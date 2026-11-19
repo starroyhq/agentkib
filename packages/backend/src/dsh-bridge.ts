@@ -39,6 +39,7 @@ import {
   claimManagedCommand,
   dispatchManagedCommand,
   finishManagedCommand,
+  observeManagedCommandCompletion,
   readUnknownManagedCommands,
   replayManagedCommand,
 } from "./managed-ledger";
@@ -379,6 +380,7 @@ const servicesSchema = z
   .object({
     sessionController: z.boolean(),
     sessionQuery: z.boolean(),
+    turnScopedCancel: z.boolean().optional(),
     approvals: z.boolean(),
     questions: z.boolean(),
     workspaceController: z.boolean().optional(),
@@ -754,6 +756,11 @@ const within = (child: string, parent: string) =>
   child === parent || child.startsWith(parent.endsWith(path.sep) ? parent : `${parent}${path.sep}`);
 const turnIdOf = (turn: number | null | undefined) =>
   typeof turn === "number" ? `dsh-turn-${turn}` : null;
+const nativeTurn = (turnId: unknown) => {
+  if (typeof turnId !== "string" || !/^dsh-turn-[1-9]\d*$/.test(turnId)) return null;
+  const number = Number(turnId.slice("dsh-turn-".length));
+  return Number.isSafeInteger(number) ? number : null;
+};
 /**
  * Why a DSH turn ended, in the words reports use for Codex turns: a cancelled turn is DSH's
  * `aborted`, a failed one its `error`; `blocked`, `max-tokens` and `interrupted` (closed after
@@ -824,6 +831,7 @@ export function dshConversationEvents(
 ): ConversationEvent[] {
   const events: ConversationEvent[] = [];
   const calls = new Map<string, { name: string; index: number }>();
+  const aborted = new Map<string, { index: number; record: DshBridgeHistoryRecord }>();
   let turn: number | null = null;
   const base = (record: DshBridgeHistoryRecord) => ({
     timestamp: iso(record.time),
@@ -838,9 +846,13 @@ export function dshConversationEvents(
       case "turn-start":
         turn = record.turn;
         break;
-      case "turn-end":
-        turn = null;
+      case "turn-end": {
+        if (turn === record.turn) turn = null;
+        const turnId = turnIdOf(record.turn);
+        if (turnId && record.reason === "aborted")
+          aborted.set(turnId, { index: events.length, record });
         break;
+      }
       case "user": {
         // Each image is read on demand through the session (`DshBridge.image`), as other
         // agents' history images are; the ID names DSH's stored copy.
@@ -925,6 +937,20 @@ export function dshConversationEvents(
         break;
     }
   }
+  for (let index = events.length - 1; index >= 0 && aborted.size; index--) {
+    const event = events[index]!;
+    if (event.turn_id && aborted.delete(event.turn_id))
+      event.turn_meta = { ...event.turn_meta, outcome: "aborted" };
+  }
+  for (const [turnId, { index, record }] of [...aborted].reverse())
+    events.splice(index, 0, {
+      ...base(record),
+      id: `turn-end:${turnId}`,
+      kind: "agent-message",
+      turn_id: turnId,
+      content: null,
+      turn_meta: { outcome: "aborted" },
+    });
   return events;
 }
 
@@ -1308,6 +1334,11 @@ export class DshBridge {
     const page = result.value as DshBridgeHistoryPage;
     if (!page || !Array.isArray(page.records) || page.sessionId !== nativeId)
       throw new Error("dsh-history-unavailable");
+    if (runtime === this.#controlRuntime(nativeId)) {
+      for (const record of page.records)
+        if (record.kind === "turn-end" && record.reason === "aborted")
+          this.#observeStoppedTurn(nativeId, record.turn);
+    }
     const history: ConversationEventPage = {
       events: dshConversationEvents(page.records),
       next_cursor:
@@ -1668,6 +1699,12 @@ export class DshBridge {
         runtime.leadsChanged = true;
         runtime.waiting?.();
       }
+      if (report.services.turnScopedCancel !== runtime.services.turnScopedCancel) {
+        for (const id of runtime.states.keys()) {
+          changed.add(id);
+          revised.add(id);
+        }
+      }
       runtime.services = report.services;
     }
     if (report.commands && stable(report.commands) !== stable(runtime.slashCommands)) {
@@ -1894,7 +1931,15 @@ export class DshBridge {
       // DSH's own client queues a message. Each edit checks that its item still waits.
       queueEditEnabled: controllable,
       queuedCount: queue.length,
-      stopEnabled: controls && online && controller && !unknown && running && !!turnId,
+      stopEnabled:
+        controls &&
+        !!workspace &&
+        controller &&
+        runtime.services.turnScopedCancel === true &&
+        !inflight &&
+        !unknown &&
+        running &&
+        nativeTurn(turnId) !== null,
       approvals: approval
         ? interactions
             .filter((item) => item.kind === "approval")
@@ -1992,9 +2037,9 @@ export class DshBridge {
     const controllable = live.queueEditEnabled === true;
     const idle = controllable && live.status === "idle" && live.activity !== "compacting";
     const archived = this.#catalog.get(nativeId)?.archived === true;
+    const workspaceReadable = !!this.options.workspaceFor(this.#catalog.get(nativeId)!.cwd);
     const archivable = idle && services?.workspaceController === true;
     const commands = online && runtime ? this.#commandsFor(runtime, nativeId) : [];
-    // A permission preset applies to the next approval, also in a running turn, as in DSH.
     const presets =
       services?.permissions === true && commands.some((entry) => entry.name === "permission");
     const compactable = commands.some((entry) => entry.name === "compact");
@@ -2008,17 +2053,14 @@ export class DshBridge {
       inspect: true,
       usage: false,
       context: false,
-      files: false,
+      files: workspaceReadable,
       reconcile: true,
-      adopt: false,
-      release: false,
-      resources: false,
+      resources: workspaceReadable,
       // Images go with any message DSH takes now: sent, queued or added to the running turn.
       attachments:
         services?.images === true &&
         (live.sendEnabled === true || live.queueEnabled === true || live.steerEnabled === true),
-      // A running turn keeps its model, so model changes wait for idle; a preset does not.
-      settings: (idle && services?.modelCatalog === true) || (controllable && presets),
+      settings: idle && (services?.modelCatalog === true || presets),
       "settings-state": online && (services?.modelCatalog === true || presets),
       queue: live.queueEnabled === true,
       "queue-list": online,
@@ -2105,6 +2147,19 @@ export class DshBridge {
         };
       case "usage":
         return { available: false, state: "unavailable", reason: "usage-unavailable" };
+      case "resources":
+        if (!this.options.workspaceFor(this.#catalog.get(nativeId)!.cwd))
+          throw new Error("session-workspace-unavailable");
+        return {
+          available: true,
+          sessionId: id,
+          executionMode: DSH_EXECUTION_MODE,
+          revision: this.live(id, false).revision,
+          skills: [],
+          plugins: [],
+          apps: [],
+          contextReferences: { supportedTypes: [] },
+        };
       case "goal":
         return this.#goalState(id, nativeId);
       case "subagents":
@@ -2569,6 +2624,18 @@ export class DshBridge {
     const presets = this.#presets(runtime, nativeId);
     if (runtime.services.modelCatalog !== true && !presets)
       return unavailable("operation-unavailable");
+    // Native preset and Plan commands can change the current turn's next step.
+    const writable =
+      live.queueEditEnabled === true && live.status === "idle" && live.activity !== "compacting";
+    const blocked =
+      (live.reason as string | undefined) ??
+      (live.queueEditEnabled === true ? "session-busy" : "operation-unavailable");
+    const choice = (offered: boolean) =>
+      !offered
+        ? { available: false, reason: "operation-unavailable" }
+        : writable
+          ? { available: true }
+          : { available: false, reason: blocked };
     const [result, permissionResult] = await Promise.all([
       runtime.services.modelCatalog === true
         ? this.#command(runtime, { commandId: randomUUID(), type: "models", sessionId: nativeId })
@@ -2594,21 +2661,13 @@ export class DshBridge {
             id: option.value,
             ...presetPresentation(option),
           })),
-          policyWritable:
-            live.queueEditEnabled === true
-              ? { available: true }
-              : {
-                  available: false,
-                  reason: (live.reason as string | undefined) ?? "operation-unavailable",
-                },
+          policyWritable: choice(true),
           // DSH's `custom` (knobs matching no preset) is not a choice; leave the picker unset.
           policyId: policy.options.some((option) => option.value === policy.current)
             ? policy.current
             : null,
         }
       : null;
-    // Plan mode is DSH's collaboration mode, switched with its own `/plan` as in its window, also
-    // in a running turn; DSH applies it at the next step.
     const planOn = planSelected(policy?.plan);
     const planFields =
       planOn !== null && this.#commandsFor(runtime, nativeId).some((entry) => entry.name === "plan")
@@ -2618,13 +2677,7 @@ export class DshBridge {
               { id: "default", name: "Default" },
               { id: "plan", name: "Plan" },
             ],
-            writable:
-              live.queueEditEnabled === true
-                ? { available: true }
-                : {
-                    available: false,
-                    reason: (live.reason as string | undefined) ?? "operation-unavailable",
-                  },
+            writable: choice(true),
           }
         : null;
     const modeFields = planFields
@@ -2668,18 +2721,6 @@ export class DshBridge {
         ? { model: modelId(selection.provider, selection.model), effort: selection.reasoningEffort }
         : { model: null, effort: null };
     const current = values(catalog.selected ?? catalog.default);
-    const writable = live.queueEditEnabled === true && live.status === "idle";
-    // Why an offered choice cannot change now: a running turn keeps its model until it ends.
-    const blocked =
-      live.queueEditEnabled === true
-        ? "session-busy"
-        : ((live.reason as string | undefined) ?? "operation-unavailable");
-    const choice = (offered: boolean) =>
-      !offered
-        ? { available: false, reason: "operation-unavailable" }
-        : writable
-          ? { available: true }
-          : { available: false, reason: blocked };
     const selected = {
       ...current,
       ...(policyFields?.policyId ? { policyId: policyFields.policyId } : {}),
@@ -2888,6 +2929,18 @@ export class DshBridge {
       .catch(() => undefined)
       .finally(() => this.#reconciling.delete(nativeId));
   }
+  #observeStoppedTurn(nativeId: string, turn: number): void {
+    const id = this.options.sessionId(nativeId);
+    const turnId = turnIdOf(turn);
+    // An early history read must not resolve a receipt still being written by its dispatch.
+    if (!turnId || this.#ids.get(id) !== nativeId || this.#inflight.has(id)) return;
+    observeManagedCommandCompletion(
+      this.options.dataDir,
+      id,
+      { operation: "stop", nativeId, turnId, stopGuard: "turn-scoped" },
+      { ...this.#result(id, "", "accepted"), turnId },
+    );
+  }
   /**
    * Settle commands whose result never came back. A sent message carries its request ID into
    * DSH's record, so finding it means accepted; once DSH no longer works on it and enough time
@@ -2949,6 +3002,59 @@ export class DshBridge {
           settle(operation, command.requestId, "not-dispatched", "dsh-message-not-recorded");
         continue;
       }
+      if (operation === "stop") {
+        const turn = nativeTurn(evidence.turnId);
+        if (turn === null || evidence.nativeId !== nativeId) continue;
+        let reason: string | null = null;
+        if (runtime.services.turnScopedCancel === true) {
+          const result = await this.#command(
+            runtime,
+            {
+              commandId: randomUUID(),
+              type: "verify-turn-end",
+              sessionId: nativeId,
+              turn,
+            },
+            HISTORY_TIMEOUT_MS,
+          );
+          const terminal = result.ok
+            ? (result.value as { sessionId?: unknown; turn?: unknown; reason?: unknown } | null)
+            : null;
+          if (
+            terminal?.sessionId === nativeId &&
+            terminal.turn === turn &&
+            typeof terminal.reason === "string"
+          )
+            reason = terminal.reason;
+        } else if (runtime.services.sessionQuery) {
+          const records = await this.#latestHistory(id);
+          const terminal = records
+            ?.reverse()
+            .find((record) => record.kind === "turn-end" && record.turn === turn);
+          if (terminal?.kind === "turn-end") reason = terminal.reason;
+        }
+        if (
+          !reason ||
+          this.#controlRuntime(nativeId) !== runtime ||
+          this.#inflight.get(id)?.requestId === command.requestId
+        )
+          continue;
+        if (reason === "aborted") {
+          const turnId = turnIdOf(turn)!;
+          finishManagedCommand(this.options.dataDir, command.requestId, {
+            ...this.#result(id, command.requestId, "accepted"),
+            turnId,
+            completed: true,
+            completionObserved: true,
+          });
+          this.#unknownSince.delete(command.requestId);
+          updates.add("history");
+        } else {
+          // The exact turn ended without the requested cancellation.
+          settle(operation, command.requestId, "not-dispatched", "stale-turn");
+        }
+        continue;
+      }
       if (!overdue) continue;
       const state = this.#state(nativeId).state;
       const row = this.#catalog.get(nativeId);
@@ -2982,31 +3088,29 @@ export class DshBridge {
       // copy that was made anyway still shows up in the session list.
       const applied = ["queue-delete", "queue-update", "queue-steer"].includes(operation)
         ? !queuedFor(state).some((item) => item.id === evidence.itemId)
-        : operation === "stop"
-          ? !(state?.status === "running" && turnIdOf(state.turn) === evidence.turnId)
-          : ["approve", "answer"].includes(operation)
-            ? !this.#interactions(nativeId).some((item) => item.id === evidence.interactionId)
-            : operation === "rename"
-              ? row?.title === evidence.title
-              : operation === "archive" || operation === "unarchive"
-                ? (row?.archived === true) === (evidence.archived === true)
-                : operation === "settings"
-                  ? (typeof evidence.preset !== "string" || preset === evidence.preset) &&
-                    (typeof evidence.plan !== "boolean" || plan === evidence.plan) &&
-                    (typeof evidence.provider !== "string" ||
-                      (selected?.provider === evidence.provider &&
-                        selected?.model === evidence.model &&
-                        (selected?.reasoningEffort ?? null) === (evidence.reasoningEffort ?? null)))
-                  : // A goal leaves its state: cleared, paused, continuing, or a new revision.
-                    operation.startsWith("goal-")
-                    ? evidence.goalAction === "clear"
-                      ? !goal
-                      : evidence.goalAction === "pause"
-                        ? goal?.phase === "paused"
-                        : evidence.goalAction === "resume"
-                          ? goal?.phase === "active" && goal.activation === "armed"
-                          : !!goal && goal.revision !== evidence.goalRevision
-                    : false;
+        : ["approve", "answer"].includes(operation)
+          ? !this.#interactions(nativeId).some((item) => item.id === evidence.interactionId)
+          : operation === "rename"
+            ? row?.title === evidence.title
+            : operation === "archive" || operation === "unarchive"
+              ? (row?.archived === true) === (evidence.archived === true)
+              : operation === "settings"
+                ? (typeof evidence.preset !== "string" || preset === evidence.preset) &&
+                  (typeof evidence.plan !== "boolean" || plan === evidence.plan) &&
+                  (typeof evidence.provider !== "string" ||
+                    (selected?.provider === evidence.provider &&
+                      selected?.model === evidence.model &&
+                      (selected?.reasoningEffort ?? null) === (evidence.reasoningEffort ?? null)))
+                : // A goal leaves its state: cleared, paused, continuing, or a new revision.
+                  operation.startsWith("goal-")
+                  ? evidence.goalAction === "clear"
+                    ? !goal
+                    : evidence.goalAction === "pause"
+                      ? goal?.phase === "paused"
+                      : evidence.goalAction === "resume"
+                        ? goal?.phase === "active" && goal.activation === "armed"
+                        : !!goal && goal.revision !== evidence.goalRevision
+                  : false;
       settle(
         operation,
         command.requestId,
@@ -3263,11 +3367,15 @@ export class DshBridge {
           };
           break;
         }
-        case "stop":
+        case "stop": {
+          if (runtime.services.turnScopedCancel !== true) throw new Error("dsh-stop-unavailable");
           if (live.stopEnabled !== true || value.turnId !== live.turnId)
             throw new Error("stale-turn");
-          command = { commandId, type: "cancel", sessionId: nativeId };
+          const turn = nativeTurn(value.turnId);
+          if (turn === null) throw new Error("stale-turn");
+          command = { commandId, type: "cancel-turn", sessionId: nativeId, turn };
           break;
+        }
         case "approve": {
           const approval = this.#interactions(nativeId).find(
             (item) => item.kind === "approval" && item.id === value.approvalId,
@@ -3348,7 +3456,12 @@ export class DshBridge {
           command = { commandId, type: "fork", sessionId: nativeId };
           break;
         case "settings": {
-          if (live.queueEditEnabled !== true) throw new Error("session-busy");
+          if (
+            live.queueEditEnabled !== true ||
+            live.status !== "idle" ||
+            live.activity === "compacting"
+          )
+            throw new Error("session-busy");
           const steps: Command[] = [];
           if (value.mode !== undefined) {
             // A plan switch goes alone, as DSH's own composer chip and `/plan` make it.
@@ -3375,7 +3488,6 @@ export class DshBridge {
             };
             break;
           }
-          // A preset applies to the next approval, also in a running turn, as in DSH's window.
           if (value.policyId !== undefined) {
             if (!this.#presets(runtime, nativeId)) throw new Error("operation-unavailable");
             // Read moments before by the same request, so this is a preset the user saw.
@@ -3432,9 +3544,6 @@ export class DshBridge {
               (current.reasoningEffort ?? null) === effort;
             // The settings dialog sends the model it shows along with a new preset.
             if (!unchanged || !steps.length) {
-              // A running turn keeps its model until it ends.
-              if (live.status !== "idle" || live.activity === "compacting")
-                throw new Error("session-busy");
               steps.push({
                 commandId: steps.length ? randomUUID() : commandId,
                 type: "selectModel",
@@ -3531,6 +3640,7 @@ export class DshBridge {
       ...(value.historyInputHash ? { historyInputHash: value.historyInputHash } : {}),
       // What an unconfirmed control acted on, for settling it from the state later.
       ...(command.type === "queue" ? { itemId: command.itemId } : {}),
+      ...(command.type === "cancel-turn" ? { stopGuard: "turn-scoped" } : {}),
       ...(command.type === "answer" ? { interactionId: command.interactionId } : {}),
       ...(command.type === "rename" ? { title: command.title } : {}),
       ...(command.type === "archive" ? { archived: command.archived } : {}),
@@ -3591,6 +3701,23 @@ export class DshBridge {
       }
       if (!result.ok && command.type === "goal-control")
         result = { ...result, error: goalRefusal(result.error) };
+      if (command.type === "cancel-turn") {
+        const receipt = result.ok
+          ? (result.value as { sessionId?: unknown; turn?: unknown; accepted?: unknown } | null)
+          : null;
+        if (
+          receipt?.sessionId !== nativeId ||
+          receipt.turn !== command.turn ||
+          receipt.accepted !== true
+        ) {
+          // Only refusals known to precede the native dispatch can settle it as not dispatched.
+          if (
+            result.ok ||
+            !["stale-turn", "dsh-stop-unavailable", "not-dispatched"].includes(result.error ?? "")
+          )
+            result = { ok: false, error: "unknown" };
+        }
+      }
       // Clients open a fork from the reply, as they do a Codex fork; still in flight, wait for
       // DSH to list it first.
       const child = result.ok ? (result.value as { sessionId?: unknown } | null)?.sessionId : null;
@@ -3635,7 +3762,11 @@ export class DshBridge {
         false,
         settings && outcome.accepted === true ? ["settings"] : [],
       );
-      const settled = { ...outcome, live: this.live(id, true) };
+      const settled = {
+        ...outcome,
+        ...(command.type === "cancel-turn" ? { turnId: turnIdOf(command.turn) } : {}),
+        live: this.live(id, true),
+      };
       // The stored result was built while this request still counted as unconfirmed, so its
       // snapshot says "outcome-unknown". A replay or a receipt would hand that to a client,
       // which would take it as the session's state.

@@ -1,6 +1,17 @@
 import { RuntimeRequestError } from "../runtime-host";
 
-/** Admission rejection is about this attempt, not necessarily the original request ID. */
+// These runtime errors can be raised before any native command is claimed.
+const PRE_DISPATCH_ERRORS = new Set([
+  "web-busy",
+  "stale-Claude-revision",
+  "session-busy",
+  "session-managed-by-another-runtime",
+  "session-already-bridged",
+  "claude-bridge-disconnected",
+  "unverified-session-identity",
+]);
+
+/** A preflight rejection describes this attempt, not necessarily the original request. */
 export async function dispatchClaude(
   invoke: (params: unknown) => Promise<unknown>,
   receipt: (params: { requestId: string; deviceId: string }) => Promise<unknown>,
@@ -12,12 +23,12 @@ export async function dispatchClaude(
     if (
       !(error instanceof RuntimeRequestError) ||
       error.code !== -32000 ||
-      error.message !== "web-busy"
+      !PRE_DISPATCH_ERRORS.has(error.message)
     )
       throw error;
     if (typeof params.requestId !== "string" || typeof params.deviceId !== "string") throw error;
-    // This read is serialized after previously admitted work. A duplicate that
-    // lost admission must not release references held by its original execution.
+    // The authoritative ledger must also have no claim for this request. A
+    // repeat attempt rejected at preflight cannot override an execution it found.
     const prior = await receipt({ requestId: params.requestId, deviceId: params.deviceId });
     if (
       !prior ||
@@ -35,8 +46,8 @@ export async function dispatchClaude(
       requestId: params.requestId,
       sessionId: params.sessionId,
       runtimeBootId: params.runtimeBootId,
-      reason: "web-busy",
-      error: "web-busy",
+      reason: error.message,
+      error: error.message,
     };
   }
 }

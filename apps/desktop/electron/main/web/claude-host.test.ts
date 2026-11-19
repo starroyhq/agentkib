@@ -9,6 +9,7 @@ import { WebAccessService, type WebDevice } from "./service";
 import { AttachmentStore } from "./attachments";
 import { approveLegacyBrowser } from "./legacy-pairing-fixture";
 import type { ArtifactListing } from "./artifacts";
+import { sessionProviderCapabilities } from "@agentkib/runtime-protocol";
 
 describe("Claude host control boundary", () => {
   let directory: string;
@@ -185,6 +186,110 @@ describe("Claude host control boundary", () => {
     await rm(directory, { recursive: true, force: true });
   });
 
+  it("projects readonly follower settings and workspace browsing without granting native writes", async () => {
+    await writeFile(join(directory, "workspace", "readme.md"), "workspace-only fixture");
+    const implementation = runtime.getMockImplementation()!;
+    const provider = sessionProviderCapabilities("claude-code")!;
+    runtime.mockImplementation(async (value) => {
+      const params = value as Record<string, unknown>;
+      if (params.operation === "live")
+        return { ...((await implementation(value)) as object), executionMode: "claude-follower" };
+      if (params.operation === "capabilities")
+        return {
+          executionMode: "claude-follower",
+          features: {
+            resources: { available: true },
+            context: { available: false },
+            "settings-state": { available: true },
+            settings: { available: false },
+          },
+        };
+      if (params.operation === "settings-state")
+        return {
+          available: true,
+          executionMode: "claude-follower",
+          provider,
+          revision: 4,
+          current: { model: "real-model", permissionMode: "auto", maxContextTokens: 1000000 },
+          historicalSettings: { model: "old-model" },
+          historicalUsage: {
+            available: true,
+            state: "stale",
+            historical: true,
+            usedTokens: 99,
+            contextWindow: 1000,
+          },
+          defaults: {},
+          writable: {},
+          models: [{ id: "real-model", efforts: [] }],
+        };
+      if (params.operation === "usage")
+        return {
+          available: true,
+          state: "stale",
+          usedTokens: 24,
+          reason: "model-context-window-unavailable",
+        };
+      if (params.operation === "resources")
+        return {
+          available: true,
+          executionMode: "claude-follower",
+          revision: 4,
+          skills: [],
+          plugins: [],
+          apps: [],
+        };
+      return implementation(value);
+    });
+    const settings = await service.localRequest("/managed/settings?sessionId=claude-session");
+    expect(settings).toMatchObject({
+      status: 200,
+      body: {
+        current: { modelId: "real-model", permissionMode: "auto", maxContextTokens: 1000000 },
+        historicalSettings: { modelId: "old-model" },
+        provider: { composer: provider.composer },
+        usage: { usedTokens: 24, state: "stale" },
+        writable: {
+          model: { available: false },
+          permissionMode: { available: false },
+          restoreDefaults: { available: false },
+        },
+      },
+    });
+    expect((settings.body as any).usage).not.toHaveProperty("contextWindow");
+    const resources = await service.localRequest("/managed/resources?sessionId=claude-session");
+    expect(resources).toMatchObject({
+      status: 200,
+      body: {
+        resources: expect.arrayContaining([
+          expect.objectContaining({ name: "readme.md", kind: "file" }),
+        ]),
+      },
+    });
+    const resourceId = (resources.body as { resources: { id: string }[] }).resources[0]!.id;
+    const access = await service.localRequest("/access");
+    const sent = await service.localRequest("/send", {
+      bootId: (access.body as { bootId: string }).bootId,
+      sessionId: "claude-session",
+      requestId: randomUUID(),
+      expectedRevision: 4,
+      text: "synthetic guard check",
+      resourceIds: [resourceId],
+    });
+    expect(sent).toMatchObject({
+      status: 409,
+      body: { error: "context_unavailable", controlOutcome: "not-dispatched" },
+    });
+    expect(
+      runtime.mock.calls.some(([value]) => (value as Record<string, unknown>).operation === "send"),
+    ).toBe(false);
+    await configure([]);
+    expect(await http("/managed/settings?sessionId=claude-session")).toMatchObject({ status: 403 });
+    expect(await http("/managed/resources?sessionId=claude-session")).toMatchObject({
+      status: 403,
+    });
+  });
+
   it("refuses restricted-device Claude control outside the current workspace allowlist", async () => {
     await configure([]);
     bootId = String((await http("/access")).body.bootId);
@@ -235,7 +340,7 @@ describe("Claude host control boundary", () => {
       }),
     );
   });
-  it("adopts a scoped Claude session without manual confirmation or a supplied fingerprint", async () => {
+  it("rejects the removed Claude adoption route without dispatch", async () => {
     const requestId = randomUUID();
     expect(
       await http("/managed/adopt", {
@@ -244,67 +349,57 @@ describe("Claude host control boundary", () => {
         sessionId: "claude-session",
         requestId,
         deviceId: "spoofed",
-        handoffConfirmed: false,
       }),
-    ).toMatchObject({ status: 200 });
-    expect(managed).toHaveBeenLastCalledWith({
-      operation: "adopt",
-      sessionId: "claude-session",
-      requestId,
-      deviceId,
-    });
+    ).toMatchObject({ status: 404 });
+    expect(managed).not.toHaveBeenCalled();
     expect(codexManaged).not.toHaveBeenCalled();
   });
-  it("continues forwarding explicit adoption fingerprints for backend verification", async () => {
+  it("also rejects adoption through the trusted desktop route without dispatch", async () => {
     const requestId = randomUUID();
+    const desktop = await service.localRequest("/access");
     expect(
-      await http("/managed/adopt", {
+      await service.localRequest("/managed/adopt", {
         agent: "claude-code",
-        bootId,
+        bootId: (desktop.body as { bootId: string }).bootId,
         sessionId: "claude-session",
         requestId,
-        handoffFingerprint: "prior-fingerprint",
       }),
-    ).toMatchObject({ status: 200 });
-    expect(managed).toHaveBeenLastCalledWith({
-      operation: "adopt",
-      sessionId: "claude-session",
-      requestId,
-      deviceId,
-      handoffFingerprint: "prior-fingerprint",
-    });
+    ).toMatchObject({ status: 404 });
+    expect(managed).not.toHaveBeenCalled();
+    expect(codexManaged).not.toHaveBeenCalled();
   });
-  it("keeps explicit adoption inside workspace authorization", async () => {
+  it("keeps Claude release inside workspace authorization", async () => {
     await configure([]);
     bootId = String((await http("/access")).body.bootId);
     expect(
-      await http("/managed/adopt", {
+      await http("/managed/release", {
         agent: "claude-code",
         bootId,
         sessionId: "claude-session",
         requestId: randomUUID(),
+        expectedRevision: 4,
       }),
     ).toMatchObject({ status: 403 });
-    expect(managed).not.toHaveBeenCalledWith(expect.objectContaining({ operation: "adopt" }));
+    expect(managed).not.toHaveBeenCalledWith(expect.objectContaining({ operation: "release" }));
   });
-  it("keeps explicit adoption behind manage permission", async () => {
+  it("keeps Claude release behind manage permission", async () => {
     cookie = "";
     const access = await http("/access");
     cookie = access.cookies![0].split(";")[0];
     csrf = String(access.body.csrfToken);
     await approveLegacyBrowser(service, cookie, { send: true, manage: false });
     expect(
-      await http("/managed/adopt", {
+      await http("/managed/release", {
         agent: "claude-code",
         bootId,
         sessionId: "claude-session",
         requestId: randomUUID(),
       }),
     ).toMatchObject({ status: 403 });
-    expect(managed).not.toHaveBeenCalledWith(expect.objectContaining({ operation: "adopt" }));
+    expect(managed).not.toHaveBeenCalledWith(expect.objectContaining({ operation: "release" }));
   });
   it.each(["resume", "queue-resume", "goal-resume"])(
-    "resumes Claude %s without forwarding an invented manual confirmation",
+    "resumes Claude %s as the trusted desktop identity",
     async (operation) => {
       const implementation = runtime.getMockImplementation()!;
       runtime.mockImplementation(async (value) =>
@@ -333,12 +428,147 @@ describe("Claude host control boundary", () => {
           deviceId: "desktop-local",
         }),
       );
-      const forwarded = runtime.mock.calls.find(
-        ([value]) => (value as Record<string, unknown>).operation === operation,
-      )![0];
-      expect(forwarded).not.toHaveProperty("handoffConfirmed");
     },
   );
+  describe("opening a connected terminal's native model picker", () => {
+    const operation = "open-model-picker";
+    const sessionId = "claude-session";
+    let mode: string;
+    let status: string;
+    let feature: { available: boolean } | undefined;
+    let ackRuntime: string;
+    const dispatched = () =>
+      runtime.mock.calls
+        .map(([params]) => params as Record<string, unknown>)
+        .filter((params) => params.operation === operation);
+    const body = (fields: Record<string, unknown> = {}) => ({
+      operation,
+      sessionId,
+      bootId,
+      requestId: randomUUID(),
+      expectedRevision: revision,
+      ...fields,
+    });
+    beforeEach(() => {
+      mode = "claude-follower";
+      status = "idle";
+      feature = { available: true };
+      ackRuntime = "runtime-one";
+      const implementation = runtime.getMockImplementation()!;
+      const request = async (value: unknown) => {
+        const params = value as Record<string, unknown>;
+        if (params.operation === "capabilities")
+          return { executionMode: mode, features: feature ? { [operation]: feature } : {} };
+        if (params.operation === "live")
+          return { ...((await implementation(value)) as object), executionMode: mode, status };
+        if (params.operation !== operation) return implementation(value);
+        const requestId = String(params.requestId);
+        const ack = {
+          accepted: true,
+          controlOutcome: "accepted",
+          requestId,
+          sessionId,
+          runtimeBootId: ackRuntime,
+        };
+        receipts.set(requestId, {
+          found: true,
+          requestId,
+          sessionId,
+          workspaceId: "workspace",
+          operation,
+          executionMode: mode,
+          expectedRevision: revision,
+          runtimeBootId: "runtime-one",
+          status: "accepted",
+          publicInputHash: params.publicInputHash,
+          ack,
+        });
+        return ack;
+      };
+      runtime.mockImplementation(request);
+      managed.mockImplementation(request);
+    });
+    it("uses only the settings grant and the connected session for desktop, Web and replay", async () => {
+      const capsPath = "/managed/capabilities?agent=claude-code&sessionId=claude-session";
+      expect(await http(capsPath)).toMatchObject({
+        body: { features: { [operation]: { available: false } } },
+      });
+      expect(await http("/managed/action", body())).toMatchObject({ status: 403 });
+      expect(dispatched()).toHaveLength(0);
+      const desktop = await service.localRequest("/access");
+      const local = body({ bootId: (desktop.body as { bootId: string }).bootId });
+      expect(await service.localRequest("/managed/action", local)).toMatchObject({
+        status: 200,
+        body: { requestId: local.requestId },
+      });
+      expect(dispatched()[0]).toEqual({
+        operation,
+        sessionId,
+        deviceId: "desktop-local",
+        requestId: local.requestId,
+        expectedRevision: revision,
+        publicInputHash: expect.any(String),
+        runtimeBootId: "runtime-one",
+        experimentalEnabled: true,
+      });
+      cookie = "";
+      const access = await http("/access");
+      cookie = access.cookies![0].split(";")[0];
+      csrf = String(access.body.csrfToken);
+      await approveLegacyBrowser(service, cookie, { settings: true, advancedControl: true });
+      expect(await http(capsPath)).toMatchObject({
+        body: { features: { [operation]: { available: true } } },
+      });
+      const browser = body();
+      for (let i = 0; i < 2; i++)
+        expect(await http("/managed/action", browser)).toMatchObject({
+          status: 200,
+          body: { requestId: browser.requestId },
+        });
+      expect(dispatched()).toHaveLength(2);
+      expect(
+        runtime.mock.calls.flat().map((params) => (params as Record<string, unknown>).operation),
+      ).not.toEqual(expect.arrayContaining(["create"]));
+      expect(managed).not.toHaveBeenCalledWith(expect.objectContaining({ operation: "settings" }));
+      expect(codexManaged).not.toHaveBeenCalled();
+      await configure([]);
+      expect(await http("/managed/action", browser)).toMatchObject({ status: 403 });
+      expect(dispatched()).toHaveLength(2);
+    });
+    it("refuses missing capabilities, a busy terminal, another executor, stale state and unexpected input", async () => {
+      const access = await service.localRequest("/access");
+      bootId = (access.body as { bootId: string }).bootId;
+      const open = (fields?: Record<string, unknown>) =>
+        service.localRequest("/managed/action", body(fields));
+      feature = undefined;
+      expect(await open()).toMatchObject({ status: 409 });
+      feature = { available: true };
+      status = "running";
+      expect(await open()).toMatchObject({ status: 409 });
+      status = "idle";
+      mode = "claude-managed";
+      expect(await open()).toMatchObject({ status: 409 });
+      mode = "claude-follower";
+      expect(await open({ expectedRevision: revision - 1 })).toMatchObject({ status: 409 });
+      expect(await open({ model: "other" })).toMatchObject({ status: 400 });
+      expect(dispatched()).toHaveLength(0);
+    });
+    it("keeps a mismatched acknowledgement uncertain, including on replay", async () => {
+      const access = await service.localRequest("/access");
+      const input = body({ bootId: (access.body as { bootId: string }).bootId });
+      ackRuntime = "previous-runtime";
+      for (let i = 0; i < 2; i++)
+        expect(await service.localRequest("/managed/action", input)).toMatchObject({
+          status: 502,
+          body: { error: "outcome_unknown" },
+        });
+      expect(await service.localRequest(`/requests/${input.requestId}`)).toMatchObject({
+        status: 503,
+        body: { error: "receipt_unavailable" },
+      });
+      expect(dispatched()).toHaveLength(1);
+    });
+  });
   describe("a Claude next-turn settings request", () => {
     // The list CLI 2.1.311 reports at initialize, as the backend's settings-state carries it.
     const models = [
@@ -462,7 +692,7 @@ describe("Claude host control boundary", () => {
     },
   );
   it.each(["claude-owner-busy", "owner-opened-elsewhere", "claude-owner-check-unavailable"])(
-    "preserves a definitive %s adoption rejection",
+    "preserves a definitive %s release rejection",
     async (reason) => {
       managed.mockImplementation(async (value) => {
         const params = value as Record<string, unknown>;
@@ -475,11 +705,12 @@ describe("Claude host control boundary", () => {
         };
       });
       expect(
-        await http("/managed/adopt", {
+        await http("/managed/release", {
           agent: "claude-code",
           bootId,
           sessionId: "claude-session",
           requestId: randomUUID(),
+          expectedRevision: 4,
         }),
       ).toMatchObject({ status: 409, body: { error: reason, controlOutcome: "not-dispatched" } });
     },
@@ -915,7 +1146,7 @@ describe("Claude host control boundary", () => {
       ),
     ).toHaveLength(0);
   });
-  it.each(["release", "adopt"])(
+  it.each(["release", "reconcile"])(
     "keeps an existing managed %s unknown when preflight fails",
     async (operation) => {
       const requestId = randomUUID();
@@ -933,8 +1164,6 @@ describe("Claude host control boundary", () => {
           sessionId: "claude-session",
           requestId,
           expectedRevision: 4,
-          handoffConfirmed: true,
-          handoffFingerprint: "fingerprint",
         }),
       ).toMatchObject({ body: { controlOutcome: "unknown" } });
       expect(receipt).toHaveBeenCalledWith({ requestId, deviceId });
@@ -1043,7 +1272,7 @@ describe("Claude host control boundary", () => {
   });
   it("projects Claude capabilities through actual device roles and LAN transport restrictions", async () => {
     const features = Object.fromEntries(
-      ["send", "approve", "adopt", "release", "files", "attachments"].map((name) => [
+      ["send", "approve", "release", "reconcile", "files", "attachments"].map((name) => [
         name,
         { available: true },
       ]),

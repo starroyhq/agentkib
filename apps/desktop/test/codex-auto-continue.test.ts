@@ -1164,6 +1164,93 @@ describe("Codex Plan mode", () => {
       Record<string, any>
     >;
 
+  it.each<[string, Record<string, unknown>]>([
+    [
+      "model, effort, Fast and Plan",
+      { model: "model-b", effort: "high", serviceTier: "priority", mode: "plan" },
+    ],
+    ["effort", { effort: "high" }],
+    ["Fast", { serviceTier: "priority" }],
+    ["Plan", { mode: "plan" }],
+    ["mode clear", { mode: null }],
+  ])(
+    "stages a policy with %s without claiming the native writer until send",
+    async (_name, fields) => {
+      const f = fixture();
+      f.setModels([
+        {
+          model: "model-a",
+          isDefault: true,
+          supportedReasoningEfforts: [{ reasoningEffort: "low" }, { reasoningEffort: "high" }],
+          serviceTiers: [{ id: "priority", name: "Fast" }],
+        },
+        {
+          model: "model-b",
+          supportedReasoningEfforts: [{ reasoningEffort: "high" }],
+          serviceTiers: [{ id: "priority", name: "Fast" }],
+        },
+      ]);
+      f.setFailure(new Error("must not claim the native writer while saving settings"));
+      const state = await f.live();
+      const requestId = randomUUID();
+      const change = {
+        operation: "settings",
+        sessionId: f.summary.id,
+        requestId,
+        deviceId: "fixture",
+        runtimeBootId: state.runtimeBootId,
+        expectedRevision: state.revision,
+        experimentalEnabled: true,
+        policyId: "full-access-on-request",
+        ...fields,
+      };
+      const saved = await f.web.managedControl(change);
+      expect(saved).toMatchObject({ accepted: true, requestId, appliesTo: "next-turn" });
+      expect(await f.web.managedControl(change)).toEqual(saved);
+      await expect(
+        f.web.managedControl({ ...change, policyId: "workspace-write-on-request" }),
+      ).rejects.toThrow("request-id-reused-with-different-input");
+      expect(readControlReceipt(f.root, { requestId, deviceId: "fixture" })).toMatchObject({
+        status: "accepted",
+        sessionId: f.summary.id,
+        operation: "settings",
+        ack: saved,
+      });
+      expect(readManagedRecord(f.root, f.summary.id)).toMatchObject({
+        policy_id: "full-access-on-request",
+        released: true,
+        ...(fields.model !== undefined ? { model: fields.model } : {}),
+        ...(fields.effort !== undefined ? { effort: fields.effort } : {}),
+        ...(fields.serviceTier !== undefined ? { service_tier: fields.serviceTier } : {}),
+        ...(fields.mode !== undefined ? { mode: fields.mode } : {}),
+        snapshot: { settingsStaged: true, revision: state.revision + 1 },
+      });
+      expect(commandOperations(f.root, f.summary.id)).toEqual(["settings"]);
+      expect(readUnknownManagedCommands(f.root, f.summary.id)).toEqual([]);
+      for (const method of ["thread/resume", "thread/start", "turn/start"])
+        expect(f.methods).not.toContain(method);
+      expect(f.follower).not.toHaveBeenCalled();
+      await expect(
+        f.web.managedControl({ ...change, policyId: "workspace-write-on-request" }),
+      ).rejects.toThrow("request-id-reused-with-different-input");
+
+      f.setFailure(undefined);
+      expect(await f.send()).toMatchObject({ accepted: true });
+      expect(f.requests.find(({ method }) => method === "thread/resume")?.params).toMatchObject({
+        threadId: nativeId,
+        approvalPolicy: "never",
+        sandbox: "danger-full-access",
+      });
+      expect(f.requests.find(({ method }) => method === "turn/start")?.params).toMatchObject({
+        model: fields.model ?? "model-a",
+        ...(fields.effort !== undefined ? { effort: fields.effort } : {}),
+        ...(fields.serviceTier !== undefined ? { serviceTier: fields.serviceTier } : {}),
+        ...(fields.mode ? { collaborationMode: { mode: fields.mode } } : {}),
+      });
+      expect(commandOperations(f.root, f.summary.id)).toEqual(["settings", "send"]);
+    },
+  );
+
   it("rolls back an attached Plan change when storing its accepted receipt fails", async () => {
     const f = fixture();
     expect(await control(f, "send")).toMatchObject({ accepted: true });
@@ -1205,6 +1292,53 @@ describe("Codex Plan mode", () => {
     expect(await control(f, "settings", { mode: "plan" })).toMatchObject({ accepted: true });
     expect((await settingsState(f)).settings).toMatchObject({ selected: { mode: "plan" } });
     expect(f.methods.filter((method) => method === "turn/start")).toHaveLength(1);
+  });
+
+  it("saves a new model, effort and policy during a turn for the next send", async () => {
+    const f = fixture();
+    f.setModels([
+      {
+        model: "model-a",
+        isDefault: true,
+        supportedReasoningEfforts: [{ reasoningEffort: "low" }],
+      },
+      { model: "model-b", supportedReasoningEfforts: [{ reasoningEffort: "high" }] },
+    ]);
+    expect(await control(f, "send")).toMatchObject({ accepted: true });
+    const running = await f.live();
+    expect(running.status).toBe("running");
+    expect(
+      await f.web.managedQuery({
+        operation: "capabilities",
+        sessionId: f.summary.id,
+        experimentalEnabled: true,
+      }),
+    ).toMatchObject({ features: { settings: { available: true } } });
+
+    const requestId = randomUUID();
+    const result = await control(f, "settings", {
+      requestId,
+      model: "model-b",
+      effort: "high",
+      policyId: "workspace-write-auto-review",
+    });
+    expect(result).toMatchObject({ accepted: true, appliesTo: "next-turn" });
+    expect(await f.live()).toMatchObject({ status: "running", turnId: running.turnId });
+    expect((await settingsState(f)).settings).toMatchObject({
+      selected: { model: "model-b", effort: "high", policyId: "workspace-write-auto-review" },
+    });
+    expect(f.methods).not.toContain("thread/settings/update");
+    expect(f.methods.filter((method) => method === "turn/start")).toHaveLength(1);
+
+    f.servers.at(-1)!.complete();
+    expect(await control(f, "send")).toMatchObject({ accepted: true });
+    expect(f.requests.filter(({ method }) => method === "turn/start").at(-1)?.params).toMatchObject(
+      {
+        model: "model-b",
+        effort: "high",
+        approvalsReviewer: "auto_review",
+      },
+    );
   });
 
   it("returns the same settings revision and Plan selection after a delayed catalog read", async () => {
@@ -3609,18 +3743,14 @@ describe("Codex automatic CLI continuation", () => {
   it("rejects a fresh standalone adoption without opening a runner or creating a receipt", async () => {
     const f = fixture();
     const requestId = randomUUID();
-    expect(
-      await f.web.managedLifecycle({
+    await expect(
+      f.web.managedLifecycle({
         operation: "adopt",
         requestId,
         deviceId: "fixture",
         sessionId: f.summary.id,
       }),
-    ).toMatchObject({
-      accepted: false,
-      controlOutcome: "not-dispatched",
-      reason: "operation-unavailable",
-    });
+    ).rejects.toThrow();
     expect(f.start).not.toHaveBeenCalled();
     expect(readControlReceipt(f.root, { requestId, deviceId: "fixture" })).toMatchObject({
       found: false,
@@ -4240,6 +4370,7 @@ describe("Codex Desktop follow", () => {
       turn?: boolean;
       approval?: boolean;
       question?: boolean;
+      settings?: boolean;
       publish?: (
         sessionId: string,
         type: "state" | "text-delta" | "item-upsert" | "snapshot",
@@ -4287,37 +4418,67 @@ describe("Codex Desktop follow", () => {
           ]
         : [];
     const state = new CodexFollowerState(nativeId, "fixture-owner");
-    state.notification({
-      type: "broadcast",
-      sourceClientId: "fixture-owner",
-      method: "thread-stream-state-changed",
-      version: 11,
-      params: {
-        conversationId: nativeId,
-        hostId: "local",
-        change: {
-          type: "snapshot",
-          revision: options.revision ?? 1,
-          conversationState: {
-            id: nativeId,
-            hostId: "local",
-            requests,
-            threadRuntimeStatus: { type: turnId ? "active" : "idle" },
-            turns: turnId ? [{ turnId, status: "inProgress", items: [] }] : [],
+    const setSnapshot = (revision = options.revision ?? 1, model = "model-a", effort = "low") =>
+      state.notification({
+        type: "broadcast",
+        sourceClientId: "fixture-owner",
+        method: "thread-stream-state-changed",
+        version: 11,
+        params: {
+          conversationId: nativeId,
+          hostId: "local",
+          change: {
+            type: "snapshot",
+            revision,
+            conversationState: {
+              id: nativeId,
+              hostId: "local",
+              requests,
+              threadRuntimeStatus: { type: turnId ? "active" : "idle" },
+              turns: turnId ? [{ turnId, status: "inProgress", items: [] }] : [],
+              ...(options.settings
+                ? {
+                    modelProvider: "openai",
+                    latestModel: model,
+                    latestReasoningEffort: effort,
+                    cwd: f.workspace,
+                  }
+                : {}),
+            },
           },
         },
-      },
-    });
+      });
+    setSnapshot();
+    if (options.settings) {
+      f.intercept((method) =>
+        method === "config/read" ? { config: { model_provider: "openai" } } : undefined,
+      );
+      f.setModels([
+        {
+          model: "model-a",
+          supportedReasoningEfforts: [{ reasoningEffort: "low" }, { reasoningEffort: "high" }],
+        },
+        {
+          model: "model-b",
+          supportedReasoningEfforts: [{ reasoningEffort: "medium" }],
+          defaultReasoningEffort: "medium",
+        },
+      ]);
+    }
     const bridge = {
       connected: true,
       selectedState: state,
       connection: {
         endpoint: path.join(f.home, "ipc", "ipc.sock"),
         clientId: "fixture-follower",
+        settingsCatalogExecutable: options.settings ? path.join(f.bin, "codex") : undefined,
       },
-      supportsThreadSettings: false,
+      supportsThreadSettings: options.settings === true,
       observeLive: vi.fn(async () => state),
       refresh: vi.fn(async () => state),
+      readModelSettings: vi.fn(async () => state.nativeModelSettings()),
+      updateModelSettings: vi.fn<CodexFollowerBridge["updateModelSettings"]>(),
+      verifyModelSettings: vi.fn<CodexFollowerBridge["verifyModelSettings"]>(),
       mutate: vi.fn(
         async (
           _method: string,
@@ -4334,8 +4495,122 @@ describe("Codex Desktop follow", () => {
       }),
     };
     f.follower.mockResolvedValue(bridge as unknown as CodexFollowerBridge);
-    return { f, state, bridge, release };
+    return { f, state, bridge, release, setSnapshot };
   }
+
+  it("projects writable Codex follower model and effort while keeping Fast read-only", async () => {
+    const { f, state } = followerFixture({ settings: true });
+    expect(
+      await f.web.sessionProviderSettingsState({
+        operation: "settings-state",
+        sessionId: f.summary.id,
+      }),
+    ).toMatchObject({
+      executionMode: "codex-follower",
+      writeScope: state.settingsWriteScope,
+      revision: 1,
+      models: [{ id: "model-a" }, { id: "model-b" }],
+      settings: {
+        current: { model: "model-a", effort: "low" },
+        writable: { model: true, effort: true, serviceTier: false },
+      },
+    });
+    expect(
+      await f.web.managedQuery({
+        operation: "capabilities",
+        sessionId: f.summary.id,
+        experimentalEnabled: true,
+      }),
+    ).toMatchObject({
+      features: { settings: { available: true } },
+    });
+    expect(f.methods).not.toContain("thread/resume");
+    expect(f.methods).not.toContain("thread/start");
+  });
+
+  it.each([
+    "accepted",
+    "declined",
+    "readback-failed",
+    "ack-missing",
+    "stale-scope",
+    "fast",
+    "unlisted",
+    "policy",
+    "running",
+  ])("uses scoped Codex follower settings receipts for %s", async (scenario) => {
+    const { f, state, bridge, setSnapshot } = followerFixture({
+      settings: true,
+      turn: scenario === "running" || scenario === "policy",
+    });
+    const live = await f.live();
+    bridge.updateModelSettings.mockImplementation(async ({ onDispatch, onApplied, next }) => {
+      onDispatch();
+      if (scenario === "declined") return false;
+      if (scenario === "ack-missing") throw new Error("missing ack");
+      onApplied();
+      if (scenario === "readback-failed") throw new Error("missing readback");
+      setSnapshot(2, next.model, next.effort ?? "low");
+      return true;
+    });
+    const request = {
+      operation: "settings",
+      sessionId: f.summary.id,
+      requestId: randomUUID(),
+      deviceId: "fixture",
+      runtimeBootId: live.runtimeBootId,
+      expectedRevision: live.revision,
+      expectedSettingsScope: scenario === "stale-scope" ? randomUUID() : state.settingsWriteScope,
+      experimentalEnabled: true,
+      model: scenario === "unlisted" ? "unknown-model" : "model-b",
+      ...(scenario === "fast" ? { serviceTier: "fast" } : {}),
+      ...(scenario === "policy" ? { policyId: "full-access-on-request" } : {}),
+    };
+    if (scenario === "running") {
+      expect(
+        await f.web.managedQuery({
+          operation: "capabilities",
+          sessionId: f.summary.id,
+          experimentalEnabled: true,
+        }),
+      ).toMatchObject({ features: { settings: { available: true } } });
+    }
+    const result = await f.web.managedControl(request);
+    if (scenario === "accepted" || scenario === "running") {
+      expect(result).toMatchObject({ accepted: true, completed: true, appliesTo: "next-turn" });
+      expect(bridge.updateModelSettings).toHaveBeenCalledWith(
+        expect.objectContaining({
+          next: { model: "model-b", effort: "medium", modelProvider: "openai" },
+        }),
+      );
+      if (scenario === "running") {
+        expect(state.status).toBe("running");
+        expect(state.activeTurn()).toBe("followed-turn");
+      }
+    } else if (scenario === "readback-failed" || scenario === "ack-missing") {
+      expect(result).toMatchObject({ accepted: false, controlOutcome: "unknown" });
+      const pending = readUnknownManagedCommands(f.root, f.summary.id);
+      expect(pending).toHaveLength(1);
+      if (scenario === "readback-failed")
+        expect(pending[0]!.evidence).toHaveProperty("followerSettings");
+      else expect(pending[0]!.evidence).not.toHaveProperty("followerSettings");
+      setSnapshot(2, "model-b", "medium");
+      bridge.verifyModelSettings.mockResolvedValue(true);
+      await f.live();
+      expect(bridge.verifyModelSettings).toHaveBeenCalledTimes(
+        scenario === "readback-failed" ? 1 : 0,
+      );
+      expect(readUnknownManagedCommands(f.root, f.summary.id)).toHaveLength(
+        scenario === "readback-failed" ? 0 : 1,
+      );
+    } else {
+      expect(result).toMatchObject({ accepted: false, controlOutcome: "not-dispatched" });
+      expect(readUnknownManagedCommands(f.root, f.summary.id)).toEqual([]);
+      expect(bridge.updateModelSettings).toHaveBeenCalledTimes(scenario === "declined" ? 1 : 0);
+    }
+    expect(f.methods).not.toContain("thread/resume");
+    expect(f.methods).not.toContain("thread/start");
+  });
 
   it("follows the Codex owner when the writer lock is held", async () => {
     const { f, bridge } = followerFixture({ revision: 7 });

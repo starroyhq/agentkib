@@ -34,11 +34,11 @@ function conversation(running = true) {
   };
 }
 
-function change(revision: number, body: JsonRecord): JsonRecord {
+function change(revision: number, body: JsonRecord, version = 11): JsonRecord {
   return {
     type: "broadcast",
     method: "thread-stream-state-changed",
-    version: 11,
+    version,
     sourceClientId: "owner",
     params: {
       conversationId: threadId,
@@ -90,18 +90,20 @@ class FixtureSocket extends EventEmitter {
   }
 }
 
-async function fixture(running = true) {
+async function fixture(running = true, streamVersion = 11, settings = false) {
   const socket = new FixtureSocket();
   const connection = Reflect.construct(CodexFollowerConnection, [
     socket,
     "26.930.51102",
     "/synthetic/ipc.sock",
+    settings ? "/synthetic/bundled-codex" : undefined,
   ]) as CodexFollowerConnection;
   const snapshots: Snapshot[] = [];
-  let latestSnapshot = change(1, {
-    type: "snapshot",
-    conversationState: conversation(running),
-  });
+  let latestSnapshot = change(
+    1,
+    { type: "snapshot", conversationState: conversation(running) },
+    streamVersion,
+  );
   const response = (request: JsonRecord) => ({
     type: "response",
     requestId: request.requestId,
@@ -134,7 +136,11 @@ async function fixture(running = true) {
     snapshots,
     response,
     setSnapshot: (revision: number, body: JsonRecord) => {
-      latestSnapshot = change(revision, { type: "snapshot", conversationState: body });
+      latestSnapshot = change(
+        revision,
+        { type: "snapshot", conversationState: body },
+        streamVersion,
+      );
     },
     requests: () => socket.sent.filter((value) => value.type === "request"),
     onRequest: (handler: (request: JsonRecord) => boolean) => {
@@ -144,6 +150,99 @@ async function fixture(running = true) {
 }
 
 describe("resident native Codex follower stream", () => {
+  it.each([
+    ["confirmed", false],
+    ["confirmed", true],
+    ["refused", false],
+    ["refused", true],
+    ["invalid-ack", true],
+    ["mismatched-readback", true],
+    ["changed-owner", false],
+  ] as const)(
+    "requires the current owner and readback to confirm native settings: %s (running=%s)",
+    async (scenario, running) => {
+      const f = await fixture(running, 14, true);
+      const oldSettings = { model: "model-a", effort: "low", modelProvider: "openai" };
+      const requested = { ...oldSettings, effort: "high" };
+      const conversationWithSettings = (settings: typeof oldSettings) => ({
+        ...conversation(running),
+        cwd: "/synthetic/workspace",
+        latestModel: settings.model,
+        latestReasoningEffort: settings.effort,
+        modelProvider: settings.modelProvider,
+      });
+      const initial = conversationWithSettings(oldSettings);
+      f.setSnapshot(2, initial);
+      f.socket.push(change(2, { type: "snapshot", conversationState: initial }, 14));
+      await vi.waitFor(() => expect(f.bridge.selectedState?.revision).toBe(2));
+      let dispatched = false;
+      const onDispatch = vi.fn(() => {
+        dispatched = true;
+      });
+      const onApplied = vi.fn();
+      f.onRequest((request) => {
+        const reply = f.response(request);
+        if (
+          request.method === "thread-owner-discovery" &&
+          dispatched &&
+          scenario === "changed-owner"
+        ) {
+          f.socket.push({ ...reply, handledByClientId: "different-owner" });
+        } else if (request.method === "thread-follower-read-model-settings") {
+          const settings = dispatched && scenario === "confirmed" ? requested : oldSettings;
+          f.socket.push({
+            ...reply,
+            result: { settings: { ...settings, reasoningEffort: settings.effort } },
+          });
+        } else if (request.method === "thread-follower-update-thread-settings") {
+          if (scenario !== "refused") f.setSnapshot(3, conversationWithSettings(requested));
+          f.socket.push({
+            ...reply,
+            result: scenario === "invalid-ack" ? {} : { applied: scenario !== "refused" },
+          });
+        } else return false;
+        return true;
+      });
+
+      const mutation = f.bridge.updateModelSettings({
+        expectedScope: f.bridge.selectedState!.settingsWriteScope,
+        expectedRevision: 2,
+        current: oldSettings,
+        next: requested,
+        onDispatch,
+        onApplied,
+      });
+      if (scenario === "confirmed") await expect(mutation).resolves.toBe(true);
+      else if (scenario === "refused") await expect(mutation).resolves.toBe(false);
+      else await expect(mutation).rejects.toThrow();
+
+      expect(onDispatch).toHaveBeenCalledOnce();
+      expect(onApplied).toHaveBeenCalledTimes(
+        ["invalid-ack", "refused"].includes(scenario) ? 0 : 1,
+      );
+      const dispatchedRequests = f
+        .requests()
+        .filter((request) => request.method === "thread-follower-update-thread-settings");
+      expect(dispatchedRequests).toMatchObject([
+        {
+          version: 2,
+          targetClientId: "owner",
+          params: {
+            conversationId: threadId,
+            threadSettings: { effort: "high" },
+            condition: { ifModelEquals: "model-a", ifEffortEquals: "low" },
+          },
+        },
+      ]);
+      expect((dispatchedRequests[0]!.params as JsonRecord).threadSettings).toEqual({
+        effort: "high",
+      });
+      expect(dispatchedRequests[0]!.params).not.toHaveProperty("activeTurnId");
+      if (scenario === "refused" || scenario === "confirmed")
+        expect(f.bridge.selectedState?.status).toBe(running ? "running" : "idle");
+    },
+  );
+
   it("does not reproject duplicate and unrelated native notifications", async () => {
     const f = await fixture();
     f.socket.push(
@@ -156,20 +255,72 @@ describe("resident native Codex follower stream", () => {
     expect(f.bridge.selectedState?.snapshotCount).toBe(2);
   });
 
-  it("publishes incoming text without a live read and handles split native frames", async () => {
-    const f = await fixture();
-    const bytes = encode(textPatch(2, "Native text"));
-    f.socket.emit("data", bytes.subarray(0, 7));
-    f.socket.emit("data", bytes.subarray(7));
+  it.each([11, 13, 14])(
+    "publishes incremental text on v%i without another live read",
+    async (version) => {
+      const f = await fixture(true, version);
+      const bytes = encode({ ...textPatch(2, "Native text"), version });
+      f.socket.emit("data", bytes.subarray(0, 7));
+      f.socket.emit("data", bytes.subarray(7));
 
-    await vi.waitFor(() => {
-      expect(f.snapshots.at(-1)?.items).toEqual([
-        expect.objectContaining({ id: "reply-a", content: "Native text" }),
-      ]);
-    });
-    expect(f.bridge.selectedState?.revision).toBe(2);
-    // The stream must not acquire a writer or issue a control/read RPC for every token.
-    expect(f.requests().map((value) => value.method)).toEqual(["thread-owner-discovery"]);
+      await vi.waitFor(() => {
+        expect(f.snapshots.at(-1)?.items).toEqual([
+          expect.objectContaining({ id: "reply-a", content: "Native text" }),
+        ]);
+      });
+      expect(f.bridge.selectedState?.revision).toBe(2);
+      // The stream must not acquire a writer or issue a control/read RPC for every token.
+      expect(f.requests().map((value) => value.method)).toEqual(["thread-owner-discovery"]);
+    },
+  );
+
+  it("rejects an incompatible increment even from the selected owner", async () => {
+    const f = await fixture(true, 14);
+    f.socket.push(change(2, { type: "patches", baseRevision: 1, patches: {} }, 14));
+    await vi.waitFor(() => expect(f.bridge.selectedState?.revision).toBeNull());
+    expect(f.bridge.selectedState?.status).toBe("unsupported");
+    expect(f.snapshots.map(({ live }) => live.revision)).toEqual([1]);
+  });
+
+  it("invalidates a snapshot with an incompatible native request structure", async () => {
+    const f = await fixture(false, 14);
+    f.socket.push(
+      change(
+        2,
+        {
+          type: "snapshot",
+          conversationState: { ...conversation(false), requests: [{ requestId: "approval-a" }] },
+        },
+        14,
+      ),
+    );
+    await vi.waitFor(() => expect(f.bridge.selectedState?.revision).toBeNull());
+    expect(f.bridge.selectedState?.status).toBe("unsupported");
+    expect(f.snapshots.map(({ live }) => live.revision)).toEqual([1]);
+  });
+
+  it("does not dispatch a send when the owner adds an unrecognized turn status", async () => {
+    const f = await fixture(false, 14);
+    f.socket.push(
+      change(
+        2,
+        {
+          type: "snapshot",
+          conversationState: {
+            ...conversation(false),
+            turns: [{ turnId: "turn-a", status: "queued", items: [] }],
+          },
+        },
+        14,
+      ),
+    );
+    await vi.waitFor(() => expect(f.bridge.selectedState?.revision).toBe(2));
+    expect(f.snapshots.at(-1)?.live).toMatchObject({ status: "unsupported", sendEnabled: false });
+    const dispatched = vi.fn();
+    await expect(f.bridge.mutate("thread-follower-start-turn", {}, 2, dispatched)).rejects.toThrow(
+      "follower-operation-unverified",
+    );
+    expect(dispatched).not.toHaveBeenCalled();
   });
 
   it("continues draining bursts beyond a single bounded notification batch", async () => {
@@ -189,10 +340,10 @@ describe("resident native Codex follower stream", () => {
   it.each(["before", "after"])(
     "keeps a mutation acknowledgement separate from notifications %s its response",
     async (order) => {
-      const f = await fixture(false);
+      const f = await fixture(false, 14);
       f.onRequest((request) => {
         if (request.method !== "thread-follower-start-turn") return false;
-        const update = change(2, { type: "snapshot", conversationState: conversation() });
+        const update = change(2, { type: "snapshot", conversationState: conversation() }, 14);
         f.setSnapshot(2, conversation());
         const acknowledgement = f.response(request);
         f.socket.push(

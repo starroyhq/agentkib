@@ -169,7 +169,7 @@ describe("trusted desktop conversation routes", () => {
     },
   );
 
-  it("prepares Claude settings over the closed desktop route without fencing later preparation on failure", async () => {
+  it("isolates Claude settings preparation to its session and releases it after failure", async () => {
     await service.shutdown();
     const options = {
       available: true,
@@ -179,9 +179,15 @@ describe("trusted desktop conversation routes", () => {
       writable: {},
       models: [{ id: "fixture-model", efforts: [] }],
     };
+    let rejectPreparation: ((error: Error) => void) | undefined;
     const prepare = vi
       .fn()
-      .mockRejectedValueOnce(new Error("offline initialize failure"))
+      .mockImplementationOnce(
+        () =>
+          new Promise<never>((_resolve, reject) => {
+            rejectPreparation = reject;
+          }),
+      )
       .mockResolvedValue(options);
     runtime.mockImplementation(async (params) => {
       const operation = (params as { operation: string }).operation;
@@ -189,7 +195,13 @@ describe("trusted desktop conversation routes", () => {
         return { executionMode: "claude-managed", features: { settings: { available: true } } };
       const result = (await defaultRuntime(params)) as Record<string, unknown>;
       if (operation === "catalog")
-        return { ...result, sessions: [{ id: "s", workspace_id: "w", agent: "claude-code" }] };
+        return {
+          ...result,
+          sessions: [
+            { id: "s", workspace_id: "w", agent: "claude-code" },
+            { id: "other", workspace_id: "w", agent: "claude-code" },
+          ],
+        };
       return result;
     });
     service = new WebAccessService({
@@ -209,20 +221,34 @@ describe("trusted desktop conversation routes", () => {
       bootId: (access.body as { bootId: string }).bootId,
       expectedRevision: 4,
     };
-    expect((await service.localRequest("/managed/settings-prepare", body)).status).not.toBe(200);
+    const preparing = service.localRequest("/managed/settings-prepare", body);
+    try {
+      await vi.waitFor(() => expect(prepare).toHaveBeenCalledOnce());
+      expect(await service.localRequest("/managed/settings-prepare", body)).toMatchObject({
+        status: 409,
+        body: { error: "operation_busy" },
+      });
+      expect(await service.localRequest("/live?sessionId=other")).toMatchObject({ status: 200 });
+      expect(
+        await service.localRequest("/managed/settings-prepare", { ...body, sessionId: "other" }),
+      ).toMatchObject({ status: 200 });
+    } finally {
+      rejectPreparation?.(new Error("offline initialize failure"));
+      expect((await preparing).status).not.toBe(200);
+    }
     expect(await service.localRequest("/managed/settings-prepare", body)).toMatchObject({
       status: 200,
       body: { sessionId: "s", options: { models: [{ id: "fixture-model" }] } },
     });
-    expect(prepare).toHaveBeenCalledTimes(2);
-    expect(prepare.mock.calls[1][0]).toMatchObject({
+    expect(prepare).toHaveBeenCalledTimes(3);
+    expect(prepare.mock.calls[2][0]).toMatchObject({
       operation: "settings-prepare",
       sessionId: "s",
       runtimeBootId: "r",
       expectedRevision: 4,
       experimentalEnabled: true,
     });
-    expect(prepare.mock.calls[1][0]).not.toHaveProperty("requestId");
+    expect(prepare.mock.calls[2][0]).not.toHaveProperty("requestId");
   });
 
   it("scopes Claude's startup catalog to a registered workspace and forwards the launch selection", async () => {
@@ -574,7 +600,7 @@ describe("trusted desktop conversation routes", () => {
     await revoked.arrayBuffer();
   });
 
-  it.each(["create", "adopt", "release", "reconcile"])(
+  it.each(["create", "release", "reconcile"])(
     "notifies receipt observers when %s settles after timeout",
     async (operation) => {
       let finish!: (value: unknown) => void;
@@ -600,9 +626,7 @@ describe("trusted desktop conversation routes", () => {
       const pending = service.localRequest(`/managed/${operation}`, {
         bootId: (access.body as { bootId: string }).bootId,
         requestId: `late-${operation}`,
-        ...(operation === "create"
-          ? { workspaceId: "w" }
-          : { sessionId: "s", handoffConfirmed: true }),
+        ...(operation === "create" ? { workspaceId: "w" } : { sessionId: "s" }),
       });
       await vi.waitFor(() => expect(managed).toHaveBeenCalledOnce());
       expire();

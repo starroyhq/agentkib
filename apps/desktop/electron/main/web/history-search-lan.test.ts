@@ -217,7 +217,7 @@ it("permits registered Codex sends while keeping LAN files and manage unavailabl
     expect(capabilities.features[name].available).toBe(false);
   expect((await http("/send", sendInput())).status).toBe(200);
   expect((await http("/files/workspaces")).status).toBe(403);
-  expect((await http("/managed/adopt", sendInput())).status).toBe(403);
+  expect((await http("/managed/release", sendInput())).status).toBe(403);
 });
 it("does not project or dispatch LAN sends without the send grant", async () => {
   await pair(false);

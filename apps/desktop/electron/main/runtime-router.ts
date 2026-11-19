@@ -205,7 +205,6 @@ export class RuntimeRouter extends EventEmitter implements RuntimeHost {
       [
         "options",
         "create",
-        "adopt",
         "release",
         "reconcile",
         "resume",
@@ -262,6 +261,7 @@ export class RuntimeRouter extends EventEmitter implements RuntimeHost {
         "queue-update",
         "queue-delete",
         "queue-steer",
+        "open-model-picker",
         "queue-reorder",
         "rename",
         "archive",

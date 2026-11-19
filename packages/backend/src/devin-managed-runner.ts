@@ -322,6 +322,7 @@ export class DevinManagedRunner {
   /** The usage limit the last turn met, until the next turn starts. */
   #usageLimit: UsageLimitView | null = null;
   #child: ChildProcess | null = null;
+  #runningSettings: DevinTurnSettings | undefined;
   #timer: NodeJS.Timeout | undefined;
   #published = "";
   /** The history items last read, which tell the turn's answer once it ends. */
@@ -340,6 +341,14 @@ export class DevinManagedRunner {
 
   get nativeId() {
     return this.#nativeId;
+  }
+
+  get canStageSettings() {
+    return !this.#closed && this.#nativeId !== null;
+  }
+
+  get runningSettings(): Readonly<DevinTurnSettings> | undefined {
+    return this.#runningSettings;
   }
 
   snapshot(): Record<string, unknown> {
@@ -406,6 +415,8 @@ export class DevinManagedRunner {
     let child: ChildProcess;
     try {
       await writeFile(promptFile, text, { mode: 0o600 });
+      if (this.#closed || expectedRevision !== this.#revision)
+        throw new Error("stale-or-disabled-control");
       beforeDispatch();
       child = spawn(executable, args, {
         cwd: this.workspace,
@@ -419,6 +430,7 @@ export class DevinManagedRunner {
       throw error;
     }
     this.#child = child;
+    this.#runningSettings = { ...settings };
     this.#status = "running";
     this.#reason = null;
     this.#usageLimit = null;
@@ -437,22 +449,32 @@ export class DevinManagedRunner {
     });
     const startedAt = Date.now();
     this.#publishState();
-    const exited = new Promise<number | null>((resolve) => {
-      child.once("exit", (code) => resolve(code));
-      child.once("error", () => resolve(-1));
-    });
+    const exited = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>(
+      (resolve) => {
+        child.once("exit", (code, signal) => resolve({ code, signal }));
+        child.once("error", () => resolve({ code: -1, signal: null }));
+      },
+    );
     this.#timer = setInterval(() => void this.#poll(before, text, startedAt), POLL_MS);
-    void exited.then(async (code) => {
+    void exited.then(async ({ code, signal }) => {
       clearInterval(this.#timer);
       this.#timer = undefined;
       await this.#poll(before, text, startedAt);
       await rm(directory, { recursive: true, force: true });
-      const stopped = this.#status === "stopping";
+      const stopped =
+        this.#status === "stopping" &&
+        (signal === "SIGINT" ||
+          signal === "SIGTERM" ||
+          signal === "SIGKILL" ||
+          code === 130 ||
+          code === 143 ||
+          code === 137);
       // A usage limit can end a turn that exits 0, so what Devin printed as errors is read
       // either way; its reply only when the turn failed, where it cannot pass for an answer.
       const limit = stopped ? null : devinUsageLimitHit(code === 0 ? errors : output);
       const failed = code !== 0 && !stopped && !limit;
       this.#child = null;
+      this.#runningSettings = undefined;
       this.#status = failed ? "failed" : "idle";
       this.#reason = failed
         ? devinRunFailure(output, code)

@@ -1,5 +1,14 @@
-import { CodexFollowerConnection } from "./codex-follower-connection";
-import { CodexFollowerState } from "./codex-follower-state";
+import {
+  CODEX_FOLLOWER_READ_MODEL_SETTINGS,
+  CODEX_FOLLOWER_UPDATE_THREAD_SETTINGS,
+  CodexFollowerConnection,
+} from "./codex-follower-connection";
+import {
+  CodexFollowerState,
+  parseFollowerModelSettings,
+  sameFollowerModelSettings,
+  type FollowerModelSettings,
+} from "./codex-follower-state";
 
 const OWNER_CHECK_INTERVAL_MS = 2_000;
 const FULL_REFRESH_INTERVAL_MS = 60_000;
@@ -60,6 +69,116 @@ export class CodexFollowerBridge {
 
   get supportsThreadSettings(): boolean {
     return this.connection.supportsThreadSettings;
+  }
+
+  async readModelSettings(): Promise<FollowerModelSettings | null> {
+    return this.#enqueue(() => this.#readModelSettings(this.#requireState()));
+  }
+
+  async #readModelSettings(state: CodexFollowerState): Promise<FollowerModelSettings | null> {
+    if (!this.supportsThreadSettings) return null;
+    let resubscribe = false;
+    const response = await this.connection.request(
+      CODEX_FOLLOWER_READ_MODEL_SETTINGS,
+      { conversationId: state.conversationId },
+      state.ownerClientId,
+      (message) => {
+        if (isFollowingStatusRequest(message, state)) resubscribe = true;
+        else {
+          state.notification(message);
+          this.#publishSnapshot(state);
+        }
+      },
+    );
+    if (resubscribe) await this.#followAndAwaitSnapshot(state.snapshotCount);
+    return isRecord(response) &&
+      response.method === CODEX_FOLLOWER_READ_MODEL_SETTINGS &&
+      isRecord(response.result)
+      ? parseFollowerModelSettings(response.result.settings)
+      : null;
+  }
+
+  async updateModelSettings(input: {
+    expectedScope: string;
+    expectedRevision: number;
+    current: FollowerModelSettings;
+    next: FollowerModelSettings;
+    onDispatch: () => void;
+    onApplied: () => void;
+  }): Promise<boolean> {
+    return this.#enqueue(async () => {
+      const state = this.#requireState();
+      const { expectedScope, expectedRevision, current, next } = input;
+      if (state.settingsWriteScope !== expectedScope || state.revision !== expectedRevision)
+        throw new Error("stale-or-disabled-control");
+      if (!sameFollowerModelSettings(await this.#readModelSettings(state), current))
+        throw new Error("stale-or-disabled-control");
+      const params = {
+        conversationId: state.conversationId,
+        threadSettings: {
+          ...(next.model === current.model ? {} : { model: next.model }),
+          ...(next.effort === current.effort ? {} : { effort: next.effort }),
+        },
+        condition: { ifModelEquals: current.model, ifEffortEquals: current.effort },
+      };
+      let previousStatus = state.status;
+      const result = await this.#mutate(
+        CODEX_FOLLOWER_UPDATE_THREAD_SETTINGS,
+        params,
+        expectedRevision,
+        () => {
+          if (
+            this.#state !== state ||
+            !sameFollowerModelSettings(state.nativeModelSettings(), current)
+          )
+            throw new Error("stale-or-disabled-control");
+          previousStatus = state.status;
+          input.onDispatch();
+        },
+      );
+      if (!isRecord(result) || typeof result.applied !== "boolean")
+        throw new Error("unrecognized owner settings acknowledgement");
+      if (!result.applied) {
+        state.markSettingsRejected(expectedRevision, previousStatus);
+        return false;
+      }
+      input.onApplied();
+      if (!(await this.#verifyModelSettings(state, expectedRevision, next)))
+        throw new Error("native-settings-unconfirmed");
+      return true;
+    });
+  }
+
+  async verifyModelSettings(
+    identity: { nativeId: string; ownerClientId: string; revision: number },
+    expected: FollowerModelSettings,
+  ): Promise<boolean> {
+    return this.#enqueue(async () => {
+      const state = this.#requireState();
+      return (
+        state.conversationId === identity.nativeId &&
+        state.ownerClientId === identity.ownerClientId &&
+        this.#verifyModelSettings(state, identity.revision, expected)
+      );
+    });
+  }
+
+  async #verifyModelSettings(
+    state: CodexFollowerState,
+    expectedRevision: number,
+    expected: FollowerModelSettings,
+  ): Promise<boolean> {
+    const refreshed = await this.#refresh();
+    if (refreshed !== state || state.revision === null || state.revision <= expectedRevision)
+      return false;
+    const observed = await this.#readModelSettings(state);
+    return (
+      this.#state === state &&
+      state.revision !== null &&
+      state.revision > expectedRevision &&
+      sameFollowerModelSettings(observed, expected) &&
+      sameFollowerModelSettings(state.nativeModelSettings(), expected)
+    );
   }
 
   async select(conversationId: string): Promise<void> {
@@ -226,9 +345,9 @@ export class CodexFollowerBridge {
         },
         () => {
           state.assertMutationAllowed(method, params, expectedRevision);
+          onDispatch();
           dispatched = true;
           state.markMutationDispatched();
-          onDispatch();
         },
       );
       if (!isRecord(response) || response.method !== method || !Object.hasOwn(response, "result"))

@@ -103,7 +103,13 @@ export function readControlReceipt(dataDir: string, value: unknown) {
         : {}),
       status,
       ack,
-      completionObserved: false,
+      completionObserved:
+        status === "accepted" &&
+        ackRecord.completed === true &&
+        ackRecord.completionObserved === true &&
+        (evidenceRecord.operation !== "stop" ||
+          (typeof evidenceRecord.turnId === "string" &&
+            ackRecord.turnId === evidenceRecord.turnId)),
     };
   } catch (error) {
     try {

@@ -185,38 +185,30 @@ describe("trusted Claude owner boundary", () => {
       deviceId: "agentkib-local-owner",
     });
   });
-  it("adopts without a manual confirmation while keeping the host owner boundary", async () => {
-    expect(
-      await localClaudeRequest(deps, {
+  it("rejects the removed adoption operation without dispatching it", async () => {
+    await expect(
+      localClaudeRequest(deps, {
         operation: "adopt",
         sessionId: "session",
         requestId: "adopt",
         deviceId: "spoofed",
-        handoffConfirmed: false,
         path: "/untrusted",
       }),
-    ).toMatchObject({ accepted: true });
-    expect(deps.managed).toHaveBeenLastCalledWith({
-      operation: "adopt",
-      sessionId: "session",
-      requestId: "adopt",
-      deviceId: "agentkib-local-owner",
-    });
+    ).rejects.toThrow("unsupported_operation");
+    expect(deps.managed).not.toHaveBeenCalled();
+    expect(deps.receipt).not.toHaveBeenCalled();
   });
-  it("preserves an explicitly supplied adoption fingerprint for the backend safety check", async () => {
-    await localClaudeRequest(deps, {
-      operation: "adopt",
-      sessionId: "session",
-      requestId: "adopt",
-      handoffFingerprint: "fingerprint",
-    });
-    expect(deps.managed).toHaveBeenLastCalledWith({
-      operation: "adopt",
-      sessionId: "session",
-      requestId: "adopt",
-      deviceId: "agentkib-local-owner",
-      handoffFingerprint: "fingerprint",
-    });
+  it("does not revive adoption when an old request has an unknown receipt", async () => {
+    deps.receipt = vi.fn(async ({ requestId }) => ({ found: true, requestId, status: "unknown" }));
+    await expect(
+      localClaudeRequest(deps, {
+        operation: "adopt",
+        sessionId: "session",
+        requestId: "adopt",
+      }),
+    ).rejects.toThrow("unsupported_operation");
+    expect(deps.managed).not.toHaveBeenCalled();
+    expect(deps.receipt).not.toHaveBeenCalled();
   });
   it.each([
     "claude-owner-busy",
@@ -241,7 +233,7 @@ describe("trusted Claude owner boundary", () => {
       error: "control_unavailable",
     });
   });
-  it.each(["send", "release", "adopt"])(
+  it.each(["send", "release", "reconcile"])(
     "keeps %s replay preflight failures unknown and uses only the host owner",
     async (operation) => {
       deps.receipt = vi.fn(async ({ requestId }) => ({
@@ -253,8 +245,8 @@ describe("trusted Claude owner boundary", () => {
         await localClaudeRequest(deps, {
           ...send,
           operation,
+          sessionId: operation === "reconcile" ? "" : send.sessionId,
           expectedRevision: -1,
-          ...(operation === "adopt" ? { handoffFingerprint: 42 } : {}),
           deviceId: "spoofed",
         }),
       ).toMatchObject({ accepted: false, controlOutcome: "unknown" });

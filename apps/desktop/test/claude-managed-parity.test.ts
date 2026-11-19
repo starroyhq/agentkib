@@ -8,6 +8,7 @@ import {
   realpathSync,
   rmSync,
   symlinkSync,
+  truncateSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -16,8 +17,10 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   ClaudeManagedReadOwner,
   ClaudeHostControlPreflightError,
+  type ClaudeContinuationOptions,
 } from "../../../packages/backend/src/claude-managed-read";
 import { ClaudeHostStateStore } from "../../../packages/backend/src/claude-host-state";
+import { ClaudeManagedRunnerProcess } from "../../../packages/backend/src/claude-managed-runner";
 import {
   claimManagedCommand,
   dispatchManagedCommand,
@@ -40,6 +43,7 @@ function fixture(
   handshakeDelayMs = 0,
   mode = "ordinary",
   publish?: (live: Record<string, unknown>) => void,
+  backgroundTasks = false,
 ) {
   const root = realpathSync(mkdtempSync(path.join(tmpdir(), "agentkib-claude-owner-parity-")));
   const workspace = path.join(root, "workspace");
@@ -79,16 +83,17 @@ require('node:readline').createInterface({input:process.stdin}).on('line', line 
    frame.request.subtype==='initialize'?{models:process.env.PARITY_MODE==='model-alias'
     ? [{value:'fixture-alias',resolvedModel:'fixture-actual-model',displayName:'Fixture',supportedEffortLevels:['low','high']}]
     : [{value:'fixture-model',displayName:'Fixture',supportedEffortLevels:['low','high']},
-       ...(process.env.PARITY_MODE==='effort-models'?[{value:'fixture-low-model',displayName:'Low effort fixture',supportedEffortLevels:['low']}]:[])],commands:[{name:'fixture-skill',description:'Project fixture'},{name:'not-installed'}]}:{}}}),frame.request.subtype==='initialize'?Number(process.env.PARITY_INIT_DELAY):0);
+       ...(['effort-models','stage-next-settings'].includes(process.env.PARITY_MODE)?[{value:'fixture-low-model',displayName:'Low effort fixture',supportedEffortLevels:['low']}]:[])],commands:[{name:'fixture-skill',description:'Project fixture'},{name:'not-installed'}]}:{}}}),frame.request.subtype==='initialize'?Number(process.env.PARITY_INIT_DELAY):0);
  } else if(frame.type==='user') {
   const assistant=crypto.randomUUID();
   const file=process.env.CLAUDE_CONFIG_DIR+'/'+frame.session_id+'.jsonl';
-  fs.appendFileSync(file, JSON.stringify({type:'user',uuid:frame.uuid,sessionId:frame.session_id,cwd:process.cwd(),message:frame.message})+'\n');
+  const previous=fs.existsSync(file)?fs.readFileSync(file,'utf8').trim().split('\n').map(line=>JSON.parse(line)).filter(row=>row.type==='assistant').at(-1)?.uuid:undefined;
+  fs.appendFileSync(file, JSON.stringify({type:'user',uuid:frame.uuid,parentUuid:previous,sessionId:frame.session_id,cwd:process.cwd(),timestamp:new Date().toISOString(),message:frame.message})+'\n');
   if(process.env.PARITY_MODE==='steer' && !frame.priority) return;
-  fs.appendFileSync(file, JSON.stringify({type:'assistant',uuid:assistant,sessionId:frame.session_id,cwd:process.cwd(),message:{role:'assistant',stop_reason:null,content:[{type:'text',text:'Synthetic complete'}]}})+'\n');
+  fs.appendFileSync(file, JSON.stringify({type:'assistant',uuid:assistant,parentUuid:frame.uuid,sessionId:frame.session_id,cwd:process.cwd(),timestamp:new Date().toISOString(),message:{role:'assistant',stop_reason:'end_turn',content:[{type:'text',text:'Synthetic complete'}]}})+'\n');
   send({type:'assistant',uuid:assistant,parent_tool_use_id:null,message:{id:assistant,model:'fixture-model',usage:{input_tokens:10},content:[]}});
   const finish=()=>send({type:'result',subtype:'success',...(process.env.PARITY_MODE==='missing-usage'?{}:{usage:{input_tokens:10,output_tokens:5}}),modelUsage:{'fixture-model':{contextWindow:100}}});
-  if(process.env.PARITY_MODE==='steer') { const timer=setInterval(()=>{if(fs.existsSync(process.env.PARITY_RESULT_GATE)){clearInterval(timer);finish();}},10); } else finish();
+  if(['steer','stage-next-settings'].includes(process.env.PARITY_MODE)) { const timer=setInterval(()=>{if(fs.existsSync(process.env.PARITY_RESULT_GATE)){clearInterval(timer);finish();}},10); } else finish();
  }
 });
 `}`,
@@ -159,7 +164,7 @@ require('node:readline').createInterface({input:process.stdin}).on('line', line 
     document: async () => ({ source: { agent: "claude-code", workspace_id: "workspace" } }),
   } as unknown as SessionReaders;
   cleanups.push(() => rmSync(root, { recursive: true, force: true }));
-  const makeOwner = () => {
+  const makeOwner = (retainedTerminalUsage?: ClaudeContinuationOptions["retainedTerminalUsage"]) => {
     const owner = new ClaudeManagedReadOwner(
       store,
       sessions,
@@ -175,6 +180,7 @@ require('node:readline').createInterface({input:process.stdin}).on('line', line 
             alias: () => {},
           }
         : undefined,
+      { backgroundTasks: () => backgroundTasks, retainedTerminalUsage },
     );
     cleanups.push(() => owner.shutdown());
     return owner;
@@ -270,6 +276,10 @@ async function prepareSettings(owner: ClaudeManagedReadOwner, id: string) {
     experimentalEnabled: true,
   });
 }
+async function start(owner: ClaudeManagedReadOwner, id: string) {
+  await control(owner, id, "send", { text: "Initialize the session" });
+  await expect.poll(async () => (await owner.live(id, true)).status).toBe("idle");
+}
 async function next(owner: ClaudeManagedReadOwner, id: string) {
   const list = (await owner.request({ operation: "schedule-list", sessionId: id })) as {
     sessions: Array<Record<string, any>>;
@@ -297,6 +307,54 @@ async function dispatch(owner: ClaudeManagedReadOwner, permit: Record<string, an
 describe.skipIf(!["darwin", "linux"].includes(process.platform))(
   "Claude remote owner parity (synthetic offline CLI)",
   () => {
+    it("uses verified terminal capacity on the first imported live read without starting a worker", async () => {
+      const f = fixture();
+      const id = f.indexNative();
+      const timestamp = "2026-11-16T15:22:30.667Z";
+      const row = (postTokens: number, updatedAt: string) =>
+        JSON.stringify({
+          type: "system",
+          subtype: "compact_boundary",
+          compactMetadata: { postTokens },
+          sessionId: id,
+          cwd: f.workspace,
+          timestamp: updatedAt,
+        }) + "\n";
+      const afterCompaction = JSON.stringify({
+        type: "progress",
+        sessionId: id,
+        data: "x".repeat(192 * 1024),
+      });
+      writeFileSync(f.transcript(id), row(24606, timestamp) + afterCompaction + "\n", {
+        flag: "a",
+      });
+      const retained: NonNullable<ClaudeContinuationOptions["retainedTerminalUsage"]> = (
+        sessionId,
+        source,
+        observation,
+        readEarlier,
+      ) => {
+        if (sessionId !== id || source.nativeId !== id) return undefined;
+        expect(source).toMatchObject({ workspace: f.workspace, workspaceId: "workspace" });
+        const usage = observation.usage.available ? observation.usage : readEarlier?.().usage;
+        return usage?.updatedAt === timestamp ? { ...usage, contextWindow: 1000000 } : undefined;
+      };
+      const owner = f.makeOwner(retained);
+      expect(await owner.live(id)).toMatchObject({
+        usage: { historical: true, usedTokens: 24606, contextWindow: 1000000 },
+      });
+      expect(await owner.request({ operation: "usage", sessionId: id })).toMatchObject({
+        historical: true,
+        usedTokens: 24606,
+        contextWindow: 1000000,
+      });
+      writeFileSync(f.transcript(id), row(8100, "2026-11-17T00:00:00Z"), { flag: "a" });
+      const live = await owner.live(id);
+      expect(live.usage).toMatchObject({ historical: true, usedTokens: 8100 });
+      expect(live.usage).not.toHaveProperty("contextWindow");
+      expect(f.frames()).toEqual([]);
+    });
+
     it("reads a scoped new-session catalog without persisting a session, then sends with the explicit choice", async () => {
       const f = fixture("2.1.286", 20, "effort-models");
       expect(await f.owner.request({ operation: "options" })).toMatchObject({
@@ -422,7 +480,7 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))(
       expect(f.frames()).toEqual([]);
     });
 
-    it("reads idle settings without starting a worker and prepares only on an explicit settings request", async () => {
+    it("reads idle settings without a worker and discovers options through an isolated catalogue", async () => {
       const f = fixture();
       const created = await create(f.owner);
       for (let i = 0; i < 3; i++) {
@@ -440,7 +498,7 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))(
       expect(await prepareSettings(f.owner, created.sessionId)).toMatchObject({
         current: { model: null },
         models: [{ id: "fixture-model" }],
-        applicationStatus: "confirmed",
+        applicationStatus: "pending",
       });
       expect(f.frames().filter((frame) => frame.type === "control_request")).toHaveLength(1);
       expect(f.frames().filter((frame) => frame.type === "user")).toEqual([]);
@@ -457,7 +515,7 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))(
     });
 
     it.each(["create", "fork"])(
-      "publishes terminal idle after explicit settings initialize succeeds for %s without a live refresh",
+      "reads the model catalogue for %s without restoring that native session",
       async (kind) => {
         const states: Array<Record<string, unknown>> = [];
         const f = fixture("2.1.286", 0, "ordinary", (state) => states.push(state));
@@ -465,146 +523,118 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))(
           kind === "create"
             ? await create(f.owner)
             : await control(f.owner, f.indexNative(), "fork");
-        const id = created.sessionId;
         states.length = 0;
-        const settings = await prepareSettings(f.owner, id);
-        expect(settings).toMatchObject({
-          applicationStatus: "confirmed",
+        expect(await prepareSettings(f.owner, created.sessionId)).toMatchObject({
+          applicationStatus: "pending",
           models: [{ id: "fixture-model" }],
         });
-        expect(
-          states.some((state) => state.status === "starting" && state.sendEnabled === false),
-        ).toBe(true);
-        expect(states.at(-1)).toMatchObject({
-          sessionId: id,
+        expect(states).toEqual([]);
+        expect(await f.owner.live(created.sessionId, true)).toMatchObject({
           status: "idle",
           sendEnabled: true,
-          stopEnabled: false,
-          revision: settings.revision,
-        });
-        expect(f.frames().filter((frame) => frame.type === "user")).toEqual([]);
-        expect(f.frames().filter((frame) => frame.type === "control_request")).toHaveLength(1);
-      },
-    );
-
-    it("does not publish an idle completion when explicit settings initialization fails", async () => {
-      const states: Array<Record<string, unknown>> = [];
-      const f = fixture("2.1.286", 0, "initialize-rejected", (state) => states.push(state));
-      const created = await create(f.owner);
-      await expect(prepareSettings(f.owner, created.sessionId)).rejects.toThrow(/initialize/);
-      expect(states.at(-1)).toMatchObject({ status: "outcome-unknown", sendEnabled: false });
-      expect(states.some((state) => state.status === "idle" && state.sendEnabled === true)).toBe(
-        false,
-      );
-      expect(f.frames().filter((frame) => frame.type === "user")).toEqual([]);
-    });
-
-    it.each([false, true])(
-      "publishes the safe state after failed settings startup without replacing the startup error (publicationFails=%s)",
-      async (publicationFails) => {
-        const states: Array<Record<string, unknown>> = [];
-        const f = fixture("2.1.286", 0, "close-initialize", (state) => {
-          states.push(state);
-          if (publicationFails && state.status === "idle")
-            throw new Error("Synthetic terminal publication failed");
-        });
-        const created = await create(f.owner);
-        await expect(prepareSettings(f.owner, created.sessionId)).rejects.toThrow(
-          /Claude (stream closed|process exited|stdin write failed)/,
-        );
-        expect(states.some((state) => state.status === "starting")).toBe(true);
-        expect(states.at(-1)).toMatchObject({
-          status: process.platform === "darwin" ? "idle" : "outcome-unknown",
-          sendEnabled: process.platform === "darwin",
           executionLocation: null,
         });
-        if (process.platform !== "darwin")
-          expect(
-            states.some((state) => state.status === "idle" && state.sendEnabled === true),
-          ).toBe(false);
-        expect(f.frames().filter((frame) => frame.type === "control_request")).toHaveLength(1);
+        const launches = f.frames().filter((frame) => frame.args);
+        expect(launches).toHaveLength(1);
+        expect(launches[0]!.args).toContain("--no-session-persistence");
+        expect(launches[0]!.args).not.toContain(`--resume=${created.sourceSessionId}`);
+        expect(launches[0]!.args).not.toContain(`--session-id=${created.sourceSessionId}`);
         expect(f.frames().filter((frame) => frame.type === "user")).toEqual([]);
       },
     );
 
-    it("still reports a terminal publication error when settings initialization itself succeeds", async () => {
-      const failure = new Error("Synthetic terminal publication failed");
-      const f = fixture("2.1.286", 0, "ordinary", (state) => {
-        if (state.status === "idle") throw failure;
+    it.each(["initialize-rejected", "close-initialize"])(
+      "keeps the target session idle when its isolated catalogue fails (%s)",
+      async (mode) => {
+        const states: Array<Record<string, unknown>> = [];
+        const f = fixture("2.1.286", 0, mode, (state) => states.push(state));
+        const created = await create(f.owner);
+        await expect(prepareSettings(f.owner, created.sessionId)).rejects.toThrow();
+        expect(states).toEqual([]);
+        expect(await f.owner.live(created.sessionId, true)).toMatchObject({
+          status: "idle",
+          sendEnabled: true,
+          executionLocation: null,
+        });
+        expect(f.frames().filter((frame) => frame.type === "user")).toEqual([]);
+        const database = openManagedLedger(f.root)!;
+        try {
+          expect(
+            database
+              .prepare("SELECT COUNT(*) AS count FROM managed_commands WHERE phase<>'resolved'")
+              .get(),
+          ).toEqual({ count: 0 });
+        } finally {
+          database.close();
+        }
+      },
+    );
+
+    it("does not publish catalogue initialization as a target session state change", async () => {
+      const publish = vi.fn(() => {
+        throw new Error("Unexpected target-state publication");
       });
+      const f = fixture("2.1.286", 0, "ordinary", publish);
       const created = await create(f.owner);
-      await expect(prepareSettings(f.owner, created.sessionId)).rejects.toBe(failure);
+      expect(await prepareSettings(f.owner, created.sessionId)).toMatchObject({
+        available: true,
+        models: [{ id: "fixture-model" }],
+      });
+      expect(publish).not.toHaveBeenCalled();
       expect(f.frames().filter((frame) => frame.type === "user")).toEqual([]);
     });
 
-    it("publishes external occupancy when a fresh startup probe rejects after the cached idle preflight", async () => {
-      const states: Array<Record<string, unknown>> = [];
-      const f = fixture("2.1.286", 0, "ordinary", (state) => {
-        states.push(state);
-        if (state.status === "starting") f.setExternalOwner(String(state.sourceSessionId));
-      });
+    it("keeps native sends fenced when an external owner appears during catalogue preparation", async () => {
+      const f = fixture("2.1.286", 150);
       const created = await create(f.owner);
-      await expect(prepareSettings(f.owner, created.sessionId)).rejects.toThrow(
-        /claude-owner-busy|active in an external process/,
-      );
-      expect(states.at(-1)).toMatchObject({
-        status: "idle",
+      const pending = prepareSettings(f.owner, created.sessionId);
+      const result = pending.catch((error: unknown) => error);
+      await expect
+        .poll(() => f.frames().some((frame) => frame.request?.subtype === "initialize"))
+        .toBe(true);
+      f.setExternalOwner(created.sourceSessionId);
+      expect(await result).toMatchObject({
+        available: true,
+        writable: { model: { available: true } },
+      });
+      expect(await f.owner.live(created.sessionId, true)).toMatchObject({
         sendEnabled: false,
         executionLocation: "external",
         ownershipReason: "claude-owner-busy",
       });
-      expect(states.some((state) => state.status === "idle" && state.sendEnabled === true)).toBe(
-        false,
-      );
-      expect(f.frames()).toEqual([]);
+      expect(f.frames().filter((frame) => frame.type === "user")).toEqual([]);
     });
 
-    it("publishes the unknown fence if another unresolved command appears before settings preparation returns", async () => {
-      const states: Array<Record<string, unknown>> = [];
-      let injected = false;
-      const f = fixture("2.1.286", 0, "ordinary", (state) => {
-        states.push(state);
-        if (
-          !injected &&
-          state.status === "starting" &&
-          Number(state.revision) > 0 &&
-          f.frames().some((frame) => frame.request?.subtype === "initialize")
-        ) {
-          injected = true;
-          const requestId = randomUUID();
-          claimManagedCommand(
-            f.root,
-            requestId,
-            String(state.sessionId),
-            "independent host mutation",
-            "browser-device-b",
-            { operation: "queue-add" },
-          );
-          dispatchManagedCommand(f.root, requestId);
-        }
-      });
+    it("preserves an unresolved control discovered during catalogue preparation", async () => {
+      const f = fixture("2.1.286", 150);
       const created = await create(f.owner);
-      const settings = await prepareSettings(f.owner, created.sessionId);
-      expect(injected).toBe(true);
-      expect(settings).toMatchObject({
-        applicationStatus: "pending",
-        writable: { model: { available: false } },
-      });
-      expect(states.at(-1)).toMatchObject({
+      const result = prepareSettings(f.owner, created.sessionId).catch((error: unknown) => error);
+      await expect
+        .poll(() => f.frames().some((frame) => frame.request?.subtype === "initialize"))
+        .toBe(true);
+      const requestId = randomUUID();
+      claimManagedCommand(
+        f.root,
+        requestId,
+        created.sessionId,
+        "independent host mutation",
+        "browser-device-b",
+        { operation: "queue-add" },
+      );
+      dispatchManagedCommand(f.root, requestId);
+      expect(await result).toBeInstanceOf(Error);
+      expect(await f.owner.live(created.sessionId, true)).toMatchObject({
         status: "outcome-unknown",
         sendEnabled: false,
         reason: "control-outcome-unconfirmed",
       });
-      expect(states.some((state) => state.status === "idle" && state.sendEnabled === true)).toBe(
-        false,
-      );
       expect(f.frames().filter((frame) => frame.type === "user")).toEqual([]);
     });
 
     it("persists confirmed setting options across a host restart without relaunching the CLI", async () => {
       const f = fixture("2.1.286", 0, "inherited-plan");
       const created = await create(f.owner);
-      await prepareSettings(f.owner, created.sessionId);
+      await start(f.owner, created.sessionId);
       await f.owner.shutdown();
       const before = f.frames();
       const restored = f.makeOwner();
@@ -621,9 +651,112 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))(
         });
       }
       expect(f.frames()).toEqual(before);
+      await prepareSettings(restored, created.sessionId);
+      const probe = f.frames().slice(before.length);
+      expect(probe.find((frame) => frame.args)?.args).toContain("--no-session-persistence");
+      expect(probe.some((frame) => frame.type === "user")).toBe(false);
+      expect(
+        probe.some((frame) => frame.args?.includes(`--resume=${created.sourceSessionId}`)),
+      ).toBe(false);
     });
 
-    it("rejects stale and externally occupied explicit settings preparation before spawning", async () => {
+    it.each(["retired", "restarted"])(
+      "stages settings after a completed turn when its worker is %s without restoring it",
+      async (lifecycle) => {
+        const f = fixture();
+        const sends = vi.spyOn(ClaudeManagedRunnerProcess.prototype, "send");
+        const created = await create(f.owner);
+        await start(f.owner, created.sessionId);
+        const recordFile = path.join(f.root, "claude-managed", `${created.sessionId}.json`);
+        expect(JSON.parse(readFileSync(recordFile, "utf8")).snapshot.revision).toBeGreaterThan(0);
+        let owner = f.owner;
+        if (lifecycle === "retired") {
+          const runner = sends.mock.contexts[0]!;
+          await expect(runner.retireIfInactive()).resolves.toBe(true);
+          expect(runner.hasWorker).toBe(false);
+        } else {
+          await owner.shutdown();
+          owner = f.makeOwner();
+        }
+        const before = f.frames().length;
+        const live = await owner.live(created.sessionId, true);
+        const hostRevision = new ClaudeHostStateStore(f.root, owner.bootId).read(
+          created.sessionId,
+        ).revision;
+        expect(live.revision).toBeGreaterThan(hostRevision);
+        await prepareSettings(owner, created.sessionId);
+        const settings = { model: "fixture-model", effort: "high", permissionMode: "plan" };
+        expect(await control(owner, created.sessionId, "settings", settings)).toMatchObject({
+          accepted: true,
+          settings,
+        });
+        expect(await owner.settingsState(created.sessionId)).toMatchObject({
+          selected: settings,
+          applicationStatus: "pending",
+        });
+        const stagedFrames = f.frames().slice(before);
+        expect(stagedFrames.filter((frame) => frame.type === "user")).toEqual([]);
+        expect(stagedFrames.filter((frame) => frame.args)).toHaveLength(1);
+        expect(stagedFrames.find((frame) => frame.args)!.args).toContain(
+          "--no-session-persistence",
+        );
+        expect(await owner.live(created.sessionId, true)).toMatchObject({
+          status: "idle",
+          executionLocation: null,
+          sendEnabled: true,
+        });
+        await start(owner, created.sessionId);
+        const launch = f
+          .frames()
+          .filter((frame) => frame.args)
+          .at(-1)!;
+        expect(launch.args).toContain(`--resume=${created.sourceSessionId}`);
+        for (const [flag, value] of [
+          ["--model", "fixture-model"],
+          ["--effort", "high"],
+          ["--permission-mode", "plan"],
+        ])
+          expect(launch.args[launch.args.indexOf(flag) + 1]).toBe(value);
+        expect(f.frames().filter((frame) => frame.type === "user")).toHaveLength(2);
+      },
+    );
+
+    it("does not overwrite settings changed while a retired session reads the catalog", async () => {
+      const f = fixture("2.1.286", 150);
+      const sends = vi.spyOn(ClaudeManagedRunnerProcess.prototype, "send");
+      const created = await create(f.owner);
+      await start(f.owner, created.sessionId);
+      await expect(sends.mock.contexts[0]!.retireIfInactive()).resolves.toBe(true);
+      const before = f.frames().length;
+      const pending = control(f.owner, created.sessionId, "settings", {
+        model: "fixture-model",
+      }).catch((error: unknown) => error);
+      await expect
+        .poll(() =>
+          f
+            .frames()
+            .slice(before)
+            .some((frame) => frame.request?.subtype === "initialize"),
+        )
+        .toBe(true);
+      new ClaudeHostStateStore(f.root, f.owner.bootId).update(created.sessionId, (state) => {
+        state.settings = { permissionMode: "acceptEdits" };
+      });
+      const rejected = await pending;
+      expect(rejected).toBeInstanceOf(ClaudeHostControlPreflightError);
+      expect((rejected as Error).message).toBe("stale-Claude-revision");
+      expect(
+        new ClaudeHostStateStore(f.root, f.owner.bootId).read(created.sessionId).settings,
+      ).toEqual({ permissionMode: "acceptEdits" });
+      expect(
+        f
+          .frames()
+          .slice(before)
+          .filter((frame) => frame.type === "user"),
+      ).toEqual([]);
+    });
+
+    it("rejects stale preparation but reads an external session catalogue without restoring it", async () => {
       const states: Array<Record<string, unknown>> = [];
       const f = fixture("2.1.303", 0, "ordinary", (state) => states.push(state));
       const created = await create(f.owner);
@@ -638,10 +771,13 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))(
         }),
       ).rejects.toThrow("invalid-managed-settings-prepare");
       f.setExternalOwner(created.sourceSessionId);
-      await expect(prepareSettings(f.owner, created.sessionId)).rejects.toThrow(
-        /claude-owner-busy|active in an external process/,
-      );
-      expect(f.frames()).toEqual([]);
+      expect(await prepareSettings(f.owner, created.sessionId)).toMatchObject({
+        available: true,
+        models: [{ id: "fixture-model" }],
+      });
+      expect(f.frames().filter((frame) => frame.args)).toHaveLength(1);
+      expect(f.frames().find((frame) => frame.args)!.args).toContain("--no-session-persistence");
+      expect(f.frames().filter((frame) => frame.type === "user")).toEqual([]);
       expect(states.some((state) => state.status === "idle" && state.sendEnabled === true)).toBe(
         false,
       );
@@ -657,12 +793,7 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))(
         const f = fixture();
         const source = f.indexNative();
         if (released) {
-          await f.owner.request({
-            operation: "adopt",
-            sessionId: source,
-            requestId: randomUUID(),
-            deviceId: "browser-device-a",
-          });
+          await start(f.owner, source);
           await f.owner.request({
             operation: "release",
             sessionId: source,
@@ -689,6 +820,7 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))(
               "\n",
           );
         const before = readFileSync(f.transcript(source), "utf8");
+        const previousFrames = f.frames().length;
         f.setExternalOwner(source);
         await expect
           .poll(() => f.owner.live(source, true), { timeout: 5000, interval: 100 })
@@ -704,7 +836,7 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))(
         const fork = await control(f.owner, source, "fork");
         expect(fork).toMatchObject({ accepted: true, forkSourceSessionId: source });
         expect(fork.sourceSessionId).not.toBe(source);
-        expect(f.frames()).toEqual([]);
+        expect(f.frames()).toHaveLength(previousFrames);
         expect(readFileSync(f.transcript(source), "utf8")).toBe(before);
         expect(
           JSON.parse(
@@ -723,7 +855,10 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))(
         await expect
           .poll(async () => (await f.owner.live(fork.sessionId, true)).status)
           .toBe("idle");
-        const launches = f.frames().filter((frame) => frame.args);
+        const launches = f
+          .frames()
+          .slice(previousFrames)
+          .filter((frame) => frame.args);
         expect(launches).toHaveLength(1);
         expect(launches[0]!.args).toEqual(
           expect.arrayContaining([
@@ -740,42 +875,50 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))(
       },
       10_000,
     );
-    it("automatically adopts a native first send while still rejecting an explicitly stale fingerprint", async () => {
+    it("restores a native session within the original send receipt and replays without resending", async () => {
       const f = fixture();
       const id = f.indexNative();
-      const inspected = await f.owner.inspect(id);
-      const previous = readFileSync(f.transcript(id), "utf8");
-      writeFileSync(
-        f.transcript(id),
-        previous +
-          JSON.stringify({ type: "custom-title", customTitle: "Native title changed" }) +
-          "\n",
+      await expect(f.owner.request({ operation: "adopt", sessionId: id })).rejects.toThrow(
+        "unsupported-Claude-managed-operation:adopt",
       );
-      await expect(
-        f.owner.request({
-          operation: "adopt",
-          sessionId: id,
-          requestId: randomUUID(),
-          deviceId: "browser-device-a",
-          handoffFingerprint: inspected.handoffFingerprint,
-        }),
-      ).rejects.toThrow("handoff-fingerprint-changed");
       expect(existsSync(path.join(f.root, "claude-managed", `${id}.json`))).toBe(false);
       expect(f.frames()).toEqual([]);
-      expect(await control(f.owner, id, "send", { text: "Continue automatically" })).toMatchObject({
-        accepted: true,
-      });
+      const request = {
+        operation: "send",
+        sessionId: id,
+        requestId: randomUUID(),
+        deviceId: "browser-device-a",
+        runtimeBootId: f.owner.bootId,
+        expectedRevision: (await f.owner.live(id, true)).revision,
+        experimentalEnabled: true,
+        text: "Continue automatically",
+      };
+      expect(await Promise.all([f.owner.request(request), f.owner.request(request)])).toEqual([
+        expect.objectContaining({ accepted: true }),
+        expect.objectContaining({ accepted: true }),
+      ]);
       await expect.poll(async () => (await f.owner.live(id, true)).status).toBe("idle");
+      expect(await f.owner.request(request)).toMatchObject({ accepted: true });
       expect(
         JSON.parse(readFileSync(path.join(f.root, "claude-managed", `${id}.json`), "utf8")),
       ).toMatchObject({ nativeId: id, adopted: true, released: false });
-      expect(
-        f
-          .frames()
-          .filter((frame) => frame.args)
-          .at(-1)!.args,
-      ).toContain(`--resume=${id}`);
+      expect(f.frames().find((frame) => frame.args)!.args).toContain(`--resume=${id}`);
       expect(f.frames().filter((frame) => frame.type === "user")).toHaveLength(1);
+      const db = openManagedLedger(f.root)!;
+      try {
+        expect(
+          (
+            db
+              .prepare("SELECT evidence,request_id FROM managed_commands WHERE session_id=?")
+              .all(id) as Array<{ evidence: string; request_id: string }>
+          ).map((row) => ({
+            operation: JSON.parse(row.evidence).operation,
+            request_id: row.request_id,
+          })),
+        ).toEqual([{ operation: "send", request_id: request.requestId }]);
+      } finally {
+        db.close();
+      }
     });
     it("stages settings for an idle native session without resuming it before the first send", async () => {
       const states: Array<Record<string, unknown>> = [];
@@ -874,24 +1017,285 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))(
       }
       expect(f.frames().filter((frame) => frame.type === "user")).toHaveLength(1);
     });
-    it("rechecks native ownership before preparing or staging imported settings", async () => {
+    it.each(["indexed", "retired", "restarted"])(
+      "stages local controls and resources under an external owner without restoring the %s session",
+      async (lifecycle) => {
+        const states: Array<Record<string, unknown>> = [];
+        const f = fixture("2.1.286", 0, "ordinary", (state) => states.push(state));
+        const sends = vi.spyOn(ClaudeManagedRunnerProcess.prototype, "send");
+        let owner = f.owner;
+        let id: string;
+        let nativeId: string;
+        if (lifecycle === "indexed") {
+          id = f.indexNative();
+          nativeId = id;
+        } else {
+          const created = await create(owner);
+          id = created.sessionId;
+          nativeId = created.sourceSessionId;
+          await start(owner, id);
+          if (lifecycle === "retired")
+            await expect(sends.mock.contexts[0]!.retireIfInactive()).resolves.toBe(true);
+          else {
+            await owner.shutdown();
+            owner = f.makeOwner();
+          }
+        }
+        const skill = path.join(f.workspace, ".claude", "skills", "fixture-skill");
+        mkdirSync(skill, { recursive: true });
+        writeFileSync(path.join(skill, "SKILL.md"), "Offline project instruction");
+        f.setExternalOwner(nativeId);
+        const previousTranscript = readFileSync(f.transcript(nativeId), "utf8");
+        const before = f.frames().length;
+        // Preparation refreshes ownership; display observations may still cache the prior worker.
+        await prepareSettings(owner, id);
+        expect(await owner.capabilities(id, true)).toMatchObject({
+          features: {
+            send: { available: false },
+            stop: { available: false },
+            approve: { available: false },
+            settings: { available: true },
+            resources: { available: true },
+            attachments: { available: true },
+            "goal-draft": { available: true },
+            "goal-set": { available: false },
+            "goal-resume": { available: false },
+          },
+        });
+        expect(await owner.capabilities(id, false)).toMatchObject({
+          features: { settings: { available: false }, "goal-draft": { available: false } },
+        });
+        expect(await prepareSettings(owner, id)).toMatchObject({
+          models: [{ id: "fixture-model" }],
+          writable: {
+            model: { available: true },
+            effort: { available: true },
+            permissionMode: { available: true },
+          },
+        });
+        expect(await owner.request({ operation: "resources", sessionId: id })).toMatchObject({
+          skills: [{ id: "fixture-skill" }],
+        });
+        expect(await owner.capabilities(id, true)).toMatchObject({
+          commands: [{ name: "fixture-skill" }, { name: "not-installed" }],
+        });
+        const settings = { model: "fixture-model", effort: "high", permissionMode: "plan" };
+        expect(await control(owner, id, "settings", settings)).toMatchObject({
+          accepted: true,
+          settings,
+        });
+        expect(states.at(-1)).toMatchObject({
+          sendEnabled: false,
+          executionLocation: "external",
+          settings: { selected: settings, applicationStatus: "pending" },
+        });
+        expect(await owner.settingsState(id)).toMatchObject({
+          selected: settings,
+          applicationStatus: "pending",
+        });
+        expect(
+          await control(owner, id, "send", { text: "Not dispatched to the external owner" }),
+        ).toMatchObject({
+          accepted: false,
+          controlOutcome: "not-dispatched",
+          error: "claude-owner-busy",
+        });
+        await expect(
+          control(owner, id, "goal-set", { goal: { objective: "Do not run" } }),
+        ).rejects.toThrow();
+        const extra = f.frames().slice(before);
+        expect(extra.filter((frame) => frame.type === "user")).toEqual([]);
+        expect(extra.filter((frame) => frame.args)).toHaveLength(1);
+        expect(extra.find((frame) => frame.args)!.args).toContain("--no-session-persistence");
+        expect(extra.some((frame) => frame.args?.includes(`--resume=${nativeId}`))).toBe(false);
+        expect(readFileSync(f.transcript(nativeId), "utf8")).toBe(previousTranscript);
+        if (lifecycle === "indexed")
+          expect(existsSync(path.join(f.root, "claude-managed", `${id}.json`))).toBe(false);
+      },
+    );
+
+    it("keeps external local drafts fenced by an unresolved message receipt", async () => {
       const f = fixture();
       const id = f.indexNative();
-      expect(await f.owner.live(id, true)).toMatchObject({ sendEnabled: true });
       f.setExternalOwner(id);
-      await expect(prepareSettings(f.owner, id)).rejects.toThrow("claude-owner-busy");
-      await expect(control(f.owner, id, "settings", { permissionMode: "plan" })).rejects.toThrow(
-        "claude-owner-busy",
-      );
+      const unknown = randomUUID();
+      claimManagedCommand(f.root, unknown, id, "unconfirmed original send", "browser-device-a", {
+        operation: "send",
+      });
+      dispatchManagedCommand(f.root, unknown);
+      expect(await f.owner.capabilities(id, true)).toMatchObject({
+        features: {
+          settings: { available: false },
+          resources: { available: false },
+          attachments: { available: false },
+          "goal-draft": { available: false },
+          send: { available: false },
+        },
+      });
       expect(await f.owner.settingsState(id)).toMatchObject({
-        selected: { permissionMode: null },
         writable: { permissionMode: { available: false } },
       });
-      expect(await f.owner.capabilities(id, true)).toMatchObject({
-        features: { "goal-draft": { available: false } },
+      await expect(prepareSettings(f.owner, id)).rejects.toThrow("control-outcome-unconfirmed");
+      await expect(control(f.owner, id, "settings", { permissionMode: "plan" })).rejects.toThrow(
+        "control-outcome-unconfirmed",
+      );
+      await expect(f.owner.request({ operation: "resources", sessionId: id })).rejects.toThrow(
+        "control-outcome-unconfirmed",
+      );
+      expect(f.frames()).toEqual([]);
+    });
+
+    it("reads external resource context without hashing its complete native transcript", async () => {
+      const f = fixture();
+      const id = f.indexNative();
+      truncateSync(f.transcript(id), 129 * 1024 * 1024);
+      f.setExternalOwner(id);
+      expect(await f.owner.request({ operation: "context", sessionId: id })).toMatchObject({
+        available: true,
+        cwd: f.workspace,
+      });
+      expect(await f.owner.request({ operation: "resources", sessionId: id })).toMatchObject({
+        available: true,
       });
       expect(f.frames()).toEqual([]);
     });
+
+    it("rechecks external draft identity after its isolated catalogue read", async () => {
+      const f = fixture("2.1.286", 150);
+      const id = f.indexNative();
+      f.setExternalOwner(id);
+      const original = f.owner.sessions.verifiedClaudeReadSource.bind(f.owner.sessions);
+      let changed = false;
+      const moved = path.join(f.workspace, "other");
+      mkdirSync(moved);
+      vi.spyOn(f.owner.sessions, "verifiedClaudeReadSource").mockImplementation((sessionId) => ({
+        ...original(sessionId),
+        ...(changed ? { workspace: moved } : {}),
+      }));
+      const pending = prepareSettings(f.owner, id).catch((error: unknown) => error);
+      await expect
+        .poll(() => f.frames().some((frame) => frame.request?.subtype === "initialize"))
+        .toBe(true);
+      changed = true;
+      expect(((await pending) as Error).message).toBe("unverified-session-identity");
+      expect(f.frames().filter((frame) => frame.type === "user")).toEqual([]);
+    });
+
+    it.each(["manual", "scheduled", "after restarting the host"])(
+      "stages Claude settings for the next %s send without changing the active turn",
+      async (admission) => {
+        const f = fixture("2.1.286", 0, "stage-next-settings");
+        const initial = { model: "fixture-model", effort: "high", permissionMode: "default" };
+        const selected = {
+          model: "fixture-low-model",
+          effort: "low",
+          permissionMode: "acceptEdits",
+        };
+        const { sessionId: id, sourceSessionId: nativeId } = await create(f.owner, initial);
+        expect(await control(f.owner, id, "send", { text: "Active turn" })).toMatchObject({
+          accepted: true,
+        });
+        const running = await f.owner.live(id, true);
+        expect(running).toMatchObject({ status: "running", sendEnabled: false });
+        expect(await f.owner.capabilities(id, true)).toMatchObject({
+          features: { settings: { available: true } },
+        });
+        expect(await f.owner.settingsState(id)).toMatchObject({
+          writable: {
+            model: { available: true },
+            effort: { available: true },
+            permissionMode: { available: true },
+          },
+        });
+        const update = { ...selected, requestId: randomUUID(), expectedRevision: running.revision };
+        const receipt = await control(f.owner, id, "settings", update);
+        expect(receipt).toMatchObject({ accepted: true, completed: true, appliesTo: "next-turn" });
+        expect(await control(f.owner, id, "settings", update)).toEqual(receipt);
+        await expect(
+          control(f.owner, id, "settings", { ...update, requestId: randomUUID() }),
+        ).rejects.toThrow("stale-Claude-revision");
+        expect(await f.owner.live(id, true)).toMatchObject({
+          turnId: running.turnId,
+          status: "running",
+          settings: { current: initial, selected, applicationStatus: "pending" },
+        });
+        const before = f.frames();
+        expect(before.filter((frame) => frame.args)).toHaveLength(1);
+        expect(before.filter((frame) => frame.type === "control_request")).toMatchObject([
+          { request: { subtype: "initialize" } },
+        ]);
+        if (admission === "scheduled")
+          await control(f.owner, id, "queue-add", { text: "Queued turn" });
+        f.releaseResult();
+        await expect.poll(async () => (await f.owner.live(id, true)).status).toBe("idle");
+        expect(await f.owner.settingsState(id)).toMatchObject({
+          current: initial,
+          selected,
+          applicationStatus: "pending",
+        });
+        let owner = f.owner;
+        if (admission === "after restarting the host") {
+          await owner.shutdown();
+          owner = f.makeOwner();
+          expect(await owner.settingsState(id)).toMatchObject({
+            current: initial,
+            selected,
+            applicationStatus: "pending",
+          });
+        }
+        const nextTurn =
+          admission === "scheduled"
+            ? await dispatch(owner, await prepare(owner, id))
+            : await control(owner, id, "send", { text: "Next turn" });
+        expect(nextTurn).toMatchObject({ accepted: true });
+        await expect.poll(async () => (await owner.live(id, true)).status).toBe("idle");
+        const launches = f.frames().filter((frame) => frame.args);
+        expect(launches).toHaveLength(2);
+        expect(launches[1]?.args).toEqual(
+          expect.arrayContaining([
+            `--resume=${nativeId}`,
+            "--model",
+            selected.model,
+            "--effort",
+            selected.effort,
+            "--permission-mode",
+            selected.permissionMode,
+          ]),
+        );
+        expect(await owner.settingsState(id)).toMatchObject({
+          selected,
+          applicationStatus: "confirmed",
+        });
+        expect(
+          f
+            .frames()
+            .filter((frame) => frame.type === "user")
+            .map((frame) => frame.session_id),
+        ).toEqual([nativeId, nativeId]);
+      },
+    );
+
+    it.skipIf(process.platform !== "darwin")(
+      "keeps running settings unavailable when the worker can start its own turns",
+      async () => {
+        const f = fixture("2.1.322", 0, "stage-next-settings", undefined, true);
+        const { sessionId: id } = await create(f.owner, { model: "fixture-model" });
+        expect(await control(f.owner, id, "send", { text: "Active turn" })).toMatchObject({
+          accepted: true,
+        });
+        expect(await f.owner.capabilities(id, true)).toMatchObject({
+          features: { settings: { available: false } },
+        });
+        await expect(control(f.owner, id, "settings", { effort: "low" })).rejects.toThrow(
+          "session-busy",
+        );
+        expect(await f.owner.settingsState(id)).toMatchObject({
+          selected: { model: "fixture-model", effort: null },
+        });
+        expect(f.frames().filter((frame) => frame.args)).toHaveLength(1);
+      },
+    );
+
     it("creates under the real browser device, persists selections without a user frame, and rejects malformed identities", async () => {
       const f = fixture();
       const requestId = randomUUID();
@@ -910,8 +1314,9 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))(
       await prepareSettings(f.owner, created.sessionId);
       expect(await f.owner.settingsState(created.sessionId)).toMatchObject({
         selected: { model: "fixture-model", effort: "high", permissionMode: "plan" },
-        current: { model: "fixture-model" },
-        applicationStatus: "confirmed",
+        current: { model: null },
+        models: [{ id: "fixture-model" }],
+        applicationStatus: "pending",
       });
       expect(f.frames().some((frame) => frame.type === "user")).toBe(false);
       const db = openManagedLedger(f.root)!;
@@ -936,13 +1341,14 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))(
     it("applies settings only after native ACK and resets by preparing a process with no override flags", async () => {
       const f = fixture();
       const created = await create(f.owner);
+      await start(f.owner, created.sessionId);
       await control(f.owner, created.sessionId, "settings", {
         model: "fixture-model",
         effort: "high",
         permissionMode: "plan",
         publicInputHash: "a".repeat(64),
       });
-      expect(f.frames().some((frame) => frame.type === "user")).toBe(false);
+      expect(f.frames().filter((frame) => frame.type === "user")).toHaveLength(1);
       expect(await f.owner.settingsState(created.sessionId)).toMatchObject({
         current: { model: "fixture-model", effort: "high", permissionMode: "plan" },
         applicationStatus: "confirmed",
@@ -966,7 +1372,7 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))(
     it("applies effort to a resolved inherited model without selecting model or permissions", async () => {
       const f = fixture("2.1.286", 0, "model-alias");
       const created = await create(f.owner);
-      await prepareSettings(f.owner, created.sessionId);
+      await start(f.owner, created.sessionId);
       expect(await f.owner.settingsState(created.sessionId)).toMatchObject({
         current: { model: "fixture-actual-model", permissionMode: "plan" },
         selected: { model: null, permissionMode: null },
@@ -988,6 +1394,7 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))(
       async (typed) => {
         const f = fixture("2.1.286", 0, "model-alias");
         const created = await create(f.owner);
+        await start(f.owner, created.sessionId);
         await control(f.owner, created.sessionId, "settings", { model: typed });
         expect(
           f
@@ -1059,6 +1466,7 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))(
         effort: "high",
         permissionMode: "plan",
       });
+      await start(f.owner, created.sessionId);
       await control(f.owner, created.sessionId, "settings", {
         model: "fixture-low-model",
         effort: null,
@@ -1075,10 +1483,10 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))(
       });
       const controls = f.frames().filter((frame) => frame.type === "control_request");
       expect(controls.map((frame) => frame.request.subtype)).toEqual(["initialize", "initialize"]);
-      expect(f.frames().filter((frame) => frame.type === "user")).toEqual([]);
+      expect(f.frames().filter((frame) => frame.type === "user")).toHaveLength(1);
       await f.owner.shutdown();
       const restored = f.makeOwner();
-      await prepareSettings(restored, created.sessionId);
+      await start(restored, created.sessionId);
       const args = f
         .frames()
         .filter((frame) => frame.args)
@@ -1095,6 +1503,7 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))(
         effort: "high",
         permissionMode: "plan",
       });
+      await start(f.owner, created.sessionId);
       const requestId = randomUUID();
       await expect(
         control(f.owner, created.sessionId, "settings", {
@@ -1113,13 +1522,13 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))(
         effort: "high",
         permissionMode: "plan",
       });
-      expect(f.frames().filter((frame) => frame.type === "user")).toEqual([]);
+      expect(f.frames().filter((frame) => frame.type === "user")).toHaveLength(1);
     });
 
     it("keeps native inherited permission separate from selection when only the model changes", async () => {
       const f = fixture("2.1.286", 0, "inherited-plan");
       const created = await create(f.owner);
-      await prepareSettings(f.owner, created.sessionId);
+      await start(f.owner, created.sessionId);
       expect(await f.owner.settingsState(created.sessionId)).toMatchObject({
         current: { permissionMode: "plan" },
         selected: { permissionMode: null },
@@ -1276,6 +1685,7 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))(
         skills: [],
       });
       await control(f.owner, id, "settings", { permissionMode: "plan" });
+      await start(f.owner, id);
       const resources = (await f.owner.request({
         operation: "resources",
         sessionId: id,
@@ -1390,7 +1800,7 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))(
     });
 
     it.each([false, true])(
-      "preserves a lazy fork through release and adoption (restart=%s)",
+      "preserves a lazy fork through release and the next send (restart=%s)",
       async (restart) => {
         const f = fixture();
         const created = await create(f.owner);
@@ -1416,14 +1826,6 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))(
           await owner.shutdown();
           owner = f.makeOwner();
         }
-        const inspected = await owner.inspect(fork.sessionId);
-        await owner.request({
-          operation: "adopt",
-          sessionId: fork.sessionId,
-          requestId: randomUUID(),
-          deviceId: "browser-device-a",
-          handoffFingerprint: inspected.handoffFingerprint,
-        });
         expect(f.frames()).toHaveLength(before);
         await control(owner, fork.sessionId, "send", { text: "child continuation" });
         await expect.poll(async () => (await owner.live(fork.sessionId, true)).status).toBe("idle");
@@ -1443,13 +1845,10 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))(
       },
     );
 
-    it("binds the unstarted fork source and cutoff to the handoff fingerprint", async () => {
+    it("validates the unstarted fork metadata before its first send", async () => {
       const f = fixture();
       const created = await create(f.owner);
-      await control(f.owner, created.sessionId, "send", { text: "parent turn" });
-      await expect
-        .poll(async () => (await f.owner.live(created.sessionId, true)).status)
-        .toBe("idle");
+      await start(f.owner, created.sessionId);
       const fork = await control(f.owner, created.sessionId, "fork");
       await f.owner.request({
         operation: "release",
@@ -1459,21 +1858,14 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))(
         runtimeBootId: f.owner.bootId,
         expectedRevision: (await f.owner.live(fork.sessionId, true)).revision,
       });
-      const inspected = await f.owner.inspect(fork.sessionId);
+      const before = f.frames();
       const file = path.join(f.root, "claude-managed", `${fork.sessionId}.json`);
       const metadata = JSON.parse(readFileSync(file, "utf8"));
-      writeFileSync(file, JSON.stringify({ ...metadata, forkCutoff: randomUUID() }));
-      await expect(
-        f.owner.request({
-          operation: "adopt",
-          sessionId: fork.sessionId,
-          requestId: randomUUID(),
-          deviceId: "browser-device-a",
-          handoffFingerprint: inspected.handoffFingerprint,
-        }),
-      ).rejects.toThrow("handoff-fingerprint-changed");
       writeFileSync(file, JSON.stringify({ ...metadata, forkCutoff: undefined }));
-      await expect(f.owner.inspect(fork.sessionId)).rejects.toThrow("invalid-Claude-metadata");
+      await expect(control(f.owner, fork.sessionId, "send", { text: "Child" })).rejects.toThrow(
+        "invalid-Claude-metadata",
+      );
+      expect(f.frames()).toEqual(before);
     });
 
     it("settles accepted steering only when its bound original turn completes and supports a fork after steering", async () => {
@@ -1718,9 +2110,13 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))(
 
     it("does not let another owner read-trigger recovery or claim scheduled work", async () => {
       const f = fixture();
+      const sends = vi.spyOn(ClaudeManagedRunnerProcess.prototype, "send");
       const created = await create(f.owner);
       const id = created.sessionId;
+      await start(f.owner, id);
+      await expect(sends.mock.contexts[0]!.retireIfInactive()).resolves.toBe(true);
       await control(f.owner, id, "queue-add", { text: "Retain original owner" });
+      await control(f.owner, id, "settings", { permissionMode: "plan" });
       const original = new ClaudeHostStateStore(f.root, f.owner.bootId).read(id);
       const second = f.makeOwner();
       expect(second.catalog()).toHaveLength(1);
@@ -1748,6 +2144,24 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))(
         }),
       ).rejects.toThrow("session-managed-by-another-runtime");
       expect(new ClaudeHostStateStore(f.root, f.owner.bootId).read(id)).toEqual(original);
+    });
+
+    it("releases the temporary settings lease without restoring an idle session", async () => {
+      const f = fixture();
+      const created = await create(f.owner);
+      await f.owner.shutdown();
+      const restored = f.makeOwner();
+      await control(restored, created.sessionId, "settings", { permissionMode: "plan" });
+      const second = f.makeOwner();
+      expect(
+        await control(second, created.sessionId, "settings", { permissionMode: "acceptEdits" }),
+      ).toMatchObject({ accepted: true });
+      expect(
+        new ClaudeHostStateStore(f.root, second.bootId).read(created.sessionId).settings,
+      ).toEqual({
+        permissionMode: "acceptEdits",
+      });
+      expect(f.frames()).toEqual([]);
     });
 
     it("scopes permit invalidation to its session while honoring device revocation during handshake", async () => {

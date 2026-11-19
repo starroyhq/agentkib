@@ -8,6 +8,17 @@ export const SESSION_RESOURCE_LIMIT = 10;
  * runtime response.
  */
 export interface SessionProviderCapabilities {
+  history: { readState: boolean };
+  operations: { execution: boolean };
+  /** Stable session toolbar slots; live grants determine whether each action can run. */
+  composer?: {
+    modelPicker: boolean;
+    permissionPicker: boolean;
+    attachments: boolean;
+    workspaceResources: boolean;
+    plan: boolean;
+    goal: boolean;
+  };
   create: {
     mode: "empty" | "with-first-message";
     catalogScope: "host" | "workspace";
@@ -30,12 +41,23 @@ export interface SessionProviderCapabilities {
     clearEffort: boolean;
     fastTierIds: readonly string[];
     prepare?: boolean;
+    nativePicker?: boolean;
   };
   contextUsage: "live" | "last-request" | "unsupported";
 }
 
 const PROVIDERS = {
   codex: {
+    history: { readState: true },
+    operations: { execution: true },
+    composer: {
+      modelPicker: true,
+      permissionPicker: true,
+      attachments: true,
+      workspaceResources: true,
+      plan: true,
+      goal: true,
+    },
     create: {
       mode: "empty",
       catalogScope: "host",
@@ -57,6 +79,16 @@ const PROVIDERS = {
     contextUsage: "live",
   },
   "claude-code": {
+    history: { readState: true },
+    operations: { execution: true },
+    composer: {
+      modelPicker: true,
+      permissionPicker: true,
+      attachments: true,
+      workspaceResources: true,
+      plan: true,
+      goal: true,
+    },
     create: {
       mode: "empty",
       catalogScope: "workspace",
@@ -76,10 +108,21 @@ const PROVIDERS = {
       clearEffort: true,
       fastTierIds: [],
       prepare: true,
+      nativePicker: true,
     },
     contextUsage: "live",
   },
   "deepseek-harness": {
+    history: { readState: false },
+    operations: { execution: true },
+    composer: {
+      modelPicker: true,
+      permissionPicker: true,
+      attachments: true,
+      workspaceResources: true,
+      plan: true,
+      goal: true,
+    },
     create: {
       mode: "empty",
       catalogScope: "workspace",
@@ -101,6 +144,16 @@ const PROVIDERS = {
     contextUsage: "unsupported",
   },
   devin: {
+    history: { readState: true },
+    operations: { execution: false },
+    composer: {
+      modelPicker: true,
+      permissionPicker: true,
+      attachments: false,
+      workspaceResources: true,
+      plan: false,
+      goal: false,
+    },
     create: {
       mode: "with-first-message",
       catalogScope: "workspace",
@@ -121,6 +174,13 @@ const PROVIDERS = {
 } satisfies Record<ManagedAgent, SessionProviderCapabilities>;
 
 export type SessionProviderAgent = keyof typeof PROVIDERS;
+export type LiveSessionAgent = SessionProviderAgent | "antigravity";
+
+export type ReadStateProvider = {
+  [Agent in SessionProviderAgent]: (typeof PROVIDERS)[Agent]["history"]["readState"] extends true
+    ? Agent
+    : never;
+}[SessionProviderAgent];
 
 export function isSessionProviderAgent(agent: unknown): agent is SessionProviderAgent {
   return typeof agent === "string" && Object.hasOwn(PROVIDERS, agent);
@@ -131,4 +191,27 @@ export function sessionProviderCapabilities(
   agent: unknown,
 ): SessionProviderCapabilities | undefined {
   return isSessionProviderAgent(agent) ? PROVIDERS[agent] : undefined;
+}
+
+export function sessionDetailCapabilities(agent: unknown): {
+  composer?: { surface: "managed" | "basic" };
+  history: SessionProviderCapabilities["history"];
+  operations: { execution: boolean };
+} {
+  const provider = sessionProviderCapabilities(agent);
+  if (provider)
+    return {
+      composer: { surface: "managed" },
+      history: provider.history,
+      operations: provider.operations,
+    };
+  return {
+    ...(agent === "antigravity" ? { composer: { surface: "basic" } } : {}),
+    history: { readState: false },
+    operations: { execution: false },
+  };
+}
+
+export function isReadStateProvider(agent: unknown): agent is ReadStateProvider {
+  return sessionDetailCapabilities(agent).history.readState;
 }

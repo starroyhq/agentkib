@@ -1,10 +1,19 @@
 import { homedir } from "node:os";
-import type { ConversationReadResult, ConversationReadState } from "@agentkib/runtime-protocol";
+import {
+  isReadStateProvider,
+  type ReadStateProvider,
+  type ConversationReadResult,
+  type ConversationReadState,
+} from "@agentkib/runtime-protocol";
 import type { BackendStore } from "./store";
 import type { SessionReaders } from "./session-readers";
 import { resolveClaudeConfig } from "./claude-config";
 import { codexRollouts } from "./codex-rollout-files";
-import { CodexReadStateObserver, type CodexReadTarget } from "./codex-read-state";
+import {
+  CodexReadStateObserver,
+  type CodexReadActiveTurn,
+  type CodexReadTarget,
+} from "./codex-read-state";
 import { conversationReadKey, ReadStateLedger } from "./read-state-ledger";
 import { observeReadHistory } from "./read-state-history";
 import { hasManagedCatalogWorkspace, managedRecordSchema } from "./managed-session-catalog";
@@ -19,9 +28,6 @@ import { devinSessionHome } from "./devin-sessions";
  * a Devin session's results are only the turns AgentKib ran, recorded as each ended
  * (`WebReadRequests.observeResults`), and the ledger is its whole read state.
  */
-type ReadStateProvider = "codex" | "claude-code" | "devin";
-const PROVIDERS: readonly unknown[] = ["codex", "claude-code", "devin"];
-
 export interface ReadStateTarget {
   provider: ReadStateProvider;
   home: string;
@@ -88,9 +94,10 @@ export class ConversationReadStates {
     readonly claudeManagedTarget: (id: string) => ReadStateTarget | null,
     readonly changed: () => void,
     readonly observed: () => boolean,
+    codexActiveTurn?: CodexReadActiveTurn,
   ) {
     this.ledger = new ReadStateLedger(dataDir);
-    this.#native = new CodexReadStateObserver(environment, changed);
+    this.#native = new CodexReadStateObserver(environment, changed, undefined, codexActiveTurn);
     this.#timer = setInterval(() => void this.#poll(), 5_000);
     this.#timer.unref();
   }
@@ -153,9 +160,8 @@ export class ConversationReadStates {
             transcript,
           };
         } else {
-          const summary = this.store.sessions.get(id);
-          if (!PROVIDERS.includes(summary?.agent)) throw new Error("read-state-unsupported");
-          const provider = summary!.agent as ReadStateProvider;
+          const provider = this.store.sessions.get(id)?.agent;
+          if (!isReadStateProvider(provider)) throw new Error("read-state-unsupported");
           const source = await this.sessions.resolve(id);
           if (!source.workspace) throw new Error("read-state-unavailable");
           const workspace =
@@ -254,7 +260,8 @@ export class ConversationReadStates {
         if (native && this.#sources.get(sourceKey) !== "agentkib" && observation.complete) {
           const persisted = this.ledger.nativeSnapshot(target.key);
           const verified = persisted?.state ?? this.#native.lastVerified(native, scope);
-          if (verified) this.ledger.handoff(target.key, scope, verified, persisted?.fingerprint);
+          if (verified && !this.ledger.handoff(target.key, scope, verified, persisted?.fingerprint))
+            return { ...this.ledger.get(target.key, scope), freshness: "stale", version: null };
           this.#sources.set(sourceKey, "agentkib");
         }
         const state = this.ledger.get(target.key, scope);
@@ -350,13 +357,13 @@ export class ConversationReadStates {
         !("id" in row) ||
         !("agent" in row) ||
         typeof row.id !== "string" ||
-        !PROVIDERS.includes(row.agent)
+        !isReadStateProvider(row.agent)
       )
         return { row };
       let candidate = this.#candidates.get(row.id);
       if (!candidate) {
         if (this.#candidates.size >= 20_000) return { row };
-        candidate = { provider: row.agent as ReadStateProvider, touched: now, stale: true };
+        candidate = { provider: row.agent, touched: now, stale: true };
         this.#candidates.set(row.id, candidate);
       }
       candidate.touched = now;
@@ -438,6 +445,7 @@ export class ConversationReadStates {
   recordTerminal(
     target: Omit<ReadStateTarget, "transcript">,
     result: ConversationReadResult,
+    options?: { turnStartedAt?: string | null },
   ): void {
     if (this.#closed) return;
     this.ledger.record(
@@ -445,6 +453,7 @@ export class ConversationReadStates {
       result,
       // No transcript backs a Devin session's results: nothing older is left to scan.
       target.provider === "devin",
+      options?.turnStartedAt,
     );
     this.changed();
   }

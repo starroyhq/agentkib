@@ -46,7 +46,12 @@ import { codexResumeCommand } from "./codex-resume-command";
 import { CodexFollowerBridge } from "./codex-follower-bridge";
 import { CodexFollowerConnection } from "./codex-follower-connection";
 import { CodexDesktopApp } from "./codex-desktop-app";
-import type { CodexFollowerState } from "./codex-follower-state";
+import {
+  parseFollowerModelSettings,
+  sameFollowerModelSettings,
+  type CodexFollowerState,
+  type FollowerModelSettings,
+} from "./codex-follower-state";
 import { CodexFollowerStream } from "./codex-follower-stream";
 import { AntigravityManagedRunner } from "./antigravity-managed-runner";
 import { devinExecutable } from "./devin-executable";
@@ -78,6 +83,7 @@ import { activityBlocks, assertActivityAllows } from "./session-activity";
 import { acquireManagedSessionLease, existingFileLeaseBusy } from "./managed-session-lock";
 import { acquireCodexFollowerOperationLock } from "./codex-follower-operation-lock";
 import {
+  acknowledgeDispatchedManagedCommand,
   annotateManagedCommand,
   claimManagedCommand,
   createManagedSnapshotWriter,
@@ -202,7 +208,6 @@ const managedResumeSchema = z
     runtimeBootId: z.string().min(1).max(256),
     expectedRevision: z.number().int().nonnegative().optional(),
     experimentalEnabled: z.boolean(),
-    handoffConfirmed: z.boolean().optional(),
   })
   .strict();
 
@@ -321,19 +326,6 @@ const managedLifecycleSchema = z.discriminatedUnion("operation", [
     .strict(),
   z
     .object({
-      operation: z.literal("adopt"),
-      requestId: z.string().uuid(),
-      deviceId: z
-        .string()
-        .min(1)
-        .max(256)
-        .regex(/^[A-Za-z0-9_:-]+$/),
-      sessionId: z.string().min(1).max(256),
-      handoffConfirmed: z.boolean().optional(),
-    })
-    .strict(),
-  z
-    .object({
       operation: z.literal("release"),
       requestId: z.string().uuid(),
       deviceId: z
@@ -423,10 +415,14 @@ const managedControlSchema = z
       .enum(["workspace-write-on-request", "full-access-on-request", "workspace-write-auto-review"])
       .optional(),
     resetDefaults: z.boolean().optional(),
+    expectedSettingsScope: z.string().uuid().optional(),
     goal: z.unknown().optional(),
   })
   .strict()
   .refine(validHistoryControl)
+  .refine(
+    (request) => request.operation === "settings" || request.expectedSettingsScope === undefined,
+  )
   .refine(
     (request) =>
       request.operation === "settings" || (request.effort !== null && request.serviceTier !== null),
@@ -651,10 +647,16 @@ export class WebReadRequests {
       agent: "codex",
       createOperation: "create",
       options: () => this.#managedOptions(),
+      live: (sessionId, enabled) => this.#codexLiveWithLimits(sessionId, enabled),
+      query: (request) => this.#codexQuery(request),
       workspaceResources: (workspaceId) => this.#codexWorkspaceResources(workspaceId),
       create: (request) => this.managedLifecycle(request),
       settingsState: (request) =>
         this.#managedSettingsState(managedSettingsStateSchema.parse(request)),
+      control: (request) =>
+        this.#managedControlAdmission(request, (validated, fingerprint) =>
+          this.#codexControl(validated, fingerprint),
+        ),
       updateSettings: (request) =>
         this.#managedControlAdmission(request, (validated, fingerprint) =>
           this.#codexControl(validated, fingerprint),
@@ -664,6 +666,9 @@ export class WebReadRequests {
     },
     "claude-code": {
       agent: "claude-code",
+      live: (sessionId, experimentalEnabled) =>
+        this.#claudeProvider({ operation: "live", sessionId, experimentalEnabled }),
+      query: (request) => this.#claudeProvider({ ...request }),
       createOperation: "create",
       options: ({ workspaceId }) => this.#claudeProvider({ operation: "options", workspaceId }),
       workspaceResources: (workspaceId) =>
@@ -671,11 +676,15 @@ export class WebReadRequests {
       create: (request) => this.#claudeProvider(request),
       settingsState: (request) => this.#claudeProvider(request),
       prepareSettings: (request) => this.#claudeProvider(request),
+      control: (request) => this.#claudeProvider(request),
       updateSettings: (request) => this.#claudeProvider(request),
       contextUsage: (sessionId) => this.#claudeProvider({ operation: "usage", sessionId }),
     },
     "deepseek-harness": {
       agent: "deepseek-harness",
+      live: (sessionId, experimentalEnabled) =>
+        this.#dshProvider({ operation: "live", sessionId, experimentalEnabled }),
+      query: (request) => this.#dshProvider({ ...request }),
       createOperation: "dsh-create",
       options: ({ workspaceId, includeModels }) =>
         this.#dshProvider({
@@ -684,21 +693,39 @@ export class WebReadRequests {
         }),
       create: (request) => this.#dshProvider(request),
       settingsState: (request) => this.#dshProvider(request),
+      control: (request) => this.#dshProvider(request),
       updateSettings: (request) => this.#dshProvider(request),
       contextUsage: (sessionId) => this.#dshProvider({ operation: "usage", sessionId }),
     },
     devin: {
       agent: "devin",
+      live: (sessionId) => this.#devinLive(sessionId),
+      query: (request) => this.#devinQuery(request),
       createOperation: "devin-create",
       options: () => this.#devinOptions(),
       create: (request) => this.#devinCreate(request),
       settingsState: (request) =>
         this.#devinSettingsState(managedSettingsStateSchema.parse(request).sessionId),
+      control: (request) =>
+        this.#managedControlAdmission(request, (validated, fingerprint) =>
+          this.#devinControl(validated, fingerprint),
+        ),
       updateSettings: (request) =>
         this.#managedControlAdmission(request, (validated, fingerprint) =>
           this.#devinControl(validated, fingerprint),
         ),
       contextUsage: (sessionId) => this.#devinContextUsage(sessionId),
+    },
+    antigravity: {
+      agent: "antigravity",
+      live: (sessionId) => this.#antigravityLive(sessionId),
+      query: (request) => this.#antigravityQuery(request),
+      control: (request) =>
+        this.#managedControlAdmission(request, (validated, fingerprint) =>
+          this.#antigravityControl(validated, fingerprint),
+        ),
+      contextUsage: async (sessionId) =>
+        normalizeContextUsage(await this.#antigravityLive(sessionId)),
     },
   });
   // New-session options and settings without a runner each start an app-server.
@@ -707,6 +734,7 @@ export class WebReadRequests {
     models: ManagedModelOption[];
     collaborationModes: CollaborationModeOption[];
   }>();
+  #followerSettingsCatalog = new CodexCatalogCache<ManagedModelOption[]>();
   #ownership = new Map<string, { checkedAt: number; reason: string | null }>();
   /** Turns that the Codex app or CLI runs, for the catalog and live state to show. */
   #externalTurns = new CodexExternalTurns(() => canonicalize(this.sessions.codexHome()));
@@ -771,6 +799,7 @@ export class WebReadRequests {
     Promise<{ follower: CodexFollowerRecord; revision: number } | undefined>
   >();
   #antigravityRunners = new Map<string, AntigravityRunnerRecord>();
+  #antigravityRetiredRevisions = new Map<string, number>();
   #antigravityRunnerFlights = new Map<string, Promise<AntigravityRunnerRecord>>();
   #devinRunners = new Map<
     string,
@@ -880,6 +909,7 @@ export class WebReadRequests {
     const pending = [this.#codex.closeAsync()];
     for (const record of this.#antigravityRunners.values()) record.runner.close();
     this.#antigravityRunners.clear();
+    this.#antigravityRetiredRevisions.clear();
     for (const record of this.#devinRunners.values()) record.runner.close();
     this.#devinRunners.clear();
     for (const follower of this.#codexFollowers.values()) follower.bridge.close();
@@ -1052,6 +1082,37 @@ export class WebReadRequests {
     return record?.native_id ? this.#externalTurns.endedTurns(record.native_id) : [];
   }
 
+  /** Existing execution evidence for the read-side observer. No follow or resume is initiated. */
+  codexActiveTurn(target: { home: string; workspace: string; nativeId: string }): string | null {
+    if (!this.#isCodexHome(target.home)) return null;
+    const workspace = pathIdentity(target.workspace);
+    for (const runner of this.#managedRunners.values()) {
+      const { state } = runner;
+      if (
+        runner.session.connected &&
+        state.nativeId === target.nativeId &&
+        typeof state.record.workspace === "string" &&
+        pathIdentity(state.record.workspace) === workspace &&
+        ["running", "awaiting-approval", "waiting-input"].includes(state.status)
+      )
+        return state.turnId;
+    }
+    for (const follower of this.#codexFollowers.values()) {
+      if (
+        follower.nativeId === target.nativeId &&
+        pathIdentity(follower.workspace) === workspace &&
+        follower.bridge.connected
+      ) {
+        const state = follower.bridge.selectedState;
+        if (state?.status === "running" || state?.status === "awaiting-approval") {
+          const turnId = state.activeTurn();
+          if (turnId) return turnId;
+        }
+      }
+    }
+    return this.#externalTurns.turnOf(target.nativeId)?.turnId ?? null;
+  }
+
   managedOptions() {
     return this.sessionProviderOptions("codex");
   }
@@ -1140,6 +1201,20 @@ export class WebReadRequests {
         return this.#withProviderCapabilities(provider, await provider.prepareSettings(value));
       case "settings":
         return provider.updateSettings(value);
+      case "live": {
+        if (typeof value.sessionId !== "string") throw new Error("invalid-request");
+        return provider.live(value.sessionId, value.experimentalEnabled === true);
+      }
+      case "capabilities":
+      case "inspect":
+        return provider.query(managedQuerySchema.parse(value));
+      case "send":
+      case "stop":
+      case "approve":
+      case "answer":
+      case "steer":
+      case "queue-add":
+        return provider.control(value);
       case "usage":
         if (typeof value.sessionId === "string") return provider.contextUsage(value.sessionId);
         return agent === "claude-code" ? this.#claudeProvider(value) : this.#dshProvider(value);
@@ -1385,16 +1460,6 @@ export class WebReadRequests {
       fingerprintOverride ?? createHash("sha256").update(stableJson(value)).digest("hex");
     const prior = replayManagedCommand(this.dataDir, request.requestId, fingerprint);
     if (prior) return prior;
-    if (request.operation === "adopt")
-      return {
-        accepted: false,
-        completed: false,
-        controlOutcome: "not-dispatched",
-        reason: "operation-unavailable",
-        sessionId: request.sessionId,
-        requestId: request.requestId,
-        runtimeBootId: this.#bootId,
-      };
     const records = readManagedRecords(this.dataDir, this.store);
     if (request.operation === "release") {
       const record = records.find((item) => item.id === request.sessionId);
@@ -2281,11 +2346,12 @@ export class WebReadRequests {
     return this.#runOperation(async () => {
       const provider =
         typeof value.sessionId === "string"
-          ? this.#sessionProviderForSession(value.sessionId)
+          ? this.#sessionProviders.creatable(
+              this.#sessionProviderForSession(value.sessionId)?.agent,
+            )
           : undefined;
-      return provider
-        ? this.#withProviderCapabilities(provider, await provider.settingsState(value))
-        : this.#managedSettingsState(managedSettingsStateSchema.parse(value));
+      if (!provider) throw new Error("unsupported-session-provider-operation");
+      return this.#withProviderCapabilities(provider, await provider.settingsState(value));
     });
   }
 
@@ -2298,8 +2364,26 @@ export class WebReadRequests {
     if (ownerSnapshot.executionMode === "codex-follower") {
       const follower = this.#attachedCodexFollower(record);
       if (!follower?.bridge.selectedState) throw new Error("session-state-unavailable");
+      const access = await this.#codexFollowerSettingsAccess(record, follower);
+      const state = follower.bridge.selectedState;
+      if (!state || this.#attachedCodexFollower(record) !== follower)
+        throw new Error("session-state-unavailable");
+      const projection = state.settingsState();
+      const settings = isObject(projection.settings) ? projection.settings : {};
+      const writable = isObject(settings.writable) ? settings.writable : {};
+      const error = access.reason;
       return {
-        ...follower.bridge.selectedState.settingsState(),
+        ...projection,
+        ...(access.models.length > 0 ? { models: access.models } : {}),
+        ...(!error ? { writeScope: state.settingsWriteScope } : {}),
+        settings: {
+          ...settings,
+          writable: {
+            ...writable,
+            model: error ? { available: false, reason: error } : true,
+            effort: error ? { available: false, reason: error } : access.effortWritable,
+          },
+        },
         runtimeBootId: this.#bootId,
       };
     }
@@ -2449,6 +2533,22 @@ export class WebReadRequests {
     });
   }
 
+  async #readCodexFollowerCatalog(
+    executable: string,
+    home: string,
+    cwd: string,
+    modelProvider: string,
+  ): Promise<ManagedModelOption[]> {
+    const [configResult, modelsResult] = await this.#codex.requestMany(executable, cwd, home, [
+      ["config/read", { cwd }],
+      ["model/list", { limit: 100 }],
+    ]);
+    const config = isObject(configResult) ? configResult.config : null;
+    if (!isObject(config) || (config.model_provider ?? "openai") !== modelProvider)
+      throw new Error("follower-operation-unverified");
+    return projectManagedModels(modelsResult);
+  }
+
   async #readCodexRawCatalog(executable: string, home: string, cwd: string) {
     let models: unknown;
     try {
@@ -2479,88 +2579,75 @@ export class WebReadRequests {
 
   async #managedQuery(value: unknown) {
     const request = managedQuerySchema.parse(value);
-    if (this.store.sessions.get(request.sessionId)?.agent === "devin")
-      return this.#devinQuery(request);
-    if (this.store.sessions.get(request.sessionId)?.agent === "antigravity") {
-      let runner: AntigravityRunnerRecord;
-      try {
-        runner = await this.#antigravityRunner(request.sessionId);
-      } catch (error) {
-        const reason = error instanceof Error ? error.message : "open-in-original-client";
-        const operations = ["send", "stop", "approve", "answer", "inspect", "resume", "usage"];
-        if (request.operation === "capabilities")
-          return {
-            sessionId: request.sessionId,
-            executionMode: "acp-managed",
-            runtimeBootId: this.#bootId,
-            status: "unsupported",
-            reason,
-            features: Object.fromEntries(
-              operations.map((operation) => [operation, { available: false, reason }]),
-            ),
-          };
-        return {
-          sessionId: request.sessionId,
-          executionMode: "acp-managed",
-          runtimeBootId: this.#bootId,
-          status: "unsupported",
-          revision: 0,
-          turnId: null,
-          approvals: [],
-          reason,
-        };
-      }
-      const live = runner.runner.snapshot();
-      const experimental = request.experimentalEnabled === true;
-      const approvals = Array.isArray(live.approvals) ? live.approvals : [];
-      const reason = experimental ? live.reason : "control-disabled";
-      const features = {
-        send:
-          experimental && live.status === "idle" && live.sendEnabled === true
-            ? { available: true }
-            : {
-                available: false,
-                reason:
-                  live.activity === "compacting"
-                    ? "session-compacting"
-                    : (reason ?? "session-busy"),
-              },
-        stop:
-          experimental && live.stopEnabled === true
-            ? { available: true }
-            : { available: false, reason: reason ?? "session-not-running" },
-        approve:
-          experimental && approvals.some((item) => isObject(item) && item.supported === true)
-            ? { available: true }
-            : { available: false, reason: reason ?? "no-supported-approval" },
-        answer: { available: false, reason: "unsupported-operation" },
-        inspect: { available: true },
-        resume: { available: false, reason: "unsupported-operation" },
-        usage:
-          isObject(live.usage) && live.usage.available === true
-            ? { available: true }
-            : { available: false, reason: "usage-not-reported" },
+    const provider = this.#sessionProviderForSession(request.sessionId);
+    if (!provider) throw new Error("unsupported-session-provider");
+    return provider.query(request);
+  }
+
+  async #antigravityQuery(request: z.infer<typeof managedQuerySchema>) {
+    const live = await this.#antigravityLive(request.sessionId);
+    if (live.status === "unsupported") {
+      if (request.operation !== "capabilities") return live;
+      return {
+        ...live,
+        features: Object.fromEntries(
+          ["send", "stop", "approve", "answer", "inspect", "resume", "usage"].map((operation) => [
+            operation,
+            { available: false, reason: live.reason },
+          ]),
+        ),
       };
-      if (request.operation === "capabilities")
-        return {
-          sessionId: request.sessionId,
-          executionMode: "acp-managed",
-          runtimeBootId: this.#bootId,
-          status: live.status,
-          reason: live.reason,
-          features,
-        };
+    }
+    const experimental = request.experimentalEnabled === true;
+    const approvals = Array.isArray(live.approvals) ? live.approvals : [];
+    const reason = experimental ? live.reason : "control-disabled";
+    const features = {
+      send:
+        experimental && live.status === "idle" && live.sendEnabled === true
+          ? { available: true }
+          : {
+              available: false,
+              reason:
+                live.activity === "compacting" ? "session-compacting" : (reason ?? "session-busy"),
+            },
+      stop:
+        experimental && live.stopEnabled === true
+          ? { available: true }
+          : { available: false, reason: reason ?? "session-not-running" },
+      approve:
+        experimental && approvals.some((item) => isObject(item) && item.supported === true)
+          ? { available: true }
+          : { available: false, reason: reason ?? "no-supported-approval" },
+      answer: { available: false, reason: "unsupported-operation" },
+      inspect: { available: true },
+      resume: { available: false, reason: "unsupported-operation" },
+      usage:
+        isObject(live.usage) && live.usage.available === true
+          ? { available: true }
+          : { available: false, reason: "usage-not-reported" },
+    };
+    if (request.operation === "capabilities")
       return {
         sessionId: request.sessionId,
         executionMode: "acp-managed",
         runtimeBootId: this.#bootId,
         status: live.status,
-        revision: live.revision,
-        turnId: live.turnId,
-        approvals,
         reason: live.reason,
+        features,
       };
-    }
+    return {
+      sessionId: request.sessionId,
+      executionMode: "acp-managed",
+      runtimeBootId: this.#bootId,
+      status: live.status,
+      revision: live.revision,
+      turnId: live.turnId,
+      approvals,
+      reason: live.reason,
+    };
+  }
+
+  async #codexQuery(request: z.infer<typeof managedQuerySchema>) {
     const record = readManagedRecords(this.dataDir, this.store).find(
       (item) => item.id === request.sessionId,
     );
@@ -2628,7 +2715,7 @@ export class WebReadRequests {
             followerUnavailable("rename"),
             followerUnavailable("archive"),
             followerUnavailable("unarchive"),
-            followerUnavailable("settings"),
+            ["settings", await this.#codexFollowerSettingsFeature(source, controls)],
             followerUnavailable("goal-set"),
             followerUnavailable("goal-pause"),
             followerUnavailable("goal-resume"),
@@ -2876,7 +2963,18 @@ export class WebReadRequests {
         managed && verified && healthy && idle && !compacting && !unknown && !record.archived;
       for (const operation of ["send", "rename", "archive", "fork", "compact", "delete"])
         set(operation, idleControls, controlReason);
-      set("settings", idleControls, controlReason);
+      set(
+        "settings",
+        managed &&
+          verified &&
+          healthy &&
+          runnerConnected &&
+          !compacting &&
+          !unknown &&
+          !record.archived &&
+          codexCanSetNextTurn(live.status),
+        controlReason,
+      );
       set(
         "goal-set",
         idleControls &&
@@ -2984,6 +3082,16 @@ export class WebReadRequests {
     }
 
     this.#ownership.delete(request.sessionId);
+
+    if (
+      !this.#managedRunners.get(request.sessionId)?.session.connected &&
+      readUnknownManagedCommands(this.dataDir, request.sessionId).some(({ evidence }) =>
+        isObject(evidence?.followerSettings),
+      )
+    ) {
+      const source = record ?? (await this.#inactiveRecord(request.sessionId));
+      await this.#checkPendingCodexFollowerSettings(source).catch(() => undefined);
+    }
 
     let workspace: string;
     let nativeId: string;
@@ -3324,21 +3432,17 @@ export class WebReadRequests {
 
   managedControl(value: unknown) {
     return this.#runOperation(() => {
-      if (
-        isObject(value) &&
-        value.operation === "settings" &&
-        typeof value.sessionId === "string"
-      ) {
-        const provider = this.#sessionProviderForSession(value.sessionId);
-        // The native bridge dispatchers authorize their own control request shapes.
-        if (provider?.agent === "codex" || provider?.agent === "devin")
-          return provider.updateSettings(value);
-      }
-      return this.#managedControlAdmission(value);
+      if (!isObject(value) || typeof value.sessionId !== "string")
+        throw new Error("invalid-request");
+      const provider = this.#sessionProviderForSession(value.sessionId);
+      if (!provider) throw new Error("unsupported-session-provider");
+      if (value.operation === "settings" && "updateSettings" in provider)
+        return provider.updateSettings(value);
+      return provider.control(value);
     });
   }
 
-  async #managedControlAdmission(value: unknown, applySettings?: ApplyManagedSettings) {
+  async #managedControlAdmission(value: unknown, execute: ApplyManagedSettings) {
     const request = managedControlSchema.parse(value);
     const id = request.sessionId;
     const admission = this.#controlSessions.get(id) ?? { count: 0, observed: false };
@@ -3348,7 +3452,9 @@ export class WebReadRequests {
     const runner = this.#managedRunners.get(id);
     if (runner && admission.observed) runner.observed = true;
     try {
-      return await this.#managedControl(value, request, applySettings);
+      const fingerprint = createHash("sha256").update(stableJson(value)).digest("hex");
+      const previous = replayManagedCommand(this.dataDir, request.requestId, fingerprint);
+      return previous ?? (await execute(request, fingerprint));
     } finally {
       const current = this.#managedRunners.get(id);
       if (current && admission.observed) current.observed = true;
@@ -3363,24 +3469,6 @@ export class WebReadRequests {
     if (runner) runner.observed = true;
     const admission = this.#controlSessions.get(sessionId);
     if (admission) admission.observed = true;
-  }
-
-  async #managedControl(
-    value: unknown,
-    request: SettingsControl,
-    applySettings?: ApplyManagedSettings,
-  ) {
-    const fingerprint = createHash("sha256").update(stableJson(value)).digest("hex");
-    const previous = replayManagedCommand(this.dataDir, request.requestId, fingerprint);
-    if (previous) return previous;
-    if (applySettings) return applySettings(request, fingerprint);
-    const agent = this.store.sessions.get(request.sessionId)?.agent;
-    if (agent === "devin") return this.#devinControl(request, fingerprint);
-    if (agent === "antigravity" && (request.effort === null || request.serviceTier === null))
-      throw new Error("unsupported-setting-clear");
-    if (agent === "antigravity") return this.#antigravityControl(request, fingerprint);
-
-    return this.#codexControl(request, fingerprint);
   }
 
   async #inactiveCodexControlRecord(source: ManagedRecord, expectedRevision: number) {
@@ -3460,16 +3548,13 @@ export class WebReadRequests {
     }
   }
 
-  async #stageCodexSettings(
-    source: ManagedRecord,
-    request: SettingsControl,
-    policyOnly?: NonNullable<SettingsControl["policyId"]>,
-  ) {
+  async #stageCodexSettings(source: ManagedRecord, request: SettingsControl) {
     const release = acquireManagedSessionLease(this.dataDir, source.id);
     try {
       const record = await this.#inactiveCodexControlRecord(source, request.expectedRevision);
       const cwd = this.#managedCwd(record);
       const home = this.#assertManagedHome(record);
+      const policyOnly = codexPolicyOnly(request);
       const modeOnly = request.mode !== undefined && !changesCodexModel(request);
       let settings: Partial<ManagedRecord>;
       if (policyOnly) settings = { policy_id: policyOnly };
@@ -3502,6 +3587,8 @@ export class WebReadRequests {
           };
         }
       }
+      // A policy can accompany any selection without opening the native thread.
+      if (request.policyId !== undefined) settings.policy_id = request.policyId;
       const snapshot: Record<string, unknown> = {
         ...record.snapshot,
         status: "idle",
@@ -3617,12 +3704,16 @@ export class WebReadRequests {
       const follower = owner === "codex-owner-busy" ? observedFollower : undefined;
       if (observedFollower && owner && !follower) return rejectInactive(owner);
       if (follower) {
+        if (request.operation === "settings")
+          return this.#updateCodexFollowerSettings(request, fingerprint, inactive, follower);
         if (!["send", "stop", "approve"].includes(request.operation))
           return rejectInactive("follower-operation-unverified");
         if (request.operation === "send" && inactive.snapshot?.settingsStaged === true)
           return rejectInactive("codex-owner-busy");
         return this.#codexFollowerControl(request, fingerprint, follower, inactive.workspace_id);
       }
+      if (request.expectedSettingsScope !== undefined)
+        return rejectInactive("stale-or-disabled-control");
       if (request.expectedRevision !== (inactive.snapshot?.revision ?? 0))
         return rejectInactive("stale-or-disabled-control");
       if (!["send", "settings", "rename", "archive", "compact"].includes(request.operation))
@@ -3637,8 +3728,8 @@ export class WebReadRequests {
       prepared = true;
       // Only resume is authoritative: the earlier focus probe can race another client.
       try {
-        if (policyOnly || (request.operation === "settings" && request.policyId === undefined))
-          return await this.#stageCodexSettings(inactive, request, policyOnly);
+        if (request.operation === "settings")
+          return await this.#stageCodexSettings(inactive, request);
         runner = await this.#connectCodexForControl(inactive, request);
         record = { ...(runner.state.record as ManagedRecord) };
         request.expectedRevision = runner.state.revision;
@@ -3667,6 +3758,8 @@ export class WebReadRequests {
       }
     }
     if (!record || !runner) throw new Error("session-unavailable");
+    if (request.expectedSettingsScope !== undefined)
+      return reject("stale-or-disabled-control", record.workspace_id);
     let cwd: string;
     let snapshot: Record<string, unknown>;
     try {
@@ -3924,7 +4017,7 @@ export class WebReadRequests {
           method = "thread/goal/set";
         }
       } else if (request.operation === "settings") {
-        if (snapshot.status !== "idle") throw new Error("session-busy");
+        if (!codexCanSetNextTurn(snapshot.status)) throw new Error("session-busy");
         if (request.mode === null && !changesCodexModel(request) && request.policyId === undefined)
           localMutation = { mode: null };
         else {
@@ -4211,104 +4304,274 @@ export class WebReadRequests {
     }
   }
 
-  // Retained for the separately approved Desktop-follower cleanup.
-  // oxlint-disable-next-line no-unused-private-class-members
-  async #reconcileCodexFollower(
-    request: z.infer<typeof managedReconcileSchema>,
-  ): Promise<Record<string, unknown>> {
-    const summary = this.store.sessions.get(request.sessionId);
-    if (!summary || summary.agent !== "codex") throw new Error("session-unavailable");
-    const unknown = readUnknownManagedCommands(this.dataDir, request.sessionId);
-    if (unknown.length === 0)
-      return { sessionId: request.sessionId, reconciled: true, unresolvedCount: 0 };
+  async #codexFollowerSettingsFeature(record: ManagedRecord, controls: boolean) {
+    if (!controls) return { available: false, reason: "control-disabled" };
+    const follower = this.#attachedCodexFollower(record);
+    if (!follower) return { available: false, reason: "follower-operation-unverified" };
+    const { reason } = await this.#codexFollowerSettingsAccess(record, follower);
+    return reason ? { available: false, reason } : { available: true };
+  }
 
-    const resolved = await this.sessions.resolve(request.sessionId);
-    const nativeId = resolved.native.native_ref;
-    if (!this.sessions.verifiedCodexControlIds([nativeId]).has(nativeId.toLowerCase()))
-      throw new Error("unverified-session-identity");
-    const workspace = canonicalize(resolved.workspace);
-    if (
-      pathIdentity(canonicalize(this.store.workspacePath(summary.workspace_id))) !==
-      pathIdentity(workspace)
-    )
-      throw new Error("session-workspace-mismatch");
-
-    const needsHistory = unknown.some(({ evidence }) =>
-      ["send", "stop"].includes(String(evidence?.operation)),
-    );
-    let thread: Record<string, unknown> | null = null;
-    if (needsHistory) {
-      const executable = this.#codexReader();
-      if (!executable) throw new Error("codex-cli-unavailable");
-      const response = await this.#codex.request(
-        executable,
-        workspace,
-        canonicalize(this.sessions.codexHome()),
-        "thread/read",
-        { threadId: nativeId, includeTurns: true },
-      );
-      const candidate = isObject(response) ? response.thread : null;
-      if (!isObject(candidate) || candidate.id !== nativeId)
-        throw new Error("thread-identity-mismatch");
-      if (typeof candidate.cwd !== "string" || !within(canonicalize(candidate.cwd), workspace))
-        throw new Error("codex-context-outside-workspace");
-      thread = candidate;
-    }
-
-    const managed =
-      readManagedRecords(this.dataDir, this.store).find((item) => item.id === request.sessionId) ??
-      (await this.#inactiveRecord(request.sessionId));
-    const follower = await this.#desktopFollower(managed);
-    const state = await follower.bridge.refresh();
-    let unresolvedCount = 0;
-    for (const command of unknown) {
-      const evidence = command.evidence;
-      let reconciled = false;
+  async #codexFollowerSettingsAccess(record: ManagedRecord, follower: CodexFollowerRecord) {
+    const unavailable = (reason: string) => ({ models: [], effortWritable: false, reason });
+    const state = follower.bridge.selectedState;
+    const executable = follower.bridge.connection.settingsCatalogExecutable;
+    if (!state || !follower.bridge.supportsThreadSettings || !executable)
+      return unavailable("follower-operation-unverified");
+    const settings = state.nativeModelSettings();
+    if (!settings) return unavailable("follower-operation-unverified");
+    const revision = state.revision;
+    try {
+      const { home, cwd, catalogKey } = this.#codexFollowerSettingsTarget(record, follower, state);
+      const [observed, models] = await Promise.all([
+        follower.bridge.readModelSettings(),
+        this.#followerSettingsCatalog.read(catalogKey, () =>
+          this.#readCodexFollowerCatalog(executable, home, cwd, settings.modelProvider),
+        ),
+      ]);
       if (
-        evidence?.executionMode === "codex-follower" &&
-        ["send", "stop"].includes(String(evidence.operation)) &&
-        thread
-      ) {
-        reconciled = managedCommandReconciles(command.requestId, evidence, thread);
-      } else if (
-        evidence?.executionMode === "codex-follower" &&
-        ["approve", "answer"].includes(String(evidence.operation)) &&
-        evidence.nativeRequestId != null &&
-        typeof evidence.turnId === "string"
-      ) {
-        reconciled = !state.hasPendingRequest(evidence.nativeRequestId, evidence.turnId);
-      } else if (
-        evidence?.executionMode === "codex-follower" &&
-        evidence.operation === "settings" &&
-        isObject(evidence.expectedNativeSettings)
-      ) {
-        reconciled = managedFollowerSettingsMatch(
-          evidence.expectedNativeSettings,
-          state.snapshot(),
-        );
-      }
-      if (!reconciled) {
-        unresolvedCount += 1;
-        continue;
-      }
-      finishManagedCommand(this.dataDir, command.requestId, {
-        accepted: true,
-        completed: false,
-        reconciled: true,
-        requestId: command.requestId,
-        runtimeBootId: this.#bootId,
-        sessionId: request.sessionId,
-      });
+        follower.bridge.selectedState !== state ||
+        state.revision !== revision ||
+        this.#attachedCodexFollower(record) !== follower ||
+        !models.length ||
+        !sameFollowerModelSettings(observed, settings)
+      )
+        return unavailable("follower-operation-unverified");
+      const tier = normalizeManagedTier(state.nativeServiceTier());
+      return {
+        models: tier
+          ? models.filter(
+              (model) => model.id === settings.model || model.serviceTiers.includes(tier),
+            )
+          : models,
+        effortWritable: models.some(
+          (model) => model.id === settings.model && model.efforts.length > 0,
+        ),
+        reason: this.#codexFollowerSettingsBlocked(record, state),
+      };
+    } catch {
+      return unavailable("follower-operation-unverified");
     }
+  }
+
+  #codexFollowerSettingsBlocked(record: ManagedRecord, state: CodexFollowerState): string | null {
+    if (managedSessionHasUnknownCommands(this.dataDir, record.id))
+      return "control-outcome-unconfirmed";
+    if (record.snapshot?.settingsStaged === true) return "codex-owner-busy";
+    if (state.activity) return "session-compacting";
+    if (state.status === "unsupported") return "follower-operation-unverified";
+    return state.canSetNextTurnModel() ? null : "session-busy";
+  }
+
+  #codexFollowerSettingsTarget(
+    record: ManagedRecord,
+    follower: CodexFollowerRecord,
+    state: CodexFollowerState,
+  ) {
+    const executable = follower.bridge.connection.settingsCatalogExecutable;
+    const settings = state.nativeModelSettings();
+    const home = this.#assertManagedHome(record);
+    const cwd = this.#managedCwd(record);
+    if (
+      record.archived ||
+      !settings ||
+      !executable ||
+      this.#attachedCodexFollower(record) !== follower ||
+      follower.bridge.selectedState !== state ||
+      state.conversationId !== record.native_id ||
+      follower.workspaceId !== record.workspace_id ||
+      follower.bridge.connection.endpoint !== path.join(home, "ipc", "ipc.sock") ||
+      realpathSync(executable) !== executable ||
+      pathIdentity(this.#checkedCodexDirectory(settings.cwd)) !== pathIdentity(cwd)
+    )
+      throw new Error("session-state-unavailable");
     return {
-      sessionId: request.sessionId,
-      reconciled: unresolvedCount === 0,
-      reason: unresolvedCount === 0 ? null : "control-outcome-unconfirmed",
-      unresolvedCount,
-      nativeStatus: thread?.status ?? state.status,
-      context: await this.#context(request.sessionId),
-      executionUnchanged: true,
+      executable,
+      settings,
+      home,
+      cwd,
+      catalogKey: JSON.stringify([codexCatalogKey(executable, home, cwd), settings.modelProvider]),
     };
+  }
+
+  async #updateCodexFollowerSettings(
+    request: SettingsControl,
+    fingerprint: string,
+    record: ManagedRecord,
+    follower: CodexFollowerRecord,
+  ): Promise<Record<string, unknown>> {
+    const receipt = {
+      sessionId: record.id,
+      requestId: request.requestId,
+      runtimeBootId: this.#bootId,
+    };
+    let claimed = false;
+    let dispatched = false;
+    const evidence = {
+      ...codexCommandEvidence(request, record.workspace_id),
+      executionMode: "codex-follower",
+    };
+    try {
+      if (
+        !follower.bridge.supportsThreadSettings ||
+        request.serviceTier !== undefined ||
+        request.policyId !== undefined ||
+        request.permissionMode !== undefined ||
+        request.mode !== undefined ||
+        request.resetDefaults ||
+        (request.model === undefined && request.effort === undefined)
+      )
+        throw new Error("follower-operation-unverified");
+      const previous = claimManagedCommand(
+        this.dataDir,
+        request.requestId,
+        record.id,
+        fingerprint,
+        request.deviceId ?? null,
+        evidence,
+      );
+      if (previous) return previous;
+      claimed = true;
+      const release = acquireCodexFollowerOperationLock(
+        follower.bridge.connection.endpoint,
+        follower.nativeId,
+      );
+      try {
+        const state = await follower.bridge.observeLive();
+        const target = this.#codexFollowerSettingsTarget(record, follower, state);
+        const check = () => {
+          this.#assertOpen();
+          const latest =
+            readManagedRecords(this.dataDir, this.store).find((item) => item.id === record.id) ??
+            record;
+          const blocked = this.#codexFollowerSettingsBlocked(latest, state);
+          if (blocked) throw new Error(blocked);
+          const summary = this.store.sessions.get(record.id);
+          if (
+            !summary ||
+            summary.agent !== "codex" ||
+            summary.archived ||
+            summary.sidechain ||
+            summary.workspace_id !== record.workspace_id ||
+            this.#managedRunners.get(record.id)?.session.connected ||
+            this.#codexWriterOwnership(latest, true) !== "codex-owner-busy" ||
+            request.expectedSettingsScope !== state.settingsWriteScope ||
+            state.revision !== request.expectedRevision ||
+            this.#codexFollowerSettingsTarget(latest, follower, state).catalogKey !==
+              target.catalogKey
+          )
+            throw new Error("stale-or-disabled-control");
+        };
+        check();
+        const { executable, home, cwd, settings } = target;
+        const models = await this.#readCodexFollowerCatalog(
+          executable,
+          home,
+          cwd,
+          settings.modelProvider,
+        );
+        const model = models.find((item) => item.id === (request.model ?? settings.model));
+        if (!model) throw new Error("unsupported-model");
+        const tier = normalizeManagedTier(state.nativeServiceTier());
+        if (model.id !== settings.model && tier && !model.serviceTiers.includes(tier))
+          throw new Error("unsupported-service-tier");
+        const effort =
+          request.effort !== undefined
+            ? request.effort
+            : model.id === settings.model ||
+                (settings.effort !== null && model.efforts.includes(settings.effort))
+              ? settings.effort
+              : model.defaultEffort;
+        if (
+          (request.effort === null && model.efforts.length === 0) ||
+          (effort !== null && !model.efforts.includes(effort))
+        )
+          throw new Error("unsupported-effort");
+        check();
+        const next = { model: model.id, effort, modelProvider: settings.modelProvider };
+        const settingsEvidence = {
+          ...evidence,
+          followerSettings: {
+            model: next.model,
+            reasoningEffort: next.effort,
+            modelProvider: next.modelProvider,
+            nativeId: state.conversationId,
+            ownerClientId: state.ownerClientId,
+            cwd,
+            home,
+          },
+        };
+        const unchanged = sameFollowerModelSettings(settings, next);
+        if (unchanged) {
+          if (!sameFollowerModelSettings(await follower.bridge.readModelSettings(), next))
+            throw new Error("stale-or-disabled-control");
+          check();
+        }
+        const applied =
+          unchanged ||
+          (await follower.bridge.updateModelSettings({
+            expectedScope: state.settingsWriteScope,
+            expectedRevision: request.expectedRevision,
+            current: settings,
+            next,
+            onDispatch: () => {
+              check();
+              dispatchManagedCommand(this.dataDir, request.requestId);
+              dispatched = true;
+            },
+            onApplied: () =>
+              acknowledgeDispatchedManagedCommand(
+                this.dataDir,
+                request.requestId,
+                settingsEvidence,
+              ),
+          }));
+        if (applied) {
+          const latest = await this.#inactiveRecord(record.id);
+          const confirmed = this.#codexFollowerSettingsTarget(latest, follower, state);
+          if (
+            this.#codexWriterOwnership(latest, true) !== "codex-owner-busy" ||
+            confirmed.catalogKey !== target.catalogKey ||
+            !sameFollowerModelSettings(confirmed.settings, next)
+          )
+            throw new Error("native-settings-unconfirmed");
+        }
+        const result = applied
+          ? { ...receipt, accepted: true, completed: true, appliesTo: "next-turn" }
+          : {
+              ...receipt,
+              accepted: false,
+              completed: false,
+              controlOutcome: "not-dispatched",
+              reason: "stale-or-disabled-control",
+            };
+        finishManagedCommand(this.dataDir, request.requestId, result);
+        this.publishConversationEvent?.(record.id, "invalidate", {
+          domains: ["settings", "receipts"],
+        });
+        return result;
+      } finally {
+        release();
+      }
+    } catch (error) {
+      const result = {
+        ...receipt,
+        accepted: false,
+        completed: false,
+        controlOutcome: dispatched ? "unknown" : "not-dispatched",
+        reason: dispatched
+          ? "control-outcome-unconfirmed"
+          : error instanceof Error
+            ? error.message
+            : "control-preflight-rejected",
+      };
+      if (claimed && !dispatched) finishManagedCommand(this.dataDir, request.requestId, result);
+      if (dispatched)
+        this.publishConversationEvent?.(record.id, "invalidate", {
+          domains: ["settings", "receipts"],
+        });
+      return result;
+    }
   }
 
   async #codexFollowerControl(
@@ -4802,60 +5065,6 @@ export class WebReadRequests {
     }
     if (textBytes > 128 * 1024) throw new Error("input-too-large");
     return result;
-  }
-
-  // Retained without callers until removal of Desktop following is separately approved.
-  // oxlint-disable-next-line no-unused-private-class-members
-  async #legacyCodexOwnershipPreflight(
-    request: { sessionId: string; requestId: string },
-    operation: "adopt" | "resume",
-  ) {
-    const observer = this.#codexFollowers.get(request.sessionId);
-    if (observer) {
-      const observed = await observer.bridge.observeLive();
-      if (activityBlocks(observed.live(false), operation))
-        return compactingRejection(request, this.#bootId);
-    }
-  }
-
-  // Legacy Desktop observation and its final write-boundary recheck are kept
-  // intact for that cleanup review; native writer locks now govern the main path.
-  // oxlint-disable-next-line no-unused-private-class-members
-  async #legacyCodexOwnershipDispatch(
-    record: ManagedRecord,
-    nativeId: string | null,
-    fork: { nativeId: string; lastTurnId: string } | undefined,
-    dispatch?: () => void,
-  ): Promise<() => void> {
-    const ownershipObserver = nativeId && !fork ? this.#codexFollowers.get(record.id) : undefined;
-    let observedOwnershipState: CodexFollowerState | undefined;
-    if (ownershipObserver) {
-      const observed = await ownershipObserver.bridge.observeLive();
-      assertActivityAllows(observed.live(false), record.adopted ? "adopt" : "resume");
-      observedOwnershipState = observed;
-    }
-    return () => {
-      if (ownershipObserver) {
-        const selected = ownershipObserver.bridge.selectedState;
-        if (
-          this.#codexFollowers.get(record.id) !== ownershipObserver ||
-          !ownershipObserver.bridge.connected ||
-          !selected ||
-          selected !== observedOwnershipState ||
-          selected.conversationId !== nativeId ||
-          selected.revision === null
-        )
-          throw new Error("recovery-required");
-        assertActivityAllows(selected.live(false), record.adopted ? "adopt" : "resume");
-        if (
-          ["waiting-for-snapshot", "unsupported", "disconnected", "outcome-unknown"].includes(
-            selected.status,
-          )
-        )
-          throw new Error("recovery-required");
-      }
-      dispatch?.();
-    };
   }
 
   #recordStartupFailure(
@@ -5376,6 +5585,14 @@ export class WebReadRequests {
     return JSON.stringify([row.workspace_id, workspace, row.created_at]);
   }
 
+  async #codexLiveWithLimits(sessionId: string, enabled: boolean) {
+    const live = await this.#managedLive(sessionId, enabled);
+    const limit = this.#codexLimits.get(sessionId)?.limit;
+    return live.executionMode === "codex-managed"
+      ? { ...live, usageLimit: usageLimitView(limit, this.#bootId) }
+      : live;
+  }
+
   async #request(value: unknown) {
     const request = requestSchema.parse(value);
     if (request.operation === "subagents" || request.operation === "subagent-events") {
@@ -5413,41 +5630,16 @@ export class WebReadRequests {
       );
     }
     if (request.operation === "live") {
-      const session = this.store.sessions.get(request.sessionId);
-      if (session?.agent === "antigravity") return this.#antigravityLive(request.sessionId);
-      if (session?.agent === "devin") return this.#devinLive(request.sessionId);
-      if (session && session.agent !== "codex" && session.agent !== "claude-code")
-        return {
-          sessionId: request.sessionId,
-          runtimeBootId: this.#bootId,
-          executionMode: "codex-follower",
-          status: "idle",
-          revision: 0,
-          turnId: null,
-          sendEnabled: false,
-          stopEnabled: false,
-          approvals: [],
-          questions: [],
-          reason: "control-disabled",
-        };
-      const live = await this.#managedLive(request.sessionId, request.experimentalEnabled === true);
-      // What the owner holds, also for a runner retired during the wait.
-      const limit = this.#codexLimits.get(request.sessionId)?.limit;
-      return live.executionMode === "codex-managed"
-        ? { ...live, usageLimit: usageLimitView(limit, this.#bootId) }
-        : live;
+      const provider = this.#sessionProviderForSession(request.sessionId);
+      if (!provider) throw new Error("unsupported-session-provider");
+      return provider.live(request.sessionId, request.experimentalEnabled === true);
     }
     if (request.operation === "context") return this.#context(request.sessionId);
     if (request.operation === "resume-command") return this.#resumeCommand(request.sessionId);
     if (request.operation === "usage") {
       const provider = this.#sessionProviderForSession(request.sessionId);
-      if (provider) return provider.contextUsage(request.sessionId);
-      const agent = this.store.sessions.get(request.sessionId)?.agent;
-      const live =
-        agent === "antigravity"
-          ? await this.#antigravityLive(request.sessionId)
-          : await this.#managedLive(request.sessionId, false);
-      return normalizeContextUsage(live);
+      if (!provider) throw new Error("unsupported-session-provider");
+      return provider.contextUsage(request.sessionId);
     }
     if (request.operation === "goal") return this.#goal(request.sessionId);
     if (request.operation === "resources") return this.#resources(request.sessionId);
@@ -6270,6 +6462,7 @@ export class WebReadRequests {
     const check = {
       retryAt: Infinity,
       live: (async () =>
+        (runner ? undefined : await this.#checkPendingCodexFollowerSettings(record)) ??
         (await this.#checkPendingCodexSend(record, runner)) ??
         (runner ? undefined : await this.#checkLegacyAdopt(record)))().catch(() => undefined),
     };
@@ -6279,6 +6472,81 @@ export class WebReadRequests {
       else check.retryAt = Date.now() + LEGACY_ADOPT_RECHECK_MS;
     });
     return check.live;
+  }
+
+  async #checkPendingCodexFollowerSettings(record: ManagedRecord) {
+    const pending = readUnknownManagedCommands(this.dataDir, record.id).find(
+      ({ evidence }) =>
+        evidence?.operation === "settings" &&
+        evidence.executionMode === "codex-follower" &&
+        isObject(evidence.followerSettings),
+    );
+    const evidence = pending?.evidence;
+    const acknowledged = evidence?.followerSettings;
+    if (
+      !pending ||
+      !evidence ||
+      !isObject(acknowledged) ||
+      !record.native_id ||
+      record.archived ||
+      evidence.workspaceId !== record.workspace_id ||
+      acknowledged.nativeId !== record.native_id ||
+      typeof acknowledged.ownerClientId !== "string" ||
+      typeof evidence.expectedRevision !== "number" ||
+      this.#controlSessions.has(record.id) ||
+      this.#codexWriterOwnership(record, true) !== "codex-owner-busy"
+    )
+      return;
+    const expected = parseFollowerModelSettings(acknowledged);
+    if (!expected) return;
+    const follower = await this.#desktopFollower(record);
+    const state = follower.bridge.selectedState;
+    if (!state || state.ownerClientId !== acknowledged.ownerClientId) return;
+    const { home, cwd } = this.#codexFollowerSettingsTarget(record, follower, state);
+    if (home !== acknowledged.home || cwd !== acknowledged.cwd) return;
+    const release = acquireCodexFollowerOperationLock(
+      follower.bridge.connection.endpoint,
+      follower.nativeId,
+    );
+    try {
+      const verified = await follower.bridge.verifyModelSettings(
+        {
+          nativeId: record.native_id,
+          ownerClientId: state.ownerClientId,
+          revision: evidence.expectedRevision,
+        },
+        expected,
+      );
+      const latest = await this.#inactiveRecord(record.id);
+      if (
+        !verified ||
+        this.#controlSessions.has(record.id) ||
+        this.#codexWriterOwnership(latest, true) !== "codex-owner-busy"
+      )
+        return;
+      const target = this.#codexFollowerSettingsTarget(latest, follower, state);
+      if (
+        target.home !== home ||
+        target.cwd !== cwd ||
+        !sameFollowerModelSettings(target.settings, expected)
+      )
+        return;
+      finishManagedCommand(this.dataDir, pending.requestId, {
+        accepted: true,
+        completed: true,
+        reconciled: true,
+        appliesTo: "next-turn",
+        requestId: pending.requestId,
+        runtimeBootId: evidence.runtimeBootId ?? this.#bootId,
+        sessionId: record.id,
+      });
+      this.publishConversationEvent?.(record.id, "invalidate", {
+        domains: ["settings", "receipts"],
+      });
+      return this.#inactiveLive(latest, true);
+    } finally {
+      release();
+    }
   }
 
   async #checkPendingCodexSend(record: ManagedRecord, runner?: ManagedRunner) {
@@ -6536,13 +6804,43 @@ export class WebReadRequests {
 
   async #antigravityLive(sessionId: string): Promise<Record<string, unknown>> {
     try {
-      const record = await this.#antigravityRunner(sessionId);
+      const target = await this.#antigravityTarget(sessionId);
+      this.sessions.antigravityControlExecutable();
+      const cached = this.#antigravityRunners.get(sessionId);
+      const unknown =
+        cached?.runner.snapshot().status === "outcome-unknown" ||
+        managedSessionHasUnknownCommands(this.dataDir, sessionId);
+      const snapshot =
+        cached?.runner.connected &&
+        cached.runner.snapshot().status !== "failed" &&
+        cached?.nativeId === target.nativeId &&
+        cached.workspaceId === target.workspaceId &&
+        pathIdentity(cached.workspace) === pathIdentity(target.workspace)
+          ? cached.runner.snapshot()
+          : {
+              executionMode: "acp-managed",
+              status: "idle",
+              revision: this.#antigravityInactiveRevision(sessionId, cached),
+              turnId: null,
+              sendEnabled: true,
+              stopEnabled: false,
+              approvals: [],
+              reason: null,
+            };
       return {
-        ...record.runner.snapshot(),
+        ...snapshot,
+        ...(unknown
+          ? {
+              status: "outcome-unknown",
+              sendEnabled: false,
+              stopEnabled: false,
+              reason: "control-outcome-unconfirmed",
+            }
+          : {}),
         sessionId,
         runtimeBootId: this.#bootId,
         // Restricted devices may control sessions in their workspaces only.
-        workspaceId: record.workspaceId,
+        workspaceId: target.workspaceId,
       };
     } catch (error) {
       return {
@@ -6561,7 +6859,7 @@ export class WebReadRequests {
     }
   }
 
-  async #antigravityRunner(sessionId: string): Promise<AntigravityRunnerRecord> {
+  async #antigravityTarget(sessionId: string) {
     if (
       process.platform !== "darwin" &&
       process.platform !== "win32" &&
@@ -6581,6 +6879,11 @@ export class WebReadRequests {
     const workspaceId = summary.workspace_id;
     const registeredWorkspace = canonicalize(this.store.workspacePath(workspaceId));
     if (!within(workspace, registeredWorkspace)) throw new Error("session-workspace-mismatch");
+    return { nativeId, workspaceId, workspace };
+  }
+
+  async #antigravityRunner(sessionId: string): Promise<AntigravityRunnerRecord> {
+    const { nativeId, workspaceId, workspace } = await this.#antigravityTarget(sessionId);
     const cached = this.#antigravityRunners.get(sessionId);
     if (
       cached?.runner.connected &&
@@ -6592,13 +6895,21 @@ export class WebReadRequests {
       cached.lastUsed = Date.now();
       return cached;
     }
+    const initialRevision = this.#antigravityInactiveRevision(sessionId, cached);
     if (cached) {
+      this.#antigravityRetiredRevisions.set(sessionId, initialRevision - 1);
       this.#antigravityRunners.delete(sessionId);
       cached.runner.close();
     }
     const pending = this.#antigravityRunnerFlights.get(sessionId);
     if (pending) return pending;
-    const flight = this.#connectAntigravityRunner(sessionId, workspaceId, workspace, nativeId);
+    const flight = this.#connectAntigravityRunner(
+      sessionId,
+      workspaceId,
+      workspace,
+      nativeId,
+      initialRevision,
+    );
     this.#antigravityRunnerFlights.set(sessionId, flight);
     try {
       return await flight;
@@ -6608,11 +6919,18 @@ export class WebReadRequests {
     }
   }
 
+  #antigravityInactiveRevision(sessionId: string, cached?: AntigravityRunnerRecord): number {
+    const last =
+      cached?.runner.snapshot().revision ?? this.#antigravityRetiredRevisions.get(sessionId);
+    return typeof last === "number" && Number.isSafeInteger(last) && last >= 0 ? last + 1 : 0;
+  }
+
   async #connectAntigravityRunner(
     sessionId: string,
     workspaceId: string,
     workspace: string,
     nativeId: string,
+    initialRevision: number,
   ): Promise<AntigravityRunnerRecord> {
     if (this.#antigravityRunners.size >= 8) {
       const candidates = [...this.#antigravityRunners.entries()]
@@ -6620,6 +6938,10 @@ export class WebReadRequests {
         .sort(([, left], [, right]) => left.lastUsed - right.lastUsed);
       const [retireId, retire] = candidates[0] ?? [];
       if (!retireId || !retire) throw new Error("live-session-limit");
+      this.#antigravityRetiredRevisions.set(
+        retireId,
+        this.#antigravityInactiveRevision(retireId, retire) - 1,
+      );
       this.#antigravityRunners.delete(retireId);
       retire.runner.close();
     }
@@ -6651,6 +6973,7 @@ export class WebReadRequests {
           throw new Error("Antigravity history recovery limit exceeded");
         return items;
       },
+      initialRevision,
     );
     try {
       const latest = await this.sessions.resolve(sessionId);
@@ -6674,11 +6997,24 @@ export class WebReadRequests {
   }
 
   async #antigravityControl(request: z.infer<typeof managedControlSchema>, fingerprint: string) {
+    if (request.effort === null || request.serviceTier === null)
+      throw new Error("unsupported-setting-clear");
     const runtimeBootId = this.#bootId;
     if (!request.experimentalEnabled || request.runtimeBootId !== runtimeBootId)
       throw new Error("stale-or-disabled-control");
     if (managedSessionHasUnknownCommands(this.dataDir, request.sessionId))
       throw new Error("control-outcome-unconfirmed");
+    const before = await this.#antigravityLive(request.sessionId);
+    if (before.revision !== request.expectedRevision) throw new Error("stale-or-disabled-control");
+    if (before.status === "unsupported")
+      throw new Error(typeof before.reason === "string" ? before.reason : "session-unavailable");
+    const cached = this.#antigravityRunners.get(request.sessionId);
+    if (!cached?.runner.connected || cached.runner.snapshot().status === "failed") {
+      if (request.operation !== "send") throw new Error("session-not-running");
+      if (!before.sendEnabled)
+        throw new Error(typeof before.reason === "string" ? before.reason : "session-unavailable");
+      if (typeof request.text !== "string") throw new Error("missing-text");
+    }
     const record = await this.#antigravityRunner(request.sessionId);
     const live = record.runner.snapshot();
     if (activityBlocks(live, request.operation)) return compactingRejection(request, this.#bootId);
@@ -7140,6 +7476,7 @@ export class WebReadRequests {
   async #devinQuery(request: z.infer<typeof managedQuerySchema>) {
     const live = await this.#devinLive(request.sessionId);
     const experimental = request.experimentalEnabled === true;
+    const canStageSettings = this.#devinRunners.get(request.sessionId)?.runner.canStageSettings;
     const held = this.#devinLimits.get(request.sessionId);
     const limitChoice = (available: boolean) =>
       experimental && available && !held?.continuing && live.status !== "unsupported"
@@ -7162,10 +7499,14 @@ export class WebReadRequests {
           ? { available: true }
           : { available: false, reason: reason ?? "session-not-running" },
       "settings-state": { available: live.status !== "unsupported" },
+      // Host workspace browsing has no native resource-attachment support.
+      resources: { available: live.status !== "unsupported" },
+      files: { available: live.status !== "unsupported" },
+      context: unsupported,
       settings:
-        experimental && live.sendEnabled === true
+        experimental && canStageSettings
           ? { available: true }
-          : { available: false, reason: reason ?? "session-busy" },
+          : { available: false, reason: reason ?? "session-unavailable" },
       // Devin runs a turn without asking: there is nothing to approve or answer mid-turn.
       approve: unsupported,
       answer: unsupported,
@@ -7268,22 +7609,21 @@ export class WebReadRequests {
           record.settings,
         );
       } else if (request.operation === "settings") {
-        const nativeId = record.runner.nativeId;
-        if (!nativeId || record.runner.snapshot().sendEnabled !== true)
-          throw new Error("session-busy");
+        const { runner } = record;
+        const nativeId = runner.nativeId;
+        if (!nativeId || !runner.canStageSettings) throw new Error("session-unavailable");
         let model = request.model ?? record.settings.model;
         if (
           !request.resetDefaults &&
           (request.effort !== undefined || request.serviceTier !== undefined)
         ) {
           const catalog = await this.#readDevinCatalog();
-          const latest = record.runner.snapshot();
           if (
             this.#devinRunners.get(request.sessionId) !== record ||
-            latest.revision !== request.expectedRevision
+            !runner.canStageSettings ||
+            runner.snapshot().revision !== request.expectedRevision
           )
             throw new Error("stale-or-disabled-control");
-          if (latest.sendEnabled !== true) throw new Error("session-busy");
           model = devinSettingsModel(
             request,
             catalog,
@@ -7302,7 +7642,7 @@ export class WebReadRequests {
               },
         );
         record.settings = this.#devinSaved().get(nativeId);
-        record.runner.bump();
+        runner.bump();
       } else {
         if (typeof request.turnId !== "string") throw new Error("missing-turn");
         await record.runner.stop(request.turnId, request.expectedRevision, beforeDispatch);
@@ -7312,6 +7652,7 @@ export class WebReadRequests {
         accepted: true,
         // A settings change is applied when it is saved; the next turn runs with it.
         completed: request.operation === "settings",
+        ...(request.operation === "settings" ? { appliesTo: "next-turn" } : {}),
         sessionId: request.sessionId,
         requestId: request.requestId,
         runtimeBootId,
@@ -7473,35 +7814,44 @@ export class WebReadRequests {
     const live = record.runner.snapshot();
     const nativeId = record.runner.nativeId;
     const nativeModel = nativeId ? this.sessions.devinSessionModel(nativeId) : null;
-    const selectedModel = record.settings.model ?? nativeModel;
-    const variant = devinSelectedVariant(catalog, selectedModel, nativeModel);
-    // Regular variants show their family and both controls. An exact variant outside that pair
-    // of controls is represented by its own row when the catalog offers one.
-    const exact = variant && options.models.some((option) => option.id === variant.id);
-    const model = variant ? (exact ? variant.id : variant.familyId) : selectedModel;
-    const capacity =
-      variant?.maxContextTokens ??
-      options.models.find((option) => option.id === model)?.maxContextTokens;
-    const historicalUsage =
-      nativeId && variant?.id === nativeModel && capacity !== undefined && live.status === "idle"
-        ? this.sessions.devinLastContextInput(nativeId, record.runner.workspace, variant.id)
-        : undefined;
-    const current = {
-      model,
-      effort: variant?.effort ?? null,
-      ...(variant?.serviceTierId ? { serviceTier: variant.serviceTierId } : {}),
-      ...(variant ? { variantId: variant.id } : {}),
-      ...(capacity !== undefined ? { maxContextTokens: capacity } : {}),
-      permissionMode: record.settings.permissionMode ?? DEVIN_DEFAULT_PERMISSION_MODE,
+    const project = (settings: Readonly<DevinTurnSettings>) => {
+      const selectedModel = settings.model ?? nativeModel;
+      const variant = devinSelectedVariant(catalog, selectedModel, nativeModel);
+      // An exact variant outside the family controls gets its own catalog row if available.
+      const exact = variant && options.models.some((option) => option.id === variant.id);
+      const model = variant ? (exact ? variant.id : variant.familyId) : selectedModel;
+      const capacity =
+        variant?.maxContextTokens ??
+        options.models.find((option) => option.id === model)?.maxContextTokens;
+      return {
+        model,
+        effort: variant?.effort ?? null,
+        ...(variant?.serviceTierId ? { serviceTier: variant.serviceTierId } : {}),
+        ...(variant ? { variantId: variant.id } : {}),
+        ...(capacity !== undefined ? { maxContextTokens: capacity } : {}),
+        permissionMode: settings.permissionMode ?? DEVIN_DEFAULT_PERMISSION_MODE,
+      };
     };
-    const mutable = live.sendEnabled === true;
+    const selected = project(record.settings);
+    const running = record.runner.runningSettings;
+    const current = running ? project(running) : selected;
+    const capacity = selected.maxContextTokens;
+    const historicalUsage =
+      nativeId &&
+      nativeModel &&
+      selected.variantId === nativeModel &&
+      capacity !== undefined &&
+      live.status === "idle"
+        ? this.sessions.devinLastContextInput(nativeId, record.runner.workspace, nativeModel)
+        : undefined;
+    const mutable = record.runner.canStageSettings;
     return {
       available: true,
       executionMode: DEVIN_EXECUTION_MODE,
       revision: live.revision,
       current,
-      selected: current,
-      settings: current,
+      selected,
+      settings: selected,
       defaults: { model: null, effort: null, permissionMode: DEVIN_DEFAULT_PERMISSION_MODE },
       applicationStatus: "confirmed",
       ...options,
@@ -7737,6 +8087,7 @@ export class WebReadRequests {
       workspaceId: record.workspace_id,
       executionMode: "codex-follower",
       executionLocation: "external",
+      connectionGeneration: state.settingsWriteScope,
       ownershipReason: null,
       ...(unknown
         ? { reason: "control-outcome-unconfirmed", sendEnabled: false, stopEnabled: false }
@@ -7749,7 +8100,15 @@ export class WebReadRequests {
     inactive: Record<string, unknown>,
     controls: boolean,
   ): Promise<Record<string, unknown> | undefined> {
-    if (inactive.reason !== "codex-owner-busy" || inactive.ownershipReason !== "codex-owner-busy")
+    if (
+      inactive.ownershipReason !== "codex-owner-busy" ||
+      (inactive.reason !== "codex-owner-busy" &&
+        (inactive.reason !== "control-outcome-unconfirmed" ||
+          !readUnknownManagedCommands(this.dataDir, record.id).some(
+            ({ evidence }) =>
+              evidence?.operation === "settings" && evidence.executionMode === "codex-follower",
+          )))
+    )
       return undefined;
     if (!CodexFollowerConnection.supported()) return undefined;
     const miss = this.#followerMisses.get(record.id);
@@ -7984,6 +8343,31 @@ export class WebReadRequests {
   }
 
   async #resources(sessionId: string) {
+    const indexed = this.store.sessions.get(sessionId);
+    if (indexed?.agent === "devin") {
+      const source = await this.sessions.resolve(sessionId);
+      const workspace = canonicalize(this.store.workspacePath(indexed.workspace_id));
+      const latest = this.store.sessions.get(sessionId);
+      if (
+        source.native.agent !== "devin" ||
+        source.native.sidechain ||
+        !latest ||
+        latest.agent !== "devin" ||
+        latest.workspace_id !== indexed.workspace_id ||
+        source.summary.workspace_id !== indexed.workspace_id ||
+        pathIdentity(canonicalize(source.workspace)) !== pathIdentity(workspace)
+      )
+        throw new Error("session-workspace-mismatch");
+      return {
+        available: true,
+        executionMode: DEVIN_EXECUTION_MODE,
+        revision: this.#devinRunners.get(sessionId)?.runner.snapshot().revision ?? 0,
+        skills: [],
+        plugins: [],
+        apps: [],
+        contextReferences: { supportedTypes: [] },
+      };
+    }
     const stored = readManagedRecords(this.dataDir, this.store).find(
       (record) => record.id === sessionId,
     );
@@ -8368,6 +8752,15 @@ function hasStagedCodexModelSettings(record: ManagedRecord): boolean {
   return record.snapshot?.settingsStaged === true && record.snapshot.policyOnlyStaged !== true;
 }
 
+function codexCanSetNextTurn(status: unknown): boolean {
+  return (
+    status === "idle" ||
+    status === "running" ||
+    status === "awaiting-approval" ||
+    status === "waiting-input"
+  );
+}
+
 function codexSettingsMutation(
   request: SettingsControl,
   record: ManagedRecord,
@@ -8636,72 +9029,6 @@ function followerInput(
   return projected;
 }
 
-// Retained with the dormant Desktop-follower implementation.
-// oxlint-disable-next-line no-unused-vars
-function followerThreadSettings(
-  snapshot: Record<string, unknown>,
-  workspace: string,
-  requestedMode: string | undefined,
-  requestedPolicy: string | undefined,
-): Record<string, unknown> {
-  const settings: Record<string, unknown> = {};
-  if (requestedMode !== undefined) {
-    if (requestedMode !== "default" && requestedMode !== "plan")
-      throw new Error("invalid-collaboration-mode");
-    const saved = isObject(snapshot.latestThreadSettings) ? snapshot.latestThreadSettings : {};
-    const model = typeof saved.model === "string" ? saved.model : snapshot.latestModel;
-    if (typeof model !== "string" || !model || model.length > 256)
-      throw new Error("invalid-collaboration-mode");
-    const effort = Object.hasOwn(saved, "effort")
-      ? saved.effort
-      : (snapshot.latestReasoningEffort ?? null);
-    if (
-      effort !== null &&
-      !["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"].includes(
-        String(effort),
-      )
-    )
-      throw new Error("invalid-collaboration-mode");
-    settings.model = model;
-    settings.effort = effort;
-    settings.collaborationMode = {
-      mode: requestedMode,
-      settings: { model, reasoning_effort: effort, developer_instructions: null },
-    };
-  }
-  if (requestedPolicy !== undefined) {
-    const profiles: Record<string, Record<string, unknown>> = {
-      "workspace-write-on-request": {
-        approvalPolicy: "on-request",
-        approvalsReviewer: "user",
-        sandboxPolicy: { type: "workspaceWrite", writableRoots: [workspace], networkAccess: false },
-      },
-      "full-access-on-request": {
-        approvalPolicy: "never",
-        approvalsReviewer: "user",
-        sandboxPolicy: { type: "dangerFullAccess" },
-      },
-      "workspace-write-auto-review": {
-        approvalPolicy: "on-request",
-        approvalsReviewer: "agent",
-        sandboxPolicy: { type: "workspaceWrite", writableRoots: [workspace], networkAccess: false },
-      },
-    };
-    const profile = profiles[requestedPolicy];
-    if (!profile) throw new Error("unsupported-policy");
-    if (isObject(profile.sandboxPolicy) && profile.sandboxPolicy.type === "workspaceWrite") {
-      if (
-        typeof snapshot.cwd !== "string" ||
-        pathIdentity(canonicalize(snapshot.cwd)) !== pathIdentity(canonicalize(workspace))
-      )
-        throw new Error("owner-workspace-unavailable");
-    }
-    Object.assign(settings, profile);
-  }
-  if (Object.keys(settings).length === 0) throw new Error("empty-thread-settings");
-  return settings;
-}
-
 function managedRequestKey(value: unknown): string {
   if (typeof value === "string") return value;
   if (typeof value === "number" && Number.isSafeInteger(value)) return String(value);
@@ -8735,46 +9062,6 @@ function managedAnswerPayload(
     if (value.allowCustom !== true && !options.some((option) => option.label === choices[0]))
       throw new Error("answer-not-offered");
     normalized[value.id] = { answers: choices };
-  }
-  return { answers: normalized };
-}
-
-// Retained with the dormant Desktop-follower implementation.
-// oxlint-disable-next-line no-unused-vars
-function followerAnswerPayload(
-  questions: unknown[],
-  answers: Record<string, string[]>,
-): Record<string, unknown> {
-  if (
-    questions.length === 0 ||
-    questions.length > 32 ||
-    Object.keys(answers).length !== questions.length ||
-    Buffer.byteLength(JSON.stringify(answers), "utf8") > 65_536
-  )
-    throw new Error("answer-keys-mismatch");
-  const normalized: Record<string, unknown> = {};
-  const ids = new Set<string>();
-  for (const question of questions) {
-    if (!isObject(question) || typeof question.id !== "string" || ids.has(question.id))
-      throw new Error("invalid-question-id");
-    ids.add(question.id);
-    const choices = answers[question.id];
-    if (
-      !Array.isArray(choices) ||
-      choices.length !== 1 ||
-      typeof choices[0] !== "string" ||
-      !choices[0].trim() ||
-      choices[0].includes("\0") ||
-      Buffer.byteLength(choices[0], "utf8") > 8192
-    )
-      throw new Error("invalid-answer");
-    if (
-      question.allowCustom !== true &&
-      (!Array.isArray(question.options) ||
-        !question.options.some((option) => isObject(option) && option.label === choices[0]))
-    )
-      throw new Error("answer-not-offered");
-    normalized[question.id] = { answers: choices };
   }
   return { answers: normalized };
 }
@@ -8897,7 +9184,13 @@ function managedSettingsEvidenceMatches(
   evidence: Record<string, unknown> | null,
   record: ManagedRecord,
 ): boolean {
-  if (!evidence || evidence.operation !== "settings" || !isObject(evidence.settings)) return false;
+  if (
+    !evidence ||
+    evidence.operation !== "settings" ||
+    evidence.executionMode === "codex-follower" ||
+    !isObject(evidence.settings)
+  )
+    return false;
   const settings = evidence.settings;
   const same =
     settings.model === (record.model ?? null) &&
@@ -8907,28 +9200,6 @@ function managedSettingsEvidenceMatches(
     (settings.mode === (record.mode ?? null) ||
       (settings.mode === undefined && record.mode == null));
   return same;
-}
-
-function managedFollowerSettingsMatch(
-  expected: Record<string, unknown>,
-  snapshot: Record<string, unknown> | null,
-): boolean {
-  if (!snapshot) return false;
-  const current = isObject(snapshot.latestThreadSettings) ? snapshot.latestThreadSettings : {};
-  const aliases: Record<string, unknown> = {
-    model: Object.hasOwn(current, "model") ? current.model : (snapshot.latestModel ?? null),
-    effort: Object.hasOwn(current, "effort")
-      ? current.effort
-      : (snapshot.latestReasoningEffort ?? null),
-    serviceTier: current.serviceTier ?? null,
-    collaborationMode: current.collaborationMode ?? null,
-    approvalPolicy: current.approvalPolicy ?? null,
-    approvalsReviewer: current.approvalsReviewer ?? null,
-    sandboxPolicy: current.sandboxPolicy ?? null,
-  };
-  return Object.entries(expected).every(
-    ([key, value]) => Object.hasOwn(aliases, key) && stableJson(aliases[key]) === stableJson(value),
-  );
 }
 
 function stableJson(value: unknown): string {
@@ -8965,25 +9236,6 @@ function indexEnabled(dataDir: string): boolean {
   return enabled === undefined || enabled === true;
 }
 
-function followerReason(error: unknown): string {
-  if (!(error instanceof Error)) return "codex-connection-failed";
-  if (error.message === "platform-unsupported") return "platform-unsupported";
-  if (error.message.includes("unverified Codex Desktop")) return "unverified-installation";
-  if (error.message === "live-session-busy") return "live-session-busy";
-  if (error.message === "no Codex session owner found") return "open-in-original-client";
-  if (error.message.includes("owner changed")) return "codex-owner-changed";
-  if (/revision|invalidated/.test(error.message)) return "recovery-required";
-  if (/unverified|peer|package|ASAR|permissions are unsafe/.test(error.message))
-    return "unverified-installation";
-  if (
-    /compatible|schema|invalid-change|unsupported|initialization|client ID|acknowledgement/.test(
-      error.message,
-    )
-  )
-    return "codex-protocol-incompatible";
-  return "codex-connection-failed";
-}
-
 function compactingRejection(
   request: { requestId: string; sessionId?: string },
   runtimeBootId: string,
@@ -8996,16 +9248,6 @@ function compactingRejection(
     sessionId: request.sessionId,
     requestId: request.requestId,
     runtimeBootId,
-  };
-}
-
-// Retained with the dormant Desktop-follower implementation.
-// oxlint-disable-next-line no-unused-vars
-function followerUnavailable(error: unknown): Record<string, unknown> {
-  return {
-    available: false,
-    executionMode: "codex-follower",
-    reason: followerReason(error),
   };
 }
 

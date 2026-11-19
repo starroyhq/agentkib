@@ -342,6 +342,105 @@ describe("Codex conversation controls", () => {
     expect(dispatched).not.toHaveProperty("serviceTierId");
   });
 
+  it("isolates settings to their session without releasing another session's mutation", async () => {
+    const client = await fullBrowser();
+    const normal = runtime.getMockImplementation()!;
+    let releasePreflight!: () => void;
+    const preflight = new Promise<void>((resolve) => {
+      releasePreflight = resolve;
+    });
+    let finishSettings!: (value: unknown) => void;
+    const settings = new Promise((resolve) => {
+      finishSettings = resolve;
+    });
+    let finishSend!: (value: unknown) => void;
+    const send = new Promise((resolve) => {
+      finishSend = resolve;
+    });
+    const requestId = randomUUID();
+    const input = {
+      bootId: client.bootId,
+      requestId,
+      sessionId: "session",
+      expectedRevision: 7,
+      effort: "high",
+    };
+    runtime.mockImplementation(async (raw) => {
+      const params = raw as { operation: string; sessionId?: string };
+      if (params.operation === "catalog")
+        return {
+          sessions: [
+            { id: "session", agent: "codex", workspace_id: "workspace" },
+            { id: "other", agent: "codex", workspace_id: "workspace" },
+          ],
+        };
+      if (params.operation === "settings-state" && params.sessionId === "session")
+        await preflight;
+      if (params.operation === "settings" && params.sessionId === "session") return settings;
+      if (params.operation === "send" && params.sessionId === "other") return send;
+      return normal(raw);
+    });
+    const held = client.api("codex/settings", input);
+    try {
+      await vi.waitFor(() =>
+        expect(runtime).toHaveBeenCalledWith(
+          expect.objectContaining({ operation: "settings-state", sessionId: "session" }),
+        ),
+      );
+      expect((await client.api("live?sessionId=other")).response.status).toBe(200);
+      const same = await client.api("codex/settings", { ...input, requestId: randomUUID() });
+      expect(same.data).toMatchObject({ error: "operation_busy", controlOutcome: "not-dispatched" });
+      expect(
+        (
+          await client.api("codex/settings", {
+            ...input,
+            requestId: randomUUID(),
+            sessionId: "other",
+          })
+        ).response.status,
+      ).toBe(200);
+      releasePreflight();
+      await vi.waitFor(() =>
+        expect(runtime).toHaveBeenCalledWith(
+          expect.objectContaining({ operation: "settings", sessionId: "session", requestId }),
+        ),
+      );
+      const duplicate = await client.api("codex/settings", input);
+      expect(duplicate.data).toMatchObject({ error: "outcome_unknown", controlOutcome: "unknown" });
+      const sendRequestId = randomUUID();
+      const sent = client.api("send", {
+        ...input,
+        requestId: sendRequestId,
+        sessionId: "other",
+        text: "another session",
+      });
+      await vi.waitFor(() =>
+        expect(runtime).toHaveBeenCalledWith(
+          expect.objectContaining({ operation: "send", sessionId: "other", requestId: sendRequestId }),
+        ),
+      );
+      finishSettings({ accepted: true, requestId, sessionId: "session", runtimeBootId: "runtime" });
+      expect((await held).response.status).toBe(200);
+      expect((await client.api("live?sessionId=other")).data.error).toBe("operation_busy");
+      finishSend({ accepted: true, requestId: sendRequestId });
+      expect((await sent).response.status).toBe(200);
+      expect((await client.api("live?sessionId=other")).response.status).toBe(200);
+      expect(
+        runtime.mock.calls.filter(
+          ([raw]) =>
+            (raw as { operation: string; sessionId: string }).operation === "settings" &&
+            (raw as { operation: string; sessionId: string }).sessionId === "session",
+        ),
+      ).toHaveLength(1);
+    } finally {
+      releasePreflight();
+      finishSettings({ accepted: false });
+      finishSend({ accepted: false });
+      await held;
+      runtime.mockImplementation(normal);
+    }
+  });
+
   it.each([
     ["accepted", { accepted: true }, true],
     ["not dispatched", { accepted: false, controlOutcome: "not-dispatched" }, true],

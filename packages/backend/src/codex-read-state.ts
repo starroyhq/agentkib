@@ -3,6 +3,7 @@ import { statSync } from "node:fs";
 import type { ConversationReadResult, ConversationReadState } from "@agentkib/runtime-protocol";
 import { CodexAppServerError, CodexAppServerSession } from "./codex-app-server";
 import { pathIdentity } from "./paths";
+import { codexTerminalResults } from "./read-state-history";
 
 export interface CodexReadTarget {
   key: string;
@@ -10,7 +11,11 @@ export interface CodexReadTarget {
   workspace: string;
   nativeId: string;
   executable: string;
+  transcript?: string | null;
 }
+export type CodexReadActiveTurn = (
+  target: Pick<CodexReadTarget, "home" | "workspace" | "nativeId">,
+) => string | null;
 type NativeRead = {
   revision: string;
   firstUnread: { type: "threadStart" } | { type: "turn"; turnId: string } | null;
@@ -18,7 +23,9 @@ type NativeRead = {
 type Snapshot = {
   receipt: NativeRead;
   latest: ConversationReadResult | null;
-  active: boolean;
+  ownerTurnId: string | null;
+  activeTurnId: string | null;
+  pendingTurnIds: string[];
   checkedAt: number;
   stale: boolean;
   fileVersion?: string;
@@ -49,7 +56,7 @@ function receipt(value: unknown): NativeRead {
     throw new Error("read-state-unavailable");
   return { revision: value.revision, firstUnread: unread as NativeRead["firstUnread"] };
 }
-function nativeResult(value: unknown): ConversationReadResult | null {
+function nativeResult(value: unknown): (ConversationReadResult & { turnId: string }) | null {
   if (
     !object(value) ||
     typeof value.id !== "string" ||
@@ -93,6 +100,7 @@ export class CodexReadStateObserver {
     readonly environment: NodeJS.ProcessEnv,
     readonly changed: () => void,
     readonly start = CodexAppServerSession.start,
+    readonly activeTurn: CodexReadActiveTurn = () => null,
   ) {}
 
   async close(): Promise<void> {
@@ -205,32 +213,42 @@ export class CodexReadStateObserver {
         firstUnread: null,
         latestResult: null,
       };
-    const stale = snapshot.stale || Date.now() - snapshot.checkedAt > 10_000;
     const first = snapshot.receipt.firstUnread;
+    const ownerTurnId = this.activeTurn(target);
+    const ownerChanged = ownerTurnId !== snapshot.ownerTurnId;
+    const latest = ownerChanged && snapshot.latest?.turnId === ownerTurnId ? null : snapshot.latest;
+    // Preserve a native unread pointer while its outcome is being verified. It
+    // cannot authorize advancing the native receipt past an unobserved result.
+    const unconfirmed =
+      ownerChanged || (first?.type === "turn" && snapshot.pendingTurnIds.includes(first.turnId));
+    const stale = snapshot.stale || Date.now() - snapshot.checkedAt > 10_000 || unconfirmed;
     return {
       source: "codex-native",
       status: first === null ? "read" : "unread",
       freshness: stale ? "stale" : "current",
-      version: `codex-native:${createHash("sha256")
-        .update(
-          JSON.stringify([
-            target.key,
-            scope,
-            this.#cacheKey(target),
-            this.#epochs.get(this.#cacheKey(target)) ?? 0,
-            snapshot.receipt.revision,
-            snapshot.latest?.id ?? null,
-            snapshot.active,
-          ]),
-        )
-        .digest("base64url")}`,
+      version: unconfirmed
+        ? null
+        : `codex-native:${createHash("sha256")
+            .update(
+              JSON.stringify([
+                target.key,
+                scope,
+                this.#cacheKey(target),
+                this.#epochs.get(this.#cacheKey(target)) ?? 0,
+                snapshot.receipt.revision,
+                snapshot.latest,
+                snapshot.activeTurnId,
+                snapshot.pendingTurnIds,
+              ]),
+            )
+            .digest("base64url")}`,
       firstUnread:
         first === null
           ? null
           : first.type === "threadStart"
             ? first
             : { type: "result", resultId: `turn:${first.turnId}`, turnId: first.turnId },
-      latestResult: snapshot.latest,
+      latestResult: latest,
     };
   }
 
@@ -376,7 +394,7 @@ export class CodexReadStateObserver {
     target: CodexReadTarget,
     old: Snapshot | undefined,
   ): Promise<Snapshot | null> {
-    if (!old?.fileVersion) return null;
+    if (!old?.fileVersion || old.ownerTurnId !== this.activeTurn(target)) return null;
     const pool = this.#poolKey(target);
     const key = `${pool}\0${target.nativeId}`;
     const workspace = `${pool}\0${pathIdentity(target.workspace)}`;
@@ -432,11 +450,16 @@ export class CodexReadStateObserver {
       }
     }
     if (!old?.fileVersion || !entry || Date.now() - entry.checkedAt > 2_000) return null;
-    if (this.#fileVersion(target, entry.thread) !== old.fileVersion) return null;
+    if (
+      this.#fileVersion(target, entry.thread) !== old.fileVersion ||
+      old.ownerTurnId !== this.activeTurn(target)
+    )
+      return null;
     return { ...old, receipt: entry.receipt, checkedAt: entry.checkedAt, stale: false };
   }
 
   async #read(session: CodexAppServerSession, target: CodexReadTarget): Promise<Snapshot> {
+    const ownerTurnId = this.activeTurn(target);
     let value: unknown;
     try {
       value = await session.request("thread/read", {
@@ -468,15 +491,38 @@ export class CodexReadStateObserver {
       itemsView: "notLoaded",
     });
     if (!object(turns) || !Array.isArray(turns.data)) throw new Error("read-state-unavailable");
-    const active = object(turns.data[0]) && turns.data[0].status === "inProgress";
-    const latest = turns.data.map(nativeResult).find((result) => result !== null) ?? null;
+    const firstTurn = turns.data[0];
+    const reportedActiveTurnId =
+      object(firstTurn) && firstTurn.status === "inProgress" && typeof firstTurn.id === "string"
+        ? firstTurn.id
+        : null;
+    const nativeResults = turns.data.map(nativeResult).filter((result) => result !== null);
+    const uncertain = new Set(
+      nativeResults
+        .filter((result) => result.outcome === "cancelled" && result.completedAt === null)
+        .map((result) => result.turnId),
+    );
+    // An independent app-server can report a live turn as interrupted with no
+    // completedAt. A verified explicit end in the same transcript can prove it.
+    const terminalEvidence =
+      uncertain.size && target.transcript
+        ? codexTerminalResults(target.transcript, uncertain)
+        : null;
+    const activeTurnId = ownerTurnId ?? reportedActiveTurnId;
+    const pendingTurnIds = [...uncertain].filter((turnId) => !terminalEvidence?.has(turnId));
+    if (activeTurnId && !pendingTurnIds.includes(activeTurnId)) pendingTurnIds.push(activeTurnId);
+    const latest =
+      nativeResults
+        .filter((result) => !pendingTurnIds.includes(result.turnId))
+        .map((result) => terminalEvidence?.get(result.turnId) ?? result)[0] ?? null;
     const checked = await session.request("thread/read", {
       threadId: target.nativeId,
       includeTurns: false,
     });
     if (!object(checked) || JSON.stringify(receipt(checked.readState)) !== JSON.stringify(current))
       throw new Error("read-state-unavailable");
-    if (this.#closed) throw new Error("read-state-unavailable");
+    if (this.#closed || ownerTurnId !== this.activeTurn(target))
+      throw new Error("read-state-unavailable");
     if (
       fileVersion &&
       (!object(checked.thread) || this.#fileVersion(target, checked.thread) !== fileVersion)
@@ -485,7 +531,16 @@ export class CodexReadStateObserver {
     // Replace any older batch entry so a concurrent native read/unread change cannot regress
     // to the receipt fetched by thread/list before this coherent read.
     this.#directory.delete(`${this.#poolKey(target)}\0${target.nativeId}`);
-    return { receipt: current, latest, active, checkedAt: Date.now(), stale: false, fileVersion };
+    return {
+      receipt: current,
+      latest,
+      ownerTurnId,
+      activeTurnId,
+      pendingTurnIds,
+      checkedAt: Date.now(),
+      stale: false,
+      fileVersion,
+    };
   }
 
   async refresh(target: CodexReadTarget, scope: string): Promise<ConversationReadState | null> {
@@ -506,8 +561,20 @@ export class CodexReadStateObserver {
         if (poolChanged || threadChanged) this.#epochs.set(key, (this.#epochs.get(key) ?? 0) + 1);
         this.#snapshots.set(key, fresh);
         if (
-          JSON.stringify([old?.receipt, old?.latest, old?.active, old?.stale]) !==
-          JSON.stringify([fresh.receipt, fresh.latest, fresh.active, false])
+          JSON.stringify([
+            old?.receipt,
+            old?.latest,
+            old?.activeTurnId,
+            old?.pendingTurnIds,
+            old?.stale,
+          ]) !==
+          JSON.stringify([
+            fresh.receipt,
+            fresh.latest,
+            fresh.activeTurnId,
+            fresh.pendingTurnIds,
+            false,
+          ])
         )
           this.changed();
         return this.#project(target, scope, fresh);
@@ -547,6 +614,7 @@ export class CodexReadStateObserver {
       const fresh = await this.#read(session, target);
       this.#snapshots.set(this.#cacheKey(target), fresh);
       const projected = this.#project(target, scope, fresh);
+      if (projected.freshness !== "current") throw new Error("read-state-unavailable");
       if (
         projected.version !== expectedVersion ||
         (projected.latestResult?.id ?? null) !== seenResultId

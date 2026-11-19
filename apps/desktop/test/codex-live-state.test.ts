@@ -1,7 +1,10 @@
 import { EventEmitter } from "node:events";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { CodexAppServerSession } from "../../../packages/backend/src/codex-app-server";
-import { CodexFollowerConnection } from "../../../packages/backend/src/codex-follower-connection";
+import {
+  CodexFollowerConnection,
+  codexFollowerManifestSupportsSettings,
+} from "../../../packages/backend/src/codex-follower-connection";
 import { CodexFollowerBridge } from "../../../packages/backend/src/codex-follower-bridge";
 import { CodexFollowerState } from "../../../packages/backend/src/codex-follower-state";
 import {
@@ -88,28 +91,32 @@ afterEach(() => {
 
 describe("Codex Desktop application minimums", () => {
   it.each([
-    ["26.917.62050", false, false],
-    ["26.917.62051", true, false],
-    ["26.924.22137", true, false],
-    ["26.924.22138", true, true],
-    ["26.930.51102", true, true],
-    ["27.0.0", true, true],
-    ["26.930.51102-beta", false, false],
-    ["26.930", false, false],
-    ["26.930.9007199254740992", false, false],
-  ])(
-    "checks %s numerically while keeping per-method protocol versions",
-    (version, basic, settings) => {
-      expect(versionAtLeast(version, "26.917.62051")).toBe(basic);
-      const socket = { on() {}, destroyed: false };
-      const connection = Reflect.construct(CodexFollowerConnection, [
-        socket,
-        version,
-        "/fixture/ipc.sock",
-      ]) as CodexFollowerConnection;
-      expect(connection.supportsThreadSettings).toBe(settings);
-    },
-  );
+    ["26.917.62050", false],
+    ["26.917.62051", true],
+    ["26.930.51102", true],
+    ["27.0.0", true],
+    ["26.930.51102-beta", false],
+    ["26.930", false],
+    ["26.930.9007199254740992", false],
+  ])("checks the basic follower minimum against %s", (version, basic) => {
+    expect(versionAtLeast(version, "26.917.62051")).toBe(basic);
+  });
+
+  it.each([
+    ['{"thread-follower-update-thread-settings":2,"thread-follower-read-model-settings":1}', true],
+    ['{"thread-follower-update-thread-settings":3,"thread-follower-read-model-settings":1}', false],
+    ['{"thread-follower-update-thread-settings":2}', false],
+    [
+      '{"thread-follower-update-thread-settings":2.1,"thread-follower-read-model-settings":1}',
+      false,
+    ],
+    [
+      '{"thread-follower-update-thread-settings":2,"thread-follower-update-thread-settings":3,"thread-follower-read-model-settings":1}',
+      false,
+    ],
+  ])("requires the documented read and update wire methods in %s", (source, expected) => {
+    expect(codexFollowerManifestSupportsSettings(source)).toBe(expected);
+  });
 });
 
 describe("managed Codex activity and context usage", () => {
@@ -958,12 +965,12 @@ describe("Codex follower activity and usage", () => {
     });
   });
 
-  it("invalidates on wrong stream version/revision or owner reset without restoring old Gauge", () => {
+  it("invalidates a malformed stream header or owner reset without restoring old Gauge", () => {
     const state = new CodexFollowerState(threadId, "owner");
     full(state, 1);
     state.notification({
       ...frame(2, { type: "snapshot", conversationState: snapshot() }),
-      version: 12,
+      version: "12",
     });
     expect(state.revision).toBeNull();
     expect(usageOf(state.live(true)).state).toBe("stale");

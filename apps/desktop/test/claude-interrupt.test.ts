@@ -162,6 +162,24 @@ describe("stopping a managed Claude turn with interrupt", () => {
     expect(state.interrupting).toBeNull();
   });
 
+  it("synthetic: preserves a normal result if it arrives while stop is pending", () => {
+    const state = new ClaudeRunnerState(randomUUID());
+    state.backgroundTasksEnabled = true;
+    const turnId = randomUUID();
+    state.initialize(state.begin("message", turnId));
+    state.frame({
+      type: "control_response",
+      response: { subtype: "success", request_id: state.initId },
+    });
+    state.frame({ type: "command_lifecycle", command_uuid: turnId, state: "queued" });
+    state.frame({ type: "command_lifecycle", command_uuid: turnId, state: "started" });
+    state.beginInterrupt(turnId, state.snapshot().revision);
+    state.frame({ type: "result", subtype: "success", is_error: false, num_turns: 1 });
+    expect(state.interrupting).toBeNull();
+    expect(state.snapshot()).toMatchObject({ status: "idle", lastOutcome: "succeeded" });
+    expect(state.terminalResult).toMatchObject({ turnId, success: true });
+  });
+
   it("synthetic: still fails a turn that ends in an error nobody asked for", () => {
     const state = new ClaudeRunnerState(randomUUID());
     state.foregroundBashContract = true;

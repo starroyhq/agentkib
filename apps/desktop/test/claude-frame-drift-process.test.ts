@@ -770,7 +770,7 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))(
           },
         ],
       });
-      let stopping: Promise<void> | undefined;
+      let stopping: ReturnType<ClaudeManagedRunnerProcess["stop"]> | undefined;
       const completed: boolean[] = [];
       const runner = new ClaudeManagedRunnerProcess(
         f.workspace,

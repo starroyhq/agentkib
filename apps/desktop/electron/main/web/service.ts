@@ -504,7 +504,6 @@ const API_ROUTES: Record<"GET" | "POST", Record<string, RouteSpec>> = {
     "/codex/goal-resume": { lan: true, control: true },
     "/codex/goal-clear": { lan: true, control: true },
     "/managed/create": { lan: true, control: true },
-    "/managed/adopt": { lan: true, control: true },
     "/managed/release": { lan: true, control: true },
     "/managed/reconcile": { lan: true, control: true },
     "/managed/action": { control: true },
@@ -560,6 +559,26 @@ function snapshotField(snapshot: unknown, key: string): unknown {
   return snapshot !== null && typeof snapshot === "object" && key in snapshot
     ? (snapshot as Record<string, unknown>)[key]
     : undefined;
+}
+function settingsControlOutcome(
+  ack: unknown,
+  requestId: string,
+  sessionId: string,
+  runtimeBootId: unknown,
+) {
+  if (
+    typeof runtimeBootId !== "string" ||
+    !runtimeBootId ||
+    snapshotField(ack, "requestId") !== requestId ||
+    snapshotField(ack, "sessionId") !== sessionId ||
+    snapshotField(ack, "runtimeBootId") !== runtimeBootId
+  )
+    return undefined;
+  const accepted = snapshotField(ack, "accepted");
+  const outcome = snapshotField(ack, "controlOutcome");
+  if (accepted === true && (outcome === undefined || outcome === "accepted")) return "accepted";
+  if (accepted === false && outcome === "not-dispatched") return "not-dispatched";
+  return undefined;
 }
 const isCodexMode = (mode: unknown) => mode === "codex-managed" || mode === "codex-follower";
 /**
@@ -644,8 +663,8 @@ export class WebAccessService {
   /** When each paired credential last made an API request, for the device's online state. */
   private seen = new Map<string, number>();
   private active = new Set<string>();
-  // One runtime worker serves all Web sessions. Reserve its admission across
-  // preflight and mutation; new reads must not queue behind that preflight.
+  // Some controls still reserve the shared worker across preflight and dispatch.
+  // Settings use only the session reservation in active.
   private controlAdmission = false;
   // Survives runtime replacement and HTTP listener restarts within this host.
   // An underlying promise settling is not proof that the HTTP reply succeeded.
@@ -816,7 +835,6 @@ export class WebAccessService {
     const operation = String(body.operation);
     const mutation = [
       "create",
-      "adopt",
       "release",
       "reconcile",
       "send",
@@ -2695,7 +2713,8 @@ export class WebAccessService {
   }
   private projectSessionProvider(value: unknown): SessionProviderCapabilities | undefined {
     if (!value || typeof value !== "object") return;
-    const { create, models, contextUsage } = value as Partial<SessionProviderCapabilities>;
+    const { create, models, contextUsage, composer, history, operations } =
+      value as Partial<SessionProviderCapabilities>;
     if (
       (create?.mode !== "empty" && create?.mode !== "with-first-message") ||
       (create.catalogScope !== "host" && create.catalogScope !== "workspace") ||
@@ -2704,6 +2723,8 @@ export class WebAccessService {
     )
       return;
     return {
+      history: { readState: history?.readState === true },
+      operations: { execution: operations?.execution === true },
       create: {
         mode: create.mode,
         catalogScope: create.catalogScope,
@@ -2733,8 +2754,29 @@ export class WebAccessService {
               .filter((tier) => this.optionalString(tier, 128) !== undefined)
           : [],
         ...(models.prepare === true ? { prepare: true } : {}),
+        ...(models.nativePicker === true ? { nativePicker: true } : {}),
       },
       contextUsage,
+      ...(composer &&
+      [
+        "modelPicker",
+        "permissionPicker",
+        "attachments",
+        "workspaceResources",
+        "plan",
+        "goal",
+      ].every((key) => typeof composer[key as keyof typeof composer] === "boolean")
+        ? {
+            composer: {
+              modelPicker: composer.modelPicker,
+              permissionPicker: composer.permissionPicker,
+              attachments: composer.attachments,
+              workspaceResources: composer.workspaceResources,
+              plan: composer.plan,
+              goal: composer.goal,
+            },
+          }
+        : {}),
     };
   }
   private projectNewSessionOptions(options: unknown, device: WebDevice) {
@@ -2785,6 +2827,7 @@ export class WebAccessService {
             serviceTiers?: unknown;
             permissionModes?: unknown;
             revision?: unknown;
+            writeScope?: unknown;
             reason?: unknown;
           })
         : {};
@@ -2930,34 +2973,44 @@ export class WebAccessService {
       ...(value(current, "policyId") ? { policyId: value(current, "policyId") } : {}),
       ...((data.executionMode === "devin-print"
         ? DEVIN_PERMISSION_MODES
-        : ["default", "plan", "acceptEdits"]
+        : data.executionMode === "claude-follower"
+          ? [...CLAUDE_OBSERVED_PERMISSION_MODES]
+          : ["default", "plan", "acceptEdits"]
       ).includes(value(current, "permissionMode") ?? "")
         ? { permissionMode: value(current, "permissionMode") }
         : {}),
       ...(value(current, "serviceTier", "serviceTierId")
         ? { serviceTierId: value(current, "serviceTier", "serviceTierId") }
         : {}),
-      ...((provider || devin) && contextLimit(current?.maxContextTokens)
+      ...((provider || devin || data.executionMode === "claude-follower") &&
+      contextLimit(current?.maxContextTokens)
         ? { maxContextTokens: contextLimit(current?.maxContextTokens) }
         : {}),
     });
     const reason = this.optionalString(data.reason);
-    const historicalModel = codex ? value(data.historicalSettings, "modelId") : undefined;
+    const writeScope =
+      data.executionMode === "codex-follower"
+        ? this.optionalString(data.writeScope, 128)
+        : undefined;
+    const historicalModel =
+      codex || data.executionMode === "claude-managed" || data.executionMode === "claude-follower"
+        ? value(data.historicalSettings, "modelId", "model")
+        : undefined;
     const historicalEffort = codex ? value(data.historicalSettings, "effort") : undefined;
     const liveUsage = this.projectUsage(usage);
     const historicalUsage =
-      provider || codex || devin ? this.projectUsage(data.historicalUsage) : undefined;
+      provider || codex || devin || data.executionMode === "claude-follower"
+        ? this.projectUsage(data.historicalUsage)
+        : undefined;
     const projectedUsage =
-      historicalUsage?.historical &&
-      (!liveUsage?.available ||
-        liveUsage.usedTokens === undefined ||
-        liveUsage.contextWindow === undefined)
+      historicalUsage?.historical && (!liveUsage?.available || liveUsage.usedTokens === undefined)
         ? historicalUsage
         : liveUsage;
     return {
       available: data.available === true,
       ...(provider ? { provider } : {}),
       ...(reason ? { reason } : {}),
+      ...(writeScope ? { writeScope } : {}),
       ...(this.optionalString(data.executionMode, 64)
         ? { executionMode: this.optionalString(data.executionMode, 64) }
         : {}),
@@ -2997,11 +3050,15 @@ export class WebAccessService {
         mode: this.availability(writable?.mode),
         policy: this.availability(writable?.policy),
         serviceTier: this.availability(writable?.serviceTier),
-        ...(data.executionMode === "claude-managed" || data.executionMode === "devin-print"
+        ...(data.executionMode === "claude-managed" ||
+        data.executionMode === "claude-follower" ||
+        data.executionMode === "devin-print"
           ? { permissionMode: this.availability(writable?.permissionMode) }
           : {}),
         restoreDefaults:
-          data.executionMode === "claude-managed" || data.executionMode === "devin-print"
+          data.executionMode === "claude-managed" ||
+          data.executionMode === "claude-follower" ||
+          data.executionMode === "devin-print"
             ? this.availability(writable?.restoreDefaults)
             : {
                 available:
@@ -3014,7 +3071,9 @@ export class WebAccessService {
         models,
         policies,
         serviceTiers: [...serviceTiers.values()].slice(0, 32),
-        ...(data.executionMode === "claude-managed" || data.executionMode === "devin-print"
+        ...(data.executionMode === "claude-managed" ||
+        data.executionMode === "claude-follower" ||
+        data.executionMode === "devin-print"
           ? {
               permissionModes: Array.isArray(data.permissionModes)
                 ? data.permissionModes.slice(0, 4).flatMap((value) => {
@@ -3394,6 +3453,14 @@ export class WebAccessService {
     return resolved;
   }
   private async codexScope(sessionId: string, hash: string, reserved = false, codexOnly = true) {
+    return (await this.sessionScope(sessionId, hash, reserved, codexOnly)).workspace_id;
+  }
+  private async sessionScope(
+    sessionId: string,
+    hash: string,
+    reserved: boolean,
+    codexOnly: boolean,
+  ) {
     const catalog = (await this.scopeCatalog(reserved)) as {
       sessions: { id: string; agent: string; workspace_id: string }[];
     };
@@ -3405,7 +3472,7 @@ export class WebAccessService {
       !(await this.workspaceAllowed(session.workspace_id, this.grant(hash), reserved))
     )
       throw new HttpError(403, "workspace_not_authorized");
-    return session.workspace_id;
+    return session;
   }
   /** Whether a session's agent can be a Project Agent without Claude Code on this computer. */
   private async leadsWithoutClaude(sessionId: string) {
@@ -3429,6 +3496,63 @@ export class WebAccessService {
       return false;
     return (await this.registeredWorkspaces(reserved)).some((row) => row.id === workspaceId);
   }
+  private async readSessionCapabilities(
+    res: ConversationResponse,
+    hash: string,
+    url: URL,
+    codexOnly: boolean,
+    operation: "capabilities" | "inspect" = "capabilities",
+  ) {
+    const sessionId = this.field(url.searchParams.get("sessionId"));
+    const permission = operation === "inspect" ? "manage" : undefined;
+    const device = this.grant(hash, permission);
+    const catalog = (await this.scopeCatalog()) as {
+      sessions: { id: string; agent: string; workspace_id: string }[];
+    };
+    const session = catalog.sessions.find((row) => row.id === sessionId);
+    if (!session || (codexOnly && session.agent !== "codex"))
+      throw new HttpError(403, "workspace_not_authorized");
+    const currentDevice = this.grant(hash, permission);
+    const workspaceAllowed =
+      this.options.mode === "lan" && session.agent === "codex"
+        ? await this.lanCodexScopeAllowed(sessionId, session.workspace_id)
+        : await this.workspaceAllowed(session.workspace_id, currentDevice);
+    if (!workspaceAllowed && (session.agent !== "codex" || this.isFullAccess(currentDevice)))
+      throw new HttpError(403, "workspace_not_authorized");
+    const request = {
+      operation,
+      sessionId,
+      experimentalEnabled: this.controlsEnabled(sessionId, this.grant(hash, permission)),
+    };
+    const claude = session.agent === "claude-code";
+    const claudeRequest = this.options.claudeManagedRequest;
+    if (claude && !claudeRequest) throw new HttpError(409, "unsupported_host");
+    const result = await this.runtime(request, claude ? claudeRequest!(request) : undefined);
+    const latest = this.grant(hash, permission);
+    if (latest.id !== device.id) throw new HttpError(401, "access_ended");
+    const stillAllowed =
+      this.options.mode === "lan" && session.agent === "codex"
+        ? await this.lanCodexScopeAllowed(sessionId, session.workspace_id)
+        : await this.workspaceAllowed(session.workspace_id, latest);
+    if (
+      !stillAllowed &&
+      (session.agent !== "codex" || operation === "inspect" || this.isFullAccess(latest))
+    )
+      throw new HttpError(403, "workspace_not_authorized");
+    if (operation === "inspect") return this.json(res, 200, result);
+    const verified =
+      session.agent === "deepseek-harness"
+        ? this.options.verifiedDshFollower === true
+        : session.agent === "devin"
+          ? this.options.verifiedDevinManaged === true
+          : session.agent === "antigravity" || this.options.verifiedClaudeManaged === true;
+    const projected =
+      session.agent === "codex"
+        ? this.projectCapabilities(result, latest, stillAllowed, sessionId)
+        : this.projectClaudeCapabilities(result, latest, sessionId, verified);
+    return this.json(res, 200, projected);
+  }
+
   private codexPermission(
     operation: string,
   ): "send" | "approve" | "manage" | "attachments" | "advancedControl" | "organize" | "settings" {
@@ -3445,7 +3569,7 @@ export class WebAccessService {
     if (operation === "attachments") return "attachments";
     if (["resume", "fork"].includes(operation)) return "manage";
     if (["rename", "archive", "unarchive", "delete"].includes(operation)) return "organize";
-    if (operation === "settings") return "settings";
+    if (operation === "settings" || operation === "open-model-picker") return "settings";
     // Compaction is a turn the user starts, as a message is.
     return operation === "send" || operation === "inspect" || operation === "compact"
       ? "send"
@@ -3471,7 +3595,6 @@ export class WebAccessService {
       "usage-limit-cancel": "send",
       "usage-limit-continue": "send",
       approve: "approve",
-      adopt: "manage",
       release: "manage",
       reconcile: "manage",
       inspect: "manage",
@@ -3480,6 +3603,7 @@ export class WebAccessService {
       usage: "advancedControl",
       "settings-state": "advancedControl",
       settings: "settings",
+      "open-model-picker": "settings",
       context: "advancedControl",
       resources: "advancedControl",
       goal: "advancedControl",
@@ -3518,7 +3642,6 @@ export class WebAccessService {
             "stop",
             "answer",
             "approve",
-            "adopt",
             "release",
             "reconcile",
             "inspect",
@@ -3545,6 +3668,7 @@ export class WebAccessService {
             (operation !== "fork" || device.organize === true) &&
             transport &&
             execution &&
+            (operation !== "open-model-picker" || data.executionMode === "claude-follower") &&
             (operation !== "attachments" || device.send === true) &&
             (operation !== "goal-draft" ||
               (data.executionMode === "claude-managed" && device.send === true));
@@ -3612,7 +3736,7 @@ export class WebAccessService {
       "queue-delete",
       "queue-reorder",
       "queue-start",
-      ...(generic ? ["queue-pause", "queue-resume", "queue-steer"] : []),
+      ...(generic ? ["queue-pause", "queue-resume", "queue-steer", "open-model-picker"] : []),
       "usage-limit-cancel",
       "usage-limit-continue",
       "rename",
@@ -3629,6 +3753,18 @@ export class WebAccessService {
       "terminals-clean",
     ];
     if (!actions.includes(operation)) throw new HttpError(404, "not_found");
+    const opensPicker = operation === "open-model-picker";
+    const settingsControl = operation === "settings" || opensPicker;
+    if (
+      opensPicker &&
+      Object.keys(body).some(
+        (field) =>
+          !["operation", "agent", "bootId", "expectedRevision", "sessionId", "requestId"].includes(
+            field,
+          ),
+      )
+    )
+      throw new HttpError(400, "invalid_input");
     if (this.options.mode === "lan") throw new HttpError(403, "capability_unavailable");
     const permission = this.codexPermission(operation);
     const device = this.grant(hash, permission);
@@ -3685,6 +3821,16 @@ export class WebAccessService {
         prior.publicInputHash !== publicInputHash
       )
         throw new HttpError(409, "request_id_conflict");
+      if (
+        opensPicker &&
+        (prior.requestId !== requestId ||
+          (prior.status === "accepted" &&
+            settingsControlOutcome(prior.ack, requestId, sessionId, prior.runtimeBootId) !==
+              "accepted"))
+      ) {
+        control.priorUncertain = true;
+        throw new HttpError(502, "outcome_unknown");
+      }
       if (prior.status === "accepted" && prior.ack && typeof prior.ack === "object") {
         control.priorUncertain = false;
         return this.json(res, 200, prior.ack);
@@ -3711,8 +3857,12 @@ export class WebAccessService {
     }
     if (this.admission || this.active.has(sessionId)) throw new HttpError(409, "operation_busy");
     const workspaceId = await this.codexScope(sessionId, hash, false, !generic);
-    if (this.admission) throw new HttpError(409, "operation_busy");
-    this.admission = true;
+    if (this.requests.has(requestId) || this.unconfirmed.has(sessionId)) {
+      control.priorUncertain = true;
+      throw new HttpError(409, "outcome_unknown");
+    }
+    if (this.admission || this.active.has(sessionId)) throw new HttpError(409, "operation_busy");
+    if (!settingsControl) this.admission = true;
     this.active.add(sessionId);
     let dispatched = false;
     let newlyPinnedDevice: string | undefined;
@@ -3726,14 +3876,15 @@ export class WebAccessService {
         features?: Record<string, { available: boolean; reason?: string }>;
         executionMode?: string;
       };
-      // A connected Claude terminal takes messages while it runs: added to the turn or queued
-      // after it, and a waiting one can be withdrawn. It offers none of the other actions.
+      // Terminal mutations are limited to its inbox and opening its native model selector.
       const terminal =
         generic &&
         capabilities.executionMode === "claude-follower" &&
-        ["steer", "queue-add", "queue-delete"].includes(operation);
+        ["steer", "queue-add", "queue-delete", "open-model-picker"].includes(operation);
       const claude = generic && capabilities.executionMode === "claude-managed";
-      const followerFork = capabilities.executionMode === "codex-follower" && operation === "fork";
+      const codexFollower =
+        capabilities.executionMode === "codex-follower" &&
+        (operation === "fork" || operation === "settings");
       // A connected DeepSeek Harness takes steering and queued messages through its own inbox;
       // renames, archives, forks, switches models and presets, changes goals and compacts through
       // its own session services and commands.
@@ -3764,10 +3915,11 @@ export class WebAccessService {
         capabilities.executionMode === "devin-print" &&
         ["settings", "usage-limit-cancel", "usage-limit-continue"].includes(operation);
       if (
+        (opensPicker && (!terminal || this.options.verifiedClaudeManaged !== true)) ||
         (capabilities.executionMode !== "codex-managed" &&
           !claude &&
           !terminal &&
-          !followerFork &&
+          !codexFollower &&
           !dsh &&
           !devin) ||
         capabilities.features?.[operation]?.available !== true
@@ -3785,10 +3937,15 @@ export class WebAccessService {
         { operation: "live", sessionId, experimentalEnabled: true },
         undefined,
         true,
-      )) as { revision: number; runtimeBootId: string; status?: string };
+      )) as { revision: number; runtimeBootId: string; status?: string; executionMode?: string };
       if (
         (operation !== "resume" && snapshot.revision !== body.expectedRevision) ||
         !snapshot.runtimeBootId
+      )
+        throw new HttpError(409, "stale_state");
+      if (
+        opensPicker &&
+        (snapshot.status !== "idle" || snapshot.executionMode !== "claude-follower")
       )
         throw new HttpError(409, "stale_state");
       if (operation === "queue-add" && !generic && snapshot.status !== "running")
@@ -3935,8 +4092,14 @@ export class WebAccessService {
           collaborationModes?: { id?: string }[];
           policies?: { id?: string }[];
           revision?: number;
+          writeScope?: string;
         };
         if (state.revision !== body.expectedRevision) throw new HttpError(409, "stale_state");
+        if (capabilities.executionMode === "codex-follower") {
+          const scope = this.optionalString(body.expectedSettingsScope, 128);
+          if (!scope || scope !== state.writeScope) throw new HttpError(409, "stale_state");
+          params.expectedSettingsScope = scope;
+        }
         const currentModel =
           state.selected?.model ??
           state.settings?.selected?.model ??
@@ -4081,7 +4244,8 @@ export class WebAccessService {
           throw new HttpError(400, "resources_not_supported");
         if (
           capabilities.features?.context?.available !== true &&
-          capabilities.features?.resources?.available !== true
+          (capabilities.features?.context !== undefined ||
+            capabilities.features?.resources?.available !== true)
         )
           throw new HttpError(409, "context_unavailable");
         const resourceRefs =
@@ -4098,12 +4262,16 @@ export class WebAccessService {
         params.resourceRefs = resourceRefs;
       }
       this.grant(hash, permission);
-      if (!(await this.workspaceAllowed(workspaceId, this.grant(hash), this.admission)))
+      if (!(await this.workspaceAllowed(workspaceId, this.grant(hash), true)))
         throw new HttpError(403, "workspace_not_authorized");
       this.grant(hash, permission);
       if (body.bootId !== this.bootId) throw new HttpError(409, "stale_boot");
       if (historyScopeKey) await this.assertHistoryScope(hash, historyScopeKey, true);
       this.grant(hash, permission);
+      if (this.requests.has(requestId)) {
+        control.priorUncertain = true;
+        throw new HttpError(409, "outcome_unknown");
+      }
       this.rate(`control:${hash}`, 30);
       rememberRequest(this.requests, requestId);
       this.unconfirmed.add(sessionId);
@@ -4111,18 +4279,13 @@ export class WebAccessService {
       dispatched = true;
       control.dispatched = true;
       let settingsConfirmed = false;
-      const pending = this.options
-        .runtimeRequest(params)
+      const pending = Promise.resolve()
+        .then(() => this.options.runtimeRequest(params))
         .then((result) => {
-          if (operation !== "settings") return result;
-          const accepted = snapshotField(result, "accepted");
-          const outcome = snapshotField(result, "controlOutcome");
+          if (!settingsControl) return result;
           settingsConfirmed =
-            snapshotField(result, "requestId") === requestId &&
-            snapshotField(result, "sessionId") === sessionId &&
-            snapshotField(result, "runtimeBootId") === snapshot.runtimeBootId &&
-            ((accepted === true && (outcome === undefined || outcome === "accepted")) ||
-              (accepted === false && outcome === "not-dispatched"));
+            settingsControlOutcome(result, requestId, sessionId, snapshot.runtimeBootId) !==
+            undefined;
           // The HTTP request may time out while the backend still owns the control. A matching
           // settings result can settle its fence even if that response has already ended.
           if (
@@ -4137,7 +4300,7 @@ export class WebAccessService {
         })
         .finally(() => {
           this.active.delete(sessionId);
-          this.admission = false;
+          if (!settingsControl) this.admission = false;
           this.notifyControlChanged(sessionId);
         });
       const result = (await this.runtime(params, pending)) as {
@@ -4153,9 +4316,9 @@ export class WebAccessService {
         if (
           result.requestId === requestId &&
           result.controlOutcome === "not-dispatched" &&
-          (operation !== "settings" || settingsConfirmed)
+          (!settingsControl || settingsConfirmed)
         ) {
-          if (operation !== "settings") this.clearUnconfirmed(sessionId);
+          if (!settingsControl) this.clearUnconfirmed(sessionId);
           control.dispatched = false;
           if (newlyPinnedDevice)
             await this.attachmentStore.settle(newlyPinnedDevice, sessionId, requestId);
@@ -4164,7 +4327,8 @@ export class WebAccessService {
         throw new HttpError(502, "outcome_unknown");
       }
       if (operation === "delete") await this.forgetDeletedSession(sessionId);
-      if (operation !== "settings")
+      if (opensPicker && !settingsConfirmed) throw new HttpError(502, "outcome_unknown");
+      if (!settingsControl)
         res.once("finish", () => {
           if (!res.destroyed && res.statusCode === 200) this.clearUnconfirmed(sessionId);
         });
@@ -4172,7 +4336,7 @@ export class WebAccessService {
     } finally {
       if (!dispatched) {
         this.active.delete(sessionId);
-        this.admission = false;
+        if (!settingsControl) this.admission = false;
         if (newlyPinnedDevice)
           await this.attachmentStore.settle(newlyPinnedDevice, sessionId, requestId);
       }
@@ -4336,7 +4500,6 @@ export class WebAccessService {
     const workspaceId = await this.codexScope(sessionId, hash, false, false);
     if (this.unconfirmed.has(sessionId)) throw new HttpError(409, "outcome_unknown");
     if (this.admission || this.active.has(sessionId)) throw new HttpError(409, "operation_busy");
-    this.admission = true;
     this.active.add(sessionId);
     let started = false;
     try {
@@ -4386,11 +4549,10 @@ export class WebAccessService {
         expectedRevision: body.expectedRevision,
         experimentalEnabled: true,
       };
-      // Unlike set_* or a user turn, initialize has no command outcome to fence. A timeout
-      // leaves admission reserved until the real preparation settles, never permits overlap.
+      // Initialization has no command receipt. Keep only this session reserved
+      // until the real preparation settles, even if the HTTP request times out.
       const pending = this.options.claudeManagedRequest(params).finally(() => {
         this.active.delete(sessionId);
-        this.admission = false;
         this.notifyControlChanged(sessionId);
       });
       started = true;
@@ -4399,7 +4561,7 @@ export class WebAccessService {
       if (this.fullAccess(hash, "advancedControl").id !== device.id)
         throw new HttpError(401, "access_ended");
       this.grant(hash, "settings");
-      await this.codexScope(sessionId, hash, false, false);
+      await this.codexScope(sessionId, hash, true, false);
       if (body.bootId !== this.bootId) throw new HttpError(409, "stale_boot");
       if (this.fullAccess(hash, "advancedControl").id !== device.id)
         throw new HttpError(401, "access_ended");
@@ -4408,7 +4570,6 @@ export class WebAccessService {
     } finally {
       if (!started) {
         this.active.delete(sessionId);
-        this.admission = false;
       }
     }
   }
@@ -4802,7 +4963,7 @@ export class WebAccessService {
       (operation === "create" || body.sessionId !== this.options.acceptanceSessionId)
     )
       throw new HttpError(403, "session_control_not_allowed");
-    if (!managedRequest || !["create", "adopt", "release", "reconcile"].includes(operation))
+    if (!managedRequest || !["create", "release", "reconcile"].includes(operation))
       throw new HttpError(404, "not_found");
     if (body.bootId !== this.bootId) throw new HttpError(409, "stale_boot");
     const params: Record<string, unknown> = {
@@ -4870,14 +5031,8 @@ export class WebAccessService {
       }
     } else {
       params.sessionId = this.field(body.sessionId);
-      if (
-        operation === "adopt" &&
-        agent === "claude-code" &&
-        body.handoffFingerprint !== undefined
-      ) {
-        params.handoffFingerprint = this.field(body.handoffFingerprint, 256);
-      }
     }
+    const sessionId = typeof params.sessionId === "string" ? params.sessionId : undefined;
     if (agent === "claude-code" && operation === "release") {
       if (!Number.isSafeInteger(body.expectedRevision) || Number(body.expectedRevision) < 0)
         throw new HttpError(400, "invalid_revision");
@@ -4889,7 +5044,8 @@ export class WebAccessService {
       params.expectedRevision = body.expectedRevision;
       params.runtimeBootId = this.field(live.runtimeBootId);
     }
-    if (this.admission) throw new HttpError(409, "operation_busy");
+    if (this.admission || (sessionId && this.active.has(sessionId)))
+      throw new HttpError(409, "operation_busy");
     if (agent !== "claude-code" && this.requests.has(requestId)) {
       control.priorUncertain = true;
       throw new HttpError(409, "duplicate_request");
@@ -4911,7 +5067,8 @@ export class WebAccessService {
     this.grant(hash, "manage");
     if (params.mode === "plan") this.grant(hash, "settings");
     if (body.bootId !== this.bootId) throw new HttpError(409, "stale_boot");
-    if (this.admission) throw new HttpError(409, "operation_busy");
+    if (this.admission || (sessionId && this.active.has(sessionId)))
+      throw new HttpError(409, "operation_busy");
     if (agent !== "claude-code" && this.requests.has(requestId)) {
       control.priorUncertain = true;
       throw new HttpError(409, "duplicate_request");
@@ -4930,7 +5087,7 @@ export class WebAccessService {
         this.admission = false;
         // A managed request may settle after the HTTP timeout, including create
         // before a session id is known. Wake receipt reconciliation in either case.
-        this.notifyControlChanged(typeof params.sessionId === "string" ? params.sessionId : "");
+        this.notifyControlChanged(sessionId ?? "");
       });
     const result = (await this.runtime(params, pending)) as {
       reconciled?: boolean;
@@ -4954,8 +5111,7 @@ export class WebAccessService {
         const safeReasons = new Set([
           "web-busy",
           "unverified-installation",
-          "handoff-fingerprint-changed",
-          "Claude-history-changed-requires-handoff",
+          "claude-session-fingerprint-changed",
           "session-busy",
           "session-compacting",
           "session-released",
@@ -6170,7 +6326,8 @@ export class WebAccessService {
           })) as { features?: Record<string, { available: boolean }> };
           if (
             capabilities.features?.context?.available !== true &&
-            capabilities.features?.resources?.available !== true
+            (capabilities.features?.context !== undefined ||
+              capabilities.features?.resources?.available !== true)
           )
             throw new HttpError(409, "context_unavailable");
           const resourceRefs =
@@ -6359,18 +6516,14 @@ export class WebAccessService {
       // 与 projectCapabilities 一致：settings-state/usage/goal/context 都属于 advancedControl，
       // 只读设备即便是 full 模式也不能读取。
       const device = this.fullAccess(hash, "advancedControl");
-      const workspaceId = await this.codexScope(
-        sessionId,
-        hash,
-        false,
-        !path.startsWith("/managed/"),
-      );
+      const scope = await this.sessionScope(sessionId, hash, false, !path.startsWith("/managed/"));
+      const workspaceId = scope.workspace_id;
       let result: unknown;
       if (path === "/codex/session-settings" || path === "/managed/settings") {
         const settings = await this.runtime({
           operation: "settings-state",
           sessionId,
-          ...(path === "/codex/session-settings" ? { includeHistorical: true } : {}),
+          ...(scope.agent === "codex" ? { includeHistorical: true } : {}),
         });
         this.fullAccess(hash, "advancedControl");
         const provider = this.projectSessionProvider(snapshotField(settings, "provider"));
@@ -6417,36 +6570,20 @@ export class WebAccessService {
         operation: "status",
         sessionId: url.searchParams.get("sessionId"),
       });
-    if (path === "/codex/capabilities" || path === "/codex/queue" || path === "/managed/queue") {
+    if (path === "/managed/capabilities" || path === "/codex/capabilities")
+      return this.readSessionCapabilities(res, hash, url, path === "/codex/capabilities");
+    if (path === "/codex/queue" || path === "/managed/queue") {
       if (path === "/managed/queue" && this.options.mode === "lan")
         throw new HttpError(403, "capability_unavailable");
       const sessionId = this.field(url.searchParams.get("sessionId"));
-      const device = this.grant(hash, path.endsWith("queue") ? "advancedControl" : undefined);
-      if (path.endsWith("queue") || this.isFullAccess(device))
-        await this.codexScope(sessionId, hash, false, !path.startsWith("/managed/"));
+      this.grant(hash, "advancedControl");
+      await this.codexScope(sessionId, hash, false, path === "/codex/queue");
       const result = await this.runtime({
-        operation: path.endsWith("queue") ? "queue-list" : "capabilities",
+        operation: "queue-list",
         sessionId,
         experimentalEnabled: this.controlsEnabled(sessionId, this.grant(hash)),
       });
       this.grant(hash);
-      if (path.endsWith("capabilities")) {
-        const catalog = (await this.scopeCatalog()) as {
-          sessions: { id: string; workspace_id: string }[];
-        };
-        this.grant(hash);
-        const workspace = catalog.sessions.find((item) => item.id === sessionId)?.workspace_id;
-        const workspaceAllowed =
-          !!workspace &&
-          (this.options.mode === "lan" && isCodexMode(snapshotField(result, "executionMode"))
-            ? await this.lanCodexScopeAllowed(sessionId, workspace)
-            : await this.workspaceAllowed(workspace, device));
-        return this.json(
-          res,
-          200,
-          this.projectCapabilities(result, this.grant(hash), workspaceAllowed, sessionId),
-        );
-      }
       if ((result as { reason?: string }).reason === "queue-too-large")
         throw new HttpError(409, "queue_too_large");
       const entries =
@@ -6548,6 +6685,7 @@ export class WebAccessService {
                     "delete",
                     "fork",
                     "settings",
+                    "open-model-picker",
                     "goal-set",
                     "goal-pause",
                     "goal-resume",
@@ -6566,6 +6704,19 @@ export class WebAccessService {
         )
           throw new HttpError(403, "workspace_not_authorized");
         this.grant(hash, permission);
+        if (
+          result.operation === "open-model-picker" &&
+          result.status === "accepted" &&
+          (result.requestId !== requestId ||
+            !result.sessionId ||
+            settingsControlOutcome(
+              snapshotField(result, "ack"),
+              requestId,
+              result.sessionId,
+              snapshotField(result, "runtimeBootId"),
+            ) !== "accepted")
+        )
+          throw new HttpError(503, "receipt_unavailable");
         if (
           result.sessionId &&
           ["accepted", "not-dispatched"].includes(result.status ?? "") &&
@@ -6613,87 +6764,8 @@ export class WebAccessService {
         workspaces: allowed.map(({ id, name }) => ({ id, name })),
       });
     }
-    if (path === "/managed/capabilities" || path === "/managed/inspect") {
-      const agent = url.searchParams.get("agent") ?? "codex";
-      if (agent === "deepseek-harness") {
-        // The runtime resolves the provider from the indexed session, never from this parameter.
-        const sessionId = this.field(url.searchParams.get("sessionId"));
-        const device = this.grant(hash);
-        if (path.endsWith("inspect")) this.grant(hash, "manage");
-        const workspaceId = await this.codexScope(sessionId, hash, false, false);
-        const result = await this.runtime({
-          operation: path.endsWith("inspect") ? "inspect" : "capabilities",
-          sessionId,
-          experimentalEnabled: this.controlsEnabled(sessionId, device),
-        });
-        if (snapshotField(result, "executionMode") !== "dsh-follower")
-          throw new HttpError(400, "invalid_agent");
-        if (!(await this.workspaceAllowed(workspaceId, this.grant(hash))))
-          throw new HttpError(403, "workspace_not_authorized");
-        return this.json(
-          res,
-          200,
-          path.endsWith("capabilities")
-            ? this.projectClaudeCapabilities(
-                result,
-                this.grant(hash),
-                sessionId,
-                this.options.verifiedDshFollower === true,
-              )
-            : result,
-        );
-      }
-      if (agent === "devin") {
-        // As for DeepSeek Harness, the runtime resolves the provider from the indexed session.
-        const sessionId = this.field(url.searchParams.get("sessionId"));
-        const device = this.grant(hash);
-        if (path.endsWith("inspect")) this.grant(hash, "manage");
-        const workspaceId = await this.codexScope(sessionId, hash, false, false);
-        const result = await this.runtime({
-          operation: path.endsWith("inspect") ? "inspect" : "capabilities",
-          sessionId,
-          experimentalEnabled: this.controlsEnabled(sessionId, device),
-        });
-        if (snapshotField(result, "executionMode") !== "devin-print")
-          throw new HttpError(400, "invalid_agent");
-        if (!(await this.workspaceAllowed(workspaceId, this.grant(hash))))
-          throw new HttpError(403, "workspace_not_authorized");
-        return this.json(
-          res,
-          200,
-          path.endsWith("capabilities")
-            ? this.projectClaudeCapabilities(
-                result,
-                this.grant(hash),
-                sessionId,
-                this.options.verifiedDevinManaged === true,
-              )
-            : result,
-        );
-      }
-      if (agent !== "claude-code") throw new HttpError(400, "invalid_agent");
-      const sessionId = this.field(url.searchParams.get("sessionId"));
-      const device = this.grant(hash);
-      if (path.endsWith("inspect")) this.grant(hash, "manage");
-      const workspaceId = await this.codexScope(sessionId, hash, false, false);
-      const managedRequest = this.options.claudeManagedRequest;
-      if (!managedRequest) throw new HttpError(409, "unsupported_host");
-      const result = await managedRequest({
-        operation: path.endsWith("inspect") ? "inspect" : "capabilities",
-        sessionId,
-        experimentalEnabled: this.controlsEnabled(sessionId, device),
-      });
-      this.grant(hash);
-      if (!(await this.workspaceAllowed(workspaceId, this.grant(hash))))
-        throw new HttpError(403, "workspace_not_authorized");
-      return this.json(
-        res,
-        200,
-        path.endsWith("capabilities")
-          ? this.projectClaudeCapabilities(result, this.grant(hash), sessionId)
-          : result,
-      );
-    }
+    if (path === "/managed/inspect")
+      return this.readSessionCapabilities(res, hash, url, false, "inspect");
     if (path === "/managed/resume-command") {
       const sessionId = this.field(url.searchParams.get("sessionId"));
       const scope = await this.codexResumeCommandScope(sessionId, hash);

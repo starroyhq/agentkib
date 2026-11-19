@@ -242,7 +242,7 @@ describe("same-origin one-time code full authorization", () => {
       ["stop", base],
       ["codex/rename", { ...base, title: "Renamed" }],
       ["codex/goal-set", { ...base, intent: "start", objective: "Ship it" }],
-      ["managed/adopt", { ...base, workspaceId: "first" }],
+      ["managed/release", base],
       ["attachments?sessionId=session-first&name=a.txt&mime=text/plain", { data: "x" }],
       ["attachments/delete", { sessionId: "session-first", id: "attachment" }],
     ];
@@ -257,7 +257,7 @@ describe("same-origin one-time code full authorization", () => {
     // 被拒绝的请求一个都不能到达 runtime / managed。
     const reached = runtime.mock.calls.map(([input]) => (input as { operation: string }).operation);
     expect(reached.filter((operation) => !["catalog", "live"].includes(operation))).toEqual([]);
-    expect(managed).not.toHaveBeenCalledWith(expect.objectContaining({ operation: "adopt" }));
+    expect(managed).not.toHaveBeenCalledWith(expect.objectContaining({ operation: "release" }));
   });
 
   it("changes a paired device between read-only and full access from the desktop", async () => {

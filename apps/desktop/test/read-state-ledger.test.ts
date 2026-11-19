@@ -52,6 +52,57 @@ const rows = (turn: string, error = false) =>
     .join("\n") + "\n";
 
 describe("durable AgentKib read states", () => {
+  it("keeps a newer turn as latest when a previous turn finishes or arrives late", () => {
+    const { ledger, key } = fixture();
+    ledger.record(
+      key,
+      { ...result("new"), completedAt: "2026-11-19T06:18:00.000Z" },
+      false,
+      "2026-11-19T06:17:00.000Z",
+    );
+    ledger.record(
+      key,
+      { ...result("old", "cancelled"), completedAt: "2026-11-19T06:19:00.000Z" },
+      false,
+      "2026-11-19T06:12:00.000Z",
+    );
+    ledger.record(key, {
+      ...result("older", "cancelled"),
+      completedAt: "2026-11-19T06:16:00.000Z",
+    });
+    expect(ledger.get(key, "a")).toMatchObject({
+      latestResult: { id: "turn:new", outcome: "completed" },
+      firstUnread: { resultId: "turn:new" },
+    });
+  });
+
+  it("revalidates an old unproven cancellation before restoring or handing off a native receipt", () => {
+    const { root, ledger, key } = fixture();
+    const state: ConversationReadState = {
+      source: "codex-native",
+      status: "unread",
+      freshness: "current",
+      version: "old-receipt",
+      firstUnread: { type: "result", resultId: "turn:one", turnId: "one" },
+      latestResult: result("one", "cancelled"),
+    };
+    ledger.saveNative(key, state, "native-1");
+    using database = new DatabaseSync(path.join(root, "codex-managed", "executions.sqlite"));
+    database
+      .prepare("UPDATE conversation_native_read_receipts SET fingerprint='old' WHERE key=?")
+      .run(key);
+    const snapshot = ledger.nativeSnapshot(key)!;
+    expect(snapshot.state).toMatchObject({ latestResult: null, freshness: "stale", version: null });
+    expect(ledger.handoff(key, "a", snapshot.state, snapshot.fingerprint)).toBe(false);
+    expect(ledger.get(key, "a").firstUnread).toBeNull();
+    ledger.observe(key, [{ result: result("one"), baseline: true, position: 1 }], null, true);
+    expect(ledger.handoff(key, "a", snapshot.state, snapshot.fingerprint)).toBe(true);
+    expect(ledger.get(key, "a")).toMatchObject({
+      status: "unread",
+      latestResult: { outcome: "completed" },
+    });
+  });
+
   it("does not enter a write transaction for unchanged authoritative native receipts", () => {
     const { ledger, key } = fixture();
     const state: ConversationReadState = {

@@ -4,6 +4,7 @@ import { ReadStateLedger, type ReadCheckpoint } from "./read-state-ledger";
 import { jsonTimestamp } from "./session-history";
 import { hasText, messageText, trimWhitespace } from "./session-events";
 import { claudeCommandInvocation, claudeCommandOutput } from "./claude-command-records";
+import { isReparseOrSymlink } from "./native-files";
 
 const SLICE_BYTES = 4 * 1024 * 1024;
 const object = (value: unknown): value is Record<string, unknown> =>
@@ -11,6 +12,69 @@ const object = (value: unknown): value is Record<string, unknown> =>
 const text = (value: unknown): string | null =>
   typeof value === "string" && value.length > 0 ? value : null;
 const messageId = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+function codexTerminalOutcome(
+  payload: Record<string, unknown>,
+): ConversationReadResult["outcome"] | null {
+  if (payload.type === "turn_aborted") return "cancelled";
+  if (payload.type === "task_complete") return payload.error == null ? "completed" : "failed";
+  return null;
+}
+
+/** Check only the verified transcript's recent complete records for the named native turns. */
+export function codexTerminalResults(
+  file: string,
+  turnIds: ReadonlySet<string>,
+): Map<string, ConversationReadResult> {
+  const results = new Map<string, ConversationReadResult>();
+  let fd: number | undefined;
+  try {
+    const expected = lstatSync(file);
+    if (!expected.isFile() || isReparseOrSymlink(file, expected)) return results;
+    fd = openSync(file, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+    const stat = fstatSync(fd);
+    if (!stat.isFile() || stat.dev !== expected.dev || stat.ino !== expected.ino) return results;
+    const start = Math.max(0, stat.size - SLICE_BYTES);
+    const bytes = Buffer.alloc(stat.size - start);
+    let read = 0;
+    while (read < bytes.length) {
+      const length = readSync(fd, bytes, read, bytes.length - read, start + read);
+      if (!length) return results;
+      read += length;
+    }
+    let end = bytes.lastIndexOf(10);
+    const firstComplete = start > 0 ? bytes.indexOf(10) + 1 : 0;
+    while (end >= firstComplete && results.size < turnIds.size) {
+      const previous = end > 0 ? bytes.lastIndexOf(10, end - 1) : -1;
+      const line = bytes.subarray(previous + 1, end);
+      end = previous;
+      if (line.indexOf('"turn_aborted"') < 0 && line.indexOf('"task_complete"') < 0) continue;
+      let row: unknown;
+      try {
+        row = JSON.parse(line.toString("utf8"));
+      } catch {
+        continue;
+      }
+      if (!object(row) || row.type !== "event_msg" || !object(row.payload)) continue;
+      const turnId = text(row.payload.turn_id) ?? text(row.turn_id);
+      if (!turnId || !turnIds.has(turnId) || results.has(turnId)) continue;
+      const outcome = codexTerminalOutcome(row.payload);
+      if (outcome)
+        results.set(turnId, {
+          id: `turn:${turnId}`,
+          turnId,
+          itemId: null,
+          outcome,
+          completedAt: jsonTimestamp(row.timestamp),
+        });
+    }
+    return results;
+  } catch {
+    return results;
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+  }
+}
 
 /** Explicit termination records only, including turns without an assistant message. */
 export function historyReadResult(
@@ -28,17 +92,13 @@ export function historyReadResult(
       cursor.lastTurnId = turnId;
       return null;
     }
-    if (!["task_complete", "turn_aborted"].includes(String(payload.type))) return null;
+    const outcome = codexTerminalOutcome(payload);
+    if (!outcome) return null;
     return {
       id: turnId ? `turn:${turnId}` : `record:${position}`,
       turnId,
       itemId: cursor.lastItemId,
-      outcome:
-        payload.type === "turn_aborted"
-          ? "cancelled"
-          : payload.error != null
-            ? "failed"
-            : "completed",
+      outcome,
       completedAt: jsonTimestamp(row.timestamp),
     };
   }

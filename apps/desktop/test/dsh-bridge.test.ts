@@ -35,6 +35,7 @@ import {
   managedHost,
 } from "../../../packages/dsh-bridge-plugin/bridge.js";
 import { post } from "../../../packages/dsh-bridge-plugin/client.js";
+import * as dshClient from "../../../packages/dsh-bridge-plugin/client.js";
 import {
   dshBridgeCompatibility,
   dshBridgePluginCompatibility,
@@ -157,6 +158,17 @@ function fakeDsh(cwd: string) {
     agents: {
       get: (id: string) => sessions.get(id)?.agent,
       list: () => [...sessions.values()].map((session) => session.agent),
+      turnBoundaryOf: (native: { id: string }) => {
+        const event = sessions
+          .get(native.id)
+          ?.events.slice()
+          .reverse()
+          .find((entry) => entry.type === "turn/start" || entry.type === "turn/end");
+        return {
+          openTurnStartSeq: event?.type === "turn/start" ? event.seq : null,
+          lastTurn: event?.data.turn ?? 0,
+        };
+      },
     },
     // DSH's tool registry; a plugin reaches one agent's own through `agent.ctx.tools`.
     tools: { register: () => () => undefined },
@@ -725,8 +737,13 @@ async function until<T>(read: () => T | undefined | false, ms = 5000): Promise<T
 
 async function fixture({
   supportsCreateModelSelection = true,
+  dshVersion = "0.2.2-rc.3",
   lead,
-}: { supportsCreateModelSelection?: boolean; lead?: DshBridgeOptions["lead"] } = {}) {
+}: {
+  supportsCreateModelSelection?: boolean;
+  dshVersion?: string;
+  lead?: DshBridgeOptions["lead"];
+} = {}) {
   const root = realpathSync(mkdtempSync(path.join(tmpdir(), "ak-dsh-test-")));
   const workspace = path.join(root, "workspace");
   const agentkibHome = path.join(root, "agentkib-home");
@@ -757,7 +774,7 @@ async function fixture({
   dsh.create("session-a", "First DSH session");
   const plugin = createBridge(dsh.ctx, {
     roots: [agentkibHome],
-    dshVersion: "0.2.1-rc.5",
+    dshVersion,
     discoveryMs: 50,
     debounceMs: 10,
     listThrottleMs: 20,
@@ -802,6 +819,28 @@ async function fixture({
 }
 
 describe("DeepSeek Harness bridge", () => {
+  it("browses its registered workspace without issuing a native command or enabling references", async () => {
+    const f = await fixture();
+    const before = f.dsh.executed.length;
+    expect(f.bridge.capabilities("ak-session-a", false).features).toMatchObject({
+      resources: { available: true },
+      files: { available: true },
+      context: { available: false },
+      usage: { available: false },
+    });
+    expect(
+      await f.bridge.request({ operation: "resources", sessionId: "ak-session-a" }),
+    ).toMatchObject({
+      available: true,
+      contextReferences: { supportedTypes: [] },
+      skills: [],
+      plugins: [],
+      apps: [],
+    });
+    expect(f.dsh.executed).toHaveLength(before);
+    expect(f.dsh.prompts).toEqual([]);
+  });
+
   it.skipIf(process.platform !== "darwin")(
     "routes the registered DSH provider and legacy requests to the same bridge and receipts",
     async () => {
@@ -1129,8 +1168,123 @@ describe("DeepSeek Harness bridge", () => {
       turnId: "dsh-turn-1",
     });
     const stopped = await f.control("stop", { turnId: "dsh-turn-1" });
-    expect(stopped).toMatchObject({ accepted: true });
+    expect(stopped).toMatchObject({ accepted: true, completed: false });
     expect(f.dsh.cancels).toEqual(["session-a"]);
+  });
+
+  it("does not send an unscoped stop when the runtime cannot guard the native turn", async () => {
+    const f = await fixture({ dshVersion: "0.2.1-rc.5" });
+    await f.control("send", { text: "keep running" });
+    const live = await until(() => {
+      const value = f.bridge.live("ak-session-a", true);
+      return value.turnId === "dsh-turn-1" && value;
+    });
+    expect(live).toMatchObject({ stopEnabled: false, queueEnabled: true });
+    await expect(f.control("stop", { turnId: "dsh-turn-1" })).resolves.toMatchObject({
+      accepted: false,
+      controlOutcome: "not-dispatched",
+      reason: "dsh-stop-unavailable",
+    });
+    expect(f.dsh.cancels).toEqual([]);
+  });
+
+  it("rechecks the native turn after the host's reported state and ignores a prior turn's late end", async () => {
+    const f = await fixture();
+    await f.control("send", { text: "stop first only" });
+    await until(() => f.bridge.live("ak-session-a", true).turnId === "dsh-turn-1");
+    const session = f.dsh.sessions.get("session-a")!;
+    // Native switched turns while the Host still has the older report.
+    const ended = {
+      seq: session.events.length,
+      time: Date.now(),
+      type: "turn/end",
+      data: { turn: 1, reason: { kind: "completed" } },
+    };
+    const started = {
+      seq: ended.seq + 1,
+      time: Date.now(),
+      type: "turn/start",
+      data: { turn: 2 },
+    };
+    session.events.push(ended, started);
+    await expect(f.control("stop", { turnId: "dsh-turn-1" })).resolves.toMatchObject({
+      accepted: false,
+      controlOutcome: "not-dispatched",
+      reason: "stale-turn",
+    });
+    expect(f.dsh.cancels).toEqual([]);
+
+    f.dsh.emit("session/event", { id: "session-a" }, started);
+    await until(() => f.bridge.live("ak-session-a", true).turnId === "dsh-turn-2");
+    f.dsh.emit("agent/assistant-stream", {
+      agent: session.agent,
+      frame: { type: "chunk", chunk: { type: "text-delta", text: "next round" } },
+    });
+    f.dsh.emit("session/event", { id: "session-a" }, ended);
+    await until(() => f.bridge.live("ak-session-a", true).streamText === "next round");
+    expect(f.bridge.live("ak-session-a", true)).toMatchObject({
+      turnId: "dsh-turn-2",
+      stopEnabled: true,
+    });
+  });
+
+  it("settles a lost stop reply only from the target turn's explicit native end", async () => {
+    const f = await fixture();
+    await f.control("send", { text: "stop this turn" });
+    await until(() => f.bridge.live("ak-session-a", true).turnId === "dsh-turn-1");
+    const sendRequest = dshClient.post;
+    // Let the native cancellation request through and drop its transport acknowledgement.
+    let dropped = false;
+    const transport = vi.spyOn(dshClient, "post").mockImplementation((...args) => {
+      const [_, route, body] = args;
+      if (
+        route === DSH_BRIDGE_PATHS.result &&
+        body?.value?.accepted === true &&
+        body.value.sessionId === "session-a" &&
+        body.value.turn === 1
+      ) {
+        dropped = true;
+        return Promise.reject(new Error("test lost reply"));
+      }
+      return sendRequest(...args);
+    });
+    try {
+      const stopped = await f.control("stop", { turnId: "dsh-turn-1" });
+      expect(dropped).toBe(true);
+      expect(stopped).toMatchObject({ controlOutcome: "unknown", completed: false });
+      expect(f.dsh.cancels).toEqual(["session-a"]);
+      const check = () =>
+        readControlReceipt(f.bridge.options.dataDir, {
+          requestId: stopped.requestId,
+          deviceId: "device-1",
+        });
+      f.dsh.append("session-a", "turn/start", { turn: 2 });
+      f.dsh.append("session-a", "turn/end", { turn: 2, reason: { kind: "aborted" } });
+      f.dsh.append("session-a", "turn/start", { turn: 3 });
+      await f.bridge.request({ operation: "reconcile", sessionId: "ak-session-a" });
+      expect(check().status).toBe("unknown");
+      f.dsh.append("session-a", "turn/end", { turn: 1, reason: { kind: "aborted" } });
+      await until(() => check().status === "accepted");
+      expect(check()).toMatchObject({
+        turnId: "dsh-turn-1",
+        completionObserved: true,
+        ack: { completed: true, completionObserved: true },
+      });
+      expect(f.bridge.live("ak-session-a", true)).toMatchObject({
+        status: "running",
+        turnId: "dsh-turn-3",
+      });
+      const history = await f.bridge.events("session-a", null, 20);
+      expect(history.events).toContainEqual(
+        expect.objectContaining({
+          kind: "user-message",
+          turn_id: "dsh-turn-1",
+          turn_meta: { outcome: "aborted" },
+        }),
+      );
+    } finally {
+      transport.mockRestore();
+    }
   });
 
   it("keeps the control revision while DSH streams, so a queued message is not stale", async () => {
@@ -1820,9 +1974,9 @@ describe("DeepSeek Harness plugin projections", () => {
     expect(features().rename.available).toBe(true);
     expect(features().fork.available).toBe(true);
     expect(features().unarchive).toEqual({ available: false, reason: "session-busy" });
-    // A permission preset applies to the next approval, so it still changes during the turn.
-    expect(features().settings).toEqual({ available: true });
-    // The model picker still reads, and says why it cannot change now.
+    // The native permission command can affect the current turn, so settings wait for idle.
+    expect(features().settings).toEqual({ available: false, reason: "session-busy" });
+    // Limits and selections remain readable.
     expect(
       (await f.bridge.request({
         operation: "settings-state",
@@ -1833,7 +1987,7 @@ describe("DeepSeek Harness plugin projections", () => {
       writable: {
         model: { available: false, reason: "session-busy" },
         effort: { available: false, reason: "session-busy" },
-        policy: { available: true },
+        policy: { available: false, reason: "session-busy" },
       },
     });
     expect(await f.control("settings", { effort: "high" })).toMatchObject({
@@ -1977,6 +2131,7 @@ describe("DeepSeek Harness plugin projections", () => {
     // The new-task form offers DSH's Agent presets; a shipped one has no name of its own.
     expect(await f.bridge.createOptions()).toEqual({
       available: true,
+      nativeGoals: true,
       agentPresets: [
         { id: "standard", name: null, description: null, isDefault: true, broken: null },
         { id: "ptc", name: null, description: null, isDefault: false, broken: null },
@@ -2604,27 +2759,28 @@ describe("DeepSeek Harness goals, commands, presets and subagents", () => {
       reason: "invalid-policy",
     });
 
-    // A preset changes during a turn; the model waits for the turn to end.
+    // The native preset changes the next approval of the current turn.
     await f.control("send", { text: "run the tests" });
     await until(() => f.bridge.live("ak-session-a", true).status === "running");
     await settings();
     expect(await f.control("settings", { policyId: "danger-full-access" })).toMatchObject({
-      accepted: true,
+      controlOutcome: "not-dispatched",
+      reason: "session-busy",
     });
-    expect(f.dsh.permissionOf.get("session-a")).toBe("danger-full-access");
+    expect(f.dsh.permissionOf.get("session-a")).toBe("workspace-write");
     expect(
       await f.control("settings", { model: "mock%2Flocal/m-1", policyId: "workspace-write" }),
     ).toMatchObject({ controlOutcome: "not-dispatched", reason: "session-busy" });
-    expect(f.dsh.permissionOf.get("session-a")).toBe("danger-full-access");
+    expect(f.dsh.permissionOf.get("session-a")).toBe("workspace-write");
 
     // Idle again: a new preset and a new model are two steps, preset first.
     f.dsh.finishTurn("session-a", "done");
     await until(() => f.bridge.live("ak-session-a", true).status === "idle");
     await settings();
     expect(
-      await f.control("settings", { model: "mock%2Flocal/m-1", policyId: "workspace-write" }),
+      await f.control("settings", { model: "mock%2Flocal/m-1", policyId: "read-only" }),
     ).toMatchObject({ accepted: true });
-    expect(f.dsh.permissionOf.get("session-a")).toBe("workspace-write");
+    expect(f.dsh.permissionOf.get("session-a")).toBe("read-only");
     expect(f.dsh.selections.at(-1)).toMatchObject({ provider: "mock/local", model: "m-1" });
   });
 
@@ -3466,9 +3622,16 @@ describe("DeepSeek Harness sessions as a Project Agent's workers", () => {
     }> = [];
     const ended: unknown[][] = [];
     const waiting: unknown[][] = [];
+    let failRead = true;
     const watch = new DshLaneWatch({
       isLane: (id) => id === "lane",
-      endedTurns: async () => turns,
+      endedTurns: async () => {
+        if (failRead) {
+          failRead = false;
+          throw new Error("native history temporarily unavailable");
+        }
+        return turns;
+      },
       turnEnded: async (...args) => void ended.push(args),
       waiting: async (...args) => void waiting.push(args),
       retryMs: 10,

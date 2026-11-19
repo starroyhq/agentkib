@@ -1,7 +1,7 @@
 # AgentKib DeepSeek Harness bridge
 
 First-party DeepSeek Harness (DSH) bundle for DSH **0.2.1-rc.5 or later** (`engines.dsh`
-`>=0.2.1-rc.5`, with no upper bound), bridge protocol **1**, plugin **0.8.1**. It connects the sessions of a
+`>=0.2.1-rc.5`, with no upper bound), bridge protocol **1**, plugin **0.8.2**. It connects the sessions of a
 running DSH to AgentKib on the same computer. It never starts a second executor, never writes
 the session log itself and never calls a model: every action goes through DSH's own services.
 
@@ -47,11 +47,15 @@ with every Runtime it finds, and then:
 - serves bounded history pages from `sessionQuery.observeSession`;
 - runs commands from AgentKib through `sessionController`: `prompt` (queue or steer, with
   AgentKib's request ID as DSH's `requestId`, so DSH keeps it on the message and never takes
-  the same request twice), `updateQueue` and `cancel` (which keeps the queue), `rename`, `fork`,
+  the same request twice), `updateQueue`, `rename`, `fork`,
   `create`, `modelCatalog` and `selectModel`. When the plugin reports new-session model
   selection, AgentKib can list native model choices without creating a session. An explicit
   model and effort are recorded for the newly created session before the first message is sent.
   This leaves the DSH profile's default model intact;
+- stops the selected turn on DSH 0.2.2-rc.3, where the native controller checks ownership
+  and cancels synchronously. The plugin checks the open turn immediately before calling
+  `cancel` with the queue preserved. The runtime enables Stop when the plugin reports
+  `turnScopedCancel`. DSH's history confirms whether that specific turn ended;
 - sends images: AgentKib names each image by its attachment file, size and SHA-256; the plugin
   reads the file, checks it and hands DSH the bytes in the prompt, so images never cross the
   socket. `attachment` reads an image back for the session's history; DSH returns only images

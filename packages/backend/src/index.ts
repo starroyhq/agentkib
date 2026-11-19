@@ -803,6 +803,7 @@ export class TypeScriptBackend {
           (id) => claudeOwner.readStateTarget(id),
           () => this.#sessionStream?.publish("", "invalidate", { domains: ["catalog"] }),
           () => this.#sessionStream?.hasSubscribers("") ?? false,
+          (target) => this.#webRead?.codexActiveTurn(target) ?? null,
         );
         const readTerminalObservation = (target: ClaudeBridgeTarget, searchEarlier: boolean) => {
           const readers = this.#sessions!;
@@ -907,7 +908,7 @@ export class TypeScriptBackend {
               : recent;
           },
           publish: (id, type, payload, live) => this.#publishSession(id, type, payload, live),
-          completed: (target, turnId, aborted) =>
+          completed: (target, turnId, aborted, timing) =>
             this.#readStates?.recordTerminal(
               {
                 provider: "claude-code",
@@ -923,8 +924,9 @@ export class TypeScriptBackend {
                 turnId,
                 itemId: null,
                 outcome: aborted ? "cancelled" : "ended",
-                completedAt: new Date().toISOString(),
+                completedAt: timing.occurredAt ? new Date(timing.occurredAt).toISOString() : null,
               },
+              { turnStartedAt: timing.startedAt ? new Date(timing.startedAt).toISOString() : null },
             ),
         });
         this.#claudeBridge.initialize();
@@ -1119,6 +1121,10 @@ export class TypeScriptBackend {
       return this.#claudeManaged ? this.#claudeManaged.receipt(nativeReceipt) : nativeReceipt;
     }
     if (method === RUNTIME_METHODS.claudeManaged) return this.#requestClaudeManaged(params);
+    if (method === RUNTIME_METHODS.codexManaged && typeof params.sessionId === "string") {
+      const agent = this.#store!.sessions.get(params.sessionId)?.agent;
+      if (agent && agent !== "codex") throw new Error("unsupported-session-provider");
+    }
     if (method === RUNTIME_METHODS.codexManaged && params.operation === "options")
       return this.#withWebRead((owner) => owner.managedOptions());
     if (method === RUNTIME_METHODS.codexManaged && params.operation === "reconcile")
@@ -1143,10 +1149,7 @@ export class TypeScriptBackend {
       return this.#withWebRead((owner) => owner.managedQuery(params));
     if (method === RUNTIME_METHODS.codexManaged && params.operation === "create")
       return this.#withWebRead((owner) => owner.sessionProviderCreate("codex", params));
-    if (
-      method === RUNTIME_METHODS.codexManaged &&
-      ["adopt", "release"].includes(String(params.operation))
-    )
+    if (method === RUNTIME_METHODS.codexManaged && params.operation === "release")
       return this.#withWebRead((owner) => owner.managedLifecycle(params));
     if (
       method === RUNTIME_METHODS.codexManaged &&
@@ -2684,11 +2687,20 @@ export class TypeScriptBackend {
 
   #requestDsh(params: Record<string, unknown>) {
     switch (params.operation) {
+      case "live":
+      case "capabilities":
+      case "inspect":
       case "dsh-options":
       case "dsh-create":
       case "settings-state":
       case "settings":
       case "usage":
+      case "send":
+      case "stop":
+      case "approve":
+      case "answer":
+      case "steer":
+      case "queue-add":
         return this.#withWebRead((owner) =>
           owner.bridgedSessionProviderRequest("deepseek-harness", params),
         );
@@ -2733,12 +2745,21 @@ export class TypeScriptBackend {
 
   #requestClaudeManaged(params: Record<string, unknown>) {
     switch (params.operation) {
+      case "live":
+      case "capabilities":
+      case "inspect":
       case "options":
       case "create":
       case "settings-state":
       case "settings-prepare":
       case "settings":
       case "usage":
+      case "send":
+      case "stop":
+      case "approve":
+      case "answer":
+      case "steer":
+      case "queue-add":
         // The Claude transport also addresses sessions before their transcripts are indexed.
         return this.#withWebRead((owner) =>
           owner.bridgedSessionProviderRequest("claude-code", params),
@@ -2791,7 +2812,6 @@ export class TypeScriptBackend {
           writePreference(this.#dataDir, "claude_background_tasks", params.enabled);
         return { backgroundTasks: await this.#claudeManaged.backgroundTasksStatus() };
       }
-      if (params.operation === "adopt") this.#claudeBridge?.assertRegistryValid();
       if (
         ["bridge-status", "bridge-challenge", "bridge-disconnect", "bridge-auto-connect"].includes(
           String(params.operation),

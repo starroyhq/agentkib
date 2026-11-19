@@ -201,6 +201,26 @@ describe.skipIf(process.platform !== "darwin")(
       { type: "result", subtype: "error_during_execution", is_error: true, num_turns: 2 },
     ];
 
+    it("keeps a successful result and the worker when the CLI finishes during stop", async () => {
+      const { runner, results, turnId, sent } = start(
+        {
+          onUser: startsBackgroundCommand,
+          noResult: true,
+          onInterrupt: [{ type: "result", subtype: "success", is_error: false, num_turns: 1 }],
+        },
+        { backgroundTasks: true },
+      );
+      await sent;
+      await expect
+        .poll(() => runner.snapshot().backgroundTasks.length, { timeout: 15_000 })
+        .toBe(1);
+      const pid = runner.processId;
+      expect(await runner.stop(turnId, runner.snapshot().revision)).toBe(false);
+      expect(runner.snapshot()).toMatchObject({ status: "idle", lastOutcome: "succeeded" });
+      expect(runner.processId).toBe(pid);
+      expect(results).toEqual([expect.objectContaining({ turnId, success: true })]);
+    }, 30_000);
+
     it("stops only the turn: the CLI and its background command keep running", async () => {
       const { fake, runner, results, turnId, sent } = start(
         {
@@ -216,7 +236,7 @@ describe.skipIf(process.platform !== "darwin")(
         .poll(() => runner.snapshot().backgroundTasks.length, { timeout: 15_000 })
         .toBe(1);
       const pid = runner.processId!;
-      await runner.stop(turnId, runner.snapshot().revision);
+      expect(await runner.stop(turnId, runner.snapshot().revision)).toBe(true);
       expect(
         fake.frames().find((frame) => frame.request?.subtype === "interrupt")?.request,
       ).toEqual({ subtype: "interrupt", cancel_queued: true });
@@ -227,8 +247,9 @@ describe.skipIf(process.platform !== "darwin")(
         sendEnabled: true,
         backgroundTasks: [{ id: TASK, kind: "command" }],
       });
-      // The turn ended as a stop ends it: no result of its own is reported.
-      expect(results).toEqual([]);
+      expect(results).toEqual([
+        expect.objectContaining({ turnId, success: false, terminalReason: "cancelled" }),
+      ]);
       expect(runner.hasWorker).toBe(true);
       expect(runner.processId).toBe(pid);
       expect(processAlive(pid)).toBe(true);
@@ -311,7 +332,10 @@ describe.skipIf(process.platform !== "darwin")(
         {
           onUser: [...startsBackgroundCommand, { __spawn: "command", detached: true }],
           // A Monitor event wakes the CLI, and the turn runs until it is interrupted.
-          afterResult: [{ __sleep: 200 }, { type: "system", subtype: "status", status: "requesting" }],
+          afterResult: [
+            { __sleep: 200 },
+            { type: "system", subtype: "status", status: "requesting" },
+          ],
           onInterrupt: interrupted,
         },
         {
@@ -324,9 +348,7 @@ describe.skipIf(process.platform !== "darwin")(
       );
       await sent;
       await expect.poll(() => asked, { timeout: 15_000 }).toBe(1);
-      await expect
-        .poll(() => runner.snapshot().lastOutcome, { timeout: 15_000 })
-        .toBe("cancelled");
+      await expect.poll(() => runner.snapshot().lastOutcome, { timeout: 15_000 }).toBe("cancelled");
       expect(fake.frames().some((frame) => frame.request?.subtype === "interrupt")).toBe(true);
       expect(runner.snapshot()).toMatchObject({
         status: "idle",
@@ -335,7 +357,10 @@ describe.skipIf(process.platform !== "darwin")(
         sendEnabled: true,
         backgroundTasks: [{ id: TASK, kind: "command" }],
       });
-      expect(results).toHaveLength(1);
+      expect(results).toEqual([
+        expect.objectContaining({ success: true }),
+        expect.objectContaining({ success: false, terminalReason: "cancelled" }),
+      ]);
       expect(runner.hasWorker).toBe(true);
       expect(processAlive(fake.childPid("command")!)).toBe(true);
     }, 60_000);

@@ -275,6 +275,32 @@ export function createBridge(ctx, options = {}) {
     state.version = bump();
     schedule();
   };
+  const turnBoundary = (agents, agent) => {
+    try {
+      return agents?.turnBoundaryOf?.(agent.session) ?? null;
+    } catch {
+      return null;
+    }
+  };
+  const openTurn = (boundary) =>
+    Number.isSafeInteger(boundary?.openTurnStartSeq) &&
+    boundary.openTurnStartSeq >= 0 &&
+    Number.isSafeInteger(boundary.lastTurn) &&
+    boundary.lastTurn > 0
+      ? boundary.lastTurn
+      : null;
+  const canCancelTurn = () => {
+    const agents = service("agents");
+    // This release's controller checks ownership and aborts synchronously. A native controller
+    // that may yield needs its own expected-turn argument. Method presence alone cannot prove that.
+    return (
+      dshVersion === "0.2.2-rc.3" &&
+      typeof agents?.get === "function" &&
+      typeof agents.turnBoundaryOf === "function" &&
+      typeof service("sessionController")?.cancel === "function" &&
+      typeof service("sessionQuery")?.observeSession === "function"
+    );
+  };
   /**
    * Which goal a change must name. It is part of what a control is decided on, so a goal changed
    * in DSH's own window makes AgentKib read it again before changing it.
@@ -302,6 +328,9 @@ export function createBridge(ctx, options = {}) {
     state.live = true;
     state.status = agent.status === "running" ? "running" : "idle";
     state.cursor = typeof agent.session?.seq === "number" ? agent.session.seq - 1 : state.cursor;
+    const boundary = turnBoundary(service("agents"), agent);
+    state.turn = state.status === "running" ? openTurn(boundary) : null;
+    state.turnEventSeq = state.cursor;
     state.queue = queueItems(agent);
     state.goal = goalRefOf(agent);
     touch(state);
@@ -336,11 +365,18 @@ export function createBridge(ctx, options = {}) {
     if (leadTools.get(String(agent.id))?.agent === agent) leadTools.delete(String(agent.id));
   });
   ctx.on("agent/status", ({ agent, status }) => {
+    if (
+      status === "idle" &&
+      agent.status === "running" &&
+      openTurn(turnBoundary(service("agents"), agent)) !== null
+    )
+      return;
     const state = stateOf(String(agent.id));
     state.live = true;
     state.status = status === "running" ? "running" : "idle";
     state.queue = queueItems(agent);
     if (state.status === "idle") {
+      state.turn = null;
       state.streamText = "";
       state.streamTruncated = false;
     }
@@ -373,8 +409,21 @@ export function createBridge(ctx, options = {}) {
     const state = states.get(sessionId);
     if (state) {
       state.cursor = Math.max(state.cursor, Number(event?.seq ?? -1));
-      if (event?.type === "turn/start") state.turn = event.data?.turn ?? null;
-      if (event?.type === "turn/end") {
+      if (
+        event?.type === "turn/start" &&
+        Number.isSafeInteger(event.seq) &&
+        event.seq > (state.turnEventSeq ?? -1)
+      ) {
+        state.turn = event.data?.turn ?? null;
+        state.turnEventSeq = event.seq;
+      }
+      if (
+        event?.type === "turn/end" &&
+        Number.isSafeInteger(event.seq) &&
+        event.seq > (state.turnEventSeq ?? -1) &&
+        event.data?.turn === state.turn
+      ) {
+        state.turnEventSeq = event.seq;
         state.turn = null;
         state.streamText = "";
         state.streamTruncated = false;
@@ -813,6 +862,22 @@ export function createBridge(ctx, options = {}) {
     }
   }
 
+  async function verifyTurnEnd({ sessionId, turn }) {
+    const query = service("sessionQuery");
+    if (typeof query?.observeSession !== "function") throw new Error("history-unavailable");
+    const observation = await query.observeSession(sessionId, { projectionMode: "none" });
+    try {
+      if (observation.header?.id !== sessionId) throw new Error("history-unavailable");
+      const event = observation.events.findLast(
+        (entry) => entry?.type === "turn/end" && entry.data?.turn === turn,
+      );
+      const record = historyRecord(event);
+      return { sessionId, turn, reason: record?.reason ?? null };
+    } finally {
+      observation[Symbol.dispose]?.();
+    }
+  }
+
   /**
    * One page of a session's conversation, oldest first, for a handoff or search. DSH's current
    * model surface says which records a compaction replaced and in what order the model sees the
@@ -1010,6 +1075,8 @@ export function createBridge(ctx, options = {}) {
       }
       case "verify":
         return present(command);
+      case "verify-turn-end":
+        return verifyTurnEnd(command);
       case "prompt": {
         const requestId = String(command.requestId);
         const controller = needController();
@@ -1057,8 +1124,30 @@ export function createBridge(ctx, options = {}) {
                 ? { kind: "steer" }
                 : { kind: "remove" },
         });
-      case "cancel":
-        return needController().cancel({ sessionId: String(command.sessionId) });
+      case "cancel-turn": {
+        if (!canCancelTurn()) throw new Error("dsh-stop-unavailable");
+        const { sessionId, turn } = command;
+        const agents = service("agents");
+        const agent = agents.get(sessionId);
+        if (
+          !Number.isSafeInteger(turn) ||
+          turn <= 0 ||
+          !agent ||
+          String(agent.id) !== sessionId ||
+          agent.status !== "running" ||
+          openTurn(turnBoundary(agents, agent)) !== turn
+        )
+          throw new Error("stale-turn");
+        try {
+          // Keep this in the same JavaScript turn as the native projection read above.
+          const receipt = needController().cancel({ sessionId });
+          return { sessionId, turn, accepted: receipt?.accepted === true };
+        } catch (error) {
+          if (error?.code === "session/not-found") throw new Error("stale-turn");
+          if (error?.code === "session/agent-busy") throw new Error("dsh-stop-unavailable");
+          throw error;
+        }
+      }
       case "rename": {
         const value = await needController().rename({
           sessionId: String(command.sessionId),
@@ -1362,6 +1451,7 @@ export function createBridge(ctx, options = {}) {
     return {
       sessionController: typeof controller?.prompt === "function",
       sessionQuery: typeof query?.observeSession === "function",
+      turnScopedCancel: canCancelTurn(),
       approvals: true,
       questions: typeof service("userQuestions")?.ask === "function",
       workspaceController: typeof service("workspaceController")?.archiveSession === "function",
@@ -1395,7 +1485,7 @@ export function createBridge(ctx, options = {}) {
     if (sessionCommands.length) body.sessionCommands = sessionCommands;
     const changed = [...states.values()].filter((state) => state.version > since);
     if (changed.length)
-      body.states = changed.map(({ version: _version, ...state }) => ({
+      body.states = changed.map(({ version: _version, turnEventSeq: _turnEventSeq, ...state }) => ({
         ...state,
         pending: [...interactions.values()].filter((item) => item.sessionId === state.sessionId)
           .length,

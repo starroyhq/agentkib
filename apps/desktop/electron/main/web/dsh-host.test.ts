@@ -88,6 +88,7 @@ describe("DeepSeek Harness host control boundary", () => {
             accepted: true,
             completed: false,
             requestId: params.requestId,
+            sessionId: params.sessionId,
             controlOutcome: "accepted",
             runtimeBootId: "runtime-one",
           };
@@ -264,7 +265,7 @@ describe("DeepSeek Harness host control boundary", () => {
       model: "deepseek/deepseek-chat",
       effort: "high",
     });
-    // Adopting or releasing is not how a DSH session is taken over.
+    // The retired route stays unavailable and cannot dispatch a DSH operation.
     expect(
       await service.localRequest("/managed/adopt", {
         agent: "deepseek-harness",
@@ -273,6 +274,7 @@ describe("DeepSeek Harness host control boundary", () => {
         sessionId: "dsh-session",
       }),
     ).toMatchObject({ status: 404 });
+    expect(forwarded("adopt")).toEqual([]);
   });
 
   it("preserves the verified-host gate even when the provider transport is configured", async () => {

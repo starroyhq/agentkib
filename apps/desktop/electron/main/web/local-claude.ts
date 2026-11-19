@@ -34,16 +34,9 @@ export async function localClaudeRequest(
   raw: unknown,
 ): Promise<unknown> {
   const input = record(raw);
-  const mutation = [
-    "create",
-    "adopt",
-    "release",
-    "reconcile",
-    "send",
-    "stop",
-    "approve",
-    "answer",
-  ].includes(String(input.operation));
+  const mutation = ["create", "release", "reconcile", "send", "stop", "approve", "answer"].includes(
+    String(input.operation),
+  );
   let dispatched = false;
   let priorUncertain = false;
   const tracked = {
@@ -169,16 +162,13 @@ async function localClaudeRequestInner(
   // Revocation must remain possible after a source disappears from the catalog.
   if (operation === "bridge-disconnect")
     return deps.managed({ operation, sessionId, deviceId: OWNER });
-  if (["adopt", "release", "reconcile"].includes(operation)) {
+  if (["release", "reconcile"].includes(operation)) {
     const params: Record<string, unknown> = {
       operation,
       sessionId,
       requestId: field(input.requestId),
       deviceId: OWNER,
     };
-    if (operation === "adopt" && input.handoffFingerprint !== undefined) {
-      params.handoffFingerprint = field(input.handoffFingerprint);
-    }
     if (operation === "release") {
       if (!Number.isSafeInteger(input.expectedRevision) || Number(input.expectedRevision) < 0)
         throw new Error("invalid_revision");

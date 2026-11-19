@@ -4,13 +4,10 @@ import {
   existsSync,
   lstatSync,
   mkdirSync,
-  mkdtempSync,
-  realpathSync,
   rmSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ClaudeManagedReadOwner } from "../../../packages/backend/src/claude-managed-read";
@@ -24,6 +21,7 @@ import {
 } from "../../../packages/backend/src/managed-ledger";
 import { SessionReaders } from "../../../packages/backend/src/session-readers";
 import { BackendStore } from "../../../packages/backend/src/store";
+import { createFakeClaude } from "./fixtures/claude-fake-cli";
 
 const cleanups: Array<() => void | Promise<void>> = [];
 afterEach(async () => {
@@ -32,16 +30,10 @@ afterEach(async () => {
 });
 
 async function fixture() {
-  const root = realpathSync(mkdtempSync(path.join(tmpdir(), "agentkib-claude-delete-")));
+  const { root, workspace, config, environment } = createFakeClaude("agentkib-claude-delete-");
   cleanups.push(() => rmSync(root, { recursive: true, force: true }));
-  const workspace = path.join(root, "workspace");
-  const config = path.join(root, "claude");
-  const bin = path.join(root, "bin");
   const project = path.join(config, "projects", "fixture");
-  for (const directory of [workspace, bin, project])
-    mkdirSync(directory, { recursive: true, mode: 0o700 });
-  writeFileSync(path.join(bin, "claude"), "offline fixture must not execute\n", { mode: 0o700 });
-  const environment = { HOME: root, CLAUDE_CONFIG_DIR: config, PATH: bin };
+  mkdirSync(project, { recursive: true, mode: 0o700 });
   const commands = new Commands();
   cleanups.push(() => commands.close());
   let agents = "[]";
@@ -160,7 +152,7 @@ async function fixture() {
     }) as Promise<Record<string, unknown>>;
   const desktopRecord = (cliSessionId: string, extra: Record<string, unknown> = {}) => {
     const directory = path.join(
-      root,
+      environment.HOME,
       "Library",
       "Application Support",
       "Claude",
@@ -209,14 +201,19 @@ describe.skipIf(process.platform === "win32")("Deleting a Claude Code session", 
     expect(f.store.sessions.get(f.id)).toBeNull();
   });
 
-  it("deletes an adopted session and AgentKib's record of it", async () => {
+  it("deletes a continued session and AgentKib's record of it", async () => {
     const f = await fixture();
     await f.owner.request({
-      operation: "adopt",
+      operation: "send",
       sessionId: f.id,
       requestId: randomUUID(),
       deviceId: "browser-device-a",
+      runtimeBootId: f.owner.bootId,
+      expectedRevision: (await f.owner.live(f.id, true)).revision,
+      experimentalEnabled: true,
+      text: "Continue the session",
     });
+    await expect.poll(async () => (await f.owner.live(f.id, true)).status).toBe("idle");
     expect(f.owner.hasManagedSession(f.id)).toBe(true);
     expect(await f.remove()).toMatchObject({ accepted: true, deleted: true });
     expect(f.owner.hasManagedSession(f.id)).toBe(false);

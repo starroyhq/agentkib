@@ -57,7 +57,11 @@ function host(overrides: Partial<LaneHost> = {}) {
     options: async () => ({ available: true, models: [{ value: "gpt-x" }] }),
     lifecycle: async (value) => {
       calls.push({ kind: "lifecycle", ...value });
-      return { accepted: true };
+      return {
+        accepted: true,
+        requestId: value.requestId,
+        sessionId: createHash("sha256").update(`managed:${value.requestId}`).digest("hex"),
+      };
     },
     control: async (value) => {
       calls.push({ kind: "control", ...value });
@@ -181,72 +185,133 @@ describe("orchestration service", () => {
     });
   });
 
-  it("opens lanes in allowed workspaces and takes over existing Codex sessions", async () => {
-    const { lanes, calls } = host();
-    const orchestration = service(lanes);
-    orchestration.designate({
-      sessionId: LEAD,
-      deviceId: DEVICE,
-      workspaceId: "w1",
-      scope: {
-        workspaceIds: ["w1", "w2"],
-        policies: ["workspace-write-on-request", "workspace-write-auto-review"],
-        maxLanes: 2,
+  it.each([true, false])(
+    "links an existing Codex worker with managed=%s and leaves execution preparation to send",
+    async (managed) => {
+      const { lanes, calls } = host({ managed: async () => managed });
+      const orchestration = service(lanes);
+      orchestration.designate({
+        sessionId: LEAD,
+        deviceId: DEVICE,
+        workspaceId: "w1",
+        scope: {
+          workspaceIds: ["w1", "w2"],
+          policies: ["workspace-write-on-request", "workspace-write-auto-review"],
+          maxLanes: 2,
+        },
+      });
+      const opened = parse(
+        await orchestration.call(LEAD, "worker_open", {
+          name: "api",
+          workspace: "w2",
+          policy: "workspace-write-auto-review",
+        }),
+      );
+      const create = calls.find((call) => call.operation === "create")!;
+      expect(create).toMatchObject({
+        workspaceId: "w2",
+        policyId: "workspace-write-auto-review",
+        deviceId: DEVICE,
+      });
+      // The Codex session follows from the request id, as web-read derives it.
+      expect(opened).toEqual({
+        accepted: true,
+        worker: "api",
+        agent: "codex",
+        session: createHash("sha256").update(`managed:${create.requestId}`).digest("hex"),
+      });
+      expect(
+        parse(
+          await orchestration.call(LEAD, "worker_open", { name: "old", session: "codex-existing" }),
+        ),
+      ).toMatchObject({
+        accepted: true,
+        session: "codex-existing",
+      });
+      expect(calls.filter((call) => call.kind === "lifecycle")).toEqual([create]);
+      expect(
+        parse(
+          await orchestration.call(LEAD, "worker_send", { worker: "old", text: "Review this" }),
+        ),
+      ).toMatchObject({ accepted: true, operation: "send" });
+      expect(calls.filter((call) => call.kind === "control")).toEqual([
+        expect.objectContaining({
+          operation: "send",
+          sessionId: "codex-existing",
+          deviceId: DEVICE,
+          runtimeBootId: "boot",
+          expectedRevision: 3,
+          text: "Review this",
+        }),
+      ]);
+      for (const [input, reason] of [
+        [{ name: "third", workspace: "w1" }, "worker-limit-reached"],
+        [{ name: "api", workspace: "w1" }, "worker-name-taken"],
+      ] as const)
+        expect(parse(await orchestration.call(LEAD, "worker_open", input))).toMatchObject({
+          accepted: false,
+          reason,
+        });
+      const narrow = service(lanes);
+      narrow.designate({ sessionId: LEAD, deviceId: DEVICE, workspaceId: "w1" });
+      for (const [input, reason] of [
+        [{ name: "a", workspace: "w9" }, "workspace-not-allowed"],
+        [
+          { name: "a", workspace: "w1", policy: "workspace-write-auto-review" },
+          "policy-not-allowed",
+        ],
+        [{ name: "a", session: "codex-elsewhere" }, "workspace-not-allowed"],
+        [{ name: "a", session: "claude-other" }, "worker-requires-codex-or-dsh-session"],
+        [{ name: "a", session: LEAD }, "session-is-a-project-agent"],
+        [{ name: "a" }, "worker-needs-workspace-or-session"],
+        [{ name: "-bad", workspace: "w1" }, "invalid-worker-name"],
+      ] as const)
+        expect(parse(await narrow.call(LEAD, "worker_open", input))).toMatchObject({
+          accepted: false,
+          reason,
+        });
+    },
+  );
+
+  it.each([
+    ["refused", "codex-owner-busy"],
+    ["unknown", "worker-open-unconfirmed"],
+    ["wrong-session", "worker-open-failed"],
+    ["wrong-request", "worker-open-failed"],
+  ])("keeps a %s Codex create out of the worker registry", async (outcome, reason) => {
+    let expectedSession = "";
+    const { lanes } = host({
+      lifecycle: async (value) => {
+        expectedSession = createHash("sha256").update(`managed:${value.requestId}`).digest("hex");
+        if (outcome === "refused")
+          return {
+            accepted: false,
+            controlOutcome: "not-dispatched",
+            reason: "codex-owner-busy",
+            requestId: value.requestId,
+            sessionId: expectedSession,
+          };
+        if (outcome === "unknown")
+          return {
+            accepted: false,
+            controlOutcome: "unknown",
+            requestId: value.requestId,
+            sessionId: expectedSession,
+          };
+        return {
+          accepted: true,
+          requestId: outcome === "wrong-request" ? "another-request" : value.requestId,
+          sessionId: outcome === "wrong-session" ? "another-session" : expectedSession,
+        };
       },
     });
-    const opened = parse(
-      await orchestration.call(LEAD, "worker_open", {
-        name: "api",
-        workspace: "w2",
-        policy: "workspace-write-auto-review",
-      }),
-    );
-    const create = calls.find((call) => call.operation === "create")!;
-    expect(create).toMatchObject({
-      workspaceId: "w2",
-      policyId: "workspace-write-auto-review",
-      deviceId: DEVICE,
-    });
-    // The Codex session follows from the request id, as web-read derives it.
-    expect(opened).toEqual({
-      accepted: true,
-      worker: "api",
-      agent: "codex",
-      session: createHash("sha256").update(`managed:${create.requestId}`).digest("hex"),
-    });
-    // Already run by AgentKib: no takeover is needed.
+    const orchestration = service(lanes);
+    orchestration.designate({ sessionId: LEAD, deviceId: DEVICE, workspaceId: "w1" });
     expect(
-      parse(
-        await orchestration.call(LEAD, "worker_open", { name: "old", session: "codex-existing" }),
-      ),
-    ).toMatchObject({
-      accepted: true,
-      session: "codex-existing",
-    });
-    expect(calls.filter((call) => call.operation === "adopt")).toEqual([]);
-    for (const [input, reason] of [
-      [{ name: "third", workspace: "w1" }, "worker-limit-reached"],
-      [{ name: "api", workspace: "w1" }, "worker-name-taken"],
-    ] as const)
-      expect(parse(await orchestration.call(LEAD, "worker_open", input))).toMatchObject({
-        accepted: false,
-        reason,
-      });
-    const narrow = service(lanes);
-    narrow.designate({ sessionId: LEAD, deviceId: DEVICE, workspaceId: "w1" });
-    for (const [input, reason] of [
-      [{ name: "a", workspace: "w9" }, "workspace-not-allowed"],
-      [{ name: "a", workspace: "w1", policy: "workspace-write-auto-review" }, "policy-not-allowed"],
-      [{ name: "a", session: "codex-elsewhere" }, "workspace-not-allowed"],
-      [{ name: "a", session: "claude-other" }, "worker-requires-codex-or-dsh-session"],
-      [{ name: "a", session: LEAD }, "session-is-a-project-agent"],
-      [{ name: "a" }, "worker-needs-workspace-or-session"],
-      [{ name: "-bad", workspace: "w1" }, "invalid-worker-name"],
-    ] as const)
-      expect(parse(await narrow.call(LEAD, "worker_open", input))).toMatchObject({
-        accepted: false,
-        reason,
-      });
+      parse(await orchestration.call(LEAD, "worker_open", { name: "api", workspace: "w1" })),
+    ).toMatchObject({ accepted: false, reason, session: expectedSession });
+    expect(orchestration.status(LEAD)!.lanes).toEqual([]);
+    expect(orchestration.status(LEAD)!.records).toEqual([]);
   });
 
   it("opens DeepSeek Harness workers, whose approvals stay the user's", async () => {
@@ -317,7 +382,7 @@ describe("orchestration service", () => {
       }),
     ]);
     expect(created[0]).not.toHaveProperty("policyId");
-    // An existing DSH session is taken over as it is: nothing to adopt.
+    // An existing DSH worker stays in the runtime that serves it.
     expect(
       parse(
         await orchestration.call(LEAD, "worker_open", { name: "old", session: "dsh-existing" }),

@@ -137,6 +137,8 @@ CLI 接入（包括曾提议的 `agentkib bridge --stdio` 长期转发器）不�
 
 `agent.cancel()` 默认清空排队和 steering，与 DSH 自身停止按钮的语义不同，不应直接使用。AgentKib 各设备的“运行中发送”设置分别对应 `queue` 与 `steer`。
 
+停止命令携带原生轮次 ID。插件在调用原生停止前重新核对当前轮次，轮次已切换时拒绝执行；只有同一轮次明确报告中止才记为已取消。当前核实可同步完成检查与停止的是 DSH `0.2.2-rc.3`，其他版本仍可在 DSH 原生界面停止。
+
 该服务只存在于 web-app 组合包，即 web 与 desktop profile；headless、sdk、acp profile 没有该服务，只提供只读接入，控制能力声明为不可用。插件在进程内调用时没有远程调用身份，消息不会记录 `principal`，在 DSH 中显示为本人发送；是否需要在原生记录中区分来自 AgentKib 的消息，见 §9。
 
 `prompt` 和 `updateQueue` 遇到未运行的会话会先恢复它，因此插件只在 §5.1 选定的 runtime 中派发，能力表把“恢复”与“发送”分开声明；恢复按 §4.2 处理。
@@ -330,7 +332,7 @@ DSH 的审批和问答经 `approval/request`、`user-questions/request` waterfal
 2a 实现（2026-11-05，#199 已合并）：
 
 - 插件升到 0.2.0。Host 当时只接受同版本插件，所以 AgentKib 升级后要重启一次 DSH，插件才会重新连上（2026-11-09 起改为同一协议内的各版本互相接受，见 §3.3）；以链接方式安装的插件随 AgentKib 一起更新，不必重装。
-- 重命名、分叉、归档与取消归档、模型与推理强度都按能力开放：重命名和分叉要求可控；归档、取消归档与改模型还要求空闲（DSH 拒绝归档运行中的会话，AgentKib 不替用户停止），运行中这几项的原因是 `session-busy`，客户端提示等本轮结束。插件跟随 workspace 流维护归档集合，DSH 自己窗口里的归档也会同步到 AgentKib。
+- 重命名、分叉、归档与取消归档、模型与推理强度都按能力开放：重命名和分叉要求可控；归档、取消归档与改模型还要求空闲（DSH 拒绝归档运行中的会话，AgentKib 不替用户停止），运行中这几项的原因是 `session-busy`，客户端将对应控件置灰。插件跟随 workspace 流维护归档集合，DSH 自己窗口里的归档也会同步到 AgentKib。
 - 目标暂不提供，但读取会返回“不可用”，打开目标面板的客户端不会报错。
 - 模型按 provider 与 model 组成一个选择器 ID（两段各自 URI 编码）。只改强度时沿用当前模型，换模型时回到该模型的默认强度；“恢复默认”选 DSH 的默认模型。
 - 当前模型从会话的 `modelSelection` 投影读取（`sessionController.projections`，取 `next`），与 DSH 自己的模型选择器一致，不需要会话正在运行；运行中 agent 的 `model.current()` 只作后备。0.2.1-rc.5 上用 agent 读取会一直得到默认模型。
@@ -357,8 +359,8 @@ DSH 的审批和问答经 `approval/request`、`user-questions/request` waterfal
 - 哪些命令替用户运行、对哪台设备运行，是插件与各端 `/` 菜单共用的一份规则（`dsh-bridge-plugin/commands.js`）：`/export` 在 DSH 窗口里下载文件，不替用户运行（`dsh-command-window-only`）；带附件的命令不运行（`dsh-command-attachments`）；`/compact`、`/plan`、`/feedback` 只作用于本会话，能发送的设备都可用；`/goal`、`/permission` 和其他插件加的命令与 AgentKib 的目标、设置控件一样要求完整访问的设备（`dsh-command-full-access`）。设备是否有完整访问只有 Host 知道，Host 随消息带上 `commandAccess`。命令已不在 DSH 中为 `dsh-command-unavailable`，DSH 运行失败为 `dsh-command-failed`。
 - 目标：读取和修改走 `goals`，修改带上目标 ID 与 revision，期间在 DSH 窗口改过则按 `goal-changed` 未执行。“开始目标”在没有目标或目标已完成时新建，否则编辑现有目标；暂停、恢复、清除对应原生动作。DSH 按轮次（默认 256）限制目标，不支持 token 预算：各端显示已开始的轮次，不显示预算输入（带预算为 `goal-token-budget-unavailable`），轮次用完不能恢复（`goal-rounds-exhausted`）。目标是否由 DSH 自动继续（activation）只在当前 DSH 进程内有效，DSH 恢复会话时目标不自动继续，AgentKib 把这种状态显示为已暂停，恢复后继续。会话未运行时从 `goal` 投影读取，不恢复会话。
 - 压缩：`/compact` 与 Web 的压缩按钮都运行 DSH 的 `/compact`（按钮要求会话空闲）。压缩期间 DSH 的 Agent 仍报告 `idle`，插件按 `compaction/start`、`compaction/end` 事件上报 `activity: "compacting"`，各端显示正在压缩。
-- 权限 preset 即各端的“执行策略”：选项来自 `permissionPresets.catalog`，当前值读 `permissions` 投影，切换运行 `/permission <preset>`。DSH 在运行中的轮次里也会应用，所以执行策略在运行中可以修改；模型和推理强度仍等本轮结束。
-- 计划模式按 Codex 的协作模式报告与切换：插件读 `plan` 投影，选中状态为 `pending ? !active : active`，与 DSH 输入框的计划标识一致；切换运行 DSH 自己的 `/plan`、`/plan off`，单独进行，运行中也可以（DSH 在下一步应用）。桌面和 Web 的输入框与 Codex、Claude 一样识别 `/plan` 并显示可点击退出的“计划”标识，设置对话框也有模式选择。
+- 权限 preset 即各端的“执行策略”：选项来自 `permissionPresets.catalog`，当前值读 `permissions` 投影，切换运行 `/permission <preset>`。DSH 原生命令会影响正在运行的轮次。AgentKib 的执行策略、模型和推理强度设置在空闲时开放。
+- 计划模式按 Codex 的协作模式报告与切换：插件读 `plan` 投影，选中状态为 `pending ? !active : active`，与 DSH 输入框的计划标识一致；切换运行 DSH 自己的 `/plan`、`/plan off`，单独进行。DSH 会在下一步应用，AgentKib 在空闲时开放这个设置入口。桌面和 Web 的输入框与 Codex、Claude 一样识别 `/plan` 并显示可点击退出的“计划”标识，设置对话框也有模式选择。
 - 子代理只读浏览：插件读 `subagentCatalog` 与 `subagentTiming` 投影，每个会话最多 50 个直接子代理；子会话 ID 在 Host 用本次运行的随机盐做 HMAC，不暴露 DSH 原始 ID。手机经现有的子代理接口浏览，Desktop 与 Web 暂无子代理视图。
 - 控制所依据的 revision 也随目标（ID、revision、activation）和压缩状态变化；目标操作结果未知时按目标状态核对：清除看目标是否消失，暂停看是否暂停，恢复看是否在继续，开始看 revision 是否变化。
 - 模型与推理强度：桌面端与 Codex、Claude 一样在输入框里切换（#200 的选择器），与 DSH 自己窗口的模型菜单一致：模型按提供方分组（DSH 后端给每个模型带上提供方名称），推理强度只列该模型支持的等级；未选强度即 DSH 的 Default，显示为“默认 · 该模型的默认强度”，换模型时仍跟随新模型的默认。DSH 没有服务档位，不显示 Fast。Web 与手机仍在设置中切换（Codex 也是）。

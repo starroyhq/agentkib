@@ -21,7 +21,7 @@ import { timestamp } from "./timestamps";
  * A turn that a Codex client outside AgentKib, such as the Codex app or the CLI, is running
  * now. For display only: it never grants or blocks a control.
  */
-export type ExternalTurn = { status: "running"; startedAt: string | null };
+export type ExternalTurn = { status: "running"; startedAt: string | null; turnId?: string };
 
 /** A turn whose end a thread's rollout records, whoever ran it. */
 export type EndedTurn = {
@@ -108,7 +108,7 @@ export class CodexExternalTurns {
       this.#lookUp(home, [...locks.keys()], now);
       for (const [key, name] of locks) {
         const thread = this.#threads.get(key);
-        const turn = thread && this.#turn(home, key, thread, name, undefined, now);
+        const turn = thread && this.#turn(home, key, thread, name, now);
         if (turn) running.set(thread.id, turn);
       }
     } catch {
@@ -118,8 +118,7 @@ export class CodexExternalTurns {
   }
 
   /**
-   * The running external turn of one thread whose writer lock was just found held, as the
-   * session's live state reports it. Never throws.
+   * The running external turn of one thread with a verified writer lock. Never throws.
    */
   turnOf(threadId: string, now = Date.now()): ExternalTurn | null {
     try {
@@ -128,7 +127,7 @@ export class CodexExternalTurns {
       const key = threadId.toLowerCase();
       this.#lookUp(home, [key], now);
       const thread = this.#threads.get(key);
-      return thread ? this.#turn(home, key, thread, `${threadId}.lock`, true, now) : null;
+      return thread ? this.#turn(home, key, thread, `${threadId}.lock`, now) : null;
     } catch {
       return null;
     }
@@ -292,7 +291,6 @@ export class CodexExternalTurns {
     key: string,
     thread: Thread,
     lockName: string,
-    held: boolean | undefined,
     now: number,
   ): ExternalTurn | null {
     const file = resolveRollout(
@@ -330,8 +328,12 @@ export class CodexExternalTurns {
       (Number.isFinite(started) && lockStat.mtimeMs > started + CLOCK_SLACK_MS)
     )
       return null;
-    if (!(held ?? this.#lockHeld(key, lock, now))) return null;
-    return { status: "running", startedAt: turn.startedAt };
+    if (!this.#lockHeld(key, lock, now)) return null;
+    return {
+      status: "running",
+      startedAt: turn.startedAt,
+      ...(turn.id ? { turnId: turn.id } : {}),
+    };
   }
 
   #lockHeld(key: string, lock: string, now: number): boolean {

@@ -70,7 +70,7 @@ function terminalOutcome(event: ConversationEventWithTurn): ConversationTurnOutc
 function isTerminalMarker(event: ConversationEventWithTurn, turnId?: string): boolean {
   return (
     !!turnId &&
-    event.id === `codex-turn-end:${turnId}` &&
+    (event.id === `turn-end:${turnId}` || event.id === `codex-turn-end:${turnId}`) &&
     event.kind === "agent-message" &&
     !event.content &&
     !event.attachment_count &&

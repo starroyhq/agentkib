@@ -49,7 +49,7 @@ describe("remote capabilities share device and workspace authorization", () => {
   beforeEach(async () => {
     cookie = "";
     managed.mockReset();
-    claude.mockReset();
+    claude.mockReset().mockResolvedValue({});
     runtime.mockReset();
     dir = await mkdtemp(join(tmpdir(), "agentkib-remote-capabilities-"));
     root = join(dir, "project");
@@ -141,6 +141,42 @@ describe("remote capabilities share device and workspace authorization", () => {
       "capabilities",
       "capabilities",
     ]);
+  });
+  it("uses the catalog's Agent for capability reads and keeps the Codex alias scoped", async () => {
+    runtime.mockImplementation(async (input: Record<string, unknown>) =>
+      input.operation === "catalog"
+        ? {
+            workspaces: [{ id: "w", name: "Project", path: root }],
+            sessions: [
+              { id: "codex", workspace_id: "w", agent: "codex" },
+              { id: "claude", workspace_id: "w", agent: "claude-code" },
+            ],
+          }
+        : { sessionId: input.sessionId, executionMode: "codex-managed", features: {} },
+    );
+    claude.mockResolvedValue({
+      sessionId: "claude",
+      executionMode: "claude-managed",
+      features: {},
+    });
+    await pair();
+    const codex = await api("managed/capabilities?sessionId=codex&agent=claude-code");
+    expect(await codex.json()).toMatchObject({
+      sessionId: "codex",
+      executionMode: "codex-managed",
+    });
+    expect(claude).not.toHaveBeenCalled();
+    const terminal = await api("managed/capabilities?sessionId=claude&agent=codex");
+    expect(await terminal.json()).toMatchObject({
+      sessionId: "claude",
+      executionMode: "claude-managed",
+    });
+    expect((await api("codex/capabilities?sessionId=claude")).status).toBe(403);
+    const alias = await api("codex/capabilities?sessionId=codex");
+    expect(await alias.json()).toMatchObject({
+      sessionId: "codex",
+      executionMode: "codex-managed",
+    });
   });
   it("lists only authorized roots and resolves explicit task references", async () => {
     await pair({ files: true });
@@ -315,14 +351,14 @@ describe("remote capabilities share device and workspace authorization", () => {
       ).status,
     ).toBe(200);
   });
-  it("keeps explicit Codex adoption behind the manage grant", async () => {
+  it("keeps Codex release behind the manage grant", async () => {
     await pair();
-    expect((await api("managed/adopt", { bootId, requestId: "a", sessionId: "s" })).status).toBe(
+    expect((await api("managed/release", { bootId, requestId: "a", sessionId: "s" })).status).toBe(
       403,
     );
     expect(managed).not.toHaveBeenCalled();
   });
-  it("keeps Codex adoption scoped without manual confirmation", async () => {
+  it("rejects the removed adoption route for known and unknown Codex sessions", async () => {
     await pair({ manage: true });
     expect(
       (
@@ -332,7 +368,7 @@ describe("remote capabilities share device and workspace authorization", () => {
           sessionId: "unknown",
         })
       ).status,
-    ).toBe(403);
+    ).toBe(404);
     managed.mockResolvedValue({ accepted: true });
     expect(
       (
@@ -342,13 +378,10 @@ describe("remote capabilities share device and workspace authorization", () => {
           sessionId: "s",
         })
       ).status,
-    ).toBe(200);
-    expect(managed).toHaveBeenCalledWith(
-      expect.objectContaining({ operation: "adopt", sessionId: "s" }),
-    );
-    expect(managed.mock.calls.at(-1)![0]).not.toHaveProperty("handoffConfirmed");
+    ).toBe(404);
+    expect(managed).not.toHaveBeenCalled();
   });
-  it("does not report a rejected or uncertain native handoff as success", async () => {
+  it("does not report a rejected or uncertain managed release as success", async () => {
     await pair({ manage: true });
     managed.mockImplementation(async ({ requestId }) => ({
       requestId,
@@ -357,7 +390,7 @@ describe("remote capabilities share device and workspace authorization", () => {
       controlOutcome: "not-dispatched",
       reason: "codex-owner-busy",
     }));
-    const rejected = await api("managed/adopt", {
+    const rejected = await api("managed/release", {
       bootId,
       requestId: "busy",
       sessionId: "s",
@@ -373,7 +406,7 @@ describe("remote capabilities share device and workspace authorization", () => {
       controlOutcome: "unknown",
       reason: "internal/private/path",
     });
-    const unknown = await api("managed/adopt", {
+    const unknown = await api("managed/release", {
       bootId,
       requestId: "lost",
       sessionId: "s",

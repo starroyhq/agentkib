@@ -735,12 +735,8 @@ describe.skipIf(process.platform !== "darwin")(
             expectedRevision: (await live(sessionId)).revision,
           });
           expect(released.status, JSON.stringify(released.body)).toBe(200);
-          await rpc("claude.managed", {
-            operation: "adopt",
-            sessionId,
-            requestId: randomUUID(),
-            deviceId,
-          });
+          expect((await send(sessionId, "Continue the named session")).status).toBe(200);
+          await idle(sessionId);
           const resumedCatalog = await http("/catalog");
           expect(resumedCatalog.status, JSON.stringify(resumedCatalog.body)).toBe(200);
           expect(resumedCatalog.body.sessions.find((row: any) => row.id === sessionId)?.title).toBe(
@@ -950,7 +946,7 @@ describe.skipIf(process.platform !== "darwin")(
       await idle(sessionId);
     });
 
-    it("publishes completed settings preparation to the actual subscriber without a live refresh or user turn", async () => {
+    it("keeps isolated settings catalogue preparation out of target session events", async () => {
       const sessionId = await create();
       const subscription = await rpc("sessions.subscribe", { sessionId });
       const states: Array<Record<string, unknown>> = [];
@@ -968,11 +964,11 @@ describe.skipIf(process.platform !== "darwin")(
         const prepared = await prepareSettings(sessionId);
         expect(prepared.status, JSON.stringify(prepared.body)).toBe(200);
         expect(prepared.body.options.models[0].id).toBe("fixture-model");
-        expect(states.some((state) => state.status === "starting")).toBe(true);
-        expect(states.at(-1)).toMatchObject({
+        expect(states).toEqual([]);
+        expect(await live(sessionId)).toMatchObject({
           status: "idle",
           sendEnabled: true,
-          stopEnabled: false,
+          executionLocation: null,
         });
         expect(frames().filter((row) => row.type === "control_request")).toHaveLength(1);
         expect(frames().filter((row) => row.type === "user")).toEqual([]);
@@ -982,7 +978,7 @@ describe.skipIf(process.platform !== "darwin")(
       }
     });
 
-    it("publishes recovered idle to the actual subscriber while the settings startup request still reports failure", async () => {
+    it("keeps target session idle when isolated settings catalogue preparation fails", async () => {
       const sessionId = await create();
       const subscription = await rpc("sessions.subscribe", { sessionId });
       const states: Array<Record<string, unknown>> = [];
@@ -1001,8 +997,8 @@ describe.skipIf(process.platform !== "darwin")(
         const prepared = await prepareSettings(sessionId);
         expect(prepared.status).toBeGreaterThanOrEqual(400);
         expect(prepared.body.error).toBeTruthy();
-        expect(states.some((state) => state.status === "starting")).toBe(true);
-        expect(states.at(-1)).toMatchObject({
+        expect(states).toEqual([]);
+        expect(await live(sessionId)).toMatchObject({
           status: "idle",
           sendEnabled: true,
           executionLocation: null,
@@ -1085,6 +1081,8 @@ describe.skipIf(process.platform !== "darwin")(
     it("preserves the inherited native permission mode when HTTP changes only the model", async () => {
       writeFileSync(modeFile, "inherited-plan");
       const sessionId = await create();
+      expect((await send(sessionId, "Initialize the session")).status).toBe(200);
+      await idle(sessionId);
       const options = await prepareSettings(sessionId);
       expect(options.status, JSON.stringify(options.body)).toBe(200);
       expect(options.body.current.permissionMode).toBe("plan");
@@ -1174,6 +1172,8 @@ describe.skipIf(process.platform !== "darwin")(
       async (mode) => {
         writeFileSync(modeFile, mode);
         const sessionId = await create();
+        expect((await send(sessionId, "Initialize the session")).status).toBe(200);
+        await idle(sessionId);
         const options = await prepareSettings(sessionId);
         expect(options.status).toBe(200);
         expect(options.body.selected.modelId).toBeUndefined();
@@ -1205,6 +1205,8 @@ describe.skipIf(process.platform !== "darwin")(
           permissionMode: "plan",
         });
         expect(configured.status, JSON.stringify(configured.body)).toBe(200);
+        expect((await send(sessionId, "Initialize configured settings")).status).toBe(200);
+        await idle(sessionId);
         const changed = await action(sessionId, "settings", { model, effort: null });
         expect(changed.status, JSON.stringify(changed.body)).toBe(200);
         const state = (await http(`/managed/settings?sessionId=${sessionId}`)).body;
@@ -1217,7 +1219,7 @@ describe.skipIf(process.platform !== "darwin")(
           expect.arrayContaining(["--model", model, "--permission-mode", "plan"]),
         );
         expect(args).not.toContain("--effort");
-        expect(frames().filter((row) => row.type === "user")).toEqual([]);
+        expect(frames().filter((row) => row.type === "user")).toHaveLength(1);
       },
     );
 
@@ -1722,6 +1724,8 @@ describe.skipIf(process.platform !== "darwin")(
 
     it("keeps a rejected native settings acknowledgement unknown and never replays its controls", async () => {
       const sessionId = await create();
+      expect((await send(sessionId, "Initialize the session")).status).toBe(200);
+      await idle(sessionId);
       await prepareSettings(sessionId);
       writeFileSync(modeFile, "settings-rejected");
       const requestId = randomUUID();
@@ -1745,7 +1749,7 @@ describe.skipIf(process.platform !== "darwin")(
       expect((await http("/managed/action", body)).body.controlOutcome).toBe("unknown");
       await shared.claudeScheduler!.tick();
       expect(frames().filter((row) => row.type === "control_request")).toHaveLength(controls);
-      expect(frames().filter((row) => row.type === "user")).toHaveLength(0);
+      expect(frames().filter((row) => row.type === "user")).toHaveLength(1);
     });
 
     it("filters sensitive resources and rejects changed file and directory references before dispatch", async () => {

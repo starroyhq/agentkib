@@ -55,6 +55,19 @@ const doctorRuns = (request: ReturnType<typeof vi.fn>) =>
     .filter(([value]) => value === M.refreshDoctorSummaries)
     .map(([, params]) => params);
 
+it("allows manual refresh in a secondary window and schedules again when it becomes primary", async () => {
+  const { coordinator, request } = setup(undefined, true);
+  coordinator.setAutomaticEnabled(false);
+  await vi.advanceTimersByTimeAsync(31_000);
+  expect(calls(request, M.refreshDiscovery)).toBe(0);
+  expect(doctorRuns(request)).toEqual([]);
+  await coordinator.request("doctor", true);
+  expect(doctorRuns(request)).toEqual([{}]);
+  coordinator.setAutomaticEnabled(true);
+  await vi.advanceTimersByTimeAsync(2_000);
+  expect(calls(request, M.refreshDiscovery)).toBeGreaterThan(0);
+});
+
 describe("workspace diagnostics refresh", () => {
   it("checks outdated workspaces shortly after startup and every workspace on a manual refresh", async () => {
     const { coordinator, request } = setup();

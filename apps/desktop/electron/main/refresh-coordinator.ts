@@ -77,6 +77,7 @@ export class ElectronRefreshCoordinator {
   #sequence = 1;
   #accepting = false;
   #runtimeAvailable = true;
+  #automaticEnabled = true;
   #suspended = false;
   #resumeTimer?: NodeJS.Timeout;
   #quotaLastAttemptAt?: string;
@@ -117,6 +118,12 @@ export class ElectronRefreshCoordinator {
     this.activityChanged();
   }
 
+  setAutomaticEnabled(enabled: boolean): void {
+    if (this.#automaticEnabled === enabled) return;
+    this.#automaticEnabled = enabled;
+    this.activityChanged();
+  }
+
   setSuspended(suspended: boolean): void {
     if (this.#suspended === suspended) return;
     this.#suspended = suspended;
@@ -133,7 +140,7 @@ export class ElectronRefreshCoordinator {
   activityChanged(): void {
     clearTimeout(this.#resumeTimer);
     this.#resumeTimer = undefined;
-    if (!this.#accepting || this.#suspended) return;
+    if (!this.#accepting || !this.#automaticEnabled || this.#suspended) return;
     this.#resumeTimer = setTimeout(() => {
       this.#resumeTimer = undefined;
       void this.refreshIfDue();
@@ -257,7 +264,11 @@ export class ElectronRefreshCoordinator {
     const wasInitialized = this.#initializedLocalKinds.has(kind);
     const previousQuotaAttempt = this.#quotaLastAttemptAt;
     try {
-      if (automatic && !this.#manualRequests.has(kind) && !(await this.#automaticAllowed(kind))) {
+      if (
+        automatic &&
+        !this.#manualRequests.has(kind) &&
+        (!(await this.#automaticAllowed(kind)) || !this.#automaticEnabled)
+      ) {
         record.status = { ...record.status, state: "idle" };
         this.#emit(record.status);
         return {
@@ -456,7 +467,13 @@ export class ElectronRefreshCoordinator {
   }
 
   async #automaticAllowed(kind: RefreshKind): Promise<boolean> {
-    if (!this.#accepting || !this.#runtimeAvailable || this.#suspended || this.#resumeTimer)
+    if (
+      !this.#automaticEnabled ||
+      !this.#accepting ||
+      !this.#runtimeAvailable ||
+      this.#suspended ||
+      this.#resumeTimer
+    )
       return false;
     const next = parseTime(this.#record(kind).status.next_allowed_at);
     if (Number.isFinite(next) && next > Date.now()) return false;

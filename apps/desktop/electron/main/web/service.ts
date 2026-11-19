@@ -677,6 +677,7 @@ export class WebAccessService {
   private disposed = false;
   private remotePairingInitialized = false;
   private scheduler?: ClaudeHostScheduler;
+  private sharedRuntimePrimary?: boolean;
   private unregisterScheduler?: () => void;
   private managedSocket?: { close(): void };
   private contextArtifactRefs = new Map<string, RememberedContextResource>();
@@ -775,6 +776,12 @@ export class WebAccessService {
   }
   private get addresses() {
     return (this.options.addresses ?? lanAddresses)();
+  }
+
+  /** Each desktop still owns its browser grants. Only one may schedule local desktop work. */
+  setSharedRuntimePrimary(primary: boolean): void {
+    this.sharedRuntimePrimary = primary;
+    this.scheduler?.setSharedRuntimePrimary(primary);
   }
 
   async localClaude(input: unknown): Promise<unknown> {
@@ -1121,21 +1128,15 @@ export class WebAccessService {
   }
 
   private ownsScheduledDevice(deviceId: string) {
-    return (
-      this.options.mode !== "lan" &&
-      ([this.localDevice.id, CLAUDE_LOCAL_OWNER].includes(deviceId) ||
-        this.credentials.some((credential) => credential.device.id === deviceId))
-    );
+    if (this.disposed || this.options.mode === "lan") return false;
+    if ([this.localDevice.id, CLAUDE_LOCAL_OWNER].includes(deviceId))
+      return this.sharedRuntimePrimary !== false;
+    return this.credentials.some((credential) => credential.device.id === deviceId);
   }
 
   private async authorizeScheduledWork(session: ClaudeScheduledSession) {
     const work = session.next;
-    if (
-      !work ||
-      this.disposed ||
-      !this.options.verifiedClaudeManaged ||
-      this.options.mode === "lan"
-    )
+    if (!work || !this.options.verifiedClaudeManaged || !this.ownsScheduledDevice(work.deviceId))
       throw new Error("scheduled-control-unavailable");
     const local = [this.localDevice.id, CLAUDE_LOCAL_OWNER].includes(work.deviceId);
     const hash = local
@@ -1152,6 +1153,7 @@ export class WebAccessService {
     }
     if (!(await this.workspaceAllowed(session.workspaceId, device, true)))
       throw new Error("workspace_not_authorized");
+    if (!this.ownsScheduledDevice(work.deviceId)) throw new Error("scheduled-control-unavailable");
     const current = this.grant(hash, "send");
     this.grant(hash, "advancedControl");
     if (work.kind === "goal") this.fullAccess(hash);

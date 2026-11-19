@@ -1,4 +1,5 @@
 import { EventEmitter } from "node:events";
+import { LOCAL_RUNTIME_PRESENCE } from "@agentkib/backend/local-runtime-ipc";
 import {
   BACKEND_INITIALIZE,
   TYPESCRIPT_READ_METHODS,
@@ -181,7 +182,8 @@ export class RuntimeRouter extends EventEmitter implements RuntimeHost {
   async #dispatch<TResult>(method: string, params: unknown): Promise<TResult> {
     if (
       method === RUNTIME_METHODS.sessionsSubscribe ||
-      method === RUNTIME_METHODS.sessionsUnsubscribe
+      method === RUNTIME_METHODS.sessionsUnsubscribe ||
+      method === LOCAL_RUNTIME_PRESENCE
     )
       return this.typescript.request<TResult>(method, params);
     if (method === NATIVE_CONTEXT) return this.typescript.request<TResult>(method, params);

@@ -75,17 +75,19 @@ export function useSessionDirectoryOrder(hub: {
     (allGroups.find((group) => group.id === id) ?? groups.find((group) => group.id === id))
       ?.workspace.remote?.host_id ?? "local";
   const workspacePositions = new Map(completeWorkspaceOrder.map((id, index) => [id, index]));
-  const orderedGroups = [...groups].sort((left, right) => {
-    const leftHost = left.workspace.remote?.host_id ?? "";
-    const rightHost = right.workspace.remote?.host_id ?? "";
-    const hostOrder = leftHost.localeCompare(rightHost);
-    if (hostOrder !== 0) return hostOrder;
-    const leftPosition = workspacePositions.get(left.id);
-    const rightPosition = workspacePositions.get(right.id);
-    if (leftPosition === undefined) return rightPosition === undefined ? 0 : 1;
-    if (rightPosition === undefined) return -1;
-    return leftPosition - rightPosition;
-  });
+  const orderGroups = (entries: typeof groups) =>
+    [...entries].sort((left, right) => {
+      const leftHost = left.workspace.remote?.host_id ?? "";
+      const rightHost = right.workspace.remote?.host_id ?? "";
+      const hostOrder = leftHost.localeCompare(rightHost);
+      if (hostOrder !== 0) return hostOrder;
+      const leftPosition = workspacePositions.get(left.id);
+      const rightPosition = workspacePositions.get(right.id);
+      if (leftPosition === undefined) return rightPosition === undefined ? 0 : 1;
+      if (rightPosition === undefined) return -1;
+      return leftPosition - rightPosition;
+    });
+  const orderedGroups = orderGroups(groups);
   const startDrag = (event: DragEvent, entry: DirectoryDragEntry, draggingKey: string) => {
     draggedEntry.current = entry;
     setDraggingId(draggingKey);
@@ -197,6 +199,8 @@ export function useSessionDirectoryOrder(hub: {
   };
   return {
     groups,
+    allGroups,
+    orderGroups,
     orderedGroups,
     draggingId,
     dropTargetId,

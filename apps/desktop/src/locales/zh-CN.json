@@ -254,6 +254,8 @@
   "sessions.reorderHint": "要调整顺序，请聚焦条目并按 Alt 加上方向键上或下。",
   "sessions.search": "搜索会话或工作区",
   "sessions.allAgents": "全部 Agent",
+  "sessions.scrollAgentsLeft": "向左浏览 Agent",
+  "sessions.scrollAgentsRight": "向右浏览 Agent",
   "sessions.readable": "有历史内容",
   "sessions.refresh": "刷新记录",
   "sessions.loading": "正在加载会话…",

@@ -1197,6 +1197,90 @@ button {
 .context-sidebar-scroll:has(.session-directory) {
   padding-bottom: 0;
 }
+
+@property --directory-agent-filter-progress {
+  syntax: "<number>";
+  inherits: true;
+  initial-value: 0;
+}
+
+.session-directory-tree[data-directory-agent-motion] {
+  overflow-anchor: none;
+}
+
+[data-directory-agent-slot] {
+  --directory-agent-slot-fraction: clamp(
+    0,
+    var(--directory-agent-slot-start) + var(--directory-agent-slot-delta) *
+      var(--directory-agent-filter-progress),
+    1
+  );
+  block-size: calc-size(auto, size * var(--directory-agent-slot-fraction));
+  overflow: clip;
+}
+
+[data-directory-agent-session][data-directory-agent-slot] > .session-directory-row {
+  opacity: var(--directory-agent-slot-fraction);
+}
+
+/* Let departing rows cross their slots. The folder panel clips their motion at its title. */
+[data-directory-agent-heading-fold] {
+  overflow: visible;
+}
+
+[data-directory-agent-heading-fold] > .session-directory-row {
+  position: relative;
+  z-index: 1;
+  translate: 0
+    calc(
+      var(--directory-agent-fold-from) + var(--directory-agent-fold-delta) *
+        var(--directory-agent-filter-progress)
+    );
+  clip-path: inset(0 0 calc((1 - var(--directory-agent-slot-fraction, 1)) * 100%));
+}
+
+[data-directory-agent-heading-fold][inert] > .session-directory-row:not(.bg-sidebar-accent) {
+  background-color: var(--sidebar);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .session-directory-tree:active-view-transition-type(directory-agent-switch) {
+    .session-workspace-heading,
+    .session-host-heading,
+    .session-directory-empty,
+    .session-workspace-items {
+      view-transition-name: match-element;
+    }
+
+    .session-workspace-items {
+      view-transition-class: directory-agent-switch-list;
+    }
+
+    &::view-transition-group(*) {
+      animation-duration: 160ms;
+      animation-timing-function: ease-out;
+    }
+
+    &::view-transition-image-pair(.directory-agent-switch-list) {
+      overflow: clip;
+    }
+
+    &::view-transition-old(.directory-agent-switch-list),
+    &::view-transition-new(.directory-agent-switch-list) {
+      height: auto;
+    }
+
+    &::view-transition-old(root),
+    &::view-transition-new(root) {
+      animation: none;
+    }
+
+    &::view-transition-old(root) {
+      opacity: 0;
+    }
+  }
+}
+
 .session-directory-trailing .session-row-menu {
   position: absolute;
   inset: 0;

@@ -254,6 +254,8 @@
   "sessions.reorderHint": "To reorder an item, focus it and press Alt plus Up Arrow or Down Arrow.",
   "sessions.search": "Search sessions or workspaces",
   "sessions.allAgents": "All agents",
+  "sessions.scrollAgentsLeft": "Scroll agents left",
+  "sessions.scrollAgentsRight": "Scroll agents right",
   "sessions.readable": "History available",
   "sessions.refresh": "Refresh history",
   "sessions.loading": "Loading sessions…",

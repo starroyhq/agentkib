@@ -254,6 +254,8 @@
   "sessions.reorderHint": "項目の順序を変更するには、項目にフォーカスして Alt と上または下矢印キーを押します。",
   "sessions.search": "会話・ワークスペースを検索",
   "sessions.allAgents": "すべての Agent",
+  "sessions.scrollAgentsLeft": "Agent を左にスクロール",
+  "sessions.scrollAgentsRight": "Agent を右にスクロール",
   "sessions.readable": "履歴あり",
   "sessions.refresh": "履歴を更新",
   "sessions.loading": "会話を読み込み中…",

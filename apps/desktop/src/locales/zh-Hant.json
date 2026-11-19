@@ -254,6 +254,8 @@
   "sessions.reorderHint": "要調整順序，請聚焦項目並按 Alt 加上方向鍵上或下。",
   "sessions.search": "搜尋對話或工作區",
   "sessions.allAgents": "全部 Agent",
+  "sessions.scrollAgentsLeft": "向左瀏覽 Agent",
+  "sessions.scrollAgentsRight": "向右瀏覽 Agent",
   "sessions.readable": "有歷史內容",
   "sessions.refresh": "重新整理記錄",
   "sessions.loading": "正在載入對話…",

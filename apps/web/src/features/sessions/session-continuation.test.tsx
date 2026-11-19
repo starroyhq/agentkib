@@ -2,23 +2,13 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-libra
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   sessionContinuationCopy,
-  SessionContinuationChoice,
   SessionContinuationReadOnly,
-  SessionContinuationReturned,
   SessionContinuationStatus,
-  SessionContinuationTerminal,
 } from "@agentkib/session-ui";
 
-const localizedChoices = [
+const localizedStatuses = [
   {
     locale: "zh-CN",
-    fork: "分支会话并继续",
-    returnTo: "回 Codex 继续",
-    choice: "这条会话正在 Codex 中使用。为避免两边同时写入，请选择：",
-    hint: "原会话不受影响，新会话会标“分支自 Project”",
-    quit: "只关掉 Codex 的窗口可能不够，完全退出应用后才能在这里继续",
-    returned: "这条会话在 AgentKib 中只读，Codex 那边关闭后会自动恢复",
-    watch: "在终端中继续这条会话，这里会同步显示",
     placeholder: "继续这条会话…",
     starting: "正在启动…",
     running: "在 AgentKib 中运行",
@@ -26,13 +16,6 @@ const localizedChoices = [
   },
   {
     locale: "zh-Hant",
-    fork: "分支對話並繼續",
-    returnTo: "回 Codex 繼續",
-    choice: "這段對話正在 Codex 中使用。為避免兩邊同時寫入，請選擇：",
-    hint: "原對話不受影響，新對話會標「分支自 Project」",
-    quit: "只關閉 Codex 的視窗可能不夠，完全結束應用程式後才能在這裡繼續",
-    returned: "這段對話在 AgentKib 中為唯讀，Codex 那邊關閉後會自動恢復",
-    watch: "在終端中繼續這段對話，這裡會同步顯示",
     placeholder: "繼續這段對話…",
     starting: "正在啟動…",
     running: "在 AgentKib 中執行",
@@ -40,14 +23,6 @@ const localizedChoices = [
   },
   {
     locale: "ja-JP",
-    fork: "会話を分岐して続ける",
-    returnTo: "Codex で続ける",
-    choice: "この会話は Codex で使用中です。同時に書き込まれないよう、操作を選んでください：",
-    hint: "元の会話には影響しません。新しい会話には「Project から分岐」と表示されます。",
-    quit: "Codex のウィンドウを閉じるだけでは不十分な場合があります。ここで続けるには、アプリを完全に終了してください。",
-    returned:
-      "この会話は AgentKib では閲覧のみです。Codex 側で閉じると、ここで続けられるようになります。",
-    watch: "この会話はターミナルで続けてください。ここにも同期して表示されます。",
     placeholder: "この会話を続ける…",
     starting: "起動中…",
     running: "AgentKib で実行中",
@@ -55,14 +30,6 @@ const localizedChoices = [
   },
   {
     locale: "en-US",
-    fork: "Fork and continue",
-    returnTo: "Continue in Codex",
-    choice: "This session is in use in Codex. To avoid both sides writing at once, choose:",
-    hint: 'The original session stays as is. The new one is marked "Forked from Project".',
-    quit: "Closing the Codex window may not be enough. Quit the app completely to continue here.",
-    returned:
-      "This session is view only in AgentKib. You can continue here once it's closed in Codex.",
-    watch: "Continue this session in the terminal. It stays in sync here.",
     placeholder: "Continue this session…",
     starting: "Starting…",
     running: "Running in AgentKib",
@@ -71,127 +38,6 @@ const localizedChoices = [
 ];
 
 afterEach(cleanup);
-
-describe("shared session continuation choice", () => {
-  it.each([
-    ["zh-CN", "草稿已保留，回到这里后会恢复。"],
-    ["zh-Hant", "草稿已保留，回到這裡後會恢復。"],
-    ["en-US", "Your draft is kept and will be restored when you return here."],
-    ["ja-JP", "下書きを保存しています。ここに戻ると復元されます。"],
-  ])("shows the retained draft only when present in %s", (locale, hint) => {
-    const props = {
-      locale,
-      agent: "Codex" as const,
-      title: "Project",
-      onFork: vi.fn(),
-      onReturn: vi.fn(),
-    };
-    const view = render(<SessionContinuationChoice {...props} />);
-    expect(screen.queryByText(hint)).not.toBeInTheDocument();
-    view.rerender(<SessionContinuationChoice {...props} hasDraft />);
-    expect(screen.getByRole("status")).toHaveTextContent(hint);
-    view.rerender(<SessionContinuationReturned locale={locale} agent="Codex" hasDraft />);
-    expect(screen.getByText(hint)).toBeVisible();
-    expect(props.onFork).not.toHaveBeenCalled();
-    expect(props.onReturn).not.toHaveBeenCalled();
-  });
-  it.each(localizedChoices)("renders usable choices in $locale", async (copy) => {
-    const onFork = vi.fn(async () => {});
-    const onReturn = vi.fn();
-    const pluginAction = vi.fn();
-    render(
-      <SessionContinuationChoice
-        locale={copy.locale}
-        agent="Codex"
-        title="Project"
-        onFork={onFork}
-        onReturn={onReturn}
-        pluginAction={pluginAction}
-      />,
-    );
-
-    const group = screen.getByRole("group", { name: copy.choice });
-    expect(group).toHaveTextContent(copy.quit);
-    const fork = screen.getByRole("button", { name: copy.fork });
-    expect(fork).toHaveAccessibleDescription(copy.hint);
-    expect(fork).toHaveAttribute("type", "button");
-    expect(fork).toHaveClass("min-h-11", "whitespace-normal", "w-full", "sm:w-auto");
-    expect(fork.parentElement?.parentElement).toHaveClass("flex-wrap");
-    const returnTo = screen.getByRole("button", { name: copy.returnTo });
-    expect(returnTo).toHaveClass("min-h-11");
-    expect(screen.getAllByRole("button")).toHaveLength(2);
-
-    fireEvent.click(fork);
-    fireEvent.click(returnTo);
-    expect(onFork).toHaveBeenCalledOnce();
-    expect(onReturn).toHaveBeenCalledOnce();
-    expect(pluginAction).not.toHaveBeenCalled();
-  });
-
-  it("disables every action while a choice is being applied", () => {
-    const action = vi.fn();
-    render(
-      <SessionContinuationChoice
-        locale="en-US"
-        agent="Claude Code"
-        title="Project"
-        onFork={action}
-        onReturn={action}
-        pluginAction={action}
-        disabled
-      />,
-    );
-    for (const button of screen.getAllByRole("button")) {
-      expect(button).toBeDisabled();
-      fireEvent.click(button);
-    }
-    expect(action).not.toHaveBeenCalled();
-  });
-
-  it("keeps returning to Codex available when forking is unavailable", () => {
-    const onFork = vi.fn();
-    const onReturn = vi.fn();
-    render(
-      <SessionContinuationChoice
-        locale="en-US"
-        agent="Codex"
-        title="Project"
-        onFork={onFork}
-        onReturn={onReturn}
-        forkDisabled
-      />,
-    );
-    const fork = screen.getByRole("button", { name: "Fork and continue" });
-    const returnTo = screen.getByRole("button", { name: "Continue in Codex" });
-    expect(fork).toBeDisabled();
-    expect(returnTo).toBeEnabled();
-    fireEvent.click(fork);
-    fireEvent.click(returnTo);
-    expect(onFork).not.toHaveBeenCalled();
-    expect(onReturn).toHaveBeenCalledOnce();
-  });
-
-  it("offers the optional terminal plugin action only for Claude Code", () => {
-    const pluginAction = vi.fn();
-    const props = {
-      locale: "en-US",
-      agent: "Claude Code" as const,
-      title: "Project",
-      onFork: vi.fn(),
-      onReturn: vi.fn(),
-    };
-    const view = render(<SessionContinuationChoice {...props} />);
-    expect(screen.getAllByRole("button")).toHaveLength(2);
-    view.rerender(<SessionContinuationChoice {...props} pluginAction={pluginAction} />);
-    fireEvent.click(
-      screen.getByRole("button", {
-        name: "Install the connection plugin to connect automatically",
-      }),
-    );
-    expect(pluginAction).toHaveBeenCalledOnce();
-    expect(screen.queryByText(/Closing the Codex window/)).not.toBeInTheDocument();
-  });
-});
 
 const readOnlyLocales = [
   {
@@ -227,37 +73,6 @@ const readOnlyLocales = [
       "Open a terminal (use PowerShell on Windows), paste the resume command and run it. If this session is still in use in the original client, continue there first.",
   },
 ];
-
-describe("shared continuation after going back and while following a terminal", () => {
-  it.each(localizedChoices)("says once where to continue after going back in $locale", (copy) => {
-    render(<SessionContinuationReturned locale={copy.locale} agent="Codex" />);
-    expect(screen.getByRole("status")).toHaveTextContent(copy.returned);
-    expect(screen.getByText(copy.quit)).toBeVisible();
-    // Going back offers no resume command: the session is already open in the other client.
-    expect(screen.queryByRole("button")).not.toBeInTheDocument();
-  });
-
-  it("does not add the Codex quit note for Claude Code", () => {
-    render(<SessionContinuationReturned locale="zh-CN" agent="Claude Code" />);
-    expect(
-      screen.getByText("这条会话在 AgentKib 中只读，Claude Code 那边关闭后会自动恢复"),
-    ).toBeVisible();
-    expect(screen.queryByText(/完全退出应用/)).not.toBeInTheDocument();
-  });
-
-  it.each(localizedChoices)("follows a terminal and offers only stop in $locale", (copy) => {
-    const onStop = vi.fn();
-    const view = render(<SessionContinuationTerminal locale={copy.locale} />);
-    expect(screen.getByText(copy.watch)).toBeVisible();
-    expect(screen.queryByRole("button")).not.toBeInTheDocument();
-    view.rerender(
-      <SessionContinuationTerminal locale={copy.locale} stop={{ label: "Stop", onStop }} />,
-    );
-    fireEvent.click(screen.getByRole("button", { name: "Stop" }));
-    expect(onStop).toHaveBeenCalledOnce();
-    expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
-  });
-});
 
 describe("shared read-only session continuation", () => {
   const command = "cd '/tmp/Project with spaces'\ncodex resume 'synthetic-session'";
@@ -464,7 +279,7 @@ describe("shared read-only session continuation", () => {
 });
 
 describe("shared session continuation status and copy", () => {
-  it.each(localizedChoices)("renders each status in $locale", (expected) => {
+  it.each(localizedStatuses)("renders each status in $locale", (expected) => {
     const copy = sessionContinuationCopy(expected.locale);
     expect(copy.placeholder).toBe(expected.placeholder);
     const view = render(<SessionContinuationStatus label={copy.starting} loading />);

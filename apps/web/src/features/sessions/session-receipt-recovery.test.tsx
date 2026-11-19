@@ -7,7 +7,7 @@ import {
   rememberPending,
   readPending,
 } from "@/features/conversation/features/sessions/pending-controls";
-import { ManagedTasks } from "@/features/conversation/features/sessions/managed-tasks";
+import { SessionReceiptRecovery } from "@/features/conversation/features/sessions/session-receipt-recovery";
 import { publishSessionInvalidation } from "@/features/conversation/features/sessions/session-events";
 import type { WebClient } from "@agentkib/web-client";
 
@@ -55,7 +55,7 @@ vi.mock("@/features/conversation/components/ui/dialog", () => ({
 const options = { available: true, workspaces: [{ id: "workspace", name: "Project" }], models: [] };
 const mutations = () =>
   session.client.request.mock.calls.filter(([path]) => !path.startsWith("managed/options"));
-describe("ManagedTasks", () => {
+describe("SessionReceiptRecovery", () => {
   beforeEach(() => {
     navigate.mockReset();
     sessionStorage.clear();
@@ -102,7 +102,7 @@ describe("ManagedTasks", () => {
     (executionMode) => {
       session.live.executionMode = executionMode;
       if (executionMode.startsWith("claude")) session.current.agent = "claude-code";
-      render(<ManagedTasks renderContent={(content) => content} />);
+      render(<SessionReceiptRecovery renderContent={(content) => content} />);
       expect(screen.queryByRole("button")).not.toBeInTheDocument();
       expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
       expect(session.client.request).not.toHaveBeenCalled();
@@ -117,7 +117,7 @@ describe("ManagedTasks", () => {
       rememberPending(scope, { requestId, sessionId: "original-session", kind });
       session.client.receipt.mockResolvedValue({ found: true, requestId, status: "unknown" });
       const panel = (active: boolean) => (
-        <ManagedTasks
+        <SessionReceiptRecovery
           renderContent={(content) => (active ? <div role="group">{content}</div> : null)}
         />
       );
@@ -157,7 +157,7 @@ describe("ManagedTasks", () => {
       if (reason === "permission") session.access.device.manage = false;
       if (reason === "experimental") session.access.experimentalEnabled = false;
       if (reason === "agent") session.current.agent = "claude";
-      render(<ManagedTasks renderContent={(content) => content} />);
+      render(<SessionReceiptRecovery renderContent={(content) => content} />);
       expect(screen.queryByRole("button")).not.toBeInTheDocument();
       expect(session.client.request).not.toHaveBeenCalled();
     },
@@ -180,7 +180,7 @@ describe("ManagedTasks", () => {
         recovery: "legacy-prepared",
         completionObserved: false,
       });
-      render(<ManagedTasks renderContent={() => null} />);
+      render(<SessionReceiptRecovery renderContent={() => null} />);
       await waitFor(() => expect(readPending(scope)).toEqual([]));
       expect(mutations()).toHaveLength(0);
       expect(navigate).not.toHaveBeenCalled();

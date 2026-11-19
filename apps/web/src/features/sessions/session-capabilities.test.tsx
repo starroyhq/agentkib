@@ -77,6 +77,16 @@ describe("capability read lifetime", () => {
     });
   });
 
+  it("discards a response from an executor that no longer owns the selected session", async () => {
+    const host = fixture();
+    const pending = host.result.current.verifyCapabilities();
+    await act(async () => {
+      host.first.resolve({ ...capabilities, executionMode: "codex-follower" });
+      expect(await pending).toBeUndefined();
+    });
+    expect(host.result.current.capabilities).toBeUndefined();
+  });
+
   it("does not let a late aborted read clear a newer read with the same key", async () => {
     const host = fixture();
     const obsolete = host.result.current.verifyCapabilities();

@@ -17,6 +17,7 @@ import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { CircleAlert, Copy, FileOutput, PlugZap, ShieldCheck, X } from "lucide-react";
 import { api } from "@/core/api";
+import { isLiveSessionAgent } from "@agentkib/web-client";
 import type {
   AgentKind,
   ContinuationCapabilityStatus,
@@ -63,7 +64,9 @@ export function SessionHandoffDialog({
   const availableTargets = useMemo(
     () =>
       sessionHandoffTargets.filter(
-        ([agent]) => agent === session.agent || targetAgents.includes(agent),
+        ([agent]) =>
+          (agent === session.agent && !isLiveSessionAgent(session.agent)) ||
+          (agent !== session.agent && targetAgents.includes(agent)),
       ),
     [session.agent, targetAgents],
   );
@@ -74,7 +77,9 @@ export function SessionHandoffDialog({
     availableTargets[0]?.[0] ??
     session.agent;
   const [targetAgent, setTargetAgent] = useState<AgentKind>(
-    initialRequest?.targetAgent ?? defaultTarget,
+    initialRequest && availableTargets.some(([agent]) => agent === initialRequest.targetAgent)
+      ? initialRequest.targetAgent
+      : defaultTarget,
   );
   const [format, setFormat] = useState<HandoffFormat>(initialRequest?.format ?? "markdown");
   const [cursorSurface, setCursorSurface] = useState<"ide" | "cli" | "agents-window">(
@@ -83,13 +88,15 @@ export function SessionHandoffDialog({
   const [bindingId, setBindingId] = useState(initialRequest?.bindingId ?? "");
   const [cursorStatus, setCursorStatus] = useState<CursorBridgeStatus>();
   const cursorIde = targetAgent === "cursor" && cursorSurface === "ide";
+  const targetAvailable = availableTargets.some(([agent]) => agent === targetAgent);
   const cursorTargetReady =
-    targetAgent !== "cursor" ||
-    cursorSurface === "cli" ||
-    (cursorIde &&
-      !workspace.remote &&
-      cursorStatus?.supported === true &&
-      cursorStatus.bindings.some((binding) => binding.id === bindingId && binding.connected));
+    targetAvailable &&
+    (targetAgent !== "cursor" ||
+      cursorSurface === "cli" ||
+      (cursorIde &&
+        !workspace.remote &&
+        cursorStatus?.supported === true &&
+        cursorStatus.bindings.some((binding) => binding.id === bindingId && binding.connected)));
   const [historyBudget, setHistoryBudget] = useState(
     initialRequest?.historyBudgetTokens ?? 120_000,
   );
@@ -192,12 +199,19 @@ export function SessionHandoffDialog({
       !sourceCanContinue ||
       !cursorTargetReady ||
       !initialRequest?.autoPrepare ||
+      initialRequest.targetAgent !== targetAgent ||
       autoPreparedRef.current
     )
       return;
     autoPreparedRef.current = true;
     void prepare();
-  }, [initialRequest?.autoPrepare, sourceCanContinue, cursorTargetReady]);
+  }, [
+    initialRequest?.autoPrepare,
+    initialRequest?.targetAgent,
+    targetAgent,
+    sourceCanContinue,
+    cursorTargetReady,
+  ]);
 
   const plan = async () => {
     if (!draft || !sourceCanContinue || !cursorTargetReady) return;
@@ -245,7 +259,7 @@ export function SessionHandoffDialog({
   };
 
   const planMcpConnection = async () => {
-    if (mcpSetupStatus !== "supported") return;
+    if (mcpSetupStatus !== "supported" || !targetAvailable) return;
     if (busyRef.current) return;
     busyRef.current = true;
     const identity = captureIdentity();

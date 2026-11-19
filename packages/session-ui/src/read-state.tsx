@@ -252,17 +252,60 @@ function persisted(events: readonly ReadEvent[]) {
   return events.filter((event) => !event.ephemeral);
 }
 
+function terminalOutcome(result: NonNullable<SessionReadState["latestResult"]>) {
+  return result.outcome === "cancelled" ? "aborted" : result.outcome;
+}
+
 /** Match a real transcript outcome before using its folded status as reading proof. */
 export function transcriptRepresentsResult(
   events: readonly ReadEvent[],
   result: SessionReadState["latestResult"] | undefined,
 ): boolean {
   if (!result?.turnId || result.outcome === "ended") return false;
-  const expected = result.outcome === "cancelled" ? "aborted" : result.outcome;
-  const outcomes = events
+  const expected = terminalOutcome(result);
+  const outcomes = persisted(events)
     .filter((event) => event.turn_id === result.turnId && event.turn_meta?.outcome)
     .map((event) => event.turn_meta!.outcome);
   return outcomes.length > 0 && outcomes.every((outcome) => outcome === expected);
+}
+
+export function readResultAnchor(
+  events: readonly ReadEvent[],
+  result: SessionReadState["latestResult"] | undefined,
+  activeTurnId?: string | null,
+) {
+  if (!result) return;
+  const rows = persisted(events);
+  // Managed Claude can call its own turn something different from the native log. Its exact
+  // message ID still identifies the right history row and must not be replaced by a guess.
+  const exactItem = result.itemId ? rows.find((event) => event.id === result.itemId) : undefined;
+  if (result.itemId && !exactItem) return;
+  const turnId = exactItem ? exactItem.turn_id : result.turnId;
+  if (activeTurnId && (activeTurnId === result.turnId || activeTurnId === turnId)) return;
+  const turnEvents = turnId
+    ? rows.filter((event) => event.turn_id === turnId)
+    : exactItem
+      ? [exactItem]
+      : [];
+  const last = turnEvents.at(-1);
+  if (!last) return;
+  const outcomes = turnEvents.flatMap((event) => event.turn_meta?.outcome ?? []);
+  const terminal = outcomes[0];
+  if (
+    terminal &&
+    (outcomes.some((outcome) => outcome !== terminal) ||
+      (result.outcome !== "ended" && terminal !== terminalOutcome(result)))
+  )
+    return;
+  // A second Codex process can describe a currently running turn as interrupted with no end
+  // time. A cancelled result needs an ended timestamp or an independently persisted terminal.
+  if (
+    result.outcome === "cancelled" &&
+    !terminal &&
+    !(result.completedAt && Number.isFinite(Date.parse(result.completedAt)))
+  )
+    return;
+  return { eventId: last.id, turnId, exactItem, turnEvents, terminal };
 }
 
 function resultBody(event: ReadEvent): boolean {
@@ -280,7 +323,7 @@ function displayedResultEvent(
   hasTerminal: boolean,
 ): ReadEvent | undefined {
   const newestFirst = [...turnEvents].reverse();
-  if (hasTerminal && result?.outcome === "cancelled") return undefined;
+  if (result?.outcome === "cancelled") return undefined;
   if (hasTerminal && result?.outcome === "failed")
     return newestFirst.find(
       (event) =>
@@ -355,6 +398,7 @@ export function useVisibleReadState(options: {
   isCurrent?: () => boolean;
   source?: SessionReadState["source"];
   catalogVersion?: string | null;
+  activeTurnId?: string | null;
   events: readonly ReadEvent[];
   viewportRef: RefObject<HTMLElement | null>;
   subscribe?: (listener: (userAction?: boolean) => void) => () => void;
@@ -572,34 +616,27 @@ export function useVisibleReadState(options: {
       )
         return;
       const result = state.latestResult;
-      const exactItem = result?.itemId
-        ? observation.events!.find((event) => event.id === result.itemId)
+      const anchor = readResultAnchor(observation.events!, result, current.activeTurnId);
+      if (result && !anchor) return;
+      const resultEvent = anchor
+        ? displayedResultEvent(result, anchor.turnEvents, anchor.exactItem, !!anchor.terminal)
         : undefined;
-      const turnEvents = result?.turnId
-        ? observation.events!.filter((event) => event.turn_id === result.turnId)
-        : [];
-      const hasTerminal = transcriptRepresentsResult(current.events, result);
-      const resultEvent = displayedResultEvent(result, turnEvents, exactItem, hasTerminal);
       const nodes = [...viewport.querySelectorAll<HTMLElement>("[data-event-id]")];
       const marker = [...viewport.querySelectorAll<HTMLElement>("[data-read-result]")].find(
         (node) => node.dataset.readResult === (result?.id ?? "threadStart"),
       );
-      const terminalMarker = hasTerminal
+      const terminalMarker = anchor?.terminal
         ? [...viewport.querySelectorAll<HTMLElement>("[data-terminal-turn-id]")]
             .reverse()
             .find(
               (node) =>
-                node.dataset.terminalTurnId === result?.turnId &&
-                node.dataset.terminalOutcome ===
-                  (result?.outcome === "cancelled" ? "aborted" : result?.outcome),
+                node.dataset.terminalTurnId === anchor.turnId &&
+                node.dataset.terminalOutcome === anchor.terminal,
             )
         : undefined;
       const target = resultEvent
         ? nodes.find((node) => node.dataset.eventId === resultEvent.id)
         : (terminalMarker ?? marker);
-      // Known but unloaded items cannot be replaced with metadata. Tool/thinking-only
-      // turns instead require their actual terminal marker to enter the viewport.
-      if (result?.itemId && !exactItem) return;
       if (!result && state.firstUnread?.type !== "threadStart") return;
       if (!target) return;
       if (!result) {
@@ -734,6 +771,7 @@ export function useVisibleReadState(options: {
     options.ready,
     options.client,
     options.sessionId,
+    options.activeTurnId,
     options.viewportRef,
   ]);
   return observation;

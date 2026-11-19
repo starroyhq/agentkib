@@ -15,7 +15,7 @@ import {
   Plus,
   Search,
 } from "lucide-react";
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { composerButtonClasses } from "./composer-control-style";
 
 const planCopy = {
@@ -285,35 +285,10 @@ function ComposerAddAction({
   );
 }
 
-function ComposerPlanAction({
-  label,
-  active,
-  disabled,
-  disabledReason,
-  onToggle,
-}: {
-  label: string;
-  active: boolean;
-  disabled: boolean;
-  disabledReason?: string;
-  onToggle: () => void;
-}) {
-  return (
-    <ComposerAddAction
-      label={label}
-      icon={<Lightbulb className="size-4" aria-hidden />}
-      pressed={active}
-      disabled={disabled}
-      title={disabledReason}
-      onClick={onToggle}
-    />
-  );
-}
-
 type ComposerLocale = keyof typeof addCopy;
 type ActionAvailability = { disabled?: boolean; reason?: string };
 
-export type ComposerResourceBrowser = {
+export type ComposerResourceBrowser = ActionAvailability & {
   page?: Pick<CodexContextOptions, "directoryId" | "parentId" | "resources">;
   path: readonly string[];
   selected: readonly SessionResource[];
@@ -367,11 +342,11 @@ export function SessionComposerAddMenu({
   const offered = !!(attachment || resources || goal || plan || clearMode);
   const open = (controlledOpen ?? localOpen) && !disabled && offered;
   useEffect(() => {
-    if (!open) {
+    if (!open || resources?.disabled) {
       setBrowsing(false);
       focusNavigation.current = false;
     }
-  }, [open]);
+  }, [open, resources?.disabled]);
   const close = (next: boolean) => {
     if (!next) {
       setBrowsing(false);
@@ -424,6 +399,8 @@ export function SessionComposerAddMenu({
               <ComposerAddAction
                 label={add.filesAndFolders}
                 icon={<Folder className="size-4" aria-hidden />}
+                disabled={resources.disabled}
+                title={resources.disabled ? resources.reason : undefined}
                 onClick={() => {
                   focusNavigation.current = true;
                   setBrowsing(true);
@@ -449,12 +426,13 @@ export function SessionComposerAddMenu({
             />
           )}
           {plan && (
-            <ComposerPlanAction
+            <ComposerAddAction
               label={planModeCopy(locale).title}
-              active={plan.active}
-              disabled={plan.disabled === true}
-              disabledReason={plan.reason}
-              onToggle={() => run(plan.onToggle)}
+              icon={<Lightbulb className="size-4" aria-hidden />}
+              pressed={plan.active}
+              disabled={plan.disabled}
+              title={plan.reason}
+              onClick={() => run(plan.onToggle)}
             />
           )}
           {clearMode && (
@@ -504,6 +482,8 @@ function ResourceBrowser({
     onSelect,
   } = resources;
   const [query, setQuery] = useState("");
+  const selectionNoticeId = useId();
+  const selectionNotice = !selectable && selectionReason ? reasonText(selectionReason) : undefined;
   const atLimit = selected.length >= SESSION_RESOURCE_LIMIT;
   const limitText = copy.selectionLimit.replace("{limit}", String(SESSION_RESOURCE_LIMIT));
   const needle = query.trim().toLocaleLowerCase();
@@ -560,6 +540,11 @@ function ResourceBrowser({
       )}
       {page && (
         <>
+          {selectionNotice && (
+            <p id={selectionNoticeId} role="status" className="text-xs text-muted-foreground">
+              {selectionNotice}
+            </p>
+          )}
           <div className="relative">
             <Search
               className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground"
@@ -585,8 +570,8 @@ function ResourceBrowser({
                     const checked = selected.some((resource) => resource.id === item.id);
                     const disabled = !item.available || loading || offline || !selectable;
                     const why =
-                      !item.available || !selectable
-                        ? reasonText(item.reason || selectionReason)
+                      !item.available && item.reason && item.reason !== selectionReason
+                        ? reasonText(item.reason)
                         : "";
                     const directoryId = item.kind === "directory" ? item.navigationId : undefined;
                     return (
@@ -601,6 +586,7 @@ function ResourceBrowser({
                             checked={checked}
                             disabled={disabled || (atLimit && !checked)}
                             title={why || (atLimit && !checked ? limitText : undefined)}
+                            aria-describedby={selectionNotice ? selectionNoticeId : undefined}
                             onChange={(event) =>
                               onSelect(
                                 event.target.checked
@@ -623,7 +609,7 @@ function ResourceBrowser({
                             type="button"
                             className="inline-flex size-11 shrink-0 items-center justify-center rounded-md hover:bg-muted focus-visible:outline-2 focus-visible:outline-ring disabled:pointer-events-none disabled:opacity-50"
                             aria-label={`${copy.enterDirectory}: ${item.name}`}
-                            disabled={disabled}
+                            disabled={loading || offline}
                             onClick={() => browse(directoryId, [...path, item.name])}
                           >
                             <ChevronRight className="size-4" aria-hidden />

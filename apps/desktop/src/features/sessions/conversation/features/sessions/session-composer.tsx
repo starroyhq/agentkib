@@ -3,25 +3,25 @@ import { takeNewSessionDraft } from "./new-session-draft";
 import {
   agentKibCommand,
   agentKibPanel,
-  claudeSlashOptions,
+  existingSessionComposerCapabilities,
+  composerDraftUnavailableReason,
+  sessionSlashOptions,
+  composerPanelShortcut,
   codexCommandPrompt,
-  codexSlashOptions,
   ComposerPrimaryAction,
-  ComposerToolbar,
-  SessionComposerAddMenu,
+  SessionComposerToolbar,
   SessionComposerInput,
+  useComposerAttachments,
   useNewSessionGoalDraft,
-  dshSlashOptions,
   slashCommandCopy,
   sessionContinuationCopy,
-  SessionContinuationReturned,
-  SessionContinuationTerminal,
+  claudeTerminalInteraction,
   unsupportedEffortReason,
   planSlashOption,
+  parseGoalDraft,
   useSlashCommandMenu,
   type AgentKibPanel,
 } from "@agentkib/session-ui";
-import { SessionBusyChoice } from "./session-busy-choice";
 import { SessionReadOnly } from "./session-read-only";
 import { runningSendAction, useSendWhileRunning } from "../preferences/send-while-running";
 import { HistoryReferenceChips } from "../history/history-search-controls";
@@ -29,14 +29,7 @@ import { validHistoryMessage } from "../history/history-reference-model";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { AlertTriangle, CornerDownRight, ListPlus, MoreHorizontal, X } from "lucide-react";
-import {
-  CODEX_MENU_COMMANDS,
-  claudeCommandDecision,
-  claudeMenuCommands,
-  codexCommandDecision,
-  dshMenuCommands,
-  type UploadedAttachment,
-} from "@agentkib/web-client";
+import { claudeCommandDecision, codexCommandDecision } from "@agentkib/web-client";
 import { Button } from "@/components/ui/button";
 import { Disclosure, DisclosureSummary } from "@/components/ui/disclosure";
 import {
@@ -68,15 +61,6 @@ import { DevinTurnNotice } from "./devin-turn-notice";
 import { claudeConnectionCopy } from "./claude-connection-copy";
 import { DshQueue } from "./dsh-queue";
 
-type Upload = {
-  key: string;
-  name: string;
-  file?: File;
-  percent: number;
-  result?: UploadedAttachment;
-  failed?: boolean;
-  previewUrl?: string;
-};
 // The desktop app acts for the person at this computer, as the terminal does.
 const COMMAND_OWNER = true;
 /** A notice floating above the composer. Opaque: the conversation scrolls behind it. */
@@ -116,15 +100,17 @@ export function SessionComposer({
   const isClaude = current?.agent === "claude-code";
   const isCodex = current?.agent === "codex";
   const continuation = sessionContinuationCopy(locale);
-  const returnKey = JSON.stringify([selected, live?.ownershipReason, live?.reason]);
-  const [returnedFor, setReturnedFor] = useState<string | null>(null);
-  useEffect(() => setReturnedFor(null), [returnKey]);
   const copy = codexCopy[locale];
   const layout = composerLayoutCopy[locale];
   const display = sessionDisplayState(session);
+  const terminalInteraction =
+    isClaude &&
+    online &&
+    (display.continuation === "terminal" || display.continuation === "terminal-watch")
+      ? claudeTerminalInteraction(live, selected)
+      : undefined;
   const composerValue = message;
   const setComposerText = setMessage;
-  const [uploads, setUploads] = useState<Upload[]>([]);
   const [restrictedAddOpen, setRestrictedAddOpen] = useState(false);
   const [submitted, setSubmitted] = useState(false);
   const submitPending = useRef(false);
@@ -133,6 +119,11 @@ export function SessionComposer({
   const runningAction = runningSendAction(useSendWhileRunning());
   const [error, setError] = useState("");
   const [resources, setResources] = useState<CodexResource[]>([]);
+  const workspaceId = current?.workspace_id;
+  const draftAuthority = useMemo(
+    () => ({ client, bootId: access?.bootId, deviceId: access?.device?.id, workspaceId }),
+    [client, access?.bootId, access?.device?.id, workspaceId],
+  );
   const {
     value: startupGoal,
     load: loadStartupGoal,
@@ -140,12 +131,9 @@ export function SessionComposer({
     handled: startupGoalHandled,
     discard: startupGoalDiscarded,
     stage: stageGoal,
-  } = useNewSessionGoalDraft(selected);
-  const [previewKey, setPreviewKey] = useState<string>();
-  const previewUrls = useRef(new Map<string, string>());
-  const active = useRef(new Map<string, AbortController>());
+  } = useNewSessionGoalDraft(selected, draftAuthority);
   const fileInput = useRef<HTMLInputElement>(null);
-  const count = useRef(0);
+  const firstMessage = useRef<{ sessionId: string; text: string; shown?: boolean }>(undefined);
   const generation = useRef(0);
   const uploadPermission = !!(
     access?.device?.attachments &&
@@ -159,16 +147,59 @@ export function SessionComposer({
   const isDsh = current?.agent === "deepseek-harness";
   const commandCatalog =
     (isClaude || isDsh) && capabilities?.sessionId === selected ? capabilities.commands : undefined;
+  const slotsGranted = fullAccess && access?.device?.advancedControl === true;
+  const composerCapabilities = existingSessionComposerCapabilities({
+    access,
+    agent: current?.agent,
+    currentId: current?.id,
+    capabilities,
+    sessionId: selected,
+    legacyReads: isCodex && typeof client.sessionCapabilities !== "function",
+  });
+  const {
+    uploads,
+    add,
+    remove,
+    keepUnavailable,
+    clear: clearUploads,
+    preview,
+    setPreviewKey,
+    unavailablePreview,
+  } = useComposerAttachments({
+    client,
+    sessionId: selected,
+    authority: draftAuthority,
+    granted: access?.device?.attachments === true,
+    canUpload: uploadPermission && !busy && !submitted,
+    copy,
+    onError: setError,
+  });
+  const draftUnknown =
+    notice === "uncertain" ||
+    live?.status === "outcome-unknown" ||
+    live?.reason === "control-outcome-unconfirmed" ||
+    capabilities?.reason === "control-outcome-unconfirmed";
+  const draftReady =
+    online &&
+    !busy &&
+    !submitted &&
+    !draftUnknown &&
+    current?.id === selected &&
+    capabilities?.sessionId === selected;
+  const localSettings = composerCapabilities.reservesModelSlot;
+  const localGoal =
+    slotsGranted && (composerCapabilities.goalReadable || composerCapabilities.goalDraftOffered);
   const commandOptions = useMemo(
     () =>
-      isCodex
-        ? codexSlashOptions(CODEX_MENU_COMMANDS, locale)
-        : !commandCatalog
-          ? []
-          : isDsh
-            ? dshSlashOptions(dshMenuCommands(commandCatalog, COMMAND_OWNER))
-            : claudeSlashOptions(claudeMenuCommands(commandCatalog, COMMAND_OWNER), locale),
-    [isCodex, isDsh, commandCatalog, locale],
+      sessionSlashOptions(current?.agent, commandCatalog, {
+        canSend,
+        claudeOwner: COMMAND_OWNER,
+        dshOwner: COMMAND_OWNER,
+        model: localSettings,
+        goal: localGoal,
+        locale,
+      }),
+    [current?.agent, commandCatalog, canSend, localSettings, localGoal, locale],
   );
   // A refused command keeps its draft; the explanation goes once the draft changes.
   const [commandNotice, setCommandNotice] = useState<{ draft: string; reason: string }>();
@@ -180,20 +211,17 @@ export function SessionComposer({
   const slash = useSlashCommandMenu({
     value: composerValue,
     options: commandOptions,
-    enabled:
-      (isClaude || isCodex || (isDsh && commandOptions.length > 0)) &&
-      online &&
-      controlReady &&
-      !busy &&
-      !submitted,
+    enabled: (isClaude || isCodex || commandOptions.length > 0) && draftReady,
     // Codex's menu is AgentKib's own list; Claude Code's comes from the CLI, DSH's from DSH.
-    catalogKnown: isCodex || !!commandCatalog?.length,
+    catalogKnown: isCodex || commandOptions.length > 0 || !!commandCatalog?.length,
     locale,
     label: isCodex
       ? slashCommandCopy(locale).codexLabel
       : isDsh
         ? slashCommandCopy(locale).dshLabel
-        : undefined,
+        : !isClaude && current?.agent
+          ? current.agent
+          : undefined,
     plan: planState.available
       ? { option: planOption, enter: () => controls.current?.plan() ?? false }
       : undefined,
@@ -210,115 +238,35 @@ export function SessionComposer({
     return true;
   };
   useEffect(() => {
-    const controllers = active.current;
-    const urls = previewUrls.current;
-    setUploads([]);
     setResources([]);
     setRestrictedAddOpen(false);
     setSubmitted(false);
+    firstMessage.current = undefined;
     submitPending.current = false;
     setError("");
     setCommandNotice(undefined);
-    setPreviewKey(undefined);
-    count.current = 0;
     return () => {
       generation.current++;
-      for (const abort of controllers.values()) abort.abort();
-      controllers.clear();
-      for (const url of urls.values()) URL.revokeObjectURL(url);
-      urls.clear();
     };
-  }, [selected, setComposerText]);
+  }, [selected, setComposerText, draftAuthority]);
   useEffect(() => {
     if (attachmentDisabled || fullAccess) setRestrictedAddOpen(false);
   }, [attachmentDisabled, fullAccess]);
   useEffect(() => {
-    if (access?.device?.attachments && live?.executionMode !== "claude-follower") return;
-    for (const abort of active.current.values()) abort.abort();
-    active.current.clear();
-    for (const url of previewUrls.current.values()) URL.revokeObjectURL(url);
-    previewUrls.current.clear();
-    setPreviewKey(undefined);
-    count.current = 0;
-    setUploads([]);
-  }, [access?.device?.attachments, live?.executionMode, live?.connectionGeneration]);
+    if (!access?.device || slotsGranted) return;
+    setResources((items) => (items.length ? [] : items));
+    startupGoalDiscarded();
+  }, [access?.device?.id, slotsGranted, startupGoalDiscarded]);
   useEffect(() => {
     if (!submitted) return;
     if (notice === "accepted") {
-      for (const url of previewUrls.current.values()) URL.revokeObjectURL(url);
-      previewUrls.current.clear();
-      setPreviewKey(undefined);
-      setUploads([]);
+      clearUploads();
       setResources([]);
       setHistoryReferences?.([]);
-      count.current = 0;
       setMessage("");
       setSubmitted(false);
     } else if (notice === "notDispatched") setSubmitted(false);
-  }, [notice, submitted, setMessage, setHistoryReferences]);
-  function releasePreview(key: string) {
-    const url = previewUrls.current.get(key);
-    if (url) URL.revokeObjectURL(url);
-    previewUrls.current.delete(key);
-    setPreviewKey((current) => (current === key ? undefined : current));
-  }
-  function unavailablePreview(key: string) {
-    releasePreview(key);
-    setUploads((items) =>
-      items.map((item) => (item.key === key ? { ...item, previewUrl: undefined } : item)),
-    );
-  }
-  async function add(files: File[]) {
-    if (!uploadPermission || busy || submitted) return;
-    setError("");
-    for (const file of files) {
-      if (count.current >= 10) {
-        setError(copy.limit);
-        break;
-      }
-      count.current++;
-      const key = crypto.randomUUID();
-      const abort = new AbortController();
-      // Only local raster files are rendered, through <img>. Documents and SVG
-      // remain ordinary attachments; no remote URL or executable preview is opened.
-      const previewUrl =
-        ["image/png", "image/jpeg", "image/webp", "image/gif"].includes(file.type) &&
-        typeof URL.createObjectURL === "function"
-          ? URL.createObjectURL(file)
-          : undefined;
-      if (previewUrl) previewUrls.current.set(key, previewUrl);
-      active.current.set(key, abort);
-      setUploads((items) => [...items, { key, name: file.name, file, percent: 0, previewUrl }]);
-      void client
-        .uploadAttachment(
-          selected,
-          file,
-          (percent) =>
-            setUploads((items) =>
-              items.map((item) => (item.key === key ? { ...item, percent } : item)),
-            ),
-          abort.signal,
-        )
-        .then((result) => {
-          if (!abort.signal.aborted)
-            setUploads((items) =>
-              items.map((item) => (item.key === key ? { ...item, percent: 100, result } : item)),
-            );
-        })
-        .catch(() => {
-          if (!abort.signal.aborted) {
-            releasePreview(key);
-            setUploads((items) =>
-              items.map((item) =>
-                item.key === key ? { ...item, failed: true, previewUrl: undefined } : item,
-              ),
-            );
-            setError(copy.uploadFailed);
-          }
-        })
-        .finally(() => active.current.delete(key));
-    }
-  }
+  }, [notice, submitted, setMessage, setHistoryReferences, clearUploads]);
   useEffect(() => {
     if (!online || !controlReady || busy || submitted || capabilities?.sessionId !== selected)
       return;
@@ -328,16 +276,7 @@ export function SessionComposer({
     if (!draft.files.length) return;
     if (uploadPermission) void add(draft.files);
     else {
-      count.current = draft.files.length;
-      setUploads(
-        draft.files.map((file) => ({
-          key: crypto.randomUUID(),
-          name: file.name,
-          file,
-          percent: 0,
-          failed: true,
-        })),
-      );
+      keepUnavailable(draft.files);
       setError(codexReason(locale, capabilities.features.attachments?.reason).text);
     }
   }, [
@@ -353,7 +292,6 @@ export function SessionComposer({
   // A session just started from the new-session composer brings its first message. It goes out
   // once, as soon as this session can take it; a failed upload, a send that cannot go now or an
   // edit leaves it here as the draft.
-  const firstMessage = useRef<{ sessionId: string; text: string; shown?: boolean }>(undefined);
   useEffect(() => {
     if (!online || !controlReady || busy || submitted || capabilities?.sessionId !== selected)
       return;
@@ -369,16 +307,7 @@ export function SessionComposer({
     if (uploadPermission) void add(draft.files);
     else {
       firstMessage.current = undefined;
-      count.current = draft.files.length;
-      setUploads(
-        draft.files.map((file) => ({
-          key: crypto.randomUUID(),
-          name: file.name,
-          file,
-          percent: 0,
-          failed: true,
-        })),
-      );
+      keepUnavailable(draft.files);
       setError(codexReason(locale, capabilities.features.attachments?.reason).text);
     }
   }, [
@@ -392,37 +321,47 @@ export function SessionComposer({
     submitted,
     setMessage,
   ]);
-  async function remove(item: Upload) {
-    const requestGeneration = generation.current;
-    active.current.get(item.key)?.abort();
-    active.current.delete(item.key);
-    releasePreview(item.key);
-    count.current = Math.max(0, count.current - 1);
-    setUploads((items) => items.filter((entry) => entry.key !== item.key));
-    if (item.result) {
-      try {
-        await client.request("attachments/delete", {
-          sessionId: selected,
-          attachmentId: item.result.id,
-          version: item.result.version,
-        });
-      } catch {
-        if (requestGeneration === generation.current) setError(copy.error);
-      }
-    }
-  }
-  const ready = uploads.every((item) => !!item.result) && resources.every((item) => item.available);
+  const draftReason = composerDraftUnavailableReason(selected, capabilities, access?.device, {
+    attachments: uploads.length > 0,
+    references: resources.length > 0,
+    goal: !!startupGoal,
+  });
+  const ready =
+    !draftReason &&
+    uploads.every((item) => !!item.result) &&
+    resources.every((item) => item.available);
   const attachmentIds = uploads.flatMap((item) => (item.result ? [item.result.id] : []));
   const resourceIds = resources.filter((item) => item.available).map((item) => item.id);
   const draft = composerValue;
   const valid = ready && validHistoryMessage(draft, historyReferences, attachmentIds.length > 0);
   const resourceNeedsMessage =
     resourceIds.length > 0 && !draft.trim() && !attachmentIds.length && !historyReferences.length;
+  const panelShortcut = composerPanelShortcut(draft, localSettings, localGoal);
+  const localCommand = isClaude
+    ? claudeCommandDecision(draft, { owner: COMMAND_OWNER, commands: commandCatalog })
+    : null;
+  const localCommandReady =
+    draftReady &&
+    !attachmentIds.length &&
+    !resourceIds.length &&
+    !historyReferences.length &&
+    (!!panelShortcut ||
+      (!!localCommand &&
+        ((localSettings &&
+          composerCapabilities.settingsWritable &&
+          ["model", "effort"].includes(localCommand.command) &&
+          (!localCommand.args || controlReady)) ||
+          (localGoal &&
+            localCommand.command === "goal" &&
+            (controlReady ||
+              (composerCapabilities.goalDraftOffered &&
+                composerCapabilities.feature("goal-set")?.available !== true))))));
   async function send(action: "send" | "steer" | "queue-add") {
     if (
       !valid ||
+      (startupGoal && action !== "send") ||
       !online ||
-      !controlReady ||
+      draftUnknown ||
       busy ||
       submitted ||
       submitPending.current ||
@@ -431,9 +370,7 @@ export function SessionComposer({
       return;
     // The host refuses these too; deciding here keeps the draft and explains it without a
     // round trip, and runs or opens AgentKib's own control for the commands it has one for.
-    const decision = isClaude
-      ? claudeCommandDecision(draft, { owner: COMMAND_OWNER, commands: commandCatalog })
-      : null;
+    const decision = localCommand;
     // Codex's own commands work only in its terminal UI; nothing is sent for them. Steering or
     // queueing one is refused like sending one with attachments: its action runs only on send.
     const codexCommand = isCodex ? codexCommandDecision(draft) : null;
@@ -443,11 +380,15 @@ export function SessionComposer({
       !resourceIds.length &&
       !historyReferences.length;
     const panel = plain
-      ? decision
-        ? agentKibPanel(decision)
-        : (codexCommand?.panel ?? null)
+      ? panelShortcut
+        ? panelShortcut === "goal"
+          ? "goal"
+          : "settings"
+        : decision
+          ? agentKibPanel(decision)
+          : (codexCommand?.panel ?? null)
       : null;
-    const command = decision?.command ?? codexCommand?.command;
+    const command = panelShortcut ?? decision?.command ?? codexCommand?.command;
     const opened =
       panel === "settings" && (command === "model" || command === "effort")
         ? controls.current?.openModel(command === "model" ? "models" : "effort")
@@ -459,11 +400,31 @@ export function SessionComposer({
       setMessage("");
       return;
     }
+    if (plain && panelShortcut) return;
     const mapped = plain
       ? decision?.refusal
         ? agentKibCommand(decision)
         : (codexCommand?.action ?? null)
       : null;
+    if (
+      mapped?.action === "goal-set" &&
+      draftReady &&
+      localGoal &&
+      composerCapabilities.goalDraftOffered &&
+      composerCapabilities.feature("goal-set")?.available !== true
+    ) {
+      const goalDraft = parseGoalDraft(mapped.fields.objective, "");
+      if (!goalDraft) {
+        setCommandNotice({ draft, reason: "claude-command-goal" });
+        return;
+      }
+      stageGoal(goalDraft);
+      setCommandNotice(undefined);
+      setMessage("");
+      return;
+    }
+    if (!controlReady || (action === "send" && (!mapped || mapped.action === "send") && !canSend))
+      return;
     const refusal = decision?.refusal ?? codexCommand?.refusal;
     if (refusal && !(mapped && capabilities?.features[mapped.action]?.available)) {
       setCommandNotice({
@@ -490,6 +451,7 @@ export function SessionComposer({
             : action === "send"
               ? await control("send", undefined, undefined, undefined, undefined, {
                   attachmentIds,
+                  ...(startupGoal ? { requiresGoal: true } : {}),
                   ...(resourceIds.length ? { resourceIds } : {}),
                 })
               : await codexAction(action, {
@@ -503,13 +465,9 @@ export function SessionComposer({
                 });
       if (result && requestGeneration === generation.current) {
         if (action === "send" && !mapped) confirmFirstMessage(live?.revision);
-        for (const url of previewUrls.current.values()) URL.revokeObjectURL(url);
-        previewUrls.current.clear();
-        setPreviewKey(undefined);
-        setUploads([]);
+        clearUploads();
         setResources([]);
         setHistoryReferences?.([]);
-        count.current = 0;
         setComposerText("");
         setMessage(keptDraft ?? "");
         setSubmitted(false);
@@ -518,7 +476,6 @@ export function SessionComposer({
       if (requestGeneration === generation.current) submitPending.current = false;
     }
   }
-  const preview = uploads.find((item) => item.key === previewKey && item.previewUrl);
   const compacting = live?.activity === "compacting";
   const running = live?.status === "running";
   const connectionToastId = useId();
@@ -555,19 +512,30 @@ export function SessionComposer({
     (running || compacting) &&
     !(canSubmit && !compacting) &&
     canAdvanced &&
+    !startupGoal &&
     !!capabilities?.features[runningAction]?.available &&
     !(compacting && runningAction === "steer") &&
     valid &&
     !submitted;
   const runningLabel = runningAction === "steer" ? copy.steer : copy.queueAdd;
   const primaryAction =
-    canStop && live?.executionMode !== "claude-follower" ? (
+    canStop &&
+    (live?.executionMode !== "claude-follower" ||
+      composerCapabilities.feature("stop")?.available === true) ? (
       <ComposerPrimaryAction label={t.stop} kind="stop" onStop={() => void control("stop")} />
     ) : (
       <ComposerPrimaryAction
         label={runningReady ? runningLabel : t.send}
-        title={runningReady ? runningLabel : undefined}
-        disabled={((!canSubmit || compacting) && !runningReady) || !valid || submitted}
+        title={
+          draftReason
+            ? codexReason(locale, draftReason).text
+            : runningReady
+              ? runningLabel
+              : undefined
+        }
+        disabled={
+          ((!canSubmit || compacting) && !runningReady && !localCommandReady) || !valid || submitted
+        }
       />
     );
   const advancedActions =
@@ -595,6 +563,7 @@ export function SessionComposer({
               disabled={
                 compacting ||
                 !canAdvanced ||
+                !!startupGoal ||
                 !capabilities?.features.steer?.available ||
                 !valid ||
                 submitted
@@ -607,6 +576,7 @@ export function SessionComposer({
             <DropdownMenuItem
               disabled={
                 !canAdvanced ||
+                !!startupGoal ||
                 !capabilities?.features["queue-add"]?.available ||
                 !valid ||
                 submitted
@@ -622,40 +592,41 @@ export function SessionComposer({
         </DropdownMenuContent>
       </DropdownMenu>
     ) : null;
-  if ((isCodex || isClaude) && display.continuation === "busy")
-    return returnedFor === returnKey ? (
-      <div className="w-full max-w-3xl self-center">
-        <SessionContinuationReturned
-          locale={locale}
-          agent={isClaude ? "Claude Code" : "Codex"}
-          hasDraft={Boolean(
-            message.trim() || uploads.length || resources.length || historyReferences.length,
-          )}
-        />
-      </div>
-    ) : (
-      <SessionBusyChoice
-        onReturn={() => setReturnedFor(returnKey)}
-        composerDraft={() => ({
-          files: uploads.flatMap((item) => (item.file ? [item.file] : [])),
-          resources,
-        })}
-      />
-    );
-  if ((isCodex || isClaude) && display.continuation === "view-only")
+  if (
+    (isCodex || isClaude) &&
+    display.continuation === "view-only" &&
+    !composerCapabilities.settingsReadable &&
+    !composerCapabilities.resourcesReadable &&
+    !localGoal &&
+    !uploads.length &&
+    !resources.length &&
+    !startupGoal
+  )
     return <SessionReadOnly reason={connectionReasonInToolbar ? undefined : display.reason} />;
-  if (isClaude && display.continuation === "terminal-watch")
-    return (
-      <div className="w-full max-w-3xl shrink-0 self-center">
-        <SessionContinuationTerminal locale={locale} />
-      </div>
-    );
   return (
     <div className="relative w-full max-w-3xl shrink-0 self-center space-y-2">
-      {isClaude && display.continuation === "terminal" && (
-        <p className="px-3 text-xs leading-5 text-muted-foreground">{continuation.terminalHint}</p>
+      {display.continuation === "busy" && (
+        <p role="status" className="px-3 text-xs leading-5 text-muted-foreground">
+          {continuation.busyHint(isClaude ? "Claude Code" : "Codex")}
+        </p>
       )}
-      {isClaude && <PermissionModeNotice permission={live?.permission} locale={locale} compact />}
+      {!terminalInteraction && display.continuation === "terminal-watch" && (
+        <p role="status" className="px-3 text-xs leading-5 text-muted-foreground">
+          {continuation.terminalWatch}
+        </p>
+      )}
+      {terminalInteraction && (
+        <p role="status" className="px-3 text-xs leading-5 text-muted-foreground">
+          {claudeConnectionCopy[locale][terminalInteraction]}
+        </p>
+      )}
+      {isClaude &&
+        live?.sessionId === selected &&
+        (live.executionMode !== "claude-follower" ||
+          (!composerCapabilities.reservesPermissionSlot &&
+            !composerCapabilities.settingsAccessDenied)) && (
+          <PermissionModeNotice permission={live.permission} locale={locale} compact />
+        )}
       {(isClaude || isCodex || isDsh || current?.agent === "devin") && (
         <ManagedTurnNotice
           live={live}
@@ -700,12 +671,14 @@ export function SessionComposer({
           ...slash.inputProps,
         }}
         onSubmit={() => {
-          if (canSubmit && !compacting) void send("send");
+          if (localCommandReady || (canSubmit && !compacting)) void send("send");
           else if (runningReady) void send(runningAction);
         }}
         onEditorKeyDown={slash.onKeyDown}
         canSubmitFromKeyboard={() =>
-          ((canSubmit && !compacting) || runningReady) && valid && !submitPending.current
+          (localCommandReady || (canSubmit && !compacting) || runningReady) &&
+          valid &&
+          !submitPending.current
         }
         attachments={{
           inputRef: fileInput,
@@ -780,6 +753,7 @@ export function SessionComposer({
           <div className="space-y-2">
             {fullAccess && (
               <CodexComposerControls
+                composerCapabilities={composerCapabilities}
                 controlsRef={controls}
                 resources={resources}
                 setResources={setResources}
@@ -795,42 +769,32 @@ export function SessionComposer({
               />
             )}
             {!fullAccess && (
-              <ComposerToolbar
-                leading={
-                  <SessionComposerAddMenu
-                    locale={locale}
-                    label={copy.addContext}
-                    disabled={attachmentDisabled}
-                    disabledReason={
-                      uploadPermission
-                        ? undefined
-                        : isClaude && live?.executionMode === "claude-follower"
-                          ? claudeConnectionCopy[locale].attachments
-                          : capabilities?.sessionId === selected &&
-                              capabilities.features.attachments?.reason
-                            ? codexReason(locale, capabilities.features.attachments.reason).text
-                            : copy.permission
-                    }
-                    open={restrictedAddOpen && !attachmentDisabled}
-                    onOpenChange={setRestrictedAddOpen}
-                    attachment={
-                      uploadPermission
-                        ? {
-                            disabled: attachmentDisabled,
-                            reason: copy.attachmentNote,
-                            onPick: () => fileInput.current?.click(),
-                          }
-                        : undefined
-                    }
-                  />
-                }
-                trailing={
-                  <>
-                    {advancedActions}
-                    <ContextUsageGauge />
-                    {primaryAction}
-                  </>
-                }
+              <SessionComposerToolbar
+                locale={locale}
+                add={{
+                  label: copy.addContext,
+                  disabled: attachmentDisabled,
+                  disabledReason: uploadPermission
+                    ? undefined
+                    : isClaude && live?.executionMode === "claude-follower"
+                      ? claudeConnectionCopy[locale].attachments
+                      : capabilities?.sessionId === selected &&
+                          capabilities.features.attachments?.reason
+                        ? codexReason(locale, capabilities.features.attachments.reason).text
+                        : copy.permission,
+                  open: restrictedAddOpen && !attachmentDisabled,
+                  onOpenChange: setRestrictedAddOpen,
+                  attachment: uploadPermission
+                    ? {
+                        disabled: attachmentDisabled,
+                        reason: copy.attachmentNote,
+                        onPick: () => fileInput.current?.click(),
+                      }
+                    : undefined,
+                }}
+                actions={advancedActions}
+                usage={<ContextUsageGauge />}
+                action={primaryAction}
               />
             )}
           </div>

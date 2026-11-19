@@ -1093,7 +1093,7 @@ describe("desktop embedded conversation", () => {
       expect(draft).toHaveValue("Keep my draft through reconnect");
     });
 
-    it("follows a terminal that cannot take messages without a dead input or handoff", async () => {
+    it("keeps an editable draft while following a terminal that cannot take messages", async () => {
       const { bridge } = await open({
         ...live(),
         executionMode: "claude-follower",
@@ -1103,10 +1103,15 @@ describe("desktop embedded conversation", () => {
         reason: "claude-follower-send-unverified",
       });
       expect(await screen.findByText(sessionContinuationCopy("zh-CN").terminalWatch)).toBeVisible();
-      // Said once: the bar replaces both the banner and the disabled composer.
       expect(screen.queryByText(claudeConnectionCopy["zh-CN"].sendUnverified)).toBeNull();
-      expect(screen.queryByRole("textbox", { name: "发送消息" })).toBeNull();
-      expect(screen.queryByRole("button", { name: "发送" })).toBeNull();
+      const editor = screen.getByRole("textbox", { name: "发送消息" });
+      expect(editor).toBeEnabled();
+      fireEvent.change(editor, { target: { value: "Keep terminal draft" } });
+      expect(editor).toHaveValue("Keep terminal draft");
+      const send = screen.getByRole("button", { name: "发送" });
+      expect(send).toBeDisabled();
+      fireEvent.click(send);
+      fireEvent.keyDown(editor, { key: "Enter" });
       expect(screen.queryByRole("button", { name: "交给 AgentKib" })).not.toBeInTheDocument();
       expect(vi.mocked(bridge.request).mock.calls.filter(([path]) => path === "send")).toHaveLength(
         0,
@@ -1178,7 +1183,10 @@ describe("desktop embedded conversation", () => {
         ).toBeVisible();
         expect(screen.queryByText(/2\.1\.307/)).toBeNull();
         expect(document.querySelector("[data-terminal-compatibility]")).toBeNull();
-        expect(screen.queryByRole("textbox")).toBeNull();
+        expect(
+          screen.getByPlaceholderText(sessionContinuationCopy(locale).placeholder),
+        ).toBeEnabled();
+        expect(screen.getByRole("button", { name: conversationWords(locale).send })).toBeDisabled();
         expect(
           vi.mocked(bridge.request).mock.calls.filter(([path]) => path === "send"),
         ).toHaveLength(0);
@@ -1226,7 +1234,7 @@ describe("desktop embedded conversation", () => {
         sendEnabled: false,
         reason: "claude-terminal-approval",
       });
-      expect(await screen.findByText(sessionContinuationCopy("zh-CN").terminalHint)).toBeVisible();
+      expect(await screen.findByText(claudeConnectionCopy["zh-CN"].approval)).toBeVisible();
       expect(screen.getByRole("button", { name: "发送" })).toBeDisabled();
       expect(screen.queryByRole("button", { name: "交给 AgentKib" })).not.toBeInTheDocument();
     });
@@ -1253,9 +1261,8 @@ describe("desktop embedded conversation", () => {
       async (locale) => {
         const copy = sessionContinuationCopy(locale);
         const { bridge, patch } = await open({ ...live(), executionLocation: "agentkib" }, locale);
-        fireEvent.change(screen.getByPlaceholderText(copy.placeholder), {
-          target: { value: "Keep conflict draft" },
-        });
+        const editor = screen.getByPlaceholderText(copy.placeholder);
+        fireEvent.change(editor, { target: { value: "Keep conflict draft" } });
         patch({
           revision: 2,
           sendEnabled: false,
@@ -1264,11 +1271,16 @@ describe("desktop embedded conversation", () => {
           reason: "owner-opened-elsewhere",
           continuationNotice: "owner-opened-elsewhere",
         });
-        expect(
-          await screen.findByRole("group", { name: copy.choice("Claude Code") }),
-        ).toBeVisible();
-        expect(screen.getAllByText(copy.ownerOpenedElsewhere)).toHaveLength(1);
-        expect(screen.queryByPlaceholderText(copy.placeholder)).toBeNull();
+        await waitFor(() => expect(screen.getAllByText(copy.ownerOpenedElsewhere)).toHaveLength(1));
+        expect(screen.getByPlaceholderText(copy.placeholder)).toBe(editor);
+        expect(editor).toBeEnabled();
+        expect(editor).toHaveValue("Keep conflict draft");
+        const send = screen.getByRole("button", { name: conversationWords(locale).send });
+        expect(send).toBeDisabled();
+        expect(screen.queryByText(/请选择：|請選擇：|choose:|操作を選んでください/)).toBeNull();
+        fireEvent.change(editor, { target: { value: "Edited conflict draft" } });
+        fireEvent.click(send);
+        fireEvent.keyDown(editor, { key: "Enter" });
         patch({
           revision: 3,
           sendEnabled: true,
@@ -1276,10 +1288,10 @@ describe("desktop embedded conversation", () => {
           ownershipReason: null,
           reason: "",
         });
-        expect(await screen.findByPlaceholderText(copy.placeholder)).toHaveValue(
-          "Keep conflict draft",
-        );
-        expect(screen.queryByRole("group", { name: copy.choice("Claude Code") })).toBeNull();
+        await waitFor(() => expect(send).toBeEnabled());
+        expect(screen.getByPlaceholderText(copy.placeholder)).toBe(editor);
+        expect(editor).toHaveValue("Edited conflict draft");
+        expect(screen.queryByText(/请选择：|請選擇：|choose:|操作を選んでください/)).toBeNull();
         expect(
           vi.mocked(bridge.request).mock.calls.filter(([, body]) => body !== undefined),
         ).toEqual([]);

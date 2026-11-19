@@ -225,6 +225,33 @@ describe("SessionHubPage catalog notices", () => {
     expect(screen.getByTestId("conversation")).toBeVisible();
   });
 
+  it("keeps scan failure details collapsed and lets the user retry", () => {
+    hub = { ...hub, selected: undefined, errors: { [workspace.id]: "Scan request failed" } };
+    const { rerender } = render(<SessionHubPage />);
+
+    const alert = within(screen.getByRole("alert"));
+    const details = alert.getByRole("button", { name: tr("common.details") });
+    const retry = alert.getByRole("button", { name: tr("sessions.retry") });
+    expect(details).toHaveAttribute("aria-expanded", "false");
+    expect(alert.queryByText("Scan request failed")).not.toBeInTheDocument();
+
+    fireEvent.click(details);
+    expect(alert.getByText(workspace.name)).toBeVisible();
+    expect(alert.getByText("Scan request failed")).toBeVisible();
+    fireEvent.click(details);
+    expect(details).toHaveAttribute("aria-expanded", "false");
+
+    fireEvent.click(retry);
+    expect(hub.refresh).toHaveBeenCalledOnce();
+    hub = { ...hub, refreshing: true };
+    rerender(<SessionHubPage />);
+    expect(retry).toBeDisabled();
+
+    hub = { ...hub, errors: {}, refreshing: false };
+    rerender(<SessionHubPage />);
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
   it.each(["offline", "disconnected"] as const)(
     "shows a named %s host without turning its status into a session error",
     (status) => {

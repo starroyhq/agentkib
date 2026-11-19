@@ -299,6 +299,10 @@ export function CodexTools({
       (item) => item.status === "pending" || (!isClaude && item.status === undefined),
     ) ?? [];
   const limitedSettings = !isClaude && !isDsh && access?.device?.accessMode !== "full";
+  // A follower write requires a fresh privileged settings read from the current owner.
+  const followerModelReadOnly =
+    live?.sessionId === selected && live.executionMode === "codex-follower";
+  const limitedModelWritable = enabled("settings") && !followerModelReadOnly;
   const observedSettings =
     live?.sessionId === selected && live.settings?.sessionId === selected
       ? live.settings
@@ -315,8 +319,8 @@ export function CodexTools({
           selected: observedSettings?.selected,
           defaults: {},
           writable: {
-            model: { available: enabled("settings") },
-            effort: { available: enabled("settings") },
+            model: { available: limitedModelWritable },
+            effort: { available: limitedModelWritable },
             mode: { available: false },
             serviceTier: { available: false },
             policy: { available: false },
@@ -455,18 +459,17 @@ export function CodexTools({
                   locale={locale}
                   settings={limitedModel}
                   selection={limitedModel?.selected ?? limitedModel?.current}
-                  disabled={!enabled("settings")}
+                  disabled={!limitedModelWritable}
+                  readOnly={followerModelReadOnly}
                   saving={operation}
-                  status={
-                    (settingsNotice?.target === "model" ? settingsStatus : undefined) ??
-                    (!limitedModel ? copy.settingUnavailable : undefined)
-                  }
                   side="bottom"
                   onOpen={() => {}}
-                  onChange={(change) => run("settings", change)}
+                  onChange={(change) =>
+                    limitedModelWritable ? run("settings", change) : Promise.resolve(false)
+                  }
                 />
               </OperationRow>
-              {settingsStatus && settingsNotice?.target === "settings" && (
+              {settingsStatus && (
                 <p role="status" className="text-xs text-muted-foreground">
                   {settingsStatus}
                 </p>

@@ -55,6 +55,25 @@ describe("session display state", () => {
     };
     expect(sessionDisplayState(settings)).toMatchObject({ label: "", reason: "" });
     expect(sessionDisplayState({ ...settings, online: false }).label).toBe("已断线");
+    expect(sessionDisplayState({ ...settings, notice: "uncertain" }).label).toBe("结果待确认");
+    expect(
+      sessionDisplayState({
+        ...settings,
+        live: { ...settings.live!, reason: "control-outcome-unconfirmed" },
+      }).label,
+    ).toBe("结果待确认");
+    expect(
+      sessionDisplayState({
+        ...settings,
+        capabilities: {
+          sessionId: "session",
+          reason: "control-outcome-unconfirmed",
+          status: "idle",
+          executionMode: "codex-managed",
+          features: { send: { available: true } },
+        },
+      }).label,
+    ).toBe("结果待确认");
     expect(
       sessionDisplayState({
         ...settings,
@@ -180,11 +199,21 @@ it.each(["zh-CN", "zh-Hant", "en-US", "ja-JP"] as const)(
         canSend: false,
         live: {
           ...codex.live!,
+          sendEnabled: false,
           ownershipReason: "codex-owner-busy",
           executionLocation: "external",
         },
       }),
     ).toMatchObject({ continuation: "busy", label: copy.busy("Codex"), tone: "muted" });
+    const staleCapabilities = {
+      ...codex.capabilities!,
+      features: { send: { available: false, reason: "codex-owner-busy" } },
+    };
+    expect(sessionDisplayState({ ...codex, capabilities: staleCapabilities })).toMatchObject({
+      continuation: "idle",
+      label: "",
+      reason: "",
+    });
     const follower = {
       ...codex,
       live: {
@@ -199,6 +228,27 @@ it.each(["zh-CN", "zh-Hant", "en-US", "ja-JP"] as const)(
       reason: "",
       tone: "muted",
     });
+    expect(
+      sessionDisplayState({
+        ...follower,
+        canSend: false,
+        live: { ...follower.live!, sendEnabled: false },
+        capabilities: staleCapabilities,
+      }),
+    ).toMatchObject({ continuation: "codex", label: copy.codexConnected, reason: "" });
+    expect(
+      sessionDisplayState({
+        ...codex,
+        canSend: false,
+        live: {
+          ...codex.live!,
+          status: "archived",
+          sendEnabled: false,
+          reason: "session-archived",
+          ownershipReason: "codex-owner-busy",
+        },
+      }),
+    ).toMatchObject({ continuation: "view-only", label: copy.viewOnly });
     expect(
       sessionDisplayState({ ...follower, pendingSend: { sessionId: "codex", text: "draft" } }),
     ).toMatchObject({ continuation: "codex", label: copy.codexConnected });

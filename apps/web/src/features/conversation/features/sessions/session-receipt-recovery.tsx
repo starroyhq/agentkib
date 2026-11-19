@@ -12,11 +12,11 @@ import {
 } from "./pending-controls";
 
 /**
- * The outcome of this session's adopt, release or reconcile while it is unknown: the saved
- * request is checked until the host says whether it ran, and is never sent again. New sessions
- * start from the new-session composer, which checks its own creates.
+ * Resolve saved lifecycle receipts, including requests recorded by older versions. Receipt
+ * retries never dispatch the original command again. New-session creation keeps its receipt
+ * owner in the new-session composer.
  */
-export function ManagedTasks({
+export function SessionReceiptRecovery({
   renderContent,
 }: {
   renderContent: (content: ReactNode) => ReactNode;

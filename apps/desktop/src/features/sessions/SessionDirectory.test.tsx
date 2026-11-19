@@ -523,64 +523,31 @@ describe("SessionDirectory", () => {
     },
   );
 
-  it.each(["zh-CN", "zh-Hant", "en-US", "ja-JP"] as const)(
-    "keeps unused index source errors neutral per workspace in %s",
-    async (locale) => {
-      await initializeI18n(locale);
-      hub.sessions = [
-        { ...first, agent: "antigravity" },
-        { ...second, agent: "claude-code" },
-      ];
-      hub.statuses = workspaces.map((workspace) => ({
-        workspace_id: workspace.id,
-        agent: "antigravity",
-        freshness: "unavailable",
-        session_count: 0,
-        error_key: "errors.conversations.sourceUnavailable",
-      }));
-      try {
-        const { container } = render(<SessionOverview />);
-        const items = container.querySelectorAll(".session-index-item");
-        expect(items).toHaveLength(2);
-        const used = within(items[0] as HTMLElement).getByText(
-          tr("errors.conversations.sourceUnavailable"),
-        );
-        const unused = within(items[1] as HTMLElement).getByText(
-          tr("errors.conversations.sourceUnavailable"),
-        );
-        expect(used).toHaveClass("text-destructive-text");
-        expect(unused).toHaveClass("text-muted-foreground");
-        expect(unused).not.toHaveClass("text-destructive-text");
-      } finally {
-        await initializeI18n("en-US");
-      }
-    },
-  );
-
-  it("keeps a previously populated source in attention even when no current session is visible", () => {
-    hub.sessions = [];
+  it("keeps index diagnostics out of the recent conversation overview", () => {
     hub.statuses = [
       {
         workspace_id: workspaces[0].id,
-        agent: "antigravity",
-        freshness: "unavailable",
-        session_count: 2,
-        error_key: "errors.conversations.sourceUnavailable",
+        agent: "codex",
+        freshness: "stale",
+        session_count: 1,
+        last_success_at: "2026-10-23T00:00:00Z",
       },
       {
         workspace_id: workspaces[1].id,
-        agent: "antigravity",
+        agent: "claude-code",
         freshness: "unavailable",
-        session_count: 0,
-        last_success_at: "2026-10-23T00:00:00Z",
-        error_detail: "Synthetic source read failed",
+        session_count: 1,
+        error_key: "errors.conversations.sourceUnavailable",
       },
     ];
+
     render(<SessionOverview />);
-    expect(screen.getByText(tr("errors.conversations.sourceUnavailable"))).toHaveClass(
-      "text-destructive-text",
-    );
-    expect(screen.getByText("Synthetic source read failed")).toHaveClass("text-muted-foreground");
+
+    expect(screen.getByRole("heading", { name: tr("sessions.recent") })).toBeVisible();
+    expect(screen.getByRole("button", { name: /Check sidebar selection/ })).toBeVisible();
+    expect(screen.getAllByRole("heading")).toHaveLength(1);
+    expect(screen.queryByText("Needs refresh")).toBeNull();
+    expect(screen.queryByText(tr("errors.conversations.sourceUnavailable"))).toBeNull();
   });
 
   it("keeps same-named workspace groups separate and exposes paths and the current session", () => {

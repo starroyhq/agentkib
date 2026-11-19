@@ -89,7 +89,7 @@ function fixture(attachments = true, send = true, full = true) {
       };
     if (operation === "events") return { events: [], warnings: [] };
     if (operation === "live") return live;
-    if (operation === "codex/capabilities")
+    if (operation === "managed/capabilities")
       return {
         sessionId: "session",
         status: "idle",
@@ -100,7 +100,7 @@ function fixture(attachments = true, send = true, full = true) {
           context: { available: true },
         },
       };
-    if (operation === "codex/session-settings")
+    if (operation === "managed/settings")
       return {
         sessionId: "session",
         revision: 1,

@@ -15,36 +15,33 @@ import {
   TriangleAlert,
   X,
 } from "lucide-react";
-import { newSessionProvider, type ManagedAgent } from "@agentkib/web-client";
+import {
+  newSessionProvider,
+  sessionProviderCapabilities,
+  type ManagedAgent,
+} from "@agentkib/web-client";
 import { AgentMark, agentName } from "@agentkib/agent-identity";
 import { sortSessions } from "@agentkib/session-catalog";
 import {
   composerGoalCopy,
   ComposerGoalFields,
-  ComposerModelPicker,
-  ComposerModeChip,
-  ComposerPermissionMenu,
   ComposerPrimaryAction,
-  ComposerToolbar,
+  SessionComposerToolbar,
   dshAgentPresetText,
   fillCopy,
-  modelEffortsForTier,
-  modelSupportsTier,
   NEW_SESSION_AGENTS,
   NewSessionAddDraftChips,
   newSessionCopy,
   newSessionCreateFields,
-  newSessionModelSettings,
+  useNewSessionModel,
   newSessionPermissions,
   newSessionAddCapabilities,
   newSessionPresets,
   planSlashOption,
-  SessionComposerAddMenu,
   SessionComposerInput,
   slashCommandCopy,
   useNewSessionAdd,
   useSlashCommandMenu,
-  type ComposerModelChange,
 } from "@agentkib/session-ui";
 import { Button } from "@/features/conversation/components/ui/button";
 import { Dialog, DialogContent, DialogTitle } from "@/features/conversation/components/ui/dialog";
@@ -130,10 +127,6 @@ export function NewSessionComposer({
   const [permission, setPermission] = useState<string>();
   const [planning, setPlanning] = useState(false);
   const [addMenuOpen, setAddMenuOpen] = useState(false);
-  const [model, setModel] = useState("");
-  const [effort, setEffort] = useState("");
-  const [serviceTier, setServiceTier] = useState<string>();
-  const [exactModel, setExactModel] = useState<string>();
   const [agentPreset, setAgentPreset] = useState<string>();
   const [sending, setSending] = useState(false);
   const draft = useRef<NewSessionDraft>({ text, files });
@@ -169,8 +162,20 @@ export function NewSessionComposer({
   const locked = sending || session.busy;
   const advancedAccess = fullAccess && access?.device?.advancedControl === true && session.ready;
   const resourceAuthority = JSON.stringify([access?.bootId, access?.device?.id]);
-  const { resourcesAllowed, goalsAllowed, hideGoalBudget, planField, offersPlan } =
-    newSessionAddCapabilities(options, provider?.create, advancedAccess);
+  const {
+    resourcesOffered,
+    resourcesAllowed,
+    goalsOffered,
+    goalsAllowed,
+    hideGoalBudget,
+    planField,
+    planOffered,
+    offersPlan,
+  } = newSessionAddCapabilities(
+    options,
+    sessionProviderCapabilities(agent)?.create,
+    advancedAccess,
+  );
   const goalCopy = composerGoalCopy(locale);
   const add = useNewSessionAdd({
     agent,
@@ -178,6 +183,8 @@ export function NewSessionComposer({
     client,
     resourceAuthority,
     resourcesAllowed,
+    resourcesOffered,
+    resourcesDisabledReason: session.optionsLoading ? copy.loadingOptions : copy.optionsUnavailable,
     locked: locked || disabled,
     offline: disabled,
     resourceError: (error) => failureOf(error, locale).reason,
@@ -199,47 +206,19 @@ export function NewSessionComposer({
   const fileInput = useRef<HTMLInputElement>(null);
   const [fileLimit, setFileLimit] = useState(false);
 
-  const modelSettings = useMemo(
-    () => (showsModelPicker ? newSessionModelSettings(options, provider) : undefined),
-    [options, provider, showsModelPicker],
-  );
-  const modelScope = JSON.stringify([
+  const sessionModel = useNewSessionModel({
     agent,
-    provider?.create.catalogScope === "workspace" ? workspace?.id : null,
-  ]);
-  const models = modelSettings?.options.models ?? [];
-  const defaultModel = modelSettings?.defaults.modelId;
-  const selectedModel = models.find((item) => item.id === model);
-  const currentModel = selectedModel ?? models.find((item) => item.id === defaultModel);
-  const modelId = currentModel?.id ?? defaultModel;
-  const chosenTier =
-    serviceTier !== undefined &&
-    provider?.create.serviceTiers &&
-    currentModel &&
-    modelSupportsTier(currentModel, serviceTier || undefined, effort || undefined)
-      ? serviceTier
-      : undefined;
-  const shownTier =
-    chosenTier ?? (!selectedModel ? modelSettings?.defaults.serviceTierId : undefined);
-  const selectedEffort = modelEffortsForTier(currentModel, shownTier).includes(effort)
-    ? effort
-    : "";
-  const shownEffort =
-    selectedEffort ||
-    (selectedModel
-      ? provider?.models.effortDefault
-        ? undefined
-        : selectedModel.defaultEffort
-      : modelSettings?.defaults.effort);
-  const canClearEffort =
-    provider?.models.effortDefault === true &&
-    !!selectedEffort &&
-    (!shownTier || modelSupportsTier(currentModel, shownTier));
+    workspaceId: workspace?.id,
+    authority: resourceAuthority,
+    options,
+    provider,
+  });
+  const { settings: modelSettings, modelId, shownEffort, shownTier } = sessionModel;
   const permissions = showsPermissionPicker
     ? newSessionPermissions(agent, options, locale, { fullAccess })
     : undefined;
   const canPickFiles = attachments && files.length < MAX_FILES;
-  const hasAddActions = attachments || offersPlan || planning || resourcesAllowed || goalsAllowed;
+  const hasAddActions = attachments || planOffered || planning || resourcesOffered || goalsOffered;
   const addDisabledReason = !hasAddActions
     ? !access?.device?.attachments
       ? conversationCopy.permission
@@ -309,12 +288,9 @@ export function NewSessionComposer({
       {
         agent,
         workspaceId: workspace.id,
-        model:
-          chosenTier === "" && currentModel?.variants?.some((item) => item.id === exactModel)
-            ? (exactModel ?? selectedModel?.id ?? "")
-            : (selectedModel?.id ?? ""),
-        effort: selectedEffort,
-        serviceTierId: chosenTier,
+        model: sessionModel.model,
+        effort: sessionModel.effort,
+        serviceTierId: sessionModel.chosenTier,
         shownModel: modelId,
         permission,
         planning,
@@ -329,41 +305,6 @@ export function NewSessionComposer({
     const sessionId = await session.create(promptAtCreate ? { ...fields, prompt: text } : fields);
     if (sessionId) await handOff(sessionId);
     else setSending(false);
-  }
-
-  function resetModel() {
-    setModel("");
-    setEffort("");
-    setServiceTier(undefined);
-    setExactModel(undefined);
-  }
-
-  async function changeModel(change: ComposerModelChange) {
-    if (change.restoreDefaults) {
-      resetModel();
-    } else if (change.model !== undefined) {
-      if (!models.some((item) => item.id === change.model)) return false;
-      resetModel();
-      setModel(change.model);
-    } else if (change.serviceTierId !== undefined) {
-      if (!currentModel) return false;
-      const tier = change.serviceTierId ?? "";
-      const matches = currentModel.variants?.filter(
-        (variant) =>
-          variant.serviceTierId === (tier || undefined) &&
-          (!shownEffort || variant.effort === shownEffort),
-      );
-      if (matches && matches.length !== 1) return false;
-      const match = matches?.[0];
-      setModel(currentModel.id);
-      setEffort(shownEffort ?? match?.effort ?? "");
-      setServiceTier(tier);
-      setExactModel(!tier && !match?.effort ? match?.id : undefined);
-    } else if (change.effort !== undefined) {
-      setEffort(change.effort ?? "");
-      if (shownTier) setServiceTier(shownTier);
-      setExactModel(undefined);
-    }
   }
 
   function addFiles(list: File[]) {
@@ -410,7 +351,7 @@ export function NewSessionComposer({
             if (workspace?.id === id) return;
             setAddMenuOpen(false);
             if (provider?.create.catalogScope === "workspace") {
-              resetModel();
+              sessionModel.reset();
               setAgentPreset(undefined);
             }
             setWorkspaceId(id);
@@ -435,7 +376,7 @@ export function NewSessionComposer({
                 onClick={() => {
                   if (item === agent) return;
                   setAgent(item);
-                  resetModel();
+                  sessionModel.reset();
                   setPermission(undefined);
                   setPlanning(false);
                   setAddMenuOpen(false);
@@ -565,108 +506,114 @@ export function NewSessionComposer({
           </>
         }
         toolbar={
-          <ComposerToolbar
-            leading={
-              <>
-                <SessionComposerAddMenu
-                  key={JSON.stringify([agent, workspace?.id, resourceAuthority])}
-                  locale={locale}
-                  label={conversationCopy.addContext}
-                  side="bottom"
-                  disabled={locked}
-                  disabledReason={addDisabledReason}
-                  open={addMenuOpen && hasAddActions && !locked}
-                  onOpenChange={setAddMenuOpen}
-                  attachment={
-                    attachments
-                      ? {
-                          disabled: !canPickFiles,
-                          reason: !canPickFiles ? conversationCopy.limit : undefined,
-                          onPick: () => fileInput.current?.click(),
-                        }
-                      : undefined
+          <SessionComposerToolbar
+            locale={locale}
+            add={{
+              scope: JSON.stringify([agent, workspace?.id, resourceAuthority]),
+              label: conversationCopy.addContext,
+              side: "bottom",
+              disabled: locked,
+              disabledReason: addDisabledReason,
+              open: addMenuOpen && hasAddActions && !locked,
+              onOpenChange: setAddMenuOpen,
+              attachment: attachments
+                ? {
+                    disabled: !canPickFiles,
+                    reason: !canPickFiles ? conversationCopy.limit : undefined,
+                    onPick: () => fileInput.current?.click(),
                   }
-                  resources={add.resourceBrowser}
-                  goal={goalsAllowed ? { selected: !!goal, onOpen: add.openGoal } : undefined}
-                  plan={
-                    offersPlan || planning
-                      ? {
-                          active: planning,
-                          reason: planning && !offersPlan ? optionStatus : undefined,
-                          onToggle: () => changePlan(!planning),
-                        }
-                      : undefined
+                : undefined,
+              resources: add.resourceBrowser,
+              goal: goalsOffered
+                ? {
+                    selected: !!goal,
+                    disabled: !goalsAllowed,
+                    reason: !goalsAllowed ? optionStatus : undefined,
+                    onOpen: add.openGoal,
                   }
-                />
-                {permissions && permissionChoices ? (
-                  <ComposerPermissionMenu
-                    label={shownPermission?.name ?? permissions.title}
-                    title={permissions.title}
-                    risky={shownPermission?.risky}
-                    disabled={optionsLocked}
-                    side="bottom"
-                    items={permissionChoices}
-                    selected={shownPermission?.id}
-                    onSelect={setPermission}
-                  />
-                ) : showsPermissionPicker ? (
-                  <OptionPlaceholder
-                    label={
-                      agent === "claude-code" ? copy.permissions[agent].title : copy.permission
+                : undefined,
+              plan:
+                planOffered || planning
+                  ? {
+                      active: planning,
+                      disabled: !planning && !offersPlan,
+                      reason: !offersPlan ? optionStatus : undefined,
+                      onToggle: () => changePlan(!planning),
                     }
-                    status={optionStatus}
-                    loading={session.optionsLoading}
-                    icon={<Shield className="size-3.5 shrink-0" aria-hidden />}
-                  />
-                ) : null}
-                {planning && (
-                  <ComposerModeChip
-                    mode="plan"
-                    locale={locale}
-                    disabled={locked}
-                    onRemove={() => changePlan(false)}
-                  />
-                )}
-                {goal && (
-                  <ComposerModeChip
-                    mode="goal"
-                    locale={locale}
-                    detail={goal.objective}
-                    disabled={locked}
-                    onOpen={add.openGoal}
-                    onRemove={add.clearGoal}
-                  />
-                )}
-              </>
+                  : undefined,
+            }}
+            permission={
+              permissions && permissionChoices
+                ? {
+                    label: shownPermission?.name ?? permissions.title,
+                    title: permissions.title,
+                    risky: shownPermission?.risky,
+                    disabled: optionsLocked,
+                    side: "bottom",
+                    items: permissionChoices,
+                    selected: shownPermission?.id,
+                    onSelect: setPermission,
+                  }
+                : undefined
             }
-            trailing={
-              <>
-                {modelSettings ? (
-                  <ComposerModelPicker
-                    key={modelScope}
-                    locale={locale}
-                    settings={modelSettings}
-                    selection={{
+            permissionFallback={
+              !(permissions && permissionChoices) && showsPermissionPicker ? (
+                <OptionPlaceholder
+                  label={agent === "claude-code" ? copy.permissions[agent].title : copy.permission}
+                  status={optionStatus}
+                  loading={session.optionsLoading}
+                  icon={<Shield className="size-3.5 shrink-0" aria-hidden />}
+                />
+              ) : undefined
+            }
+            plan={
+              planning
+                ? {
+                    disabled: locked,
+                    onRemove: () => changePlan(false),
+                  }
+                : undefined
+            }
+            goal={
+              goal
+                ? {
+                    detail: goal.objective,
+                    disabled: locked,
+                    onOpen: add.openGoal,
+                    onRemove: add.clearGoal,
+                  }
+                : undefined
+            }
+            model={
+              modelSettings
+                ? {
+                    scope: sessionModel.scope,
+                    settings: modelSettings,
+                    selection: {
                       modelId,
                       effort: shownEffort,
                       serviceTierId: shownTier || undefined,
-                    }}
-                    disabled={optionsLocked}
-                    saving={false}
-                    side="bottom"
-                    clearEffort={canClearEffort}
-                    onOpen={() => undefined}
-                    onChange={changeModel}
-                  />
-                ) : showsModelPicker ? (
-                  <OptionPlaceholder
-                    label={copy.model}
-                    status={optionStatus}
-                    loading={session.optionsLoading}
-                  />
-                ) : null}
-                <ComposerPrimaryAction label={sendLabel} disabled={!canSend} loading={locked} />
-              </>
+                    },
+                    disabled: optionsLocked,
+                    saving: false,
+                    side: "bottom",
+                    clearEffort: sessionModel.canClearEffort,
+                    onOpen: () => undefined,
+                    onChange: sessionModel.change,
+                  }
+                : undefined
+            }
+            modelFallback={
+              !modelSettings && showsModelPicker ? (
+                <OptionPlaceholder
+                  label={copy.model}
+                  status={optionStatus}
+                  loading={session.optionsLoading}
+                />
+              ) : undefined
+            }
+            action={
+              <ComposerPrimaryAction label={sendLabel} disabled={!canSend} loading={locked} />
             }
           />
         }

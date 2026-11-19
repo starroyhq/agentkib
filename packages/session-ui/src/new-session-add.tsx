@@ -17,26 +17,33 @@ type ResourcePage = Awaited<ReturnType<ResourceClient["newSessionResources"]>>;
 
 const noResources: CodexContextResource[] = [];
 
-/** Startup choices depend on the host's verified capabilities for the current target. */
+/** Keep supported startup entries stable while the host verifies their current availability. */
 export function newSessionAddCapabilities(
   options: ManagedOptions | undefined,
   create: SessionProviderCapabilities["create"] | undefined,
   advancedAccess: boolean,
 ) {
-  const ready = options?.available === true && create?.mode !== "with-first-message";
   const reported = options?.provider?.create;
   const planField = create?.planMode;
+  const emptyCreate = create?.mode === "empty";
+  const ready =
+    options?.available === true && emptyCreate && reported?.mode !== "with-first-message";
+  const resourcesOffered = emptyCreate && advancedAccess && create.workspaceResources === true;
+  const goalsOffered = emptyCreate && advancedAccess && create.goal === true;
   return {
     planField,
+    planOffered: emptyCreate && !!planField,
     offersPlan:
       ready &&
       !!planField &&
       (reported?.planMode === planField ||
         (planField === "permissionMode" &&
           options.permissionModes?.some((mode) => mode.id === "plan") === true)),
-    resourcesAllowed: ready && advancedAccess && reported?.workspaceResources === true,
-    goalsAllowed: ready && advancedAccess && reported?.goal === true,
-    hideGoalBudget: reported?.goalBudget === "rounds",
+    resourcesOffered,
+    resourcesAllowed: ready && resourcesOffered && reported?.workspaceResources === true,
+    goalsOffered,
+    goalsAllowed: ready && goalsOffered && reported?.goal === true,
+    hideGoalBudget: create?.goalBudget === "rounds",
   };
 }
 
@@ -46,6 +53,8 @@ export function useNewSessionAdd({
   client,
   resourceAuthority,
   resourcesAllowed,
+  resourcesOffered = resourcesAllowed,
+  resourcesDisabledReason,
   locked,
   offline,
   resourceError,
@@ -56,6 +65,8 @@ export function useNewSessionAdd({
   client: ResourceClient;
   resourceAuthority: string;
   resourcesAllowed: boolean;
+  resourcesOffered?: boolean;
+  resourcesDisabledReason?: string;
   locked: boolean;
   offline?: boolean;
   resourceError: (error: unknown) => string;
@@ -171,7 +182,7 @@ export function useNewSessionAdd({
   return {
     resources,
     setResources,
-    resourceBrowser: resourcesAllowed
+    resourceBrowser: resourcesOffered
       ? {
           page: activeListing?.page,
           path: activeListing?.path ?? [],
@@ -179,7 +190,9 @@ export function useNewSessionAdd({
           loading: activeListing?.loading,
           error: activeListing?.error,
           offline,
-          selectable: !locked,
+          disabled: !resourcesAllowed,
+          reason: !resourcesAllowed ? resourcesDisabledReason : undefined,
+          selectable: resourcesAllowed && !locked,
           reasonText: (code?: string) =>
             code === activeListing?.error ? (code ?? "") : resourceReason(code),
           load,

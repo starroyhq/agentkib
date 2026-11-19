@@ -14,6 +14,7 @@ interface ComposerPermissionItem {
 type PermissionMenuProps = {
   label: string;
   title: string;
+  description?: string;
   risky?: boolean;
   disabled: boolean;
   side: "top" | "bottom";
@@ -23,13 +24,12 @@ type PermissionMenuProps = {
   open?: boolean;
   onOpenChange?: (open: boolean) => void;
   disabledReason?: string;
-  status?: string;
-  blockItemsOnStatus?: boolean;
 };
 
 export function ComposerPermissionMenu({
   label,
   title,
+  description,
   risky = false,
   disabled,
   side,
@@ -39,13 +39,11 @@ export function ComposerPermissionMenu({
   open,
   onOpenChange,
   disabledReason,
-  status,
-  blockItemsOnStatus = true,
 }: PermissionMenuProps) {
   return (
     <Menu.Root open={open} onOpenChange={onOpenChange}>
       <Menu.Trigger
-        className={`${composerButtonClasses} h-11 min-w-0 gap-1.5 rounded-full px-2.5 text-sm font-normal ${risky ? "text-orange-600 hover:text-orange-700" : "text-muted-foreground"}`}
+        className={`${composerButtonClasses} h-11 min-w-0 gap-1.5 rounded-full px-2.5 text-sm font-normal disabled:opacity-50 disabled:grayscale ${risky ? "text-orange-600 hover:text-orange-700" : "text-muted-foreground"}`}
         disabled={disabled}
         title={disabledReason}
         aria-label={title === label ? title : `${title}: ${label}`}
@@ -64,18 +62,16 @@ export function ComposerPermissionMenu({
               <Menu.GroupLabel className="px-1.5 py-1 text-xs font-medium text-muted-foreground">
                 {title}
               </Menu.GroupLabel>
-              {status && (
-                <p role="status" className="px-1.5 py-1 text-xs text-muted-foreground">
-                  {status}
-                </p>
+              {description && (
+                <p className="px-1.5 py-1 text-xs text-muted-foreground">{description}</p>
               )}
               {items.map((item) => {
                 const active = item.selected ?? item.id === selected;
                 return (
                   <Menu.Item
                     key={item.id}
-                    className={`flex cursor-default items-start gap-1.5 rounded-md px-1.5 py-1 text-sm outline-none select-none data-highlighted:bg-accent data-highlighted:text-accent-foreground data-disabled:opacity-50 ${item.risky ? "text-orange-600" : ""}`}
-                    disabled={disabled || item.disabled || (blockItemsOnStatus && !!status)}
+                    className={`flex cursor-default items-start gap-1.5 rounded-md px-1.5 py-1 text-sm outline-none select-none data-highlighted:bg-accent data-highlighted:text-accent-foreground data-disabled:opacity-50 data-disabled:grayscale ${item.risky ? "text-orange-600" : ""}`}
+                    disabled={disabled || item.disabled}
                     aria-current={active || undefined}
                     onClick={() => onSelect(item.id)}
                   >

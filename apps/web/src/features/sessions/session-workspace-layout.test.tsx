@@ -50,8 +50,8 @@ vi.mock("@/features/conversation/features/sessions/pending-center", () => ({
     return <button>pending-center</button>;
   },
 }));
-vi.mock("@/features/conversation/features/sessions/managed-tasks", () => ({
-  ManagedTasks: () => null,
+vi.mock("@/features/conversation/features/sessions/session-receipt-recovery", () => ({
+  SessionReceiptRecovery: () => null,
 }));
 vi.mock("@/features/conversation/features/catalog/session-catalog", () => ({
   SessionCatalog: () => null,

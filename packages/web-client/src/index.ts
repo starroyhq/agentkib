@@ -5,6 +5,7 @@ export { SESSION_RESOURCE_LIMIT } from "@agentkib/runtime-protocol";
 import {
   managedAgentOf,
   sessionProviderCapabilities,
+  type LiveSessionAgent,
   type ManagedAgent,
   type SessionProviderCapabilities,
 } from "@agentkib/runtime-protocol";
@@ -61,6 +62,8 @@ export {
   managedAgentOf,
   type ManagedAgent,
   sessionProviderCapabilities,
+  sessionDetailCapabilities,
+  type LiveSessionAgent,
   type SessionProviderCapabilities,
   CLAUDE_BRIDGE_CLI_VERSION,
   CLAUDE_COMMAND_REFUSALS,
@@ -102,8 +105,8 @@ export interface ConversationSessionSummary {
     /** Managed Claude: background tasks running in AgentKib's process; absent when none. */
     backgroundTasks?: number;
   };
-  /** A turn that the Codex app or CLI runs now; display only, never a control. */
-  externalTurn?: { status: "running"; startedAt: string | null } | null;
+  /** Verified native activity, available even when the control bridge is offline. */
+  externalTurn?: { status: "running"; startedAt: string | null; turnId?: string | null } | null;
   /** Verified index identities that route to this managed session. */
   indexedSessionIds?: string[];
   id: string;
@@ -579,7 +582,12 @@ export type CodexAction =
   | "usage-limit-cancel"
   /** Continues after this limit's reset after all: off by setting, turned off, or a day away. */
   | "usage-limit-continue";
-export type SessionAction = CodexAction | "queue-pause" | "queue-resume";
+export type SessionAction = CodexAction | "queue-pause" | "queue-resume" | "open-model-picker";
+
+/** Settings-related receipts refresh the composer without reloading the transcript. */
+export function isSessionSettingsAction(kind: string): kind is "settings" | "open-model-picker" {
+  return kind === "settings" || kind === "open-model-picker";
+}
 export type ClaudePermissionMode = "default" | "plan" | "acceptEdits";
 export type DevinPermissionMode = "auto" | "accept-edits" | "smart" | "dangerous";
 /**
@@ -600,7 +608,7 @@ export interface LivePermission {
   /** Only with `mode: null`, no selection and Claude Code 2.1.285+, where the CLI may start in auto. */
   possiblyAuto?: true;
 }
-export interface CodexCapabilities {
+export interface SessionCapabilities {
   sessionId: string;
   executionMode: string;
   status: string;
@@ -608,7 +616,6 @@ export interface CodexCapabilities {
   features: Partial<
     Record<
       | SessionAction
-      | "adopt"
       | "reconcile"
       | "settings-state"
       | "goal"
@@ -618,6 +625,7 @@ export interface CodexCapabilities {
       | "context"
       | "resources"
       | "send"
+      | "stop"
       | "files"
       | "usage",
       { available: boolean; reason?: string }
@@ -630,7 +638,7 @@ export interface CodexCapabilities {
    */
   commands?: ClaudeCommandEntry[];
 }
-export type SessionCapabilities = CodexCapabilities;
+export type CodexCapabilities = SessionCapabilities;
 export interface DevinModelVariantOption {
   id: string;
   name?: string;
@@ -711,7 +719,6 @@ export function newSessionProvider(
 
 export interface ManagedInspection {
   sessionId: string;
-  handoffFingerprint?: string;
   available?: boolean;
   reason?: string;
   executionLocation?: "agentkib" | "terminal" | "external" | null;
@@ -747,8 +754,6 @@ export interface ManagedActionBody {
   agentPreset?: string;
   /** Devin: the first message, which a new session starts with. */
   prompt?: string;
-  handoffConfirmed?: boolean;
-  handoffFingerprint?: string;
 }
 export interface ManagedActionResult {
   accepted?: boolean;
@@ -819,7 +824,7 @@ export interface CodexSettingValues {
   serviceTierId?: string;
   /** Model window limit, independent of this conversation's token consumption. */
   maxContextTokens?: number;
-  permissionMode?: ClaudePermissionMode | DevinPermissionMode;
+  permissionMode?: ClaudeObservedPermissionMode | DevinPermissionMode;
 }
 export interface CodexSessionSettings {
   sessionId: string;
@@ -827,6 +832,8 @@ export interface CodexSessionSettings {
   reason?: string;
   revision: number;
   executionMode?: string;
+  /** The native executor that supplied the currently writable fields. */
+  writeScope?: string;
   provider?: SessionProviderCapabilities;
   status?: string;
   current: CodexSettingValues;
@@ -928,7 +935,6 @@ export interface CodexActionBody {
   requestId: string;
   sessionId: string;
   expectedRevision: number;
-  handoffConfirmed?: boolean;
   turnId?: string;
   name?: string;
   text?: string;
@@ -948,14 +954,17 @@ export interface CodexActionBody {
 }
 export interface SessionActionBody extends Omit<CodexActionBody, "effort"> {
   effort?: string | null;
+  expectedSettingsScope?: string;
   permissionMode?: ClaudePermissionMode | DevinPermissionMode;
 }
 export {
   canDisplayCodexModelFallback,
+  sessionModelDisplayFallback,
   readSessionModelDisplay,
   rememberSessionModelDisplay,
   forgetSessionModelDisplay,
   type SessionModelDisplay,
+  type SessionModelEffortOptions,
 } from "./session-model-display";
 
 export interface SessionActionResult {
@@ -1302,29 +1311,26 @@ export class WebClient {
   devinTerminal(body: { action: "login" | "trust"; sessionId?: string; workspaceId?: string }) {
     return this.request<{ terminal: string }>("devin/terminal", body);
   }
-  managedAction(operation: "create" | "adopt" | "release" | "reconcile", body: ManagedActionBody) {
+  managedAction(operation: "create" | "release" | "reconcile", body: ManagedActionBody) {
     return this.request<ManagedActionResult>(`managed/${operation}`, body);
   }
-  sessionCapabilities(sessionId: string, agent: ManagedAgent, signal?: AbortSignal) {
-    return agent === "codex"
-      ? this.codexCapabilities(sessionId, signal)
-      : this.request<SessionCapabilities>(
-          `managed/capabilities?${new URLSearchParams({ sessionId, agent })}`,
-          undefined,
-          signal,
-        );
+  sessionCapabilities(sessionId: string, agent: LiveSessionAgent, signal?: AbortSignal) {
+    return this.request<SessionCapabilities>(
+      `managed/capabilities?${new URLSearchParams({ sessionId, agent })}`,
+      undefined,
+      signal,
+    );
   }
   sessionAction(
     action: SessionAction,
     body: SessionActionBody,
     agent: ManagedAgent,
   ): Promise<SessionActionResult> {
-    if (agent === "codex") {
-      if (action === "queue-pause" || action === "queue-resume")
-        return Promise.reject(new ApiError(409, "operation_unavailable", "not-dispatched"));
-      return this.codexAction(action, body);
-    }
-    if (action === "inspect")
+    if (body.effort === null && sessionProviderCapabilities(agent)?.models.effortDefault === false)
+      return Promise.reject(new ApiError(400, "invalid_effort", "not-dispatched"));
+    if (action === "open-model-picker" && !sessionProviderCapabilities(agent)?.models.nativePicker)
+      return Promise.reject(new ApiError(409, "operation_unavailable", "not-dispatched"));
+    if (action === "inspect" && agent !== "codex")
       return this.managedInspect(body.sessionId, agent).then((context) => ({ context }));
     return this.request<SessionActionResult>("managed/action", {
       ...body,
@@ -1333,13 +1339,11 @@ export class WebClient {
     });
   }
   sessionSettings(sessionId: string, agent: ManagedAgent, signal?: AbortSignal) {
-    return agent === "codex"
-      ? this.codexSessionSettings(sessionId, signal)
-      : this.request<SessionSettings>(
-          `managed/settings?${new URLSearchParams({ sessionId, agent })}`,
-          undefined,
-          signal,
-        );
+    return this.request<SessionSettings>(
+      `managed/settings?${new URLSearchParams({ sessionId, agent })}`,
+      undefined,
+      signal,
+    );
   }
   prepareSessionSettings(
     body: { sessionId: string; bootId: string; expectedRevision: number },

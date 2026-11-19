@@ -146,6 +146,45 @@ describe("WorkspaceSessionsPage", () => {
     expect(screen.queryByText("Some session sources are unavailable")).toBeNull();
   });
 
+  it.each(["codex", "claude-code", "deepseek-harness", "devin", "antigravity"] as const)(
+    "routes an old same-Agent %s continuation link to the original conversation",
+    async (agent) => {
+      Object.defineProperty(window, "desktopConversation", { configurable: true, value: {} });
+      const source = { ...cachedSession, agent };
+      vi.mocked(api.workspaceSessions).mockResolvedValue([source]);
+      vi.mocked(api.refreshWorkspaceSessions).mockResolvedValue([source]);
+      const onContinueSession = vi.fn();
+      try {
+        render(
+          <WorkspaceSessionsPage
+            workspace={workspace}
+            enabled
+            targetAgents={[agent]}
+            resumeContinuation={{
+              sessionId: source.id,
+              targetAgent: agent,
+              historyBudgetTokens: 120000,
+              format: "markdown",
+              autoPrepare: true,
+            }}
+            onContinueSession={onContinueSession}
+            onRuntimeChanged={vi.fn()}
+            onHandoffPlanned={vi.fn()}
+            onMcpConnectionPlanned={vi.fn()}
+          />,
+        );
+        await waitFor(() => expect(onContinueSession).toHaveBeenCalledWith(source.id));
+        expect(api.prepareSessionHandoff).not.toHaveBeenCalled();
+        expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+      } finally {
+        Object.defineProperty(window, "desktopConversation", {
+          configurable: true,
+          value: undefined,
+        });
+      }
+    },
+  );
+
   it("waits for session indexing to be enabled and prevents duplicate requests", async () => {
     const pending = deferred<void>();
     const onRuntimeChanged = vi.fn().mockReturnValue(pending.promise);

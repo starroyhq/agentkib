@@ -1,7 +1,8 @@
+import userEvent from "@testing-library/user-event";
 import "@testing-library/jest-dom/vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import type { CodexSessionSettings } from "@agentkib/web-client";
+import { forgetSessionModelDisplay, type CodexSessionSettings } from "@agentkib/web-client";
 import { CodexComposerControls } from "@/features/conversation/features/sessions/codex-session-controls";
 import { useSession } from "@/features/conversation/features/sessions/session-context";
 
@@ -76,12 +77,13 @@ beforeEach(() => {
     },
     capabilities: { sessionId: "s", features: { settings: { available: true } } },
     client: {
-      codexSessionSettings: vi.fn(async () => historicalSettings),
+      sessionSettings: vi.fn(async () => historicalSettings),
       codexGoals: vi.fn(async () => undefined),
       codexContextOptions: vi.fn(async () => ({ resources: [] })),
     },
     codexAction: vi.fn(),
   } as unknown as ReturnType<typeof useSession>;
+  forgetSessionModelDisplay(state.client, state.access, state.selected, "codex");
   vi.mocked(useSession).mockImplementation(() => state);
 });
 
@@ -89,7 +91,7 @@ afterEach(cleanup);
 
 it("retains a scoped model and Fast badge when an unconfirmed settings write obscures live", async () => {
   state.access!.device!.id = "uncertain-settings-device";
-  vi.mocked(state.client.codexSessionSettings).mockResolvedValue(fastSettings);
+  vi.mocked(state.client.sessionSettings).mockResolvedValue(fastSettings);
   const first = render(<CodexComposerControls {...props} />);
   expect(await screen.findByRole("button", { name: /Native Model.*Fast mode/ })).toBeVisible();
   first.unmount();
@@ -102,7 +104,7 @@ it("retains a scoped model and Fast badge when an unconfirmed settings write obs
     status: "uncertain",
   };
   state.live = { ...state.live!, status: "outcome-unknown" };
-  vi.mocked(state.client.codexSessionSettings).mockImplementation(() => new Promise(() => {}));
+  vi.mocked(state.client.sessionSettings).mockImplementation(() => new Promise(() => {}));
   render(<CodexComposerControls {...props} />);
   const entry = screen.getByRole("button", { name: /Native Model.*Fast mode/ });
   expect(entry.querySelector('svg[fill="currentColor"]')).toBeVisible();
@@ -115,11 +117,11 @@ it("retains a scoped model and Fast badge when an unconfirmed settings write obs
 
 it("keeps the remembered model and Fast badge while an accepted policy change is pending", async () => {
   state.access!.device!.id = "pending-policy-device";
-  vi.mocked(state.client.codexSessionSettings).mockResolvedValue(fastSettings);
+  vi.mocked(state.client.sessionSettings).mockResolvedValue(fastSettings);
   vi.mocked(state.codexAction).mockResolvedValue({ accepted: true });
   render(<CodexComposerControls {...props} />);
   await screen.findByRole("button", { name: /Native Model.*Fast mode/ });
-  vi.mocked(state.client.codexSessionSettings).mockResolvedValue({
+  vi.mocked(state.client.sessionSettings).mockResolvedValue({
     ...fastSettings,
     current: {},
     selected: { policyId: "new-policy" },
@@ -135,7 +137,7 @@ it("keeps the remembered model and Fast badge while an accepted policy change is
 
 it("shows native model history on a cold open with a staged policy only", async () => {
   state.access!.device!.id = "cold-policy-device";
-  vi.mocked(state.client.codexSessionSettings).mockResolvedValue({
+  vi.mocked(state.client.sessionSettings).mockResolvedValue({
     ...historicalSettings,
     selected: { policyId: "workspace-write-auto-review" },
     applicationStatus: "pending",
@@ -159,7 +161,7 @@ it("starts a revisited session with its model label while keeping settings tied 
 
   state.live = undefined;
   let finish!: (settings: CodexSessionSettings) => void;
-  vi.mocked(state.client.codexSessionSettings).mockImplementation(
+  vi.mocked(state.client.sessionSettings).mockImplementation(
     () =>
       new Promise((resolve) => {
         finish = resolve;
@@ -189,6 +191,31 @@ it("starts a revisited session with its model label while keeping settings tied 
   expect(state.codexAction).not.toHaveBeenCalled();
 });
 
+it("replaces an older cached model with native history and keeps it ahead of provider defaults", async () => {
+  vi.mocked(state.client.sessionSettings).mockResolvedValue(fastSettings);
+  const first = render(<CodexComposerControls {...props} />);
+  await screen.findByRole("button", { name: /Native Model.*Fast mode/ });
+  first.unmount();
+
+  vi.mocked(state.client.sessionSettings).mockResolvedValue(historicalSettings);
+  const second = render(<CodexComposerControls {...props} />);
+  await screen.findByRole("button", { name: /recorded-model.*Extra high/ });
+  second.unmount();
+
+  vi.mocked(state.client.sessionSettings).mockResolvedValue({
+    ...historicalSettings,
+    historicalSettings: undefined,
+    defaults: { modelId: "default-model" },
+    options: { ...historicalSettings.options, policies: [{ id: "test", name: "Read completed" }] },
+    current: { policyId: "test" },
+    selected: undefined,
+  });
+  render(<CodexComposerControls {...props} />);
+  await screen.findByRole("button", { name: /Execution policy: Read completed/ });
+  expect(screen.getByRole("button", { name: /recorded-model.*Extra high/ })).toBeVisible();
+  expect(state.codexAction).not.toHaveBeenCalled();
+});
+
 it.each(["device", "permission"] as const)(
   "does not reuse the remembered label after a change of %s",
   async (scope) => {
@@ -203,7 +230,7 @@ it.each(["device", "permission"] as const)(
         ...(scope === "device" ? { id: "other-device" } : { advancedControl: false }),
       },
     };
-    vi.mocked(state.client.codexSessionSettings).mockImplementation(() => new Promise(() => {}));
+    vi.mocked(state.client.sessionSettings).mockImplementation(() => new Promise(() => {}));
     render(<CodexComposerControls {...props} />);
     expect(screen.getByRole("button", { name: "Model settings" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /recorded-model/ })).not.toBeInTheDocument();
@@ -234,7 +261,7 @@ it.each([
   ["recorded-model", "Extra high", historicalSettings.historicalSettings],
   ["Default Model", "Medium", undefined],
 ] as const)("displays %s without prefilling model settings", async (name, effortLabel, history) => {
-  vi.mocked(state.client.codexSessionSettings).mockResolvedValue({
+  vi.mocked(state.client.sessionSettings).mockResolvedValue({
     ...historicalSettings,
     historicalSettings: history,
     defaults: { modelId: "default-model", effort: "medium" },
@@ -254,13 +281,15 @@ it.each([
   fireEvent.click(dialog.getByRole("button", { name: `Select model: ${name}` }));
   expect(dialog.getByRole("button", { name })).toHaveAttribute("aria-pressed", "false");
   expect(dialog.queryByText(/Last used/)).not.toBeInTheDocument();
-  fireEvent.click(screen.getByRole("button", { name: "Context usage" }));
-  expect(screen.getByText(/29 \/ 100 \(29%\)/)).toBeVisible();
+  await userEvent.setup().hover(screen.getByRole("img", { name: "Context usage" }));
+  const usage = within(await screen.findByRole("tooltip"));
+  expect(usage.getByText("29% used (71% remaining)")).toBeInTheDocument();
+  expect(usage.getByText("29 / 100 tokens used")).toBeInTheDocument();
   expect(state.codexAction).not.toHaveBeenCalled();
 });
 
 it("keeps recorded usage available and shows the live model once reported", async () => {
-  vi.mocked(state.client.codexSessionSettings).mockResolvedValue({
+  vi.mocked(state.client.sessionSettings).mockResolvedValue({
     ...historicalSettings,
     available: false,
     defaults: { modelId: "default-model", effort: "medium" },
@@ -269,13 +298,16 @@ it("keeps recorded usage available and shows the live model once reported", asyn
   const view = render(<CodexComposerControls {...props} />);
   expect(await screen.findByRole("button", { name: /recorded-model/ })).toBeVisible();
   await waitFor(() =>
-    expect(screen.getByRole("button", { name: "Context usage" })).toHaveTextContent("29%"),
+    expect(screen.getByRole("img", { name: "Context usage" })).toHaveAccessibleDescription(
+      expect.stringContaining("29%"),
+    ),
   );
   state.live = { ...state.live!, status: "running", reason: undefined };
   view.rerender(<CodexComposerControls {...props} />);
-  expect(screen.getByRole("button", { name: "Model settings" })).toBeVisible();
-  expect(screen.queryByRole("button", { name: /recorded-model/ })).not.toBeInTheDocument();
-  expect(screen.getByRole("button", { name: "Context usage" })).not.toHaveTextContent("29%");
+  expect(screen.getByRole("button", { name: /recorded-model/ })).toBeVisible();
+  expect(screen.getByRole("img", { name: "Context usage" })).toHaveAccessibleDescription(
+    expect.stringContaining("29%"),
+  );
   state.live = {
     ...state.live!,
     settings: {
@@ -287,5 +319,7 @@ it("keeps recorded usage available and shows the live model once reported", asyn
   };
   view.rerender(<CodexComposerControls {...props} />);
   expect(await screen.findByRole("button", { name: /live-model/ })).toBeVisible();
-  expect(screen.getByRole("button", { name: "Context usage" })).toHaveTextContent("50%");
+  expect(screen.getByRole("img", { name: "Context usage" })).toHaveAccessibleDescription(
+    expect.stringContaining("50%"),
+  );
 });

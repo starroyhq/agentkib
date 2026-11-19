@@ -57,7 +57,6 @@ beforeEach(() => {
       sessionSettings: vi.fn(async () => settings),
       sessionGoals: vi.fn(),
       sessionResources: vi.fn(),
-      codexSessionSettings: vi.fn(),
       codexGoals: vi.fn(),
       codexContextOptions: vi.fn(),
     },
@@ -78,7 +77,6 @@ describe("DeepSeek Harness model settings in the composer", () => {
     expect(
       screen.queryByRole("button", { name: new RegExp(`^${copy.executionPolicy}:`) }),
     ).not.toBeInTheDocument();
-    expect(state.client.codexSessionSettings).not.toHaveBeenCalled();
     expect(state.client.codexGoals).not.toHaveBeenCalled();
     // Without goal, resource or attachment capabilities there is nothing to add.
     expect(state.client.sessionGoals).not.toHaveBeenCalled();
@@ -121,7 +119,7 @@ describe("DeepSeek Harness model settings in the composer", () => {
     expect(menu).not.toHaveTextContent(contextUsageCopy["en-US"].unavailableDetail);
   });
 
-  it("says once, while a turn runs, that the settings wait for it", async () => {
+  it("greys settings the executor cannot write during a turn", async () => {
     const busy = { available: false, reason: "session-busy" };
     state = {
       ...state,
@@ -140,49 +138,73 @@ describe("DeepSeek Harness model settings in the composer", () => {
     } as unknown as ReturnType<typeof useSession>;
     render(<CodexComposerControls {...props} />);
     fireEvent.click(await screen.findByRole("button", { name: /DeepSeek Chat/ }));
-    expect(await screen.findByText(copy.settingsWhileRunning)).toBeInTheDocument();
-    expect(screen.queryByText(codexReason("en-US", "session-busy").text)).not.toBeInTheDocument();
+    const overview = within(await screen.findByRole("dialog"));
+    expect(overview.queryByRole("status")).not.toBeInTheDocument();
+    fireEvent.click(overview.getByRole("button", { name: "Select model: DeepSeek Chat" }));
+    const models = within(await screen.findByRole("dialog", { name: "Model" }));
+    const model = models.getByRole("button", { name: "DeepSeek Chat" });
+    expect(model).toBeDisabled();
+    fireEvent.click(model);
+    expect(state.codexAction).not.toHaveBeenCalled();
   });
 
-  it("switches the permission preset during a turn, while the model waits", async () => {
+  it("re-enables the permission preset only after an authorized idle read", async () => {
     const busy = { available: false, reason: "session-busy" };
+    const presetSettings = {
+      ...settings,
+      current: { ...settings.current, policyId: "workspace-write" },
+      options: {
+        ...settings.options,
+        policies: [
+          { id: "read-only", name: "Read Only" },
+          { id: "workspace-write", name: "Workspace write · ask when needed" },
+        ],
+      },
+    };
     state = {
       ...state,
       live: { sessionId: "session", status: "running", revision: 1 },
+      capabilities: {
+        ...state.capabilities!,
+        features: { ...state.capabilities!.features, settings: busy },
+      },
       client: {
         ...state.client,
         sessionSettings: vi.fn(async () => ({
-          ...settings,
-          current: { ...settings.current, policyId: "workspace-write" },
+          ...presetSettings,
           writable: {
             ...settings.writable,
             model: busy,
             effort: busy,
-            policy: { available: true },
-          },
-          options: {
-            ...settings.options,
-            policies: [
-              { id: "read-only", name: "Read Only" },
-              { id: "workspace-write", name: "Workspace write · ask when needed" },
-            ],
+            policy: busy,
           },
         })),
       },
     } as unknown as ReturnType<typeof useSession>;
-    render(<CodexComposerControls {...props} />);
+    const view = render(<CodexComposerControls {...props} />);
     const permissions = await screen.findByRole("button", {
       name: new RegExp(`^${copy.executionPolicy}:`),
     });
     expect(permissions).toHaveTextContent("Workspace Write");
     fireEvent.click(permissions);
-    expect(await screen.findByText(copy.settingsWhileRunningModel)).toBeInTheDocument();
-    expect(screen.queryByText(copy.settingsWhileRunning)).not.toBeInTheDocument();
     const menu = await screen.findByRole("menu");
+    expect(within(menu).queryByRole("status")).not.toBeInTheDocument();
     expect(within(menu).getByRole("menuitem", { name: /^Workspace Write/ })).toBeVisible();
     expect(menu).not.toHaveTextContent("workspace-write");
     const readOnly = within(menu).getByRole("menuitem", { name: /^Read Only/ });
-    expect(readOnly).not.toHaveAttribute("aria-disabled", "true");
+    expect(readOnly).toHaveAttribute("aria-disabled", "true");
+    fireEvent.click(readOnly);
+    expect(state.codexAction).not.toHaveBeenCalled();
+
+    vi.mocked(state.client.sessionSettings).mockResolvedValue({
+      ...presetSettings,
+      revision: 2,
+      writable: { ...settings.writable, policy: { available: true } },
+    });
+    state.live = { ...state.live!, status: "idle", revision: 2 };
+    state.capabilities!.features.settings = { available: true };
+    view.rerender(<CodexComposerControls {...props} />);
+    await waitFor(() => expect(readOnly).not.toHaveAttribute("aria-disabled", "true"));
     await userEvent.click(readOnly);
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     expect(state.codexAction).toHaveBeenCalledExactlyOnceWith("settings", {

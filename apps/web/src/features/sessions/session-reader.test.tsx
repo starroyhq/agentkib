@@ -308,6 +308,7 @@ describe("conversation reading position", () => {
       current: { ...state.current!, agent: "antigravity" },
       access: {
         ...state.access!,
+        status: "approved",
         experimentalEnabled: true,
         device: {
           id: "device",
@@ -329,7 +330,9 @@ describe("conversation reading position", () => {
     };
     const view = render(<SessionReader />);
     expect(screen.getByRole("button", { name: "添加上下文" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "上下文用量" })).toHaveTextContent("0%");
+    expect(screen.getByRole("img", { name: "上下文用量" })).toHaveAccessibleDescription(
+      expect.stringContaining("0%"),
+    );
     state.live = { ...state.live!, activity: "compacting" };
     view.rerender(<SessionReader />);
     expect(screen.getByRole("button", { name: state.t.send })).toBeDisabled();
@@ -345,7 +348,9 @@ describe("conversation reading position", () => {
       },
     };
     view.rerender(<SessionReader />);
-    expect(screen.getByRole("button", { name: "上下文用量" })).toHaveTextContent("5%");
+    expect(screen.getByRole("img", { name: "上下文用量" })).toHaveAccessibleDescription(
+      expect.stringContaining("5%"),
+    );
     expect(screen.queryByRole("button", { name: state.t.send })).not.toBeInTheDocument();
   });
   it("keeps the reading position and offers an accessible jump for an appended reply", async () => {

@@ -170,16 +170,6 @@ export function SessionHistoryContent({
         </div>
       ) : (
         <div className="session-transcript mx-auto mt-6 flex w-full max-w-3xl flex-col gap-5">
-          {history.nextCursor && (
-            <Button
-              variant="outline"
-              className="self-center"
-              disabled={history.loadingEarlier}
-              onClick={() => loadEarlier()}
-            >
-              {tr(history.loadingEarlier ? "sessions.loadingHistory" : "sessions.loadEarlier")}
-            </Button>
-          )}
           {!history.events.length && !history.error && (
             <p className="session-state-inline p-7 px-5 text-center text-muted-foreground">
               {tr(history.nextCursor ? "history.emptyWindow" : "conversations.noReadableEvents")}
@@ -189,9 +179,10 @@ export function SessionHistoryContent({
             events={history.events}
             sessionKey={sessionKey}
             incomplete={history.warnings.length > 0}
+            hasEarlier={!!history.nextCursor}
             historyDetailTurnId={history.historyDetailTurnId}
             loadingEarlier={history.loadingEarlier}
-            loadEarlierDetails={loadEarlier}
+            loadEarlier={loadEarlier}
           />
           <HistoryReadState
             session={selected}

@@ -4,7 +4,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CodexSessionSettings } from "@agentkib/web-client";
 import { createRef } from "react";
-import { planModeCopy } from "@agentkib/session-ui";
+import { confirmsComposerSettings, planModeCopy } from "@agentkib/session-ui";
 import { CodexComposerControls, type ComposerControlsHandle } from "./codex-session-controls";
 import { useSession } from "./session-context";
 import { codexCopy } from "./codex-copy";
@@ -59,11 +59,15 @@ beforeEach(() => {
     online: true,
     busy: false,
     usageEpoch: "epoch",
-    access: { bootId: "boot", device: { id: "device", accessMode: "full" } },
+    access: {
+      status: "approved",
+      bootId: "boot",
+      device: { id: "device", accessMode: "full", advancedControl: true },
+    },
     live: { sessionId: "session", status: "idle", revision: 1 },
     capabilities: { sessionId: "session", features: { settings: writable } },
     client: {
-      codexSessionSettings: vi.fn(async () => settings),
+      sessionSettings: vi.fn(async () => settings),
       codexGoals: vi.fn(),
       codexContextOptions: vi.fn(),
     },
@@ -83,6 +87,95 @@ async function openPicker() {
 }
 
 describe("Codex composer quick model settings", () => {
+  it("confirms a next-turn receipt using the native owner's settings readback", () => {
+    const pending = { model: "terra", expectedRevision: 1, nextTurn: true };
+    const flags = { prepared: false, variants: false, follower: true };
+    const readback: CodexSessionSettings = {
+      ...settings,
+      revision: 2,
+      executionMode: "codex-follower",
+      applicationStatus: "confirmed",
+      current: { modelId: "terra" },
+    };
+    expect(confirmsComposerSettings(readback, pending, flags)).toBe(true);
+    expect(confirmsComposerSettings({ ...readback, revision: 1 }, pending, flags)).toBe(false);
+    expect(
+      confirmsComposerSettings({ ...readback, current: settings.current }, pending, flags),
+    ).toBe(false);
+  });
+
+  it("keeps the current model and effort visible when Codex owns model writes", async () => {
+    state.live = { ...state.live!, executionMode: "codex-follower" };
+    state.capabilities!.features = {
+      "settings-state": { available: true },
+      settings: { available: false, reason: "follower-operation-unverified" },
+    };
+    settings.current.policyId = "workspace-write-on-request";
+    settings.writable.policy = { available: false };
+    render(<CodexComposerControls {...props} />);
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: /^Execution policy: / })).toBeDisabled(),
+    );
+    const trigger = await screen.findByRole("button", { name: "Model settings: Sol · High" });
+    fireEvent.click(trigger);
+    const popup = await screen.findByRole("dialog");
+    expect(trigger).toHaveTextContent("Sol");
+    expect(trigger).toHaveTextContent("High");
+    expect(within(popup).getByText("Sol")).toBeVisible();
+    expect(within(popup).queryByRole("status")).not.toBeInTheDocument();
+    expect(within(popup).getByRole("slider")).toBeDisabled();
+    expect(state.codexAction).not.toHaveBeenCalled();
+  });
+
+  it("binds a follower model change to the current owner's settings read", async () => {
+    state.live = { ...state.live!, executionMode: "codex-follower", connectionGeneration: "one" };
+    settings.executionMode = "codex-follower";
+    settings.writeScope = "owner-one";
+    settings.options.models.push({
+      id: "terra",
+      name: "Terra",
+      efforts: ["low", "high"],
+      serviceTierIds: [],
+    });
+    const view = render(<CodexComposerControls {...props} />);
+    const trigger = await screen.findByRole("button", { name: /Select reasoning effort: Sol/ });
+    fireEvent.click(trigger);
+    const picker = await screen.findByRole("dialog");
+    fireEvent.click(within(picker).getByRole("button", { name: "Select model: Sol" }));
+    const models = await screen.findByRole("dialog", { name: "Model" });
+    expect(within(models).getByRole("button", { name: "Terra" })).toBeEnabled();
+
+    let resolveRead!: (value: CodexSessionSettings) => void;
+    vi.mocked(state.client.sessionSettings).mockReturnValue(
+      new Promise((resolve) => (resolveRead = resolve)),
+    );
+    state.live = { ...state.live!, connectionGeneration: "two" };
+    view.rerender(<CodexComposerControls {...props} />);
+    expect(within(models).getByRole("button", { name: "Terra" })).toBeDisabled();
+    expect(state.codexAction).not.toHaveBeenCalled();
+
+    await act(async () => resolveRead({ ...settings, writeScope: "owner-two" }));
+    const terra = within(models).getByRole("button", { name: "Terra" });
+    await waitFor(() => expect(terra).toBeEnabled());
+    let finishWrite!: () => void;
+    vi.mocked(state.codexAction).mockImplementationOnce(
+      () => new Promise((resolve) => (finishWrite = () => resolve({ accepted: true }))),
+    );
+    fireEvent.click(terra);
+    expect(state.codexAction).toHaveBeenCalledExactlyOnceWith("settings", {
+      model: "terra",
+      expectedSettingsScope: "owner-two",
+    });
+    expect(trigger).toHaveTextContent("Terra");
+
+    vi.mocked(state.client.sessionSettings).mockImplementation(() => new Promise(() => {}));
+    state.live = { ...state.live!, connectionGeneration: "three" };
+    view.rerender(<CodexComposerControls {...props} />);
+    expect(trigger).toHaveTextContent("Sol");
+    await act(async () => finishWrite());
+    expect(trigger).toHaveTextContent("Sol");
+  });
+
   it("places the model after the context ring and keeps advanced settings separate", async () => {
     render(<CodexComposerControls {...props} action={<button>Send</button>} />);
     const picker = await screen.findByRole("button", { name: /Select reasoning effort: Sol/ });
@@ -158,21 +251,84 @@ describe("Codex composer quick model settings", () => {
     expect(within(dialog).getByRole("button", { name: "Fast mode" })).toBeEnabled();
     expect(within(dialog).queryByText(/next turn/i)).not.toBeInTheDocument();
     expect(state.control).not.toHaveBeenCalled();
-    expect(state.client.codexSessionSettings).toHaveBeenCalledTimes(2);
+    expect(state.client.sessionSettings).toHaveBeenCalledTimes(2);
   });
 
   it("lets a running native follower inspect its model without sending settings", async () => {
     state = {
       ...state,
       live: { ...state.live!, status: "running" },
-      capabilities: { ...state.capabilities!, features: { settings: { available: false } } },
+      capabilities: {
+        ...state.capabilities!,
+        features: {
+          settings: { available: false },
+          "settings-state": { available: true },
+        },
+      },
     };
     render(<CodexComposerControls {...props} />);
     const dialog = await openPicker();
     expect(within(dialog).getByRole("button", { name: "Fast mode" })).toBeDisabled();
     expect(await within(dialog).findByRole("slider")).toBeDisabled();
-    expect(within(dialog).getByText(codexCopy["en-US"].settingsWhileRunning)).toBeVisible();
+    expect(within(dialog).queryByRole("status")).not.toBeInTheDocument();
     expect(state.codexAction).not.toHaveBeenCalled();
+  });
+
+  it("can stage writable settings during a turn and keeps other fields disabled", async () => {
+    state.live = { ...state.live!, executionMode: "codex-managed", status: "running" };
+    settings.current = { ...settings.current, mode: "default", policyId: "first-policy" };
+    settings.writable.serviceTier = { available: false };
+    settings.writable.restoreDefaults = { available: false };
+    settings.writable.mode = { available: false };
+    settings.options.models.push({
+      id: "terra",
+      name: "Terra",
+      efforts: ["low", "high"],
+      serviceTierIds: [],
+    });
+    settings.options.collaborationModes = [
+      { id: "default", name: "Default" },
+      { id: "plan", name: "Plan" },
+    ];
+    settings.options.policies = [
+      { id: "first-policy", name: "First policy" },
+      { id: "second-policy", name: "Second policy" },
+    ];
+    vi.mocked(state.codexAction).mockResolvedValue({ accepted: true });
+    render(<CodexComposerControls {...props} />);
+
+    const model = await screen.findByRole("button", { name: /Select reasoning effort: Sol/ });
+    fireEvent.click(model);
+    const panel = within(await screen.findByRole("dialog"));
+    expect(panel.queryByRole("status")).not.toBeInTheDocument();
+    expect(panel.getByRole("button", { name: "Fast mode" })).toBeDisabled();
+    expect(panel.getByRole("button", { name: "Reset default model" })).toBeDisabled();
+    const effort = await panel.findByRole("slider");
+    expect(effort).toBeEnabled();
+    fireEvent.keyDown(effort, { key: "Home" });
+    await waitFor(() =>
+      expect(state.codexAction).toHaveBeenNthCalledWith(1, "settings", { effort: "low" }),
+    );
+
+    fireEvent.click(panel.getByRole("button", { name: "Select model: Sol" }));
+    const terra = await screen.findByRole("button", { name: "Terra" });
+    await waitFor(() => expect(terra).toBeEnabled());
+    fireEvent.click(terra);
+    await waitFor(() =>
+      expect(state.codexAction).toHaveBeenNthCalledWith(2, "settings", { model: "terra" }),
+    );
+    fireEvent.click(model);
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole("button", { name: /Execution policy: First policy/ }));
+    const policy = await screen.findByRole("menuitem", { name: "Second policy" });
+    await waitFor(() => expect(policy).not.toHaveAttribute("aria-disabled", "true"));
+    fireEvent.click(policy);
+    await waitFor(() =>
+      expect(state.codexAction).toHaveBeenNthCalledWith(3, "settings", {
+        policyId: "second-policy",
+      }),
+    );
   });
 
   it("does not apply an old settings receipt after switching conversations", async () => {
@@ -196,10 +352,11 @@ describe("Codex composer quick model settings", () => {
       selected: "other",
       current: { ...state.current!, id: "other" },
       live: { ...state.live!, sessionId: "other" },
+      capabilities: { ...state.capabilities!, sessionId: "other" },
     };
     view.rerender(<CodexComposerControls {...props} />);
     await screen.findByRole("button", { name: /Select reasoning effort: other-model/ });
-    const reads = vi.mocked(state.client.codexSessionSettings).mock.calls.length;
+    const reads = vi.mocked(state.client.sessionSettings).mock.calls.length;
     await act(async () =>
       resolve({ accepted: true } as unknown as Awaited<ReturnType<typeof state.codexAction>>),
     );
@@ -207,7 +364,7 @@ describe("Codex composer quick model settings", () => {
     expect(
       screen.getByRole("button", { name: /Select reasoning effort: other-model/ }),
     ).toBeVisible();
-    expect(state.client.codexSessionSettings).toHaveBeenCalledTimes(reads);
+    expect(state.client.sessionSettings).toHaveBeenCalledTimes(reads);
   });
 
   it("releases the mutation busy state after a reconnect invalidates its read generation", async () => {
@@ -228,7 +385,8 @@ describe("Codex composer quick model settings", () => {
     );
     state = { ...state, online: true, usageEpoch: "new-observation" };
     view.rerender(<CodexComposerControls {...props} />);
-    fireEvent.click(await screen.findByRole("button", { name: /Select reasoning effort: Sol/ }));
+    await screen.findByRole("button", { name: /Select reasoning effort: Sol/ });
+    // Observations keep the open picker mounted while releasing the previous write's busy state.
     const reconnected = await screen.findByRole("dialog", { name: /Select reasoning effort:/ });
     expect(within(reconnected).getByRole("button", { name: "Fast mode" })).toBeEnabled();
     expect(state.codexAction).toHaveBeenCalledTimes(1);
@@ -306,9 +464,7 @@ describe("plan mode in the composer, as in Codex's own", () => {
     const label = codexCopy["en-US"].addContext;
     fireEvent.click(screen.getByRole("button", { name: label }));
     const add = within(await screen.findByRole("dialog", { name: label }));
-    expect(
-      add.queryByRole("button", { name: planModeCopy("en-US").title }),
-    ).not.toBeInTheDocument();
+    expect(add.getByRole("button", { name: planModeCopy("en-US").title })).toBeDisabled();
     fireEvent.click(add.getByRole("button", { name: planModeCopy("en-US").clear }));
 
     await waitFor(() => {

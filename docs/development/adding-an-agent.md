@@ -40,9 +40,9 @@
 
 **会话 Provider**
 
-- Codex、Claude Code、DeepSeek Harness 和 Devin 已接入 `packages/backend/src/session-provider.ts`。在注册表给 Agent 装配新建选项、创建、设置读取与写入、上下文用量；原生参数的翻译放在各自适配器。
-- 在 `packages/runtime-protocol/src/session-providers.ts` 声明首条消息何时提交、模型选择方式和上下文用量来源。主机把描述与实际模型目录、可写字段和会话状态一起返回。桌面、Web 和菜单栏用这些数据选择控件和提交方式。
-- `/managed/options` 和 `/managed/create` 对已注册的 Provider 使用同一分派。已有会话按后端确认的会话归属选择 Provider。Claude Code 使用所选工作区的模型目录，显式选择的启动模型仍需原生确认。接管的 Claude Code 会话可准备模型设置，已连接原生终端的会话使用终端上报的能力。
+- 在 `packages/backend/src/session-provider.ts` 注册 Agent 的实时状态、能力查询、操作和上下文用量。支持新建的 Agent 同时接入创建和设置。Antigravity 通过 ACP 接入已有会话。原生参数和回执校验放在各自适配器。
+- 在 `packages/runtime-protocol/src/session-providers.ts` 声明会话详情、已读、输入框和创建能力。桌面和 Web 共用详情页、记录和输入框组件。共用控件读取主机返回的可用性、实际模型目录和可写字段。
+- `/managed/options`、`/managed/create`、`/managed/capabilities`、`/managed/settings` 和 `/managed/action` 走统一入口。已有会话由后端确认所属 Agent。Claude Code 使用所选工作区的模型目录，显式选择的启动模型需原生确认。连接终端后使用终端实际提供的能力。
 - DeepSeek Harness 由桥接插件提供 Agent 预设、按提供方分组的模型目录和各模型的推理档位。实际可选项以插件返回为准。插件暂未上报占用量，桌面和 Web 隐藏上下文用量控件。
 - 工作区授权、设备权限、会话修订号和回执仍在主机与后端校验。旧请求路径继续由同一个适配器处理。
 

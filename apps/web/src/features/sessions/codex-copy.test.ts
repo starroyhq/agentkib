@@ -308,6 +308,6 @@ describe("a Claude Code command AgentKib did not send", () => {
   it("points /clear to a new session and to compacting", () => {
     const text = codexReason("en-US", "claude-command-clear").text;
     expect(text).toContain("start a new session");
-    expect(text).toContain("Compact context");
+    expect(text).toContain("/compact");
   });
 });

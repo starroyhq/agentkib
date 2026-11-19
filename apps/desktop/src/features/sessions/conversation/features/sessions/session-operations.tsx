@@ -1,11 +1,11 @@
-import { requestReadStateRefresh } from "@agentkib/session-ui";
-import { Info, RefreshCw, SlidersHorizontal } from "lucide-react";
+import { requestReadStateRefresh, SessionDetailOperations } from "@agentkib/session-ui";
+import { sessionDetailCapabilities } from "@agentkib/web-client";
 import { useEffect, useState } from "react";
 import { useSessionPanels } from "./session-panels";
 import { Button } from "@/components/ui/button";
 import { Dialog } from "../../components/dialog";
 import { CodexTools } from "./codex-tools";
-import { ManagedTasks } from "./managed-tasks";
+import { SessionReceiptRecovery } from "./session-receipt-recovery";
 import { useSession } from "./session-context";
 import { webLayoutCopy } from "./web-layout-copy";
 import { ClaudeBackgroundSetting } from "./claude-background-setting";
@@ -31,96 +31,50 @@ export function SessionOperations({
   useEffect(() => {
     setTerminalOpen(false);
   }, [selected, canConnectTerminal, setTerminalOpen]);
-  const shortcuts = (
-    <div className="flex flex-wrap gap-2">
-      <Button
-        variant="outline"
-        onClick={() => {
-          onOpenChange(false);
-          setModal("metadata");
-        }}
-      >
-        <Info aria-hidden="true" />
-        {t.details}
-      </Button>
-      <Button
-        variant="outline"
-        disabled={busy}
-        onClick={() => {
+  const hasExecutionControls = sessionDetailCapabilities(current?.agent).operations.execution;
+  return (
+    <>
+      <SessionDetailOperations
+        open={open}
+        title={webLayoutCopy[locale].actions}
+        labels={t}
+        busy={busy}
+        embedded={embedded}
+        onOpenChange={onOpenChange}
+        onShowModal={setModal}
+        onRefresh={() => {
           requestReadStateRefresh("desktop-local", selected);
           void refresh(true);
         }}
-      >
-        <RefreshCw aria-hidden="true" />
-        {t.refresh}
-      </Button>
-      {!embedded && (
-        <Button
-          variant="outline"
-          onClick={() => {
-            onOpenChange(false);
-            setModal("preferences");
-          }}
-        >
-          <SlidersHorizontal aria-hidden="true" />
-          {t.preferences}
-        </Button>
-      )}
-    </div>
-  );
-  if (
-    current?.agent !== "codex" &&
-    current?.agent !== "claude-code" &&
-    current?.agent !== "deepseek-harness"
-  )
-    return open ? (
-      <Dialog
-        panel
-        title={webLayoutCopy[locale].actions}
-        closeLabel={t.close}
-        onClose={() => onOpenChange(false)}
-        bodyClassName="space-y-5 leading-5"
-      >
-        {shortcuts}
-      </Dialog>
-    ) : null;
-  // Settings of this computer's agent, above the session's own actions: how its DeepSeek
-  // Harness connects, or whether its Claude Code keeps background tasks, and whether this
-  // session directs workers as a Project Agent.
-  const header =
-    current?.agent === "deepseek-harness" && !!access?.device?.manage ? (
-      <>
-        {shortcuts}
-        <DshBridgePanel />
-        <ProjectAgentPanel />
-      </>
-    ) : current?.agent === "claude-code" && !!access?.device?.manage ? (
-      <>
-        {shortcuts}
-        <ClaudeBackgroundSetting />
-        <ProjectAgentPanel />
-      </>
-    ) : current?.agent === "codex" && !!access?.device?.manage ? (
-      <>
-        {shortcuts}
-        <ProjectAgentPanel />
-      </>
-    ) : (
-      shortcuts
-    );
-  // Old request identities still need settlement after the execution controls disappear.
-  return (
-    <>
-      <ManagedTasks
-        renderContent={(pendingOutcome) => (
-          <CodexTools
-            open={open}
-            onOpenChange={onOpenChange}
-            showTrigger={false}
-            shortcuts={header}
-            ownership={pendingOutcome}
-          />
-        )}
+        extra={
+          access?.device?.manage &&
+          hasExecutionControls && (
+            <>
+              {current?.agent === "deepseek-harness" && <DshBridgePanel />}
+              {current?.agent === "claude-code" && <ClaudeBackgroundSetting />}
+              <ProjectAgentPanel />
+            </>
+          )
+        }
+        controls={
+          hasExecutionControls
+            ? (shortcuts) => (
+                <SessionReceiptRecovery
+                  renderContent={(ownership) => (
+                    <CodexTools
+                      open={open}
+                      onOpenChange={onOpenChange}
+                      showTrigger={false}
+                      shortcuts={shortcuts}
+                      ownership={ownership}
+                    />
+                  )}
+                />
+              )
+            : undefined
+        }
+        Button={Button}
+        Dialog={Dialog}
       />
       {canConnectTerminal && terminalOpen && (
         <ClaudeBridgePanel active onClose={() => setTerminalOpen(false)} />

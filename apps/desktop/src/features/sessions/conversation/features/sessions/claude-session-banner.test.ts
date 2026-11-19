@@ -196,6 +196,19 @@ describe("Claude execution and terminal connection presentation", () => {
         continuation: "terminal",
         tone: "muted",
       });
+      const picker = fixture(locale, "claude-follower", "idle", "claude-model-picker-open");
+      Object.assign(picker.live!, {
+        executionLocation: "terminal",
+        terminalSend: false,
+        sendEnabled: false,
+      });
+      expect(claudeSessionBanner(picker)).toBeNull();
+      expect(sessionDisplayState(picker)).toEqual({
+        label: continuation.terminalAttached,
+        reason: "",
+        tone: "muted",
+        continuation: "terminal",
+      });
       // A terminal that cannot take messages is explained once, in place of the composer.
       for (const reason of [
         "claude-follower-send-unverified",

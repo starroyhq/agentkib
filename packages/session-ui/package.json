@@ -5,6 +5,7 @@
   "type": "module",
   "exports": "./src/index.tsx",
   "dependencies": {
+    "@agentkib/conversation-state": "workspace:*",
     "@agentkib/web-client": "workspace:*",
     "@base-ui/react": "^1.9.0",
     "lucide-react": "^1.59.0",
@@ -13,7 +14,8 @@
     "remark-gfm": "^4.0.1"
   },
   "devDependencies": {
-    "@types/react": "^19.3.0"
+    "@types/react": "^19.3.0",
+    "react-resizable-panels": "^4.14.7"
   },
   "peerDependencies": {
     "react": "^19.1.0"

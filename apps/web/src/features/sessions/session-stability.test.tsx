@@ -741,7 +741,9 @@ describe("advanced Codex receipt recovery", () => {
     await openSession();
     const writes = () =>
       server.fetcher.mock.calls.filter(
-        ([url, init]) => String(url).endsWith("/codex/rename") && init?.method === "POST",
+        ([url, init]) =>
+          String(url).endsWith("/managed/action") &&
+          JSON.parse(String(init?.body)).operation === "rename",
       );
     expect(writes()).toHaveLength(1);
     fireEvent.click(screen.getByRole("button", { name: "会话操作" }));
@@ -776,7 +778,7 @@ it("does not reload capabilities for streaming text revisions but does on manual
   };
   await openSession();
   const count = () =>
-    server.fetcher.mock.calls.filter(([url]) => String(url).includes("/codex/capabilities?"))
+    server.fetcher.mock.calls.filter(([url]) => String(url).includes("/managed/capabilities?"))
       .length;
   await waitFor(() => expect(count()).toBeGreaterThan(0));
   await act(async () => {
@@ -800,7 +802,7 @@ describe("Codex composer with the real session controller", () => {
     server.state.catalog = { ...catalog, sessions: [{ ...catalog.sessions[0], agent: "codex" }] };
     server.state.access = {
       ...approvedAccess,
-      device: { ...approvedAccess.device!, accessMode: "full" },
+      device: { ...approvedAccess.device!, accessMode: "full", advancedControl: true },
     };
     server.state.capabilities = {
       sessionId: "session",
@@ -882,7 +884,9 @@ describe("Codex composer with the real session controller", () => {
       fireEvent.click(start);
       const writes = () =>
         server.fetcher.mock.calls.filter(
-          ([url, init]) => String(url).endsWith("/codex/goal-set") && init?.method === "POST",
+          ([url, init]) =>
+            String(url).endsWith("/managed/action") &&
+            JSON.parse(String(init?.body)).operation === "goal-set",
         );
       await waitFor(() => expect(writes()).toHaveLength(1));
       expect(observedPending).toBe(true);

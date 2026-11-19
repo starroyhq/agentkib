@@ -308,6 +308,53 @@ describe("reader follows user intent across transcript and viewport layout", () 
   });
 });
 
+describe("reader active turn status", () => {
+  it.each(["zh-CN", "zh-Hant", "en-US", "ja-JP"] as const)(
+    "keeps one localized label for the same running turn in %s",
+    (locale) => {
+      state = {
+        ...state,
+        locale,
+        t: conversationWords(locale),
+        live: { ...state.live!, status: "running", turnId: "turn-1" },
+        canStop: false,
+      };
+      const view = reader();
+      const status = () => view.container.querySelector('[data-session-turn-status="running"]');
+      expect(status()).toBeVisible();
+      expect(status()).toHaveTextContent(/…/);
+      expect(status()?.closest(".reader-composer")).toBeNull();
+      expect(status()?.querySelector("svg")).toHaveClass("motion-safe:animate-spin");
+      const text = status()?.textContent;
+      state = { ...state, live: { ...state.live!, revision: 10, streamText: "Live update" } };
+      view.update();
+      expect(status()?.textContent).toBe(text);
+
+      state = { ...state, live: { ...state.live!, status: "waiting-input" } };
+      view.update();
+      expect(status()).toBeNull();
+    },
+  );
+
+  it("falls back to verified external activity when the owner has not attached", () => {
+    state = {
+      ...state,
+      current: {
+        ...state.current!,
+        externalTurn: { status: "running", startedAt: "2026-11-19T07:02:00.000Z" },
+      },
+      live: { ...state.live!, status: "idle", ownershipReason: "claude-owner-busy" },
+    };
+    const view = reader();
+    const status = () => view.container.querySelector('[data-session-turn-status="running"]');
+    expect(status()).toBeVisible();
+
+    state = { ...state, live: { ...state.live!, ownershipReason: undefined } };
+    view.update();
+    expect(status()).toBeNull();
+  });
+});
+
 describe("reader compaction status belongs to the conversation", () => {
   it.each(["zh-CN", "zh-Hant", "en-US", "ja-JP"] as const)(
     "shows a single concise status after the transcript in %s",

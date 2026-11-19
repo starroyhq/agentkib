@@ -266,6 +266,40 @@ describe("NewSessionComposer", () => {
     expect(doubles.client.managedAction).not.toHaveBeenCalled();
   });
 
+  it("keeps supported startup actions visible but disabled until the host options arrive", async () => {
+    let resolveOptions!: (value: ManagedOptions) => void;
+    doubles.client.managedOptions.mockReturnValue(
+      new Promise<ManagedOptions>((resolve) => {
+        resolveOptions = resolve;
+      }),
+    );
+    renderComposer();
+    await waitFor(() => expect(doubles.client.managedOptions).toHaveBeenCalledOnce());
+    const user = userEvent.setup();
+    await user.click(addContext());
+    const menu = await screen.findByRole("dialog", { name: "Add context" });
+    const actions = [addCopy.filesAndFolders, goalCopy.title, planLabel()].map((name) =>
+      within(menu).getByRole("button", { name }),
+    );
+    for (const action of actions) {
+      expect(action).toBeDisabled();
+      expect(action).toHaveAttribute("title", copy.loadingOptions);
+      await user.click(action);
+    }
+    expect(doubles.client.newSessionResources).not.toHaveBeenCalled();
+    expect(doubles.client.managedAction).not.toHaveBeenCalled();
+
+    await act(async () => {
+      resolveOptions({ ...options.codex, provider: sessionProviderCapabilities("codex") });
+    });
+    await waitFor(() => {
+      for (const action of actions) expect(action).toBeEnabled();
+    });
+    expect(screen.getByRole("button", { name: /gpt-6\.1-sol/ })).toBeEnabled();
+    expect(doubles.client.newSessionResources).not.toHaveBeenCalled();
+    expect(doubles.client.managedAction).not.toHaveBeenCalled();
+  });
+
   it("shows no selectable permissions or model when this device cannot create sessions", async () => {
     doubles.client.access.mockResolvedValue({
       status: "approved",
@@ -287,10 +321,35 @@ describe("NewSessionComposer", () => {
   });
 
   it("keeps a warm catalogue through a transient error and removes it after access is refused", async () => {
+    doubles.client.managedOptions.mockResolvedValue({
+      ...options.codex,
+      provider: sessionProviderCapabilities("codex"),
+    });
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     renderComposer({}, client);
     await write("Keep this draft");
     const refresh = () => client.invalidateQueries({ queryKey: ["new-session-options"] });
+    let resolveRefresh!: (value: ManagedOptions) => void;
+    doubles.client.managedOptions.mockReturnValueOnce(
+      new Promise<ManagedOptions>((resolve) => {
+        resolveRefresh = resolve;
+      }),
+    );
+    let refreshing!: Promise<void>;
+    act(() => {
+      refreshing = refresh();
+    });
+    await waitFor(() => expect(doubles.client.managedOptions).toHaveBeenCalledTimes(2));
+    expect(screen.getByRole("button", { name: /gpt-6\.1-sol/ })).toBeEnabled();
+    fireEvent.click(addContext());
+    const menu = await screen.findByRole("dialog", { name: "Add context" });
+    for (const name of [addCopy.filesAndFolders, goalCopy.title, planLabel()])
+      expect(within(menu).getByRole("button", { name })).toBeEnabled();
+    await act(async () => {
+      resolveRefresh({ ...options.codex, provider: sessionProviderCapabilities("codex") });
+      await refreshing;
+    });
+
     doubles.client.managedOptions.mockRejectedValueOnce(new ApiError(503, "host_offline"));
     await act(refresh);
     expect(screen.getByRole("button", { name: /gpt-6\.1-sol/ })).toBeEnabled();
@@ -300,6 +359,9 @@ describe("NewSessionComposer", () => {
     await act(refresh);
     await waitFor(() => expect(optionSlot(copy.model, copy.optionsUnavailable)).toBeDisabled());
     expect(optionSlot(copy.permission, copy.optionsUnavailable)).toBeDisabled();
+    for (const name of [addCopy.filesAndFolders, goalCopy.title, planLabel()])
+      expect(within(menu).getByRole("button", { name })).toBeDisabled();
+    expect(doubles.client.newSessionResources).not.toHaveBeenCalled();
     expect(send()).toBeDisabled();
     expect(message()).toHaveValue("Keep this draft");
     doubles.client.managedOptions.mockRejectedValueOnce(new ApiError(503, "host_offline"));
@@ -322,7 +384,7 @@ describe("NewSessionComposer", () => {
     const chooseFile = vi.spyOn(fileInput, "click");
     await user.click(addContext());
     const addMenu = await screen.findByRole("dialog", { name: "Add context" });
-    expect(within(addMenu).queryByText(planLabel())).not.toBeInTheDocument();
+    expect(within(addMenu).getByRole("button", { name: planLabel() })).toBeDisabled();
     await user.click(within(addMenu).getByRole("button", { name: addCopy.attachment }));
     expect(chooseFile).toHaveBeenCalledOnce();
     const file = new File(["spec"], "spec.md", { type: "text/markdown" });
@@ -459,8 +521,15 @@ describe("NewSessionComposer", () => {
     const props = renderComposer({ initial: { agent: "codex" } });
 
     await write("Review the routes");
-    expect(addContext()).toBeDisabled();
-    expect(addContext()).toHaveAttribute("title", "Nothing to add");
+    expect(addContext()).toBeEnabled();
+    const user = userEvent.setup();
+    await user.click(addContext());
+    const menu = await screen.findByRole("dialog", { name: "Add context" });
+    expect(within(menu).queryByRole("button", { name: addCopy.attachment })).toBeNull();
+    for (const name of [addCopy.filesAndFolders, goalCopy.title, planLabel()])
+      expect(within(menu).getByRole("button", { name })).toBeDisabled();
+    expect(doubles.client.newSessionResources).not.toHaveBeenCalled();
+    await user.keyboard("{Escape}");
     fireEvent.click(send());
     await waitFor(() => expect(props.onCreated).toHaveBeenCalledWith("created"));
     expect(doubles.client.managedAction).toHaveBeenCalledExactlyOnceWith("create", {

@@ -50,8 +50,6 @@ const zh = {
   connectionLimit: "终端连接数量已达上限。请先断开不再使用的连接，再重试。",
   connectionRejected: "连接请求被拒绝。请检查终端与这台电脑状态后重新连接。",
 
-  handoff: "可以继续",
-  handoffInfo: "直接输入即可继续这条会话。",
   released: "后台进程已结束",
   releasedInfo: "后台进程已结束，下次发送时会自动继续",
   lostTitle: "终端连接已断开",
@@ -156,8 +154,6 @@ export const claudeConnectionCopy: Record<Locale, Copy> = {
     connectionLimit: "終端連線數量已達上限。請先中斷不再使用的連線，再重試。",
     connectionRejected: "連線要求遭拒。請檢查終端與這台電腦狀態後重新連接。",
 
-    handoff: "可以繼續",
-    handoffInfo: "直接輸入即可繼續這段對話。",
     released: "背景程序已結束",
     releasedInfo: "背景程序已結束，下次傳送訊息時會自動繼續",
     lostTitle: "終端連線已中斷",
@@ -270,8 +266,6 @@ export const claudeConnectionCopy: Record<Locale, Copy> = {
     connectionRejected:
       "The connection request was rejected. Check the terminal and computer, then reconnect.",
 
-    handoff: "Ready to continue",
-    handoffInfo: "Type a message to continue this session.",
     released: "Background process ended",
     releasedInfo:
       "The background process ended. It will resume automatically when you send your next message.",
@@ -396,8 +390,6 @@ export const claudeConnectionCopy: Record<Locale, Copy> = {
     connectionRejected:
       "接続要求が拒否されました。ターミナルとこのコンピューターを確認して再接続してください。",
 
-    handoff: "続行可能",
-    handoffInfo: "メッセージを入力すると、この会話を続けられます。",
     released: "バックグラウンドプロセスを終了",
     releasedInfo:
       "バックグラウンドプロセスを終了しました。次のメッセージ送信時に自動で続行します。",

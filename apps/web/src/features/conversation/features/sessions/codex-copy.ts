@@ -534,10 +534,13 @@ const reasons: Record<Locale, Record<string, string>> = {
     "recovery-required": "暂时无法继续这条会话，请刷新状态后重试。",
     "native-session-unconfirmed": "无法确认这条会话的身份，请刷新状态后重试。",
     "follower-operation-unverified": "这项操作请在 Codex 中完成。",
+    "claude-follower-settings-unavailable": "请在 Claude Code 终端修改设置。",
+    "follower-resource-input-unsupported":
+      "当前执行方式支持浏览文件和文件夹，暂不支持将引用加入消息。",
     "control-disabled": "这台电脑上的 AgentKib 尚未开启执行控制。",
     "session-state-unavailable": "暂时无法读取会话状态，请刷新后重试。",
     "unsupported-codex-cli-version": "当前 Codex 版本未经兼容验证，此能力保持只读。",
-    "native-operation-not-integrated": "尚不支持通过远程访问执行此原客户端操作。",
+    "native-operation-not-integrated": "当前执行方式暂不支持这项操作。",
     "control-outcome-unconfirmed":
       "上次操作结果尚未确认。请刷新核对已保存请求的处理状态，勿重复提交；不会自动重发。",
     "claude-background-task":
@@ -549,7 +552,7 @@ const reasons: Record<Locale, Record<string, string>> = {
     "claude-auth-failed":
       "Claude Code 未通过认证：还没有登录，或 API key 被拒绝。请在这台电脑的终端里运行 claude，用 /login 登录；使用 API key 时，把它写进 ~/.claude/settings.json 的 env，或配置 apiKeyHelper。shell 配置文件里 export 的变量通常传不到 AgentKib（例如从程序坞打开时）。修好后直接重新发送，AgentKib 会用新的设置启动 Claude Code。",
     "claude-command-clear":
-      "/clear 会让 Claude Code 改用一条新会话，AgentKib 无法跟随，本次消息尚未发送。需要空白上下文时请新建会话，这条会话会保留；只想腾出上下文可以用 /compact，或在上下文用量里压缩上下文。",
+      "/clear 会让 Claude Code 改用一条新会话，AgentKib 无法跟随，本次消息尚未发送。需要空白上下文时请新建会话，这条会话会保留；只想腾出上下文可以用 /compact。",
     "claude-command-background":
       "/loop 和 /batch 会启动 AgentKib 无法监管的后台任务，本次消息尚未发送。要接着执行的消息可以加入待发队列，或使用持续目标。",
     "claude-command-goal":
@@ -680,10 +683,13 @@ const reasons: Record<Locale, Record<string, string>> = {
     "recovery-required": "暫時無法繼續這段對話，請重新整理狀態後重試。",
     "native-session-unconfirmed": "無法確認這段對話的身分，請重新整理狀態後重試。",
     "follower-operation-unverified": "這項操作請在 Codex 中完成。",
+    "claude-follower-settings-unavailable": "請在 Claude Code 終端修改設定。",
+    "follower-resource-input-unsupported":
+      "目前執行方式支援瀏覽檔案和資料夾，暫不支援將引用加入訊息。",
     "control-disabled": "這台電腦上的 AgentKib 尚未啟用執行控制。",
     "session-state-unavailable": "暫時無法讀取對話狀態，請重新整理後重試。",
     "unsupported-codex-cli-version": "目前 Codex 版本未經相容驗證，此能力保持唯讀。",
-    "native-operation-not-integrated": "尚不支援透過遠端存取執行此原客戶端操作。",
+    "native-operation-not-integrated": "目前執行方式暫不支援這項操作。",
     "control-outcome-unconfirmed":
       "上次操作結果尚未確認。請重新整理核對已儲存請求的處理狀態，勿重複提交；不會自動重傳。",
     "claude-background-task":
@@ -695,7 +701,7 @@ const reasons: Record<Locale, Record<string, string>> = {
     "claude-auth-failed":
       "Claude Code 未通過驗證：尚未登入，或 API key 遭到拒絕。請在這台電腦的終端機執行 claude，用 /login 登入；使用 API key 時，請寫進 ~/.claude/settings.json 的 env，或設定 apiKeyHelper。shell 設定檔中 export 的變數通常傳不到 AgentKib（例如從 Dock 開啟時）。修正後直接重新傳送，AgentKib 會用新的設定啟動 Claude Code。",
     "claude-command-clear":
-      "/clear 會讓 Claude Code 改用一段新對話，AgentKib 無法跟隨，本次訊息尚未傳送。需要空白上下文時請建立新對話，這段對話會保留；只想騰出上下文可以使用 /compact，或在上下文用量裡壓縮上下文。",
+      "/clear 會讓 Claude Code 改用一段新對話，AgentKib 無法跟隨，本次訊息尚未傳送。需要空白上下文時請建立新對話，這段對話會保留；只想騰出上下文可以使用 /compact。",
     "claude-command-background":
       "/loop 和 /batch 會啟動 AgentKib 無法監管的背景任務，本次訊息尚未傳送。要接著執行的訊息可以加入待發佇列，或使用持續目標。",
     "claude-command-goal":
@@ -846,12 +852,14 @@ const reasons: Record<Locale, Record<string, string>> = {
     "native-session-unconfirmed":
       "This session's identity could not be confirmed. Refresh its state and retry.",
     "follower-operation-unverified": "Use Codex for this action.",
+    "claude-follower-settings-unavailable": "Change settings in the Claude Code terminal.",
+    "follower-resource-input-unsupported":
+      "You can browse files and folders, but this executor cannot add references to messages.",
     "control-disabled": "Execution control is not enabled in AgentKib on this computer.",
     "session-state-unavailable": "Session state is unavailable. Refresh and retry.",
     "unsupported-codex-cli-version":
       "This Codex version has not passed compatibility verification. This capability remains read-only.",
-    "native-operation-not-integrated":
-      "This original-client operation is not available through remote access yet.",
+    "native-operation-not-integrated": "This executor does not support this action yet.",
     "control-outcome-unconfirmed":
       "The previous outcome is unconfirmed. Refresh to check the saved request; do not resubmit. It will not be sent again automatically.",
     "claude-background-task":
@@ -863,7 +871,7 @@ const reasons: Record<Locale, Record<string, string>> = {
     "claude-auth-failed":
       "Claude Code could not authenticate: it is not logged in, or the API key was rejected. Run claude in a terminal on this computer and log in with /login. For an API key, put it in the env block of ~/.claude/settings.json or configure apiKeyHelper. Variables exported in your shell profile usually do not reach AgentKib (for example when it is opened from the Dock). After fixing it, send again; AgentKib starts Claude Code with the new settings.",
     "claude-command-clear":
-      "/clear moves Claude Code to a new session that AgentKib cannot follow. This message was not sent. For an empty context, start a new session; this one is kept. To free up context, use /compact or Compact context under Context usage.",
+      "/clear moves Claude Code to a new session that AgentKib cannot follow. This message was not sent. For an empty context, start a new session; this one is kept. To free up context, use /compact.",
     "claude-command-background":
       "/loop and /batch start background work that AgentKib cannot supervise. This message was not sent. Add follow-up messages to Queued messages, or use a persistent goal.",
     "claude-command-goal":
@@ -1021,11 +1029,14 @@ const reasons: Record<Locale, Record<string, string>> = {
     "native-session-unconfirmed":
       "この会話の識別情報を確認できません。状態を更新して再試行してください。",
     "follower-operation-unverified": "この操作は Codex で行ってください。",
+    "claude-follower-settings-unavailable": "Claude Code のターミナルで設定を変更してください。",
+    "follower-resource-input-unsupported":
+      "ファイルとフォルダーは閲覧できますが、現在の実行方式では参照をメッセージに追加できません。",
     "control-disabled": "このコンピューター上の AgentKib で実行操作が有効になっていません。",
     "session-state-unavailable": "会話の状態を取得できません。更新して再試行してください。",
     "unsupported-codex-cli-version":
       "この Codex バージョンは互換性が未検証のため、この機能は読み取り専用です。",
-    "native-operation-not-integrated": "元のクライアントのこの操作はリモートアクセスに未対応です。",
+    "native-operation-not-integrated": "現在の実行方式ではこの操作にまだ対応していません。",
     "control-outcome-unconfirmed":
       "前回の結果は未確認です。更新して保存済みリクエストの処理状況を確認し、再送しないでください。自動で再送しません。",
     "claude-background-task":
@@ -1037,7 +1048,7 @@ const reasons: Record<Locale, Record<string, string>> = {
     "claude-auth-failed":
       "Claude Code の認証に失敗しました。ログインしていないか、API キーが拒否されています。このコンピューターのターミナルで claude を実行し、/login でログインしてください。API キーを使う場合は ~/.claude/settings.json の env に書くか、apiKeyHelper を設定してください。シェルの設定ファイルで export した変数は、通常 AgentKib には届きません（Dock から開いた場合など）。修正したらそのまま再送信してください。AgentKib が新しい設定で Claude Code を起動します。",
     "claude-command-clear":
-      "/clear を実行すると Claude Code は新しい会話に切り替わり、AgentKib は追従できません。このメッセージは送信されていません。空のコンテキストが必要な場合は新しい会話を開始してください（この会話は残ります）。コンテキストを空けるだけなら /compact か、コンテキスト使用量の「コンテキストを圧縮」を使えます。",
+      "/clear を実行すると Claude Code は新しい会話に切り替わり、AgentKib は追従できません。このメッセージは送信されていません。空のコンテキストが必要な場合は新しい会話を開始してください（この会話は残ります）。コンテキストを空けるだけなら /compact を使えます。",
     "claude-command-background":
       "/loop と /batch は AgentKib が監督できないバックグラウンド作業を開始します。このメッセージは送信されていません。続けて実行したいメッセージは送信待ちキューに追加するか、継続目標を使ってください。",
     "claude-command-goal":

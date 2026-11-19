@@ -226,11 +226,13 @@ async function mount(
   f: ReturnType<typeof fixture>,
   selected: ConversationSessionSummary | null = f.summary,
   localEnabled = false,
+  catalogReady = true,
 ) {
   doubles.client = f.client;
   doubles.catalog.mockResolvedValue([f.summary]);
   setHub(selected ?? undefined);
   hub.localEnabled = localEnabled;
+  hub.ready = catalogReady;
   const root = createRootRoute({
     component: () => (
       <>
@@ -357,6 +359,18 @@ describe("desktop window conversation tools", () => {
       expect(within(actions).queryByRole("button", { name: terminalName })).toBeNull();
     },
   );
+  it("keeps terminal setup available while the catalog refreshes", async () => {
+    document.documentElement.dataset.platform = "macos";
+    const f = fixture("claude-code");
+    await mount(f, f.summary, true, false);
+    await screen.findByText("Loaded session body");
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: tr("common.moreActions") }));
+    const terminal = await screen.findByRole("menuitem", { name: "Connect terminal…" });
+    terminal.focus();
+    await user.keyboard("{Enter}");
+    expect(await screen.findByRole("dialog", { name: "Connect terminal" })).toBeVisible();
+  });
   it.each(["linux", "win32", "no-platform", "no-manage", "not-approved", "codex"])(
     "does not expose terminal setup for %s",
     async (boundary) => {

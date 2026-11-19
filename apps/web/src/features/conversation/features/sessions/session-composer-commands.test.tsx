@@ -131,16 +131,14 @@ describe("slash commands in the Web composer", () => {
   it("lists only what a paired browser may run, and points the textarea at the active one", () => {
     const { input } = renderComposer("/");
     // No /config, /heapdump or /loop, and no /clear: AgentKib starts a new session instead.
-    // /model, /goal and /rename run or open AgentKib's own control.
+    // Local model and goal controls require their capabilities; rename remains reported.
     expect(options()).toEqual([
       "/probe-skillA probe skill (project)",
       "/code-reviewReview the diff",
       "/compactFree up context",
       "/output-style",
-      "/model[model]Change the next-turn model",
       "/rename[name]Rename the session in AgentKib",
       "/usageShow usage",
-      "/goal[objective]Set a persistent goal",
     ]);
     const listbox = screen.getByRole("listbox");
     const [first, second] = within(listbox).getAllByRole("option");

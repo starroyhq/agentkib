@@ -11,36 +11,35 @@ import { X } from "lucide-react";
 import {
   ApiError,
   forgetSessionModelDisplay,
+  managedAgentOf,
   canDisplayCodexModelFallback,
-  readSessionModelDisplay,
-  rememberSessionModelDisplay,
   sessionProviderCapabilities,
   type SessionAction,
-  type SessionActionBody,
-  type ClaudePermissionMode,
-  type DevinPermissionMode,
   type CodexContextOptions,
   type CodexContextResource,
   type CodexGoalState,
   type CodexSettingValues,
   type CodexSessionSettings,
-  type ManagedAgent,
 } from "@agentkib/web-client";
 import {
-  codexPolicyLabel,
   composerGoalCopy,
   ComposerGoalFields,
-  ComposerModeChip,
   ComposerModelPicker,
-  SessionComposerAddMenu,
-  ComposerPermissionMenu,
-  ComposerToolbar,
-  dshPolicyLabel,
-  newSessionPermissions,
+  SessionComposerToolbar,
   parseGoalDraft,
-  sessionCollaborationMode,
-  sessionComposerCapabilities,
-  type ComposerModelPickerHandle,
+  existingSessionComposerCapabilities,
+  runComposerSettingsMutation,
+  type ComposerMutationFields,
+  composerSettingsSelection,
+  projectComposerSettingsControls,
+  mergePreparedCatalog,
+  prepareComposerSettings,
+  composerSettingsWriteLocked,
+  useComposerModelPanel,
+  useComposerModelDisplay,
+  confirmsComposerSettings,
+  type PendingComposerSettings,
+  useComposerFollowerSettings,
   type NewSessionGoalDraft,
 } from "@agentkib/session-ui";
 import { Button } from "@/components/ui/button";
@@ -54,7 +53,6 @@ import { subscribeSessionInvalidation } from "./session-events";
 import {
   contextUsagePercent,
   ContextUsageGauge,
-  useContextUsage,
   type ContextUsageGaugeHandle,
 } from "./context-usage";
 import { sessionAgentCopy } from "./session-agent-copy";
@@ -73,6 +71,7 @@ export type ComposerControlsHandle = {
 export type ComposerPlanState = { on: boolean; available: boolean };
 
 type CodexComposerControlsProps = {
+  composerCapabilities?: ReturnType<typeof existingSessionComposerCapabilities>;
   resources: CodexResource[];
   setResources: (resources: CodexResource[]) => void;
   openPhoneFiles: () => void;
@@ -93,17 +92,6 @@ function unavailable(error: unknown) {
   return error instanceof ApiError ? error.code : "request_failed";
 }
 
-function settingsSelection(settings: CodexSessionSettings, isClaude: boolean) {
-  if (!isClaude) return settings.selected ?? settings.current;
-  return {
-    ...settings.current,
-    ...settings.selected,
-    modelId: settings.selected?.modelId ?? settings.current.modelId,
-    effort: settings.selected?.effort ?? settings.current.effort,
-    permissionMode: settings.selected?.permissionMode ?? settings.current.permissionMode,
-  };
-}
-
 /** Which goal actions the panel offers: starting one always; with a goal, clearing it and
  * resuming it once stopped or pausing it while active. */
 function offersGoalAction(
@@ -120,16 +108,8 @@ function offersGoalAction(
   return true;
 }
 
-/** Permission mode IDs accepted by Devin's settings action. */
-const DEVIN_PERMISSION_IDS: readonly DevinPermissionMode[] = [
-  "auto",
-  "accept-edits",
-  "smart",
-  "dangerous",
-];
-const CLAUDE_PERMISSION_IDS: readonly ClaudePermissionMode[] = ["default", "plan", "acceptEdits"];
-
 export function CodexComposerControls({
+  composerCapabilities,
   resources,
   setResources,
   openPhoneFiles,
@@ -164,48 +144,39 @@ export function CodexComposerControls({
   const copy = codexCopy[locale];
   const isClaude = current?.agent === "claude-code";
   const isCodex = current?.agent === "codex";
-  // Claude Code, DeepSeek Harness and Devin read through the shared managed routes, and only
-  // what their capabilities offer; DeepSeek Harness otherwise follows the Codex settings rules.
-  const managedAgent: ManagedAgent | null = isClaude
-    ? "claude-code"
-    : current?.agent === "deepseek-harness"
-      ? "deepseek-harness"
-      : current?.agent === "devin"
-        ? "devin"
-        : null;
+  const settingsAgent = managedAgentOf(current?.agent);
+  const managedAgent = settingsAgent === "codex" ? null : settingsAgent;
   const isDevin = managedAgent === "devin";
-  const modelPicker = useRef<ComposerModelPickerHandle>(null);
+  const modelPanel = useComposerModelPanel();
   const usageGauge = useRef<ContextUsageGaugeHandle>(null);
-  const refreshModelOnOpen = useRef(false);
   const agentCopy = sessionAgentCopy[locale];
   const {
     feature,
     settingsReadable,
-    settingsReadReason,
+    canOpenTerminalModel,
+    settingsReadOnly,
+    terminalModel,
+    settingsAccessDenied,
     reservesModelSlot,
     reservesPermissionSlot,
     goalDraftOffered,
+    goalOffered,
+    planOffered,
     goalReadable,
     resourcesReadable,
+    resourcesOffered,
     attachmentOffered,
     attachmentAllowed,
-  } = sessionComposerCapabilities({
-    capabilities,
-    sessionId: selected,
-    legacyReads: !managedAgent,
-    attachmentsGranted: access?.device?.attachments === true,
-    settingsSlots:
-      isClaude &&
-      current.id === selected &&
-      access?.status === "approved" &&
-      access.device?.accessMode === "full" &&
-      access.device.advancedControl === true &&
-      (live?.sessionId !== selected ||
-        !live.executionMode ||
-        live.executionMode === "claude-managed")
-        ? sessionProviderCapabilities(current.agent)?.create
-        : undefined,
-  });
+  } =
+    composerCapabilities ??
+    existingSessionComposerCapabilities({
+      access,
+      agent: current?.agent,
+      currentId: current?.id,
+      capabilities,
+      sessionId: selected,
+      legacyReads: !managedAgent && typeof client.sessionCapabilities !== "function",
+    });
   const layout = composerLayoutCopy[locale];
   const term = (value: string) => composerTerm(locale, value);
   const reason = (code?: string) => codexReason(locale, code).text;
@@ -257,7 +228,8 @@ export function CodexComposerControls({
   modelAccess.current = access;
   const displayAgent = current?.id === selected ? current.agent : undefined;
   const [dialog, setDialog] = useState<"goal" | "goal-draft">();
-  const offerGoalDraft = goalDraftOffered && !goalReadable && !!onStageGoal;
+  const offerGoalDraft =
+    goalDraftOffered && feature("goal-set")?.available !== true && !!onStageGoal;
   const editingGoalDraft = dialog === "goal-draft";
   const goalCopy = composerGoalCopy(locale);
   const [addOpen, setAddOpen] = useState(false);
@@ -272,8 +244,16 @@ export function CodexComposerControls({
   const [settingsSource, setSettingsSource] = useState<{
     scope: string;
     client: typeof client;
+    execution: string;
     value: CodexSessionSettings;
   }>();
+  const settingsExecutionScope = JSON.stringify([live?.executionMode, live?.connectionGeneration]);
+  const { follower, writeScope, rememberRead, followerAuthority } = useComposerFollowerSettings(
+    client,
+    access,
+    selected,
+    live,
+  );
   const settings =
     settingsSource?.scope === historyScope && settingsSource.client === client
       ? settingsSource.value
@@ -284,6 +264,7 @@ export function CodexComposerControls({
   const provider =
     (settings?.sessionId === selected ? settings?.provider : undefined) ??
     sessionProviderCapabilities(current?.agent);
+  const usesVariants = provider?.models.selection === "variants";
   const preparesSettings = provider?.models.prepare === true;
   const canPrepareSettings = preparesSettings && live?.executionMode === "claude-managed";
   const [settingsRead, setSettingsRead] = useState<{
@@ -314,21 +295,34 @@ export function CodexComposerControls({
   const mutationFlight = useRef<symbol | undefined>(undefined);
   const [preparingSettings, setPreparingSettings] = useState(false);
   const settingsPreparation = useRef<symbol | undefined>(undefined);
-  const [saved, setSaved] = useState(false);
-  const [pendingSettings, setPendingSettings] =
-    useState<
-      Pick<
-        SessionActionBody,
-        | "model"
-        | "effort"
-        | "mode"
-        | "policyId"
-        | "serviceTierId"
-        | "restoreDefaults"
-        | "permissionMode"
-        | "expectedRevision"
-      >
-    >();
+  const settingsReadVersion = useRef(0);
+  const preparationAuthority = {
+    selected,
+    client,
+    bootId: access?.bootId,
+    deviceId: access?.device?.id,
+    full,
+    advancedControl: access?.device?.advancedControl,
+    accessStatus: access?.status,
+    execution: settingsExecutionScope,
+    allowed:
+      online &&
+      settingsReadable &&
+      feature("settings")?.available === true &&
+      !settingsUnknown &&
+      notice !== "uncertain" &&
+      live?.status !== "outcome-unknown" &&
+      live?.reason !== "control-outcome-unconfirmed" &&
+      capabilities?.reason !== "control-outcome-unconfirmed",
+  };
+  const currentPreparation = useRef(preparationAuthority);
+  currentPreparation.current = preparationAuthority;
+
+  const [pending, setPendingSettings] = useState<PendingComposerSettings>();
+  const pendingSettings =
+    !pending?.followerAuthority || pending.followerAuthority === followerAuthority
+      ? pending
+      : undefined;
   const pendingModelSettings =
     !!pendingSettings && settingsNoticeGroup(pendingSettings) !== "permissions";
   const [objective, setObjective] = useState("");
@@ -343,23 +337,12 @@ export function CodexComposerControls({
       ? settingsRead
       : undefined;
   const canShowModelFallback =
-    !compacting &&
     (isCodex
       ? canDisplayCodexModelFallback(settings)
       : settings?.applicationStatus !== "pending") &&
     !pendingModelSettings &&
-    (!live ||
-      (live.sessionId === selected &&
-        (live.status === "idle" || live.status === "unsupported") &&
-        !live.executionLocation));
-  const observedModelFallback =
-    history && canShowModelFallback
-      ? history.values?.modelId
-        ? history.values
-        : isCodex
-          ? history.defaults
-          : undefined
-      : undefined;
+    (!live || live.sessionId === selected);
+  const observedModelFallback = canShowModelFallback ? history?.values : undefined;
   const settingsUsage =
     provider?.contextUsage !== "last-request" &&
     settings?.sessionId === selected &&
@@ -376,14 +359,14 @@ export function CodexComposerControls({
     contextUsagePercent(settingsUsage) !== undefined
       ? settingsUsage
       : (historicalUsage ?? settingsUsage);
-  const usageView = useContextUsage(usageFallback, provider?.contextUsage);
 
   const applySettings = useCallback(
-    (value: CodexSessionSettings) => {
+    (value: CodexSessionSettings, fromLive = false) => {
       if (value.sessionId !== selected) return;
-      setSettingsSource({ scope: historyScope, client, value });
+      if (!fromLive) rememberRead(value);
+      setSettingsSource({ scope: historyScope, client, execution: settingsExecutionScope, value });
     },
-    [client, historyScope, selected],
+    [client, historyScope, rememberRead, selected, settingsExecutionScope],
   );
 
   const loadContext = useCallback(
@@ -416,8 +399,14 @@ export function CodexComposerControls({
         if (next.some((item, index) => item !== current[index]) || next.length !== current.length)
           setResources(next);
       } catch (error) {
-        if (!abort.signal.aborted && generation === contextGeneration.current)
+        if (!abort.signal.aborted && generation === contextGeneration.current) {
+          if (error instanceof ApiError && [401, 403, 404, 410].includes(error.status)) {
+            setContext(undefined);
+            setContextNames([]);
+            contextLocation.current = { names: [] };
+          }
           setContextError(unavailable(error));
+        }
       } finally {
         if (!abort.signal.aborted && generation === contextGeneration.current)
           setContextLoading(false);
@@ -434,6 +423,17 @@ export function CodexComposerControls({
       resourcesReadable,
     ],
   );
+
+  useEffect(() => {
+    if (resourcesReadable) return;
+    contextGeneration.current++;
+    contextAbort.current?.abort();
+    contextLocation.current = { names: [] };
+    setContext(undefined);
+    setContextNames([]);
+    setContextLoading(false);
+    setContextError("");
+  }, [resourcesReadable]);
 
   const load = useCallback(
     (background = false, includeGoal = true): Promise<void> => {
@@ -460,14 +460,13 @@ export function CodexComposerControls({
         while (flight.dirty && generation === loadGeneration.current) {
           const quiet = flight.background;
           const readGoal = goalReadable && flight.includeGoal;
+          const readVersion = settingsReadVersion.current;
           flight.dirty = false;
           flight.background = true;
           flight.includeGoal = false;
           const [settingsResult, goalResult] = await Promise.allSettled([
-            settingsReadable
-              ? managedAgent
-                ? client.sessionSettings(selected, managedAgent)
-                : client.codexSessionSettings(selected)
+            settingsReadable && settingsAgent
+              ? client.sessionSettings(selected, settingsAgent)
               : Promise.resolve(undefined),
             readGoal
               ? managedAgent
@@ -476,7 +475,10 @@ export function CodexComposerControls({
               : Promise.resolve(undefined),
           ]);
           if (generation !== loadGeneration.current) return;
-          if (settingsResult.status === "fulfilled") {
+          if (
+            readVersion === settingsReadVersion.current &&
+            settingsResult.status === "fulfilled"
+          ) {
             const value = settingsResult.value;
             // Keep historical display data tied to the authorized read, even when live settings
             // replace the editable projection.
@@ -496,15 +498,18 @@ export function CodexComposerControls({
                 : undefined,
             );
             if (value) applySettings(value);
-            else setSettingsSource(undefined);
+            else if (settingsReadable) setSettingsSource(undefined);
             setSettingsError("");
-          } else {
+          } else if (settingsResult.status === "rejected") {
             const error = settingsResult.reason;
             const accessLost =
               error instanceof ApiError && [401, 403, 404, 410].includes(error.status);
-            if (accessLost)
+            if (accessLost) {
               forgetSessionModelDisplay(client, modelAccess.current, selected, displayAgent);
-            if (!quiet || accessLost) {
+              settingsPreparation.current = undefined;
+              setPreparingSettings(false);
+            }
+            if ((readVersion === settingsReadVersion.current && !quiet) || accessLost) {
               setSettingsSource(undefined);
               setSettingsRead(undefined);
               setSettingsError(unavailable(error));
@@ -536,6 +541,7 @@ export function CodexComposerControls({
       full,
       selected,
       managedAgent,
+      settingsAgent,
       displayAgent,
       settingsReadable,
       goalReadable,
@@ -580,7 +586,6 @@ export function CodexComposerControls({
     setPermissionOpen(false);
     setAddOpen(false);
 
-    setSaved(false);
     setSaving(false);
     mutationFlight.current = undefined;
     settingsPreparation.current = undefined;
@@ -623,6 +628,7 @@ export function CodexComposerControls({
     settingsReadable,
     goalReadable,
     resourcesReadable,
+    settingsExecutionScope,
   ]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
@@ -667,10 +673,13 @@ export function CodexComposerControls({
 
   useEffect(() => {
     if (live?.settings?.sessionId === selected) {
-      applySettings({
-        ...live.settings,
-        usage: live.usage ?? live.settings.usage,
-      });
+      applySettings(
+        {
+          ...live.settings,
+          usage: live.usage ?? live.settings.usage,
+        },
+        true,
+      );
     } else if (live?.usage && settings?.sessionId === selected) {
       setSettingsSource((source) =>
         source?.scope === historyScope && source.client === client
@@ -683,149 +692,103 @@ export function CodexComposerControls({
   }, [applySettings, client, goal?.sessionId, historyScope, live, selected, settings?.sessionId]);
 
   useEffect(() => {
-    if (!settings?.available || !pendingSettings) return;
-    const expected: Omit<typeof pendingSettings, "expectedRevision"> =
-      pendingSettings.restoreDefaults
-        ? {
-            model: settings.defaults.modelId,
-            effort: settings.defaults.effort,
-            serviceTierId: settings.defaults.serviceTierId,
-            permissionMode: settings.defaults.permissionMode,
-          }
-        : pendingSettings;
-    const confirmed =
-      (!isClaude ||
-        (settings.applicationStatus === "confirmed" &&
-          settings.revision > pendingSettings.expectedRevision)) &&
-      settings.applicationStatus !== "pending" &&
-      settings.applicationStatus !== "unknown" &&
-      (expected.model === undefined ||
-        settings.current.modelId === expected.model ||
-        (isClaude &&
-          !!settings.current.modelId &&
-          settings.options.models.find((item) => item.id === expected.model)?.resolvedModel ===
-            settings.current.modelId)) &&
-      (expected.effort === undefined ||
-        (expected.effort === null
-          ? isClaude
-            ? settings.selected !== undefined && settings.selected.effort === undefined
-            : settings.current.effort === undefined
-          : settings.current.effort === expected.effort)) &&
-      (expected.mode === undefined ||
-        (expected.mode === null
-          ? settings.selected !== undefined && settings.selected.mode === undefined
-          : settings.current.mode === expected.mode)) &&
-      (expected.policyId === undefined || settings.current.policyId === expected.policyId) &&
-      (expected.permissionMode === undefined ||
-        settings.current.permissionMode === expected.permissionMode) &&
-      (expected.serviceTierId === undefined ||
-        (expected.serviceTierId === null
-          ? settings.current.serviceTierId === undefined
-          : settings.current.serviceTierId === expected.serviceTierId));
-    if (confirmed) {
-      setPendingSettings(undefined);
-      setSaved(true);
-    }
-  }, [isClaude, pendingSettings, settings]);
+    if (
+      !confirmsComposerSettings(settings, pendingSettings, {
+        prepared: isClaude,
+        variants: usesVariants,
+        follower,
+      })
+    )
+      return;
+    setPendingSettings(undefined);
+  }, [follower, isClaude, pendingSettings, settings, usesVariants]);
 
-  async function mutate(
-    name: SessionAction,
-    fields: Omit<
-      Partial<SessionActionBody>,
-      "requestId" | "bootId" | "sessionId" | "expectedRevision"
-    > = {},
-  ) {
-    if (!full || mutationFlight.current || compacting || (name === "settings" && settingsUnknown))
-      return false;
-    const readRevision = name === "settings" ? settings?.revision : goal?.revision;
-    if (live?.revision !== undefined && readRevision !== live.revision) return false;
-    setSaving(true);
-    setSaved(false);
-    setMutationFailure(undefined);
-    const generation = loadGeneration.current;
-    const mutation = Symbol("settings-or-goal");
-    mutationFlight.current = mutation;
-    try {
-      const result = await codexAction(name, fields);
-      if (mutationFlight.current !== mutation) return false;
-      if (name === "goal-set" && result && startupGoal) onStartupGoalHandled?.(true);
-      if (generation !== loadGeneration.current) return !!result;
-      if (result) {
-        if (name === "settings") {
-          setPendingSettings({ ...fields, expectedRevision: readRevision ?? 0 });
-        }
-        if (name.startsWith("goal-")) {
-          goalDraftRevision.current = undefined;
-          setGoalDirty(false);
-        }
-        await load(false, name !== "settings");
-        return true;
-      }
-      return false;
-    } catch (error) {
-      if (generation === loadGeneration.current)
+  function mutate(name: SessionAction, fields: ComposerMutationFields = {}) {
+    const changesSettings = name === "settings";
+    return runComposerSettingsMutation({
+      action: name,
+      fields,
+      permitted: full && !compacting,
+      settingsAllowed:
+        !!settings?.available &&
+        !settingsUnknown &&
+        !settingsReadStale &&
+        (capabilities?.sessionId !== selected || feature("settings")?.available === true),
+      readRevision: changesSettings ? settings?.revision : goal?.revision,
+      liveRevision: live?.revision,
+      follower: follower ? { authority: followerAuthority, writeScope } : undefined,
+      flight: mutationFlight,
+      loadGeneration,
+      send: codexAction,
+      onStart: () => {
+        setSaving(true);
+        setMutationFailure(undefined);
+      },
+      onAccepted: () => {
+        if (name === "goal-set" && startupGoal) onStartupGoalHandled?.(true);
+      },
+      onPendingSettings: setPendingSettings,
+      onGoalChanged: () => {
+        goalDraftRevision.current = undefined;
+        setGoalDirty(false);
+      },
+      refresh: () => load(false, !changesSettings),
+      onError: (error) =>
         setMutationFailure({
           scope: historyScope,
           client,
-          group: name === "settings" ? settingsNoticeGroup(fields) : "goal",
+          group: changesSettings ? settingsNoticeGroup(fields) : "goal",
           reason: unavailable(error),
-        });
-      return false;
-    } finally {
-      // Reconnection can invalidate reads without replacing this mutation's busy owner.
-      if (mutationFlight.current === mutation) {
-        mutationFlight.current = undefined;
-        setSaving(false);
-      }
-    }
+        }),
+      onSettle: () => setSaving(false),
+    });
   }
 
-  const settingsReadStale = live?.revision !== undefined && settings?.revision !== live.revision;
+  const settingsReadStale =
+    !settingsReadable ||
+    (follower && feature("settings")?.available === true && !writeScope) ||
+    settingsSource?.execution !== settingsExecutionScope ||
+    (live?.revision !== undefined && settings?.revision !== live.revision);
   const goalReadStale = live?.revision !== undefined && goal?.revision !== live.revision;
   const prepareSettings = () => {
+    if (!settingsReadable || !online) return;
     if (
       canPrepareSettings &&
-      !settingsUnknown &&
       !running &&
-      feature("settings")?.available &&
-      access?.bootId &&
-      selected &&
-      live.revision !== undefined
-    ) {
-      if (settingsPreparation.current) return;
-      const generation = loadGeneration.current;
-      const preparation = Symbol("settings-prepare");
-      settingsPreparation.current = preparation;
-      setPreparingSettings(true);
-      setSettingsError("");
-      void client
-        .prepareSessionSettings({
-          sessionId: selected,
-          bootId: access.bootId,
-          expectedRevision: live.revision,
-        })
-        .then((value) => {
-          if (generation === loadGeneration.current) applySettings(value);
-        })
-        .catch((error: unknown) => {
-          if (generation === loadGeneration.current) setSettingsError(unavailable(error));
-        })
-        .finally(() => {
-          // Observation changes invalidate response data, but must still release
-          // this request's busy state. A different visit may own a new request.
-          if (settingsPreparation.current === preparation) {
-            settingsPreparation.current = undefined;
-            setPreparingSettings(false);
-          }
-        });
+      prepareComposerSettings({
+        currentAuthority: currentPreparation,
+        flight: settingsPreparation,
+        loadGeneration,
+        readVersion: settingsReadVersion,
+        revision: live?.revision,
+        onStart: () => {
+          setPreparingSettings(true);
+          setSettingsError("");
+        },
+        onPrepared: (value, currentRead) => {
+          if (currentRead) applySettings(value);
+          else
+            setSettingsSource((previous) => ({
+              scope: historyScope,
+              client,
+              execution: settingsExecutionScope,
+              value:
+                previous?.scope === historyScope && previous.client === client
+                  ? mergePreparedCatalog(previous.value, value)
+                  : value,
+            }));
+        },
+        onError: (error) => setSettingsError(unavailable(error)),
+        onSettle: () => setPreparingSettings(false),
+      })
+    )
       return;
-    }
-    void load(false, false);
+    void load(!!settings?.available && !settingsReadStale && !settingsError, false);
   };
   const displayedSettings = settings
     ? settingsUnknown
       ? settings.current
-      : settingsSelection(settings, isClaude)
+      : composerSettingsSelection(settings, isClaude, { live, staged: pendingSettings })
     : undefined;
   const contextLimit =
     settings?.sessionId === selected &&
@@ -836,12 +799,6 @@ export function CodexComposerControls({
         settings.applicationStatus !== "unknown"))
       ? displayedSettings?.maxContextTokens
       : undefined;
-  const supportsContextUsage = provider?.contextUsage !== "unsupported";
-  const showContextUsage =
-    supportsContextUsage &&
-    (provider?.contextUsage !== "last-request" ||
-      usageView.usage?.historical === true ||
-      contextLimit !== undefined);
   const liveSettings =
     provider !== undefined &&
     !preparesSettings &&
@@ -850,85 +807,72 @@ export function CodexComposerControls({
     live.settings.revision >= (settings?.revision ?? 0)
       ? live.settings
       : undefined;
-  const liveSelection = liveSettings && settingsSelection(liveSettings, false);
+  const liveSelection = liveSettings && composerSettingsSelection(liveSettings, false);
   const reportedSettings =
     !settingsUnknown && settings?.applicationStatus !== "pending" && !pendingModelSettings
       ? liveSelection?.modelId || liveSelection?.effort
         ? liveSelection
         : liveSettings?.current
       : undefined;
-  const cachedModelDisplay =
-    !isCodex || canShowModelFallback || settingsReceiptUncertain
-      ? readSessionModelDisplay(client, access, selected, displayAgent)
+  const claudeReadFallbackAllowed =
+    isClaude &&
+    !settingsUnknown &&
+    notice !== "uncertain" &&
+    live?.status !== "outcome-unknown" &&
+    live?.reason !== "control-outcome-unconfirmed" &&
+    capabilities?.reason !== "control-outcome-unconfirmed";
+  const claudeHistoricalModel = claudeReadFallbackAllowed
+    ? settings?.historicalSettings
+    : undefined;
+  const fallbackDefaults = claudeReadFallbackAllowed
+    ? settings?.defaults
+    : isCodex && canShowModelFallback
+      ? history?.defaults
       : undefined;
-  const displayModelFallback =
-    observedModelFallback?.modelId && !(settingsUnknown && cachedModelDisplay)
-      ? {
-          ...observedModelFallback,
-          name:
-            cachedModelDisplay?.modelId === observedModelFallback.modelId
-              ? cachedModelDisplay.name
-              : undefined,
-        }
-      : cachedModelDisplay;
   const observedModel: CodexSettingValues | undefined = [
     reportedSettings,
     displayedSettings,
     settings?.current,
+    claudeHistoricalModel,
     observedModelFallback,
   ].find((value) => value?.modelId);
-  const observedModelId = observedModel?.modelId;
-  const observedModelName = observedModelId
-    ? (settings ?? liveSettings)?.options.models.find(
-        (option) => option.id === observedModelId || option.resolvedModel === observedModelId,
-      )?.name
-    : undefined;
-  const observedEffort = observedModel?.effort;
-  const observedServiceTier = observedModel?.serviceTierId;
-  useEffect(() => {
-    if (!observedModelId || settingsUnknown) return;
-    rememberSessionModelDisplay(client, access, selected, displayAgent, {
-      modelId: observedModelId,
-      name: observedModelName,
-      effort: observedEffort,
-      serviceTierId: observedServiceTier,
-    });
-  }, [
-    access,
+  const {
+    showModelPicker,
+    displayFallback: displayModelFallback,
+    retainedEffortOptions,
+  } = useComposerModelDisplay({
     client,
-    displayAgent,
-    observedEffort,
-    observedModelId,
-    observedModelName,
-    observedServiceTier,
-    selected,
-    settingsUnknown,
-  ]);
-  const showModelPicker =
-    (settingsReadable || reservesModelSlot || !!cachedModelDisplay) &&
-    (!provider ||
-      preparesSettings ||
-      !settings?.available ||
-      settings.options.models.length > 0 ||
-      !!observedModelId ||
-      !!cachedModelDisplay);
+    access,
+    sessionId: selected,
+    agent: displayAgent,
+    denied: settingsAccessDenied,
+    settingsReadable,
+    reservesSlot: reservesModelSlot,
+    provider,
+    catalog: settings ?? liveSettings,
+    observed: observedModel,
+    historical: claudeHistoricalModel?.modelId ? claudeHistoricalModel : observedModelFallback,
+    defaults: fallbackDefaults,
+    holdCache:
+      settingsUnknown ||
+      (isCodex && !!pendingSettings && !pendingModelSettings && !displayedSettings?.modelId),
+    uncertain: settingsUnknown,
+  });
   const showPermissions =
-    reservesPermissionSlot ||
-    (settingsReadable && (isCodex || isClaude || isDevin || !!settings?.options.policies?.length));
-  const missingSettingsStatus = !settingsReadable
-    ? (reasonTitle(settingsReadReason) ??
-      (capabilities?.sessionId === selected ? copy.settingUnavailable : layout.connecting))
-    : undefined;
+    !settingsAccessDenied &&
+    (reservesPermissionSlot ||
+      (settingsReadable &&
+        (isCodex || isClaude || isDevin || !!settings?.options.policies?.length)));
   const changePermissionOpen = (open: boolean) => {
     setPermissionOpen(open);
     if (!open) return;
-    if (
-      (canPrepareSettings && !settingsUnknown) ||
-      !settings?.available ||
-      settingsReadStale ||
-      settingsError
-    )
-      prepareSettings();
+    const hasPermissionOptions =
+      isClaude || isDevin
+        ? settings?.options.permissionModes?.length
+        : settings?.options.policies.length;
+    if (settings?.available && !settingsReadStale && !settingsError && hasPermissionOptions) {
+      if (preparesSettings) void load(true, false);
+    } else prepareSettings();
   };
   const closeAdd = () => {
     setAddOpen(false);
@@ -942,12 +886,8 @@ export function CodexComposerControls({
     setDialog("goal");
     if (goalReadable && goalReadStale) void load();
   };
-  const openModel = (page: "effort" | "models", refresh = false) => {
-    if (!full || disabled || !settingsReadable || !modelPicker.current) return false;
-    refreshModelOnOpen.current = refresh;
-    modelPicker.current.open(page);
-    return true;
-  };
+  const openModel = (page: "models" | "effort", refresh = false) =>
+    modelPanel.open(page, full && !disabled && settingsReadable, refresh);
   const stagedGoal = goalDirty ? undefined : startupGoal?.value;
   const disarmStartupGoal = () => {
     if (!startupGoal?.apply || attemptedStartupGoal.current === startupGoal.value) return;
@@ -961,7 +901,13 @@ export function CodexComposerControls({
   const selectedGoalDetail = savedGoal
     ? `${term(savedGoal.status)} · ${savedGoal.objective}`
     : startupGoal && goalObjective;
-  const goalDraftLocked = disabled || saving || notice === "uncertain";
+  const goalDraftLocked =
+    disabled ||
+    saving ||
+    notice === "uncertain" ||
+    live?.status === "outcome-unknown" ||
+    live?.reason === "control-outcome-unconfirmed" ||
+    capabilities?.reason === "control-outcome-unconfirmed";
   const resetGoalDraftEditor = () => {
     goalDraftRevision.current = undefined;
     setGoalDirty(false);
@@ -987,115 +933,60 @@ export function CodexComposerControls({
     }
     setGoalDirty(true);
   };
-  // DeepSeek Harness's permission preset changes at once during a turn; its model waits.
-  const presetWhileRunning =
-    running && managedAgent === "deepseek-harness" && settings?.writable.policy?.available === true;
-  const settingDisabled =
-    disabled || busy || saving || preparingSettings || feature("settings")?.available !== true;
   const parsedBudget = goalBudget ? Number(goalBudget) : undefined;
   const budgetValid =
     parsedBudget === undefined || (Number.isSafeInteger(parsedBudget) && parsedBudget > 0);
   const parsedGoalDraft = editingGoalDraft ? parseGoalDraft(goalObjective, goalBudget) : undefined;
-  const goalDraftDisabled =
-    !offerGoalDraft || goalDraftLocked || !online || !controlReady || busy || compacting;
+  const goalDraftDisabled = !offerGoalDraft || goalDraftLocked;
   const saveGoalDraft = () => {
     if (goalDraftDisabled || !parsedGoalDraft) return;
     onStageGoal?.(parsedGoalDraft);
     closeGoal();
   };
-  const permissionTriggerLocked =
-    disabled ||
-    (reservesPermissionSlot && !settingsReadable) ||
-    (!settingsUnknown &&
-      isDevin &&
-      (!online ||
-        busy ||
-        saving ||
-        running ||
-        feature("settings")?.available !== true ||
-        (settings?.available === true && !settings.writable.permissionMode?.available)));
-  const settingsWriteLocked =
-    settingDisabled ||
-    compacting ||
-    !online ||
-    !settings?.available ||
-    settingsReadStale ||
-    settingsUnknown;
-  const permissionWriteLocked = settingsWriteLocked || (running && !presetWhileRunning);
-  const permissionModes =
-    settings?.available && (isClaude || isDevin)
-      ? newSessionPermissions(
-          isClaude ? "claude-code" : "devin",
-          { available: true, permissionModes: settings.options.permissionModes },
-          locale,
-        )
-      : undefined;
-  const permissionChoices = permissionModes?.choices.flatMap((choice) => {
-    const permissionMode = (isDevin ? DEVIN_PERMISSION_IDS : CLAUDE_PERMISSION_IDS).find(
-      (id) => id === choice.id,
-    );
-    return permissionMode
-      ? [
-          {
-            ...choice,
-            selected: permissionMode === displayedSettings?.permissionMode,
-            disabled: permissionWriteLocked || !settings?.writable.permissionMode?.available,
-            fields: { permissionMode },
-          },
-        ]
-      : [];
+  const settingsWriteLocked = composerSettingsWriteLocked({
+    settings: settings,
+    online,
+    busy: disabled || busy || saving || preparingSettings,
+    stale: settingsReadStale,
+    uncertain: settingsUnknown || notice === "uncertain",
+    live,
+    capabilities,
+    feature: feature("settings"),
   });
-  const menuTitle = isDevin
-    ? agentCopy.nextTurnPermission
-    : isClaude
-      ? agentCopy.permission
-      : copy.executionPolicy;
-  const policies = (settings?.options.policies ?? []).map((item) => {
-    const label =
-      managedAgent === "deepseek-harness"
-        ? dshPolicyLabel(item.id, locale)
-        : codexPolicyLabel(item.id, locale);
-    return {
-      id: item.id,
-      name: label?.name ?? item.name,
-      description: label?.description ?? item.description,
-      risky: item.id === "full-access-on-request" || item.id === "danger-full-access",
-      selected: item.id === displayedSettings?.policyId,
-      disabled: permissionWriteLocked || !settings?.writable.policy?.available,
-      fields: { policyId: item.id },
-    };
+  const menuTitle = isClaude || isDevin ? agentCopy.permission : copy.executionPolicy;
+  const {
+    permissionItems,
+    permissionReadOnlyWithoutMenu,
+    permissionLabel,
+    permissionDescription,
+    permissionRisky,
+    changePermission,
+    collaboration,
+    planOn,
+    planAvailable,
+    canTogglePlan,
+    canExitPlan,
+    clearSavedMode,
+    canClearSavedMode,
+    setPlan,
+    clearPlan,
+    togglePlan,
+    exitPlan,
+  } = projectComposerSettingsControls({
+    agent: settingsAgent,
+    settings,
+    selection: displayedSettings,
+    live,
+    sessionId: selected,
+    locale,
+    locked: settingsWriteLocked,
+    full,
+    write: (fields) => mutate("settings", fields),
   });
-  const permissionItems = isClaude || isDevin ? (permissionChoices ?? []) : policies;
-  const collaboration = sessionCollaborationMode(settings, displayedSettings);
-  const clearSavedMode =
-    isCodex && !collaboration && settings?.writable.mode.available && !!settings.selected?.mode;
-  const planOn =
-    (collaboration?.field
-      ? displayedSettings?.[collaboration.field]
-      : (displayedSettings?.mode ?? displayedSettings?.permissionMode)) === "plan";
-  const planAvailable =
-    full &&
-    !settingsWriteLocked &&
-    (!running || managedAgent === "deepseek-harness") &&
-    collaboration?.writable === true;
-  const savedModeCanClear = clearSavedMode && !settingsWriteLocked && !running;
-  const canExitPlan = collaboration
-    ? planAvailable && collaboration.modes.includes("default")
-    : savedModeCanClear;
-  const clearSavedModeSelection = () => {
-    if (savedModeCanClear) void mutate("settings", { mode: null });
-  };
+  const permissionTriggerLocked = disabled || permissionReadOnlyWithoutMenu;
   useEffect(() => {
     onPlan?.({ on: planOn, available: planAvailable });
   }, [onPlan, planOn, planAvailable]);
-  const setPlan = (on: boolean) => {
-    const mode = on ? "plan" : "default";
-    if (!planAvailable || !collaboration?.modes.includes(mode) || planOn === on) return;
-    void mutate("settings", collaboration.change(mode));
-  };
-  const selectedPermission = (permissionChoices ?? policies).find((item) => item.selected);
-  const permissionLabel =
-    selectedPermission?.name ?? (isClaude || isDevin ? agentCopy.permission : copy.executionPolicy);
   const localSettingsNotice: SettingsNotice | undefined =
     settingsNotice ??
     (settingsUnknown
@@ -1114,27 +1005,6 @@ export function CodexComposerControls({
       (localSettingsNotice?.group === "settings" && !showPermissions));
   const permissionMessage =
     !modelMessage && (showPermissions || localSettingsNotice?.group === "permissions");
-  const permissionStatus =
-    settingsUnknown || (permissionMessage && localSettingsNotice)
-      ? undefined
-      : preparingSettings
-        ? layout.connecting
-        : !settings?.available || settingsReadStale
-          ? (reasonTitle(settingsError || settings?.reason) ?? layout.connecting)
-          : running
-            ? presetWhileRunning
-              ? copy.settingsWhileRunningModel
-              : copy.settingsWhileRunning
-            : permissionItems.every((item) => item.disabled)
-              ? (reasonTitle(
-                  feature("settings")?.reason ??
-                    (isClaude || isDevin
-                      ? settings.writable.permissionMode?.reason
-                      : settings.writable.policy?.reason),
-                ) ?? copy.settingUnavailable)
-              : saved
-                ? copy.settingsSaved
-                : undefined;
   useEffect(() => {
     // A submitted draft has at most one automatic dispatch. The existing action
     // controller owns its receipt, including after a reconnect.
@@ -1193,27 +1063,11 @@ export function CodexComposerControls({
     },
     plan: () => {
       if (!planAvailable) return false;
-      if (!planOn) setPlan(true);
+      if (!planOn) setPlan("plan");
       return true;
     },
   }));
   if (!full) return null;
-  const quickStatus =
-    settingsUnknown || (modelMessage && localSettingsNotice)
-      ? undefined
-      : settingsError
-        ? reason(settingsError)
-        : preparingSettings
-          ? layout.connecting
-          : !settings?.available
-            ? reason(settings?.reason) || copy.settingUnavailable
-            : running
-              ? presetWhileRunning
-                ? copy.settingsWhileRunningModel
-                : copy.settingsWhileRunning
-              : settingsReadStale && !saving
-                ? layout.connecting
-                : undefined;
   const settingsFeedback = settingsMessage && (
     <p
       role={localSettingsNotice?.status === "uncertain" ? "status" : "alert"}
@@ -1264,178 +1118,158 @@ export function CodexComposerControls({
             </Button>
           </div>
         )}
-      <ComposerToolbar
-        leading={
-          <>
-            <SessionComposerAddMenu
-              locale={locale}
-              label={copy.addContext}
-              disabled={disabled}
-              open={addOpen}
-              onOpenChange={(open) => {
-                setAddOpen(open);
-                if (open) void load(false, false);
-              }}
-              attachment={
-                attachmentOffered
-                  ? { disabled: disabled || !attachmentAllowed, onPick: openPhoneFiles }
-                  : undefined
+      <SessionComposerToolbar
+        locale={locale}
+        add={{
+          label: copy.addContext,
+          disabled: disabled,
+          open: addOpen,
+          onOpenChange: (open) => {
+            setAddOpen(open);
+            if (open) void load(false, false);
+          },
+          attachment: attachmentOffered
+            ? {
+                disabled: disabled || !attachmentAllowed,
+                reason: reasonTitle(feature("attachments")?.reason),
+                onPick: openPhoneFiles,
               }
-              resources={
-                resourcesReadable
-                  ? {
-                      page: context,
-                      path: contextNames,
-                      selected: resources,
-                      loading: contextLoading,
-                      error: contextError,
-                      offline: !online,
-                      selectable: !disabled && feature("context")?.available === true,
-                      selectionReason: feature("context")?.reason,
-                      reasonText: reason,
-                      load: loadContext,
-                      retry: () =>
-                        void loadContext(contextLocation.current.id, contextLocation.current.names),
-                      onSelect: setResources,
-                    }
-                  : undefined
+            : undefined,
+          resources: resourcesOffered
+            ? {
+                disabled: !resourcesReadable,
+                reason: !resourcesReadable
+                  ? reasonTitle(feature("resources")?.reason ?? feature("context")?.reason)
+                  : undefined,
+                page: context,
+                path: contextNames,
+                selected: resources,
+                loading: contextLoading,
+                error: contextError,
+                offline: !online,
+                selectable: !disabled && feature("context")?.available === true,
+                selectionReason: feature("context")?.reason,
+                reasonText: reason,
+                load: loadContext,
+                retry: () =>
+                  void loadContext(contextLocation.current.id, contextLocation.current.names),
+                onSelect: setResources,
               }
-              goal={
-                goalReadable || offerGoalDraft
-                  ? { selected: !!startupGoal || !!savedGoal, onOpen: openGoal }
-                  : undefined
+            : undefined,
+          goal: goalOffered
+            ? {
+                selected: !!startupGoal || !!savedGoal,
+                disabled: !goalReadable && !offerGoalDraft && !startupGoal,
+                reason: reasonTitle(feature("goal")?.reason ?? feature("goal-draft")?.reason),
+                onOpen: openGoal,
               }
-              plan={
-                collaboration
-                  ? {
-                      active: planOn,
-                      disabled:
-                        !planAvailable ||
-                        !collaboration.modes.includes(planOn ? "default" : "plan"),
-                      reason: reasonTitle(collaboration.reason),
-                      onToggle: () => setPlan(!planOn),
-                    }
-                  : undefined
+            : undefined,
+          plan:
+            planOffered || collaboration
+              ? {
+                  active: planOn,
+                  disabled: !canTogglePlan,
+                  reason: reasonTitle(collaboration?.reason ?? feature("settings")?.reason),
+                  onToggle: togglePlan,
+                }
+              : undefined,
+          clearMode: clearSavedMode
+            ? {
+                disabled: !canClearSavedMode,
+                onClear: clearPlan,
               }
-              clearMode={
-                clearSavedMode
-                  ? {
-                      disabled: !savedModeCanClear,
-                      onClear: clearSavedModeSelection,
-                    }
-                  : undefined
+            : undefined,
+        }}
+        permission={
+          showPermissions
+            ? {
+                title: menuTitle,
+                label:
+                  permissionLabel ??
+                  (isClaude || isDevin ? agentCopy.permission : copy.executionPolicy),
+                description: permissionDescription,
+                risky: permissionRisky,
+                disabled: permissionTriggerLocked,
+                side: "top",
+                open: permissionOpen,
+                onOpenChange: changePermissionOpen,
+                items: permissionItems,
+                onSelect: changePermission,
               }
-            />
-            <div
-              className={
-                permissionMessage && settingsFeedback
-                  ? "grid min-w-0 justify-items-start"
-                  : "contents"
-              }
-            >
-              {showPermissions && (
-                <ComposerPermissionMenu
-                  title={menuTitle}
-                  label={reservesPermissionSlot && !settingsReadable ? menuTitle : permissionLabel}
-                  risky={selectedPermission?.risky}
-                  disabled={permissionTriggerLocked}
-                  disabledReason={
-                    permissionTriggerLocked
-                      ? (missingSettingsStatus ?? permissionStatus)
-                      : undefined
-                  }
-                  side="top"
-                  open={permissionOpen}
-                  onOpenChange={changePermissionOpen}
-                  status={permissionStatus}
-                  blockItemsOnStatus={false}
-                  items={permissionItems}
-                  onSelect={(id) => {
-                    const choice = permissionItems.find((item) => item.id === id);
-                    if (choice && !choice.selected && !choice.disabled)
-                      void mutate("settings", choice.fields);
-                  }}
-                />
-              )}
-              {permissionMessage && settingsFeedback}
-            </div>
-            {planOn && (
-              <ComposerModeChip
-                mode="plan"
-                locale={locale}
-                disabled={!canExitPlan}
-                onRemove={() => (collaboration ? setPlan(false) : clearSavedModeSelection())}
-              />
-            )}
-            {(savedGoal || startupGoal) && (
-              <ComposerModeChip
-                mode="goal"
-                locale={locale}
-                detail={selectedGoalDetail}
-                disabled={!savedGoal && goalDraftLocked}
-                onOpen={openGoal}
-                onRemove={!savedGoal && onStartupGoalDiscarded ? discardStartupGoal : undefined}
-              />
-            )}
-          </>
+            : undefined
         }
-        trailing={
-          <>
-            {advancedActions}
-            {showContextUsage && (
-              <ContextUsageGauge
-                gaugeRef={usageGauge}
-                fallback={usageFallback}
-                limit={contextLimit}
-                source={provider?.contextUsage}
-              />
-            )}
-            <div
-              className={
-                modelMessage && settingsFeedback ? "grid min-w-0 justify-items-end" : "contents"
+        plan={
+          planOn
+            ? {
+                disabled: !canExitPlan,
+                onRemove: exitPlan,
               }
-            >
-              {showModelPicker && (
-                <ComposerModelPicker
-                  key={`${selected}\0${access?.bootId ?? ""}\0${access?.device?.id ?? ""}\0${usageEpoch ?? ""}`}
-                  pickerRef={modelPicker}
-                  locale={locale}
-                  settings={settings}
-                  provider={provider}
-                  selection={displayedSettings}
-                  reportedSettings={reportedSettings}
-                  displayFallback={displayModelFallback}
-                  disabled={settingDisabled || running || settingsReadStale || settingsUnknown}
-                  triggerDisabled={reservesModelSlot && !settingsReadable}
-                  saving={saving}
-                  status={missingSettingsStatus ?? quickStatus}
-                  onOpen={() => {
-                    const refresh = refreshModelOnOpen.current;
-                    refreshModelOnOpen.current = false;
-                    if (
-                      refresh ||
-                      settingsReadStale ||
-                      !settings?.available ||
-                      !settings.options.models.length
-                    )
-                      prepareSettings();
-                  }}
-                  // Claude Code and DeepSeek Harness report no effort for the model's own default.
-                  effortDefault={provider?.models.effortDefault ?? managedAgent !== null}
-                  // A live session can still be resolving its selected model during preparation.
-                  modelDefault={!preparesSettings && provider?.models.modelDefault}
-                  clearEffort={
-                    provider?.models.clearEffort === true &&
-                    (!preparesSettings || canPrepareSettings)
-                  }
-                  onChange={(fields) => mutate("settings", fields)}
-                />
-              )}
-              {modelMessage && settingsFeedback}
-            </div>
-            {action}
-          </>
+            : undefined
         }
+        goal={
+          savedGoal || startupGoal
+            ? {
+                detail: selectedGoalDetail,
+                disabled: !savedGoal && goalDraftLocked,
+                onOpen: openGoal,
+                onRemove: !savedGoal && onStartupGoalDiscarded ? discardStartupGoal : undefined,
+              }
+            : undefined
+        }
+        actions={advancedActions}
+        usage={
+          <ContextUsageGauge
+            gaugeRef={usageGauge}
+            fallback={usageFallback}
+            limit={contextLimit}
+            source={provider?.contextUsage}
+          />
+        }
+        model={
+          showModelPicker
+            ? {
+                scope: `${selected}\0${access?.bootId ?? ""}\0${access?.device?.id ?? ""}\0${access?.device?.advancedControl ?? ""}`,
+                settings: settings,
+                provider: provider,
+                selection: displayedSettings,
+                reportedSettings: reportedSettings,
+                displayFallback: displayModelFallback,
+                retainedEffortOptions,
+                disabled: settingsWriteLocked,
+                triggerDisabled: false,
+                readOnly: settingsReadOnly,
+                settingsAuthority: followerAuthority,
+                terminalModel: terminalModel,
+                saving: saving,
+                loading: preparingSettings,
+                ...modelPanel.modelActions({
+                  settings: settings,
+                  stale: settingsReadStale,
+                  settingsError,
+                  prepare: prepareSettings,
+                  refresh: preparesSettings ? () => void load(true, false) : undefined,
+                  terminal: {
+                    offered: canOpenTerminalModel,
+                    settingsReadable,
+                    executionMode: live?.executionMode,
+                    ready: controlReady,
+                    online,
+                    blocked: disabled || busy || running,
+                    open: async () => !!(await codexAction("open-model-picker")),
+                  },
+                }),
+                effortDefault: provider?.models.effortDefault ?? managedAgent !== null,
+                modelDefault: !preparesSettings && provider?.models.modelDefault,
+                clearEffort:
+                  provider?.models.clearEffort === true &&
+                  (!preparesSettings || canPrepareSettings),
+                onChange: (fields) => mutate("settings", fields),
+              }
+            : undefined
+        }
+        action={action}
+        permissionFeedback={permissionMessage && settingsFeedback}
+        modelFeedback={modelMessage && settingsFeedback}
       />
       {!permissionMessage && !modelMessage && settingsFeedback}
       {dialog && (

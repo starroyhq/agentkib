@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { managedText } from "./managed-copy";
-import source from "./managed-tasks.tsx?raw";
+import source from "./session-receipt-recovery.tsx?raw";
 
 const calls = [
   ...source.matchAll(

@@ -353,26 +353,16 @@ afterEach(() => {
 });
 
 describe("idle Claude settings and retirement", () => {
-  it("prepares native settings only when the user opens the model picker", async () => {
+  it("reuses the loaded native catalog when the user opens the model picker", async () => {
     const { fetcher } = createHost();
     await openSession();
     expect(
       fetcher.mock.calls.filter(([url]) => String(url).endsWith("/managed/settings-prepare")),
     ).toHaveLength(0);
     await openEffort();
-    await waitFor(() =>
-      expect(
-        fetcher.mock.calls.filter(([url]) => String(url).endsWith("/managed/settings-prepare")),
-      ).toHaveLength(1),
-    );
-    const call = fetcher.mock.calls.find(([url]) =>
-      String(url).endsWith("/managed/settings-prepare"),
-    )!;
-    expect(JSON.parse(String(call[1]?.body))).toEqual({
-      sessionId: "session",
-      bootId: "boot",
-      expectedRevision: 1,
-    });
+    expect(
+      fetcher.mock.calls.filter(([url]) => String(url).endsWith("/managed/settings-prepare")),
+    ).toHaveLength(0);
   });
 
   it("does not replay another client's old retirement notice but shows the next retirement in this visit", async () => {
@@ -464,7 +454,7 @@ describe("original Claude terminal over Web", () => {
     expect(state.mutations).toEqual([]);
   });
 
-  it("follows a terminal that cannot take messages instead of offering a dead input", async () => {
+  it("keeps an editable draft while a connected terminal cannot take messages", async () => {
     const { state } = createHost({ follower: true });
     state.live = {
       ...state.live,
@@ -479,8 +469,8 @@ describe("original Claude terminal over Web", () => {
     expect(
       screen.queryByText("会话发送尚未开放，请在终端发送；AgentKib 可同步观察并取消当前轮次。"),
     ).not.toBeInTheDocument();
-    expect(screen.queryByRole("textbox", { name: "发送消息" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "发送" })).not.toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: "发送消息" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "发送" })).toBeDisabled();
     expect(screen.queryByRole("button", { name: "交给 AgentKib" })).not.toBeInTheDocument();
     expect(state.mutations).toEqual([]);
   });
@@ -495,10 +485,10 @@ describe("original Claude terminal over Web", () => {
       stopEnabled: true,
       terminalSend: false,
     };
-    state.features.stop = available;
+    state.features.stop = unavailable;
     await openSession();
     expect(await screen.findByText("在终端中继续这条会话，这里会同步显示")).toBeVisible();
-    expect(screen.queryByRole("textbox", { name: "发送消息" })).not.toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: "发送消息" })).toBeEnabled();
     expect(screen.queryByRole("button", { name: "停止当前轮次" })).not.toBeInTheDocument();
     expect(state.mutations).toEqual([]);
   });
@@ -528,7 +518,7 @@ describe("original Claude terminal over Web", () => {
     const { state } = createHost({ follower: true });
     await openSession();
     expect(await screen.findByText("在终端中运行 · 已连接")).toBeVisible();
-    expect(screen.getByText("审批和提问在终端中处理")).toBeVisible();
+    expect(screen.queryByText("审批和提问在终端中处理")).not.toBeInTheDocument();
     expect(document.querySelector("aside.info")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "交给 AgentKib" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "生成连接码" })).not.toBeInTheDocument();
@@ -571,8 +561,8 @@ describe("original Claude terminal over Web", () => {
   });
 
   it.each([
-    ["claude-terminal-approval", "awaiting-approval", "审批和提问在终端中处理"],
-    ["claude-terminal-question", "waiting-input", "审批和提问在终端中处理"],
+    ["claude-terminal-approval", "awaiting-approval", "正在等待工具审批，请在终端处理。"],
+    ["claude-terminal-question", "waiting-input", "正在等待问题回答，请在终端处理。"],
     [
       "claude-bridge-event-gap",
       "unsupported",
@@ -785,7 +775,9 @@ describe("Claude Remote parity", () => {
     host.state.settings = { ...host.state.settings, applicationStatus: "unknown" };
     reportNativeSettings(host.state);
     const picker = within(await screen.findByRole("dialog"));
-    expect(await picker.findByText(composerLayoutCopy["zh-CN"].settingsUnknown)).toBeVisible();
+    const message = composerLayoutCopy["zh-CN"].settingsUnknown;
+    expect(await screen.findByText(message)).toBeVisible();
+    expect(picker.queryByText(message)).not.toBeInTheDocument();
     expect(host.state.mutations).toHaveLength(1);
   });
 

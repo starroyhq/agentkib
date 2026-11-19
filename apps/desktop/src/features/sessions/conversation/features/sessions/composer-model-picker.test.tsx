@@ -124,8 +124,8 @@ describe("composer model picker", () => {
       expect(trigger).toHaveTextContent("GPT Sol");
       expect(trigger).toHaveTextContent(composerTerm(locale, "low"));
       const popup = await openPicker();
-      expect(trigger).toHaveTextContent(composerModelCopy[locale].chooseEffort);
-      expect(trigger).not.toHaveTextContent("GPT Sol");
+      expect(trigger).toHaveTextContent("GPT Sol");
+      expect(trigger).toHaveTextContent(composerTerm(locale, "low"));
       expect(
         within(popup).getByRole("button", { name: composerModelCopy[locale].fast }),
       ).toBeEnabled();
@@ -506,6 +506,27 @@ describe("composer model picker", () => {
     },
   );
 
+  it("keeps a retained effort scale disabled while the catalog is missing", async () => {
+    const loaded = props.settings!;
+    const view = render(<ComposerModelPicker {...props} />);
+    const popup = await openPicker();
+    expect(within(popup).getByRole("slider")).toBeEnabled();
+
+    props.retainedEffortOptions = loaded.options.models[0];
+    props.settings = { ...loaded, options: { ...loaded.options, models: [] } };
+    view.rerender(<ComposerModelPicker {...props} />);
+    const slider = within(popup).getByRole("slider");
+    expect(slider).toBeDisabled();
+    expect(slider).toHaveAttribute("aria-valuetext", "Low");
+    expect(within(popup).queryByRole("status")).not.toBeInTheDocument();
+    fireEvent.keyDown(slider, { key: "End" });
+    expect(props.onChange).not.toHaveBeenCalled();
+
+    props.selection = { modelId: "terra" };
+    view.rerender(<ComposerModelPicker {...props} />);
+    expect(within(popup).queryByRole("slider")).not.toBeInTheDocument();
+  });
+
   it("deduplicates all changes during an async save and reopening never resends", async () => {
     let finish!: (accepted: boolean) => void;
     props.onChange = vi.fn(
@@ -652,13 +673,13 @@ describe("composer model picker", () => {
     expect(props.onChange).toHaveBeenCalledExactlyOnceWith({ model: "terra" });
   });
 
-  it("opens the overview during loading and preserves the receipt status", async () => {
-    props = { ...props, settings: undefined, selection: undefined, status: "Read back required" };
+  it("opens the overview during loading without presenting active settings or status text", async () => {
+    props = { ...props, settings: undefined, selection: undefined, loading: true };
     render(<ComposerModelPicker {...props} />);
     const trigger = screen.getByRole("button", { name: copy.modelSettings });
     fireEvent.click(trigger);
     const popup = await screen.findByRole("dialog", { name: copy.modelSettings });
-    expect(within(popup).getByRole("status")).toHaveTextContent("Read back required");
+    expect(within(popup).queryByRole("status")).not.toBeInTheDocument();
     expect(within(popup).queryByRole("slider")).not.toBeInTheDocument();
     expect(within(popup).getByRole("button", { name: copy.reset })).toBeDisabled();
     expect(within(popup).getByRole("button", { name: copy.fast })).toBeDisabled();

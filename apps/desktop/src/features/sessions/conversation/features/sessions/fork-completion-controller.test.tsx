@@ -142,8 +142,8 @@ function baseFixture(initial: Live, agent: "codex" | "claude-code") {
     status: "idle",
     features: { fork: { available: true } },
   }));
-  const request = vi.spyOn(client, "request").mockImplementation(async (path) => {
-    if (path === (agent === "codex" ? "codex/fork" : "managed/action")) {
+  const request = vi.spyOn(client, "request").mockImplementation(async (path, body) => {
+    if (path === "managed/action" && (body as { operation?: unknown })?.operation === "fork") {
       sessions.push(summary("forked", agent));
       return { accepted: true, sessionId: "forked" };
     }
@@ -331,14 +331,22 @@ describe("active send receipt ownership", () => {
 });
 
 describe("settings actions and their receipts", () => {
-  function fixture(agent: "codex" | "claude-code") {
-    const live = { ...baseIdle("original", agent), runtimeBootId: "runtime" };
+  function fixture(agent: "codex" | "claude-code", terminal = false) {
+    const live: Live = {
+      ...baseIdle("original", agent),
+      ...(terminal ? { executionMode: "claude-follower" } : {}),
+      runtimeBootId: "runtime",
+    };
     const host = baseFixture(live, agent);
     vi.mocked(host.client.sessionCapabilities).mockImplementation(async (sessionId) => ({
       sessionId,
-      executionMode: agent === "codex" ? "codex-managed" : "claude-managed",
+      executionMode: live.executionMode!,
       status: "idle",
-      features: { fork: { available: true }, settings: { available: true } },
+      features: {
+        fork: { available: true },
+        settings: { available: !terminal },
+        "open-model-picker": { available: terminal },
+      },
     }));
     return { ...host, updated: () => host.liveById.set("original", { ...live, revision: 2 }) };
   }
@@ -351,53 +359,65 @@ describe("settings actions and their receipts", () => {
     runtimeBootId: "runtime",
   });
 
-  it.each(["codex", "claude-code"] as const)(
-    "does one scoped read after an acknowledged %s settings write",
-    async (agent) => {
-      const host = fixture(agent);
-      const { result } = await open(host);
-      act(() => result.current.setMessage("Keep this draft"));
-      host.live.mockClear();
-      host.events.mockClear();
-      vi.mocked(host.client.catalog).mockClear();
-      let finish!: (result: SessionActionResult) => void;
-      host.request.mockImplementationOnce(async () => new Promise((resolve) => (finish = resolve)));
-      let save!: ReturnType<typeof result.current.codexAction>;
-      const change = agent === "codex" ? { serviceTierId: "priority" } : { model: "sonnet" };
-      await act(async () => {
-        save = result.current.codexAction("settings", change);
-      });
-      expect(host.request).toHaveBeenCalledExactlyOnceWith(
-        agent === "codex" ? "codex/settings" : "managed/action",
-        expect.objectContaining({ ...change, sessionId: "original", expectedRevision: 1 }),
-      );
-      const { requestId } = host.request.mock.calls[0]![1] as SessionActionBody;
-      expect(readPending(host.scope)).toMatchObject([
-        { requestId, sessionId: "original", kind: "settings" },
-      ]);
-      expect(result.current.canSend).toBe(false);
-      expect(result.current.busy).toBe(false);
-      await act(async () => publishSessionInvalidation(host.client, "original", ["receipts"]));
-      expect(host.receipt).not.toHaveBeenCalled();
-      expect(result.current.notice).toBeUndefined();
-      expect(host.live).not.toHaveBeenCalled();
+  it.each([
+    ["codex", "settings"],
+    ["claude-code", "settings"],
+    ["claude-code", "open-model-picker"],
+  ] as const)("does one scoped read after an acknowledged %s %s request", async (agent, action) => {
+    const host = fixture(agent, action === "open-model-picker");
+    const { result } = await open(host);
+    act(() => result.current.setMessage("Keep this draft"));
+    host.live.mockClear();
+    host.events.mockClear();
+    vi.mocked(host.client.catalog).mockClear();
+    let finish!: (result: SessionActionResult) => void;
+    host.request.mockImplementationOnce(async () => new Promise((resolve) => (finish = resolve)));
+    let save!: ReturnType<typeof result.current.codexAction>;
+    const change =
+      action === "open-model-picker"
+        ? {}
+        : agent === "codex"
+          ? { serviceTierId: "priority" }
+          : { model: "sonnet" };
+    await act(async () => {
+      save = result.current.codexAction(action, change);
+    });
+    expect(host.request).toHaveBeenCalledExactlyOnceWith(
+      "managed/action",
+      expect.objectContaining({
+        ...change,
+        agent,
+        operation: action,
+        sessionId: "original",
+        expectedRevision: 1,
+      }),
+    );
+    const { requestId } = host.request.mock.calls[0]![1] as SessionActionBody;
+    expect(readPending(host.scope)).toMatchObject([
+      { requestId, sessionId: "original", kind: action },
+    ]);
+    expect(result.current.canSend).toBe(false);
+    expect(result.current.busy).toBe(false);
+    await act(async () => publishSessionInvalidation(host.client, "original", ["receipts"]));
+    expect(host.receipt).not.toHaveBeenCalled();
+    expect(result.current.notice).toBeUndefined();
+    expect(host.live).not.toHaveBeenCalled();
 
-      host.updated();
-      await act(async () => {
-        finish(ack(requestId));
-        await expect(save).resolves.toMatchObject(ack(requestId));
-      });
-      expect(host.live).toHaveBeenCalledExactlyOnceWith("original");
-      expect(host.events).not.toHaveBeenCalled();
-      expect(host.client.catalog).not.toHaveBeenCalled();
-      expect(host.receipt).not.toHaveBeenCalled();
-      expect(readPending(host.scope)).toEqual([]);
-      expect(result.current.live?.revision).toBe(2);
-      expect(result.current.message).toBe("Keep this draft");
-      expect(result.current.canSend).toBe(true);
-      expect(host.request).toHaveBeenCalledOnce();
-    },
-  );
+    host.updated();
+    await act(async () => {
+      finish(ack(requestId));
+      await expect(save).resolves.toMatchObject(ack(requestId));
+    });
+    expect(host.live).toHaveBeenCalledExactlyOnceWith("original");
+    expect(host.events).not.toHaveBeenCalled();
+    expect(host.client.catalog).not.toHaveBeenCalled();
+    expect(host.receipt).not.toHaveBeenCalled();
+    expect(readPending(host.scope)).toEqual([]);
+    expect(result.current.live?.revision).toBe(2);
+    expect(result.current.message).toBe("Keep this draft");
+    expect(result.current.canSend).toBe(true);
+    expect(host.request).toHaveBeenCalledOnce();
+  });
 
   it.each(["matching", "other revision", "other acknowledgement"] as const)(
     "checks a %s receipt when the settings response is lost",
@@ -728,7 +748,7 @@ describe.each(["codex", "claude-code"] as const)("a deleted %s session", (agent)
       status: "idle",
       features: { fork: { available: true }, delete: { available: true } },
     }));
-    const path = agent === "codex" ? "codex/delete" : "managed/action";
+    const path = "managed/action";
     host.request.mockImplementation(async (requested) =>
       requested === path
         ? { accepted: true, completed: true, deleted: true, sessionId: "original" }
@@ -744,7 +764,8 @@ describe.each(["codex", "claude-code"] as const)("a deleted %s session", (agent)
       path,
       expect.objectContaining({
         sessionId: "original",
-        ...(agent === "claude-code" ? { operation: "delete", agent } : {}),
+        operation: "delete",
+        agent,
       }),
     );
     expect(view.result.current.sessions.map((session) => session.id)).toEqual(["other"]);

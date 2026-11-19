@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { composerGoalCopy } from "@agentkib/session-ui";
 import {
@@ -17,8 +17,7 @@ const copy = codexCopy["en-US"];
 const codexReasonText = (code: string) => codexReason("en-US", code, "web").text;
 let state: ReturnType<typeof useSession>;
 let props: Parameters<typeof CodexComposerControls>[0];
-// As the host projects a running DeepSeek Harness session: its model waits for the turn to end,
-// its permission preset does not.
+// The executor reports whether its settings are writable at the current revision.
 const settings = (running: boolean): CodexSessionSettings => ({
   sessionId: "session",
   revision: 1,
@@ -30,7 +29,7 @@ const settings = (running: boolean): CodexSessionSettings => ({
     model: running ? { available: false, reason: "session-busy" } : { available: true },
     effort: running ? { available: false, reason: "session-busy" } : { available: true },
     mode: { available: false, reason: "operation-unavailable" },
-    policy: { available: true },
+    policy: running ? { available: false, reason: "session-busy" } : { available: true },
     serviceTier: { available: false, reason: "operation-unavailable" },
     restoreDefaults: { available: !running },
   },
@@ -105,27 +104,26 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe("DeepSeek Harness controls", () => {
-  it("switches the permission preset during a turn, while the model waits", async () => {
+  it("keeps model and permission controls gray until the executor becomes idle", async () => {
     const provider = sessionProviderCapabilities("deepseek-harness");
     vi.mocked(state.client.sessionSettings).mockResolvedValue({ ...settings(true), provider });
     state.access!.device!.advancedControl = true;
+    state.capabilities!.features.settings = { available: false, reason: "session-busy" };
     state.live!.usage = {
       available: true,
       state: "ready",
       usedTokens: 700,
       contextWindow: 1000,
     };
-    render(<CodexComposerControls {...props} />);
+    const view = render(<CodexComposerControls {...props} />);
     const model = await screen.findByRole("button", { name: /DeepSeek Chat/ });
     fireEvent.click(model);
     expect(screen.getByRole("button", { name: "Reset default model" })).toBeDisabled();
-    // Only the model and its effort wait for the turn to end.
-    await waitFor(() => expect(screen.getByText(copy.settingsWhileRunningModel)).toBeVisible());
-    expect(screen.queryByText(copy.settingsWhileRunning)).not.toBeInTheDocument();
+    expect(within(screen.getByRole("dialog")).queryByRole("status")).not.toBeInTheDocument();
     // DSH has no collaboration mode or service tier to offer.
     expect(screen.queryByLabelText(copy.mode)).not.toBeInTheDocument();
     expect(screen.queryByLabelText(copy.serviceTier)).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: copy.contextUsage })).not.toBeInTheDocument();
+    expect(screen.queryByRole("img", { name: copy.contextUsage })).not.toBeInTheDocument();
     expect(screen.getByRole("dialog")).not.toHaveTextContent("70%");
     expect(screen.getByRole("dialog")).not.toHaveTextContent(copy.contextUnknown);
     fireEvent.click(model);
@@ -134,7 +132,22 @@ describe("DeepSeek Harness controls", () => {
     await waitFor(() =>
       expect(screen.getByText(/^Can write inside the workspace and permitted/)).toBeVisible(),
     );
-    fireEvent.click(screen.getByRole("menuitem", { name: /^Read only/i }));
+    const policy = await screen.findByRole("menuitem", { name: /^Read only/i });
+    expect(policy).toHaveAttribute("aria-disabled", "true");
+    expect(within(screen.getByRole("menu")).queryByRole("status")).not.toBeInTheDocument();
+    fireEvent.click(policy);
+    expect(state.codexAction).not.toHaveBeenCalled();
+
+    vi.mocked(state.client.sessionSettings).mockResolvedValue({
+      ...settings(false),
+      provider,
+      revision: 2,
+    });
+    state.live = { ...state.live!, status: "idle", revision: 2 };
+    state.capabilities!.features.settings = { available: true };
+    view.rerender(<CodexComposerControls {...props} />);
+    await waitFor(() => expect(policy).not.toHaveAttribute("aria-disabled", "true"));
+    fireEvent.click(policy);
     await waitFor(() =>
       expect(state.codexAction).toHaveBeenCalledWith("settings", { policyId: "read-only" }),
     );

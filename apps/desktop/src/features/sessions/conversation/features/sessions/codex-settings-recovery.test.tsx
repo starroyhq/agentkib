@@ -51,7 +51,7 @@ beforeEach(() => {
     live: { sessionId: "session", status: "idle", revision: 1 },
     capabilities: { sessionId: "session", features: { settings: { available: true } } },
     client: {
-      codexSessionSettings: vi.fn(async () => settings),
+      sessionSettings: vi.fn(async () => settings),
       codexGoals: vi.fn(async () => ({
         sessionId: "session",
         revision: 1,
@@ -82,7 +82,7 @@ describe("Codex settings recovery on desktop", () => {
     );
     expect(await screen.findByText(text)).toBeVisible();
     await screen.findByRole("button", { name: /unlisted-model/ });
-    vi.mocked(state.client.codexSessionSettings).mockClear();
+    vi.mocked(state.client.sessionSettings).mockClear();
     fireEvent.click(screen.getByRole("button", { name: "Change model" }));
     const picker = composerModelCopy["en-US"];
     expect(
@@ -91,7 +91,9 @@ describe("Codex settings recovery on desktop", () => {
           reason === "unsupported-model" ? picker.model : new RegExp(`^${picker.chooseEffort}:`),
       }),
     ).toBeVisible();
-    await waitFor(() => expect(state.client.codexSessionSettings).toHaveBeenCalledWith("session"));
+    await waitFor(() =>
+      expect(state.client.sessionSettings).toHaveBeenCalledWith("session", "codex"),
+    );
     expect(state.codexAction).not.toHaveBeenCalled();
     expect(state.control).not.toHaveBeenCalled();
   });
@@ -112,7 +114,7 @@ describe("Codex settings recovery on desktop", () => {
   it("displays the saved model and usage until the current settings are known", async () => {
     state.notice = undefined;
     const emptySettings = { ...settings, current: {}, selected: {} };
-    vi.mocked(state.client.codexSessionSettings).mockResolvedValue({
+    vi.mocked(state.client.sessionSettings).mockResolvedValue({
       ...emptySettings,
       historicalSettings: { modelId: "older-model", effort: "high" },
       usage: {
@@ -146,8 +148,8 @@ describe("Codex settings recovery on desktop", () => {
 
     state.live = { ...state.live, executionLocation: "external" };
     view.rerender(<CodexComposerControls {...controlsProps} />);
-    expect(screen.getByRole("button", { name: "Model settings" })).toBeVisible();
-    expect(ring).not.toHaveAccessibleDescription(expect.stringContaining("Last recorded"));
+    expect(screen.getByRole("button", { name: /older-model · High/ })).toBeVisible();
+    expect(ring).toHaveAccessibleDescription(expect.stringContaining("29% used"));
 
     state.live = {
       ...state.live,
@@ -162,9 +164,41 @@ describe("Codex settings recovery on desktop", () => {
     expect(state.codexAction).not.toHaveBeenCalled();
   });
 
+  it("prefers the external session's recorded model over the cache, and the cache over defaults", async () => {
+    state.notice = undefined;
+    const props = {
+      resources: [],
+      setResources: vi.fn(),
+      openPhoneFiles: vi.fn(),
+      disabled: false,
+    };
+    const read = vi.mocked(state.client.sessionSettings);
+    const view = render(<CodexComposerControls key="initial" {...props} />);
+    await screen.findByRole("button", { name: /unlisted-model/ });
+
+    state.live = { ...state.live!, executionLocation: "external", status: "running" };
+    read.mockResolvedValue({
+      ...settings,
+      current: {},
+      historicalSettings: { modelId: "observed-externally", effort: "high" },
+    });
+    view.rerender(<CodexComposerControls key="external" {...props} />);
+    await screen.findByRole("button", { name: /observed-externally · High/ });
+
+    read.mockResolvedValue({
+      ...settings,
+      current: { policyId: "test" },
+      options: { ...settings.options, policies: [{ id: "test", name: "Read completed" }] },
+    });
+    view.rerender(<CodexComposerControls key="again" {...props} />);
+    await screen.findByRole("button", { name: /Execution policy: Read completed/ });
+    expect(screen.getByRole("button", { name: /observed-externally · High/ })).toBeVisible();
+    expect(state.codexAction).not.toHaveBeenCalled();
+  });
+
   it("shows the host default when no model is known without selecting it", async () => {
     state.notice = undefined;
-    vi.mocked(state.client.codexSessionSettings).mockResolvedValue({
+    vi.mocked(state.client.sessionSettings).mockResolvedValue({
       ...settings,
       current: {},
       selected: {},
@@ -192,7 +226,7 @@ describe("Codex settings recovery on desktop", () => {
 
   it("keeps the native history model when a cold session has only a staged policy", async () => {
     state.notice = undefined;
-    vi.mocked(state.client.codexSessionSettings).mockResolvedValue({
+    vi.mocked(state.client.sessionSettings).mockResolvedValue({
       ...settings,
       applicationStatus: "pending",
       current: {},
@@ -231,7 +265,7 @@ describe("Codex settings recovery on desktop", () => {
         disabled={false}
       />
     );
-    const read = vi.mocked(state.client.codexSessionSettings).mockResolvedValue(resolved);
+    const read = vi.mocked(state.client.sessionSettings).mockResolvedValue(resolved);
     const mounted = render(view("first"));
     const name = /Listed model · Low · Fast mode/;
     await screen.findByRole("button", { name });
@@ -262,7 +296,7 @@ describe("Codex settings recovery on desktop", () => {
         disabled={false}
       />
     );
-    const read = vi.mocked(state.client.codexSessionSettings);
+    const read = vi.mocked(state.client.sessionSettings);
     const mounted = render(controls("first"));
     await screen.findByRole("button", { name: /unlisted-model · Low/ });
     read.mockRejectedValue(new ApiError(403, "permission_denied"));
@@ -279,7 +313,7 @@ describe("Codex settings recovery on desktop", () => {
       status: "notDispatched",
       reason: "collaboration-modes-unavailable",
     };
-    const read = vi.mocked(state.client.codexSessionSettings);
+    const read = vi.mocked(state.client.sessionSettings);
     read.mockResolvedValue({
       ...settings,
       options: { ...settings.options, policies: [{ id: "verified", name: "Verified policy" }] },
@@ -305,7 +339,7 @@ describe("Codex settings recovery on desktop", () => {
 
   it("keeps the authorized cached model readable while an unconfirmed settings write is fenced", async () => {
     state.notice = undefined;
-    const read = vi.mocked(state.client.codexSessionSettings);
+    const read = vi.mocked(state.client.sessionSettings);
     read.mockResolvedValue({ ...settings, current: { modelId: "listed-model", effort: "low" } });
     const controls = (key: string) => (
       <CodexComposerControls

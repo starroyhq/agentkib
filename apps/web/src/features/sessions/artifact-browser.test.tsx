@@ -11,7 +11,7 @@ import {
 
 let session: {
   client: { request: ReturnType<typeof vi.fn> };
-  access: { device: { files: boolean } };
+  access: { device: { files: boolean; id?: string } };
   current: { workspace_id: string };
   selected: string;
   locale: string;
@@ -259,6 +259,18 @@ describe("ArtifactBrowser", () => {
     view.rerender(<ArtifactBrowser />);
     expect(screen.queryByText("Text from the authorized file")).not.toBeInTheDocument();
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+  it("drops an open preview when the authorized device changes", async () => {
+    session.access.device.id = "old-device";
+    const view = await show();
+    fireEvent.click(screen.getByRole("button", { name: "report.txt" }));
+    await screen.findByText("Text from the authorized file");
+    session.access.device.id = "new-device";
+    view.rerender(<ArtifactBrowser />);
+    expect(screen.queryByText("Text from the authorized file")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Files & artifacts" }));
+    await screen.findByRole("button", { name: "report.txt" });
+    expect(screen.queryByText("Text from the authorized file")).not.toBeInTheDocument();
   });
   it("keeps an unexpired media ticket during a temporary renewal failure and retries", async () => {
     const view = await show();

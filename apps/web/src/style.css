@@ -57,6 +57,7 @@
   --muted-foreground: #6b6b74;
   --accent: #eef2ff;
   --accent-foreground: #4059b5;
+  --composer-action-color: var(--accent-foreground);
   --destructive: #c03943;
   --destructive-text: #98262f;
   --destructive-icon: var(--destructive);

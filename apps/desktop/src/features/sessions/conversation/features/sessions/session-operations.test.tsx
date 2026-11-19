@@ -10,9 +10,12 @@ import { conversationWords } from "@/core/i18n";
 import type { SessionController } from "./use-session-controller";
 let session: SessionController;
 vi.mock("./session-context", () => ({ useSession: () => session }));
-vi.mock("./managed-tasks", () => ({
-  ManagedTasks: ({ renderContent }: { renderContent: (content: ReactNode) => ReactNode }) =>
-    renderContent(null),
+vi.mock("./session-receipt-recovery", () => ({
+  SessionReceiptRecovery: ({
+    renderContent,
+  }: {
+    renderContent: (content: ReactNode) => ReactNode;
+  }) => renderContent(null),
 }));
 vi.mock("./codex-tools", () => ({
   CodexTools: ({ open, shortcuts }: { open: boolean; shortcuts: ReactNode }) =>

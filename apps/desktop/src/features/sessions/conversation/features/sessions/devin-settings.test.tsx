@@ -86,7 +86,11 @@ function renderControls({
     locale: "en-US",
     online: true,
     busy: false,
-    access: { bootId: "boot", device: { id: "device", accessMode: "full", advancedControl: true } },
+    access: {
+      status: "approved",
+      bootId: "boot",
+      device: { id: "device", accessMode: "full", advancedControl: true },
+    },
     live: {
       sessionId: settings.sessionId,
       status: running ? "running" : "idle",
@@ -139,9 +143,12 @@ describe("permissions in an existing Devin conversation", () => {
   ] as const)("cannot change modes %s", async (_description, options) => {
     const { codexAction } = renderControls(options);
     const trigger = await permissionTrigger();
-    expect(trigger).toBeDisabled();
+    expect(trigger).toBeEnabled();
     await userEvent.setup().click(trigger);
-    expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+    const menu = await screen.findByRole("menu");
+    const item = within(menu).getByRole("menuitem", { name: /^Read-only auto/ });
+    expect(item).toHaveAttribute("aria-disabled", "true");
+    await userEvent.setup().click(item);
     expect(codexAction).not.toHaveBeenCalled();
   });
 
@@ -158,6 +165,15 @@ describe("permissions in an existing Devin conversation", () => {
 });
 
 describe("the model in an existing Devin conversation", () => {
+  it("does not show live tokens as last-request usage when neither the last count nor the model limit is known", async () => {
+    renderControls({
+      liveUsage: { available: true, state: "ready", usedTokens: 35, contextWindow: 100 },
+    });
+    expect(await permissionTrigger()).toBeEnabled();
+    expect(
+      screen.queryByRole("img", { name: codexCopy["en-US"].contextUsage }),
+    ).not.toBeInTheDocument();
+  });
   it("shows the context capacity and writes Fast using the selected native tier", async () => {
     const provider = sessionProviderCapabilities("devin")!;
     const { codexAction } = renderControls({
@@ -209,7 +225,9 @@ describe("the model in an existing Devin conversation", () => {
     });
     const ring = await screen.findByRole("img", { name: codexCopy["en-US"].contextUsage });
     await waitFor(() =>
-      expect(ring).toHaveAccessibleDescription("4% used (96% remaining) 40K / 1M tokens used"),
+      expect(ring).toHaveAccessibleDescription(
+        "4% used (96% remaining) 40,000 / 1,000,000 tokens used",
+      ),
     );
     expect(ring.querySelector("circle[pathLength]")).toHaveAttribute("stroke-dasharray", "4 100");
   });

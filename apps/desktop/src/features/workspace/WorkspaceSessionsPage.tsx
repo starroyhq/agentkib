@@ -4,7 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
-import { ConversationEventRow } from "@/features/sessions/ConversationEventRow";
+import { ConversationTranscript } from "@/features/sessions/ConversationTranscript";
 import { HistoryError, HistoryWarning } from "@/features/sessions/HistoryFeedback";
 import {
   DropdownMenu,
@@ -33,6 +33,8 @@ import {
 } from "lucide-react";
 import { useInfiniteQuery } from "@tanstack/react-query";
 import { api } from "@/core/api";
+import { isLiveSessionAgent } from "@agentkib/web-client";
+import { hasDesktopConversation } from "@/core/conversation-bridge";
 import { DEFAULT_SESSION_PAGE_SIZE } from "@/core/session-history";
 import { queryDefaults, useOptionalQueryClient } from "@/features/home/home-query";
 import { AgentIcon } from "@/features/agents/AgentIcon";
@@ -139,6 +141,7 @@ export function WorkspaceSessionsPage({
   targetAgents,
   installedAgents,
   onOpenSession,
+  onContinueSession,
   openHandoffOnInitialSession = false,
 }: {
   workspace: WorkspaceSummary;
@@ -155,6 +158,7 @@ export function WorkspaceSessionsPage({
   targetAgents: AgentKind[];
   installedAgents?: AgentKind[];
   onOpenSession?: (sessionId: string) => void;
+  onContinueSession?: (sessionId: string) => void;
   openHandoffOnInitialSession?: boolean;
 }) {
   const { formatDateTime, formatRelativeTime, localizeMessage, tr } = useI18n();
@@ -389,6 +393,18 @@ export function WorkspaceSessionsPage({
     }
     setHiddenSessionNotice(false);
     revealSession(target);
+    if (
+      onContinueSession &&
+      !workspace.remote &&
+      hasDesktopConversation() &&
+      target.availability === "readable" &&
+      isLiveSessionAgent(target.agent) &&
+      resumeContinuation.targetAgent === target.agent
+    ) {
+      prepareSessionNavigation(target);
+      onContinueSession(target.id);
+      return;
+    }
     setFilter("all");
     setSelectedId(resumeContinuation.sessionId);
     setResumedRequest(resumeContinuation);
@@ -397,6 +413,7 @@ export function WorkspaceSessionsPage({
     onResumeConsumed?.();
   }, [
     onResumeConsumed,
+    onContinueSession,
     resumeContinuation,
     revealSession,
     sessions,
@@ -1039,9 +1056,13 @@ export function WorkspaceSessionsPage({
                       </strong>
                     </div>
                   )}
-                  {events.map((event) => (
-                    <ConversationEventRow key={event.id} event={event} />
-                  ))}
+                  {events.length > 0 && (
+                    <ConversationTranscript
+                      events={events}
+                      sessionKey={selected.id}
+                      incomplete={warnings.length > 0}
+                    />
+                  )}
                 </div>
               )}
             </div>

@@ -1,3 +1,4 @@
+import userEvent from "@testing-library/user-event";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { composerAddCopy } from "@agentkib/session-ui";
@@ -8,7 +9,6 @@ import {
   type UploadedAttachment,
 } from "@agentkib/web-client";
 import { CodexTools } from "@/features/conversation/features/sessions/codex-tools";
-import { CodexComposer } from "@/features/conversation/features/sessions/codex-composer";
 import { SessionComposer } from "@/features/conversation/features/sessions/session-composer";
 import { useSession } from "@/features/conversation/features/sessions/session-context";
 import { dictionaries } from "@/features/conversation/i18n";
@@ -41,8 +41,8 @@ beforeEach(() => {
     client: {
       uploadAttachment: vi.fn().mockResolvedValue(uploaded),
       request,
-      codexSessionSettings: vi.fn((sessionId: string) =>
-        request(`codex/session-settings?sessionId=${sessionId}`),
+      sessionSettings: vi.fn((sessionId: string) =>
+        request(`managed/settings?sessionId=${sessionId}&agent=codex`),
       ),
       codexGoals: vi.fn((sessionId: string) => request(`codex/goals?sessionId=${sessionId}`)),
       codexContextOptions: vi.fn((sessionId: string) =>
@@ -151,7 +151,7 @@ describe("Codex composer", () => {
     expect(state.codexAction).toHaveBeenCalledTimes(2);
   });
 
-  it("blocks send and steer during compaction while keeping explicit queueing and native stop available", () => {
+  it("blocks send and steer during compaction while keeping explicit queueing and native stop available", async () => {
     state.message = "next";
     state.live = {
       ...state.live!,
@@ -162,15 +162,24 @@ describe("Codex composer", () => {
     };
     state.canSend = false;
     state.canStop = true;
-    render(<CodexComposer />);
-    expect(screen.getByRole("button", { name: "追加到当前轮次" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "加入队列（将自动执行）" })).toBeEnabled();
+    render(<SessionComposer />);
     expect(screen.getByRole("button", { name: state.t.stop })).toBeEnabled();
-    fireEvent.click(screen.getByRole("button", { name: "加入队列（将自动执行）" }));
+    fireEvent.click(screen.getByRole("button", { name: "更多操作" }));
+    expect(await screen.findByRole("menuitem", { name: "追加到当前轮次" })).toHaveAttribute(
+      "aria-disabled",
+      "true",
+    );
+    const queue = screen.getByRole("menuitem", { name: "加入队列（将自动执行）" });
+    expect(queue).not.toHaveAttribute("aria-disabled", "true");
+    fireEvent.click(queue);
     expect(state.codexAction).toHaveBeenCalledWith("queue-add", { text: "next" });
   });
   it("refreshes settings and goals from native invalidation without scanning resources", async () => {
+    state.current = { id: "s", agent: "codex" } as typeof state.current;
     state.access!.device!.accessMode = "full";
+    state.capabilities!.features["settings-state"] = { available: true };
+    state.capabilities!.features.goal = { available: true };
+    state.capabilities!.features.resources = { available: true };
     vi.mocked(state.client.request).mockResolvedValue({
       sessionId: "s",
       available: false,
@@ -181,17 +190,17 @@ describe("Codex composer", () => {
       options: {},
       writable: {},
     });
-    render(<CodexComposer />);
-    await waitFor(() => expect(state.client.codexSessionSettings).toHaveBeenCalledOnce());
+    render(<SessionComposer />);
+    await waitFor(() => expect(state.client.sessionSettings).toHaveBeenCalledOnce());
     act(() => {
       publishSessionInvalidation(state.client, "s", ["settings", "goal"]);
     });
-    await waitFor(() => expect(state.client.codexSessionSettings).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(state.client.sessionSettings).toHaveBeenCalledTimes(2));
     expect(state.client.codexGoals).toHaveBeenCalledTimes(2);
     expect(state.client.codexContextOptions).toHaveBeenCalledOnce();
   });
   it("stages an attachment and sends only opaque IDs, allowing an attachment-only turn", async () => {
-    render(<CodexComposer />);
+    render(<SessionComposer />);
     expect(screen.getByRole("button", { name: "发送" })).toBeDisabled();
     fireEvent.change(screen.getByLabelText("添加附件", { selector: "input" }), {
       target: { files: [new File(["abc"], "image.png", { type: "image/png" })] },
@@ -214,18 +223,19 @@ describe("Codex composer", () => {
   it.each([
     ["queue-add", "加入队列（将自动执行）"],
     ["steer", "追加到当前轮次"],
-  ])("sends text-only %s only during a running turn", (action, label) => {
+  ])("sends text-only %s only during a running turn", async (action, label) => {
     state.message = "next";
-    const view = render(<CodexComposer />);
-    expect(screen.queryByRole("button", { name: /加入队列/ })).not.toBeInTheDocument();
+    const view = render(<SessionComposer />);
+    expect(screen.queryByRole("button", { name: "更多操作" })).not.toBeInTheDocument();
     state = {
       ...state,
       live: { ...state.live!, status: "running", turnId: "turn" },
       canSend: false,
       canStop: true,
     };
-    view.rerender(<CodexComposer />);
-    fireEvent.click(screen.getByRole("button", { name: label }));
+    view.rerender(<SessionComposer />);
+    fireEvent.click(screen.getByRole("button", { name: "更多操作" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: label }));
     expect(state.codexAction).toHaveBeenCalledWith(action, {
       text: "next",
       ...(action === "steer" ? { turnId: "turn" } : {}),
@@ -240,7 +250,7 @@ describe("Codex composer", () => {
         return new Promise(() => {});
       },
     );
-    const view = render(<CodexComposer />);
+    const view = render(<SessionComposer />);
     fireEvent.change(screen.getByLabelText("添加附件", { selector: "input" }), {
       target: { files: [new File(["abc"], "image.png")] },
     });
@@ -251,12 +261,12 @@ describe("Codex composer", () => {
   });
   it("rejects pasted files when the host has not verified attachment support", () => {
     state = { ...state, capabilities: undefined };
-    render(<CodexComposer />);
+    render(<SessionComposer />);
     fireEvent.paste(screen.getByLabelText("发送消息"), {
       clipboardData: { files: [new File(["x"], "file.txt")] },
     });
     expect(state.client.uploadAttachment).not.toHaveBeenCalled();
-    expect(screen.getByRole("button", { name: "添加附件" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "添加上下文" })).toBeDisabled();
   });
 
   it("shows host-confirmed settings and context usage only to a full-access browser", async () => {
@@ -278,7 +288,7 @@ describe("Codex composer", () => {
       } as CodexCapabilities,
     };
     vi.mocked(state.client.request).mockImplementation(async (path: string) => {
-      if (path.startsWith("codex/session-settings?"))
+      if (path.startsWith("managed/settings?"))
         return {
           sessionId: "s",
           available: true,
@@ -324,10 +334,12 @@ describe("Codex composer", () => {
         return { sessionId: "s", revision: 4, resources: [] };
       return {};
     });
-    render(<CodexComposer />);
+    render(<SessionComposer />);
     const picker = await screen.findByRole("button", { name: /GPT-6 Sol.*Fast/ });
     expect(picker.querySelector('svg[fill="currentColor"]')).toBeVisible();
-    expect(screen.getByTitle("上下文用量: 50 / 100")).toHaveTextContent("50%");
+    const usage = screen.getByRole("img", { name: "上下文用量" });
+    expect(usage).toHaveAccessibleDescription(expect.stringContaining("50%"));
+    expect(usage).toHaveAccessibleDescription(/已使用 50%（剩余 50%）.*50 \/ 100/);
     fireEvent.click(picker);
     expect(await screen.findByRole("heading", { name: /高/ })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Fast 模式" })).toHaveAttribute(
@@ -392,13 +404,12 @@ describe("Codex composer", () => {
     state.client.sessionSettings = vi.fn(async (): Promise<SessionSettings> => settings);
     const view = render(<SessionComposer />);
     const picker = await screen.findByRole("button", { name: /Claude Opus/ });
-    const gauge = screen.getByRole("button", { name: copy.contextUsage });
-    fireEvent.click(gauge);
-    expect(await screen.findByRole("dialog", { name: copy.contextUsage })).toHaveTextContent(
-      "模型上下文上限 100,000 Token",
-    );
-    expect(screen.getByRole("dialog", { name: copy.contextUsage })).not.toHaveTextContent("%");
-    fireEvent.click(screen.getByRole("button", { name: copy.close }));
+    const gauge = screen.getByRole("img", { name: copy.contextUsage });
+    const user = userEvent.setup();
+    await user.hover(gauge);
+    expect(await screen.findByRole("tooltip")).toHaveTextContent("模型上下文上限 100,000 Token");
+    expect(screen.getByRole("tooltip")).not.toHaveTextContent("%");
+    await user.unhover(gauge);
     fireEvent.click(picker);
     expect(picker.querySelector('svg[fill="currentColor"]')).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Fast 模式" }));
@@ -428,9 +439,9 @@ describe("Codex composer", () => {
         'svg[fill="currentColor"]',
       ),
     ).toBeVisible();
-    fireEvent.click(await screen.findByRole("button", { name: copy.contextUsage }));
+    await user.hover(await screen.findByRole("img", { name: copy.contextUsage }));
     expect(screen.queryByText(copy.settingsSaved)).not.toBeInTheDocument();
-    const usage = await screen.findByRole("dialog", { name: copy.contextUsage });
+    const usage = await screen.findByRole("tooltip");
     expect(usage).toHaveTextContent("25%");
     expect(usage).not.toHaveTextContent("这是上次模型请求的输入用量。");
     state.access = {
@@ -438,12 +449,8 @@ describe("Codex composer", () => {
       device: { ...state.access!.device!, advancedControl: false },
     };
     view.rerender(<SessionComposer />);
-    expect(
-      screen.queryByRole("dialog", { name: copy.contextUsage })?.textContent ?? "",
-    ).not.toContain("25%");
-    expect(
-      screen.queryByRole("dialog", { name: copy.contextUsage })?.textContent ?? "",
-    ).not.toContain("100,000");
+    expect(screen.queryByRole("tooltip")?.textContent ?? "").not.toContain("25%");
+    expect(screen.queryByRole("tooltip")?.textContent ?? "").not.toContain("100,000");
   });
 
   it("sends opaque host resource IDs and never exposes the control to a legacy credential", async () => {
@@ -463,7 +470,7 @@ describe("Codex composer", () => {
       } as CodexCapabilities,
     };
     vi.mocked(state.client.request).mockImplementation(async (path: string) => {
-      if (path.startsWith("codex/session-settings?")) throw new Error("unavailable");
+      if (path.startsWith("managed/settings?")) throw new Error("unavailable");
       if (path.startsWith("codex/goals?")) throw new Error("unavailable");
       if (path.startsWith("codex/context-options?"))
         return {
@@ -481,7 +488,7 @@ describe("Codex composer", () => {
         };
       return {};
     });
-    const view = render(<CodexComposer />);
+    const view = render(<SessionComposer />);
     fireEvent.click(await screen.findByRole("button", { name: "添加上下文" }));
     fireEvent.click(
       await screen.findByRole("button", { name: composerAddCopy("zh-CN").filesAndFolders }),
@@ -492,7 +499,7 @@ describe("Codex composer", () => {
     expect(screen.getByText("引用文件或技能后，请输入消息或添加附件再发送。")).toBeVisible();
     expect(state.control).not.toHaveBeenCalled();
     state = { ...state, message: "Use these references" };
-    view.rerender(<CodexComposer />);
+    view.rerender(<SessionComposer />);
     fireEvent.click(screen.getByRole("button", { name: "发送" }));
     await waitFor(() =>
       expect(state.control).toHaveBeenCalledWith(
@@ -510,22 +517,31 @@ describe("Codex composer", () => {
       ...state,
       access: { ...fullAccess, device: { ...fullAccess.device!, accessMode: undefined } },
     };
-    view.rerender(<CodexComposer />);
-    expect(screen.queryByRole("button", { name: "添加上下文" })).not.toBeInTheDocument();
+    view.rerender(<SessionComposer />);
+    fireEvent.click(screen.getByRole("button", { name: "添加上下文" }));
+    const add = await screen.findByRole("dialog", { name: "添加上下文" });
+    expect(
+      within(add).queryByRole("button", { name: composerAddCopy("zh-CN").filesAndFolders }),
+    ).not.toBeInTheDocument();
   });
 
-  it("disables setting changes while a native turn is running", async () => {
+  it("disables setting changes when a running executor does not grant settings", async () => {
     state = {
       ...state,
       access: { ...state.access!, device: { ...state.access!.device!, accessMode: "full" } },
-      live: { ...state.live!, status: "running", revision: 2 },
+      current: { id: "s", agent: "codex", availability: "readable" } as typeof state.current,
+      live: { ...state.live!, sessionId: "s", status: "running", revision: 2 },
       capabilities: {
         ...state.capabilities!,
-        features: { ...state.capabilities!.features, settings: { available: true } },
+        features: {
+          ...state.capabilities!.features,
+          "settings-state": { available: true },
+          settings: { available: false, reason: "session-busy" },
+        },
       } as CodexCapabilities,
     };
     vi.mocked(state.client.request).mockImplementation(async (path: string) => {
-      if (path.startsWith("codex/session-settings?"))
+      if (path.startsWith("managed/settings?"))
         return {
           sessionId: "s",
           available: true,
@@ -536,6 +552,10 @@ describe("Codex composer", () => {
           defaults: {},
           writable: {
             model: { available: true },
+            mode: { available: false },
+            policy: { available: true },
+            serviceTier: { available: true },
+            effort: { available: true },
             restoreDefaults: { available: true },
           },
           options: {
@@ -548,10 +568,13 @@ describe("Codex composer", () => {
         return { sessionId: "s", revision: 2, available: false, actions: {} };
       return { sessionId: "s", revision: 2, resources: [] };
     });
-    render(<CodexComposer />);
+    render(<SessionComposer />);
     fireEvent.click(await screen.findByRole("button", { name: /Model/ }));
-    expect(screen.getByRole("button", { name: "恢复默认模型" })).toBeDisabled();
-    await waitFor(() => expect(screen.getByText("当前轮次结束后才能修改设置")).toBeVisible());
+    const reset = screen.getByRole("button", { name: "恢复默认模型" });
+    expect(reset).toBeDisabled();
+    fireEvent.click(reset);
+    expect(state.codexAction).not.toHaveBeenCalled();
+    expect(within(screen.getByRole("dialog")).queryByRole("status")).not.toBeInTheDocument();
   });
 
   it("uses the durable Codex action path for goal changes", async () => {
@@ -587,7 +610,7 @@ describe("Codex composer", () => {
         return { sessionId: "s", revision: 8, resources: [] };
       throw new Error("settings unavailable");
     });
-    render(<CodexComposer />);
+    render(<SessionComposer />);
     fireEvent.click(await screen.findByRole("button", { name: "持续目标" }));
     expect(screen.getByDisplayValue("finish QA")).toBeVisible();
     fireEvent.click(screen.getByRole("button", { name: "暂停" }));
@@ -778,7 +801,7 @@ it("keeps native inspection available while write outcome is unconfirmed", async
 
 it("does not delete a staged attachment while its send outcome is unknown", async () => {
   vi.mocked(state.control).mockResolvedValue(undefined);
-  const view = render(<CodexComposer />);
+  const view = render(<SessionComposer />);
   fireEvent.change(screen.getByLabelText("添加附件", { selector: "input" }), {
     target: { files: [new File(["abc"], "image.png")] },
   });
@@ -786,11 +809,11 @@ it("does not delete a staged attachment while its send outcome is unknown", asyn
   fireEvent.click(screen.getByRole("button", { name: "发送" }));
   await waitFor(() => expect(state.control).toHaveBeenCalled());
   state = { ...state, notice: "uncertain" };
-  view.rerender(<CodexComposer />);
+  view.rerender(<SessionComposer />);
   expect(screen.getByRole("button", { name: "移除附件: image.png" })).toBeDisabled();
   expect(state.client.request).not.toHaveBeenCalled();
   state = { ...state, notice: "accepted" };
-  view.rerender(<CodexComposer />);
+  view.rerender(<SessionComposer />);
   await waitFor(() => expect(screen.queryByText("image.png")).not.toBeInTheDocument());
   expect(state.client.request).not.toHaveBeenCalled();
 });

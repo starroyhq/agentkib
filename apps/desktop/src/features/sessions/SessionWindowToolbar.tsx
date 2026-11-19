@@ -79,7 +79,6 @@ export function SessionWindowToolbar() {
     isLiveSessionAgent(selected.agent);
   const canConnectTerminal =
     interactive &&
-    hub.ready &&
     selected.agent === "claude-code" &&
     document.documentElement.dataset.platform === "macos" &&
     terminalEntry?.sessionId === selected.id;

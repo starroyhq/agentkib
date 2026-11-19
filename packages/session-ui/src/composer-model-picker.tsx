@@ -19,6 +19,7 @@ import { composerButtonClasses } from "./composer-control-style";
 import type {
   CodexSessionSettings,
   CodexSettingValues,
+  SessionModelEffortOptions,
   SessionProviderCapabilities,
 } from "@agentkib/web-client";
 import { composerModelCopy, type ComposerModelLocale } from "./composer-model-copy";
@@ -35,6 +36,7 @@ type ComposerModelPage = "effort" | "models";
 
 type ModelPreview = {
   scope: string;
+  authority?: object;
   selection: Pick<CodexSettingValues, "modelId" | "effort" | "serviceTierId">;
 };
 
@@ -182,15 +184,20 @@ export function ComposerModelPicker({
   selection: savedSelection,
   reportedSettings,
   displayFallback,
+  retainedEffortOptions,
   disabled,
   triggerDisabled = false,
   saving,
-  status,
+  loading = false,
   provider = settings?.provider,
   modelDefault = provider?.models.modelDefault,
   effortDefault = provider?.models.effortDefault,
   clearEffort = provider?.models.clearEffort ?? false,
   pickerRef,
+  settingsAuthority,
+  readOnly,
+  terminalModel,
+  onOpenTerminalPicker,
   side = "top",
   onOpen,
   onChange,
@@ -202,10 +209,12 @@ export function ComposerModelPicker({
   displayFallback?: Pick<CodexSettingValues, "modelId" | "effort" | "serviceTierId"> & {
     name?: string;
   };
+  /** Last observed scale for the same authorized session, for display while the catalog is absent. */
+  retainedEffortOptions?: SessionModelEffortOptions;
   disabled: boolean;
   triggerDisabled?: boolean;
   saving: boolean;
-  status?: string;
+  loading?: boolean;
   provider?: SessionProviderCapabilities;
   /** A new session can delegate the model choice to the Agent. */
   modelDefault?: boolean;
@@ -217,6 +226,11 @@ export function ComposerModelPicker({
   /** The host accepts clearing the effort without resetting the model or permissions. */
   clearEffort?: boolean;
   pickerRef?: Ref<ComposerModelPickerHandle>;
+  /** A pending choice only applies to the executor and device which issued it. */
+  settingsAuthority?: object;
+  readOnly?: boolean;
+  terminalModel?: boolean;
+  onOpenTerminalPicker?: () => Promise<boolean>;
   /** Where the picker opens: above a composer at the bottom, below one at the top of a page. */
   side?: "top" | "bottom";
   onOpen: () => void;
@@ -226,6 +240,7 @@ export function ComposerModelPicker({
   const copy = composerModelCopy[locale];
   const [open, setOpen] = useState(false);
   const [page, setPage] = useState<ComposerModelPage>("effort");
+  const [terminalPicker, setTerminalPicker] = useState<"idle" | "opening" | "opened">("idle");
   const triggerId = useId();
   const [popover] = useState(() => Popover.createHandle<ComposerModelPage>());
   const openState = useRef(false);
@@ -233,7 +248,7 @@ export function ComposerModelPicker({
   const [popup, setPopup] = useState<HTMLDivElement | null>(null);
   const [preview, setPreview] = useState<ModelPreview>();
   const [writing, setWriting] = useState(false);
-  const [draft, setDraft] = useState<{ scope: string; effort: string }>();
+  const [draft, setDraft] = useState<{ scope: string; authority?: object; effort: string }>();
   const selectionScope = JSON.stringify([
     settings?.sessionId,
     settings?.revision,
@@ -249,8 +264,11 @@ export function ComposerModelPicker({
     reportedSettings?.effort,
     reportedSettings?.serviceTierId,
   ]);
-  if (preview && preview.scope !== selectionScope) setPreview(undefined);
-  const activePreview = preview?.scope === selectionScope ? preview : undefined;
+  const activePreview =
+    preview?.scope === selectionScope && preview.authority === settingsAuthority
+      ? preview
+      : undefined;
+  if (preview && !activePreview) setPreview(undefined);
   const selection = activePreview?.selection ?? savedSelection;
   const effortScope = JSON.stringify([
     selectionScope,
@@ -258,9 +276,16 @@ export function ComposerModelPicker({
     selection?.effort,
     selection?.serviceTierId,
   ]);
-  const draftEffort = draft?.scope === effortScope ? draft.effort : undefined;
+  const draftEffort =
+    draft?.scope === effortScope && draft.authority === settingsAuthority
+      ? draft.effort
+      : undefined;
   const setDraftEffort = (effort?: string) =>
-    setDraft(effort === undefined ? undefined : { scope: effortScope, effort });
+    setDraft(
+      effort === undefined
+        ? undefined
+        : { scope: effortScope, authority: settingsAuthority, effort },
+    );
   const flight = useRef(false);
   const unknownEffortPointer = useRef<number | undefined>(undefined);
   const modelId = selection?.modelId;
@@ -293,30 +318,51 @@ export function ComposerModelPicker({
   const panelModelName =
     modelId && modelId !== displayModel ? model?.name || modelId : displayModelName;
   const selectedTier = selection?.serviceTierId ?? "";
-  const standardEfforts = panelModel?.efforts ?? [];
+  const effortModelId = modelId ?? displayModel;
+  const retainedScale =
+    !terminalModel &&
+    !settings?.options.models?.length &&
+    !!effortModelId &&
+    retainedEffortOptions &&
+    (retainedEffortOptions.id === effortModelId ||
+      retainedEffortOptions.resolvedModel === effortModelId ||
+      retainedEffortOptions.variants?.some((item) => item.id === effortModelId))
+      ? retainedEffortOptions
+      : undefined;
+  const effortModel = panelModel ?? retainedScale;
   const nativeVariants = provider?.models.selection === "variants";
   const variants = nativeVariants ? panelModel?.variants : undefined;
-  const efforts = variants
-    ? modelEffortsForTier(panelModel, selectedTier || undefined)
-    : standardEfforts;
+  const effortTier = selectedTier || (retainedScale && fallback?.serviceTierId);
+  const efforts = nativeVariants
+    ? modelEffortsForTier(effortModel, effortTier || undefined)
+    : (effortModel?.efforts ?? []);
   const fastTierIds = provider?.models.fastTierIds ?? LEGACY_FAST_TIERS;
   const isFastTier = (id: string) => fastTierIds.includes(id);
   // The model's default effort runs; the slider shows where it stands.
   const followsDefault = effortDefault === true && !!settings?.available && !selection?.effort;
+  const defaultEffort = model?.defaultEffort ?? retainedScale?.defaultEffort;
   const effort =
     draftEffort ??
     selection?.effort ??
     (fallback && displayEffort) ??
-    (followsDefault ? model?.defaultEffort : undefined);
+    (followsDefault ? defaultEffort : undefined);
   const effortIndex = effort ? efforts.indexOf(effort) : -1;
   const peak = effortIndex >= 0 && effortIndex === efforts.length - 1;
   const effortLabels: Record<string, string> = copy.efforts;
   const effortText = (value: string) => effortLabels[value] ?? value;
   const hasDisplaySelection = !!displayModel || modelDefault;
-  const showsEffort = !!displayModel && (!panelModel || panelModel.efforts.length > 0);
-  const triggerLabel = showsEffort ? copy.chooseEffort : copy.chooseModel;
-  const overviewLabel = showsEffort ? copy.chooseEffort : copy.modelSettings;
-  const writable = settings?.available && !disabled && !saving && !writing;
+  const showsEffort =
+    !terminalModel && !!displayModel && (!panelModel || panelModel.efforts.length > 0);
+  const triggerLabel =
+    terminalModel || readOnly
+      ? terminalModel
+        ? copy.model
+        : copy.modelSettings
+      : showsEffort
+        ? copy.chooseEffort
+        : copy.chooseModel;
+  const overviewLabel = showsEffort && !readOnly ? copy.chooseEffort : copy.modelSettings;
+  const writable = settings?.available && !readOnly && !disabled && !loading && !saving && !writing;
   const fast = isFastTier(selectedTier);
   const displayFast = isFastTier(
     selection?.serviceTierId ?? liveReport?.serviceTierId ?? fallback?.serviceTierId ?? "",
@@ -343,7 +389,8 @@ export function ComposerModelPicker({
   // An effort or tier-only write may target another model until a selection is known.
   const tierWritable = writable && !fallback && settings?.writable.serviceTier?.available;
   const fastWritable = tierWritable && fastSupported;
-  const effortWritable = writable && !fallback && settings?.writable.effort?.available;
+  const effortWritable =
+    writable && !fallback && !retainedScale && settings?.writable.effort?.available;
   const restoresDefaults = settings?.writable.restoreDefaults?.available === true;
   const clearsEffort = !restoresDefaults && clearEffort && !!selection?.effort;
   const resetLabel = clearsEffort ? copy.useDefaultEffort : copy.reset;
@@ -383,6 +430,7 @@ export function ComposerModelPicker({
     const changesVariantFamily = nativeVariants && value.model !== undefined;
     const next: ModelPreview = {
       scope: selectionScope,
+      authority: settingsAuthority,
       selection: value.restoreDefaults
         ? modelDefault
           ? {}
@@ -416,8 +464,8 @@ export function ComposerModelPicker({
 
   const effortLabel =
     followsDefault && draftEffort === undefined
-      ? model?.defaultEffort
-        ? `${copy.defaultEffort} · ${effortText(model.defaultEffort)}`
+      ? defaultEffort
+        ? `${copy.defaultEffort} · ${effortText(defaultEffort)}`
         : copy.defaultEffort
       : effort
         ? effortText(effort)
@@ -430,6 +478,7 @@ export function ComposerModelPicker({
         if (next === openState.current || (next && triggerDisabled)) return;
         openState.current = next;
         setOpen(next);
+        if (next) setTerminalPicker("idle");
         setDraftEffort(undefined);
         unknownEffortPointer.current = undefined;
         if (next) {
@@ -452,8 +501,6 @@ export function ComposerModelPicker({
                   type="button"
                   variant="ghost"
                   className="h-9 min-w-0 max-w-64 gap-1.5 rounded-full px-2 text-sm font-normal"
-                  title={triggerDisabled ? status : undefined}
-                  aria-description={triggerDisabled ? status : undefined}
                   aria-label={
                     !hasDisplaySelection
                       ? copy.modelSettings
@@ -464,10 +511,8 @@ export function ComposerModelPicker({
             />
           }
         >
-          <span className="truncate">
-            {open && !fallback && showsEffort ? copy.chooseEffort : displayModelName}
-          </span>
-          {hasDisplaySelection && (!open || fallback) && displayEffort && (
+          <span className="truncate">{displayModelName}</span>
+          {hasDisplaySelection && displayEffort && (
             <span
               className={`shrink-0 @max-[25rem]:hidden ${displayEffort === efforts.at(-1) ? "text-violet-600 dark:text-violet-400" : "text-muted-foreground"}`}
             >
@@ -477,9 +522,7 @@ export function ComposerModelPicker({
           {displayFast && <ComposerFastIcon active />}
           <ChevronDown className="size-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
         </Tooltip.Trigger>
-        <TooltipContent>
-          {triggerDisabled ? (status ?? overviewLabel) : overviewLabel}
-        </TooltipContent>
+        <TooltipContent>{overviewLabel}</TooltipContent>
       </Tooltip.Root>
       <Popover.Portal>
         <Popover.Positioner
@@ -491,14 +534,54 @@ export function ComposerModelPicker({
         >
           <Popover.Popup
             ref={setPopup}
-            aria-label={page === "models" ? copy.chooseModel : overviewLabel}
+            aria-busy={loading || saving || writing || undefined}
+            aria-label={
+              terminalModel ? copy.model : page === "models" ? copy.chooseModel : overviewLabel
+            }
             className="composer-model-popup w-64 max-w-[calc(100vw-24px)] rounded-2xl border border-border bg-popover p-3 text-popover-foreground shadow-xl outline-none dark:border-white/15 dark:bg-[#2b2b2b]"
             data-peak={peak || undefined}
             data-fast={fast || undefined}
           >
             <Popover.Viewport className="composer-model-viewport">
               <div key={page} className="composer-model-page" data-page={page}>
-                {page === "models" ? (
+                {terminalModel ? (
+                  <div className="grid gap-2 px-1">
+                    <Popover.Title className="break-words text-sm font-medium">
+                      {displayModelName}
+                    </Popover.Title>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      className="h-8 rounded-lg px-2 text-sm"
+                      disabled={!onOpenTerminalPicker || terminalPicker !== "idle"}
+                      onClick={async () => {
+                        if (!onOpenTerminalPicker) return;
+                        setTerminalPicker("opening");
+                        try {
+                          setTerminalPicker((await onOpenTerminalPicker()) ? "opened" : "idle");
+                        } catch {
+                          setTerminalPicker("idle");
+                        }
+                      }}
+                    >
+                      {copy.openTerminalModel}
+                    </Button>
+                    {terminalPicker === "opened" && (
+                      <p className="text-xs leading-5 text-muted-foreground">
+                        {copy.chooseInTerminal}
+                      </p>
+                    )}
+                  </div>
+                ) : readOnly && efforts.length < 2 ? (
+                  <div className="grid gap-2 px-1">
+                    <Popover.Title className="break-words text-sm font-medium">
+                      {displayModelName}
+                    </Popover.Title>
+                    {displayEffort && (
+                      <p className="text-sm text-muted-foreground">{effortText(displayEffort)}</p>
+                    )}
+                  </div>
+                ) : page === "models" ? (
                   <>
                     <Popover.Title className="mb-2 px-1 text-sm font-normal text-muted-foreground">
                       {copy.model}
@@ -678,10 +761,14 @@ export function ComposerModelPicker({
                           setDraftEffort(efforts[value]);
                         }}
                         onValueCommitted={(value) => {
-                          if (efforts[value] && efforts[value] !== selection?.effort)
+                          if (
+                            effortWritable &&
+                            efforts[value] &&
+                            efforts[value] !== selection?.effort
+                          )
                             void change({ effort: efforts[value] });
                         }}
-                        className="mt-2 h-7 w-full rounded-lg px-2.5 text-sm"
+                        className={`mt-2 h-7 w-full rounded-lg px-2.5 text-sm ${effortWritable ? "" : "opacity-50 grayscale"}`}
                       >
                         <Slider.Control
                           className="composer-effort-track relative flex h-7 w-full touch-none items-center select-none"
@@ -810,11 +897,6 @@ export function ComposerModelPicker({
                       </label>
                     )}
                   </>
-                )}
-                {status && (
-                  <p role="status" className="mt-2 px-1 text-xs leading-4 text-muted-foreground">
-                    {status}
-                  </p>
                 )}
               </div>
             </Popover.Viewport>

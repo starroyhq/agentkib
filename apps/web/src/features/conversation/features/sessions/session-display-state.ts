@@ -6,7 +6,7 @@ import { codexReason } from "./codex-copy";
 import { contextUsageCopyForSurface } from "./context-usage-copy";
 import { webLayoutCopy } from "./web-layout-copy";
 import { managedControlCopyForSurface } from "./managed-control-copy";
-import { sessionContinuationCopy } from "@agentkib/session-ui";
+import { claudeTerminalDisplay, sessionContinuationCopy } from "@agentkib/session-ui";
 import { claudeReconnectFailureReason } from "./claude-session-banner";
 
 type State = Pick<
@@ -22,15 +22,17 @@ type State = Pick<
   | "selected"
   | "current"
   | "notice"
-> & { pendingSend?: SessionController["pendingSend"]; settingsOnlyBlocked?: boolean };
+> & {
+  pendingSend?: SessionController["pendingSend"];
+  settingsNotice?: Pick<NonNullable<SessionController["settingsNotice"]>, "status">;
+  settingsOnlyBlocked?: boolean;
+};
 
-export type SessionNextAction = "managed-handoff";
 type DisplayState = {
   label: string;
   reason: string;
   tone: "warning" | "active" | "muted";
   loading?: boolean;
-  nextAction?: SessionNextAction;
   continuation?:
     | "idle"
     | "starting"
@@ -43,18 +45,15 @@ type DisplayState = {
     | "view-only";
 };
 
-/** Execution ownership is automatic; no user-visible handoff action remains. */
-export function sessionNextAction(_state: State): SessionNextAction | undefined {
-  return undefined;
-}
 /** Presentation only: never grants capabilities or changes dispatch eligibility. */
 export function sessionDisplayState(
   state: State,
   surface: SessionSurface = "desktop",
 ): DisplayState {
   const { live, online, canSend, access, capabilities, locale } = state;
-  const controlReady = state.controlReady || state.settingsOnlyBlocked;
-  const busy = state.busy && !state.settingsOnlyBlocked;
+  const settingsOnlyBlocked = state.settingsOnlyBlocked === true;
+  const controlReady = state.controlReady || settingsOnlyBlocked;
+  const busy = state.busy && !settingsOnlyBlocked;
   const c = webLayoutCopy[locale];
   const reason =
     live?.reason === "handoff-required" &&
@@ -62,6 +61,24 @@ export function sessionDisplayState(
     capabilities.reason !== "handoff-required"
       ? capabilities.reason
       : live?.reason || capabilities?.features.send?.reason || capabilities?.reason;
+  // An explicit fence classification excludes pending message outcomes. Only controllers without
+  // that signal infer a settings-only receipt from the current session's idle host projection.
+  const settingsReceiptOnly =
+    state.settingsOnlyBlocked === undefined &&
+    state.settingsNotice?.status === "uncertain" &&
+    !!state.selected &&
+    state.current?.id === state.selected &&
+    live?.sessionId === state.selected &&
+    capabilities?.sessionId === state.selected &&
+    capabilities.features.send?.available === true &&
+    live.sendEnabled &&
+    (live.status === "idle" ||
+      (state.current.agent === "claude-code" && live.status === "released")) &&
+    !live.ownershipReason &&
+    live.activity !== "compacting" &&
+    !busy &&
+    !reason;
+  const connectionReady = controlReady || settingsReceiptOnly;
   if (
     state.notice === "uncertain" ||
     live?.status === "outcome-unknown" ||
@@ -90,7 +107,7 @@ export function sessionDisplayState(
       tone: "warning",
       loading: !live,
     };
-  const idleUnderSettings = state.settingsOnlyBlocked && live?.status === "idle" && !reason;
+  const idleUnderSettings = settingsOnlyBlocked && live?.status === "idle" && !reason;
   if (state.current?.agent === "codex") {
     const copy = sessionContinuationCopy(locale);
     if (access?.status !== "approved")
@@ -127,8 +144,6 @@ export function sessionDisplayState(
     // The Codex app holds the thread with no window on it: a message asks the app to take it.
     if (live.ownerHandoff === true && live.sendEnabled)
       return { label: copy.codexHandoff, reason: "", tone: "muted", continuation: "codex" };
-    if (live.ownershipReason === "codex-owner-busy" || reason === "codex-owner-busy")
-      return { label: copy.busy("Codex"), reason: "", tone: "muted", continuation: "busy" };
     if (live.executionMode === "codex-follower")
       return {
         label: copy.codexConnected,
@@ -136,6 +151,14 @@ export function sessionDisplayState(
         tone: "muted",
         continuation: "codex",
       };
+    // Capabilities can still describe the previous owner while live state changes.
+    const codexStateReason = reason === "codex-owner-busy" ? live.reason : reason;
+    if (
+      !live.sendEnabled &&
+      (live.reason === "codex-owner-busy" ||
+        (!live.reason && live.ownershipReason === "codex-owner-busy"))
+    )
+      return { label: copy.busy("Codex"), reason: "", tone: "muted", continuation: "busy" };
     if (
       (state.pendingSend?.sessionId === state.selected &&
         !["agentkib", "terminal"].includes(live.executionLocation ?? "")) ||
@@ -150,13 +173,13 @@ export function sessionDisplayState(
       };
     if (live.executionLocation === "agentkib")
       return { label: copy.running, reason: "", tone: "active", continuation: "running" };
-    if (!controlReady)
+    if (!connectionReady)
       return { label: c.verifying, reason: c.verifying, tone: "muted", loading: true };
-    if (canSend || (live.sendEnabled && !reason) || idleUnderSettings)
+    if (canSend || (live.sendEnabled && !codexStateReason) || idleUnderSettings)
       return { label: "", reason: "", tone: "muted", continuation: "idle" };
     return {
       label: copy.viewOnly,
-      reason: codexReason(locale, reason, surface).text,
+      reason: codexReason(locale, codexStateReason, surface).text,
       tone: "muted",
       continuation: "view-only",
     };
@@ -213,17 +236,10 @@ export function sessionDisplayState(
         loading: true,
         continuation: "starting",
       };
-    if (live.executionLocation === "terminal")
-      return {
-        label: copy.terminalConnected,
-        reason: "",
-        tone: "muted",
-        // Until the plugin takes messages from here, the terminal is followed, not typed into.
-        continuation: live.terminalSend || live.sendEnabled ? "terminal" : "terminal-watch",
-      };
+    if (live.executionLocation === "terminal") return claudeTerminalDisplay(copy, live);
     if (live.executionLocation === "agentkib")
       return { label: copy.running, reason: "", tone: "active", continuation: "running" };
-    if (!controlReady)
+    if (!connectionReady)
       return { label: c.verifying, reason: c.verifying, tone: "muted", loading: true };
     if (canSend || (live.sendEnabled && !reason) || idleUnderSettings)
       return { label: "", reason: "", tone: "muted", continuation: "idle" };
@@ -299,7 +315,7 @@ export function sessionDisplayState(
           loading: true,
           continuation: "starting",
         };
-      if (!controlReady)
+      if (!connectionReady)
         return { label: c.verifying, reason: c.verifying, tone: "muted", loading: true };
       if (canSend || (live.sendEnabled && !reason) || idleUnderSettings)
         return { label: "", reason: "", tone: "muted", continuation: "idle" };
@@ -395,7 +411,7 @@ export function sessionDisplayState(
     };
   if (
     !canSend &&
-    (((!controlReady || !live) && (!reason || reason === "handoff-required")) ||
+    (((!connectionReady || !live) && (!reason || reason === "handoff-required")) ||
       (state.selected &&
         (state.current?.id !== state.selected ||
           live?.sessionId !== state.selected ||
@@ -405,24 +421,14 @@ export function sessionDisplayState(
   if (controlReady && live?.status === "idle" && live.lastOutcome === "cancelled")
     return { label: c.cancelled, reason: "", tone: "muted" };
   if (idleUnderSettings) return { label: "", reason: "", tone: "muted", continuation: "idle" };
-  if (canSend) return { label: c.ready, reason: "", tone: "active" };
-  if (
-    reason === "handoff-required" &&
-    !access.device.manage &&
-    capabilities?.features.adopt?.available
-  )
-    return {
-      label: c.permissionRequired,
-      reason: managedControlCopyForSurface(locale, surface).management,
-      tone: "muted",
-    };
+  if (canSend || settingsReceiptOnly) return { label: c.ready, reason: "", tone: "active" };
   if (reason)
     return {
       label: reason === "unverified-installation" ? c.unverified : c.readonly,
       reason: codexReason(locale, reason, surface).text,
       tone: "muted",
     };
-  if (!controlReady || !live)
+  if (!connectionReady || !live)
     return { label: c.verifying, reason: c.verifying, tone: "muted", loading: true };
   return { label: c.readonly, reason: c.readonly, tone: "muted" };
 }

@@ -7,7 +7,7 @@ import { ApiError } from "@agentkib/web-client";
 import type { ManagedActionBody, ManagedActionResult, ManagedOptions } from "@agentkib/web-client";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ManagedTasks } from "@/features/sessions/conversation/features/sessions/managed-tasks";
+import { SessionReceiptRecovery } from "@/features/sessions/conversation/features/sessions/session-receipt-recovery";
 import { managedControlCopy } from "@/features/sessions/conversation/features/sessions/managed-control-copy";
 import {
   pendingScope,
@@ -127,7 +127,9 @@ const mutations = () =>
   session.client.request.mock.calls.filter(([path]) => !path.startsWith("managed/options"));
 const requestId = "11111111-1111-4111-8111-111111111111";
 const panel = (active: boolean) => (
-  <ManagedTasks renderContent={(children) => (active ? <section>{children}</section> : null)} />
+  <SessionReceiptRecovery
+    renderContent={(children) => (active ? <section>{children}</section> : null)}
+  />
 );
 function save(kind: "adopt" | "release" | "reconcile" = "adopt") {
   const scope = pendingScope(session.origin, session.access.device.id);
@@ -151,7 +153,7 @@ describe("automatic Claude continuation replaces execution handoff", () => {
     "never offers handoff, release or execution management in $locale",
     (copy) => {
       session.locale = copy.locale;
-      const view = render(<ManagedTasks renderContent={(content) => content} />);
+      const view = render(<SessionReceiptRecovery renderContent={(content) => content} />);
       for (const [mode, status] of [
         ["managed-resume", "idle"],
         ["claude-managed", "idle"],
@@ -161,7 +163,7 @@ describe("automatic Claude continuation replaces execution handoff", () => {
       ]) {
         session.live.executionMode = mode;
         session.live.status = status;
-        view.rerender(<ManagedTasks renderContent={(content) => content} />);
+        view.rerender(<SessionReceiptRecovery renderContent={(content) => content} />);
         expect(screen.queryByRole("button")).not.toBeInTheDocument();
         expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
         expect(screen.queryByText(copy.notHandedOver)).not.toBeInTheDocument();
@@ -193,7 +195,7 @@ describe("automatic Claude continuation replaces execution handoff", () => {
     if (boundary === "experimental") session.access.experimentalEnabled = false;
     if (boundary === "protocol") session.access.protocolVersion = 1;
     if (boundary === "compacting") session.live.activity = "compacting";
-    render(<ManagedTasks renderContent={(content) => content} />);
+    render(<SessionReceiptRecovery renderContent={(content) => content} />);
     expect(screen.queryByRole("button")).not.toBeInTheDocument();
     expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
     expect(session.client.managedInspect).not.toHaveBeenCalled();
@@ -224,7 +226,7 @@ describe("automatic Claude continuation replaces execution handoff", () => {
     "settles saved %s while hidden without replaying or reopening the old panel",
     async (kind) => {
       const scope = save(kind);
-      const view = render(<ManagedTasks renderContent={() => null} />);
+      const view = render(<SessionReceiptRecovery renderContent={() => null} />);
       await waitFor(() => expect(session.client.receipt).toHaveBeenCalledWith(requestId));
       expect(readPending(scope)).toHaveLength(1);
       session.client.receipt.mockResolvedValue({

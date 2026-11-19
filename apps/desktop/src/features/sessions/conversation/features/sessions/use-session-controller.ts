@@ -1,3 +1,18 @@
+import {
+  createSessionControl,
+  createEarlierSessionHistory,
+  useSessionHistoryRead,
+  type EarlierHistoryFlight,
+  completedForkReceipt,
+  dispatchSessionAction,
+  readPendingControlReceipt,
+  verifySettingsWrite,
+  settingsNoticeGroup,
+  codexSettingsRecoveryReason,
+  type ControlKind,
+  type ControlNotice,
+  type NotDispatchedReason,
+} from "@agentkib/session-ui";
 import type { ContinuationComposerDraft, ContinuationDraft } from "./continuation-draft";
 import {
   mountSessionImages,
@@ -20,7 +35,6 @@ import type { ResolvedHistoryReference } from "@agentkib/web-client";
 import {
   createConversationStore,
   createTranscriptPageCache,
-  loadEarlierHistoryBatch,
   mergeConversationItems,
   oldestIncompleteHistoryTurn,
   type SessionStreamEvent,
@@ -48,19 +62,15 @@ import {
 } from "react";
 import {
   ApiError,
-  isClaudeCommandRefusal,
-  isDshCommandRefusal,
   isLegacyPreparedReceipt,
   matchesSettingsAck,
-  settledReceipt,
+  isSessionSettingsAction,
   WebClient,
   mergeCatalogSessions,
   isStaleCatalogRead,
   retryStaleCatalogRead,
   type ConversationCatalog,
   type Access,
-  type ClaudeCommandRefusal,
-  type DshCommandRefusal,
   type WebConnection,
   type SessionAction,
   type SessionActionBody,
@@ -68,18 +78,10 @@ import {
   type ConversationEvent,
   type ConversationEventPage,
   type ConversationSessionSummary,
-  type Decision,
   type Live,
   type UserQuestionRequest,
-  managedAgentOf,
-  needsDurableReceipt,
 } from "@agentkib/web-client";
 import { displaySessionTitle, isSessionListed } from "@agentkib/session-catalog";
-import {
-  answerRequestBody,
-  captureHistoryScrollAnchor,
-  DEVIN_TURN_REASONS,
-} from "@agentkib/session-ui";
 import { interactionCopy } from "../interactions/interaction-copy";
 import type { CatalogWorkspace } from "../catalog/session-catalog";
 import { catalogCopy } from "../catalog/catalog-copy";
@@ -87,32 +89,21 @@ import { conversationWords } from "@/core/i18n";
 import type { SupportedLocale as Locale } from "@/core/types";
 import { unavailableReasonText } from "../../live-status";
 import {
-  isValidMessage,
   mergeLatestPage,
   mergeOrderedPersistedHistory,
   removePersistedOverlays,
   mergeNativeCoverage,
-  beginHistoryRead,
-  failHistoryRead,
   completeHistoryRead,
   hasAppliedNewerHistory,
   type NativeCoverage,
 } from "./session-model";
 import {
-  applyHistoryPagination,
-  beginHistoryPagination,
   createHistoryPagination,
   historyPaginationCursor,
-  rebaseHistoryPagination,
   recordLatestHistoryPage,
 } from "./history-pagination";
 import { useAppearance } from "../preferences/use-appearance";
 import { publishSessionInvalidation, subscribeSessionInvalidation } from "./session-events";
-type EarlierHistoryFlight = {
-  generation: number;
-  pagination: NonNullable<NativeCoverage["historyPagination"]>;
-  cacheEpoch: string | undefined;
-};
 type ForkNavigation = {
   sourceId: string;
   generation: number;
@@ -123,105 +114,14 @@ type ForkNavigation = {
   resolve: (id: string | undefined) => void;
   completion?: Promise<string | undefined>;
 };
-type ControlNotice = "accepted" | "uncertain" | "notDispatched";
 export type SettingsNotice = {
   group: "permissions" | "model" | "settings";
   status: "uncertain" | "notDispatched";
   reason?: string;
 };
 
-export function settingsNoticeGroup(fields: Partial<SessionActionBody>): SettingsNotice["group"] {
-  const permissions = "policyId" in fields || "permissionMode" in fields || "mode" in fields;
-  const model =
-    "model" in fields ||
-    "effort" in fields ||
-    "serviceTierId" in fields ||
-    "restoreDefaults" in fields;
-  return permissions === model ? "settings" : permissions ? "permissions" : "model";
-}
+export { settingsNoticeGroup } from "@agentkib/session-ui";
 
-/** The control call a notice came from; the interaction card shows its own outcomes. */
-type ControlKind = "send" | "stop" | "approve" | "answer";
-type CodexSettingsRecoveryReason =
-  | "unsupported-model"
-  | "unsupported-effort"
-  | "native-model-unconfirmed"
-  | "native-effort-unconfirmed";
-/** A model or effort Claude Code does not offer; worded apart from Codex's unsent message. */
-type ClaudeSettingsReason = "claude-model-unsupported" | "claude-effort-unsupported";
-/** An image the agent refused, explained the same way for every agent that takes images. */
-type AttachmentRefusal =
-  | "model-images-unsupported"
-  | "attachment-invalid"
-  | "attachment-changed"
-  | "attachment-unavailable"
-  | "invalid_attachment_image";
-const attachmentRefusals: ReadonlySet<string> = new Set<AttachmentRefusal>([
-  "model-images-unsupported",
-  "attachment-invalid",
-  "attachment-changed",
-  "attachment-unavailable",
-  "invalid_attachment_image",
-]);
-/** A slash command DeepSeek Harness did not run: refused here, or no longer in its registry. */
-type DshCommandReason = DshCommandRefusal | "dsh-command-unavailable";
-/** A reason a rejected request is explained with instead of the generic notice. */
-type NotDispatchedReason =
-  | CodexSettingsRecoveryReason
-  | ClaudeCommandRefusal
-  | ClaudeSettingsReason
-  | AttachmentRefusal
-  | DshCommandReason
-  | DevinRefusal;
-/** Devin CLI's own refusals, explained under its composer (`DEVIN_TURN_REASONS`). */
-type DevinRefusal =
-  | "devin-login-required"
-  | "devin-workspace-untrusted"
-  | "devin-cli-unavailable"
-  | "devin-run-failed"
-  | "devin-session-not-found"
-  | "session-open-elsewhere"
-  | "attachments-unsupported";
-function codexSettingsRecoveryReason(
-  agent: string | undefined,
-  ...reasons: (string | undefined)[]
-): NotDispatchedReason | undefined {
-  const image = reasons.find(
-    (reason): reason is AttachmentRefusal => !!reason && attachmentRefusals.has(reason),
-  );
-  if (image) return image;
-  if (agent === "claude-code") {
-    // A slash command Claude Code was not sent; the host names which rule refused it.
-    const refusal = reasons.find(isClaudeCommandRefusal);
-    if (refusal) return refusal;
-    // The Service checks a settings request first and answers `unsupported_model`; the backend
-    // checks again and names the same rejection `unsupported-model`.
-    if (reasons.some((reason) => reason === "unsupported-model" || reason === "unsupported_model"))
-      return "claude-model-unsupported";
-    if (
-      reasons.some((reason) => reason === "unsupported-effort" || reason === "unsupported_effort")
-    )
-      return "claude-effort-unsupported";
-    return;
-  }
-  if (agent === "deepseek-harness")
-    return reasons.find(
-      (reason): reason is DshCommandReason =>
-        isDshCommandRefusal(reason) || reason === "dsh-command-unavailable",
-    );
-  if (agent === "devin")
-    return reasons.find(
-      (reason): reason is DevinRefusal => !!reason && DEVIN_TURN_REASONS.includes(reason),
-    );
-  if (agent !== "codex") return;
-  return reasons.find(
-    (reason): reason is CodexSettingsRecoveryReason =>
-      reason === "unsupported-model" ||
-      reason === "unsupported-effort" ||
-      reason === "native-model-unconfirmed" ||
-      reason === "native-effort-unconfirmed",
-  );
-}
 export function useSessionController({
   origin: legacyOrigin = "",
   connection,
@@ -554,7 +454,7 @@ export function useSessionController({
       durablePending.current.some(
         (pending) =>
           pending.sessionId === id &&
-          (pending.kind !== "settings" || !awaitsReceiptResponse(pending.requestId)),
+          (!isSessionSettingsAction(pending.kind) || !awaitsReceiptResponse(pending.requestId)),
       ),
     [awaitsReceiptResponse],
   );
@@ -757,41 +657,15 @@ export function useSessionController({
     },
     [clear, client, isLan, setOnline],
   );
-  const readHistory = useCallback(
-    async (id: string, g: number, historyCacheEpoch: string | undefined, cursor?: string) => {
-      if (excludedIds.current.has(id)) return undefined;
-      const attempt = beginHistoryRead(nativeCoverage.current);
-      try {
-        return { type: "page" as const, page: await client.events(id, cursor), attempt };
-      } catch (error) {
-        if (
-          g === generation.current &&
-          selection.current === id &&
-          historyCacheEpoch === nativeCoverage.current.historyCacheEpoch
-        ) {
-          // Handle history separately from the concurrent live read, including
-          // a late history failure after Promise.all has already rejected.
-          if (error instanceof DOMException && error.name === "AbortError") return undefined;
-          // Return contention separately so a concurrent real live-read failure
-          // is still observed before the caller schedules read recovery.
-          if (error instanceof ApiError && error.code === "operation_busy")
-            return { type: "busy" as const, error };
-          if (cursor && error instanceof ApiError && error.code === "stale_cursor")
-            return { type: "stale-cursor" as const };
-          if (failHistoryRead(nativeCoverage.current, attempt)) {
-            setError(true);
-            fail(error, g);
-          } else if (hasAppliedNewerHistory(nativeCoverage.current, attempt)) {
-            // A newer applied history read already satisfied this refresh. Keep
-            // its completion distinct from an unresolved or out-of-scope failure.
-            return { type: "superseded" as const, attempt };
-          }
-        }
-        return undefined;
-      }
-    },
-    [client, fail],
-  );
+  const readHistory = useSessionHistoryRead({
+    client,
+    excludedIds,
+    generation,
+    selection,
+    nativeCoverage,
+    setError,
+    fail,
+  });
   const syncAccess = useCallback(
     (stillCurrent?: () => boolean) => {
       const g = generation.current;
@@ -876,30 +750,13 @@ export function useSessionController({
         // An awaited write is still in progress. Reconcile it after its response is lost,
         // or after its visit/runtime changes, rather than blocking on its own receipt.
         if (awaitsReceiptResponse(entry.requestId)) continue;
-        const result = await client.receipt(entry.requestId).catch((error: unknown) => {
-          if (
-            entry.kind !== "settings" ||
-            (error instanceof ApiError && [401, 403].includes(error.status))
-          )
-            throw error;
-          return undefined;
-        });
+        const result = await readPendingControlReceipt(client, entry);
         if (scope !== durableScope.current) return;
         if (!result) continue;
-        if (
-          !result.found ||
-          result.requestId !== entry.requestId ||
-          (!isLegacyPreparedReceipt(result, entry.requestId) &&
-            (result.recovery !== undefined ||
-              (entry.sessionId && result.sessionId !== entry.sessionId) ||
-              result.operation !== entry.kind ||
-              result.status === "unknown"))
-        )
-          continue;
         if (result.status !== "accepted" && result.status !== "not-dispatched") continue;
         const settingsWrite = settingsInFlight.current;
         if (
-          entry.kind === "settings" &&
+          isSessionSettingsAction(entry.kind) &&
           settingsWrite?.requestId === entry.requestId &&
           !isLegacyPreparedReceipt(result, entry.requestId) &&
           ((result.runtimeBootId &&
@@ -910,38 +767,32 @@ export function useSessionController({
         )
           continue;
         if (
-          entry.kind === "settings" &&
+          isSessionSettingsAction(entry.kind) &&
           result.status === "accepted" &&
           (!entry.sessionId || !matchesSettingsAck(result.ack, entry.requestId, entry.sessionId))
         )
           continue;
         const intent = forkNavigation.current;
         if (entry.kind === "fork" && result.status === "accepted") {
-          if (
-            isLegacyPreparedReceipt(result, entry.requestId) ||
-            result.ack?.accepted !== true ||
-            result.ack.completed !== true ||
-            result.ack.requestId !== entry.requestId ||
-            typeof result.ack.sessionId !== "string" ||
-            !result.ack.sessionId ||
-            result.ack.sessionId === entry.sessionId ||
-            (intent?.requestId === entry.requestId &&
-              intent.runtimeBootId !== undefined &&
-              result.runtimeBootId !== intent.runtimeBootId)
-          )
-            continue;
+          const childId = completedForkReceipt(
+            result,
+            entry,
+            intent?.requestId === entry.requestId ? intent.runtimeBootId : undefined,
+          );
+          if (!childId) continue;
           if (intent?.requestId === entry.requestId) {
-            intent.childId = result.ack.sessionId;
+            intent.childId = childId;
             observeForkNavigation();
           }
         } else if (entry.kind === "fork" && intent?.requestId === entry.requestId)
           intent.resolve(undefined);
         forgetPending(scope, entry.requestId);
         durablePending.current = readPending(scope);
-        if (entry.kind !== "settings") uncertainOutcomes.current.delete(entry.sessionId ?? "");
+        if (!isSessionSettingsAction(entry.kind))
+          uncertainOutcomes.current.delete(entry.sessionId ?? "");
         if (entry.sessionId === selection.current) {
           resolvedSelected = entry.sessionId;
-          if (entry.kind === "settings") {
+          if (isSessionSettingsAction(entry.kind)) {
             resolvedSettings = entry.sessionId;
             const ack = "ack" in result ? result.ack : undefined;
             settingsRefusal =
@@ -986,7 +837,7 @@ export function useSessionController({
       const id = selection.current;
       const waitingSettings = durablePending.current.some(
         (entry) =>
-          entry.kind === "settings" &&
+          isSessionSettingsAction(entry.kind) &&
           entry.sessionId === id &&
           !awaitsReceiptResponse(entry.requestId),
       );
@@ -1017,7 +868,7 @@ export function useSessionController({
       if (
         durablePending.current.some(
           (entry) =>
-            entry.kind !== "settings" &&
+            !isSessionSettingsAction(entry.kind) &&
             entry.sessionId === selection.current &&
             !awaitsReceiptResponse(entry.requestId),
         )
@@ -1683,8 +1534,6 @@ export function useSessionController({
       const wake = refreshWake.current;
       let historyScope: { epoch?: string } | undefined;
       try {
-        await reconcilePending(id);
-        if (g !== generation.current) return;
         const delivered = liveDelivery.current;
         const historyCacheEpoch = nativeCoverage.current.historyCacheEpoch;
         historyScope = { epoch: historyCacheEpoch };
@@ -1726,7 +1575,13 @@ export function useSessionController({
           }
           return historyRead;
         });
-        const [historyRead, state] = await Promise.all([historyPromise, client.live(id)]);
+        // History is available independently of native writes and their receipts.
+        // Readiness still waits for reconciliation before enabling controls.
+        const [historyRead, state] = await Promise.all([
+          historyPromise,
+          client.live(id),
+          reconcilePending(id),
+        ]);
         if (historyRead?.type === "busy") {
           readBusy(wake, g);
           return;
@@ -1819,176 +1674,26 @@ export function useSessionController({
       setBusy(false);
     }
   }
-  async function earlier(turnId?: string) {
-    const id = selected;
-    const g = generation.current;
-    const current = pageValue.current;
-    const pagination = nativeCoverage.current.historyPagination;
-    const historyCacheEpoch = nativeCoverage.current.historyCacheEpoch;
-    const pending = earlierFlight.current;
-    if (
-      !current?.next_cursor ||
-      !pagination ||
-      busy ||
-      selection.current !== id ||
-      excludedIds.current.has(id) ||
-      (turnId && turnId !== oldestIncompleteHistoryTurn(current, pagination)) ||
-      (pending?.generation === g &&
-        pending.pagination === pagination &&
-        pending.cacheEpoch === historyCacheEpoch)
-    )
-      return;
-    let rangeId = beginHistoryPagination(pagination, current.next_cursor)?.rangeId;
-    if (rangeId === undefined) return;
-    const scope = { generation: g, pagination, cacheEpoch: historyCacheEpoch };
-    earlierFlight.current = scope;
-    setLoadingEarlier(true);
-    const wake = refreshWake.current;
-    const stillCurrent = () =>
-      g === generation.current &&
-      selection.current === id &&
-      !excludedIds.current.has(id) &&
-      pagination === nativeCoverage.current.historyPagination &&
-      historyCacheEpoch === nativeCoverage.current.historyCacheEpoch;
-    const preserveScroll = () => {
-      const viewport = scroll.current;
-      if (!viewport || earlierAnchor.current?.scope === scope) return;
-      const restore = captureHistoryScrollAnchor(viewport);
-      earlierAnchor.current = {
-        scope,
-        restore: () => {
-          if (stillCurrent() && scroll.current === viewport) restore();
-        },
-      };
-    };
-    let rebased = false;
-    try {
-      await loadEarlierHistoryBatch(
-        current.next_cursor,
-        current.events,
-        async (cursor) => {
-          if (!stillCurrent() || historyPaginationCursor(pagination) !== cursor) return;
-          const ticket = beginHistoryPagination(pagination, cursor);
-          if (!ticket || ticket.rangeId !== rangeId) return;
-          const historyRead = await readHistory(id, g, historyCacheEpoch, cursor);
-          if (!stillCurrent()) return;
-          if (historyRead?.type === "stale-cursor") {
-            if (rebased || historyPaginationCursor(pagination) !== cursor) return;
-            rebased = true;
-            const delivered = liveDelivery.current;
-            const latest = await readHistory(id, g, historyCacheEpoch);
-            if (
-              !stillCurrent() ||
-              latest?.type !== "page" ||
-              !rebaseHistoryPagination(pagination, ticket, latest.page, latest.attempt.id)
-            )
-              return;
-            const coverage = nativeCoverage.current;
-            const hadHistoryError = coverage.historyRecoveryFailed;
-            completeHistoryRead(coverage, latest.attempt);
-            if (hadHistoryError) setError(!!coverage.historyRecoveryFailed);
-            const nextCursor = historyPaginationCursor(pagination);
-            rangeId = beginHistoryPagination(pagination, nextCursor)?.rangeId;
-            preserveScroll();
-            setPage((previous) => ({
-              events: mergeNativeCoverage(
-                mergeConversationItems(
-                  mergeOrderedPersistedHistory(
-                    previous?.events ?? [],
-                    latest.page.events,
-                    "latest",
-                    coverage.preserveItemsOutsideCoverage,
-                  ),
-                  removePersistedOverlays(
-                    previous?.events.filter(
-                      (item) => delivered !== liveDelivery.current || item.ephemeral,
-                    ) ?? [],
-                    latest.page.events,
-                    coverage.preserveItemsOutsideCoverage,
-                  ),
-                ),
-                coverage,
-              ),
-              next_cursor: nextCursor,
-              warnings: [
-                ...new Set([
-                  ...(previous?.warnings ?? []).filter(
-                    (warning) => warning !== "TRANSCRIPT_SCAN_BUDGET",
-                  ),
-                  ...latest.page.warnings,
-                ]),
-              ],
-            }));
-            // The latest page sets a new cursor; the batch only counts earlier rows.
-            return { events: [], next_cursor: nextCursor };
-          }
-          if (historyRead?.type === "busy") {
-            if (!rebased) readBusy(wake, g);
-            return;
-          }
-          if (historyRead?.type !== "page") return;
-          const { page: older, attempt } = historyRead;
-          const wasActiveCursor = historyPaginationCursor(pagination) === cursor;
-          if (!applyHistoryPagination(pagination, ticket, older)) return;
-          const nextCursor = historyPaginationCursor(pagination);
-          const hadHistoryError = nativeCoverage.current.historyRecoveryFailed;
-          completeHistoryRead(nativeCoverage.current, attempt);
-          if (hadHistoryError) setError(!!nativeCoverage.current.historyRecoveryFailed);
-
-          preserveScroll();
-          setPage((latest) =>
-            latest
-              ? {
-                  events: mergeNativeCoverage(
-                    mergeConversationItems(
-                      mergeOrderedPersistedHistory(
-                        latest.events,
-                        older.events,
-                        "older",
-                        nativeCoverage.current.preserveItemsOutsideCoverage,
-                        ticket.beforeItemIds,
-                        ticket.afterItemIds,
-                      ),
-                      removePersistedOverlays(
-                        latest.events,
-                        older.events,
-                        nativeCoverage.current.preserveItemsOutsideCoverage,
-                      ),
-                    ),
-                    nativeCoverage.current,
-                  ),
-                  next_cursor: nextCursor,
-                  warnings: [
-                    ...new Set([
-                      ...older.warnings,
-                      ...latest.warnings.filter(
-                        (warning) => warning !== "TRANSCRIPT_SCAN_BUDGET" || !wasActiveCursor,
-                      ),
-                    ]),
-                  ],
-                }
-              : {
-                  ...older,
-                  next_cursor: nextCursor,
-                  events: mergeNativeCoverage(older.events, nativeCoverage.current),
-                },
-          );
-          return {
-            events: older.events,
-            next_cursor: older.next_cursor === nextCursor ? nextCursor : undefined,
-          };
-        },
-        turnId,
-      );
-    } catch (e) {
-      if (stillCurrent()) fail(e, g);
-    } finally {
-      if (earlierFlight.current === scope) {
-        earlierFlight.current = undefined;
-        setLoadingEarlier(false);
-      }
-    }
-  }
+  const earlier = createEarlierSessionHistory({
+    selected,
+    busy,
+    generation,
+    selection,
+    nativeCoverage,
+    pageValue,
+    earlierFlight,
+    earlierAnchor,
+    excludedIds,
+    refreshWake,
+    liveDelivery,
+    scroll,
+    readHistory,
+    readBusy,
+    setPage,
+    setError,
+    setLoadingEarlier,
+    fail,
+  });
   useEffect(() => {
     if (!live || live.sessionId !== selected) return;
     // A retained stream may still deliver after its catalog entry disappears.
@@ -2039,11 +1744,10 @@ export function useSessionController({
       (previous.mode === "claude-follower" || terminalMode === "claude-follower") &&
       (previous.mode !== terminalMode || previous.generation !== terminalGeneration);
     if (!changed && !(terminalMode === "claude-follower" && !online)) return;
-    // A replaced binding invalidates reviewed forms and source references, not the draft.
+    // A replaced executor invalidates its open forms. Draft quotes are revalidated on send.
     setModal(undefined);
-    setHistoryReferences([]);
     setHistorySearchOpen(false);
-  }, [selected, terminalPresent, terminalMode, terminalGeneration, online, setHistoryReferences]);
+  }, [selected, terminalPresent, terminalMode, terminalGeneration, online]);
   useEffect(() => {
     if (!historyReferences.length) return;
     const abort = new AbortController();
@@ -2097,7 +1801,7 @@ export function useSessionController({
       "requestId" | "bootId" | "sessionId" | "expectedRevision"
     > = {},
   ) {
-    const settingsAction = action === "settings";
+    const settingsAction = isSessionSettingsAction(action);
     if (
       mutating.current ||
       excludedIds.current.has(selected) ||
@@ -2131,7 +1835,7 @@ export function useSessionController({
     if (!settingsAction) setActionUnavailable(undefined);
     const requestId = crypto.randomUUID();
     const id = selected;
-    const settingsGroup = settingsNoticeGroup(fields);
+    const settingsGroup = action === "open-model-picker" ? "model" : settingsNoticeGroup(fields);
     const g = generation.current;
     const accessBinding = capabilityAccessBinding(access);
     const settingsVisitCurrent = () =>
@@ -2220,13 +1924,7 @@ export function useSessionController({
       setSettingsIntentBinding(settingsBinding);
     const sessionAgent = sessions.find((session) => session.id === id)?.agent;
     const perform = (body: SessionActionBody) =>
-      sessionAgent === "claude-code" ||
-      sessionAgent === "deepseek-harness" ||
-      sessionAgent === "devin"
-        ? client.sessionAction(action, body, sessionAgent)
-        : action === "queue-pause" || action === "queue-resume"
-          ? Promise.reject(new ApiError(409, "operation_unavailable", "not-dispatched"))
-          : client.codexAction(action, body);
+      dispatchSessionAction(client, sessionAgent, action, body);
     if (action === "inspect") {
       try {
         const result = await perform({
@@ -2270,41 +1968,20 @@ export function useSessionController({
         expectedRevision: live.revision ?? 0,
         requestId,
       };
-      const result = await (async () => {
-        try {
-          const response = await perform(body);
-          if (settingsAction && !matchesSettingsAck(response, requestId, id, live.runtimeBootId))
-            throw new ApiError(502, "outcome_unknown", "unknown");
-          return response;
-        } catch (error) {
-          if (
-            !settingsAction ||
-            (error instanceof ApiError && error.controlOutcome === "not-dispatched")
-          )
-            throw error;
-          if (!settingsVisitCurrent()) throw error;
-          const saved = await client.receipt(requestId).catch(() => undefined);
-          if (!saved?.found) throw error;
-          const outcome = settledReceipt(saved, { requestId, sessionId: id, kind: action });
-          if (isLegacyPreparedReceipt(saved, requestId))
-            throw new ApiError(409, "request-interrupted", "not-dispatched");
-          if (
-            (saved.runtimeBootId &&
-              live.runtimeBootId &&
-              saved.runtimeBootId !== live.runtimeBootId) ||
-            (saved.expectedRevision != null && saved.expectedRevision !== body.expectedRevision)
-          )
-            throw error;
-          if (outcome === "not-dispatched")
-            throw new ApiError(
-              409,
-              saved.ack?.reason ?? saved.ack?.error ?? "request_failed",
-              "not-dispatched",
-            );
-          if (outcome !== "accepted" || !matchesSettingsAck(saved.ack, requestId, id)) throw error;
-          return saved.ack;
-        }
-      })();
+      const result = settingsAction
+        ? await verifySettingsWrite({
+            client,
+            action,
+            body,
+            runtimeBootId: live.runtimeBootId,
+            perform,
+            stillCurrent: settingsVisitCurrent,
+            allowReceiptWithoutRuntime: true,
+          }).then((outcome) => {
+            if (outcome.status !== "accepted") throw outcome.error;
+            return outcome.result;
+          })
+        : await perform(body);
       forgetPending(scope, requestId);
       if (durableScope.current === scope) durablePending.current = readPending(scope);
       if (generation.current !== g) return;
@@ -2381,272 +2058,51 @@ export function useSessionController({
       } else setBusy(false);
     }
   }
-  async function control(
-    kind: "send" | "stop" | "approve" | "answer",
-    approval?: Approval,
-    decision?: Decision,
-    question?: UserQuestionRequest,
-    answers?: Record<string, string[]>,
-    extra?: {
-      attachmentIds?: string[];
-      resourceIds?: string[];
-      nativeDecision?: unknown;
-      /**
-       * A slash command sent as a message of its own (the compact button). The draft, its
-       * attachments and history quotes stay as they are.
-       */
-      command?: string;
-      /**
-       * A message AgentKib wrote in place of the draft (Codex `/review`, `/init`). It is sent
-       * without attachments or history quotes, and clears the draft like any send.
-       */
-      prompt?: string;
-    },
-  ) {
-    if (
-      mutating.current ||
-      !access ||
-      !live ||
-      !online ||
-      !controlReady ||
-      excludedIds.current.has(selected) ||
-      selection.current !== selected ||
-      hasDurablePending(selected)
-    )
-      return;
-    const command = kind === "send" ? extra?.command : undefined;
-    const prompt = kind === "send" && command === undefined ? extra?.prompt : undefined;
-    const text = command ?? prompt ?? message.trim();
-    if (
-      kind === "send" &&
-      (live.activity === "compacting" ||
-        (command !== undefined
-          ? !command.startsWith("/") ||
-            !isValidMessage(command, false) ||
-            !!extra?.attachmentIds?.length ||
-            !!extra?.resourceIds?.length
-          : prompt !== undefined
-            ? !isValidMessage(prompt, false) ||
-              !!extra?.attachmentIds?.length ||
-              !!extra?.resourceIds?.length
-            : !isValidMessage(
-                historyMessageText(message, historyReferencesValue.current),
-                !!extra?.attachmentIds?.length,
-              )))
-    )
-      return;
-    if (
-      extra?.attachmentIds?.length &&
-      (!access.device?.attachments || !capabilities?.features.attachments?.available)
-    )
-      return;
-    if (
-      extra?.resourceIds?.length &&
-      (access.device?.accessMode !== "full" ||
-        !(capabilities?.features as Record<string, { available?: boolean } | undefined> | undefined)
-          ?.context?.available)
-    )
-      return;
-    if (
-      extra?.nativeDecision !== undefined &&
-      (!access.device?.extendedApproval ||
-        !approval?.decisionOptions?.some(
-          (option) => JSON.stringify(option.decision) === JSON.stringify(extra.nativeDecision),
-        ))
-    )
-      return;
-    if (
-      kind === "stop" &&
-      (!access.experimentalEnabled ||
-        !access.device?.send ||
-        live.stopEnabled !== true ||
-        !live.turnId)
-    )
-      return;
-    if (
-      kind === "answer" &&
-      (!question ||
-        !access.experimentalEnabled ||
-        !access.device?.send ||
-        !question.supported ||
-        !live.questions?.some((current) => JSON.stringify(current) === JSON.stringify(question)))
-    )
-      return;
-    // A stable request ID does not mean the command/scope shown on the card
-    // is still current. Require the exact reviewed projection.
-    if (
-      kind === "approve" &&
-      (!approval ||
-        !live.approvals.some((current) => JSON.stringify(current) === JSON.stringify(approval)))
-    )
-      return;
-    mutating.current = true;
-    setBusy(true);
-    setNotice(undefined);
-    readinessEpoch.current++;
-    manualRefreshRequired.current = false;
-    const g = generation.current,
-      id = selected;
-    const requestId = crypto.randomUUID();
-    if (
-      kind === "send" &&
-      managedAgentOf(catalogSessions.current.find((item) => item.id === id)?.agent ?? "")
-    )
-      setPendingSend({ sessionId: id, text, afterEventId: page?.events.at(-1)?.id });
-    const durableReceipt = needsDurableReceipt(
-      sessions.find((session) => session.id === id)?.agent,
-      live.executionMode,
-    );
-    const scope = durableReceipt ? durableScope.current : undefined;
-    try {
-      if (extra?.attachmentIds?.length || extra?.resourceIds?.length) {
-        const accessBinding = capabilityAccessBinding(access);
-        const checked = await verifyCapabilities();
-        if (
-          g !== generation.current ||
-          selection.current !== id ||
-          capabilityAccessBinding(accessRef.current) !== accessBinding ||
-          refreshRequired.current ||
-          !streamReady.current ||
-          hasDurablePending(id) ||
-          uncertainOutcomes.current.has(id) ||
-          (extra.attachmentIds?.length && !checked?.features.attachments?.available) ||
-          (extra.resourceIds?.length && !checked?.features.context?.available)
-        ) {
-          if (
-            hasDurablePending(id) ||
-            uncertainOutcomes.current.has(id) ||
-            liveValue.current?.status === "outcome-unknown" ||
-            liveValue.current?.reason === "control-outcome-unconfirmed" ||
-            checked?.reason === "control-outcome-unconfirmed"
-          ) {
-            if (g === generation.current && selection.current === id) {
-              refreshRequired.current = true;
-              setControlReady(false);
-              setNotice("uncertain", undefined, kind);
-            }
-            return;
-          }
-          throw new ApiError(409, "session-state-unavailable", "not-dispatched");
-        }
-      }
-      if (durableReceipt) {
-        try {
-          if (!scope) throw new Error("missing_device_scope");
-          if (kind === "send")
-            activeReceipts.current.set(requestId, { scope, generation: g, bootId: access.bootId });
-          rememberPending(scope, { requestId, sessionId: id, kind });
-          durablePending.current = readPending(scope);
-        } catch {
-          throw new ApiError(409, "pending_storage_unavailable", "not-dispatched");
-        }
-      }
-      await client.request(kind, {
-        sessionId: id,
-        requestId,
-        bootId: access.bootId,
-        expectedRevision: live.revision,
-        ...(kind === "send"
-          ? {
-              text,
-              ...(command === undefined &&
-              prompt === undefined &&
-              historyReferencesValue.current.length
-                ? {
-                    historyReferences: historyReferencesValue.current.map((item) => item.reference),
-                  }
-                : {}),
-              ...(extra?.attachmentIds?.length ? { attachmentIds: extra.attachmentIds } : {}),
-              ...(extra?.resourceIds?.length ? { resourceIds: extra.resourceIds } : {}),
-            }
-          : kind === "stop"
-            ? { turnId: live.turnId }
-            : kind === "approve"
-              ? {
-                  turnId: approval!.turnId,
-                  approvalId: approval!.requestId,
-                  ...(extra?.nativeDecision !== undefined
-                    ? { nativeDecision: extra.nativeDecision }
-                    : { decision }),
-                }
-              : answerRequestBody(
-                  question!,
-                  answers!,
-                  { sessionId: id, bootId: access.bootId, expectedRevision: live.revision },
-                  requestId,
-                )),
-      });
-      if (scope) {
-        forgetPending(scope, requestId);
-        if (durableScope.current === scope) durablePending.current = readPending(scope);
-      }
-      if (g !== generation.current) return;
-      receipt.current = {
-        sessionId: id,
-        requestId,
-        turnId:
-          kind === "send"
-            ? undefined
-            : kind === "stop"
-              ? live.turnId
-              : kind === "answer"
-                ? question!.turnId
-                : approval!.turnId,
-        // A current native interaction already establishes an active turn,
-        // even if the owner uses an unfamiliar waiting-status label.
-        observedActive: kind !== "send",
-      };
-      setNotice("accepted", undefined, kind);
-      if (kind === "send" && command === undefined) {
-        setMessage("");
-        setHistoryReferences([]);
-      }
-      setModal(undefined);
-      await refresh();
-      return true;
-    } catch (e) {
-      if (scope && e instanceof ApiError && e.controlOutcome === "not-dispatched") {
-        try {
-          forgetPending(scope, requestId);
-          if (durableScope.current === scope) durablePending.current = readPending(scope);
-        } catch {
-          /* Keep the durable fence if browser storage could not be updated. */
-        }
-      }
-      if (g === generation.current) {
-        if (e instanceof ApiError && e.code === "access_ended") {
-          fail(e, g);
-        } else {
-          setControlReady(false);
-          refreshRequired.current = true;
-          if (e instanceof ApiError && e.controlOutcome === "not-dispatched") {
-            setNotice(
-              "notDispatched",
-              codexSettingsRecoveryReason(
-                catalogSessions.current.find((session) => session.id === id)?.agent,
-                e.code,
-              ),
-              kind,
-            );
-            await refresh();
-          } else {
-            // A refresh clicked while this request was pending cannot acknowledge
-            // an uncertain outcome that has only just arrived.
-            manualRefreshRequired.current = false;
-            uncertainOutcomes.current.add(id);
-            setNotice("uncertain", undefined, kind);
-            setOnline(false);
-            fail(e, g);
-          }
-        }
-      }
-    } finally {
-      activeReceipts.current.delete(requestId);
-      if (g === generation.current) setPendingSend(undefined);
-      mutating.current = false;
-      setBusy(false);
-    }
-  }
+  const control = createSessionControl({
+    client,
+    access,
+    live,
+    online,
+    controlReady,
+    selected,
+    capabilities,
+    message,
+    sessions,
+    page,
+    accessRef,
+    liveValue,
+    historyReferencesValue,
+    generation,
+    selection,
+    readinessEpoch,
+    refreshRequired,
+    manualRefreshRequired,
+    streamReady,
+    catalogSessions,
+    excludedIds,
+    uncertainOutcomes,
+    mutating,
+    activeReceipts,
+    durableScope,
+    durablePending,
+    receipt,
+    verifyCapabilities,
+    hasDurablePending,
+    setBusy,
+    setNotice,
+    setControlReady,
+    setPendingSend,
+    setMessage,
+    setHistoryReferences,
+    setModal,
+    setOnline,
+    refresh,
+    fail,
+    historyMessageText,
+    forgetPending,
+    rememberPending,
+    readPending,
+  });
   const checkContinuation = useCallback(async () => {
     const id = selection.current;
     const prior = continuationCheck.current;
@@ -2799,7 +2255,8 @@ export function useSessionController({
     !!access?.experimentalEnabled &&
     !!access.device?.send &&
     live?.stopEnabled === true &&
-    live.executionMode !== "claude-follower" &&
+    (live.executionMode !== "claude-follower" ||
+      (capabilities?.sessionId === selected && capabilities.features.stop?.available === true)) &&
     !!live.turnId;
   const terminalReasonText =
     live?.executionMode === "claude-follower"

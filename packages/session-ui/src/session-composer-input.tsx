@@ -8,6 +8,7 @@ import {
   type Ref,
 } from "react";
 import { ArrowUp, LoaderCircle, Square } from "lucide-react";
+import "./session-composer-input.css";
 
 type Attachments = {
   inputRef: Ref<HTMLInputElement>;
@@ -169,12 +170,8 @@ export function ComposerPrimaryAction({
   return (
     <button
       type={kind === "stop" ? "button" : "submit"}
-      className={
-        "inline-flex shrink-0 items-center justify-center rounded-full focus-visible:outline-2 focus-visible:outline-ring disabled:pointer-events-none disabled:opacity-50 " +
-        (kind === "stop"
-          ? "size-11 border border-border bg-background hover:bg-muted"
-          : "size-8 bg-primary text-primary-foreground hover:bg-[var(--primary-hover)] pointer-coarse:size-11")
-      }
+      data-slot="composer-primary-action"
+      className="inline-flex size-8 shrink-0 items-center justify-center rounded-full text-white focus-visible:outline-2 focus-visible:outline-ring disabled:pointer-events-none disabled:opacity-50 pointer-coarse:size-11"
       aria-label={label}
       aria-busy={loading || undefined}
       title={title}
@@ -184,7 +181,7 @@ export function ComposerPrimaryAction({
       {loading ? (
         <LoaderCircle className="size-4 animate-spin" aria-hidden />
       ) : kind === "stop" ? (
-        <Square size={17} aria-hidden />
+        <Square size={16} fill="currentColor" stroke="none" aria-hidden />
       ) : (
         <ArrowUp size={20} aria-hidden />
       )}

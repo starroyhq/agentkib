@@ -1,10 +1,33 @@
 import type { Access, CodexSessionSettings, WebClient } from "./index";
 
+export type SessionModelEffortOptions = Pick<
+  CodexSessionSettings["options"]["models"][number],
+  "id" | "resolvedModel" | "efforts" | "defaultEffort" | "variants"
+>;
+
 export interface SessionModelDisplay {
   modelId: string;
   name?: string;
   effort?: string;
   serviceTierId?: string;
+  effortOptions?: SessionModelEffortOptions;
+}
+
+// Chooses the label only. Neither historical observations nor defaults authorize a write.
+export function sessionModelDisplayFallback(
+  observed: Partial<SessionModelDisplay> | undefined,
+  cached: SessionModelDisplay | undefined,
+  defaults: Partial<SessionModelDisplay> | undefined,
+  holdCache: boolean,
+): Partial<SessionModelDisplay> | undefined {
+  if (holdCache && cached) return cached;
+  if (observed?.modelId) {
+    return {
+      ...observed,
+      name: observed.name ?? (cached?.modelId === observed.modelId ? cached.name : undefined),
+    };
+  }
+  return cached ?? (defaults?.modelId ? defaults : undefined);
 }
 
 export function canDisplayCodexModelFallback(settings?: CodexSessionSettings) {
@@ -18,7 +41,7 @@ export function canDisplayCodexModelFallback(settings?: CodexSessionSettings) {
   );
 }
 
-// Only keep what the button displays. The settings catalog and write revision come from the host.
+// Display evidence carries no writable catalog or revision.
 const displays = new Map<string, SessionModelDisplay>();
 const MAX_SESSION_DISPLAYS = 128;
 
@@ -57,7 +80,7 @@ export function rememberSessionModelDisplay(
   access: Access | undefined,
   sessionId: string,
   agent: string | undefined,
-  { modelId, name, effort, serviceTierId }: SessionModelDisplay,
+  { modelId, name, effort, serviceTierId, effortOptions }: SessionModelDisplay,
 ) {
   const key = displayKey(client, access, sessionId, agent);
   if (key === undefined || !modelId) return;
@@ -68,6 +91,8 @@ export function rememberSessionModelDisplay(
     name: name ?? (previous?.modelId === modelId ? previous.name : undefined),
     effort,
     serviceTierId,
+    effortOptions:
+      effortOptions ?? (previous?.modelId === modelId ? previous.effortOptions : undefined),
   });
   if (displays.size > MAX_SESSION_DISPLAYS) {
     const oldest = displays.keys().next().value;

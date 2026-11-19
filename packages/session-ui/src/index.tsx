@@ -12,6 +12,25 @@ export {
   type SessionReadState,
 } from "./read-state";
 
+export { retryBusyRead, isBusyRead } from "./session-read-retry";
+export { capabilityAccessBinding, useSessionCapabilities } from "./use-session-capabilities";
+export { canReadContextUsage, contextUsagePercent, useObservedContextUsage } from "./context-usage";
+export {
+  ContextUsageIndicator,
+  type ContextUsageView,
+  type ContextUsageHandle,
+} from "./context-usage-indicator";
+export { surfaceCopy, surfaceText, type SessionSurface } from "./session-surface-copy";
+export {
+  contextUsageCopy,
+  contextUsageCopyForSurface,
+  contextUsageReason,
+} from "./context-usage-copy";
+export { useSessionContextUsage, type SessionContextUsageView } from "./session-context-usage";
+export {
+  SessionContextUsageGauge,
+  type SessionContextUsageGaugeProps,
+} from "./session-context-usage-gauge";
 export { useTranscriptFollow } from "./use-transcript-follow";
 export { captureHistoryScrollAnchor } from "./history-scroll-anchor";
 export { MessageActions, messageActionGroups } from "./message-actions";
@@ -34,25 +53,19 @@ export {
 export { displayUserMessageText } from "./message-image-text";
 
 export {
+  claudeTerminalDisplay,
   sessionContinuationCopy,
   sessionContinuationListState,
   SessionContinuationDot,
-  SessionContinuationChoice,
   SessionContinuationReadOnly,
-  SessionContinuationReturned,
   SessionContinuationStatus,
-  SessionContinuationTerminal,
   sessionGroupActivity,
   SessionGroupActivity,
   type SessionListSession,
   type SessionListState,
-  type SessionContinuationAction,
-  type SessionContinuationAgent,
-  type SessionContinuationChoiceProps,
   type SessionContinuationCopy,
   type SessionContinuationReadOnlyProps,
   type SessionContinuationStatusProps,
-  type SessionContinuationTerminalProps,
 } from "./session-continuation";
 
 export {
@@ -96,7 +109,7 @@ export {
 } from "./interaction-items";
 export { DEVIN_TURN_REASONS, devinTerminalAction, devinTerminalCopy } from "./devin-terminal";
 export { modelEffortsForTier, modelSupportsTier } from "./model-capabilities";
-export { newSessionModelSettings } from "./new-session-model-settings";
+export { newSessionModelSettings, useNewSessionModel } from "./new-session-model-settings";
 export { ComposerFastIcon } from "./composer-fast-icon";
 export {
   NEW_SESSION_AGENTS,
@@ -135,6 +148,9 @@ export {
   agentKibCommand,
   agentKibPanel,
   claudeSlashOptions,
+  composerLocalSlashOptions,
+  sessionSlashOptions,
+  composerPanelShortcut,
   matchSlashCommands,
   codexSlashOptions,
   dshSlashOptions,
@@ -166,26 +182,55 @@ export {
   type TurnFileChange,
 } from "./tool-details";
 
-export function toolStatusLabel(status: string | null | undefined, locale: string): string {
-  const names =
-    locale === "zh-Hant"
-      ? ["已完成", "失敗", "執行中", "等待中", "已取消", "已拒絕"]
-      : locale.startsWith("zh")
-        ? ["已完成", "失败", "执行中", "等待中", "已取消", "已拒绝"]
-        : locale.startsWith("ja")
-          ? ["完了", "失敗", "実行中", "待機中", "キャンセル済み", "拒否済み"]
-          : ["Completed", "Failed", "Running", "Pending", "Cancelled", "Declined"];
-  const value = status?.toLowerCase();
-  if (["completed", "complete", "success", "succeeded"].includes(value ?? "")) return names[0];
-  if (["failed", "failure", "error", "errored"].includes(value ?? "")) return names[1];
-  if (["running", "in-progress", "inprogress"].includes(value ?? "")) return names[2];
-  if (["pending", "queued"].includes(value ?? "")) return names[3];
-  if (["cancelled", "canceled"].includes(value ?? "")) return names[4];
-  if (["declined", "rejected", "denied"].includes(value ?? "")) return names[5];
-  return status ?? "";
-}
-
+export { toolStatusLabel } from "./tool-status";
 export { SafeMarkdown } from "./safe-markdown";
+export { SessionTranscript, type SessionTranscriptProps } from "./session-transcript";
+export { SessionDetail, type SessionDetailProps } from "./session-detail";
+export { useSessionDetailReadState } from "./session-detail-read-state";
+export { SessionDetailHeader } from "./session-detail-header";
+export { SessionDetailDialogs } from "./session-detail-dialogs";
+export { SessionDetailOperations } from "./session-detail-operations";
+export {
+  codexSettingsRecoveryReason,
+  createSessionControl,
+  type ControlKind,
+  type ControlNotice,
+  type NotDispatchedReason,
+} from "./session-control";
+export {
+  completedForkReceipt,
+  dispatchSessionAction,
+  readPendingControlReceipt,
+  settingsNoticeGroup,
+  verifySettingsWrite,
+} from "./session-control-receipts";
+export {
+  createEarlierSessionHistory,
+  useSessionHistoryRead,
+  type EarlierHistoryFlight,
+} from "./session-controller-history";
+export { SessionInteractionDock } from "./session-interaction-dock";
+export { catalogCopy, catalogCopyForSurface } from "./catalog-copy";
+export { worktreeCopy, worktreeLabel, worktreeChip } from "./worktree-copy";
+export { OrchestrationIcon, OrchestrationNote, orchestrationText } from "./orchestration-note";
+export { WorktreeMark, WorktreeNote } from "./worktree-note";
+export { ArtifactBrowser, type ArtifactBrowserControls } from "./artifact-browser";
+export { createArtifactPanels } from "./artifact-panel";
+export { artifactCopy } from "./artifact-copy";
+export {
+  ArtifactPreview,
+  artifactViewers,
+  createArtifactViewerRegistry,
+  type ArtifactViewer,
+  type ArtifactViewerProps,
+  type ArtifactViewerRegistry,
+} from "./artifact-viewers";
+export {
+  BasicSessionComposer,
+  SessionDetailComposerNotices,
+  SessionDetailReadOnlyFooter,
+} from "./session-detail-composer";
+
 export { projectAgentCopy, type ProjectAgentCopy } from "./project-agent-copy";
 export { usageLimitNotice, usageLimitTime, type UsageLimitNoticeInput } from "./usage-limit-copy";
 
@@ -196,14 +241,40 @@ export {
 } from "./composer-model-picker";
 export { composerModelCopy } from "./composer-model-copy";
 export { ComposerModeChip } from "./composer-mode-chip";
+export { permissionModeCopy, permissionModeSummaryCopy } from "./permission-mode-copy";
+export { claudeTerminalInteraction, claudeTerminalPermission } from "./claude-terminal-permission";
 export { ComposerPermissionMenu } from "./composer-permission-menu";
 export {
   ComposerPrimaryAction,
   ComposerToolbar,
   SessionComposerInput,
 } from "./session-composer-input";
+export { SessionComposerToolbar } from "./session-composer-toolbar";
+export { useComposerAttachments } from "./use-composer-attachments";
+export {
+  composerSettingsSelection,
+  composerSettingsWriteLocked,
+  confirmsComposerSettings,
+  projectComposerSettingsControls,
+  type PendingComposerSettings,
+} from "./composer-session-settings";
+export { mergePreparedCatalog, prepareComposerSettings } from "./composer-settings-preparation";
+export {
+  runComposerSettingsMutation,
+  type ComposerMutationFields,
+} from "./composer-settings-mutation";
+export { useComposerModelPanel } from "./use-composer-model-panel";
+export { useComposerModelDisplay } from "./use-composer-model-display";
 export { sessionCollaborationMode } from "./session-collaboration-mode";
-export { sessionComposerCapabilities } from "./session-composer-capabilities";
+export { composerDraftUnavailableReason, sessionComposerSurface } from "./session-composer-access";
+export {
+  canSubmitGoalDraft,
+  composerFollowerSettingsRequest,
+  existingSessionComposerCapabilities,
+  observedClaudePermissionLabel,
+  sessionComposerCapabilities,
+  useComposerFollowerSettings,
+} from "./session-composer-capabilities";
 export {
   ComposerGoalFields,
   SessionComposerAddMenu,

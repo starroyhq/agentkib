@@ -43,6 +43,7 @@ const pendingKinds = {
   delete: true,
   fork: true,
   settings: true,
+  "open-model-picker": true,
   "goal-set": true,
   "goal-pause": true,
   "goal-resume": true,

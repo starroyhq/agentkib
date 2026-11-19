@@ -64,7 +64,11 @@ function session(claude: boolean, selected: "default" | "plan") {
     online: true,
     busy: false,
     usageEpoch: "observation-a",
-    access: { bootId: "boot", device: { id: "device", accessMode: "full" } },
+    access: {
+      status: "approved",
+      bootId: "boot",
+      device: { id: "device", accessMode: "full", advancedControl: true },
+    },
     live: {
       sessionId: "session",
       status: "idle",
@@ -141,11 +145,13 @@ describe("plan mode in the Web composer", () => {
     fireEvent.click(await screen.findByRole("button", { name: permissions }));
     const permissionMenu = within(await screen.findByRole("menu", { name: permissions }));
     expect(permissionMenu.queryByRole("menuitem", { name: "Plan" })).not.toBeInTheDocument();
-    expect(permissionMenu.getByRole("menuitem", { name: "Default" })).not.toHaveAttribute(
+    expect(permissionMenu.getByRole("menuitem", { name: /^Manual approval/ })).not.toHaveAttribute(
       "aria-current",
       "true",
     );
-    fireEvent.keyDown(permissionMenu.getByRole("menuitem", { name: "Default" }), { key: "Escape" });
+    fireEvent.keyDown(permissionMenu.getByRole("menuitem", { name: /^Manual approval/ }), {
+      key: "Escape",
+    });
     const plan = await openPlan();
     await waitFor(() => expect(plan).toBeEnabled());
     fireEvent.click(plan);
@@ -208,7 +214,7 @@ describe("plan mode in the Web composer", () => {
     };
     state.current = { ...state.current!, agent: "codex" };
     state.live = { ...state.live!, executionMode: "codex-managed" };
-    state.client.codexSessionSettings = vi.fn(async () => projected);
+    state.client.sessionSettings = vi.fn(async () => projected);
     const unavailable = { available: false };
     state.client.codexGoals = vi.fn(async () => ({
       sessionId: "session",
@@ -230,9 +236,7 @@ describe("plan mode in the Web composer", () => {
     render(<CodexComposerControls {...props} onPlan={onPlan} />);
     await waitFor(() => expect(onPlan).toHaveBeenLastCalledWith({ on: true, available: false }));
     const add = await openAdd();
-    expect(
-      add.queryByRole("button", { name: planModeCopy("en-US").title }),
-    ).not.toBeInTheDocument();
+    expect(add.getByRole("button", { name: planModeCopy("en-US").title })).toBeDisabled();
     fireEvent.click(add.getByRole("button", { name: planModeCopy("en-US").clear }));
     await waitFor(() => {
       expect(state.codexAction).toHaveBeenCalledExactlyOnceWith("settings", { mode: null });

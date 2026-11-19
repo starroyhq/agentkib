@@ -546,6 +546,9 @@ importers:
 
   packages/session-ui:
     dependencies:
+      '@agentkib/conversation-state':
+        specifier: workspace:*
+        version: link:../conversation-state
       '@agentkib/web-client':
         specifier: workspace:*
         version: link:../web-client
@@ -571,6 +574,9 @@ importers:
       '@types/react':
         specifier: ^19.3.0
         version: 19.3.0
+      react-resizable-panels:
+        specifier: ^4.14.7
+        version: 4.14.7(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
 
   packages/web-client:
     dependencies:

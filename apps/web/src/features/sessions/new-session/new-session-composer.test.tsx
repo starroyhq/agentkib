@@ -319,6 +319,44 @@ describe("Web NewSessionComposer", () => {
     expect(client.managedOptions.mock.calls.filter(([agent]) => agent === "devin")).toHaveLength(1);
   });
 
+  it("keeps supported startup actions visible but disabled while a new agent's options load", async () => {
+    const { client } = setup();
+    let resolveOptions!: (value: ManagedOptions) => void;
+    const pending = new Promise<ManagedOptions>((resolve) => {
+      resolveOptions = resolve;
+    });
+    client.managedOptions.mockImplementation((agent) =>
+      agent === "claude-code" ? pending : Promise.resolve(options[agent]),
+    );
+    const user = userEvent.setup();
+    await screen.findByRole("button", { name: settingLabel("gpt-6.1-sol · Medium") });
+    await user.click(screen.getByRole("button", { name: "Agent: Codex" }));
+    await user.click(await screen.findByRole("menuitem", { name: "Claude Code" }));
+    await user.click(screen.getByRole("button", { name: "Add context" }));
+    const menu = await screen.findByRole("dialog", { name: "Add context" });
+    const actions = [addCopy.filesAndFolders, goalCopy.title, planLabel].map((name) =>
+      within(menu).getByRole("button", { name }),
+    );
+    for (const action of actions) {
+      expect(action).toBeDisabled();
+      expect(action).toHaveAttribute("title", "Loading options…");
+      await user.click(action);
+    }
+    expect(client.newSessionResources).not.toHaveBeenCalled();
+    expect(client.managedAction).not.toHaveBeenCalled();
+
+    await act(async () => {
+      resolveOptions({
+        ...options["claude-code"],
+        provider: sessionProviderCapabilities("claude-code"),
+      });
+    });
+    for (const action of actions) expect(action).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Tool permissions" })).toBeEnabled();
+    expect(client.newSessionResources).not.toHaveBeenCalled();
+    expect(client.managedAction).not.toHaveBeenCalled();
+  });
+
   it("keeps a catalog from the previous host boot out of the new controls", async () => {
     const { client, onCreated, view } = setup();
     await screen.findByRole("button", { name: settingLabel("gpt-6.1-sol · Medium") });
@@ -333,7 +371,9 @@ describe("Web NewSessionComposer", () => {
   });
 
   it("keeps cached options during a background refresh but clears them if access is refused", async () => {
-    const { client, onCreated, view } = setup();
+    const { client, onCreated, view } = setup({
+      codexOptions: { ...options.codex, provider: sessionProviderCapabilities("codex") },
+    });
     const model = settingLabel("gpt-6.1-sol · Medium");
     await screen.findByRole("button", { name: model });
     const stale = vi.spyOn(Date, "now").mockReturnValue(Date.now() + 5 * 60_000 + 1);
@@ -346,6 +386,10 @@ describe("Web NewSessionComposer", () => {
       view.unmount();
       const refreshed = render(<NewSessionComposer onCreated={onCreated} />);
       expect(screen.getByRole("button", { name: model })).toBeEnabled();
+      fireEvent.click(screen.getByRole("button", { name: "Add context" }));
+      const menu = await screen.findByRole("dialog", { name: "Add context" });
+      for (const name of [addCopy.filesAndFolders, goalCopy.title, planLabel])
+        expect(within(menu).getByRole("button", { name })).toBeEnabled();
       await act(async () => rejectRefresh(new Error("temporarily offline")));
       expect(screen.getByRole("button", { name: model })).toBeEnabled();
 
@@ -356,6 +400,12 @@ describe("Web NewSessionComposer", () => {
         await screen.findByRole("button", { name: "Model: Options unavailable" }),
       ).toBeDisabled();
       expect(screen.queryByRole("button", { name: model })).not.toBeInTheDocument();
+      fireEvent.click(screen.getByRole("button", { name: "Add context" }));
+      const deniedMenu = await screen.findByRole("dialog", { name: "Add context" });
+      for (const name of [addCopy.filesAndFolders, goalCopy.title, planLabel])
+        expect(within(deniedMenu).getByRole("button", { name })).toBeDisabled();
+      expect(client.newSessionResources).not.toHaveBeenCalled();
+      expect(client.managedAction).not.toHaveBeenCalled();
     } finally {
       stale.mockRestore();
     }
@@ -678,17 +728,21 @@ describe("Web NewSessionComposer", () => {
     });
   });
 
-  it("keeps + visible when the device has no attachment grant", () => {
-    setup({ attachments: false });
+  it("keeps the other startup entries when the device has no attachment grant", async () => {
+    const { client } = setup({
+      attachments: false,
+      codexOptions: { ...options.codex, provider: sessionProviderCapabilities("codex") },
+    });
+    await screen.findByRole("button", { name: /gpt-6.1-sol/ });
     const add = screen.getByRole("button", { name: "Add context" });
-    expect(add).toBeVisible();
-    expect(add).toBeDisabled();
-    expect(add).toHaveAttribute(
-      "title",
-      "This access does not include permission to upload attachments.",
-    );
+    expect(add).toBeEnabled();
     fireEvent.click(add);
-    expect(screen.queryByRole("button", { name: addCopy.attachment })).not.toBeInTheDocument();
+    const menu = await screen.findByRole("dialog", { name: "Add context" });
+    expect(within(menu).queryByRole("button", { name: addCopy.attachment })).toBeNull();
+    for (const name of [addCopy.filesAndFolders, goalCopy.title, planLabel])
+      expect(within(menu).getByRole("button", { name })).toBeEnabled();
+    expect(client.newSessionResources).not.toHaveBeenCalled();
+    expect(client.managedAction).not.toHaveBeenCalled();
   });
 
   it("starts Devin with an offered effort and Fast pair and never hands off its dispatched prompt", async () => {

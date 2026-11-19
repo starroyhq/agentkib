@@ -13,7 +13,9 @@ import {
   useVisibleReadState,
   type SessionReadState,
 } from "@agentkib/session-ui";
-import { ApiError, WebClient } from "@agentkib/web-client";
+import { ApiError, WebClient, type ConversationEvent } from "@agentkib/web-client";
+
+type FixtureEvent = Omit<ConversationEvent, "kind"> & { kind: string };
 
 const event = {
   id: "answer",
@@ -39,7 +41,7 @@ const unread = (extra: Partial<SessionReadState> = {}): SessionReadState => ({
   },
   ...extra,
 });
-function fixture(state = unread(), fresh = events) {
+function fixture(state = unread(), fresh: FixtureEvent[] = events) {
   return {
     events: vi.fn(async () => ({ events: fresh, warnings: [] })),
     readState: vi.fn(async () => ({ readState: state })),
@@ -64,11 +66,12 @@ function Probe({
   catalogVersion,
   imagePending = false,
   folded,
+  activeTurnId,
 }: {
   client: Client;
   id?: string;
   scope?: string;
-  rows?: typeof events;
+  rows?: FixtureEvent[];
   supported?: boolean;
   blocked?: boolean;
   source?: SessionReadState["source"];
@@ -76,6 +79,7 @@ function Probe({
   catalogVersion?: string;
   imagePending?: boolean | string;
   folded?: boolean;
+  activeTurnId?: string;
 }) {
   const viewport = useRef<HTMLDivElement>(null);
   const observed = useVisibleReadState({
@@ -87,6 +91,7 @@ function Probe({
     blocked,
     source,
     catalogVersion,
+    activeTurnId,
     events: rows,
     viewportRef: viewport,
   });
@@ -169,6 +174,52 @@ afterEach(() => {
 });
 
 describe("visible result read acknowledgements", () => {
+  it("does not acknowledge a reported ending for the current running turn", async () => {
+    const client = fixture();
+    const view = render(<Probe client={client} activeTurnId="turn" />);
+    await settle();
+    expect(client.acknowledgeReadState).not.toHaveBeenCalled();
+
+    view.rerender(<Probe client={client} activeTurnId="new-turn" />);
+    await settle();
+    expect(client.acknowledgeReadState).toHaveBeenCalledExactlyOnceWith(
+      "session",
+      "native:revision-1",
+      "result",
+    );
+  });
+
+  it("does not acknowledge a cancellation with no observed terminal or end time", async () => {
+    const client = fixture(
+      unread({ latestResult: { ...unread().latestResult!, outcome: "cancelled" } }),
+    );
+    Object.defineProperty(document, "elementFromPoint", {
+      configurable: true,
+      value: () => document.querySelector("[data-read-result]"),
+    });
+    render(<Probe client={client} />);
+    await settle();
+    expect(client.acknowledgeReadState).not.toHaveBeenCalled();
+  });
+
+  it("uses the exact native message to locate a managed Claude result", async () => {
+    const rows = [{ ...event, turn_id: null }];
+    const client = fixture(
+      unread({
+        source: "agentkib",
+        latestResult: { ...unread().latestResult!, turnId: "managed-turn", outcome: "ended" },
+      }),
+      rows,
+    );
+    render(<Probe client={client} rows={rows} source="agentkib" />);
+    await settle();
+    expect(client.acknowledgeReadState).toHaveBeenCalledExactlyOnceWith(
+      "session",
+      "native:revision-1",
+      "result",
+    );
+  });
+
   it("acknowledges an interrupted turn only after its folded status enters view", async () => {
     const rows = [
       event,

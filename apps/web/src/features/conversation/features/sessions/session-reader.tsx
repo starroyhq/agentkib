@@ -1,11 +1,4 @@
-import { catalogCopy } from "../catalog/catalog-copy";
-import {
-  isLiveSessionAgent,
-  managedAgentOf,
-  sessionProviderCapabilities,
-} from "@agentkib/web-client";
-import { OrchestrationNote } from "../catalog/orchestration-note";
-import { WorktreeNote } from "../catalog/worktree-note";
+import { isLiveSessionAgent, sessionProviderCapabilities } from "@agentkib/web-client";
 import { codexCopyForSurface, codexReason } from "./codex-copy";
 import {
   claudeBackgroundStatus,
@@ -17,36 +10,28 @@ import { validHistoryMessage } from "../history/history-reference-model";
 import { SessionOperations } from "./session-operations";
 import { useSessionPanels } from "./session-panels";
 import { ContextUsageGauge } from "./context-usage";
-import { contextUsageCopyForSurface } from "./context-usage-copy";
 import { SessionComposer } from "./session-composer";
-import { Button } from "../../components/ui/button";
-import { ArrowDown, LoaderCircle } from "lucide-react";
 import { SessionTranscript } from "./session-transcript";
 import { SessionInteractionDock } from "../interactions/interaction-dock";
 import { MAX_MESSAGE_LENGTH } from "./session-model";
 import { useSession } from "./session-context";
 import { ArtifactBrowser } from "./artifact-browser";
 import { ArtifactWorkspace } from "./artifact-panel";
-import { useCallback, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useMemo } from "react";
 import {
   createSessionImageLoader,
   sessionImageCacheScope,
   sessionImageRevision,
 } from "./session-image-scope";
 import {
-  composerAddCopy,
-  ComposerPrimaryAction,
-  ComposerToolbar,
-  SessionComposerAddMenu,
-  SessionComposerInput,
-  useTranscriptFollow,
-  useVisibleReadState,
-  ReadStateNotice,
-  readStateCopy,
-  transcriptRepresentsResult,
-  DEVIN_TURN_REASONS,
+  sessionComposerSurface,
+  SessionDetail,
+  SessionDetailHeader,
+  BasicSessionComposer,
+  SessionDetailComposerNotices,
+  SessionDetailReadOnlyFooter,
+  useSessionDetailReadState,
 } from "@agentkib/session-ui";
-import { publishSessionInvalidation, subscribeSessionInvalidation } from "./session-events";
 import { webLayoutCopy } from "./web-layout-copy";
 export function SessionReader() {
   const session = useSession();
@@ -103,8 +88,7 @@ export function SessionReader() {
     imageCacheRevision,
     imageCacheScope,
   ]);
-  const submitPending = useRef(false);
-  const banner = claudeSessionBanner(session, "web");
+  const banner = current?.agent === "claude-code" ? claudeSessionBanner(session, "web") : null;
   const backgroundStatus = claudeBackgroundStatus(session);
   const scopedLive = live?.sessionId === selected ? live : undefined;
   const scopedSettings =
@@ -126,96 +110,22 @@ export function SessionReader() {
           readOnlyCapacity > 0)
       : contextUsageSource === "live" || current?.agent === "antigravity";
   const panels = useSessionPanels();
-  const readSubscription = useCallback(
-    (listener: (userAction?: boolean) => void) =>
-      subscribeSessionInvalidation(session.client, (id, domains) => {
-        if (
-          (!id || id === selected) &&
-          domains.some((domain) =>
-            ["catalog", "history", "live", "read-state", "read-state-refresh"].includes(domain),
-          )
-        )
-          listener(domains.includes("read-state-refresh"));
-      }),
-    [session.client, selected],
-  );
-  // Codex, Claude Code and Devin sessions keep a read state (Devin's has the turns AgentKib ran).
-  // For other Agents a missing read state is expected, not a sign that the computer needs an
-  // update.
-  const readStateAgent = ["codex", "claude-code", "devin"].includes(current?.agent ?? "");
-  const readObservation = useVisibleReadState({
-    client: session.client,
-    sessionId: selected,
-    scope: JSON.stringify([
-      session.origin,
-      access?.bootId,
-      access?.device?.id,
-      access?.historySearchScope,
-      access?.accountLogin?.accountId,
-    ]),
-    source: current?.readState?.source,
-    catalogVersion: current?.readState?.version,
-    supported: access?.readStateVersion === 1 && readStateAgent,
-    ready: !!page && online && access?.status === "approved",
+  const readObservation = useSessionDetailReadState({
+    session,
     blocked:
       !!session.modal ||
       session.historySearchOpen ||
       !!panels?.filesOpen ||
       !!panels?.actionsOpen ||
       !!panels?.terminalOpen,
-    events: page?.events ?? [],
-    viewportRef: scroll,
-    subscribe: readSubscription,
-    onAcknowledged: () => publishSessionInvalidation(session.client, selected, ["catalog"]),
   });
-  const readCopy = readStateCopy(locale);
   const forkSource = current?.forked_from_session_id
     ? session.sessions?.find((item) => item.id === current.forked_from_session_id)
     : undefined;
-  const hasNativeReply =
-    !!live?.turnId &&
-    page?.events.some((event) => event.kind === "agent-message" && event.turn_id === live.turnId);
-  const liveStreamText = live?.status !== "idle" ? live?.streamText : undefined;
   const pendingMessage =
     session.pendingSend?.sessionId === selected ? session.pendingSend : undefined;
-  const previousSession = useRef(selected);
-  const previousContent = useRef({ events: page?.events, streamText: live?.streamText });
-  const previousLiveContentVersion = useRef(liveContentVersion);
-  const [hasNewMessages, setHasNewMessages] = useState(false);
-  const { following, contentRef, pause, resume } = useTranscriptFollow({
-    viewportRef: scroll,
-    sessionId: selected,
-    enabled: !!access && !!selected,
-    layoutVersion: [page?.events, liveStreamText, liveContentVersion, pendingMessage],
-    onFollowingChange: (value) => {
-      if (value) setHasNewMessages(false);
-    },
-  });
-  useLayoutEffect(() => {
-    if (previousSession.current !== selected) {
-      previousSession.current = selected;
-      submitPending.current = false;
-      setHasNewMessages(false);
-    } else if (!following.current && previousLiveContentVersion.current !== liveContentVersion) {
-      const previous = previousContent.current;
-      const last = previous.events?.at(-1);
-      const latest = page?.events.at(-1);
-      // Prepending a history page leaves existing content unchanged. Also
-      // observe deltas to a message followed by another active tool item.
-      const previousItems = new Map(previous.events?.map((event) => [event.id, event]));
-      const changedText = page?.events.some((event) => {
-        const old = previousItems.get(event.id);
-        return old && old.content !== event.content;
-      });
-      const appended =
-        last && latest?.id !== last.id && page?.events.some((event) => event.id === last.id);
-      const streamed = !!live?.streamText && live.streamText !== previous.streamText;
-      if (changedText || appended || streamed) setHasNewMessages(true);
-    }
-    previousContent.current = { events: page?.events, streamText: live?.streamText };
-    previousLiveContentVersion.current = liveContentVersion;
-  }, [selected, page?.events, live?.streamText, liveContentVersion, scroll]);
   if (!access || !selected) return null;
+  const composerSurface = sessionComposerSurface(current, access);
   return (
     <ArtifactWorkspace
       browser={
@@ -227,293 +137,121 @@ export function SessionReader() {
         />
       }
     >
-      <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-        <SessionOperations
-          key={`operations-${selected}`}
-          open={panels?.actionsOpen ?? false}
-          onOpenChange={(open) => panels?.setActionsOpen(open)}
-        />
-        <section
-          className="reader-scroll relative min-h-0 flex flex-1 flex-col overflow-y-auto overscroll-contain px-4 pb-2 pt-4 [scrollbar-gutter:stable] md:px-8"
-          tabIndex={0}
-          ref={(element) => {
-            scroll.current = element;
-          }}
-        >
-          {!page ? (
-            <div
-              role="status"
-              className="absolute inset-0 flex flex-col items-center justify-center gap-3 p-6 text-center"
-            >
-              <LoaderCircle
-                aria-hidden="true"
-                className="size-6 animate-spin text-muted-foreground motion-reduce:animate-none"
-              />
-              <p className="text-sm text-muted-foreground">{t.loading}</p>
-            </div>
-          ) : (
-            <div ref={contentRef} className="min-w-0 shrink-0">
-              {readStateAgent && <ReadStateNotice locale={locale} observation={readObservation} />}
-              {current?.agent === "claude-code" && banner && !claudeComposerNotice(banner) && (
-                <aside
-                  className="info mx-auto mb-5 max-w-3xl"
-                  data-execution-mode={live?.executionMode}
-                >
-                  {banner.title && <strong className="block mb-1">{banner.title}</strong>}
-                  {banner.body}
-                </aside>
-              )}
-              {["codex", "claude-code"].includes(current?.agent ?? "") &&
-                current?.forked_from_session_id && (
-                  <p className="mx-auto mb-4 w-full max-w-3xl text-xs text-muted-foreground">
-                    {catalogCopy[locale].fork}{" "}
-                    {forkSource ? session.sourceTitle(forkSource.id) : t.untitled}
-                  </p>
-                )}
-              {current?.orchestration && (
-                <OrchestrationNote
-                  orchestration={current.orchestration}
-                  leadTitle={
-                    current.orchestration.role === "worker" &&
-                    session.sourceTitle(current.orchestration.leadId) !==
-                      current.orchestration.leadId
-                      ? session.sourceTitle(current.orchestration.leadId)
-                      : null
-                  }
-                  locale={locale}
-                />
-              )}
-              {current?.worktree && <WorktreeNote worktree={current.worktree} locale={locale} />}
-              {page?.warnings.length ? (
-                <aside className="mx-auto mb-5 max-w-3xl rounded-lg border border-amber-500/20 bg-amber-500/5 p-3 text-xs leading-6 text-amber-600">
-                  {t.warnings}: {page.warnings.join(" · ")}
-                </aside>
-              ) : null}
-              <SessionTranscript
+      <SessionDetail
+        layout="web"
+        sessionId={selected}
+        locale={locale}
+        labels={t}
+        jumpLabel={webLayoutCopy[locale].newMessages}
+        viewportRef={scroll}
+        Transcript={SessionTranscript}
+        history={{
+          page,
+          live: scopedLive,
+          online,
+          externalTurn: current?.id === selected ? current.externalTurn : undefined,
+          liveContentVersion,
+          pending: pendingMessage,
+          detailTurnId: historyDetailTurnId,
+          loadingEarlier: busy || loadingEarlier,
+          loadEarlier: earlier,
+          onTool: setModal,
+          imageLoader,
+          readObservation,
+        }}
+        operations={
+          <SessionOperations
+            key={`operations-${selected}`}
+            open={panels?.actionsOpen ?? false}
+            onOpenChange={(open) => panels?.setActionsOpen(open)}
+          />
+        }
+        beforeTranscript={
+          <SessionDetailHeader
+            locale={locale}
+            session={current}
+            forkTitle={forkSource ? session.sourceTitle(forkSource.id) : t.untitled}
+            sourceTitle={session.sourceTitle}
+            banner={banner && !claudeComposerNotice(banner) ? banner : undefined}
+            executionMode={scopedLive?.executionMode}
+          />
+        }
+        composer={
+          <>
+            <SessionDetailComposerNotices
+              agent={current?.agent}
+              accessMode={access.device?.accessMode}
+              banner={
+                claudeComposerNotice(banner) && !session.pendingSend ? banner?.body : undefined
+              }
+              background={backgroundStatus}
+              interactions={<SessionInteractionDock />}
+              live={scopedLive}
+              notice={notice}
+              noticeSource={session.noticeSource}
+              noticeReason={noticeReason}
+              noticeText={
+                notice === "notDispatched" && (session.actionUnavailableReason || noticeReason)
+                  ? codexReason(locale, (session.actionUnavailableReason || noticeReason)!, "web")
+                      .text
+                  : notice
+                    ? t[notice]
+                    : undefined
+              }
+              hasSeparateBanner={!!banner}
+            />
+            {composerSurface === "managed" ? (
+              <SessionComposer
+                connectionStatusInBanner={!!banner && !claudeComposerNotice(banner)}
                 key={selected}
-                events={page.events}
-                pendingMessage={pendingMessage}
-                streamText={!hasNativeReply ? liveStreamText : undefined}
-                streamTextTruncated={live?.streamTextTruncated}
-                liveTurnId={live?.turnId}
-                incomplete={page.warnings.length > 0}
-                labels={t}
-                locale={locale}
-                onTool={setModal}
-                imageLoader={imageLoader}
-                hasEarlier={!!page.next_cursor}
-                loadingEarlier={busy || loadingEarlier}
-                historyDetailTurnId={historyDetailTurnId}
-                earlierLabel={t.earlier}
-                onLoadEarlier={async (turnId) => {
-                  pause();
-                  await earlier(turnId);
-                }}
               />
-              {readObservation.status === "ready" &&
-                readObservation.events &&
-                readObservation.readState?.freshness === "current" &&
-                !transcriptRepresentsResult(
-                  page.events,
-                  readObservation.readState.latestResult,
-                ) && (
-                  <p
-                    data-read-result={readObservation.readState.latestResult?.id ?? "threadStart"}
-                    className="mx-auto mt-4 w-full max-w-3xl text-xs text-muted-foreground"
-                  >
-                    {readObservation.readState.latestResult
-                      ? readCopy[readObservation.readState.latestResult.outcome]
-                      : !page.events.length
-                        ? readCopy.empty
-                        : readObservation.readState.firstUnread?.type === "threadStart"
-                          ? readCopy.manualUnread
-                          : null}
-                  </p>
-                )}
-            </div>
-          )}
-        </section>
-        <div className="shrink-0 bg-background px-3 pb-3 pt-2 md:px-6" role="status">
-          {hasNewMessages && (
-            <Button
-              type="button"
-              variant="ghost"
-              className="mb-2 flex min-h-9 w-fit mx-auto items-center gap-2 rounded-full border border-border bg-background px-3 text-xs text-muted-foreground shadow-sm transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-              onClick={() => {
-                resume();
-                setHasNewMessages(false);
-              }}
-            >
-              <ArrowDown size={16} />
-              {webLayoutCopy[locale].newMessages}
-            </Button>
-          )}
-          <div className="flex flex-col gap-2">
-            {current?.agent === "claude-code" &&
-              claudeComposerNotice(banner) &&
-              !session.pendingSend && (
-                <p
-                  role="status"
-                  className="mx-auto w-full max-w-3xl px-3 text-xs leading-5 text-muted-foreground"
-                >
-                  {banner?.body}
-                </p>
-              )}
-            {current?.agent === "claude-code" && backgroundStatus && (
-              <p
-                role="status"
-                className="mx-auto w-full max-w-3xl px-3 text-xs leading-5 text-muted-foreground"
-              >
-                {backgroundStatus}
-              </p>
-            )}
-            <SessionInteractionDock />
-            {notice &&
-              // An accepted message shows up in the conversation at once; saying so is noise.
-              notice !== "accepted" &&
-              // The card reports the outcome of its own decisions while it is still shown.
-              !(
-                (session.noticeSource === "approve" || session.noticeSource === "answer") &&
-                !!(live?.approvals.length || live?.questions?.length)
-              ) &&
-              // The composer's controls explain these beside a way into next-turn settings.
-              !(
-                notice === "notDispatched" &&
-                ((current?.agent === "codex" &&
-                  (noticeReason === "unsupported-model" ||
-                    noticeReason === "unsupported-effort")) ||
-                  (current?.agent === "claude-code" &&
-                    access?.device?.accessMode === "full" &&
-                    (noticeReason === "claude-model-unsupported" ||
-                      noticeReason === "claude-effort-unsupported")) ||
-                  // Devin's own refusals are explained under its composer.
-                  (current?.agent === "devin" && DEVIN_TURN_REASONS.includes(noticeReason ?? "")))
-              ) &&
-              !(current?.agent === "claude-code" && banner && notice === "uncertain") && (
-                <p
-                  role="status"
-                  className="mx-auto w-full max-w-3xl px-5 py-2 text-xs leading-6 text-muted-foreground"
-                >
-                  {notice === "notDispatched" && session.actionUnavailableReason
-                    ? codexReason(locale, session.actionUnavailableReason, "web").text
-                    : // Only a reason with its own explanation is kept; see `NotDispatchedReason`.
-                      notice === "notDispatched" && noticeReason
-                      ? codexReason(locale, noticeReason, "web").text
-                      : t[notice]}
-                </p>
-              )}
-            {isLiveSessionAgent(current?.agent) &&
-            access.experimentalEnabled &&
-            access.protocolVersion === 2 &&
-            access.device?.send ? (
-              managedAgentOf(current?.agent) ? (
-                <SessionComposer
-                  connectionStatusInBanner={!!banner && !claudeComposerNotice(banner)}
-                  key={`composer-${selected}`}
-                />
-              ) : (
-                <div className="w-full max-w-3xl shrink-0 self-center">
-                  <SessionComposerInput
-                    editorContextKey={selected}
-                    editor={{
-                      id: "message",
-                      "aria-label": t.message,
-                      value: message,
-                      maxLength: MAX_MESSAGE_LENGTH,
-                      onChange: (event) => setMessage(event.currentTarget.value),
-                      placeholder: t.message,
-                      disabled: busy,
-                    }}
-                    onSubmit={() => {
-                      if (
-                        !online ||
-                        busy ||
-                        !canSend ||
-                        live?.activity === "compacting" ||
-                        !validHistoryMessage(message, historyReferences) ||
-                        submitPending.current
-                      )
-                        return;
-                      submitPending.current = true;
-                      const requestSession = selected;
-                      void Promise.resolve(control("send")).finally(() => {
-                        if (previousSession.current === requestSession)
-                          submitPending.current = false;
-                      });
-                    }}
-                    canSubmitFromKeyboard={() => !busy && !submitPending.current}
-                    beforeEditor={<HistoryReferenceChips />}
-                    toolbar={
-                      <>
-                        <ComposerToolbar
-                          leading={
-                            <>
-                              <SessionComposerAddMenu
-                                locale={locale}
-                                label={composerCopy.addContext}
-                                disabled
-                                disabledReason={composerAddCopy(locale).unavailable}
-                              />
-                              <small className="max-w-lg text-xs leading-5 text-muted-foreground">
-                                {t.experimental} · {t.controlInfo}
-                              </small>
-                            </>
-                          }
-                          trailing={
-                            <>
-                              <ContextUsageGauge />
-                              {canStop ? (
-                                <ComposerPrimaryAction
-                                  kind="stop"
-                                  label={t.stop}
-                                  onStop={() => void control("stop")}
-                                />
-                              ) : (
-                                <ComposerPrimaryAction
-                                  label={t.send}
-                                  disabled={
-                                    !online ||
-                                    !canSend ||
-                                    live?.activity === "compacting" ||
-                                    !validHistoryMessage(message, historyReferences)
-                                  }
-                                />
-                              )}
-                            </>
-                          }
-                        />
-                        {live?.activity === "compacting" && (
-                          <p role="status" className="mt-2 text-xs text-muted-foreground">
-                            {contextUsageCopyForSurface(locale, "web").compactingDetail}
-                          </p>
-                        )}
-                      </>
-                    }
-                  />
-                </div>
-              )
+            ) : composerSurface === "basic" ? (
+              <BasicSessionComposer
+                key={selected}
+                sessionId={selected}
+                locale={locale}
+                labels={{ ...t, addContext: composerCopy.addContext }}
+                value={message}
+                busy={busy}
+                canSend={
+                  online &&
+                  !busy &&
+                  canSend &&
+                  scopedLive?.activity !== "compacting" &&
+                  validHistoryMessage(message, historyReferences)
+                }
+                canStop={canStop}
+                maxLength={MAX_MESSAGE_LENGTH}
+                onChange={setMessage}
+                onSend={async () => control("send")}
+                onStop={() => void control("stop")}
+                references={<HistoryReferenceChips />}
+                contextUsage={<ContextUsageGauge />}
+              />
             ) : (
-              <footer className="shrink-0 border-t px-5 py-4 text-center text-xs text-muted-foreground">
-                {access.protocolVersion === 2 &&
+              <SessionDetailReadOnlyFooter
+                contextUsage={
+                  access.protocolVersion === 2 &&
                   access.device?.accessMode === "full" &&
                   access.device.advancedControl &&
                   showReadOnlyContext && (
-                    <div className="flex justify-center">
-                      <ContextUsageGauge source={contextUsageSource} capacity={readOnlyCapacity} />
-                    </div>
-                  )}
-                {isLiveSessionAgent(current?.agent) &&
-                access.experimentalEnabled &&
-                access.device?.approve
-                  ? t.noSendPermission
-                  : access.protocolVersion !== 2
-                    ? t.lanIncompatible
-                    : t.readOnly}
-              </footer>
+                    <ContextUsageGauge source={contextUsageSource} capacity={readOnlyCapacity} />
+                  )
+                }
+                message={
+                  isLiveSessionAgent(current?.agent) &&
+                  access.experimentalEnabled &&
+                  access.device?.approve
+                    ? t.noSendPermission
+                    : access.protocolVersion !== 2
+                      ? t.lanIncompatible
+                      : t.readOnly
+                }
+              />
             )}
-          </div>
-        </div>
-      </div>
+          </>
+        }
+      />
     </ArtifactWorkspace>
   );
 }

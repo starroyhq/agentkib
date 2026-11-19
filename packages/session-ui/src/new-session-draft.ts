@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import type { CodexContextResource } from "@agentkib/web-client";
 
 export type NewSessionGoalDraft = { objective: string; tokenBudget?: number };
@@ -24,31 +24,40 @@ export interface NewSessionDraft {
 
 type StartupGoal = {
   sessionId: string;
+  authority?: unknown;
   value: NewSessionGoalDraft;
   stage: "first-message" | "ready" | "draft";
   afterRevision?: number;
 };
 
-export function useNewSessionGoalDraft(sessionId: string) {
+export function useNewSessionGoalDraft(sessionId: string, authority?: unknown) {
+  // Late callbacks from another host or visit cannot replace this visit's local goal.
+  const scope = useMemo(() => ({ sessionId, authority }), [sessionId, authority]);
+  const activeScope = useRef(scope);
+  activeScope.current = scope;
   const [goal, setGoal] = useState<StartupGoal>();
-  const current = goal?.sessionId === sessionId ? goal : undefined;
+  const current = goal?.sessionId === sessionId && goal.authority === authority ? goal : undefined;
 
   const stage = useCallback(
-    (value: NewSessionGoalDraft) => setGoal({ sessionId, value, stage: "first-message" }),
-    [sessionId],
+    (value: NewSessionGoalDraft) => {
+      if (activeScope.current === scope)
+        setGoal({ sessionId, authority, value, stage: "first-message" });
+    },
+    [sessionId, authority, scope],
   );
 
   const load = useCallback(
     (draft: NewSessionDraft, submit: boolean) => {
-      if (!draft.goal) return;
+      if (!draft.goal || activeScope.current !== scope) return;
       const hasMessage = !!draft.text.trim() || draft.files.length > 0;
       setGoal({
         sessionId,
+        authority,
         value: draft.goal,
         stage: !submit ? "draft" : hasMessage ? "first-message" : "ready",
       });
     },
-    [sessionId],
+    [sessionId, authority, scope],
   );
   const confirmFirstMessage = (revision?: number | null) => {
     if (current?.stage !== "first-message") return;
@@ -61,17 +70,19 @@ export function useNewSessionGoalDraft(sessionId: string) {
   const handled = useCallback(
     (applied: boolean) =>
       setGoal((previous) =>
-        previous?.sessionId !== sessionId
+        previous?.sessionId !== sessionId || previous.authority !== authority
           ? previous
           : applied
             ? undefined
             : { ...previous, stage: "draft" },
       ),
-    [sessionId],
+    [sessionId, authority],
   );
   const discard = useCallback(() => {
-    setGoal((previous) => (previous?.sessionId === sessionId ? undefined : previous));
-  }, [sessionId]);
+    setGoal((previous) =>
+      previous?.sessionId === sessionId && previous.authority === authority ? undefined : previous,
+    );
+  }, [sessionId, authority]);
 
   return {
     value: current

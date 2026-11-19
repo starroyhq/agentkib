@@ -1,3 +1,9 @@
+import {
+  CODEX_MENU_COMMANDS,
+  claudeMenuCommands,
+  dshMenuCommands,
+  type SessionCapabilities,
+} from "@agentkib/web-client";
 import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent } from "react";
 
 /**
@@ -137,6 +143,79 @@ export function claudeSlashOptions(
     if (!handled(name)) return command;
     return { ...command, argumentHint: HANDLED[name], description: copy[name] };
   });
+}
+
+/** Add only controls AgentKib can handle locally; the CLI still owns its native catalog. */
+export function composerLocalSlashOptions(
+  commands: readonly SlashCommandOption[],
+  controls: { model: boolean; effort: boolean; goal: boolean },
+  locale: string,
+): SlashCommandOption[] {
+  const copy = slashCommandCopy(locale);
+  const offered = commands.filter(
+    (command) =>
+      !Object.hasOwn(controls, command.name) || controls[command.name as keyof typeof controls],
+  );
+  return [
+    ...offered,
+    ...(["model", "effort", "goal"] as const).flatMap((name) =>
+      controls[name] && !commands.some((command) => command.name === name)
+        ? [{ name, aliases: [], argumentHint: HANDLED[name], description: copy[name] }]
+        : [],
+    ),
+  ];
+}
+
+/** Merge local panels with the commands the device can actually send to the current executor. */
+export function sessionSlashOptions(
+  agent: string | undefined,
+  catalog: SessionCapabilities["commands"],
+  options: {
+    canSend: boolean;
+    claudeOwner: boolean;
+    dshOwner: boolean;
+    model: boolean;
+    goal: boolean;
+    locale: string;
+  },
+): SlashCommandOption[] {
+  const { locale, model, goal } = options;
+  const commands = options.canSend ? (catalog ?? []) : [];
+  const local = { model, effort: model, goal };
+  if (agent === "claude-code")
+    return composerLocalSlashOptions(
+      claudeSlashOptions(claudeMenuCommands(commands, options.claudeOwner), locale),
+      local,
+      locale,
+    );
+  const native =
+    agent === "codex"
+      ? codexSlashOptions(CODEX_MENU_COMMANDS, locale)
+      : agent === "deepseek-harness"
+        ? dshSlashOptions(dshMenuCommands(commands, options.dshOwner))
+        : [];
+  // Entries added to a provider's own catalog open panels. Only its native entries describe
+  // arguments that can be submitted to that provider.
+  const panels = composerLocalSlashOptions([], local, locale);
+  return [
+    ...native,
+    ...panels
+      .filter((panel) => !native.some((entry) => entry.name === panel.name))
+      .map(({ argumentHint: _hint, ...panel }) => panel),
+  ];
+}
+
+export function composerPanelShortcut(text: string, model: boolean, goal: boolean) {
+  switch (text.trim().toLowerCase()) {
+    case "/model":
+      return model ? "model" : undefined;
+    case "/effort":
+      return model ? "effort" : undefined;
+    case "/goal":
+      return goal ? "goal" : undefined;
+    default:
+      return undefined;
+  }
 }
 
 /** What each Codex menu command does in AgentKib, with the argument it takes. */

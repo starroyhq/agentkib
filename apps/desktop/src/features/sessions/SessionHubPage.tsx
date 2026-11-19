@@ -3,6 +3,7 @@ import { isLiveSessionAgent } from "@agentkib/web-client";
 import { useRef, useState } from "react";
 import { Database, RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { RemoteErrorDetails } from "@/features/remote/RemoteErrorDetails";
 import { api } from "@/core/api";
 import { useAppStore } from "@/stores/app-store";
@@ -101,9 +102,9 @@ export function SessionHubPage() {
   const remoteNotices = hub.remoteHosts?.filter(
     (host) => host.status !== "online" || hub.remoteErrors?.[host.id],
   );
-  const scanErrorCount = Object.keys(hub.errors).length;
+  const scanErrors = Object.entries(hub.errors).filter(([, error]) => Boolean(error));
   const hasCatalogNotices =
-    !!hub.catalogError || !!remoteNotices?.length || !!hub.workspacesError || scanErrorCount > 0;
+    !!hub.catalogError || !!remoteNotices?.length || !!hub.workspacesError || scanErrors.length > 0;
 
   const catalogNotices = (
     <>
@@ -130,8 +131,39 @@ export function SessionHubPage() {
           </Button>
         </Notice>
       )}
-      {scanErrorCount > 0 && (
-        <Notice error>{tr("sessions.partialFailure", { count: scanErrorCount })}</Notice>
+      {scanErrors.length > 0 && (
+        <Notice error>
+          <Collapsible>
+            <div className="flex flex-wrap items-center gap-x-3">
+              <span>{tr("sessions.partialFailure", { count: scanErrors.length })}</span>
+              <Button
+                variant="link"
+                size="sm"
+                className="px-0"
+                disabled={hub.refreshing}
+                onClick={() => void hub.refresh()}
+              >
+                {tr("sessions.retry")}
+              </Button>
+              <CollapsibleTrigger render={<Button variant="link" size="sm" className="px-0" />}>
+                {tr("common.details")}
+              </CollapsibleTrigger>
+            </div>
+            <CollapsibleContent>
+              <ul className="mt-2 grid max-h-40 gap-2 overflow-y-auto overscroll-contain text-xs text-muted-foreground">
+                {scanErrors.map(([id, error]) => {
+                  const workspace = hub.workspaces.find((item) => item.id === id);
+                  return (
+                    <li key={id}>
+                      {workspace && <strong className="block font-medium">{workspace.name}</strong>}
+                      <p>{error}</p>
+                    </li>
+                  );
+                })}
+              </ul>
+            </CollapsibleContent>
+          </Collapsible>
+        </Notice>
       )}
     </>
   );

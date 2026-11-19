@@ -45,7 +45,7 @@ export function SessionDirectoryTrailing({
         unread
       />
     );
-  } else if (session.worktree) {
+  } else if (session.worktree && !status?.active && !status?.waiting) {
     indicator = (
       <WorktreeMark
         label={worktreeLabel(session.worktree, tr)}

@@ -109,12 +109,13 @@ function baseFixture(initial: Live, agent: Agent) {
     .mockImplementation(async (requestId) => ({ found: false, requestId }));
   vi.spyOn(client, "sessionCapabilities").mockImplementation(async (sessionId) => ({
     sessionId,
-    executionMode: agent === "codex" ? "codex-managed" : "claude-managed",
+    executionMode:
+      liveById.get(sessionId)?.executionMode ?? baseIdle(sessionId, agent).executionMode!,
     status: "idle",
     features: { fork: { available: true } },
   }));
-  const request = vi.spyOn(client, "request").mockImplementation(async (path) => {
-    if (path === (agent === "codex" ? "codex/fork" : "managed/action")) {
+  const request = vi.spyOn(client, "request").mockImplementation(async (path, body) => {
+    if (path === "managed/action" && (body as { operation?: unknown })?.operation === "fork") {
       sessions.push(summary("forked", agent));
       return { accepted: true, sessionId: "forked" };
     }
@@ -658,6 +659,28 @@ describe("Codex next-turn settings recovery", () => {
     },
   );
 
+  it("retains the message when the executor loses goal support before dispatch", async () => {
+    const host = baseFixture(baseIdle("original", "claude-code"), "claude-code");
+    let supported = true;
+    vi.mocked(host.client.sessionCapabilities).mockImplementation(async (sessionId) => ({
+      sessionId,
+      executionMode: "claude-managed",
+      status: "idle",
+      features: { fork: { available: true }, "goal-draft": { available: supported } },
+    }));
+    const { result } = await open(host);
+    await act(async () => result.current.setMessage("Start with this objective"));
+    supported = false;
+    await act(async () =>
+      result.current.control("send", undefined, undefined, undefined, undefined, {
+        requiresGoal: true,
+      }),
+    );
+    expect(host.request).not.toHaveBeenCalled();
+    expect(readPending(host.scope)).toEqual([]);
+    expect(result.current.message).toBe("Start with this objective");
+  });
+
   it("sends a command button's message and leaves the draft and quotes as they are", async () => {
     const host = baseFixture(baseIdle("original", "claude-code"), "claude-code");
     // Quotes survive the refresh after a send only while history search stays granted. The
@@ -950,8 +973,13 @@ describe.each(["codex", "claude-code"] as const)(
       expect(result.current.selected).toBe("forked");
       expect(result.current.message).toBe("  Original draft A  ");
       expect(host.request).toHaveBeenCalledExactlyOnceWith(
-        agent === "codex" ? "codex/fork" : "managed/action",
-        expect.objectContaining({ sessionId: "original", requestId: expect.any(String) }),
+        "managed/action",
+        expect.objectContaining({
+          agent,
+          operation: "fork",
+          sessionId: "original",
+          requestId: expect.any(String),
+        }),
       );
       await act(async () => result.current.setMessage("New branch draft B"));
       await act(async () => finishHistory(history));

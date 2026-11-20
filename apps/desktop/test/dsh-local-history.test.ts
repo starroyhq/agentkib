@@ -1,4 +1,5 @@
 // @vitest-environment node
+import { randomBytes } from "node:crypto";
 import {
   appendFileSync,
   mkdtempSync,
@@ -9,7 +10,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { zstdCompressSync } from "node:zlib";
+import { constants as zlib, zstdCompressSync } from "node:zlib";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   readLocalDshHistory,
@@ -38,20 +39,22 @@ function encode(...items: unknown[]) {
 describe("DSH local history", () => {
   it("pages projected native records across frames and ignores an unfinished line", async () => {
     const dir = fixture();
-    const nativeOnly = { seq: 2, type: "system/message", data: { content: "internal" } };
+    const nativeOnly = {
+      seq: 2,
+      type: "system/message",
+      data: { content: randomBytes(128 * 1024).toString("base64") },
+    };
     const assistant = {
       seq: 3,
       type: "assistant/message",
       data: { turn: 1, message: { content: [{ type: "text", text: "收到" }] } },
     };
     const appending = encode({ seq: 4, type: "turn/end", data: { turn: 1 } });
+    const initial = encode(header, { seq: 1, type: "turn/start", data: { turn: 1 } }, nativeOnly);
+    expect(initial.length).toBeGreaterThan(64 * 1024);
     writeFileSync(
       path.join(dir, logName),
-      Buffer.concat([
-        encode(header, { seq: 1, type: "turn/start", data: { turn: 1 } }, nativeOnly),
-        encode(assistant),
-        appending.subarray(0, appending.length - 8),
-      ]),
+      Buffer.concat([initial, encode(assistant), appending.subarray(0, appending.length - 8)]),
     );
     const page = await readLocalDshHistory(dir, nativeId, undefined, 1);
     expect(page).toMatchObject({
@@ -145,7 +148,9 @@ describe("DSH persisted turn evidence", () => {
     const first = (await readLocalDshTurn(dir, nativeId))!;
     expect(first).toMatchObject({ seq: 2, open: { turn: 3, startedAt: 100 } });
 
-    const endingFrame = encode(ended);
+    const endingFrame = zstdCompressSync(Buffer.from(`${JSON.stringify(ended)}\n`), {
+      params: { [zlib.ZSTD_c_checksumFlag]: 1 },
+    });
     appendFileSync(log, endingFrame.subarray(0, -1));
     expect(await readLocalDshTurn(dir, nativeId, first)).toBeNull();
     appendFileSync(log, endingFrame.subarray(-1));

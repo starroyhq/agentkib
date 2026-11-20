@@ -3,7 +3,7 @@ import { constants, type Stats } from "node:fs";
 import { lstat, open, type FileHandle } from "node:fs/promises";
 import path from "node:path";
 import { pipeline } from "node:stream/promises";
-import { constants as zlib, createZstdDecompress } from "node:zlib";
+import { createZstdDecompress } from "node:zlib";
 import { DSH_HIDDEN_COMMANDS } from "../../dsh-bridge-plugin/commands.js";
 import { historyRecord } from "../../dsh-bridge-plugin/projection.js";
 import { isReparseOrSymlink } from "./native-files";
@@ -14,6 +14,8 @@ const MAX_LINE_CHARS = 4 * 1024 * 1024;
 const MAX_HISTORY_PAGE_CHARS = 1536 * 1024;
 const MAX_PENDING_COMMANDS = 128;
 const MAX_READ_MS = 5_000;
+const ZSTD_MAGIC = 0xfd2fb528;
+const ZSTD_DICTIONARY_ID_SIZES = [0, 1, 2, 4];
 
 async function readLocalDshLog<T>(
   directory: string,
@@ -50,6 +52,36 @@ async function readLocalDshLog<T>(
   }
 }
 
+type ReadSnapshot = (offset: number, length: number) => Promise<Buffer | null>;
+
+// RFC 8878 sections 3.1.1.1–2. DSH writes independently decodable frames. Node 22 can
+// lose concatenated frames and accept truncated ones, so establish their bounds first.
+async function zstdFrameEnd(read: ReadSnapshot, offset: number, signal: AbortSignal) {
+  const header = await read(offset, 5);
+  if (!header) return null;
+  const descriptor = header[4]!;
+  if (header.readUInt32LE() !== ZSTD_MAGIC || (descriptor & 0x08) !== 0)
+    throw new Error("dsh-history-invalid-zstd-frame");
+
+  const singleSegment = (descriptor & 0x20) !== 0;
+  const hasChecksum = (descriptor & 0x04) !== 0;
+  const contentSizeFlag = descriptor >>> 6;
+  const contentSizeLength = contentSizeFlag === 0 ? Number(singleSegment) : 1 << contentSizeFlag;
+  const dictionaryLength = ZSTD_DICTIONARY_ID_SIZES[descriptor & 0x03]!;
+  let blockOffset = offset + 5 + Number(!singleSegment) + dictionaryLength + contentSizeLength;
+  for (;;) {
+    signal.throwIfAborted();
+    const bytes = await read(blockOffset, 3);
+    if (!bytes) return null;
+    const block = bytes.readUIntLE(0, 3);
+    const blockType = (block >>> 1) & 0x03;
+    if (blockType === 3) throw new Error("dsh-history-invalid-zstd-block");
+    // A run-length block stores one byte, regardless of its decompressed size.
+    blockOffset += 3 + (blockType === 1 ? 1 : block >>> 3);
+    if ((block & 1) !== 0) return blockOffset + (hasChecksum ? 4 : 0);
+  }
+}
+
 async function decodeDshLog(
   handle: FileHandle,
   start: number,
@@ -60,10 +92,48 @@ async function decodeDshLog(
   let bytes = 0;
   let partial = "";
   const decoder = new TextDecoder("utf-8", { fatal: true });
-  // The read is bounded to the opened size even while DSH appends to it.
+  const signal = AbortSignal.timeout(MAX_READ_MS);
+  // Reuse one buffer and stay within the size captured before DSH can append.
+  const buffer = Buffer.allocUnsafe(64 * 1024);
+  let bufferStart = -1;
+  let bufferEnd = -1;
+  const readSnapshot: ReadSnapshot = async (offset, length) => {
+    if (offset + length > size) return null;
+    if (offset < bufferStart || offset + length > bufferEnd) {
+      const { bytesRead } = await handle.read(
+        buffer,
+        0,
+        Math.min(buffer.length, size - offset),
+        offset,
+      );
+      bufferStart = offset;
+      bufferEnd = offset + bytesRead;
+    }
+    return offset + length <= bufferEnd
+      ? buffer.subarray(offset - bufferStart, offset - bufferStart + length)
+      : null;
+  };
+
+  async function* compressedFrames() {
+    let offset = start;
+    while (offset < size) {
+      signal.throwIfAborted();
+      const end = await zstdFrameEnd(readSnapshot, offset, signal);
+      if (end === null || end > size) break;
+      // Input chunks can split a large frame, but must never span two frames.
+      while (offset < end) {
+        const data = await readSnapshot(offset, Math.min(buffer.length, end - offset));
+        if (!data) throw new Error("dsh-history-incomplete-frame");
+        yield Buffer.from(data);
+        offset += data.length;
+      }
+    }
+    if (complete && offset !== size) throw new Error("dsh-history-incomplete-frame");
+  }
+
   await pipeline(
-    handle.createReadStream({ start, end: size - 1, autoClose: false }),
-    createZstdDecompress({ finishFlush: complete ? zlib.ZSTD_e_end : zlib.ZSTD_e_continue }),
+    compressedFrames(),
+    createZstdDecompress(),
     async (chunks: AsyncIterable<Buffer>) => {
       for await (const chunk of chunks) {
         bytes += chunk.length;
@@ -77,7 +147,7 @@ async function decodeDshLog(
         }
       }
     },
-    { signal: AbortSignal.timeout(MAX_READ_MS) },
+    { signal },
   );
   if (complete && (partial || decoder.decode())) throw new Error("dsh-history-incomplete-line");
 }
@@ -142,7 +212,7 @@ export async function readLocalDshHistory(
       if (inPage) retain(record);
     };
 
-    // History can still project complete lines from an incomplete trailing compressed frame.
+    // An incomplete trailing frame does not hide the already saved history.
     await decodeDshLog(handle, 0, stat.size, readLine, false);
     if (!header) return null;
     for (const command of pending.values()) retain(command);

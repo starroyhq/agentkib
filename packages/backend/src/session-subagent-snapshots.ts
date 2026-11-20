@@ -141,6 +141,11 @@ export class SessionSubagentSnapshots {
     this.#trim();
   }
 
+  current(sessionId: string, live: Json): SubagentSnapshot | undefined {
+    const entry = this.#entries.get(sessionId);
+    return entry?.scope === scope(live) ? entry.value : undefined;
+  }
+
   async read(
     sessionId: string,
     live: Json,

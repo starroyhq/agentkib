@@ -1,4 +1,20 @@
-import { isSessionProviderAgent, type SessionProviderAgent } from "@agentkib/runtime-protocol";
+import {
+  CODEX_MENU_COMMANDS,
+  isSessionProviderAgent,
+  sessionProviderCapabilities,
+  sessionProviderDeclaration,
+  type HistoryReference,
+  type LiveSessionAgent,
+  type SessionActivity,
+  type SessionApprovalKind,
+  type SessionCommandMenu,
+  type SessionExecution,
+  type SessionFeedback,
+  type SessionProviderAgent,
+  type SessionProviderDeclaration,
+  type SessionQueueItemActions,
+} from "@agentkib/runtime-protocol";
+import { z } from "zod";
 
 export interface SessionQuery {
   operation: "capabilities" | "inspect";
@@ -12,6 +28,7 @@ interface SessionExecutor {
   query(request: SessionQuery): Promise<unknown>;
   control(request: Record<string, unknown>): Promise<unknown>;
   contextUsage(sessionId: string): Promise<unknown>;
+  queue?(request: Extract<SessionProviderRequest, { operation: "queue-list" }>): Promise<unknown>;
 }
 
 /** Each provider prepares its native execution environment within the original control request. */
@@ -32,6 +49,510 @@ type SessionProviders = {
   };
 } & { readonly antigravity: SessionExecutor & { readonly agent: "antigravity" } };
 
+type ReadScope = Omit<SessionQuery, "operation">;
+
+type ControlScope = {
+  sessionId: string;
+  requestId: string;
+  deviceId?: string;
+  runtimeBootId: string;
+  expectedRevision: number;
+  experimentalEnabled: boolean;
+};
+
+type MessageFields = {
+  text?: string;
+  input?: unknown[];
+  historyReferences?: HistoryReference[];
+  historyInputHash?: string;
+  resourceRefs?: { kind: string; id?: string; relativePath?: string }[];
+  commandAccess?: "all" | "session";
+};
+
+type SettingsFields = {
+  model?: string;
+  effort?: string | null;
+  serviceTier?: string | null;
+  mode?: string | null;
+  policyId?: string;
+  permissionMode?: string;
+  resetDefaults?: boolean;
+  expectedSettingsScope?: string;
+};
+
+type ControlFields = {
+  send: MessageFields;
+  steer: MessageFields & { turnId: string };
+  "queue-add": MessageFields;
+  "queue-update": { queuedSubmissionId: string; text: string };
+  "queue-delete": { queuedSubmissionId: string };
+  "queue-steer": { queuedSubmissionId: string };
+  "queue-reorder": { queuedSubmissionIds: string[] };
+  "queue-start": object;
+  "queue-pause": object;
+  "queue-resume": object;
+  stop: { turnId: string };
+  approve: {
+    turnId: string;
+    approvalId: string | number;
+    decision?: string;
+    nativeDecision?: unknown;
+  };
+  answer: { turnId: string; questionId: string | number; answers: Record<string, string[]> };
+  settings: SettingsFields;
+};
+
+export type SessionProviderControlRequest = {
+  [Operation in keyof ControlFields]: {
+    operation: Operation;
+  } & ControlScope &
+    ControlFields[Operation];
+}[keyof ControlFields];
+
+export type SessionProviderRequest =
+  | {
+      operation: "create";
+      workspaceId: string;
+      requestId: string;
+      deviceId: string;
+      name?: string;
+      prompt?: string;
+      model?: string;
+      effort?: string;
+      serviceTier?: string;
+      policyId?: string;
+      permissionMode?: string;
+      mode?: "plan";
+      agentPreset?: string;
+      verifyStartupModel?: true;
+    }
+  | ({ operation: "capabilities" } & ReadScope)
+  | ({ operation: "inspect" } & ReadScope)
+  | ({ operation: "live" } & ReadScope)
+  | ({ operation: "queue-list"; limit?: number } & ReadScope)
+  | { operation: "usage"; sessionId: string }
+  | { operation: "settings-state"; sessionId: string; includeHistorical?: boolean }
+  | ({ operation: "settings-prepare"; deviceId: string } & Omit<ControlScope, "requestId">)
+  | SessionProviderControlRequest;
+
+const resultScope = {
+  sessionId: z.string().optional(),
+  runtimeBootId: z.string().optional(),
+  reason: z.string().nullish(),
+};
+const feature = z.looseObject({ available: z.boolean(), reason: z.string().nullish() });
+const capabilities = z.looseObject({
+  ...resultScope,
+  sessionId: z.string(),
+  status: z.string(),
+  executionMode: z.string().optional(),
+  features: z.record(z.string(), feature),
+});
+const approval = z.looseObject({
+  requestId: z.union([z.string(), z.number()]),
+  method: z.string().optional(),
+  turnId: z.string().optional(),
+  supported: z.boolean().optional(),
+  availableDecisions: z.array(z.string()).optional(),
+  options: z
+    .array(
+      z.looseObject({
+        optionId: z.string(),
+        name: z.string(),
+        kind: z.string(),
+      }),
+    )
+    .optional(),
+  decisionOptions: z
+    .array(
+      z.looseObject({
+        id: z.string(),
+        label: z.string(),
+        decision: z.unknown(),
+        scope: z.enum(["once", "session", "persistent"]),
+      }),
+    )
+    .optional(),
+  presentation: z
+    .enum(["command", "files", "network", "permissions", "tool", "mcp", "unknown"])
+    .optional(),
+});
+const live = z.looseObject({
+  ...resultScope,
+  sessionId: z.string(),
+  status: z.string(),
+  revision: z.number(),
+  executionMode: z.string().optional(),
+  turnId: z.string().nullish(),
+  sendEnabled: z.boolean(),
+  stopEnabled: z.boolean().optional(),
+  approvals: z.array(approval),
+});
+const control = z.looseObject({
+  ...resultScope,
+  requestId: z.string().optional(),
+  accepted: z.boolean().optional(),
+  completed: z.boolean().optional(),
+  controlOutcome: z.enum(["accepted", "not-dispatched", "unknown"]).optional(),
+});
+const settings = z.looseObject({
+  ...resultScope,
+  available: z.boolean(),
+  revision: z.number().optional(),
+  writeScope: z.string().nullish(),
+  applicationStatus: z.enum(["pending", "confirmed", "unknown"]).optional(),
+});
+const inspect = z.looseObject({
+  ...resultScope,
+  status: z.string().optional(),
+  revision: z.number().optional(),
+});
+const usage = z.looseObject({
+  ...resultScope,
+  available: z.boolean(),
+  state: z.enum(["ready", "pending", "stale", "unavailable"]).optional(),
+  usedTokens: z.number().optional(),
+  totalTokens: z.number().optional(),
+  contextWindow: z.number().optional(),
+  percent: z.number().optional(),
+});
+const queueItem = z.looseObject({
+  id: z.string(),
+  hasAttachments: z.boolean().optional(),
+  status: z.enum(["pending", "claimed", "dispatched", "unknown"]).optional(),
+  actions: z
+    .partialRecord(
+      z.enum(["update", "delete", "steer"]),
+      z.object({ available: z.boolean(), reason: z.string().optional() }),
+    )
+    .optional(),
+});
+const queue = z.looseObject({
+  ...resultScope,
+  paused: z.boolean().optional(),
+  requiresResume: z.boolean().optional(),
+  data: z.array(queueItem),
+});
+const reportedCommands = z.array(
+  z.object({
+    name: z.string(),
+    description: z.string().optional(),
+    argumentHint: z.string().optional(),
+    aliases: z.array(z.string()).optional(),
+  }),
+);
+const queuedInput = z.array(z.object({ type: z.string(), text: z.string().optional() }));
+
+type ControlResult = z.infer<typeof control> & { feedback?: readonly SessionFeedback[] };
+type CapabilityResult = z.infer<typeof capabilities> & {
+  provider?: SessionProviderDeclaration;
+  execution: SessionExecution;
+  /** Internal catalog. The host must gate this and legacy commands with the same send grant. */
+  commandMenu?: SessionCommandMenu;
+  feedback?: readonly SessionFeedback[];
+};
+type LiveResult = z.infer<typeof live> & {
+  execution: SessionExecution;
+  feedback?: readonly SessionFeedback[];
+  activities?: readonly SessionActivity[];
+  approvals: (z.infer<typeof approval> & { presentation?: SessionApprovalKind })[];
+};
+
+type SessionProviderResults = {
+  [Operation in SessionProviderControlRequest["operation"]]: ControlResult;
+} & {
+  create: ControlResult;
+  capabilities: CapabilityResult;
+  inspect: z.infer<typeof inspect>;
+  live: LiveResult;
+  "queue-list": z.infer<typeof queue> & {
+    data: (z.infer<typeof queueItem> & { actions?: SessionQueueItemActions })[];
+  };
+  usage: z.infer<typeof usage>;
+  "settings-state": z.infer<typeof settings>;
+  "settings-prepare": z.infer<typeof settings>;
+};
+
+type SessionProviderOperation = keyof SessionProviderResults;
+export type SessionProviderResponse<
+  Operation extends SessionProviderOperation = SessionProviderOperation,
+> = {
+  [Key in Operation]: { operation: Key; result: SessionProviderResults[Key] };
+}[Operation];
+
+export type SessionProviderValidationContext = {
+  agent: LiveSessionAgent;
+  sessionId: string;
+  workspaceId?: string;
+  deviceId?: string;
+  runtimeBootId: string;
+  revision: number;
+};
+
+export interface TypedSessionProvider {
+  readonly agent: LiveSessionAgent;
+  request<Request extends SessionProviderRequest>(
+    request: Request,
+  ): Promise<SessionProviderResponse<Request["operation"]>>;
+  validateControl?(
+    request: SessionProviderControlRequest,
+    context: SessionProviderValidationContext,
+  ): void | Promise<void>;
+}
+
+function parseResult<T>(schema: z.ZodType<T>, value: unknown): T {
+  const parsed = schema.safeParse(value);
+  if (!parsed.success) throw new Error("invalid-provider-response");
+  return parsed.data;
+}
+
+/** Read ownership without a new native query or an inference about control grants. */
+export function projectSessionExecution(value: {
+  executionMode?: unknown;
+  executionLocation?: unknown;
+  ownerHandoff?: unknown;
+  status?: unknown;
+  reason?: unknown;
+  ownershipReason?: unknown;
+  bridgeCompatibility?: unknown;
+}): SessionExecution {
+  const { executionMode: mode, executionLocation: location } = value;
+  if (value.ownerHandoff === true || (mode === "codex-follower" && location === "external"))
+    return { owner: "native-app", observed: true, confidence: "live" };
+  if (location === "agentkib" || location === "terminal")
+    return { owner: location, observed: true, confidence: "live" };
+  if (mode === "dsh-follower" && value.reason === "dsh-native-turn-observed")
+    return { owner: "external", observed: true, confidence: "inferred" };
+  const ownershipReason = value.ownershipReason ?? value.reason;
+  if (
+    location === "external" ||
+    ownershipReason === "codex-owner-busy" ||
+    ownershipReason === "claude-owner-busy" ||
+    ownershipReason === "claude-background-session-running" ||
+    ownershipReason === "owner-opened-elsewhere"
+  ) {
+    const observed = mode === "dsh-follower" && value.bridgeCompatibility != null;
+    return { owner: "external", observed, confidence: observed ? "live" : "inferred" };
+  }
+  if (
+    location === undefined &&
+    value.status !== "unsupported" &&
+    value.status !== "outcome-unknown"
+  ) {
+    if (mode === "codex-follower")
+      return { owner: "native-app", observed: false, confidence: "inferred" };
+    if (mode === "claude-follower")
+      return { owner: "terminal", observed: false, confidence: "inferred" };
+  }
+  if (
+    location === undefined &&
+    value.status !== "unsupported" &&
+    (mode === "codex-managed" ||
+      mode === "claude-managed" ||
+      mode === "devin-print" ||
+      mode === "acp-managed" ||
+      mode === "managed-resume")
+  ) {
+    return { owner: "agentkib", observed: false, confidence: "inferred" };
+  }
+  return { owner: null, observed: false, confidence: "unknown" };
+}
+
+function projectCommandMenu(agent: LiveSessionAgent, raw: unknown): SessionCommandMenu | undefined {
+  if (agent === "codex")
+    return {
+      state: "ready",
+      entries: CODEX_MENU_COMMANDS.map((name) => ({
+        name,
+        run: { kind: "client", command: name },
+      })),
+    };
+  if (agent !== "claude-code" && agent !== "deepseek-harness") return undefined;
+  const parsed = reportedCommands.safeParse(raw);
+  // Claude uses an empty list both before the first worker report and for an empty catalog.
+  if (!parsed.success || (agent === "claude-code" && parsed.data.length === 0)) return undefined;
+  return {
+    state: "ready",
+    entries: parsed.data.map((entry) => ({
+      ...entry,
+      run:
+        agent === "claude-code" && ["model", "effort", "rename", "goal"].includes(entry.name)
+          ? { kind: "client", command: entry.name }
+          : { kind: "native" },
+    })),
+  };
+}
+
+function projectFeedback(reason: unknown): { feedback?: readonly SessionFeedback[] } {
+  // Provider reasons may contain human-readable native or filesystem errors.
+  // Only stable code-shaped values belong in this projection.
+  return typeof reason === "string" && /^[a-z][a-z0-9_-]{0,127}$/.test(reason)
+    ? { feedback: [{ code: reason }] }
+    : {};
+}
+
+function approvalKind(
+  agent: LiveSessionAgent,
+  value: z.infer<typeof approval>,
+): SessionApprovalKind {
+  switch (value.method) {
+    case "item/commandExecution/requestApproval": {
+      const context = value.requestContext;
+      return context &&
+        typeof context === "object" &&
+        "networkApprovalContext" in context &&
+        context.networkApprovalContext != null
+        ? "network"
+        : "command";
+    }
+    case "item/fileChange/requestApproval":
+      return "files";
+    case "item/permissions/requestApproval":
+      return "permissions";
+    case "mcpServer/elicitation/request":
+      return "mcp";
+    case "claude/can_use_tool":
+    case "dsh/approval":
+      return "tool";
+    default:
+      return agent === "antigravity" && value.toolCall != null ? "tool" : "unknown";
+  }
+}
+
+function projectLive(agent: LiveSessionAgent, raw: unknown): LiveResult {
+  const value = parseResult(live, raw);
+  return {
+    ...value,
+    execution: projectSessionExecution(value),
+    ...projectFeedback(value.reason),
+    approvals: value.approvals.map((entry) => ({
+      ...entry,
+      presentation: entry.presentation ?? approvalKind(agent, entry),
+    })),
+  };
+}
+
+function projectCapabilities(agent: LiveSessionAgent, raw: unknown): CapabilityResult {
+  const value = parseResult(capabilities, raw);
+  const provider = sessionProviderDeclaration(agent);
+  const commandMenu = projectCommandMenu(agent, value.commands);
+  return {
+    ...value,
+    execution: projectSessionExecution(value),
+    ...projectFeedback(value.reason),
+    ...(provider ? { provider } : {}),
+    ...(commandMenu ? { commandMenu } : {}),
+  };
+}
+
+function projectQueue(raw: unknown): SessionProviderResults["queue-list"] {
+  const value = parseResult(queue, raw);
+  return {
+    ...value,
+    data: value.data.map((item) => {
+      const input = queuedInput.safeParse(item.input);
+      const hasAttachments =
+        item.hasAttachments === true ||
+        (input.success &&
+          input.data.some(
+            (entry) => entry.type !== "text" || entry.text?.startsWith("User attached file "),
+          ));
+      if (!hasAttachments) return item;
+      // The host refuses text edits on queued input with attachments for every provider.
+      return {
+        ...item,
+        actions: {
+          ...item.actions,
+          update: { available: false, reason: "queue_attachments_edit_unsupported" },
+        },
+      };
+    }),
+  };
+}
+
+function projectControl(raw: unknown): ControlResult {
+  const value = parseResult(control, raw);
+  return { ...value, ...projectFeedback(value.reason) };
+}
+
+class SessionProviderAdapter implements TypedSessionProvider {
+  readonly #provider: SessionProviders[LiveSessionAgent];
+
+  constructor(provider: SessionProviders[LiveSessionAgent]) {
+    this.#provider = provider;
+  }
+
+  get agent(): LiveSessionAgent {
+    return this.#provider.agent;
+  }
+
+  request<Request extends SessionProviderRequest>(
+    request: Request,
+  ): Promise<SessionProviderResponse<Request["operation"]>>;
+  async request(request: SessionProviderRequest): Promise<SessionProviderResponse> {
+    const provider = this.#provider;
+    const { operation } = request;
+    switch (operation) {
+      case "create": {
+        if (!("create" in provider)) throw new Error("unsupported-session-provider-operation");
+        const { prompt, ...fields } = request;
+        const acceptsPrompt =
+          sessionProviderCapabilities(provider.agent)?.create.mode === "with-first-message";
+        return {
+          operation,
+          result: projectControl(
+            await provider.create({
+              ...fields,
+              operation: provider.createOperation,
+              ...(acceptsPrompt && prompt !== undefined ? { prompt } : {}),
+            }),
+          ),
+        };
+      }
+      case "capabilities":
+        return {
+          operation,
+          result: projectCapabilities(this.agent, await provider.query(request)),
+        };
+      case "inspect":
+        return { operation, result: parseResult(inspect, await provider.query(request)) };
+      case "live":
+        return {
+          operation,
+          result: projectLive(
+            this.agent,
+            await provider.live(request.sessionId, request.experimentalEnabled === true),
+          ),
+        };
+      case "usage":
+        return {
+          operation,
+          result: parseResult(usage, await provider.contextUsage(request.sessionId)),
+        };
+      case "queue-list":
+        if (!provider.queue) throw new Error("unsupported-session-provider-operation");
+        return { operation, result: projectQueue(await provider.queue(request)) };
+      case "settings-state":
+        if (!("settingsState" in provider))
+          throw new Error("unsupported-session-provider-operation");
+        return { operation, result: parseResult(settings, await provider.settingsState(request)) };
+      case "settings-prepare":
+        if (!("prepareSettings" in provider) || !provider.prepareSettings)
+          throw new Error("unsupported-session-provider-operation");
+        return {
+          operation,
+          result: parseResult(settings, await provider.prepareSettings(request)),
+        };
+      case "settings":
+        if (!("updateSettings" in provider))
+          throw new Error("unsupported-session-provider-operation");
+        return { operation, result: projectControl(await provider.updateSettings(request)) };
+      default:
+        return { operation, result: projectControl(await provider.control(request)) };
+    }
+  }
+}
+
 export class SessionProviderRegistry {
   readonly #providers: SessionProviders;
 
@@ -41,6 +562,11 @@ export class SessionProviderRegistry {
 
   get(agent: unknown) {
     return agent === "antigravity" ? this.#providers.antigravity : this.creatable(agent);
+  }
+
+  typed(agent: unknown): TypedSessionProvider | undefined {
+    const provider = this.get(agent);
+    return provider ? new SessionProviderAdapter(provider) : undefined;
   }
 
   creatable(agent: unknown) {

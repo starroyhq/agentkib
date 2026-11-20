@@ -45,6 +45,7 @@ import {
   isClaudeCommandRefusal,
   type ClaudeCommandEntry,
   type ConversationTurnMeta,
+  type SubagentCatalog,
 } from "@agentkib/runtime-protocol";
 import { terminationCodeOf } from "./claude-frame-policy";
 import {
@@ -76,6 +77,7 @@ import {
 } from "./usage-limit";
 import { createClaudeGoalReportEndpoint } from "./claude-goal-report";
 import { projectContextUsage } from "./context-usage";
+import { backgroundTaskActivities, subagentActivities } from "./session-activities";
 import {
   readClaudeTranscriptModel,
   readClaudeTranscriptObservation,
@@ -4561,7 +4563,9 @@ export class ClaudeManagedReadOwner {
     // Runner observations carry native ids internally; only the parent-scoped projection is public.
     delete live.subagents;
     // Background work lives in the worker: without one none runs, whatever was last stored.
-    live.backgroundTasks = runner?.hasWorker ? publicBackgroundTasks(live.backgroundTasks) : [];
+    const backgroundTasks = runner?.hasWorker ? live.backgroundTasks : [];
+    live.backgroundTasks = publicBackgroundTasks(backgroundTasks);
+    live.activities = this.#backgroundActivities(id, backgroundTasks);
     if (live.turnOrigin !== "self") live.turnOrigin = "host";
     live.sourceSessionId = record.nativeId;
     live.workspaceId = record.workspaceId;
@@ -4649,6 +4653,12 @@ export class ClaudeManagedReadOwner {
     return live;
   }
 
+  #backgroundActivities(id: string, tasks: unknown) {
+    return backgroundTaskActivities(tasks, id, this.bootId, () =>
+      this.store.sessions.identitySalt(),
+    );
+  }
+
   #streamLive(
     id: string,
     snapshot: ClaudeRunnerSnapshot,
@@ -4661,22 +4671,27 @@ export class ClaudeManagedReadOwner {
     const version = this.#version?.value ?? null;
     const permission = this.#permissionView(id, version, () => host.settings.permissionMode);
     const pendingStartup = this.#runners.get(id)?.startupPending;
+    const subagents: SubagentCatalog = snapshot.subagents?.length
+      ? projectSubagentObservations(
+          {
+            sessionId: id,
+            nativeId: record?.nativeId ?? "",
+            workspace: record?.workspace ?? "",
+            transcript: "",
+            agent: "claude-code",
+          },
+          this.store.sessions.identitySalt(),
+          snapshot.subagents,
+        )
+      : { version: 1, sessionId: id, agents: [], truncated: false, partial: true };
     return {
       ...snapshot,
       backgroundTasks: publicBackgroundTasks(snapshot.backgroundTasks),
-      subagents: snapshot.subagents?.length
-        ? projectSubagentObservations(
-            {
-              sessionId: id,
-              nativeId: record?.nativeId ?? "",
-              workspace: record?.workspace ?? "",
-              transcript: "",
-              agent: "claude-code",
-            },
-            this.store.sessions.identitySalt(),
-            snapshot.subagents,
-          )
-        : { version: 1, sessionId: id, agents: [], truncated: false, partial: true },
+      subagents,
+      activities: [
+        ...this.#backgroundActivities(id, snapshot.backgroundTasks),
+        ...subagentActivities(subagents),
+      ],
       ...(this.#starting.has(id) && (snapshot.status !== "outcome-unknown" || pendingStartup)
         ? {
             status: "starting",

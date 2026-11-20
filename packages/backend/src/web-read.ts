@@ -2669,8 +2669,9 @@ export class WebReadRequests {
     const result = await provider.query(request);
     if (
       request.operation !== "capabilities" ||
-      !this.#serialQueueTarget(request.sessionId) ||
-      !isObject(result)
+      !isObject(result) ||
+      result.status === "unsupported" ||
+      !this.#serialQueueTarget(request.sessionId)
     )
       return result;
     return {

@@ -374,8 +374,7 @@ describe("Codex conversation controls", () => {
             { id: "other", agent: "codex", workspace_id: "workspace" },
           ],
         };
-      if (params.operation === "settings-state" && params.sessionId === "session")
-        await preflight;
+      if (params.operation === "settings-state" && params.sessionId === "session") await preflight;
       if (params.operation === "settings" && params.sessionId === "session") return settings;
       if (params.operation === "send" && params.sessionId === "other") return send;
       return normal(raw);
@@ -389,7 +388,10 @@ describe("Codex conversation controls", () => {
       );
       expect((await client.api("live?sessionId=other")).response.status).toBe(200);
       const same = await client.api("codex/settings", { ...input, requestId: randomUUID() });
-      expect(same.data).toMatchObject({ error: "operation_busy", controlOutcome: "not-dispatched" });
+      expect(same.data).toMatchObject({
+        error: "operation_busy",
+        controlOutcome: "not-dispatched",
+      });
       expect(
         (
           await client.api("codex/settings", {
@@ -416,7 +418,11 @@ describe("Codex conversation controls", () => {
       });
       await vi.waitFor(() =>
         expect(runtime).toHaveBeenCalledWith(
-          expect.objectContaining({ operation: "send", sessionId: "other", requestId: sendRequestId }),
+          expect.objectContaining({
+            operation: "send",
+            sessionId: "other",
+            requestId: sendRequestId,
+          }),
         ),
       );
       finishSettings({ accepted: true, requestId, sessionId: "session", runtimeBootId: "runtime" });

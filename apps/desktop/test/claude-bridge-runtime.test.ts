@@ -422,13 +422,17 @@ describe.skipIf(process.platform !== "darwin")(
         status: "idle",
         sendEnabled: true,
       });
-      expect(processScans).toHaveLength(1);
-      expect(processScans[0]).toMatchObject({
-        timeout: 3000,
-        limit: 4 * 1024 * 1024,
-        strictOutput: true,
-        env: { TZ: "UTC", LC_ALL: "C", LANG: "C" },
-      });
+      // This first live read loads the catalog to scope access, which samples terminal activity
+      // for display. It also checks ownership separately before enabling send.
+      expect(processScans).toHaveLength(2);
+      for (const scan of processScans) {
+        expect(scan).toMatchObject({
+          timeout: 3000,
+          limit: 4 * 1024 * 1024,
+          strictOutput: true,
+          env: { TZ: "UTC", LC_ALL: "C", LANG: "C" },
+        });
+      }
       expect(
         readFileSync(join(directory, "unexpected-cli"), "utf8")
           .trim()

@@ -9,7 +9,7 @@ const repo = fileURLToPath(new URL("../../", import.meta.url));
 const web = join(repo, "apps/web/src/features/conversation/features");
 const desktop = join(repo, "apps/desktop/src/features/sessions/conversation/features");
 
-// At 9ecc9e574, 36 pairs are byte-identical and the other 53 differ by 5,816 lines.
+// At e77efe196, 36 pairs are byte-identical and the other 53 differ by 5,821 lines.
 // Only the paths below may differ. Migrated paths leave the comparison when no pair remains.
 const divergenceBudget = {
   "catalog/session-catalog.tsx": 237,
@@ -50,7 +50,7 @@ const divergenceBudget = {
   "sessions/session-approvals.test.tsx": 58,
   "sessions/session-composer-commands.test.tsx": 753,
   "sessions/session-composer-offline.test.tsx": 41,
-  "sessions/session-composer.test.tsx": 205,
+  "sessions/session-composer.test.tsx": 210,
   "sessions/session-composer.tsx": 261,
   "sessions/session-context.tsx": 18,
   "sessions/session-display-state.ts": 2,

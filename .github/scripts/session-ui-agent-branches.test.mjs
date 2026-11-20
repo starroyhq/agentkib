@@ -17,7 +17,7 @@ const roots = [
   "apps/desktop/src/features/sessions",
 ];
 
-// Baseline: origin/main at 9ecc9e574. One hit per source line, including usages in each copy.
+// Baseline: origin/main at e77efe196. One hit per source line, including usages in each copy.
 // This is a syntactic budget outside the Agent registry, independent of the 137 review items.
 const maximum = { files: 101, lines: 1188 };
 const agentIds = new Set(["claude-code", "codex", "deepseek-harness", "devin", "antigravity"]);

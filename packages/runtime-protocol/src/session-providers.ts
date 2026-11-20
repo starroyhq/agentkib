@@ -83,7 +83,10 @@ interface SessionProviderIntegrationCapabilities {
   /** The provider's native integration, even when no session is connected to it. */
   connection?: { kind: "native-app" | "terminal-bridge" | "plugin-bridge" | "acp" };
   permissionField?: "policyId" | "permissionMode";
-  activities?: SessionActivityCapabilities;
+  activities?: SessionActivityCapabilities & {
+    /** Activity kinds a connected terminal can observe independently of the managed runner. */
+    terminal?: SessionActivityCapabilities;
+  };
 }
 
 /**
@@ -289,6 +292,12 @@ const PROVIDERS = {
       kinds: ["background-task", "subagent"],
       canStopIndividually: false,
       canOpenSubagentHistory: true,
+      // The Mods getter lists retained subagents. Shell and Monitor tasks lack a complete API.
+      terminal: {
+        kinds: ["subagent"],
+        canStopIndividually: false,
+        canOpenSubagentHistory: false,
+      },
     },
   },
   "deepseek-harness": {

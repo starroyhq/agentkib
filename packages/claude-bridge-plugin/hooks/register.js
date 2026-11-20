@@ -5,6 +5,7 @@ import {
   claudeBridgeCompatibility,
   claudeBridgePluginCompatibility,
 } from "./compatibility.js";
+import { safeTerminalSubagentTitle } from "./terminal-subagents.js";
 
 const CLI_VERSION = CLAUDE_BRIDGE_COMPATIBILITY.minimumCliVersion;
 const PLUGIN_VERSION = CLAUDE_BRIDGE_COMPATIBILITY.pluginVersion;
@@ -47,6 +48,16 @@ const AUTO_RETRY_REASONS = [
 // it makes one gets its worker tools here, under this plugin's name, and its reports as queued
 // messages. A Runtime that does not name it hears nothing of it.
 const LEAD_FEATURE = "lead-tools";
+const TERMINAL_SUBAGENTS_FEATURE = "terminal-subagents";
+const MAX_TERMINAL_SUBAGENTS = 16;
+const SUBAGENT_STATES = new Map([
+  ["pending", "starting"],
+  ["running", "running"],
+  ["completed", "completed"],
+  ["failed", "failed"],
+  ["killed", "stopped"],
+]);
+const FINISHED_SUBAGENTS = new Set(["completed", "failed", "killed"]);
 // The engine takes one unmatched hook per event, so each tool AgentKib may give is served by a
 // hook of its own; a tool of another name is not registered.
 const LEAD_TOOL_PREFIX = "mcp__agentkib-bridge__";
@@ -231,6 +242,7 @@ export function initialState() {
     identity: null,
     instanceId: crypto.randomUUID(),
     connection: null,
+    terminalSubagents: null,
     connectionFailure: null,
     connectionStatusReason: null,
     socketPath: null,
@@ -761,6 +773,7 @@ function invalidate(state, reason) {
   state.streamTruncated = false;
   state.activeTools.clear();
   state.waits.clear();
+  state.terminalSubagents = null;
   state.revision += 1;
   if (state.connection && state.identity && state.lastSnapshot) {
     const revoked = {
@@ -772,6 +785,7 @@ function invalidate(state, reason) {
       waiting: null,
       messages: [],
       toolItems: [],
+      ...(state.lastSnapshot.terminalSubagents !== undefined ? { terminalSubagents: [] } : {}),
       usage: null,
       outbox: [],
       capabilities: {
@@ -883,6 +897,90 @@ function connectionFrom(value) {
   return value;
 }
 
+function publishTerminalSubagents(state, observation, rows) {
+  if (JSON.stringify(rows) !== JSON.stringify(observation.rows)) {
+    observation.rows = rows;
+    state.dirty = true;
+  }
+}
+
+async function refreshTerminalSubagents($, state) {
+  const connection = state.connection;
+  const nativeId = state.identity?.nativeId;
+  if (
+    !connection?.features?.includes(TERMINAL_SUBAGENTS_FEATURE) ||
+    !nativeId ||
+    state.needsReconnect
+  )
+    return;
+  if (state.terminalSubagents?.connection !== connection)
+    state.terminalSubagents = {
+      connection,
+      nativeId,
+      ids: new Map(),
+      rows: undefined,
+      pending: null,
+    };
+  const observation = state.terminalSubagents;
+  if (observation.pending) {
+    // A stuck optional host read must neither block bridge snapshots nor keep old data live.
+    observation.pending.expired = true;
+    publishTerminalSubagents(state, observation, undefined);
+    return;
+  }
+  const read = { expired: false };
+  observation.pending = read;
+  const current = () =>
+    !read.expired &&
+    state.terminalSubagents === observation &&
+    state.connection === connection &&
+    !state.needsReconnect;
+  try {
+    const before = await $.session.id();
+    if (!current()) return;
+    const agents = before === nativeId ? await $.agent.list() : undefined;
+    if (!current()) return;
+    const sameSession = Array.isArray(agents) && (await $.session.id()) === nativeId;
+    if (!current()) return;
+    if (!sameSession) {
+      publishTerminalSubagents(state, observation, undefined);
+      return;
+    }
+    const byId = new Map();
+    const nativeIds = [];
+    for (const agent of agents) {
+      if (typeof agent?.id !== "string" || agent.id.length === 0 || agent.id.length > 256) continue;
+      nativeIds.push(agent.id);
+      if (agent.teammateId == null && agent.kind !== "in_process_teammate")
+        byId.set(agent.id, agent);
+    }
+    const selected = [...byId.values()]
+      .sort(
+        (a, b) =>
+          Number(FINISHED_SUBAGENTS.has(a.status)) - Number(FINISHED_SUBAGENTS.has(b.status)),
+      )
+      .slice(0, MAX_TERMINAL_SUBAGENTS);
+    const ids = new Map();
+    const rows = selected.map((agent) => {
+      const id = observation.ids.get(agent.id) ?? crypto.randomUUID();
+      ids.set(agent.id, id);
+      const title = safeTerminalSubagentTitle(agent.description);
+      return {
+        id,
+        title: nativeIds.some((nativeAgentId) => title.includes(nativeAgentId)) ? "" : title,
+        status: SUBAGENT_STATES.get(agent.status) ?? "unknown",
+      };
+    });
+    observation.ids = ids;
+    publishTerminalSubagents(state, observation, rows);
+  } catch {
+    // The getter is optional and its errors may carry native details.
+    if (current()) publishTerminalSubagents(state, observation, undefined);
+  } finally {
+    observation.pending = null;
+  }
+}
+
 async function snapshot($, state) {
   const observed = await identity($, state);
   const rows = await $.session.messages();
@@ -898,6 +996,11 @@ async function snapshot($, state) {
   const numeric = (v) => (typeof v === "number" && Number.isFinite(v) ? v : null);
   const waiting = waitingState(state);
   const offersPicker = state.connection?.features?.includes("open-model-picker") === true;
+  const observation = state.terminalSubagents;
+  const terminalSubagents =
+    observation?.connection === state.connection && observation?.nativeId === observed.nativeId
+      ? observation.rows
+      : undefined;
   if (offersPicker && state.modelPickerSupported === undefined)
     state.modelPickerSupported = await hasNativeModelPicker($);
   const result = {
@@ -913,6 +1016,7 @@ async function snapshot($, state) {
     waiting,
     messages: visibleMessages(rows),
     toolItems: state.currentTurnId ? visibleTools(rows) : [],
+    ...(terminalSubagents !== undefined ? { terminalSubagents } : {}),
     streamText: state.streamText,
     model,
     ...(offersPicker ? { modelPickerOpen: state.modelPicker !== null } : {}),
@@ -1654,6 +1758,7 @@ async function connectOnce($, state, ticket, generation) {
 
 async function adopt($, state, observed, response) {
   state.connection = connectionFrom(response);
+  state.terminalSubagents = null;
   state.connectionStatusReason = null;
   state.modelPickerSupported = undefined;
   state.leadUnavailable = null;
@@ -1743,6 +1848,7 @@ async function reconnect($, state) {
   state.needsReconnect = true;
   // Once a lease needs recovery, no event may reuse it while probes/backoff run.
   state.connection = null;
+  state.terminalSubagents = null;
   try {
     await reconnectOnce($, state);
     if (state.generation === generation && !state.closed) {
@@ -2114,6 +2220,9 @@ function startBridge($, state) {
   $.clock.every(250, () => pump($, state));
   // A native submit waits for the turn ending in its hook, so dispatch outside that hook.
   $.clock.every(250, () => dispatchOutbox($, state));
+  $.clock.every(1_000, () => {
+    void refreshTerminalSubagents($, state);
+  });
   const generation = state.generation;
   // The original terminal can continue even while its saved connection is recovering.
   void reconnect($, state)

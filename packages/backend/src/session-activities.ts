@@ -1,5 +1,9 @@
 import { createHmac } from "node:crypto";
-import type { SessionActivity, SubagentCatalog } from "@agentkib/runtime-protocol";
+import type {
+  ClaudeBridgeTerminalSubagent,
+  SessionActivity,
+  SubagentCatalog,
+} from "@agentkib/runtime-protocol";
 import { subagentObservationId } from "./session-subagents";
 
 type ClaudeActivitySource = {
@@ -90,6 +94,22 @@ export function prepareClaudeActivities(
   const tasks = claudeTasks(source);
   tasksByState.set(state, tasks);
   state.activities = claudeActivities(tasks, subagents);
+}
+
+/** Terminal observations are scoped to the live binding and have no history or control ID. */
+export function terminalSubagentActivities(
+  subagents: readonly ClaudeBridgeTerminalSubagent[] | undefined,
+  sessionId: string,
+  leaseId: string,
+): SessionActivity[] {
+  return (subagents ?? []).map(({ id, title, status }) => ({
+    id: createHmac("sha256", leaseId)
+      .update(JSON.stringify(["terminal-subagent", sessionId, id]))
+      .digest("hex"),
+    kind: "subagent",
+    title,
+    status,
+  }));
 }
 
 export function withSessionActivities(

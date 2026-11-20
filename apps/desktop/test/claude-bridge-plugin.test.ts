@@ -331,6 +331,109 @@ async function fixture(
   };
 }
 
+describe("Claude Code terminal subagents", () => {
+  async function observed(f: Awaited<ReturnType<typeof fixture>>) {
+    await f.tick();
+    await f.flush();
+    return f.snapshots().at(-1)?.terminalSubagents;
+  }
+
+  it("does not ask the host for subagents when the Runtime does not opt in", async () => {
+    const list = vi.fn(async () => []);
+    const f = await fixture({ configure: (api) => (api.agent = { list }) });
+    expect(await observed(f)).toBeUndefined();
+    expect(list).not.toHaveBeenCalled();
+  });
+
+  it("reports native descriptions and scoped IDs without copying native task data", async () => {
+    const nativeIds = Array.from({ length: 8 }, () => randomUUID());
+    const agents = [
+      { id: nativeIds[0], description: "检查测试覆盖", status: "pending" },
+      { id: nativeIds[1], description: "Review permissions", status: "waiting" },
+      { id: nativeIds[2], description: "sleep 30", status: "completed" },
+      { id: nativeIds[3], description: "Inspect /some/private/file", status: "failed" },
+      { id: nativeIds[4], description: `Task ${nativeIds[0]}`, status: "killed" },
+      { id: nativeIds[5], description: "Peer work", status: "running", teammateId: "peer-id" },
+      { id: nativeIds[6], description: "'git status'", status: "completed" },
+      { id: nativeIds[7], description: "Touch record", status: "completed" },
+    ].map((agent) => ({ ...agent, toolUseId: "synthetic-native-tool", cwd: "/some/private/root" }));
+    const f = await fixture({
+      features: ["terminal-subagents"],
+      configure: (api) => (api.agent = { list: async () => agents }),
+    });
+    await expect
+      .poll(() => observed(f))
+      .toEqual([
+        { id: expect.any(String), title: "检查测试覆盖", status: "starting" },
+        { id: expect.any(String), title: "Review permissions", status: "unknown" },
+        { id: expect.any(String), title: "", status: "completed" },
+        { id: expect.any(String), title: "", status: "failed" },
+        { id: expect.any(String), title: "", status: "stopped" },
+      { id: expect.any(String), title: "", status: "completed" },
+      { id: expect.any(String), title: "", status: "completed" },
+      ]);
+    const initial = f.snapshots().at(-1).terminalSubagents;
+    const serialized = JSON.stringify(initial);
+    for (const nativeValue of [
+      ...nativeIds,
+      "synthetic-native-tool",
+      "/some/private",
+      "sleep 30",
+      "peer-id",
+    ])
+      expect(serialized).not.toContain(nativeValue);
+    const firstId = initial[0].id;
+    agents[0].status = "running";
+    await expect
+      .poll(async () => (await observed(f))?.[0])
+      .toEqual({
+        id: firstId,
+        title: "检查测试覆盖",
+        status: "running",
+      });
+    agents.splice(0);
+    await expect.poll(() => observed(f)).toEqual([]);
+    expect(f.dispatches).toBe(0);
+    expect(f.stops).toBe(0);
+  });
+
+  it("clears unsupported observations without disabling the bridge", async () => {
+    let rows: unknown = [{ id: randomUUID(), description: "Review changes", status: "idle" }];
+    const f = await fixture({
+      features: ["terminal-subagents"],
+      configure: (api) => (api.agent = { list: async () => rows }),
+    });
+    await expect.poll(async () => (await observed(f))?.[0]?.status).toBe("unknown");
+    rows = { invalid: "native shape changed" };
+    await expect.poll(() => observed(f)).toBeUndefined();
+    expect((await f.run("command.run", { command: "agentkib-status" })).text).toContain(
+      "connected",
+    );
+  });
+
+  it("clears a stuck native read and discards its late result after session.end", async () => {
+    const late = deferred<Value[]>();
+    const list = vi
+      .fn()
+      .mockResolvedValueOnce([
+        { id: randomUUID(), description: "Review changes", status: "running" },
+      ])
+      .mockImplementation(() => late.promise);
+    const f = await fixture({
+      features: ["terminal-subagents"],
+      configure: (api) => (api.agent = { list }),
+    });
+    await expect.poll(async () => (await observed(f))?.length).toBe(1);
+    await expect.poll(() => observed(f)).toBeUndefined();
+    expect(list).toHaveBeenCalledTimes(2);
+    await f.run("session.end", { reason: "exit" });
+    late.resolve([{ id: randomUUID(), description: "Late child", status: "running" }]);
+    await f.tick();
+    expect(f.snapshots().at(-1)?.status).toBe("disconnected");
+    expect(JSON.stringify(f.snapshots())).not.toContain("Late child");
+  });
+});
+
 describe("Claude Code native session plugin as a Project Agent", () => {
   /** A Runtime that names `lead-tools`, with this lead info in its command replies. */
   async function leading(options: { feature?: boolean; register?: boolean } = {}) {

@@ -400,6 +400,98 @@ describe.skipIf(process.platform === "win32")("native Claude borrowed-host broke
       expect.stringContaining("turn ended: cancelled"),
     );
   });
+
+  it("projects read-only terminal subagents with stable per-lease IDs and clears stale observations", async () => {
+    const f = await fixture();
+    expect(f.connection.features).toContain("terminal-subagents");
+    expect(f.live()).not.toHaveProperty("activities");
+
+    const subagent = { id: randomUUID(), title: "Check regression tests", status: "running" };
+    const observation = { ...f.snapshot, terminalSubagents: [subagent] };
+    expect((await f.events({ type: "snapshot", snapshot: observation })).status).toBe(200);
+    const activity = {
+      id: expect.stringMatching(/^[a-f0-9]{64}$/),
+      title: subagent.title,
+      kind: "subagent",
+      status: "running",
+    };
+    expect(f.live().activities).toEqual([activity]);
+    const activities = f.live().activities;
+    expect(JSON.stringify(activities)).not.toContain(subagent.id);
+    expect(f.publish).toHaveBeenLastCalledWith(
+      f.target.sessionId,
+      "state",
+      expect.objectContaining({ activities }),
+      expect.objectContaining({ activities }),
+    );
+
+    f.invalidate();
+    expect(f.live().activities).toEqual([]);
+    f.restore();
+    expect((await f.events({ type: "gap", revision: 1 })).status).toBe(200);
+    expect(f.live().activities).toEqual([]);
+    expect(f.publish).toHaveBeenCalledWith(
+      f.target.sessionId,
+      "state",
+      expect.objectContaining({ activities: [] }),
+      expect.objectContaining({ activities: [] }),
+    );
+    expect(
+      (await f.events({ type: "snapshot", snapshot: { ...observation, revision: 1 } })).status,
+    ).toBe(200);
+    expect(f.live().activities).toEqual(activities);
+
+    expect(
+      (await f.events({ type: "snapshot", snapshot: { ...f.snapshot, revision: 2 } })).status,
+    ).toBe(200);
+    expect(f.live().activities).toEqual([]);
+    await f.reconnect();
+    expect(f.connection.features).toContain("terminal-subagents");
+    expect(f.live()).not.toHaveProperty("activities");
+    expect((await f.events({ type: "snapshot", snapshot: observation })).status).toBe(200);
+    expect(f.live().activities).toEqual([activity]);
+    expect(f.live().activities).not.toEqual(activities);
+  });
+
+  it.each([
+    ["a native ID", [{ id: "native-agent-id", title: "Review", status: "running" }]],
+    ["an oversized title", [{ id: randomUUID(), title: "a".repeat(121), status: "running" }]],
+    ["an unsupported status", [{ id: randomUUID(), title: "Review", status: "aborted" }]],
+    [
+      "too many rows",
+      Array.from({ length: 17 }, () => ({ id: randomUUID(), title: "Review", status: "running" })),
+    ],
+  ])("rejects terminal subagent snapshots with %s", async (_case, terminalSubagents) => {
+    const f = await fixture();
+    const snapshot = { ...f.snapshot, terminalSubagents };
+    expect((await f.events({ type: "snapshot", snapshot })).status).toBe(409);
+    expect(f.live()).not.toHaveProperty("activities");
+  });
+
+  it("removes unsafe titles and ignores unrecognized fields in terminal subagent reports", async () => {
+    const f = await fixture();
+    const terminalSubagents = [
+      {
+        id: randomUUID(),
+        title: "Review /tmp/private/project.txt",
+        status: "running",
+        childId: "unverified-child-id",
+        toolUseId: "native-tool-id",
+      },
+    ];
+    expect(
+      (await f.events({ type: "snapshot", snapshot: { ...f.snapshot, terminalSubagents } })).status,
+    ).toBe(200);
+    expect(f.live().activities).toEqual([
+      {
+        id: expect.stringMatching(/^[a-f0-9]{64}$/),
+        title: "",
+        kind: "subagent",
+        status: "running",
+      },
+    ]);
+  });
+
   it("reads a verified permission marker independently of native usage and never makes auto writable", async () => {
     const observed = vi.fn(() => ({ usage: { available: false } }));
     const permission = vi.fn((): ClaudeObservedPermissionMode | null => "auto");
@@ -2469,7 +2561,11 @@ describe.skipIf(process.platform === "win32")(
     it("names the feature and gives a lead its tools, its reports and its calls", async () => {
       const l = terminalLead();
       const f = await fixture(1000, l.lead);
-      expect(f.connection.features).toEqual(["lead-tools", "open-model-picker"]);
+      expect(f.connection.features).toEqual([
+        "lead-tools",
+        "open-model-picker",
+        "terminal-subagents",
+      ]);
       expect(f.bridge.leadCapable(f.target.sessionId)).toBe(false);
       expect((await leadPoll(f)).body).toEqual({ commands: [], lead: null });
       expect(f.bridge.leadCapable(f.target.sessionId)).toBe(true);
@@ -2549,7 +2645,7 @@ describe.skipIf(process.platform === "win32")(
 
     it("offers nothing of it without a lead hook, nor to a plugin that did not ask", async () => {
       const plain = await fixture();
-      expect(plain.connection.features).toEqual(["open-model-picker"]);
+      expect(plain.connection.features).toEqual(["open-model-picker", "terminal-subagents"]);
       expect((await leadPoll(plain)).body).toEqual({ commands: [] });
       expect(plain.bridge.leadCapable(plain.target.sessionId)).toBe(false);
       const l = terminalLead();

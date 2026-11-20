@@ -4,6 +4,7 @@ import {
   claudeBridgePluginCompatibility,
   missingClaudeBridgeCapabilities,
 } from "@agentkib/runtime-protocol";
+import { safeTerminalSubagentTitle } from "../../claude-bridge-plugin/hooks/terminal-subagents.js";
 
 // What the terminal plugin sends. A plugin of another AgentKib release connects too, so a field
 // this Runtime does not know is dropped rather than failing the message; values it reads stay exact.
@@ -61,6 +62,17 @@ export const bridgeSnapshotSchema = bridgeIdentitySchema.extend({
   modelPickerOpen: z.boolean().optional(),
   compacting: z.boolean().optional(),
   compactStartedAt: z.number().int().min(0).max(8_640_000_000_000_000).optional(),
+  terminalSubagents: z
+    .array(
+      z.object({
+        id,
+        title: z.string().max(120).transform(safeTerminalSubagentTitle),
+        status: z.enum(["starting", "running", "completed", "failed", "stopped", "unknown"]),
+      }),
+    )
+    .max(16)
+    .refine((rows) => new Set(rows.map((row) => row.id)).size === rows.length)
+    .optional(),
   usage: z
     .object({
       tokens: revision.nullable(),

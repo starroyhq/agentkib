@@ -5,10 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ContextUsage } from "@agentkib/web-client";
 import { ContextUsageGauge } from "@/features/conversation/features/sessions/context-usage";
 import { useSession } from "@/features/conversation/features/sessions/session-context";
-import {
-  contextUsageCopy,
-  contextUsageCopyForSurface,
-} from "@/features/conversation/features/sessions/context-usage-copy";
+import { contextUsageCopy, contextUsageCopyForSurface } from "@agentkib/session-ui";
 import { codexCopy } from "@/features/conversation/features/sessions/codex-copy";
 import type { Locale } from "@/features/conversation/i18n";
 

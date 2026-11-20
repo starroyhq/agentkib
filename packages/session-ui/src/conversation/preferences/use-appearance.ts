@@ -1,7 +1,12 @@
 import { useEffect } from "react";
-import type { SupportedLocale as Locale } from "@/core/types";
+import type { InteractionLocale } from "../../interaction-model";
 
-export function useAppearance(locale: Locale, theme: string, accent = "blue", enabled = true) {
+export function useAppearance(
+  locale: InteractionLocale,
+  theme: string,
+  accent = "blue",
+  enabled = true,
+) {
   useEffect(() => {
     if (!enabled) return;
     const root = document.documentElement;

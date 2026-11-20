@@ -1,6 +1,6 @@
-import { continuationResources } from "./continuation-draft";
-import { takeNewSessionDraft } from "./new-session-draft";
 import {
+  continuationResources,
+  takeNewSessionDraft,
   agentKibCommand,
   agentKibPanel,
   existingSessionComposerCapabilities,
@@ -22,11 +22,13 @@ import {
   parseGoalDraft,
   useSlashCommandMenu,
   type AgentKibPanel,
+  runningSendAction,
+  useSendWhileRunning,
+  validHistoryMessage,
+  claudeConnectionCopy,
 } from "@agentkib/session-ui";
 import { SessionReadOnly } from "./session-read-only";
-import { runningSendAction, useSendWhileRunning } from "../preferences/send-while-running";
 import { HistoryReferenceChips } from "../history/history-search-controls";
-import { validHistoryMessage } from "../history/history-reference-model";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { AlertTriangle, CornerDownRight, ListPlus, MoreHorizontal, X } from "lucide-react";
@@ -48,7 +50,7 @@ import { ContextUsageGauge } from "./context-usage";
 import { sessionDisplayState } from "./session-display-state";
 import { composerLayoutCopy } from "./composer-layout-copy";
 import { codexCopy, codexReason } from "./codex-copy";
-import { MAX_MESSAGE_LENGTH } from "./session-model";
+import { MAX_MESSAGE_LENGTH } from "@agentkib/conversation-state";
 import {
   CodexComposerControls,
   type CodexResource,
@@ -59,7 +61,6 @@ import { useSessionPanels } from "./session-panels";
 import { PermissionModeNotice } from "./permission-mode-notice";
 import { ManagedTurnNotice } from "./managed-turn-notice";
 import { DevinTurnNotice } from "./devin-turn-notice";
-import { claudeConnectionCopy } from "./claude-connection-copy";
 import { SessionSendQueue } from "./dsh-queue";
 
 // The desktop app acts for the person at this computer, as the terminal does.

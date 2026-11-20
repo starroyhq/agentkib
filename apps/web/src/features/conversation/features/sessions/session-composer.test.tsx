@@ -5,9 +5,12 @@ import { useState, type ReactNode } from "react";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { UploadedAttachment } from "@agentkib/web-client";
-import { sessionContinuationCopy } from "@agentkib/session-ui";
+import {
+  sessionContinuationCopy,
+  offerNewSessionDraft,
+  takeNewSessionDraft,
+} from "@agentkib/session-ui";
 import { SessionComposer } from "./session-composer";
-import { offerNewSessionDraft, takeNewSessionDraft } from "./new-session-draft";
 import { composerLayoutCopy } from "./composer-layout-copy";
 import { codexCopy, codexReason } from "./codex-copy";
 import type { CodexResource } from "./codex-session-controls";

@@ -15,8 +15,27 @@ import {
   type ControlKind,
   type ControlNotice,
   type NotDispatchedReason,
+  type ContinuationComposerDraft,
+  type ContinuationDraft,
+  claudeConnectionReason,
+  historyMessageText,
+  historyReferenceKey,
+  referencesWithinBudget,
+  forgetPending,
+  pendingScope,
+  readPending,
+  rememberPending,
+  type PendingControl,
+  blockedWhileCompacting,
+  contextUsageCopy,
+  retryBusyRead,
+  capabilityAccessBinding,
+  useSessionCapabilities,
+  interactionCopy,
+  catalogCopy,
+  unavailableReasonText,
+  useAppearance,
 } from "@agentkib/session-ui";
-import type { ContinuationComposerDraft, ContinuationDraft } from "./continuation-draft";
 import {
   mountSessionImages,
   acceptSessionImageAccess,
@@ -28,12 +47,6 @@ import {
   restoreSessionImages,
   noteSessionImageBoot,
 } from "./session-image-scope";
-import { claudeConnectionReason } from "./claude-connection-copy";
-import {
-  historyMessageText,
-  historyReferenceKey,
-  referencesWithinBudget,
-} from "../history/history-reference-model";
 import type { ResolvedHistoryReference } from "@agentkib/web-client";
 import {
   createConversationStore,
@@ -41,19 +54,20 @@ import {
   mergeConversationItems,
   oldestIncompleteHistoryTurn,
   type SessionStreamEvent,
+  mergeLatestPage,
+  mergeOrderedPersistedHistory,
+  removePersistedOverlays,
+  mergeNativeCoverage,
+  completeHistoryRead,
+  hasAppliedNewerHistory,
+  type NativeCoverage,
+  createHistoryPagination,
+  historyPaginationCursor,
+  recordLatestHistoryPage,
+  publishSessionInvalidation,
+  subscribeSessionInvalidation,
 } from "@agentkib/conversation-state";
-import {
-  forgetPending,
-  pendingScope,
-  readPending,
-  rememberPending,
-  type PendingControl,
-} from "./pending-controls";
-import { blockedWhileCompacting } from "./session-activity";
-import { contextUsageCopy } from "./context-usage-copy";
-import { retryBusyRead } from "./session-read-retry";
 import { useSessionLive, type WarmSessionNavigation } from "./use-session-live";
-import { capabilityAccessBinding, useSessionCapabilities } from "./use-session-capabilities";
 import {
   useCallback,
   useEffect,
@@ -85,29 +99,10 @@ import {
   type UserQuestionRequest,
 } from "@agentkib/web-client";
 import { displaySessionTitle, isSessionListed } from "@agentkib/session-catalog";
-import { interactionCopy } from "../interactions/interaction-copy";
 import type { CatalogWorkspace } from "../catalog/session-catalog";
-import { catalogCopy } from "../catalog/catalog-copy";
 import { conversationWords } from "@/core/i18n";
 import type { SupportedLocale as Locale } from "@/core/types";
 import { useDesktopConversationWindow } from "../../../DesktopConversationWindow";
-import { unavailableReasonText } from "../../live-status";
-import {
-  mergeLatestPage,
-  mergeOrderedPersistedHistory,
-  removePersistedOverlays,
-  mergeNativeCoverage,
-  completeHistoryRead,
-  hasAppliedNewerHistory,
-  type NativeCoverage,
-} from "./session-model";
-import {
-  createHistoryPagination,
-  historyPaginationCursor,
-  recordLatestHistoryPage,
-} from "./history-pagination";
-import { useAppearance } from "../preferences/use-appearance";
-import { publishSessionInvalidation, subscribeSessionInvalidation } from "./session-events";
 type ForkNavigation = {
   sourceId: string;
   generation: number;

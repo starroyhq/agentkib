@@ -1,8 +1,7 @@
-import { continuationResources } from "@/features/conversation/features/sessions/continuation-draft";
+import { continuationResources, composerAddCopy } from "@agentkib/session-ui";
 import { useState } from "react";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { composerAddCopy } from "@agentkib/session-ui";
 import { type CodexContextOptions, type CodexContextResource } from "@agentkib/web-client";
 import { CodexComposerControls } from "@/features/conversation/features/sessions/codex-session-controls";
 import { useSession } from "@/features/conversation/features/sessions/session-context";

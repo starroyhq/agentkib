@@ -2,13 +2,9 @@ import type { ReactNode } from "react";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "@agentkib/web-client";
-import {
-  pendingScope,
-  rememberPending,
-  readPending,
-} from "@/features/conversation/features/sessions/pending-controls";
+import { pendingScope, rememberPending, readPending } from "@agentkib/session-ui";
 import { SessionReceiptRecovery } from "@/features/conversation/features/sessions/session-receipt-recovery";
-import { publishSessionInvalidation } from "@/features/conversation/features/sessions/session-events";
+import { publishSessionInvalidation } from "@agentkib/conversation-state";
 import type { WebClient } from "@agentkib/web-client";
 
 const navigate = vi.fn();

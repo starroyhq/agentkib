@@ -2,6 +2,8 @@ import {
   PendingReviewLane,
   sessionContinuationListState,
   SessionContinuationDot,
+  interactionCopy,
+  catalogCopy,
 } from "@agentkib/session-ui";
 import { NativeSelect } from "@/components/ui/native-select";
 import { Input } from "@/components/ui/input";
@@ -27,8 +29,6 @@ import {
 import type { ConversationSessionSummary } from "@agentkib/web-client";
 import { conversationWords } from "@/core/i18n";
 import type { SupportedLocale as Locale } from "@/core/types";
-import { catalogCopy } from "./catalog-copy";
-import { interactionCopy } from "../interactions/interaction-copy";
 
 export interface CatalogWorkspace {
   id: string;

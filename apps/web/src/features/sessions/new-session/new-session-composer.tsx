@@ -42,6 +42,10 @@ import {
   slashCommandCopy,
   useNewSessionAdd,
   useSlashCommandMenu,
+  offerNewSessionDraft,
+  readNewSessionTarget,
+  rememberNewSessionTarget,
+  type NewSessionDraft,
 } from "@agentkib/session-ui";
 import { Button } from "@/features/conversation/components/ui/button";
 import { Dialog, DialogContent, DialogTitle } from "@/features/conversation/components/ui/dialog";
@@ -60,13 +64,7 @@ import {
   codexReason,
 } from "@/features/conversation/features/sessions/codex-copy";
 import { composerLayoutCopy } from "@/features/conversation/features/sessions/composer-layout-copy";
-import { MAX_MESSAGE_LENGTH } from "@/features/conversation/features/sessions/session-model";
-import {
-  offerNewSessionDraft,
-  readNewSessionTarget,
-  rememberNewSessionTarget,
-  type NewSessionDraft,
-} from "@/features/conversation/features/sessions/new-session-draft";
+import { MAX_MESSAGE_LENGTH } from "@agentkib/conversation-state";
 import type { Locale } from "@/features/conversation/i18n";
 import { failureOf, useNewSession } from "./use-new-session";
 

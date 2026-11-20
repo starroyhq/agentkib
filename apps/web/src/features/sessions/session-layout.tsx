@@ -1,5 +1,6 @@
 import { Navigate, Outlet, useLocation } from "@tanstack/react-router";
 import { Settings2 } from "lucide-react";
+import { SessionPlatformProvider } from "@agentkib/session-ui";
 import { useEnvironment } from "@/providers/environment";
 import {
   SessionProvider,
@@ -9,20 +10,23 @@ import { SessionDialogs } from "@/features/conversation/features/sessions/sessio
 import { PairingPage } from "@/features/connection/pairing-page";
 import { Button } from "@/features/conversation/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { webSessionPlatform } from "@/features/conversation/session-platform";
 
 export function SessionLayout() {
   const env = useEnvironment();
   if (env.hosted && !env.connection) return <Navigate to="/connect" replace />;
   return (
-    <SessionProvider
-      key={env.attempt}
-      connection={env.connection}
-      initialLocale={env.locale}
-      initialTheme={env.theme}
-      disconnect={env.hosted || env.connection?.type === "lan-http" ? env.disconnect : undefined}
-    >
-      <SessionShell />
-    </SessionProvider>
+    <SessionPlatformProvider platform={webSessionPlatform}>
+      <SessionProvider
+        key={env.attempt}
+        connection={env.connection}
+        initialLocale={env.locale}
+        initialTheme={env.theme}
+        disconnect={env.hosted || env.connection?.type === "lan-http" ? env.disconnect : undefined}
+      >
+        <SessionShell />
+      </SessionProvider>
+    </SessionPlatformProvider>
   );
 }
 function SessionShell() {

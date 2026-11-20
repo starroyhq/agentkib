@@ -13,8 +13,8 @@ import {
   rememberPending,
   subscribePending,
   type PendingControl,
-} from "@/features/conversation/features/sessions/pending-controls";
-import { subscribeSessionInvalidation } from "@/features/conversation/features/sessions/session-events";
+} from "@agentkib/session-ui";
+import { subscribeSessionInvalidation } from "@agentkib/conversation-state";
 
 /** How long an answered request stays off the home while the catalog catches up. */
 const ANSWERED_GRACE = 15_000;

@@ -5,7 +5,7 @@ import {
   type ResolvedHistoryReference,
   type HistoryReference,
 } from "@agentkib/web-client";
-import { isValidMessage } from "../sessions/session-model";
+import { isValidMessage } from "@agentkib/conversation-state";
 export const historyReferenceKey = (reference: HistoryReference) => JSON.stringify(reference);
 export function historyMessageText(
   message: string,

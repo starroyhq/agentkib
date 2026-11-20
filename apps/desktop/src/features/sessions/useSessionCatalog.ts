@@ -1,4 +1,4 @@
-import { isBusyRead } from "./conversation/features/sessions/session-read-retry";
+import { isBusyRead } from "@agentkib/session-ui";
 import { codexReason } from "./conversation/features/sessions/codex-copy";
 import { useI18n } from "@/core/useI18n";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";

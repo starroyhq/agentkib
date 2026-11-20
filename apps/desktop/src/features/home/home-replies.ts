@@ -17,7 +17,7 @@ import {
   rememberPending,
   subscribePending,
   type PendingControl,
-} from "@/features/sessions/conversation/features/sessions/pending-controls";
+} from "@agentkib/session-ui";
 
 /** How long an answered request stays off the home while the catalog catches up. */
 const ANSWERED_GRACE = 15_000;

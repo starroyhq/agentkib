@@ -10,15 +10,12 @@ import {
   type ResolvedHistoryReference,
 } from "@agentkib/web-client";
 import { useSessionController } from "@/features/conversation/features/sessions/use-session-controller";
-import { publishSessionInvalidation } from "@/features/conversation/features/sessions/session-events";
+import { publishSessionInvalidation } from "@agentkib/conversation-state";
 import { sessionDisplayState } from "@/features/conversation/features/sessions/session-display-state";
-import {
-  pendingScope,
-  readPending,
-  rememberPending,
-} from "@/features/conversation/features/sessions/pending-controls";
+import { pendingScope, readPending, rememberPending } from "@agentkib/session-ui";
 
-vi.mock("@/features/conversation/features/preferences/use-appearance", () => ({
+vi.mock("@agentkib/session-ui", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@agentkib/session-ui")>()),
   useAppearance: () => {},
 }));
 vi.mock("@/features/conversation/features/sessions/use-session-live", () => ({

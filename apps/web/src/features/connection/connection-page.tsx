@@ -2,7 +2,7 @@ import { ConnectionPreferences } from "./connection-preferences";
 import { Input } from "@/features/conversation/components/ui/input";
 import { Button } from "@/features/conversation/components/ui/button";
 import { useState, type FormEvent } from "react";
-import { useAppearance } from "@/features/conversation/features/preferences/use-appearance";
+import { useAppearance } from "@agentkib/session-ui";
 import { parseLanOrigin } from "@agentkib/web-client";
 import { useNavigate } from "@tanstack/react-router";
 import { useEnvironment } from "@/providers/environment";

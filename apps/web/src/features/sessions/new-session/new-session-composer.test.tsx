@@ -15,10 +15,10 @@ import {
   composerGoalCopy,
   composerModelCopy,
   planModeCopy,
+  takeNewSessionDraft,
 } from "@agentkib/session-ui";
 import { composerLayoutCopy } from "@/features/conversation/features/sessions/composer-layout-copy";
-import { takeNewSessionDraft } from "@/features/conversation/features/sessions/new-session-draft";
-import { publishSessionInvalidation } from "@/features/conversation/features/sessions/session-events";
+import { publishSessionInvalidation } from "@agentkib/conversation-state";
 import { NewSessionComposer } from "./new-session-composer";
 
 const fixture = vi.hoisted(() => ({ session: undefined as unknown as Record<string, unknown> }));

@@ -6,7 +6,7 @@ import { conversationWords } from "@/core/i18n";
 import { SessionReader } from "./session-reader";
 import { useSession } from "./session-context";
 import { webLayoutCopy } from "./web-layout-copy";
-import { contextUsageCopy } from "./context-usage-copy";
+import { contextUsageCopy } from "@agentkib/session-ui";
 
 vi.mock("./session-context", () => ({ useSession: vi.fn() }));
 vi.mock("./session-operations", () => ({ SessionOperations: () => null }));

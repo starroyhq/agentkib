@@ -1,7 +1,10 @@
-import { sessionContinuationCopy } from "@agentkib/session-ui";
+import {
+  sessionContinuationCopy,
+  claudeConnectionCopy,
+  claudeConnectionReason,
+} from "@agentkib/session-ui";
 import { describe, expect, it } from "vitest";
 import { claudeComposerNotice, claudeSessionBanner } from "./claude-session-banner";
-import { claudeConnectionCopy, claudeConnectionReason } from "./claude-connection-copy";
 import { sessionDisplayState } from "./session-display-state";
 import type { SessionController } from "./use-session-controller";
 

@@ -7,6 +7,8 @@ import {
   NEW_SESSION_AGENTS,
   newSessionCopy,
   newSessionCreateFields,
+  readNewSessionTarget,
+  rememberNewSessionTarget,
 } from "@agentkib/session-ui";
 import { cn } from "cn";
 import { Button } from "@/components/ui/button";
@@ -24,10 +26,6 @@ import type { WorkspaceSummary } from "@/core/types";
 import { useI18n } from "@/core/useI18n";
 import { recentContinuationWorkspaces } from "@/features/home/home-continuations";
 import { codexReason } from "@/features/sessions/conversation/features/sessions/codex-copy";
-import {
-  readNewSessionTarget,
-  rememberNewSessionTarget,
-} from "@/features/sessions/conversation/features/sessions/new-session-draft";
 import { failureOf, useNewSession } from "@/features/sessions/new-session/use-new-session";
 
 /** Workspaces the target menu lists, most recently active first. */

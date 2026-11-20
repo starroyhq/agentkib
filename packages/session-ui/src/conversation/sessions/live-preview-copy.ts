@@ -1,4 +1,4 @@
-import { surfaceCopy, type SessionSurface } from "./session-surface-copy";
+import { surfaceCopy, type SessionSurface } from "../../session-surface-copy";
 
 const en = {
   intro: "Pages served on this computer, such as a dev server started in this conversation.",

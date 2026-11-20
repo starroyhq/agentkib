@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ConversationEvent } from "@agentkib/web-client";
 import { createConversationStore, type SessionStreamEvent } from "@agentkib/conversation-state";
 import { CodexFollowerStream } from "../../../../../../../../packages/backend/src/codex-follower-stream";
-import { SessionTranscript } from "./session-transcript";
+import { SessionTranscript } from "@agentkib/session-ui";
 
 const props = {
   labels: {

@@ -1,6 +1,9 @@
 import { ApiError, type Access, type WebClient } from "@agentkib/web-client";
-import { clearMessageImageCache, type MessageImageLoader } from "@agentkib/session-ui";
-import { capabilityAccessBinding } from "./use-session-capabilities";
+import {
+  clearMessageImageCache,
+  type MessageImageLoader,
+  capabilityAccessBinding,
+} from "@agentkib/session-ui";
 
 type Owner = {
   client: WebClient;

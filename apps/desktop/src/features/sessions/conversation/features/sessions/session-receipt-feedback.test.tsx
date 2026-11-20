@@ -1,4 +1,4 @@
-import { publishSessionInvalidation } from "@/features/sessions/conversation/features/sessions/session-events";
+import { publishSessionInvalidation } from "@agentkib/conversation-state";
 import type { WebClient } from "@agentkib/web-client";
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
@@ -9,11 +9,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-libra
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SessionReceiptRecovery } from "@/features/sessions/conversation/features/sessions/session-receipt-recovery";
 import { managedControlCopy } from "@/features/sessions/conversation/features/sessions/managed-control-copy";
-import {
-  pendingScope,
-  rememberPending,
-  readPending,
-} from "@/features/sessions/conversation/features/sessions/pending-controls";
+import { pendingScope, rememberPending, readPending } from "@agentkib/session-ui";
 
 const managementLocales = [
   {

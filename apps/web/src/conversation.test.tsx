@@ -22,13 +22,8 @@ import {
 import { EmbeddedConversation } from "@/features/conversation/conversation";
 import { HistoryCoverageStatus } from "@/features/conversation/features/history/history-search";
 import { useSessionController } from "@/features/conversation/features/sessions/use-session-controller";
-import {
-  pendingScope,
-  readPending,
-  rememberPending,
-} from "@/features/conversation/features/sessions/pending-controls";
-import { catalogCopy } from "@/features/conversation/features/catalog/catalog-copy";
-import { publishSessionInvalidation } from "@/features/conversation/features/sessions/session-events";
+import { pendingScope, readPending, rememberPending, catalogCopy } from "@agentkib/session-ui";
+import { publishSessionInvalidation } from "@agentkib/conversation-state";
 
 afterEach(cleanup);
 beforeEach(() => {

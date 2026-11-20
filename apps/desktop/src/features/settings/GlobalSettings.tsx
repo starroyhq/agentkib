@@ -86,7 +86,7 @@ import {
   setSendWhileRunning,
   useSendWhileRunning,
   type SendWhileRunning,
-} from "@/features/sessions/conversation/features/preferences/send-while-running";
+} from "@agentkib/session-ui";
 
 const buildPlatform = desktopApi().platform;
 const appPlatform = normalizePlatform(buildPlatform);

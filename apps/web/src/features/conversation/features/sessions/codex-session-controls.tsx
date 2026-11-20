@@ -46,7 +46,7 @@ import { Dialog } from "../../components/dialog";
 import { useSession } from "./session-context";
 import { composerLayoutCopy, composerTerm } from "./composer-layout-copy";
 import { codexCopyForSurface, codexReason } from "./codex-copy";
-import { subscribeSessionInvalidation } from "./session-events";
+import { subscribeSessionInvalidation } from "@agentkib/conversation-state";
 import { ContextUsageGauge, type ContextUsageHandle } from "./context-usage";
 import { sessionAgentCopy } from "./session-agent-copy";
 

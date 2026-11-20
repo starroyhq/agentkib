@@ -1,6 +1,6 @@
 import { managedText } from "./managed-copy";
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
-import { subscribeSessionInvalidation } from "./session-events";
+import { subscribeSessionInvalidation } from "@agentkib/conversation-state";
 import { ApiError, isLegacyPreparedReceipt } from "@agentkib/web-client";
 import { Button } from "@/components/ui/button";
 import { codexReason } from "./codex-copy";
@@ -12,7 +12,7 @@ import {
   rememberPending,
   subscribePending,
   type PendingControl,
-} from "./pending-controls";
+} from "@agentkib/session-ui";
 
 /**
  * Resolve saved lifecycle receipts, including requests recorded by older versions. Receipt

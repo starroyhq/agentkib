@@ -3,10 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Access, Live, LivePermission } from "@agentkib/web-client";
 import { WebApplication } from "@/router";
 import { PermissionModeNotice } from "../conversation/features/sessions/permission-mode-notice";
-import {
-  permissionModeCopy,
-  permissionModeSummaryCopy,
-} from "../conversation/features/sessions/permission-mode-copy";
+import { permissionModeCopy, permissionModeSummaryCopy } from "@agentkib/session-ui";
 import type { Locale } from "../conversation/i18n";
 
 const locales: Locale[] = ["zh-CN", "zh-Hant", "en-US", "ja-JP"];

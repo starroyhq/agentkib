@@ -11,9 +11,8 @@ import {
 } from "@agentkib/web-client";
 import { api } from "@/core/api";
 import { ArtifactBrowser } from "./artifact-browser";
-import { artifactCopy } from "./artifact-copy";
+import { artifactCopy, livePreviewCopy } from "@agentkib/session-ui";
 import { LivePreview } from "./live-preview";
-import { livePreviewCopy } from "./live-preview-copy";
 import { useSession } from "./session-context";
 
 vi.mock("./session-context", () => ({ useSession: vi.fn() }));

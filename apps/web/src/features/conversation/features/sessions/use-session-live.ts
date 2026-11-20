@@ -11,10 +11,7 @@ import {
   createConversationStore,
   mergeConversationItems,
   type SessionStreamEvent,
-} from "@agentkib/conversation-state";
-import { warmSessionAuthority, type WarmSessionStreamPool } from "@agentkib/session-ui";
-import { publishSessionInvalidation } from "./session-events";
-import {
+  publishSessionInvalidation,
   beginHistoryRead,
   completeHistoryRead,
   failHistoryRead,
@@ -22,9 +19,14 @@ import {
   removePersistedOverlays,
   mergeNativeCoverage,
   type NativeCoverage,
-} from "./session-model";
-import { createHistoryPagination, recordLatestHistoryPage } from "./history-pagination";
-import { retryBusyRead } from "./session-read-retry";
+  createHistoryPagination,
+  recordLatestHistoryPage,
+} from "@agentkib/conversation-state";
+import {
+  warmSessionAuthority,
+  type WarmSessionStreamPool,
+  retryBusyRead,
+} from "@agentkib/session-ui";
 type Setter<T> = Dispatch<SetStateAction<T>>;
 // These fields cannot grant control or remove an execution/authorization fence.
 // Unknown fields conservatively count as control boundaries.

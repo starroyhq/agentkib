@@ -17,7 +17,7 @@ import { Switch } from "@/components/ui/switch";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Dialog } from "../../components/dialog";
 import { useSession } from "./session-context";
-import { claudeConnectionCopy, claudeConnectionReason } from "./claude-connection-copy";
+import { claudeConnectionCopy, claudeConnectionReason } from "@agentkib/session-ui";
 
 const incompatibleReasons = new Set([
   "bridge-cli-too-old",

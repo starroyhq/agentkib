@@ -13,6 +13,55 @@ export {
 } from "./read-state";
 
 export { retryBusyRead, isBusyRead } from "./session-read-retry";
+export { unavailableReasonText } from "./conversation/live-status";
+export {
+  SessionPlatformProvider,
+  useSessionPlatform,
+  type SessionPlatform,
+} from "./session-platform";
+export {
+  historyReferenceKey,
+  historyMessageText,
+  referencesWithinBudget,
+  validHistoryMessage,
+} from "./conversation/history/history-reference-model";
+export { interactionCopy } from "./conversation/interactions/interaction-copy";
+export { PreferencesDialog } from "./conversation/preferences/preferences-dialog";
+export { useAppearance } from "./conversation/preferences/use-appearance";
+export {
+  useSendWhileRunning,
+  setSendWhileRunning,
+  runningSendAction,
+  type SendWhileRunning,
+} from "./conversation/preferences/send-while-running";
+export {
+  claudeConnectionCopy,
+  claudeConnectionReason,
+  claudeConnectionCopyForSurface,
+} from "./conversation/sessions/claude-connection-copy";
+export {
+  continuationResources,
+  type ContinuationComposerDraft,
+  type ContinuationDraft,
+} from "./conversation/sessions/continuation-draft";
+export { livePreviewCopy } from "./conversation/sessions/live-preview-copy";
+export {
+  offerNewSessionDraft,
+  takeNewSessionDraft,
+  readNewSessionTarget,
+  rememberNewSessionTarget,
+  type NewSessionTarget,
+} from "./conversation/sessions/new-session-draft";
+export {
+  subscribePending,
+  pendingScope,
+  readPending,
+  pendingCreateMatches,
+  rememberPending,
+  forgetPending,
+  type PendingControl,
+} from "./conversation/sessions/pending-controls";
+export { blockedWhileCompacting } from "./conversation/sessions/session-activity";
 export { capabilityAccessBinding, useSessionCapabilities } from "./use-session-capabilities";
 export { canReadContextUsage, contextUsagePercent, useObservedContextUsage } from "./context-usage";
 export {

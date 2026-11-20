@@ -1,6 +1,6 @@
 import { managedText } from "./managed-copy";
 import { useEffect, useState, type ReactNode } from "react";
-import { subscribeSessionInvalidation } from "./session-events";
+import { subscribeSessionInvalidation } from "@agentkib/conversation-state";
 import { isLegacyPreparedReceipt } from "@agentkib/web-client";
 import { useSession } from "./session-context";
 import {
@@ -9,7 +9,7 @@ import {
   readPending,
   subscribePending,
   type PendingControl,
-} from "./pending-controls";
+} from "@agentkib/session-ui";
 
 /**
  * Resolve saved lifecycle receipts, including requests recorded by older versions. Receipt

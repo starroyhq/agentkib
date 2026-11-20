@@ -405,8 +405,7 @@ describe("useAppNavigation guards", () => {
     );
     expect(testDoubles.refreshCatalog).toHaveBeenCalledTimes(2);
     // The session's own composer takes the first message and sends it.
-    const { takeNewSessionDraft } =
-      await import("@/features/sessions/conversation/features/sessions/new-session-draft");
+    const { takeNewSessionDraft } = await import("@agentkib/session-ui");
     expect(takeNewSessionDraft("new-session")).toMatchObject({
       text: "Fix the login timeout",
       send: true,

@@ -1,3 +1,4 @@
+import { MAX_MESSAGE_LENGTH } from "@agentkib/conversation-state";
 import {
   ComposerPrimaryAction,
   requestReadStateRefresh,
@@ -5,6 +6,7 @@ import {
   SessionComposerInput,
   SessionComposerToolbar,
   SessionDetail,
+  SessionPlatformProvider,
 } from "@agentkib/session-ui";
 import {
   createContext,
@@ -46,7 +48,7 @@ import {
 import { desktopReadScope } from "../read-state-scope";
 import { webLayoutCopy } from "./features/sessions/web-layout-copy";
 import { codexCopy } from "./features/sessions/codex-copy";
-import { MAX_MESSAGE_LENGTH } from "./features/sessions/session-model";
+import { useDesktopSessionPlatform } from "./session-platform";
 
 export type { ConversationClientBridge, WebClient } from "@agentkib/web-client";
 export type ConversationPanel = "files" | "actions" | "search" | "terminal";
@@ -81,17 +83,20 @@ function useEmbedded() {
 }
 function EmbeddedRoot() {
   const { client, locale, sessionId, showExecution, readInitialCatalog } = useEmbedded();
+  const platform = useDesktopSessionPlatform(client);
   return (
-    <SessionProvider
-      client={client}
-      embedded
-      initialLocale={locale}
-      initialSessionId={sessionId}
-      readInitialCatalog={readInitialCatalog}
-      showExecution={showExecution}
-    >
-      <EmbeddedShell />
-    </SessionProvider>
+    <SessionPlatformProvider platform={platform}>
+      <SessionProvider
+        client={client}
+        embedded
+        initialLocale={locale}
+        initialSessionId={sessionId}
+        readInitialCatalog={readInitialCatalog}
+        showExecution={showExecution}
+      >
+        <EmbeddedShell />
+      </SessionProvider>
+    </SessionPlatformProvider>
   );
 }
 function EmbeddedShell() {

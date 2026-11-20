@@ -6,7 +6,7 @@ import { useSession } from "@/features/conversation/features/sessions/session-co
 import { dictionaries, type Locale } from "@/features/conversation/i18n";
 import { composerLayoutCopy } from "@/features/conversation/features/sessions/composer-layout-copy";
 import { codexCopyForSurface } from "@/features/conversation/features/sessions/codex-copy";
-import { publishSessionInvalidation } from "@/features/conversation/features/sessions/session-events";
+import { publishSessionInvalidation } from "@agentkib/conversation-state";
 import type { CodexGoalState, CodexSessionSettings } from "@agentkib/web-client";
 import { composerAddCopy, composerModelCopy, planModeCopy } from "@agentkib/session-ui";
 

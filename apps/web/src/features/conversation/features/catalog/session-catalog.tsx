@@ -2,9 +2,13 @@ import {
   PendingReviewLane,
   sessionContinuationListState,
   SessionContinuationDot,
+  interactionCopy,
   sessionGroupActivity,
   SessionGroupActivity,
+  catalogCopyForSurface,
 } from "@agentkib/session-ui";
+import { OrchestrationIcon, orchestrationText } from "@agentkib/session-ui";
+import { WorktreeMark, worktreeCopy, worktreeLabel } from "@agentkib/session-ui";
 import { NativeSelect } from "../../components/ui/native-select";
 import { Input } from "../../components/ui/input";
 import { Button } from "../../components/ui/button";
@@ -29,11 +33,6 @@ import {
 } from "@agentkib/session-catalog";
 import type { ConversationSessionSummary, WorkspaceCheckout } from "@agentkib/web-client";
 import { dictionaries, type Locale } from "../../i18n";
-import { catalogCopyForSurface } from "./catalog-copy";
-import { interactionCopy } from "../interactions/interaction-copy";
-import { worktreeCopy, worktreeLabel } from "./worktree-copy";
-import { OrchestrationIcon, orchestrationText } from "./orchestration-note";
-import { WorktreeMark } from "./worktree-note";
 
 export interface CatalogWorkspace {
   id: string;

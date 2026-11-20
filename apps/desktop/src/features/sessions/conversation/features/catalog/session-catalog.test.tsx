@@ -3,7 +3,7 @@ import "@testing-library/jest-dom/vitest";
 import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { SessionCatalog } from "./session-catalog";
-import { catalogCopy, catalogCopyForSurface } from "./catalog-copy";
+import { catalogCopy, catalogCopyForSurface } from "@agentkib/session-ui";
 
 afterEach(cleanup);
 

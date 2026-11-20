@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ConversationSessionSummary } from "@agentkib/web-client";
 import { SessionWorkspace } from "./session-workspace";
 import { dictionaries, type Locale } from "@/features/conversation/i18n";
-import { catalogCopy } from "@/features/conversation/features/catalog/catalog-copy";
+import { catalogCopy } from "@agentkib/session-ui";
 
 const fixture = vi.hoisted(() => ({
   locale: "zh-CN" as Locale,

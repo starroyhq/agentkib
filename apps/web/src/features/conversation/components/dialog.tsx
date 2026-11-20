@@ -29,7 +29,7 @@ export function Dialog({
   footer?: ReactNode;
   className?: string;
   bodyClassName?: string;
-  description?: string;
+  description?: ReactNode;
   headerAdornment?: ReactNode;
 }) {
   const returnFocus = useRef<HTMLElement | null>(

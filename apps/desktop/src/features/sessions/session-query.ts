@@ -1,4 +1,4 @@
-import { retryBusyRead } from "./conversation/features/sessions/session-read-retry";
+import { retryBusyRead } from "@agentkib/session-ui";
 import { queryOptions, replaceEqualDeep, type QueryClient } from "@tanstack/react-query";
 import { api } from "@/core/api";
 import type { ConversationSessionSummary } from "@/core/types";

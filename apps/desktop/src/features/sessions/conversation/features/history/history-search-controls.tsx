@@ -5,11 +5,7 @@ import { useSession } from "../sessions/session-context";
 import { useSessionNavigate } from "../sessions/session-navigation";
 import { historyCopy } from "./history-copy";
 import { HistorySearchDialog, historyAccessScope } from "./history-search";
-import {
-  historyMessageText,
-  historyReferenceKey,
-  validHistoryMessage,
-} from "./history-reference-model";
+import { historyMessageText, historyReferenceKey, validHistoryMessage } from "@agentkib/session-ui";
 export function HistorySearchTrigger() {
   const session = useSession();
   if (!historyAccessScope(session.access)) return null;

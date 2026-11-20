@@ -14,7 +14,7 @@ import type { SettingsSection, SettingsTarget } from "@/features/settings/Settin
 import { refreshAgentTools } from "@/features/settings/agent-tools-query";
 import { requestSessionRefresh } from "@/features/sessions/session-refresh";
 import { refreshConversationCatalog } from "@/features/sessions/conversation-catalog";
-import { offerNewSessionDraft } from "@/features/sessions/conversation/features/sessions/new-session-draft";
+import { offerNewSessionDraft } from "@agentkib/session-ui";
 import { findListedSession } from "@/features/sessions/open-listed-session";
 import { prepareSessionNavigation } from "@/features/sessions/session-view-store";
 import { withAsyncCleanup } from "@/lib/utils";

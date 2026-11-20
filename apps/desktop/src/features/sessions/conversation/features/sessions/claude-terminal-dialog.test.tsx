@@ -4,7 +4,7 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-li
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { SessionController } from "./use-session-controller";
 import { ClaudeBridgePanel } from "./claude-bridge-panel";
-import { claudeConnectionCopy } from "./claude-connection-copy";
+import { claudeConnectionCopy } from "@agentkib/session-ui";
 
 const state = vi.hoisted(() => ({ session: {} as SessionController, request: vi.fn() }));
 vi.mock("./session-context", () => ({ useSession: () => state.session }));

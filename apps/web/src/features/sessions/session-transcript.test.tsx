@@ -2,7 +2,7 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-li
 import { StrictMode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ConversationEvent } from "@agentkib/web-client";
-import { SessionTranscript } from "@/features/conversation/features/sessions/session-transcript";
+import { SessionTranscript } from "@agentkib/session-ui";
 
 const props = {
   labels: {

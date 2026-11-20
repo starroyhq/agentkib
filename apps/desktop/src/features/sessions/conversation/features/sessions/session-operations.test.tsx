@@ -5,7 +5,7 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SessionOperations } from "./session-operations";
 import { SessionPanelsContext } from "./session-panels";
-import { claudeConnectionCopy } from "./claude-connection-copy";
+import { claudeConnectionCopy } from "@agentkib/session-ui";
 import { conversationWords } from "@/core/i18n";
 import type { SessionController } from "./use-session-controller";
 let session: SessionController;

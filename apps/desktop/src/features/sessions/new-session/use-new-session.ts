@@ -17,12 +17,9 @@ import {
   type ManagedAgent,
   type ManagedOptions,
 } from "@agentkib/web-client";
-import { newSessionCopy, type NewSessionCreateFields } from "@agentkib/session-ui";
-import { createDesktopConversationClient } from "@/core/conversation-bridge";
-import type { SupportedLocale } from "@/core/types";
-import { codexReason } from "../conversation/features/sessions/codex-copy";
-import { managedErrorCopy } from "../conversation/features/sessions/managed-error-copy";
 import {
+  newSessionCopy,
+  type NewSessionCreateFields,
   forgetPending,
   pendingCreateMatches,
   pendingScope,
@@ -30,7 +27,11 @@ import {
   rememberPending,
   subscribePending,
   type PendingControl,
-} from "../conversation/features/sessions/pending-controls";
+} from "@agentkib/session-ui";
+import { createDesktopConversationClient } from "@/core/conversation-bridge";
+import type { SupportedLocale } from "@/core/types";
+import { codexReason } from "../conversation/features/sessions/codex-copy";
+import { managedErrorCopy } from "../conversation/features/sessions/managed-error-copy";
 
 export const newSessionOptionsKey = (agent: ManagedAgent, workspaceId?: string) =>
   workspaceId ? ["new-session-options", agent, workspaceId] : ["new-session-options", agent];

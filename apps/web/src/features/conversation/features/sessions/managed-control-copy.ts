@@ -1,5 +1,5 @@
 import type { Locale } from "../../i18n";
-import { surfaceCopy, type SessionSurface } from "./session-surface-copy";
+import { surfaceCopy, type SessionSurface } from "@agentkib/session-ui";
 
 export type ManagedControlBlockReason =
   | "tool"

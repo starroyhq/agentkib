@@ -14,7 +14,10 @@ vi.mock("./session-context", () => ({
 }));
 vi.mock("./session-operations", () => ({ SessionOperations: () => null }));
 vi.mock("./session-panels", () => ({ useSessionPanels: () => null }));
-vi.mock("./session-transcript", () => ({ SessionTranscript: () => null }));
+vi.mock("@agentkib/session-ui", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@agentkib/session-ui")>()),
+  SessionTranscript: () => null,
+}));
 vi.mock("./artifact-browser", () => ({ ArtifactBrowser: () => null }));
 vi.mock("./context-usage", () => ({ ContextUsageGauge: () => null }));
 vi.mock("../history/history-search-controls", () => ({ HistoryReferenceChips: () => null }));

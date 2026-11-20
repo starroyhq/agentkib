@@ -3,7 +3,7 @@ import "@testing-library/jest-dom/vitest";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { ConversationEvent } from "@agentkib/web-client";
-import { SessionTranscript } from "./session-transcript";
+import { SessionTranscript } from "@agentkib/session-ui";
 
 const props = {
   labels: {

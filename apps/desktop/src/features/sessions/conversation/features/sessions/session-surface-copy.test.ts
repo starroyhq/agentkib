@@ -2,10 +2,8 @@ import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import { codexCopyForSurface, codexReason } from "./codex-copy";
 import { managedControlCopyForSurface } from "./managed-control-copy";
-import { claudeConnectionCopyForSurface } from "./claude-connection-copy";
-import { surfaceText } from "./session-surface-copy";
+import { claudeConnectionCopyForSurface, surfaceText, artifactCopy } from "@agentkib/session-ui";
 import { managedText } from "./managed-copy";
-import { artifactCopy } from "./artifact-copy";
 
 const locales = ["zh-CN", "zh-Hant", "en-US", "ja-JP"] as const;
 
@@ -130,17 +128,12 @@ describe("session copy identifies the computer and application", () => {
 
   it("keeps the shared presentation implementations mirrored", () => {
     for (const filename of [
-      "session-surface-copy.ts",
       "codex-copy.ts",
       "managed-control-copy.ts",
       "session-display-state.ts",
       "claude-session-banner.ts",
-      "claude-connection-copy.ts",
       "managed-copy.ts",
       "managed-error-copy.ts",
-      "context-usage-copy.ts",
-      "artifact-copy.ts",
-      "../catalog/catalog-copy.ts",
     ]) {
       const desktop = new URL(filename, import.meta.url);
       const web = new URL(

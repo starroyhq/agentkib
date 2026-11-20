@@ -2,9 +2,8 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-li
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "@agentkib/web-client";
 import { ArtifactBrowser } from "@/features/conversation/features/sessions/artifact-browser";
-import { artifactCopy } from "@/features/conversation/features/sessions/artifact-copy";
+import { artifactCopy, livePreviewCopy } from "@agentkib/session-ui";
 import { LivePreview } from "@/features/conversation/features/sessions/live-preview";
-import { livePreviewCopy } from "@/features/conversation/features/sessions/live-preview-copy";
 
 let session: {
   client: { request: ReturnType<typeof vi.fn> };

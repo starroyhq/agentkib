@@ -11,7 +11,7 @@ import {
 } from "@agentkib/web-client";
 import { Button, buttonVariants } from "../../components/ui/button";
 import { Input } from "../../components/ui/input";
-import { livePreviewCopy } from "./live-preview-copy";
+import { livePreviewCopy } from "@agentkib/session-ui";
 import { useSession } from "./session-context";
 
 /** A dev server's address is in recent output; older loaded pages are not scanned. */

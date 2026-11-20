@@ -10,25 +10,9 @@ import {
 import { codexCopy, codexReason } from "./codex-copy";
 import { claudeComposerNotice, claudeSessionBanner } from "./claude-session-banner";
 import { HistoryReferenceChips } from "../history/history-search-controls";
-import { validHistoryMessage } from "../history/history-reference-model";
-import { SessionOperations } from "./session-operations";
-import { useSessionPanels } from "./session-panels";
-import { ContextUsageGauge } from "./context-usage";
-import { SessionComposer } from "./session-composer";
-import { basicSendQueue } from "./dsh-queue";
-import { SessionTranscript } from "./session-transcript";
-import { SessionInteractionDock } from "../interactions/interaction-dock";
-import { MAX_MESSAGE_LENGTH } from "./session-model";
-import { useSession } from "./session-context";
-import { ArtifactBrowser } from "./artifact-browser";
-import { ArtifactWorkspace } from "./artifact-panel";
-import { useMemo } from "react";
 import {
-  createSessionImageLoader,
-  sessionImageCacheScope,
-  sessionImageRevision,
-} from "./session-image-scope";
-import {
+  validHistoryMessage,
+  SessionTranscript,
   sessionComposerSurface,
   SessionActivities,
   SessionDetail,
@@ -38,6 +22,22 @@ import {
   SessionDetailReadOnlyFooter,
   useSessionDetailReadState,
 } from "@agentkib/session-ui";
+import { SessionOperations } from "./session-operations";
+import { useSessionPanels } from "./session-panels";
+import { ContextUsageGauge } from "./context-usage";
+import { SessionComposer } from "./session-composer";
+import { basicSendQueue } from "./dsh-queue";
+import { SessionInteractionDock } from "../interactions/interaction-dock";
+import { MAX_MESSAGE_LENGTH } from "@agentkib/conversation-state";
+import { useSession } from "./session-context";
+import { ArtifactBrowser } from "./artifact-browser";
+import { ArtifactWorkspace } from "./artifact-panel";
+import { useMemo } from "react";
+import {
+  createSessionImageLoader,
+  sessionImageCacheScope,
+  sessionImageRevision,
+} from "./session-image-scope";
 import { webLayoutCopy } from "./web-layout-copy";
 import { useConversationDisplayLive } from "../../../DesktopConversationWindow";
 export function SessionReader() {

@@ -1,7 +1,12 @@
 import { act, cleanup, fireEvent, render, renderHook, screen } from "@testing-library/react";
 import { createElement, useState } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createConversationStore, type SessionStreamEvent } from "@agentkib/conversation-state";
+import {
+  createConversationStore,
+  type SessionStreamEvent,
+  mergeNativeCoverage,
+  type NativeCoverage,
+} from "@agentkib/conversation-state";
 import { createWarmSessionStreamPool, warmSessionAuthority } from "@agentkib/session-ui";
 import type {
   Access,
@@ -12,10 +17,6 @@ import type {
   WebClient,
 } from "@agentkib/web-client";
 import { dictionaries } from "@/features/conversation/i18n";
-import {
-  mergeNativeCoverage,
-  type NativeCoverage,
-} from "@/features/conversation/features/sessions/session-model";
 import { useSessionLive } from "@/features/conversation/features/sessions/use-session-live";
 import { SessionReader } from "@/features/conversation/features/sessions/session-reader";
 import { useSession } from "@/features/conversation/features/sessions/session-context";

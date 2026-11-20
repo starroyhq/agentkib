@@ -13,7 +13,15 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { PassThrough } from "node:stream";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { RUNTIME_METHODS, sessionProviderCapabilities } from "@agentkib/runtime-protocol";
+import {
+  DSH_BRIDGE_PLUGIN_VERSION,
+  DSH_BRIDGE_PROTOCOL,
+  RUNTIME_METHODS,
+  SESSION_EVENT_NOTIFICATION,
+  sessionProviderCapabilities,
+  type SessionSubscription,
+  type SubagentCatalog,
+} from "@agentkib/runtime-protocol";
 import {
   DshBridge,
   dshConversationEvents,
@@ -27,6 +35,7 @@ import {
 import { readControlReceipt } from "../../../packages/backend/src/control-receipt";
 import type { ContextUsage } from "../../../packages/backend/src/context-usage";
 import { TypeScriptBackend } from "../../../packages/backend/src/index";
+import { withSessionActivities } from "../../../packages/backend/src/session-activities";
 import { McpHub } from "../../../packages/backend/src/mcp-hub";
 import { RemoteAgent } from "../../../packages/backend/src/remote-agent";
 import { BackendStore } from "../../../packages/backend/src/store";
@@ -880,16 +889,20 @@ describe("DeepSeek Harness bridge", () => {
       store.close();
       vi.spyOn(McpHub.prototype, "start").mockResolvedValue();
       vi.spyOn(RemoteAgent.prototype, "start").mockResolvedValue();
-      const backend = new TypeScriptBackend({
-        HOME: root,
-        USERPROFILE: root,
-        AGENTKIB_HOME: agentkibHome,
-        AGENTKIB_DSH_PLUGIN_DIR: "",
-        CLAUDE_CONFIG_DIR: path.join(root, ".claude"),
-        CODEX_HOME: path.join(root, ".codex"),
-        DSH_HOME: path.join(root, ".dsh"),
-        PATH: "/usr/bin:/bin",
-      });
+      const notify = vi.fn();
+      const backend = new TypeScriptBackend(
+        {
+          HOME: root,
+          USERPROFILE: root,
+          AGENTKIB_HOME: agentkibHome,
+          AGENTKIB_DSH_PLUGIN_DIR: "",
+          CLAUDE_CONFIG_DIR: path.join(root, ".claude"),
+          CODEX_HOME: path.join(root, ".codex"),
+          DSH_HOME: path.join(root, ".dsh"),
+          PATH: "/usr/bin:/bin",
+        },
+        notify,
+      );
       cleanups.push(() => backend.close());
       const call = (method: string, params: Record<string, unknown>) =>
         backend.handleAsync({ jsonrpc: "2.0", id: randomUUID(), method, params });
@@ -1005,6 +1018,57 @@ describe("DeepSeek Harness bridge", () => {
           deviceId: "other-device",
         }),
       ).toMatchObject({ found: false });
+
+      dsh.spawnChild(String(live.sourceSessionId), "activity-child", "Check package", true);
+      const listing = await web({ operation: "subagents", sessionId });
+      const childId = (listing.agents as SubagentCatalog["agents"])[0]?.id;
+      expect(childId).toMatch(/^[a-f0-9]{64}$/);
+      const subscription = (await rpc(RUNTIME_METHODS.sessionsSubscribe, {
+        sessionId,
+      })) as SessionSubscription;
+      try {
+        const snapshot = subscription.events.find(({ type }) => type === "snapshot")?.payload.live;
+        expect(snapshot).toMatchObject({
+          subagents: { agents: [], available: false },
+          activities: [
+            { id: childId, childId, kind: "subagent", title: "Check package", status: "completed" },
+          ],
+        });
+        expect(await web({ operation: "live", sessionId })).not.toHaveProperty("activities");
+        // Re-register with the same plugin runtime ID, as happens after a broken poll.
+        // The replaced binding must clear its activities without waiting for a new list.
+        plugin.close();
+        const discovery = JSON.parse(
+          readFileSync(path.join(agentkibHome, "dsh-bridge", "discovery-v1.json"), "utf8"),
+        );
+        await post(discovery.socketPath, DSH_BRIDGE_PATHS.register, {
+          key: discovery.key,
+          protocol: DSH_BRIDGE_PROTOCOL,
+          pluginVersion: DSH_BRIDGE_PLUGIN_VERSION,
+          dshVersion: plugin.dshVersion,
+          runtimeId: plugin.runtimeId,
+          pid: process.pid,
+          services: {
+            sessionController: true,
+            sessionQuery: true,
+            approvals: true,
+            questions: true,
+          },
+        });
+        expect(notify).toHaveBeenCalledWith(
+          SESSION_EVENT_NOTIFICATION,
+          expect.objectContaining({
+            subscriptionId: subscription.subscriptionId,
+            sessionId,
+            type: "state",
+            payload: expect.objectContaining({ activities: [] }),
+          }),
+        );
+      } finally {
+        await rpc(RUNTIME_METHODS.sessionsUnsubscribe, {
+          subscriptionId: subscription.subscriptionId,
+        });
+      }
     },
   );
 
@@ -2952,6 +3016,62 @@ describe("DeepSeek Harness goals, commands, presets and subagents", () => {
         limit: 50,
       }),
     ).rejects.toThrow("subagent-unavailable");
+  });
+
+  it("reads activities from the bound DSH plugin apart from the legacy directory cache", async () => {
+    const { bridge, dsh } = await fixture();
+    const sessionId = "ak-session-a";
+    const scope = bridge.activitySubagentScope(sessionId);
+    expect(scope).toBeDefined();
+    const legacy = () =>
+      bridge.request({ operation: "subagents", sessionId }) as Promise<SubagentCatalog>;
+    expect((await legacy()).agents).toEqual([]);
+
+    dsh.spawnChild("session-a", "native-child", "Check the build", true);
+    dsh.append("native-child", "assistant/message", {
+      turn: 1,
+      step: 0,
+      message: { role: "assistant", content: [{ type: "text", text: "Build passed." }] },
+    });
+    await until(() => bridge.handles("ak-native-child"));
+    await expect(bridge.activitySubagents(sessionId, "other-binding")).resolves.toBeUndefined();
+    const catalog = await bridge.activitySubagents(sessionId, scope);
+    const child = catalog?.agents[0];
+    expect(child?.id).toMatch(/^[a-f0-9]{64}$/);
+    expect(withSessionActivities(bridge.live(sessionId, true), catalog).activities).toEqual([
+      {
+        id: child?.id,
+        childId: child?.id,
+        kind: "subagent",
+        title: "Check the build",
+        status: "completed",
+      },
+    ]);
+    expect((await legacy()).agents).toEqual([]);
+    expect(
+      await bridge.request({ operation: "subagent-events", sessionId, subagentId: child?.id }),
+    ).toMatchObject({ events: [{ content: "Build passed." }] });
+    vi.spyOn(dsh.ctx.sessionController, "projections").mockRejectedValueOnce(new Error("offline"));
+    await expect(bridge.activitySubagents(sessionId, scope)).resolves.toBeUndefined();
+  });
+
+  it("rechecks a plugin child whose completion has no list change marker", async () => {
+    const { bridge, dsh } = await fixture();
+    const list = dsh.ctx.sessionController.list;
+    vi.spyOn(dsh.ctx.sessionController, "list").mockImplementation(async () => ({
+      items: (await list()).items.filter((item) => item.sessionId !== "unlisted-child"),
+    }));
+    dsh.spawnChild("session-a", "unlisted-child", "Independent check", false);
+    const read = () => bridge.activitySubagents("ak-session-a");
+    expect((await read())?.agents[0]?.status).toBe("stopped");
+    const projections = dsh.ctx.sessionController.projections;
+    vi.spyOn(dsh.ctx.sessionController, "projections").mockImplementation(async (request) => {
+      const result = await projections(request);
+      if (result && request.sessionId === "unlisted-child")
+        result.values.subagentTiming = { settledMs: 5, lastTurnCompleted: true };
+      return result;
+    });
+    expect((await read())?.agents[0]?.status).toBe("completed");
   });
 
   it("remembers the commands it ran, so a lost reply can be settled", async () => {

@@ -28,10 +28,15 @@ const scope = (live: Json) =>
     live.sourceSessionId ?? null,
     live.workspaceId ?? null,
     live.runtimeBootId ?? null,
+    live.activityBinding ?? null,
   ]);
 
 /** Defensively whitelist a publication; runner arrays/native identifiers must never seed this cache. */
-function project(sessionId: string, input: unknown): SubagentSnapshot | null {
+function project(
+  sessionId: string,
+  input: unknown,
+  agentsAllowed: ReadonlySet<unknown>,
+): SubagentSnapshot | null {
   if (
     !record(input) ||
     input.version !== 1 ||
@@ -49,7 +54,7 @@ function project(sessionId: string, input: unknown): SubagentSnapshot | null {
       !identifier(child.id) ||
       typeof child.name !== "string" ||
       child.name.length > 640 ||
-      !["codex", "claude-code"].includes(String(child.agent)) ||
+      !agentsAllowed.has(child.agent) ||
       typeof child.status !== "string" ||
       !states.has(child.status) ||
       typeof child.readable !== "boolean" ||
@@ -103,7 +108,13 @@ export class SessionSubagentSnapshots {
     string,
     { scope: string; token: object; promise: Promise<SubagentSnapshot> }
   >();
-  constructor(readonly ttlMs = 2_000) {}
+  constructor(
+    readonly ttlMs = 2_000,
+    private readonly agentsAllowed: ReadonlySet<SubagentSummary["agent"]> = new Set([
+      "codex",
+      "claude-code",
+    ]),
+  ) {}
 
   invalidate(sessionId?: string): void {
     if (sessionId === undefined) {
@@ -122,7 +133,7 @@ export class SessionSubagentSnapshots {
     const identity = scope(live);
     this.#tokens.set(sessionId, { scope: identity, token: {} });
     this.#flights.delete(sessionId);
-    const value = project(sessionId, live.subagents);
+    const value = project(sessionId, live.subagents, this.agentsAllowed);
     const previous = this.#entries.get(sessionId);
     if (value?.partial) {
       const baseline = previous?.scope === identity ? previous : undefined;
@@ -177,7 +188,7 @@ export class SessionSubagentSnapshots {
         // A child state can change while its parent control revision stays unchanged.
         if (this.#tokens.get(sessionId)?.token !== token) {
           const published = this.#entries.get(sessionId);
-          const baseline = project(sessionId, input);
+          const baseline = project(sessionId, input, this.agentsAllowed);
           if (
             published?.scope === identity &&
             published.publication?.partial &&
@@ -190,7 +201,7 @@ export class SessionSubagentSnapshots {
           }
           return latest();
         }
-        const value = project(sessionId, input) ?? unavailable(sessionId);
+        const value = project(sessionId, input, this.agentsAllowed) ?? unavailable(sessionId);
         this.#entries.set(sessionId, { scope: identity, at: Date.now(), value });
         return structuredClone(value);
       } catch {

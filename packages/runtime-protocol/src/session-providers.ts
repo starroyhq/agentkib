@@ -274,7 +274,7 @@ const PROVIDERS = {
     connection: { kind: "native-app" },
     permissionField: "policyId",
     activities: {
-      kinds: ["subagent", "terminal"],
+      kinds: ["subagent"],
       canStopIndividually: false,
       canOpenSubagentHistory: true,
     },

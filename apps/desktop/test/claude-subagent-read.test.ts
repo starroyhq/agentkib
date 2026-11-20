@@ -10,7 +10,9 @@ import { ClaudeManagedReadOwner } from "../../../packages/backend/src/claude-man
 import { ClaudeManagedRunnerProcess } from "../../../packages/backend/src/claude-managed-runner";
 import { claudeProjectKey } from "../../../packages/backend/src/claude-project-path";
 import type { ConversationEvent } from "../../../packages/backend/src/session-events";
+import { withSessionActivities } from "../../../packages/backend/src/session-activities";
 import type { SubagentCatalog } from "@agentkib/runtime-protocol";
+import type { Live } from "@agentkib/web-client";
 import { createFakeClaude, type FakeClaudePlan } from "./fixtures/claude-fake-cli";
 
 // The CLI is an offline protocol fixture. Native ownership and child reads use real temporary
@@ -68,7 +70,7 @@ type ReadPage = {
   warnings: string[];
 };
 
-function fixture() {
+function fixture(backgroundTasks = false) {
   const f = createFakeClaude("agentkib-child-owner-read-");
   cleanups.push(() => rmSync(f.root, { recursive: true, force: true }));
   f.setPlan(initialPlan());
@@ -100,7 +102,22 @@ function fixture() {
     profiles: () => [],
   });
   cleanups.push(() => readers.close());
-  const owner = new ClaudeManagedReadOwner(store, readers, commands, f.root, f.environment);
+  const publications: Live[] = [];
+  const owner = new ClaudeManagedReadOwner(
+    store,
+    readers,
+    commands,
+    f.root,
+    f.environment,
+    undefined,
+    {
+      publish: (_sessionId, type, _payload, live) => {
+        if (backgroundTasks && type === "state") publications.push(live as unknown as Live);
+      },
+      alias: () => {},
+    },
+    { backgroundTasks: () => backgroundTasks },
+  );
   cleanups.push(() => owner.shutdown());
   const workers: ClaudeManagedRunnerProcess[] = [];
   const originalSend = ClaudeManagedRunnerProcess.prototype.send;
@@ -108,7 +125,12 @@ function fixture() {
     this: ClaudeManagedRunnerProcess,
     ...args: Parameters<ClaudeManagedRunnerProcess["send"]>
   ) {
-    if (!workers.includes(this)) workers.push(this);
+    if (!workers.includes(this)) {
+      workers.push(this);
+      // Linux lacks the production macOS supervisor. This fake sends only task frames,
+      // so enable their tracking to exercise the same projection in Linux CI.
+      if (backgroundTasks && process.platform === "linux") this.state.backgroundTasksEnabled = true;
+    }
     return originalSend.apply(this, args);
   });
   const project = claudeProjectKey(f.workspace);
@@ -171,7 +193,20 @@ function fixture() {
       cursor,
       limit,
     }) as Promise<ReadPage>;
-  return { f, owner, readers, store, workers, directory, nativeParent, create, send, list, page };
+  return {
+    f,
+    owner,
+    readers,
+    store,
+    workers,
+    publications,
+    directory,
+    nativeParent,
+    create,
+    send,
+    list,
+    page,
+  };
 }
 
 describe.skipIf(!["darwin", "linux"].includes(process.platform))(
@@ -197,6 +232,101 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))(
       const older = await f.page(parent.id, child.id, first.next_cursor);
       expect(older.epoch).toBe(first.epoch);
       expect(older.events.map((value) => value.content)).toEqual(["First child older message"]);
+    }, 30_000);
+
+    it("merges only proven background subagent pairs and keeps both legacy views", async () => {
+      const f = fixture(true);
+      const parent = await f.create();
+      const paired = "private-tool-paired";
+      const taskOnly = "private-tool-observed";
+      const mismatchedTool = "private-tool-mismatched";
+      const mismatchedTask = "private-task-mismatched";
+      f.f.setPlan({
+        lifecycle: true,
+        onUser: [
+          main([spawn(paired, "Paired child"), spawn(taskOnly, "Other child")]),
+          { ...task(paired), description: "Paired background task" },
+          { ...task(paired), task_id: mismatchedTask, description: "Only tool matches" },
+          task(taskOnly),
+          {
+            ...task(mismatchedTool),
+            task_id: task(taskOnly).task_id,
+            description: "Only task matches",
+          },
+          childText(paired, "Paired child can be opened"),
+        ],
+      });
+      await f.send(parent.id);
+      f.nativeParent(parent.nativeId);
+      const childDirectory = path.join(f.directory, parent.nativeId, "subagents");
+      mkdirSync(childDirectory, { recursive: true, mode: 0o700 });
+      const nativeAgentId = "private-child-catalog-only";
+      writeFileSync(
+        path.join(childDirectory, `agent-${nativeAgentId}.jsonl`),
+        JSON.stringify({
+          type: "assistant",
+          uuid: randomUUID(),
+          sessionId: parent.nativeId,
+          agentId: nativeAgentId,
+          cwd: f.f.workspace,
+          isSidechain: true,
+          timestamp: new Date().toISOString(),
+          message: { content: [{ type: "text", text: "Synthetic historic child" }] },
+        }) + "\n",
+        { mode: 0o600 },
+      );
+
+      const catalog = await f.list(parent.id);
+      const pairedChild = catalog.agents.find(({ name }) => name === "Paired child");
+      const historicChild = catalog.agents.find(({ name }) => name === "Claude Code");
+      expect(pairedChild).toMatchObject({ readable: true, status: "running" });
+      expect(historicChild).toMatchObject({ readable: true, status: "unknown" });
+      expect(catalog.agents).toHaveLength(3);
+
+      const read = (await f.owner.live(parent.id, true)) as unknown as Live;
+      const published = f.publications.findLast(({ status }) => status === "idle");
+      expect(published).toBeDefined();
+      expect(published?.subagents?.agents).toHaveLength(2);
+      expect(read.subagents).toBeUndefined();
+      for (const live of [read, published!]) {
+        expect(live.backgroundTasks).toHaveLength(3);
+        const pairedTask = live.backgroundTasks?.find(
+          ({ description }) => description === "Paired background task",
+        );
+        expect(pairedTask?.startedAt).toEqual(expect.any(String));
+        expect(live.activities).toHaveLength(4);
+        expect(live.activities).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              id: pairedChild?.id,
+              kind: "subagent",
+              childId: pairedChild?.id,
+              title: "Paired child",
+              startedAt: pairedTask?.startedAt,
+            }),
+            expect.objectContaining({ kind: "subagent", title: "Other child" }),
+            expect.objectContaining({ kind: "background-task", title: "Only tool matches" }),
+            expect.objectContaining({ kind: "background-task", title: "Only task matches" }),
+          ]),
+        );
+        const complete = withSessionActivities(
+          live as unknown as Record<string, unknown>,
+          catalog,
+        ).activities;
+        expect(complete).toHaveLength(5);
+        expect(complete).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ id: pairedChild?.id, startedAt: pairedTask?.startedAt }),
+            expect.objectContaining({ id: historicChild?.id, childId: historicChild?.id }),
+          ]),
+        );
+        const wire = JSON.stringify([live, complete]);
+        for (const native of [paired, taskOnly, mismatchedTool, mismatchedTask, nativeAgentId])
+          expect(wire).not.toContain(native);
+      }
+      expect(read.activities?.map(({ id }) => id).sort()).toEqual(
+        published?.activities?.map(({ id }) => id).sort(),
+      );
     }, 30_000);
 
     it("rejects a memory cursor used for another child or another authorized parent", async () => {

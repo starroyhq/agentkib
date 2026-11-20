@@ -45,7 +45,6 @@ import {
   isClaudeCommandRefusal,
   type ClaudeCommandEntry,
   type ConversationTurnMeta,
-  type SubagentCatalog,
 } from "@agentkib/runtime-protocol";
 import { terminationCodeOf } from "./claude-frame-policy";
 import {
@@ -77,7 +76,7 @@ import {
 } from "./usage-limit";
 import { createClaudeGoalReportEndpoint } from "./claude-goal-report";
 import { projectContextUsage } from "./context-usage";
-import { backgroundTaskActivities, subagentActivities } from "./session-activities";
+import { prepareClaudeActivities } from "./session-activities";
 import {
   readClaudeTranscriptModel,
   readClaudeTranscriptObservation,
@@ -4490,8 +4489,10 @@ export class ClaudeManagedReadOwner {
     this.#validate(record);
     record = this.#recoverStartupCleanup(record);
     this.#recoverCompletions(record);
+    let observations: ClaudeRunnerSnapshot["subagents"];
     if (runner) {
       const snapshot = runner.snapshot();
+      if (runner.hasWorker) observations = snapshot.subagents;
       const turnId = snapshot.turnId;
       if (
         snapshot.status === "idle" &&
@@ -4565,7 +4566,7 @@ export class ClaudeManagedReadOwner {
     // Background work lives in the worker: without one none runs, whatever was last stored.
     const backgroundTasks = runner?.hasWorker ? live.backgroundTasks : [];
     live.backgroundTasks = publicBackgroundTasks(backgroundTasks);
-    live.activities = this.#backgroundActivities(id, backgroundTasks);
+    this.#projectActivities(live, { id, record, tasks: backgroundTasks, observations });
     if (live.turnOrigin !== "self") live.turnOrigin = "host";
     live.sourceSessionId = record.nativeId;
     live.workspaceId = record.workspaceId;
@@ -4653,9 +4654,50 @@ export class ClaudeManagedReadOwner {
     return live;
   }
 
-  #backgroundActivities(id: string, tasks: unknown) {
-    return backgroundTaskActivities(tasks, id, this.bootId, () =>
-      this.store.sessions.identitySalt(),
+  #projectActivities(
+    live: Record<string, unknown>,
+    {
+      id,
+      record,
+      tasks,
+      observations = [],
+      includeSubagents = false,
+    }: {
+      id: string;
+      record: Pick<ClaudeRecord, "nativeId" | "workspace"> | null;
+      tasks: unknown;
+      observations?: ClaudeRunnerSnapshot["subagents"];
+      includeSubagents?: boolean;
+    },
+  ): void {
+    let salt: string | undefined;
+    const identitySalt = () => (salt ??= this.store.sessions.identitySalt());
+    const nativeId = record?.nativeId ?? "";
+    const subagents = observations.length
+      ? projectSubagentObservations(
+          {
+            sessionId: id,
+            nativeId,
+            workspace: record?.workspace ?? "",
+            transcript: "",
+            agent: "claude-code",
+          },
+          identitySalt(),
+          observations,
+        )
+      : undefined;
+    if (includeSubagents)
+      live.subagents = subagents ?? {
+        version: 1,
+        sessionId: id,
+        agents: [],
+        truncated: false,
+        partial: true,
+      };
+    prepareClaudeActivities(
+      live,
+      { tasks, observations, sessionId: id, nativeId, bootId: this.bootId, identitySalt },
+      subagents,
     );
   }
 
@@ -4671,27 +4713,9 @@ export class ClaudeManagedReadOwner {
     const version = this.#version?.value ?? null;
     const permission = this.#permissionView(id, version, () => host.settings.permissionMode);
     const pendingStartup = this.#runners.get(id)?.startupPending;
-    const subagents: SubagentCatalog = snapshot.subagents?.length
-      ? projectSubagentObservations(
-          {
-            sessionId: id,
-            nativeId: record?.nativeId ?? "",
-            workspace: record?.workspace ?? "",
-            transcript: "",
-            agent: "claude-code",
-          },
-          this.store.sessions.identitySalt(),
-          snapshot.subagents,
-        )
-      : { version: 1, sessionId: id, agents: [], truncated: false, partial: true };
-    return {
+    const live: Record<string, unknown> = {
       ...snapshot,
       backgroundTasks: publicBackgroundTasks(snapshot.backgroundTasks),
-      subagents,
-      activities: [
-        ...this.#backgroundActivities(id, snapshot.backgroundTasks),
-        ...subagentActivities(subagents),
-      ],
       ...(this.#starting.has(id) && (snapshot.status !== "outcome-unknown" || pendingStartup)
         ? {
             status: "starting",
@@ -4715,6 +4739,14 @@ export class ClaudeManagedReadOwner {
       cliVersion: version,
       ...(permission ? { permission } : {}),
     };
+    this.#projectActivities(live, {
+      id,
+      record,
+      tasks: snapshot.backgroundTasks,
+      observations: snapshot.subagents,
+      includeSubagents: true,
+    });
+    return live;
   }
 
   /**

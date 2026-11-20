@@ -3,6 +3,7 @@ import { lstatSync } from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { pathToFileURL } from "node:url";
+import type { SubagentCatalog } from "@agentkib/runtime-protocol";
 import { sessionTitle } from "./codex-sessions";
 import { acpToolCall, toolEventBytes, type ToolContext } from "./conversation-tools";
 import { within } from "./files";
@@ -853,11 +854,15 @@ export class DevinSessions {
     );
   }
   /** Devin's subagents of a session: each runs its own chain in the session's message tree. */
-  #subagentHeads(ref: string, workspace: string) {
+  #subagentHeads(ref: string, workspace: string, verifyReadable = false) {
     return (
       this.#read((source) => {
         ownedSession(source, ref, workspace);
         if (!columns(source.db, "subagent_heads").has("chain_node_id")) return [];
+        const chainHead =
+          verifyReadable && source.history
+            ? source.db.prepare("SELECT 1 FROM message_nodes WHERE session_id=? AND node_id=?")
+            : undefined;
         return (
           source.db
             .prepare(
@@ -873,6 +878,7 @@ export class DevinSessions {
                   agent: row.agent_id,
                   head: row.chain_node_id as number,
                   updated: typeof row.updated_at === "number" ? row.updated_at : null,
+                  readable: !verifyReadable || !!chainHead?.get(ref, row.chain_node_id as number),
                 },
               ]
             : [],
@@ -884,34 +890,52 @@ export class DevinSessions {
     return createHash("sha256").update(`devin-subagent:${sessionId}:${agent}`).digest("hex");
   }
   /** The subagents Devin ran in a session, named by the task each was given. */
-  subagents(ref: string, workspace: string, sessionId: string) {
-    const heads = this.#subagentHeads(ref, workspace);
-    const agents = heads.slice(0, 64).map((head) => {
+  subagents(ref: string, workspace: string, sessionId: string): SubagentCatalog {
+    return this.#subagents(ref, workspace, sessionId, false);
+  }
+
+  /** Activity links only open child histories whose chain head could actually be read. */
+  activitySubagents(ref: string, workspace: string, sessionId: string): SubagentCatalog {
+    return this.#subagents(ref, workspace, sessionId, true);
+  }
+
+  #subagents(
+    ref: string,
+    workspace: string,
+    sessionId: string,
+    verifyReadable: boolean,
+  ): SubagentCatalog {
+    const heads = this.#subagentHeads(ref, workspace, verifyReadable);
+    const agents: SubagentCatalog["agents"] = heads.slice(0, 64).map((head) => {
       let name = "Devin";
-      try {
-        const page = this.events(ref, workspace, null, 100, head.head);
-        const task = page.events.find((event) => event.kind === "user-message")?.content;
-        const line = task
-          ?.split("\n")
-          .find((value) => value.trim())
-          ?.trim();
-        if (line) name = line.length > 80 ? `${line.slice(0, 79)}…` : line;
-      } catch {
-        // A chain Devin no longer has keeps the generic name; reading it says why.
+      let readable = head.readable;
+      if (readable) {
+        try {
+          const page = this.events(ref, workspace, null, 100, head.head);
+          const task = page.events.find((event) => event.kind === "user-message")?.content;
+          const line = task
+            ?.split("\n")
+            .find((value) => value.trim())
+            ?.trim();
+          if (line) name = line.length > 80 ? `${line.slice(0, 79)}…` : line;
+        } catch {
+          // Legacy discovery still lists the child, so opening it can explain the failure.
+          readable = !verifyReadable;
+        }
       }
       return {
         id: DevinSessions.subagentId(sessionId, head.agent),
         name,
-        agent: "devin" as const,
+        agent: "devin",
         // Devin does not record whether a subagent is still running.
-        status: "unknown" as const,
+        status: "unknown",
         ...(head.updated !== null
           ? { updatedAt: new Date(head.updated * 1000).toISOString() }
           : {}),
-        readable: true,
+        readable,
       };
     });
-    return { version: 1 as const, sessionId, agents, truncated: heads.length > 64 };
+    return { version: 1, sessionId, agents, truncated: heads.length > 64 };
   }
   /** One page of a subagent's own chain, newest first. */
   subagentEvents(

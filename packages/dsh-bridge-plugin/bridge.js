@@ -963,7 +963,7 @@ export function createBridge(ctx, options = {}) {
   const endings = new Map();
   async function settledStatus(sessionId, updatedAt) {
     const known = endings.get(sessionId);
-    if (known && known.updatedAt === updatedAt) return known.status;
+    if (Number.isFinite(updatedAt) && known?.updatedAt === updatedAt) return known.status;
     let status = "unknown";
     try {
       const timing = (await projections(sessionId)).subagentTiming;
@@ -977,7 +977,9 @@ export function createBridge(ctx, options = {}) {
     } catch {
       return "unknown";
     }
-    if (status !== "running") {
+    // An unlisted child has no trustworthy change marker, and an unknown result may
+    // become known before the parent's next read without a list refresh.
+    if (Number.isFinite(updatedAt) && (status === "completed" || status === "stopped")) {
       endings.set(sessionId, { updatedAt, status });
       if (endings.size > 512) endings.delete(endings.keys().next().value);
     }

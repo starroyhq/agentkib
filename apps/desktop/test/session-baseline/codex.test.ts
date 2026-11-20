@@ -350,33 +350,40 @@ describe("Codex session baseline through HTTP and backend RPC", () => {
     const legacyQueue = await control(sessionId, "/codex/queue-add", "queue-add", {
       text: "Phone queue entry",
     });
-    // The host sends an experimentalEnabled field that the Codex queue-list schema rejects.
+    const queueEntries = [
+      { id: "offline-queue-item-1", text: "Web queue entry", hasAttachments: false },
+      { id: "offline-queue-item-2", text: "Phone queue entry", hasAttachments: false },
+    ];
+    const queueReadsStart = host.calls.length;
+    const nativeQueueReadsStart = nativeCalls.length;
     for (const route of ["/managed/queue", "/codex/queue"]) {
       expect(await host.http(`${route}?sessionId=${sessionId}`)).toEqual({
-        status: 500,
-        body: { error: "request_failed" },
+        status: 200,
+        body: {
+          sessionId,
+          ...(route === "/managed/queue" ? { paused: false, requiresResume: false } : {}),
+          data: queueEntries,
+        },
       });
     }
-    expect(host.calls).toContainEqual({
+    const queueRead = {
       method: "web.request",
-      params: { operation: "queue-list", sessionId, experimentalEnabled: true },
-    });
-    expect(await backend?.rpc("web.request", { operation: "queue-list", sessionId })).toMatchObject(
-      {
-        data: [
-          {
-            id: "offline-queue-item-1",
-            clientUserMessageId: queue,
-            input: textInput("Web queue entry"),
-          },
-          {
-            id: "offline-queue-item-2",
-            clientUserMessageId: legacyQueue,
-            input: textInput("Phone queue entry"),
-          },
-        ],
-      },
-    );
+      params: { operation: "queue-list", sessionId },
+    };
+    expect(
+      host.calls
+        .slice(queueReadsStart)
+        .filter(({ params }) => (params as Body).operation === "queue-list"),
+    ).toEqual([queueRead, queueRead]);
+    const nativeQueueRead = {
+      method: "thread/queue/list",
+      params: { threadId, cursor: null, limit: 100 },
+    };
+    expect(
+      nativeCalls
+        .slice(nativeQueueReadsStart)
+        .filter(({ method }) => method === "thread/queue/list"),
+    ).toEqual([nativeQueueRead, nativeQueueRead]);
     await control(sessionId, "/stop", "stop", { turnId });
     expect(
       nativeCalls.filter(({ method }) => /^(turn\/|thread\/queue\/add$)/.test(method)),

@@ -6583,11 +6583,8 @@ export class WebAccessService {
       const sessionId = this.field(url.searchParams.get("sessionId"));
       this.grant(hash, "advancedControl");
       await this.codexScope(sessionId, hash, false, path === "/codex/queue");
-      const result = await this.runtime({
-        operation: "queue-list",
-        sessionId,
-        experimentalEnabled: this.controlsEnabled(sessionId, this.grant(hash)),
-      });
+      this.grant(hash);
+      const result = await this.runtime({ operation: "queue-list", sessionId });
       this.grant(hash);
       if ((result as { reason?: string }).reason === "queue-too-large")
         throw new HttpError(409, "queue_too_large");
@@ -6730,6 +6727,26 @@ export class WebAccessService {
         ) {
           this.clearUnconfirmed(result.sessionId);
           this.unconfirmedRequests.delete(result.sessionId);
+        }
+        if (
+          result.operation === "create" &&
+          result.executionMode === "devin-print" &&
+          result.status === "accepted" &&
+          result.requestId === requestId &&
+          result.sessionId === `devin-create:${requestId}`
+        ) {
+          // Devin claims the request before a native session exists. Reconciliation uses
+          // the outer session ID, so expose the confirmed ID from the stored acknowledgement.
+          const ack = snapshotField(result, "ack");
+          const sessionId = snapshotField(ack, "sessionId");
+          if (
+            snapshotField(ack, "requestId") === requestId &&
+            snapshotField(ack, "accepted") === true &&
+            snapshotField(ack, "completed") === true &&
+            typeof sessionId === "string" &&
+            /^[a-f0-9]{64}$/.test(sessionId)
+          )
+            return this.json(res, 200, { ...result, sessionId });
         }
       }
       return this.json(res, 200, result);

@@ -894,7 +894,19 @@ export class TypeScriptBackend {
             const id = store.sessions.id("claude-code", nativeId);
             if (!store.sessions.get(id))
               await this.#sessionIndex?.refresh({ workspaceId: workspace.id, force: true });
-            const target = await claudeOwner.nativeBridgeTarget(id, nativeId, cwd);
+            const target = await claudeOwner
+              .nativeBridgeTarget(id, nativeId, cwd)
+              .catch((error) => {
+                // A managed record can resolve without an index row. Diagnose absence only
+                // after resolution fails, and keep other identity failures generic.
+                if (
+                  error instanceof Error &&
+                  error.message === "session-not-controllable" &&
+                  !store.sessions.get(id)
+                )
+                  throw new Error("session-not-indexed");
+                throw error;
+              });
             if (target.workspaceId !== workspace.id) throw new Error("session-workspace-mismatch");
             return target;
           },

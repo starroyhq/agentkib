@@ -161,18 +161,21 @@ describe("Claude bridge automatic pairing", () => {
 
   it("rejects a wrong or rotated key", async () => {
     const f = await fixture();
-    expect((await f.autoPair({ autoKey: "0".repeat(64) })).status).toBe(401);
+    expect(await f.autoPair({ autoKey: "0".repeat(64) })).toEqual({
+      status: 401,
+      body: { error: "bridge-authorization-required" },
+    });
     const old = f.discovery().autoKey;
     await f.restart();
     expect(f.discovery().autoKey).not.toBe(old);
     expect((await f.autoPair({ autoKey: old })).status).toBe(401);
   });
 
-  it("asks the terminal to retry while the session is not indexed", async () => {
+  it("keeps unrecognized target failures generic and retryable", async () => {
     const f = await fixture();
     f.autoTarget.mockRejectedValueOnce(new Error("session-unavailable"));
     const first = await f.autoPair();
-    expect(first).toMatchObject({ status: 409, body: { error: "bridge-auto-unavailable" } });
+    expect(first).toEqual({ status: 409, body: { error: "bridge-auto-unavailable" } });
     expect((await f.autoPair()).status).toBe(200);
   });
 
@@ -182,7 +185,7 @@ describe("Claude bridge automatic pairing", () => {
     expect(off.autoConnect).toEqual({ available: true, enabled: false, declined: false });
     expect(await f.autoPair()).toMatchObject({
       status: 409,
-      body: { error: "bridge-auto-disabled" },
+      body: { error: "bridge-auto-disabled", reason: "auto-connect-disabled" },
     });
     // The choice survives a Runtime restart.
     await f.restart();
@@ -198,7 +201,7 @@ describe("Claude bridge automatic pairing", () => {
     expect((await f.manage("bridge-status")).autoConnect.declined).toBe(true);
     expect(await f.autoPair()).toMatchObject({
       status: 409,
-      body: { error: "bridge-auto-declined" },
+      body: { error: "bridge-auto-declined", reason: "session-disconnected" },
     });
     await f.restart();
     expect((await f.autoPair()).body.error).toBe("bridge-auto-declined");

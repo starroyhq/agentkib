@@ -220,11 +220,13 @@ describe("Claude bridge plugin automatic pairing", () => {
     expect(await f.status()).toContain("is connected");
   });
 
-  it("does nothing when AgentKib is not running", async () => {
+  it("explains that AgentKib could not be found without attempting to pair", async () => {
     const f = await fixture({ discovery: false });
     await f.completeTurn();
     expect(f.calls).toHaveLength(0);
-    expect(await f.status()).toBe("AgentKib bridge is not connected.");
+    expect(await f.status()).toBe(
+      "AgentKib is not running or could not be found. Open AgentKib on this computer and wait for automatic connection.",
+    );
   });
 
   it("finds a Runtime started long after the idle terminal without another turn", async () => {
@@ -269,7 +271,7 @@ describe("Claude bridge plugin automatic pairing", () => {
     const f = await fixture({ configure: (api) => (api.session.messages = history) });
     expect(history).toHaveBeenCalledTimes(1);
     expect(f.autoPairs()).toHaveLength(0);
-    expect(await f.status()).toBe("AgentKib bridge is not connected.");
+    expect(await f.status()).toContain("AgentKib bridge is not connected.");
     expect(f.stored.has("compatibility:credential-store:1")).toBe(false);
     await f.tick(3);
     expect(history).toHaveBeenCalledTimes(1);
@@ -318,7 +320,7 @@ describe("Claude bridge plugin automatic pairing", () => {
     await f.tick(400);
     expect(f.autoPairs()).toHaveLength(0);
     expect(f.stored.get(`credentialPath:${f.nativeId}`)).toBeUndefined();
-    expect(await f.status()).toBe("AgentKib bridge is not connected.");
+    expect(await f.status()).toContain("AgentKib bridge is not connected.");
     expect(f.api.prompt.submit).not.toHaveBeenCalled();
   });
 
@@ -342,7 +344,7 @@ describe("Claude bridge plugin automatic pairing", () => {
       expect(f.autoPairs()).toHaveLength(0);
       expect(f.api.session.messages).not.toHaveBeenCalled();
       expect(f.stored.get(`credentialPath:${f.nativeId}`)).toBeUndefined();
-      expect(await f.status()).toBe("AgentKib bridge is not connected.");
+      expect(await f.status()).toContain("AgentKib bridge is not connected.");
       expect(f.api.prompt.submit).not.toHaveBeenCalled();
     },
   );
@@ -350,6 +352,12 @@ describe("Claude bridge plugin automatic pairing", () => {
   it("ignores a late automatic pairing response after session.end", async () => {
     const held = deferred<void>();
     const f = await fixture({
+      autoReplies: [
+        {
+          status: 409,
+          body: { error: "bridge-auto-unavailable", reason: "workspace-not-registered" },
+        },
+      ],
       configure: (api) => {
         const fetch = api.http.fetch;
         api.http.fetch = async (url: string, init: Value) => {
@@ -365,7 +373,7 @@ describe("Claude bridge plugin automatic pairing", () => {
     await f.tick(400);
     expect(f.autoPairs()).toHaveLength(1);
     expect(f.stored.get(`credentialPath:${f.nativeId}`)).toBeUndefined();
-    expect(await f.status()).toBe("AgentKib bridge is not connected.");
+    expect(await f.status()).toContain("AgentKib bridge is not connected.");
     expect(f.api.prompt.submit).not.toHaveBeenCalled();
   });
 
@@ -419,23 +427,44 @@ describe("Claude bridge plugin automatic pairing", () => {
     await f.completeTurn();
     expect(f.autoPairs()).toHaveLength(0);
     expect(f.stored.has("compatibility:credential-store:1")).toBe(false);
-    expect(await f.status()).toBe("AgentKib bridge is not connected.");
+    expect(await f.status()).toBe(
+      "AgentKib is not responding on this computer. Open AgentKib and wait for this terminal to connect.",
+    );
   });
 
-  it("retries after a turn until AgentKib has indexed the session", async () => {
+  it.each([
+    [
+      "workspace-not-registered",
+      "This terminal's workspace is not registered in AgentKib. Add it in AgentKib, then wait for automatic connection.",
+    ],
+    [
+      "session-not-indexed",
+      "AgentKib has not indexed this Claude Code session yet. Make sure session indexing is enabled in AgentKib, then start or continue the conversation in this terminal and wait for automatic connection.",
+    ],
+  ])("explains %s and replaces the reason after a successful retry", async (reason, message) => {
     const f = await fixture({
-      autoReplies: [{ status: 409, body: { error: "bridge-auto-unavailable" } }],
+      autoReplies: [{ status: 409, body: { error: "bridge-auto-unavailable", reason } }],
     });
-    expect(await f.status()).toBe("AgentKib bridge is not connected.");
+    expect(await f.status()).toBe(message);
     await f.completeTurn();
     expect(f.autoPairs()).toHaveLength(2);
     expect(await f.status()).toContain("is connected");
   });
 
-  it("retries an unindexed session while the terminal remains idle", async () => {
+  it.each([
+    ["legacy", 409, undefined],
+    ["unknown", 409, `unknown ${AUTO_KEY} /private/bridge.sock`],
+    ["unauthorized", 401, "workspace-not-registered"],
+  ] as const)("retries a %s automatic pairing reply while idle", async (_label, code, reason) => {
     const f = await fixture({
-      autoReplies: [{ status: 409, body: { error: "bridge-auto-unavailable" } }],
+      autoReplies: [{ status: code, body: { error: "bridge-auto-unavailable", reason } }],
     });
+    const status = await f.status();
+    expect(status).toBe(
+      "AgentKib bridge is not connected. Check the terminal connection in AgentKib or generate a new connection code.",
+    );
+    expect(status).not.toContain(AUTO_KEY);
+    expect(status).not.toContain("/private/bridge.sock");
     expect(f.autoPairs()).toHaveLength(1);
     await f.tick(3);
     expect(f.autoPairs()).toHaveLength(1);
@@ -445,30 +474,40 @@ describe("Claude bridge plugin automatic pairing", () => {
     expect(f.api.prompt.submit).not.toHaveBeenCalled();
   });
 
-  it("stops trying when the user disconnected the session", async () => {
-    const f = await fixture({
-      autoReplies: [{ status: 409, body: { error: "bridge-auto-declined" } }],
-    });
-    await f.completeTurn();
-    await f.completeTurn();
-    await f.tick(600);
-    expect(f.autoPairs()).toHaveLength(1);
-    expect(await f.status()).toBe("AgentKib bridge is not connected.");
-  });
+  it.each([undefined, "session-disconnected"])(
+    "stops trying after a disconnect (%s)",
+    async (reason) => {
+      const f = await fixture({
+        autoReplies: [{ status: 409, body: { error: "bridge-auto-declined", reason } }],
+      });
+      await f.completeTurn();
+      await f.completeTurn();
+      await f.tick(600);
+      expect(f.autoPairs()).toHaveLength(1);
+      expect(await f.status()).toBe(
+        "This session was disconnected or cleared in AgentKib. Generate a new connection code in AgentKib and run it in this terminal.",
+      );
+    },
+  );
 
-  it("connects on a later turn once the workspace is switched back on", async () => {
-    const f = await fixture({
-      autoReplies: [
-        { status: 409, body: { error: "bridge-auto-disabled" } },
-        { status: 409, body: { error: "bridge-auto-disabled" } },
-      ],
-    });
-    await f.completeTurn();
-    expect(await f.status()).toBe("AgentKib bridge is not connected.");
-    await f.completeTurn();
-    expect(f.autoPairs()).toHaveLength(3);
-    expect(await f.status()).toContain("is connected");
-  });
+  it.each([undefined, "auto-connect-disabled"])(
+    "can recover when auto-connect is re-enabled (%s)",
+    async (reason) => {
+      const f = await fixture({
+        autoReplies: [
+          { status: 409, body: { error: "bridge-auto-disabled", reason } },
+          { status: 409, body: { error: "bridge-auto-disabled", reason } },
+        ],
+      });
+      await f.completeTurn();
+      expect(await f.status()).toBe(
+        "Automatic connection is disabled for this workspace. Enable it in AgentKib or generate a new connection code.",
+      );
+      await f.completeTurn();
+      expect(f.autoPairs()).toHaveLength(3);
+      expect(await f.status()).toContain("is connected");
+    },
+  );
 
   it("explains an outdated plugin and keeps reporting it after later turns", async () => {
     const f = await fixture({
@@ -505,6 +544,16 @@ describe("Claude bridge plugin automatic pairing", () => {
     expect(f.calls.some((call) => call.url.endsWith("/reconnect"))).toBe(true);
   });
 
+  it("keeps the diagnosis when an automatic attempt finds an offline saved binding", async () => {
+    const f = await fixture({ discovery: false, unreachable: true });
+    f.stored.set(`credentialPath:${f.nativeId}`, f.connection.credentialPath);
+    await f.completeTurn();
+    expect(f.calls).toHaveLength(0);
+    expect(await f.status()).toBe(
+      "AgentKib is not responding on this computer. Open AgentKib and wait for this terminal to connect.",
+    );
+  });
+
   it.each(["endpoint", "overlapping binding"] as const)(
     "uses the same saved path when the shared runtime updates the %s",
     async (change) => {
@@ -519,7 +568,9 @@ describe("Claude bridge plugin automatic pairing", () => {
           };
         },
       });
-      expect(await f.status()).toBe("AgentKib bridge is not connected.");
+      expect(await f.status()).toBe(
+        "AgentKib is not responding on this computer. Open AgentKib and wait for this terminal to connect.",
+      );
       expect(f.calls).toHaveLength(0);
 
       const { credentialPath, bindingId, token } = f.connection;

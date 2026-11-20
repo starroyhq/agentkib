@@ -18,7 +18,9 @@ test("validates literal sends and private Unix socket paths without executing a 
 
 test("connection status never calls a model or installs configuration", async ($) => {
   const result = await $.command.run({ command: "agentkib-status", args: "" });
-  expect(result.text).toBe("AgentKib bridge is not connected.");
+  expect(result.text).toBe(
+    "AgentKib bridge is not connected. Check the terminal connection in AgentKib or generate a new connection code.",
+  );
 });
 
 test("native permission and tool results pass through unchanged", async ($, on) => {

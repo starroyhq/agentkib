@@ -298,6 +298,7 @@
   "sessions.enableDescription": "開啟後可在此檢視已登記工作區的本機對話記錄。不會連線遠端裝置。",
   "sessions.enabling": "正在開啟…",
   "sessions.partialFailure": "{{count}} 個工作區的對話未能完整讀取。",
+  "sessions.partialFailure_one": "{{count}} 個工作區的對話未能完整讀取。",
   "common.breadcrumb": "麵包屑導覽",
   "sidebar.tasks": "任務",
   "sidebar.development": "開發",

@@ -12,7 +12,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-libra
 import type { ConversationSubscription, SessionStreamEvent } from "@agentkib/conversation-state";
 import type { Access, ConversationReadState, Live } from "@agentkib/web-client";
 import { StrictMode } from "react";
-import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, expect, it, vi } from "vitest";
 import { AppDialogProvider } from "@/components/AppDialogProvider";
 import { api } from "@/core/api";
 import type {
@@ -192,7 +192,7 @@ function createHost({
   };
 }
 
-function renderDesktop() {
+async function renderDesktop() {
   const root = createRootRoute({
     component: rootRoute.options.component,
     validateSearch: rootRoute.options.validateSearch,
@@ -222,21 +222,29 @@ function renderDesktop() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   client.setQueryData(homeKeys.workspaces(), [workspace]);
   client.setQueryData(homeKeys.continuations(workspace.id), [session]);
-  render(
-    <StrictMode>
-      <QueryClientProvider client={client}>
-        <AppDialogProvider>
-          <RouterProvider router={router} />
-        </AppDialogProvider>
-      </QueryClientProvider>
-    </StrictMode>,
-  );
+  await router.load();
+  await act(async () => {
+    render(
+      <StrictMode>
+        <QueryClientProvider client={client}>
+          <AppDialogProvider>
+            <RouterProvider router={router} />
+          </AppDialogProvider>
+        </QueryClientProvider>
+      </StrictMode>,
+    );
+  });
   return router;
 }
 
 function setIndexEnabled(enabled: boolean) {
   useAppStore.getState().setRuntime({ session_index_enabled: enabled } as RuntimeInfo);
 }
+
+beforeAll(async () => {
+  // Load the real conversation module before testing navigation between mounted views.
+  await import("./conversation/conversation");
+});
 
 beforeEach(async () => {
   await initializeI18n("en-US");
@@ -269,8 +277,8 @@ afterEach(() => {
 async function openDesktopConversation(options?: Parameters<typeof createHost>[0]) {
   const host = createHost(options);
   window.desktopConversation = host.bridge;
-  const router = renderDesktop();
-  expect(await screen.findByText("Existing window history")).toBeVisible();
+  const router = await renderDesktop();
+  expect(screen.getByText("Existing window history")).toBeVisible();
   await waitFor(() => expect(host.subscribe).toHaveBeenCalledWith(session.id, undefined));
   return { host, router };
 }

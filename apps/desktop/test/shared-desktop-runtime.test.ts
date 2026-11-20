@@ -325,7 +325,7 @@ function bridgeRequest<T>(
   });
 }
 
-it.skipIf(!["darwin", "linux"].includes(process.platform))(
+it.skipIf(process.platform !== "darwin")(
   "reconnects an existing Dev terminal credential and streams the same turn to both desktops",
   async () => {
     const runtime = await runtimeFixture();

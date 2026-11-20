@@ -298,6 +298,7 @@
   "sessions.enableDescription": "索引を有効にすると、登録済みワークスペースのローカル履歴を表示します。リモートデバイスには接続しません。",
   "sessions.enabling": "有効にしています…",
   "sessions.partialFailure": "{{count}} 件のワークスペースで会話の一部を読み取れませんでした。",
+  "sessions.partialFailure_one": "{{count}} 件のワークスペースで会話の一部を読み取れませんでした。",
   "common.breadcrumb": "パンくずリスト",
   "sidebar.tasks": "タスク",
   "sidebar.development": "開発",

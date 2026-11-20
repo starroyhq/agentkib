@@ -31,7 +31,7 @@ function rule(css: string, selector: string): Record<string, string> {
     const selectors = match[1]
       .replace(/\/\*[\s\S]*?\*\//g, "")
       .split(",")
-      .map((item) => item.trim());
+      .map((item) => item.trim().replace(/\s+/g, " "));
     if (selectors.includes(selector))
       return Object.fromEntries(
         [...match[2].matchAll(/([\w-]+):\s*([^;]+);/g)].map((item) => [item[1], item[2].trim()]),
@@ -341,29 +341,32 @@ describe.each([
     css: webCss,
     palettes: webPalettes,
     scope: '[data-message-role="user"] .aui-markdown',
+    plainCodeBlock: "pre:not(.session-code-block-content)",
   },
   {
     name: "desktop transcript",
     css: conversationCss,
     palettes: desktopPalettes,
     scope: '.agentkib-conversation [data-message-role="user"] .aui-markdown',
+    plainCodeBlock: "pre:not(.session-code-block-content)",
   },
   {
     name: "desktop session list",
     css: desktopCss,
     palettes: desktopPalettes,
     scope: ".markdown-on-primary",
+    plainCodeBlock: "pre",
   },
-])("$name user messages", ({ css, palettes, scope }) => {
+])("$name user messages", ({ css, palettes, scope, plainCodeBlock }) => {
   it.each(palettes)("$name keeps code, quotes and links readable", ({ palette }) => {
     const get = (token: string) => color(palette[token], palette);
     const bubble = over(get("--primary"), get("--background"));
     const resolve = (value: string) =>
       value === "inherit" ? get("--primary-foreground") : color(value, palette);
-    // Code and code blocks are filled on page surfaces; quotes and links are coloured there.
+    // Plain code blocks and inline code need a contrasting fill on the user bubble.
     for (const [element, property] of [
       [":not(pre) > code", "background-color"],
-      ["pre", "background-color"],
+      [plainCodeBlock, "background-color"],
       ["blockquote", "color"],
       ["a", "color"],
     ]) {

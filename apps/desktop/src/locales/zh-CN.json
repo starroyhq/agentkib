@@ -298,6 +298,7 @@
   "sessions.enableDescription": "开启后可在此查看已登记工作区的本机会话记录。不会连接远程设备。",
   "sessions.enabling": "正在开启…",
   "sessions.partialFailure": "{{count}} 个工作区的会话未能完整读取。",
+  "sessions.partialFailure_one": "{{count}} 个工作区的会话未能完整读取。",
   "common.breadcrumb": "面包屑导航",
   "sidebar.tasks": "任务",
   "sidebar.development": "开发",

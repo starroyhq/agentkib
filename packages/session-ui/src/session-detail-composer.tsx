@@ -158,11 +158,7 @@ export function SessionDetailComposerNotices({
           {banner}
         </p>
       )}
-      {background && (
-        <p role="status" className={bannerClass}>
-          {background}
-        </p>
-      )}
+      {background}
       {interactions}
       {showNotice && (
         <p

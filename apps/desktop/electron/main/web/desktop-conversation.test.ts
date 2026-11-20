@@ -97,6 +97,59 @@ describe("trusted desktop conversation routes", () => {
     });
   });
 
+  it("forwards child history reads through the desktop route only for an authorized parent", async () => {
+    const childId = "c".repeat(64);
+    const page = {
+      version: 1,
+      sessionId: "s",
+      subagentId: childId,
+      epoch: "child-epoch",
+      events: [
+        {
+          id: "child-message",
+          kind: "agent-message",
+          content: "Synthetic child reply",
+          attachment_count: 0,
+          truncated: false,
+        },
+      ],
+      next_cursor: "older",
+      warnings: [],
+    };
+    runtime.mockImplementation(async (params) =>
+      (params as { operation: string }).operation === "subagent-events"
+        ? page
+        : defaultRuntime(params),
+    );
+
+    const route = `/subagent/events?sessionId=s&subagentId=${childId}&limit=25&cursor=before`;
+    expect(await service.localRequest(route)).toEqual({ status: 200, body: page });
+    expect(await service.localRequest(route, {})).toMatchObject({
+      status: 404,
+      body: { error: "not_found", controlOutcome: "not-dispatched" },
+    });
+    workspaceRegistered = false;
+    expect(await service.localRequest(route)).toMatchObject({
+      status: 403,
+      body: { error: "workspace_not_authorized" },
+    });
+    expect(
+      runtime.mock.calls.filter(
+        ([input]) => (input as { operation: string }).operation === "subagent-events",
+      ),
+    ).toEqual([
+      [
+        {
+          operation: "subagent-events",
+          sessionId: "s",
+          subagentId: childId,
+          limit: 25,
+          cursor: "before",
+        },
+      ],
+    ]);
+  });
+
   it("retains catalog authorization when a history page cannot use the targeted route", async () => {
     workspaceRegistered = false;
     runtime.mockResolvedValueOnce({ handled: false });

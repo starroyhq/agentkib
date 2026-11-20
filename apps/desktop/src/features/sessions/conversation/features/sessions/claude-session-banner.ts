@@ -115,23 +115,3 @@ export function claudeComposerNotice(banner: ReturnType<typeof claudeSessionBann
     banner?.notice === "lead-turn-limit"
   );
 }
-
-/**
- * Managed Claude: what runs in the background, or that the CLI is continuing by itself after a
- * background task ended. Null when nothing does.
- */
-export function claudeBackgroundStatus({
-  locale,
-  live,
-}: Pick<SessionController, "locale" | "live">): string | null {
-  if (live?.executionMode !== "claude-managed") return null;
-  const continuation = sessionContinuationCopy(locale);
-  if (
-    live.turnOrigin === "self" &&
-    ["running", "waiting-approval", "waiting-input"].includes(live.status)
-  )
-    return continuation.backgroundTurn;
-  const tasks = live.backgroundTasks ?? [];
-  if (!tasks.length) return null;
-  return continuation.backgroundRunning(tasks.length, tasks[0]?.description ?? null);
-}

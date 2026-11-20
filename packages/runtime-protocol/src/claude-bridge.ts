@@ -44,8 +44,13 @@ export const CLAUDE_BRIDGE_PATHS = {
  *   calls go to `leadCall`, and `turn-start` events say whether the terminal or AgentKib started
  *   the turn (`origin`; none for a turn no one typed, which counts as an automatic turn).
  * - `open-model-picker`: a plugin may advertise the terminal's built-in interactive model picker.
+ * - `terminal-subagents`: a plugin may report a bounded list of observed subagents in snapshots.
  */
-export const CLAUDE_BRIDGE_FEATURES = ["lead-tools", "open-model-picker"] as const;
+export const CLAUDE_BRIDGE_FEATURES = [
+  "lead-tools",
+  "open-model-picker",
+  "terminal-subagents",
+] as const;
 
 export interface ClaudeBridgeTicket {
   protocol: 1;
@@ -162,6 +167,13 @@ export interface ClaudeBridgeUsage {
   observedAt: number;
 }
 
+export interface ClaudeBridgeTerminalSubagent {
+  /** Plugin-generated identity. The native task, agent and tool IDs stay in the terminal. */
+  id: string;
+  title: string;
+  status: "starting" | "running" | "completed" | "failed" | "stopped" | "unknown";
+}
+
 export interface ClaudeBridgeSnapshot extends ClaudeBridgeIdentity {
   revision: number;
   currentTurnId: string | null;
@@ -177,6 +189,8 @@ export interface ClaudeBridgeSnapshot extends ClaudeBridgeIdentity {
   compacting?: boolean;
   /** Local native clock, retained after the latest compaction so buffered snapshots keep its order. */
   compactStartedAt?: number;
+  /** Feature `terminal-subagents`: present when the plugin can observe the current list. */
+  terminalSubagents?: ClaudeBridgeTerminalSubagent[];
   usage: ClaudeBridgeUsage | null;
   outbox: ClaudeBridgeOutboxItem[];
   capabilities: ClaudeBridgeCapabilities;

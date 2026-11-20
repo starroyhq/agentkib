@@ -50,6 +50,7 @@ import {
 } from "./managed-ledger";
 import { validHistoryControl } from "./history-control-schema";
 import { sanitizeSessionText } from "./session-handoff";
+import { terminalSubagentActivities } from "./session-activities";
 import type { ClaudeTranscriptObservation } from "./claude-context-usage";
 import type { ContextUsage } from "./context-usage";
 import type { ClaudeObservedPermissionMode } from "./claude-managed-runner";
@@ -207,6 +208,7 @@ type Connection = {
   seq: number;
   revision: number;
   snapshot: ClaudeBridgeSnapshot | null;
+  terminalSubagentsObserved: boolean;
   gap: boolean;
   pending: Pending | null;
   wake?: () => void;
@@ -1251,6 +1253,15 @@ export class ClaudeBridge {
         snapshot.capabilities.stop,
       approvals: [],
       questions: [],
+      ...(connection?.terminalSubagentsObserved
+        ? {
+            activities: terminalSubagentActivities(
+              gap ? undefined : snapshot?.terminalSubagents,
+              id,
+              connection.leaseId,
+            ),
+          }
+        : {}),
       permission: { mode: valid && !row.revoked ? this.#permission(row, observation) : null },
       streamText: sanitizeSessionText(snapshot?.streamText ?? "", { value: 0 }),
       usage: this.#usage(
@@ -2410,6 +2421,7 @@ export class ClaudeBridge {
       seq: 0,
       revision: ++this.#revision,
       snapshot: null,
+      terminalSubagentsObserved: false,
       gap: false,
       pending: null,
       pollActive: false,
@@ -2460,6 +2472,7 @@ export class ClaudeBridge {
       if (started !== undefined && started > (this.#compactStartedAt.get(row) ?? -1))
         this.#compactStartedAt.set(row, Math.min(started, connection.lastSeen));
       connection.snapshot = snapshot;
+      connection.terminalSubagentsObserved ||= snapshot.terminalSubagents !== undefined;
       connection.gap = false;
       this.#rememberContextWindow(row, snapshot);
     } else {

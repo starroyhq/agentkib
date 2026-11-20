@@ -21,10 +21,13 @@ import { Commands } from "../../../packages/backend/src/commands";
 import { WebAccessService, createWebControlState } from "../electron/main/web/service";
 import {
   CLAUDE_BRIDGE_PATHS,
+  RUNTIME_METHODS,
   type ClaudeBridgeCommand,
   type ClaudeBridgeConnection,
   type ClaudeBridgeSnapshot,
   type ClaudeBridgeTicket,
+  type SessionActivity,
+  type SessionSubscription,
 } from "@agentkib/runtime-protocol";
 
 interface HttpResult<T> {
@@ -40,6 +43,7 @@ interface LiveState {
   sendEnabled: boolean;
   stopEnabled: boolean;
   turnId?: string;
+  activities?: readonly SessionActivity[];
 }
 
 describe.skipIf(process.platform !== "darwin")(
@@ -513,6 +517,45 @@ describe.skipIf(process.platform !== "darwin")(
         expect((await http(`/managed/${operation}`, { bootId, sessionId })).status).not.toBe(200);
       }
       expect(await commands()).toEqual([]);
+    });
+
+    it("exposes terminal subagents through bridge live and the session stream", async () => {
+      await connect();
+      expect(await live()).not.toHaveProperty("activities");
+
+      const id = randomUUID();
+      await events({
+        type: "snapshot",
+        snapshot: {
+          ...snapshot,
+          revision: 2,
+          terminalSubagents: [{ id, title: "Read the test report", status: "completed" }],
+        },
+      });
+      const expected = [
+        {
+          id: expect.stringMatching(/^[a-f0-9]{64}$/),
+          title: "Read the test report",
+          kind: "subagent",
+          status: "completed",
+        },
+      ];
+      const current = await live();
+      expect(current.activities).toEqual(expected);
+      expect(JSON.stringify(current.activities)).not.toContain(id);
+      const subscription = await rpc<SessionSubscription>(RUNTIME_METHODS.sessionsSubscribe, {
+        sessionId,
+      });
+      try {
+        expect(subscription.events[0]).toMatchObject({
+          type: "snapshot",
+          payload: { live: { activities: current.activities } },
+        });
+      } finally {
+        await rpc(RUNTIME_METHODS.sessionsUnsubscribe, {
+          subscriptionId: subscription.subscriptionId,
+        });
+      }
     });
 
     it("dispatches one original-terminal send, replays its receipt, and cancels that exact turn", async () => {

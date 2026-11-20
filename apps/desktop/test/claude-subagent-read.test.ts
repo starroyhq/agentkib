@@ -125,7 +125,12 @@ function fixture(backgroundTasks = false) {
     this: ClaudeManagedRunnerProcess,
     ...args: Parameters<ClaudeManagedRunnerProcess["send"]>
   ) {
-    if (!workers.includes(this)) workers.push(this);
+    if (!workers.includes(this)) {
+      workers.push(this);
+      // Linux lacks the production macOS supervisor. This fake sends only task frames,
+      // so enable their tracking to exercise the same projection in Linux CI.
+      if (backgroundTasks && process.platform === "linux") this.state.backgroundTasksEnabled = true;
+    }
     return originalSend.apply(this, args);
   });
   const project = claudeProjectKey(f.workspace);

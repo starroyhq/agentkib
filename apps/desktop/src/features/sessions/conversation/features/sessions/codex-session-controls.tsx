@@ -198,10 +198,10 @@ export function CodexComposerControls({
   const modelAccess = useRef(access);
   modelAccess.current = access;
   const displayAgent = current?.id === selected ? current.agent : undefined;
-  const [dialog, setDialog] = useState<"goal" | "goal-draft">();
-  const offerGoalDraft =
+  const [goalDialog, setGoalDialog] = useState<"goal" | "goal-draft">();
+  const offersGoalDraft =
     goalRegistered && goalDraftOffered && feature("goal-set")?.available !== true && !!onStageGoal;
-  const editingGoalDraft = dialog === "goal-draft";
+  const editingGoalDraft = goalDialog === "goal-draft";
   const goalCopy = composerGoalCopy(locale);
   const [addOpen, setAddOpen] = useState(false);
   const [permissionOpen, setPermissionOpen] = useState(false);
@@ -559,7 +559,7 @@ export function CodexComposerControls({
       bootId: access?.bootId,
       deviceId: access?.device?.id,
     };
-    setDialog(undefined);
+    setGoalDialog(undefined);
     setPermissionOpen(false);
     setAddOpen(false);
 
@@ -635,7 +635,7 @@ export function CodexComposerControls({
       live.revision !== undefined &&
       live.revision !== null
     )
-      void load(true, dialog === "goal" || applyingStartupGoal);
+      void load(true, goalDialog === "goal" || applyingStartupGoal);
   }, [
     full,
     load,
@@ -644,7 +644,7 @@ export function CodexComposerControls({
     live?.sessionId,
     live?.status,
     live?.revision,
-    dialog,
+    goalDialog,
     applyingStartupGoal,
   ]);
 
@@ -890,16 +890,16 @@ export function CodexComposerControls({
   const openGoal = () => {
     if (!goalRegistered) return;
     closeAdd();
-    if (offerGoalDraft) {
+    if (offersGoalDraft) {
       // Keep background native reads from replacing the local draft.
       goalDraftRevision.current = goalSnapshot?.revision ?? 0;
       setGoalDirty(false);
       setObjective(startupGoal?.value.objective ?? "");
       setTokenBudget(startupGoal?.value.tokenBudget?.toString() ?? "");
-      setDialog("goal-draft");
+      setGoalDialog("goal-draft");
       return;
     }
-    setDialog("goal");
+    setGoalDialog("goal");
     if (goalReadable && goalReadStale) void load();
   };
   const openModel = (page: "models" | "effort", refresh = false) =>
@@ -932,7 +932,7 @@ export function CodexComposerControls({
   };
   const closeGoal = () => {
     if (editingGoalDraft) resetGoalDraftEditor();
-    setDialog(undefined);
+    setGoalDialog(undefined);
   };
   const discardStartupGoal = () => {
     if (savedGoal || !startupGoal || goalDraftLocked || mutationFlight.current) return;
@@ -952,14 +952,14 @@ export function CodexComposerControls({
   const parsedBudget = goalBudget ? Number(goalBudget) : undefined;
   const budgetValid =
     parsedBudget === undefined || (Number.isSafeInteger(parsedBudget) && parsedBudget > 0);
-  const parsedGoalDraft = editingGoalDraft ? parseGoalDraft(goalObjective, goalBudget) : undefined;
-  const goalDraftDisabled = !offerGoalDraft || goalDraftLocked;
-  const goalDraftTitle = !offerGoalDraft
+  const goalDraft = editingGoalDraft ? parseGoalDraft(goalObjective, goalBudget) : undefined;
+  const goalDraftDisabled = !offersGoalDraft || goalDraftLocked;
+  const goalDraftTitle = !offersGoalDraft
     ? (reasonTitle(feature("goal-draft")?.reason) ?? copy.goalUnavailable)
     : undefined;
   const saveGoalDraft = () => {
-    if (goalDraftDisabled || !parsedGoalDraft) return;
-    onStageGoal?.(parsedGoalDraft);
+    if (goalDraftDisabled || !goalDraft) return;
+    onStageGoal?.(goalDraft);
     closeGoal();
   };
   const settingsWriteLocked = composerSettingsWriteLocked({
@@ -1072,7 +1072,7 @@ export function CodexComposerControls({
         changePermissionOpen(true);
         return true;
       }
-      if (!goalReadable && !offerGoalDraft) return false;
+      if (!goalReadable && !offersGoalDraft) return false;
       openGoal();
       return true;
     },
@@ -1097,8 +1097,22 @@ export function CodexComposerControls({
       {settingsMessage}
     </p>
   );
+
+  const changeGoalField = (field: "objective" | "budget", value: string) => {
+    editGoal();
+    if (field === "objective") setObjective(value);
+    else setTokenBudget(value);
+  };
+  const goalFieldObjective =
+    editingGoalDraft || goalSnapshot?.available ? goalObjective : (stagedGoal?.objective ?? "");
+  const goalFieldBudget =
+    editingGoalDraft || goalSnapshot?.available
+      ? goalBudget
+      : (stagedGoal?.tokenBudget?.toString() ?? "");
   const goalFieldsDisabled = editingGoalDraft ? goalDraftDisabled : goalActionDisabled("set");
-  const goalFields = dialog && (
+  const goalBudgetType =
+    (editingGoalDraft ? undefined : goalSnapshot?.budget) ?? goalProvider?.create.goalBudget;
+  const goalFields = goalDialog && (
     <div
       className="space-y-3"
       title={
@@ -1111,26 +1125,12 @@ export function CodexComposerControls({
     >
       <ComposerGoalFields
         locale={locale}
-        objective={
-          editingGoalDraft || goalSnapshot?.available
-            ? goalObjective
-            : (stagedGoal?.objective ?? "")
-        }
-        budget={
-          editingGoalDraft || goalSnapshot?.available
-            ? goalBudget
-            : (stagedGoal?.tokenBudget?.toString() ?? "")
-        }
+        objective={goalFieldObjective}
+        budget={goalFieldBudget}
         disabled={goalFieldsDisabled}
-        hideBudget={(goalSnapshot?.budget ?? goalProvider?.create.goalBudget) === "rounds"}
-        onObjectiveChange={(value) => {
-          editGoal();
-          setObjective(value);
-        }}
-        onBudgetChange={(value) => {
-          editGoal();
-          setTokenBudget(value);
-        }}
+        hideBudget={goalBudgetType === "rounds"}
+        onObjectiveChange={(value) => changeGoalField("objective", value)}
+        onBudgetChange={(value) => changeGoalField("budget", value)}
       />
     </div>
   );
@@ -1317,7 +1317,7 @@ export function CodexComposerControls({
         modelFeedback={modelMessage && settingsFeedback}
       />
       {!permissionMessage && !modelMessage && settingsFeedback}
-      {goalRegistered && dialog && (
+      {goalRegistered && goalDialog && (
         <Dialog
           panel
           description={editingGoalDraft ? undefined : `${layout.selected}: ${resources.length}`}
@@ -1326,7 +1326,7 @@ export function CodexComposerControls({
               <Button
                 type="button"
                 className="disabled:pointer-events-auto"
-                disabled={goalDraftDisabled || !parsedGoalDraft}
+                disabled={goalDraftDisabled || !goalDraft}
                 title={goalDraftTitle}
                 onClick={saveGoalDraft}
               >

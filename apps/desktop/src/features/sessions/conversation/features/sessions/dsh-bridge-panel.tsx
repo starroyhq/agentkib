@@ -1,5 +1,7 @@
 import { useEffect, useState } from "react";
+import { Copy } from "lucide-react";
 import { desktopApi } from "@/core/desktop";
+import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import {
   CopyField,
@@ -191,6 +193,41 @@ const copy: Record<
   },
 };
 
+function InstallCopyField({
+  value,
+  label,
+  copiedLabel,
+  disabledReason,
+}: {
+  value: string;
+  label: string;
+  copiedLabel: string;
+  disabledReason?: string;
+}) {
+  if (!disabledReason) return <CopyField value={value} label={label} copiedLabel={copiedLabel} />;
+  return (
+    <div className="flex min-w-0 items-center gap-1 rounded-lg border border-border/70 bg-muted/40 py-1 pr-1 pl-3">
+      {value ? (
+        <code className="min-w-0 flex-1 truncate font-mono text-xs" title={value}>
+          {value}
+        </code>
+      ) : (
+        <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">{label}</span>
+      )}
+      <Button
+        variant="ghost"
+        size="icon-sm"
+        className="disabled:pointer-events-auto"
+        aria-label={label}
+        title={disabledReason}
+        disabled
+      >
+        <Copy aria-hidden />
+      </Button>
+    </div>
+  );
+}
+
 /**
  * Status and settings of the per-computer DeepSeek Harness connection: whether AgentKib starts DSH
  * in the background, and how to install the plugin into a DSH the user runs. Never installs.
@@ -310,7 +347,7 @@ export function DshBridgePanel() {
           {!directoryReason && (
             <p className="text-xs leading-5 text-muted-foreground">{text.desktop}</p>
           )}
-          <CopyField
+          <InstallCopyField
             value={directory}
             label={text.copyDirectory}
             copiedLabel={text.copied}
@@ -319,7 +356,7 @@ export function DshBridgePanel() {
         </div>
         <div className="grid gap-1.5">
           {!commandReason && <p className="text-xs leading-5 text-muted-foreground">{text.cli}</p>}
-          <CopyField
+          <InstallCopyField
             value={command}
             label={text.copy}
             copiedLabel={text.copied}

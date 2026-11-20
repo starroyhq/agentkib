@@ -267,6 +267,17 @@ describe("v15 workspace header", () => {
       expect(screen.queryByText(tr("workspace.noDraftChanges"))).toBeNull();
       act(() => useWorkspaceStore.getState().setManifest(draft));
       const review = within(header).getByRole("button", { name: tr("workspace.reviewChanges") });
+      act(() => useWorkspaceStore.getState().setApplyingChanges(true));
+      expect(review).toBeDisabled();
+      expect(review).toHaveAttribute("title", tr("changes.applying"));
+      expect(review).not.toHaveAttribute("aria-describedby");
+      expect(within(header).queryByText(tr("changes.applying"))).not.toBeInTheDocument();
+      fireEvent.click(review);
+      expect(api.plan).not.toHaveBeenCalled();
+      act(() => useWorkspaceStore.getState().setApplyingChanges(false));
+      expect(review).toBeEnabled();
+      expect(review).not.toHaveAttribute("title");
+
       const pending = deferred<ChangeSet>();
       vi.mocked(api.plan).mockReturnValueOnce(pending.promise);
       fireEvent.click(review);
@@ -274,6 +285,8 @@ describe("v15 workspace header", () => {
       expect(api.plan).toHaveBeenCalledOnce();
       expect(api.plan).toHaveBeenCalledWith(workspace.path, draft, false);
       expect(review).toBeDisabled();
+      expect(review).toHaveAttribute("title", tr("common.loading"));
+      expect(within(header).queryByText(tr("common.loading"))).not.toBeInTheDocument();
       await act(async () => pending.resolve(changeSet));
       await waitFor(() =>
         expect(doubles.navigate).toHaveBeenCalledWith({

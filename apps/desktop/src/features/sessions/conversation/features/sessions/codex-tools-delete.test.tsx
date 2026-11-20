@@ -1,10 +1,11 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CodexTools } from "./codex-tools";
 import { codexCopy, codexReason } from "./codex-copy";
 import { useSession } from "./session-context";
+import { webLayoutCopy } from "./web-layout-copy";
 
 const { navigate } = vi.hoisted(() => ({ navigate: vi.fn() }));
 vi.mock("./session-context", () => ({ useSession: vi.fn() }));
@@ -96,22 +97,27 @@ describe("deleting a session from its actions on the desktop", () => {
     expect(navigate).not.toHaveBeenCalled();
   });
 
-  it("says a reason shared by several management buttons once", () => {
+  const forkReason = codexReason("en-US", "session-busy").text;
+  it.each([
+    ["session-busy", forkReason],
+    ["codex-owner-busy", copy.deleteOwnerBusy],
+  ])("keeps unavailable management actions' reasons in their titles (%s)", (reason, text) => {
     prepare({
       fork: { available: false, reason: "session-busy" },
-      delete: { available: false, reason: "session-busy" },
+      delete: { available: false, reason },
     });
     render(<CodexTools open />);
-    expect(screen.getByRole("button", { name: copy.fork })).toBeDisabled();
-    expect(screen.getByRole("button", { name: copy.delete })).toBeDisabled();
-    expect(screen.getAllByText(codexReason("en-US", "session-busy").text)).toHaveLength(1);
-  });
-
-  it("says another Codex process has to quit first", () => {
-    prepare({ delete: { available: false, reason: "codex-owner-busy" } });
-    render(<CodexTools open />);
-    expect(screen.getByRole("button", { name: copy.delete })).toBeDisabled();
-    expect(screen.getByText(copy.deleteOwnerBusy)).toBeVisible();
+    const management = within(
+      screen.getByRole("region", { name: webLayoutCopy["en-US"].management }),
+    );
+    const fork = management.getByRole("button", { name: copy.fork });
+    const remove = management.getByRole("button", { name: copy.delete });
+    expect(fork).toBeDisabled();
+    expect(fork).toHaveAttribute("title", forkReason);
+    expect(remove).toBeDisabled();
+    expect(remove).toHaveAttribute("title", text);
+    expect(management.queryByText(forkReason)).not.toBeInTheDocument();
+    expect(management.queryByText(text)).not.toBeInTheDocument();
   });
 
   it.each([
@@ -120,8 +126,13 @@ describe("deleting a session from its actions on the desktop", () => {
   ])("explains a Claude session it cannot delete (%s)", (reason, text) => {
     prepare({ delete: { available: false, reason } }, "claude-code");
     render(<CodexTools open />);
-    expect(screen.getByRole("button", { name: copy.delete })).toBeDisabled();
-    expect(screen.getByText(text)).toBeVisible();
+    const management = within(
+      screen.getByRole("region", { name: webLayoutCopy["en-US"].management }),
+    );
+    const remove = management.getByRole("button", { name: copy.delete });
+    expect(remove).toBeDisabled();
+    expect(remove).toHaveAttribute("title", text);
+    expect(management.queryByText(text)).not.toBeInTheDocument();
     expect(text).toMatch(/Claude/);
   });
 });

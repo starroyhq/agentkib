@@ -534,7 +534,7 @@ describe("composer sending shortcuts", () => {
     expect(
       screen.queryByRole("button", { name: codexCopy["en-US"].advanced }),
     ).not.toBeInTheDocument();
-    expect(screen.queryByText(/In use in Codex/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/in use in Codex/i)).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Send" })).toBeEnabled();
   });
   it("shows the stop button during a followed turn", () => {
@@ -561,7 +561,7 @@ describe("composer sending shortcuts", () => {
     expect(
       screen.queryByRole("button", { name: codexCopy["en-US"].advanced }),
     ).not.toBeInTheDocument();
-    expect(screen.queryByText(/In use in Codex/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/in use in Codex/i)).not.toBeInTheDocument();
   });
   it("checks Claude on focus and keeps the composer directly available after background retirement", () => {
     continuationFixture();
@@ -607,9 +607,7 @@ describe("composer sending shortcuts", () => {
     expect(input).toHaveValue("Claude draft");
     expect(input).toBeEnabled();
     expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
-    expect(
-      screen.getByText(sessionContinuationCopy("en-US").busyHint("Claude Code")),
-    ).toBeVisible();
+    expect(screen.getByText("This session is in use in Claude Code.")).toBeVisible();
     expect(
       screen.queryByRole("button", { name: "Continue in Claude Code" }),
     ).not.toBeInTheDocument();

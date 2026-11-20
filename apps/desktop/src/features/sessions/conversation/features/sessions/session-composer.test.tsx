@@ -561,15 +561,20 @@ describe("composer sending shortcuts", () => {
       reason: "codex-owner-busy",
     });
   }
-  it.each(["zh-CN", "zh-Hant", "en-US", "ja-JP"] as const)(
+  it.each([
+    ["zh-CN", "这条会话正在 Codex 中使用。"],
+    ["zh-Hant", "這段對話正在 Codex 中使用。"],
+    ["en-US", "This session is in use in Codex."],
+    ["ja-JP", "この会話は Codex で使用中です。"],
+  ] as const)(
     "keeps an editable composer and a passive ownership hint in %s",
-    (locale) => {
+    (locale, busyHint) => {
       continuationFixture();
       externalOwner();
       doubles.session.locale = locale;
       const { input } = renderComposer("Keep the draft");
       expect(input).toBeEnabled();
-      expect(screen.getByText(sessionContinuationCopy(locale).busyHint("Codex"))).toBeVisible();
+      expect(screen.getByText(busyHint)).toBeVisible();
       expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
       expect(doubles.control).not.toHaveBeenCalled();
       expect(doubles.codexAction).not.toHaveBeenCalled();
@@ -599,7 +604,7 @@ describe("composer sending shortcuts", () => {
     expect(
       screen.queryByRole("button", { name: codexCopy["en-US"].advanced }),
     ).not.toBeInTheDocument();
-    expect(screen.queryByText(/In use in Codex/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/in use in Codex/i)).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Send" })).toBeEnabled();
   });
   it("shows the stop button during a followed turn", () => {
@@ -626,7 +631,7 @@ describe("composer sending shortcuts", () => {
     expect(
       screen.queryByRole("button", { name: codexCopy["en-US"].advanced }),
     ).not.toBeInTheDocument();
-    expect(screen.queryByText(/In use in Codex/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/in use in Codex/i)).not.toBeInTheDocument();
   });
   it("checks Claude on focus and keeps the composer directly available after background retirement", () => {
     continuationFixture();
@@ -672,9 +677,7 @@ describe("composer sending shortcuts", () => {
     expect(input).toHaveValue("Claude draft");
     expect(input).toBeEnabled();
     expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
-    expect(
-      screen.getByText(sessionContinuationCopy("en-US").busyHint("Claude Code")),
-    ).toBeVisible();
+    expect(screen.getByText("This session is in use in Claude Code.")).toBeVisible();
     expect(
       screen.queryByRole("button", { name: "Continue in Claude Code" }),
     ).not.toBeInTheDocument();

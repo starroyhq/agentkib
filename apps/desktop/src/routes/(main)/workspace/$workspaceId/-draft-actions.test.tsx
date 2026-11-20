@@ -142,11 +142,14 @@ describe("workspace draft controls", () => {
     expect(useWorkspaceStore.getState().workspaceDrafts.workspace).toEqual(draft);
   });
 
-  it("disables discard while applying and shows an accurate review-disabled reason", async () => {
+  it("disables discard and review while applying, with the review reason in its title", async () => {
     useWorkspaceStore.getState().setApplyingChanges(true);
     await renderRoute();
     expect(screen.getByRole("button", { name: "Discard draft" })).toBeDisabled();
-    expect(screen.getByText("Applying…")).toBeInTheDocument();
+    const review = screen.getByRole("button", { name: "Review changes" });
+    expect(review).toBeDisabled();
+    expect(review).toHaveAttribute("title", "Applying…");
+    expect(screen.queryByText("Applying…")).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Discard draft" }));
     expect(confirm).not.toHaveBeenCalled();
   });

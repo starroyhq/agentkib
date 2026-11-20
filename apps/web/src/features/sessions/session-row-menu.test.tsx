@@ -4,7 +4,10 @@ import type { ConversationSessionSummary } from "@agentkib/web-client";
 import { SessionRowMenu } from "@/features/conversation/features/catalog/session-row-menu";
 import { SessionCatalog } from "@/features/conversation/features/catalog/session-catalog";
 import { useSession } from "@/features/conversation/features/sessions/session-context";
-import { codexCopyForSurface } from "@/features/conversation/features/sessions/codex-copy";
+import {
+  codexCopyForSurface,
+  codexReason,
+} from "@/features/conversation/features/sessions/codex-copy";
 
 vi.mock("@/features/conversation/features/sessions/session-context", () => ({
   useSession: vi.fn(),
@@ -73,6 +76,44 @@ describe("a session row's menu in the browser", () => {
     await screen.findByRole("menuitem", { name: copy.delete });
     expect(screen.queryByRole("menuitem", { name: copy.archive })).not.toBeInTheDocument();
   });
+
+  it.each([
+    {
+      agent: "codex",
+      reason: "follower-operation-unverified",
+      deleteReason: "codex-owner-busy",
+      deleteCopy: copy.deleteOwnerBusy,
+    },
+    {
+      agent: "claude-code",
+      reason: "claude-desktop-session",
+      deleteReason: "claude-owner-busy",
+      deleteCopy: copy.deleteClaudeOwnerBusy,
+    },
+  ])(
+    "shows unavailable $agent actions as disabled labels",
+    async ({ agent, reason, deleteReason, deleteCopy }) => {
+      const unavailable = { available: false, reason };
+      const supportsArchive = agent === "codex";
+      features({
+        rename: unavailable,
+        ...(supportsArchive ? { archive: unavailable } : {}),
+        delete: { available: false, reason: deleteReason },
+      });
+      render(<SessionRowMenu session={summary(agent)} />);
+      openMenu();
+      await screen.findByRole("menuitem", { name: copy.delete });
+      for (const name of [copy.rename, ...(supportsArchive ? [copy.archive] : []), copy.delete]) {
+        const item = screen.getByRole("menuitem", { name });
+        expect(item).toHaveAttribute("aria-disabled", "true");
+        fireEvent.click(item);
+      }
+      expect(screen.queryByText(codexReason("en-US", reason, "web").text)).not.toBeInTheDocument();
+      expect(screen.queryByText(deleteCopy)).not.toBeInTheDocument();
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+      expect(client.sessionAction).not.toHaveBeenCalled();
+    },
+  );
 
   it("is rendered beside the row, never inside its button", () => {
     render(

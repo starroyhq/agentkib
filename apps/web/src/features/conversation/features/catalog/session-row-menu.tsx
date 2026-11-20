@@ -51,7 +51,7 @@ export function SessionRowMenu({ session }: { session: ConversationSessionSummar
   }, [open, client, session.id, session.agent]);
   if (!managedAgentOf(session.agent)) return null;
   const isClaude = session.agent === "claude-code";
-  const reason = (action: SessionManagementAction, value = features?.[action]?.reason) => {
+  const reason = (action: SessionManagementAction, value: string) => {
     if (action === "delete" && value === "codex-owner-busy") return copy.deleteOwnerBusy;
     if (
       action === "delete" &&
@@ -83,15 +83,8 @@ export function SessionRowMenu({ session }: { session: ConversationSessionSummar
   const archive = features?.archive ?? features?.unarchive;
   const archiveAction: SessionManagementAction = session.archived ? "unarchive" : "archive";
   const item = (action: SessionManagementAction, label: string, select: () => void) => (
-    <DropdownMenuItem
-      disabled={!available(action)}
-      className="grid max-w-72 justify-items-start gap-0.5"
-      onClick={select}
-    >
-      <span>{label}</span>
-      {features && !available(action) && !busy && (
-        <span className="text-xs whitespace-normal text-muted-foreground">{reason(action)}</span>
-      )}
+    <DropdownMenuItem disabled={!available(action)} onClick={select}>
+      {label}
     </DropdownMenuItem>
   );
   return (

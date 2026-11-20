@@ -28,6 +28,7 @@ import { register as registerPlugin } from "../../../packages/claude-bridge-plug
 import type { ClaudeTranscriptObservation } from "../../../packages/backend/src/claude-context-usage";
 import type { ClaudeObservedPermissionMode } from "../../../packages/backend/src/claude-managed-runner";
 import { projectAgentFixture } from "./fixtures/project-agent";
+import { OrchestrationService } from "../../../packages/backend/src/orchestration-service";
 
 const cleanups: Array<() => Promise<void>> = [];
 afterEach(async () => {
@@ -261,6 +262,144 @@ async function fixture(
 }
 
 describe.skipIf(process.platform === "win32")("native Claude borrowed-host broker", () => {
+  it("runs a terminal Worker through the native send, queue, steer and stop gates", async () => {
+    const f = await fixture(5_000);
+    const leadId = "fixture-project-agent";
+    const workerId = f.target.sessionId;
+    const report = vi.fn((_id: string, _device: string, _text: string) => false);
+    const orchestration = new OrchestrationService(
+      f.options.dataDir,
+      f.options.bootId,
+      {
+        control: (params) => f.bridge.request(params),
+        live: async () => f.live(),
+        events: async () => [{ kind: "agent-message", content: "Recorded terminal reply" }],
+        session: (id) =>
+          id === workerId || id === leadId
+            ? { agent: "claude-code", workspaceId: f.target.workspaceId, title: "Fixture" }
+            : null,
+        managed: async (id) => id === workerId && f.live().executionLocation === "terminal",
+        workspaces: () => [{ id: f.target.workspaceId, name: "Fixture" }],
+      },
+      (id) => id === leadId,
+      report,
+    );
+    cleanups.push(() => orchestration.close());
+    f.bridge.observeWorkers({
+      isWorker: (id) => !!orchestration.registry.leadOfLane(id),
+      turnEnded: (...args) => void orchestration.laneTurnEnded(...args),
+      waiting: (...args) => void orchestration.laneWaiting(...args),
+      controlled: (...args) => orchestration.laneControlled(...args),
+    });
+    await orchestration.assignWorkers({
+      sessionId: leadId,
+      deviceId: "browser-a",
+      workspaceId: f.target.workspaceId,
+      workers: [workerId],
+    });
+    const call = async (name: string, input: Record<string, unknown> = {}) =>
+      JSON.parse((await orchestration.call(leadId, name, { worker: "worker-1", ...input })).text);
+    async function command(expectedKind: string) {
+      let offered: Record<string, unknown> | undefined;
+      await expect
+        .poll(async () => {
+          offered ??= (await f.poll()).body.commands[0];
+          return offered?.kind;
+        })
+        .toBe(expectedKind);
+      return offered!;
+    }
+    const sent = call("worker_send", { text: "Synthetic assignment" });
+    const send = await command("send");
+    const turnId = randomUUID();
+    await f.events({ type: "turn-start", turnId, revision: 1, origin: "agentkib" });
+    await f.post("/v1/results", {
+      commandId: send.commandId,
+      status: "accepted",
+      revision: 1,
+      turnId,
+    });
+    expect(await sent).toMatchObject({ accepted: true, operation: "send" });
+    for (const mode of ["queue", "steer"]) {
+      const sent = call("worker_send", { text: `Synthetic ${mode}`, mode });
+      const offered = await command(mode);
+      await f.post("/v1/results", {
+        commandId: offered.commandId,
+        status: "accepted",
+        revision: 1,
+        turnId,
+      });
+      expect(await sent).toMatchObject({
+        accepted: true,
+        operation: mode === "queue" ? "queue-add" : "steer",
+      });
+    }
+    const endedAt = Date.now();
+    await f.events({
+      type: "turn-complete",
+      turnId,
+      revision: 2,
+      text: "Synthetic terminal reply",
+      aborted: false,
+      occurredAt: endedAt,
+      startedAt: endedAt - 1_500,
+    });
+    expect(report).toHaveBeenCalledWith(
+      leadId,
+      "browser-a",
+      expect.stringContaining("Synthetic terminal reply"),
+    );
+    expect(await call("worker_read")).toMatchObject({
+      status: "idle",
+      replies: [{ turn: null, text: "Recorded terminal reply" }],
+    });
+    const nativeTurn = randomUUID();
+    await f.events({ type: "turn-start", turnId: nativeTurn, revision: 3, origin: "terminal" });
+    const waiting = {
+      ...f.snapshot,
+      revision: 4,
+      currentTurnId: nativeTurn,
+      status: "waiting",
+      waiting: "permission",
+    };
+    await f.events({ type: "snapshot", snapshot: waiting });
+    expect(report).toHaveBeenCalledWith(
+      leadId,
+      "browser-a",
+      expect.stringContaining("sent it a message directly"),
+    );
+    await expect
+      .poll(() =>
+        report.mock.calls.some(([, , text]) => text.includes("waiting for the user's approval")),
+      )
+      .toBe(true);
+    expect(await call("worker_read")).toMatchObject({
+      status: "awaiting-approval",
+      waitingForUser: [],
+    });
+    const stopped = call("worker_stop");
+    const stop = await command("stop");
+    expect(stop.turnId).toBe(nativeTurn);
+    await f.post("/v1/results", {
+      commandId: stop.commandId,
+      status: "accepted",
+      revision: 4,
+      turnId: nativeTurn,
+    });
+    await f.events({
+      type: "turn-complete",
+      turnId: nativeTurn,
+      revision: 5,
+      text: "",
+      aborted: true,
+    });
+    expect(await stopped).toMatchObject({ accepted: true });
+    expect(report).toHaveBeenCalledWith(
+      leadId,
+      "browser-a",
+      expect.stringContaining("turn ended: cancelled"),
+    );
+  });
   it("reads a verified permission marker independently of native usage and never makes auto writable", async () => {
     const observed = vi.fn(() => ({ usage: { available: false } }));
     const permission = vi.fn((): ClaudeObservedPermissionMode | null => "auto");

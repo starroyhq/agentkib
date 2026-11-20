@@ -12,6 +12,7 @@ import {
   type WebClient,
 } from "@agentkib/web-client";
 import type { SessionControlPending } from "./session-control";
+import { sessionQueuePanel } from "./agents/session-queue";
 
 export function settingsNoticeGroup(
   fields: Partial<SessionActionBody>,
@@ -31,6 +32,16 @@ export function dispatchSessionAction(
   action: SessionAction,
   body: SessionActionBody,
 ): Promise<SessionActionResult> {
+  if (
+    sessionQueuePanel(agent)?.surface === "basic" &&
+    ["queue-add", "queue-update", "queue-delete", "queue-pause", "queue-resume"].includes(action)
+  ) {
+    return client.request<SessionActionResult>("managed/action", {
+      ...body,
+      operation: action,
+      agent,
+    });
+  }
   const managed = managedAgentOf(agent);
   if (!managed) return Promise.reject(new ApiError(409, "operation_unavailable", "not-dispatched"));
   return client.sessionAction(action, body, managed);

@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { PROJECT_AGENT_MAX_WORKERS } from "@agentkib/runtime-protocol";
+import { PROJECT_AGENT_MAX_WORKERS, parseClaudeSlashCommand } from "@agentkib/runtime-protocol";
 import { sanitizeSessionText } from "./session-handoff";
 import {
   openLeadEndpoint,
@@ -9,6 +9,7 @@ import {
 } from "./orchestration-endpoint";
 import {
   addLeadRecord,
+  isLaneAgent,
   LEAD_APPROVALS,
   LEAD_DEFAULTS,
   LeadRegistry,
@@ -19,9 +20,31 @@ import {
   type LeadScope,
 } from "./orchestration-registry";
 
+export type LaneEndedTurn = {
+  turnId: string;
+  outcome: string;
+  startedAt: string | null;
+  endedAt: string | null;
+  historyTurnId?: string;
+  replyText?: string | null;
+};
+
+export interface WorkerObserver {
+  turnEnded(
+    sessionId: string,
+    turnId: string,
+    outcome: string,
+    durationMs: number | null,
+    historyTurnId?: string,
+    replyText?: string | null,
+  ): void;
+  waiting(sessionId: string, turnId: string | null, status: string): void;
+  controlled(sessionId: string, operation: string): void;
+  isWorker(sessionId: string): boolean;
+}
+
 /**
- * What the service needs of the sessions AgentKib runs as lanes: Codex sessions (`web-read.ts`)
- * and DeepSeek Harness sessions (`dsh-bridge.ts`). Calls about a session go to whichever runs it.
+ * The existing session controls and reads. Calls about a Worker go to its assigned provider.
  */
 export type LaneHost = {
   /** `send`, `steer`, `queue-add`, `stop`, `approve` and `answer` on a lane's session. */
@@ -31,7 +54,7 @@ export type LaneHost = {
   events(sessionId: string, limit: number): Promise<Array<Record<string, unknown>>>;
   /** An indexed session's agent and workspace, or null. */
   session(sessionId: string): { agent: string; workspaceId: string; title: string | null } | null;
-  /** Whether AgentKib already runs this Codex session, or reaches this DSH session. */
+  /** Whether a session reachable only through a specific provider can be assigned now. */
   managed(sessionId: string): Promise<boolean>;
   workspaces(): Array<{ id: string; name: string }>;
   /**
@@ -39,11 +62,7 @@ export type LaneHost = {
    * ones no live observer reported, as when the Codex app ran the lane, are reported late
    * (`catchUp`). A turn whose start is not known has a null `startedAt`.
    */
-  endedTurns?(
-    sessionId: string,
-  ): Promise<
-    Array<{ turnId: string; outcome: string; startedAt: string | null; endedAt: string | null }>
-  >;
+  endedTurns?(sessionId: string): Promise<LaneEndedTurn[]>;
 };
 
 /** The longest message AgentKib sends in one turn, as the host's control entry allows. */
@@ -80,10 +99,26 @@ function elapsed(milliseconds: number): string {
   return `${Math.floor(minutes / 60)}h ${String(minutes % 60).padStart(2, "0")}m`;
 }
 
-const AGENT_NAMES: Record<LaneAgent, string> = {
-  codex: "Codex",
-  "deepseek-harness": "DeepSeek Harness",
-};
+const WORKER_CAPABILITIES = {
+  codex: { name: "Codex", requiresReachability: false, steer: true },
+  "deepseek-harness": {
+    name: "DeepSeek Harness",
+    requiresReachability: true,
+    steer: true,
+  },
+  "claude-code": { name: "Claude Code", requiresReachability: true, steer: true },
+  devin: { name: "Devin", requiresReachability: true, steer: false },
+  antigravity: { name: "Antigravity", requiresReachability: true, steer: false },
+} satisfies Record<LaneAgent, { name: string; requiresReachability: boolean; steer: boolean }>;
+
+function workerIsRunning(status: unknown): boolean {
+  return (
+    status === "running" ||
+    status === "awaiting-approval" ||
+    status === "waiting-approval" ||
+    status === "waiting-input"
+  );
+}
 
 /**
  * A report's envelope: what happened to which worker, then the worker's own words, if any. It is
@@ -95,7 +130,7 @@ export function workerReport(
   event: string,
   reply?: string | null,
 ): string {
-  const head = `[AgentKib report] Worker "${lane.name}" (${AGENT_NAMES[lane.agent ?? "codex"]}) · ${event}`;
+  const head = `[AgentKib report] Worker "${lane.name}" (${WORKER_CAPABILITIES[lane.agent ?? "codex"].name}) · ${event}`;
   if (reply === undefined) return head;
   return [
     head,
@@ -202,18 +237,59 @@ type WaitingItem = {
   youMayDecide: boolean;
 };
 
-/**
- * An approval a lead may decide: accept once or decline, nothing more. One that asks for network
- * access, more permissions or a policy change (an extended approval) offers neither.
- */
-function plainApproval(approval: Record<string, unknown>): boolean {
+type DelegatedApproval = { kind: LeadApproval; accept: string; decline: string };
+
+/** Select only the provider's explicit one-time choices for a recognizable task. */
+function delegatedApproval(
+  live: Record<string, unknown>,
+  approval: Record<string, unknown>,
+): DelegatedApproval | undefined {
+  if (approval.supported !== true || approval.requiresExtendedApproval === true) return;
   const decisions = Array.isArray(approval.availableDecisions) ? approval.availableDecisions : [];
-  return (
-    approval.supported === true &&
-    approval.requiresExtendedApproval !== true &&
-    decisions.includes("accept") &&
-    decisions.includes("decline")
-  );
+  const kind = APPROVAL_KINDS[String(approval.method)];
+  if (kind && decisions.includes("accept") && decisions.includes("decline"))
+    return { kind, accept: "accept", decline: "decline" };
+  if (approval.method === "claude/can_use_tool" && isObject(approval.context)) {
+    const context = approval.context;
+    if (
+      context.blockedPath != null ||
+      context.decisionReason != null ||
+      context.decision_reason_type != null ||
+      context.mcp_server != null ||
+      context.matched_ask_rule != null ||
+      context.default_to_no === true ||
+      context.server_policy_ask_only ||
+      context.requires_user_interaction ||
+      (context.permissionSuggestions != null &&
+        (!Array.isArray(context.permissionSuggestions) || context.permissionSuggestions.length > 0))
+    )
+      return;
+    if (!decisions.includes("allow") || !decisions.includes("deny") || !isObject(approval.input))
+      return;
+    const tool = approval.toolName;
+    if (tool === "Bash" && typeof approval.input.command === "string")
+      return { kind: "command", accept: "allow", decline: "deny" };
+    if ((tool === "Write" || tool === "Edit") && typeof approval.input.file_path === "string")
+      return { kind: "file-change", accept: "allow", decline: "deny" };
+    return;
+  }
+  if (live.executionMode !== "acp-managed" || !isObject(approval.toolCall)) return;
+  const tool = approval.toolCall.kind;
+  const options = (Array.isArray(approval.options) ? approval.options : []).filter(isObject);
+  const allow = options.filter((option) => option.kind === "allow_once");
+  const reject = options.filter((option) => option.kind === "reject_once");
+  if (allow.length !== 1 || reject.length !== 1) return;
+  const accept = allow[0]?.optionId;
+  const decline = reject[0]?.optionId;
+  if (
+    typeof accept !== "string" ||
+    typeof decline !== "string" ||
+    !decisions.includes(accept) ||
+    !decisions.includes(decline)
+  )
+    return;
+  if (tool === "execute") return { kind: "command", accept, decline };
+  if (tool === "edit") return { kind: "file-change", accept, decline };
 }
 
 function fileChanges(value: unknown): WaitingItem["changes"] {
@@ -248,17 +324,23 @@ function waitingItems(live: Record<string, unknown>, scope: LeadScope): WaitingI
   const questions = (Array.isArray(live.questions) ? live.questions : []).filter(isObject);
   return [
     ...approvals.map((approval): WaitingItem => {
-      const kind = APPROVAL_KINDS[String(approval.method)];
+      const delegated = delegatedApproval(live, approval);
+      const kind = delegated?.kind ?? APPROVAL_KINDS[String(approval.method)];
       const context = isObject(approval.requestContext) ? approval.requestContext : {};
+      const native = isObject(approval.toolCall) ? approval.toolCall.rawInput : approval.input;
+      const input = isObject(native) ? native : {};
+      const command = approval.command ?? input.command ?? input.cmd ?? input.script;
+      const path = input.file_path ?? input.path ?? input.filePath;
+      const changes = approval.changes ?? (typeof path === "string" ? [{ path }] : null);
       return {
         kind: "approval",
         id: String(approval.requestId),
         approval: kind ?? "other",
-        ...(approval.command != null ? { command: shown(approval.command, 2000) } : {}),
+        ...(command != null ? { command: shown(command, 2000) } : {}),
         ...(typeof approval.cwd === "string" ? { cwd: shown(approval.cwd, 1024) } : {}),
         ...(typeof context.reason === "string" ? { reason: shown(context.reason, 1000) } : {}),
-        ...(approval.changes != null ? { changes: fileChanges(approval.changes) } : {}),
-        youMayDecide: !!kind && (scope.approvals ?? []).includes(kind) && plainApproval(approval),
+        ...(changes != null ? { changes: fileChanges(changes) } : {}),
+        youMayDecide: !!delegated && (scope.approvals ?? []).includes(delegated.kind),
       };
     }),
     ...questions.map((question): WaitingItem => ({
@@ -439,11 +521,10 @@ export class OrchestrationService {
       throw new Error("invalid-lead-workspaces");
     return this.registry.registerWorkers(
       sessionId,
-      (lead) => {
+      (lead, names) => {
         if (lead.paused) throw new Error("delegation-paused");
         if (lead.lanes.length + candidates.length > PROJECT_AGENT_MAX_WORKERS)
           throw new Error("worker-limit-reached");
-        const names = new Set(lead.lanes.map((lane) => lane.name));
         let number = 1;
         const assigned = candidates.map((worker) => {
           const current = this.#workerSession(worker.id);
@@ -709,22 +790,30 @@ export class OrchestrationService {
     turnId: string,
     outcome: string,
     durationMs: number | null = null,
+    historyTurnId?: string,
+    replyText?: string | null,
   ): Promise<void> {
     const owner = this.registry.leadOfLane(sessionId);
     if (!owner || owner.lane.reportedTurns.includes(turnId)) return;
-    let reply: string | null = null;
+    const replyTurnId = historyTurnId ?? turnId;
+    let reply =
+      typeof replyText === "string" && replyText.trim() ? shown(replyText, MAX_REPLY) : null;
     try {
-      const last = (await this.lanes.events(sessionId, 50))
-        .filter(
-          (event) =>
-            event.turn_id === turnId &&
-            event.kind === "agent-message" &&
-            event.cli_output !== true &&
-            typeof event.content === "string" &&
-            event.content.trim() !== "",
-        )
-        .at(-1);
-      if (last) reply = bounded(sanitizeSessionText(String(last.content), { value: 0 }), MAX_REPLY);
+      const last =
+        replyText === undefined
+          ? (await this.lanes.events(sessionId, 50))
+              .filter(
+                (event) =>
+                  (event.turn_id === replyTurnId ||
+                    (historyTurnId && event.id === historyTurnId)) &&
+                  event.kind === "agent-message" &&
+                  event.cli_output !== true &&
+                  typeof event.content === "string" &&
+                  event.content.trim() !== "",
+              )
+              .at(-1)
+          : undefined;
+      if (last) reply = shown(last.content, MAX_REPLY);
     } catch {
       /* The report still says the turn ended. */
     }
@@ -766,6 +855,7 @@ export class OrchestrationService {
             const since = turn.startedAt === null ? ended : started;
             if (
               lane.reportedTurns.includes(turn.turnId) ||
+              (lane.agent === "devin" && turn.startedAt === null) ||
               !(since >= joined) ||
               !(now - ended >= CATCH_UP_GRACE_MS)
             )
@@ -775,6 +865,8 @@ export class OrchestrationService {
               turn.turnId,
               turn.outcome,
               ended >= started ? ended - started : null,
+              turn.historyTurnId,
+              turn.replyText,
             );
           }
         }
@@ -789,7 +881,7 @@ export class OrchestrationService {
    */
   async laneWaiting(sessionId: string, turnId: string | null, status: string): Promise<void> {
     const owner = this.registry.leadOfLane(sessionId);
-    const key = `${turnId ?? "?"}:${status}`;
+    const key = `${turnId ?? "?"}:${status === "waiting-approval" ? "awaiting-approval" : status}`;
     if (!owner || owner.lane.reportedTurns.includes(key)) return;
     const live = await this.#state(sessionId);
     const pending = live ? waitingItems(live, owner.lead.scope) : [];
@@ -1090,7 +1182,7 @@ export class OrchestrationService {
             {
               name: "worker_approve",
               readOnly: false,
-              description: `Decide a Codex worker's approval that the user lets you decide (${(scope.approvals ?? []).join(", ")}; see youMayDecide in worker_read or the report): "accept" lets that one action run once, "decline" refuses it and the worker goes on. A DeepSeek Harness worker's approvals are always the user's. Check the command or the change first; when in doubt, decline or leave it to the user.`,
+              description: `Decide a worker's approval that the user lets you decide (${(scope.approvals ?? []).join(", ")}; see youMayDecide in worker_read or the report): "accept" lets that one action run once, "decline" refuses it and the worker goes on. A DeepSeek Harness worker's approvals are always the user's. Check the command or the change first; when in doubt, decline or leave it to the user.`,
               inputSchema: {
                 type: "object",
                 properties: {
@@ -1229,13 +1321,12 @@ export class OrchestrationService {
   #workerSession(sessionId: string): { agent: LaneAgent; workspaceId: string } {
     const summary = this.lanes.session(sessionId);
     const agent = summary?.agent;
-    if (!summary || (agent !== "codex" && agent !== "deepseek-harness"))
-      throw new Error("worker-requires-codex-or-dsh-session");
+    if (!summary || !isLaneAgent(agent)) throw new Error("worker-agent-unsupported");
     return { agent, workspaceId: summary.workspaceId };
   }
 
   async #checkWorkerReachable(sessionId: string, agent: LaneAgent): Promise<void> {
-    if (agent === "deepseek-harness" && !(await this.lanes.managed(sessionId)))
+    if (WORKER_CAPABILITIES[agent].requiresReachability && !(await this.lanes.managed(sessionId)))
       throw new Error("worker-unavailable");
   }
 
@@ -1263,7 +1354,11 @@ export class OrchestrationService {
     if (mode !== "queue" && mode !== "steer") return refuse("invalid-mode");
     const live = await this.#state(lane.sessionId);
     if (!live) return refuse("worker-unavailable");
-    const running = ["running", "awaiting-approval", "waiting-input"].includes(String(live.status));
+    const running = workerIsRunning(live.status);
+    const capability = WORKER_CAPABILITIES[lane.agent ?? "codex"];
+    if (running && mode === "steer" && !capability.steer) return refuse("steer-unsupported");
+    if (lane.agent === "claude-code" && parseClaudeSlashCommand(body))
+      return refuse("worker-command-unsupported");
     const operation = running ? (mode === "steer" ? "steer" : "queue-add") : "send";
     if (!running && live.sendEnabled !== true)
       return refuse(typeof live.reason === "string" ? live.reason : "worker-busy");
@@ -1341,7 +1436,7 @@ export class OrchestrationService {
     });
   }
 
-  /** Decides an approval its lane waits for, where the person let the lead (`plainApproval`). */
+  /** Decides an approval where the provider offers a single-use choice and the user delegated it. */
   async #approve(lead: Lead, input: Record<string, unknown>): Promise<EndpointResult> {
     const lane = this.#lane(lead, input);
     const id = stringField(input, "approval", 256);
@@ -1359,12 +1454,14 @@ export class OrchestrationService {
     const approval = (live.approvals as unknown[])
       .filter(isObject)
       .find((entry) => String(entry.requestId) === id)!;
+    const delegated = delegatedApproval(live, approval);
+    if (!delegated) return refuse("approval-not-delegated");
     return this.#decide(lead, lane, "approve", {
       runtimeBootId: live.runtimeBootId,
       expectedRevision: live.revision,
       turnId: approval.turnId,
       approvalId: approval.requestId,
-      decision,
+      decision: delegated[decision],
     });
   }
 

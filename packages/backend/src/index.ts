@@ -59,7 +59,12 @@ import { RemoteAgent } from "./remote-agent";
 import { WorkspaceStorageOwner } from "./storage";
 import { QuotaOwner } from "./quota";
 import { ClaudeHostControlPreflightError, ClaudeManagedReadOwner } from "./claude-managed-read";
-import { OrchestrationService, type LaneHost, type SessionRole } from "./orchestration-service";
+import {
+  OrchestrationService,
+  type LaneHost,
+  type SessionRole,
+  type WorkerObserver,
+} from "./orchestration-service";
 import { createRelayCsr } from "./relay-csr";
 import { readControlReceipt } from "./control-receipt";
 import { ConversationReadStates } from "./conversation-read-state";
@@ -801,6 +806,7 @@ export class TypeScriptBackend {
             (this.#claudeBridge?.queuedReports(sessionId) ?? 0),
           (sessionId) => this.#webRead?.usageLimited(sessionId) === true,
         );
+        leadOwner.observeWorkers(this.#workerObserver);
         this.#dshLeads?.close();
         this.#dshLeads = new DshLeadWatch({
           isLead: (sessionId) => !!this.#orchestration?.status(sessionId),
@@ -964,6 +970,7 @@ export class TypeScriptBackend {
               { turnStartedAt: timing.startedAt ? new Date(timing.startedAt).toISOString() : null },
             ),
         });
+        this.#claudeBridge.observeWorkers(this.#workerObserver);
         this.#claudeBridge.initialize();
         dshBridge.initialize();
         this.#historySearch = new HistorySearch(
@@ -1374,6 +1381,8 @@ export class TypeScriptBackend {
           "steer",
           "queue-add",
           "queue-update",
+          "queue-pause",
+          "queue-resume",
           "queue-delete",
           "queue-reorder",
           "rename",
@@ -2624,10 +2633,26 @@ export class TypeScriptBackend {
   });
 
   /**
-   * A control of a Codex session from a person's device. When the session is a lead's lane,
+   * A control from a person's device. When the session is a lead's lane,
    * the lead hears that the person stepped in; the service's own controls do not come here.
    */
   #codexControl(params: Record<string, unknown>) {
+    const sessionId = params.sessionId;
+    const operation = String(params.operation);
+    if (typeof sessionId === "string") {
+      const agent = this.#store?.sessions.get(sessionId)?.agent;
+      if (agent === "devin" || agent === "antigravity")
+        return this.#withWebRead((owner) => owner.managedControl(params)).then((result) => {
+          if (
+            result &&
+            typeof result === "object" &&
+            "accepted" in result &&
+            result.accepted === true
+          )
+            this.#workerObserver.controlled(sessionId, operation);
+          return result;
+        });
+    }
     try {
       if (typeof params.sessionId === "string") {
         this.#orchestration?.laneControlled(params.sessionId, String(params.operation));
@@ -2644,22 +2669,65 @@ export class TypeScriptBackend {
     return this.#withWebRead((owner) => owner.managedControl(params));
   }
 
-  /**
-   * The sessions AgentKib runs as lanes, as the orchestration service reaches them: a DeepSeek
-   * Harness session through the DSH bridge, any other through AgentKib's Codex services.
-   */
+  /** Worker observations never block the native session protocol. */
+  readonly #workerObserver: WorkerObserver = {
+    turnEnded: (sessionId, turnId, outcome, durationMs, historyTurnId, replyText) => {
+      void this.#orchestration
+        ?.laneTurnEnded(sessionId, turnId, outcome, durationMs, historyTurnId, replyText)
+        .catch(() => undefined);
+    },
+    waiting: (sessionId, turnId, status) => {
+      void this.#orchestration?.laneWaiting(sessionId, turnId, status).catch(() => undefined);
+    },
+    controlled: (sessionId, operation) => {
+      try {
+        this.#orchestration?.laneControlled(sessionId, operation);
+      } catch {
+        // The person's control has its own result, independent of delegation.
+      }
+    },
+    isWorker: (sessionId) => !!this.#orchestration?.registry.leadOfLane(sessionId),
+  };
+
   #laneHost(store: BackendStore): LaneHost {
-    const dsh = (sessionId: unknown) =>
-      typeof sessionId === "string" && this.#dshBridge?.handles(sessionId) ? this.#dshBridge : null;
+    const dsh = (sessionId: string) =>
+      this.#dshBridge?.handles(sessionId) ? this.#dshBridge : null;
+    const session = (sessionId: string) => {
+      const summary = store.sessions.get(sessionId);
+      if (summary)
+        return {
+          agent: summary.agent,
+          workspaceId: summary.workspace_id,
+          title: summary.title ?? null,
+        };
+      const claude =
+        this.#claudeManaged?.managedWorkspace(sessionId) ??
+        this.#claudeBridge?.workspaceOf(sessionId);
+      if (claude) return { agent: "claude-code", workspaceId: claude, title: null };
+      const codex = this.#webRead?.codexLeadCapable(sessionId)
+        ? this.#webRead.managedWorkspace(sessionId)
+        : null;
+      return codex ? { agent: "codex", workspaceId: codex, title: null } : null;
+    };
+    const live = async (sessionId: string): Promise<Record<string, unknown>> => {
+      const bridge = dsh(sessionId);
+      if (bridge) return bridge.live(sessionId, true);
+      const request = { operation: "live", sessionId, experimentalEnabled: true };
+      return (await (session(sessionId)?.agent === "claude-code"
+        ? this.#dispatchClaudeManaged(request)
+        : this.#withWebRead((owner) => owner.request(request)))) as Record<string, unknown>;
+    };
     return {
-      control: (value) =>
-        dsh(value.sessionId)?.request(value) ??
-        this.#withWebRead((owner) => owner.managedControl(value)),
-      live: async (sessionId) =>
-        dsh(sessionId)?.live(sessionId, true) ??
-        ((await this.#withWebRead((owner) =>
-          owner.request({ operation: "live", sessionId, experimentalEnabled: true }),
-        )) as Record<string, unknown>),
+      session,
+      live,
+      control: (value) => {
+        if (typeof value.sessionId !== "string") throw new Error("session-unavailable");
+        const bridge = dsh(value.sessionId);
+        if (bridge) return bridge.request(value);
+        if (session(value.sessionId)?.agent === "claude-code")
+          return this.#dispatchClaudeManaged(value);
+        return this.#withWebRead((owner) => owner.managedControl(value));
+      },
       events: async (sessionId, limit) => {
         const bridge = dsh(sessionId);
         if (bridge) {
@@ -2670,31 +2738,61 @@ export class TypeScriptBackend {
               >)
             : [];
         }
-        const page = (await this.#withWebRead((owner) =>
-          owner.request({ operation: "events", sessionId, limit, retainCursor: false }),
-        )) as { events?: unknown };
+        if (session(sessionId)?.agent === "antigravity") {
+          const events = await this.#withWebRead((owner) =>
+            owner.antigravityWorkerEvents(sessionId, limit),
+          );
+          if (events) return events;
+        }
+        const request = { operation: "events", sessionId, limit };
+        const page = (await (session(sessionId)?.agent === "claude-code"
+          ? this.#claudeManaged?.hasManagedSession(sessionId)
+            ? this.#claudeManaged.request(request)
+            : this.#readIndexedClaudeEvents(request, sessionId)
+          : this.#withWebRead((owner) => owner.request({ ...request, retainCursor: false })))) as {
+          events?: unknown;
+        };
         return Array.isArray(page?.events) ? (page.events as Array<Record<string, unknown>>) : [];
       },
-      session: (sessionId) => {
-        const summary = store.sessions.get(sessionId);
-        if (summary)
-          return {
-            agent: summary.agent,
-            workspaceId: summary.workspace_id,
-            title: summary.title ?? null,
-          };
-        const workspaceId = this.#webRead?.codexLeadCapable(sessionId)
-          ? this.#webRead.managedWorkspace(sessionId)
-          : null;
-        return workspaceId ? { agent: "codex", workspaceId, title: null } : null;
+      managed: async (sessionId) => {
+        switch (session(sessionId)?.agent) {
+          case "deepseek-harness":
+            return !!dsh(sessionId);
+          case "claude-code": {
+            const state = await live(sessionId);
+            return (
+              (state.executionMode === "claude-follower" &&
+                state.terminalSend === true &&
+                state.status !== "unsupported" &&
+                state.status !== "disconnected") ||
+              (state.executionMode === "claude-managed" &&
+                !!this.#claudeManaged?.managedWorkspace(sessionId) &&
+                state.status !== "unsupported")
+            );
+          }
+          case "devin":
+            return (await live(sessionId)).status !== "unsupported";
+          case "antigravity":
+            return this.#withWebRead((owner) => owner.antigravityWorkerAvailable(sessionId));
+          default:
+            return this.#withWebRead((owner) => owner.isManagedSession(sessionId));
+        }
       },
-      managed: async (sessionId) =>
-        store.sessions.get(sessionId)?.agent === "deepseek-harness"
-          ? !!dsh(sessionId)
-          : this.#withWebRead((owner) => owner.isManagedSession(sessionId)),
-      endedTurns: (sessionId) =>
-        dsh(sessionId)?.endedTurns(sessionId) ??
-        this.#withWebRead((owner) => owner.endedTurns(sessionId)),
+      endedTurns: async (sessionId) => {
+        const bridge = dsh(sessionId);
+        if (bridge) return bridge.endedTurns(sessionId);
+        switch (session(sessionId)?.agent) {
+          case "claude-code":
+            return (await this.#claudeManaged?.endedTurns(sessionId)) ?? [];
+          case "devin":
+            return this.#withWebRead((owner) => owner.devinEndedTurns(sessionId));
+          case "antigravity":
+            // ACP replay has messages and tool calls, without a persisted turn outcome.
+            return [];
+          default:
+            return this.#withWebRead((owner) => owner.endedTurns(sessionId));
+        }
+      },
       workspaces: () =>
         (store.listWorkspaces() as Array<{ id: string; name?: string; path: string }>).map(
           (workspace) => ({ id: workspace.id, name: workspace.name ?? workspace.path }),
@@ -2729,18 +2827,14 @@ export class TypeScriptBackend {
         (request) => this.#dispatchDsh(request),
       );
       this.#webRead.observeLanes({
-        turnEnded: (sessionId, turnId, outcome, durationMs) =>
-          void this.#orchestration
-            ?.laneTurnEnded(sessionId, turnId, outcome, durationMs)
-            .catch(() => undefined),
-        waiting: (sessionId, turnId, status) =>
-          void this.#orchestration?.laneWaiting(sessionId, turnId, status).catch(() => undefined),
+        turnEnded: this.#workerObserver.turnEnded,
+        waiting: this.#workerObserver.waiting,
         ownTurn: (sessionId, turnId) => void this.#leadOwnTurn(sessionId, turnId),
         limitEnded: (sessionId) => this.#orchestration?.limitEnded(sessionId),
       });
       // Devin's history marks no turn's end: the turns AgentKib ran record their own results.
-      this.#webRead.observeResults((target, result) =>
-        this.#readStates?.recordTerminal(target, result),
+      this.#webRead.observeResults((target, result, timing) =>
+        this.#readStates?.recordTerminal(target, result, timing),
       );
       // A Codex Project Agent's thread starts with its worker tools.
       this.#webRead.leadEndpoints(async (sessionId) => {
@@ -2833,7 +2927,17 @@ export class TypeScriptBackend {
         // The Claude transport also addresses sessions before their transcripts are indexed.
         return this.#withWebRead((owner) =>
           owner.bridgedSessionProviderRequest("claude-code", params),
-        );
+        ).then((result) => {
+          if (
+            typeof params.sessionId === "string" &&
+            result &&
+            typeof result === "object" &&
+            "accepted" in result &&
+            result.accepted === true
+          )
+            this.#workerObserver.controlled(params.sessionId, String(params.operation));
+          return result;
+        });
       default:
         return this.#dispatchClaudeManaged(params);
     }
@@ -2841,6 +2945,25 @@ export class TypeScriptBackend {
 
   async #dispatchClaudeManaged(params: Record<string, unknown>) {
     try {
+      const operation = String(params.operation);
+      if (operation === "schedule-list") {
+        const serial = this.#withWebRead((owner) => owner.serialScheduleList());
+        if (params.serialOnly === true) return { sessions: await serial };
+        const [claude, queued] = await Promise.all([
+          this.#claudeManaged!.request(params) as Promise<{ sessions?: unknown[] }>,
+          serial.catch(() => null),
+        ]);
+        return {
+          ...claude,
+          sessions: [...(claude.sessions ?? []), ...(queued ?? [])],
+          ...(queued === null ? { serialQueueUnavailable: true } : {}),
+        };
+      }
+      if (operation.startsWith("schedule-") && typeof params.sessionId === "string") {
+        const agent = this.#store?.sessions.get(params.sessionId)?.agent;
+        if (agent === "devin" || agent === "antigravity")
+          return this.#withWebRead((owner) => owner.serialSchedule(params));
+      }
       if (params.operation === "schedule-invalidate") {
         const deviceId = typeof params.deviceId === "string" ? params.deviceId : undefined;
         const sessionId = typeof params.sessionId === "string" ? params.sessionId : undefined;
@@ -2855,6 +2978,10 @@ export class TypeScriptBackend {
             () => undefined,
           );
         }
+        if (deviceId)
+          await this.#withWebRead((owner) =>
+            owner.invalidateSerialSchedule(deviceId, params.quitting === true),
+          ).catch(() => undefined);
       }
       if (String(params.operation).startsWith("lead-")) return await this.#requestLead(params);
       // The desktop's local management channel also reports the DeepSeek Harness connection.

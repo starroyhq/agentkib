@@ -240,6 +240,7 @@ export {
   SessionDetailComposerNotices,
   SessionDetailReadOnlyFooter,
 } from "./session-detail-composer";
+export { sessionQueuePanel, type SessionQueuePanelAgent } from "./agents/session-queue";
 
 export { projectAgentCopy, type ProjectAgentCopy } from "./project-agent-copy";
 export { usageLimitNotice, usageLimitTime, type UsageLimitNoticeInput } from "./usage-limit-copy";

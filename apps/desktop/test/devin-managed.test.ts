@@ -371,6 +371,8 @@ describe.runIf(posix)("Devin managed runner", () => {
       {
         nativeId: "known-session",
         turnId,
+        startedAt: expect.any(String),
+        endedAt: expect.any(String),
         outcome: "completed",
         historyTurnId: "devin-u1",
         answerItemId: "devin-r2",

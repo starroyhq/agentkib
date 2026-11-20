@@ -260,6 +260,21 @@ export class ClaudeHostStateStore {
     }
   }
 
+  keysWithPrefix(prefix: string): string[] {
+    const database = openManagedLedger(this.dataDir);
+    if (!database) return [];
+    try {
+      if (!database.prepare("SELECT 1 FROM sqlite_master WHERE name='claude_host_states'").get())
+        return [];
+      const rows = database
+        .prepare("SELECT session_id FROM claude_host_states WHERE session_id>=? AND session_id<?")
+        .all(prefix, `${prefix}\uffff`) as Array<{ session_id: string }>;
+      return rows.map((row) => row.session_id);
+    } finally {
+      database.close();
+    }
+  }
+
   update<T>(sessionId: string, mutate: (state: ClaudeHostState) => T): T {
     return this.#transaction(sessionId, (state) => {
       const result = mutate(state);
@@ -275,11 +290,13 @@ export class ClaudeHostStateStore {
     workspaceId: string,
     mutate: (state: ClaudeHostState) => Record<string, unknown>,
     resolveDispatched = false,
+    receipt?: { sessionId: string; executionMode: string },
   ): Record<string, unknown> {
     const requestId = value.requestId;
     if (typeof requestId !== "string" || !validClaudeDeviceId(value.deviceId))
       throw new Error("invalid-managed-control");
     const fingerprint = claudeCommandFingerprint(value);
+    const receiptSessionId = receipt?.sessionId ?? sessionId;
     return this.#transaction(sessionId, (state, database) => {
       const previous = database
         .prepare("SELECT fingerprint,result FROM managed_commands WHERE request_id=?")
@@ -297,7 +314,7 @@ export class ClaudeHostStateStore {
         completed: true,
         controlOutcome: "accepted",
         requestId,
-        sessionId,
+        sessionId: receiptSessionId,
         runtimeBootId: this.bootId,
         ...(typeof value.publicInputHash === "string"
           ? { publicInputHash: value.publicInputHash }
@@ -310,14 +327,14 @@ export class ClaudeHostStateStore {
         )
         .run(
           requestId,
-          sessionId,
+          receiptSessionId,
           fingerprint,
           JSON.stringify(result),
           value.deviceId as string,
           JSON.stringify({
             operation: value.operation,
             workspaceId,
-            executionMode: "claude-managed",
+            executionMode: receipt?.executionMode ?? "claude-managed",
             runtimeBootId: this.bootId,
             ...(typeof value.publicInputHash === "string"
               ? { publicInputHash: value.publicInputHash }

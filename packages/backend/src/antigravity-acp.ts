@@ -10,8 +10,8 @@ import { versionAtLeast } from "./native-version";
 export const MAX_ACP_FRAME_BYTES = 1024 * 1024;
 export type AcpId = bigint | string;
 export class AcpUndispatchedError extends Error {
-  constructor() {
-    super("session-compacting");
+  constructor(reason = "session-compacting") {
+    super(reason);
   }
 }
 export interface AcpCompatibility {

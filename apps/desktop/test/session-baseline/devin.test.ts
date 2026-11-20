@@ -160,6 +160,7 @@ async function fixture() {
 
   return {
     ...host,
+    rpc: backend.rpc,
     sessionId,
     createdId,
     data,
@@ -276,7 +277,7 @@ describe.skipIf(process.platform === "win32")("Devin session HTTP baseline", () 
       status: "idle",
       reason: null,
     };
-    expect(await f.http(`/managed/capabilities?sessionId=${sessionId}`)).toEqual({
+    expect(await f.http(`/managed/capabilities?sessionId=${sessionId}`)).toMatchObject({
       status: 200,
       body: {
         ...base,
@@ -293,6 +294,8 @@ describe.skipIf(process.platform === "win32")("Devin session HTTP baseline", () 
           inspect: { available: true },
           resume: { available: false, reason: "permission_denied" },
           usage: { available: false, reason: "usage-not-reported" },
+          "queue-list": { available: true },
+          "queue-add": { available: true },
           "usage-limit-cancel": { available: false, reason: "usage-limit-continue-unavailable" },
           "usage-limit-continue": { available: false, reason: "usage-limit-continue-unavailable" },
         },
@@ -566,7 +569,7 @@ describe.skipIf(process.platform === "win32")("Devin session HTTP baseline", () 
     ]);
   });
 
-  it("refuses steering, queueing, approval and answers during a print turn without receipts", async () => {
+  it("refuses native steering, approval and answers but shares the host queue for print turns", async () => {
     const f = await fixture();
     const { sessionId, bootId } = f;
     const activeTurn = await f.http("/send", {
@@ -592,12 +595,6 @@ describe.skipIf(process.platform === "win32")("Devin session HTTP baseline", () 
         error: "capability_unavailable",
       },
       {
-        path: "/managed/action",
-        requestId: requestIds.queue,
-        fields: { operation: "queue-add", text: "Later" },
-        error: "capability_unavailable",
-      },
-      {
         path: "/approve",
         requestId: requestIds.approve,
         fields: { turnId, approvalId: "fixture-approval", decision: "accept" },
@@ -619,19 +616,119 @@ describe.skipIf(process.platform === "win32")("Devin session HTTP baseline", () 
     const dispatched = f.calls.filter(
       ({ method, params }) =>
         method === "web.request" &&
-        ["steer", "queue-add", "approve", "answer"].includes(
-          (params as { operation: string }).operation,
-        ),
+        ["steer", "approve", "answer"].includes((params as { operation: string }).operation),
     );
     expect(dispatched).toEqual([]);
     expect(f.runtimeCalls()).toEqual(runtimeCalls);
     expect(await f.live()).toEqual({ status: 200, body: running.body });
+    const userQueue = {
+      ...control,
+      requestId: requestIds.queue,
+      operation: "queue-add",
+      text: "User queued this",
+    };
+    const accepted = await f.http("/managed/action", userQueue);
+    expect(accepted).toMatchObject({ status: 200, body: { accepted: true } });
+    expect(await f.http("/managed/action", userQueue)).toEqual(accepted);
+    expect(
+      await f.http("/managed/action", { ...userQueue, text: "Different message" }),
+    ).toMatchObject({ status: 409, body: { error: "request_id_conflict" } });
+    expect(await f.receipt(requestIds.queue)).toMatchObject({
+      status: 200,
+      body: { found: true, operation: "queue-add", sessionId, status: "accepted" },
+    });
+    // The Worker uses the same session-control entry as a user's queue action.
+    const workerRequest = "10000000-0000-4000-8000-000000000010";
+    const workerQueued = (await f.rpc("web.request", {
+      sessionId,
+      runtimeBootId,
+      requestId: workerRequest,
+      deviceId: "agentkib-local-owner",
+      expectedRevision: 1,
+      experimentalEnabled: true,
+      operation: "queue-add",
+      text: "Worker queued this",
+    })) as { queuedSubmission: { id: string } };
+    const path = `/managed/queue?sessionId=${sessionId}`;
+    const queued = await f.http(path);
+    expect(queued).toMatchObject({
+      status: 200,
+      body: {
+        data: [
+          { text: "User queued this", status: "pending" },
+          { id: workerQueued.queuedSubmission.id, text: "Worker queued this", status: "pending" },
+        ],
+      },
+    });
+    const [userItem, workerItem] = queued.body.data as Array<{ id: string }>;
+    expect(
+      await f.http("/managed/action", {
+        ...control,
+        requestId: "10000000-0000-4000-8000-000000000011",
+        operation: "queue-delete",
+        queuedSubmissionId: userItem!.id,
+      }),
+    ).toMatchObject({ status: 200, body: { accepted: true } });
+    expect(
+      await f.http("/managed/action", {
+        ...control,
+        requestId: "10000000-0000-4000-8000-000000000012",
+        operation: "queue-update",
+        queuedSubmissionId: workerItem!.id,
+        text: "Edited Worker message",
+      }),
+    ).toMatchObject({ status: 200, body: { accepted: true } });
+
     f.release();
     await expect
       .poll(() => f.live())
-      .toEqual({
+      .toMatchObject({
         status: 200,
-        body: liveBody(sessionId, runtimeBootId, 2, { completed: turnId }),
+        body: { status: "idle", completedTurnId: turnId },
       });
+    const { sessions } = (await f.rpc("claude.managed", {
+      operation: "schedule-list",
+      serialOnly: true,
+    })) as {
+      sessions: Array<{
+        sessionId: string;
+        runtimeBootId: string;
+        revision: number;
+        next: {
+          itemId: string;
+          requestId: string;
+          deviceId: string;
+        };
+      }>;
+    };
+    const scheduled = sessions.find((session) => session.sessionId === sessionId)!;
+    expect(scheduled.next).toMatchObject({
+      itemId: workerItem!.id,
+      deviceId: "agentkib-local-owner",
+    });
+    const identity = {
+      sessionId,
+      itemId: scheduled.next.itemId,
+      requestId: scheduled.next.requestId,
+      deviceId: scheduled.next.deviceId,
+      runtimeBootId: scheduled.runtimeBootId,
+      expectedRevision: scheduled.revision,
+    };
+    const permit = (await f.rpc("claude.managed", {
+      ...identity,
+      operation: "schedule-prepare",
+    })) as { permitId: string; expectedRevision: number };
+    expect(
+      await f.rpc("claude.managed", {
+        ...identity,
+        operation: "schedule-dispatch",
+        permitId: permit.permitId,
+        expectedRevision: permit.expectedRevision,
+      }),
+    ).toMatchObject({ accepted: true });
+    await expect
+      .poll(f.runtimeCalls)
+      .toContainEqual(expect.objectContaining({ prompt: "Edited Worker message" }));
+    expect(await f.http(path)).toMatchObject({ status: 200, body: { data: [] } });
   });
 });

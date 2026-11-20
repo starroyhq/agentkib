@@ -44,9 +44,19 @@ export type LeadScope = {
   answers?: boolean;
 };
 
-/** The agents a lane can be; a record from before DeepSeek Harness lanes has none (Codex). */
-export const LANE_AGENTS = ["codex", "deepseek-harness"] as const;
+/** A record from before per-Worker agents has no agent field and represents Codex. */
+export const LANE_AGENTS = [
+  "codex",
+  "deepseek-harness",
+  "claude-code",
+  "devin",
+  "antigravity",
+] as const;
 export type LaneAgent = (typeof LANE_AGENTS)[number];
+
+export function isLaneAgent(value: unknown): value is LaneAgent {
+  return (LANE_AGENTS as readonly unknown[]).includes(value);
+}
 
 export type Lane = {
   id: string;
@@ -135,7 +145,11 @@ export class LeadRegistry {
    */
   #transaction<T>(
     sessionId: string,
-    fn: (lead: Lead | null, database: DatabaseSync) => { lead: Lead | null; value: T },
+    fn: (
+      lead: Lead | null,
+      database: DatabaseSync,
+      unsupportedLanes: unknown[],
+    ) => { lead: Lead | null; value: T },
   ) {
     const database = this.#open();
     try {
@@ -143,8 +157,8 @@ export class LeadRegistry {
       const row = database
         .prepare("SELECT record FROM orchestration_leads WHERE session_id=?")
         .get(sessionId) as { record: string } | undefined;
-      const current = row ? this.#restarted(JSON.parse(row.record) as Lead) : null;
-      const { lead, value } = fn(current, database);
+      const stored = row ? this.#readRecord(row.record) : null;
+      const { lead, value } = fn(stored?.lead ?? null, database, stored?.unsupportedLanes ?? []);
       if (lead === null) {
         if (row)
           database.prepare("DELETE FROM orchestration_leads WHERE session_id=?").run(sessionId);
@@ -157,7 +171,13 @@ export class LeadRegistry {
           .prepare(
             "INSERT INTO orchestration_leads(session_id,record) VALUES(?,?) ON CONFLICT(session_id) DO UPDATE SET record=excluded.record",
           )
-          .run(sessionId, JSON.stringify(lead));
+          .run(
+            sessionId,
+            JSON.stringify({
+              ...lead,
+              lanes: [...lead.lanes, ...(stored?.unsupportedLanes ?? [])],
+            }),
+          );
       }
       database.exec("COMMIT");
       return value;
@@ -173,8 +193,26 @@ export class LeadRegistry {
     }
   }
 
+  #readRecord(record: string): { lead: Lead; unsupportedLanes: unknown[] } {
+    const { lanes, ...stored } = JSON.parse(record) as Omit<Lead, "lanes"> & { lanes?: unknown };
+    if (stored.version !== 1 || !Array.isArray(lanes)) throw new Error("invalid-lead-record");
+    const lead: Lead = { ...stored, lanes: [] };
+    const unsupportedLanes: unknown[] = [];
+    for (const lane of lanes as unknown[]) {
+      if (lane && typeof lane === "object" && !Array.isArray(lane)) {
+        const agent = "agent" in lane ? lane.agent : undefined;
+        if (agent === undefined || isLaneAgent(agent)) {
+          lead.lanes.push(lane as Lane);
+          continue;
+        }
+      }
+      // Keep future Workers on disk so reading or updating a project cannot discard them.
+      unsupportedLanes.push(lane);
+    }
+    return { lead: this.#restarted(lead), unsupportedLanes };
+  }
+
   #restarted(lead: Lead): Lead {
-    if (lead.version !== 1 || !Array.isArray(lead.lanes)) throw new Error("invalid-lead-record");
     if (lead.bootId === this.bootId) return lead;
     lead.bootId = this.bootId;
     if (!lead.paused) {
@@ -197,7 +235,7 @@ export class LeadRegistry {
         database.prepare("SELECT record FROM orchestration_leads").all() as Array<{
           record: string;
         }>
-      ).map((row) => this.#restarted(JSON.parse(row.record) as Lead));
+      ).map((row) => this.#readRecord(row.record).lead);
     } finally {
       database.close();
     }
@@ -239,7 +277,7 @@ export class LeadRegistry {
     return !!database
       .prepare(
         `SELECT 1 FROM orchestration_leads, json_each(orchestration_leads.record, '$.lanes') AS lane
-         WHERE json_extract(lane.value, '$.sessionId') = ? LIMIT 1`,
+         WHERE CASE WHEN lane.type = 'object' THEN json_extract(lane.value, '$.sessionId') END = ? LIMIT 1`,
       )
       .get(sessionId);
   }
@@ -259,20 +297,25 @@ export class LeadRegistry {
    */
   registerWorkers(
     sessionId: string,
-    workers: (lead: Lead) => Lane[],
+    workers: (lead: Lead, usedNames: ReadonlySet<string>) => Lane[],
     requestId: string | null,
     create?: () => NewLead,
   ): { designated: boolean } {
-    return this.#transaction(sessionId, (current, database) => {
+    return this.#transaction(sessionId, (current, database, unsupportedLanes) => {
       if (this.#hasWorker(database, sessionId)) throw new Error("session-is-a-worker");
       let lead = current;
       if (!lead) {
         if (!create) throw new Error("lead-unavailable");
         lead = this.#newLead(create());
       }
-      const lanes = workers(lead);
-      const sessions = new Set<string>();
       const names = new Set(lead.lanes.map((lane) => lane.name));
+      for (const lane of unsupportedLanes)
+        if (lane && typeof lane === "object" && "name" in lane && typeof lane.name === "string")
+          names.add(lane.name);
+      const lanes = workers(lead, names);
+      if (lead.lanes.length + unsupportedLanes.length + lanes.length > PROJECT_AGENT_MAX_WORKERS)
+        throw new Error("worker-limit-reached");
+      const sessions = new Set<string>();
       const hasLead = database.prepare("SELECT 1 FROM orchestration_leads WHERE session_id = ?");
       for (const lane of lanes) {
         if (lane.sessionId === sessionId || hasLead.get(lane.sessionId))

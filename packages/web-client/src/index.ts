@@ -1418,7 +1418,7 @@ export class WebClient {
   ) {
     return this.request<{ lead: ProjectAgentState | null }>("managed/project-agent", body, signal);
   }
-  sessionQueue(sessionId: string, agent: ManagedAgent, signal?: AbortSignal) {
+  sessionQueue(sessionId: string, agent: LiveSessionAgent, signal?: AbortSignal) {
     return agent === "codex"
       ? this.codexQueue(sessionId, signal)
       : this.request<SessionQueue>(

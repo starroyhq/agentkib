@@ -5,6 +5,7 @@ import {
   agentKibPanel,
   existingSessionComposerCapabilities,
   composerDraftUnavailableReason,
+  sessionQueuePanel,
   sessionSlashOptions,
   composerPanelShortcut,
   codexCommandPrompt,
@@ -59,7 +60,7 @@ import { PermissionModeNotice } from "./permission-mode-notice";
 import { ManagedTurnNotice } from "./managed-turn-notice";
 import { DevinTurnNotice } from "./devin-turn-notice";
 import { claudeConnectionCopy } from "./claude-connection-copy";
-import { DshQueue } from "./dsh-queue";
+import { SessionSendQueue } from "./dsh-queue";
 
 // The desktop app acts for the person at this computer, as the terminal does.
 const COMMAND_OWNER = true;
@@ -334,6 +335,11 @@ export function SessionComposer({
   const resourceIds = resources.filter((item) => item.available).map((item) => item.id);
   const draft = composerValue;
   const valid = ready && validHistoryMessage(draft, historyReferences, attachmentIds.length > 0);
+  const queuePanel = sessionQueuePanel(current?.agent);
+  const serialQueue = queuePanel?.surface === "managed" && queuePanel.serial;
+  const queueDraftAllowed =
+    !serialQueue ||
+    (!!draft.trim() && !historyReferences.length && !attachmentIds.length && !resourceIds.length);
   const resourceNeedsMessage =
     resourceIds.length > 0 && !draft.trim() && !attachmentIds.length && !historyReferences.length;
   const panelShortcut = composerPanelShortcut(draft, localSettings, localGoal);
@@ -359,6 +365,7 @@ export function SessionComposer({
   async function send(action: "send" | "steer" | "queue-add") {
     if (
       !valid ||
+      (action === "queue-add" && !queueDraftAllowed) ||
       (startupGoal && action !== "send") ||
       !online ||
       draftUnknown ||
@@ -514,6 +521,7 @@ export function SessionComposer({
     canAdvanced &&
     !startupGoal &&
     !!capabilities?.features[runningAction]?.available &&
+    (runningAction !== "queue-add" || queueDraftAllowed) &&
     !(compacting && runningAction === "steer") &&
     valid &&
     !submitted;
@@ -539,13 +547,16 @@ export function SessionComposer({
       />
     );
   const advancedActions =
-    (running || compacting) &&
-    (live?.executionMode === "codex-follower"
-      ? capabilities?.features.steer?.available === true ||
-        capabilities?.features["queue-add"]?.available === true
-      : !isClaude ||
-        capabilities?.features.steer?.available ||
-        capabilities?.features["queue-add"]?.available) ? (
+    (serialQueue &&
+      capabilities?.sessionId === selected &&
+      capabilities.features["queue-add"]?.available) ||
+    ((running || compacting) &&
+      (live?.executionMode === "codex-follower"
+        ? capabilities?.features.steer?.available === true ||
+          capabilities?.features["queue-add"]?.available === true
+        : !isClaude ||
+          capabilities?.features.steer?.available ||
+          capabilities?.features["queue-add"]?.available)) ? (
       <DropdownMenu>
         <DropdownMenuTrigger
           type="button"
@@ -578,6 +589,7 @@ export function SessionComposer({
                 !canAdvanced ||
                 !!startupGoal ||
                 !capabilities?.features["queue-add"]?.available ||
+                !queueDraftAllowed ||
                 !valid ||
                 submitted
               }
@@ -650,7 +662,14 @@ export function SessionComposer({
           sessionId={current.id}
         />
       )}
-      {current?.agent === "deepseek-harness" && <DshQueue key={selected} />}
+      {queuePanel?.surface === "managed" && (
+        <SessionSendQueue
+          key={
+            serialQueue ? JSON.stringify([selected, access?.bootId, access?.device?.id]) : selected
+          }
+          agent={queuePanel.agent}
+        />
+      )}
       <SessionComposerInput
         editorContextKey={selected}
         editor={{

@@ -29,6 +29,7 @@ export const workerAssignmentCopy: Record<SupportedLocale, WorkerAssignmentCopy>
       "session-is-a-project-agent": "此会话已是项目 Agent",
       "session-is-a-worker": "此会话已指派给另一个项目 Agent",
       "worker-requires-codex-or-dsh-session": "Worker 支持 Codex 和 DeepSeek Harness 会话",
+      "worker-agent-unsupported": "此 Agent 暂不支持作为 Worker",
       "workspace-not-allowed": "此工作区尚未获准用于委派",
       "worker-limit-reached": "已达到 Worker 数量上限",
       "delegation-paused": "委派已暂停",
@@ -50,6 +51,7 @@ export const workerAssignmentCopy: Record<SupportedLocale, WorkerAssignmentCopy>
       "session-is-a-project-agent": "此對話已是專案 Agent",
       "session-is-a-worker": "此對話已指派給另一個專案 Agent",
       "worker-requires-codex-or-dsh-session": "Worker 支援 Codex 和 DeepSeek Harness 對話",
+      "worker-agent-unsupported": "此 Agent 暫不支援作為 Worker",
       "workspace-not-allowed": "此工作區尚未獲准用於委任",
       "worker-limit-reached": "已達 Worker 數量上限",
       "delegation-paused": "委任已暫停",
@@ -70,6 +72,7 @@ export const workerAssignmentCopy: Record<SupportedLocale, WorkerAssignmentCopy>
     reasons: {
       "session-is-a-project-agent": "このセッションはすでにプロジェクト Agent です",
       "session-is-a-worker": "別のプロジェクト Agent に割り当て済み",
+      "worker-agent-unsupported": "この Agent はワーカーとして利用できません",
       "worker-requires-codex-or-dsh-session":
         "ワーカーは Codex と DeepSeek Harness に対応しています",
       "workspace-not-allowed": "このワークスペースは委任を許可されていません",
@@ -93,6 +96,7 @@ export const workerAssignmentCopy: Record<SupportedLocale, WorkerAssignmentCopy>
       "session-is-a-project-agent": "This session is already a Project Agent",
       "session-is-a-worker": "Already assigned to another Project Agent",
       "worker-requires-codex-or-dsh-session": "Workers can be Codex or DeepSeek Harness sessions",
+      "worker-agent-unsupported": "This agent does not support use as a Worker",
       "workspace-not-allowed": "This workspace is outside the delegation scope",
       "worker-limit-reached": "The Worker limit has been reached",
       "delegation-paused": "Delegation is paused",

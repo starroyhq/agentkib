@@ -347,6 +347,7 @@ async function startApplication(): Promise<void> {
     verifiedCodex: process.platform === "darwin",
     verifiedClaudeManaged: process.platform === "darwin",
     enableClaudeScheduler: process.platform === "darwin",
+    enableSerialSessionScheduler: true,
     verifiedAntigravityManaged: true,
     verifiedDshFollower: process.platform === "darwin",
     verifiedDevinManaged: true,

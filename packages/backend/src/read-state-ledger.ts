@@ -315,6 +315,30 @@ export class ReadStateLedger {
     return this.#withPending(state, key, pathIdentity(this.dataDir));
   }
 
+  /** Recent recorded completions, oldest first, without a reader's unread projection. */
+  recentTerminalResults(
+    key: string,
+  ): Array<{ result: ConversationReadResult; startedAt: string | null }> {
+    return this.#read((db) => {
+      const columns = db.prepare("PRAGMA table_info(conversation_read_results)").all() as Array<{
+        name: string;
+      }>;
+      if (!columns.some(({ name }) => name === "turn_started_at")) return [];
+      const rows = db
+        .prepare(
+          `SELECT result,turn_started_at FROM (
+            SELECT result,turn_started_at,baseline,position,sequence FROM conversation_read_results
+            WHERE key=? ORDER BY sequence DESC LIMIT 50
+          ) WHERE baseline=0 AND position IS NULL ORDER BY sequence DESC`,
+        )
+        .all(key) as Array<Pick<ReadResultRecord, "result" | "turn_started_at">>;
+      return rows.reverse().map((row) => ({
+        result: JSON.parse(row.result) as ConversationReadResult,
+        startedAt: row.turn_started_at,
+      }));
+    }, []);
+  }
+
   /** Catalog rows share one read transaction and a bounded number of SQL statements. */
   catalogStates(
     keys: ReadonlyMap<string, boolean>,

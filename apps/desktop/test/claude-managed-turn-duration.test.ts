@@ -9,6 +9,7 @@ import { ClaudeTurnMetaStore, cleanTurnMeta } from "../../../packages/backend/sr
 import type { BackendStore } from "../../../packages/backend/src/store";
 import type { SessionReaders } from "../../../packages/backend/src/session-readers";
 import type { Commands } from "../../../packages/backend/src/commands";
+import { OrchestrationService } from "../../../packages/backend/src/orchestration-service";
 import { createFakeClaude, type FakeClaudePlan } from "./fixtures/claude-fake-cli";
 
 // A print-mode transcript has no `system/turn_duration` (checked with CLI 2.1.311 against a local
@@ -265,22 +266,63 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))(
         deviceId: "browser-device-a",
       })) as Record<string, any>;
       const id = created.sessionId as string;
-      const live = (await owner.live(id, true)) as Record<string, any>;
-      await owner.request({
-        operation: "send",
-        sessionId: id,
+      const leadId = "fixture-project-agent";
+      const report = vi.fn((_sessionId: string, _deviceId: string, _message: string) => false);
+      const service = new OrchestrationService(
+        f.root,
+        owner.bootId,
+        {
+          control: (input) => owner.request(input),
+          live: (sessionId) => owner.live(sessionId, true),
+          events: async (sessionId, limit) =>
+            (
+              (await owner.events(sessionId, null, limit)) as {
+                events: Array<Record<string, unknown>>;
+              }
+            ).events,
+          session: (sessionId) =>
+            sessionId === id || sessionId === leadId
+              ? { agent: "claude-code", workspaceId: "workspace", title: "Fixture" }
+              : null,
+          managed: async (sessionId) => owner.hasManagedSession(sessionId),
+          workspaces: () => [{ id: "workspace", name: "Fixture" }],
+          endedTurns: (sessionId) => owner.endedTurns(sessionId),
+        },
+        (sessionId) => sessionId === leadId,
+        report,
+      );
+      cleanups.push(() => service.close());
+      owner.observeWorkers({
+        isWorker: (sessionId) => !!service.registry.leadOfLane(sessionId),
+        turnEnded: (...args) => void service.laneTurnEnded(...args),
+        waiting: (...args) => void service.laneWaiting(...args),
+        controlled: (...args) => service.laneControlled(...args),
+      });
+      await service.assignWorkers({
+        sessionId: leadId,
         deviceId: "browser-device-a",
-        requestId: randomUUID(),
-        runtimeBootId: owner.bootId,
-        expectedRevision: live.revision,
-        experimentalEnabled: true,
-        text: "synthetic turn",
+        workspaceId: "workspace",
+        workers: [id],
+      });
+      const call = async (name: string, input: Record<string, unknown> = {}) =>
+        JSON.parse((await service.call(leadId, name, { worker: "worker-1", ...input })).text);
+      expect(await call("worker_send", { text: "synthetic turn" })).toMatchObject({
+        accepted: true,
+        operation: "send",
       });
       await expect
         .poll(async () => ((await owner.live(id, true)) as Record<string, any>).status, {
           timeout: 15_000,
         })
         .toBe("idle");
+      await expect.poll(() => report.mock.calls.length).toBe(1);
+      expect(report).toHaveBeenCalledWith(
+        leadId,
+        "browser-device-a",
+        expect.stringMatching(
+          /Claude Code.*turn ended: completed after 3s[\s\S]*Synthetic reply\./,
+        ),
+      );
       expect(published.filter(({ payload }) => payload.turn_meta)).toMatchObject([
         { type: "item-upsert", payload: { id: reply, turn_meta: { duration_ms: 2750 } } },
       ]);
@@ -295,6 +337,10 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))(
         [reply, { outcome: "completed", duration_ms: 2750 }],
         ["interactive-1", { outcome: "completed", duration_ms: 1 }],
       ]);
+      const read = await call("worker_read");
+      expect(read.replies).toContainEqual({ turn: null, text: "Synthetic reply." });
+      await service.catchUp(Date.now() + 20_000);
+      expect(report).toHaveBeenCalledTimes(1);
 
       // A projection cached by version reads the history again once another end is stored.
       const before = await owner.historyVersion(id);
@@ -320,6 +366,112 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))(
         })
         .toBe(2);
       expect(await owner.historyVersion(id)).not.toBe(before);
+
+      const onUser = [
+        {
+          type: "control_request",
+          request_id: "worker-question",
+          request: {
+            subtype: "can_use_tool",
+            tool_name: "AskUserQuestion",
+            input: {
+              questions: [
+                {
+                  question: "Where?",
+                  header: "Destination",
+                  options: [{ label: "Here" }, { label: "There" }],
+                },
+              ],
+            },
+          },
+        },
+      ];
+      f.setPlan({ onUser, noResult: true });
+      await service.update({
+        sessionId: leadId,
+        deviceId: "browser-device-a",
+        scope: { answers: true },
+      });
+      expect(await call("worker_send", { text: "Wait for a question" })).toMatchObject({
+        accepted: true,
+      });
+      await expect.poll(async () => (await call("worker_read")).status).toBe("waiting-input");
+      await expect
+        .poll(() =>
+          report.mock.calls.some(
+            ([, , message]) => message.includes("waiting for") && message.includes("worker_answer"),
+          ),
+        )
+        .toBe(true);
+      expect(
+        await call("worker_answer", { question: "worker-question", answers: { "Where?": "Here" } }),
+      ).toMatchObject({ accepted: true });
+      expect(await call("worker_stop")).toMatchObject({ accepted: true });
+      await expect
+        .poll(() =>
+          report.mock.calls.some(([, , message]) => message.includes("turn ended: cancelled")),
+        )
+        .toBe(true);
+
+      await service.update({
+        sessionId: leadId,
+        deviceId: "browser-device-a",
+        scope: { approvals: ["command"] },
+      });
+      f.setPlan({
+        noResult: true,
+        onUser: [
+          {
+            type: "control_request",
+            request_id: "worker-approval",
+            request: {
+              subtype: "can_use_tool",
+              tool_name: "Bash",
+              input: { command: "printf fixture" },
+            },
+          },
+          { __wait: "worker-approval" },
+          result(),
+        ],
+      });
+      expect(await call("worker_send", { text: "Wait for ordinary approval" })).toMatchObject({
+        accepted: true,
+      });
+      await expect
+        .poll(() => call("worker_read"))
+        .toMatchObject({
+          waitingForUser: [{ id: "worker-approval", approval: "command", youMayDecide: true }],
+        });
+      expect(
+        await call("worker_approve", { approval: "worker-approval", decision: "accept" }),
+      ).toMatchObject({ accepted: true });
+      expect(f.frames()).toContainEqual({
+        type: "control_response",
+        response: {
+          subtype: "success",
+          request_id: "worker-approval",
+          response: { behavior: "allow", updatedInput: { command: "printf fixture" } },
+        },
+      });
+      await expect.poll(async () => (await call("worker_read")).status).toBe("idle");
+
+      const endedOffline = Date.now() + 20_000;
+      writeFileSync(
+        path.join(f.config, `${nativeId}.jsonl`),
+        `${JSON.stringify({
+          sessionId: nativeId,
+          type: "system",
+          subtype: "turn_duration",
+          uuid: randomUUID(),
+          timestamp: new Date(endedOffline).toISOString(),
+          durationMs: 7_000,
+        })}\n`,
+      );
+      await service.catchUp(endedOffline + 30_000);
+      await service.catchUp(endedOffline + 30_000);
+      expect(
+        report.mock.calls.filter(([, , message]) => message.includes("completed after 7s")),
+      ).toHaveLength(1);
     }, 60_000);
   },
 );

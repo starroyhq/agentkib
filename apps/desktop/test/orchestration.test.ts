@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { codexTurnErrorEvent } from "../../../packages/backend/src/codex-turn-error";
+import { openManagedLedger } from "../../../packages/backend/src/managed-ledger";
 import { LeadRegistry } from "../../../packages/backend/src/orchestration-registry";
 import {
   LEAD_INSTRUCTIONS,
@@ -169,6 +170,106 @@ describe("orchestration service", () => {
     });
   });
 
+  it("keeps legacy and new assignments, without exposing or losing a future Worker type", async () => {
+    const root = directory();
+    const agents = new Map([
+      ["existing-codex", "codex"],
+      ["existing-dsh", "deepseek-harness"],
+      ["existing-claude", "claude-code"],
+      ["existing-devin", "devin"],
+      ["existing-antigravity", "antigravity"],
+    ]);
+    const { lanes } = host({
+      session: (sessionId) => {
+        const agent = agents.get(sessionId);
+        return agent ? { agent, workspaceId: "w1", title: null } : null;
+      },
+      managed: async () => true,
+    });
+    const orchestration = service(lanes, root);
+    await orchestration.assignWorkers({ ...OWNER, workers: [...agents.keys()] });
+    const database = openManagedLedger(root, true)!;
+    try {
+      const row = database
+        .prepare("SELECT record FROM orchestration_leads WHERE session_id=?")
+        .get(LEAD) as { record: string };
+      const stored = JSON.parse(row.record);
+      expect(stored.version).toBe(1);
+      expect(stored.lanes.map((lane: { agent: string }) => lane.agent)).toEqual([
+        ...agents.values(),
+      ]);
+      delete stored.lanes[0].agent; // Older records used implicit Codex.
+      stored.lanes.push({
+        ...stored.lanes[0],
+        id: "future",
+        sessionId: "future",
+        name: "worker-6",
+        agent: "future-agent",
+      });
+      database
+        .prepare("UPDATE orchestration_leads SET record=? WHERE session_id=?")
+        .run(JSON.stringify(stored), LEAD);
+      expect(orchestration.status(LEAD)?.lanes.map((lane) => lane.sessionId)).toEqual([
+        ...agents.keys(),
+      ]);
+      expect(orchestration.roles().has("future")).toBe(false);
+      expect(
+        parse(await orchestration.call(LEAD, "worker_list", {})).workers.map(
+          (lane: { agent: string }) => lane.agent,
+        ),
+      ).toEqual([...agents.values()]);
+      agents.set("another-codex", "codex");
+      await orchestration.assignWorkers({ ...OWNER, workers: ["another-codex"] });
+      expect(orchestration.status(LEAD)?.lanes.at(-1)).toMatchObject({
+        sessionId: "another-codex",
+        name: "worker-7",
+      });
+      const saved = database
+        .prepare("SELECT record FROM orchestration_leads WHERE session_id=?")
+        .get(LEAD) as { record: string };
+      expect(JSON.parse(saved.record).lanes.at(-1)).toMatchObject({
+        agent: "future-agent",
+        id: "future",
+      });
+    } finally {
+      database.close();
+    }
+  });
+
+  it.each(["devin", "antigravity"] as const)(
+    "queues work without attempting a native steer for %s",
+    async (agent) => {
+      const { lanes, lives, calls } = host({
+        session: (sessionId) =>
+          sessionId === WORKER ? { agent, workspaceId: "w1", title: null } : null,
+        managed: async () => true,
+      });
+      const orchestration = service(lanes);
+      await assignWorker(orchestration);
+      lives.set(WORKER, {
+        turnId: "turn",
+        status: "waiting-approval",
+        runtimeBootId: "boot",
+        revision: 4,
+      });
+      expect(
+        parse(await orchestration.call(LEAD, "worker_send", { worker: "worker-1", text: "later" })),
+      ).toMatchObject({ accepted: true, operation: "queue-add" });
+      expect(
+        parse(
+          await orchestration.call(LEAD, "worker_send", {
+            worker: "worker-1",
+            text: "now",
+            mode: "steer",
+          }),
+        ),
+      ).toMatchObject({ accepted: false, reason: "steer-unsupported" });
+      expect(calls).toEqual([
+        expect.objectContaining({ operation: "queue-add", sessionId: WORKER, text: "later" }),
+      ]);
+    },
+  );
+
   it("reads legacy persisted settings while deriving capacity and workspace authority", async () => {
     const root = directory();
     const { lanes } = host();
@@ -294,7 +395,7 @@ describe("orchestration service", () => {
         candidates: [
           { sessionId: "existing-api", reason: "session-is-a-worker", assigned: true },
           { sessionId: "elsewhere", reason: null },
-          { sessionId: "claude-other", reason: "worker-requires-codex-or-dsh-session" },
+          { sessionId: "claude-other", reason: "worker-unavailable" },
         ],
       });
       await expect(

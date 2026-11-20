@@ -20,6 +20,8 @@ export function BasicSessionComposer({
   onStop,
   references,
   contextUsage,
+  actions,
+  beforeComposer,
   afterToolbar,
 }: {
   sessionId: string;
@@ -42,12 +44,15 @@ export function BasicSessionComposer({
   onStop: () => void;
   references: ReactNode;
   contextUsage: ReactNode;
+  actions?: ReactNode;
+  beforeComposer?: ReactNode;
   afterToolbar?: ReactNode;
 }) {
   const submitting = useRef(false);
   const addCopy = composerAddCopy(locale);
   return (
     <div className="w-full max-w-3xl shrink-0 self-center">
+      {beforeComposer}
       <SessionComposerInput
         editorContextKey={sessionId}
         editor={{
@@ -82,6 +87,7 @@ export function BasicSessionComposer({
                   {labels.experimental} · {labels.controlInfo}
                 </small>
               }
+              actions={actions}
               usage={contextUsage}
               action={
                 <ComposerPrimaryAction

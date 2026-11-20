@@ -302,7 +302,7 @@ const PROVIDERS = {
   devin: {
     ...MANAGED_CAPABILITIES.devin,
     commands: { source: "none" },
-    queue: { actions: [] },
+    queue: { actions: ["list", "add", "update", "delete", "pause", "resume"] },
     permissionField: "permissionMode",
     activities: { kinds: ["subagent"], canStopIndividually: false, canOpenSubagentHistory: true },
   },
@@ -313,7 +313,7 @@ const PROVIDERS = {
     contextUsage: "live",
     controls: ["send", "stop", "approve"],
     commands: { source: "none" },
-    queue: { actions: [] },
+    queue: { actions: ["list", "add", "update", "delete", "pause", "resume"] },
     connection: { kind: "acp" },
     activities: { kinds: [], canStopIndividually: false, canOpenSubagentHistory: false },
   },

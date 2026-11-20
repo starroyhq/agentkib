@@ -37,6 +37,7 @@
   "dependencies": {
     "@agentkib/runtime-protocol": "workspace:*",
     "@modelcontextprotocol/sdk": "1.32.1",
+    "agentkib-dsh-bridge": "workspace:*",
     "bonjour-service": "1.4.4",
     "cross-spawn": "^7.0.6",
     "json5": "^2.2.3",

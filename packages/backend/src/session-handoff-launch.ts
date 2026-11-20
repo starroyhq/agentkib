@@ -25,7 +25,7 @@ import { claudeProjectKey } from "./claude-project-path";
 import { verifyClaudeTranscript, type ClaudeNativeExpectation } from "./claude-native-verify";
 import { resolveCommand } from "./command-resolution";
 import { Commands } from "./commands";
-import type { DshBridge } from "./dsh-bridge";
+import type { DshBridge } from "./agents/dsh/dsh-bridge";
 import { isReparseOrSymlink } from "./native-files";
 import { canonicalize, pathIdentity } from "./paths";
 import { userHome } from "./mcp-config-read";

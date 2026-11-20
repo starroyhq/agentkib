@@ -19,7 +19,7 @@ import {
   dshEnvironment,
   dshHome,
   findDshLauncher,
-} from "../../../packages/backend/src/dsh-managed-runtime";
+} from "../../../packages/backend/src/agents/dsh/dsh-managed-runtime";
 import {
   DSH_BRIDGE_COMPATIBILITY,
   dshBridgeLaunchable,

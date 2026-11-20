@@ -41,7 +41,7 @@ import { Commands } from "./commands";
 import { parameters, optionalString, unsigned } from "./rpc";
 import type { ConversationEventPage } from "./session-events";
 import type { DocumentOptions, SessionDocument } from "./session-model";
-import type { DshBridge } from "./dsh-bridge";
+import type { DshBridge } from "./agents/dsh/dsh-bridge";
 import {
   readClaudeDocument,
   readCodexDocument,

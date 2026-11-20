@@ -2,7 +2,10 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, statSync, symlinkSync } fro
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { dshSessionDirectory, probeDshWriter } from "../../../packages/backend/src/dsh-writer";
+import {
+  dshSessionDirectory,
+  probeDshWriter,
+} from "../../../packages/backend/src/agents/dsh/dsh-writer";
 import { acquirePortableFileLease } from "../../../packages/backend/src/managed-session-lock";
 
 const homes: string[] = [];

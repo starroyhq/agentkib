@@ -15,6 +15,9 @@ import {
   type SessionQueueItemActions,
 } from "@agentkib/runtime-protocol";
 import { z } from "zod";
+import { projectSessionExecution } from "./sessions/execution";
+
+export { projectSessionExecution };
 
 export interface SessionQuery {
   operation: "capabilities" | "inspect";
@@ -29,6 +32,7 @@ interface SessionExecutor {
   control(request: Record<string, unknown>): Promise<unknown>;
   contextUsage(sessionId: string): Promise<unknown>;
   queue?(request: Extract<SessionProviderRequest, { operation: "queue-list" }>): Promise<unknown>;
+  readonly typed?: TypedSessionProvider;
 }
 
 /** Each provider prepares its native execution environment within the original control request. */
@@ -43,7 +47,7 @@ export interface SessionProvider extends SessionExecutor {
   updateSettings(request: Record<string, unknown>): Promise<unknown>;
 }
 
-type SessionProviders = {
+export type SessionProviders = {
   readonly [Agent in SessionProviderAgent]: SessionProvider & {
     readonly agent: Agent;
   };
@@ -273,7 +277,7 @@ type SessionProviderResults = {
   "settings-prepare": z.infer<typeof settings>;
 };
 
-type SessionProviderOperation = keyof SessionProviderResults;
+export type SessionProviderOperation = keyof SessionProviderResults;
 export type SessionProviderResponse<
   Operation extends SessionProviderOperation = SessionProviderOperation,
 > = {
@@ -304,58 +308,6 @@ function parseResult<T>(schema: z.ZodType<T>, value: unknown): T {
   const parsed = schema.safeParse(value);
   if (!parsed.success) throw new Error("invalid-provider-response");
   return parsed.data;
-}
-
-/** Read ownership without a new native query or an inference about control grants. */
-export function projectSessionExecution(value: {
-  executionMode?: unknown;
-  executionLocation?: unknown;
-  ownerHandoff?: unknown;
-  status?: unknown;
-  reason?: unknown;
-  ownershipReason?: unknown;
-  bridgeCompatibility?: unknown;
-}): SessionExecution {
-  const { executionMode: mode, executionLocation: location } = value;
-  if (value.ownerHandoff === true || (mode === "codex-follower" && location === "external"))
-    return { owner: "native-app", observed: true, confidence: "live" };
-  if (location === "agentkib" || location === "terminal")
-    return { owner: location, observed: true, confidence: "live" };
-  if (mode === "dsh-follower" && value.reason === "dsh-native-turn-observed")
-    return { owner: "external", observed: true, confidence: "inferred" };
-  const ownershipReason = value.ownershipReason ?? value.reason;
-  if (
-    location === "external" ||
-    ownershipReason === "codex-owner-busy" ||
-    ownershipReason === "claude-owner-busy" ||
-    ownershipReason === "claude-background-session-running" ||
-    ownershipReason === "owner-opened-elsewhere"
-  ) {
-    const observed = mode === "dsh-follower" && value.bridgeCompatibility != null;
-    return { owner: "external", observed, confidence: observed ? "live" : "inferred" };
-  }
-  if (
-    location === undefined &&
-    value.status !== "unsupported" &&
-    value.status !== "outcome-unknown"
-  ) {
-    if (mode === "codex-follower")
-      return { owner: "native-app", observed: false, confidence: "inferred" };
-    if (mode === "claude-follower")
-      return { owner: "terminal", observed: false, confidence: "inferred" };
-  }
-  if (
-    location === undefined &&
-    value.status !== "unsupported" &&
-    (mode === "codex-managed" ||
-      mode === "claude-managed" ||
-      mode === "devin-print" ||
-      mode === "acp-managed" ||
-      mode === "managed-resume")
-  ) {
-    return { owner: "agentkib", observed: false, confidence: "inferred" };
-  }
-  return { owner: null, observed: false, confidence: "unknown" };
 }
 
 function projectCommandMenu(agent: LiveSessionAgent, raw: unknown): SessionCommandMenu | undefined {
@@ -470,15 +422,50 @@ function projectQueue(raw: unknown): SessionProviderResults["queue-list"] {
   };
 }
 
-function projectControl(raw: unknown): ControlResult {
+function projectControl(_agent: LiveSessionAgent, raw: unknown): ControlResult {
   const value = parseResult(control, raw);
   return { ...value, ...projectFeedback(value.reason) };
 }
 
+export const sessionResultProjectors = {
+  create: projectControl,
+  capabilities: projectCapabilities,
+  live: projectLive,
+  inspect: (_agent, raw) => parseResult(inspect, raw),
+  usage: (_agent, raw) => parseResult(usage, raw),
+  "queue-list": (_agent, raw) => projectQueue(raw),
+  "settings-state": (_agent, raw) => parseResult(settings, raw),
+  "settings-prepare": (_agent, raw) => parseResult(settings, raw),
+  settings: projectControl,
+  send: projectControl,
+  steer: projectControl,
+  "queue-add": projectControl,
+  "queue-update": projectControl,
+  "queue-delete": projectControl,
+  "queue-steer": projectControl,
+  "queue-reorder": projectControl,
+  "queue-start": projectControl,
+  "queue-pause": projectControl,
+  "queue-resume": projectControl,
+  stop: projectControl,
+  approve: projectControl,
+  answer: projectControl,
+} satisfies {
+  [Operation in SessionProviderOperation]: (
+    agent: LiveSessionAgent,
+    raw: unknown,
+  ) => SessionProviderResults[Operation];
+};
+
+type ExecuteSessionRequest = (request: SessionProviderRequest) => Promise<unknown>;
+
 class SessionProviderAdapter implements TypedSessionProvider {
   readonly #provider: SessionProviders[LiveSessionAgent];
 
-  constructor(provider: SessionProviders[LiveSessionAgent]) {
+  constructor(
+    provider: SessionProviders[LiveSessionAgent],
+    private readonly execute?: ExecuteSessionRequest,
+  ) {
     this.#provider = provider;
   }
 
@@ -490,6 +477,15 @@ class SessionProviderAdapter implements TypedSessionProvider {
     request: Request,
   ): Promise<SessionProviderResponse<Request["operation"]>>;
   async request(request: SessionProviderRequest): Promise<SessionProviderResponse> {
+    const { operation } = request;
+    const raw = await (this.execute ? this.execute(request) : this.#execute(request));
+    return {
+      operation,
+      result: sessionResultProjectors[operation](this.agent, raw),
+    } as SessionProviderResponse;
+  }
+
+  async #execute(request: SessionProviderRequest): Promise<unknown> {
     const provider = this.#provider;
     const { operation } = request;
     switch (operation) {
@@ -498,57 +494,36 @@ class SessionProviderAdapter implements TypedSessionProvider {
         const { prompt, ...fields } = request;
         const acceptsPrompt =
           sessionProviderCapabilities(provider.agent)?.create.mode === "with-first-message";
-        return {
-          operation,
-          result: projectControl(
-            await provider.create({
-              ...fields,
-              operation: provider.createOperation,
-              ...(acceptsPrompt && prompt !== undefined ? { prompt } : {}),
-            }),
-          ),
-        };
+        return provider.create({
+          ...fields,
+          operation: provider.createOperation,
+          ...(acceptsPrompt && prompt !== undefined ? { prompt } : {}),
+        });
       }
       case "capabilities":
-        return {
-          operation,
-          result: projectCapabilities(this.agent, await provider.query(request)),
-        };
       case "inspect":
-        return { operation, result: parseResult(inspect, await provider.query(request)) };
+        return provider.query(request);
       case "live":
-        return {
-          operation,
-          result: projectLive(
-            this.agent,
-            await provider.live(request.sessionId, request.experimentalEnabled === true),
-          ),
-        };
+        return provider.live(request.sessionId, request.experimentalEnabled === true);
       case "usage":
-        return {
-          operation,
-          result: parseResult(usage, await provider.contextUsage(request.sessionId)),
-        };
+        return provider.contextUsage(request.sessionId);
       case "queue-list":
         if (!provider.queue) throw new Error("unsupported-session-provider-operation");
-        return { operation, result: projectQueue(await provider.queue(request)) };
+        return provider.queue(request);
       case "settings-state":
         if (!("settingsState" in provider))
           throw new Error("unsupported-session-provider-operation");
-        return { operation, result: parseResult(settings, await provider.settingsState(request)) };
+        return provider.settingsState(request);
       case "settings-prepare":
         if (!("prepareSettings" in provider) || !provider.prepareSettings)
           throw new Error("unsupported-session-provider-operation");
-        return {
-          operation,
-          result: parseResult(settings, await provider.prepareSettings(request)),
-        };
+        return provider.prepareSettings(request);
       case "settings":
         if (!("updateSettings" in provider))
           throw new Error("unsupported-session-provider-operation");
-        return { operation, result: projectControl(await provider.updateSettings(request)) };
+        return provider.updateSettings(request);
       default:
-        return { operation, result: projectControl(await provider.control(request)) };
+        return provider.control(request);
     }
   }
 }
@@ -564,9 +539,11 @@ export class SessionProviderRegistry {
     return agent === "antigravity" ? this.#providers.antigravity : this.creatable(agent);
   }
 
-  typed(agent: unknown): TypedSessionProvider | undefined {
+  typed(agent: unknown, execute?: ExecuteSessionRequest): TypedSessionProvider | undefined {
     const provider = this.get(agent);
-    return provider ? new SessionProviderAdapter(provider) : undefined;
+    return (
+      provider?.typed ?? (provider ? new SessionProviderAdapter(provider, execute) : undefined)
+    );
   }
 
   creatable(agent: unknown) {

@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { LeadTurnOrigin } from "./lead-turn-origin";
+import type { LeadTurnOrigin } from "../../lead-turn-origin";
 
 /**
  * DeepSeek Harness sessions as a Project Agent's workers (docs/agents/project-agent.md): how one

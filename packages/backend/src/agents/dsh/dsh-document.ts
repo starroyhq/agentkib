@@ -1,6 +1,6 @@
 import type { DshBridgeDocumentRecord, HistoryRecordKind } from "@agentkib/runtime-protocol";
-import { finishDocument, type DocumentSource } from "./session-document-providers";
-import type { DocumentOptions, SessionDocument } from "./session-model";
+import { finishDocument, type DocumentSource } from "../../session-document-providers";
+import type { DocumentOptions, SessionDocument } from "../../session-model";
 
 type Turn = SessionDocument["turns"][number];
 type LossCode = SessionDocument["losses"][number]["code"];

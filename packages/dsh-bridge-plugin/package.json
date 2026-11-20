@@ -9,12 +9,31 @@
     "bridge.js",
     "client.js",
     "projection.js",
+    "projection.d.ts",
     "compatibility.js",
+    "compatibility.d.ts",
     "commands.js",
+    "commands.d.ts",
     "cordis.patch.yml"
   ],
   "type": "module",
   "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./commands.js": {
+      "types": "./commands.d.ts",
+      "default": "./commands.js"
+    },
+    "./compatibility.js": {
+      "types": "./compatibility.d.ts",
+      "default": "./compatibility.js"
+    },
+    "./projection.js": {
+      "types": "./projection.d.ts",
+      "default": "./projection.js"
+    },
+    "./package.json": "./package.json"
+  },
   "engines": {
     "dsh": ">=0.2.1-rc.5"
   },

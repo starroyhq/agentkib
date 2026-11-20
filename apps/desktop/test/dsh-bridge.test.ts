@@ -26,12 +26,12 @@ import {
   DshBridge,
   dshConversationEvents,
   type DshBridgeOptions,
-} from "../../../packages/backend/src/dsh-bridge";
+} from "../../../packages/backend/src/agents/dsh/dsh-bridge";
 import {
   createDshWorker,
   DshLaneWatch,
   type DshLaneBridge,
-} from "../../../packages/backend/src/dsh-lanes";
+} from "../../../packages/backend/src/agents/dsh/dsh-lanes";
 import { readControlReceipt } from "../../../packages/backend/src/control-receipt";
 import type { ContextUsage } from "../../../packages/backend/src/context-usage";
 import { TypeScriptBackend } from "../../../packages/backend/src/index";

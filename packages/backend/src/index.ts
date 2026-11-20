@@ -10,11 +10,11 @@ import {
 import { CursorBridge } from "./cursor-bridge";
 import { ClaudeBridge, type ClaudeBridgeTarget } from "./claude-bridge";
 import { readClaudeTranscriptObservation } from "./claude-context-usage";
-import { DSH_EXECUTION_MODE, DSH_NATIVE_TURN_OBSERVED, DshBridge } from "./dsh-bridge";
-import { readLocalDshHistory, readLocalDshTurn } from "./dsh-local-history";
-import { DshManagedRuntime, dshHome } from "./dsh-managed-runtime";
-import { dshSessionDirectory, probeDshWriter } from "./dsh-writer";
-import { DshLaneWatch, DshLeadWatch } from "./dsh-lanes";
+import { DSH_EXECUTION_MODE, DSH_NATIVE_TURN_OBSERVED, DshBridge } from "./agents/dsh/dsh-bridge";
+import { readLocalDshHistory, readLocalDshTurn } from "./agents/dsh/dsh-local-history";
+import { DshManagedRuntime, dshHome } from "./agents/dsh/dsh-managed-runtime";
+import { dshSessionDirectory, probeDshWriter } from "./agents/dsh/dsh-writer";
+import { DshLaneWatch, DshLeadWatch } from "./agents/dsh/dsh-lanes";
 import { listNativeImports } from "./session-native-imports";
 import {
   continueNativeImport,
@@ -54,6 +54,14 @@ import { scanNativeMcp } from "./mcp-native-scan";
 import { planNativeMcpMigration } from "./mcp-migration-plan";
 import { webDiff } from "./web-diff";
 import type { WebReadRequests } from "./web-read";
+import { DshSessionProvider } from "./agents/dsh/session-provider";
+import {
+  isSessionMethod,
+  legacySessionFields,
+  readSessionRequest,
+  restrictSessionCommands,
+  type SessionMethod,
+} from "./sessions/routing";
 import { RemoteGateways } from "./remote-gateways";
 import { RemoteAgent } from "./remote-agent";
 import { WorkspaceStorageOwner } from "./storage";
@@ -145,39 +153,6 @@ import {
 } from "./migration";
 import { haltOwnTurns } from "./lead-turn-origin";
 
-/** Session requests a DeepSeek Harness bridge answers; history and everything else stay on the readers. */
-const DSH_BRIDGE_OPERATIONS = new Set<string>([
-  "live",
-  "capabilities",
-  "inspect",
-  "usage",
-  "goal",
-  "context",
-  "queue-list",
-  "reconcile",
-  "send",
-  "steer",
-  "queue-add",
-  "queue-update",
-  "queue-delete",
-  "queue-steer",
-  "stop",
-  "approve",
-  "answer",
-  "settings-state",
-  "settings",
-  "rename",
-  "archive",
-  "unarchive",
-  "fork",
-  "goal-set",
-  "goal-pause",
-  "goal-resume",
-  "goal-clear",
-  "compact",
-  "subagents",
-  "subagent-events",
-]);
 const HANDOFF_TASK_METHODS = new Set<string>([
   RUNTIME_METHODS.prepareSessionHandoff,
   RUNTIME_METHODS.planSessionHandoff,
@@ -215,6 +190,7 @@ export class TypeScriptBackend {
   #cursorBridge?: CursorBridge;
   #claudeBridge?: ClaudeBridge;
   #dshBridge?: DshBridge;
+  #dshSessionProvider = new DshSessionProvider();
   /** Reports DeepSeek Harness workers' turns from the states the DSH bridge publishes. */
   #dshLanes?: DshLaneWatch;
   /** A DSH Project Agent's turns, counted when nobody sent them (`DshLeadWatch`). */
@@ -295,6 +271,7 @@ export class TypeScriptBackend {
     this.#claudeBridge = undefined;
     void this.#dshBridge?.close();
     this.#dshBridge = undefined;
+    this.#dshSessionProvider = new DshSessionProvider();
     this.#claudeManaged = undefined;
     this.#sessionIndex?.close();
     this.#sessionIndex = undefined;
@@ -350,6 +327,7 @@ export class TypeScriptBackend {
     this.#claudeManaged = undefined;
     this.#claudeBridge = undefined;
     this.#dshBridge = undefined;
+    this.#dshSessionProvider = new DshSessionProvider();
     this.#mcpHub = undefined;
     this.#remoteAgent = undefined;
     const closing = (async () => {
@@ -723,6 +701,9 @@ export class TypeScriptBackend {
           },
         });
         this.#dshBridge = dshBridge;
+        this.#dshSessionProvider = new DshSessionProvider(dshBridge, (id, operation) =>
+          this.#noteDshControl(id, operation),
+        );
         this.#sessions = new SessionReaders(
           store.sessions,
           this.#commands,
@@ -1166,62 +1147,7 @@ export class TypeScriptBackend {
       const nativeReceipt = this.#claudeBridge?.receipt(dshReceipt) ?? dshReceipt;
       return this.#claudeManaged ? this.#claudeManaged.receipt(nativeReceipt) : nativeReceipt;
     }
-    if (method === RUNTIME_METHODS.claudeManaged) return this.#requestClaudeManaged(params);
-    if (method === RUNTIME_METHODS.codexManaged && typeof params.sessionId === "string") {
-      const agent = this.#store!.sessions.get(params.sessionId)?.agent;
-      if (agent && agent !== "codex") throw new Error("unsupported-session-provider");
-    }
-    if (method === RUNTIME_METHODS.codexManaged && params.operation === "options")
-      return this.#withWebRead((owner) => owner.managedOptions());
-    if (method === RUNTIME_METHODS.codexManaged && params.operation === "reconcile")
-      return this.#withWebRead((owner) => owner.managedReconcile(params));
-    if (method === RUNTIME_METHODS.codexManaged && params.operation === "resume")
-      return this.#withWebRead((owner) => owner.managedResume(params));
-    if (method === RUNTIME_METHODS.codexManaged && params.operation === "queue-list")
-      return this.#withWebRead((owner) => owner.managedQueueList(params));
-    if (method === RUNTIME_METHODS.codexManaged && params.operation === "unarchive")
-      return this.#withWebRead((owner) => owner.managedUnarchive(params));
-    if (method === RUNTIME_METHODS.codexManaged && params.operation === "delete")
-      return this.#deleted(
-        params,
-        this.#withWebRead((owner) => owner.managedDelete(params)),
-      );
-    if (method === RUNTIME_METHODS.codexManaged && params.operation === "settings-state")
-      return this.#withWebRead((owner) => owner.managedSettingsState(params));
-    if (
-      method === RUNTIME_METHODS.codexManaged &&
-      ["capabilities", "inspect"].includes(String(params.operation))
-    )
-      return this.#withWebRead((owner) => owner.managedQuery(params));
-    if (method === RUNTIME_METHODS.codexManaged && params.operation === "create")
-      return this.#withWebRead((owner) => owner.sessionProviderCreate("codex", params));
-    if (method === RUNTIME_METHODS.codexManaged && params.operation === "release")
-      return this.#withWebRead((owner) => owner.managedLifecycle(params));
-    if (
-      method === RUNTIME_METHODS.codexManaged &&
-      [
-        "send",
-        "stop",
-        "approve",
-        "answer",
-        "steer",
-        "queue-add",
-        "queue-update",
-        "queue-delete",
-        "queue-reorder",
-        "rename",
-        "archive",
-        "settings",
-        "goal-set",
-        "goal-pause",
-        "goal-resume",
-        "goal-clear",
-        "fork",
-        "compact",
-        "terminals-clean",
-      ].includes(String(params.operation))
-    )
-      return this.#codexControl(params);
+    if (isSessionMethod(method)) return this.#routeSession(method, params);
     if (method === RUNTIME_METHODS.refreshInsights) return this.#insightRefresh!.refresh();
     if (method === RUNTIME_METHODS.listWorkspaceOpeners)
       return this.#workspaceApplications!.list(string(params, "workspaceId"));
@@ -1231,274 +1157,6 @@ export class TypeScriptBackend {
         params,
       );
       return this.#workspaceApplications!.open(request.workspaceId, request.openerId);
-    }
-    if (method === RUNTIME_METHODS.webRequest) {
-      if (params.operation === "desktop-events")
-        return this.#withWebRead((owner) =>
-          owner.indexedCodexEvents({ ...params, operation: "events" }),
-        );
-      if (params.operation === "read-state" || params.operation === "read-state-update") {
-        const input = parameters(
-          z
-            .object({
-              operation: z.enum(["read-state", "read-state-update"]),
-              sessionId: z.string().min(1).max(256),
-              readerScope: z.string().min(1).max(512),
-              expectedVersion: z.string().min(1).max(8192).optional(),
-              seenResultId: z.string().min(1).max(1024).nullable().optional(),
-            })
-            .strict(),
-          params,
-        );
-        if (!this.#readStates) throw new Error("read-state-unavailable");
-        if (input.operation === "read-state")
-          return this.#readStates
-            .get(input.sessionId, input.readerScope)
-            .then((readState) => ({ readState }));
-        if (!input.expectedVersion || input.seenResultId === undefined)
-          throw new Error("read-state-conflict");
-        return this.#readStates
-          .update(input.sessionId, input.readerScope, input.expectedVersion, input.seenResultId)
-          .then((readState) => ({ readState }));
-      }
-      let readerScope: string | undefined;
-      if (params.operation === "catalog" && params.readerScope !== undefined) {
-        readerScope = parameters(
-          z.object({ readerScope: z.string().min(1).max(512) }),
-          params,
-        ).readerScope;
-        const { readerScope: _scope, ...unscoped } = params;
-        params = unscoped;
-      }
-      if (params.operation === "diff") return webDiff(params, this.#store, this.#git!);
-      if (params.operation === "session-image")
-        return typeof params.sessionId === "string" &&
-          this.#claudeManaged!.hasManagedSession(params.sessionId)
-          ? this.#claudeManaged!.request(params)
-          : this.#withWebRead((owner) => owner.request(params));
-      // Claude managed sessions run in their registered workspace root, so they have no
-      // narrower directory; every other session reads it from the index or Codex ledger.
-      if (params.operation === "session-directory")
-        return typeof params.sessionId === "string" &&
-          this.#claudeManaged!.hasManagedSession(params.sessionId)
-          ? { cwd: null }
-          : this.#withWebRead((owner) => owner.request(params));
-      if (params.operation === "provider-options") {
-        const { agent, operation: _operation, ...scope } = params;
-        return this.#withWebRead((owner) => owner.sessionProviderOptions(agent, scope));
-      }
-      if (params.operation === "provider-workspace-resources") {
-        const { agent, operation: _operation, ...scope } = params;
-        return this.#withWebRead((owner) => owner.sessionProviderWorkspaceResources(agent, scope));
-      }
-      if (params.operation === "provider-create") {
-        const { agent, operation: _operation, ...fields } = params;
-        return this.#withWebRead((owner) => owner.sessionProviderCreate(agent, fields));
-      }
-      if (params.operation === "dsh-create" || params.operation === "dsh-options")
-        return this.#requestDsh(params);
-      // A Devin session has no ID until its first turn has run; the web reader starts it.
-      if (params.operation === "devin-create")
-        return this.#withWebRead((owner) => owner.devinCreate(params));
-      // Devin CLI's own login or workspace trust, run in a terminal for the person to finish.
-      if (params.operation === "devin-terminal") {
-        const action =
-          params.action === "login" || params.action === "trust" ? params.action : null;
-        if (!action) throw new Error("invalid-request");
-        const environment = devinChildEnvironment({ ...process.env, ...this.environment });
-        const executable = devinExecutable(environment);
-        if (!executable) throw new Error("devin-cli-unavailable");
-        const cwd =
-          action === "trust"
-            ? this.#store!.workspacePath(z.string().min(1).max(256).parse(params.workspaceId))
-            : (environment.HOME ?? environment.USERPROFILE ?? os.homedir());
-        return launchDevinTerminal(
-          action,
-          executable,
-          cwd,
-          this.#handoffWork.commands,
-          environment,
-        );
-      }
-      if (params.operation === "devin-options")
-        return this.#withWebRead((owner) => owner.devinOptions());
-      // Resolve the provider from persisted identity, never from a browser-supplied agent.
-      // Fresh Claude sessions are not indexed until their first native transcript exists.
-      if (typeof params.sessionId === "string" && params.operation !== "catalog") {
-        const sessionId = typeof params.sessionId === "string" ? params.sessionId : "";
-        // DSH history pages come through the session readers; live state and control go to
-        // the bridge, which talks to the plugin inside the running DSH.
-        if (
-          this.#store!.sessions.get(sessionId)?.agent === "deepseek-harness" &&
-          DSH_BRIDGE_OPERATIONS.has(String(params.operation))
-        )
-          return this.#requestDsh(params);
-        const claudeSession =
-          this.#store!.sessions.get(sessionId)?.agent === "claude-code" ||
-          this.#claudeManaged!.hasManagedSession(sessionId);
-        if (claudeSession) {
-          if (params.operation === "subagents" || params.operation === "subagent-events")
-            return this.#claudeManaged!.request(params);
-          if (
-            params.operation === "events" &&
-            this.#store!.sessions.get(sessionId)?.agent === "claude-code" &&
-            !this.#claudeManaged!.hasManagedSession(sessionId)
-          )
-            return this.#readIndexedClaudeEvents(params, sessionId);
-          return this.#requestClaudeManaged(params);
-        }
-      }
-      if (
-        params.operation === "live" ||
-        params.operation === "events" ||
-        params.operation === "subagents" ||
-        params.operation === "subagent-events" ||
-        params.operation === "usage"
-      ) {
-        return this.#withWebRead((owner) => owner.request(params));
-      }
-      if (params.operation === "settings-state")
-        return this.#withWebRead((owner) => owner.sessionProviderSettingsState(params));
-      if (params.operation === "queue-list")
-        return this.#withWebRead((owner) => owner.managedQueueList(params));
-      if (["capabilities", "inspect"].includes(String(params.operation)))
-        return this.#withWebRead((owner) => owner.managedQuery(params));
-      if (params.operation === "resume")
-        return this.#withWebRead((owner) => owner.managedResume(params));
-      if (params.operation === "unarchive")
-        return this.#withWebRead((owner) => owner.managedUnarchive(params));
-      if (params.operation === "delete")
-        return this.#deleted(
-          params,
-          this.#withWebRead((owner) => owner.managedDelete(params)),
-        );
-      if (
-        [
-          "send",
-          "stop",
-          "approve",
-          "answer",
-          "steer",
-          "queue-add",
-          "queue-update",
-          "queue-pause",
-          "queue-resume",
-          "queue-delete",
-          "queue-reorder",
-          "rename",
-          "archive",
-          "settings",
-          "goal-set",
-          "goal-pause",
-          "goal-resume",
-          "goal-clear",
-          "fork",
-          "compact",
-          "terminals-clean",
-        ].includes(String(params.operation))
-      )
-        return this.#codexControl(params);
-      if (
-        params.operation === "catalog" ||
-        params.operation === "events" ||
-        params.operation === "context" ||
-        params.operation === "resume-command" ||
-        params.operation === "usage" ||
-        params.operation === "goal" ||
-        params.operation === "resources"
-      )
-        if (params.operation !== "catalog")
-          return this.#withWebRead((owner) => owner.request(params));
-      return this.#withWebRead((owner) => owner.request(params)).then((value) => {
-        if (!value || typeof value !== "object" || Array.isArray(value)) return value;
-        const catalog = value as Record<string, unknown>;
-        const claude = this.#claudeManaged!;
-        void claude.refreshExternalTurns().catch(() => undefined);
-        const records = claude.catalog();
-        const managedIds = new Set(records.map((record) => record.id));
-        const aliases = new Set(
-          records.flatMap((record) =>
-            typeof record.indexedSessionId === "string" ? [record.indexedSessionId] : [],
-          ),
-        );
-        const sessions = Array.isArray(catalog.sessions) ? catalog.sessions : [];
-        const continuation = (session: unknown) => {
-          if (!session || typeof session !== "object" || Array.isArray(session)) return session;
-          const row = session as Record<string, unknown>;
-          if (
-            row.agent === "deepseek-harness" &&
-            typeof row.id === "string" &&
-            this.#dshBridge?.handles(row.id)
-          ) {
-            try {
-              const live = this.#dshBridge.live(row.id, false);
-              return {
-                ...row,
-                continuation: {
-                  status: live.status,
-                  executionLocation: live.executionLocation,
-                  ownershipReason: live.ownershipReason,
-                  reason: live.reason,
-                },
-              };
-            } catch {
-              return row;
-            }
-          }
-          if (row.agent !== "claude-code" || typeof row.id !== "string") return row;
-          const projection = row.continuation;
-          let live = managedIds.has(row.id)
-            ? projection && typeof projection === "object" && !Array.isArray(projection)
-              ? (projection as Record<string, unknown>)
-              : undefined
-            : claude.catalogContinuation(row.id);
-          try {
-            if (
-              this.#claudeBridge?.handles(row.id) &&
-              this.#claudeBridge.blocksManagedResume(row.id)
-            )
-              live = this.#claudeBridge.live(row.id, false);
-          } catch {
-            // A broken connection registry must not prevent read-only catalog access.
-            live = {
-              status: "unsupported",
-              executionLocation: null,
-              reason: "claude-bridge-registry-invalid",
-            };
-          }
-          const externalTurn = !["terminal", "agentkib"].includes(String(live?.executionLocation))
-            ? claude.externalTurn(row.id)
-            : undefined;
-          const observedRow = externalTurn ? { ...row, externalTurn } : row;
-          return live
-            ? {
-                ...observedRow,
-                continuation: {
-                  status: live.status,
-                  executionLocation: live.executionLocation,
-                  ownershipReason: live.ownershipReason,
-                  reason: live.reason,
-                },
-              }
-            : observedRow;
-        };
-        const merged = [
-          ...sessions.filter(
-            (session) =>
-              !!session &&
-              typeof session === "object" &&
-              !Array.isArray(session) &&
-              !("id" in session && aliases.has(String(session.id))),
-          ),
-          ...this.#withWorktrees(records),
-        ]
-          .map(continuation)
-          .map(this.#withOrchestration());
-        return {
-          ...catalog,
-          sessions: readerScope ? this.#readStates!.project(merged, readerScope) : merged,
-        };
-      });
     }
     if (method.startsWith("skills.")) return this.#skills!.request(method, params);
     if (method === RUNTIME_METHODS.agentToolsStatus)
@@ -2800,6 +2458,356 @@ export class TypeScriptBackend {
     };
   }
 
+  #routeSession(method: SessionMethod, params: Record<string, unknown>) {
+    if (method === RUNTIME_METHODS.sessionRequest) return this.#requestTypedSession(params);
+    if (method === RUNTIME_METHODS.claudeManaged) return this.#requestClaudeManaged(params);
+    if (method === RUNTIME_METHODS.codexManaged) return this.#requestCodexSession(params);
+    if (
+      typeof params.sessionId === "string" &&
+      typeof params.operation === "string" &&
+      this.#store!.sessions.get(params.sessionId)?.agent === "deepseek-harness"
+    ) {
+      const handled = this.#dshSessionProvider.legacy(params.operation, params);
+      if (handled !== undefined) return handled;
+    }
+    return this.#requestWebSession(params);
+  }
+
+  async #requestTypedSession(params: Record<string, unknown>) {
+    const { agent: requestedAgent, request } = readSessionRequest(params);
+    const agent =
+      request.operation === "create"
+        ? requestedAgent === undefined
+          ? "codex"
+          : requestedAgent
+        : (this.#store!.sessions.get(request.sessionId)?.agent ??
+          (this.#claudeManaged?.hasManagedSession(request.sessionId) ? "claude-code" : "codex"));
+    const response =
+      agent === "deepseek-harness"
+        ? await this.#dshSessionProvider.request(request)
+        : await this.#withWebRead((owner) => {
+            const provider = owner.sessionProviders.typed(
+              agent,
+              request.operation === "create" ||
+                (request.operation === "settings-prepare" && agent !== "claude-code")
+                ? undefined
+                : async (value) =>
+                    agent === "claude-code"
+                      ? this.#requestClaudeManaged(legacySessionFields(value))
+                      : this.#requestWebSession(legacySessionFields(value)),
+            );
+            if (!provider) throw new Error("unsupported-session-provider");
+            return provider.request(request);
+          });
+    return restrictSessionCommands(request, response);
+  }
+
+  #requestCodexSession(params: Record<string, unknown>) {
+    if (typeof params.sessionId === "string") {
+      const agent = this.#store!.sessions.get(params.sessionId)?.agent;
+      if (agent && agent !== "codex") throw new Error("unsupported-session-provider");
+    }
+    if (params.operation === "options") return this.#withWebRead((owner) => owner.managedOptions());
+    if (params.operation === "reconcile")
+      return this.#withWebRead((owner) => owner.managedReconcile(params));
+    if (params.operation === "resume")
+      return this.#withWebRead((owner) => owner.managedResume(params));
+    if (params.operation === "queue-list")
+      return this.#withWebRead((owner) => owner.managedQueueList(params));
+    if (params.operation === "unarchive")
+      return this.#withWebRead((owner) => owner.managedUnarchive(params));
+    if (params.operation === "delete")
+      return this.#deleted(
+        params,
+        this.#withWebRead((owner) => owner.managedDelete(params)),
+      );
+    if (params.operation === "settings-state")
+      return this.#withWebRead((owner) => owner.managedSettingsState(params));
+    if (["capabilities", "inspect"].includes(String(params.operation)))
+      return this.#withWebRead((owner) => owner.managedQuery(params));
+    if (params.operation === "create")
+      return this.#withWebRead((owner) => owner.sessionProviderCreate("codex", params));
+    if (params.operation === "release")
+      return this.#withWebRead((owner) => owner.managedLifecycle(params));
+    if (
+      [
+        "send",
+        "stop",
+        "approve",
+        "answer",
+        "steer",
+        "queue-add",
+        "queue-update",
+        "queue-delete",
+        "queue-reorder",
+        "rename",
+        "archive",
+        "settings",
+        "goal-set",
+        "goal-pause",
+        "goal-resume",
+        "goal-clear",
+        "fork",
+        "compact",
+        "terminals-clean",
+      ].includes(String(params.operation))
+    )
+      return this.#codexControl(params);
+    throw new RpcFault(-32601, "Method not found");
+  }
+
+  #requestWebSession(params: Record<string, unknown>) {
+    if (params.operation === "desktop-events")
+      return this.#withWebRead((owner) =>
+        owner.indexedCodexEvents({ ...params, operation: "events" }),
+      );
+    if (params.operation === "read-state" || params.operation === "read-state-update") {
+      const input = parameters(
+        z
+          .object({
+            operation: z.enum(["read-state", "read-state-update"]),
+            sessionId: z.string().min(1).max(256),
+            readerScope: z.string().min(1).max(512),
+            expectedVersion: z.string().min(1).max(8192).optional(),
+            seenResultId: z.string().min(1).max(1024).nullable().optional(),
+          })
+          .strict(),
+        params,
+      );
+      if (!this.#readStates) throw new Error("read-state-unavailable");
+      if (input.operation === "read-state")
+        return this.#readStates
+          .get(input.sessionId, input.readerScope)
+          .then((readState) => ({ readState }));
+      if (!input.expectedVersion || input.seenResultId === undefined)
+        throw new Error("read-state-conflict");
+      return this.#readStates
+        .update(input.sessionId, input.readerScope, input.expectedVersion, input.seenResultId)
+        .then((readState) => ({ readState }));
+    }
+    let readerScope: string | undefined;
+    if (params.operation === "catalog" && params.readerScope !== undefined) {
+      readerScope = parameters(
+        z.object({ readerScope: z.string().min(1).max(512) }),
+        params,
+      ).readerScope;
+      const { readerScope: _scope, ...unscoped } = params;
+      params = unscoped;
+    }
+    if (params.operation === "diff") return webDiff(params, this.#store!, this.#git!);
+    if (params.operation === "session-image")
+      return typeof params.sessionId === "string" &&
+        this.#claudeManaged!.hasManagedSession(params.sessionId)
+        ? this.#claudeManaged!.request(params)
+        : this.#withWebRead((owner) => owner.request(params));
+    // Claude managed sessions run in their registered workspace root, so they have no
+    // narrower directory; every other session reads it from the index or Codex ledger.
+    if (params.operation === "session-directory")
+      return typeof params.sessionId === "string" &&
+        this.#claudeManaged!.hasManagedSession(params.sessionId)
+        ? { cwd: null }
+        : this.#withWebRead((owner) => owner.request(params));
+    if (params.operation === "provider-options") {
+      const { agent, operation: _operation, ...scope } = params;
+      return this.#withWebRead((owner) => owner.sessionProviderOptions(agent, scope));
+    }
+    if (params.operation === "provider-workspace-resources") {
+      const { agent, operation: _operation, ...scope } = params;
+      return this.#withWebRead((owner) => owner.sessionProviderWorkspaceResources(agent, scope));
+    }
+    if (params.operation === "provider-create") {
+      const { agent, operation: _operation, ...fields } = params;
+      return this.#withWebRead((owner) => owner.sessionProviderCreate(agent, fields));
+    }
+    if (params.operation === "dsh-create" || params.operation === "dsh-options")
+      return this.#dshSessionProvider.legacy(params.operation, params);
+    // A Devin session has no ID until its first turn has run; the web reader starts it.
+    if (params.operation === "devin-create")
+      return this.#withWebRead((owner) => owner.devinCreate(params));
+    // Devin CLI's own login or workspace trust, run in a terminal for the person to finish.
+    if (params.operation === "devin-terminal") {
+      const action = params.action === "login" || params.action === "trust" ? params.action : null;
+      if (!action) throw new Error("invalid-request");
+      const environment = devinChildEnvironment({ ...process.env, ...this.environment });
+      const executable = devinExecutable(environment);
+      if (!executable) throw new Error("devin-cli-unavailable");
+      const cwd =
+        action === "trust"
+          ? this.#store!.workspacePath(z.string().min(1).max(256).parse(params.workspaceId))
+          : (environment.HOME ?? environment.USERPROFILE ?? os.homedir());
+      return launchDevinTerminal(action, executable, cwd, this.#handoffWork.commands, environment);
+    }
+    if (params.operation === "devin-options")
+      return this.#withWebRead((owner) => owner.devinOptions());
+    // Resolve the provider from persisted identity, never from a browser-supplied agent.
+    // Fresh Claude sessions are not indexed until their first native transcript exists.
+    if (typeof params.sessionId === "string" && params.operation !== "catalog") {
+      const sessionId = typeof params.sessionId === "string" ? params.sessionId : "";
+      const claudeSession =
+        this.#store!.sessions.get(sessionId)?.agent === "claude-code" ||
+        this.#claudeManaged!.hasManagedSession(sessionId);
+      if (claudeSession) {
+        if (params.operation === "subagents" || params.operation === "subagent-events")
+          return this.#claudeManaged!.request(params);
+        if (
+          params.operation === "events" &&
+          this.#store!.sessions.get(sessionId)?.agent === "claude-code" &&
+          !this.#claudeManaged!.hasManagedSession(sessionId)
+        )
+          return this.#readIndexedClaudeEvents(params, sessionId);
+        return this.#requestClaudeManaged(params);
+      }
+    }
+    if (
+      params.operation === "live" ||
+      params.operation === "events" ||
+      params.operation === "subagents" ||
+      params.operation === "subagent-events" ||
+      params.operation === "usage"
+    ) {
+      return this.#withWebRead((owner) => owner.request(params));
+    }
+    if (params.operation === "settings-state")
+      return this.#withWebRead((owner) => owner.sessionProviderSettingsState(params));
+    if (params.operation === "queue-list")
+      return this.#withWebRead((owner) => owner.managedQueueList(params));
+    if (["capabilities", "inspect"].includes(String(params.operation)))
+      return this.#withWebRead((owner) => owner.managedQuery(params));
+    if (params.operation === "resume")
+      return this.#withWebRead((owner) => owner.managedResume(params));
+    if (params.operation === "unarchive")
+      return this.#withWebRead((owner) => owner.managedUnarchive(params));
+    if (params.operation === "delete")
+      return this.#deleted(
+        params,
+        this.#withWebRead((owner) => owner.managedDelete(params)),
+      );
+    if (
+      [
+        "send",
+        "stop",
+        "approve",
+        "answer",
+        "steer",
+        "queue-add",
+        "queue-update",
+        "queue-pause",
+        "queue-resume",
+        "queue-delete",
+        "queue-reorder",
+        "rename",
+        "archive",
+        "settings",
+        "goal-set",
+        "goal-pause",
+        "goal-resume",
+        "goal-clear",
+        "fork",
+        "compact",
+        "terminals-clean",
+      ].includes(String(params.operation))
+    )
+      return this.#codexControl(params);
+    if (
+      params.operation === "catalog" ||
+      params.operation === "events" ||
+      params.operation === "context" ||
+      params.operation === "resume-command" ||
+      params.operation === "usage" ||
+      params.operation === "goal" ||
+      params.operation === "resources"
+    )
+      if (params.operation !== "catalog")
+        return this.#withWebRead((owner) => owner.request(params));
+    return this.#withWebRead((owner) => owner.request(params)).then((value) => {
+      if (!value || typeof value !== "object" || Array.isArray(value)) return value;
+      const catalog = value as Record<string, unknown>;
+      const claude = this.#claudeManaged!;
+      void claude.refreshExternalTurns().catch(() => undefined);
+      const records = claude.catalog();
+      const managedIds = new Set(records.map((record) => record.id));
+      const aliases = new Set(
+        records.flatMap((record) =>
+          typeof record.indexedSessionId === "string" ? [record.indexedSessionId] : [],
+        ),
+      );
+      const sessions = Array.isArray(catalog.sessions) ? catalog.sessions : [];
+      const continuation = (session: unknown) => {
+        if (!session || typeof session !== "object" || Array.isArray(session)) return session;
+        const row = session as Record<string, unknown>;
+        if (
+          row.agent === "deepseek-harness" &&
+          typeof row.id === "string" &&
+          this.#dshBridge?.handles(row.id)
+        ) {
+          try {
+            const live = this.#dshBridge.live(row.id, false);
+            return {
+              ...row,
+              continuation: {
+                status: live.status,
+                executionLocation: live.executionLocation,
+                ownershipReason: live.ownershipReason,
+                reason: live.reason,
+              },
+            };
+          } catch {
+            return row;
+          }
+        }
+        if (row.agent !== "claude-code" || typeof row.id !== "string") return row;
+        const projection = row.continuation;
+        let live = managedIds.has(row.id)
+          ? projection && typeof projection === "object" && !Array.isArray(projection)
+            ? (projection as Record<string, unknown>)
+            : undefined
+          : claude.catalogContinuation(row.id);
+        try {
+          if (this.#claudeBridge?.handles(row.id) && this.#claudeBridge.blocksManagedResume(row.id))
+            live = this.#claudeBridge.live(row.id, false);
+        } catch {
+          // A broken connection registry must not prevent read-only catalog access.
+          live = {
+            status: "unsupported",
+            executionLocation: null,
+            reason: "claude-bridge-registry-invalid",
+          };
+        }
+        const externalTurn = !["terminal", "agentkib"].includes(String(live?.executionLocation))
+          ? claude.externalTurn(row.id)
+          : undefined;
+        const observedRow = externalTurn ? { ...row, externalTurn } : row;
+        return live
+          ? {
+              ...observedRow,
+              continuation: {
+                status: live.status,
+                executionLocation: live.executionLocation,
+                ownershipReason: live.ownershipReason,
+                reason: live.reason,
+              },
+            }
+          : observedRow;
+      };
+      const merged = [
+        ...sessions.filter(
+          (session) =>
+            !!session &&
+            typeof session === "object" &&
+            !Array.isArray(session) &&
+            !("id" in session && aliases.has(String(session.id))),
+        ),
+        ...this.#withWorktrees(records),
+      ]
+        .map(continuation)
+        .map(this.#withOrchestration());
+      return {
+        ...catalog,
+        sessions: readerScope ? this.#readStates!.project(merged, readerScope) : merged,
+      };
+    });
+  }
+
   async #withWebRead<T>(operation: (owner: WebReadRequests) => T): Promise<Awaited<T>> {
     if (!this.#webRead) {
       const store = this.#store,
@@ -2824,7 +2832,7 @@ export class TypeScriptBackend {
         this.#sessionIndex,
         () => this.#sessionStream?.publish("", "invalidate", { domains: ["catalog"] }),
         (request) => this.#dispatchClaudeManaged(request),
-        (request) => this.#dispatchDsh(request),
+        this.#dshSessionProvider,
       );
       this.#webRead.observeLanes({
         turnEnded: this.#workerObserver.turnEnded,
@@ -2849,62 +2857,18 @@ export class TypeScriptBackend {
     return await operation(this.#webRead);
   }
 
-  #requestDsh(params: Record<string, unknown>) {
-    switch (params.operation) {
-      case "live":
-      case "capabilities":
-      case "inspect":
-      case "dsh-options":
-      case "dsh-create":
-      case "settings-state":
-      case "settings":
-      case "usage":
-      case "send":
-      case "stop":
-      case "approve":
-      case "answer":
-      case "steer":
-      case "queue-add":
-        return this.#withWebRead((owner) =>
-          owner.bridgedSessionProviderRequest("deepseek-harness", params),
-        );
-      default:
-        return this.#dispatchDsh(params);
-    }
-  }
-
-  /**
-   * A DSH session's state or control from a person's device. When the session is a lead's lane,
-   * the lead hears that the person stepped in; the service's own controls do not come here.
-   */
-  async #dispatchDsh(params: Record<string, unknown>) {
-    const bridge = this.#dshBridge;
-    if (params.operation === "dsh-options")
-      return (
-        bridge?.createOptions(params.includeModels === true) ?? {
-          available: false,
-          reason: "platform-unsupported",
-        }
-      );
-    // A new session has no ID yet; the bridge starts it in the chosen DSH runtime.
-    if (params.operation === "dsh-create") {
-      if (!bridge) throw new Error("session-unavailable");
-      return bridge.create(params);
-    }
-    if (!bridge || typeof params.sessionId !== "string" || !bridge.handles(params.sessionId))
-      throw new Error("session-unavailable");
+  /** The person's control keeps the existing lead and worker bookkeeping. */
+  #noteDshControl(sessionId: string, operation: string) {
     try {
-      this.#orchestration?.laneControlled(params.sessionId, String(params.operation));
-      // The person wrote to a DSH Project Agent: its turns without them start over.
+      this.#orchestration?.laneControlled(sessionId, operation);
       if (
-        ["send", "steer", "queue-add"].includes(String(params.operation)) &&
-        this.#orchestration?.status(params.sessionId)
+        ["send", "steer", "queue-add"].includes(operation) &&
+        this.#orchestration?.status(sessionId)
       )
-        this.#orchestration.userSpoke(params.sessionId);
+        this.#orchestration.userSpoke(sessionId);
     } catch {
       /* A lead's bookkeeping never blocks the person's control. */
     }
-    return bridge.request(params);
   }
 
   #requestClaudeManaged(params: Record<string, unknown>) {
@@ -2925,19 +2889,19 @@ export class TypeScriptBackend {
       case "steer":
       case "queue-add":
         // The Claude transport also addresses sessions before their transcripts are indexed.
-        return this.#withWebRead((owner) =>
-          owner.bridgedSessionProviderRequest("claude-code", params),
-        ).then((result) => {
-          if (
-            typeof params.sessionId === "string" &&
-            result &&
-            typeof result === "object" &&
-            "accepted" in result &&
-            result.accepted === true
-          )
-            this.#workerObserver.controlled(params.sessionId, String(params.operation));
-          return result;
-        });
+        return this.#withWebRead((owner) => owner.claudeSessionProviderRequest(params)).then(
+          (result) => {
+            if (
+              typeof params.sessionId === "string" &&
+              result &&
+              typeof result === "object" &&
+              "accepted" in result &&
+              result.accepted === true
+            )
+              this.#workerObserver.controlled(params.sessionId, String(params.operation));
+            return result;
+          },
+        );
       default:
         return this.#dispatchClaudeManaged(params);
     }

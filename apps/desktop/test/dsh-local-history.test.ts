@@ -15,7 +15,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   readLocalDshHistory,
   readLocalDshTurn,
-} from "../../../packages/backend/src/dsh-local-history";
+} from "../../../packages/backend/src/agents/dsh/dsh-local-history";
 
 const nativeId = "session-a";
 const logName = "session.v4.jsonl.zstd";

@@ -7,6 +7,7 @@ import {
   DSH_BRIDGE_PATHS,
   DSH_BRIDGE_PLUGIN_VERSION,
   DSH_BRIDGE_PROTOCOL,
+  RUNTIME_METHODS,
   type DshBridgeCommand,
   type DshBridgeDiscovery,
   type DshBridgeInteraction,
@@ -14,8 +15,10 @@ import {
   type DshBridgeSessionState,
 } from "@agentkib/runtime-protocol";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { DshBridge } from "../../../../packages/backend/src/agents/dsh/dsh-bridge";
+import { DshSessionProvider } from "../../../../packages/backend/src/agents/dsh/session-provider";
 import { discover, post } from "../../../../packages/dsh-bridge-plugin/client.js";
-import { startBackend, startHost } from "./harness";
+import { startBackend, startHost, type Rpc } from "./harness";
 
 const agent = "deepseek-harness";
 const nativeId = "session-baseline";
@@ -234,6 +237,7 @@ describe.skipIf(process.platform !== "darwin")("DeepSeek Harness HTTP behavior b
   let workspace: string;
   let host: Awaited<ReturnType<typeof startHost>>;
   let plugin: Awaited<ReturnType<typeof startFakePlugin>>;
+  let rpc: Rpc;
   let sessionId: string;
   const cleanups: Array<() => Promise<unknown>> = [];
 
@@ -261,6 +265,7 @@ describe.skipIf(process.platform !== "darwin")("DeepSeek Harness HTTP behavior b
         PATH: "/usr/bin:/bin",
       },
     });
+    rpc = backend.rpc;
     cleanups.push(backend.close);
     plugin = await startFakePlugin(agentkibHome, workspace);
     cleanups.push(plugin.close);
@@ -576,6 +581,101 @@ describe.skipIf(process.platform !== "darwin")("DeepSeek Harness HTTP behavior b
       turnId: null,
       queuedCount: 0,
     });
+  });
+
+  it("dispatches typed and legacy sends through the DSH provider and replays the typed receipt", async () => {
+    const before = await getLive();
+    expect(before).toMatchObject({
+      status: 200,
+      body: { runtimeBootId: expect.any(String), revision: expect.any(Number) },
+    });
+    const requestId = randomUUID();
+    const request = {
+      operation: "send",
+      sessionId,
+      requestId,
+      deviceId: host.deviceId,
+      runtimeBootId: before.body.runtimeBootId,
+      expectedRevision: before.body.revision,
+      experimentalEnabled: true,
+      text: "Typed send",
+    };
+    const typedRequest = vi.spyOn(DshSessionProvider.prototype, "request");
+    const legacyRequest = vi.spyOn(DshSessionProvider.prototype, "legacy");
+    const bridgeRequest = vi.spyOn(DshBridge.prototype, "request");
+    try {
+      const result = await rpc(RUNTIME_METHODS.sessionRequest, request);
+      expect(result).toMatchObject({
+        operation: "send",
+        result: {
+          sessionId,
+          requestId,
+          runtimeBootId: request.runtimeBootId,
+          accepted: true,
+          completed: false,
+          controlOutcome: "accepted",
+        },
+      });
+      expect(typedRequest).toHaveBeenCalledExactlyOnceWith(request);
+      expect(plugin.drainCommands()).toEqual([
+        {
+          type: "prompt",
+          sessionId: nativeId,
+          requestId,
+          mode: "queue",
+          content: [{ type: "text", text: request.text }],
+        },
+      ]);
+      expect(await host.http("/requests/" + requestId)).toMatchObject({
+        status: 200,
+        body: {
+          found: true,
+          requestId,
+          sessionId,
+          workspaceId: "workspace",
+          operation: "send",
+          executionMode: "dsh-follower",
+          runtimeBootId: request.runtimeBootId,
+          expectedRevision: request.expectedRevision,
+          status: "accepted",
+          ack: { requestId, sessionId, accepted: true, completed: false },
+        },
+      });
+
+      await expect(rpc(RUNTIME_METHODS.sessionRequest, request)).resolves.toEqual(result);
+      expect(typedRequest).toHaveBeenCalledTimes(2);
+      expect(plugin.drainCommands()).toEqual([]);
+      expect(legacyRequest.mock.calls.filter(([operation]) => operation === "send")).toEqual([]);
+
+      await mutate("stop", { turnId }, [{ type: "cancel-turn", sessionId: nativeId, turn }], {
+        status: "idle",
+        turnId: null,
+        queuedCount: 0,
+      });
+      await mutate(
+        "send",
+        { text: "Legacy send" },
+        [
+          {
+            type: "prompt",
+            sessionId: nativeId,
+            mode: "queue",
+            content: [{ type: "text", text: "Legacy send" }],
+            fullAccess: true,
+          },
+        ],
+        { status: "running", turnId, queuedCount: 0 },
+      );
+      expect(legacyRequest.mock.calls.filter(([operation]) => operation === "send")).toEqual([
+        ["send", expect.objectContaining({ sessionId, text: "Legacy send" })],
+      ]);
+      expect(typedRequest).toHaveBeenCalledTimes(2);
+      expect(bridgeRequest.mock.calls.filter(([value]) => value.operation === "send")).toEqual([]);
+    } finally {
+      bridgeRequest.mockRestore();
+      legacyRequest.mockRestore();
+      typedRequest.mockRestore();
+    }
   });
 
   it("maps approvals and answers to the native interaction protocol", async () => {

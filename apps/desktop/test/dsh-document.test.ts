@@ -7,7 +7,7 @@ import {
   dshSearchRecords,
   dshSessionDocument,
   type DshDocumentImage,
-} from "../../../packages/backend/src/dsh-document";
+} from "../../../packages/backend/src/agents/dsh/dsh-document";
 
 const source = {
   agent: "deepseek-harness" as const,

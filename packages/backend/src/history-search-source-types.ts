@@ -1,7 +1,7 @@
 import type { BigIntStats } from "node:fs";
 import type { HistoryRecordKind } from "@agentkib/runtime-protocol";
 import type { CursorBridgeContext } from "./cursor-bridge";
-import type { DshSearchRecord } from "./dsh-document";
+import type { DshSearchRecord } from "./agents/dsh/dsh-document";
 import type { SessionStore } from "./session-store";
 
 // Shared by persisted caches and source fingerprints. Bump when common redaction changes,

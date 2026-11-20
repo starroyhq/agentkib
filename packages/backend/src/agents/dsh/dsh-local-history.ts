@@ -4,9 +4,9 @@ import { lstat, open, type FileHandle } from "node:fs/promises";
 import path from "node:path";
 import { pipeline } from "node:stream/promises";
 import { createZstdDecompress } from "node:zlib";
-import { DSH_HIDDEN_COMMANDS } from "../../dsh-bridge-plugin/commands.js";
-import { historyRecord } from "../../dsh-bridge-plugin/projection.js";
-import { isReparseOrSymlink } from "./native-files";
+import { DSH_HIDDEN_COMMANDS } from "agentkib-dsh-bridge/commands.js";
+import { historyRecord } from "agentkib-dsh-bridge/projection.js";
+import { isReparseOrSymlink } from "../../native-files";
 
 const MAX_COMPRESSED_BYTES = 64 * 1024 * 1024;
 const MAX_DECODED_BYTES = 256 * 1024 * 1024;

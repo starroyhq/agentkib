@@ -20,7 +20,7 @@ import { claudeProjectKey } from "./claude-project-path";
 import { probeClaudeSessionFormat } from "./claude-session-probe";
 import { resolveCommand } from "./command-resolution";
 import { devinExecutable } from "./devin-executable";
-import type { DshBridge } from "./dsh-bridge";
+import type { DshBridge } from "./agents/dsh/dsh-bridge";
 import { isReparseOrSymlink } from "./native-files";
 import { versionAtLeast } from "./native-version";
 import { userHome } from "./mcp-config-read";

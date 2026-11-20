@@ -35,7 +35,7 @@ import {
   type SessionStreamEvent,
   type SubagentCatalog,
 } from "@agentkib/runtime-protocol";
-import { acquirePortableFileLease } from "./managed-session-lock";
+import { acquirePortableFileLease } from "../../managed-session-lock";
 import {
   claimManagedCommand,
   dispatchManagedCommand,
@@ -43,20 +43,20 @@ import {
   observeManagedCommandCompletion,
   readUnknownManagedCommands,
   replayManagedCommand,
-} from "./managed-ledger";
+} from "../../managed-ledger";
 import { dshSessionDocument, type DshDocumentImage } from "./dsh-document";
 import type { DshManagedRuntime } from "./dsh-managed-runtime";
 import type { DshLocalTurnCheckpoint } from "./dsh-local-history";
 import type { DshWriterStatus } from "./dsh-writer";
-import type { UsageLimitView } from "./usage-limit";
-import { sanitizeSessionText } from "./session-handoff";
-import type { DocumentSource } from "./session-document-providers";
-import type { ConversationEvent, ConversationEventPage } from "./session-events";
-import { decodedSessionImage, sessionImageResult } from "./session-images";
-import type { DocumentOptions, SessionDocument } from "./session-model";
-import type { NativeSession } from "./session-store";
-import { dshTurnOrigin, type LeadTurnOrigin } from "./lead-turn-origin";
-import { projectContextUsage, type ContextUsage } from "./context-usage";
+import type { UsageLimitView } from "../../usage-limit";
+import { sanitizeSessionText } from "../../session-handoff";
+import type { DocumentSource } from "../../session-document-providers";
+import type { ConversationEvent, ConversationEventPage } from "../../session-events";
+import { decodedSessionImage, sessionImageResult } from "../../session-images";
+import type { DocumentOptions, SessionDocument } from "../../session-model";
+import type { NativeSession } from "../../session-store";
+import { dshTurnOrigin, type LeadTurnOrigin } from "../../lead-turn-origin";
+import { projectContextUsage, type ContextUsage } from "../../context-usage";
 
 const MAX_BODY = 8 * 1024 * 1024;
 const OFFLINE_MS = 45_000;
@@ -996,6 +996,15 @@ export function dshConversationEvents(
  * A borrowed DeepSeek Harness execution host. Every DSH process with the AgentKib plugin
  * registers here; closing this broker never signals a DSH process.
  */
+type DshSessionOperation = (value: Record<string, unknown>) => Promise<unknown>;
+
+type DshSessionScope = {
+  value: Record<string, unknown>;
+  id: string;
+  nativeId: string;
+  controls: boolean;
+};
+
 export class DshBridge {
   readonly root: string;
   #runtimes = new Map<string, Runtime>();
@@ -2397,32 +2406,53 @@ export class DshBridge {
     };
   }
 
-  async request(value: Record<string, unknown>): Promise<unknown> {
+  #sessionScope(value: Record<string, unknown>): DshSessionScope {
     const id = z.string().min(1).max(256).parse(value.sessionId);
     const nativeId = this.#ids.get(id);
     if (!nativeId) throw new Error("session-unavailable");
-    const controls = value.experimentalEnabled === true;
-    switch (value.operation) {
-      case "live":
+    return { value, id, nativeId, controls: value.experimentalEnabled === true };
+  }
+
+  #sessionOperation(run: (scope: DshSessionScope) => unknown): DshSessionOperation {
+    return async (value) => run(this.#sessionScope(value));
+  }
+
+  readonly #sessionControl = this.#sessionOperation(({ value, id, nativeId }) =>
+    this.#control(value, id, nativeId),
+  );
+
+  /** Select by the original operation and pass the request through for native receipt validation. */
+  readonly sessionOperations: ReadonlyMap<string, DshSessionOperation> = new Map([
+    [
+      "live",
+      this.#sessionOperation(({ id, nativeId, controls }) => {
         this.#readContextUsage(nativeId);
         return this.live(id, controls);
-      case "capabilities":
-        return this.capabilities(id, controls);
-      case "inspect":
-        return {
-          sessionId: id,
-          sourceSessionId: nativeId,
-          workspaceId: this.options.workspaceFor(this.#catalog.get(nativeId)!.cwd)?.id ?? null,
-          live: this.live(id, controls),
-          reconciled: false,
-        };
-      case "usage": {
+      }),
+    ],
+    ["capabilities", this.#sessionOperation(({ id, controls }) => this.capabilities(id, controls))],
+    [
+      "inspect",
+      this.#sessionOperation(({ id, nativeId, controls }) => ({
+        sessionId: id,
+        sourceSessionId: nativeId,
+        workspaceId: this.options.workspaceFor(this.#catalog.get(nativeId)!.cwd)?.id ?? null,
+        live: this.live(id, controls),
+        reconciled: false,
+      })),
+    ],
+    [
+      "usage",
+      this.#sessionOperation(({ nativeId }) => {
         if (!this.options.workspaceFor(this.#catalog.get(nativeId)!.cwd))
           throw new Error("session-workspace-unavailable");
         this.#readContextUsage(nativeId);
         return this.#contextUsage(nativeId, this.#controlRuntime(nativeId));
-      }
-      case "resources":
+      }),
+    ],
+    [
+      "resources",
+      this.#sessionOperation(({ id, nativeId }) => {
         if (!this.options.workspaceFor(this.#catalog.get(nativeId)!.cwd))
           throw new Error("session-workspace-unavailable");
         return {
@@ -2435,48 +2465,65 @@ export class DshBridge {
           apps: [],
           contextReferences: { supportedTypes: [] },
         };
-      case "goal":
-        return this.#goalState(id, nativeId);
-      case "subagents":
-        return this.#subagents(id, nativeId);
-      case "subagent-events":
-        return this.#subagentEvents(id, nativeId, value);
-      case "context":
-        return {
-          available: true,
-          cwd: this.#catalog.get(nativeId)!.cwd,
-          projectId: null,
-          branchAtCreation: null,
-        };
-      case "queue-list":
-        return this.#queueList(id, nativeId);
-      case "settings-state":
-        return this.#settingsState(id, nativeId);
-      case "reconcile":
-        return this.#reconcile(id, nativeId, controls);
-      case "send":
-      case "steer":
-      case "queue-add":
-      case "queue-update":
-      case "queue-delete":
-      case "queue-steer":
-      case "stop":
-      case "approve":
-      case "answer":
-      case "rename":
-      case "archive":
-      case "unarchive":
-      case "fork":
-      case "settings":
-      case "goal-set":
-      case "goal-pause":
-      case "goal-resume":
-      case "goal-clear":
-      case "compact":
-        return this.#control(value, id, nativeId);
-      default:
-        throw new Error("operation-unavailable");
-    }
+      }),
+    ],
+    ["goal", this.#sessionOperation(({ id, nativeId }) => this.#goalState(id, nativeId))],
+    ["subagents", this.#sessionOperation(({ id, nativeId }) => this.#subagents(id, nativeId))],
+    [
+      "subagent-events",
+      this.#sessionOperation(({ id, nativeId, value }) =>
+        this.#subagentEvents(id, nativeId, value),
+      ),
+    ],
+    [
+      "context",
+      this.#sessionOperation(({ nativeId }) => ({
+        available: true,
+        cwd: this.#catalog.get(nativeId)!.cwd,
+        projectId: null,
+        branchAtCreation: null,
+      })),
+    ],
+    ["queue-list", this.#sessionOperation(({ id, nativeId }) => this.#queueList(id, nativeId))],
+    [
+      "settings-state",
+      this.#sessionOperation(({ id, nativeId }) => this.#settingsState(id, nativeId)),
+    ],
+    [
+      "reconcile",
+      this.#sessionOperation(({ id, nativeId, controls }) =>
+        this.#reconcile(id, nativeId, controls),
+      ),
+    ],
+    ["send", this.#sessionControl],
+    ["steer", this.#sessionControl],
+    ["queue-add", this.#sessionControl],
+    ["queue-update", this.#sessionControl],
+    ["queue-delete", this.#sessionControl],
+    ["queue-steer", this.#sessionControl],
+    ["stop", this.#sessionControl],
+    ["approve", this.#sessionControl],
+    ["answer", this.#sessionControl],
+    ["rename", this.#sessionControl],
+    ["archive", this.#sessionControl],
+    ["unarchive", this.#sessionControl],
+    ["fork", this.#sessionControl],
+    ["settings", this.#sessionControl],
+    ["goal-set", this.#sessionControl],
+    ["goal-pause", this.#sessionControl],
+    ["goal-resume", this.#sessionControl],
+    ["goal-clear", this.#sessionControl],
+    ["compact", this.#sessionControl],
+  ]);
+
+  async request(value: Record<string, unknown>): Promise<unknown> {
+    const { operation } = value;
+    const handler =
+      typeof operation === "string" ? this.sessionOperations.get(operation) : undefined;
+    if (handler) return handler(value);
+    // Legacy callers validate the target before receiving an unsupported-operation error.
+    this.#sessionScope(value);
+    throw new Error("operation-unavailable");
   }
   #queueList(id: string, nativeId: string): Record<string, unknown> {
     const live = this.live(id, false);

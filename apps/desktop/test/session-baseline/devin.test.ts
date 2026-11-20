@@ -165,6 +165,8 @@ async function fixture() {
     data,
     live: (id = sessionId) => host.http(`/live?sessionId=${id}`),
     receipt: (id: string) => host.http(`/requests/${id}`),
+    runtimeReceipt: (requestId: string) =>
+      backend.rpc("control.receipt", { requestId, deviceId: host.deviceId }),
     runtimeCalls: (): Array<Record<string, unknown>> =>
       existsSync(log)
         ? readFileSync(log, "utf8")
@@ -316,7 +318,7 @@ describe.skipIf(process.platform === "win32")("Devin session HTTP baseline", () 
     expect(f.runtimeCalls()).toEqual([modelQuery]);
   });
 
-  it("creates only with a first prompt and binds its receipt to the provisional ID", async () => {
+  it("creates only with a first prompt and exposes the new session ID in its HTTP receipt", async () => {
     const f = await fixture();
     const input = { agent: "devin", bootId: f.bootId, workspaceId };
     const empty = requestIds.empty;
@@ -385,10 +387,15 @@ describe.skipIf(process.platform === "win32")("Devin session HTTP baseline", () 
         prompt,
       },
     ]);
-    expect(await f.receipt(requestId)).toEqual(
-      acceptedReceipt(ack, "create", requestId, `devin-create:${requestId}`, runtimeBootId, null),
+    expect(await f.runtimeReceipt(requestId)).toEqual(
+      acceptedReceipt(ack, "create", requestId, `devin-create:${requestId}`, runtimeBootId, null)
+        .body,
     );
-    const running = await f.live(f.createdId);
+    const receipt = await f.receipt(requestId);
+    expect(receipt).toEqual(
+      acceptedReceipt(ack, "create", requestId, f.createdId, runtimeBootId, null),
+    );
+    const running = await f.live(receipt.body.sessionId as string);
     const turnId = running.body.turnId as string;
     expect(turnId).toEqual(expect.any(String));
     expect(running).toEqual({

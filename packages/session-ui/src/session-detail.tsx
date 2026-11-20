@@ -16,7 +16,7 @@ import {
 } from "./read-state";
 import { contextUsageCopyForSurface } from "./context-usage-copy";
 import type { ComposerModelLocale } from "./composer-model-copy";
-import { sessionContinuationCopy } from "./session-continuation";
+import { dshNativeStatusDisplay, sessionContinuationCopy } from "./session-continuation";
 import {
   runningTurnLabel,
   sessionTurnStatus,
@@ -76,13 +76,18 @@ export function SessionDetail({
   const sticky = layout === "desktop";
   const { page, pending, liveContentVersion, readObservation, loadEarlier } = history;
   const live = history.live?.sessionId === sessionId ? history.live : undefined;
+  const turnLive = history.turnLive ?? live;
   const turn =
     history.online === false
       ? undefined
-      : sessionTurnStatus(sessionId, history.turnLive ?? live, history.externalTurn);
+      : sessionTurnStatus(sessionId, turnLive, history.externalTurn);
+  const nativeStatus =
+    turnLive?.sessionId === sessionId ? dshNativeStatusDisplay(turnLive, locale) : undefined;
   const activeLabel =
     turn?.kind === "running"
-      ? runningTurnLabel(locale, sessionId, turn)
+      ? nativeStatus?.continuation === "dsh-observed"
+        ? nativeStatus.label
+        : runningTurnLabel(locale, sessionId, turn)
       : turn?.kind === "starting"
         ? sessionContinuationCopy(locale).starting
         : turn?.kind === "compacting"

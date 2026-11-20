@@ -70,13 +70,35 @@ describe("runtime-only session list presentation", () => {
         { ...session, continuation: { executionLocation: "external", ...continuation } },
         "en-US",
       );
-    expect(state({ status: "running" })).toEqual({ label: copy.running, active: true, dot: true });
+    expect(state({ status: "running" })).toEqual({
+      label: copy.runningIn("DeepSeek Harness"),
+      active: true,
+      dot: true,
+    });
+    expect(state({ status: "running", reason: "dsh-native-turn-observed" })).toEqual({
+      label: `${copy.runningIn("DeepSeek Harness")} · ${copy.dshTurnObservation}`,
+      active: true,
+      dot: true,
+    });
     expect(state({ status: "awaiting-approval", reason: "dsh-approval-pending" })).toEqual({
       label: copy.waiting,
       waiting: true,
       dot: true,
     });
     expect(state({ status: "idle" })).toBeUndefined();
+    expect(state({ status: "unsupported", reason: "dsh-native-status-unknown" })).toEqual({
+      label: copy.dshStatusUnknown,
+    });
+    expect(
+      sessionContinuationListState(
+        {
+          ...session,
+          continuation: { status: "unsupported", reason: "dsh-native-status-unknown" },
+          externalTurn: { status: "running" },
+        },
+        "zh-CN",
+      ),
+    ).toEqual({ label: "实时状态未知" });
     // Without a running DSH the session can only be read.
     expect(
       sessionContinuationListState({ ...session, availability: "metadata-only" }, "en-US"),

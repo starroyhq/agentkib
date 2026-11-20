@@ -141,7 +141,7 @@ const PROVIDERS = {
       clearEffort: false,
       fastTierIds: [],
     },
-    contextUsage: "unsupported",
+    contextUsage: "live",
   },
   devin: {
     history: { readState: true },

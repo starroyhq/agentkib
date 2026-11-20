@@ -38,6 +38,9 @@ export type SessionContinuationCopy = {
   codexHandoff: string;
   codexHandleThere: string;
   dshConnected: string;
+  dshTurnObservation: string;
+  dshStatusUnknown: string;
+  dshStatusUnknownDetail: string;
   dshHandleThere: string;
   viewOnly: string;
   queued: string;
@@ -87,7 +90,10 @@ const continuationCopy: Record<string, SessionContinuationCopy> = {
     codexConnected: "在 Codex 中运行 · 已连接",
     codexHandoff: "在 Codex 中打开 · 发送时连接",
     codexHandleThere: "这项请求请在 Codex 中处理",
-    dshConnected: "在 DeepSeek Harness 中运行 · 已连接",
+    dshConnected: "DeepSeek Harness 已连接",
+    dshTurnObservation: "来自会话记录",
+    dshStatusUnknown: "实时状态未知",
+    dshStatusUnknownDetail: "DeepSeek Harness 桥接未连接，仍可查看历史和缓存。",
     dshHandleThere: "这项请求请在 DeepSeek Harness 中处理",
     viewOnly: "仅可查看",
     queued: "待发队列",
@@ -137,7 +143,10 @@ const continuationCopy: Record<string, SessionContinuationCopy> = {
     codexConnected: "在 Codex 中執行 · 已連線",
     codexHandoff: "在 Codex 中開啟 · 傳送時連線",
     codexHandleThere: "這項請求請在 Codex 中處理",
-    dshConnected: "在 DeepSeek Harness 中執行 · 已連線",
+    dshConnected: "DeepSeek Harness 已連線",
+    dshTurnObservation: "來自對話記錄",
+    dshStatusUnknown: "即時狀態未知",
+    dshStatusUnknownDetail: "DeepSeek Harness 橋接未連線，仍可查看記錄和快取。",
     dshHandleThere: "這項請求請在 DeepSeek Harness 中處理",
     viewOnly: "僅可查看",
     queued: "待發佇列",
@@ -191,7 +200,11 @@ const continuationCopy: Record<string, SessionContinuationCopy> = {
     codexConnected: "Codex で実行中 · 接続済み",
     codexHandoff: "Codex で開いています · 送信時に接続",
     codexHandleThere: "このリクエストは Codex で対応してください",
-    dshConnected: "DeepSeek Harness で実行中 · 接続済み",
+    dshConnected: "DeepSeek Harness に接続済み",
+    dshTurnObservation: "会話履歴から確認",
+    dshStatusUnknown: "リアルタイムの状態は不明",
+    dshStatusUnknownDetail:
+      "DeepSeek Harness ブリッジに接続されていません。履歴とキャッシュは閲覧できます。",
     dshHandleThere: "このリクエストは DeepSeek Harness で対応してください",
     viewOnly: "閲覧のみ",
     queued: "送信待ちキュー",
@@ -247,7 +260,11 @@ const continuationCopy: Record<string, SessionContinuationCopy> = {
     codexConnected: "Running in Codex · Connected",
     codexHandoff: "Open in Codex · Connects when you send",
     codexHandleThere: "Handle this request in Codex",
-    dshConnected: "Running in DeepSeek Harness · Connected",
+    dshConnected: "Connected to DeepSeek Harness",
+    dshTurnObservation: "From session history",
+    dshStatusUnknown: "Live status unknown",
+    dshStatusUnknownDetail:
+      "The DeepSeek Harness bridge is disconnected. History and cached data are still available.",
     dshHandleThere: "Handle this request in DeepSeek Harness",
     viewOnly: "View only",
     queued: "Queued messages",
@@ -302,6 +319,7 @@ const continuationButtonClass =
 
 export type SessionContinuationStatusProps = {
   label: string | null | undefined;
+  title?: string;
   active?: boolean;
   loading?: boolean;
   /** A turn runs now: the mark turns, as in the session lists. */
@@ -313,6 +331,7 @@ export type SessionContinuationStatusProps = {
 
 export function SessionContinuationStatus({
   label,
+  title,
   active,
   loading,
   running,
@@ -323,6 +342,7 @@ export function SessionContinuationStatus({
   return (
     <span
       role="status"
+      title={title}
       aria-busy={loading || undefined}
       className={`inline-flex max-w-full items-center gap-1.5 text-xs ${waiting ? waitingText : active || loading || running ? "text-primary-text" : "text-muted-foreground"} ${className ?? ""}`}
     >
@@ -500,6 +520,11 @@ export function SessionContinuationReadOnly({
 
 /** Statuses in which an approval or a question waits for the person. */
 const WAITING_STATUSES = ["awaiting-approval", "waiting-input"];
+const EXTERNAL_OWNERS: Partial<Record<string, string>> = {
+  codex: "Codex",
+  "claude-code": "Claude Code",
+  "deepseek-harness": "DeepSeek Harness",
+};
 const waitingText = "text-amber-700 dark:text-amber-300";
 /** A three-quarter ring that turns once a second, held still when motion is reduced. */
 const runningMark =
@@ -534,6 +559,44 @@ export type SessionListState = {
   unread?: boolean;
 };
 
+export function isDshNativeStatusUnknown(
+  state?: {
+    status: string;
+    reason?: string | null;
+    ownershipReason?: string | null;
+  } | null,
+) {
+  return (
+    state?.status === "unavailable" ||
+    state?.reason === "dsh-native-status-unknown" ||
+    state?.ownershipReason === "dsh-native-status-unknown"
+  );
+}
+
+export function dshNativeStatusDisplay(
+  state:
+    | { status: string; reason?: string | null; ownershipReason?: string | null }
+    | null
+    | undefined,
+  locale: string,
+) {
+  const copy = sessionContinuationCopy(locale);
+  if (state?.status === "running" && state.reason === "dsh-native-turn-observed")
+    return {
+      label: `${copy.runningIn("DeepSeek Harness")} · ${copy.dshTurnObservation}`,
+      reason: "",
+      tone: "active",
+      continuation: "dsh-observed",
+    } as const;
+  if (isDshNativeStatusUnknown(state))
+    return {
+      label: copy.dshStatusUnknown,
+      reason: copy.dshStatusUnknownDetail,
+      tone: "muted",
+      continuation: "status-unknown",
+    } as const;
+}
+
 /**
  * List presentation uses observed runtime state and never grants controls. In order: a request
  * waiting for the person, a turn running in AgentKib, in a connected terminal or in the Codex app,
@@ -558,6 +621,15 @@ export function sessionContinuationListState(
   const state = session.continuation;
   if (state?.status === "outcome-unknown" || state?.reason === "control-outcome-unconfirmed")
     return unread ? { label: unreadText, dot: true, unread: true } : undefined;
+  if (!session.archived && session.agent === "deepseek-harness") {
+    const native = dshNativeStatusDisplay(state, locale);
+    if (native)
+      return {
+        label: native.label + unreadLabel,
+        ...(native.continuation === "dsh-observed" ? { active: true, dot: true } : {}),
+        ...(unread ? { dot: true, unread: true } : {}),
+      };
+  }
   // An archived session keeps no live mark.
   if (!session.archived) {
     if (state && WAITING_STATUSES.includes(state.status))
@@ -567,19 +639,21 @@ export function sessionContinuationListState(
         dot: true,
         ...(unread ? { unread: true } : {}),
       };
-    if (state?.status === "running" || state?.status === "starting")
+    if (state?.status === "running" || state?.status === "starting") {
+      const externalOwner =
+        state.executionLocation === "external" ? EXTERNAL_OWNERS[session.agent] : undefined;
       return {
         label:
           (state.executionLocation === "terminal"
             ? copy.terminalRunning
-            : state.executionLocation === "external" &&
-                (session.agent === "codex" || session.agent === "claude-code")
-              ? copy.runningIn(session.agent === "claude-code" ? "Claude Code" : "Codex")
+            : externalOwner
+              ? copy.runningIn(externalOwner)
               : copy.running) + unreadLabel,
         ...(unread ? { unread: true } : {}),
         active: true,
         dot: true,
       };
+    }
     if (session.externalTurn?.status === "running")
       return {
         label:

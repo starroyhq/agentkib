@@ -446,9 +446,35 @@ it.each(["zh-CN", "zh-Hant", "en-US", "ja-JP"] as const)(
       label: copy.viewOnly,
       reason: codexReason(locale, "dsh-runtime-offline").text,
     });
-    // The person's own DSH, with the plugin, is followed as before.
+    const external = { ...dsh, live: { ...dsh.live!, executionLocation: "external" as const } };
+    expect(sessionDisplayState(external)).toMatchObject({
+      continuation: "dsh",
+      label: copy.dshConnected,
+      tone: "muted",
+    });
     expect(
-      sessionDisplayState({ ...dsh, live: { ...dsh.live!, executionLocation: "external" } }),
-    ).toMatchObject({ continuation: "dsh", label: copy.dshConnected });
+      sessionDisplayState({
+        ...external,
+        live: { ...external.live, status: "running", sendEnabled: false },
+      }),
+    ).toMatchObject({
+      continuation: "dsh",
+      label: copy.runningIn("DeepSeek Harness"),
+      tone: "active",
+    });
+    expect(
+      sessionDisplayState({ ...external, live: { ...external.live, activity: "compacting" } }),
+    ).toMatchObject({ tone: "active" });
+    expect(
+      sessionDisplayState({
+        ...external,
+        live: { ...external.live, status: "unsupported", reason: "dsh-native-status-unknown" },
+      }),
+    ).toEqual({
+      continuation: "status-unknown",
+      label: copy.dshStatusUnknown,
+      reason: copy.dshStatusUnknownDetail,
+      tone: "muted",
+    });
   },
 );

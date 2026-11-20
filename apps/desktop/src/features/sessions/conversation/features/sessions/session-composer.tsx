@@ -477,7 +477,7 @@ export function SessionComposer({
     }
   }
   const compacting = live?.activity === "compacting";
-  const running = live?.status === "running";
+  const running = live?.status === "running" && display.continuation !== "dsh-observed";
   const connectionToastId = useId();
   const connectionFailure =
     !canSend &&
@@ -830,7 +830,7 @@ export function SessionComposer({
             {codexReason(locale, commandNotice.reason).text}
           </p>
         )}
-        {!canSend &&
+        {(!canSend || display.continuation === "status-unknown") &&
           display.reason &&
           !connectionReasonInToolbar &&
           !(connectionStatusInBanner && isClaude) &&
@@ -849,7 +849,10 @@ export function SessionComposer({
               {display.tone === "warning" && (
                 <AlertTriangle aria-hidden="true" className="mt-0.5 size-3.5 shrink-0" />
               )}
-              <span className="min-w-0">{display.reason}</span>
+              <span className="min-w-0">
+                {display.continuation === "status-unknown" && `${display.label} · `}
+                {display.reason}
+              </span>
             </div>
           )}
       </div>

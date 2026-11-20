@@ -191,21 +191,32 @@ describe("context usage is an informational surface", () => {
     expect(screen.getByRole("tooltip")).toHaveTextContent("20% used");
   });
 
-  it("dismisses the gauge when switching to a provider that cannot report usage", async () => {
+  it("shows the persisted DSH context reading from the selected session", async () => {
     const view = render(<ContextUsageGauge />);
     await userEvent.setup().hover(ring());
     expect(await screen.findByRole("tooltip")).toHaveTextContent("20% used");
 
     state = {
       ...state,
-      current: { ...state.current!, agent: "deepseek-harness" },
-      live: { ...state.live!, executionMode: "dsh-follower" },
+      selected: "dsh-session",
+      current: { ...state.current!, id: "dsh-session", agent: "deepseek-harness" },
+      live: {
+        ...state.live!,
+        sessionId: "dsh-session",
+        executionMode: "dsh-follower",
+        usage: {
+          available: true,
+          historical: true,
+          state: "stale",
+          usedTokens: 24_000,
+          contextWindow: 120_000,
+        },
+      },
     };
     view.rerender(<ContextUsageGauge />);
-    expect(
-      screen.queryByRole("img", { name: codexCopy["en-US"].contextUsage }),
-    ).not.toBeInTheDocument();
-    expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
+    expect(ring()).toHaveAccessibleDescription(
+      expect.stringContaining("24,000 / 120,000 tokens used"),
+    );
   });
 });
 

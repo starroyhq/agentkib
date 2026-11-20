@@ -550,7 +550,7 @@ export function SessionComposer({
       if (requestGeneration === generation.current) submitPending.current = false;
     }
   }
-  const running = live?.status === "running";
+  const running = live?.status === "running" && display.continuation !== "dsh-observed";
   const connectionToastId = useId();
   const connectionFailure =
     !canSend &&
@@ -922,7 +922,7 @@ export function SessionComposer({
             {codexReason(locale, commandNotice.reason, "web").text}
           </p>
         )}
-        {!canSend &&
+        {(!canSend || display.continuation === "status-unknown") &&
           !(connectionStatusInBanner && isClaude) &&
           (!running || (live?.executionMode === "claude-follower" && display.tone === "warning")) &&
           !compacting &&
@@ -940,7 +940,10 @@ export function SessionComposer({
               {display.tone === "warning" && (
                 <AlertTriangle aria-hidden="true" className="mt-0.5 size-3.5 shrink-0" />
               )}
-              <span className="min-w-0">{display.reason}</span>
+              <span className="min-w-0">
+                {display.continuation === "status-unknown" && `${display.label} · `}
+                {display.reason}
+              </span>
             </div>
           )}
       </div>

@@ -107,7 +107,8 @@ describe("DeepSeek Harness controls", () => {
   it("keeps model and permission controls gray until the executor becomes idle", async () => {
     const provider = sessionProviderCapabilities("deepseek-harness");
     vi.mocked(state.client.sessionSettings).mockResolvedValue({ ...settings(true), provider });
-    state.access!.device!.advancedControl = true;
+    state.access = { ...state.access!, status: "approved" };
+    state.access.device!.advancedControl = true;
     state.capabilities!.features.settings = { available: false, reason: "session-busy" };
     state.live!.usage = {
       available: true,
@@ -123,7 +124,9 @@ describe("DeepSeek Harness controls", () => {
     // DSH has no collaboration mode or service tier to offer.
     expect(screen.queryByLabelText(copy.mode)).not.toBeInTheDocument();
     expect(screen.queryByLabelText(copy.serviceTier)).not.toBeInTheDocument();
-    expect(screen.queryByRole("img", { name: copy.contextUsage })).not.toBeInTheDocument();
+    expect(screen.getByRole("img", { name: copy.contextUsage })).toHaveAccessibleDescription(
+      expect.stringContaining("70%"),
+    );
     expect(screen.getByRole("dialog")).not.toHaveTextContent("70%");
     expect(screen.getByRole("dialog")).not.toHaveTextContent(copy.contextUnknown);
     fireEvent.click(model);

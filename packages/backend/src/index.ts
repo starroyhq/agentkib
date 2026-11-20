@@ -9,8 +9,10 @@ import {
 import { CursorBridge } from "./cursor-bridge";
 import { ClaudeBridge, type ClaudeBridgeTarget } from "./claude-bridge";
 import { readClaudeTranscriptObservation } from "./claude-context-usage";
-import { DshBridge } from "./dsh-bridge";
-import { DshManagedRuntime } from "./dsh-managed-runtime";
+import { DSH_NATIVE_TURN_OBSERVED, DshBridge } from "./dsh-bridge";
+import { readLocalDshHistory, readLocalDshTurn } from "./dsh-local-history";
+import { DshManagedRuntime, dshHome } from "./dsh-managed-runtime";
+import { dshSessionDirectory, probeDshWriter } from "./dsh-writer";
 import { createDshWorker, DshLaneWatch, DshLeadWatch } from "./dsh-lanes";
 import { listNativeImports } from "./session-native-imports";
 import {
@@ -618,6 +620,8 @@ export class TypeScriptBackend {
           );
         };
         const dshPluginDirectory = this.environment.AGENTKIB_DSH_PLUGIN_DIR ?? "";
+        const dshEnvironment = { ...process.env, ...this.environment };
+        const dshStorage = dshHome(dshEnvironment);
         // DSH started in the background when none of the user's runs; the bridge decides when
         // and stops it on close.
         const dshManaged = dshPluginDirectory
@@ -625,7 +629,7 @@ export class TypeScriptBackend {
               dataDir,
               agentkibHome,
               pluginDirectory: dshPluginDirectory,
-              env: { ...process.env, ...this.environment },
+              env: dshEnvironment,
               onExit: (pid) => dshBridge.managedExited(pid),
             })
           : undefined;
@@ -650,6 +654,15 @@ export class TypeScriptBackend {
               }
             : {}),
           sessionId: (nativeId) => store.sessions.id("deepseek-harness", nativeId),
+          writerStatus: (nativeId, cwd) => probeDshWriter(nativeId, cwd, dshStorage),
+          localHistory: async (nativeId, cwd, before, limit) => {
+            const directory = dshSessionDirectory(nativeId, cwd, dshStorage);
+            return directory ? readLocalDshHistory(directory, nativeId, before, limit) : null;
+          },
+          localTurn: async (nativeId, cwd, previous) => {
+            const directory = dshSessionDirectory(nativeId, cwd, dshStorage);
+            return directory ? readLocalDshTurn(directory, nativeId, previous) : null;
+          },
           workspaceFor: registeredWorkspace,
           workspacePath: (workspaceId) => {
             try {
@@ -679,7 +692,7 @@ export class TypeScriptBackend {
           },
           publish: (id, type, payload, live) => {
             this.#publishSession(id, type, payload, live);
-            if (type === "state") {
+            if (type === "state" && live.reason !== DSH_NATIVE_TURN_OBSERVED) {
               this.#dshLanes?.observe(id, live);
               this.#dshLeads?.observe(id, live);
             }
@@ -2606,7 +2619,7 @@ export class TypeScriptBackend {
       // Listing workers never starts DSH; opening a DSH worker does, as a new DSH session does.
       dshOptions: async () =>
         this.#dshBridge
-          ? this.#dshBridge.createOptions(true, { start: false })
+          ? this.#dshBridge.createOptions(true)
           : { available: false, reason: "platform-unsupported" },
       lifecycle: async (value) => {
         if (value.agent !== "deepseek-harness")

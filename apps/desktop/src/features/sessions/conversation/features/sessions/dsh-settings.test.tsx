@@ -68,7 +68,7 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe("DeepSeek Harness model settings in the composer", () => {
-  it("reads DSH's own models without showing a settings panel when there are no permissions", async () => {
+  it("reads DSH's own models without a permission picker when none is available", async () => {
     render(<CodexComposerControls {...props} />);
     await waitFor(() =>
       expect(state.client.sessionSettings).toHaveBeenCalledWith("session", "deepseek-harness"),
@@ -81,7 +81,9 @@ describe("DeepSeek Harness model settings in the composer", () => {
     // Without goal, resource or attachment capabilities there is nothing to add.
     expect(state.client.sessionGoals).not.toHaveBeenCalled();
     expect(screen.getByRole("button", { name: copy.addContext })).toBeDisabled();
-    expect(screen.queryByRole("img", { name: copy.contextUsage })).not.toBeInTheDocument();
+    const gauge = screen.getByRole("img", { name: copy.contextUsage });
+    expect(gauge).toHaveAccessibleDescription(contextUsageCopy["en-US"].permission);
+    expect(gauge.querySelector("circle[pathLength]")).toBeNull();
   });
 
   it("keeps permission presets accessible when the plugin offers no model settings", async () => {

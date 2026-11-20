@@ -59,6 +59,39 @@ function moveTo(top: number) {
 }
 
 describe("conversation reading position", () => {
+  it("shows the source of an observed DSH turn and removes the spinner when observation ends", () => {
+    state = {
+      ...state,
+      current: { ...state.current!, agent: "deepseek-harness" },
+      online: true,
+      live: {
+        sessionId: "first",
+        status: "running",
+        revision: 1,
+        approvals: [],
+        executionMode: "dsh-follower",
+        executionLocation: "external",
+        reason: "dsh-native-turn-observed",
+        sendEnabled: false,
+        stopEnabled: false,
+      },
+    };
+    const view = render(<SessionReader />);
+    expect(screen.getByText("在 DeepSeek Harness 中运行 · 来自会话记录")).toHaveAttribute(
+      "data-session-turn-status",
+      "running",
+    );
+    state.live = {
+      ...state.live!,
+      status: "unsupported",
+      executionLocation: null,
+      reason: "dsh-native-status-unknown",
+    };
+    view.rerender(<SessionReader />);
+    expect(screen.queryByText(/来自会话记录/)).not.toBeInTheDocument();
+    expect(view.container.querySelector("[data-session-turn-status]")).toBeNull();
+  });
+
   it.each(["zh-CN", "zh-Hant", "en-US", "ja-JP"] as const)(
     "renders authenticated reconnect failures in %s and clears the prior reason",
     (locale) => {

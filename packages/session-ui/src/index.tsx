@@ -61,6 +61,8 @@ export { displayUserMessageText } from "./message-image-text";
 
 export {
   claudeTerminalDisplay,
+  dshNativeStatusDisplay,
+  isDshNativeStatusUnknown,
   sessionContinuationCopy,
   sessionContinuationListState,
   SessionContinuationDot,

@@ -58,17 +58,18 @@ const unmanagedClaude = () => {
   };
 };
 
-it("hides unsupported usage in the generic gauge only for the selected DSH session", () => {
+it("retains the last DSH context reading across reconnect and then shows the updated report", () => {
   state.current = { id: "s", agent: "deepseek-harness" } as typeof state.current;
+  state.live = {
+    ...state.live!,
+    executionMode: "dsh-follower",
+    usage: { ...report(27), state: "stale", historical: true },
+  };
   const view = render(<ContextUsageGauge />);
-  expect(
-    screen.queryByRole("img", { name: codexCopy[state.locale].contextUsage }),
-  ).not.toBeInTheDocument();
-
-  state.selected = "next";
-  state.live = { ...state.live!, sessionId: "next", usage: report(27) };
-  view.rerender(<ContextUsageGauge />);
   expect(gauge()).toHaveAccessibleDescription(description("27%"));
+  state.live = { ...state.live!, usage: report(41) };
+  view.rerender(<ContextUsageGauge />);
+  expect(gauge()).toHaveAccessibleDescription(description("41%"));
 });
 
 it.each(["claude-code", "devin"] as const)(

@@ -6,7 +6,11 @@ import { codexReason } from "./codex-copy";
 import { contextUsageCopyForSurface } from "./context-usage-copy";
 import { webLayoutCopy } from "./web-layout-copy";
 import { managedControlCopyForSurface } from "./managed-control-copy";
-import { claudeTerminalDisplay, sessionContinuationCopy } from "@agentkib/session-ui";
+import {
+  claudeTerminalDisplay,
+  dshNativeStatusDisplay,
+  sessionContinuationCopy,
+} from "@agentkib/session-ui";
 import { claudeReconnectFailureReason } from "./claude-session-banner";
 
 type State = Pick<
@@ -43,6 +47,8 @@ type DisplayState = {
     | "busy"
     | "codex"
     | "dsh"
+    | "dsh-observed"
+    | "status-unknown"
     | "view-only";
 };
 
@@ -259,6 +265,10 @@ export function sessionDisplayState(
   }
   if (state.current?.agent === "deepseek-harness") {
     const copy = sessionContinuationCopy(locale);
+    if (state.current.id === state.selected && live?.sessionId === state.selected) {
+      const native = dshNativeStatusDisplay(live, locale);
+      if (native) return native;
+    }
     if (access?.status !== "approved")
       return {
         label: c.accessRequired,
@@ -289,15 +299,6 @@ export function sessionDisplayState(
       capabilities?.sessionId !== state.selected
     )
       return { label: c.verifying, reason: c.verifying, tone: "muted", loading: true };
-    // The running DSH executes; this view follows it. Requests waiting for an answer keep their
-    // own cards, and either side may answer them.
-    if (live.executionMode === "dsh-follower" && live.executionLocation === "external") {
-      if (live.questions?.length) return { label: c.question, reason: c.question, tone: "warning" };
-      if (live.approvals?.length) return { label: c.approval, reason: c.approval, tone: "warning" };
-      return { label: copy.dshConnected, reason: "", tone: "muted", continuation: "dsh" };
-    }
-    // A DSH that AgentKib started runs here, as a managed Codex does. While none runs, the next
-    // message starts one, so the session reads as ready rather than view-only.
     if (live.executionMode === "dsh-follower") {
       if (live.questions?.length) return { label: c.question, reason: c.question, tone: "warning" };
       if (live.approvals?.length) return { label: c.approval, reason: c.approval, tone: "warning" };
@@ -307,6 +308,15 @@ export function sessionDisplayState(
           reason: contextUsageCopyForSurface(locale, surface).compactingDetail,
           tone: "active",
         };
+      if (live.executionLocation === "external") {
+        const working = live.status === "running";
+        return {
+          label: working ? copy.runningIn("DeepSeek Harness") : copy.dshConnected,
+          reason: "",
+          tone: working ? "active" : "muted",
+          continuation: "dsh",
+        };
+      }
       if (live.status === "running")
         return { label: copy.running, reason: "", tone: "active", continuation: "running" };
       if (state.pendingSend?.sessionId === state.selected && live.executionLocation !== "agentkib")

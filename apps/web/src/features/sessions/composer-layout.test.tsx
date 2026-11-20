@@ -495,6 +495,61 @@ describe("responsive composer behavior", () => {
     expect(state.control).not.toHaveBeenCalled();
     expect(state.codexAction).not.toHaveBeenCalled();
   });
+  it("keeps the draft editable while the DSH owner cannot be verified", () => {
+    state = {
+      ...state,
+      current: { ...state.current!, agent: "deepseek-harness" },
+      canSend: false,
+      canStop: false,
+      message: "Keep this draft",
+      live: {
+        ...state.live!,
+        status: "unsupported",
+        reason: "dsh-native-status-unknown",
+        executionMode: "dsh-follower",
+        sendEnabled: false,
+      },
+    };
+    render(<SessionComposer />);
+    expect(screen.getByText(/实时状态未知.*DeepSeek Harness 桥接未连接/)).toBeVisible();
+    const draft = screen.getByRole("textbox");
+    expect(draft).toBeEnabled();
+    expect(draft).toHaveValue("Keep this draft");
+    const send = screen.getByRole("button", { name: "发送" });
+    expect(send).toBeDisabled();
+    fireEvent.click(send);
+    expect(state.control).not.toHaveBeenCalled();
+  });
+  it("keeps controls disabled for an observed DSH turn during capability refresh", () => {
+    state = {
+      ...state,
+      current: { ...state.current!, agent: "deepseek-harness" },
+      canSend: false,
+      canStop: false,
+      message: "Keep this draft",
+      capabilities: {
+        ...state.capabilities!,
+        features: { steer: { available: true }, "queue-add": { available: true } },
+      },
+      live: {
+        ...state.live!,
+        status: "running",
+        executionLocation: "external",
+        reason: "dsh-native-turn-observed",
+        executionMode: "dsh-follower",
+        sendEnabled: false,
+      },
+    };
+    render(<SessionComposer />);
+    expect(screen.getByRole("textbox")).toBeEnabled();
+    expect(screen.getByRole("textbox")).toHaveValue("Keep this draft");
+    expect(screen.getByRole("button", { name: state.t.send })).toBeDisabled();
+    expect(screen.queryByRole("button", { name: state.t.stop })).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: codexCopyForSurface(state.locale, "web").advanced }),
+    ).not.toBeInTheDocument();
+    expect(state.control).not.toHaveBeenCalled();
+  });
   it("ignores late settings responses for a previously selected conversation", async () => {
     let finish!: (value: CodexSessionSettings) => void;
     vi.mocked(state.client.sessionSettings).mockImplementationOnce(

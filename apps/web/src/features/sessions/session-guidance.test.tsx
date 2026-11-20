@@ -102,6 +102,50 @@ describe("production session guidance", () => {
     },
   );
 
+  it.each([false, true])(
+    "shows unknown DSH status and honors the explicit send grant (%s)",
+    async (sendEnabled) => {
+      vi.spyOn(WebClient.prototype, "access").mockResolvedValue({
+        status: "approved",
+        protocolVersion: 2,
+        csrfToken: "test",
+        bootId: "boot",
+        experimentalEnabled: true,
+        device: { id: "device", name: "Browser", send: true, approve: false },
+      });
+      vi.spyOn(WebClient.prototype, "catalog").mockResolvedValue({
+        indexEnabled: true,
+        sessions: [
+          {
+            id: "dsh-session",
+            workspace_id: "workspace",
+            agent: "deepseek-harness",
+            availability: "readable",
+            archived: false,
+            sidechain: false,
+          },
+        ],
+      });
+      vi.spyOn(WebClient.prototype, "events").mockResolvedValue({ events: [], warnings: [] });
+      vi.spyOn(WebClient.prototype, "live").mockResolvedValue({
+        sessionId: "dsh-session",
+        status: "unsupported",
+        reason: "dsh-native-status-unknown",
+        revision: 4,
+        sendEnabled,
+        stopEnabled: false,
+        approvals: [],
+        executionMode: "dsh-follower",
+      });
+      const { result } = renderHook(() => useSessionController({}));
+      await waitFor(() => expect(result.current.sessions).toHaveLength(1));
+      await act(() => result.current.choose("dsh-session"));
+      expect(result.current.liveText).toBe("实时状态未知");
+      expect(result.current.canSend).toBe(sendEnabled);
+      expect(result.current.canStop).toBe(false);
+    },
+  );
+
   it.each(["running", "waiting-approval"])(
     "stops the exact active Antigravity turn while %s",
     async (status) => {

@@ -222,6 +222,7 @@ function WorkspaceShell() {
                   {managedAgentOf(session.current?.agent) ? (
                     <SessionContinuationStatus
                       label={status.label}
+                      title={status.continuation === "status-unknown" ? status.reason : undefined}
                       active={status.tone === "active"}
                       loading={status.loading}
                       // The workspace name truncates first; the state stays on one line.

@@ -11,6 +11,7 @@ import {
   verifySettingsWrite,
   settingsNoticeGroup,
   codexSettingsRecoveryReason,
+  dshNativeStatusDisplay,
   type ControlKind,
   type ControlNotice,
   type NotDispatchedReason,
@@ -2287,6 +2288,10 @@ export function useSessionController({
     const source = sessions.find((s) => s.id === id);
     return source ? displaySessionTitle(source.title, t.untitled) : id;
   };
+  const dshStatus =
+    current?.agent === "deepseek-harness" && live?.sessionId === selected
+      ? dshNativeStatusDisplay(live, locale)
+      : undefined;
   const canSend =
     controlReady &&
     online &&
@@ -2296,7 +2301,9 @@ export function useSessionController({
     !!access?.experimentalEnabled &&
     !!access.device?.send &&
     !!live?.sendEnabled &&
-    (live.status === "idle" || (current?.agent === "claude-code" && live.status === "released")) &&
+    (live.status === "idle" ||
+      (current?.agent === "claude-code" && live.status === "released") ||
+      (dshStatus?.continuation === "status-unknown" && live.status === "unsupported")) &&
     live.activity !== "compacting";
   const canStop =
     controlReady &&
@@ -2314,8 +2321,9 @@ export function useSessionController({
     live?.executionMode === "claude-follower"
       ? claudeConnectionReason(locale, live.reason, "web")
       : undefined;
-  const liveText =
-    live?.reason === "control-outcome-unconfirmed"
+  const liveText = dshStatus
+    ? dshStatus.label
+    : live?.reason === "control-outcome-unconfirmed"
       ? t.controlUnconfirmed
       : (terminalReasonText ??
         (live?.activity === "compacting"

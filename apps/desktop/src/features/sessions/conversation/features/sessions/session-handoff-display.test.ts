@@ -473,4 +473,64 @@ describe("handoff-aware session presentation", () => {
     state.canSend = true;
     expect(sessionDisplayState(state)).toMatchObject({ label: "", continuation: "idle" });
   });
+  it("distinguishes a working DeepSeek Harness session from an idle connection", () => {
+    const state = fixture();
+    state.current!.agent = "deepseek-harness";
+    state.live = { ...state.live!, executionMode: "dsh-follower", executionLocation: "external" };
+    expect(sessionDisplayState(state)).toMatchObject({
+      label: "Connected to DeepSeek Harness",
+      tone: "muted",
+    });
+    state.live.status = "running";
+    expect(sessionDisplayState(state)).toMatchObject({
+      label: "Running in DeepSeek Harness",
+      tone: "active",
+    });
+    state.live.status = "idle";
+    expect(sessionDisplayState(state)).toMatchObject({
+      label: "Connected to DeepSeek Harness",
+      tone: "muted",
+    });
+  });
+  it("renders an unbridged DeepSeek Harness session with a muted unknown status", () => {
+    const state = fixture();
+    state.locale = "zh-CN";
+    state.current!.agent = "deepseek-harness";
+    state.live = {
+      ...state.live!,
+      executionMode: "dsh-follower",
+      executionLocation: "external",
+      status: "unsupported",
+      reason: "dsh-native-status-unknown",
+    };
+    const display = {
+      label: "实时状态未知",
+      reason: "DeepSeek Harness 桥接未连接，仍可查看历史和缓存。",
+      tone: "muted",
+      continuation: "status-unknown",
+    };
+    expect(sessionDisplayState(state)).toEqual(display);
+    expect(sessionDisplayState({ ...state, capabilities: undefined })).toEqual(display);
+    expect(sessionDisplayState({ ...state, selected: "another" })).not.toEqual(display);
+  });
+  it("shows observed DSH activity while control permissions are still unverified", () => {
+    const state = fixture();
+    state.locale = "zh-CN";
+    state.current!.agent = "deepseek-harness";
+    state.access = undefined;
+    state.capabilities = undefined;
+    state.live = {
+      ...state.live!,
+      executionMode: "dsh-follower",
+      executionLocation: "external",
+      status: "running",
+      reason: "dsh-native-turn-observed",
+    };
+    expect(sessionDisplayState(state)).toEqual({
+      label: "在 DeepSeek Harness 中运行 · 来自会话记录",
+      reason: "",
+      tone: "active",
+      continuation: "dsh-observed",
+    });
+  });
 });

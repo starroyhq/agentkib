@@ -43,7 +43,7 @@
 - 在 `packages/backend/src/session-provider.ts` 注册 Agent 的实时状态、能力查询、操作和上下文用量。支持新建的 Agent 同时接入创建和设置。Antigravity 通过 ACP 接入已有会话。原生参数和回执校验放在各自适配器。
 - 在 `packages/runtime-protocol/src/session-providers.ts` 声明会话详情、已读、输入框和创建能力。桌面和 Web 共用详情页、记录和输入框组件。共用控件读取主机返回的可用性、实际模型目录和可写字段。
 - `/managed/options`、`/managed/create`、`/managed/capabilities`、`/managed/settings` 和 `/managed/action` 走统一入口。已有会话由后端确认所属 Agent。Claude Code 使用所选工作区的模型目录，显式选择的启动模型需原生确认。连接终端后使用终端实际提供的能力。
-- DeepSeek Harness 由桥接插件提供 Agent 预设、按提供方分组的模型目录和各模型的推理档位。实际可选项以插件返回为准。插件暂未上报占用量，桌面和 Web 隐藏上下文用量控件。
+- DeepSeek Harness 由桥接插件提供 Agent 预设、按提供方分组的模型目录和各模型的推理档位。实际可选项以插件返回为准。支持原生上下文读数的插件提供占用量，断线时桌面和 Web 显示最近保存的读数。
 - 工作区授权、设备权限、会话修订号和回执仍在主机与后端校验。旧请求路径继续由同一个适配器处理。
 
 **新建会话的展示配置**（`packages/session-ui/src/new-session.ts`）

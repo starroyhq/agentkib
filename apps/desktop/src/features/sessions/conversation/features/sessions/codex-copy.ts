@@ -1094,6 +1094,7 @@ export function codexReason(
   if (reason === "codex-owner-busy") return { text: continuation.busy("Codex") };
   if (reason === "codex-cli-version-too-old") return { text: continuation.codexVersionTooOld };
   if (reason === "claude-cli-too-old") return { text: continuation.claudeVersionTooOld };
+  if (reason === "dsh-native-status-unknown") return { text: continuation.dshStatusUnknown };
   const claudeReason = claudeConnectionReason(locale, reason, surface);
   if (claudeReason) return { text: claudeReason };
   if (

@@ -1,14 +1,14 @@
-import { isLiveSessionAgent, sessionProviderCapabilities } from "@agentkib/web-client";
+import {
+  isLiveSessionAgent,
+  sessionProviderCapabilities,
+  sessionProviderDeclaration,
+} from "@agentkib/web-client";
 import {
   desktopReadScope as currentDesktopReadScope,
   useDesktopReadScope,
 } from "../../../read-state-scope";
 import { codexCopy, codexReason } from "./codex-copy";
-import {
-  claudeBackgroundStatus,
-  claudeComposerNotice,
-  claudeSessionBanner,
-} from "./claude-session-banner";
+import { claudeComposerNotice, claudeSessionBanner } from "./claude-session-banner";
 import { HistoryReferenceChips } from "../history/history-search-controls";
 import { validHistoryMessage } from "../history/history-reference-model";
 import { SessionOperations } from "./session-operations";
@@ -30,6 +30,7 @@ import {
 } from "./session-image-scope";
 import {
   sessionComposerSurface,
+  SessionActivities,
   SessionDetail,
   SessionDetailHeader,
   BasicSessionComposer,
@@ -115,7 +116,6 @@ export function SessionReader() {
         (contextLimit !== undefined && Number.isSafeInteger(contextLimit) && contextLimit > 0)
       : contextUsageSource === "live" || current?.agent === "antigravity";
   const banner = current?.agent === "claude-code" ? claudeSessionBanner(session) : null;
-  const backgroundStatus = claudeBackgroundStatus(session);
   const panels = useSessionPanels();
   const connectionNoticeInToolbar = !!(banner?.connection && panels?.statusInToolbar);
   const inlineBanner = connectionNoticeInToolbar ? null : banner;
@@ -200,7 +200,15 @@ export function SessionReader() {
               banner={
                 claudeComposerNotice(banner) && !session.pendingSend ? banner?.body : undefined
               }
-              background={backgroundStatus}
+              background={
+                <SessionActivities
+                  sessionId={selected}
+                  locale={locale}
+                  capabilities={sessionProviderDeclaration(current?.agent)?.activities}
+                  live={selectedLive}
+                  client={client}
+                />
+              }
               interactions={<SessionInteractionDock />}
               live={selectedLive}
               notice={notice}

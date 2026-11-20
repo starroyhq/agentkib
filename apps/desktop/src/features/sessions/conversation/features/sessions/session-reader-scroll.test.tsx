@@ -155,6 +155,35 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+it("updates activities for the displayed session without showing another session's activity", () => {
+  const activity = {
+    id: "review",
+    kind: "subagent",
+    title: "Review changes",
+    status: "running",
+  } as const;
+  const view = reader();
+  expect(screen.getByRole("button", { name: "Session activities" })).toBeDisabled();
+
+  state = { ...state, live: { ...state.live!, activities: [activity] } };
+  view.update();
+  fireEvent.click(screen.getByRole("button", { name: "1 subagent" }));
+  expect(screen.getByText(activity.title)).toBeVisible();
+  expect(screen.getByText("Running")).toBeVisible();
+
+  state = {
+    ...state,
+    live: { ...state.live!, activities: [{ ...activity, status: "completed" }] },
+  };
+  view.update();
+  expect(screen.getByText("Completed")).toBeVisible();
+
+  state = { ...state, live: { ...state.live!, sessionId: "another-session" } };
+  view.update();
+  expect(screen.getByRole("button", { name: "Session activities" })).toBeDisabled();
+  expect(screen.queryByText(activity.title)).not.toBeInTheDocument();
+});
+
 describe("reader follows user intent across transcript and viewport layout", () => {
   it("keeps following a pending row and its native replacement despite layout scroll events", () => {
     const view = reader();

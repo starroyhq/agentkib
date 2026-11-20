@@ -83,6 +83,7 @@ export {
   managedAgentOf,
   type ManagedAgent,
   sessionProviderCapabilities,
+  sessionProviderDeclaration,
   sessionDetailCapabilities,
   type LiveSessionAgent,
   type SessionProviderCapabilities,

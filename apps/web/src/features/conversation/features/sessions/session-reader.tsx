@@ -1,10 +1,10 @@
-import { isLiveSessionAgent, sessionProviderCapabilities } from "@agentkib/web-client";
-import { codexCopyForSurface, codexReason } from "./codex-copy";
 import {
-  claudeBackgroundStatus,
-  claudeComposerNotice,
-  claudeSessionBanner,
-} from "./claude-session-banner";
+  isLiveSessionAgent,
+  sessionProviderCapabilities,
+  sessionProviderDeclaration,
+} from "@agentkib/web-client";
+import { codexCopyForSurface, codexReason } from "./codex-copy";
+import { claudeComposerNotice, claudeSessionBanner } from "./claude-session-banner";
 import { HistoryReferenceChips } from "../history/history-search-controls";
 import { validHistoryMessage } from "../history/history-reference-model";
 import { SessionOperations } from "./session-operations";
@@ -26,6 +26,7 @@ import {
 } from "./session-image-scope";
 import {
   sessionComposerSurface,
+  SessionActivities,
   SessionDetail,
   SessionDetailHeader,
   BasicSessionComposer,
@@ -90,7 +91,6 @@ export function SessionReader() {
     imageCacheScope,
   ]);
   const banner = current?.agent === "claude-code" ? claudeSessionBanner(session, "web") : null;
-  const backgroundStatus = claudeBackgroundStatus(session);
   const scopedLive = live?.sessionId === selected ? live : undefined;
   const scopedSettings =
     scopedLive?.settings?.sessionId === selected ? scopedLive.settings : undefined;
@@ -186,7 +186,15 @@ export function SessionReader() {
               banner={
                 claudeComposerNotice(banner) && !session.pendingSend ? banner?.body : undefined
               }
-              background={backgroundStatus}
+              background={
+                <SessionActivities
+                  sessionId={selected}
+                  locale={locale}
+                  capabilities={sessionProviderDeclaration(current?.agent)?.activities}
+                  live={scopedLive}
+                  client={client}
+                />
+              }
               interactions={<SessionInteractionDock />}
               live={scopedLive}
               notice={notice}

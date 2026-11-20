@@ -104,13 +104,13 @@ async function mockModel() {
       );
       job ??= /Scheduled (?:recurring )?job ([0-9a-f]{8})/.exec(JSON.stringify(toolResults))?.[1] ?? null;
       if (prompt.includes("PROJECT-AGENT") && toolResults.length < 2) {
-        const name = toolResults.length === 0 ? "worker_list" : "worker_open";
+        const name = toolResults.length === 0 ? "worker_list" : "worker_read";
         content = [
           {
             type: "tool_use",
             id: `toolu_${randomUUID().slice(0, 8)}`,
             name: `mcp__agentkib_workers__${name}`,
-            input: name === "worker_open" ? { name: "api", workspace: "w1" } : {},
+            input: name === "worker_read" ? { worker: "worker-1" } : {},
           },
         ];
         reason = "tool_use";
@@ -705,12 +705,11 @@ describe.skipIf(
   it("lets a Project Agent call its worker tools without asking", async () => {
     const box = await sandbox();
     const lanes = {
-      options: async () => ({ models: [] }),
-      lifecycle: async () => ({ accepted: true }),
       control: async () => ({ accepted: true }),
       live: async (sessionId: string) => ({ sessionId, status: "idle", revision: 1 }),
       events: async () => [],
-      session: () => null,
+      session: (id: string) =>
+        id === "worker-session" ? { agent: "codex", workspaceId: "w1", title: null } : null,
       managed: async () => false,
       workspaces: () => [{ id: "w1", name: "app" }],
     };
@@ -719,7 +718,12 @@ describe.skipIf(
     const lead = randomUUID();
     const orchestration = new OrchestrationService(data, "boot", lanes, (id) => id === lead);
     cleanups.push(() => orchestration.close());
-    orchestration.designate({ sessionId: lead, deviceId: "desktop-local", workspaceId: "w1" });
+    await orchestration.assignWorkers({
+      sessionId: lead,
+      deviceId: "desktop-local",
+      workspaceId: "w1",
+      workers: ["worker-session"],
+    });
     const tools = (await orchestration.leadTools(lead)) as {
       mcpServers: Record<string, { url: string }>;
     };
@@ -728,7 +732,7 @@ describe.skipIf(
       mcpConfig: tools,
       allowedTools: [...LEAD_ALLOWED_TOOLS],
     });
-    await send("PROJECT-AGENT: open a worker for the API.");
+    await send("PROJECT-AGENT: read the worker assigned to this project.");
     await expect.poll(() => results.length, wait).toBe(1);
     expect(results[0]).toMatchObject({ success: true });
     // No approval was asked for either call.
@@ -736,11 +740,15 @@ describe.skipIf(
     const calls = box.model.requests.filter((request) => request.toolResults);
     expect(calls.map((request) => request.reply.name)).toEqual([
       "mcp__agentkib_workers__worker_list",
-      "mcp__agentkib_workers__worker_open",
+      "mcp__agentkib_workers__worker_read",
     ]);
     // The model saw the tools' answers.
-    expect(JSON.stringify(calls[1]!.toolResults)).toContain('\\"workers\\":[]');
-    expect(orchestration.status(lead)!.lanes).toMatchObject([{ name: "api", workspaceId: "w1" }]);
+    expect(JSON.stringify(calls[1]!.toolResults)).toContain("worker-1");
+    expect(orchestration.status(lead)!.lanes).toMatchObject([
+      { name: "worker-1", sessionId: "worker-session", workspaceId: "w1" },
+    ]);
+    expect(box.model.toolsByRequest.flat()).not.toContain("mcp__agentkib_workers__worker_open");
+    expect(box.model.toolsByRequest.flat()).not.toContain("mcp__agentkib_workers__worker_close");
     expect(runner.snapshot()).toMatchObject({ status: "idle", reason: null });
   }, 120_000);
 
@@ -749,8 +757,6 @@ describe.skipIf(
   it("gives a Project Agent its worker tools in every new CLI process", async () => {
     const box = await sandbox();
     const lanes = {
-      options: async () => ({ models: [] }),
-      lifecycle: async () => ({ accepted: true }),
       control: async () => ({ accepted: true }),
       live: async (sessionId: string) => ({ sessionId, status: "idle", revision: 1 }),
       events: async () => [],

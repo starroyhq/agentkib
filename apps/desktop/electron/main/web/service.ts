@@ -4359,8 +4359,8 @@ export class WebAccessService {
   /**
    * A Project Agent from Web or a phone (docs/agents/project-agent.md). Any device that may read
    * the session sees its state. Setting one up, or resuming it, takes a device with full access
-   * that may do all the Project Agent then does in its name: open and manage sessions, send and
-   * queue, and approve when it may decide approvals; its workspaces must be the device's too.
+   * that may manage sessions, send and queue, and approve when it may decide approvals.
+   * The device must have access to the project and its assigned workers' workspaces.
    * Pausing takes one that may send, ending it one that may manage sessions.
    */
   private async projectAgent(
@@ -4416,32 +4416,30 @@ export class WebAccessService {
     if (operation === "designate" || operation === "update") {
       if (!body.scope || typeof body.scope !== "object" || Array.isArray(body.scope))
         throw new HttpError(400, "invalid_input");
-      scope = body.scope as Record<string, unknown>;
-      // A change keeps what it does not name, and this device answers for all of it from now on.
-      const current =
-        operation === "update"
-          ? lead(await request({ operation: "lead-status", sessionId, deviceId: device.id }))
-          : null;
-      if (operation === "update" && !current) throw new HttpError(409, "lead-unavailable");
-      const workspaceIds = Array.isArray(scope.workspaceIds)
-        ? scope.workspaceIds
-        : (current?.scope?.workspaceIds ?? []);
-      for (const id of workspaceIds)
-        if (typeof id !== "string" || !(await this.workspaceAllowed(id, device)))
-          throw new HttpError(403, "workspace_not_authorized");
-      const approvals = Array.isArray(scope.approvals)
-        ? scope.approvals
-        : (current?.scope?.approvals ?? []);
-      if (approvals.length) this.grant(hash, "approve");
+      scope = Object.fromEntries(
+        Object.entries(body.scope).filter(([key]) =>
+          ["approvals", "answers", "maxAutoTurns"].includes(key),
+        ),
+      );
     }
-    if (operation === "resume") {
+    let authorizedWorkspaceIds: string[] | undefined;
+    if (operation === "update" || operation === "resume") {
       const current = lead(
         await request({ operation: "lead-status", sessionId, deviceId: device.id }),
       );
-      if (current?.scope?.approvals?.length) this.grant(hash, "approve");
-      for (const id of current?.scope?.workspaceIds ?? [])
+      if (!current) throw new HttpError(409, "lead-unavailable");
+      authorizedWorkspaceIds = [];
+      for (const id of current.scope?.workspaceIds ?? []) {
         if (typeof id !== "string" || !(await this.workspaceAllowed(id, device)))
           throw new HttpError(403, "workspace_not_authorized");
+        authorizedWorkspaceIds.push(id);
+      }
+      const approvals = Array.isArray(scope?.approvals)
+        ? scope.approvals
+        : current.scope?.approvals;
+      if (approvals?.length) this.grant(hash, "approve");
+    } else if (Array.isArray(scope?.approvals) && scope.approvals.length) {
+      this.grant(hash, "approve");
     }
     const backendOperation =
       operation === "remove-worker"
@@ -4454,17 +4452,18 @@ export class WebAccessService {
       sessionId,
       deviceId: device.id,
       ...(scope ? { scope } : {}),
+      ...(authorizedWorkspaceIds ? { authorizedWorkspaceIds } : {}),
       ...(worker ? { worker } : {}),
     }).catch((error: unknown) => {
       const code = error instanceof Error ? error.message : "";
+      if (code.includes("workspace_not_authorized"))
+        throw new HttpError(403, "workspace_not_authorized");
       const known = [
         "lead-requires-managed-claude",
         "session-is-a-worker",
         "lead-exists",
         "lead-unavailable",
         "invalid-lead-workspaces",
-        "invalid-lead-policies",
-        "invalid-lead-lane-limit",
         "invalid-lead-turn-limit",
         "invalid-lead-delegation",
         "worker-unavailable",

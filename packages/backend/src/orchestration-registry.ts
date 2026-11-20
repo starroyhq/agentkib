@@ -81,7 +81,7 @@ export type LeadRecord = {
     | "report"
     | "pause"
     | "resume"
-    /** A worker let go: by the person, by the lead (`worker_close`), or with its session. */
+    /** A worker removed by the user or when its session is deleted. */
     | "close"
     /** The person changed the lead's scope. */
     | "update";

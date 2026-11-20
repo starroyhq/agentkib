@@ -83,7 +83,7 @@ async function provider() {
 describe.skipIf(process.platform !== "darwin" || process.env.AGENTKIB_CODEX_WORKER_NATIVE !== "1")(
   "a Project Agent's worker on the real Codex CLI",
   () => {
-    it("opens a worker, sends it a task and reports its turn with its reply and time", async () => {
+    it("assigns an existing worker, sends it a task and reports its turn with its reply and time", async () => {
       const codex = realpathSync(
         process.env.AGENTKIB_CODEX_EXECUTABLE ?? "/opt/homebrew/bin/codex",
       );
@@ -159,9 +159,16 @@ describe.skipIf(process.platform !== "darwin" || process.env.AGENTKIB_CODEX_WORK
       // The AgentKib the lanes go through; a later one stands in after a restart.
       let reader = web;
       // What AgentKib's backend gives the orchestration service (`index.ts`, `#laneHost`).
+      const created = await reader.managedLifecycle({
+        operation: "create",
+        requestId: crypto.randomUUID(),
+        deviceId: "desktop-local",
+        workspaceId: "w1",
+        policyId: "workspace-write-on-request",
+      });
+      expect(created).toMatchObject({ accepted: true, sessionId: expect.any(String) });
+      const workerSessionId = String(created.sessionId);
       const lanes: LaneHost = {
-        options: () => reader.managedOptions() as Promise<Record<string, unknown>>,
-        lifecycle: (value) => reader.managedLifecycle(value),
         control: (value) => reader.managedControl(value),
         live: (sessionId) =>
           reader.request({
@@ -181,16 +188,8 @@ describe.skipIf(process.platform !== "darwin" || process.env.AGENTKIB_CODEX_WORK
             }
           ).events ?? [],
         endedTurns: async (sessionId) => reader.endedTurns(sessionId),
-        session: (sessionId) => {
-          const summary = store.sessions.get(sessionId);
-          return summary
-            ? {
-                agent: summary.agent,
-                workspaceId: summary.workspace_id,
-                title: summary.title ?? null,
-              }
-            : null;
-        },
+        session: (sessionId) =>
+          sessionId === workerSessionId ? { agent: "codex", workspaceId: "w1", title: null } : null,
         managed: async (sessionId) => reader.isManagedSession(sessionId),
         workspaces: () => [{ id: "w1", name: "Project" }],
       };
@@ -213,35 +212,38 @@ describe.skipIf(process.platform !== "darwin" || process.env.AGENTKIB_CODEX_WORK
         waiting: (sessionId, turnId, status) =>
           void orchestration.laneWaiting(sessionId, turnId, status),
       });
-      orchestration.designate({ sessionId: lead, deviceId: "desktop-local", workspaceId: "w1" });
+      await orchestration.assignWorkers({
+        sessionId: lead,
+        deviceId: "desktop-local",
+        workspaceId: "w1",
+        workers: [workerSessionId],
+      });
       const call = async (name: string, input: Json) =>
         JSON.parse((await orchestration.call(lead, name, input)).text) as Json;
       const wait = { timeout: 60_000, interval: 200 };
 
-      const opened = await call("worker_open", { name: "api", workspace: "w1" });
-      expect(opened).toMatchObject({ accepted: true, worker: "api" });
       await expect
-        .poll(async () => (await lanes.live(opened.session)).sendEnabled, wait)
+        .poll(async () => (await lanes.live(workerSessionId)).sendEnabled, wait)
         .toBe(true);
       const sent = await call("worker_send", {
-        worker: "api",
+        worker: "worker-1",
         text: "BRIEF: write the summary into notes.md",
         title: "Summary",
       });
       expect(sent).toMatchObject({ accepted: true, operation: "send" });
       await expect.poll(() => reports.length, wait).toBe(1);
       expect(reports[0]).toMatch(
-        /^\[AgentKib report\] Worker "api" \(Codex\) · turn ended: completed after \d+s\n/,
+        /^\[AgentKib report\] Worker "worker-1" \(Codex\) · turn ended: completed after \d+s\n/,
       );
       expect(reports[0]).toContain("WORKER-DONE: summary written.");
       expect(model.inputs.some((input) => input.includes("BRIEF: write the summary"))).toBe(true);
-      const read = await call("worker_read", { worker: "api" });
-      expect(read).toMatchObject({ worker: "api", status: "idle", title: "Summary" });
+      const read = await call("worker_read", { worker: "worker-1" });
+      expect(read).toMatchObject({ worker: "worker-1", status: "idle", title: "Summary" });
       expect(JSON.stringify(read.replies)).toContain("WORKER-DONE");
       const listed = await call("worker_list", {});
       expect(listed.workers).toMatchObject([
         {
-          worker: "api",
+          worker: "worker-1",
           status: "idle",
           title: "Summary",
           lastReport: { preview: expect.any(String) },
@@ -249,7 +251,7 @@ describe.skipIf(process.platform !== "darwin" || process.env.AGENTKIB_CODEX_WORK
       ]);
 
       // Codex's rollout records that turn under the ID the live report used: never told twice.
-      const [recorded] = await lanes.endedTurns!(opened.session);
+      const [recorded] = await lanes.endedTurns!(workerSessionId);
       expect(orchestration.status(lead)!.lanes[0]!.reportedTurns).toContain(recorded!.turnId);
       await orchestration.catchUp(Date.now() + 60_000);
       expect(reports).toHaveLength(1);
@@ -280,7 +282,7 @@ describe.skipIf(process.platform !== "darwin" || process.env.AGENTKIB_CODEX_WORK
       await orchestration.catchUp(Date.now() + 60_000);
       expect(reports).toHaveLength(2);
       expect(reports[1]).toMatch(
-        /^\[AgentKib report\] Worker "api" \(Codex\) · turn ended: completed after \d+s\n/,
+        /^\[AgentKib report\] Worker "worker-1" \(Codex\) · turn ended: completed after \d+s\n/,
       );
     }, 180_000);
   },

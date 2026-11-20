@@ -1,8 +1,8 @@
 // @vitest-environment node
 // Opt in on macOS with AGENTKIB_CODEX_WORKER_NATIVE=1 (AGENTKIB_CODEX_EXECUTABLE for a CLI other
 // than /opt/homebrew/bin/codex). A Codex session AgentKib runs is the Project Agent: its thread
-// gets the worker tools as an MCP server in its configuration, it opens and briefs a worker (a
-// second Codex session) through them, and the worker's report comes back as a turn of its own.
+// gets the worker tools as an MCP server in its configuration, briefs an assigned worker (a
+// second Codex session), and receives the worker's report as a turn of its own.
 // Both are the real Codex CLI against a loopback Responses provider, logged in with a fake API key
 // in a throwaway HOME and confined by sandbox-exec to loopback. No account or user data is read.
 import { createHash, randomUUID } from "node:crypto";
@@ -82,11 +82,11 @@ async function provider() {
       const item =
         text.includes("LEAD-PLAN") && !answered
           ? exec(
-              'const opened = await tools.mcp__agentkib_workers__worker_open({ name: "api", workspace: "w1" });\ntext(JSON.stringify(opened));',
+              "const listed = await tools.mcp__agentkib_workers__worker_list({});\ntext(JSON.stringify(listed));",
             )
           : text.includes("LEAD-SEND") && !answered
             ? exec(
-                'const sent = await tools.mcp__agentkib_workers__worker_send({ worker: "api", text: "BRIEF: write the summary", title: "Summary" });\ntext(JSON.stringify(sent));',
+                'const sent = await tools.mcp__agentkib_workers__worker_send({ worker: "worker-1", text: "BRIEF: write the summary", title: "Summary" });\ntext(JSON.stringify(sent));',
               )
             : text.includes("[AgentKib report]")
               ? say("LEAD-NOTED")
@@ -195,9 +195,8 @@ async function codexLead() {
   cleanups.push(() => web.closeAsync());
   // What AgentKib's backend wires (`index.ts`): the lane host, the Codex lead's reports and
   // its thread's worker tools.
+  let workerSessionId: string | undefined;
   const lanes: LaneHost = {
-    options: () => web.managedOptions() as Promise<Record<string, unknown>>,
-    lifecycle: (value) => web.managedLifecycle(value),
     control: (value) => web.managedControl(value),
     live: (sessionId) =>
       web.request({ operation: "live", sessionId, experimentalEnabled: true }) as Promise<Json>,
@@ -207,7 +206,8 @@ async function codexLead() {
           events?: Json[];
         }
       ).events ?? [],
-    session: () => null,
+    session: (sessionId) =>
+      sessionId === workerSessionId ? { agent: "codex", workspaceId: "w1", title: null } : null,
     managed: async (sessionId) => web.isManagedSession(sessionId),
     workspaces: () => [{ id: "w1", name: "Project" }],
   };
@@ -290,29 +290,46 @@ async function codexLead() {
       text,
     });
   };
-  return { web, lanes, orchestration, model, lead, say, wait, stops };
+  const assignWorker = async () => {
+    const created = await web.managedLifecycle({
+      operation: "create",
+      requestId: randomUUID(),
+      deviceId: "desktop-local",
+      workspaceId: "w1",
+      policyId: "workspace-write-on-request",
+    });
+    expect(created).toMatchObject({ accepted: true, sessionId: expect.any(String) });
+    workerSessionId = String(created.sessionId);
+    await orchestration.assignWorkers({
+      sessionId: lead,
+      deviceId: "desktop-local",
+      workspaceId: "w1",
+      workers: [workerSessionId],
+    });
+    return workerSessionId;
+  };
+  return { web, lanes, orchestration, model, lead, say, wait, stops, assignWorker };
 }
 
 describe.skipIf(process.platform !== "darwin" || process.env.AGENTKIB_CODEX_WORKER_NATIVE !== "1")(
   "a Codex session as a Project Agent, on the real Codex CLI",
   () => {
-    it("opens and briefs a worker through its tools, and takes the worker's report as a turn", async () => {
-      const { web, lanes, orchestration, model, lead, say, wait } = await codexLead();
+    it("lists and briefs an assigned worker, and takes the worker's report as a turn", async () => {
+      const { web, lanes, orchestration, model, lead, say, wait, assignWorker } = await codexLead();
 
+      const worker = await assignWorker();
       expect(await say("LEAD-HELLO")).toMatchObject({ accepted: true });
       await expect.poll(() => web.runnerHasLeadTools(lead), wait).toBeNull();
-      const planned = await say("LEAD-PLAN: open a worker named api");
+      const planned = await say("LEAD-PLAN: list the assigned workers");
       expect(web.runnerHasLeadTools(lead)).toBe(true);
       expect(planned, JSON.stringify({ planned, live: await lanes.live(lead) })).toMatchObject({
         accepted: true,
       });
-      await expect.poll(() => orchestration.status(lead)?.lanes.length, wait).toBe(1);
-      const worker = orchestration.status(lead)!.lanes[0]!.sessionId;
       await expect.poll(async () => (await lanes.live(lead)).status, wait).toBe("idle");
       await expect.poll(async () => (await lanes.live(worker)).sendEnabled, wait).toBe(true);
       // The tool's answer, as the lead's code got it back (encoded twice on the way).
       expect(
-        model.outputs.some((output) => /accepted\W*:true/.test(output) && output.includes("api")),
+        model.outputs.some((output) => output.includes("workers") && output.includes("worker-1")),
       ).toBe(true);
 
       expect(await say("LEAD-SEND: brief the worker")).toMatchObject({ accepted: true });
@@ -321,7 +338,7 @@ describe.skipIf(process.platform !== "darwin" || process.env.AGENTKIB_CODEX_WORK
         .poll(
           () =>
             model.asked.some((text) =>
-              text.startsWith('[AgentKib report] Worker "api" (Codex) · turn ended: completed'),
+              text.startsWith('[AgentKib report] Worker "worker-1" (Codex) · turn ended: completed'),
             ),
           wait,
         )

@@ -62,8 +62,14 @@ const finish = async () => {
     await fetch(server.url,{method:'POST',headers,body:JSON.stringify({jsonrpc:'2.0',method:'notifications/initialized'})});
     if (lanes) {
       // A lead: list its lanes through the tools AgentKib gave it.
-      const listed = await fetch(server.url,{method:'POST',headers,body:JSON.stringify({jsonrpc:'2.0',id:2,method:'tools/call',params:{name:'worker_list',arguments:{}}})});
-      log({workers:JSON.parse(JSON.parse(await listed.text()).result.content[0].text)});
+      const request = async (id,method,params) => {
+        const result = await fetch(server.url,{method:'POST',headers,body:JSON.stringify({jsonrpc:'2.0',id,method,params})});
+        return (await result.json()).result;
+      };
+      const menu = await request(2,'tools/list',{});
+      const results = await Promise.all(['worker_list','worker_open','worker_close'].map(async (name,index) =>
+        JSON.parse((await request(3+index,'tools/call',{name,arguments:{}})).content[0].text)));
+      log({workerTools:menu.tools.map(tool=>tool.name),workers:results[0],retiredTools:results.slice(1)});
     } else {
     const result = await fetch(server.url,{method:'POST',headers,body:JSON.stringify({jsonrpc:'2.0',id:2,method:'tools/call',params:{name:'report_goal_step',arguments:{reportId:crypto.randomUUID(),outcome:m.includes('continue')?'continue':'complete',summary:'Synthetic verified work',evidence:['offline fixture assertion'],remainingWork:m.includes('continue')?['next fixture step']:[]}}})});
     const text = await result.text(); log({report:JSON.parse(text)});
@@ -1326,7 +1332,15 @@ describe.skipIf(process.platform !== "darwin")(
       // Its worker tools run without asking: being made a Project Agent is the authorization.
       expect(first.slice(-2)).toEqual(["--allowedTools", "mcp__agentkib_workers"]);
       expect(frames().find((row) => row.workers)).toMatchObject({
-        workers: { paused: false, workers: [], maxWorkers: 10 },
+        workerTools: ["worker_list", "worker_send", "worker_read", "worker_stop"],
+        retiredTools: [
+          { accepted: false, reason: "tool-not-offered" },
+          { accepted: false, reason: "tool-not-offered" },
+        ],
+      });
+      expect(frames().find((row) => row.workers)?.workers).toEqual({
+        paused: false,
+        workers: [],
       });
       // Its settings change. Only a change of what it may decide changes its tools: the next
       // message starts a worker with an endpoint that offers them.
@@ -1339,7 +1353,7 @@ describe.skipIf(process.platform !== "darwin")(
             scope,
           })
         ).lead;
-      expect(await update({ maxLanes: 2 })).toMatchObject({ scope: { maxLanes: 2 } });
+      expect(await update({ maxLanes: 2 })).toMatchObject({ scope: { maxLanes: 10 } });
       expect((await send(sessionId)).status).toBe(200);
       await idle(sessionId);
       expect(launches()).toHaveLength(1);

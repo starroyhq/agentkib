@@ -15,7 +15,7 @@ Codex 同 Agent 续接统一使用 AgentKib 自己启动的 `codex app-server`�
 
 HTTP 另外携带 Electron `bootId`，由 Electron 验证，不直接传给 Runtime。托管 sessionId 为 64 位十六进制，对外不暴露原生路径。create 不接受首条消息；成功获取 sessionId 后再单独 send，避免创建回执丢失时重复执行首条消息。相同 requestId 和输入重试返回持久回执；同 ID 换输入会拒绝。
 
-不再提供独立的 `adopt` 操作或 HTTP 接口。打开旧会话和项目 Agent 的 `worker_open` 只读取、登记已验证身份；模型、权限与模式先保存设置，原生线程在原 `send` 请求中按需恢复。恢复与发送共用该次发送回执，仍检查原生身份、写锁和权限；初始化失败不会另留一条接管回执，也不会自动重发。旧版本已保存的接管回执继续只读核对。
+不再提供独立的 `adopt` 操作或 HTTP 接口。打开旧会话、把已有会话指派为 Worker 时，只读取和登记已验证身份。模型、权限与模式先保存设置，原生线程在原 `send` 请求中按需恢复。恢复与发送共用该次发送回执，仍检查原生身份、写锁和权限。初始化失败不会另留一条接管回执，也不会自动重发。旧版本已保存的接管回执继续只读核对。指派流程见[项目 Agent](project-agent.md)。
 
 现有 `web.request` 对托管会话自动分派 `live`, `events`, `send`, `stop`, `approve`, `answer`。控制参数沿用 `runtimeBootId`, `expectedRevision`, UUID `requestId`, `experimentalEnabled:true`；审批/问答另外验证原生 `turnId` 和请求 ID。`events` 默认最新 50 条、页面内部按时间正序；`next_cursor` 向更早历史分页。catalog 合并持久托管记录，即使会话索引关闭或重建，托管任务仍可见。
 

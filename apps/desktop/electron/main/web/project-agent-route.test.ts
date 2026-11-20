@@ -21,7 +21,8 @@ describe("Project Agent from a paired device", () => {
     reason: null,
     scope: {
       workspaceIds: ["first"],
-      policies: ["workspace-write-on-request"],
+      policies: [] as string[],
+      maxLanes: 10,
       approvals: [] as string[],
     },
     workers: [],
@@ -117,24 +118,24 @@ describe("Project Agent from a paired device", () => {
     await rm(directory, { recursive: true, force: true });
   });
 
-  it("sets one up in the device's name, within the workspaces it may use", async () => {
+  it("sets one up in the device's name and accepts legacy settings without forwarding them", async () => {
     const device = await phone();
     expect(await device.api("managed/project-agent?sessionId=claude-session")).toMatchObject({
       status: 200,
       data: { lead: null },
     });
-    const scope = {
-      workspaceIds: ["first", "second"],
-      policies: ["workspace-write-on-request"],
-      maxLanes: 2,
-      maxAutoTurns: 10,
-      approvals: ["command"],
-      answers: true,
-    };
+    const scope = { maxAutoTurns: 10, approvals: ["command"], answers: true };
     const designated = await device.api("managed/project-agent", {
       sessionId: "claude-session",
       operation: "designate",
-      scope,
+      scope: {
+        ...scope,
+        workspaceIds: ["nonexistent"],
+        policies: ["workspace-write-auto-review"],
+        maxLanes: 1,
+        allowAutoReview: true,
+        maxWorkers: 1,
+      },
     });
     expect(designated).toMatchObject({
       status: 200,
@@ -146,16 +147,6 @@ describe("Project Agent from a paired device", () => {
       deviceId: device.id,
       scope,
     });
-    // Not a workspace of this computer.
-    expect(
-      (
-        await device.api("managed/project-agent", {
-          sessionId: "claude-session",
-          operation: "designate",
-          scope: { ...scope, workspaceIds: ["elsewhere"] },
-        })
-      ).status,
-    ).toBe(403);
     currentLead = { ...lead, scope: { ...lead.scope, approvals: ["command"] } };
     for (const operation of ["pause", "resume", "release"])
       expect(
@@ -172,6 +163,9 @@ describe("Project Agent from a paired device", () => {
       "lead-release",
     ]);
     expect(leadCalls().every((call) => call.deviceId === device.id)).toBe(true);
+    expect(leadCalls().find((call) => call.operation === "lead-resume")).toMatchObject({
+      authorizedWorkspaceIds: ["first"],
+    });
   });
 
   it("changes its settings, and lets one worker go or stops its turn, in the device's name", async () => {
@@ -180,10 +174,12 @@ describe("Project Agent from a paired device", () => {
     const call = (body: Record<string, unknown>) =>
       device.api("managed/project-agent", { sessionId: "claude-session", ...body });
     // A change keeps what it does not name, and this device answers for all of it.
-    expect((await call({ operation: "update", scope: { maxLanes: 3 } })).status).toBe(200);
     expect(
-      (await call({ operation: "update", scope: { workspaceIds: ["elsewhere"] } })).status,
-    ).toBe(403);
+      await call({
+        operation: "update",
+        scope: { maxLanes: 3, workspaceIds: ["elsewhere"], maxAutoTurns: 15 },
+      }),
+    ).toMatchObject({ status: 200, data: { lead: { scope: { maxLanes: 10 } } } });
     for (const operation of ["stop-worker", "remove-worker"])
       expect((await call({ operation, worker: "codex-worker" })).status).toBe(200);
     // A session this device cannot reach is no worker it acts on.
@@ -195,9 +191,9 @@ describe("Project Agent from a paired device", () => {
         operation: "lead-update",
         sessionId: "claude-session",
         deviceId: device.id,
-        scope: { maxLanes: 3 },
+        scope: { maxAutoTurns: 15 },
+        authorizedWorkspaceIds: ["first"],
       },
-      { operation: "lead-status", sessionId: "claude-session", deviceId: device.id },
       {
         operation: "lead-worker-stop",
         sessionId: "claude-session",
@@ -211,6 +207,20 @@ describe("Project Agent from a paired device", () => {
         worker: "codex-worker",
       },
     ]);
+  });
+
+  it("does not let a device take responsibility for workers outside its reach", async () => {
+    const device = await phone();
+    currentLead = { ...lead, scope: { ...lead.scope, workspaceIds: ["first", "elsewhere"] } };
+    for (const operation of ["update", "resume"]) {
+      const result = await device.api("managed/project-agent", {
+        sessionId: "claude-session",
+        operation,
+        ...(operation === "update" ? { scope: { workspaceIds: ["first"] } } : {}),
+      });
+      expect(result).toMatchObject({ status: 403 });
+    }
+    expect(leadCalls().map((call) => call.operation)).toEqual(["lead-status", "lead-status"]);
   });
 
   it("says so when it stops because the app quits, not when its settings change", async () => {

@@ -258,8 +258,6 @@ describe.skipIf(process.platform !== "darwin" || process.env.AGENTKIB_CLAUDE_BRI
       let spoken = 0;
       // Workers stood in for: AgentKib's Codex side is not part of this run.
       const lanes = {
-        options: async () => ({ models: [] }),
-        lifecycle: async () => ({ accepted: true }),
         control: async () => ({ accepted: true }),
         live: async (id: string) => ({
           sessionId: id,
@@ -271,7 +269,8 @@ describe.skipIf(process.platform !== "darwin" || process.env.AGENTKIB_CLAUDE_BRI
         events: async () => [
           { kind: "agent-message", content: "Worker done.", turn_id: "lane-turn" },
         ],
-        session: () => null,
+        session: (id: string) =>
+          id === "worker-session" ? { agent: "codex", workspaceId: "w1", title: null } : null,
         managed: async () => false,
         workspaces: () => [{ id: "w1", name: "workspace" }],
       };
@@ -370,6 +369,12 @@ describe.skipIf(process.platform !== "darwin" || process.env.AGENTKIB_CLAUDE_BRI
           workspaceId: "w1",
           scope: { maxAutoTurns: 1 },
         });
+        await orchestration.assignWorkers({
+          sessionId,
+          deviceId: "agentkib-local-owner",
+          workspaceId: "w1",
+          workers: ["worker-session"],
+        });
         bridge.leadChanged(sessionId);
 
         // The poll it wakes registers the tools; a turn typed in the terminal uses one.
@@ -381,19 +386,16 @@ describe.skipIf(process.platform !== "darwin" || process.env.AGENTKIB_CLAUDE_BRI
             wait,
           )
           .toBe(true);
-        expect(requests.find((request) => request.text.includes("LEAD-LIST"))?.tools).toContain(
-          "mcp__agentkib-bridge__worker_list",
-        );
+        const tools = requests.find((request) => request.text.includes("LEAD-LIST"))?.tools;
+        expect(tools).toContain("mcp__agentkib-bridge__worker_list");
+        expect(tools).not.toContain("mcp__agentkib-bridge__worker_open");
+        expect(tools).not.toContain("mcp__agentkib-bridge__worker_close");
         await expect.poll(() => tty.text.includes("fixture-after-tool"), wait).toBe(true);
         // That typed turn is heard before a report arrives, as it came first.
         await expect.poll(() => spoken, wait).toBeGreaterThanOrEqual(1);
 
         // A worker's turn ends: the report reaches the terminal as a turn of its own.
-        const opened = JSON.parse(
-          (await orchestration.call(sessionId, "worker_open", { name: "api", workspace: "w1" }))
-            .text,
-        );
-        await orchestration.laneTurnEnded(opened.session, "lane-turn", "completed", 12_000);
+        await orchestration.laneTurnEnded("worker-session", "lane-turn", "completed", 12_000);
         await expect
           .poll(
             () => requests.some((request) => request.text.includes("[AgentKib report] Worker")),

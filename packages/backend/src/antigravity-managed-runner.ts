@@ -20,6 +20,13 @@ const MAX_CONTENT_BYTES = 512 * 1024;
 const MAX_APPROVAL_DETAILS_BYTES = 64 * 1024;
 const MAX_UPDATES = 4096;
 const DISPATCHING_TURN_ID = "agentkib-prompt-dispatch-in-progress";
+const PROMPT_STOP_REASONS = new Set([
+  "end_turn",
+  "max_tokens",
+  "max_turn_requests",
+  "refusal",
+  "cancelled",
+]);
 
 type JsonRecord = Record<string, unknown>;
 type PermissionState = AcpPermission & {
@@ -29,6 +36,11 @@ type PermissionState = AcpPermission & {
   toolCall: JsonRecord;
   availableDecisions: string[];
   unsupportedReason: string | null;
+};
+type ReportableSend = { requestId: string; accepted: Promise<boolean> };
+type AntigravityTurnObserver = {
+  waiting(turnId: string): void;
+  ended(turnId: string, outcome: string, durationMs: number, replyText: string | null): void;
 };
 
 function acpIdText(value: AcpId): string {
@@ -56,9 +68,11 @@ export class AntigravityManagedRunner {
   #revision = 0;
   #turnId: string | null = null;
   #completedTurn: string | null = null;
+  #reportableTurn?: ReportableSend & { startedAt: number };
   #streamText = "";
   #messageText = new Map<string, string>();
   #items = new Map<string, JsonRecord>();
+  #lastWorkerReply?: { kind: "agent-message"; turn_id: string; content: string };
   #toolCalls = new Map<string, JsonRecord>();
   #approvals = new Map<string, PermissionState>();
   #seenPermissions = new Set<string>();
@@ -88,6 +102,7 @@ export class AntigravityManagedRunner {
       live: JsonRecord,
     ) => void,
     private readonly recoverHistory?: () => Promise<JsonRecord[]>,
+    private readonly observeTurn?: AntigravityTurnObserver,
   ) {}
 
   static async connect(
@@ -98,6 +113,7 @@ export class AntigravityManagedRunner {
     publish?: AntigravityManagedRunner["publish"],
     recoverHistory?: AntigravityManagedRunner["recoverHistory"],
     initialRevision = 0,
+    observeTurn?: AntigravityTurnObserver,
   ): Promise<AntigravityManagedRunner> {
     if (!path.isAbsolute(executable) || !path.isAbsolute(workspace) || !sessionId)
       throw new Error("invalid Antigravity session target");
@@ -112,6 +128,7 @@ export class AntigravityManagedRunner {
       workspace,
       publish,
       recoverHistory,
+      observeTurn,
     );
     // Replacing a retired transport must not make an old control revision current again.
     runner.#revision = initialRevision;
@@ -150,6 +167,17 @@ export class AntigravityManagedRunner {
     return !this.#closed && this.client.compatibility !== null;
   }
 
+  recentWorkerReplies(limit: number): JsonRecord[] {
+    const replies = [...this.#items.values()].filter((item) => item.kind === "agent-message");
+    const last = this.#lastWorkerReply;
+    if (last && !replies.some((item) => item.content === last.content)) {
+      // A successful native history reload can still omit the just-finished turn.
+      const active = replies.findIndex((item) => item.turn_id === this.#turnId);
+      replies.splice(active < 0 ? replies.length : active, 0, last);
+    }
+    return replies.slice(-limit);
+  }
+
   snapshot(): JsonRecord {
     return {
       sessionId: this.sessionId,
@@ -184,7 +212,12 @@ export class AntigravityManagedRunner {
     };
   }
 
-  async send(text: string, expectedRevision: number, beforeDispatch?: () => void): Promise<void> {
+  async send(
+    text: string,
+    expectedRevision: number,
+    beforeDispatch?: () => void,
+    reporting?: ReportableSend,
+  ): Promise<void> {
     if (!text.trim() || Buffer.byteLength(text) > 65_536)
       throw new Error("invalid Antigravity prompt");
     this.#checkRevision(expectedRevision);
@@ -197,12 +230,14 @@ export class AntigravityManagedRunner {
     this.#revision += 1;
     this.#publishSnapshot();
     try {
+      const startedAt = performance.now();
       const id = await this.client.prompt(this.sessionId, text, () => {
         if (this.#liveCompactionIds.size) throw new AcpUndispatchedError();
         beforeDispatch?.();
       });
       this.#awaitingOrdinaryContext = false;
       this.#turnId = acpIdText(id);
+      this.#reportableTurn = reporting && { ...reporting, startedAt };
       this.#completedTurn = null;
       this.#streamText = "";
       this.#messageText.clear();
@@ -335,6 +370,8 @@ export class AntigravityManagedRunner {
 
   #apply(event: AcpEvent, replay: boolean): void {
     let changed = false;
+    let outcome: string | undefined;
+    const previousStatus = this.#status;
     if (event.type === "session-update") {
       if (event.sessionId !== this.sessionId) throw new Error("ACP session identity changed");
       this.#applyUpdate(event.update, replay);
@@ -356,12 +393,9 @@ export class AntigravityManagedRunner {
         throw new Error("unexpected Antigravity prompt response");
       if (event.error) throw new Error(`Antigravity prompt failed: ${event.error.message}`);
       const result = isRecord(event.result) ? event.result : {};
-      if (
-        !new Set(["end_turn", "max_tokens", "max_turn_requests", "refusal", "cancelled"]).has(
-          String(result.stopReason),
-        )
-      )
+      if (typeof result.stopReason !== "string" || !PROMPT_STOP_REASONS.has(result.stopReason))
         throw new Error("Antigravity prompt response has no valid stop reason");
+      outcome = result.stopReason === "end_turn" ? "completed" : result.stopReason;
       this.#completedTurn = this.#turnId;
       this.#turnId = null;
       this.#status = "idle";
@@ -376,6 +410,32 @@ export class AntigravityManagedRunner {
     if (!replay && changed) {
       this.#revision += 1;
       this.#publishSnapshot();
+      const turn = this.#reportableTurn;
+      const observer = this.observeTurn;
+      if (turn && observer) {
+        // ACP RPC ids repeat across attachments. The accepted send identifies the turn
+        // in orchestration, while the live/control projection keeps the native RPC id.
+        if (outcome !== undefined) {
+          this.#reportableTurn = undefined;
+          const durationMs = performance.now() - turn.startedAt;
+          const replyText = Array.from(this.#messageText.values()).at(-1) ?? null;
+          const terminalOutcome = outcome;
+          void turn.accepted.then((accepted) => {
+            if (!accepted) return;
+            if (replyText !== null)
+              this.#lastWorkerReply = {
+                kind: "agent-message",
+                turn_id: turn.requestId,
+                content: replyText,
+              };
+            observer.ended(turn.requestId, terminalOutcome, durationMs, replyText);
+          });
+        } else if (previousStatus !== "waiting-approval" && this.#status === "waiting-approval") {
+          void turn.accepted.then((accepted) => {
+            if (accepted) observer.waiting(turn.requestId);
+          });
+        }
+      }
     }
     if (
       !replay &&

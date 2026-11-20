@@ -2,6 +2,8 @@ import { randomUUID } from "node:crypto";
 
 export interface ClaudeScheduledSession {
   sessionId: string;
+  /** Absent on the existing Claude host path. */
+  agent?: "devin" | "antigravity";
   workspaceId: string;
   runtimeBootId: string;
   revision: number;
@@ -39,7 +41,10 @@ export class ClaudeHostScheduler {
   private flight?: Promise<void>;
   private sharedRuntimePrimary?: boolean;
 
-  constructor(private readonly invoke: (input: unknown) => Promise<unknown>) {}
+  constructor(
+    private readonly invoke: (input: unknown) => Promise<unknown>,
+    private readonly serialOnly = false,
+  ) {}
 
   setSharedRuntimePrimary(primary: boolean): void {
     this.sharedRuntimePrimary = primary;
@@ -106,11 +111,15 @@ export class ClaudeHostScheduler {
   }
 
   private async run() {
-    const result = (await this.invoke({ operation: "schedule-list" })) as {
+    const result = (await this.invoke({
+      operation: "schedule-list",
+      ...(this.serialOnly ? { serialOnly: true } : {}),
+    })) as {
       sessions?: ClaudeScheduledSession[];
     };
     if (!Array.isArray(result?.sessions)) return;
     for (const session of result.sessions) {
+      if (this.serialOnly && session.agent === undefined) continue;
       const previous = this.sessions.get(session.sessionId);
       this.sessions.set(
         session.sessionId,

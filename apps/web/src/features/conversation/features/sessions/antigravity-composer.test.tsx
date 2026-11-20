@@ -46,6 +46,35 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 describe("Antigravity composer shortcuts", () => {
+  it("adds the current draft to the queue while the native turn can still be stopped", async () => {
+    const codexAction = vi.fn().mockResolvedValue({ queuedSubmission: { id: "queued" } });
+    const sessionQueue = vi.fn().mockResolvedValue({ sessionId: "s", data: [] });
+    state.session = {
+      ...state.session,
+      codexAction,
+      client: { sessionQueue },
+      canSend: false,
+      canStop: true,
+      live: { ...state.session.live!, status: "running" },
+      access: { ...state.session.access!, device: { send: true, advancedControl: true } },
+      capabilities: {
+        sessionId: "s",
+        features: { "queue-list": { available: true }, "queue-add": { available: true } },
+      },
+    } as unknown as SessionController;
+    render(<SessionReader />);
+    const queue = screen.getByRole("button", { name: "Queue for automatic execution" });
+    expect(screen.getByRole("button", { name: "Stop" })).toBeEnabled();
+    expect(queue).toBeEnabled();
+    await act(async () => {
+      fireEvent.click(queue);
+    });
+    expect(codexAction).toHaveBeenCalledExactlyOnceWith("queue-add", { text: "first line" });
+    expect(state.control).not.toHaveBeenCalled();
+    expect(screen.getByRole("textbox", { name: "Message" })).toHaveValue("");
+    expect(sessionQueue).toHaveBeenCalledWith("s", "antigravity", expect.any(AbortSignal));
+  });
+
   it("sends with desktop Enter and keeps Shift+Enter and IME input as text", async () => {
     render(<SessionReader />);
     const input = screen.getByRole("textbox", { name: "Message" });

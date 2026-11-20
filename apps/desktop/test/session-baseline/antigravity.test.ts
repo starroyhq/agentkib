@@ -6,6 +6,8 @@ import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AntigravityAcp } from "../../../../packages/backend/src/antigravity-acp";
+import { ClaudeManagedReadOwner } from "../../../../packages/backend/src/claude-managed-read";
+import { OrchestrationService } from "../../../../packages/backend/src/orchestration-service";
 import { SessionReaders } from "../../../../packages/backend/src/session-readers";
 import type { NativeSession } from "../../../../packages/backend/src/session-store";
 import { BackendStore } from "../../../../packages/backend/src/store";
@@ -113,7 +115,7 @@ describe("Antigravity session baseline through HTTP, backend RPC and ACP frames"
     } finally {
       store.close();
     }
-    host = await startHost({ root, workspace, rpc: backend.rpc });
+    host = await startHost({ root, workspace, rpc: backend.rpc, enableClaudeScheduler: true });
   });
 
   afterEach(async () => {
@@ -130,6 +132,184 @@ describe("Antigravity session baseline through HTTP, backend RPC and ACP frames"
   });
 
   const live = (id = sessionId) => host.http(`/live?sessionId=${id}`);
+
+  it("assigns an ACP worker, reports approvals and replies, and stops its exact turn", async () => {
+    const leadId = "offline-claude-lead";
+    const deviceId = "agentkib-local-owner";
+    const reports: string[] = [];
+    vi.spyOn(ClaudeManagedReadOwner.prototype, "hasManagedSession").mockImplementation(
+      (id) => id === leadId,
+    );
+    vi.spyOn(ClaudeManagedReadOwner.prototype, "managedWorkspace").mockImplementation((id) =>
+      id === leadId ? "workspace" : null,
+    );
+    vi.spyOn(ClaudeManagedReadOwner.prototype, "queueReport").mockImplementation(
+      (_id, _device, message) => {
+        reports.push(message);
+        return true;
+      },
+    );
+    let service: OrchestrationService | undefined;
+    const assign = OrchestrationService.prototype.assignWorkers;
+    vi.spyOn(OrchestrationService.prototype, "assignWorkers").mockImplementation(
+      function (this: OrchestrationService, input) {
+        service = this;
+        return assign.call(this, input);
+      },
+    );
+    const lead = (operation: string, fields: Record<string, unknown> = {}) =>
+      backend.rpc("claude.managed", { operation, sessionId: leadId, deviceId, ...fields });
+    expect(
+      await lead("lead-assignment-options", { candidateIds: [sessionId, localSessionId] }),
+    ).toMatchObject({
+      capable: true,
+      candidates: [
+        { sessionId, reason: null },
+        { sessionId: localSessionId, reason: "worker-unavailable" },
+      ],
+    });
+    await lead("lead-assign-workers", { workers: [sessionId] });
+    await lead("lead-update", { scope: { approvals: ["command"] } });
+    expect(acp.spawn).not.toHaveBeenCalled();
+    const call = async (name: string, input: Record<string, unknown> = {}) =>
+      JSON.parse((await service!.call(leadId, name, { worker: "worker-1", ...input })).text);
+    expect(await call("worker_list")).toMatchObject({
+      workers: [{ worker: "worker-1", agent: "antigravity", session: sessionId }],
+    });
+    expect(await call("worker_send", { text: "Read the handoff", title: "Handoff" })).toMatchObject(
+      {
+        accepted: true,
+        operation: "send",
+      },
+    );
+    const prompt = acp.frames.find((frame) => frame.method === "session/prompt")!;
+    expect(prompt.params).toEqual({
+      sessionId: nativeId,
+      prompt: [{ type: "text", text: "Read the handoff" }],
+    });
+    const queuePath = `/managed/queue?${new URLSearchParams({ sessionId, agent: "antigravity" })}`;
+    const queue = (operation: string, fields: Record<string, unknown> = {}) =>
+      live().then(({ body }) =>
+        host.http("/managed/action", {
+          operation,
+          agent: "antigravity",
+          sessionId,
+          bootId: host.bootId,
+          expectedRevision: body.revision,
+          requestId: randomUUID(),
+          ...fields,
+        }),
+      );
+    expect(await call("worker_send", { text: "Queued by the project Agent" })).toMatchObject({
+      accepted: true,
+      operation: "queue-add",
+    });
+    const queued = await host.http(queuePath);
+    expect(queued).toMatchObject({
+      status: 200,
+      body: {
+        data: [{ id: expect.any(String), status: "pending", text: "Queued by the project Agent" }],
+      },
+    });
+    const [{ id: queuedSubmissionId }] = queued.body.data as Array<{ id: string }>;
+    expect(await queue("queue-pause")).toMatchObject({ status: 200 });
+    expect(
+      await queue("queue-update", { queuedSubmissionId, text: "Edited by the user" }),
+    ).toMatchObject({ status: 200 });
+    expect(await host.http(queuePath)).toMatchObject({
+      status: 200,
+      body: { paused: true, data: [{ id: queuedSubmissionId, text: "Edited by the user" }] },
+    });
+    expect(await queue("queue-add", { text: "Added by the user" })).toMatchObject({ status: 200 });
+    await expect.poll(() => reports.at(-1)).toContain("the user sent it a message directly");
+    const both = await host.http(queuePath);
+    expect(both).toMatchObject({
+      status: 200,
+      body: {
+        paused: true,
+        data: [
+          { id: queuedSubmissionId, text: "Edited by the user" },
+          { id: expect.any(String), text: "Added by the user" },
+        ],
+      },
+    });
+    const userItem = (both.body.data as Array<{ id: string }>)[1]!;
+    expect(await queue("queue-delete", { queuedSubmissionId: userItem.id })).toMatchObject({
+      status: 200,
+    });
+    expect(await host.http(queuePath)).toMatchObject({
+      status: 200,
+      body: { paused: true, data: [{ id: queuedSubmissionId }] },
+    });
+    expect(acp.frames.filter((frame) => frame.method === "session/prompt")).toHaveLength(1);
+    acp.notify({
+      id: "worker-permission",
+      method: "session/request_permission",
+      params: {
+        sessionId: nativeId,
+        toolCall: {
+          toolCallId: "show-brief",
+          kind: "execute",
+          rawInput: { command: "cat brief.md", cwd: workspace },
+        },
+        options: [
+          { optionId: "always", name: "Always", kind: "allow_always" },
+          { optionId: "once", name: "Once", kind: "allow_once" },
+          { optionId: "reject", name: "Reject once", kind: "reject_once" },
+        ],
+      },
+    });
+    await expect.poll(() => reports.at(-1)).toContain("waiting for the user's approval");
+    expect(
+      await call("worker_approve", { approval: "worker-permission", decision: "accept" }),
+    ).toMatchObject({ accepted: true });
+    expect(acp.frames.find((frame) => frame.id === "worker-permission")?.result).toEqual({
+      outcome: { outcome: "selected", optionId: "once" },
+    });
+    acp.notify({
+      method: "session/update",
+      params: {
+        sessionId: nativeId,
+        update: {
+          sessionUpdate: "agent_message_chunk",
+          messageId: "visible-reply",
+          content: { type: "text", text: "Confirmed the handoff." },
+        },
+      },
+    });
+    acp.notify({ id: prompt.id, result: { stopReason: "end_turn" } });
+    await expect.poll(() => reports.at(-1)).toContain("turn ended: completed");
+    expect(reports.at(-1)).toContain("Confirmed the handoff.");
+    expect(await call("worker_read")).toMatchObject({
+      status: "idle",
+      title: "Handoff",
+      replies: [{ text: "Confirmed the handoff." }],
+    });
+    expect(acp.spawn).toHaveBeenCalledOnce();
+
+    await host.tickClaudeQueue();
+    expect(acp.frames.filter((frame) => frame.method === "session/prompt")).toHaveLength(1);
+    expect(await queue("queue-resume")).toMatchObject({ status: 200 });
+    await host.tickClaudeQueue();
+    expect(acp.frames.filter((frame) => frame.method === "session/prompt")).toHaveLength(2);
+    const next = acp.frames.filter((frame) => frame.method === "session/prompt").at(-1)!;
+    expect(next.params).toEqual({
+      sessionId: nativeId,
+      prompt: [{ type: "text", text: "Edited by the user" }],
+    });
+    expect(await host.http(queuePath)).toMatchObject({
+      status: 200,
+      body: { paused: false, data: [] },
+    });
+    expect(await call("worker_stop")).toMatchObject({ accepted: true });
+    expect(acp.frames.at(-1)).toMatchObject({
+      method: "session/cancel",
+      params: { sessionId: nativeId },
+    });
+    acp.notify({ id: next.id, result: { stopReason: "cancelled" } });
+    await expect.poll(() => reports.at(-1)).toContain("turn ended: cancelled");
+    expect(reports).toHaveLength(4);
+  });
 
   async function accepted(
     operation: "send" | "approve" | "stop",
@@ -205,6 +385,11 @@ describe("Antigravity session baseline through HTTP, backend RPC and ACP frames"
           approve: { available: false, reason: "no-supported-approval" },
           answer: { available: false, reason: "unsupported-operation" },
           inspect: allowed,
+          "queue-list": allowed,
+          "queue-add": allowed,
+          "queue-update": allowed,
+          "queue-delete": allowed,
+          "queue-pause": allowed,
         },
       },
     });
@@ -375,7 +560,7 @@ describe("Antigravity session baseline through HTTP, backend RPC and ACP frames"
     ],
     [
       "/managed/action",
-      { agent: "antigravity", operation: "queue-add", text: "Next turn" },
+      { agent: "antigravity", operation: "queue-steer", queuedSubmissionId: "not-native" },
       "capability_unavailable",
     ],
     [

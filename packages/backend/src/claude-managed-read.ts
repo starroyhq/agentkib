@@ -31,7 +31,13 @@ import { canonicalize, pathIdentity } from "./paths";
 import { within } from "./files";
 import { restrictRemotePath } from "./remote-tls";
 import { acquirePortableFileLease } from "./managed-session-lock";
-import { LEAD_ALLOWED_TOOLS, mergeMcpConfigs } from "./orchestration-service";
+import {
+  LEAD_ALLOWED_TOOLS,
+  mergeMcpConfigs,
+  type LaneEndedTurn,
+  type WorkerObserver,
+} from "./orchestration-service";
+import { userHome } from "./mcp-config-read";
 import {
   CLAUDE_BACKGROUND_TASKS_MINIMUM,
   readClaudeInstallation,
@@ -53,6 +59,7 @@ import {
   removeClaudeSessionFiles,
 } from "./claude-session-files";
 import { ClaudeTurnMetaStore } from "./claude-turn-meta";
+import { claudeWorkerHistoryTurns, claudeWorkerUnobservedTurns } from "./claude-worker-turns";
 import type { ConversationEventPage } from "./session-events";
 import {
   assertClaudeConfigWritable,
@@ -266,6 +273,7 @@ export class ClaudeManagedReadOwner {
   #leadToolKeys = new Map<string, string>();
   #hostState: ClaudeHostStateStore;
   #turnMeta: ClaudeTurnMetaStore;
+  #workerObserver?: WorkerObserver;
   // Bumped when a turn end is stored, so cached history projections are read again with it.
   #turnMetaRevisions = new Map<string, number>();
   #scheduleEpoch = 0;
@@ -380,6 +388,10 @@ export class ClaudeManagedReadOwner {
 
   close(): void {
     void this.shutdown().catch(() => undefined);
+  }
+
+  observeWorkers(observer: WorkerObserver): void {
+    this.#workerObserver = observer;
   }
 
   externalTurn(sessionId: string) {
@@ -1413,6 +1425,8 @@ export class ClaudeManagedReadOwner {
   ): ClaudeManagedRunnerProcess {
     const id = record.id;
     const mcpConfig = mergeMcpConfigs(options.mcpConfig, leadTools);
+    let activeTurn: { id: string; startedAt: string } | undefined;
+    let lastWaiting: string | undefined;
     const runner = new ClaudeManagedRunnerProcess(
       record.workspace,
       record.nativeId,
@@ -1463,6 +1477,24 @@ export class ClaudeManagedReadOwner {
           });
         this.#save(current);
         if (completed) this.#recoverCompletions(current);
+        if (turnId && ["running", "waiting-approval", "waiting-input"].includes(snapshot.status)) {
+          if (activeTurn?.id !== turnId)
+            activeTurn = { id: turnId, startedAt: new Date().toISOString() };
+          const waiting =
+            snapshot.status === "waiting-approval" ? "awaiting-approval" : snapshot.status;
+          const key = `${turnId}:${waiting}`;
+          if (waiting !== "running" && key !== lastWaiting) {
+            lastWaiting = key;
+            try {
+              if (this.#workerObserver?.isWorker(id))
+                this.#workerObserver.waiting(id, turnId, waiting);
+            } catch {
+              // Reporting must not affect the runner or its approval.
+            }
+          }
+        }
+        if (completed && snapshot.lastOutcome === "cancelled" && !snapshot.terminalResult)
+          this.#reportWorkerTurn(id, turnId, "cancelled", null);
         const streamLive = this.#streamLive(id, snapshot, current);
         this.#publishConversationEvent?.(id, "state", streamLive, streamLive);
       },
@@ -1512,7 +1544,7 @@ export class ClaudeManagedReadOwner {
           }
           return allowed;
         },
-        onResult: (result) => {
+        onResult: (result, observation) => {
           const cancelled =
             !result.success &&
             (runner.state.lastOutcome === "cancelled" ||
@@ -1529,6 +1561,16 @@ export class ClaudeManagedReadOwner {
               outcome: result.success ? "completed" : cancelled ? "cancelled" : "failed",
               completedAt: new Date().toISOString(),
             },
+            false,
+            activeTurn?.id === result.turnId ? activeTurn.startedAt : null,
+          );
+          this.#reportWorkerTurn(
+            id,
+            result.turnId,
+            result.success ? "completed" : cancelled ? "cancelled" : "failed",
+            observation.durationMs,
+            observation.itemId,
+            observation.replyText,
           );
           this.#catalogChanged?.();
           this.#hostState.complete(id, result.turnId, {
@@ -1555,6 +1597,22 @@ export class ClaudeManagedReadOwner {
     if (key === undefined) this.#leadToolKeys.delete(id);
     else this.#leadToolKeys.set(id, key);
     return runner;
+  }
+
+  #reportWorkerTurn(
+    id: string,
+    turnId: string,
+    outcome: string,
+    durationMs: number | null,
+    historyItemId?: string,
+    replyText?: string,
+  ): void {
+    try {
+      if (this.#workerObserver?.isWorker(id))
+        this.#workerObserver.turnEnded(id, turnId, outcome, durationMs, historyItemId, replyText);
+    } catch {
+      // Reporting must not affect a finished turn.
+    }
   }
 
   /** A lead's delegation tools; none when the lookup fails, so the session still runs. */
@@ -5304,6 +5362,41 @@ export class ClaudeManagedReadOwner {
       throw new Error("session-image-unavailable");
     this.#validate(latest);
     return result;
+  }
+
+  async endedTurns(id: string): Promise<LaneEndedTurn[]> {
+    const record = this.#load(id);
+    if (record) this.#validate(record);
+    const native = record ? undefined : this.sessions.verifiedClaudeReadSource(id);
+    const nativeId = record?.nativeId ?? native!.nativeId;
+    const home =
+      record?.home ?? resolveClaudeConfig(this.environment, userHome(this.environment)).dir;
+    const transcript =
+      record && !record.fresh
+        ? this.sessions.verifiedClaudeControlTarget(record.nativeId, record.workspace)
+        : native?.transcript;
+    const observed = new ReadStateLedger(this.dataDir)
+      .recentTerminalResults(conversationReadKey("claude-code", home, nativeId))
+      .flatMap(({ result, startedAt }): LaneEndedTurn[] =>
+        result.turnId && result.completedAt
+          ? [
+              {
+                turnId: result.turnId,
+                outcome: result.outcome === "ended" ? "completed" : result.outcome,
+                startedAt,
+                endedAt: result.completedAt,
+                ...(result.itemId ? { historyTurnId: result.itemId } : {}),
+              },
+            ]
+          : [],
+      );
+    const history = transcript ? claudeWorkerHistoryTurns(transcript, nativeId) : [];
+    return [
+      ...observed.filter((turn) => turn.startedAt !== null),
+      ...claudeWorkerUnobservedTurns(history, observed),
+    ]
+      .sort((a, b) => Date.parse(a.endedAt!) - Date.parse(b.endedAt!))
+      .slice(-50);
   }
 
   async events(id: string, cursor: unknown, limit: unknown, retain = true): Promise<unknown> {

@@ -17,6 +17,7 @@ import { homeSessionGroups, workStoppedByQuit, type HomeSession } from "@agentki
 import { Commands } from "../../../packages/backend/src/commands";
 import { ConversationReadStates } from "../../../packages/backend/src/conversation-read-state";
 import { readManagedUsageLimit } from "../../../packages/backend/src/managed-ledger";
+import { OrchestrationService } from "../../../packages/backend/src/orchestration-service";
 import { SessionReaders } from "../../../packages/backend/src/session-readers";
 import type { ConversationEvent } from "../../../packages/backend/src/session-events";
 import type { NativeSession } from "../../../packages/backend/src/session-store";
@@ -200,6 +201,7 @@ process.on("SIGHUP", () => process.exit(0));
     environment,
     store,
     readers,
+    history,
     events,
     turn,
     usage,
@@ -779,4 +781,184 @@ describe.runIf(process.platform !== "win32")("a Devin turn's result", () => {
     // Each reader keeps its own place: the phone's has not read it yet.
     expect(await reads.get(f.id, "local")).toMatchObject({ status: "unread" });
   });
+});
+
+describe.runIf(process.platform !== "win32")("an assigned Devin Worker", () => {
+  function project(f: ReturnType<typeof fixture>) {
+    const lead = "fixture-lead";
+    const reports: string[] = [];
+    const orchestration = new OrchestrationService(
+      f.root,
+      "fixture-boot",
+      {
+        control: (value) => f.web.managedControl(value),
+        live: () => f.live(),
+        events: async (_sessionId, limit) => f.history.slice(-limit),
+        endedTurns: (id) => f.web.devinEndedTurns(id),
+        session: (id) =>
+          id === f.id ? { agent: "devin", workspaceId: "workspace", title: null } : null,
+        managed: async () => true,
+        workspaces: () => [{ id: "workspace", name: "Fixture" }],
+      },
+      (id) => id === lead,
+      (_id, _device, text) => {
+        reports.push(text);
+        return false;
+      },
+    );
+    cleanups.push(() => orchestration.close());
+    return {
+      orchestration,
+      reports,
+      assign: () =>
+        orchestration.assignWorkers({
+          sessionId: lead,
+          deviceId: "desktop-local",
+          workspaceId: "workspace",
+          workers: [f.id],
+        }),
+      call: async (name: string, input: Record<string, unknown>) =>
+        JSON.parse((await orchestration.call(lead, name, input)).text),
+    };
+  }
+
+  function recordAnswer(f: ReturnType<typeof fixture>, prompt: string, reply: string) {
+    const turnId = `worker-${f.history.length}`;
+    const timestamp = new Date().toISOString();
+    f.history.push(
+      { ...f.history[0]!, id: turnId, turn_id: turnId, content: prompt, timestamp },
+      { ...f.history[1]!, id: `${turnId}-answer`, turn_id: turnId, content: reply, timestamp },
+    );
+    return turnId;
+  }
+
+  it("sends tasks, reports the observed reply and stops without quoting a prior turn", async () => {
+    const f = fixture();
+    const { orchestration, reports, assign, call } = project(f);
+    const observed: Array<{ turnId: string; historyTurnId: string | undefined }> = [];
+    const waiting = vi.fn();
+    f.web.observeLanes({
+      turnEnded: (id, turnId, outcome, durationMs, historyTurnId, replyText) => {
+        observed.push({ turnId, historyTurnId });
+        void orchestration.laneTurnEnded(id, turnId, outcome, durationMs, historyTurnId, replyText);
+      },
+      waiting,
+    });
+    await assign();
+    expect(
+      await f.control("settings", { model: "saved-model", permissionMode: "auto" }),
+    ).toMatchObject({ accepted: true });
+    f.turn({ hold: true });
+    expect(
+      await call("worker_send", { worker: "worker-1", text: "Run the fixture" }),
+    ).toMatchObject({
+      accepted: true,
+      operation: "send",
+    });
+    const first = await f.live();
+    expect(first).toMatchObject({ status: "running", approvals: [], questions: [] });
+    expect(
+      await call("worker_send", { worker: "worker-1", text: "Do not insert", mode: "steer" }),
+    ).toEqual({ accepted: false, reason: "steer-unsupported" });
+    const historyTurnId = recordAnswer(f, "Run the fixture", "Fixture complete");
+    f.turn();
+    await f.ended();
+    await expect.poll(() => reports.length).toBe(1);
+    expect(reports[0]).toMatch(/Worker "worker-1" \(Devin\) · turn ended: completed after /);
+    expect(reports[0]).toContain("Fixture complete");
+    expect(observed).toEqual([{ turnId: first.turnId, historyTurnId }]);
+    const worker = await call("worker_read", { worker: "worker-1" });
+    expect(worker).toMatchObject({
+      status: "idle",
+      replies: expect.arrayContaining([expect.objectContaining({ text: "Fixture complete" })]),
+    });
+    expect(worker).not.toHaveProperty("waiting");
+    expect(f.log("prompts.log")).toContain("Run the fixture");
+    expect(f.log("models.log")).toBe("saved-model\n");
+    expect(f.log("permissions.log")).toBe("auto\n");
+
+    f.turn({ hold: true });
+    expect(await call("worker_send", { worker: "worker-1", text: "Stop this turn" })).toMatchObject(
+      {
+        accepted: true,
+      },
+    );
+    const second = await f.live();
+    expect(await call("worker_stop", { worker: "worker-1" })).toMatchObject({ accepted: true });
+    await f.ended();
+    await expect.poll(() => reports.length).toBe(2);
+    expect(reports[1]).toContain("turn ended: cancelled");
+    expect(reports[1]).not.toContain("Fixture complete");
+    expect(observed[1]).toEqual({ turnId: second.turnId, historyTurnId: undefined });
+    expect(await f.features()).toMatchObject({
+      approve: { available: false, reason: "unsupported-operation" },
+      answer: { available: false, reason: "unsupported-operation" },
+    });
+    expect(waiting).not.toHaveBeenCalled();
+  }, 15_000);
+
+  it("recovers only stored post-assignment terminal results, once after restart", async () => {
+    const f = fixture();
+    const readStates = new ConversationReadStates(
+      f.store,
+      f.readers,
+      f.root,
+      f.environment,
+      () => null,
+      () => undefined,
+      () => false,
+    );
+    cleanups.push(() => readStates.close());
+    f.web.observeResults((target, result, options) =>
+      readStates.recordTerminal(target, result, options),
+    );
+    f.turn();
+    await f.send("Before assignment");
+    await f.ended();
+    const { orchestration, reports, assign, call } = project(f);
+    await assign();
+
+    // Only read state hears this result. Worker report delivery was unavailable.
+    f.turn({ hold: true });
+    expect(
+      await call("worker_send", { worker: "worker-1", text: "Recover this task" }),
+    ).toMatchObject({ accepted: true });
+    const live = await f.live();
+    const historyTurnId = recordAnswer(f, "Recover this task", "Recovered fixture reply");
+    f.turn();
+    await f.ended();
+    readStates.recordTerminal(
+      {
+        provider: "devin",
+        home: path.join(f.root, "devin", "cli"),
+        nativeId: "brisk-otter",
+        workspace: f.workspace,
+      },
+      {
+        id: "turn:legacy-completion",
+        turnId: null,
+        itemId: null,
+        outcome: "completed",
+        completedAt: new Date().toISOString(),
+      },
+    );
+    await f.restart();
+    recordAnswer(f, "Sent in a native client", "No stored terminal evidence");
+    const turns = await f.web.devinEndedTurns(f.id);
+    expect(turns).toHaveLength(2);
+    expect(turns.at(-1)).toMatchObject({
+      turnId: live.turnId,
+      outcome: "completed",
+      startedAt: expect.any(String),
+      endedAt: expect.any(String),
+      historyTurnId,
+      replyText: "Recovered fixture reply",
+    });
+    const later = Date.now() + 60_000;
+    await orchestration.catchUp(later);
+    await orchestration.catchUp(later);
+    expect(reports).toHaveLength(1);
+    expect(reports[0]).toContain("Recovered fixture reply");
+    expect(reports[0]).not.toContain("No stored terminal evidence");
+  }, 15_000);
 });

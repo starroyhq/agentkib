@@ -53,6 +53,7 @@ import {
   type FollowerModelSettings,
 } from "./codex-follower-state";
 import { CodexFollowerStream } from "./codex-follower-stream";
+import { AcpUndispatchedError } from "./antigravity-acp";
 import { AntigravityManagedRunner } from "./antigravity-managed-runner";
 import { devinExecutable } from "./devin-executable";
 import { devinSessionHome } from "./devin-sessions";
@@ -65,6 +66,7 @@ import {
   DEVIN_PERMISSION_MODES,
   DevinManagedRunner,
   devinChildEnvironment,
+  devinItemInTurn,
   devinModelCatalog,
   devinModelVariant,
   emptyDevinModelCatalog,
@@ -78,6 +80,7 @@ import {
 import { ManagedCodexState, elicitationResponse } from "./managed-codex-state";
 import { ManagedCodexEventBridge } from "./managed-codex-state";
 import { projectContextUsage, type ContextUsage } from "./context-usage";
+import { SerialSessionQueue } from "./serial-session-queue";
 import { SessionProviderRegistry, type SessionProvider } from "./session-provider";
 import { activityBlocks, assertActivityAllows } from "./session-activity";
 import { acquireManagedSessionLease, existingFileLeaseBusy } from "./managed-session-lock";
@@ -627,8 +630,14 @@ type DevinUsageRead = { at: number; read: Promise<DevinUsageWindow[] | null>; kn
 
 /** See `WebReadRequests.observeLanes`. */
 export type LaneObserver = {
-  /** `durationMs` is Codex's own measure of the turn, when it gives one. */
-  turnEnded(sessionId: string, turnId: string, outcome: string, durationMs: number | null): void;
+  turnEnded(
+    sessionId: string,
+    turnId: string,
+    outcome: string,
+    durationMs: number | null,
+    historyTurnId?: string,
+    replyText?: string | null,
+  ): void;
   waiting(sessionId: string, turnId: string | null, status: string): void;
   /**
    * A turn Codex started by itself, as a goal continues (`CodexLeadTurns`), told for any session
@@ -745,6 +754,7 @@ export class WebReadRequests {
   #retiring = false;
   #controlSessions = new Map<string, { count: number; observed: boolean }>();
   #laneObserver?: LaneObserver;
+  readonly #serialQueue: SerialSessionQueue;
   #closing?: Promise<void>;
   #shuttingDown = false;
   #operations = new Set<Promise<unknown>>();
@@ -831,6 +841,7 @@ export class WebReadRequests {
   #resultObserver?: (
     target: Omit<ReadStateTarget, "transcript">,
     result: ConversationReadResult,
+    options: { turnStartedAt: string },
   ) => void;
 
   #devinSaved() {
@@ -860,6 +871,17 @@ export class WebReadRequests {
     this.#codex = new CodexAppServerReader(environment);
     this.#preflight = new CodexRuntimePreflight(environment);
     this.#desktopApp = new CodexDesktopApp(environment);
+    this.#serialQueue = new SerialSessionQueue(
+      dataDir,
+      this.#bootId,
+      (id) => this.#serialQueueTarget(id),
+      (id) => this.#serialQueueLive(id),
+      (value, beforeDispatch) => this.#dispatchSerialQueue(value, beforeDispatch),
+      (id) =>
+        this.publishConversationEvent?.(id, "invalidate", {
+          domains: ["queue", "receipts", "capabilities"],
+        }),
+    );
     const handoffTimeout = Number(environment.AGENTKIB_CODEX_HANDOFF_TIMEOUT_MS);
     this.#handoffTimeoutMs =
       environment.AGENTKIB_CODEX_HANDOFF_TIMEOUT_MS !== undefined &&
@@ -989,7 +1011,11 @@ export class WebReadRequests {
    */
   observeResults(
     observer:
-      | ((target: Omit<ReadStateTarget, "transcript">, result: ConversationReadResult) => void)
+      | ((
+          target: Omit<ReadStateTarget, "transcript">,
+          result: ConversationReadResult,
+          options: { turnStartedAt: string },
+        ) => void)
       | undefined,
   ): void {
     this.#resultObserver = observer;
@@ -1854,11 +1880,70 @@ export class WebReadRequests {
     }
   }
 
+  #serialQueueTarget(sessionId: string) {
+    const summary = this.store.sessions.get(sessionId);
+    if (
+      !summary ||
+      summary.archived ||
+      summary.sidechain ||
+      (summary.agent !== "devin" && summary.agent !== "antigravity")
+    )
+      return;
+    return {
+      agent: summary.agent,
+      workspaceId: summary.workspace_id,
+      // The catalog ID is generated from the native reference without exposing it.
+      nativeId: summary.id,
+    } as const;
+  }
+
+  async #serialQueueLive(sessionId: string): Promise<Record<string, unknown>> {
+    switch (this.#serialQueueTarget(sessionId)?.agent) {
+      case "devin":
+        return this.#devinLive(sessionId);
+      case "antigravity":
+        return this.#antigravityLive(sessionId);
+      default:
+        throw new Error("session-unavailable");
+    }
+  }
+
+  #dispatchSerialQueue(value: Record<string, unknown>, beforeDispatch: () => void) {
+    return this.#runOperation(() => {
+      const target =
+        typeof value.sessionId === "string" ? this.#serialQueueTarget(value.sessionId) : null;
+      if (!target || value.operation !== "send") throw new Error("invalid-scheduled-operation");
+      return this.#managedControlAdmission(value, (request, fingerprint) =>
+        target.agent === "devin"
+          ? this.#devinControl(request, fingerprint, beforeDispatch)
+          : this.#antigravityControl(request, fingerprint, beforeDispatch),
+      );
+    });
+  }
+
+  serialScheduleList() {
+    return this.#runOperation(() => this.#serialQueue.scheduleList());
+  }
+
+  serialSchedule(request: Record<string, unknown>) {
+    return this.#runOperation(() => this.#serialQueue.schedule(request));
+  }
+
+  invalidateSerialSchedule(deviceId: string, quitting: boolean) {
+    return this.#serialQueue.invalidate(deviceId, quitting);
+  }
+
   managedQueueList(value: unknown) {
     return this.#runOperation(() => this.#managedQueueList(value));
   }
 
   async #managedQueueList(value: unknown) {
+    if (
+      isObject(value) &&
+      typeof value.sessionId === "string" &&
+      this.#serialQueueTarget(value.sessionId)
+    )
+      return this.#serialQueue.list(value.sessionId);
     const request = managedQueueSchema.parse(value);
     const record = readManagedRecords(this.dataDir, this.store).find(
       (item) => item.id === request.sessionId,
@@ -2581,7 +2666,25 @@ export class WebReadRequests {
     const request = managedQuerySchema.parse(value);
     const provider = this.#sessionProviderForSession(request.sessionId);
     if (!provider) throw new Error("unsupported-session-provider");
-    return provider.query(request);
+    const result = await provider.query(request);
+    if (
+      request.operation !== "capabilities" ||
+      !isObject(result) ||
+      result.status === "unsupported" ||
+      !this.#serialQueueTarget(request.sessionId)
+    )
+      return result;
+    return {
+      ...result,
+      features: {
+        ...(isObject(result.features) ? result.features : {}),
+        ...(await this.#serialQueue.features(
+          request.sessionId,
+          result,
+          request.experimentalEnabled === true,
+        )),
+      },
+    };
   }
 
   async #antigravityQuery(request: z.infer<typeof managedQuerySchema>) {
@@ -3436,6 +3539,13 @@ export class WebReadRequests {
         throw new Error("invalid-request");
       const provider = this.#sessionProviderForSession(value.sessionId);
       if (!provider) throw new Error("unsupported-session-provider");
+      if (
+        this.#serialQueueTarget(value.sessionId) &&
+        ["queue-add", "queue-update", "queue-delete", "queue-pause", "queue-resume"].includes(
+          String(value.operation),
+        )
+      )
+        return this.#serialQueue.control(value);
       if (value.operation === "settings" && "updateSettings" in provider)
         return provider.updateSettings(value);
       return provider.control(value);
@@ -6882,6 +6992,34 @@ export class WebReadRequests {
     return { nativeId, workspaceId, workspace };
   }
 
+  async antigravityWorkerAvailable(sessionId: string): Promise<boolean> {
+    const live = await this.#antigravityLive(sessionId);
+    return ["idle", "running", "waiting-approval"].includes(String(live.status));
+  }
+
+  /** Read visible replies not yet persisted by ACP without starting a second transport. */
+  async antigravityWorkerEvents(
+    sessionId: string,
+    limit: number,
+  ): Promise<Record<string, unknown>[] | null> {
+    try {
+      const target = await this.#antigravityTarget(sessionId);
+      const cached = this.#antigravityRunners.get(sessionId);
+      if (
+        !cached?.runner.connected ||
+        cached.nativeId !== target.nativeId ||
+        cached.workspaceId !== target.workspaceId ||
+        pathIdentity(cached.workspace) !== pathIdentity(target.workspace)
+      )
+        return null;
+      const replies = cached.runner.recentWorkerReplies(limit);
+      return replies.length ? replies : null;
+    } catch {
+      // An unavailable native projection can still have readable history.
+      return null;
+    }
+  }
+
   async #antigravityRunner(sessionId: string): Promise<AntigravityRunnerRecord> {
     const { nativeId, workspaceId, workspace } = await this.#antigravityTarget(sessionId);
     const cached = this.#antigravityRunners.get(sessionId);
@@ -6974,6 +7112,14 @@ export class WebReadRequests {
         return items;
       },
       initialRevision,
+      {
+        waiting: (turnId) =>
+          this.#observeLane((observer) => observer.waiting(sessionId, turnId, "awaiting-approval")),
+        ended: (turnId, outcome, durationMs, replyText) =>
+          this.#observeLane((observer) =>
+            observer.turnEnded(sessionId, turnId, outcome, durationMs, undefined, replyText),
+          ),
+      },
     );
     try {
       const latest = await this.sessions.resolve(sessionId);
@@ -6996,7 +7142,11 @@ export class WebReadRequests {
     }
   }
 
-  async #antigravityControl(request: z.infer<typeof managedControlSchema>, fingerprint: string) {
+  async #antigravityControl(
+    request: z.infer<typeof managedControlSchema>,
+    fingerprint: string,
+    beforeNativeDispatch?: () => void,
+  ) {
     if (request.effort === null || request.serviceTier === null)
       throw new Error("unsupported-setting-clear");
     const runtimeBootId = this.#bootId;
@@ -7037,16 +7187,30 @@ export class WebReadRequests {
       },
     );
     if (claimed) return claimed;
+    let finishReport!: (accepted: boolean) => void;
+    const sendAccepted = new Promise<boolean>((resolve) => {
+      finishReport = resolve;
+    });
     let dispatched = false;
     const beforeDispatch = () => {
       assertActivityAllows(record.runner.snapshot(), request.operation);
+      try {
+        beforeNativeDispatch?.();
+      } catch (error) {
+        throw new AcpUndispatchedError(
+          error instanceof Error ? error.message : "control-preflight-rejected",
+        );
+      }
       dispatchManagedCommand(this.dataDir, request.requestId);
       dispatched = true;
     };
     try {
       if (request.operation === "send") {
         if (typeof request.text !== "string") throw new Error("missing-text");
-        await record.runner.send(request.text, request.expectedRevision, beforeDispatch);
+        await record.runner.send(request.text, request.expectedRevision, beforeDispatch, {
+          requestId: request.requestId,
+          accepted: sendAccepted,
+        });
       } else if (request.operation === "stop") {
         if (typeof request.turnId !== "string") throw new Error("missing-turn");
         await record.runner.stop(request.turnId, request.expectedRevision, beforeDispatch);
@@ -7076,8 +7240,10 @@ export class WebReadRequests {
         runtimeBootId,
       };
       finishManagedCommand(this.dataDir, request.requestId, result);
+      finishReport(true);
       return result;
     } catch (error) {
+      finishReport(false);
       const outcomeUnknown = dispatched || record.runner.snapshot().status === "outcome-unknown";
       const result = {
         accepted: false,
@@ -7156,14 +7322,69 @@ export class WebReadRequests {
           turnId: end.historyTurnId,
           itemId: end.answerItemId,
           outcome: end.outcome,
-          completedAt: new Date().toISOString(),
+          completedAt: end.endedAt,
         },
+        { turnStartedAt: end.startedAt },
       );
     } catch {
       // A result that cannot be recorded changes nothing about the turn.
     }
+    this.#observeLane((observer) =>
+      observer.turnEnded(
+        sessionId,
+        end.turnId,
+        end.outcome,
+        Math.max(0, Date.parse(end.endedAt) - Date.parse(end.startedAt)),
+        end.observedHistoryTurnId,
+        end.observedReplyText ?? null,
+      ),
+    );
     if (end.usageLimit) void this.#holdDevinLimit(sessionId, workspace, end.usageLimit);
     else if (this.#devinLimits.has(sessionId)) this.#armDevinLimit(sessionId, null);
+  }
+
+  /** Devin's native history has no terminal markers. Only AgentKib-observed results can catch up. */
+  async devinEndedTurns(sessionId: string) {
+    const source = await this.sessions.resolve(sessionId);
+    if (source.native.agent !== "devin") return [];
+    const rows = new ReadStateLedger(this.dataDir)
+      .recentTerminalResults(
+        conversationReadKey("devin", devinSessionHome(this.environment), source.native.native_ref),
+      )
+      .filter(
+        ({ result, startedAt }) => startedAt && result.completedAt && result.id.startsWith("turn:"),
+      );
+    if (!rows.length) return [];
+    const page = await this.sessions
+      .eventsForNative("devin", source.native.native_ref, source.workspace, null, 100)
+      .catch(() => null);
+    const current = this.#serialQueueTarget(sessionId);
+    if (
+      current?.agent !== "devin" ||
+      current.workspaceId !== source.summary.workspace_id ||
+      current.nativeId !== this.store.sessions.id("devin", source.native.native_ref)
+    )
+      return [];
+    const events = new Map(page?.events.map((item) => [item.id, item]));
+    return rows.map(({ result, startedAt }) => {
+      const answer = result.itemId ? events.get(result.itemId) : undefined;
+      const hasAnswer =
+        answer?.kind === "agent-message" &&
+        answer.turn_id === result.turnId &&
+        devinItemInTurn(
+          answer.timestamp,
+          Date.parse(startedAt ?? ""),
+          Date.parse(result.completedAt ?? ""),
+        );
+      return {
+        turnId: result.id.slice("turn:".length),
+        outcome: result.outcome,
+        startedAt,
+        endedAt: result.completedAt,
+        ...(hasAnswer && result.turnId ? { historyTurnId: result.turnId } : {}),
+        replyText: hasAnswer ? answer.content : null,
+      };
+    });
   }
 
   /**
@@ -7529,7 +7750,11 @@ export class WebReadRequests {
       : { ...base, revision: live.revision, turnId: live.turnId, approvals: [] };
   }
 
-  async #devinControl(request: z.infer<typeof managedControlSchema>, fingerprint: string) {
+  async #devinControl(
+    request: z.infer<typeof managedControlSchema>,
+    fingerprint: string,
+    beforeNativeDispatch?: () => void,
+  ) {
     const runtimeBootId = this.#bootId;
     if (!request.experimentalEnabled || request.runtimeBootId !== runtimeBootId)
       throw new Error("stale-or-disabled-control");
@@ -7589,6 +7814,7 @@ export class WebReadRequests {
     if (claimed) return claimed;
     let dispatched = false;
     const beforeDispatch = () => {
+      beforeNativeDispatch?.();
       dispatchManagedCommand(this.dataDir, request.requestId);
       dispatched = true;
       if (request.operation !== "send") return;

@@ -15,6 +15,7 @@ import { SessionOperations } from "./session-operations";
 import { useSessionPanels } from "./session-panels";
 import { ContextUsageGauge } from "./context-usage";
 import { SessionComposer } from "./session-composer";
+import { basicSendQueue } from "./dsh-queue";
 import { SessionTranscript } from "./session-transcript";
 import { SessionInteractionDock } from "../interactions/interaction-dock";
 import { MAX_MESSAGE_LENGTH } from "./session-model";
@@ -139,6 +140,7 @@ export function SessionReader() {
     session.pendingSend?.sessionId === selected ? session.pendingSend : undefined;
   if (!access || !selected) return null;
   const composerSurface = sessionComposerSurface(current, access);
+  const queue = basicSendQueue(session);
   return (
     <ArtifactWorkspace
       browser={
@@ -239,6 +241,8 @@ export function SessionReader() {
                 onChange={setMessage}
                 onSend={async () => control("send")}
                 onStop={() => void control("stop")}
+                beforeComposer={queue.list}
+                actions={queue.action}
                 references={<HistoryReferenceChips />}
                 contextUsage={<ContextUsageGauge />}
               />

@@ -34,11 +34,16 @@ export interface DevinTurnEnd {
   nativeId: string;
   /** AgentKib's ID of the turn, as the live state named it. */
   turnId: string;
+  startedAt: string;
+  endedAt: string;
   /** Answered, failed (also on a usage limit), or stopped by the person. */
   outcome: "completed" | "failed" | "cancelled";
   /** The turn's prompt and answer in the session's history, when Devin stored them. */
   historyTurnId: string | null;
   answerItemId: string | null;
+  /** Only when the observed prompt or answer can be tied to this run. */
+  observedHistoryTurnId?: string;
+  observedReplyText?: string;
   usageLimit: UsageLimitHit | null;
 }
 
@@ -308,6 +313,11 @@ function signal(child: ChildProcess, name: NodeJS.Signals) {
 
 const normalized = (text: string | null) => (text ?? "").replace(/\s+/g, " ").trim();
 
+export function devinItemInTurn(timestamp: unknown, startedAt: number, endedAt: number) {
+  const time = typeof timestamp === "string" ? Date.parse(timestamp) : Number.NaN;
+  return time >= startedAt && time <= endedAt;
+}
+
 /**
  * One Devin session run by AgentKib: a turn is one `devin -p` process, its progress is read
  * back from Devin's session store while it runs, and stopping it ends that process.
@@ -413,11 +423,13 @@ export class DevinManagedRunner {
       ...(settings.permissionMode ? ["--permission-mode", settings.permissionMode] : []),
     ];
     let child: ChildProcess;
+    let startedAt: number;
     try {
       await writeFile(promptFile, text, { mode: 0o600 });
       if (this.#closed || expectedRevision !== this.#revision)
         throw new Error("stale-or-disabled-control");
       beforeDispatch();
+      startedAt = Date.now();
       child = spawn(executable, args, {
         cwd: this.workspace,
         env: this.host.environment,
@@ -447,7 +459,6 @@ export class DevinManagedRunner {
       output = (output + text).slice(-OUTPUT_LIMIT);
       errors = (errors + text).slice(-OUTPUT_LIMIT);
     });
-    const startedAt = Date.now();
     this.#publishState();
     const exited = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>(
       (resolve) => {
@@ -457,6 +468,7 @@ export class DevinManagedRunner {
     );
     this.#timer = setInterval(() => void this.#poll(before, text, startedAt), POLL_MS);
     void exited.then(async ({ code, signal }) => {
+      const endedAt = Date.now();
       clearInterval(this.#timer);
       this.#timer = undefined;
       await this.#poll(before, text, startedAt);
@@ -498,8 +510,10 @@ export class DevinManagedRunner {
           this.host.turnEnded?.({
             nativeId: this.#nativeId,
             turnId,
+            startedAt: new Date(startedAt).toISOString(),
+            endedAt: new Date(endedAt).toISOString(),
             outcome: stopped ? "cancelled" : failed || limit ? "failed" : "completed",
-            ...this.#answer(),
+            ...this.#answer(startedAt, endedAt),
             usageLimit: limit,
           });
         } catch {
@@ -580,7 +594,13 @@ export class DevinManagedRunner {
    * that is not commentary. AgentKib's own continue is not an item, so a continued turn answers
    * under the prompt it continues.
    */
-  #answer(): { historyTurnId: string | null; answerItemId: string | null } {
+  #answer(
+    startedAt: number,
+    endedAt: number,
+  ): Pick<
+    DevinTurnEnd,
+    "historyTurnId" | "answerItemId" | "observedHistoryTurnId" | "observedReplyText"
+  > {
     const text = (value: unknown) => (typeof value === "string" && value ? value : null);
     const newestFirst = [...this.#items].reverse();
     const prompt = newestFirst.find((item) => item.kind === "user-message");
@@ -593,7 +613,20 @@ export class DevinManagedRunner {
             item.message_phase !== "commentary",
         )
       : undefined;
-    return { historyTurnId, answerItemId: text(answer?.id) };
+    // A failure or very early stop may leave only the previous turn's history. That is still
+    // the read-state anchor, but must not be quoted as this run's answer in a Worker report.
+    const fresh = [prompt, answer].some((item) =>
+      devinItemInTurn(item?.timestamp, startedAt, endedAt),
+    );
+    return {
+      historyTurnId,
+      answerItemId: text(answer?.id),
+      ...(historyTurnId && fresh ? { observedHistoryTurnId: historyTurnId } : {}),
+      ...(typeof answer?.content === "string" &&
+      devinItemInTurn(answer.timestamp, startedAt, endedAt)
+        ? { observedReplyText: answer.content }
+        : {}),
+    };
   }
 
   async #publishItems() {

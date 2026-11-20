@@ -52,6 +52,44 @@ const rows = (turn: string, error = false) =>
     .join("\n") + "\n";
 
 describe("durable AgentKib read states", () => {
+  it("reads a bounded window of live completions without writing or mixing source keys", () => {
+    const { root, ledger, key } = fixture();
+    expect(ledger.recentTerminalResults(key)).toEqual([]);
+    expect(existsSync(path.join(root, "codex-managed"))).toBe(false);
+    const startedAt = "2026-11-19T06:17:00.000Z";
+    const live = Array.from({ length: 51 }, (_, index) => ({
+      result: result(String(index)),
+      baseline: false,
+      turnStartedAt: startedAt,
+    }));
+    ledger.observe(
+      key,
+      [
+        ...live,
+        { result: result("baseline"), baseline: true },
+        { result: result("native"), baseline: false, position: 1000 },
+      ],
+      null,
+      true,
+    );
+    ledger.record(conversationReadKey("devin", root, "other"), result("other"));
+    const exec = vi.spyOn(DatabaseSync.prototype, "exec");
+    expect(ledger.recentTerminalResults(key)).toEqual(
+      live.slice(3).map(({ result }) => ({ result, startedAt })),
+    );
+    expect(exec.mock.calls.some(([sql]) => /BEGIN IMMEDIATE|CREATE TABLE/.test(sql))).toBe(false);
+  });
+
+  it("does not migrate old read-state data that cannot prove when a turn began", () => {
+    const { root, ledger, key } = fixture();
+    ledger.record(key, result("legacy"));
+    using database = new DatabaseSync(path.join(root, "codex-managed", "executions.sqlite"));
+    database.exec("ALTER TABLE conversation_read_results DROP COLUMN turn_started_at");
+    expect(ledger.recentTerminalResults(key)).toEqual([]);
+    const columns = database.prepare("PRAGMA table_info(conversation_read_results)").all();
+    expect(columns.map(({ name }) => name)).not.toContain("turn_started_at");
+  });
+
   it("keeps a newer turn as latest when a previous turn finishes or arrives late", () => {
     const { ledger, key } = fixture();
     ledger.record(

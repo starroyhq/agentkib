@@ -53,6 +53,7 @@ import { sanitizeSessionText } from "./session-handoff";
 import type { ClaudeTranscriptObservation } from "./claude-context-usage";
 import type { ContextUsage } from "./context-usage";
 import type { ClaudeObservedPermissionMode } from "./claude-managed-runner";
+import type { WorkerObserver } from "./orchestration-service";
 
 const MAX_BODY = 1024 * 1024;
 const HEARTBEAT_MS = 35_000;
@@ -400,6 +401,7 @@ export class ClaudeBridge {
   #releaseLegacyLock?: () => void;
   /** Reports for terminal Project Agents, by session, until their plugin takes them. */
   #reports = new Map<string, QueuedReport[]>();
+  #workerObserver?: WorkerObserver;
 
   constructor(readonly options: BridgeOptions) {
     this.root = path.join(options.dataDir, "claude-bridge");
@@ -2437,6 +2439,7 @@ export class ClaudeBridge {
     // display snapshot after reconnect. Never discard it merely for UI ordering.
     if (event.type === "turn-complete") this.#complete(row, connection, event);
     const previousTurnId = connection.snapshot?.currentTurnId;
+    const previousWaiting = connection.snapshot?.waiting;
     let stop: { turnId: string; deviceId: string } | null = null;
     if (event.type === "snapshot") {
       const snapshot = event.snapshot;
@@ -2476,8 +2479,14 @@ export class ClaudeBridge {
         // A Project Agent's count of turns without the person restarts when they type. A turn the
         // CLI begins by itself has no text, so no origin from a plugin that gives one; it counts,
         // and past the limit it stops, as for a session AgentKib runs.
-        if (event.origin === "terminal") this.#leadSpoke(connection, id);
-        else if (event.origin === undefined && connection.leadTools)
+        if (event.origin === "terminal") {
+          this.#leadSpoke(connection, id);
+          try {
+            if (this.#workerObserver?.isWorker(id)) this.#workerObserver.controlled(id, "send");
+          } catch {
+            // Reporting must not affect the terminal's message.
+          }
+        } else if (event.origin === undefined && connection.leadTools)
           try {
             const refused = this.options.lead?.selfTurn?.(id);
             if (refused) stop = { turnId: event.turnId, deviceId: refused.stopAs };
@@ -2512,7 +2521,30 @@ export class ClaudeBridge {
     if (previousTurnId !== connection.snapshot?.currentTurnId) connection.turnTools.clear();
     connection.revision = ++this.#revision;
     this.#publish(id);
+    if (event.type === "snapshot") {
+      const { currentTurnId: turnId, waiting } = event.snapshot;
+      if (
+        turnId &&
+        (waiting === "permission" || waiting === "question") &&
+        (turnId !== previousTurnId || waiting !== previousWaiting)
+      ) {
+        try {
+          if (this.#workerObserver?.isWorker(id))
+            this.#workerObserver.waiting(
+              id,
+              turnId,
+              waiting === "question" ? "waiting-input" : "awaiting-approval",
+            );
+        } catch {
+          // Reporting must not affect the terminal's pending interaction.
+        }
+      }
+    }
     if (stop) void this.#stopLeadTurn(row, stop.turnId, stop.deviceId);
+  }
+
+  observeWorkers(observer: WorkerObserver): void {
+    this.#workerObserver = observer;
   }
 
   /** The person wrote to this session; for a terminal Project Agent, its turns restart. */
@@ -2562,6 +2594,27 @@ export class ClaudeBridge {
       });
     } catch {
       console.warn("Conversation read-state observation could not be recorded");
+    }
+    try {
+      const id = row.target.sessionId;
+      if (!connection.completed.has(event.turnId) && this.#workerObserver?.isWorker(id)) {
+        const duration =
+          event.startedAt !== undefined &&
+          event.occurredAt !== undefined &&
+          event.occurredAt >= event.startedAt
+            ? event.occurredAt - event.startedAt
+            : null;
+        this.#workerObserver.turnEnded(
+          id,
+          event.turnId,
+          event.aborted ? "cancelled" : "completed",
+          duration,
+          undefined,
+          event.text.trim() ? event.text : null,
+        );
+      }
+    } catch {
+      // Reporting must not affect the terminal's completion receipt.
     }
     connection.completed.set(
       event.turnId,

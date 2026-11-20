@@ -54,6 +54,12 @@ Devin 在 `subagent_heads` 里记下每个子代理的链头，子代理的消�
 - 作为来源：默认只包含 Devin 模型当前看到的内容，即最近一次压缩的摘要和之后的对话，被替换的历史计入 `compacted-history`。选择包含压缩前历史时，按顺序保留全部片段，并在压缩处加标注。
 - 作为目标：用交接文件开始，在终端里启动 `devin`，第一条消息让它先读取交接文件。Devin 没有导入其他 Agent 历史的接口，原生导入标为 `native-history-import-unsupported`。
 
+## 作为项目 Agent 的 Worker
+
+在桌面「指派 Worker」中选择已有的 Devin 会话。项目 Agent 可以发文字任务、读状态和回复、停止当前轮次。运行中排队的任务等当前轮次结束后再发，仍使用该会话已保存的模型和权限设置。Devin 的非交互命令每轮启动一个进程，正在运行的进程无法接收插话。
+
+AgentKib 记录自己运行的每轮结果并向项目 Agent 汇报。你在 AgentKib 里直接给 Worker 发消息或停止当前轮次，也会通知项目 Agent。成为 Worker 后开始的轮次，如果 AgentKib 已记录终态但还没汇报，重启后可以补报。Devin 在非交互模式下没有审批或问答卡片，因此没有等待用户处理的汇报、代批或代答。Devin Desktop 或终端直接运行的轮次仍可从历史读取，但会话库没有可靠的轮次终态，AgentKib 无法据此补报它们的结果。见[项目 Agent](project-agent.md)。
+
 ## 规则、Skills 与 MCP
 
 - 上下文预览按 Devin 文档的加载规则列出常驻指令：`~/.config/devin/AGENTS.md`；工作区里的 `AGENTS.md`、`AGENTS.local.md`、`AGENT.md`、`.windsurfrules`；`.devin/global_rules.md`，没有时用 `.windsurf/global_rules.md`；`.devin/rules`、`.windsurf/rules` 中 `trigger: always_on` 的规则；`.cursor/rules` 中 `alwaysApply` 的规则；`CLAUDE.md` 与 `~/.claude/CLAUDE.md`。按需激活或无法确认激活方式的规则不并入，并给出提示。`.devin/config.json`、`.devin/config.local.json` 和用户配置里的 `read_config_from` 关闭某个来源时，预览同步排除。Devin Desktop 还会读取 Windsurf 稳定版的 `~/.codeium/windsurf/memories/global_rules.md`，这一点在本机核实过。

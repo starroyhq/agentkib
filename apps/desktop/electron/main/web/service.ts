@@ -126,6 +126,14 @@ function managedActionInputHash(operation: string, body: Record<string, unknown>
     )
     .digest("hex");
 }
+
+function serialQueueMode(mode: unknown): boolean {
+  return ["devin-print", "acp-managed", "antigravity-acp-managed"].includes(String(mode));
+}
+
+function serialQueueRequiresSend(operation: string): boolean {
+  return ["queue-add", "queue-update", "queue-resume"].includes(operation);
+}
 export function isPrivateIPv4(address: string): boolean {
   const parts = address.split(".");
   if (parts.length !== 4 || parts.some((p) => !/^(0|[1-9]\d{0,2})$/.test(p) || Number(p) > 255))
@@ -747,6 +755,7 @@ export class WebAccessService {
       verifiedExperimental?: boolean;
       verifiedClaudeManaged?: boolean;
       enableClaudeScheduler?: boolean;
+      enableSerialSessionScheduler?: boolean;
       verifiedAntigravityManaged?: boolean;
       /** DeepSeek Harness sessions connected through the AgentKib plugin (macOS only for now). */
       verifiedDshFollower?: boolean;
@@ -782,10 +791,13 @@ export class WebAccessService {
       !/^[a-f0-9]{64}$/.test(options.acceptanceSessionId)
     )
       throw new Error("invalid_acceptance_session");
-    if (options.enableClaudeScheduler && options.claudeManagedRequest) {
+    if (
+      (options.enableClaudeScheduler || options.enableSerialSessionScheduler) &&
+      options.claudeManagedRequest
+    ) {
       this.scheduler =
         options.sharedControl?.claudeScheduler ??
-        new ClaudeHostScheduler(options.claudeManagedRequest);
+        new ClaudeHostScheduler(options.claudeManagedRequest, !options.enableClaudeScheduler);
       if (options.sharedControl) options.sharedControl.claudeScheduler = this.scheduler;
     }
   }
@@ -1160,7 +1172,13 @@ export class WebAccessService {
 
   private async authorizeScheduledWork(session: ClaudeScheduledSession) {
     const work = session.next;
-    if (!work || !this.options.verifiedClaudeManaged || !this.ownsScheduledDevice(work.deviceId))
+    const verified =
+      session.agent === "devin"
+        ? this.options.verifiedDevinManaged
+        : session.agent === "antigravity"
+          ? this.options.verifiedAntigravityManaged
+          : this.options.verifiedClaudeManaged;
+    if (!work || !verified || !this.ownsScheduledDevice(work.deviceId))
       throw new Error("scheduled-control-unavailable");
     const local = [this.localDevice.id, CLAUDE_LOCAL_OWNER].includes(work.deviceId);
     const hash = local
@@ -3668,6 +3686,9 @@ export class WebAccessService {
           const allowed =
             permission &&
             device[permission] === true &&
+            (!serialQueueMode(data.executionMode) ||
+              !serialQueueRequiresSend(operation) ||
+              device.send === true) &&
             ((!["usage", "settings-state", "goal", "context", "resources"].includes(operation) &&
               !operation.startsWith("goal-")) ||
               this.isFullAccess(device)) &&
@@ -3821,6 +3842,8 @@ export class WebAccessService {
       await this.codexScope(sessionId, hash, false, false);
       if (body.attachmentIds !== undefined) this.grant(hash, "attachments");
       this.grant(hash, permission);
+      const serialQueue = serialQueueMode(prior.executionMode) && operation.startsWith("queue-");
+      if (serialQueue && serialQueueRequiresSend(operation)) this.grant(hash, "send");
       if (
         prior.sessionId !== sessionId ||
         prior.operation !== operation ||
@@ -3839,6 +3862,10 @@ export class WebAccessService {
       }
       if (prior.status === "accepted" && prior.ack && typeof prior.ack === "object") {
         control.priorUncertain = false;
+        if (serialQueue && this.unconfirmedRequests.get(sessionId) === requestId) {
+          this.unconfirmedRequests.delete(sessionId);
+          this.clearUnconfirmed(sessionId);
+        }
         return this.json(res, 200, prior.ack);
       }
       control.priorUncertain = prior.status !== "not-dispatched";
@@ -3914,6 +3941,17 @@ export class WebAccessService {
           "goal-clear",
           "compact",
         ].includes(operation);
+      const serialQueue =
+        generic &&
+        ((capabilities.executionMode === "devin-print" && this.options.verifiedDevinManaged) ||
+          (capabilities.executionMode === "acp-managed" &&
+            this.options.verifiedAntigravityManaged)) &&
+        ["queue-add", "queue-update", "queue-delete", "queue-pause", "queue-resume"].includes(
+          operation,
+        );
+      if (serialQueue && serialQueueRequiresSend(operation)) this.grant(hash, "send");
+      if (serialQueue && (body.attachmentIds !== undefined || body.historyReferences !== undefined))
+        throw new HttpError(409, "capability_unavailable");
       // Devin changes the model and permission mode its next turns run with, and continues after
       // a usage limit as Codex does.
       const devin =
@@ -3927,7 +3965,8 @@ export class WebAccessService {
           !terminal &&
           !codexFollower &&
           !dsh &&
-          !devin) ||
+          !devin &&
+          !serialQueue) ||
         capabilities.features?.[operation]?.available !== true
       )
         throw new HttpError(
@@ -3964,7 +4003,7 @@ export class WebAccessService {
         expectedRevision: body.expectedRevision,
         runtimeBootId: snapshot.runtimeBootId,
         experimentalEnabled: true,
-        ...(claude || terminal || dsh ? { publicInputHash } : {}),
+        ...(claude || terminal || dsh || serialQueue ? { publicInputHash } : {}),
       };
       // Every operation has an explicit public-field projection. Paths and raw RPC input never pass through.
       if (["steer", "queue-add", "queue-update"].includes(operation)) {
@@ -4023,7 +4062,7 @@ export class WebAccessService {
       }
       if (
         operation === "queue-update" ||
-        (operation === "queue-delete" && (claude || terminal || dsh)) ||
+        (operation === "queue-delete" && (claude || terminal || dsh || serialQueue)) ||
         operation === "queue-steer"
       ) {
         const queued = (await this.runtime(
@@ -4040,7 +4079,10 @@ export class WebAccessService {
           throw new HttpError(409, "queue_too_large");
         const target = queued.data?.find((item) => item.id === body.queuedSubmissionId);
         // A terminal message of unknown outcome is never resent; deleting it is how it ends.
-        const removable = terminal ? ["pending", "unknown"] : ["pending"];
+        const removable =
+          terminal || (serialQueue && operation === "queue-delete")
+            ? ["pending", "unknown"]
+            : ["pending"];
         if (!target || (target.status !== undefined && !removable.includes(target.status)))
           throw new HttpError(409, "queue_item_unavailable");
         if (
@@ -4274,6 +4316,7 @@ export class WebAccessService {
       if (body.bootId !== this.bootId) throw new HttpError(409, "stale_boot");
       if (historyScopeKey) await this.assertHistoryScope(hash, historyScopeKey, true);
       this.grant(hash, permission);
+      if (serialQueue && serialQueueRequiresSend(operation)) this.grant(hash, "send");
       if (this.requests.has(requestId)) {
         control.priorUncertain = true;
         throw new HttpError(409, "outcome_unknown");
@@ -4317,6 +4360,7 @@ export class WebAccessService {
         error?: string;
       };
       this.grant(hash, permission);
+      if (serialQueue && serialQueueRequiresSend(operation)) this.grant(hash, "send");
       if (body.bootId !== this.bootId) throw new HttpError(409, "stale_boot");
       if (result.accepted !== true) {
         if (
@@ -6581,11 +6625,14 @@ export class WebAccessService {
       if (path === "/managed/queue" && this.options.mode === "lan")
         throw new HttpError(403, "capability_unavailable");
       const sessionId = this.field(url.searchParams.get("sessionId"));
-      this.grant(hash, "advancedControl");
+      const device = this.grant(hash, "advancedControl");
       await this.codexScope(sessionId, hash, false, path === "/codex/queue");
-      this.grant(hash);
+      if (this.grant(hash, "advancedControl").id !== device.id)
+        throw new HttpError(401, "access_ended");
       const result = await this.runtime({ operation: "queue-list", sessionId });
-      this.grant(hash);
+      await this.codexScope(sessionId, hash, false, path === "/codex/queue");
+      if (this.grant(hash, "advancedControl").id !== device.id)
+        throw new HttpError(401, "access_ended");
       if ((result as { reason?: string }).reason === "queue-too-large")
         throw new HttpError(409, "queue_too_large");
       const entries =

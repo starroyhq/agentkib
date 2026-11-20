@@ -138,7 +138,10 @@ export type ClaudeRunnerOptions = {
    * tools: being made a Project Agent is the authorization, and the host checks each call.
    */
   allowedTools?: string[];
-  onResult?: (result: ClaudeRunnerTerminalResult) => void;
+  onResult?: (
+    result: ClaudeRunnerTerminalResult,
+    observation: { durationMs: number | null; itemId?: string; replyText?: string },
+  ) => void;
   controlTimeoutMs?: number;
   /** Revalidate native ownership immediately before every new worker, including retirement reuse. */
   beforeStart?: () => Promise<void>;
@@ -2680,7 +2683,20 @@ export class ClaudeManagedRunnerProcess {
           const result = this.state.terminalResult;
           if (result && result !== this.#reportedResult) {
             this.#reportedResult = result;
-            this.options.onResult?.(structuredClone(result));
+            const item =
+              this.#lastAgentItem?.turn_id === result.turnId ? this.#lastAgentItem : null;
+            this.options.onResult?.(structuredClone(result), {
+              durationMs:
+                frame.type === "result" &&
+                Number.isSafeInteger(frame.duration_ms) &&
+                frame.duration_ms >= 0
+                  ? frame.duration_ms
+                  : null,
+              ...(typeof item?.id === "string" ? { itemId: item.id } : {}),
+              ...(typeof item?.content === "string" && item.cli_output !== true
+                ? { replyText: item.content }
+                : {}),
+            });
             this.#emitTurnEnd(frame, result);
           }
         }

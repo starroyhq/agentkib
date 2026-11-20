@@ -33,6 +33,50 @@ type ReadProjection = {
   latest_result: string | null;
   first_unread: string | null;
 };
+type ReadResultRecord = {
+  result: string;
+  baseline: number;
+  position: number | null;
+  turn_started_at: string | null;
+};
+const nativeEvidencePrefix = "terminal-v2:";
+function nativeEvidence(state: ConversationReadState, fingerprint: string): ConversationReadState {
+  const result = state.latestResult;
+  if (
+    fingerprint.startsWith(nativeEvidencePrefix) ||
+    result?.outcome !== "cancelled" ||
+    result.completedAt
+  )
+    return state;
+  // Older observers persisted a synthetic interruption before the running
+  // turn had actually ended. Keep the native cursor, but withhold that outcome.
+  return { ...state, latestResult: null, freshness: "stale", version: null };
+}
+
+function occurredAt(value: string | null | undefined): number | null {
+  const time = value ? Date.parse(value) : Number.NaN;
+  return Number.isFinite(time) ? time : null;
+}
+
+function isNewerResult(
+  next: ConversationReadResult,
+  nextStart: string | null | undefined,
+  nextPosition: number | undefined,
+  previous: ReadResultRecord,
+): boolean {
+  const started = occurredAt(nextStart);
+  const previousStart = occurredAt(previous.turn_started_at);
+  if (started !== null && previousStart !== null && started !== previousStart)
+    return started > previousStart;
+  const ended = occurredAt(next.completedAt);
+  const previousEnd = occurredAt(
+    (JSON.parse(previous.result) as ConversationReadResult).completedAt,
+  );
+  if (ended !== null && previousEnd !== null && ended !== previousEnd) return ended > previousEnd;
+  if (nextPosition !== undefined && previous.position !== null)
+    return nextPosition >= previous.position;
+  return ended !== null || previousEnd === null;
+}
 const projectionColumns = `source.key, source.revision, source.baseline_done,
   cursor.read_sequence, cursor.manual_unread, latest.result AS latest_result,
   (SELECT result FROM conversation_read_results
@@ -42,13 +86,14 @@ const projectionJoins = `LEFT JOIN conversation_read_cursors cursor
     ON cursor.key=source.key AND cursor.reader_scope=?
   LEFT JOIN conversation_read_results latest
     ON latest.key=source.key AND latest.result_id=source.latest_id`;
-const pendingObservations = new Map<string, Map<string, ConversationReadResult>>();
+type PendingObservation = { result: ConversationReadResult; turnStartedAt?: string | null };
+const pendingObservations = new Map<string, Map<string, PendingObservation>>();
 
 function migrate(db: DatabaseSync): void {
   db.exec(`CREATE TABLE IF NOT EXISTS conversation_read_sources(
     key TEXT PRIMARY KEY,revision INTEGER NOT NULL DEFAULT 0,baseline_done INTEGER NOT NULL DEFAULT 0,checkpoint TEXT,latest_id TEXT);
     CREATE TABLE IF NOT EXISTS conversation_read_results(
-    sequence INTEGER PRIMARY KEY AUTOINCREMENT,key TEXT NOT NULL,result_id TEXT NOT NULL,result TEXT NOT NULL,baseline INTEGER NOT NULL,position INTEGER,
+    sequence INTEGER PRIMARY KEY AUTOINCREMENT,key TEXT NOT NULL,result_id TEXT NOT NULL,result TEXT NOT NULL,baseline INTEGER NOT NULL,position INTEGER,turn_started_at TEXT,
     UNIQUE(key,result_id));
     CREATE INDEX IF NOT EXISTS conversation_read_result_order ON conversation_read_results(key,sequence);
     CREATE TABLE IF NOT EXISTS conversation_read_cursors(
@@ -68,12 +113,13 @@ function migrate(db: DatabaseSync): void {
     ).some((column) => column.name === "latest_id")
   )
     db.exec("ALTER TABLE conversation_read_sources ADD COLUMN latest_id TEXT");
-  if (
-    !(
-      db.prepare("PRAGMA table_info(conversation_read_results)").all() as Array<{ name: string }>
-    ).some((column) => column.name === "position")
-  )
+  const resultColumns = db.prepare("PRAGMA table_info(conversation_read_results)").all() as Array<{
+    name: string;
+  }>;
+  if (!resultColumns.some((column) => column.name === "position"))
     db.exec("ALTER TABLE conversation_read_results ADD COLUMN position INTEGER");
+  if (!resultColumns.some((column) => column.name === "turn_started_at"))
+    db.exec("ALTER TABLE conversation_read_results ADD COLUMN turn_started_at TEXT");
 }
 
 /** Separate from command receipts: viewing a result never locks execution or approvals. */
@@ -139,7 +185,12 @@ export class ReadStateLedger {
   /** Commit one reliable transcript slice and its checkpoint together. */
   observe(
     key: string,
-    results: Array<{ result: ConversationReadResult; baseline: boolean; position?: number }>,
+    results: Array<{
+      result: ConversationReadResult;
+      baseline: boolean;
+      position?: number;
+      turnStartedAt?: string | null;
+    }>,
     checkpoint: ReadCheckpoint | null,
     complete: boolean,
   ): boolean {
@@ -164,15 +215,16 @@ export class ReadStateLedger {
       db.prepare("INSERT OR IGNORE INTO conversation_read_sources(key) VALUES(?)").run(key);
       let changed = false;
       const insert = db.prepare(
-        "INSERT OR IGNORE INTO conversation_read_results(key,result_id,result,baseline,position) VALUES(?,?,?,?,?)",
+        "INSERT OR IGNORE INTO conversation_read_results(key,result_id,result,baseline,position,turn_started_at) VALUES(?,?,?,?,?,?)",
       );
-      for (const { result, baseline, position } of results) {
+      for (const { result, baseline, position, turnStartedAt } of results) {
         const inserted = insert.run(
           key,
           result.id,
           JSON.stringify(result),
           baseline ? 1 : 0,
           position ?? null,
+          turnStartedAt ?? null,
         );
         if (position !== undefined)
           db.prepare(
@@ -182,15 +234,36 @@ export class ReadStateLedger {
           changed = true;
           const latest = db
             .prepare(
-              "SELECT r.baseline FROM conversation_read_sources s JOIN conversation_read_results r ON r.key=s.key AND r.result_id=s.latest_id WHERE s.key=?",
+              "SELECT r.result,r.baseline,r.position,r.turn_started_at FROM conversation_read_sources s JOIN conversation_read_results r ON r.key=s.key AND r.result_id=s.latest_id WHERE s.key=?",
             )
-            .get(key) as { baseline: number } | undefined;
+            .get(key) as ReadResultRecord | undefined;
           // Historical baseline rows must not displace a completion observed live during that scan.
-          if (!latest || !baseline || latest.baseline === 1)
+          if (
+            !latest ||
+            ((!baseline || latest.baseline === 1) &&
+              isNewerResult(result, turnStartedAt, position, latest))
+          )
             db.prepare("UPDATE conversation_read_sources SET latest_id=? WHERE key=?").run(
               result.id,
               key,
             );
+        } else if (
+          position !== undefined &&
+          result.outcome !== "ended" &&
+          result.outcome !== "cancelled"
+        ) {
+          // An explicit transcript ending may correct a previously handed off
+          // synthetic interruption. Existing reading cursors stay on the same row.
+          const prior = db
+            .prepare("SELECT result FROM conversation_read_results WHERE key=? AND result_id=?")
+            .get(key, result.id) as { result: string };
+          const previous = JSON.parse(prior.result) as ConversationReadResult;
+          if (previous.outcome === "cancelled" && previous.completedAt === null) {
+            db.prepare(
+              "UPDATE conversation_read_results SET result=? WHERE key=? AND result_id=?",
+            ).run(JSON.stringify(result), key, result.id);
+            changed = true;
+          }
         }
       }
       db.prepare(
@@ -201,14 +274,19 @@ export class ReadStateLedger {
   }
 
   /** `complete`: no history scan follows, so the source's baseline is done. */
-  record(key: string, result: ConversationReadResult, complete = false): boolean {
+  record(
+    key: string,
+    result: ConversationReadResult,
+    complete = false,
+    turnStartedAt?: string | null,
+  ): boolean {
     // A live completion precedes an initial history scan; keep it outside that baseline.
     const pendingKey = `${pathIdentity(this.dataDir)}\0${key}`;
     try {
       const prior = this.checkpoint(key);
       const changed = this.observe(
         key,
-        [{ result, baseline: false }],
+        [{ result, baseline: false, turnStartedAt }],
         prior.checkpoint,
         prior.complete || complete,
       );
@@ -216,21 +294,20 @@ export class ReadStateLedger {
       if (pendingObservations.get(pendingKey)?.size === 0) pendingObservations.delete(pendingKey);
       return changed;
     } catch {
-      const pending =
-        pendingObservations.get(pendingKey) ?? new Map<string, ConversationReadResult>();
+      const pending = pendingObservations.get(pendingKey) ?? new Map<string, PendingObservation>();
       if (!pending.has(result.id))
         console.warn("Conversation read-state observation could not be persisted");
-      pending.set(result.id, result);
+      pending.set(result.id, { result, turnStartedAt });
       pendingObservations.set(pendingKey, pending);
       return false;
     }
   }
 
   retryObservations(key: string, complete = false): void {
-    for (const result of [
+    for (const { result, turnStartedAt } of [
       ...(pendingObservations.get(`${pathIdentity(this.dataDir)}\0${key}`)?.values() ?? []),
     ])
-      this.record(key, result, complete);
+      this.record(key, result, complete, turnStartedAt);
   }
 
   get(key: string, scope: string): ConversationReadState {
@@ -288,7 +365,10 @@ export class ReadStateLedger {
           ...(hasHandoffs ? [JSON.stringify(nativeKeys), scope] : [JSON.stringify(nativeKeys)]),
         ) as Array<{ key: string; fingerprint: string; snapshot: string; applied: string | null }>;
       for (const receipt of receipts) {
-        const state = JSON.parse(receipt.snapshot) as ConversationReadState;
+        const state = nativeEvidence(
+          JSON.parse(receipt.snapshot) as ConversationReadState,
+          receipt.fingerprint,
+        );
         if (state.status === "unread" && receipt.fingerprint !== receipt.applied)
           states.set(receipt.key, {
             ...state,
@@ -388,9 +468,14 @@ export class ReadStateLedger {
   }
 
   /** A source handoff copies only verified native evidence, never guesses from silence. */
-  handoff(key: string, scope: string, previous: ConversationReadState, fingerprint?: string): void {
-    if (previous.source !== "codex-native" || previous.status === "unknown") return;
-    this.#write((db) => {
+  handoff(
+    key: string,
+    scope: string,
+    previous: ConversationReadState,
+    fingerprint?: string,
+  ): boolean {
+    if (previous.source !== "codex-native" || previous.status === "unknown") return true;
+    return this.#write((db) => {
       db.prepare("INSERT OR IGNORE INTO conversation_read_sources(key) VALUES(?)").run(key);
       if (fingerprint) {
         const prior = db
@@ -398,14 +483,26 @@ export class ReadStateLedger {
             "SELECT fingerprint FROM conversation_native_read_handoffs WHERE key=? AND reader_scope=?",
           )
           .get(key, scope) as { fingerprint: string } | undefined;
-        if (prior?.fingerprint === fingerprint) return;
+        if (prior?.fingerprint === fingerprint) return true;
       }
+      const first = previous.firstUnread;
+      if (
+        previous.freshness === "stale" &&
+        previous.version === null &&
+        first?.type === "result" &&
+        previous.latestResult?.id !== first.resultId &&
+        !db
+          .prepare(
+            "SELECT 1 FROM conversation_read_results WHERE key=? AND result_id=? AND position IS NOT NULL",
+          )
+          .get(key, first.resultId)
+      )
+        return false;
       if (previous.latestResult)
         db.prepare(
           "INSERT OR IGNORE INTO conversation_read_results(key,result_id,result,baseline) VALUES(?,?,?,1)",
         ).run(key, previous.latestResult.id, JSON.stringify(previous.latestResult));
       let sequence = 0;
-      const first = previous.firstUnread;
       if (previous.status === "unread" && first?.type === "result") {
         const marker: ConversationReadResult = {
           id: first.resultId,
@@ -466,6 +563,7 @@ export class ReadStateLedger {
         db.prepare(
           "INSERT INTO conversation_native_read_handoffs(key,reader_scope,fingerprint) VALUES(?,?,?) ON CONFLICT(key,reader_scope) DO UPDATE SET fingerprint=excluded.fingerprint",
         ).run(key, scope, fingerprint);
+      return true;
     });
   }
 
@@ -476,9 +574,11 @@ export class ReadStateLedger {
       state.status === "unknown"
     )
       return;
-    const fingerprint = createHash("sha256")
-      .update(JSON.stringify([nativeRevision, state.firstUnread, state.latestResult]))
-      .digest("hex");
+    const fingerprint =
+      nativeEvidencePrefix +
+      createHash("sha256")
+        .update(JSON.stringify([nativeRevision, state.firstUnread, state.latestResult]))
+        .digest("hex");
     // Foreground polling usually observes the same receipt. Avoid opening a writable
     // ledger (including schema checks) unless there is a durable semantic change.
     if (this.nativeSnapshot(key)?.fingerprint === fingerprint) return;
@@ -505,7 +605,13 @@ export class ReadStateLedger {
         .prepare("SELECT fingerprint,snapshot FROM conversation_native_read_receipts WHERE key=?")
         .get(key) as { fingerprint: string; snapshot: string } | undefined;
       return row
-        ? { fingerprint: row.fingerprint, state: JSON.parse(row.snapshot) as ConversationReadState }
+        ? {
+            fingerprint: row.fingerprint,
+            state: nativeEvidence(
+              JSON.parse(row.snapshot) as ConversationReadState,
+              row.fingerprint,
+            ),
+          }
         : null;
     }, null);
   }

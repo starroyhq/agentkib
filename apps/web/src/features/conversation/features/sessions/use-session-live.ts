@@ -12,6 +12,7 @@ import {
   mergeConversationItems,
   type SessionStreamEvent,
 } from "@agentkib/conversation-state";
+import { warmSessionAuthority, type WarmSessionStreamPool } from "@agentkib/session-ui";
 import { publishSessionInvalidation } from "./session-events";
 import {
   beginHistoryRead,
@@ -23,6 +24,7 @@ import {
   type NativeCoverage,
 } from "./session-model";
 import { createHistoryPagination, recordLatestHistoryPage } from "./history-pagination";
+import { retryBusyRead } from "./session-read-retry";
 type Setter<T> = Dispatch<SetStateAction<T>>;
 // These fields cannot grant control or remove an execution/authorization fence.
 // Unknown fields conservatively count as control boundaries.
@@ -44,7 +46,16 @@ const nativeProgressFields = new Set([
 type ProgressPatch = Map<string, { value: unknown; revision: number }>;
 const nativeRevision = (value: unknown): value is number =>
   Number.isSafeInteger(value) && Number(value) >= 0;
+export type WarmSessionNavigation = {
+  park?: () => void;
+  resume?: { generation: number; onCold: () => void };
+};
 interface LiveSyncOptions {
+  warmStreams: WarmSessionStreamPool;
+  warmScope?: string;
+  warmNavigation: RefObject<WarmSessionNavigation>;
+  selectionVisit?: number;
+  liveValue: RefObject<Live | undefined>;
   streamReady: RefObject<boolean>;
   controlReconciliationPending: RefObject<boolean>;
   nativeCoverage: RefObject<NativeCoverage>;
@@ -71,8 +82,17 @@ interface LiveSyncOptions {
   setPage: Setter<ConversationEventPage | undefined>;
   setLiveContentVersion?: Setter<number>;
   setUsageEpoch?: Setter<string>;
+  readSettingsControls?: RefObject<
+    ((accept: (live: Live) => boolean) => Promise<void>) | undefined
+  >;
+  isSettingsWriteActive?: (sessionId: string) => boolean;
 }
 export function useSessionLive({
+  warmStreams,
+  warmScope,
+  warmNavigation,
+  selectionVisit,
+  liveValue,
   streamReady,
   controlReconciliationPending,
   nativeCoverage,
@@ -99,6 +119,8 @@ export function useSessionLive({
   liveDelivery,
   setLiveContentVersion,
   setUsageEpoch,
+  readSettingsControls,
+  isSettingsWriteActive,
 }: LiveSyncOptions) {
   useEffect(() => {
     if (!selected || access?.status !== "approved" || access.protocolVersion !== 2) return;
@@ -106,7 +128,10 @@ export function useSessionLive({
     controlReconciliationPending.current = false;
     const id = selected;
     const g = generation.current;
-    const store = createConversationStore<Live>(id);
+    let store = createConversationStore<Live>(id);
+    const resume =
+      warmNavigation.current.resume?.generation === g ? warmNavigation.current.resume : undefined;
+    if (resume) warmNavigation.current.resume = undefined;
     let closed = false;
     let closeStream: (() => void) | undefined;
     let resets = 0;
@@ -118,6 +143,8 @@ export function useSessionLive({
     let historyDirty = false;
     let historyRetry: number | undefined;
     let historyRecoveryPending = false;
+    let settingsHistory: "waiting" | "retry" | undefined;
+    let settingsHistoryWake = 0;
     let controlRequest = 0;
     let controlGeneration = 0;
     let progressPatch: ProgressPatch | undefined;
@@ -135,13 +162,23 @@ export function useSessionLive({
         if (current() && historyDirty) loadHistory();
       }, 50);
     };
+    const wakeSettingsHistory = () => {
+      settingsHistoryWake++;
+      if (settingsHistory !== "waiting") return;
+      settingsHistory = "retry";
+      if (historyDirty && !historyLoading) scheduleHistory();
+    };
     const loadHistory = () => {
       historyLoading = true;
       historyDirty = false;
+      const retryAfterSettings = settingsHistory === "retry";
+      settingsHistory = undefined;
       const itemsAtRequest = itemGeneration;
       const request = historyRequest;
       const attempt = beginHistoryRead(nativeCoverage.current);
       const wake = refreshWake.current;
+      const settingsWake = settingsHistoryWake;
+      const duringSettings = isSettingsWriteActive?.(id);
       void client
         .events(id)
         .then((page) => {
@@ -195,6 +232,13 @@ export function useSessionLive({
         .catch((error) => {
           if (current() && request === historyRequest) {
             if (error instanceof ApiError && error.code === "operation_busy") {
+              // A provider can append history before our settings command releases admission.
+              // Retry this page on settlement without promoting the contention to a full refresh.
+              if (!retryAfterSettings && (duringSettings || isSettingsWriteActive?.(id))) {
+                historyDirty = true;
+                settingsHistory = settingsWake === settingsHistoryWake ? "waiting" : "retry";
+                return;
+              }
               readBusy(wake, g);
               return;
             }
@@ -209,13 +253,13 @@ export function useSessionLive({
         })
         .finally(() => {
           historyLoading = false;
-          if (current() && historyDirty) scheduleHistory();
+          if (current() && historyDirty && settingsHistory !== "waiting") scheduleHistory();
         });
     };
     const readHistory = () => {
       historyRequest++;
       historyDirty = true;
-      if (historyLoading) return;
+      if (historyLoading || settingsHistory === "waiting") return;
       if (historyRetry !== undefined) scheduleHistory();
       else loadHistory();
     };
@@ -240,32 +284,75 @@ export function useSessionLive({
         connect();
       });
     };
-    const connect = () => {
+    const connect = (warmReturn?: typeof resume) => {
+      const scope = warmScope ?? "";
+      let lease = warmStreams.claim(scope, id);
+      if (lease.checkpoint && !warmReturn) {
+        lease.release();
+        lease = warmStreams.claim(scope, id);
+      }
+      const checkpoint = lease.checkpoint;
+      if (checkpoint) {
+        store = createConversationStore(id, checkpoint.state);
+        nativeCoverage.current = checkpoint.coverage;
+        sourceItems = checkpoint.coverage.items;
+        setUsageEpoch?.(JSON.stringify([checkpoint.state.runtimeBootId, checkpoint.state.epoch]));
+        setPage((page) => page);
+      } else warmReturn?.onCold();
+      closeStream = () => lease.release();
+      warmNavigation.current.park = () => {
+        const projection = liveValue.current;
+        const coverage = nativeCoverage.current;
+        if (
+          !active() ||
+          !warmScope ||
+          warmScope !== warmSessionAuthority(accessRef.current, streamEpoch) ||
+          !streamReady.current ||
+          controlReconciliationPending.current ||
+          refreshRequired.current ||
+          hasDurablePending(id) ||
+          historyLoading ||
+          historyDirty ||
+          historyRecoveryPending ||
+          !coverage.historyPagination ||
+          coverage.historyRecoveryFailed ||
+          projection?.sessionId !== id
+        )
+          return;
+        const accepted = store.replaceLive(projection);
+        if (accepted.live && accepted.cursor) lease.release({ state: accepted, coverage });
+      };
       const connection = ++connectionEpoch;
       const active = () => current() && connection === connectionEpoch;
-      let snapshotSeen = false;
+      let snapshotSeen = !!checkpoint;
       let readyReconciled = false;
-      const reconcileControls = () => {
-        controlReconciliationPending.current = true;
-        setControlReady(false);
+      const reconcileControls = (acceptSettingsRead?: (live: Live) => boolean): Promise<void> => {
+        const settingsRead = !!acceptSettingsRead || isSettingsWriteActive?.(id);
+        if (!settingsRead) {
+          controlReconciliationPending.current = true;
+          setControlReady(false);
+        }
         publishSessionInvalidation(client, id, ["receipts"]);
         const request = ++controlRequest;
         const wake = refreshWake.current;
         const boundary = controlGeneration;
         const progress: ProgressPatch = new Map();
         progressPatch = progress;
-        void client
-          .live(id)
+        const read = settingsRead ? retryBusyRead(() => client.live(id)) : client.live(id);
+        return read
           .then((live) => {
             if (!active() || request !== controlRequest) return;
             if (boundary !== controlGeneration) {
               // A changed owner, native control state or host fence requires a
               // fresh complete projection. Text/revision progress alone does not.
-              reconcileControls();
-              return;
+              return reconcileControls(acceptSettingsRead);
             }
             progressPatch = undefined;
             controlReconciliationPending.current = false;
+            if (acceptSettingsRead && !acceptSettingsRead(live)) {
+              setControlReady(false);
+              return;
+            }
             const projected: Live & Record<string, unknown> = { ...live };
             // Preserve only native progress observed at/after this response's
             // revision. Never turn a null/unknown host projection into a usable
@@ -291,6 +378,14 @@ export function useSessionLive({
           })
           .catch((error) => {
             if (!active() || request !== controlRequest) return;
+            if (settingsRead) {
+              progressPatch = undefined;
+              controlReconciliationPending.current = false;
+              setControlReady(false);
+              // The write has settled. A failed read cannot make its receipt unknown.
+              if (error instanceof ApiError && [401, 403].includes(error.status)) fail(error, g);
+              return;
+            }
             if (error instanceof ApiError && error.code === "operation_busy") {
               progressPatch = undefined;
               controlReconciliationPending.current = false;
@@ -298,6 +393,12 @@ export function useSessionLive({
             } else fail(error, g);
           });
       };
+      if (readSettingsControls)
+        readSettingsControls.current = (accept) => {
+          if (!active()) return Promise.resolve();
+          wakeSettingsHistory();
+          return reconcileControls(accept);
+        };
       const disconnected = () => {
         needsDomainRecovery = true;
         snapshotSeen = false;
@@ -308,7 +409,7 @@ export function useSessionLive({
         setOnline(false);
         setControlReady(false);
       };
-      closeStream = client.stream(id, {
+      const started = lease.start({
         open: () => {
           // Delivery readiness comes from a valid baseline/replay, never merely
           // from an open TCP connection.
@@ -362,6 +463,7 @@ export function useSessionLive({
                     "capabilities",
                   ]);
                 needsDomainRecovery = false;
+                wakeSettingsHistory();
                 setOnline(true);
                 if (!nativeCoverage.current.historyRecoveryFailed) setError(false);
                 streamReady.current = true;
@@ -388,6 +490,7 @@ export function useSessionLive({
             try {
               const changed = JSON.parse(data) as { sessionId?: string };
               if (changed.sessionId !== id) return false;
+              wakeSettingsHistory();
               reconcileControls();
             } catch {
               return false;
@@ -535,10 +638,19 @@ export function useSessionLive({
           }
         },
       });
+      if (!started && checkpoint && current()) {
+        nativeCoverage.current = { items: [], authoritativeTurnIds: [], removedTurnIds: [] };
+        sourceItems = [];
+        store.reset();
+        warmReturn?.onCold();
+        connect();
+      }
     };
-    connect();
+    connect(resume);
     return () => {
       closed = true;
+      warmNavigation.current.park = undefined;
+      if (readSettingsControls) readSettingsControls.current = undefined;
       window.clearTimeout(historyRetry);
       streamReady.current = false;
       setControlReady(false);
@@ -546,6 +658,11 @@ export function useSessionLive({
     };
   }, [
     selected,
+    warmStreams,
+    warmScope,
+    warmNavigation,
+    selectionVisit,
+    liveValue,
     access?.status,
     access?.protocolVersion,
     client,
@@ -571,5 +688,7 @@ export function useSessionLive({
     streamReady,
     controlReconciliationPending,
     nativeCoverage,
+    readSettingsControls,
+    isSettingsWriteActive,
   ]);
 }

@@ -474,6 +474,23 @@ export function annotateManagedCommand(
   }
 }
 
+export function acknowledgeDispatchedManagedCommand(
+  dataDir: string,
+  requestId: string,
+  evidence: Record<string, unknown>,
+): void {
+  const database = openManagedLedger(dataDir);
+  if (!database) throw new Error("session-unavailable");
+  try {
+    const changed = database
+      .prepare("UPDATE managed_commands SET evidence=? WHERE request_id=? AND phase='dispatched'")
+      .run(JSON.stringify(evidence), requestId).changes;
+    if (changed !== 1) throw new Error("control-ledger-not-dispatched");
+  } finally {
+    database.close();
+  }
+}
+
 export function finishManagedCommand(
   dataDir: string,
   requestId: string,
@@ -485,6 +502,50 @@ export function finishManagedCommand(
     database
       .prepare("UPDATE managed_commands SET phase='resolved',result=? WHERE request_id=?")
       .run(JSON.stringify(result), requestId);
+  } finally {
+    database.close();
+  }
+}
+
+/** Store a local settings change and its receipt together. Neither can survive alone. */
+type PreparedSettingsReceipt = {
+  requestId: string;
+  result: Record<string, unknown>;
+};
+
+function resolvePreparedSettings(
+  database: DatabaseSync,
+  sessionId: string,
+  { requestId, result }: PreparedSettingsReceipt,
+): void {
+  const changed = database
+    .prepare(
+      "UPDATE managed_commands SET phase='resolved',result=? WHERE request_id=? AND session_id=? AND phase='prepared'",
+    )
+    .run(JSON.stringify(result), requestId, sessionId).changes;
+  if (changed !== 1) throw new Error("control-ledger-not-prepared");
+}
+
+export function saveManagedSettingsReceipt(
+  dataDir: string,
+  record: { id: string } & Record<string, unknown>,
+  requestId: string,
+  result: Record<string, unknown>,
+): void {
+  const database = openManagedLedger(dataDir);
+  if (!database) throw new Error("session-unavailable");
+  try {
+    database.exec("BEGIN IMMEDIATE");
+    resolvePreparedSettings(database, record.id, { requestId, result });
+    database
+      .prepare(
+        "INSERT INTO managed_sessions(id,record) VALUES(?,?) ON CONFLICT(id) DO UPDATE SET record=excluded.record",
+      )
+      .run(record.id, JSON.stringify(record));
+    database.exec("COMMIT");
+  } catch (error) {
+    if (database.isTransaction) database.exec("ROLLBACK");
+    throw error;
   } finally {
     database.close();
   }
@@ -729,6 +790,7 @@ export function persistManagedSnapshot(
     archived?: unknown;
   },
   event?: Record<string, unknown> | Record<string, unknown>[],
+  receipt?: PreparedSettingsReceipt,
 ): number {
   const nextRevision = revisionOf(snapshot.revision);
   if (nextRevision === null) throw new Error("invalid-managed-revision");
@@ -771,21 +833,30 @@ export function persistManagedSnapshot(
     database
       .prepare("UPDATE managed_sessions SET record=? WHERE id=?")
       .run(JSON.stringify(record), expected.id);
-    for (const item of event ? (Array.isArray(event) ? event : [event]) : []) {
-      if (typeof item.id !== "string") continue;
-      const { id, ...payload } = item;
-      database
-        .prepare("INSERT OR IGNORE INTO managed_events(session_id,event_id,event) VALUES(?,?,?)")
-        .run(expected.id, id, JSON.stringify(payload));
-      // A finished turn adds its duration to an item that is already stored.
-      // Only that key changes; the first-written item otherwise stays as is.
-      if (isObject(payload.turn_meta))
-        database
-          .prepare(
-            "UPDATE managed_events SET event=json_set(event,'$.turn_meta',json(?)) WHERE session_id=? AND event_id=?",
-          )
-          .run(JSON.stringify(payload.turn_meta), expected.id, id);
+    const events = Array.isArray(event) ? event : event ? [event] : [];
+    if (events.length) {
+      // Skipping existing rows before INSERT also avoids advancing sqlite_sequence on replay.
+      const insert = database.prepare(
+        `INSERT INTO managed_events(session_id,event_id,event)
+         SELECT ?,?,?
+         WHERE NOT EXISTS (SELECT 1 FROM managed_events WHERE session_id=? AND event_id=?)`,
+      );
+      const updateTurnMeta = database.prepare(
+        `UPDATE managed_events SET event=json_set(event,'$.turn_meta',json(?))
+         WHERE session_id=? AND event_id=? AND (event -> '$.turn_meta') IS NOT ?`,
+      );
+      for (const item of events) {
+        if (typeof item.id !== "string") continue;
+        const { id, ...payload } = item;
+        const inserted = insert.run(expected.id, id, JSON.stringify(payload), expected.id, id);
+        // A finished turn adds metadata without replacing the first-written item body.
+        if (inserted.changes === 0 && isObject(payload.turn_meta)) {
+          const turnMeta = JSON.stringify(payload.turn_meta);
+          updateTurnMeta.run(turnMeta, expected.id, id, turnMeta);
+        }
+      }
     }
+    if (receipt) resolvePreparedSettings(database, expected.id, receipt);
     database.exec("COMMIT");
     return nextRevision;
   } catch (error) {
@@ -821,9 +892,14 @@ export function createManagedSnapshotWriter(
       snapshot(runtimeBootId: string, controls: boolean): Record<string, unknown>;
     },
     event?: Record<string, unknown> | Record<string, unknown>[],
+    receipt?: PreparedSettingsReceipt,
   ) => {
     const current = state.record;
     const snapshot = state.snapshot("", false);
+    if (isObject(current.snapshot) && current.snapshot.settingsStaged === true) {
+      snapshot.settingsStaged = true;
+      if (current.snapshot.policyOnlyStaged === true) snapshot.policyOnlyStaged = true;
+    }
     const nextRevision = persistManagedSnapshot(
       dataDir,
       {
@@ -849,6 +925,7 @@ export function createManagedSnapshotWriter(
         archived: current.archived ?? false,
       },
       event,
+      receipt,
     );
     nativeId = state.nativeId;
     ledgerRevision = nextRevision;

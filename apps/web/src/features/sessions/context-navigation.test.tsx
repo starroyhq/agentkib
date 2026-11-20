@@ -2,6 +2,7 @@ import { continuationResources } from "@/features/conversation/features/sessions
 import { useState } from "react";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { composerAddCopy } from "@agentkib/session-ui";
 import { type CodexContextOptions, type CodexContextResource } from "@agentkib/web-client";
 import { CodexComposerControls } from "@/features/conversation/features/sessions/codex-session-controls";
 import { useSession } from "@/features/conversation/features/sessions/session-context";
@@ -58,14 +59,18 @@ function Harness({ initialResources = [] }: { initialResources?: CodexContextRes
 beforeEach(() => {
   state = {
     selected: "s",
+    current: { id: "s", agent: "codex" },
     locale: "en-US",
     online: true,
     busy: false,
-    access: { device: { accessMode: "full" } },
+    access: { status: "approved", device: { accessMode: "full", advancedControl: true } },
     live: { sessionId: "s", status: "idle", revision: 1 },
-    capabilities: { features: { context: { available: true } } },
+    capabilities: {
+      sessionId: "s",
+      features: { resources: { available: true }, context: { available: true } },
+    },
     client: {
-      codexSessionSettings: vi.fn().mockRejectedValue(new Error("unsupported")),
+      sessionSettings: vi.fn().mockRejectedValue(new Error("unsupported")),
       codexGoals: vi.fn().mockRejectedValue(new Error("unsupported")),
       codexContextOptions: vi.fn(async (_session: string, id?: string) =>
         id === "opaque-src" ? nested : root,
@@ -78,8 +83,14 @@ afterEach(() => {
   cleanup();
   vi.clearAllMocks();
 });
-async function open() {
+async function openBrowser() {
   fireEvent.click(screen.getByRole("button", { name: "Add context" }));
+  fireEvent.click(
+    await screen.findByRole("button", { name: composerAddCopy("en-US").filesAndFolders }),
+  );
+}
+async function open() {
+  await openBrowser();
   await screen.findByRole("button", { name: "Open folder: src" });
   await waitFor(() =>
     expect(screen.getByRole("button", { name: "Open folder: src" })).toBeEnabled(),
@@ -145,7 +156,13 @@ it("aborts old directory requests and ignores their response after a session swi
     },
   );
   fireEvent.click(screen.getByRole("button", { name: "Open folder: src" }));
-  state = { ...state, selected: "other", live: { ...state.live!, sessionId: "other" } };
+  state = {
+    ...state,
+    selected: "other",
+    current: { ...state.current!, id: "other" },
+    live: { ...state.live!, sessionId: "other" },
+    capabilities: { ...state.capabilities!, sessionId: "other" },
+  };
   view.rerender(<Harness />);
   expect(signal?.aborted).toBe(true);
   resolve(nested);
@@ -154,15 +171,74 @@ it("aborts old directory requests and ignores their response after a session swi
   expect(screen.getByRole("button", { name: "Parent folder" })).toBeDisabled();
   expect(screen.getByLabelText("selected ids")).toBeEmptyDOMElement();
 });
-it("keeps directory browsing disabled when context capability is unavailable", async () => {
+it("keeps directory browsing available while context references cannot be submitted", async () => {
   state = {
     ...state,
-    capabilities: { ...state.capabilities!, features: { context: { available: false } } },
+    capabilities: {
+      ...state.capabilities!,
+      features: { resources: { available: true }, context: { available: false } },
+    },
   };
   render(<Harness />);
-  fireEvent.click(screen.getByRole("button", { name: "Add context" }));
-  expect(await screen.findByRole("button", { name: "Open folder: src" })).toBeDisabled();
+  await openBrowser();
+  const navigation = await screen.findByRole("button", { name: "Open folder: src" });
+  expect(navigation).toBeEnabled();
   expect(screen.getByRole("checkbox", { name: /src/ })).toBeDisabled();
+  fireEvent.click(navigation);
+  expect(await screen.findByRole("checkbox", { name: /nested.ts/ })).toBeDisabled();
+  expect(screen.getByLabelText("selected ids")).toBeEmptyDOMElement();
+});
+
+it("allows browsing and removing references when the selection reaches the send limit", async () => {
+  const initialResources = [
+    rootFile,
+    ...Array.from({ length: 9 }, (_, i) => ({ ...nestedFile, id: `other-${i}` })),
+  ];
+  render(<Harness initialResources={initialResources} />);
+  await open();
+  expect(screen.getByText("Select up to 10 items")).toBeVisible();
+  expect(screen.getByRole("checkbox", { name: /src/ })).toBeDisabled();
+  fireEvent.click(screen.getByRole("button", { name: "Open folder: src" }));
+  expect(await screen.findByRole("checkbox", { name: /nested.ts/ })).toBeDisabled();
+  fireEvent.click(screen.getByRole("button", { name: "Parent folder" }));
+  fireEvent.click(await screen.findByRole("checkbox", { name: /README.md/ }));
+  expect(screen.getByRole("checkbox", { name: /src/ })).toBeEnabled();
+});
+
+it("aborts directory browsing when its grant is revoked and ignores the pending result", async () => {
+  const view = render(<Harness />);
+  await open();
+  let resolve!: (value: CodexContextOptions) => void;
+  let signal: AbortSignal | undefined;
+  vi.mocked(state.client.codexContextOptions).mockImplementationOnce(
+    (_id, _directory, requestSignal) => {
+      signal = requestSignal;
+      return new Promise((done) => {
+        resolve = done;
+      });
+    },
+  );
+  fireEvent.click(screen.getByRole("button", { name: "Open folder: src" }));
+  state = {
+    ...state,
+    capabilities: {
+      ...state.capabilities!,
+      features: {
+        resources: { available: false, reason: "permission_denied" },
+        context: { available: false, reason: "permission_denied" },
+      },
+    },
+  };
+  view.rerender(<Harness />);
+  expect(signal?.aborted).toBe(true);
+  const entry = screen.getByRole("button", { name: "Files and folders" });
+  expect(entry).toBeDisabled();
+  const reads = vi.mocked(state.client.codexContextOptions).mock.calls.length;
+  resolve(nested);
+  await waitFor(() => expect(screen.queryByRole("checkbox")).not.toBeInTheDocument());
+  fireEvent.click(entry);
+  expect(state.client.codexContextOptions).toHaveBeenCalledTimes(reads);
+  expect(screen.getByLabelText("selected ids")).toBeEmptyDOMElement();
 });
 
 it("retains restored resource chips on initial mount without reusing source IDs or directory cursors", async () => {

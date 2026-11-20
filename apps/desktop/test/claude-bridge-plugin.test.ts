@@ -104,6 +104,7 @@ function expectedUtf8Preview(value: string, budget: number) {
 async function fixture(
   options: {
     connect?: boolean;
+    features?: string[];
     activeAtStart?: boolean;
     storedCredential?: boolean;
     version?: string;
@@ -140,6 +141,7 @@ async function fixture(
   const stored = new Map<string, unknown>();
   const connection = {
     protocol: 1,
+    ...(options.features ? { features: options.features } : {}),
     bindingId: randomUUID(),
     token: "a".repeat(64),
     leaseId: randomUUID(),
@@ -150,6 +152,7 @@ async function fixture(
     session: {
       id: async () => nativeId,
       cwd: async () => cwd,
+      root: async () => cwd,
       version: async () => ({ version }),
       messages: async () => messages,
       usage: async () => ({ context: { tokens: 32, window: 100, percent: 32 } }),
@@ -566,6 +569,57 @@ describe("Claude Code native session plugin as a Project Agent", () => {
 });
 
 describe("Claude Code native session plugin", () => {
+  it("reports the native model without making the optional getter a connection requirement", async () => {
+    const f = await fixture({
+      configure(api) {
+        api.session.model = async () => "actual-terminal-model";
+      },
+    });
+    expect(f.snapshots().at(-1)).toMatchObject({
+      model: "actual-terminal-model",
+      compacting: false,
+    });
+    f.api.session.model = async () => {
+      throw new Error("getter temporarily unavailable");
+    };
+    await f.run("session.append", {});
+    await f.flush();
+    expect(f.snapshots().at(-1)).toMatchObject({ model: null });
+    expect(f.dispatches).toBe(0);
+  });
+
+  it("withholds pre-compaction counts and sends while preserving the native compact result", async () => {
+    const f = await fixture();
+    const bottom = deferred<Value>();
+    const result = { native: "compacted" };
+    const pending = f.run("session.compact", {}, () => bottom.promise);
+    await f.flush();
+    expect(f.snapshots().at(-1)).toMatchObject({
+      compacting: true,
+      compactStartedAt: expect.any(Number),
+      usage: null,
+      capabilities: { send: false, steer: false, queue: false },
+    });
+    const compactStartedAt = f.snapshots().at(-1)?.compactStartedAt;
+    bottom.resolve(result);
+    await expect(pending).resolves.toBe(result);
+    await f.flush();
+    expect(f.snapshots().at(-1)).toMatchObject({
+      compacting: false,
+      compactStartedAt,
+      usage: { tokens: 32 },
+    });
+    const error = new Error("native compaction failed");
+    await expect(
+      f.run("session.compact", {}, () => {
+        throw error;
+      }),
+    ).rejects.toBe(error);
+    await f.flush();
+    expect(f.snapshots().at(-1)).toMatchObject({ compacting: false });
+    expect(f.dispatches).toBe(0);
+  });
+
   // 2.1.301 applies a changed hooks module as a turn ends; what the old module did not send is
   // lost with it, and AgentKib could not confirm the message that started the turn.
   it("sends a turn's end before its hook returns, after a send already under way", async () => {
@@ -629,7 +683,7 @@ describe("Claude Code native session plugin", () => {
       const f = await fixture({ version });
       expect(f.calls.find((call) => call.url.endsWith("/pair"))?.body).toMatchObject({
         cliVersion: version,
-        pluginVersion: "0.5.1",
+        pluginVersion: "0.5.3",
         nativeCapabilities: {
           version: 1,
           available: [
@@ -763,6 +817,60 @@ describe("Claude Code native session plugin", () => {
     });
     expect(f.dispatches).toBe(0);
   });
+  it("reuses the saved root binding when Claude reloads inside a workspace subdirectory", async () => {
+    const workspace = "/isolated/workspace";
+    const f = await fixture({
+      connect: false,
+      storedCredential: true,
+      configure(api) {
+        api.session.root = async () => workspace;
+        api.session.cwd = async () => `${workspace}/.agents/tasks`;
+        api.fs.stat = async () => ({ kind: "dir", isLink: false });
+      },
+    });
+    const handshakes = () => f.calls.filter((call) => call.url.endsWith("/reconnect"));
+    await expect.poll(() => handshakes().length).toBe(1);
+    expect(handshakes()[0].body).toMatchObject({
+      cwd: workspace,
+      bindingId: f.connection.bindingId,
+      nativeId: f.nativeId,
+    });
+    f.nextHttpResponse("/v1/commands", { status: 409, body: { error: "bridge-lease-expired" } });
+    await f.tick();
+    await f.tick();
+    expect(handshakes().map(({ body }) => body.bindingId)).toEqual([
+      f.connection.bindingId,
+      f.connection.bindingId,
+    ]);
+    expect(f.calls.some(({ url }) => url.endsWith("/pair"))).toBe(false);
+    expect(f.dispatches).toBe(0);
+  });
+  it.each(["sibling directory", "symbolic link", "different checkout"])(
+    "preserves the original binding when the terminal tries to reconnect from a %s",
+    async (location) => {
+      const workspace = "/isolated/workspace";
+      let current = workspace;
+      let root = workspace;
+      const f = await fixture({
+        connect: false,
+        storedCredential: true,
+        configure(api) {
+          if (location === "sibling directory") current = `${workspace}-other`;
+          if (location === "symbolic link") current = `${workspace}/link/child`;
+          if (location === "different checkout") current = root = `${workspace}/.claude/worktrees/new`;
+          api.session.root = async () => root;
+          api.session.cwd = async () => current;
+          api.fs.stat = async (path: string) => ({ kind: "dir", isLink: path.endsWith("/link") });
+        },
+      });
+      await f.tick();
+      expect(f.calls.some(({ url }) => url.endsWith("/reconnect") || url.endsWith("/pair"))).toBe(
+        false,
+      );
+      expect(f.stored.get(`credentialPath:${f.nativeId}`)).toBe(f.connection.credentialPath);
+      expect(f.dispatches).toBe(0);
+    },
+  );
   it.each([
     ["bridge-cli-too-old", "2.1.300"],
     ["bridge-cli-unsupported", "2.1.307-preview"],
@@ -793,7 +901,7 @@ describe("Claude Code native session plugin", () => {
         bindingId: f.connection.bindingId,
         nativeId: f.nativeId,
         cwd: "/isolated/workspace",
-        pluginVersion: "0.5.1",
+        pluginVersion: "0.5.3",
       });
       expect(report.body).not.toHaveProperty("nativeCapabilities");
       expect(report.body).not.toHaveProperty("token");
@@ -1029,7 +1137,7 @@ describe("Claude Code native session plugin", () => {
     expect(
       (await f.run("command.run", { command: "agentkib-connect", args: f.ticket })).text,
     ).toContain("connected");
-    expect(f.snapshots().at(-1).toolItems).toMatchObject([{ id, name }]);
+    expect(f.snapshots().at(-1).toolItems).toEqual([]);
   });
   it("reports a missing version method as a capability failure without fabricating the CLI version", async () => {
     const f = await fixture({ connect: false });
@@ -1052,7 +1160,7 @@ describe("Claude Code native session plugin", () => {
     const result = await f.run("command.run", { command: "agentkib-connect", args: f.ticket });
     expect(result.text).toContain("AgentKib connected");
     const pair = f.calls.find((call) => call.url.endsWith("/pair"))?.body;
-    expect(pair).toMatchObject({ pluginVersion: "0.5.1", cliVersion: "2.1.307" });
+    expect(pair).toMatchObject({ pluginVersion: "0.5.3", cliVersion: "2.1.307" });
     expect(pair).not.toHaveProperty("connectionError");
   });
   it.each(["2.1.301-beta", "02.1.301", "not-a-version"])(
@@ -1124,6 +1232,41 @@ describe("Claude Code native session plugin", () => {
       "is connected",
     );
     expect(f.dispatches).toBe(0);
+  });
+
+  it("retries saved-binding startup once the native REPL can read its history", async () => {
+    let ready = false;
+    const history = vi.fn(async () => {
+      if (!ready)
+        throw new Error(
+          "$.session.messages is not available in this mode: no session is bound in this process " +
+            "(the REPL has not mounted and no headless session is built); catch it and carry on",
+        );
+      return [{ role: "user", text: "native history" }];
+    });
+    const f = await fixture({
+      connect: false,
+      storedCredential: true,
+      configure: (api) => (api.session.messages = history),
+    });
+    await expect.poll(() => history.mock.calls.length).toBe(1);
+    expect(f.calls.filter((call) => call.url.endsWith("/reconnect"))).toHaveLength(0);
+    expect((await f.run("command.run", { command: "agentkib-status" })).text).toContain(
+      "not connected",
+    );
+    ready = true;
+    await expect
+      .poll(async () => {
+        await f.tick();
+        return (await f.run("command.run", { command: "agentkib-status" })).text;
+      })
+      .toContain("is connected");
+    const reconnects = f.calls.filter((call) => call.url.endsWith("/reconnect"));
+    expect(reconnects).toHaveLength(1);
+    expect(reconnects[0].body).not.toHaveProperty("connectionError");
+    expect(reconnects[0].body.nativeCapabilities.available).toContain("session-messages");
+    expect(f.dispatches).toBe(0);
+    expect(f.stops).toBe(0);
   });
 
   it.each(["timer", "prompt.submit", "turn.start"])(
@@ -1240,7 +1383,7 @@ describe("Claude Code native session plugin", () => {
       ).toHaveLength(1);
       expect(set).toHaveBeenCalledWith(
         "compatibility:credential-store:1",
-        "agentkib-bridge:0.5.1:capabilities:1",
+        "agentkib-bridge:0.5.3:capabilities:1",
       );
       expect((await f.run("command.run", { command: "agentkib-status", args: "" })).text).toContain(
         "is connected",
@@ -2090,7 +2233,7 @@ describe("Claude Code native session plugin", () => {
     });
     expect(pair.init.headers.Authorization).toBeUndefined();
     expect([...f.stored]).toEqual([
-      ["compatibility:credential-store:1", "agentkib-bridge:0.5.1:capabilities:1"],
+      ["compatibility:credential-store:1", "agentkib-bridge:0.5.3:capabilities:1"],
       [`credentialPath:${f.nativeId}`, f.connection.credentialPath],
     ]);
     expect(JSON.stringify([...f.stored])).not.toContain(f.connection.token);
@@ -2098,6 +2241,107 @@ describe("Claude Code native session plugin", () => {
       capabilities: { read: true, send: true, approve: false, answer: false },
     });
     expect(f.dispatches).toBe(0);
+  });
+
+  it("opens only the native model chooser, receipts its dispatch once, and reads the eventual selection", async () => {
+    const picker = deferred<void>();
+    const run = vi.fn(() => picker.promise);
+    const readbacks = new Map<number, () => void>();
+    let model = "claude-sonnet";
+    const f = await fixture({
+      features: ["open-model-picker"],
+      configure(api) {
+        api.session.model = async () => model;
+        api.command.list = async () => [{ name: "model", source: "builtin" }];
+        api.command.run = run;
+        api.clock.after = (delay: number, cb: () => void) => readbacks.set(delay, cb);
+      },
+    });
+    const initial = f.snapshots().at(-1);
+    expect(initial).toMatchObject({ model, capabilities: { modelPicker: true } });
+    const command = {
+      commandId: randomUUID(),
+      kind: "open-model-picker",
+      expectedRevision: initial.revision,
+    };
+    await f.deliver(command);
+    expect(run.mock.calls).toEqual([[{ command: "model" }]]);
+    expect(f.results().at(-1)).toMatchObject({ commandId: command.commandId, status: "accepted" });
+    await f.run("ui.render", { component: "AbovePrompt", props: { isWorking: true } });
+    await f.flush();
+    expect(f.snapshots().at(-1)).toMatchObject({
+      model,
+      modelPickerOpen: true,
+      currentTurnId: null,
+      status: "idle",
+      capabilities: { modelPicker: false, send: false },
+    });
+    await f.deliver(command);
+    await f.deliver({ ...command, commandId: randomUUID() });
+    expect(f.results().at(-1)).toMatchObject({ status: "rejected" });
+    expect(run).toHaveBeenCalledTimes(1);
+    picker.resolve();
+    await vi.waitFor(() => expect(readbacks.size).toBe(2));
+    readbacks.get(1000)!();
+    await f.flush();
+    expect(f.snapshots().at(-1)).toMatchObject({
+      model,
+      modelPickerOpen: false,
+      status: "idle",
+      capabilities: { modelPicker: true, send: true },
+    });
+    model = "claude-haiku";
+    readbacks.get(3000)!();
+    await f.flush();
+    expect(f.snapshots().at(-1).model).toBe(model);
+    expect(f.dispatches).toBe(0);
+  });
+
+  it.each([
+    { feature: false, busy: false, source: "builtin", revision: 0 },
+    { feature: true, busy: true, source: "builtin", revision: 0 },
+    { feature: true, busy: false, source: "plugin", revision: 0 },
+    { feature: true, busy: false, source: "builtin", revision: 10 },
+  ])(
+    "refuses an unsupported, busy, shadowed, or stale native model chooser: %j",
+    async ({ feature, busy, source, revision }) => {
+      const run = vi.fn();
+      const f = await fixture({
+        features: feature ? ["open-model-picker"] : [],
+        activeAtStart: busy,
+        configure(api) {
+          api.command.list = async () => [{ name: "model", source }];
+          api.command.run = run;
+        },
+      });
+      await f.deliver({
+        commandId: randomUUID(),
+        kind: "open-model-picker",
+        expectedRevision: revision,
+      });
+      expect(f.results().at(-1)).toMatchObject({ status: "rejected" });
+      expect(run).not.toHaveBeenCalled();
+    },
+  );
+
+  it("refuses a failed native chooser without changing the observed model", async () => {
+    const f = await fixture({
+      features: ["open-model-picker"],
+      configure(api) {
+        api.session.model = async () => "claude-sonnet";
+        api.command.list = async () => [{ name: "model", source: "builtin" }];
+        api.command.run = async () => ({ isError: true });
+      },
+    });
+    await f.deliver({ commandId: randomUUID(), kind: "open-model-picker", expectedRevision: 0 });
+    expect(f.results().at(-1)).toMatchObject({
+      status: "rejected",
+      reason: "native-model-picker-unavailable",
+    });
+    expect(f.snapshots().at(-1)).toMatchObject({
+      model: "claude-sonnet",
+      capabilities: { modelPicker: false },
+    });
   });
 
   it("requires origin and a matching actual turn to acknowledge a send, and never repeats it", async () => {
@@ -2173,13 +2417,16 @@ describe("Claude Code native session plugin", () => {
     expect(f.results()).toHaveLength(2);
   });
 
-  it("reconnects an expired Runtime lease and permits a fresh explicit pairing after revoke", async () => {
+  it.each([
+    { status: 409, error: "bridge-lease-expired" },
+    { status: 410, error: "bridge-source-unavailable" },
+  ])("recovers from $error and respects an explicit revoke", async ({ status, error }) => {
     const f = await fixture();
-    f.nextHttpResponse("/v1/commands", { status: 409, body: { error: "bridge-lease-expired" } });
+    f.nextHttpResponse("/v1/commands", { status, body: { error } });
     await f.tick();
     await f.tick();
     expect(f.calls.filter((call) => call.url.endsWith("/reconnect"))).toHaveLength(1);
-    f.nextHttpResponse("/v1/commands", { status: 410, body: { error: "binding-revoked" } });
+    f.nextHttpResponse("/v1/commands", { status: 410, body: { error: "bridge-binding-revoked" } });
     await f.tick();
     expect((await f.run("command.run", { command: "agentkib-status", args: "" })).text).toContain(
       "not connected",

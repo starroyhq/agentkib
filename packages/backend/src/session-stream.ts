@@ -19,6 +19,16 @@ interface Snapshot {
   authoritativeTurnIds?: string[];
 }
 
+interface HistoryPrefix {
+  length: number;
+  fingerprint: string;
+}
+
+interface CompleteHistoryCoverage {
+  omitted?: HistoryPrefix;
+  retained: Map<string | Record<string, unknown>, HistoryPrefix>;
+}
+
 interface Source {
   epoch: string;
   seq: number;
@@ -29,11 +39,11 @@ interface Source {
   nextPollAt: number;
   removedItemIds: Set<string>;
   removedTurnIds: Set<string>;
-  completeItemsFingerprint?: string;
-  retentionOverflowed: boolean;
+  completeHistory?: CompleteHistoryCoverage;
   historyCacheEpoch?: string;
-  pendingText?: {
-    payload: Record<string, unknown>;
+  pendingProgress?: {
+    text?: Record<string, unknown>;
+    followerState?: Record<string, unknown>;
     timer: ReturnType<typeof setTimeout>;
   };
 }
@@ -110,20 +120,21 @@ export class SessionStreamHub {
         nextPollAt: Date.now() + (sessionId ? SNAPSHOT_INTERVAL_MS : 2_000),
         removedItemIds: new Set(),
         removedTurnIds: new Set(),
-        ...(snapshot.completeItems
-          ? { completeItemsFingerprint: this.#itemsFingerprint(snapshot.items) }
-          : {}),
-        retentionOverflowed: snapshot.completeItems && !retainedAll,
         ...(snapshot.completeItems && !retainedAll ? { historyCacheEpoch: randomUUID() } : {}),
       };
+      this.#recordCompleteCoverage(source, snapshot.items, snapshot.completeItems, initialItems);
       this.#sources.set(sessionId, source);
     } else {
-      this.#flushText(sessionId, source);
+      this.#flushProgress(sessionId, source);
+      const previousCacheEpoch = source.historyCacheEpoch;
       const reconciled =
         source !== previousSource || source.historyRevision !== previousHistoryRevision
           ? source.snapshot
           : this.#reconcileSnapshot(source, snapshot);
-      if (JSON.stringify(source.snapshot) === JSON.stringify(reconciled)) {
+      if (
+        previousCacheEpoch === source.historyCacheEpoch &&
+        JSON.stringify(source.snapshot) === JSON.stringify(reconciled)
+      ) {
         // Keep the live object fresh even when its JSON projection is equal.
         source.snapshot = reconciled;
       } else {
@@ -176,7 +187,7 @@ export class SessionStreamHub {
       ![...this.#subscriptions.values()].some((item) => item.sessionId === subscription.sessionId)
     ) {
       const source = this.#sources.get(subscription.sessionId);
-      if (source?.pendingText) clearTimeout(source.pendingText.timer);
+      if (source?.pendingProgress) clearTimeout(source.pendingProgress.timer);
       this.#sources.delete(subscription.sessionId);
     }
     return { removed };
@@ -200,7 +211,8 @@ export class SessionStreamHub {
       this.#queueText(sessionId, source, payload, live, textItem);
       return;
     }
-    this.#flushText(sessionId, source);
+    if (type === "state" && this.#queueFollowerProgress(sessionId, source, payload, live)) return;
+    this.#flushProgress(sessionId, source);
     if (type === "snapshot" && Array.isArray(payload.items)) {
       source.historyRevision += 1;
       const incoming = payload.items.filter(isRecord);
@@ -239,7 +251,7 @@ export class SessionStreamHub {
           items,
         ),
       };
-      this.#recordCompleteCoverage(source, incoming, complete, retainedAll);
+      this.#recordCompleteCoverage(source, complete ? incoming : beforeRetention, complete, items);
       this.#boundRemoved(source);
       this.#append(sessionId, source, "snapshot", this.#snapshotPayload(source));
       this.#broadcastLatest(sessionId, source);
@@ -255,8 +267,7 @@ export class SessionStreamHub {
       const index = items.findIndex((item) => item.id === payload.id);
       if (index >= 0) items[index] = payload;
       else items.push(payload);
-      const retainedAll = this.#retainItems(items);
-      source.retentionOverflowed ||= !retainedAll;
+      const retainedAll = this.#retainItems(items, source.completeHistory);
       source.snapshot = {
         ...source.snapshot,
         items,
@@ -289,15 +300,14 @@ export class SessionStreamHub {
     const previous = source.snapshot.items.find((item) => item.id === previousId);
     if (!previous) return;
     source.historyRevision += 1;
-    this.#flushText(sessionId, source);
+    this.#flushProgress(sessionId, source);
     const replacement: Record<string, unknown> = { ...previous, id: itemId, ephemeral: false };
     const items = [...source.snapshot.items];
     const previousIndex = items.findIndex((item) => item.id === previousId);
     const targetIndex = items.findIndex((item) => item.id === itemId);
     if (previousIndex >= 0) items[previousIndex] = replacement;
     if (targetIndex >= 0 && targetIndex !== previousIndex) items.splice(targetIndex, 1);
-    const retainedAll = this.#retainItems(items);
-    source.retentionOverflowed ||= !retainedAll;
+    const retainedAll = this.#retainItems(items, source.completeHistory);
     source.snapshot = {
       ...source.snapshot,
       live,
@@ -317,7 +327,7 @@ export class SessionStreamHub {
     this.#closed = true;
     clearInterval(this.#timer);
     for (const source of this.#sources.values())
-      if (source.pendingText) clearTimeout(source.pendingText.timer);
+      if (source.pendingProgress) clearTimeout(source.pendingProgress.timer);
     this.#subscriptions.clear();
     this.#sources.clear();
     this.#snapshotReads.clear();
@@ -358,9 +368,14 @@ export class SessionStreamHub {
             source.nextPollAt = Date.now();
             continue;
           }
+          const previousCacheEpoch = source.historyCacheEpoch;
           const snapshot = this.#reconcileSnapshot(source, read);
-          if (JSON.stringify(source.snapshot) === JSON.stringify(snapshot)) continue;
-          this.#flushText(sessionId, source);
+          if (
+            previousCacheEpoch === source.historyCacheEpoch &&
+            JSON.stringify(source.snapshot) === JSON.stringify(snapshot)
+          )
+            continue;
+          this.#flushProgress(sessionId, source);
           source.snapshot = snapshot;
           source.historyRevision += 1;
           this.#append(
@@ -402,6 +417,34 @@ export class SessionStreamHub {
     }
   }
 
+  #progressBatch(sessionId: string, source: Source): NonNullable<Source["pendingProgress"]> {
+    if (source.pendingProgress) return source.pendingProgress;
+    const timer = setTimeout(() => this.#flushProgress(sessionId, source), TEXT_BATCH_DELAY_MS);
+    timer.unref();
+    return (source.pendingProgress = { timer });
+  }
+
+  #queueFollowerProgress(
+    sessionId: string,
+    source: Source,
+    payload: Record<string, unknown>,
+    live?: Record<string, unknown>,
+  ): boolean {
+    if (
+      !live ||
+      payload.executionMode !== "codex-follower" ||
+      source.snapshot.live.executionMode !== "codex-follower"
+    )
+      return false;
+    const previous = source.snapshot.live;
+    if (JSON.stringify(previous) === JSON.stringify(live)) return true;
+    if (followerControlState(previous) !== followerControlState(live)) return false;
+    source.snapshot = { ...source.snapshot, live };
+    source.historyRevision += 1;
+    this.#progressBatch(sessionId, source).followerState = payload;
+    return true;
+  }
+
   #queueText(
     sessionId: string,
     source: Source,
@@ -422,7 +465,7 @@ export class SessionStreamHub {
       !Number.isSafeInteger(offset) ||
       offset < 0
     ) {
-      this.#flushText(sessionId, source);
+      this.#flushProgress(sessionId, source);
       this.#append(sessionId, source, "snapshot", {
         live: live ?? source.snapshot.live,
         items: source.snapshot.items,
@@ -445,7 +488,7 @@ export class SessionStreamHub {
         content.startsWith(textItem.content)
       )
         return;
-      this.#flushText(sessionId, source);
+      this.#flushProgress(sessionId, source);
       const replacement =
         textItem?.id === itemId
           ? textItem
@@ -460,8 +503,7 @@ export class SessionStreamHub {
             };
       if (existingIndex >= 0) items[existingIndex] = replacement;
       else items.push(replacement);
-      const retainedAll = this.#retainItems(items);
-      source.retentionOverflowed ||= !retainedAll;
+      const retainedAll = this.#retainItems(items, source.completeHistory);
       source.snapshot = {
         ...source.snapshot,
         live: live ?? source.snapshot.live,
@@ -488,8 +530,7 @@ export class SessionStreamHub {
     };
     if (existingIndex >= 0) items[existingIndex] = item;
     else items.push(item);
-    const retainedAll = this.#retainItems(items);
-    source.retentionOverflowed ||= !retainedAll;
+    const retainedAll = this.#retainItems(items, source.completeHistory);
     source.snapshot = {
       ...source.snapshot,
       live: live ?? source.snapshot.live,
@@ -499,8 +540,8 @@ export class SessionStreamHub {
     };
     source.historyRevision += 1;
 
-    const pending = source.pendingText;
-    const pendingPayload = pending?.payload;
+    const pending = source.pendingProgress;
+    const pendingPayload = pending?.text;
     const pendingText = typeof pendingPayload?.text === "string" ? pendingPayload.text : "";
     const contiguous =
       pendingPayload?.itemId === itemId &&
@@ -513,24 +554,29 @@ export class SessionStreamHub {
       contiguous &&
       Buffer.byteLength(pendingText + text, "utf8") <= MAX_TEXT_BATCH_BYTES
     ) {
-      pending.payload = { ...pendingPayload, text: pendingText + text };
+      pending.text = { ...pendingPayload, text: pendingText + text };
       return;
     }
 
-    this.#flushText(sessionId, source);
-    const timer = setTimeout(() => this.#flushText(sessionId, source), TEXT_BATCH_DELAY_MS);
-    timer.unref();
-    source.pendingText = { payload, timer };
-    if (Buffer.byteLength(text, "utf8") >= MAX_TEXT_BATCH_BYTES) this.#flushText(sessionId, source);
+    if (pendingPayload) this.#flushProgress(sessionId, source);
+    this.#progressBatch(sessionId, source).text = payload;
+    if (Buffer.byteLength(text, "utf8") >= MAX_TEXT_BATCH_BYTES)
+      this.#flushProgress(sessionId, source);
   }
 
-  #flushText(sessionId: string, source: Source): void {
-    const pending = source.pendingText;
+  #flushProgress(sessionId: string, source: Source): void {
+    const pending = source.pendingProgress;
     if (!pending) return;
     clearTimeout(pending.timer);
-    source.pendingText = undefined;
-    this.#append(sessionId, source, "text-delta", pending.payload);
-    this.#broadcastLatest(sessionId, source);
+    source.pendingProgress = undefined;
+    if (pending.followerState) {
+      this.#append(sessionId, source, "state", pending.followerState);
+      this.#broadcastLatest(sessionId, source);
+    }
+    if (pending.text) {
+      this.#append(sessionId, source, "text-delta", pending.text);
+      this.#broadcastLatest(sessionId, source);
+    }
   }
 
   #broadcastLatest(sessionId: string, source: Source): void {
@@ -605,7 +651,7 @@ export class SessionStreamHub {
     }
     const retainedAll = this.#retainItems(items);
     if (!retainedAll) completeItems = false;
-    this.#recordCompleteCoverage(source, next.items, next.completeItems, retainedAll);
+    this.#recordCompleteCoverage(source, next.items, next.completeItems, items);
     return {
       live: next.live,
       items,
@@ -614,50 +660,74 @@ export class SessionStreamHub {
     };
   }
 
-  #itemsFingerprint(items: Record<string, unknown>[]): string {
-    const hash = createHash("sha256");
-    for (const item of items) hash.update(JSON.stringify(item));
-    return hash.digest("hex");
-  }
-
   #recordCompleteCoverage(
     source: Source,
     items: Record<string, unknown>[],
     complete: boolean,
-    retainedAll: boolean,
+    retained: Record<string, unknown>[],
   ): void {
+    const retainedIds = new Set(retained.map(historyItemIdentity));
     if (!complete) {
-      source.retentionOverflowed ||= !retainedAll;
+      const coverage = source.completeHistory;
+      if (coverage)
+        for (const [id, prefix] of coverage.retained)
+          if (!retainedIds.has(id)) rememberOmittedHistory(coverage, prefix);
       return;
     }
-    const fingerprint = this.#itemsFingerprint(items);
-    if (
-      source.retentionOverflowed &&
-      source.completeItemsFingerprint &&
-      source.completeItemsFingerprint !== fingerprint
-    ) {
+    // Kept rows can be corrected or removed by ID. For rows no longer retained, verify the
+    // corresponding ordered prefix, so appending to an unchanged history keeps older pages valid.
+    const previous = source.completeHistory?.omitted;
+    let omittedLength = items.length;
+    while (omittedLength > 0 && retainedIds.has(historyItemIdentity(items[omittedLength - 1])))
+      omittedLength -= 1;
+    const coverage: CompleteHistoryCoverage = { retained: new Map() };
+    const hash = createHash("sha256");
+    let incompatible = !!previous && previous.length > items.length;
+    for (const [index, item] of items.entries()) {
+      hash.update(JSON.stringify(item));
+      const length = index + 1;
+      if (length === previous?.length || length >= omittedLength) {
+        const fingerprint = hash.copy().digest("hex");
+        if (length === previous?.length) incompatible = previous.fingerprint !== fingerprint;
+        if (length === omittedLength) coverage.omitted = { length, fingerprint };
+        else if (length > omittedLength)
+          coverage.retained.set(historyItemIdentity(item), { length, fingerprint });
+      }
+    }
+    if (incompatible) {
       source.historyCacheEpoch = randomUUID();
       source.removedItemIds.clear();
       source.removedTurnIds.clear();
     }
-    source.completeItemsFingerprint = fingerprint;
-    source.retentionOverflowed = !retainedAll;
+    source.completeHistory = coverage;
   }
 
-  #retainItems(items: Record<string, unknown>[]): boolean {
+  #retainItems(items: Record<string, unknown>[], coverage?: CompleteHistoryCoverage): boolean {
     const originalCount = items.length;
     let bytes = 0;
-    const bounded: Record<string, unknown>[] = [];
+    let first = 0;
+    const bounded: Array<{ item: Record<string, unknown>; size: number }> = [];
+    const omit = (item: Record<string, unknown>) => {
+      if (coverage)
+        rememberOmittedHistory(coverage, coverage.retained.get(historyItemIdentity(item)));
+    };
+    if (coverage && originalCount > MAX_ITEM_COUNT)
+      for (const item of items.slice(0, -MAX_ITEM_COUNT)) omit(item);
     for (const item of items.slice(-MAX_ITEM_COUNT)) {
       const size = Buffer.byteLength(JSON.stringify(item), "utf8");
-      if (size > MAX_ITEM_BYTES) continue;
-      while (bounded.length && bytes + size > MAX_ITEM_BYTES) {
-        bytes -= Buffer.byteLength(JSON.stringify(bounded.shift()), "utf8");
+      if (size > MAX_ITEM_BYTES) {
+        omit(item);
+        continue;
       }
-      bounded.push(item);
+      while (first < bounded.length && bytes + size > MAX_ITEM_BYTES) {
+        const removed = bounded[first++];
+        bytes -= removed.size;
+        omit(removed.item);
+      }
+      bounded.push({ item, size });
       bytes += size;
     }
-    items.splice(0, items.length, ...bounded);
+    items.splice(0, items.length, ...bounded.slice(first).map(({ item }) => item));
     return items.length === originalCount;
   }
 
@@ -741,6 +811,20 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function isString(value: unknown): value is string {
   return typeof value === "string";
+}
+
+function followerControlState(live: Record<string, unknown>): string {
+  const { revision: _revision, usage: _usage, tokenUsage: _tokenUsage, ...control } = live;
+  return JSON.stringify(control);
+}
+
+function historyItemIdentity(item: Record<string, unknown>): string | Record<string, unknown> {
+  return isString(item.id) ? item.id : item;
+}
+
+function rememberOmittedHistory(coverage: CompleteHistoryCoverage, prefix?: HistoryPrefix): void {
+  if (prefix && (!coverage.omitted || prefix.length > coverage.omitted.length))
+    coverage.omitted = prefix;
 }
 
 function retainedCoverage(

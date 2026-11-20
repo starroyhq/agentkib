@@ -11,6 +11,7 @@ import {
 } from "../../../packages/backend/src/codex-app-server";
 import { CodexRuntimePreflight } from "../../../packages/backend/src/codex-runtime-preflight";
 import { CodexFollowerBridge } from "../../../packages/backend/src/codex-follower-bridge";
+import { CodexFollowerConnection } from "../../../packages/backend/src/codex-follower-connection";
 import { CodexFollowerState } from "../../../packages/backend/src/codex-follower-state";
 import { CodexSessions } from "../../../packages/backend/src/codex-sessions";
 import { Commands } from "../../../packages/backend/src/commands";
@@ -20,12 +21,15 @@ import {
   readUnknownManagedCommands,
   saveManagedRecord,
 } from "../../../packages/backend/src/managed-ledger";
+import { acquirePortableFileLease } from "../../../packages/backend/src/managed-session-lock";
 import { SessionReaders } from "../../../packages/backend/src/session-readers";
 import { BackendStore } from "../../../packages/backend/src/store";
 import { WebReadRequests } from "../../../packages/backend/src/web-read";
 
 type Json = Record<string, unknown>;
 const nativeId = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+const existingSessions = ["indexed session", "released session"] as const;
+type ExistingSession = (typeof existingSessions)[number];
 const cleanups: Array<() => void | Promise<void>> = [];
 
 afterEach(async () => {
@@ -225,23 +229,25 @@ function fixture() {
     app.sent.length = 0;
     return result as { sessionId: string; runtimeBootId: string; live: Json };
   }
-  async function observe() {
+  async function firstSend(source: ExistingSession, savedSnapshot: Json = {}) {
+    if (source === "released session") releasedRecord(savedSnapshot);
     const live = (await web.request({
       operation: "live",
       sessionId: indexedId,
       experimentalEnabled: true,
-    })) as Json;
+    })) as Json & { runtimeBootId: string };
     expect(connect).not.toHaveBeenCalled();
     expect(live).toMatchObject({
       executionMode: "codex-managed",
       status: "idle",
+      sendEnabled: true,
       executionLocation: null,
-      revision: 0,
+      revision: source === "released session" ? 1 : 0,
     });
-    return live;
+    return sendRequest({ sessionId: indexedId, runtimeBootId: live.runtimeBootId, live });
   }
 
-  function releasedRecord(adopted = true, savedSnapshot: Json = {}) {
+  function releasedRecord(savedSnapshot: Json) {
     saveManagedRecord(root, {
       id: indexedId,
       workspace_id: "workspace",
@@ -251,11 +257,31 @@ function fixture() {
       title: "Fixture",
       created_at: "2026-10-06T00:00:00Z",
       released: true,
-      adopted,
+      adopted: true,
       archived: false,
       policy_id: "workspace-write-on-request",
       snapshot: { revision: 1, status: "released", ...savedSnapshot },
     });
+  }
+
+  function holdWriter() {
+    const locks = path.join(home, "thread-writer-locks");
+    mkdirSync(locks);
+    const release = acquirePortableFileLease(path.join(locks, `${nativeId}.lock`));
+    cleanups.push(release);
+    return release;
+  }
+
+  function rejectNativeWriter() {
+    vi.spyOn(CodexFollowerConnection, "supported").mockReturnValue(true);
+    connect.mockRejectedValue(new Error("offline follower unavailable"));
+    app.afterWrite = (method) => {
+      if (method === "thread/resume")
+        throw new CodexAppServerError({
+          code: -32600,
+          message: "thread already has an active writer",
+        });
+    };
   }
   return {
     root,
@@ -266,8 +292,9 @@ function fixture() {
     indexedId,
     skillId,
     create,
-    observe,
-    releasedRecord,
+    firstSend,
+    holdWriter,
+    rejectNativeWriter,
     followerSnapshot,
     followerState,
   };
@@ -472,225 +499,137 @@ describe("Web managed control compaction barriers", () => {
 });
 
 describe("Codex writer lock replaces Desktop ownership observations", () => {
-  it.each(["adopt", "resume"])(
-    "allows %s without confirmation when the native writer is free",
-    async (operation) => {
-      const f = fixture(),
-        observed = await f.observe();
-      if (operation === "resume") f.releasedRecord();
-      const base = {
-        operation,
-        sessionId: f.indexedId,
-        requestId: randomUUID(),
-        deviceId: "fixture",
-        handoffConfirmed: true,
-      };
-      const result =
-        operation === "adopt"
-          ? await f.web.managedLifecycle(base)
-          : await f.web.managedResume({
-              ...base,
-              runtimeBootId: observed.runtimeBootId,
-              experimentalEnabled: true,
-            });
-      expect(result).toMatchObject({ accepted: true, completed: true });
-      // The preset and queue probes fail on this fixture, as on a CLI without those methods.
-      expect(f.app.sent).toEqual([
-        "model/list",
-        "collaborationMode/list",
-        "thread/goal/get",
-        "thread/resume",
-        "thread/queue/list",
-      ]);
+  const resumeRequests = [
+    "model/list",
+    "collaborationMode/list",
+    "thread/goal/get",
+    "thread/resume",
+  ];
+  // The fixture also covers a CLI without the optional preset and queue reads.
+  const firstSendRequests = [...resumeRequests, "thread/queue/list", "model/list", "turn/start"];
+
+  it.each(existingSessions)(
+    "sends the first message to an %s without confirmation when the native writer is free",
+    async (source) => {
+      const f = fixture();
+      const request = await f.firstSend(source);
+      const result = await f.web.managedControl(request);
+      expect(result).toMatchObject({
+        accepted: true,
+        completed: false,
+        requestId: request.requestId,
+      });
+      expect(await f.web.managedControl(request)).toEqual(result);
+      expect(f.app.sent).toEqual(firstSendRequests);
       expect(readManagedRecord(f.root, f.indexedId)?.released).toBe(false);
       expect(f.command).not.toHaveBeenCalled();
     },
   );
 
-  it("does not permanently block resume based on a saved compaction marker", async () => {
-    const f = fixture(),
-      observed = await f.observe();
-    f.releasedRecord(true, { activity: "compacting", turnId: "old-manual-turn" });
-    const result = await f.web.managedResume({
-      operation: "resume",
-      sessionId: f.indexedId,
-      requestId: randomUUID(),
-      deviceId: "fixture",
-      handoffConfirmed: true,
-      runtimeBootId: observed.runtimeBootId,
-      experimentalEnabled: true,
+  it("sends to a released session with a saved compaction marker", async () => {
+    const f = fixture();
+    const request = await f.firstSend("released session", {
+      activity: "compacting",
+      turnId: "old-manual-turn",
     });
-    expect(result).toMatchObject({
+    expect(await f.web.managedControl(request)).toMatchObject({
       accepted: true,
-      completed: true,
-      live: { activity: null, status: "idle" },
+      completed: false,
     });
-    expect(f.app.sent).toContain("thread/resume");
+    expect(await f.web.request({ operation: "live", sessionId: f.indexedId })).toMatchObject({
+      activity: null,
+      status: "running",
+      turnId: "sent-turn",
+    });
+    expect(f.app.sent).toEqual(firstSendRequests);
   });
 
-  it.each(["adopt", "resume"])(
-    "does not use a compacting follower snapshot to gate %s",
-    async (operation) => {
-      const f = fixture(),
-        observed = await f.observe();
-      if (operation === "resume") f.releasedRecord();
+  it.each(existingSessions)(
+    "sends to an %s once the writer releases a compacting follower",
+    async (source) => {
+      const f = fixture();
+      const request = await f.firstSend(source);
+      vi.spyOn(CodexFollowerConnection, "supported").mockReturnValue(true);
+      const release = f.holdWriter();
+      // Let the earlier free-writer observation expire so live reads can attach the follower.
+      const now = Date.now.bind(Date);
+      vi.spyOn(Date, "now").mockImplementation(() => now() + 5_000);
       f.followerSnapshot(true);
-      const base = {
-        operation,
-        sessionId: f.indexedId,
-        requestId: randomUUID(),
-        deviceId: "fixture",
-        handoffConfirmed: true,
-      };
-      const result =
-        operation === "adopt"
-          ? await f.web.managedLifecycle(base)
-          : await f.web.managedResume({
-              ...base,
-              runtimeBootId: observed.runtimeBootId,
-              experimentalEnabled: true,
-            });
-      expect(result).toMatchObject({ accepted: true, completed: true });
+      expect(
+        await f.web.request({
+          operation: "live",
+          sessionId: f.indexedId,
+          experimentalEnabled: true,
+        }),
+      ).toMatchObject({ executionMode: "codex-follower", activity: "compacting" });
+      release();
+
+      expect(await f.web.managedControl(request)).toMatchObject({
+        accepted: true,
+        completed: false,
+      });
       expect(f.start).toHaveBeenCalledOnce();
-      // The preset and queue probes fail on this fixture, as on a CLI without those methods.
-      expect(f.app.sent).toEqual([
-        "model/list",
-        "collaborationMode/list",
-        "thread/goal/get",
-        "thread/resume",
-        "thread/queue/list",
-      ]);
+      expect(f.app.sent).toEqual(firstSendRequests);
       expect(readManagedRecord(f.root, f.indexedId)?.released).toBe(false);
       expect(f.command).not.toHaveBeenCalled();
     },
   );
 
-  it.each(["adopt", "resume"])(
-    "reports a writer acquired immediately before %s as a definite native rejection",
-    async (operation) => {
-      const f = fixture(),
-        observed = await f.observe();
-      if (operation === "resume") f.releasedRecord();
-      f.app.afterWrite = (method) => {
-        if (method === "thread/resume")
-          throw new CodexAppServerError({
-            code: -32600,
-            message: "thread already has an active writer",
-          });
-      };
-      const base = {
-        operation,
-        sessionId: f.indexedId,
-        requestId: randomUUID(),
-        deviceId: "fixture",
-        handoffConfirmed: true,
-      };
-      const result =
-        operation === "adopt"
-          ? await f.web.managedLifecycle(base)
-          : await f.web.managedResume({
-              ...base,
-              runtimeBootId: observed.runtimeBootId,
-              experimentalEnabled: true,
-            });
+  it.each(existingSessions)(
+    "reports a writer acquired before the first send to an %s as a definite native rejection",
+    async (source) => {
+      const f = fixture();
+      const request = await f.firstSend(source);
+      f.rejectNativeWriter();
+      const result = await f.web.managedControl(request);
       expect(result).toMatchObject({
         accepted: false,
+        completed: false,
         controlOutcome: "not-dispatched",
         reason: "codex-owner-busy",
       });
-      // The preset probe fails on this fixture; the rejected resume ends startup before the queue probe.
-      expect(f.app.sent).toEqual([
-        "model/list",
-        "collaborationMode/list",
-        "thread/goal/get",
-        "thread/resume",
-      ]);
+      expect(await f.web.managedControl(request)).toEqual(result);
+      expect(f.app.sent).toEqual(resumeRequests);
       expect(readManagedRecord(f.root, f.indexedId)?.released).toBe(true);
       expect(readUnknownManagedCommands(f.root, f.indexedId)).toEqual([]);
       expect(f.command).not.toHaveBeenCalled();
     },
   );
 
-  it.each(["adopt", "resume"])(
-    "keeps the final writer rejection authoritative for %s after model/goal reads",
-    async (operation) => {
-      const f = fixture(),
-        observed = await f.observe();
-      if (operation === "resume") f.releasedRecord();
+  it.each(existingSessions)(
+    "keeps the final writer rejection authoritative for an %s after model and goal reads",
+    async (source) => {
+      const f = fixture();
+      const request = await f.firstSend(source);
       f.app.beforeRequest = (method) => {
-        if (method === "model/list") f.followerSnapshot(true);
+        if (method === "thread/goal/get") f.followerSnapshot(true);
       };
-      f.app.afterWrite = (method) => {
-        if (method === "thread/resume")
-          throw new CodexAppServerError({
-            code: -32600,
-            message: "thread already has an active writer",
-          });
-      };
-      const base = {
-        operation,
-        sessionId: f.indexedId,
-        requestId: randomUUID(),
-        deviceId: "fixture",
-        handoffConfirmed: true,
-      };
-      const result =
-        operation === "adopt"
-          ? await f.web.managedLifecycle(base)
-          : await f.web.managedResume({
-              ...base,
-              runtimeBootId: observed.runtimeBootId,
-              experimentalEnabled: true,
-            });
-      expect(result).toMatchObject({
+      f.rejectNativeWriter();
+      expect(await f.web.managedControl(request)).toMatchObject({
         accepted: false,
+        completed: false,
         controlOutcome: "not-dispatched",
         reason: "codex-owner-busy",
       });
-      // The preset probe fails on this fixture; the rejected resume ends startup before the queue probe.
-      expect(f.app.sent).toEqual([
-        "model/list",
-        "collaborationMode/list",
-        "thread/goal/get",
-        "thread/resume",
-      ]);
+      expect(f.app.sent).toEqual(resumeRequests);
       expect(readManagedRecord(f.root, f.indexedId)?.released).toBe(true);
+      expect(readUnknownManagedCommands(f.root, f.indexedId)).toEqual([]);
     },
   );
 
-  it.each(["adopt", "resume"])(
-    "keeps %s independent of an unconnected follower stream reset",
-    async (operation) => {
-      const f = fixture(),
-        observed = await f.observe();
-      if (operation === "resume") f.releasedRecord();
+  it.each(existingSessions)(
+    "sends to an %s despite an unconnected follower stream reset",
+    async (source) => {
+      const f = fixture();
+      const request = await f.firstSend(source);
       f.app.beforeWrite = (method) => {
         if (method === "thread/resume") f.followerState.invalidate("disconnected");
       };
-      const base = {
-        operation,
-        sessionId: f.indexedId,
-        requestId: randomUUID(),
-        deviceId: "fixture",
-        handoffConfirmed: true,
-      };
-      const result =
-        operation === "adopt"
-          ? await f.web.managedLifecycle(base)
-          : await f.web.managedResume({
-              ...base,
-              runtimeBootId: observed.runtimeBootId,
-              experimentalEnabled: true,
-            });
-      expect(result).toMatchObject({ accepted: true, completed: true });
-      // The preset and queue probes fail on this fixture, as on a CLI without those methods.
-      expect(f.app.sent).toEqual([
-        "model/list",
-        "collaborationMode/list",
-        "thread/goal/get",
-        "thread/resume",
-        "thread/queue/list",
-      ]);
+      expect(await f.web.managedControl(request)).toMatchObject({
+        accepted: true,
+        completed: false,
+      });
+      expect(f.app.sent).toEqual(firstSendRequests);
       expect(readUnknownManagedCommands(f.root, f.indexedId)).toEqual([]);
     },
   );

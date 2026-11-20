@@ -128,7 +128,7 @@ describe("reader handoff entries", () => {
   });
   it("does not expose the old Codex handoff even when legacy capabilities advertise adoption", async () => {
     session.capabilities!.features.resume = { available: false };
-    session.capabilities!.features.adopt = { available: true };
+    Object.assign(session.capabilities!.features, { adopt: { available: true } });
     render(<View />);
     expect(screen.getByText("Existing composer")).toBeVisible();
     expect(screen.queryByText("Handoff required")).not.toBeInTheDocument();
@@ -202,7 +202,7 @@ describe("reader handoff entries", () => {
   });
   it("leaves Claude's existing strictly gated composer entry in place without adding a duplicate reader shortcut", () => {
     session.current!.agent = "claude-code";
-    session.capabilities!.features.adopt = { available: true };
+    Object.assign(session.capabilities!.features, { adopt: { available: true } });
     session.capabilities!.features.resume = { available: false };
     render(<View />);
     expect(screen.getByText("Existing composer")).toBeVisible();

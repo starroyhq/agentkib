@@ -30,6 +30,7 @@ function fixture(options: { metadata?: boolean } = {}) {
     nativeId: "thread-one",
   };
   const rollout = path.join(root, "rollout.jsonl");
+  target.transcript = rollout;
   writeFileSync(rollout, "synthetic fixture\n");
   let listMode: "supported" | "no-receipts" | "unsupported" | "second-page" = "supported";
   let revision = "one",
@@ -40,6 +41,9 @@ function fixture(options: { metadata?: boolean } = {}) {
   let race = false,
     empty = false,
     active = false,
+    runningStatus: "inProgress" | "interrupted" = "inProgress",
+    runningCompletedAt: number | null = null,
+    ownerTurnId: string | null = null,
     turnsUnsupported = false,
     page = 0;
   const thread = (id: unknown, updatedAt: number) => ({
@@ -71,7 +75,9 @@ function fixture(options: { metadata?: boolean } = {}) {
           data: empty
             ? []
             : [
-                ...(active ? [{ id: "running", status: "inProgress" }] : []),
+                ...(active
+                  ? [{ id: "running", status: runningStatus, completedAt: runningCompletedAt }]
+                  : []),
                 { id: race ? "new-turn" : "turn-one", status: "completed", completedAt: 1 },
               ],
           nextCursor: null,
@@ -115,7 +121,7 @@ function fixture(options: { metadata?: boolean } = {}) {
     },
   );
   const changed = vi.fn(),
-    owner = new CodexReadStateObserver({}, changed, start);
+    owner = new CodexReadStateObserver({}, changed, start, () => ownerTurnId);
   cleanups.push(() => owner.close());
   return {
     owner,
@@ -164,6 +170,19 @@ function fixture(options: { metadata?: boolean } = {}) {
     active: () => {
       active = true;
     },
+    interrupted: (completedAt: number | null, receive: boolean, owner: string | null = null) => {
+      active = true;
+      runningStatus = "interrupted";
+      runningCompletedAt = completedAt;
+      ownerTurnId = owner;
+      if (receive) firstUnread = { type: "turn", turnId: "running" };
+    },
+    terminalRecord: (turnId: string, type: "turn_aborted" | "task_complete") => {
+      appendFileSync(
+        rollout,
+        `${JSON.stringify({ type: "event_msg", payload: { turn_id: turnId, type } })}\n`,
+      );
+    },
     manualUnread: () => {
       revision = "manual";
       firstUnread = { type: "threadStart" };
@@ -176,6 +195,54 @@ function fixture(options: { metadata?: boolean } = {}) {
 }
 
 describe("authoritative native Codex receipt observation", () => {
+  it("withholds an observer's unconfirmed interruption from read acknowledgement", async () => {
+    const f = fixture();
+    f.interrupted(null, true);
+    f.terminalRecord("different-turn", "turn_aborted");
+    const state = await f.owner.refresh(f.target, "a");
+    expect(state).toMatchObject({
+      status: "unread",
+      freshness: "stale",
+      version: null,
+      latestResult: { id: "turn:turn-one", outcome: "completed" },
+    });
+    await expect(f.owner.update(f.target, "a", "stale", "turn:turn-one")).rejects.toThrow(
+      "read-state-unavailable",
+    );
+    expect(f.calls.some((call) => call.method === "thread/readState/update")).toBe(false);
+    f.terminalRecord("running", "turn_aborted");
+    expect(await f.owner.refresh(f.target, "a")).toMatchObject({
+      status: "unread",
+      freshness: "current",
+      latestResult: { id: "turn:running", outcome: "cancelled", completedAt: null },
+    });
+  });
+
+  it("uses matching live-owner proof, and a normal transcript result can correct an observer interruption", async () => {
+    const f = fixture();
+    f.interrupted(10, true);
+    expect(await f.owner.refresh(f.target, "a")).toMatchObject({
+      freshness: "current",
+      latestResult: { id: "turn:running", outcome: "cancelled" },
+    });
+    f.interrupted(10, true, "running");
+    expect(f.owner.cached(f.target, "a")).toMatchObject({
+      freshness: "stale",
+      version: null,
+      latestResult: null,
+    });
+    expect(await f.owner.refresh(f.target, "a")).toMatchObject({
+      freshness: "stale",
+      latestResult: { id: "turn:turn-one" },
+    });
+    f.interrupted(null, true);
+    f.terminalRecord("running", "task_complete");
+    expect(await f.owner.refresh(f.target, "a")).toMatchObject({
+      freshness: "current",
+      latestResult: { id: "turn:running", outcome: "completed" },
+    });
+  });
+
   it("rechecks authoritative receipts without decoding unchanged rollouts or notifying again", async () => {
     vi.useFakeTimers();
     const f = fixture({ metadata: true });

@@ -65,8 +65,10 @@ vi.mock("@/features/sessions/new-session/use-new-session", () => ({
   failureOf: () => ({ reason: "failed" }),
   useNewSession: () => ({
     ready: true,
+    fullAccess: true,
+    optionsAccessDenied: false,
+    optionsData: { available: true, models: [] },
     options: {
-      data: { available: true, models: [] },
       isError: false,
       isFetching: false,
       refetch: vi.fn(),
@@ -133,6 +135,53 @@ describe("menu bar popover", () => {
       }),
     );
     expect(input).toHaveValue("");
+  });
+
+  it("starts Devin with its first message and opens the session without another draft", async () => {
+    localStorage.setItem(
+      "agentkib.newSession.target",
+      JSON.stringify({ workspaceId: "workspace", agent: "devin" }),
+    );
+    renderPopover();
+    const input = screen.getByRole("textbox", { name: /New session/ });
+    fireEvent.change(input, { target: { value: "  Fix the login timeout  " } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    await waitFor(() =>
+      expect(state.create).toHaveBeenCalledExactlyOnceWith({
+        agent: "devin",
+        workspaceId: "workspace",
+        prompt: "Fix the login timeout",
+      }),
+    );
+    expect(shell.openMain).toHaveBeenCalledExactlyOnceWith({
+      page: "sessions",
+      session_id: "new-session",
+      configure_popover: false,
+    });
+    expect(input).toHaveValue("");
+  });
+
+  it("creates a Claude Code session before handing off the first message", async () => {
+    localStorage.setItem(
+      "agentkib.newSession.target",
+      JSON.stringify({ workspaceId: "workspace", agent: "claude-code" }),
+    );
+    renderPopover();
+    const input = screen.getByRole("textbox", { name: /New session/ });
+    fireEvent.change(input, { target: { value: "Fix the login timeout" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    await waitFor(() =>
+      expect(state.create).toHaveBeenCalledExactlyOnceWith({
+        agent: "claude-code",
+        workspaceId: "workspace",
+      }),
+    );
+    expect(shell.openMain).toHaveBeenCalledExactlyOnceWith({
+      page: "sessions",
+      session_id: "new-session",
+      draft: "Fix the login timeout",
+      configure_popover: false,
+    });
   });
 
   it("opens an Agent's quota windows from its ring", () => {

@@ -125,14 +125,36 @@ describe("local Antigravity sessions remain browse-only", () => {
     },
   );
 
-  it("keeps existing ACP histories on their existing control path", async () => {
+  it("reads ACP state and usage without connecting, then prepares execution only for send", async () => {
     const f = fixture("synthetic-acp-session");
-    await expect(
-      f.web.managedQuery({ operation: "capabilities", sessionId: f.id, experimentalEnabled: true }),
-    ).resolves.toMatchObject({
-      reason: "synthetic-acp-connect",
+    const capabilities = (await f.web.managedQuery({
+      operation: "capabilities",
+      sessionId: f.id,
+      experimentalEnabled: true,
+    })) as { runtimeBootId: string };
+    expect(capabilities).toMatchObject({
+      status: "idle",
+      features: { send: { available: true }, stop: { available: false } },
     });
-    expect(f.executable).toHaveBeenCalledOnce();
+    await expect(f.web.request({ operation: "usage", sessionId: f.id })).resolves.toMatchObject({
+      available: false,
+    });
+    await expect(
+      f.web.request({ operation: "live", sessionId: f.id, experimentalEnabled: true }),
+    ).resolves.toMatchObject({ status: "idle", revision: 0, sendEnabled: true });
+    expect(f.connect).not.toHaveBeenCalled();
+    await expect(
+      f.web.managedControl({
+        operation: "send",
+        sessionId: f.id,
+        requestId: randomUUID(),
+        runtimeBootId: capabilities.runtimeBootId,
+        expectedRevision: 0,
+        experimentalEnabled: true,
+        text: "Continue",
+      }),
+    ).rejects.toThrow("synthetic-acp-connect");
     expect(f.connect).toHaveBeenCalledOnce();
+    expect(readUnknownManagedCommands(f.root, f.id)).toEqual([]);
   });
 });

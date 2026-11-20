@@ -111,6 +111,86 @@ describe("SessionHandoffDialog", () => {
   });
   afterEach(cleanup);
 
+  it.each(["codex", "claude-code", "deepseek-harness", "devin", "antigravity"] as const)(
+    "does not prepare a same-Agent import for a %s conversation that can continue in its composer",
+    async (agent) => {
+      render(
+        <SessionHandoffDialog
+          workspace={workspace}
+          session={{ ...session, agent }}
+          targetAgents={[agent]}
+          initialRequest={{
+            sessionId: session.id,
+            targetAgent: agent,
+            historyBudgetTokens: 120000,
+            format: "markdown",
+            autoPrepare: true,
+          }}
+          onClose={vi.fn()}
+          onPlanned={vi.fn()}
+          onMcpConnectionPlanned={vi.fn()}
+        />,
+      );
+      expect(
+        await screen.findByRole("button", { name: "Inspect transferable content" }),
+      ).toBeDisabled();
+      expect(api.prepareSessionHandoff).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["cursor", "opencode", "open-claw", "hermes", "grok-build"] as const)(
+    "keeps explicit native import available for a read-only %s source",
+    async (agent) => {
+      vi.mocked(api.prepareSessionHandoff).mockResolvedValue({ status: "ready", draft });
+      render(
+        <SessionHandoffDialog
+          workspace={workspace}
+          session={{ ...session, agent }}
+          targetAgents={[]}
+          initialRequest={{
+            sessionId: session.id,
+            targetAgent: agent,
+            historyBudgetTokens: 120000,
+            format: "markdown",
+            autoPrepare: true,
+          }}
+          onClose={vi.fn()}
+          onPlanned={vi.fn()}
+          onMcpConnectionPlanned={vi.fn()}
+        />,
+      );
+      await waitFor(() =>
+        expect(api.prepareSessionHandoff).toHaveBeenCalledWith(
+          expect.objectContaining({ session_id: session.id, target_agent: agent }),
+        ),
+      );
+    },
+  );
+
+  it("does not automatically turn a retired same-Agent request into a cross-Agent import", async () => {
+    render(
+      <SessionHandoffDialog
+        workspace={workspace}
+        session={session}
+        targetAgents={["claude-code"]}
+        initialRequest={{
+          sessionId: session.id,
+          targetAgent: "codex",
+          historyBudgetTokens: 120000,
+          format: "markdown",
+          autoPrepare: true,
+        }}
+        onClose={vi.fn()}
+        onPlanned={vi.fn()}
+        onMcpConnectionPlanned={vi.fn()}
+      />,
+    );
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Inspect transferable content" })).toBeEnabled(),
+    );
+    expect(api.prepareSessionHandoff).not.toHaveBeenCalled();
+  });
+
   it("requires an explicitly selected IDE window even when one is connected", async () => {
     render(
       <SessionHandoffDialog
@@ -313,8 +393,8 @@ describe("SessionHandoffDialog", () => {
     render(
       <SessionHandoffDialog
         workspace={workspace}
-        session={session}
-        targetAgents={[]}
+        session={{ ...session, agent: "opencode" }}
+        targetAgents={["codex"]}
         onClose={vi.fn()}
         onPlanned={vi.fn()}
         onMcpConnectionPlanned={vi.fn()}

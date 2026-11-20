@@ -4,6 +4,7 @@ import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { codexTurnErrorEvent } from "../../../packages/backend/src/codex-turn-error";
 import { LeadRegistry } from "../../../packages/backend/src/orchestration-registry";
 import {
   LEAD_INSTRUCTIONS,
@@ -57,7 +58,11 @@ function host(overrides: Partial<LaneHost> = {}) {
     options: async () => ({ available: true, models: [{ value: "gpt-x" }] }),
     lifecycle: async (value) => {
       calls.push({ kind: "lifecycle", ...value });
-      return { accepted: true };
+      return {
+        accepted: true,
+        requestId: value.requestId,
+        sessionId: createHash("sha256").update(`managed:${value.requestId}`).digest("hex"),
+      };
     },
     control: async (value) => {
       calls.push({ kind: "control", ...value });
@@ -93,8 +98,9 @@ function service(
   root = directory(),
   bootId = "boot-1",
   sendReport: (lead: string, device: string, text: string) => boolean = () => false,
+  isLeadCapable = (id: string) => id === LEAD,
 ) {
-  const created = new OrchestrationService(root, bootId, lanes, (id) => id === LEAD, sendReport);
+  const created = new OrchestrationService(root, bootId, lanes, isLeadCapable, sendReport);
   cleanups.push(() => created.close());
   return created;
 }
@@ -124,6 +130,7 @@ describe("lead registry", () => {
       paused: true,
       reason: "restart-confirmation-required",
       bootId: "boot-2",
+      scope: { maxLanes: 4 },
     });
     expect(() =>
       second.create({
@@ -174,79 +181,338 @@ describe("orchestration service", () => {
       scope: {
         workspaceIds: ["w1"],
         policies: ["workspace-write-on-request"],
-        maxLanes: 4,
+        maxLanes: 10,
         maxAutoTurns: 25,
       },
       paused: false,
     });
   });
 
-  it("opens lanes in allowed workspaces and takes over existing Codex sessions", async () => {
+  it.each([true, false])(
+    "links an existing Codex worker with managed=%s and leaves execution preparation to send",
+    async (managed) => {
+      const { lanes, calls } = host({ managed: async () => managed });
+      const orchestration = service(lanes);
+      orchestration.designate({
+        sessionId: LEAD,
+        deviceId: DEVICE,
+        workspaceId: "w1",
+        scope: {
+          workspaceIds: ["w1", "w2"],
+          policies: ["workspace-write-on-request", "workspace-write-auto-review"],
+          maxLanes: 2,
+        },
+      });
+      const opened = parse(
+        await orchestration.call(LEAD, "worker_open", {
+          name: "api",
+          workspace: "w2",
+          policy: "workspace-write-auto-review",
+        }),
+      );
+      const create = calls.find((call) => call.operation === "create")!;
+      expect(create).toMatchObject({
+        workspaceId: "w2",
+        policyId: "workspace-write-auto-review",
+        deviceId: DEVICE,
+      });
+      // The Codex session follows from the request id, as web-read derives it.
+      expect(opened).toEqual({
+        accepted: true,
+        worker: "api",
+        agent: "codex",
+        session: createHash("sha256").update(`managed:${create.requestId}`).digest("hex"),
+      });
+      expect(
+        parse(
+          await orchestration.call(LEAD, "worker_open", { name: "old", session: "codex-existing" }),
+        ),
+      ).toMatchObject({
+        accepted: true,
+        session: "codex-existing",
+      });
+      expect(calls.filter((call) => call.kind === "lifecycle")).toEqual([create]);
+      expect(
+        parse(
+          await orchestration.call(LEAD, "worker_send", { worker: "old", text: "Review this" }),
+        ),
+      ).toMatchObject({ accepted: true, operation: "send" });
+      expect(calls.filter((call) => call.kind === "control")).toEqual([
+        expect.objectContaining({
+          operation: "send",
+          sessionId: "codex-existing",
+          deviceId: DEVICE,
+          runtimeBootId: "boot",
+          expectedRevision: 3,
+          text: "Review this",
+        }),
+      ]);
+      for (const [input, reason] of [
+        [{ name: "third", workspace: "w1" }, "worker-limit-reached"],
+        [{ name: "api", workspace: "w1" }, "worker-name-taken"],
+      ] as const)
+        expect(parse(await orchestration.call(LEAD, "worker_open", input))).toMatchObject({
+          accepted: false,
+          reason,
+        });
+      const narrow = service(lanes);
+      narrow.designate({ sessionId: LEAD, deviceId: DEVICE, workspaceId: "w1" });
+      for (const [input, reason] of [
+        [{ name: "a", workspace: "w9" }, "workspace-not-allowed"],
+        [
+          { name: "a", workspace: "w1", policy: "workspace-write-auto-review" },
+          "policy-not-allowed",
+        ],
+        [{ name: "a", session: "codex-elsewhere" }, "workspace-not-allowed"],
+        [{ name: "a", session: "claude-other" }, "worker-requires-codex-or-dsh-session"],
+        [{ name: "a", session: LEAD }, "session-is-a-project-agent"],
+        [{ name: "a" }, "worker-needs-workspace-or-session"],
+        [{ name: "-bad", workspace: "w1" }, "invalid-worker-name"],
+      ] as const)
+        expect(parse(await narrow.call(LEAD, "worker_open", input))).toMatchObject({
+          accepted: false,
+          reason,
+        });
+    },
+  );
+
+  it("creates only one session when concurrent opens compete for the last worker slot", async () => {
     const { lanes, calls } = host();
+    const createStarted = Promise.withResolvers<void>();
+    const secondCreateStarted = Promise.withResolvers<void>();
+    const finishCreate = Promise.withResolvers<void>();
+    const lifecycle = lanes.lifecycle;
+    let creates = 0;
+    lanes.lifecycle = async (input) => {
+      if (++creates === 1) createStarted.resolve();
+      else secondCreateStarted.resolve();
+      await finishCreate.promise;
+      return lifecycle(input);
+    };
     const orchestration = service(lanes);
     orchestration.designate({
       sessionId: LEAD,
       deviceId: DEVICE,
       workspaceId: "w1",
-      scope: {
-        workspaceIds: ["w1", "w2"],
-        policies: ["workspace-write-on-request", "workspace-write-auto-review"],
-        maxLanes: 2,
+      scope: { maxLanes: 1 },
+    });
+    const config = (await orchestration.leadTools(LEAD)) as {
+      mcpServers: Record<string, { url: string }>;
+    };
+    const client = new Client({ name: "probe", version: "0" });
+    await client.connect(
+      new StreamableHTTPClientTransport(new URL(config.mcpServers.agentkib_workers!.url)),
+    );
+    cleanups.push(() => client.close());
+    const open = (name: string) =>
+      client.callTool({ name: "worker_open", arguments: { name, workspace: "w1" } });
+
+    const first = open("api");
+    await createStarted.promise;
+    const second = open("web");
+    // Release the first creation as soon as the competing request is refused or reaches the host.
+    await Promise.race([second, secondCreateStarted.promise]).finally(finishCreate.resolve);
+    const [opened, refused] = (await Promise.all([first, second])).map((result) =>
+      parse(result.content[0]),
+    );
+
+    expect(opened).toMatchObject({ accepted: true, worker: "api" });
+    expect(refused).toMatchObject({ accepted: false, reason: "worker-limit-reached" });
+    expect(calls.filter((call) => call.operation === "create")).toHaveLength(1);
+    expect(orchestration.status(LEAD)!.lanes).toEqual([
+      expect.objectContaining({ name: "api", sessionId: opened.session }),
+    ]);
+  });
+
+  describe("assigning existing sessions", () => {
+    const OWNER = { sessionId: LEAD, deviceId: DEVICE, workspaceId: "w1" };
+
+    it("creates the lead and all selected relationships without starting a session or sending", async () => {
+      const sessions: Record<string, NonNullable<ReturnType<LaneHost["session"]>>> = {
+        "existing-api": { agent: "codex", workspaceId: "w1", title: "API" },
+        "existing-tests": { agent: "deepseek-harness", workspaceId: "w2", title: "Tests" },
+        elsewhere: { agent: "codex", workspaceId: "w9", title: null },
+        "claude-other": { agent: "claude-code", workspaceId: "w1", title: null },
+      };
+      const { lanes, calls } = host({
+        session: (id) => sessions[id] ?? null,
+        managed: async (id) => id === "existing-tests",
+      });
+      const orchestration = service(lanes);
+      expect(
+        await orchestration.assignWorkers({
+          ...OWNER,
+          workers: ["existing-api", "existing-tests"],
+        }),
+      ).toEqual({ designated: true });
+      expect(orchestration.status(LEAD)).toMatchObject({
+        scope: {
+          workspaceIds: ["w1", "w2"],
+          policies: ["workspace-write-on-request"],
+          approvals: [],
+          answers: false,
+        },
+        lanes: [
+          { sessionId: "existing-api", agent: "codex", name: "worker-1", policyId: null },
+          {
+            sessionId: "existing-tests",
+            agent: "deepseek-harness",
+            name: "worker-2",
+            policyId: null,
+          },
+        ],
+      });
+      expect(
+        await orchestration.assignmentOptions(LEAD, "w1", [
+          "existing-api",
+          "elsewhere",
+          "claude-other",
+        ]),
+      ).toEqual({
+        capable: true,
+        remaining: 8,
+        candidates: [
+          { sessionId: "existing-api", reason: "session-is-a-worker", assigned: true },
+          { sessionId: "elsewhere", reason: "workspace-not-allowed" },
+          { sessionId: "claude-other", reason: "worker-requires-codex-or-dsh-session" },
+        ],
+      });
+      await expect(
+        orchestration.assignWorkers({ ...OWNER, workers: ["elsewhere"] }),
+      ).rejects.toThrow("workspace-not-allowed");
+      orchestration.pause(LEAD);
+      expect(await orchestration.assignmentOptions(LEAD, "w1", [])).toMatchObject({
+        remaining: 0,
+        reason: "delegation-paused",
+      });
+      expect(calls).toEqual([]);
+    });
+
+    it("allows ten workers in one assignment and refuses an eleventh without partial changes", async () => {
+      const sessions = Array.from({ length: 11 }, (_, index) => `existing-${index + 1}`);
+      const { lanes, calls } = host({
+        session: (id) =>
+          sessions.includes(id) ? { agent: "codex", workspaceId: "w1", title: null } : null,
+      });
+      const orchestration = service(lanes);
+      expect(await orchestration.assignmentOptions(LEAD, "w1", [])).toMatchObject({
+        capable: true,
+        remaining: 10,
+      });
+      await expect(orchestration.assignWorkers({ ...OWNER, workers: sessions })).rejects.toThrow(
+        "worker-limit-reached",
+      );
+      expect(orchestration.status(LEAD)).toBeNull();
+
+      const workers = sessions.slice(0, 10);
+      await expect(orchestration.assignWorkers({ ...OWNER, workers })).resolves.toEqual({
+        designated: true,
+      });
+      const lead = orchestration.status(LEAD);
+      expect(lead?.lanes.map((lane) => lane.sessionId)).toEqual(workers);
+      expect(await orchestration.assignmentOptions(LEAD, "w1", [])).toMatchObject({
+        remaining: 0,
+      });
+      await expect(
+        orchestration.assignWorkers({ ...OWNER, workers: sessions.slice(10) }),
+      ).rejects.toThrow("worker-limit-reached");
+      expect(orchestration.status(LEAD)).toEqual(lead);
+      expect(calls).toEqual([]);
+    });
+
+    it("rolls back the entire first assignment if a selected session already leads", async () => {
+      const orchestration = service(host().lanes, directory(), "boot-1", undefined, () => true);
+      orchestration.designate({
+        sessionId: "codex-elsewhere",
+        deviceId: DEVICE,
+        workspaceId: "w9",
+      });
+      expect(
+        await orchestration.assignmentOptions(LEAD, "w1", ["codex-existing", "codex-elsewhere"]),
+      ).toMatchObject({
+        candidates: [
+          { sessionId: "codex-existing", reason: null },
+          { sessionId: "codex-elsewhere", reason: "session-is-a-project-agent" },
+        ],
+      });
+      await expect(
+        orchestration.assignWorkers({
+          ...OWNER,
+          workers: ["codex-existing", "codex-elsewhere"],
+        }),
+      ).rejects.toThrow("session-is-a-project-agent");
+      expect(orchestration.status(LEAD)).toBeNull();
+      expect(orchestration.registry.leadOfLane("codex-existing")).toBeNull();
+    });
+
+    it("keeps a worker exclusive to one lead across the desktop and model assignment paths", async () => {
+      const available = Promise.withResolvers<boolean>();
+      const { lanes } = host({
+        session: (id) =>
+          id === "dsh-one" ? { agent: "deepseek-harness", workspaceId: "w1", title: null } : null,
+        managed: () => available.promise,
+      });
+      const orchestration = service(lanes, directory(), "boot-1", undefined, () => true);
+      orchestration.designate({
+        sessionId: "other-lead",
+        deviceId: DEVICE,
+        workspaceId: "w1",
+      });
+      const tool = orchestration.call("other-lead", "worker_open", {
+        name: "one",
+        session: "dsh-one",
+      });
+      const desktop = orchestration.assignWorkers({ ...OWNER, workers: ["dsh-one"] });
+      available.resolve(true);
+      expect(parse(await tool)).toMatchObject({ accepted: true });
+      await expect(desktop).rejects.toThrow("session-is-a-worker");
+      expect(orchestration.status(LEAD)).toBeNull();
+      expect(orchestration.registry.leadOfLane("dsh-one")?.lead.sessionId).toBe("other-lead");
+      expect(() =>
+        orchestration.designate({ sessionId: "dsh-one", deviceId: DEVICE, workspaceId: "w1" }),
+      ).toThrow("session-is-a-worker");
+    });
+  });
+
+  it.each([
+    ["refused", "codex-owner-busy"],
+    ["unknown", "worker-open-unconfirmed"],
+    ["wrong-session", "worker-open-failed"],
+    ["wrong-request", "worker-open-failed"],
+  ])("keeps a %s Codex create out of the worker registry", async (outcome, reason) => {
+    let expectedSession = "";
+    const { lanes } = host({
+      lifecycle: async (value) => {
+        expectedSession = createHash("sha256").update(`managed:${value.requestId}`).digest("hex");
+        if (outcome === "refused")
+          return {
+            accepted: false,
+            controlOutcome: "not-dispatched",
+            reason: "codex-owner-busy",
+            requestId: value.requestId,
+            sessionId: expectedSession,
+          };
+        if (outcome === "unknown")
+          return {
+            accepted: false,
+            controlOutcome: "unknown",
+            requestId: value.requestId,
+            sessionId: expectedSession,
+          };
+        return {
+          accepted: true,
+          requestId: outcome === "wrong-request" ? "another-request" : value.requestId,
+          sessionId: outcome === "wrong-session" ? "another-session" : expectedSession,
+        };
       },
     });
-    const opened = parse(
-      await orchestration.call(LEAD, "worker_open", {
-        name: "api",
-        workspace: "w2",
-        policy: "workspace-write-auto-review",
-      }),
-    );
-    const create = calls.find((call) => call.operation === "create")!;
-    expect(create).toMatchObject({
-      workspaceId: "w2",
-      policyId: "workspace-write-auto-review",
-      deviceId: DEVICE,
-    });
-    // The Codex session follows from the request id, as web-read derives it.
-    expect(opened).toEqual({
-      accepted: true,
-      worker: "api",
-      agent: "codex",
-      session: createHash("sha256").update(`managed:${create.requestId}`).digest("hex"),
-    });
-    // Already run by AgentKib: no takeover is needed.
+    const orchestration = service(lanes);
+    orchestration.designate({ sessionId: LEAD, deviceId: DEVICE, workspaceId: "w1" });
     expect(
-      parse(
-        await orchestration.call(LEAD, "worker_open", { name: "old", session: "codex-existing" }),
-      ),
-    ).toMatchObject({
-      accepted: true,
-      session: "codex-existing",
-    });
-    expect(calls.filter((call) => call.operation === "adopt")).toEqual([]);
-    for (const [input, reason] of [
-      [{ name: "third", workspace: "w1" }, "worker-limit-reached"],
-      [{ name: "api", workspace: "w1" }, "worker-name-taken"],
-    ] as const)
-      expect(parse(await orchestration.call(LEAD, "worker_open", input))).toMatchObject({
-        accepted: false,
-        reason,
-      });
-    const narrow = service(lanes);
-    narrow.designate({ sessionId: LEAD, deviceId: DEVICE, workspaceId: "w1" });
-    for (const [input, reason] of [
-      [{ name: "a", workspace: "w9" }, "workspace-not-allowed"],
-      [{ name: "a", workspace: "w1", policy: "workspace-write-auto-review" }, "policy-not-allowed"],
-      [{ name: "a", session: "codex-elsewhere" }, "workspace-not-allowed"],
-      [{ name: "a", session: "claude-other" }, "worker-requires-codex-or-dsh-session"],
-      [{ name: "a", session: LEAD }, "session-is-a-project-agent"],
-      [{ name: "a" }, "worker-needs-workspace-or-session"],
-      [{ name: "-bad", workspace: "w1" }, "invalid-worker-name"],
-    ] as const)
-      expect(parse(await narrow.call(LEAD, "worker_open", input))).toMatchObject({
-        accepted: false,
-        reason,
-      });
+      parse(await orchestration.call(LEAD, "worker_open", { name: "api", workspace: "w1" })),
+    ).toMatchObject({ accepted: false, reason, session: expectedSession });
+    expect(orchestration.status(LEAD)!.lanes).toEqual([]);
+    expect(orchestration.status(LEAD)!.records).toEqual([]);
   });
 
   it("opens DeepSeek Harness workers, whose approvals stay the user's", async () => {
@@ -317,7 +583,7 @@ describe("orchestration service", () => {
       }),
     ]);
     expect(created[0]).not.toHaveProperty("policyId");
-    // An existing DSH session is taken over as it is: nothing to adopt.
+    // An existing DSH worker stays in the runtime that serves it.
     expect(
       parse(
         await orchestration.call(LEAD, "worker_open", { name: "old", session: "dsh-existing" }),
@@ -739,7 +1005,7 @@ describe("orchestration service", () => {
         orchestration.update({ sessionId: LEAD, deviceId: DEVICE, scope: { workspaceIds: [] } }),
       ).rejects.toThrow("invalid-lead-workspaces");
       await expect(
-        orchestration.update({ sessionId: LEAD, deviceId: DEVICE, scope: { maxLanes: 9 } }),
+        orchestration.update({ sessionId: LEAD, deviceId: DEVICE, scope: { maxLanes: 11 } }),
       ).rejects.toThrow("invalid-lead-lane-limit");
       await expect(
         orchestration.update({ sessionId: "elsewhere", deviceId: DEVICE, scope: {} }),
@@ -755,7 +1021,7 @@ describe("orchestration service", () => {
       expect(await orchestration.leadTools(LEAD)).toEqual(before);
       expect(orchestration.status(LEAD)).toMatchObject({
         deviceId: DEVICE,
-        scope: { workspaceIds: ["w1", "w2"], maxLanes: 4, maxAutoTurns: 10, approvals: [] },
+        scope: { workspaceIds: ["w1", "w2"], maxLanes: 10, maxAutoTurns: 10, approvals: [] },
       });
       // Deciding approvals changes its tools. The CLI running now keeps its endpoint until the
       // next one asks for its tools.
@@ -1077,6 +1343,8 @@ describe("orchestration service", () => {
             content: "Done. api_key=sk-test-1234567890abcdef1234",
             turn_id: "t1",
           },
+          { kind: "user-message", content: "Another task", turn_id: "failed-turn" },
+          codexTurnErrorEvent("failed-with-cli-error", "CLI error details", null),
           { kind: "agent-message", content: "a later turn", turn_id: "t2" },
         ],
       });
@@ -1114,6 +1382,21 @@ describe("orchestration service", () => {
       expect(delivered[0]!.text).not.toContain("sk-test-1234567890abcdef1234");
       expect(orchestration.status(LEAD)!.lanes[0]!.lastReport?.preview).toContain("Done.");
     });
+
+    it.each(["failed-turn", "failed-with-cli-error"])(
+      "reports no reply when the failed turn only has replies from other turns (%s)",
+      async (turnId) => {
+        const { orchestration, delivered, session } = await leading();
+        await orchestration.laneTurnEnded(session, turnId, "failed");
+
+        expect(delivered).toHaveLength(1);
+        expect(delivered[0]!.text).toContain("turn ended: failed");
+        expect(delivered[0]!.text).toContain("(no reply was recorded)");
+        expect(delivered[0]!.text).not.toMatch(
+          /earlier turn|Done\.|a later turn|CLI error details/,
+        );
+      },
+    );
 
     it("counts a Codex lead's reports as they go: two at once pass its limit no further", async () => {
       const delivered: string[] = [];

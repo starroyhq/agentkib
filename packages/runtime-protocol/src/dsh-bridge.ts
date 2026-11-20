@@ -32,12 +32,18 @@ export interface DshBridgeDiscovery {
 export interface DshBridgeServices {
   sessionController: boolean;
   sessionQuery: boolean;
+  /** Cancels only a checked native turn and can look up native evidence for its end. */
+  turnScopedCancel?: boolean;
+  /** Reads the native context-pressure projection without resuming the session. */
+  contextUsage?: boolean;
   approvals: boolean;
   questions: boolean;
   /** Archive and unarchive. Plugins older than 0.2.0 do not report it. */
   workspaceController?: boolean;
-  /** Model catalog and per-session model selection. Plugins older than 0.2.0 do not report it. */
+  /** Read the model catalog and the session's selected model. */
   modelCatalog?: boolean;
+  /** Record an existing session's model and effort without saving the profile default. */
+  sessionModelSelection?: boolean;
   /** Read a model catalog before creating a session and apply its initial selection. */
   createModelSelection?: boolean;
   /** Images in prompts and reading a session's images. Plugins older than 0.3.0 do not report it. */
@@ -317,6 +323,7 @@ export interface DshBridgeDocumentPage {
 
 export type DshBridgeCommand = { commandId: string } & (
   | { type: "history"; sessionId: string; before?: number; limit: number }
+  | { type: "context-usage"; sessionId: string }
   /** One page of the session's conversation after `after`, read up to `through` when given. */
   | { type: "document"; sessionId: string; after?: number; through?: number }
   | { type: "verify"; sessionId: string; requestId: string }
@@ -341,7 +348,8 @@ export type DshBridgeCommand = { commandId: string } & (
       itemId: string;
       action: { kind: "remove" } | { kind: "steer" } | { kind: "edit"; text: string };
     }
-  | { type: "cancel"; sessionId: string }
+  | { type: "cancel-turn"; sessionId: string; turn: number }
+  | { type: "verify-turn-end"; sessionId: string; turn: number }
   | { type: "rename"; sessionId: string; title: string }
   | { type: "archive"; sessionId: string; archived: boolean }
   | { type: "fork"; sessionId: string }

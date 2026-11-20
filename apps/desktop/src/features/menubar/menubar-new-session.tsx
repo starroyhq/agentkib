@@ -1,7 +1,7 @@
 import { useRef, useState } from "react";
 import { ChevronDown, Loader2, Plus } from "lucide-react";
 import { AgentMark, agentName } from "@agentkib/agent-identity";
-import type { ManagedAgent } from "@agentkib/web-client";
+import { newSessionProvider, type ManagedAgent } from "@agentkib/web-client";
 import {
   fillCopy,
   NEW_SESSION_AGENTS,
@@ -36,7 +36,7 @@ const MENU_WORKSPACES = 8;
 /**
  * Starts a session from the menu bar in one line: Enter creates it in the last workspace and Agent
  * used, through the same create as the new-session composer, then opens it in the main window,
- * whose composer sends this text as the first message.
+ * passing a draft when the provider hasn't already sent the first message during creation.
  */
 export function MenuBarNewSession({
   workspaces,
@@ -45,7 +45,7 @@ export function MenuBarNewSession({
 }: {
   workspaces: WorkspaceSummary[];
   notInstalled: ReadonlySet<string>;
-  onCreated: (sessionId: string, text: string) => void;
+  onCreated: (sessionId: string, draft?: string) => void;
 }) {
   const { locale, tr } = useI18n();
   const copy = newSessionCopy(locale);
@@ -59,40 +59,52 @@ export function MenuBarNewSession({
   // The Agent's options are read once the person starts here: the first Codex read starts an
   // app-server, which merely opening the menu bar should not do.
   const [engaged, setEngaged] = useState(false);
-  const sent = useRef("");
+  const submittedDraft = useRef<string>(undefined);
   const composing = useRef(false);
   const session = useNewSession({
     agent,
+    workspaceId: workspace?.id,
     locale,
     readOptions: engaged,
     // A create checked after its outcome was unknown opens the session it made.
     onReconciled: (sessionId, own) => {
-      if (own) onCreated(sessionId, sent.current);
+      if (own) onCreated(sessionId, submittedDraft.current);
     },
   });
-  const options = session.options.data;
-  const unavailable = session.options.isError
-    ? failureOf(session.options.error, locale).reason
-    : options && !options.available
-      ? fillCopy(copy.agentUnavailableHere, { reason: codexReason(locale, options.reason).text })
-      : undefined;
+  const options = session.optionsData;
+  const unavailable =
+    session.options.isError && !options
+      ? failureOf(session.options.error, locale).reason
+      : options && !options.available
+        ? fillCopy(copy.agentUnavailableHere, { reason: codexReason(locale, options.reason).text })
+        : undefined;
   const busy = session.busy || (engaged && !!text.trim() && session.options.isFetching && !options);
   const canSend =
-    session.ready && !!workspace && !session.busy && !session.unknown && !!text.trim();
+    session.ready &&
+    !session.optionsAccessDenied &&
+    !!workspace &&
+    !session.busy &&
+    !session.unknown &&
+    !!text.trim();
 
   async function send() {
     if (!canSend || !workspace) return;
-    const read = options ?? (await session.options.refetch()).data;
+    const fresh = options ? undefined : await session.options.refetch();
+    const read = options ?? (fresh?.isSuccess ? fresh.data : undefined);
     if (!read?.available) return;
     const value = text.trim();
-    sent.current = value;
-    rememberNewSessionTarget({ workspaceId: workspace.id, agent });
-    const sessionId = await session.create(
-      newSessionCreateFields({ agent, workspaceId: workspace.id }, read),
+    const promptAtCreate = newSessionProvider(agent, read)?.create.mode === "with-first-message";
+    const fields = newSessionCreateFields(
+      { agent, workspaceId: workspace.id, fullAccess: session.fullAccess },
+      read,
     );
+    const draft = promptAtCreate ? undefined : value;
+    submittedDraft.current = draft;
+    rememberNewSessionTarget({ workspaceId: workspace.id, agent });
+    const sessionId = await session.create(promptAtCreate ? { ...fields, prompt: value } : fields);
     if (!sessionId) return;
     setText("");
-    onCreated(sessionId, value);
+    onCreated(sessionId, draft);
   }
 
   const notice = !workspaces.length

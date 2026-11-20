@@ -35,14 +35,14 @@ vi.mock("@/features/sessions/conversation/features/history/history-search-contro
 const wording = [
   {
     locale: "zh-CN",
-    draftHint: "草稿已保留，回到这里后会恢复。",
+    actionFork: "分支会话",
+    busyHint:
+      "这条会话正在 Claude Code 中使用，暂时无法在这里发送。草稿可继续编辑，占用解除后会自动恢复。",
     placeholder: "继续这条会话…",
     terminalHint: "审批和提问在终端中处理",
     choice: "这条会话正在 Claude Code 中使用。为避免两边同时写入，请选择：",
     fork: "分支会话并继续",
-    forkHint: "原会话不受影响，新会话会标“分支自 Original”",
     back: "回 Claude Code 继续",
-    returned: "这条会话在 AgentKib 中只读，Claude Code 那边关闭后会自动恢复",
     watch: "在终端中继续这条会话，这里会同步显示",
     terminalControls: "消息发送和停止请在终端处理，AgentKib 会同步显示。",
     ended: "后台进程已结束，下次发送时会自动继续",
@@ -58,14 +58,14 @@ const wording = [
   },
   {
     locale: "zh-Hant",
-    draftHint: "草稿已保留，回到這裡後會恢復。",
+    actionFork: "分支對話",
+    busyHint:
+      "這段對話正在 Claude Code 中使用，暫時無法在這裡傳送。草稿可繼續編輯，占用解除後會自動恢復。",
     placeholder: "繼續這段對話…",
     terminalHint: "核准和提問在終端中處理",
     choice: "這段對話正在 Claude Code 中使用。為避免兩邊同時寫入，請選擇：",
     fork: "分支對話並繼續",
-    forkHint: "原對話不受影響，新對話會標「分支自 Original」",
     back: "回 Claude Code 繼續",
-    returned: "這段對話在 AgentKib 中為唯讀，Claude Code 那邊關閉後會自動恢復",
     watch: "在終端中繼續這段對話，這裡會同步顯示",
     terminalControls: "訊息傳送和停止請在終端處理，AgentKib 會同步顯示。",
     ended: "背景程序已結束，下次傳送訊息時會自動繼續",
@@ -81,15 +81,14 @@ const wording = [
   },
   {
     locale: "en-US",
-    draftHint: "Your draft is kept and will be restored when you return here.",
+    actionFork: "Fork session",
+    busyHint:
+      "This session is in use in Claude Code, so sending here is unavailable. You can edit your draft; sending becomes available when the session is no longer in use.",
     placeholder: "Continue this session…",
     terminalHint: "Handle approvals and questions in the terminal",
     choice: "This session is in use in Claude Code. To avoid both sides writing at once, choose:",
     fork: "Fork and continue",
-    forkHint: 'The original session stays as is. The new one is marked "Forked from Original".',
     back: "Continue in Claude Code",
-    returned:
-      "This session is view only in AgentKib. You can continue here once it's closed in Claude Code.",
     watch: "Continue this session in the terminal. It stays in sync here.",
     terminalControls:
       "Send messages and stop turns in the terminal. AgentKib keeps the session in sync.",
@@ -109,15 +108,14 @@ const wording = [
   },
   {
     locale: "ja-JP",
-    draftHint: "下書きを保存しています。ここに戻ると復元されます。",
+    actionFork: "会話を分岐",
+    busyHint:
+      "この会話は Claude Code で使用中のため、ここからはまだ送信できません。下書きは編集でき、使用が終了すると自動的に再開できます。",
     placeholder: "この会話を続ける…",
     terminalHint: "承認と質問はターミナルで対応してください",
     choice: "この会話は Claude Code で使用中です。同時に書き込まれないよう、操作を選んでください：",
     fork: "会話を分岐して続ける",
-    forkHint: "元の会話には影響しません。新しい会話には「Original から分岐」と表示されます。",
     back: "Claude Code で続ける",
-    returned:
-      "この会話は AgentKib では閲覧のみです。Claude Code 側で閉じると、ここで続けられるようになります。",
     watch: "この会話はターミナルで続けてください。ここにも同期して表示されます。",
     terminalControls:
       "メッセージの送信とターンの停止はターミナルで行ってください。AgentKib に同期して表示されます。",
@@ -286,7 +284,7 @@ describe("visible session continuation terminology", () => {
 
       Object.assign(session.live!, { terminalSend: true });
       redraw(view);
-      expect(screen.getByText(expected.terminalHint)).toBeVisible();
+      expect(screen.queryByText(expected.terminalHint)).not.toBeInTheDocument();
       expect(screen.queryByRole("button", { name: session.t.stop })).not.toBeInTheDocument();
       expect(session.control).not.toHaveBeenCalled();
 
@@ -316,7 +314,7 @@ describe("visible session continuation terminology", () => {
         executionLocation: "terminal",
       });
       redraw(view);
-      expect(screen.getAllByText(expected.terminalHint)).toHaveLength(1);
+      expect(screen.queryByText(expected.terminalHint)).not.toBeInTheDocument();
       expect(screen.getByRole("textbox", { name: session.t.message })).toHaveValue("Unsent draft");
       expectNoExecutionHandoff(expected.locale);
 
@@ -326,7 +324,9 @@ describe("visible session continuation terminology", () => {
       redraw(view);
       expect(screen.getAllByText(expected.watch)).toHaveLength(1);
       expect(screen.queryByText(expected.terminalHint)).not.toBeInTheDocument();
-      expect(screen.queryByRole("textbox", { name: session.t.message })).not.toBeInTheDocument();
+      expect(screen.getByRole("textbox", { name: session.t.message })).toBeEnabled();
+      expect(screen.getByRole("textbox", { name: session.t.message })).toHaveValue("Unsent draft");
+      expect(screen.getByRole("button", { name: session.t.send })).toBeDisabled();
       expectNoExecutionHandoff(expected.locale);
 
       Object.assign(session.live!, {
@@ -337,20 +337,25 @@ describe("visible session continuation terminology", () => {
       });
       session.canSend = false;
       redraw(view);
-      expect(screen.getByText(expected.choice)).toBeVisible();
-      expect(screen.getByText(expected.draftHint)).toBeVisible();
-      expect(screen.queryByText(expected.forkHint)).not.toBeInTheDocument();
-      expect(screen.getByRole("button", { name: expected.fork })).toBeVisible();
-      expect(screen.getByRole("button", { name: expected.back })).toBeVisible();
-      expect(screen.queryByRole("textbox", { name: session.t.message })).not.toBeInTheDocument();
-      expectNoExecutionHandoff(expected.locale);
-
-      // Going back to the other client only says where to continue; it offers no resume command.
-      fireEvent.click(screen.getByRole("button", { name: expected.back }));
-      expect(screen.getAllByText(expected.returned)).toHaveLength(1);
-      expect(screen.getByText(expected.draftHint)).toBeVisible();
+      const editor = screen.getByRole("textbox", { name: session.t.message });
+      expect(editor).toBeEnabled();
+      expect(editor).toHaveValue("Unsent draft");
+      expect(screen.getAllByText(expected.busyHint)).toHaveLength(1);
+      expect(screen.getByRole("button", { name: session.t.send })).toBeDisabled();
       expect(screen.queryByText(expected.choice)).not.toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: expected.fork })).not.toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: expected.back })).not.toBeInTheDocument();
+      fireEvent.change(editor, { target: { value: "Edited while occupied" } });
+      expect(session.setMessage).toHaveBeenCalledWith("Edited while occupied");
+      session.message = "Edited while occupied";
+      redraw(view);
+      expect(screen.getByRole("textbox", { name: session.t.message })).toBe(editor);
+      fireEvent.click(screen.getByRole("button", { name: session.t.send }));
+      fireEvent.keyDown(editor, { key: "Enter" });
+      expect(session.control).not.toHaveBeenCalled();
+      expect(session.forkContinuation).not.toHaveBeenCalled();
       expect(session.client.claudeResumeCommand).not.toHaveBeenCalled();
+      expectNoExecutionHandoff(expected.locale);
 
       Object.assign(session.live!, {
         executionLocation: null,
@@ -361,7 +366,9 @@ describe("visible session continuation terminology", () => {
       session.canSend = true;
       redraw(view);
       expect(screen.getAllByText(expected.ended)).toHaveLength(1);
-      expect(screen.getByRole("textbox", { name: session.t.message })).toHaveValue("Unsent draft");
+      expect(screen.getByRole("textbox", { name: session.t.message })).toBe(editor);
+      expect(editor).toHaveValue("Edited while occupied");
+      expect(screen.getByRole("button", { name: session.t.send })).toBeEnabled();
       expect(screen.queryByText(expected.choice)).not.toBeInTheDocument();
 
       Object.assign(session.live!, {
@@ -373,8 +380,13 @@ describe("visible session continuation terminology", () => {
       session.canSend = false;
       redraw(view);
       expect(screen.getAllByText(expected.conflict)).toHaveLength(1);
-      expect(screen.getByText(expected.choice)).toBeVisible();
-      expect(screen.getByText(expected.draftHint)).toBeVisible();
+      expect(screen.queryByText(expected.choice)).not.toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: expected.fork })).not.toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: expected.back })).not.toBeInTheDocument();
+      expect(screen.getByRole("textbox", { name: session.t.message })).toBe(editor);
+      expect(editor).toHaveValue("Edited while occupied");
+      expect(editor).toBeEnabled();
+      expect(screen.getByRole("button", { name: session.t.send })).toBeDisabled();
       expectNoExecutionHandoff(expected.locale);
     },
   );
@@ -418,6 +430,7 @@ describe("visible session continuation terminology", () => {
         within(actions).queryByRole("button", { name: `${expected.terminalTitle}…` }),
       ).not.toBeInTheDocument();
       expect(within(actions).getByRole("heading", { name: expected.queue })).toBeVisible();
+      expect(within(actions).getByRole("button", { name: expected.actionFork })).toBeEnabled();
       expectNoExecutionHandoff(expected.locale, actions);
       expect(session.codexAction).not.toHaveBeenCalled();
       expect(session.client.request).not.toHaveBeenCalled();
@@ -427,6 +440,7 @@ describe("visible session continuation terminology", () => {
       redraw(view);
       const codexActions = await screen.findByRole("dialog");
       expect(within(codexActions).getByRole("heading", { name: expected.queue })).toBeVisible();
+      expect(within(codexActions).getByRole("button", { name: expected.actionFork })).toBeEnabled();
       expectNoExecutionHandoff(expected.locale, codexActions);
       expect(session.codexAction).not.toHaveBeenCalled();
     },

@@ -10,6 +10,7 @@ import { cachedConversationCatalog, refreshConversationCatalog } from "./convers
 import { useSessionViewStore } from "./session-view-store";
 import { cn } from "cn";
 import { subscribeConversationPanel } from "./conversation-panel-commands";
+import { useDesktopConversationWindow } from "./DesktopConversationWindow";
 
 const EmbeddedConversation = lazy(() =>
   import("./conversation/conversation").then((module) => ({
@@ -21,7 +22,8 @@ export function DesktopConversationPane({ sessionId }: { sessionId?: string }) {
   const { locale, tr, localizeMessage } = useI18n();
   const { select, selected, sessions, selectionVersion, conversationRefreshRevision } =
     useSessionHub();
-  const [client] = useState(createDesktopConversationClient);
+  const windowConversation = useDesktopConversationWindow();
+  const [client] = useState(() => windowConversation?.client ?? createDesktopConversationClient());
   const [catalogError, setCatalogError] = useState("");
   const navigation = useRef(0);
   const pendingNavigation = useRef<{ id: string; request: number; intent: number } | undefined>(

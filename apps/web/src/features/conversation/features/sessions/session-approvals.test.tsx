@@ -193,6 +193,7 @@ function acp() {
     current: { ...state.current!, agent: "antigravity" },
     access: {
       ...state.access!,
+      status: "approved",
       experimentalEnabled: true,
       device: {
         id: "device",

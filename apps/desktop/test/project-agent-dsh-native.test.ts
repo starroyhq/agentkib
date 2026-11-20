@@ -54,12 +54,14 @@ async function until<T>(
 type Answer = { text: string } | { tool: { name: string; arguments: Json } };
 
 /** An OpenAI-style chat-completions provider that answers each request as `script` says. */
-async function provider(script: (body: Json) => Answer = () => ({ text: REPLY })) {
+async function provider(
+  script: (body: Json) => Answer | Promise<Answer> = () => ({ text: REPLY }),
+) {
   const requests: Json[] = [];
   const server = createServer((request, response) => {
     let raw = "";
     request.on("data", (chunk) => (raw += chunk));
-    request.on("end", () => {
+    request.on("end", async () => {
       if (request.method !== "POST" || !request.url?.includes("/chat/completions")) {
         response.writeHead(404);
         response.end();
@@ -67,7 +69,8 @@ async function provider(script: (body: Json) => Answer = () => ({ text: REPLY })
       }
       const body = JSON.parse(raw) as Json;
       requests.push(body);
-      const answer = script(body);
+      const answer = await script(body);
+      if (response.destroyed) return;
       const chunk = (value: Json) =>
         `data: ${JSON.stringify({
           id: `chatcmpl-${requests.length}`,
@@ -158,6 +161,11 @@ async function sandbox(port: number) {
       "          - id: mock-model",
       "            name: Mock Model",
       "            contextWindow: 128000",
+      "          - id: mock-reasoning",
+      "            name: Mock Reasoning",
+      "            contextWindow: 128000",
+      "            reasoningEfforts: { low: low, high: high }",
+      "            compat: { supportsReasoningEffort: true }",
       "- id: agent-default-model",
       "  config:",
       "    provider: mock",
@@ -244,7 +252,7 @@ async function sandbox(port: number) {
   const presetSteps: string[] = [];
   const lanes: LaneHost = {
     options: async () => ({ available: false }),
-    dshOptions: () => bridge.createOptions(true, { start: false }),
+    dshOptions: () => bridge.createOptions(true),
     lifecycle: async ({ agent: _agent, ...value }) =>
       createDshWorker(
         {
@@ -321,6 +329,156 @@ async function sandbox(port: number) {
 describe.skipIf(
   process.platform !== "darwin" || process.env.AGENTKIB_DSH_PROJECT_AGENT_NATIVE !== "1",
 )("Project Agents and workers on a real DeepSeek Harness", () => {
+  it("stops only the requested native turn and runs the retained queued prompt once", async () => {
+    const firstPrompt = "active first prompt";
+    const queuedPrompt = "queued second prompt";
+    const wakePrompt = "start the next turn";
+    const prompts = [firstPrompt, queuedPrompt, wakePrompt];
+    const first = Promise.withResolvers<Answer>();
+    const second = Promise.withResolvers<Answer>();
+    const turnRequests: string[] = [];
+    const model = await provider((body) => {
+      // DSH can inject reminders after the user message and generate a title in a separate call.
+      const prompt = (body.messages as Json[]).findLast(
+        ({ role, content }) => role === "user" && prompts.includes(content),
+      )?.content;
+      if (!prompt) return { text: "Stop test" };
+      turnRequests.push(prompt);
+      if (prompt === wakePrompt) return { text: "NEW-PROMPT-COMPLETED" };
+      return prompt === firstPrompt ? first.promise : second.promise;
+    });
+    const { bridge, history } = await sandbox(model.port);
+    const created = await bridge.create({
+      requestId: randomUUID(),
+      deviceId: DEVICE,
+      workspaceId: "w1",
+    });
+    expect(created).toMatchObject({ accepted: true });
+    const sessionId = created.sessionId as string;
+    const live = () => bridge.live(sessionId, true);
+    const control = (operation: string, fields: Json) =>
+      bridge.request({
+        operation,
+        sessionId,
+        requestId: randomUUID(),
+        deviceId: DEVICE,
+        runtimeBootId: live().runtimeBootId,
+        expectedRevision: live().revision,
+        experimentalEnabled: true,
+        ...fields,
+      });
+
+    await until(() => live().sendEnabled === true, 30_000);
+    expect(await control("send", { text: firstPrompt })).toMatchObject({ accepted: true });
+    await until(() => turnRequests.includes(firstPrompt) && live().turnId === "dsh-turn-1", 30_000);
+    expect(live()).toMatchObject({ status: "running", stopEnabled: true });
+    expect(await control("queue-add", { text: queuedPrompt })).toMatchObject({ accepted: true });
+    await until(() => live().queuedCount === 1, 30_000);
+
+    const target = "dsh-turn-1";
+    expect(await control("stop", { turnId: target })).toMatchObject({
+      accepted: true,
+      turnId: target,
+    });
+    await until(() => live().status === "idle" && live().queuedCount === 1, 30_000);
+    expect(await bridge.endedTurns(sessionId)).toMatchObject([
+      { turnId: target, outcome: "cancelled" },
+    ]);
+    expect(turnRequests).toEqual([firstPrompt]);
+    expect(await control("send", { text: wakePrompt })).toMatchObject({ accepted: true });
+    await until(
+      () => turnRequests.includes(queuedPrompt) && live().turnId === "dsh-turn-2",
+      30_000,
+    );
+    expect(await control("stop", { turnId: target })).toMatchObject({
+      accepted: false,
+      controlOutcome: "not-dispatched",
+      reason: "stale-turn",
+    });
+    expect(live()).toMatchObject({ status: "running", turnId: "dsh-turn-2" });
+    first.resolve({ text: "FIRST-SHOULD-NOT-COMPLETE" });
+    second.resolve({ text: "QUEUED-SECOND-COMPLETED" });
+    await until(async () => (await bridge.endedTurns(sessionId)).length === 3, 30_000);
+    await until(() => live().status === "idle", 30_000);
+    expect(await bridge.endedTurns(sessionId)).toMatchObject([
+      { turnId: target, outcome: "cancelled" },
+      { turnId: "dsh-turn-2", outcome: "completed" },
+      { turnId: "dsh-turn-3", outcome: "completed" },
+    ]);
+    expect(turnRequests).toEqual(prompts);
+    expect(
+      (await history(sessionId))
+        .filter((event) => event.kind === "user-message")
+        .map((event) => event.content),
+    ).toEqual(prompts);
+  }, 180_000);
+
+  it("keeps the real native context count and capacity when DSH disconnects and the host restarts", async () => {
+    const model = await provider();
+    const { bridge, runtime } = await sandbox(model.port);
+    const created = await bridge.create({
+      requestId: randomUUID(),
+      deviceId: DEVICE,
+      workspaceId: "w1",
+    });
+    expect(created).toMatchObject({ accepted: true });
+    const sessionId = created.sessionId as string;
+    const nativeId = bridge.nativeId(sessionId)!;
+    const live = bridge.live(sessionId, true);
+    await bridge.request({ operation: "usage", sessionId });
+    expect(
+      await bridge.request({
+        operation: "send",
+        sessionId,
+        requestId: randomUUID(),
+        deviceId: DEVICE,
+        runtimeBootId: live.runtimeBootId,
+        expectedRevision: live.revision,
+        experimentalEnabled: true,
+        text: "Respond with one line.",
+      }),
+    ).toMatchObject({ accepted: true });
+    const reading = await until(() => {
+      const usage = bridge.live(sessionId, true).usage as Json;
+      return usage.state === "ready" ? usage : undefined;
+    }, 30_000);
+    expect(reading.contextWindow).toBe(128000);
+    expect(reading.usedTokens).toBeGreaterThanOrEqual(10);
+    expect(reading.percent).toBeCloseTo((reading.usedTokens / 128000) * 100, 8);
+    const delivered = () =>
+      model.requests.filter((request) =>
+        (request.messages as Json[]).some(
+          (message) => message.role === "user" && message.content === "Respond with one line.",
+        ),
+      );
+    expect(delivered()).toHaveLength(1);
+
+    await runtime.stop();
+    const cached = {
+      available: true,
+      state: "stale",
+      historical: true,
+      usedTokens: reading.usedTokens,
+      contextWindow: 128000,
+      updatedAt: reading.updatedAt,
+    };
+    await until(() => (bridge.live(sessionId, true).usage as Json).state === "stale", 10_000);
+    expect(await bridge.request({ operation: "usage", sessionId })).toMatchObject(cached);
+
+    await bridge.close();
+    const restarted = new DshBridge({
+      ...bridge.options,
+      bootId: randomUUID(),
+      managed: undefined,
+    });
+    cleanups.push(() => restarted.close());
+    restarted.initialize();
+    expect(restarted.nativeId(sessionId)).toBe(nativeId);
+    expect(restarted.live(sessionId, true).usage).toMatchObject(cached);
+    expect(await restarted.request({ operation: "usage", sessionId })).toMatchObject(cached);
+    expect(delivered()).toHaveLength(1);
+  }, 100_000);
+
   it("opens a DSH worker in workspace-write, sends it a task and reports its turn", async () => {
     const model = await provider();
     const { bridge, runtime, orchestration, reports, presetSteps } = await sandbox(model.port);
@@ -471,7 +629,16 @@ describe.skipIf(
     ).toBe(true);
   }, 300_000);
   it("counts a DSH lead's goal rounds, and at the limit stops the round; DSH pauses the goal", async () => {
-    const model = await provider();
+    // A tool record lets the host classify the round as DSH-initiated while it is still active.
+    // Hold the following model step until the host counts it or stops it at the limit.
+    const rounds = Array.from({ length: 3 }, () => Promise.withResolvers<Answer>());
+    let goalRequests = 0;
+    const model = await provider((body) => {
+      if (!body.tools?.length) return { text: REPLY };
+      const step = goalRequests++;
+      if (step % 2 === 0) return { tool: { name: "worker_list", arguments: {} } };
+      return rounds[Math.floor(step / 2)]?.promise ?? { text: REPLY };
+    });
     const { bridge, orchestration } = await sandbox(model.port);
     const created = await bridge.create({
       requestId: randomUUID(),
@@ -503,6 +670,10 @@ describe.skipIf(
         goal: { objective: "Keep checking the project." },
       }),
     ).toMatchObject({ accepted: true });
+    for (let index = 0; index < 2; index++) {
+      await until(() => (orchestration.status(lead)?.autoTurns ?? 0) > index, 30_000);
+      rounds[index]!.resolve({ text: REPLY });
+    }
     // Two rounds count; the next pauses delegation and is stopped, and DSH pauses its goal.
     await until(() => orchestration.status(lead)?.paused, 150_000);
     expect(orchestration.status(lead)).toMatchObject({ reason: "auto-turn-limit", autoTurns: 2 });
@@ -515,4 +686,74 @@ describe.skipIf(
     await new Promise((resolve) => setTimeout(resolve, 3000));
     expect(model.requests.length).toBe(asked);
   }, 300_000);
+
+  it("changes the model and effort of an existing session while preserving the profile default", async () => {
+    const model = await provider();
+    const { bridge } = await sandbox(model.port);
+    const create = async () => {
+      const result = await bridge.create({
+        requestId: randomUUID(),
+        deviceId: DEVICE,
+        workspaceId: "w1",
+      });
+      expect(result).toMatchObject({ accepted: true });
+      return String(result.sessionId);
+    };
+    const target = await create();
+    const settings = (sessionId: string) =>
+      bridge.request({ operation: "settings-state", sessionId });
+    const control = (sessionId: string, operation: string, value: Json) => {
+      const live = bridge.live(sessionId, true);
+      return bridge.request({
+        operation,
+        sessionId,
+        requestId: randomUUID(),
+        deviceId: DEVICE,
+        runtimeBootId: live.runtimeBootId,
+        expectedRevision: live.revision,
+        experimentalEnabled: true,
+        ...value,
+      });
+    };
+    const defaultSelection = { model: "mock/mock-model", effort: null };
+    expect(await settings(target)).toMatchObject({ current: defaultSelection });
+    expect(
+      await control(target, "settings", { model: "mock/mock-reasoning", effort: "low" }),
+    ).toMatchObject({ accepted: true });
+    expect(await settings(target)).toMatchObject({
+      current: { model: "mock/mock-reasoning", effort: "low" },
+      defaults: defaultSelection,
+    });
+    expect(await control(target, "settings", { effort: "high" })).toMatchObject({ accepted: true });
+    expect(await settings(target)).toMatchObject({
+      current: { model: "mock/mock-reasoning", effort: "high" },
+      defaults: defaultSelection,
+    });
+    expect(model.requests).toHaveLength(0);
+
+    const next = await create();
+    expect(await settings(next)).toMatchObject({ current: defaultSelection });
+    // Ignore the separate title request and reminders injected after the user's message.
+    const sentPrompt = (request: Json, prompt: string) =>
+      (request.messages as Json[]).some(
+        ({ role, content }) => role === "user" && content === prompt,
+      );
+    expect(await control(target, "send", { text: "SESSION-MODEL-CHECK" })).toMatchObject({
+      accepted: true,
+    });
+    const sent = await until(
+      () => model.requests.find((request) => sentPrompt(request, "SESSION-MODEL-CHECK")),
+      15_000,
+    );
+    expect(sent).toMatchObject({ model: "mock-reasoning", reasoning_effort: "high" });
+    expect(await control(next, "send", { text: "PROFILE-DEFAULT-CHECK" })).toMatchObject({
+      accepted: true,
+    });
+    const untouched = await until(
+      () => model.requests.find((request) => sentPrompt(request, "PROFILE-DEFAULT-CHECK")),
+      15_000,
+    );
+    expect(untouched.model).toBe("mock-model");
+    expect(untouched).not.toHaveProperty("reasoning_effort");
+  }, 60_000);
 });

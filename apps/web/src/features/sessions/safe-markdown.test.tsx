@@ -1,5 +1,5 @@
-import { cleanup, render } from "@testing-library/react";
-import { afterEach, describe, expect, it } from "vitest";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { SafeMarkdown } from "@agentkib/session-ui";
 
 // Replies CLI 2.1.311 wrote for bare commands, run offline against a local API stub. /context is
@@ -18,6 +18,51 @@ const rendered = (text: string, literal: boolean) =>
   render(<SafeMarkdown text={text} literal={literal} />).container;
 
 afterEach(cleanup);
+
+describe("conversation code blocks", () => {
+  it("highlights fenced code, keeps wrap during streaming, and copies the original text", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    const clipboard = Object.getOwnPropertyDescriptor(navigator, "clipboard");
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+    const source = "  printf '%s\\n' '<script>'  \n  # keep indentation\n";
+    const message = "Inline `printf`\n\n```bash\n" + source;
+
+    try {
+      const { container, rerender } = render(<SafeMarkdown text={message} locale="zh-Hant" />);
+      expect(screen.getByText("Bash")).toBeVisible();
+      const body = container.querySelector("pre");
+      expect(body).toHaveAttribute("data-wrap", "true");
+      expect(body?.querySelector('[data-syntax="string"]')?.textContent).toBe("'%s\\n'");
+      expect(body?.querySelector("script")).toBeNull();
+      expect(container.querySelector("p > code")?.textContent).toBe("printf");
+      const wrap = screen.getByRole("button", { name: "自動換行" });
+      expect(wrap).toHaveAttribute("aria-pressed", "true");
+      fireEvent.click(wrap);
+      expect(wrap).toHaveAttribute("aria-pressed", "false");
+      expect(body).toHaveAttribute("data-wrap", "false");
+
+      rerender(<SafeMarkdown text={message + "\n```"} locale="zh-Hant" />);
+      expect(screen.getByRole("button", { name: "自動換行" })).toBe(wrap);
+      expect(body?.textContent).toBe(source);
+      fireEvent.click(screen.getByRole("button", { name: "複製程式碼" }));
+      await screen.findByText("已複製");
+      expect(writeText).toHaveBeenCalledExactlyOnceWith(source);
+    } finally {
+      if (clipboard) Object.defineProperty(navigator, "clipboard", clipboard);
+      else Reflect.deleteProperty(navigator, "clipboard");
+    }
+  });
+
+  it("labels untyped blocks and renders unsupported languages as ordinary code", () => {
+    const text = "```\n请查看长路径\n```\n\n```example\n<name>\n```";
+    const { container } = render(<SafeMarkdown text={text} locale="zh-CN" literal />);
+    expect(screen.getByText("纯文本")).toBeVisible();
+    expect(screen.getByText("example")).toBeVisible();
+    expect(container.querySelectorAll("pre code")).toHaveLength(2);
+    expect(container.querySelector("pre .language-example")?.textContent).toBe("<name>");
+    expect(container.querySelector("[data-syntax]")).toBeNull();
+  });
+});
 
 describe("Markdown for text Claude Code wrote itself", () => {
   it("keeps the placeholders of a usage line", () => {

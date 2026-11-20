@@ -5,7 +5,6 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-li
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { initializeI18n, tr } from "@/core/i18n";
 import type { ConversationEvent } from "@/core/types";
-import { ConversationEventRow } from "./ConversationEventRow";
 import { ConversationTranscript } from "./ConversationTranscript";
 
 function event(
@@ -47,9 +46,7 @@ describe("ConversationTranscript", () => {
     ];
 
     const { container } = render(<ConversationTranscript events={events} sessionKey="session-1" />);
-    const process = container.querySelector('[data-slot="collapsible"]');
-    expect(process).not.toBeNull();
-    const trigger = process!.querySelector('[data-slot="collapsible-trigger"]');
+    const trigger = screen.getByRole("button", { name: "Worked 2m 9s" });
     expect(trigger).toHaveAttribute("aria-expanded", "false");
     expect(screen.getByText("user")).toBeVisible();
     expect(screen.getByText("final")).toBeVisible();
@@ -82,11 +79,10 @@ describe("ConversationTranscript", () => {
         { turn_meta: { outcome: "completed" } },
       ),
     ];
-    const { container, rerender } = render(
+    const { rerender } = render(
       <ConversationTranscript events={initial} sessionKey="session-page" />,
     );
-    const process = container.querySelector('[data-slot="collapsible"]')!;
-    const trigger = process.querySelector('[data-slot="collapsible-trigger"]')!;
+    const trigger = screen.getByRole("button", { name: "Execution process" });
     fireEvent.click(trigger);
     expect(trigger).toHaveAttribute("aria-expanded", "true");
 
@@ -103,11 +99,8 @@ describe("ConversationTranscript", () => {
         sessionKey="session-page"
       />,
     );
-    expect(
-      container
-        .querySelector('[data-segment-key$=":segment:tool"]')
-        ?.querySelector('[data-slot="collapsible-trigger"]'),
-    ).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByRole("button", { name: "Execution process" })).toBe(trigger);
+    expect(trigger).toHaveAttribute("aria-expanded", "true");
     expect(screen.getByText("older")).toBeVisible();
   });
 
@@ -181,16 +174,13 @@ describe("ConversationTranscript", () => {
         { turn_meta: { outcome: "completed" } },
       ),
     ];
-    const { container, rerender } = render(
-      <ConversationTranscript events={events} sessionKey="session-a" />,
-    );
-    const process = container.querySelector('[data-slot="collapsible"]')!;
-    const trigger = process.querySelector('[data-slot="collapsible-trigger"]')!;
+    const { rerender } = render(<ConversationTranscript events={events} sessionKey="session-a" />);
+    const trigger = screen.getByRole("button", { name: "Execution process" });
     fireEvent.click(trigger);
     expect(trigger).toHaveAttribute("aria-expanded", "true");
 
     rerender(<ConversationTranscript events={events} sessionKey="session-b" />);
-    expect(container.querySelector('[data-slot="collapsible-trigger"]')).toHaveAttribute(
+    expect(screen.getByRole("button", { name: /^Execution process/ })).toHaveAttribute(
       "aria-expanded",
       "false",
     );
@@ -209,16 +199,13 @@ describe("ConversationTranscript", () => {
     const { container } = render(
       <ConversationTranscript events={events} sessionKey="session-failed" incomplete />,
     );
-    const process = container.querySelector('[data-slot="collapsible"]');
-    expect(process?.querySelector('[data-slot="collapsible-trigger"]')).toHaveAttribute(
-      "aria-expanded",
-      "false",
-    );
+    const trigger = screen.getByRole("button", { name: /^Execution process/ });
+    expect(trigger).toHaveAttribute("aria-expanded", "false");
     expect(screen.getByText("commentary")).toBeVisible();
     expect(container.querySelector('[data-event-id="failed-tool"]')).toBeNull();
-    fireEvent.click(process!.querySelector('[data-slot="collapsible-trigger"]')!);
+    fireEvent.click(trigger);
     expect(container.querySelector('[data-event-id="failed-tool"]')).toBeVisible();
-    expect(screen.getByText(tr("sessions.processFailed", { count: 1 }))).toBeVisible();
+    expect(trigger).toHaveAccessibleName(/1 failed/);
   });
 
   it("keeps the default disclosure closed when pagination reveals a failed tool", () => {
@@ -226,10 +213,10 @@ describe("ConversationTranscript", () => {
       event("user", "user-message", { turn_id: "turn-late-failure" }),
       event("tool", "tool-summary", { turn_id: "turn-late-failure" }, { tool_status: "completed" }),
     ];
-    const { container, rerender } = render(
+    const { rerender } = render(
       <ConversationTranscript events={initial} sessionKey="session-late-failure" />,
     );
-    expect(container.querySelector('[data-slot="collapsible-trigger"]')).toHaveAttribute(
+    expect(screen.getByRole("button", { name: /^Execution process/ })).toHaveAttribute(
       "aria-expanded",
       "false",
     );
@@ -248,46 +235,10 @@ describe("ConversationTranscript", () => {
         sessionKey="session-late-failure"
       />,
     );
-    expect(container.querySelector('[data-slot="collapsible-trigger"]')).toHaveAttribute(
+    expect(screen.getByRole("button", { name: /^Execution process/ })).toHaveAttribute(
       "aria-expanded",
       "false",
     );
-  });
-
-  it("keeps workspace row framing and metadata while hub rows stay compact", () => {
-    const timestamp = "2026-09-07T03:04:05Z";
-    const { container } = render(
-      <>
-        <ConversationEventRow
-          event={event("hub-agent", "agent-message", {}, { timestamp })}
-          variant="hub"
-        />
-        <ConversationEventRow
-          event={event("hub-user", "user-message", {}, { timestamp })}
-          variant="hub"
-        />
-        <ConversationEventRow
-          event={event("workspace-agent", "agent-message", {}, { timestamp })}
-        />
-        <ConversationEventRow
-          event={event("hub-tool", "tool-summary", {}, { timestamp, tool_status: "completed" })}
-          variant="hub"
-        />
-      </>,
-    );
-
-    expect(container.querySelector('[data-event-id="hub-agent"] header')).toBeNull();
-    expect(container.querySelector('[data-event-id="hub-user"] header')).toBeNull();
-    expect(container.querySelector('[data-event-id="hub-tool"] time')).toBeNull();
-    expect(container.querySelector('[data-event-id="workspace-agent"] header')).toHaveTextContent(
-      tr("conversations.agent"),
-    );
-    expect(container.querySelector('[data-event-id="workspace-agent"] header time')).toBeNull();
-    const workspace = container.querySelector<HTMLElement>('[data-event-id="workspace-agent"]')!;
-    const copy = within(workspace).getByRole("button", { name: /copy/i });
-    const time = workspace.querySelector("time")!;
-    expect(time).toHaveAttribute("datetime", timestamp);
-    expect(copy.compareDocumentPosition(time) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
   it("copies the visible user text and the complete final reply without process output", async () => {
@@ -329,17 +280,15 @@ describe("ConversationTranscript", () => {
     ];
     render(<ConversationTranscript events={events} sessionKey="session-copy" />);
     const user = screen.getByText("Read this.").closest("article")!;
-    const copyUser = within(user).getByRole("button", { name: /copy/i });
+    const copyUser = within(user).getByRole("button", { name: "Copy message" });
     const userTime = user.querySelector("time")!;
     expect(
       userTime.compareDocumentPosition(copyUser) & Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy();
     fireEvent.click(copyUser);
     await waitFor(() => expect(writeText).toHaveBeenCalledExactlyOnceWith("Read this."));
-    const answer = screen
-      .getByText("First")
-      .closest(".session-hub-transcript-event") as HTMLElement;
-    const copyAnswer = within(answer).getByRole("button", { name: /copy/i });
+    const answer = screen.getByText("First").closest("article")!;
+    const copyAnswer = within(answer).getByRole("button", { name: "Copy message" });
     const answerTime = answer.querySelector("time")!;
     expect(answerTime).toHaveAttribute("datetime", timestamp);
     expect(
@@ -356,16 +305,14 @@ describe("ConversationTranscript", () => {
 
   it("keeps the timestamp available for an attachment-only message without a copy action", () => {
     const timestamp = "2026-09-07T03:04:05Z";
+    const attachment = event(
+      "attachment",
+      "user-message",
+      {},
+      { content: "", attachment_count: 1, timestamp },
+    );
     const { container } = render(
-      <ConversationEventRow
-        event={event(
-          "attachment",
-          "user-message",
-          {},
-          { content: "", attachment_count: 1, timestamp },
-        )}
-        variant="hub"
-      />,
+      <ConversationTranscript events={[attachment]} sessionKey="session-attachment" />,
     );
     expect(container.querySelector("time")).toHaveAttribute("datetime", timestamp);
     expect(container.querySelector("[data-message-body]")).toBeNull();
@@ -379,27 +326,17 @@ describe("ConversationTranscript", () => {
       "Total cost:            $0.0000\nTotal duration (API):  0s\nTotal duration (wall): 0s";
     const model =
       "Current model: `Haiku 5.5`\nUsage: /model <name>. Available: sonnet, opus, or a full model ID.";
+    const events = [
+      event("usage", "agent-message", {}, { content: usage, cli_output: true }),
+      event("model", "agent-message", {}, { content: model, cli_output: true }),
+      event("nested", "agent-message", {}, { content: "**two\nlines**", cli_output: true }),
+      event("reply", "agent-message", {}, { content: usage }),
+    ];
     const { container } = render(
-      <>
-        <ConversationEventRow
-          event={event("usage", "agent-message", {}, { content: usage, cli_output: true })}
-        />
-        <ConversationEventRow
-          event={event("model", "agent-message", {}, { content: model, cli_output: true })}
-        />
-        <ConversationEventRow
-          event={event(
-            "nested",
-            "agent-message",
-            {},
-            { content: "**two\nlines**", cli_output: true },
-          )}
-        />
-        <ConversationEventRow event={event("reply", "agent-message", {}, { content: usage })} />
-      </>,
+      <ConversationTranscript events={events} sessionKey="session-commands" />,
     );
     const body = (id: string) =>
-      container.querySelector(`[data-event-id="${id}"] .markdown-content`)!;
+      container.querySelector(`[data-event-id="${id}"] [data-message-body]`)!;
     expect(body("usage").querySelectorAll("br")).toHaveLength(2);
     expect(body("model").querySelectorAll("br")).toHaveLength(1);
     expect(body("model").querySelector("code")).toHaveTextContent("Haiku 5.5");

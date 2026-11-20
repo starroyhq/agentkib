@@ -1,8 +1,13 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { CodexGoalState, CodexSessionSettings } from "@agentkib/web-client";
+import { composerGoalCopy } from "@agentkib/session-ui";
+import {
+  sessionProviderCapabilities,
+  type CodexGoalState,
+  type CodexSessionSettings,
+} from "@agentkib/web-client";
 import { CodexComposerControls } from "../conversation/features/sessions/codex-session-controls";
 import { useSession } from "../conversation/features/sessions/session-context";
 import { codexCopy, codexReason } from "../conversation/features/sessions/codex-copy";
@@ -12,8 +17,7 @@ const copy = codexCopy["en-US"];
 const codexReasonText = (code: string) => codexReason("en-US", code, "web").text;
 let state: ReturnType<typeof useSession>;
 let props: Parameters<typeof CodexComposerControls>[0];
-// As the host projects a running DeepSeek Harness session: its model waits for the turn to end,
-// its permission preset does not.
+// The executor reports whether its settings are writable at the current revision.
 const settings = (running: boolean): CodexSessionSettings => ({
   sessionId: "session",
   revision: 1,
@@ -25,7 +29,7 @@ const settings = (running: boolean): CodexSessionSettings => ({
     model: running ? { available: false, reason: "session-busy" } : { available: true },
     effort: running ? { available: false, reason: "session-busy" } : { available: true },
     mode: { available: false, reason: "operation-unavailable" },
-    policy: { available: true },
+    policy: running ? { available: false, reason: "session-busy" } : { available: true },
     serviceTier: { available: false, reason: "operation-unavailable" },
     restoreDefaults: { available: !running },
   },
@@ -100,23 +104,53 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe("DeepSeek Harness controls", () => {
-  it("switches the permission preset during a turn, while the model waits", async () => {
-    render(<CodexComposerControls {...props} />);
-    fireEvent.click(await screen.findByRole("button", { name: /DeepSeek Chat/ }));
-    // The label also holds the chosen preset's description.
-    const policy = await screen.findByLabelText(new RegExp(`^${copy.executionPolicy}`));
-    expect(policy).toBeEnabled();
-    expect(screen.getByLabelText(copy.model)).toBeDisabled();
-    // Only the model and its effort wait for the turn to end.
-    expect(screen.getByText(copy.settingsWhileRunningModel)).toBeVisible();
-    expect(screen.queryByText(copy.settingsWhileRunning)).not.toBeInTheDocument();
-    // The host text is English only; clients show DSH's preset wording by id.
-    expect(screen.getByText(/^Can write inside the workspace and permitted/)).toBeVisible();
+  it("keeps model and permission controls gray until the executor becomes idle", async () => {
+    const provider = sessionProviderCapabilities("deepseek-harness");
+    vi.mocked(state.client.sessionSettings).mockResolvedValue({ ...settings(true), provider });
+    state.access = { ...state.access!, status: "approved" };
+    state.access.device!.advancedControl = true;
+    state.capabilities!.features.settings = { available: false, reason: "session-busy" };
+    state.live!.usage = {
+      available: true,
+      state: "ready",
+      usedTokens: 700,
+      contextWindow: 1000,
+    };
+    const view = render(<CodexComposerControls {...props} />);
+    const model = await screen.findByRole("button", { name: /DeepSeek Chat/ });
+    fireEvent.click(model);
+    expect(screen.getByRole("button", { name: "Reset default model" })).toBeDisabled();
+    expect(within(screen.getByRole("dialog")).queryByRole("status")).not.toBeInTheDocument();
     // DSH has no collaboration mode or service tier to offer.
     expect(screen.queryByLabelText(copy.mode)).not.toBeInTheDocument();
     expect(screen.queryByLabelText(copy.serviceTier)).not.toBeInTheDocument();
-    fireEvent.change(policy, { target: { value: "read-only" } });
-    fireEvent.click(screen.getByRole("button", { name: copy.apply }));
+    expect(screen.getByRole("img", { name: copy.contextUsage })).toHaveAccessibleDescription(
+      expect.stringContaining("70%"),
+    );
+    expect(screen.getByRole("dialog")).not.toHaveTextContent("70%");
+    expect(screen.getByRole("dialog")).not.toHaveTextContent(copy.contextUnknown);
+    fireEvent.click(model);
+    fireEvent.click(screen.getByRole("button", { name: new RegExp(`^${copy.executionPolicy}`) }));
+    // The host text is English only; clients show DSH's preset wording by id.
+    await waitFor(() =>
+      expect(screen.getByText(/^Can write inside the workspace and permitted/)).toBeVisible(),
+    );
+    const policy = await screen.findByRole("menuitem", { name: /^Read only/i });
+    expect(policy).toHaveAttribute("aria-disabled", "true");
+    expect(within(screen.getByRole("menu")).queryByRole("status")).not.toBeInTheDocument();
+    fireEvent.click(policy);
+    expect(state.codexAction).not.toHaveBeenCalled();
+
+    vi.mocked(state.client.sessionSettings).mockResolvedValue({
+      ...settings(false),
+      provider,
+      revision: 2,
+    });
+    state.live = { ...state.live!, status: "idle", revision: 2 };
+    state.capabilities!.features.settings = { available: true };
+    view.rerender(<CodexComposerControls {...props} />);
+    await waitFor(() => expect(policy).not.toHaveAttribute("aria-disabled", "true"));
+    fireEvent.click(policy);
     await waitFor(() =>
       expect(state.codexAction).toHaveBeenCalledWith("settings", { policyId: "read-only" }),
     );
@@ -153,5 +187,56 @@ describe("DeepSeek Harness controls", () => {
     expect(await screen.findByLabelText(copy.goalObjective)).toBeVisible();
     expect(screen.getByRole("button", { name: copy.goalCreate })).toBeInTheDocument();
     expect(screen.queryByText(codexReasonText("goal-action-unavailable"))).not.toBeInTheDocument();
+  });
+
+  it("keeps an unconfirmed staged goal editable after a single automatic submission", async () => {
+    state.controlReady = true;
+    state.live = { ...state.live!, status: "idle" };
+    vi.mocked(state.client.sessionGoals).mockResolvedValue({ ...goal, goal: undefined });
+    vi.mocked(state.codexAction).mockResolvedValue(undefined);
+    const onStartupGoalHandled = vi.fn();
+    render(
+      <CodexComposerControls
+        {...props}
+        startupGoal={{ value: { objective: "Ship it" }, apply: true }}
+        onStartupGoalHandled={onStartupGoalHandled}
+      />,
+    );
+    await waitFor(() =>
+      expect(state.codexAction).toHaveBeenCalledExactlyOnceWith("goal-set", {
+        objective: "Ship it",
+        intent: "start",
+        tokenBudget: null,
+      }),
+    );
+    fireEvent.click(await screen.findByRole("button", { name: copy.goals }));
+    expect(await screen.findByLabelText(copy.goalObjective)).toHaveValue("Ship it");
+    expect(onStartupGoalHandled).toHaveBeenCalledExactlyOnceWith(false);
+    expect(state.codexAction).toHaveBeenCalledTimes(1);
+  });
+
+  it("discards an inherited goal draft and clears its local editor without a host action", async () => {
+    vi.mocked(state.client.sessionGoals).mockResolvedValue({ ...goal, goal: undefined });
+    const onStartupGoalDiscarded = vi.fn();
+    const view = render(
+      <CodexComposerControls
+        {...props}
+        startupGoal={{ value: { objective: "Ship it" }, apply: false }}
+        onStartupGoalDiscarded={onStartupGoalDiscarded}
+      />,
+    );
+    fireEvent.click(await screen.findByRole("button", { name: copy.goals }));
+    fireEvent.change(await screen.findByLabelText(copy.goalObjective), {
+      target: { value: "Revised goal" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: copy.close }));
+    fireEvent.click(screen.getByRole("button", { name: composerGoalCopy("en-US").clearDraft }));
+    expect(onStartupGoalDiscarded).toHaveBeenCalledOnce();
+
+    view.rerender(<CodexComposerControls {...props} />);
+    fireEvent.click(await screen.findByRole("button", { name: copy.addContext }));
+    fireEvent.click(await screen.findByRole("button", { name: copy.goals }));
+    expect(await screen.findByLabelText(copy.goalObjective)).toHaveValue("");
+    expect(state.codexAction).not.toHaveBeenCalled();
   });
 });

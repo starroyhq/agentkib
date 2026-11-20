@@ -137,6 +137,8 @@ CLI 接入（包括曾提议的 `agentkib bridge --stdio` 长期转发器）不�
 
 `agent.cancel()` 默认清空排队和 steering，与 DSH 自身停止按钮的语义不同，不应直接使用。AgentKib 各设备的“运行中发送”设置分别对应 `queue` 与 `steer`。
 
+停止命令携带原生轮次 ID。插件在调用原生停止前重新核对当前轮次，轮次已切换时拒绝执行；只有同一轮次明确报告中止才记为已取消。已核实 DSH `0.2.2-rc.3` 和 `0.2.2-rc.5` 可同步完成检查与停止。`0.2.2-rc.5` 停止后保留原有待发消息，等用户发起下一轮。其他版本可在 DSH 原生界面停止。
+
 该服务只存在于 web-app 组合包，即 web 与 desktop profile；headless、sdk、acp profile 没有该服务，只提供只读接入，控制能力声明为不可用。插件在进程内调用时没有远程调用身份，消息不会记录 `principal`，在 DSH 中显示为本人发送；是否需要在原生记录中区分来自 AgentKib 的消息，见 §9。
 
 `prompt` 和 `updateQueue` 遇到未运行的会话会先恢复它，因此插件只在 §5.1 选定的 runtime 中派发，能力表把“恢复”与“发送”分开声明；恢复按 §4.2 处理。
@@ -212,7 +214,7 @@ Codex／Claude 与 DSH 相互交接时，由宿主机生成统一会话文档、
 
 持久会话 ID 与运行实例 ID 分开。一条插件连接可以服务多个会话，各会话独立核验绑定、revision、命令和交互。不能沿用 Claude 的 UUID 限制，也不能只凭 profile 名称识别执行者。
 
-同一份 DSH 会话数据可能被多个进程同时使用，例如 DSH Desktop 与 npm CLI 共享会话数据；装有插件的每个进程都会报告同一批会话。Host 以当前持有该会话运行中 Agent 的 runtime 作为控制目标，其余 runtime 只提供只读视图；都没有运行中 Agent 时按未运行会话处理。DSH 的单写者 lease 保证同一会话不会被两个进程同时执行。
+同一份 DSH 会话数据可能被多个进程同时使用，例如 DSH Desktop 与 npm CLI 共享会话数据。Host 跟随报告已加载该会话 Agent 的 runtime，优先使用用户自己的 DSH。其余进程可以读取历史。桥接未连接时，原生写锁与近期 v4 记录中的未结束轮次一起作为只读运行状态，界面标明来源。看到轮次结束、写锁释放或证据过期就撤下运行标记，实时状态仍无法确认时显示「实时状态未知」。草稿可编辑，发送和停止由原生写锁与桥接能力决定。DSH 的原生单写者租约仍在恢复时核验。
 
 未运行的会话需要恢复时：只连接了一个可控制的 runtime 就用它；有多个时用用户在设置中指定的默认 runtime，未指定则请用户选择，不自动挑选。三期由 AgentKib 启动的 runtime 只在没有其他可控制 runtime 时使用。
 
@@ -330,10 +332,11 @@ DSH 的审批和问答经 `approval/request`、`user-questions/request` waterfal
 2a 实现（2026-11-05，#199 已合并）：
 
 - 插件升到 0.2.0。Host 当时只接受同版本插件，所以 AgentKib 升级后要重启一次 DSH，插件才会重新连上（2026-11-09 起改为同一协议内的各版本互相接受，见 §3.3）；以链接方式安装的插件随 AgentKib 一起更新，不必重装。
-- 重命名、分叉、归档与取消归档、模型与推理强度都按能力开放：重命名和分叉要求可控；归档、取消归档与改模型还要求空闲（DSH 拒绝归档运行中的会话，AgentKib 不替用户停止），运行中这几项的原因是 `session-busy`，客户端提示等本轮结束。插件跟随 workspace 流维护归档集合，DSH 自己窗口里的归档也会同步到 AgentKib。
+- 重命名、分叉、归档与取消归档、模型与推理强度都按能力开放：重命名和分叉要求可控；归档、取消归档与改模型还要求空闲（DSH 拒绝归档运行中的会话，AgentKib 不替用户停止），运行中这几项的原因是 `session-busy`，客户端将对应控件置灰。插件跟随 workspace 流维护归档集合，DSH 自己窗口里的归档也会同步到 AgentKib。
 - 目标暂不提供，但读取会返回“不可用”，打开目标面板的客户端不会报错。
 - 模型按 provider 与 model 组成一个选择器 ID（两段各自 URI 编码）。只改强度时沿用当前模型，换模型时回到该模型的默认强度；“恢复默认”选 DSH 的默认模型。
 - 当前模型从会话的 `modelSelection` 投影读取（`sessionController.projections`，取 `next`），与 DSH 自己的模型选择器一致，不需要会话正在运行；运行中 agent 的 `model.current()` 只作后备。0.2.1-rc.5 上用 agent 读取会一直得到默认模型。
+- 已有会话切换模型或推理强度时，插件通过 `agent.model.select` 只记录到该会话，再读回原生投影确认。旧插件仍可读取模型和使用权限预设，模型与强度选择需要插件声明 `sessionModelSelection`。
 - 分叉的回执带上新会话 ID，客户端照 Codex 分叉的方式打开它。DSH 先回复、下一次上报才列出新会话，所以分叉和新建在回复客户端前最多等三秒，让新会话先出现在列表里。
 - 新建会话要求恰好一个运行中的 DSH，在 AgentKib 工作区的根目录发起；有多个 DSH 时原因为 `dsh-create-ambiguous`，提示直接在要用的那个 DSH 里新建（不同于已有会话的 `dsh-runtime-ambiguous`）。新会话的 ID 由 AgentKib 预先生成并交给 DSH（`session.create` 的 `sessionId`），回执因此直接指向新会话。
 - 结果未知的核对：重命名比对标题，归档比对归档状态，改模型重新读取模型目录比对；新建以预留 ID 的会话出现在列表为已创建，超过两分钟且 DSH 此后重新上报过会话列表仍没有它，判为未创建。分叉在原会话上没有证据，超过两分钟判为未执行（若实际已分叉，副本仍会出现在列表中）。都不自动重发。
@@ -357,8 +360,8 @@ DSH 的审批和问答经 `approval/request`、`user-questions/request` waterfal
 - 哪些命令替用户运行、对哪台设备运行，是插件与各端 `/` 菜单共用的一份规则（`dsh-bridge-plugin/commands.js`）：`/export` 在 DSH 窗口里下载文件，不替用户运行（`dsh-command-window-only`）；带附件的命令不运行（`dsh-command-attachments`）；`/compact`、`/plan`、`/feedback` 只作用于本会话，能发送的设备都可用；`/goal`、`/permission` 和其他插件加的命令与 AgentKib 的目标、设置控件一样要求完整访问的设备（`dsh-command-full-access`）。设备是否有完整访问只有 Host 知道，Host 随消息带上 `commandAccess`。命令已不在 DSH 中为 `dsh-command-unavailable`，DSH 运行失败为 `dsh-command-failed`。
 - 目标：读取和修改走 `goals`，修改带上目标 ID 与 revision，期间在 DSH 窗口改过则按 `goal-changed` 未执行。“开始目标”在没有目标或目标已完成时新建，否则编辑现有目标；暂停、恢复、清除对应原生动作。DSH 按轮次（默认 256）限制目标，不支持 token 预算：各端显示已开始的轮次，不显示预算输入（带预算为 `goal-token-budget-unavailable`），轮次用完不能恢复（`goal-rounds-exhausted`）。目标是否由 DSH 自动继续（activation）只在当前 DSH 进程内有效，DSH 恢复会话时目标不自动继续，AgentKib 把这种状态显示为已暂停，恢复后继续。会话未运行时从 `goal` 投影读取，不恢复会话。
 - 压缩：`/compact` 与 Web 的压缩按钮都运行 DSH 的 `/compact`（按钮要求会话空闲）。压缩期间 DSH 的 Agent 仍报告 `idle`，插件按 `compaction/start`、`compaction/end` 事件上报 `activity: "compacting"`，各端显示正在压缩。
-- 权限 preset 即各端的“执行策略”：选项来自 `permissionPresets.catalog`，当前值读 `permissions` 投影，切换运行 `/permission <preset>`。DSH 在运行中的轮次里也会应用，所以执行策略在运行中可以修改；模型和推理强度仍等本轮结束。
-- 计划模式按 Codex 的协作模式报告与切换：插件读 `plan` 投影，选中状态为 `pending ? !active : active`，与 DSH 输入框的计划标识一致；切换运行 DSH 自己的 `/plan`、`/plan off`，单独进行，运行中也可以（DSH 在下一步应用）。桌面和 Web 的输入框与 Codex、Claude 一样识别 `/plan` 并显示可点击退出的“计划”标识，设置对话框也有模式选择。
+- 权限 preset 即各端的“执行策略”：选项来自 `permissionPresets.catalog`，当前值读 `permissions` 投影，切换运行 `/permission <preset>`。DSH 原生命令会影响正在运行的轮次。AgentKib 的执行策略、模型和推理强度设置在空闲时开放。
+- 计划模式按 Codex 的协作模式报告与切换：插件读 `plan` 投影，选中状态为 `pending ? !active : active`，与 DSH 输入框的计划标识一致；切换运行 DSH 自己的 `/plan`、`/plan off`，单独进行。DSH 会在下一步应用，AgentKib 在空闲时开放这个设置入口。桌面和 Web 的输入框与 Codex、Claude 一样识别 `/plan` 并显示可点击退出的“计划”标识，设置对话框也有模式选择。
 - 子代理只读浏览：插件读 `subagentCatalog` 与 `subagentTiming` 投影，每个会话最多 50 个直接子代理；子会话 ID 在 Host 用本次运行的随机盐做 HMAC，不暴露 DSH 原始 ID。手机经现有的子代理接口浏览，Desktop 与 Web 暂无子代理视图。
 - 控制所依据的 revision 也随目标（ID、revision、activation）和压缩状态变化；目标操作结果未知时按目标状态核对：清除看目标是否消失，暂停看是否暂停，恢复看是否在继续，开始看 revision 是否变化。
 - 模型与推理强度：桌面端与 Codex、Claude 一样在输入框里切换（#200 的选择器），与 DSH 自己窗口的模型菜单一致：模型按提供方分组（DSH 后端给每个模型带上提供方名称），推理强度只列该模型支持的等级；未选强度即 DSH 的 Default，显示为“默认 · 该模型的默认强度”，换模型时仍跟随新模型的默认。DSH 没有服务档位，不显示 Fast。Web 与手机仍在设置中切换（Codex 也是）。
@@ -399,7 +402,9 @@ DSH 的审批和问答经 `approval/request`、`user-questions/request` waterfal
 
 **什么时候启动和停止**
 
-- 没有用户自己的可控制 runtime、设置“需要时自动启动 DeepSeek Harness”打开（默认，偏好 `dsh_auto_start`）且找到合适版本的启动器时，会话显示为空闲、可以发送。发送、重命名、分叉、打开会话读历史、交接读取、选 DSH 新建会话（读选项时）会先启动 DSH，等插件注册、报告过一次且 DSH 的会话服务可用（最长 30 秒）再继续，不等会话列表：0.5.0 的插件不报告空的列表，全新的 DSH 会一直等不到（0.6.0 起空列表也报告一次）；同时到来的请求共用一次启动。正文搜索收录从不启动 DSH。
+- 打开会话、读取新建选项、交接预览和正文索引都是只读操作。会话历史优先读已连接的原生服务，断线后使用本次已读的缓存或以只读方式分页读取 DSH v4 会话文件。
+- 只读轮次观测以 5 秒间隔复用已验证的压缩帧位置，文件有新增内容时读取增量。首次读取和文件被替换时验证整份快照。长时间没有记录更新（30 分钟）的轮次恢复为未知。该观测只用于界面，执行、审批和项目 Agent 调度需要桥接报告。
+- 明确新建会话，或发送消息以恢复写锁确认空闲的已有会话时，如果没有可用的桥接、偏好 `dsh_auto_start` 开启且找到合适版本的启动器，可以启动后台 DSH。启动后等待插件报告且会话服务可用（最长 30 秒）。同时到来的请求共用一次启动，恢复请求派发前再次核验写锁。
 - 控制请求按启动前客户端看到的状态核对 revision，启动后不再因 DSH 注册带来的 revision 变化而拒绝。
 - 控制目标：用户自己的 DSH 优先，AgentKib 启动的只在没有用户的可控制 runtime 时使用（§5.1）；新建会话同理，用户的多于一个时仍请用户在 DSH 里选。
 - 停止：没有运行中的轮次、待答的审批与问题、进行中的控制，并且最近 10 秒没有发过命令（插件稍后才报告命令开始的那一轮），持续 3 分钟后停止；DSH Desktop 的窗口在运行时 1 分钟，因为 DSH 恢复过的会话会一直占着写入锁，直到进程退出；用户自己装了插件的 DSH 注册上来或设置被关掉时，一空闲就停。决定停止时先把它从可用的 runtime 里撤下，它退出前不再接受它重新注册，新请求另起一个。停止发 SIGTERM，8 秒后仍未退出再 SIGKILL。

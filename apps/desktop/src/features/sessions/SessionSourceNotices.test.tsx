@@ -92,7 +92,7 @@ describe("named source notices", () => {
     expect(screen.queryByRole("status")).toBeNull();
     rerender(
       <SessionSourceNotices
-        statuses={[{ ...status, error_key: undefined }]}
+        statuses={[{ ...status, freshness: "stale", error_key: undefined }]}
         sessions={[]}
         refreshing={false}
         onRetry={vi.fn()}
@@ -132,4 +132,55 @@ describe("named source notices", () => {
       }
     },
   );
+});
+
+it("keeps scan errors compact and reveals only the affected sources when expanded", () => {
+  const retry = vi.fn();
+  const partialRead = tr("sessions.sourcePartialRead");
+  const unknownDetail = "Unexpected diagnostic for /private/source.jsonl";
+  render(
+    <SessionSourceNotices
+      statuses={[
+        {
+          ...status,
+          session_count: 1,
+          error_detail:
+            "Some conversation sources could not be read; previous records were retained",
+        },
+        {
+          ...status,
+          workspace_id: "other",
+          error_key: "unknown-error",
+          error_detail: unknownDetail,
+        },
+        { ...status, workspace_id: "healthy", freshness: "stale", error_key: undefined },
+      ]}
+      sessions={[]}
+      workspaces={[
+        { id: "project", name: "App" },
+        { id: "other", name: "Docs" },
+        { id: "healthy", name: "Healthy" },
+      ]}
+      refreshing={false}
+      onRetry={retry}
+    />,
+  );
+
+  expect(screen.getByRole("alert")).toHaveTextContent(
+    tr("sessions.sourceUnavailable", { agent: "Antigravity" }),
+  );
+  const details = screen.getByRole("button", { name: tr("common.details") });
+  expect(details).toHaveAttribute("aria-expanded", "false");
+  expect(screen.queryByText("App · Antigravity")).toBeNull();
+  expect(screen.queryByText(partialRead)).toBeNull();
+  fireEvent.click(details);
+  expect(details).toHaveAttribute("aria-expanded", "true");
+  expect(screen.getByText("App · Antigravity")).toBeVisible();
+  expect(screen.getByText("Docs · Antigravity")).toBeVisible();
+  expect(screen.getByText(partialRead)).toBeVisible();
+  expect(screen.getByText(tr("errors.conversations.sourceUnavailable"))).toBeVisible();
+  expect(screen.queryByText("Healthy · Antigravity")).toBeNull();
+  expect(screen.queryByText(unknownDetail)).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: tr("sessions.retry") }));
+  expect(retry).toHaveBeenCalledOnce();
 });

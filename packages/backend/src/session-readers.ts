@@ -1,4 +1,12 @@
-import { closeSync, constants, fstatSync, lstatSync, openSync, readSync } from "node:fs";
+import {
+  closeSync,
+  constants,
+  fstatSync,
+  lstatSync,
+  openSync,
+  readSync,
+  type BigIntStats,
+} from "node:fs";
 import path from "node:path";
 import { z } from "zod";
 import { sessionCollection, type SessionCollection } from "@agentkib/runtime-protocol";
@@ -38,8 +46,39 @@ import {
 import { canonicalize, pathIdentity } from "./paths";
 import { within } from "./files";
 import { handoffActive, handoffCheckpoint, readHandoff } from "./handoff-work";
+import { readCheckout } from "./git-checkouts";
+import { isReparseOrSymlink } from "./native-files";
 
 const canonicalizePath = canonicalize;
+const claudeBridgeFileVersion = (metadata: BigIntStats) =>
+  [metadata.dev, metadata.ino, metadata.size, metadata.mtimeNs, metadata.ctimeNs].join(":");
+
+/** Worktree administration pointers are small local files, never followed through a link. */
+function claudeBridgeGitPointer(file: string): string {
+  const metadata = lstatSync(file, { bigint: true });
+  if (!metadata.isFile() || isReparseOrSymlink(file, metadata) || metadata.size > 4096n)
+    throw new Error("session-workspace-mismatch");
+  const fd = openSync(file, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+  try {
+    if (
+      claudeBridgeFileVersion(fstatSync(fd, { bigint: true })) !== claudeBridgeFileVersion(metadata)
+    )
+      throw new Error("session-workspace-mismatch");
+    const buffer = Buffer.alloc(4097);
+    const count = readSync(fd, buffer, 0, buffer.length, 0);
+    const value = buffer.subarray(0, count).toString("utf8").trim();
+    if (
+      count !== Number(metadata.size) ||
+      !value ||
+      /[\r\n\0]/.test(value) ||
+      claudeBridgeFileVersion(fstatSync(fd, { bigint: true })) !== claudeBridgeFileVersion(metadata)
+    )
+      throw new Error("session-workspace-mismatch");
+    return value;
+  } finally {
+    closeSync(fd);
+  }
+}
 
 /**
  * The real path of a session directory, or for a deleted one, its nearest existing ancestor's
@@ -281,11 +320,125 @@ export class SessionReaders {
   devinSessionModel(nativeRef: string): string | null {
     return this.#devin.model(nativeRef);
   }
+  devinLastContextInput(nativeRef: string, workspace: string, model: string) {
+    return this.#devin.lastContextInput(nativeRef, workspace, model);
+  }
   antigravityReadHandoff(nativeRef: string) {
     return this.#antigravity.readHandoff(nativeRef);
   }
   verifiedClaudeControlTarget(nativeRef: string, workspace: string): string {
     return this.#verifiedClaudeControlSource(nativeRef, workspace).transcript;
+  }
+  /** A native EnterWorktree move keeps its original UUID and transcript, not its opening cwd. */
+  verifyClaudeBridgeWorktree(
+    nativeId: string,
+    sourceWorkspace: string,
+    candidateWorkspace: string,
+  ): void {
+    const fail = () => {
+      throw new Error("session-workspace-mismatch");
+    };
+    const source = canonicalize(sourceWorkspace),
+      candidate = canonicalize(candidateWorkspace),
+      worktrees = path.join(source, ".claude", "worktrees");
+    if (
+      source !== sourceWorkspace ||
+      candidate !== candidateWorkspace ||
+      candidateWorkspace.split(/[\\/]/).some((part) => part === "." || part === "..") ||
+      path.dirname(candidate) !== worktrees
+    )
+      fail();
+    const directory = (value: string) => {
+      const metadata = lstatSync(value, { bigint: true });
+      if (!metadata.isDirectory() || isReparseOrSymlink(value, metadata)) fail();
+    };
+    const layout = () => {
+      if (canonicalize(source) !== source || canonicalize(candidate) !== candidate) fail();
+      for (const value of [path.join(source, ".claude"), worktrees, candidate]) directory(value);
+      const primary = readCheckout(source);
+      if (!primary) return fail();
+      const marker = path.join(candidate, ".git"),
+        pointer = /^gitdir:\s*(.+)$/i.exec(claudeBridgeGitPointer(marker));
+      if (!pointer) return fail();
+      const admin = path.resolve(candidate, pointer[1]!),
+        administration = path.join(primary.commonDir, "worktrees");
+      if (path.dirname(admin) !== administration) fail();
+      directory(administration);
+      directory(admin);
+      if (
+        canonicalize(admin) !== admin ||
+        path.resolve(admin, claudeBridgeGitPointer(path.join(admin, "commondir"))) !==
+          primary.commonDir ||
+        path.resolve(admin, claudeBridgeGitPointer(path.join(admin, "gitdir"))) !== marker
+      )
+        fail();
+      const linked = readCheckout(candidate);
+      if (!linked?.linked || linked.gitDir !== admin || linked.commonDir !== primary.commonDir)
+        fail();
+      return [primary.commonDir, admin].join("\0");
+    };
+    const beforeLayout = layout(),
+      transcript = this.verifiedClaudeControlTarget(nativeId, source),
+      metadata = lstatSync(transcript, { bigint: true });
+    if (!metadata.isFile() || isReparseOrSymlink(transcript, metadata)) fail();
+    const version = claudeBridgeFileVersion(metadata),
+      fd = openSync(transcript, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+    try {
+      if (claudeBridgeFileVersion(fstatSync(fd, { bigint: true })) !== version) fail();
+      const size = Math.min(Number(metadata.size), 512 * 1024),
+        start = Number(metadata.size) - size,
+        buffer = Buffer.alloc(size),
+        count = readSync(fd, buffer, 0, buffer.length, start);
+      if (count !== size) fail();
+      const text = buffer.toString("utf8"),
+        lines = (start ? text.slice(text.indexOf("\n") + 1) : text).split("\n");
+      let latest: Record<string, unknown> | undefined;
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        let row: unknown;
+        try {
+          row = JSON.parse(line);
+        } catch {
+          return fail();
+        }
+        if (!row || typeof row !== "object" || Array.isArray(row)) continue;
+        const value = row as Record<string, unknown>;
+        if (value.type !== "user" && value.type !== "assistant") continue;
+        if (
+          value.isSidechain === true ||
+          value.isMeta === true ||
+          value.isCompactSummary === true ||
+          typeof value.agentId === "string"
+        )
+          continue;
+        if (
+          typeof value.sessionId !== "string" ||
+          value.sessionId.toLowerCase() !== nativeId.toLowerCase()
+        )
+          fail();
+        latest = value;
+      }
+      if (
+        typeof latest?.cwd !== "string" ||
+        latest.cwd !== candidate ||
+        !latest.message ||
+        typeof latest.message !== "object" ||
+        Array.isArray(latest.message) ||
+        (latest.message as Record<string, unknown>).role !== latest.type ||
+        claudeBridgeFileVersion(fstatSync(fd, { bigint: true })) !== version ||
+        claudeBridgeFileVersion(lstatSync(transcript, { bigint: true })) !== version
+      )
+        fail();
+    } finally {
+      closeSync(fd);
+    }
+    // The bounded tail must not validate a file or Git layout swapped after its opening proof.
+    if (
+      this.verifiedClaudeControlTarget(nativeId, source) !== transcript ||
+      claudeBridgeFileVersion(lstatSync(transcript, { bigint: true })) !== version ||
+      layout() !== beforeLayout
+    )
+      fail();
   }
   /** Display metadata follows the same native identity and workspace proof as control. */
   verifiedClaudeControlMetadata(

@@ -1,5 +1,5 @@
 import { sessionContinuationListState, SessionContinuationStatus } from "@agentkib/session-ui";
-import { Clock, Database, GitBranch } from "lucide-react";
+import { Clock, GitBranch } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { AgentIcon } from "@/features/agents/AgentIcon";
 import { displaySessionTitle } from "@/features/workspace/session-title";
@@ -15,10 +15,9 @@ import {
 } from "./session-labels";
 import { sessionGroupLabels } from "./session-catalog";
 import { WorktreeMark } from "./WorktreeMark";
-import { sessionSourceWasUsed } from "./session-source-status";
 
 export function SessionOverview() {
-  const { locale, tr, formatDateTime, localizeMessage } = useI18n();
+  const { locale, tr, formatDateTime } = useI18n();
   const hub = useSessionHub();
   const statsAvailable = hub.usable ?? (hub.ready || hub.filtered.length > 0);
   const resetFilters = useSessionViewStore((state) => state.resetFilters);
@@ -30,15 +29,6 @@ export function SessionOverview() {
   ] as const;
   // Name each session after the directory group it is listed in (its repository's, for a worktree).
   const groupLabels = sessionGroupLabels(hub.filtered, hub.workspaces, hub.visibility);
-  const visibleWorkspaceIds = new Set(hub.filtered.map((session) => session.workspace_id));
-  const statusWorkspaces = hub.workspaces
-    .filter((item) => !item.remote)
-    .filter(
-      (item) =>
-        visibleWorkspaceIds.has(item.id) ||
-        Boolean(hub.errors[item.id]) ||
-        !hub.sessions.some((session) => session.workspace_id === item.id),
-    );
 
   return (
     <>
@@ -60,144 +50,84 @@ export function SessionOverview() {
           {tr("conversations.scanning")}
         </p>
       )}
-      <div className="session-overview-panels grid grid-cols-[minmax(0,1.15fr)_minmax(0,1fr)] items-stretch gap-[18px] max-[1199px]:grid-cols-1">
-        <section className="session-overview-panel min-w-0 rounded-[14px] border border-border">
-          <header className="flex items-center gap-[9px] p-5">
-            <Clock size={18} />
-            <h2 className="flex-1 text-base font-semibold">{tr("sessions.recent")}</h2>
-            <span className="text-muted-foreground">
-              {statsAvailable ? hub.filtered.length : "—"}
-            </span>
-          </header>
-          <div className="session-overview-panel-content">
-            {hub.filtered.slice(0, 12).map((session) => {
-              const status = sessionContinuationListState(session, locale);
-              const source = hub.workspaces.find((item) => item.id === session.workspace_id);
-              return (
-                <Button
-                  variant="bare"
-                  size="content"
-                  className="session-recent-item mx-4 flex w-[calc(100%-2rem)] flex-wrap items-start gap-2 border-t border-border px-1 py-3.5 text-left hover:bg-muted focus-visible:outline-2 focus-visible:outline-ring focus-visible:outline-offset-2"
-                  key={session.id}
-                  onClick={() => hub.select(session.id)}
-                  title={[
-                    session.worktree ? worktreeLabel(session.worktree, tr) : source?.path,
-                    sessionSourceLabel(session, hub.sessions, tr, formatDateTime),
-                  ]
-                    .filter(Boolean)
-                    .join("\n")}
-                >
-                  <AgentIcon agent={session.agent} compact />
-                  <span className="grid min-w-0 flex-1 gap-[5px]">
-                    <strong className="inline-flex items-center gap-1 font-[550] [overflow-wrap:anywhere]">
-                      {displaySessionTitle(session.title, tr)}
-                      {session.worktree && (
-                        <WorktreeMark
-                          label={worktreeLabel(session.worktree, tr)}
-                          deleted={session.worktree.status === "deleted"}
-                        />
-                      )}
-                      {isInteractiveFork(session) && (
-                        <GitBranch
-                          size={12}
-                          aria-label={`${tr("conversations.forked")}: ${sessionSourceLabel(session, hub.sessions, tr, formatDateTime)}`}
-                        />
-                      )}
-                    </strong>
-                    <small className="text-sm text-muted-foreground [overflow-wrap:anywhere]">
-                      {session.remote && `${session.remote.host_name} · `}
-                      {groupLabels.get(session.id) ?? source?.name} ·{" "}
-                      {sessionAgentNames[session.agent]} · {sessionRecordLabel(session, tr)}
-                    </small>
-                  </span>
-                  {status && (
-                    <SessionContinuationStatus
-                      label={status.label}
-                      running={status.active}
-                      waiting={status.waiting}
-                    />
-                  )}
-                  <time className="w-full pl-7 text-sm text-muted-foreground [overflow-wrap:anywhere]">
-                    {session.updated_at
-                      ? formatDateTime(session.updated_at)
-                      : tr("conversations.unknownTime")}
-                  </time>
-                </Button>
-              );
-            })}
-            {!hub.filtered.length && !hub.loading && !hub.catalogError && (
-              <div className="session-state-inline p-7 px-5 text-center">
-                <p className="text-muted-foreground">
-                  {tr(hub.sessions.length ? "sessions.noMatches" : "sessions.noSessions")}
-                </p>
-                {hub.sessions.length > 0 && (
-                  <Button variant="ghost" onClick={resetFilters}>
-                    {tr("sessions.clearFilters")}
-                  </Button>
-                )}
-              </div>
-            )}
-          </div>
-        </section>
-        <section className="session-overview-panel min-w-0 rounded-[14px] border border-border">
-          <header className="flex items-center gap-[9px] p-5">
-            <Database size={18} />
-            <h2 className="flex-1 text-base font-semibold">{tr("sessions.indexStatus")}</h2>
-          </header>
-          <div className="session-overview-panel-content">
-            {statusWorkspaces.map((item) => (
-              <div
-                className="session-index-item mx-5 border-t border-border py-3.5 [overflow-wrap:anywhere] [&>p]:mt-2 [&>p]:text-muted-foreground"
-                key={item.id}
+      <section className="session-overview-panel min-w-0 rounded-[14px] border border-border">
+        <header className="flex items-center gap-[9px] p-5">
+          <Clock size={18} />
+          <h2 className="flex-1 text-base font-semibold">{tr("sessions.recent")}</h2>
+          <span className="text-muted-foreground">
+            {statsAvailable ? hub.filtered.length : "—"}
+          </span>
+        </header>
+        <div className="session-overview-panel-content">
+          {hub.filtered.slice(0, 12).map((session) => {
+            const status = sessionContinuationListState(session, locale);
+            const source = hub.workspaces.find((item) => item.id === session.workspace_id);
+            return (
+              <Button
+                variant="bare"
+                size="content"
+                className="session-recent-item mx-4 flex w-[calc(100%-2rem)] flex-wrap items-start gap-2 border-t border-border px-1 py-3.5 text-left hover:bg-muted focus-visible:outline-2 focus-visible:outline-ring focus-visible:outline-offset-2"
+                key={session.id}
+                onClick={() => hub.select(session.id)}
+                title={[
+                  session.worktree ? worktreeLabel(session.worktree, tr) : source?.path,
+                  sessionSourceLabel(session, hub.sessions, tr, formatDateTime),
+                ]
+                  .filter(Boolean)
+                  .join("\n")}
               >
-                <strong className="font-semibold" title={item.path}>
-                  {item.name}
-                </strong>
-                {hub.errors[item.id] && (
-                  <p className="text-destructive-text">{hub.errors[item.id]}</p>
+                <AgentIcon agent={session.agent} compact />
+                <span className="grid min-w-0 flex-1 gap-[5px]">
+                  <strong className="inline-flex items-center gap-1 font-[550] [overflow-wrap:anywhere]">
+                    {displaySessionTitle(session.title, tr)}
+                    {session.worktree && (
+                      <WorktreeMark
+                        label={worktreeLabel(session.worktree, tr)}
+                        deleted={session.worktree.status === "deleted"}
+                      />
+                    )}
+                    {isInteractiveFork(session) && (
+                      <GitBranch
+                        size={12}
+                        aria-label={`${tr("conversations.forked")}: ${sessionSourceLabel(session, hub.sessions, tr, formatDateTime)}`}
+                      />
+                    )}
+                  </strong>
+                  <small className="text-sm text-muted-foreground [overflow-wrap:anywhere]">
+                    {session.remote && `${session.remote.host_name} · `}
+                    {groupLabels.get(session.id) ?? source?.name} ·{" "}
+                    {sessionAgentNames[session.agent]} · {sessionRecordLabel(session, tr)}
+                  </small>
+                </span>
+                {status && (
+                  <SessionContinuationStatus
+                    label={status.label}
+                    running={status.active}
+                    waiting={status.waiting}
+                  />
                 )}
-                {hub.statuses
-                  .filter((status) => status.workspace_id === item.id)
-                  .map((status) => (
-                    <div
-                      className="session-index-status flex flex-wrap gap-x-3 gap-y-1 pt-2 [&>span:nth-child(2)]:ml-auto [&_small]:w-full [&_small]:text-sm [&_small]:text-muted-foreground [&_p]:w-full [&_p]:text-sm"
-                      key={`${item.id}:${status.agent}`}
-                    >
-                      <span>{sessionAgentNames[status.agent]}</span>
-                      <span>{tr(`sessions.index.${status.freshness}`)}</span>
-                      <small>
-                        {status.last_success_at
-                          ? formatDateTime(status.last_success_at)
-                          : tr("sessions.neverIndexed")}
-                      </small>
-                      {(status.error_key || status.error_detail) && (
-                        <p
-                          className={
-                            sessionSourceWasUsed(status, hub.sessions)
-                              ? "text-destructive-text"
-                              : "text-muted-foreground"
-                          }
-                        >
-                          {status.error_key
-                            ? tr(status.error_key)
-                            : localizeMessage(status.error_detail ?? "")}
-                        </p>
-                      )}
-                    </div>
-                  ))}
-                {!hub.statuses.some((status) => status.workspace_id === item.id) && (
-                  <p>{tr(hub.refreshing ? "conversations.scanning" : "sessions.neverIndexed")}</p>
-                )}
-              </div>
-            ))}
-            {!statusWorkspaces.length && (
-              <p className="session-state-inline p-7 px-5 text-center text-muted-foreground">
-                {tr(hub.workspaces.length ? "sessions.noMatches" : "sessions.noWorkspaces")}
+                <time className="w-full pl-7 text-sm text-muted-foreground [overflow-wrap:anywhere]">
+                  {session.updated_at
+                    ? formatDateTime(session.updated_at)
+                    : tr("conversations.unknownTime")}
+                </time>
+              </Button>
+            );
+          })}
+          {!hub.filtered.length && !hub.loading && !hub.catalogError && (
+            <div className="session-state-inline p-7 px-5 text-center">
+              <p className="text-muted-foreground">
+                {tr(hub.sessions.length ? "sessions.noMatches" : "sessions.noSessions")}
               </p>
-            )}
-          </div>
-        </section>
-      </div>
+              {hub.sessions.length > 0 && (
+                <Button variant="ghost" onClick={resetFilters}>
+                  {tr("sessions.clearFilters")}
+                </Button>
+              )}
+            </div>
+          )}
+        </div>
+      </section>
     </>
   );
 }

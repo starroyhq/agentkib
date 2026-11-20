@@ -43,8 +43,9 @@ export const CLAUDE_BRIDGE_PATHS = {
  *   carries `lead` (its worker tools, the reports to queue and why delegation is paused), tool
  *   calls go to `leadCall`, and `turn-start` events say whether the terminal or AgentKib started
  *   the turn (`origin`; none for a turn no one typed, which counts as an automatic turn).
+ * - `open-model-picker`: a plugin may advertise the terminal's built-in interactive model picker.
  */
-export const CLAUDE_BRIDGE_FEATURES = ["lead-tools"] as const;
+export const CLAUDE_BRIDGE_FEATURES = ["lead-tools", "open-model-picker"] as const;
 
 export interface ClaudeBridgeTicket {
   protocol: 1;
@@ -123,6 +124,8 @@ export interface ClaudeBridgeCapabilities {
   /** A message that starts a turn of its own after the running one, in order. */
   queue: boolean;
   stop: boolean;
+  /** Absent from snapshots of plugins without the native model picker. */
+  modelPicker?: boolean;
   approve: false;
   answer: false;
 }
@@ -167,6 +170,13 @@ export interface ClaudeBridgeSnapshot extends ClaudeBridgeIdentity {
   messages: ClaudeBridgeMessage[];
   toolItems: ClaudeBridgeTool[];
   streamText: string;
+  /** Optional native getter; omitted by older plugins rather than inferred from defaults. */
+  model?: string | null;
+  /** The terminal's interactive model command is open. */
+  modelPickerOpen?: boolean;
+  compacting?: boolean;
+  /** Local native clock, retained after the latest compaction so buffered snapshots keep its order. */
+  compactStartedAt?: number;
   usage: ClaudeBridgeUsage | null;
   outbox: ClaudeBridgeOutboxItem[];
   capabilities: ClaudeBridgeCapabilities;
@@ -189,8 +199,15 @@ export type ClaudeBridgeEvent =
       text: string;
       aborted: boolean;
       revision: number;
+      occurredAt?: number;
+      startedAt?: number;
     }
-  | { type: "tool-start" | "tool-complete"; tool: ClaudeBridgeTool; revision: number }
+  | {
+      type: "tool-start" | "tool-complete";
+      turnId?: string;
+      tool: ClaudeBridgeTool;
+      revision: number;
+    }
   | { type: "invalidated"; reason: string; revision: number };
 
 export interface ClaudeBridgeSequencedEvent {
@@ -207,6 +224,11 @@ export interface ClaudeBridgeEventsResponse {
 }
 
 export type ClaudeBridgeCommand =
+  | {
+      commandId: string;
+      kind: "open-model-picker";
+      expectedRevision: number;
+    }
   | {
       commandId: string;
       kind: "send";

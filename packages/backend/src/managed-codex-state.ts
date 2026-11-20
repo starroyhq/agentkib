@@ -633,14 +633,17 @@ export class ManagedCodexState {
   }
 
   restoreReconciledTurn(): boolean {
-    if (this.#turn === null || this.#reason !== "control-outcome-unconfirmed") return false;
+    const idle = this.#turn === null && this.#status === "idle";
+    if ((!idle && this.#turn === null) || this.#reason !== "control-outcome-unconfirmed")
+      return false;
     this.#reason = null;
-    this.#status =
-      this.#questions.size > 0
-        ? "waiting-input"
-        : this.#approvals.size > 0
-          ? "awaiting-approval"
-          : "running";
+    if (!idle)
+      this.#status =
+        this.#questions.size > 0
+          ? "waiting-input"
+          : this.#approvals.size > 0
+            ? "awaiting-approval"
+            : "running";
     this.#runtimeRevision = this.#mutationRevision = ++this.#revision;
     return true;
   }
@@ -676,6 +679,31 @@ export class ManagedCodexState {
     if (status) this.#status = status;
     this.#mutationRevision = ++this.#revision;
     if (status) this.#runtimeRevision = this.#revision;
+  }
+
+  commitSettings(
+    update: Partial<
+      Pick<ManagedRecord, "model" | "effort" | "service_tier" | "policy_id" | "mode">
+    >,
+    persist: () => void,
+  ): void {
+    const record = this.#record;
+    const revision = this.#revision;
+    const mutationRevision = this.#mutationRevision;
+    const usageState = this.#usageState;
+    const barrier = this.#usageBarrierTurn;
+    this.#record = { ...record };
+    try {
+      this.commitManagedMutation(update);
+      persist();
+    } catch (error) {
+      this.#record = record;
+      this.#revision = revision;
+      this.#mutationRevision = mutationRevision;
+      this.#usageState = usageState;
+      this.#usageBarrierTurn = barrier;
+      throw error;
+    }
   }
 
   #invalidateUsage(preserveBarrier = false): void {
@@ -857,7 +885,12 @@ function managedSettingsProjection(record: ManagedRecord): JsonObject {
   return {
     current,
     selected,
-    applicationStatus: !native ? "unknown" : confirmed ? "confirmed" : "pending",
+    applicationStatus:
+      !native && record.snapshot?.settingsStaged !== true
+        ? "unknown"
+        : confirmed
+          ? "confirmed"
+          : "pending",
     defaults: {
       model: record.default_model ?? null,
       effort: record.default_effort ?? null,

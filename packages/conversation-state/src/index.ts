@@ -217,8 +217,10 @@ export const reduceConversationEvent = reduceSessionStreamEvent;
 
 export function createConversationStore<Live extends object = Record<string, unknown>>(
   sessionId: string,
+  checkpoint?: ConversationState<Live>,
 ) {
-  let state = createConversationState<Live>(sessionId);
+  let state =
+    checkpoint?.sessionId === sessionId ? checkpoint : createConversationState<Live>(sessionId);
   const listeners = new Set<() => void>();
   const publish = (next: ConversationState<Live>) => {
     if (next === state) return;

@@ -17,7 +17,6 @@ const POST_PATHS = new Set([
   "/approve",
   "/answer",
   "/managed/create",
-  "/managed/adopt",
   "/managed/release",
   "/managed/reconcile",
   "/managed/action",

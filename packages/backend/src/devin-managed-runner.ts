@@ -116,58 +116,167 @@ export async function devinSessionLockedElsewhere(
   return /devin/i.test(command);
 }
 
-/** Devin's models by family, and which family each concrete model (variant) belongs to. */
+export const DEVIN_MODEL_EFFORTS = [
+  "none",
+  "minimal",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "max",
+  "ultra",
+] as const;
+const DEVIN_MODEL_SPEEDS = ["fast", "priority", "lightning"] as const;
+type DevinModelEffort = (typeof DEVIN_MODEL_EFFORTS)[number];
+type DevinModelSpeed = (typeof DEVIN_MODEL_SPEEDS)[number];
+
+export interface DevinModelVariant {
+  id: string;
+  familyId: string;
+  name?: string;
+  effort?: DevinModelEffort;
+  serviceTierId?: DevinModelSpeed;
+  maxContextTokens?: number;
+}
+
+/** Devin's model families and the concrete variants the account can select. */
 export interface DevinModelCatalog {
   families: Array<{ id: string; name?: string }>;
   familyOf: Map<string, string>;
+  variantsByFamily: Map<string, DevinModelVariant[]>;
 }
 
 const MODEL_ID = /^[A-Za-z0-9._:@/+-]{1,128}$/;
 
-/**
- * The model families `devin models list --format json` reports (`{ families: [{ slug,
- * family_label, variants: [{ model_uid }] }] }`), one choice each: `--model <slug>` lets Devin
- * pick the variant. A session keeps the variant it ran with, which `familyOf` names a family
- * for. Empty when the CLI cannot list them, for example without a login.
- */
+export function emptyDevinModelCatalog(): DevinModelCatalog {
+  return { families: [], familyOf: new Map(), variantsByFamily: new Map() };
+}
+
+export function devinModelVariant(
+  catalog: DevinModelCatalog,
+  id: string,
+): DevinModelVariant | undefined {
+  const familyId = catalog.familyOf.get(id);
+  return familyId
+    ? catalog.variantsByFamily.get(familyId)?.find((variant) => variant.id === id)
+    : undefined;
+}
+
+/** Resolve a unique advertised variant. A bare family leaves the choice to Devin. */
+export function resolveDevinModel(
+  catalog: DevinModelCatalog,
+  {
+    modelId,
+    effort,
+    serviceTierId,
+  }: { modelId: string; effort?: string | null; serviceTierId?: string | null },
+): string | undefined {
+  if (!effort && !serviceTierId) {
+    return catalog.variantsByFamily.has(modelId) || catalog.familyOf.has(modelId)
+      ? modelId
+      : undefined;
+  }
+  const matches = (variant: DevinModelVariant) =>
+    (!effort || variant.effort === effort) &&
+    variant.serviceTierId === (serviceTierId ?? undefined);
+  const exact = devinModelVariant(catalog, modelId);
+  if (exact && matches(exact)) return exact.id;
+  const choices = catalog.variantsByFamily.get(exact?.familyId ?? modelId)?.filter(matches);
+  return choices?.length === 1 ? choices[0]?.id : undefined;
+}
+
+/** Read an exact effort/speed suffix after the native family ID (or the CLI slug).
+ * Composite models, capacity variants, and unfamiliar suffixes stay selectable by their native ID. */
+function devinVariantControls(
+  id: string,
+  familyIds: string[],
+  label?: string,
+  familyLabel?: string,
+): Pick<DevinModelVariant, "effort" | "serviceTierId"> {
+  for (const family of familyIds) {
+    if (id === family && label && familyLabel && label.startsWith(`${familyLabel} `)) {
+      // Some bare variants carry the reasoning setting only in their own label, e.g. GLM-5.2 High.
+      const suffix = label.slice(familyLabel.length + 1).toLowerCase();
+      const effort = DEVIN_MODEL_EFFORTS.find((value) => value === suffix);
+      if (effort) return { effort };
+    }
+    if (!id.startsWith(`${family}-`)) continue;
+    const suffix = id.slice(family.length + 1);
+    const [level, speed, extra] = suffix.split("-");
+    if (extra !== undefined) continue;
+    const effort = DEVIN_MODEL_EFFORTS.find((value) => value === level);
+    if (effort && speed === undefined) return { effort };
+    const serviceTierId = DEVIN_MODEL_SPEEDS.find((value) => value === (effort ? speed : level));
+    if (serviceTierId && (effort || speed === undefined))
+      return effort ? { effort, serviceTierId } : { serviceTierId };
+  }
+  return {};
+}
+
+function parseDevinModelCatalog(listing: unknown): DevinModelCatalog {
+  const catalog = emptyDevinModelCatalog();
+  const families = (listing as { families?: unknown } | null)?.families;
+  if (!Array.isArray(families)) return catalog;
+  for (const family of families.slice(0, 200)) {
+    const entry = (family ?? {}) as {
+      slug?: unknown;
+      family_uid?: unknown;
+      family_label?: unknown;
+      variants?: unknown;
+    };
+    const { slug } = entry;
+    if (typeof slug !== "string" || !MODEL_ID.test(slug) || catalog.variantsByFamily.has(slug))
+      continue;
+    const name =
+      typeof entry.family_label === "string" ? entry.family_label.trim().slice(0, 256) : "";
+    catalog.families.push({ id: slug, ...(name ? { name } : {}) });
+    const familyIds = [slug, slug.replaceAll(".", "-")];
+    if (typeof entry.family_uid === "string" && MODEL_ID.test(entry.family_uid))
+      familyIds.unshift(entry.family_uid);
+    const variants: DevinModelVariant[] = [];
+    catalog.variantsByFamily.set(slug, variants);
+    if (!Array.isArray(entry.variants)) continue;
+    for (const value of entry.variants.slice(0, 2_000)) {
+      const variant = value as {
+        model_uid?: unknown;
+        label?: unknown;
+        max_context_tokens?: unknown;
+      } | null;
+      const id = variant?.model_uid;
+      if (typeof id !== "string" || !MODEL_ID.test(id) || catalog.familyOf.has(id)) continue;
+      const label = typeof variant?.label === "string" ? variant.label.trim().slice(0, 256) : "";
+      const capacity = variant?.max_context_tokens;
+      variants.push({
+        id,
+        familyId: slug,
+        ...(label ? { name: label } : {}),
+        ...devinVariantControls(id, familyIds, label, name),
+        ...(typeof capacity === "number" && Number.isSafeInteger(capacity) && capacity > 0
+          ? { maxContextTokens: capacity }
+          : {}),
+      });
+      catalog.familyOf.set(id, slug);
+    }
+  }
+  return catalog;
+}
+
+/** Query the CLI catalog. An unavailable catalog leaves Devin's default model in effect. */
 export function devinModelCatalog(
   executable: string,
   environment: NodeJS.ProcessEnv,
 ): Promise<DevinModelCatalog> {
-  const empty = (): DevinModelCatalog => ({ families: [], familyOf: new Map() });
   return new Promise((resolve) =>
     execFile(
       executable,
       ["models", "list", "--format", "json"],
       { env: environment, timeout: 15_000, maxBuffer: 8 * 1024 * 1024, windowsHide: true },
       (error, stdout) => {
-        if (error) return resolve(empty());
+        if (error) return resolve(emptyDevinModelCatalog());
         try {
-          const families = (JSON.parse(String(stdout)) as { families?: unknown }).families;
-          if (!Array.isArray(families)) return resolve(empty());
-          const catalog = empty();
-          for (const family of families.slice(0, 200)) {
-            const entry = (family ?? {}) as {
-              slug?: unknown;
-              family_label?: unknown;
-              variants?: unknown;
-            };
-            if (typeof entry.slug !== "string" || !MODEL_ID.test(entry.slug)) continue;
-            const label = entry.family_label;
-            catalog.families.push({
-              id: entry.slug,
-              ...(typeof label === "string" && label ? { name: label } : {}),
-            });
-            if (Array.isArray(entry.variants))
-              for (const variant of entry.variants.slice(0, 2_000)) {
-                const uid = (variant as { model_uid?: unknown } | null)?.model_uid;
-                if (typeof uid === "string" && MODEL_ID.test(uid) && !catalog.familyOf.has(uid))
-                  catalog.familyOf.set(uid, entry.slug);
-              }
-          }
-          resolve(catalog);
+          resolve(parseDevinModelCatalog(JSON.parse(String(stdout))));
         } catch {
-          resolve(empty());
+          resolve(emptyDevinModelCatalog());
         }
       },
     ),
@@ -213,6 +322,7 @@ export class DevinManagedRunner {
   /** The usage limit the last turn met, until the next turn starts. */
   #usageLimit: UsageLimitView | null = null;
   #child: ChildProcess | null = null;
+  #runningSettings: DevinTurnSettings | undefined;
   #timer: NodeJS.Timeout | undefined;
   #published = "";
   /** The history items last read, which tell the turn's answer once it ends. */
@@ -231,6 +341,14 @@ export class DevinManagedRunner {
 
   get nativeId() {
     return this.#nativeId;
+  }
+
+  get canStageSettings() {
+    return !this.#closed && this.#nativeId !== null;
+  }
+
+  get runningSettings(): Readonly<DevinTurnSettings> | undefined {
+    return this.#runningSettings;
   }
 
   snapshot(): Record<string, unknown> {
@@ -297,6 +415,8 @@ export class DevinManagedRunner {
     let child: ChildProcess;
     try {
       await writeFile(promptFile, text, { mode: 0o600 });
+      if (this.#closed || expectedRevision !== this.#revision)
+        throw new Error("stale-or-disabled-control");
       beforeDispatch();
       child = spawn(executable, args, {
         cwd: this.workspace,
@@ -310,6 +430,7 @@ export class DevinManagedRunner {
       throw error;
     }
     this.#child = child;
+    this.#runningSettings = { ...settings };
     this.#status = "running";
     this.#reason = null;
     this.#usageLimit = null;
@@ -328,22 +449,32 @@ export class DevinManagedRunner {
     });
     const startedAt = Date.now();
     this.#publishState();
-    const exited = new Promise<number | null>((resolve) => {
-      child.once("exit", (code) => resolve(code));
-      child.once("error", () => resolve(-1));
-    });
+    const exited = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>(
+      (resolve) => {
+        child.once("exit", (code, signal) => resolve({ code, signal }));
+        child.once("error", () => resolve({ code: -1, signal: null }));
+      },
+    );
     this.#timer = setInterval(() => void this.#poll(before, text, startedAt), POLL_MS);
-    void exited.then(async (code) => {
+    void exited.then(async ({ code, signal }) => {
       clearInterval(this.#timer);
       this.#timer = undefined;
       await this.#poll(before, text, startedAt);
       await rm(directory, { recursive: true, force: true });
-      const stopped = this.#status === "stopping";
+      const stopped =
+        this.#status === "stopping" &&
+        (signal === "SIGINT" ||
+          signal === "SIGTERM" ||
+          signal === "SIGKILL" ||
+          code === 130 ||
+          code === 143 ||
+          code === 137);
       // A usage limit can end a turn that exits 0, so what Devin printed as errors is read
       // either way; its reply only when the turn failed, where it cannot pass for an answer.
       const limit = stopped ? null : devinUsageLimitHit(code === 0 ? errors : output);
       const failed = code !== 0 && !stopped && !limit;
       this.#child = null;
+      this.#runningSettings = undefined;
       this.#status = failed ? "failed" : "idle";
       this.#reason = failed
         ? devinRunFailure(output, code)

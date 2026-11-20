@@ -12,6 +12,7 @@ import {
   mergeConversationItems,
   type SessionStreamEvent,
 } from "@agentkib/conversation-state";
+import { warmSessionAuthority, type WarmSessionStreamPool } from "@agentkib/session-ui";
 import { publishSessionInvalidation } from "./session-events";
 import {
   beginHistoryRead,
@@ -23,6 +24,7 @@ import {
   type NativeCoverage,
 } from "./session-model";
 import { createHistoryPagination, recordLatestHistoryPage } from "./history-pagination";
+import { retryBusyRead } from "./session-read-retry";
 type Setter<T> = Dispatch<SetStateAction<T>>;
 // These fields cannot grant control or remove an execution/authorization fence.
 // Unknown fields conservatively count as control boundaries.
@@ -44,7 +46,16 @@ const nativeProgressFields = new Set([
 type ProgressPatch = Map<string, { value: unknown; revision: number }>;
 const nativeRevision = (value: unknown): value is number =>
   Number.isSafeInteger(value) && Number(value) >= 0;
+export type WarmSessionNavigation = {
+  park?: () => void;
+  resume?: { generation: number; onCold: () => void };
+};
 interface LiveSyncOptions {
+  warmStreams: WarmSessionStreamPool;
+  warmScope?: string;
+  warmNavigation: RefObject<WarmSessionNavigation>;
+  selectionVisit?: number;
+  liveValue: RefObject<Live | undefined>;
   streamReady: RefObject<boolean>;
   controlReconciliationPending: RefObject<boolean>;
   nativeCoverage: RefObject<NativeCoverage>;
@@ -71,8 +82,19 @@ interface LiveSyncOptions {
   setPage: Setter<ConversationEventPage | undefined>;
   setLiveContentVersion?: Setter<number>;
   setUsageEpoch?: Setter<string>;
+  settingsInFlight: RefObject<
+    { sessionId: string; generation: number; controlChanged?: boolean } | undefined
+  >;
+  readSettingsControls: RefObject<
+    ((sessionId: string, accept?: (live: Live) => boolean) => Promise<void>) | undefined
+  >;
 }
 export function useSessionLive({
+  warmStreams,
+  warmScope,
+  warmNavigation,
+  selectionVisit,
+  liveValue,
   streamReady,
   controlReconciliationPending,
   nativeCoverage,
@@ -99,6 +121,8 @@ export function useSessionLive({
   liveDelivery,
   setLiveContentVersion,
   setUsageEpoch,
+  settingsInFlight,
+  readSettingsControls,
 }: LiveSyncOptions) {
   useEffect(() => {
     if (!selected || access?.status !== "approved" || access.protocolVersion !== 2) return;
@@ -106,7 +130,10 @@ export function useSessionLive({
     controlReconciliationPending.current = false;
     const id = selected;
     const g = generation.current;
-    const store = createConversationStore<Live>(id);
+    let store = createConversationStore<Live>(id);
+    const resume =
+      warmNavigation.current.resume?.generation === g ? warmNavigation.current.resume : undefined;
+    if (resume) warmNavigation.current.resume = undefined;
     let closed = false;
     let closeStream: (() => void) | undefined;
     let resets = 0;
@@ -118,6 +145,8 @@ export function useSessionLive({
     let historyDirty = false;
     let historyRetry: number | undefined;
     let historyRecoveryPending = false;
+    let historyWaitingForSettings = false;
+    let settingsHistoryWake = 0;
     let controlRequest = 0;
     let controlGeneration = 0;
     let progressPatch: ProgressPatch | undefined;
@@ -126,7 +155,13 @@ export function useSessionLive({
     // remove the previously rendered native tail without touching older pages.
     let sourceItems: ConversationEvent[] = nativeCoverage.current.items;
     const current = () => !closed && g === generation.current && selection.current === id;
+    const selectedSettingsWrite = () => {
+      const write = settingsInFlight.current;
+      return write?.sessionId === id && write.generation === g ? write : undefined;
+    };
+    let historyRetriedForWrite: ReturnType<typeof selectedSettingsWrite>;
     const scheduleHistory = () => {
+      if (historyWaitingForSettings) return;
       window.clearTimeout(historyRetry);
       // Only an invalidated read waits for native updates to settle. Token
       // delivery by itself never schedules a historical read.
@@ -135,6 +170,12 @@ export function useSessionLive({
         if (current() && historyDirty) loadHistory();
       }, 50);
     };
+    const wakeSettingsHistory = () => {
+      settingsHistoryWake++;
+      if (!historyWaitingForSettings) return;
+      historyWaitingForSettings = false;
+      if (!historyLoading && historyDirty) scheduleHistory();
+    };
     const loadHistory = () => {
       historyLoading = true;
       historyDirty = false;
@@ -142,6 +183,8 @@ export function useSessionLive({
       const request = historyRequest;
       const attempt = beginHistoryRead(nativeCoverage.current);
       const wake = refreshWake.current;
+      const settingsWakeAtRead = settingsHistoryWake;
+      const writeAtRead = selectedSettingsWrite();
       void client
         .events(id)
         .then((page) => {
@@ -195,6 +238,19 @@ export function useSessionLive({
         .catch((error) => {
           if (current() && request === historyRequest) {
             if (error instanceof ApiError && error.code === "operation_busy") {
+              const activeWrite = selectedSettingsWrite();
+              const write = activeWrite ?? writeAtRead;
+              if (write && historyRetriedForWrite !== write) {
+                // A native settings command can append history before the host frees admission.
+                // Keep that invalidation and retry only history once the write settles.
+                historyRetriedForWrite = write;
+                historyDirty = true;
+                historyWaitingForSettings =
+                  !!activeWrite &&
+                  !activeWrite.controlChanged &&
+                  settingsWakeAtRead === settingsHistoryWake;
+                return;
+              }
               readBusy(wake, g);
               return;
             }
@@ -215,7 +271,7 @@ export function useSessionLive({
     const readHistory = () => {
       historyRequest++;
       historyDirty = true;
-      if (historyLoading) return;
+      if (historyLoading || historyWaitingForSettings) return;
       if (historyRetry !== undefined) scheduleHistory();
       else loadHistory();
     };
@@ -240,32 +296,77 @@ export function useSessionLive({
         connect();
       });
     };
-    const connect = () => {
+    const connect = (warmReturn?: typeof resume) => {
+      const scope = warmScope ?? "";
+      let lease = warmStreams.claim(scope, id);
+      if (lease.checkpoint && !warmReturn) {
+        lease.release();
+        lease = warmStreams.claim(scope, id);
+      }
+      const checkpoint = lease.checkpoint;
+      if (checkpoint) {
+        store = createConversationStore(id, checkpoint.state);
+        nativeCoverage.current = checkpoint.coverage;
+        sourceItems = checkpoint.coverage.items;
+        setUsageEpoch?.(JSON.stringify([checkpoint.state.runtimeBootId, checkpoint.state.epoch]));
+        setPage((page) => page);
+      } else warmReturn?.onCold();
+      closeStream = () => lease.release();
+      warmNavigation.current.park = () => {
+        const projection = liveValue.current;
+        const coverage = nativeCoverage.current;
+        if (
+          !active() ||
+          !warmScope ||
+          warmScope !== warmSessionAuthority(accessRef.current, streamEpoch) ||
+          !streamReady.current ||
+          controlReconciliationPending.current ||
+          refreshRequired.current ||
+          hasDurablePending(id) ||
+          historyLoading ||
+          historyDirty ||
+          historyRecoveryPending ||
+          !coverage.historyPagination ||
+          coverage.historyRecoveryFailed ||
+          projection?.sessionId !== id
+        )
+          return;
+        const accepted = store.replaceLive(projection);
+        if (accepted.live && accepted.cursor) lease.release({ state: accepted, coverage });
+      };
       const connection = ++connectionEpoch;
       const active = () => current() && connection === connectionEpoch;
-      let snapshotSeen = false;
+      let snapshotSeen = !!checkpoint;
       let readyReconciled = false;
-      const reconcileControls = () => {
-        controlReconciliationPending.current = true;
-        setControlReady(false);
-        publishSessionInvalidation(client, id, ["receipts"]);
+      const reconcileControls = (
+        quiet = false,
+        accept?: (live: Live) => boolean,
+      ): Promise<void> => {
+        if (!quiet) {
+          controlReconciliationPending.current = true;
+          setControlReady(false);
+        }
+        if (!quiet) publishSessionInvalidation(client, id, ["receipts"]);
         const request = ++controlRequest;
         const wake = refreshWake.current;
         const boundary = controlGeneration;
         const progress: ProgressPatch = new Map();
         progressPatch = progress;
-        void client
-          .live(id)
+        return (quiet ? retryBusyRead(() => client.live(id)) : client.live(id))
           .then((live) => {
             if (!active() || request !== controlRequest) return;
             if (boundary !== controlGeneration) {
               // A changed owner, native control state or host fence requires a
               // fresh complete projection. Text/revision progress alone does not.
-              reconcileControls();
-              return;
+              return reconcileControls(quiet, accept);
             }
             progressPatch = undefined;
             controlReconciliationPending.current = false;
+            if (live.sessionId !== id) throw new ApiError(409, "session-state-unavailable");
+            if (accept && !accept(live)) {
+              setControlReady(false);
+              return;
+            }
             const projected: Live & Record<string, unknown> = { ...live };
             // Preserve only native progress observed at/after this response's
             // revision. Never turn a null/unknown host projection into a usable
@@ -294,9 +395,15 @@ export function useSessionLive({
             if (error instanceof ApiError && error.code === "operation_busy") {
               progressPatch = undefined;
               controlReconciliationPending.current = false;
-              readBusy(wake, g);
+              if (quiet) fail(error, g);
+              else readBusy(wake, g);
             } else fail(error, g);
           });
+      };
+      readSettingsControls.current = async (sessionId, accept) => {
+        if (sessionId !== id || !active()) return;
+        await reconcileControls(true, accept);
+        if (active()) wakeSettingsHistory();
       };
       const disconnected = () => {
         needsDomainRecovery = true;
@@ -308,7 +415,7 @@ export function useSessionLive({
         setOnline(false);
         setControlReady(false);
       };
-      closeStream = client.stream(id, {
+      const started = lease.start({
         open: () => {
           // Delivery readiness comes from a valid baseline/replay, never merely
           // from an open TCP connection.
@@ -362,6 +469,7 @@ export function useSessionLive({
                     "capabilities",
                   ]);
                 needsDomainRecovery = false;
+                if (!selectedSettingsWrite()) wakeSettingsHistory();
                 setOnline(true);
                 if (!nativeCoverage.current.historyRecoveryFailed) setError(false);
                 streamReady.current = true;
@@ -388,7 +496,10 @@ export function useSessionLive({
             try {
               const changed = JSON.parse(data) as { sessionId?: string };
               if (changed.sessionId !== id) return false;
-              reconcileControls();
+              const write = selectedSettingsWrite();
+              if (write) write.controlChanged = true;
+              else void reconcileControls();
+              wakeSettingsHistory();
             } catch {
               return false;
             }
@@ -535,10 +646,19 @@ export function useSessionLive({
           }
         },
       });
+      if (!started && checkpoint && current()) {
+        nativeCoverage.current = { items: [], authoritativeTurnIds: [], removedTurnIds: [] };
+        sourceItems = [];
+        store.reset();
+        warmReturn?.onCold();
+        connect();
+      }
     };
-    connect();
+    connect(resume);
     return () => {
       closed = true;
+      warmNavigation.current.park = undefined;
+      readSettingsControls.current = undefined;
       window.clearTimeout(historyRetry);
       streamReady.current = false;
       setControlReady(false);
@@ -546,6 +666,11 @@ export function useSessionLive({
     };
   }, [
     selected,
+    warmStreams,
+    warmScope,
+    warmNavigation,
+    selectionVisit,
+    liveValue,
     access?.status,
     access?.protocolVersion,
     client,
@@ -571,5 +696,7 @@ export function useSessionLive({
     streamReady,
     controlReconciliationPending,
     nativeCoverage,
+    settingsInFlight,
+    readSettingsControls,
   ]);
 }

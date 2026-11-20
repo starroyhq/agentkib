@@ -1,10 +1,46 @@
-import { mkdir, rename, stat } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { mkdir, realpath, rename, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
 const APP_DATA_DIRECTORY = "ai.agentkib";
 const DEVELOPMENT_DATA_DIRECTORY = "ai.agentkib.dev";
 const LEGACY_APP_DATA_DIRECTORY = "com.agentkib.desktop";
+
+export async function resolveDesktopRuntimeProfile(
+  environment: NodeJS.ProcessEnv,
+  platform: NodeJS.Platform,
+  development: boolean,
+  homeDirectory = os.homedir(),
+): Promise<{ dataDir: string; shared?: { root: string; legacyDevDataDir: string } }> {
+  if (
+    environment.AGENTKIB_BENCHMARK_DATA_DIR ||
+    (development && environment.AGENTKIB_DEV_ISOLATED === "1")
+  )
+    return {
+      dataDir: await resolveApplicationDataDir(environment, platform, development, homeDirectory),
+    };
+  const applicationDir = await resolveApplicationDataDir(
+    environment,
+    platform,
+    false,
+    homeDirectory,
+  );
+  const dataDir = await realpath(applicationDir);
+  const namespace = createHash("sha256").update(dataDir).digest("hex").slice(0, 24);
+  // Keep Unix socket paths below the kernel's length limit, even with a long home path.
+  const root =
+    platform === "win32"
+      ? path.join(dataDir, "local-runtime")
+      : path.join("/tmp", `ak-runtime-${process.getuid?.() ?? 0}-${namespace}`);
+  return {
+    dataDir,
+    shared: {
+      root,
+      legacyDevDataDir: path.join(path.dirname(applicationDir), DEVELOPMENT_DATA_DIRECTORY),
+    },
+  };
+}
 
 export async function resolveApplicationDataDir(
   environment: NodeJS.ProcessEnv,

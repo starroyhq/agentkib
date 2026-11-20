@@ -11,6 +11,8 @@ const CLIENT_TYPE = "agentkib-codex-bridge";
 const MAX_FRAME_BYTES = 64 * 1024 * 1024;
 const MAX_REQUEST_BYTES = 64 * 1024;
 const READ_TIMEOUT_MS = 3_000;
+export const CODEX_FOLLOWER_READ_MODEL_SETTINGS = "thread-follower-read-model-settings";
+export const CODEX_FOLLOWER_UPDATE_THREAD_SETTINGS = "thread-follower-update-thread-settings";
 // Electron's fs treats .asar paths as virtual directories. Package identity
 // verification needs the archive's physical bytes and canonical file path.
 const archiveFs: typeof fs = process.versions.electron
@@ -26,15 +28,29 @@ const METHOD_VERSIONS: Readonly<Record<string, number>> = {
   "thread-follower-command-approval-decision": 1,
   "thread-follower-submit-user-input": 1,
   "thread-follower-file-approval-decision": 1,
-  "thread-follower-update-thread-settings": 2,
+  [CODEX_FOLLOWER_READ_MODEL_SETTINGS]: 1,
+  [CODEX_FOLLOWER_UPDATE_THREAD_SETTINGS]: 2,
   "thread-follower-start-turn": 2,
   "thread-follower-interrupt-turn": 4,
-  "thread-stream-state-changed": 11,
 };
 // IPC method versions remain strictly checked below. App versions use minimum
 // gates so compatible future patch releases do not become read-only by default.
 const MINIMUM_DESKTOP_VERSION = "26.917.62051";
-const SETTINGS_MINIMUM_DESKTOP_VERSION = "26.924.22138";
+
+type DesktopInstallation = { version: string; settingsCatalogExecutable?: string };
+
+export function codexFollowerManifestSupportsSettings(source: string): boolean {
+  return [CODEX_FOLLOWER_READ_MODEL_SETTINGS, CODEX_FOLLOWER_UPDATE_THREAD_SETTINGS].every(
+    (method) => {
+      const declaration = new RegExp(`["']${method}["']\\s*:\\s*(\\d+)\\s*[,}]`, "g");
+      const versions = [...source.matchAll(declaration)];
+      return (
+        versions.length > 0 &&
+        versions.every((match) => Number(match[1]) === METHOD_VERSIONS[method])
+      );
+    },
+  );
+}
 
 type JsonRecord = Record<string, unknown>;
 type Frame = { bytes: Buffer; value: unknown };
@@ -57,6 +73,7 @@ export class CodexFollowerConnection {
     socket: Socket,
     desktopVersion: string,
     readonly endpoint: string,
+    readonly settingsCatalogExecutable?: string,
   ) {
     this.#socket = socket;
     this.desktopVersion = desktopVersion;
@@ -79,10 +96,15 @@ export class CodexFollowerConnection {
       if (before.dev !== after.dev || before.ino !== after.ino)
         throw new Error("Codex IPC endpoint changed");
       const peerPath = await realpath(verifyPeer(socket, process.getuid!()));
-      const desktopVersion = await readDesktopVersion(peerPath);
-      if (!versionAtLeast(desktopVersion, MINIMUM_DESKTOP_VERSION))
+      const installation = await readDesktopInstallation(peerPath);
+      if (!versionAtLeast(installation.version, MINIMUM_DESKTOP_VERSION))
         throw new Error("unverified Codex Desktop installation");
-      const connection = new CodexFollowerConnection(socket, desktopVersion, endpoint);
+      const connection = new CodexFollowerConnection(
+        socket,
+        installation.version,
+        endpoint,
+        installation.settingsCatalogExecutable,
+      );
       try {
         const response = await connection.request("initialize", { clientType: CLIENT_TYPE });
         if (!isRecord(response) || response.method !== "initialize")
@@ -111,7 +133,7 @@ export class CodexFollowerConnection {
   }
 
   get supportsThreadSettings(): boolean {
-    return versionAtLeast(this.desktopVersion, SETTINGS_MINIMUM_DESKTOP_VERSION);
+    return this.settingsCatalogExecutable !== undefined;
   }
 
   get hasPendingMessages(): boolean {
@@ -383,7 +405,7 @@ function verifyPeer(socket: Socket, expectedUid: number): string {
   return path.resolve(value.toString("utf8"));
 }
 
-async function readDesktopVersion(executable: string): Promise<string> {
+async function readDesktopInstallation(executable: string): Promise<DesktopInstallation> {
   const contentsIndex = executable.split(path.sep).lastIndexOf("Contents");
   if (contentsIndex < 1) throw new Error("Codex IPC peer is not inside a Desktop app bundle");
   const root = path.resolve(path.sep, ...executable.split(path.sep).slice(1, contentsIndex + 1));
@@ -393,14 +415,7 @@ async function readDesktopVersion(executable: string): Promise<string> {
   const asarPath = path.join(root, "Resources/app.asar");
   if ((await archiveFs.promises.realpath(asarPath)) !== asarPath)
     throw new Error("Codex Desktop ASAR is not canonical");
-  const packageData = await readAsarPackage(asarPath);
-  if (packageData.name !== "openai-codex-electron" || typeof packageData.version !== "string")
-    throw new Error("Codex Desktop package identity is invalid");
-  return packageData.version;
-}
-
-async function readAsarPackage(filePath: string): Promise<JsonRecord> {
-  const file = await archiveFs.promises.open(filePath, "r");
+  const file = await archiveFs.promises.open(asarPath, "r");
   try {
     const { size: fileSize } = await file.stat();
     const prefix = Buffer.alloc(16);
@@ -414,34 +429,64 @@ async function readAsarPackage(filePath: string): Promise<JsonRecord> {
     if ((await file.read(index, 0, index.byteLength, 16)).bytesRead !== index.byteLength)
       throw new Error("truncated Codex Desktop ASAR index");
     const header: unknown = JSON.parse(index.toString("utf8"));
-    if (!isRecord(header) || !isRecord(header.files) || !isRecord(header.files["package.json"]))
+    if (!isRecord(header) || !isRecord(header.files))
       throw new Error("Codex Desktop ASAR package metadata is missing");
-    const packageEntry = header.files["package.json"];
-    if ("link" in packageEntry || "unpacked" in packageEntry)
-      throw new Error("unsupported Codex Desktop ASAR package entry");
-    const offset = packageEntry.offset;
-    const packageSize = packageEntry.size;
+    const read = async (entry: unknown): Promise<string> => {
+      if (!isRecord(entry) || "link" in entry || "unpacked" in entry)
+        throw new Error("unsupported Codex Desktop ASAR entry");
+      const { offset, size } = entry;
+      if (
+        typeof offset !== "string" ||
+        !/^\d+$/.test(offset) ||
+        typeof size !== "number" ||
+        !Number.isSafeInteger(size) ||
+        size <= 0 ||
+        size > 2 * 1024 * 1024
+      )
+        throw new Error("invalid Codex Desktop ASAR extent");
+      const start = BigInt(headerSize) + 8n + BigInt(offset);
+      const end = start + BigInt(size);
+      if (end > BigInt(fileSize) || end > BigInt(Number.MAX_SAFE_INTEGER))
+        throw new Error("Codex Desktop entry is outside its ASAR");
+      const contents = Buffer.alloc(size);
+      if ((await file.read(contents, 0, size, Number(start))).bytesRead !== size)
+        throw new Error("truncated Codex Desktop ASAR entry");
+      return contents.toString("utf8");
+    };
+    const value: unknown = JSON.parse(await read(header.files["package.json"]));
     if (
-      typeof offset !== "string" ||
-      !/^\d+$/.test(offset) ||
-      !Number.isSafeInteger(packageSize) ||
-      Number(packageSize) === 0 ||
-      Number(packageSize) > 1024 * 1024
+      !isRecord(value) ||
+      value.name !== "openai-codex-electron" ||
+      typeof value.version !== "string"
     )
-      throw new Error("invalid Codex Desktop package extent");
-    const start = BigInt(headerSize) + 8n + BigInt(offset);
-    const end = start + BigInt(Number(packageSize));
-    if (end > BigInt(fileSize) || end > BigInt(Number.MAX_SAFE_INTEGER))
-      throw new Error("Codex Desktop package metadata is outside its ASAR");
-    const contents = Buffer.alloc(Number(packageSize));
-    if (
-      (await file.read(contents, 0, contents.byteLength, Number(start))).bytesRead !==
-      contents.byteLength
-    )
-      throw new Error("truncated Codex Desktop package metadata");
-    const value: unknown = JSON.parse(contents.toString("utf8"));
-    if (!isRecord(value)) throw new Error("invalid Codex Desktop package metadata");
-    return value;
+      throw new Error("Codex Desktop package identity is invalid");
+    const installation: DesktopInstallation = { version: value.version };
+    try {
+      // The install's IPC method table declares the wire contract. An unknown
+      // layout or changed method version leaves settings read-only.
+      if (typeof value.main === "string" && /^[\w./-]+\.js$/.test(value.main)) {
+        let entry: unknown = header;
+        for (const segment of value.main.split("/"))
+          entry = isRecord(entry) && isRecord(entry.files) ? entry.files[segment] : undefined;
+        if (codexFollowerManifestSupportsSettings(await read(entry))) {
+          for (const name of ["codex-cli/bin/codex", "codex"]) {
+            const candidate = path.join(root, "Resources", name);
+            const info = await stat(candidate).catch(() => null);
+            if (
+              info?.isFile() &&
+              (info.mode & 0o111) !== 0 &&
+              (await realpath(candidate)) === candidate
+            ) {
+              installation.settingsCatalogExecutable = candidate;
+              break;
+            }
+          }
+        }
+      }
+    } catch {
+      // Settings compatibility is optional for following and existing controls.
+    }
+    return installation;
   } finally {
     await file.close();
   }

@@ -1,8 +1,32 @@
+import { randomUUID } from "node:crypto";
 import { createContextUsageGeneration, projectContextUsage } from "./context-usage";
 import { codexTurnEndEvent, codexTurnMeta } from "./codex-turn-end";
 import { codexErrorText, codexTurnErrorEvent } from "./codex-turn-error";
 
 type JsonRecord = Record<string, unknown>;
+export type FollowerModelSettings = { model: string; effort: string | null; modelProvider: string };
+
+export function parseFollowerModelSettings(value: unknown): FollowerModelSettings | null {
+  if (!isRecord(value)) return null;
+  const { model, reasoningEffort: effort, modelProvider } = value;
+  const valid = (part: unknown, max: number): part is string =>
+    typeof part === "string" && part.trim().length > 0 && part.length <= max;
+  return valid(model, 256) && (effort === null || valid(effort, 64)) && valid(modelProvider, 256)
+    ? { model, effort, modelProvider }
+    : null;
+}
+
+export function sameFollowerModelSettings(
+  left: FollowerModelSettings | null,
+  right: FollowerModelSettings,
+): boolean {
+  return (
+    left?.model === right.model &&
+    left.effort === right.effort &&
+    left.modelProvider === right.modelProvider
+  );
+}
+
 type UsageRecovery = {
   raw: unknown;
   reportId: number;
@@ -41,6 +65,7 @@ export class CodexFollowerState {
   #awaitingUsageReport = false;
   readonly conversationId: string;
   readonly ownerClientId: string;
+  readonly settingsWriteScope = randomUUID();
 
   constructor(conversationId: string, ownerClientId: string, usageRecovery?: UsageRecovery) {
     if (!conversationId || !ownerClientId) throw new Error("invalid-follower-identity");
@@ -58,6 +83,12 @@ export class CodexFollowerState {
 
   get status(): CodexFollowerStatus {
     return this.#status;
+  }
+
+  canSetNextTurnModel(): boolean {
+    return (
+      this.#status === "idle" || this.#status === "running" || this.#status === "awaiting-approval"
+    );
   }
 
   get revision(): number | null {
@@ -167,7 +198,15 @@ export class CodexFollowerState {
           );
         if (isRecord(item)) params.changes = item.changes;
       }
-      result.push(projectFollowerApproval(request.id, turnId, String(method), params, controls));
+      result.push(
+        projectFollowerApproval(
+          request.id,
+          turnId,
+          String(method),
+          params,
+          controls && this.#status !== "unsupported",
+        ),
+      );
     }
     return result;
   }
@@ -240,7 +279,23 @@ export class CodexFollowerState {
     };
   }
 
-  settingsState(supportsThreadSettings: boolean): JsonRecord {
+  nativeModelSettings(): (FollowerModelSettings & { cwd: string }) | null {
+    const snapshot = this.#snapshot;
+    if (!snapshot || typeof snapshot.cwd !== "string") return null;
+    const settings = parseFollowerModelSettings({
+      model: snapshot.latestModel,
+      reasoningEffort: snapshot.latestReasoningEffort,
+      modelProvider: snapshot.modelProvider,
+    });
+    return settings && { ...settings, cwd: snapshot.cwd };
+  }
+
+  nativeServiceTier(): string | null {
+    const saved = this.#snapshot?.latestThreadSettings;
+    return isRecord(saved) && typeof saved.serviceTier === "string" ? saved.serviceTier : null;
+  }
+
+  settingsState(): JsonRecord {
     const snapshot = this.#snapshot;
     if (!snapshot)
       return {
@@ -252,10 +307,10 @@ export class CodexFollowerState {
     const current = isRecord(saved.collaborationMode) ? saved.collaborationMode : {};
     const currentMode = isRecord(current) ? current.mode : null;
     return {
-      available: supportsThreadSettings,
+      available: true,
       executionMode: "codex-follower",
       settings: {
-        applicationStatus: supportsThreadSettings ? "confirmed" : "unknown",
+        applicationStatus: "confirmed",
         current: {
           model: Object.hasOwn(saved, "model") ? saved.model : (snapshot.latestModel ?? null),
           effort: Object.hasOwn(saved, "effort")
@@ -273,37 +328,14 @@ export class CodexFollowerState {
         writable: {
           model: false,
           effort: false,
-          mode: supportsThreadSettings,
+          mode: false,
           serviceTier: false,
-          policy: supportsThreadSettings,
+          policy: false,
           restoreDefaults: false,
         },
       },
-      collaborationModes: supportsThreadSettings
-        ? [
-            { id: "default", name: "Default" },
-            { id: "plan", name: "Plan" },
-          ]
-        : [],
-      policies: [
-        {
-          id: "workspace-write-on-request",
-          name: "Workspace write · ask when needed",
-          description: "Can edit the workspace; risky actions still require user approval.",
-        },
-        {
-          id: "full-access-on-request",
-          name: "Full access · no approval prompts",
-          description: "Can access the computer and network without prompting for approvals.",
-        },
-        {
-          id: "workspace-write-auto-review",
-          name: "Workspace write · agent review",
-          description: "Can edit the workspace; the native agent reviews approval requests.",
-        },
-      ],
       revision: this.#revision,
-      reason: supportsThreadSettings ? null : "follower-operation-unverified",
+      reason: null,
     };
   }
 
@@ -424,12 +456,15 @@ export class CodexFollowerState {
     )
       throw new Error("session-compacting");
     if (this.#revision !== expectedRevision) throw new Error("stale-or-disabled-control");
+    if (this.#status === "unsupported") throw new Error("follower-operation-unverified");
     const live = this.live(true);
     if (this.#status === "outcome-unknown") throw new Error("control-outcome-unconfirmed");
     if (method === "thread-follower-start-turn" && live.sendEnabled !== true)
       throw new Error("session-busy");
-    if (method === "thread-follower-update-thread-settings" && this.#status !== "idle")
-      throw new Error("session-busy");
+    if (method === "thread-follower-update-thread-settings") {
+      if (params.activeTurnId != null) throw new Error("follower-operation-unverified");
+      if (!this.canSetNextTurnModel()) throw new Error("session-busy");
+    }
     if (
       method === "thread-follower-interrupt-turn" &&
       (typeof params.expectedTurnId !== "string" ||
@@ -443,8 +478,21 @@ export class CodexFollowerState {
     if (this.#valid) this.#status = "outcome-unknown";
   }
 
+  markSettingsRejected(expectedRevision: number, previousStatus: CodexFollowerStatus): void {
+    if (this.#revision === expectedRevision && this.#status === "outcome-unknown")
+      this.#status = previousStatus;
+  }
+
   #applyChange(message: JsonRecord, params: JsonRecord): void {
-    if (message.version !== 11 || !isRecord(params.change)) throw new Error("invalid-change");
+    // Only the owner emits this stream. Validate each change against the shape
+    // we consume so additive producer upgrades do not require a version list.
+    if (
+      typeof message.version !== "number" ||
+      !Number.isSafeInteger(message.version) ||
+      message.version < 0 ||
+      !isRecord(params.change)
+    )
+      throw new Error("invalid-change");
     const change = params.change;
     const revision = safeRevision(change.revision);
     if (this.#revision === revision) {
@@ -475,7 +523,16 @@ export class CodexFollowerState {
       candidate.id !== this.conversationId ||
       candidate.hostId !== "local" ||
       !Array.isArray(candidate.turns) ||
-      !Array.isArray(candidate.requests)
+      !Array.isArray(candidate.requests) ||
+      candidate.requests.some(
+        (request) =>
+          !isRecord(request) ||
+          !validRequestId(request.id) ||
+          typeof request.method !== "string" ||
+          !isRecord(request.params),
+      ) ||
+      (candidate.unconfirmedTurnSubmissions != null &&
+        !Array.isArray(candidate.unconfirmedTurnSubmissions))
     )
       throw new Error("snapshot-identity-or-schema-mismatch");
     const turns = conversationTurns(candidate);
@@ -565,6 +622,8 @@ export class CodexFollowerState {
           ? "idle"
           : "unsupported";
     if (turns.some((turn) => turn.status === "inProgress")) status = "running";
+    else if (status === "idle" && turns.some((turn) => !codexTurnMeta(turn)))
+      status = "unsupported";
     if (candidate.requests.length > 0) status = "awaiting-approval";
     if (
       Array.isArray(candidate.unconfirmedTurnSubmissions) &&

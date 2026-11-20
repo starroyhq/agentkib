@@ -61,7 +61,7 @@ export function projectContextUsage(raw: unknown, revision?: number): ContextUsa
     : declared === "ready" && !valid
       ? "pending"
       : (declared ?? (valid ? "ready" : "pending"));
-  const historical = data.historical === true && state === "stale" && valid;
+  const historical = data.historical === true && state === "stale" && usedTokens !== undefined;
   const reportId = historical ? undefined : count(data.reportId);
   const reportGeneration = historical ? undefined : count(data.reportGeneration);
   const controlRevision = historical ? undefined : (count(data.revision) ?? count(revision));

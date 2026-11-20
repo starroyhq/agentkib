@@ -4,6 +4,8 @@ import {
   LIVE_SESSION_AGENTS,
   MANAGED_AGENTS,
   managedAgentOf,
+  newSessionProvider,
+  sessionProviderCapabilities,
   type ManagedAgent,
 } from "@agentkib/web-client";
 import { NEW_SESSION_AGENTS, type NewSessionAgent } from "@agentkib/session-ui";
@@ -20,6 +22,28 @@ describe("managed Agent registry", () => {
     expect(managedAgentOf("antigravity")).toBeNull();
     expect(managedAgentOf(undefined)).toBeNull();
     expect(managedAgentOf(42)).toBeNull();
+  });
+
+  it("declares the new-session toolbar before any catalog response", () => {
+    for (const agent of MANAGED_AGENTS) {
+      expect(newSessionProvider(agent)?.create).toMatchObject({
+        modelPicker: true,
+        permissionPicker: agent !== "deepseek-harness",
+      });
+    }
+    expect(newSessionProvider("deepseek-harness")?.create.agentPresets).toBe(true);
+  });
+
+  it("fills missing toolbar flags on older hosts and honors explicit host flags", () => {
+    const provider = sessionProviderCapabilities("devin")!;
+    expect(
+      newSessionProvider("devin", {
+        provider: {
+          ...provider,
+          create: { ...provider.create, modelPicker: undefined, permissionPicker: false },
+        },
+      })?.create,
+    ).toMatchObject({ modelPicker: true, permissionPicker: false });
   });
 
   it("opens managed sessions and Antigravity live", () => {

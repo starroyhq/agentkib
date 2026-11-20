@@ -141,17 +141,30 @@ describe("session copy identifies the computer and application", () => {
       "context-usage-copy.ts",
       "artifact-copy.ts",
       "../catalog/catalog-copy.ts",
-      "claude-handoff.ts",
     ]) {
       const desktop = new URL(filename, import.meta.url);
       const web = new URL(
         `../../../../../../../web/src/features/conversation/features/sessions/${filename}`,
         import.meta.url,
       );
-      const normalize = (source: string) =>
-        source
+      const normalize = (source: string) => {
+        const presentation = source
           .replace('import type { SupportedLocale as Locale } from "@/core/types";', "")
           .replace('import type { Locale } from "../../i18n";', "");
+        // Desktop also tells its embedded host when the toolbar owns the connection status.
+        if (filename === "session-display-state.ts")
+          return presentation
+            .replace("  offline?: boolean;\n", "")
+            .replace("      offline: true,\n", "");
+        if (filename === "claude-session-banner.ts")
+          return presentation
+            .replace(
+              "return {\n      title: copy.hostDisconnected,\n      body: copy.hostDisconnectedInfo,\n      connection: true as const,\n    };",
+              "return { title: copy.hostDisconnected, body: copy.hostDisconnectedInfo };",
+            )
+            .replace(", connection: true as const };", " };");
+        return presentation;
+      };
       expect(normalize(readFileSync(desktop, "utf8")), filename).toBe(
         normalize(readFileSync(web, "utf8")),
       );

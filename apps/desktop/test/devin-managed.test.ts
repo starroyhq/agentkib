@@ -22,8 +22,10 @@ import {
   DevinManagedRunner,
   devinChildEnvironment,
   devinModelCatalog,
+  devinModelVariant,
   devinRunFailure,
   devinSessionLockedElsewhere,
+  resolveDevinModel,
   type DevinRunnerHost,
 } from "../../../packages/backend/src/devin-managed-runner";
 import { DevinSessionSettings } from "../../../packages/backend/src/devin-session-settings";
@@ -668,28 +670,126 @@ describe("Devin session settings", () => {
 });
 
 describe.runIf(posix)("Devin model catalog", () => {
-  it("lists families and names the family of each variant a session keeps", async () => {
+  function listModels(families: unknown[]) {
     const root = temp();
     const file = path.join(root, "devin");
-    const listing = {
-      families: [
-        {
-          slug: "swe-2",
-          family_label: "SWE-2",
-          variants: [{ model_uid: "swe-2-high" }, { model_uid: "swe-2" }],
-        },
-        { slug: "bad slug!", family_label: "Bad", variants: [{ model_uid: "bad" }] },
-        { slug: "opus", variants: [{ model_uid: "opus-4" }, { model_uid: "x y" }] },
-      ],
-    };
-    writeFileSync(file, `#!/bin/sh\ncat <<'JSON'\n${JSON.stringify(listing)}\nJSON\n`);
+    writeFileSync(file, `#!/bin/sh\ncat <<'JSON'\n${JSON.stringify({ families })}\nJSON\n`);
     chmodSync(file, 0o755);
-    const catalog = await devinModelCatalog(file, process.env);
+    return devinModelCatalog(file, process.env);
+  }
+
+  it("lists families and names the family of each variant a session keeps", async () => {
+    const catalog = await listModels([
+      {
+        slug: "swe-2",
+        family_label: "SWE-2",
+        variants: [{ model_uid: "swe-2-high" }, { model_uid: "swe-2" }],
+      },
+      { slug: "bad slug!", family_label: "Bad", variants: [{ model_uid: "bad" }] },
+      { slug: "opus", variants: [{ model_uid: "opus-4" }, { model_uid: "x y" }] },
+    ]);
     expect(catalog.families).toEqual([{ id: "swe-2", name: "SWE-2" }, { id: "opus" }]);
     expect(catalog.familyOf.get("swe-2-high")).toBe("swe-2");
     expect(catalog.familyOf.get("opus-4")).toBe("opus");
     expect(catalog.familyOf.has("bad")).toBe(false);
     expect(catalog.familyOf.has("x y")).toBe(false);
+  });
+
+  it("resolves only listed reasoning and speed combinations and keeps native capacity", async () => {
+    const catalog = await listModels([
+      {
+        slug: "claude-opus-5.5",
+        family_uid: "claude-opus-5-5",
+        family_label: "Claude Opus 5.5",
+        variants: [
+          { model_uid: "claude-opus-5-5-low", max_context_tokens: 1_000_000 },
+          { model_uid: "claude-opus-5.5-low", max_context_tokens: 1_000_000 },
+          { model_uid: "claude-opus-5-5-high", max_context_tokens: 1_000_000 },
+          {
+            model_uid: "claude-opus-5-5-high-fast",
+            label: "Claude Opus 5.5 High Fast",
+            max_context_tokens: 1_000_000,
+          },
+          { model_uid: "claude-opus-5-5-max-fast", max_context_tokens: 1_000_000 },
+        ],
+      },
+      {
+        slug: "gpt-6-sol",
+        family_uid: "gpt-6-sol",
+        variants: [{ model_uid: "gpt-6-sol-none-priority" }],
+      },
+      {
+        slug: "swe-2",
+        variants: [{ model_uid: "swe-2-medium-lightning" }],
+      },
+    ]);
+    const modelId = "claude-opus-5.5";
+    expect(resolveDevinModel(catalog, { modelId })).toBe(modelId);
+    expect(resolveDevinModel(catalog, { modelId, effort: "high" })).toBe("claude-opus-5-5-high");
+    expect(resolveDevinModel(catalog, { modelId, effort: "high", serviceTierId: "fast" })).toBe(
+      "claude-opus-5-5-high-fast",
+    );
+    expect(
+      resolveDevinModel(catalog, { modelId, effort: "low", serviceTierId: "fast" }),
+    ).toBeUndefined();
+    expect(resolveDevinModel(catalog, { modelId, serviceTierId: "fast" })).toBeUndefined();
+    expect(resolveDevinModel(catalog, { modelId, effort: "low" })).toBeUndefined();
+    expect(resolveDevinModel(catalog, { modelId: "claude-opus-5-5-low", effort: "low" })).toBe(
+      "claude-opus-5-5-low",
+    );
+    expect(resolveDevinModel(catalog, { modelId: "gpt-6-sol", serviceTierId: "priority" })).toBe(
+      "gpt-6-sol-none-priority",
+    );
+    expect(devinModelVariant(catalog, "claude-opus-5-5-high-fast")).toEqual({
+      id: "claude-opus-5-5-high-fast",
+      familyId: modelId,
+      name: "Claude Opus 5.5 High Fast",
+      effort: "high",
+      serviceTierId: "fast",
+      maxContextTokens: 1_000_000,
+    });
+    expect(devinModelVariant(catalog, "gpt-6-sol-none-priority")).toMatchObject({
+      effort: "none",
+      serviceTierId: "priority",
+    });
+    expect(devinModelVariant(catalog, "swe-2-medium-lightning")).toMatchObject({
+      effort: "medium",
+      serviceTierId: "lightning",
+    });
+  });
+
+  it("keeps irregular variants directly selectable without inventing controls", async () => {
+    const catalog = await listModels([
+      {
+        slug: "glm-5.2",
+        family_uid: "glm-5-2",
+        family_label: "GLM-5.2",
+        variants: [
+          { model_uid: "glm-5-2", label: "GLM-5.2 High", max_context_tokens: 200_000 },
+          { model_uid: "glm-5-2-high-1m", label: "GLM-5.2 High 1M", max_context_tokens: 1_000_000 },
+        ],
+      },
+      {
+        slug: "fusion",
+        family_uid: "fusion",
+        variants: [
+          {
+            model_uid: "fusion-claude-opus-5-5-high-fast-sidekick-swe-2-medium",
+            max_context_tokens: -1,
+          },
+        ],
+      },
+    ]);
+    expect(resolveDevinModel(catalog, { modelId: "glm-5.2", effort: "high" })).toBe("glm-5-2");
+    expect(devinModelVariant(catalog, "glm-5-2-high-1m")).toEqual({
+      id: "glm-5-2-high-1m",
+      familyId: "glm-5.2",
+      name: "GLM-5.2 High 1M",
+      maxContextTokens: 1_000_000,
+    });
+    const modelId = "fusion-claude-opus-5-5-high-fast-sidekick-swe-2-medium";
+    expect(resolveDevinModel(catalog, { modelId })).toBe(modelId);
+    expect(devinModelVariant(catalog, modelId)).toEqual({ id: modelId, familyId: "fusion" });
   });
 
   it("is empty when the CLI cannot list them", async () => {
@@ -700,5 +800,6 @@ describe.runIf(posix)("Devin model catalog", () => {
     const catalog = await devinModelCatalog(file, process.env);
     expect(catalog.families).toEqual([]);
     expect(catalog.familyOf.size).toBe(0);
+    expect(catalog.variantsByFamily.size).toBe(0);
   });
 });

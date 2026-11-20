@@ -65,6 +65,7 @@ async function fixture() {
       session: {
         id: async () => target.nativeId,
         cwd: async () => workspace,
+        root: async () => workspace,
         version: async () => ({ version: "2.1.307" }),
         messages: async () => messages,
         usage: async () => usage,

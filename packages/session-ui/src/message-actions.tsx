@@ -74,6 +74,37 @@ export function messageActionGroups<S extends MessageSegment>(segments: readonly
   return groups;
 }
 
+export function useClipboardFeedback() {
+  const [feedback, setFeedback] = useState<"copied" | "failed">();
+  const timeout = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const attempt = useRef(0);
+  useEffect(
+    () => () => {
+      attempt.current++;
+      clearTimeout(timeout.current);
+    },
+    [],
+  );
+
+  async function copyText(text: string) {
+    const request = ++attempt.current;
+    clearTimeout(timeout.current);
+    setFeedback(undefined);
+    let result: "copied" | "failed";
+    try {
+      await navigator.clipboard.writeText(text);
+      result = "copied";
+    } catch {
+      result = "failed";
+    }
+    if (request !== attempt.current) return;
+    setFeedback(result);
+    timeout.current = setTimeout(() => setFeedback(undefined), result === "copied" ? 1600 : 4000);
+  }
+
+  return { feedback, copyText };
+}
+
 export function MessageActions({
   locale,
   text,
@@ -90,17 +121,7 @@ export function MessageActions({
   role?: "user" | "assistant";
 }) {
   const words = copy[locale as keyof typeof copy] ?? copy["en-US"];
-  const [feedback, setFeedback] = useState<"copied" | "failed">();
-  const timeout = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
-  const attempt = useRef(0);
-  useEffect(
-    () => () => {
-      attempt.current++;
-      clearTimeout(timeout.current);
-    },
-    [],
-  );
-
+  const { feedback, copyText } = useClipboardFeedback();
   const time = useMemo(() => {
     if (!timestamp) return;
     const date = new Date(timestamp);
@@ -112,23 +133,6 @@ export function MessageActions({
   }, [timestamp, locale]);
   const hasText = !!text?.trim();
   if (!time && !hasText) return null;
-
-  async function copyMessage() {
-    if (!text) return;
-    const request = ++attempt.current;
-    clearTimeout(timeout.current);
-    setFeedback(undefined);
-    let result: "copied" | "failed";
-    try {
-      await navigator.clipboard.writeText(text);
-      result = "copied";
-    } catch {
-      result = "failed";
-    }
-    if (request !== attempt.current) return;
-    setFeedback(result);
-    timeout.current = setTimeout(() => setFeedback(undefined), result === "copied" ? 1600 : 4000);
-  }
 
   const label = feedback ? words[feedback] : words.copy;
   const isAssistant = role === "assistant";
@@ -156,7 +160,9 @@ export function MessageActions({
             aria-label={words.copy}
             title={label}
             className="grid size-6 place-items-center rounded-md hover:bg-muted hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring pointer-coarse:min-w-8"
-            onClick={() => void copyMessage()}
+            onClick={() => {
+              if (text) void copyText(text);
+            }}
           >
             <svg
               aria-hidden="true"

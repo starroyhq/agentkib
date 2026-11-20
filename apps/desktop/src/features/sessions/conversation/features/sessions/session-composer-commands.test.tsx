@@ -8,7 +8,7 @@ import type { ClaudeCommandEntry } from "@agentkib/web-client";
 import { codexCommandPrompt, slashCommandCopy } from "@agentkib/session-ui";
 import { SessionComposer } from "./session-composer";
 import { codexCopy, codexReason } from "./codex-copy";
-import { composerModelCopy } from "./composer-model-copy";
+import { composerModelCopy } from "@agentkib/session-ui";
 import type { SessionPanels } from "./session-panels";
 import type { SessionController } from "./use-session-controller";
 
@@ -26,18 +26,6 @@ vi.mock("./session-context", () => ({
   },
 }));
 vi.mock("./session-panels", () => ({ useSessionPanels: () => doubles.panels }));
-vi.mock(import("./context-usage"), async (importOriginal) => ({
-  ...(await importOriginal()),
-  ContextUsageGauge: () => <></>,
-  ContextUsageDetails: () => <></>,
-  useContextUsage: () => ({
-    usage: undefined,
-    percent: undefined,
-    state: "unavailable",
-    compacting: false,
-    awaitingCliReport: false,
-  }),
-}));
 vi.mock("../history/history-search-controls", () => ({ HistoryReferenceChips: () => null }));
 
 const catalog: ClaudeCommandEntry[] = [
@@ -60,6 +48,7 @@ function renderComposer(message: string) {
 function enableComposerSettings() {
   doubles.session.access = {
     ...doubles.session.access!,
+    status: "approved",
     device: { send: true, accessMode: "full", advancedControl: true },
   } as SessionController["access"];
   doubles.session.capabilities = {
@@ -87,14 +76,13 @@ function enableComposerSettings() {
         { id: "default", name: "Default" },
         { id: "plan", name: "Plan" },
       ],
-      policies: [],
+      policies: [{ id: "verified", name: "Verified policy" }],
       serviceTiers: [],
     },
   }));
   doubles.session.client = {
     request: vi.fn(),
     sessionSettings: readSettings,
-    codexSessionSettings: readSettings,
     codexGoals: vi.fn(),
     codexContextOptions: vi.fn(),
   } as unknown as SessionController["client"];
@@ -152,6 +140,24 @@ describe("slash commands in the desktop composer", () => {
         .map((option) => option.textContent),
     ).toEqual(["/configkey=value", "/heapdumpDump the JS heap", "/output-style[style]"]);
   });
+
+  it.each(["deepseek-harness", "devin"] as const)(
+    "opens %s model settings while only reads are available",
+    async (agent) => {
+      enableComposerSettings();
+      doubles.session.current = { ...doubles.session.current!, agent };
+      doubles.session.canSend = false;
+      doubles.session.capabilities!.features = { "settings-state": { available: true } };
+      const { form, input } = renderComposer("/");
+      expect(await screen.findByRole("option", { name: /\/model/ })).toBeVisible();
+      await screen.findByRole("button", { name: /Sol/ });
+      fireEvent.change(input, { target: { value: "/model" } });
+      fireEvent.submit(form);
+      await waitFor(() => expect(input).toHaveValue(""));
+      expect(doubles.control).not.toHaveBeenCalled();
+      expect(doubles.codexAction).not.toHaveBeenCalled();
+    },
+  );
 
   it("sends a settings command, as the terminal would", async () => {
     const { form } = renderComposer("/config autoScroll=false");
@@ -324,17 +330,29 @@ describe("Codex slash commands in the desktop composer", () => {
     await screen.findByRole("button", { name: /Sol/ });
     fireEvent.submit(model.form);
     expect(
-      await screen.findByRole("dialog", { name: composerModelCopy["en-US"].chooseModel }),
+      await screen.findByRole("dialog", { name: composerModelCopy["en-US"].model }),
     ).toBeVisible();
     expect(model.input).toHaveValue("");
     model.unmount();
 
     const permissions = renderComposer("/permissions");
     fireEvent.submit(permissions.form);
-    expect(
-      await screen.findByRole("dialog", { name: codexCopy["en-US"].conversationSettings }),
-    ).toBeVisible();
+    const menu = await screen.findByRole("menu");
+    expect(within(menu).getByRole("menuitem", { name: "Verified policy" })).toBeVisible();
+    expect(within(menu).getAllByRole("menuitem")).toHaveLength(1);
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     expect(permissions.input).toHaveValue("");
+    expect(doubles.control).not.toHaveBeenCalled();
+    expect(doubles.codexAction).not.toHaveBeenCalled();
+  });
+
+  it("opens the context gauge for /status", async () => {
+    enableComposerSettings();
+    const status = renderComposer("/status");
+    fireEvent.submit(status.form);
+    expect(await screen.findByRole("tooltip")).toHaveTextContent("Context window");
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(status.input).toHaveValue("");
     expect(doubles.control).not.toHaveBeenCalled();
     expect(doubles.codexAction).not.toHaveBeenCalled();
   });

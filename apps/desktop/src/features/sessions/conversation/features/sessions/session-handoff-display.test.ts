@@ -1,9 +1,6 @@
 import { sessionContinuationCopy } from "@agentkib/session-ui";
 import { describe, expect, it } from "vitest";
-import {
-  sessionDisplayState,
-  sessionNextAction,
-} from "@/features/sessions/conversation/features/sessions/session-display-state";
+import { sessionDisplayState } from "@/features/sessions/conversation/features/sessions/session-display-state";
 import type { SessionController } from "@/features/sessions/conversation/features/sessions/use-session-controller";
 
 function fixture(): SessionController {
@@ -57,7 +54,7 @@ describe("handoff-aware session presentation", () => {
       state.live!.sendEnabled = true;
       state.capabilities!.features.send = { available: true };
       state.canSend = true;
-      expect(sessionNextAction(state)).toBeUndefined();
+      expect(sessionDisplayState(state)).not.toHaveProperty("nextAction");
       expect(sessionDisplayState(state)).toMatchObject({
         label: "",
         reason: "",
@@ -84,17 +81,43 @@ describe("handoff-aware session presentation", () => {
   it("keeps an idle Codex session ready without a badge or manual resume", () => {
     const state = codexFixture();
     state.capabilities!.features.resume = { available: true };
-    expect(sessionNextAction(state)).toBeUndefined();
+    expect(sessionDisplayState(state)).not.toHaveProperty("nextAction");
     expect(sessionDisplayState(state)).toMatchObject({
       label: "",
       reason: "",
       continuation: "idle",
     });
   });
+  it("keeps settings-only receipt verification out of the connection display", () => {
+    const state = codexFixture();
+    state.controlReady = false;
+    state.canSend = false;
+    state.settingsNotice = { group: "permissions", status: "uncertain" };
+    expect(sessionDisplayState(state)).toEqual({
+      label: "",
+      reason: "",
+      tone: "muted",
+      continuation: "idle",
+    });
+    state.capabilities!.sessionId = "previous";
+    expect(sessionDisplayState(state)).toMatchObject({ label: "Verifying state", loading: true });
+    state.capabilities!.sessionId = state.selected;
+    state.notice = "uncertain";
+    expect(sessionDisplayState(state)).toMatchObject({
+      label: "Result unconfirmed",
+      tone: "warning",
+    });
+    state.notice = undefined;
+    state.live!.status = "outcome-unknown";
+    expect(sessionDisplayState(state)).toMatchObject({
+      label: "Result unconfirmed",
+      tone: "warning",
+    });
+  });
   it("does not require management permission to send to an automatically continued Codex session", () => {
     const state = codexFixture();
     state.access!.device!.manage = false;
-    expect(sessionNextAction(state)).toBeUndefined();
+    expect(sessionDisplayState(state)).not.toHaveProperty("nextAction");
     expect(sessionDisplayState(state).continuation).toBe("idle");
   });
   it("identifies the external Codex owner without a handoff action or warning color", () => {
@@ -106,11 +129,49 @@ describe("handoff-aware session presentation", () => {
       ownershipReason: "codex-owner-busy",
       reason: "codex-owner-busy",
     });
-    expect(sessionNextAction(state)).toBeUndefined();
+    expect(sessionDisplayState(state)).not.toHaveProperty("nextAction");
     expect(sessionDisplayState(state)).toMatchObject({
       label: "In use in Codex",
       continuation: "busy",
       tone: "muted",
+    });
+  });
+  it("clears the old occupancy while the same session's capabilities refresh", () => {
+    const state = codexFixture();
+    state.capabilities!.features.send = { available: false, reason: "codex-owner-busy" };
+    expect(sessionDisplayState(state)).toMatchObject({
+      continuation: "idle",
+      label: "",
+      reason: "",
+    });
+
+    state.canSend = false;
+    state.live!.sendEnabled = false;
+    expect(sessionDisplayState(state)).not.toMatchObject({ reason: "In use in Codex" });
+
+    Object.assign(state.live!, {
+      executionMode: "codex-follower",
+      executionLocation: "external",
+    });
+    // A setting staged in AgentKib can still prevent sending through the connected owner.
+    expect(sessionDisplayState(state)).toMatchObject({
+      label: "Running in Codex · Connected",
+      continuation: "codex",
+    });
+    expect(state.live!.sendEnabled).toBe(false);
+  });
+  it("shows the archive reason even when the original Codex writer still holds the thread", () => {
+    const state = codexFixture();
+    state.canSend = false;
+    Object.assign(state.live!, {
+      status: "archived",
+      sendEnabled: false,
+      ownershipReason: "codex-owner-busy",
+      reason: "session-archived",
+    });
+    expect(sessionDisplayState(state)).toMatchObject({
+      continuation: "view-only",
+      reason: "This session is archived. Unarchive it first.",
     });
   });
   it("lets a message go to the Codex app that holds the session with no window on it", () => {
@@ -159,7 +220,7 @@ describe("handoff-aware session presentation", () => {
   it("returns a retired Codex session to idle without asking for resume confirmation", () => {
     const state = codexFixture();
     state.live!.status = "released";
-    expect(sessionNextAction(state)).toBeUndefined();
+    expect(sessionDisplayState(state)).not.toHaveProperty("nextAction");
     expect(sessionDisplayState(state)).toMatchObject({ label: "", continuation: "idle" });
   });
   const blocked: [string, (state: SessionController) => void][] = [
@@ -250,7 +311,7 @@ describe("handoff-aware session presentation", () => {
     [
       "unavailable adoption capability",
       (s) => {
-        s.capabilities!.features.adopt = { available: false };
+        Object.assign(s.capabilities!.features, { adopt: { available: false } });
       },
     ],
     [
@@ -315,9 +376,8 @@ describe("handoff-aware session presentation", () => {
   it.each(blocked)("does not advertise an executable handoff for %s", (_name, mutate) => {
     const state = fixture();
     mutate(state);
-    expect(sessionNextAction(state)).toBeUndefined();
     const result = sessionDisplayState(state);
-    expect(result.nextAction).toBeUndefined();
+    expect(result).not.toHaveProperty("nextAction");
     expect(result.label).not.toBe("Handoff required");
     expect(result.label).not.toBe("Resume required");
     expect(state.canSend).toBe(false);
@@ -368,14 +428,14 @@ describe("handoff-aware session presentation", () => {
     const state = fixture();
     mutate(state);
     expect(sessionDisplayState(state)).toMatchObject({ label, tone: "muted" });
-    expect(sessionDisplayState(state).nextAction).toBeUndefined();
+    expect(sessionDisplayState(state)).not.toHaveProperty("nextAction");
     expect(sessionDisplayState(state).reason.length).toBeGreaterThan(0);
   });
   it("does not claim that a failed native resume capability can be entered without the separate managed capability", () => {
     const state = fixture();
     state.current!.agent = "codex";
-    state.capabilities!.features.adopt = { available: false };
-    expect(sessionNextAction(state)).toBeUndefined();
+    Object.assign(state.capabilities!.features, { adopt: { available: false } });
+    expect(sessionDisplayState(state)).not.toHaveProperty("nextAction");
   });
   it("continues to report send readiness only from the existing dispatch decision", () => {
     const state = fixture();
@@ -383,7 +443,7 @@ describe("handoff-aware session presentation", () => {
     state.canSend = true;
     state.capabilities!.features.send = { available: true };
     expect(sessionDisplayState(state)).toMatchObject({ label: "", continuation: "idle" });
-    expect(sessionDisplayState(state).nextAction).toBeUndefined();
+    expect(sessionDisplayState(state)).not.toHaveProperty("nextAction");
   });
   it("uses the same neutral ownership state for both Agents in all four locales", () => {
     for (const locale of ["en-US", "zh-CN", "zh-Hant", "ja-JP"] as const) {
@@ -395,6 +455,7 @@ describe("handoff-aware session presentation", () => {
       ] as const) {
         state.current!.agent = agent;
         state.live!.ownershipReason = reason;
+        state.live!.reason = reason;
         expect(sessionDisplayState(state)).toMatchObject({
           label: sessionContinuationCopy(locale).busy(name),
           reason: "",
@@ -411,5 +472,65 @@ describe("handoff-aware session presentation", () => {
     state.live!.sendEnabled = true;
     state.canSend = true;
     expect(sessionDisplayState(state)).toMatchObject({ label: "", continuation: "idle" });
+  });
+  it("distinguishes a working DeepSeek Harness session from an idle connection", () => {
+    const state = fixture();
+    state.current!.agent = "deepseek-harness";
+    state.live = { ...state.live!, executionMode: "dsh-follower", executionLocation: "external" };
+    expect(sessionDisplayState(state)).toMatchObject({
+      label: "Connected to DeepSeek Harness",
+      tone: "muted",
+    });
+    state.live.status = "running";
+    expect(sessionDisplayState(state)).toMatchObject({
+      label: "Running in DeepSeek Harness",
+      tone: "active",
+    });
+    state.live.status = "idle";
+    expect(sessionDisplayState(state)).toMatchObject({
+      label: "Connected to DeepSeek Harness",
+      tone: "muted",
+    });
+  });
+  it("renders an unbridged DeepSeek Harness session with a muted unknown status", () => {
+    const state = fixture();
+    state.locale = "zh-CN";
+    state.current!.agent = "deepseek-harness";
+    state.live = {
+      ...state.live!,
+      executionMode: "dsh-follower",
+      executionLocation: "external",
+      status: "unsupported",
+      reason: "dsh-native-status-unknown",
+    };
+    const display = {
+      label: "实时状态未知",
+      reason: "DeepSeek Harness 桥接未连接，仍可查看历史和缓存。",
+      tone: "muted",
+      continuation: "status-unknown",
+    };
+    expect(sessionDisplayState(state)).toEqual(display);
+    expect(sessionDisplayState({ ...state, capabilities: undefined })).toEqual(display);
+    expect(sessionDisplayState({ ...state, selected: "another" })).not.toEqual(display);
+  });
+  it("shows observed DSH activity while control permissions are still unverified", () => {
+    const state = fixture();
+    state.locale = "zh-CN";
+    state.current!.agent = "deepseek-harness";
+    state.access = undefined;
+    state.capabilities = undefined;
+    state.live = {
+      ...state.live!,
+      executionMode: "dsh-follower",
+      executionLocation: "external",
+      status: "running",
+      reason: "dsh-native-turn-observed",
+    };
+    expect(sessionDisplayState(state)).toEqual({
+      label: "在 DeepSeek Harness 中运行 · 来自会话记录",
+      reason: "",
+      tone: "active",
+      continuation: "dsh-observed",
+    });
   });
 });

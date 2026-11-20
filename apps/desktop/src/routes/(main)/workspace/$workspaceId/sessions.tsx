@@ -79,6 +79,9 @@ function WorkspaceSessionsRoute() {
               void navigate({ to: "/sessions", search: { sessionId } });
             }
       }
+      onContinueSession={(sessionId) => {
+        void navigate({ to: "/sessions", search: { sessionId } });
+      }}
       onNewClaudeSession={canStartClaude ? () => void startClaudeSession() : undefined}
       claudeStartStatus={claudeStartState?.status}
       onRuntimeChanged={async (enabled) => {

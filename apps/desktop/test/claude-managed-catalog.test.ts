@@ -2,14 +2,11 @@ import { randomUUID } from "node:crypto";
 import {
   appendFileSync,
   mkdirSync,
-  mkdtempSync,
   readFileSync,
-  realpathSync,
   rmSync,
   utimesSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ClaudeManagedReadOwner } from "../../../packages/backend/src/claude-managed-read";
@@ -18,6 +15,7 @@ import { Commands } from "../../../packages/backend/src/commands";
 import type { CursorBridge } from "../../../packages/backend/src/cursor-bridge";
 import { SessionReaders } from "../../../packages/backend/src/session-readers";
 import { BackendStore } from "../../../packages/backend/src/store";
+import { createFakeClaude } from "./fixtures/claude-fake-cli";
 
 const cleanups: Array<() => void | Promise<void>> = [];
 afterEach(async () => {
@@ -26,17 +24,10 @@ afterEach(async () => {
 });
 
 async function fixture(titleKind: "prompt" | "ai" | "custom" = "prompt") {
-  const root = realpathSync(mkdtempSync(path.join(tmpdir(), "agentkib-claude-catalog-")));
+  const { root, workspace, config, environment } = createFakeClaude("agentkib-claude-catalog-");
   cleanups.push(() => rmSync(root, { recursive: true, force: true }));
-  const workspace = path.join(root, "workspace");
-  const config = path.join(root, "claude");
-  const bin = path.join(root, "bin");
   const project = path.join(config, "projects", "fixture");
-  for (const directory of [workspace, bin, project])
-    mkdirSync(directory, { recursive: true, mode: 0o700 });
-  const executable = path.join(bin, "claude");
-  writeFileSync(executable, "offline fixture must not execute\n", { mode: 0o700 });
-  const environment = { HOME: root, CLAUDE_CONFIG_DIR: config, PATH: bin };
+  mkdirSync(project, { recursive: true, mode: 0o700 });
   const commands = new Commands();
   cleanups.push(() => commands.close());
   vi.spyOn(commands, "run").mockImplementation(async (program, args) => ({
@@ -125,13 +116,19 @@ async function fixture(titleKind: "prompt" | "ai" | "custom" = "prompt") {
     return owner;
   };
   const owner = makeOwner();
-  const adopt = (target = owner) =>
-    target.request({
-      operation: "adopt",
-      sessionId: id,
+  const send = async (target = owner, sessionId = id) => {
+    await target.request({
+      operation: "send",
+      sessionId,
       requestId: randomUUID(),
       deviceId: "browser-device-a",
+      runtimeBootId: target.bootId,
+      expectedRevision: (await target.live(sessionId, true)).revision,
+      experimentalEnabled: true,
+      text: "Continue the session",
     });
+    await expect.poll(async () => (await target.live(sessionId, true)).status).toBe("idle");
+  };
   const control = async (operation: string, sessionId = id, target = owner) =>
     target.request({
       operation,
@@ -147,7 +144,7 @@ async function fixture(titleKind: "prompt" | "ai" | "custom" = "prompt") {
     store,
     owner,
     makeOwner,
-    adopt,
+    send,
     control,
     id,
     nativeId,
@@ -162,16 +159,16 @@ async function fixture(titleKind: "prompt" | "ai" | "custom" = "prompt") {
 
 describe.skipIf(process.platform === "win32")("Claude verified managed catalog metadata", () => {
   it.each(["prompt", "ai", "custom"] as const)(
-    "preserves the native %s title through adoption, release and backend restart",
+    "preserves the native %s title through continuation, release and backend restart",
     async (kind) => {
       const f = await fixture(kind);
       const before = readFileSync(f.file);
-      await f.adopt();
+      await f.send();
       expect(f.owner.catalog().find((row) => row.id === f.id)?.title).toBe(f.expectedTitle);
       await f.control("release");
       await f.owner.shutdown();
       const next = f.makeOwner();
-      await f.adopt(next);
+      await f.send(next);
       expect(next.catalog().find((row) => row.id === f.id)?.title).toBe(f.expectedTitle);
       expect(readFileSync(f.file)).toEqual(before);
     },
@@ -300,7 +297,7 @@ describe.skipIf(process.platform === "win32")("Claude verified managed catalog m
 
   it("shares native discovery within a catalog read while verifying each session", async () => {
     const f = await fixture();
-    await f.adopt();
+    await f.send();
     const secondNativeId = randomUUID();
     writeFileSync(
       path.join(path.dirname(f.file), `${secondNativeId}.jsonl`),
@@ -310,12 +307,7 @@ describe.skipIf(process.platform === "win32")("Claude verified managed catalog m
     const listing = await f.sessions.list("claude-code", f.workspace);
     f.store.sessions.sync("workspace", "claude-code", listing.sessions);
     const secondId = f.sessions.store.id("claude-code", secondNativeId);
-    await f.owner.request({
-      operation: "adopt",
-      sessionId: secondId,
-      requestId: randomUUID(),
-      deviceId: "browser-device-a",
-    });
+    await f.send(f.owner, secondId);
     const discover = vi.spyOn(ClaudeSessions.prototype, "list");
     f.owner.catalog();
     expect(discover).toHaveBeenCalledTimes(1);
@@ -355,7 +347,7 @@ describe.skipIf(process.platform === "win32")("Claude verified managed catalog m
 
   it("projects verified native activity time and never refreshes it just by reading settings or catalog", async () => {
     const f = await fixture();
-    await f.adopt();
+    await f.send();
     expect(f.owner.catalog().find((row) => row.id === f.id)?.updated_at).toBe(f.originalAt);
     await f.owner.settingsState(f.id);
     expect(f.owner.catalog().find((row) => row.id === f.id)?.updated_at).toBe(f.originalAt);
@@ -378,7 +370,7 @@ describe.skipIf(process.platform === "win32")("Claude verified managed catalog m
 
   it("omits unverified native metadata rather than borrowing the timestamp or title of another session", async () => {
     const f = await fixture("ai");
-    await f.adopt();
+    await f.send();
     writeFileSync(
       f.file,
       JSON.stringify({

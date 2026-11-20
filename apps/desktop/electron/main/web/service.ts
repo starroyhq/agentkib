@@ -1,10 +1,14 @@
 import { createHash, randomBytes, randomInt, randomUUID } from "node:crypto";
 import {
   HISTORY_SEARCH_METHODS,
+  SESSION_RESOURCE_LIMIT,
   claudeModelOption,
   managedAgentOf,
+  sessionProviderCapabilities,
   type HistoryReference,
+  type ManagedAgent,
   type ResolvedHistoryReference,
+  type SessionProviderCapabilities,
 } from "@agentkib/runtime-protocol";
 import {
   historyInputHash,
@@ -359,6 +363,12 @@ type ContextResourceReference = {
   id?: string;
   relativePath?: string;
 };
+type ContextResourceScope = { deviceId: string; sessionId: string; workspaceId: string };
+type RememberedContextResource = ContextResourceScope &
+  (
+    | { draftAgent?: ManagedAgent; artifactId: string; revision: string }
+    | { draftAgent: ManagedAgent; reference: ContextResourceReference }
+  );
 class HttpError extends Error {
   constructor(
     readonly status: number,
@@ -371,17 +381,9 @@ const token = () => randomBytes(32).toString("base64url");
 const digest = (value: string) => createHash("sha256").update(value).digest("hex");
 const MAX_AGE = 30 * 24 * 60 * 60 * 1000;
 const PAIRING_CODE_TTL_MS = 300_000;
-/**
- * A managed Agent with no host handler here. Each Agent in MANAGED_AGENTS needs its own case where
- * this is called; without one, its requests would otherwise reach another Agent's handler.
- */
 /** Devin CLI's permission modes, which apply to a whole `devin -p` turn. */
 const DEVIN_PERMISSION_MODES = ["auto", "accept-edits", "smart", "dangerous"];
 
-function unhandledManagedAgent(agent: never): never {
-  void agent;
-  throw new HttpError(400, "invalid_agent");
-}
 /** A paired device counts as online this long after its last request, or while it holds a stream. */
 const ONLINE_WINDOW_MS = 60_000;
 const PAIRING_FAILURES_PER_BROWSER = 5;
@@ -502,7 +504,6 @@ const API_ROUTES: Record<"GET" | "POST", Record<string, RouteSpec>> = {
     "/codex/goal-resume": { lan: true, control: true },
     "/codex/goal-clear": { lan: true, control: true },
     "/managed/create": { lan: true, control: true },
-    "/managed/adopt": { lan: true, control: true },
     "/managed/release": { lan: true, control: true },
     "/managed/reconcile": { lan: true, control: true },
     "/managed/action": { control: true },
@@ -559,6 +560,26 @@ function snapshotField(snapshot: unknown, key: string): unknown {
     ? (snapshot as Record<string, unknown>)[key]
     : undefined;
 }
+function settingsControlOutcome(
+  ack: unknown,
+  requestId: string,
+  sessionId: string,
+  runtimeBootId: unknown,
+) {
+  if (
+    typeof runtimeBootId !== "string" ||
+    !runtimeBootId ||
+    snapshotField(ack, "requestId") !== requestId ||
+    snapshotField(ack, "sessionId") !== sessionId ||
+    snapshotField(ack, "runtimeBootId") !== runtimeBootId
+  )
+    return undefined;
+  const accepted = snapshotField(ack, "accepted");
+  const outcome = snapshotField(ack, "controlOutcome");
+  if (accepted === true && (outcome === undefined || outcome === "accepted")) return "accepted";
+  if (accepted === false && outcome === "not-dispatched") return "not-dispatched";
+  return undefined;
+}
 const isCodexMode = (mode: unknown) => mode === "codex-managed" || mode === "codex-follower";
 /**
  * Besides Codex, the execution modes whose controls stay within the device's workspaces, checked
@@ -573,6 +594,9 @@ const WORKSPACE_SCOPED_MODES: readonly string[] = [
 ];
 /** 小于这个大小的回复不压缩，省下的字节抵不过压缩本身。 */
 const COMPRESSED_REPLY_MIN_BYTES = 16 * 1024;
+const MAX_EVENT_STREAMS = 16;
+const MAX_DEVICE_STREAMS = 4;
+const MAX_DEVICE_DETAIL_STREAMS = 3;
 /** 客户端是否接受 gzip；显式的 `gzip;q=0` 视为拒绝。 */
 function acceptsGzip(header: string | string[] | undefined): boolean {
   let wildcard = false;
@@ -638,12 +662,15 @@ export class WebAccessService {
   private credentials: Credential[] = [];
   private browsers = new Map<string, Browser>();
   // 按建立顺序登记；evict 走该流自己的 unavailable 清理路径。
-  private streams = new Map<ConversationResponse, { hash: string; evict: () => void }>();
+  private streams = new Map<
+    ConversationResponse,
+    { hash: string; sessionId?: string; evict: () => void }
+  >();
   /** When each paired credential last made an API request, for the device's online state. */
   private seen = new Map<string, number>();
   private active = new Set<string>();
-  // One runtime worker serves all Web sessions. Reserve its admission across
-  // preflight and mutation; new reads must not queue behind that preflight.
+  // Some controls still reserve the shared worker across preflight and dispatch.
+  // Settings use only the session reservation in active.
   private controlAdmission = false;
   // Survives runtime replacement and HTTP listener restarts within this host.
   // An underlying promise settling is not proof that the HTTP reply succeeded.
@@ -675,18 +702,10 @@ export class WebAccessService {
   private disposed = false;
   private remotePairingInitialized = false;
   private scheduler?: ClaudeHostScheduler;
+  private sharedRuntimePrimary?: boolean;
   private unregisterScheduler?: () => void;
   private managedSocket?: { close(): void };
-  private contextArtifactRefs = new Map<
-    string,
-    {
-      deviceId: string;
-      sessionId: string;
-      workspaceId: string;
-      artifactId: string;
-      revision: string;
-    }
-  >();
+  private contextArtifactRefs = new Map<string, RememberedContextResource>();
   constructor(
     private readonly options: {
       conversationHub?: ConversationHub;
@@ -697,6 +716,7 @@ export class WebAccessService {
       historyRequest?: (method: string, params: unknown) => Promise<unknown>;
       managedRequest?: (params: unknown) => Promise<unknown>;
       claudeManagedRequest?: (params: unknown) => Promise<unknown>;
+      sessionProviderRequest?: (params: unknown) => Promise<unknown>;
       receiptRequest?: (params: { requestId: string; deviceId: string }) => Promise<unknown>;
       createRelayCsr?: (params: {
         privateKeyDer: string;
@@ -783,6 +803,12 @@ export class WebAccessService {
     return (this.options.addresses ?? lanAddresses)();
   }
 
+  /** Each desktop still owns its browser grants. Only one may schedule local desktop work. */
+  setSharedRuntimePrimary(primary: boolean): void {
+    this.sharedRuntimePrimary = primary;
+    this.scheduler?.setSharedRuntimePrimary(primary);
+  }
+
   async localClaude(input: unknown): Promise<unknown> {
     if (!this.options.claudeManagedRequest || !this.options.receiptRequest)
       throw new Error("runtime_unavailable");
@@ -815,7 +841,6 @@ export class WebAccessService {
     const operation = String(body.operation);
     const mutation = [
       "create",
-      "adopt",
       "release",
       "reconcile",
       "send",
@@ -1127,21 +1152,15 @@ export class WebAccessService {
   }
 
   private ownsScheduledDevice(deviceId: string) {
-    return (
-      this.options.mode !== "lan" &&
-      ([this.localDevice.id, CLAUDE_LOCAL_OWNER].includes(deviceId) ||
-        this.credentials.some((credential) => credential.device.id === deviceId))
-    );
+    if (this.disposed || this.options.mode === "lan") return false;
+    if ([this.localDevice.id, CLAUDE_LOCAL_OWNER].includes(deviceId))
+      return this.sharedRuntimePrimary !== false;
+    return this.credentials.some((credential) => credential.device.id === deviceId);
   }
 
   private async authorizeScheduledWork(session: ClaudeScheduledSession) {
     const work = session.next;
-    if (
-      !work ||
-      this.disposed ||
-      !this.options.verifiedClaudeManaged ||
-      this.options.mode === "lan"
-    )
+    if (!work || !this.options.verifiedClaudeManaged || !this.ownsScheduledDevice(work.deviceId))
       throw new Error("scheduled-control-unavailable");
     const local = [this.localDevice.id, CLAUDE_LOCAL_OWNER].includes(work.deviceId);
     const hash = local
@@ -1158,6 +1177,7 @@ export class WebAccessService {
     }
     if (!(await this.workspaceAllowed(session.workspaceId, device, true)))
       throw new Error("workspace_not_authorized");
+    if (!this.ownsScheduledDevice(work.deviceId)) throw new Error("scheduled-control-unavailable");
     const current = this.grant(hash, "send");
     this.grant(hash, "advancedControl");
     if (work.kind === "goal") this.fullAccess(hash);
@@ -2697,12 +2717,101 @@ export class WebAccessService {
     const permission = this.projectPermission(raw);
     return permission ? { ...rest, permission } : rest;
   }
+  private projectSessionProvider(value: unknown): SessionProviderCapabilities | undefined {
+    if (!value || typeof value !== "object") return;
+    const { create, models, contextUsage, composer, history, operations } =
+      value as Partial<SessionProviderCapabilities>;
+    if (
+      (create?.mode !== "empty" && create?.mode !== "with-first-message") ||
+      (create.catalogScope !== "host" && create.catalogScope !== "workspace") ||
+      (models?.selection !== "independent" && models?.selection !== "variants") ||
+      (contextUsage !== "live" && contextUsage !== "last-request" && contextUsage !== "unsupported")
+    )
+      return;
+    return {
+      history: { readState: history?.readState === true },
+      operations: { execution: operations?.execution === true },
+      create: {
+        mode: create.mode,
+        catalogScope: create.catalogScope,
+        attachments: create.attachments === true,
+        serviceTiers: create.serviceTiers === true,
+        ...(typeof create.modelPicker === "boolean" ? { modelPicker: create.modelPicker } : {}),
+        ...(typeof create.permissionPicker === "boolean"
+          ? { permissionPicker: create.permissionPicker }
+          : {}),
+        ...(create.agentPresets === true ? { agentPresets: true } : {}),
+        ...(create.verifyStartupModel === true ? { verifyStartupModel: true } : {}),
+        ...(create.planMode === "mode" || create.planMode === "permissionMode"
+          ? { planMode: create.planMode }
+          : {}),
+        ...(create.workspaceResources === true ? { workspaceResources: true } : {}),
+        ...(create.goal === true ? { goal: true } : {}),
+        ...(create.goal === true && create.goalBudget === "rounds" ? { goalBudget: "rounds" } : {}),
+      },
+      models: {
+        selection: models.selection,
+        modelDefault: models.modelDefault === true,
+        effortDefault: models.effortDefault === true,
+        clearEffort: models.clearEffort === true,
+        fastTierIds: Array.isArray(models.fastTierIds)
+          ? models.fastTierIds
+              .slice(0, 32)
+              .filter((tier) => this.optionalString(tier, 128) !== undefined)
+          : [],
+        ...(models.prepare === true ? { prepare: true } : {}),
+        ...(models.nativePicker === true ? { nativePicker: true } : {}),
+      },
+      contextUsage,
+      ...(composer &&
+      [
+        "modelPicker",
+        "permissionPicker",
+        "attachments",
+        "workspaceResources",
+        "plan",
+        "goal",
+      ].every((key) => typeof composer[key as keyof typeof composer] === "boolean")
+        ? {
+            composer: {
+              modelPicker: composer.modelPicker,
+              permissionPicker: composer.permissionPicker,
+              attachments: composer.attachments,
+              workspaceResources: composer.workspaceResources,
+              plan: composer.plan,
+              goal: composer.goal,
+            },
+          }
+        : {}),
+    };
+  }
+  private projectNewSessionOptions(options: unknown, device: WebDevice) {
+    const provider = this.projectSessionProvider(snapshotField(options, "provider"));
+    if (!provider) return {};
+    const { planMode, workspaceResources, goal, goalBudget, ...create } = provider.create;
+    const advanced =
+      device.manage === true && device.advancedControl === true && this.isFullAccess(device);
+    return {
+      provider: {
+        ...provider,
+        create: {
+          ...create,
+          ...(planMode && (planMode !== "mode" || device.settings === true) ? { planMode } : {}),
+          ...(workspaceResources && advanced && device.files === true
+            ? { workspaceResources }
+            : {}),
+          ...(goal && advanced ? { goal, ...(goalBudget ? { goalBudget } : {}) } : {}),
+        },
+      },
+    };
+  }
   private projectSettings(raw: unknown, usage?: unknown) {
     const data =
       raw && typeof raw === "object"
         ? (raw as {
             available?: unknown;
             executionMode?: unknown;
+            provider?: unknown;
             status?: unknown;
             settings?: {
               current?: Record<string, unknown>;
@@ -2724,6 +2833,7 @@ export class WebAccessService {
             serviceTiers?: unknown;
             permissionModes?: unknown;
             revision?: unknown;
+            writeScope?: unknown;
             reason?: unknown;
           })
         : {};
@@ -2732,6 +2842,10 @@ export class WebAccessService {
     const applicationStatus = data.applicationStatus ?? data.settings?.applicationStatus;
     const defaults = data.defaults ?? data.settings?.defaults;
     const writable = data.writable ?? data.settings?.writable;
+    const provider = this.projectSessionProvider(data.provider);
+    const devin = data.executionMode === "devin-print";
+    const contextLimit = (value: unknown) =>
+      typeof value === "number" && Number.isSafeInteger(value) && value > 0 ? value : undefined;
     const stringList = (value: unknown, max = 32) =>
       Array.isArray(value)
         ? [
@@ -2757,7 +2871,7 @@ export class WebAccessService {
           ].slice(0, 32)
         : [];
     const models = Array.isArray(data.models)
-      ? data.models.slice(0, 64).flatMap((value) => {
+      ? data.models.slice(0, devin ? 256 : 64).flatMap((value) => {
           if (!value || typeof value !== "object") return [];
           const model = value as Record<string, unknown>;
           const id = this.optionalString(model.id, 128);
@@ -2773,6 +2887,27 @@ export class WebAccessService {
           );
           // The provider an agent lists the model under (DeepSeek Harness).
           const group = this.optionalString(model.group, 256);
+          const maxContextTokens =
+            provider || devin ? contextLimit(model.maxContextTokens) : undefined;
+          const variants =
+            (provider?.models.selection === "variants" || (!provider && devin)) &&
+            Array.isArray(model.variants)
+              ? model.variants.slice(0, 128).flatMap((entry) => {
+                  if (!entry || typeof entry !== "object") return [];
+                  const variant = entry as Record<string, unknown>;
+                  const id = this.optionalString(variant.id, 128);
+                  if (!id) return [];
+                  return [
+                    {
+                      id,
+                      name: this.optionalString(variant.name, 256),
+                      effort: this.optionalString(variant.effort, 128),
+                      serviceTierId: this.optionalString(variant.serviceTierId, 128),
+                      maxContextTokens: contextLimit(variant.maxContextTokens),
+                    },
+                  ];
+                })
+              : undefined;
           return [
             {
               id,
@@ -2784,6 +2919,8 @@ export class WebAccessService {
               serviceTierIds: tierIds(
                 model.serviceTierIds ?? model.serviceTiers ?? model.service_tiers,
               ),
+              ...(maxContextTokens ? { maxContextTokens } : {}),
+              ...(variants?.length ? { variants } : {}),
             },
           ];
         })
@@ -2809,19 +2946,28 @@ export class WebAccessService {
           })
         : []),
     ];
-    const serviceTiers = [
-      ...new Map(
-        rawServiceTiers.slice(0, 256).flatMap((value) => {
-          if (!value || typeof value !== "object") return [];
-          const tier = value as Record<string, unknown>;
-          const id = this.optionalString(tier.id, 128);
-          if (!id) return [];
-          const name = this.optionalString(tier.name, 256) ?? id;
-          const description = this.optionalString(tier.description, 1024);
-          return [[id, { id, name, ...(description ? { description } : {}) }] as const];
-        }),
-      ).values(),
-    ].slice(0, 32);
+    const serviceTiers = new Map(
+      rawServiceTiers.slice(0, 256).flatMap((value) => {
+        if (!value || typeof value !== "object") return [];
+        const tier = value as Record<string, unknown>;
+        const id = this.optionalString(tier.id, 128);
+        if (!id) return [];
+        const name = this.optionalString(tier.name, 256) ?? id;
+        const description = this.optionalString(tier.description, 1024);
+        return [[id, { id, name, ...(description ? { description } : {}) }] as const];
+      }),
+    );
+    const codex = isCodexMode(data.executionMode);
+    if (codex) {
+      // The native settings catalog can list only IDs for a model's service tiers.
+      const fastTierIds =
+        provider?.models.fastTierIds ?? sessionProviderCapabilities("codex")?.models.fastTierIds;
+      for (const id of new Set(models.flatMap((model) => model.serviceTierIds))) {
+        if (serviceTiers.size >= 32) break;
+        if (!serviceTiers.has(id))
+          serviceTiers.set(id, { id, name: fastTierIds?.includes(id) ? "Fast" : id });
+      }
+    }
     const value = (source: Record<string, unknown> | undefined, key: string, fallback?: string) =>
       this.optionalString(source?.[key] ?? (fallback ? source?.[fallback] : undefined), 128);
     const projectValues = (current: Record<string, unknown> | undefined) => ({
@@ -2833,30 +2979,44 @@ export class WebAccessService {
       ...(value(current, "policyId") ? { policyId: value(current, "policyId") } : {}),
       ...((data.executionMode === "devin-print"
         ? DEVIN_PERMISSION_MODES
-        : ["default", "plan", "acceptEdits"]
+        : data.executionMode === "claude-follower"
+          ? [...CLAUDE_OBSERVED_PERMISSION_MODES]
+          : ["default", "plan", "acceptEdits"]
       ).includes(value(current, "permissionMode") ?? "")
         ? { permissionMode: value(current, "permissionMode") }
         : {}),
       ...(value(current, "serviceTier", "serviceTierId")
         ? { serviceTierId: value(current, "serviceTier", "serviceTierId") }
         : {}),
+      ...((provider || devin || data.executionMode === "claude-follower") &&
+      contextLimit(current?.maxContextTokens)
+        ? { maxContextTokens: contextLimit(current?.maxContextTokens) }
+        : {}),
     });
     const reason = this.optionalString(data.reason);
-    const codex = isCodexMode(data.executionMode);
-    const historicalModel = codex ? value(data.historicalSettings, "modelId") : undefined;
+    const writeScope =
+      data.executionMode === "codex-follower"
+        ? this.optionalString(data.writeScope, 128)
+        : undefined;
+    const historicalModel =
+      codex || data.executionMode === "claude-managed" || data.executionMode === "claude-follower"
+        ? value(data.historicalSettings, "modelId", "model")
+        : undefined;
     const historicalEffort = codex ? value(data.historicalSettings, "effort") : undefined;
     const liveUsage = this.projectUsage(usage);
-    const historicalUsage = codex ? this.projectUsage(data.historicalUsage) : undefined;
+    const historicalUsage =
+      provider || codex || devin || data.executionMode === "claude-follower"
+        ? this.projectUsage(data.historicalUsage)
+        : undefined;
     const projectedUsage =
-      historicalUsage?.historical &&
-      (!liveUsage?.available ||
-        liveUsage.usedTokens === undefined ||
-        liveUsage.contextWindow === undefined)
+      historicalUsage?.historical && (!liveUsage?.available || liveUsage.usedTokens === undefined)
         ? historicalUsage
         : liveUsage;
     return {
       available: data.available === true,
+      ...(provider ? { provider } : {}),
       ...(reason ? { reason } : {}),
+      ...(writeScope ? { writeScope } : {}),
       ...(this.optionalString(data.executionMode, 64)
         ? { executionMode: this.optionalString(data.executionMode, 64) }
         : {}),
@@ -2896,11 +3056,15 @@ export class WebAccessService {
         mode: this.availability(writable?.mode),
         policy: this.availability(writable?.policy),
         serviceTier: this.availability(writable?.serviceTier),
-        ...(data.executionMode === "claude-managed" || data.executionMode === "devin-print"
+        ...(data.executionMode === "claude-managed" ||
+        data.executionMode === "claude-follower" ||
+        data.executionMode === "devin-print"
           ? { permissionMode: this.availability(writable?.permissionMode) }
           : {}),
         restoreDefaults:
-          data.executionMode === "claude-managed" || data.executionMode === "devin-print"
+          data.executionMode === "claude-managed" ||
+          data.executionMode === "claude-follower" ||
+          data.executionMode === "devin-print"
             ? this.availability(writable?.restoreDefaults)
             : {
                 available:
@@ -2912,8 +3076,10 @@ export class WebAccessService {
       options: {
         models,
         policies,
-        serviceTiers,
-        ...(data.executionMode === "claude-managed" || data.executionMode === "devin-print"
+        serviceTiers: [...serviceTiers.values()].slice(0, 32),
+        ...(data.executionMode === "claude-managed" ||
+        data.executionMode === "claude-follower" ||
+        data.executionMode === "devin-print"
           ? {
               permissionModes: Array.isArray(data.permissionModes)
                 ? data.permissionModes.slice(0, 4).flatMap((value) => {
@@ -3043,6 +3209,30 @@ export class WebAccessService {
       );
     if (!Number.isSafeInteger(revision) || revision < 0)
       throw new HttpError(409, "state_unavailable");
+    return this.projectContextResources(
+      { deviceId: device.id, sessionId, workspaceId },
+      raw,
+      revision,
+      directoryId,
+    );
+  }
+  private rememberContextResource(id: string, resource: RememberedContextResource) {
+    // Kept in order of listing; the oldest make way instead of refusing new listings.
+    this.contextArtifactRefs.delete(id);
+    this.contextArtifactRefs.set(id, resource);
+    for (const oldest of this.contextArtifactRefs.keys()) {
+      if (this.contextArtifactRefs.size <= CONTEXT_ARTIFACT_LIMIT) break;
+      this.contextArtifactRefs.delete(oldest);
+    }
+  }
+  private async projectContextResources(
+    scope: ContextResourceScope,
+    raw: Record<string, unknown>,
+    revision: number,
+    directoryId?: string,
+    draftAgent?: ManagedAgent,
+  ) {
+    const { deviceId, sessionId, workspaceId } = scope;
     const resources: {
       id: string;
       kind: ContextResourceReference["kind"];
@@ -3073,7 +3263,7 @@ export class WebAccessService {
           ...(nativeId ? { id: nativeId } : {}),
           ...(relativePath ? { relativePath } : {}),
         };
-        const id = digest(`${this.bootId}|${device.id}|${sessionId}|${JSON.stringify(reference)}`);
+        const id = digest(`${this.bootId}|${deviceId}|${sessionId}|${JSON.stringify(reference)}`);
         if (seenIds.has(id)) continue;
         const name =
           this.optionalString(item.name, 256) ?? relativePath?.split("/").at(-1) ?? nativeId;
@@ -3088,7 +3278,10 @@ export class WebAccessService {
               },
         );
         seenIds.add(id);
-        if (availability.available) references.set(id, reference);
+        if (availability.available) {
+          references.set(id, reference);
+          if (draftAgent) this.rememberContextResource(id, { ...scope, draftAgent, reference });
+        }
         resources.push({
           id,
           kind,
@@ -3109,34 +3302,24 @@ export class WebAccessService {
           entries: { id: string; name: string; kind: "file" | "directory"; revision: string }[];
         }
       | undefined;
-    const artifacts = this.artifactsFor(device.id);
+    const artifacts = this.artifactsFor(deviceId);
     if (artifacts) {
       try {
-        directory = await artifacts.list(
-          { deviceId: device.id, workspaceId, sessionId },
-          directoryId,
-        );
+        directory = await artifacts.list(scope, directoryId);
       } catch (error) {
         if (error instanceof ArtifactError) throw new HttpError(error.status, error.code);
         throw error;
       }
       for (const entry of directory.entries) {
         const id = digest(
-          `${this.bootId}|${device.id}|${sessionId}|${workspaceId}|${entry.id}|${entry.revision}`,
+          `${this.bootId}|${deviceId}|${sessionId}|${workspaceId}|${entry.id}|${entry.revision}`,
         );
-        // Kept in order of listing; the oldest make way instead of refusing new listings.
-        this.contextArtifactRefs.delete(id);
-        this.contextArtifactRefs.set(id, {
-          deviceId: device.id,
-          sessionId,
-          workspaceId,
+        this.rememberContextResource(id, {
+          ...scope,
+          ...(draftAgent ? { draftAgent } : {}),
           artifactId: entry.id,
           revision: entry.revision,
         });
-        for (const oldest of this.contextArtifactRefs.keys()) {
-          if (this.contextArtifactRefs.size <= CONTEXT_ARTIFACT_LIMIT) break;
-          this.contextArtifactRefs.delete(oldest);
-        }
         resources.push({
           id,
           kind: entry.kind,
@@ -3161,17 +3344,55 @@ export class WebAccessService {
       references,
     };
   }
+  private async newSessionResources(hash: string, url: URL) {
+    if (this.options.acceptanceSessionId) throw new HttpError(403, "session_control_not_allowed");
+    if (url.searchParams.has("sessionId")) throw new HttpError(400, "invalid_input");
+    const device = this.fullAccess(hash, "advancedControl");
+    this.grant(hash, "manage");
+    this.grant(hash, "files");
+    const workspaceId = this.field(url.searchParams.get("workspaceId"));
+    const agent = managedAgentOf(url.searchParams.get("agent"));
+    if (!agent || !sessionProviderCapabilities(agent)?.create.workspaceResources)
+      throw new HttpError(400, "unsupported_provider_resources");
+    if (!(await this.workspaceAllowed(workspaceId, device)))
+      throw new HttpError(403, "workspace_not_authorized");
+    const bootId = this.bootId;
+    const directoryId = url.searchParams.get("directoryId") ?? undefined;
+    if (directoryId && directoryId.length > 128) throw new HttpError(400, "invalid_directory_id");
+    const raw = (await this.runtime({
+      operation: "provider-workspace-resources",
+      agent,
+      workspaceId,
+    }).catch(() => ({}))) as Record<string, unknown>;
+    const { response } = await this.projectContextResources(
+      { deviceId: device.id, workspaceId, sessionId: `draft:${agent}:${workspaceId}` },
+      raw ?? {},
+      0,
+      directoryId,
+      agent,
+    );
+    if (!(await this.workspaceAllowed(workspaceId, device)))
+      throw new HttpError(403, "workspace_not_authorized");
+    if (this.bootId !== bootId) throw new HttpError(409, "stale_boot");
+    if (this.fullAccess(hash, "advancedControl").id !== device.id)
+      throw new HttpError(401, "access_ended");
+    this.grant(hash, "manage");
+    this.grant(hash, "files");
+    const { sessionId: _scope, ...resources } = response;
+    return { ...resources, workspaceId };
+  }
   private async resolveContextResources(
     sessionId: string,
     hash: string,
     value: unknown,
     expectedRevision: unknown,
     reserved = false,
+    draftAgent?: ManagedAgent,
   ) {
     if (value === undefined) return undefined;
     if (
       !Array.isArray(value) ||
-      value.length > 10 ||
+      value.length > SESSION_RESOURCE_LIMIT ||
       value.some((id) => typeof id !== "string" || !/^[a-f0-9]{64}$/.test(id)) ||
       new Set(value).size !== value.length
     )
@@ -3198,14 +3419,34 @@ export class WebAccessService {
       if (
         !artifact ||
         artifact.deviceId !== device.id ||
-        artifact.sessionId !== sessionId ||
         artifact.workspaceId !== workspaceId ||
-        !artifacts
+        (artifact.draftAgent
+          ? artifact.draftAgent !== draftAgent
+          : artifact.sessionId !== sessionId)
       )
         throw new HttpError(409, "resource_unavailable");
+      if (artifact.draftAgent) {
+        this.fullAccess(hash, "advancedControl");
+        this.grant(hash, "files");
+      }
+      if ("reference" in artifact) {
+        const { reference } = artifact;
+        if (
+          ![...references.values()].some(
+            (current) =>
+              current.kind === reference.kind &&
+              current.id === reference.id &&
+              current.relativePath === reference.relativePath,
+          )
+        )
+          throw new HttpError(409, "resource_unavailable");
+        resolved.push(reference);
+        continue;
+      }
+      if (!artifacts) throw new HttpError(409, "resource_unavailable");
       try {
         const reference = await artifacts.resolveContextReference(
-          { deviceId: device.id, workspaceId, sessionId },
+          { deviceId: device.id, workspaceId, sessionId: artifact.sessionId },
           artifact.artifactId,
           artifact.revision,
         );
@@ -3218,6 +3459,14 @@ export class WebAccessService {
     return resolved;
   }
   private async codexScope(sessionId: string, hash: string, reserved = false, codexOnly = true) {
+    return (await this.sessionScope(sessionId, hash, reserved, codexOnly)).workspace_id;
+  }
+  private async sessionScope(
+    sessionId: string,
+    hash: string,
+    reserved: boolean,
+    codexOnly: boolean,
+  ) {
     const catalog = (await this.scopeCatalog(reserved)) as {
       sessions: { id: string; agent: string; workspace_id: string }[];
     };
@@ -3229,7 +3478,7 @@ export class WebAccessService {
       !(await this.workspaceAllowed(session.workspace_id, this.grant(hash), reserved))
     )
       throw new HttpError(403, "workspace_not_authorized");
-    return session.workspace_id;
+    return session;
   }
   /** Whether a session's agent can be a Project Agent without Claude Code on this computer. */
   private async leadsWithoutClaude(sessionId: string) {
@@ -3253,6 +3502,63 @@ export class WebAccessService {
       return false;
     return (await this.registeredWorkspaces(reserved)).some((row) => row.id === workspaceId);
   }
+  private async readSessionCapabilities(
+    res: ConversationResponse,
+    hash: string,
+    url: URL,
+    codexOnly: boolean,
+    operation: "capabilities" | "inspect" = "capabilities",
+  ) {
+    const sessionId = this.field(url.searchParams.get("sessionId"));
+    const permission = operation === "inspect" ? "manage" : undefined;
+    const device = this.grant(hash, permission);
+    const catalog = (await this.scopeCatalog()) as {
+      sessions: { id: string; agent: string; workspace_id: string }[];
+    };
+    const session = catalog.sessions.find((row) => row.id === sessionId);
+    if (!session || (codexOnly && session.agent !== "codex"))
+      throw new HttpError(403, "workspace_not_authorized");
+    const currentDevice = this.grant(hash, permission);
+    const workspaceAllowed =
+      this.options.mode === "lan" && session.agent === "codex"
+        ? await this.lanCodexScopeAllowed(sessionId, session.workspace_id)
+        : await this.workspaceAllowed(session.workspace_id, currentDevice);
+    if (!workspaceAllowed && (session.agent !== "codex" || this.isFullAccess(currentDevice)))
+      throw new HttpError(403, "workspace_not_authorized");
+    const request = {
+      operation,
+      sessionId,
+      experimentalEnabled: this.controlsEnabled(sessionId, this.grant(hash, permission)),
+    };
+    const claude = session.agent === "claude-code";
+    const claudeRequest = this.options.claudeManagedRequest;
+    if (claude && !claudeRequest) throw new HttpError(409, "unsupported_host");
+    const result = await this.runtime(request, claude ? claudeRequest!(request) : undefined);
+    const latest = this.grant(hash, permission);
+    if (latest.id !== device.id) throw new HttpError(401, "access_ended");
+    const stillAllowed =
+      this.options.mode === "lan" && session.agent === "codex"
+        ? await this.lanCodexScopeAllowed(sessionId, session.workspace_id)
+        : await this.workspaceAllowed(session.workspace_id, latest);
+    if (
+      !stillAllowed &&
+      (session.agent !== "codex" || operation === "inspect" || this.isFullAccess(latest))
+    )
+      throw new HttpError(403, "workspace_not_authorized");
+    if (operation === "inspect") return this.json(res, 200, result);
+    const verified =
+      session.agent === "deepseek-harness"
+        ? this.options.verifiedDshFollower === true
+        : session.agent === "devin"
+          ? this.options.verifiedDevinManaged === true
+          : session.agent === "antigravity" || this.options.verifiedClaudeManaged === true;
+    const projected =
+      session.agent === "codex"
+        ? this.projectCapabilities(result, latest, stillAllowed, sessionId)
+        : this.projectClaudeCapabilities(result, latest, sessionId, verified);
+    return this.json(res, 200, projected);
+  }
+
   private codexPermission(
     operation: string,
   ): "send" | "approve" | "manage" | "attachments" | "advancedControl" | "organize" | "settings" {
@@ -3269,7 +3575,7 @@ export class WebAccessService {
     if (operation === "attachments") return "attachments";
     if (["resume", "fork"].includes(operation)) return "manage";
     if (["rename", "archive", "unarchive", "delete"].includes(operation)) return "organize";
-    if (operation === "settings") return "settings";
+    if (operation === "settings" || operation === "open-model-picker") return "settings";
     // Compaction is a turn the user starts, as a message is.
     return operation === "send" || operation === "inspect" || operation === "compact"
       ? "send"
@@ -3283,6 +3589,7 @@ export class WebAccessService {
     verified = this.options.verifiedClaudeManaged === true,
   ) {
     const data = result as {
+      executionMode?: unknown;
       features?: Record<string, { available: boolean; reason?: string }>;
       commands?: unknown;
     };
@@ -3294,7 +3601,6 @@ export class WebAccessService {
       "usage-limit-cancel": "send",
       "usage-limit-continue": "send",
       approve: "approve",
-      adopt: "manage",
       release: "manage",
       reconcile: "manage",
       inspect: "manage",
@@ -3303,9 +3609,11 @@ export class WebAccessService {
       usage: "advancedControl",
       "settings-state": "advancedControl",
       settings: "settings",
+      "open-model-picker": "settings",
       context: "advancedControl",
       resources: "advancedControl",
       goal: "advancedControl",
+      "goal-draft": "advancedControl",
       "goal-set": "advancedControl",
       "goal-pause": "advancedControl",
       "goal-resume": "advancedControl",
@@ -3340,7 +3648,6 @@ export class WebAccessService {
             "stop",
             "answer",
             "approve",
-            "adopt",
             "release",
             "reconcile",
             "inspect",
@@ -3367,7 +3674,10 @@ export class WebAccessService {
             (operation !== "fork" || device.organize === true) &&
             transport &&
             execution &&
-            (operation !== "attachments" || device.send === true);
+            (operation !== "open-model-picker" || data.executionMode === "claude-follower") &&
+            (operation !== "attachments" || device.send === true) &&
+            (operation !== "goal-draft" ||
+              (data.executionMode === "claude-managed" && device.send === true));
           return [
             operation,
             allowed
@@ -3432,7 +3742,7 @@ export class WebAccessService {
       "queue-delete",
       "queue-reorder",
       "queue-start",
-      ...(generic ? ["queue-pause", "queue-resume", "queue-steer"] : []),
+      ...(generic ? ["queue-pause", "queue-resume", "queue-steer", "open-model-picker"] : []),
       "usage-limit-cancel",
       "usage-limit-continue",
       "rename",
@@ -3449,6 +3759,18 @@ export class WebAccessService {
       "terminals-clean",
     ];
     if (!actions.includes(operation)) throw new HttpError(404, "not_found");
+    const opensPicker = operation === "open-model-picker";
+    const settingsControl = operation === "settings" || opensPicker;
+    if (
+      opensPicker &&
+      Object.keys(body).some(
+        (field) =>
+          !["operation", "agent", "bootId", "expectedRevision", "sessionId", "requestId"].includes(
+            field,
+          ),
+      )
+    )
+      throw new HttpError(400, "invalid_input");
     if (this.options.mode === "lan") throw new HttpError(403, "capability_unavailable");
     const permission = this.codexPermission(operation);
     const device = this.grant(hash, permission);
@@ -3505,6 +3827,16 @@ export class WebAccessService {
         prior.publicInputHash !== publicInputHash
       )
         throw new HttpError(409, "request_id_conflict");
+      if (
+        opensPicker &&
+        (prior.requestId !== requestId ||
+          (prior.status === "accepted" &&
+            settingsControlOutcome(prior.ack, requestId, sessionId, prior.runtimeBootId) !==
+              "accepted"))
+      ) {
+        control.priorUncertain = true;
+        throw new HttpError(502, "outcome_unknown");
+      }
       if (prior.status === "accepted" && prior.ack && typeof prior.ack === "object") {
         control.priorUncertain = false;
         return this.json(res, 200, prior.ack);
@@ -3531,8 +3863,12 @@ export class WebAccessService {
     }
     if (this.admission || this.active.has(sessionId)) throw new HttpError(409, "operation_busy");
     const workspaceId = await this.codexScope(sessionId, hash, false, !generic);
-    if (this.admission) throw new HttpError(409, "operation_busy");
-    this.admission = true;
+    if (this.requests.has(requestId) || this.unconfirmed.has(sessionId)) {
+      control.priorUncertain = true;
+      throw new HttpError(409, "outcome_unknown");
+    }
+    if (this.admission || this.active.has(sessionId)) throw new HttpError(409, "operation_busy");
+    if (!settingsControl) this.admission = true;
     this.active.add(sessionId);
     let dispatched = false;
     let newlyPinnedDevice: string | undefined;
@@ -3546,14 +3882,15 @@ export class WebAccessService {
         features?: Record<string, { available: boolean; reason?: string }>;
         executionMode?: string;
       };
-      // A connected Claude terminal takes messages while it runs: added to the turn or queued
-      // after it, and a waiting one can be withdrawn. It offers none of the other actions.
+      // Terminal mutations are limited to its inbox and opening its native model selector.
       const terminal =
         generic &&
         capabilities.executionMode === "claude-follower" &&
-        ["steer", "queue-add", "queue-delete"].includes(operation);
+        ["steer", "queue-add", "queue-delete", "open-model-picker"].includes(operation);
       const claude = generic && capabilities.executionMode === "claude-managed";
-      const followerFork = capabilities.executionMode === "codex-follower" && operation === "fork";
+      const codexFollower =
+        capabilities.executionMode === "codex-follower" &&
+        (operation === "fork" || operation === "settings");
       // A connected DeepSeek Harness takes steering and queued messages through its own inbox;
       // renames, archives, forks, switches models and presets, changes goals and compacts through
       // its own session services and commands.
@@ -3584,10 +3921,11 @@ export class WebAccessService {
         capabilities.executionMode === "devin-print" &&
         ["settings", "usage-limit-cancel", "usage-limit-continue"].includes(operation);
       if (
+        (opensPicker && (!terminal || this.options.verifiedClaudeManaged !== true)) ||
         (capabilities.executionMode !== "codex-managed" &&
           !claude &&
           !terminal &&
-          !followerFork &&
+          !codexFollower &&
           !dsh &&
           !devin) ||
         capabilities.features?.[operation]?.available !== true
@@ -3605,10 +3943,15 @@ export class WebAccessService {
         { operation: "live", sessionId, experimentalEnabled: true },
         undefined,
         true,
-      )) as { revision: number; runtimeBootId: string; status?: string };
+      )) as { revision: number; runtimeBootId: string; status?: string; executionMode?: string };
       if (
         (operation !== "resume" && snapshot.revision !== body.expectedRevision) ||
         !snapshot.runtimeBootId
+      )
+        throw new HttpError(409, "stale_state");
+      if (
+        opensPicker &&
+        (snapshot.status !== "idle" || snapshot.executionMode !== "claude-follower")
       )
         throw new HttpError(409, "stale_state");
       if (operation === "queue-add" && !generic && snapshot.status !== "running")
@@ -3723,9 +4066,11 @@ export class WebAccessService {
       }
       if (operation === "rename") params.name = this.field(body.name, 200);
       if (operation === "settings") {
+        const devin = capabilities.executionMode === "devin-print";
         const usesFullAccessFields =
           body.serviceTierId !== undefined ||
           body.policyId !== undefined ||
+          body.mode === null ||
           body.restoreDefaults !== undefined ||
           body.resourceIds !== undefined;
         if (usesFullAccessFields) this.fullAccess(hash);
@@ -3753,8 +4098,14 @@ export class WebAccessService {
           collaborationModes?: { id?: string }[];
           policies?: { id?: string }[];
           revision?: number;
+          writeScope?: string;
         };
         if (state.revision !== body.expectedRevision) throw new HttpError(409, "stale_state");
+        if (capabilities.executionMode === "codex-follower") {
+          const scope = this.optionalString(body.expectedSettingsScope, 128);
+          if (!scope || scope !== state.writeScope) throw new HttpError(409, "stale_state");
+          params.expectedSettingsScope = scope;
+        }
         const currentModel =
           state.selected?.model ??
           state.settings?.selected?.model ??
@@ -3780,14 +4131,20 @@ export class WebAccessService {
         const effort =
           body.effort === null &&
           (capabilities.executionMode === "claude-managed" ||
-            capabilities.executionMode === "codex-managed")
+            capabilities.executionMode === "codex-managed" ||
+            devin)
             ? null
             : body.effort === undefined
               ? undefined
               : this.field(body.effort, 128);
-        const mode = body.mode === undefined ? undefined : this.field(body.mode, 128);
+        const mode =
+          body.mode === null && capabilities.executionMode === "codex-managed"
+            ? null
+            : body.mode === undefined
+              ? undefined
+              : this.field(body.mode, 128);
         const serviceTier =
-          body.serviceTierId === null && capabilities.executionMode === "codex-managed"
+          body.serviceTierId === null && (capabilities.executionMode === "codex-managed" || devin)
             ? null
             : body.serviceTierId === undefined
               ? undefined
@@ -3814,7 +4171,6 @@ export class WebAccessService {
           params.effort = effort;
         }
         if (body.permissionMode !== undefined) {
-          const devin = capabilities.executionMode === "devin-print";
           if (capabilities.executionMode !== "claude-managed" && !devin)
             throw new HttpError(400, "unsupported_permission_mode");
           ensureWritable("permissionMode");
@@ -3826,11 +4182,12 @@ export class WebAccessService {
           if (devin && (mode === "smart" || mode === "dangerous")) this.fullAccess(hash);
           params.permissionMode = body.permissionMode;
         }
-        if (mode) {
+        if (mode !== undefined) {
           ensureWritable("mode");
           if (
-            !new Set(["default", "plan"]).has(mode) ||
-            !state.collaborationModes?.some((item) => item.id === mode)
+            mode !== null &&
+            (!["default", "plan"].includes(mode) ||
+              !state.collaborationModes?.some((item) => item.id === mode))
           )
             throw new HttpError(400, "unsupported_mode");
           params.mode = mode;
@@ -3863,7 +4220,7 @@ export class WebAccessService {
         if (
           !model &&
           effort === undefined &&
-          !mode &&
+          mode === undefined &&
           serviceTier === undefined &&
           !policyId &&
           body.permissionMode === undefined &&
@@ -3893,7 +4250,8 @@ export class WebAccessService {
           throw new HttpError(400, "resources_not_supported");
         if (
           capabilities.features?.context?.available !== true &&
-          capabilities.features?.resources?.available !== true
+          (capabilities.features?.context !== undefined ||
+            capabilities.features?.resources?.available !== true)
         )
           throw new HttpError(409, "context_unavailable");
         const resourceRefs =
@@ -3910,23 +4268,47 @@ export class WebAccessService {
         params.resourceRefs = resourceRefs;
       }
       this.grant(hash, permission);
-      if (!(await this.workspaceAllowed(workspaceId, this.grant(hash), this.admission)))
+      if (!(await this.workspaceAllowed(workspaceId, this.grant(hash), true)))
         throw new HttpError(403, "workspace_not_authorized");
       this.grant(hash, permission);
       if (body.bootId !== this.bootId) throw new HttpError(409, "stale_boot");
       if (historyScopeKey) await this.assertHistoryScope(hash, historyScopeKey, true);
       this.grant(hash, permission);
+      if (this.requests.has(requestId)) {
+        control.priorUncertain = true;
+        throw new HttpError(409, "outcome_unknown");
+      }
       this.rate(`control:${hash}`, 30);
       rememberRequest(this.requests, requestId);
       this.unconfirmed.add(sessionId);
       this.unconfirmedRequests.set(sessionId, requestId);
       dispatched = true;
       control.dispatched = true;
-      const pending = this.options.runtimeRequest(params).finally(() => {
-        this.active.delete(sessionId);
-        this.admission = false;
-        this.notifyControlChanged(sessionId);
-      });
+      let settingsConfirmed = false;
+      const pending = Promise.resolve()
+        .then(() => this.options.runtimeRequest(params))
+        .then((result) => {
+          if (!settingsControl) return result;
+          settingsConfirmed =
+            settingsControlOutcome(result, requestId, sessionId, snapshot.runtimeBootId) !==
+            undefined;
+          // The HTTP request may time out while the backend still owns the control. A matching
+          // settings result can settle its fence even if that response has already ended.
+          if (
+            settingsConfirmed &&
+            this.bootId === body.bootId &&
+            this.unconfirmedRequests.get(sessionId) === requestId
+          ) {
+            this.unconfirmedRequests.delete(sessionId);
+            this.clearUnconfirmed(sessionId);
+          }
+          return result;
+        })
+        .finally(() => {
+          this.active.delete(sessionId);
+          if (!settingsControl) this.admission = false;
+          this.notifyControlChanged(sessionId);
+        });
       const result = (await this.runtime(params, pending)) as {
         accepted?: boolean;
         requestId?: string;
@@ -3937,8 +4319,12 @@ export class WebAccessService {
       this.grant(hash, permission);
       if (body.bootId !== this.bootId) throw new HttpError(409, "stale_boot");
       if (result.accepted !== true) {
-        if (result.requestId === requestId && result.controlOutcome === "not-dispatched") {
-          this.clearUnconfirmed(sessionId);
+        if (
+          result.requestId === requestId &&
+          result.controlOutcome === "not-dispatched" &&
+          (!settingsControl || settingsConfirmed)
+        ) {
+          if (!settingsControl) this.clearUnconfirmed(sessionId);
           control.dispatched = false;
           if (newlyPinnedDevice)
             await this.attachmentStore.settle(newlyPinnedDevice, sessionId, requestId);
@@ -3947,14 +4333,16 @@ export class WebAccessService {
         throw new HttpError(502, "outcome_unknown");
       }
       if (operation === "delete") await this.forgetDeletedSession(sessionId);
-      res.once("finish", () => {
-        if (!res.destroyed && res.statusCode === 200) this.clearUnconfirmed(sessionId);
-      });
+      if (opensPicker && !settingsConfirmed) throw new HttpError(502, "outcome_unknown");
+      if (!settingsControl)
+        res.once("finish", () => {
+          if (!res.destroyed && res.statusCode === 200) this.clearUnconfirmed(sessionId);
+        });
       return this.json(res, 200, result);
     } finally {
       if (!dispatched) {
         this.active.delete(sessionId);
-        this.admission = false;
+        if (!settingsControl) this.admission = false;
         if (newlyPinnedDevice)
           await this.attachmentStore.settle(newlyPinnedDevice, sessionId, requestId);
       }
@@ -4118,7 +4506,6 @@ export class WebAccessService {
     const workspaceId = await this.codexScope(sessionId, hash, false, false);
     if (this.unconfirmed.has(sessionId)) throw new HttpError(409, "outcome_unknown");
     if (this.admission || this.active.has(sessionId)) throw new HttpError(409, "operation_busy");
-    this.admission = true;
     this.active.add(sessionId);
     let started = false;
     try {
@@ -4168,11 +4555,10 @@ export class WebAccessService {
         expectedRevision: body.expectedRevision,
         experimentalEnabled: true,
       };
-      // Unlike set_* or a user turn, initialize has no command outcome to fence. A timeout
-      // leaves admission reserved until the real preparation settles, never permits overlap.
+      // Initialization has no command receipt. Keep only this session reserved
+      // until the real preparation settles, even if the HTTP request times out.
       const pending = this.options.claudeManagedRequest(params).finally(() => {
         this.active.delete(sessionId);
-        this.admission = false;
         this.notifyControlChanged(sessionId);
       });
       started = true;
@@ -4181,7 +4567,7 @@ export class WebAccessService {
       if (this.fullAccess(hash, "advancedControl").id !== device.id)
         throw new HttpError(401, "access_ended");
       this.grant(hash, "settings");
-      await this.codexScope(sessionId, hash, false, false);
+      await this.codexScope(sessionId, hash, true, false);
       if (body.bootId !== this.bootId) throw new HttpError(409, "stale_boot");
       if (this.fullAccess(hash, "advancedControl").id !== device.id)
         throw new HttpError(401, "access_ended");
@@ -4190,7 +4576,6 @@ export class WebAccessService {
     } finally {
       if (!started) {
         this.active.delete(sessionId);
-        this.admission = false;
       }
     }
   }
@@ -4477,6 +4862,56 @@ export class WebAccessService {
     }
     return this.json(res, 200, result);
   }
+  private sessionProviderOperation(agent: ManagedAgent, operation: "options" | "create") {
+    const dispatch = this.options.sessionProviderRequest;
+    if (!dispatch || !sessionProviderCapabilities(agent)) return;
+    return (params: unknown) =>
+      dispatch({
+        ...(params as Record<string, unknown>),
+        agent,
+        operation: `provider-${operation}`,
+      });
+  }
+  private async sessionCreationOptions(agent: ManagedAgent, workspaceId: string | undefined) {
+    const unsupported = { available: false, reason: "unsupported_host" };
+    if (agent === "devin" || agent === "deepseek-harness") {
+      const verified =
+        agent === "devin" ? this.options.verifiedDevinManaged : this.options.verifiedDshFollower;
+      if (verified !== true) return unsupported;
+      if (this.admission) throw new HttpError(409, "operation_busy");
+    }
+    const registered = this.sessionProviderOperation(agent, "options");
+    if (registered) {
+      const workspaceScoped =
+        sessionProviderCapabilities(agent)?.create.catalogScope === "workspace" &&
+        (agent !== "claude-code" || this.options.verifiedClaudeManaged === true);
+      return this.runtime(
+        { operation: "provider-options" },
+        registered(workspaceScoped && workspaceId ? { workspaceId } : {}),
+      );
+    }
+
+    switch (agent) {
+      case "codex":
+        return this.options.managedRequest?.({ operation: "options" }) ?? unsupported;
+      case "claude-code":
+        return (
+          this.options.claudeManagedRequest?.({
+            operation: "options",
+            ...(workspaceId && this.options.verifiedClaudeManaged ? { workspaceId } : {}),
+          }) ?? unsupported
+        );
+      case "deepseek-harness":
+        return this.runtime({
+          operation: "dsh-options",
+          ...(workspaceId ? { includeModels: true } : {}),
+        });
+      case "devin":
+        return this.runtime({ operation: "devin-options" });
+      default:
+        return unsupported;
+    }
+  }
   private async manage(
     _req: ConversationRequest,
     res: ConversationResponse,
@@ -4488,6 +4923,7 @@ export class WebAccessService {
     this.grant(hash, "manage");
     const agent = managedAgentOf(body.agent ?? "codex");
     if (!agent) throw new HttpError(400, "invalid_agent");
+    const provider = sessionProviderCapabilities(agent);
     // DeepSeek Harness only starts sessions here; its sessions are controlled through actions.
     if (agent === "deepseek-harness" && operation !== "create")
       throw new HttpError(404, "not_found");
@@ -4496,28 +4932,32 @@ export class WebAccessService {
     const requestId = this.field(body.requestId, 128);
     if (agent === "claude-code")
       await this.controlReceipt(requestId, this.grant(hash, "manage").id, control);
-    const managedRequest = (() => {
-      switch (agent) {
-        case "codex":
-          return this.options.managedRequest;
-        case "claude-code":
-          return this.options.claudeManagedRequest;
-        case "deepseek-harness":
-          return (value: unknown) =>
-            this.options.runtimeRequest({
-              ...(value as Record<string, unknown>),
-              operation: "dsh-create",
-            });
-        case "devin":
-          return (value: unknown) =>
-            this.options.runtimeRequest({
-              ...(value as Record<string, unknown>),
-              operation: "devin-create",
-            });
-        default:
-          return unhandledManagedAgent(agent);
-      }
-    })();
+    const providerCreate =
+      operation === "create" ? this.sessionProviderOperation(agent, "create") : undefined;
+    const managedRequest =
+      providerCreate ??
+      (() => {
+        switch (agent) {
+          case "codex":
+            return this.options.managedRequest;
+          case "claude-code":
+            return this.options.claudeManagedRequest;
+          case "deepseek-harness":
+            return (value: unknown) =>
+              this.options.runtimeRequest({
+                ...(value as Record<string, unknown>),
+                operation: "dsh-create",
+              });
+          case "devin":
+            return (value: unknown) =>
+              this.options.runtimeRequest({
+                ...(value as Record<string, unknown>),
+                operation: "devin-create",
+              });
+          default:
+            return undefined;
+        }
+      })();
     if (agent === "claude-code" && !this.options.verifiedClaudeManaged)
       throw new HttpError(409, "unsupported_host");
     if (agent === "deepseek-harness" && this.options.verifiedDshFollower !== true)
@@ -4529,7 +4969,7 @@ export class WebAccessService {
       (operation === "create" || body.sessionId !== this.options.acceptanceSessionId)
     )
       throw new HttpError(403, "session_control_not_allowed");
-    if (!managedRequest || !["create", "adopt", "release", "reconcile"].includes(operation))
+    if (!managedRequest || !["create", "release", "reconcile"].includes(operation))
       throw new HttpError(404, "not_found");
     if (body.bootId !== this.bootId) throw new HttpError(409, "stale_boot");
     const params: Record<string, unknown> = {
@@ -4557,32 +4997,38 @@ export class WebAccessService {
         if (policyId !== "workspace-write-on-request") this.fullAccess(hash);
         params.policyId = policyId;
       }
+      if (body.mode !== undefined) {
+        if (provider?.create.planMode !== "mode" || body.mode !== "plan")
+          throw new HttpError(400, "unsupported_mode");
+        this.grant(hash, "settings");
+        params.mode = body.mode;
+      }
       if (body.model !== undefined) params.model = this.field(body.model, 128);
       if (body.effort !== undefined) params.effort = this.field(body.effort, 32);
+      if (provider?.create.verifyStartupModel && body.verifyStartupModel !== undefined) {
+        if (body.verifyStartupModel !== true) throw new HttpError(400, "invalid_input");
+        params.verifyStartupModel = true;
+      }
       if (agent === "claude-code") {
-        if (body.verifyStartupModel !== undefined) {
-          if (body.verifyStartupModel !== true) throw new HttpError(400, "invalid_input");
-          params.verifyStartupModel = true;
-        }
         if (body.permissionMode !== undefined) {
           if (!["default", "plan", "acceptEdits"].includes(String(body.permissionMode)))
             throw new HttpError(400, "unsupported_permission_mode");
           params.permissionMode = body.permissionMode;
         }
       }
-      // DSH picks an Agent preset only when a session starts, as on its own new-session screen.
-      if (agent === "deepseek-harness" && body.agentPreset !== undefined)
+      if (provider?.create.agentPresets && body.agentPreset !== undefined)
         params.agentPreset = this.field(body.agentPreset, 128);
-      if (agent === "devin") {
-        if (body.effort !== undefined) throw new HttpError(400, "unsupported_effort");
-        if (body.permissionMode !== undefined) {
-          const mode = String(body.permissionMode);
-          if (!DEVIN_PERMISSION_MODES.includes(mode))
-            throw new HttpError(400, "unsupported_permission_mode");
-          // Approving more without asking is changing what the session may do: full access only.
-          if (mode === "smart" || mode === "dangerous") this.fullAccess(hash);
-          params.permissionMode = mode;
-        }
+      if (provider?.create.serviceTiers && body.serviceTierId !== undefined)
+        params.serviceTier = this.field(body.serviceTierId, 128);
+      if (agent === "devin" && body.permissionMode !== undefined) {
+        const mode = String(body.permissionMode);
+        if (!DEVIN_PERMISSION_MODES.includes(mode))
+          throw new HttpError(400, "unsupported_permission_mode");
+        // Approving more without asking is changing what the session may do: full access only.
+        if (mode === "smart" || mode === "dangerous") this.fullAccess(hash);
+        params.permissionMode = mode;
+      }
+      if (provider?.create.mode === "with-first-message") {
         if (typeof body.prompt !== "string" || !body.prompt.trim())
           throw new HttpError(400, "missing_prompt");
         if (Buffer.byteLength(body.prompt, "utf8") > 64 * 1024)
@@ -4591,14 +5037,8 @@ export class WebAccessService {
       }
     } else {
       params.sessionId = this.field(body.sessionId);
-      if (
-        operation === "adopt" &&
-        agent === "claude-code" &&
-        body.handoffFingerprint !== undefined
-      ) {
-        params.handoffFingerprint = this.field(body.handoffFingerprint, 256);
-      }
     }
+    const sessionId = typeof params.sessionId === "string" ? params.sessionId : undefined;
     if (agent === "claude-code" && operation === "release") {
       if (!Number.isSafeInteger(body.expectedRevision) || Number(body.expectedRevision) < 0)
         throw new HttpError(400, "invalid_revision");
@@ -4610,7 +5050,8 @@ export class WebAccessService {
       params.expectedRevision = body.expectedRevision;
       params.runtimeBootId = this.field(live.runtimeBootId);
     }
-    if (this.admission) throw new HttpError(409, "operation_busy");
+    if (this.admission || (sessionId && this.active.has(sessionId)))
+      throw new HttpError(409, "operation_busy");
     if (agent !== "claude-code" && this.requests.has(requestId)) {
       control.priorUncertain = true;
       throw new HttpError(409, "duplicate_request");
@@ -4630,8 +5071,10 @@ export class WebAccessService {
     )
       throw new HttpError(403, "workspace_not_authorized");
     this.grant(hash, "manage");
+    if (params.mode === "plan") this.grant(hash, "settings");
     if (body.bootId !== this.bootId) throw new HttpError(409, "stale_boot");
-    if (this.admission) throw new HttpError(409, "operation_busy");
+    if (this.admission || (sessionId && this.active.has(sessionId)))
+      throw new HttpError(409, "operation_busy");
     if (agent !== "claude-code" && this.requests.has(requestId)) {
       control.priorUncertain = true;
       throw new HttpError(409, "duplicate_request");
@@ -4650,7 +5093,7 @@ export class WebAccessService {
         this.admission = false;
         // A managed request may settle after the HTTP timeout, including create
         // before a session id is known. Wake receipt reconciliation in either case.
-        this.notifyControlChanged(typeof params.sessionId === "string" ? params.sessionId : "");
+        this.notifyControlChanged(sessionId ?? "");
       });
     const result = (await this.runtime(params, pending)) as {
       reconciled?: boolean;
@@ -4674,8 +5117,7 @@ export class WebAccessService {
         const safeReasons = new Set([
           "web-busy",
           "unverified-installation",
-          "handoff-fingerprint-changed",
-          "Claude-history-changed-requires-handoff",
+          "claude-session-fingerprint-changed",
           "session-busy",
           "session-compacting",
           "session-released",
@@ -4689,6 +5131,7 @@ export class WebAccessService {
           "unsupported-codex-cli-version",
           "unsupported-model",
           "unsupported-effort",
+          "unsupported-service-tier",
           "claude-startup-models-unavailable",
           "session-managed-by-another-runtime",
           "pause-original-goal-before-handoff",
@@ -5700,6 +6143,7 @@ export class WebAccessService {
           runtimeBootId?: string;
           revision?: number;
           status?: string;
+          executionMode?: string;
           turnId?: string;
           sendEnabled?: boolean;
           stopEnabled?: boolean;
@@ -5888,7 +6332,8 @@ export class WebAccessService {
           })) as { features?: Record<string, { available: boolean }> };
           if (
             capabilities.features?.context?.available !== true &&
-            capabilities.features?.resources?.available !== true
+            (capabilities.features?.context !== undefined ||
+              capabilities.features?.resources?.available !== true)
           )
             throw new HttpError(409, "context_unavailable");
           const resourceRefs =
@@ -5898,6 +6343,11 @@ export class WebAccessService {
               body.resourceIds,
               body.expectedRevision,
               true,
+              snapshot.executionMode === "codex-managed"
+                ? "codex"
+                : snapshot.executionMode === "claude-managed"
+                  ? "claude-code"
+                  : undefined,
             )) ?? [];
           const inputRows = Array.isArray(params.input) ? params.input.length : 1;
           if (inputRows > 11 || resourceRefs.length > 32)
@@ -6058,6 +6508,8 @@ export class WebAccessService {
       this.grant(hash, "attachments");
       return this.json(res, 200, { attachments });
     }
+    if (path === "/managed/resources" && url.searchParams.has("workspaceId"))
+      return this.json(res, 200, await this.newSessionResources(hash, url));
     if (
       path === "/codex/session-settings" ||
       path === "/codex/goals" ||
@@ -6070,30 +6522,30 @@ export class WebAccessService {
       // 与 projectCapabilities 一致：settings-state/usage/goal/context 都属于 advancedControl，
       // 只读设备即便是 full 模式也不能读取。
       const device = this.fullAccess(hash, "advancedControl");
-      const workspaceId = await this.codexScope(
-        sessionId,
-        hash,
-        false,
-        !path.startsWith("/managed/"),
-      );
+      const scope = await this.sessionScope(sessionId, hash, false, !path.startsWith("/managed/"));
+      const workspaceId = scope.workspace_id;
       let result: unknown;
       if (path === "/codex/session-settings" || path === "/managed/settings") {
         const settings = await this.runtime({
           operation: "settings-state",
           sessionId,
-          ...(path === "/codex/session-settings" ? { includeHistorical: true } : {}),
+          ...(scope.agent === "codex" ? { includeHistorical: true } : {}),
         });
         this.fullAccess(hash, "advancedControl");
-        const usage = await this.runtime({ operation: "usage", sessionId }).catch((error) => {
-          // The optional live usage read cannot take down already available history.
-          if (
-            !settings ||
-            typeof settings !== "object" ||
-            (!("historicalSettings" in settings) && !("historicalUsage" in settings))
-          )
-            throw error;
-          return undefined;
-        });
+        const provider = this.projectSessionProvider(snapshotField(settings, "provider"));
+        const usage =
+          provider?.contextUsage === "last-request"
+            ? undefined
+            : await this.runtime({ operation: "usage", sessionId }).catch((error) => {
+                // Keep any history already returned with the settings.
+                if (
+                  !settings ||
+                  typeof settings !== "object" ||
+                  (!("historicalSettings" in settings) && !("historicalUsage" in settings))
+                )
+                  throw error;
+                return undefined;
+              });
         result = { sessionId, ...this.projectSettings(settings, usage) };
       } else if (path === "/codex/goals" || path === "/managed/goals") {
         const goal = await this.runtime({ operation: "goal", sessionId });
@@ -6124,36 +6576,20 @@ export class WebAccessService {
         operation: "status",
         sessionId: url.searchParams.get("sessionId"),
       });
-    if (path === "/codex/capabilities" || path === "/codex/queue" || path === "/managed/queue") {
+    if (path === "/managed/capabilities" || path === "/codex/capabilities")
+      return this.readSessionCapabilities(res, hash, url, path === "/codex/capabilities");
+    if (path === "/codex/queue" || path === "/managed/queue") {
       if (path === "/managed/queue" && this.options.mode === "lan")
         throw new HttpError(403, "capability_unavailable");
       const sessionId = this.field(url.searchParams.get("sessionId"));
-      const device = this.grant(hash, path.endsWith("queue") ? "advancedControl" : undefined);
-      if (path.endsWith("queue") || this.isFullAccess(device))
-        await this.codexScope(sessionId, hash, false, !path.startsWith("/managed/"));
+      this.grant(hash, "advancedControl");
+      await this.codexScope(sessionId, hash, false, path === "/codex/queue");
       const result = await this.runtime({
-        operation: path.endsWith("queue") ? "queue-list" : "capabilities",
+        operation: "queue-list",
         sessionId,
         experimentalEnabled: this.controlsEnabled(sessionId, this.grant(hash)),
       });
       this.grant(hash);
-      if (path.endsWith("capabilities")) {
-        const catalog = (await this.scopeCatalog()) as {
-          sessions: { id: string; workspace_id: string }[];
-        };
-        this.grant(hash);
-        const workspace = catalog.sessions.find((item) => item.id === sessionId)?.workspace_id;
-        const workspaceAllowed =
-          !!workspace &&
-          (this.options.mode === "lan" && isCodexMode(snapshotField(result, "executionMode"))
-            ? await this.lanCodexScopeAllowed(sessionId, workspace)
-            : await this.workspaceAllowed(workspace, device));
-        return this.json(
-          res,
-          200,
-          this.projectCapabilities(result, this.grant(hash), workspaceAllowed, sessionId),
-        );
-      }
       if ((result as { reason?: string }).reason === "queue-too-large")
         throw new HttpError(409, "queue_too_large");
       const entries =
@@ -6255,6 +6691,7 @@ export class WebAccessService {
                     "delete",
                     "fork",
                     "settings",
+                    "open-model-picker",
                     "goal-set",
                     "goal-pause",
                     "goal-resume",
@@ -6273,6 +6710,19 @@ export class WebAccessService {
         )
           throw new HttpError(403, "workspace_not_authorized");
         this.grant(hash, permission);
+        if (
+          result.operation === "open-model-picker" &&
+          result.status === "accepted" &&
+          (result.requestId !== requestId ||
+            !result.sessionId ||
+            settingsControlOutcome(
+              snapshotField(result, "ack"),
+              requestId,
+              result.sessionId,
+              snapshotField(result, "runtimeBootId"),
+            ) !== "accepted")
+        )
+          throw new HttpError(503, "receipt_unavailable");
         if (
           result.sessionId &&
           ["accepted", "not-dispatched"].includes(result.status ?? "") &&
@@ -6302,40 +6752,7 @@ export class WebAccessService {
         this.grant(hash, permission);
         if (this.bootId !== bootId) throw new HttpError(409, "stale_boot");
       }
-      const managedRequest = (() => {
-        switch (agent) {
-          case "codex":
-            return this.options.managedRequest;
-          case "claude-code":
-            return this.options.claudeManagedRequest;
-          case "deepseek-harness":
-          case "devin":
-            return undefined;
-          default:
-            return unhandledManagedAgent(agent);
-        }
-      })();
-      // A new DeepSeek Harness session needs exactly one running DSH with the plugin.
-      const options =
-        agent === "deepseek-harness"
-          ? this.options.verifiedDshFollower === true
-            ? await this.runtime({
-                operation: "dsh-options",
-                ...(workspaceId ? { includeModels: true } : {}),
-              })
-            : { available: false, reason: "unsupported_host" }
-          : agent === "devin"
-            ? this.options.verifiedDevinManaged === true
-              ? await this.runtime({ operation: "devin-options" })
-              : { available: false, reason: "unsupported_host" }
-            : managedRequest
-              ? await managedRequest({
-                  operation: "options",
-                  ...(workspaceId && agent === "claude-code" && this.options.verifiedClaudeManaged
-                    ? { workspaceId }
-                    : {}),
-                })
-              : { available: false, reason: "unsupported_host" };
+      const options = await this.sessionCreationOptions(agent, workspaceId);
       const device = this.grant(hash, permission);
       const workspaces = device.manage === true ? await this.registeredWorkspaces() : [];
       const current = this.grant(hash, permission);
@@ -6349,90 +6766,12 @@ export class WebAccessService {
       }
       return this.json(res, 200, {
         ...(options as object),
+        ...this.projectNewSessionOptions(options, current),
         workspaces: allowed.map(({ id, name }) => ({ id, name })),
       });
     }
-    if (path === "/managed/capabilities" || path === "/managed/inspect") {
-      const agent = url.searchParams.get("agent") ?? "codex";
-      if (agent === "deepseek-harness") {
-        // The runtime resolves the provider from the indexed session, never from this parameter.
-        const sessionId = this.field(url.searchParams.get("sessionId"));
-        const device = this.grant(hash);
-        if (path.endsWith("inspect")) this.grant(hash, "manage");
-        const workspaceId = await this.codexScope(sessionId, hash, false, false);
-        const result = await this.runtime({
-          operation: path.endsWith("inspect") ? "inspect" : "capabilities",
-          sessionId,
-          experimentalEnabled: this.controlsEnabled(sessionId, device),
-        });
-        if (snapshotField(result, "executionMode") !== "dsh-follower")
-          throw new HttpError(400, "invalid_agent");
-        if (!(await this.workspaceAllowed(workspaceId, this.grant(hash))))
-          throw new HttpError(403, "workspace_not_authorized");
-        return this.json(
-          res,
-          200,
-          path.endsWith("capabilities")
-            ? this.projectClaudeCapabilities(
-                result,
-                this.grant(hash),
-                sessionId,
-                this.options.verifiedDshFollower === true,
-              )
-            : result,
-        );
-      }
-      if (agent === "devin") {
-        // As for DeepSeek Harness, the runtime resolves the provider from the indexed session.
-        const sessionId = this.field(url.searchParams.get("sessionId"));
-        const device = this.grant(hash);
-        if (path.endsWith("inspect")) this.grant(hash, "manage");
-        const workspaceId = await this.codexScope(sessionId, hash, false, false);
-        const result = await this.runtime({
-          operation: path.endsWith("inspect") ? "inspect" : "capabilities",
-          sessionId,
-          experimentalEnabled: this.controlsEnabled(sessionId, device),
-        });
-        if (snapshotField(result, "executionMode") !== "devin-print")
-          throw new HttpError(400, "invalid_agent");
-        if (!(await this.workspaceAllowed(workspaceId, this.grant(hash))))
-          throw new HttpError(403, "workspace_not_authorized");
-        return this.json(
-          res,
-          200,
-          path.endsWith("capabilities")
-            ? this.projectClaudeCapabilities(
-                result,
-                this.grant(hash),
-                sessionId,
-                this.options.verifiedDevinManaged === true,
-              )
-            : result,
-        );
-      }
-      if (agent !== "claude-code") throw new HttpError(400, "invalid_agent");
-      const sessionId = this.field(url.searchParams.get("sessionId"));
-      const device = this.grant(hash);
-      if (path.endsWith("inspect")) this.grant(hash, "manage");
-      const workspaceId = await this.codexScope(sessionId, hash, false, false);
-      const managedRequest = this.options.claudeManagedRequest;
-      if (!managedRequest) throw new HttpError(409, "unsupported_host");
-      const result = await managedRequest({
-        operation: path.endsWith("inspect") ? "inspect" : "capabilities",
-        sessionId,
-        experimentalEnabled: this.controlsEnabled(sessionId, device),
-      });
-      this.grant(hash);
-      if (!(await this.workspaceAllowed(workspaceId, this.grant(hash))))
-        throw new HttpError(403, "workspace_not_authorized");
-      return this.json(
-        res,
-        200,
-        path.endsWith("capabilities")
-          ? this.projectClaudeCapabilities(result, this.grant(hash), sessionId)
-          : result,
-      );
-    }
+    if (path === "/managed/inspect")
+      return this.readSessionCapabilities(res, hash, url, false, "inspect");
     if (path === "/managed/resume-command") {
       const sessionId = this.field(url.searchParams.get("sessionId"));
       const scope = await this.codexResumeCommandScope(sessionId, hash);
@@ -6574,22 +6913,33 @@ export class WebAccessService {
         String(req.headers["last-event-id"] ?? "") ||
         undefined;
       if (afterCursor && afterCursor.length > 1024) throw new HttpError(400, "invalid_cursor");
-      // 网络切换后旧连接可能半开，心跳仍能写入，名额迟迟不释放。同一凭据重连就是同一客户端：
-      // 达到每设备 2 条上限时淘汰它自己最早的流，接纳新流。只淘汰本凭据的流，不影响其他设备；
-      // 全局 16 条仍是硬上限，替换自己的流不增加总数，所以表满时也允许。
+      // Allow a catalog and up to three detail streams, including the recently
+      // viewed sessions retained by the client. Idle tabs can share a credential.
+      // Replace a half-open detail on reconnect, or prefer an older detail at a cap.
       const owned = [...this.streams.values()].filter((stream) => stream.hash === hash);
-      if (owned.length < 2 && this.streams.size >= 16) {
+      const details = owned.filter((stream) => stream.sessionId !== undefined);
+      const reconnect =
+        sessionId !== undefined && (owned.length >= 2 || this.streams.size >= MAX_EVENT_STREAMS)
+          ? details.find((stream) => stream.sessionId === sessionId)
+          : undefined;
+      const previous =
+        reconnect ??
+        (owned.length >= MAX_DEVICE_STREAMS ||
+        (sessionId !== undefined && details.length >= MAX_DEVICE_DETAIL_STREAMS)
+          ? (details[0] ?? owned[0])
+          : undefined);
+      if (!previous && this.streams.size >= MAX_EVENT_STREAMS) {
         res.setHeader("Retry-After", "3");
         throw new HttpError(429, "stream_limit");
       }
-      if (owned.length >= 2) owned[0].evict();
+      previous?.evict();
       res.writeHead(200, {
         "Content-Type": "text/event-stream",
         "Cache-Control": "no-store",
         "X-Accel-Buffering": "no",
       });
       // unavailable 定义在下方；首个 await 之前不会有其他请求调用 evict。
-      this.streams.set(res, { hash, evict: () => unavailable() });
+      this.streams.set(res, { hash, sessionId, evict: () => unavailable() });
       const hub = this.options.conversationHub;
       let subscriptionId: string | undefined;
       let closed = false;
@@ -6880,10 +7230,11 @@ export class WebAccessService {
         }
       } else result = await this.runtime(params);
     } catch (error) {
-      if (path === "/catalog") {
+      if (path === "/catalog" || (path === "/events" && params.cursor)) {
         this.grant(hash);
         if (boot !== this.bootId) throw new HttpError(409, "stale_boot");
-        if (readerScope !== this.readerScope()) throw new HttpError(409, "access_changed");
+        if ((path === "/catalog" || localEvents) && readerScope !== this.readerScope())
+          throw new HttpError(409, "access_changed");
         const detail =
           error instanceof RuntimeRequestError &&
           error.data !== null &&
@@ -6893,7 +7244,10 @@ export class WebAccessService {
             : error instanceof Error
               ? error.message
               : undefined;
-        if (detail === "catalog-stale") throw new HttpError(409, "catalog_stale");
+        if (path === "/catalog" && detail === "catalog-stale")
+          throw new HttpError(409, "catalog_stale");
+        if (path === "/events" && detail === "TRANSCRIPT_CURSOR_STALE")
+          throw new HttpError(409, "stale_cursor");
       }
       throw error;
     }

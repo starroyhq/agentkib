@@ -1,5 +1,8 @@
 import { projectAgentCopy } from "@agentkib/session-ui";
-import type { ProjectAgentState as ProjectAgent } from "@agentkib/web-client";
+import {
+  PROJECT_AGENT_MAX_WORKERS,
+  type ProjectAgentState as ProjectAgent,
+} from "@agentkib/web-client";
 import { useCallback, useEffect, useState } from "react";
 import { Button } from "../../components/ui/button";
 import { Input } from "../../components/ui/input";
@@ -110,7 +113,7 @@ export function ProjectAgentPanel() {
     approveFiles: scope?.approvals?.includes("file-change") ?? false,
     approveCommands: scope?.approvals?.includes("command") ?? false,
     answers: scope?.answers ?? false,
-    maxLanes: scope?.maxLanes ?? 4,
+    maxLanes: scope?.maxLanes ?? PROJECT_AGENT_MAX_WORKERS,
     maxAutoTurns: scope?.maxAutoTurns ?? 25,
   });
 
@@ -178,9 +181,14 @@ export function ProjectAgentPanel() {
             <Input
               type="number"
               min={1}
-              max={8}
+              max={PROJECT_AGENT_MAX_WORKERS}
               value={form.maxLanes}
-              onChange={(event) => setForm({ ...form, maxLanes: bounded(event.target.value, 8) })}
+              onChange={(event) =>
+                setForm({
+                  ...form,
+                  maxLanes: bounded(event.target.value, PROJECT_AGENT_MAX_WORKERS),
+                })
+              }
             />
           </label>
           <label className="grid gap-1.5">

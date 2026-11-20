@@ -657,51 +657,97 @@ while IFS= read -r frame; do printf '%s\\n' "$frame" >> "$FAKE_LOG"; done
     expect(f.evidence()).toContain("close-user");
   }, 30_000);
 
-  it("finishes a pre-initialize stream failure as not-dispatched and keeps the session usable after restart", async () => {
-    const f = fixture({ beforeInitialize: [{ __closeOutput: true }], silentInitialize: true });
-    const owner = host(f);
-    const { sessionId } = await create(owner);
-    const requestId = randomUUID();
-    expect(await send(owner, sessionId, requestId)).toMatchObject({
-      accepted: false,
-      controlOutcome: confirmsOwnedTree ? "not-dispatched" : "unknown",
-    });
-    expect(await owner.live(sessionId, true)).toMatchObject({
-      status: confirmsOwnedTree ? "idle" : "outcome-unknown",
-      sendEnabled: confirmsOwnedTree,
-    });
-    const database = openManagedLedger(f.root)!;
-    try {
-      const row = database
-        .prepare("SELECT phase,result,evidence FROM managed_commands WHERE request_id=?")
-        .get(requestId) as { phase: string; result: string; evidence: string };
-      expect(row.phase).toBe(confirmsOwnedTree ? "resolved" : "prepared");
-      if (confirmsOwnedTree) {
-        expect(JSON.parse(row.result)).toMatchObject({ controlOutcome: "not-dispatched" });
-        expect(JSON.parse(row.evidence)).toMatchObject({
-          startupCleanup: { version: 2, cleanupKind: "mac-owned-process-tree" },
-        });
-      } else {
-        expect(row.result).toBeNull();
-        expect(JSON.parse(row.evidence)).not.toHaveProperty("startupCleanup");
+  it.each([false, true])(
+    "finishes a pre-initialize stream failure in the original send receipt and keeps the session usable after restart (native=%s)",
+    async (native) => {
+      const f = fixture({ beforeInitialize: [{ __closeOutput: true }], silentInitialize: true });
+      const nativeId = native ? randomUUID() : undefined;
+      if (nativeId) {
+        const user = randomUUID();
+        writeFileSync(
+          path.join(f.config, `${nativeId}.jsonl`),
+          [
+            {
+              type: "user",
+              uuid: user,
+              sessionId: nativeId,
+              cwd: f.workspace,
+              message: { role: "user", content: "Previous user message" },
+            },
+            {
+              type: "assistant",
+              uuid: randomUUID(),
+              parentUuid: user,
+              sessionId: nativeId,
+              cwd: f.workspace,
+              message: {
+                role: "assistant",
+                stop_reason: "end_turn",
+                content: [{ type: "text", text: "Previous answer" }],
+              },
+            },
+          ]
+            .map((row) => JSON.stringify(row))
+            .join("\n") + "\n",
+          { mode: 0o600 },
+        );
       }
-    } finally {
-      database.close();
-    }
-    await owner.shutdown();
-    const restarted = host(f);
-    expect(await restarted.live(sessionId, true)).toMatchObject({
-      status: confirmsOwnedTree ? "idle" : "outcome-unknown",
-      sendEnabled: confirmsOwnedTree,
-    });
-    if (!confirmsOwnedTree) {
-      expect(f.frames().filter((frame) => frame.type === "user")).toEqual([]);
-      return;
-    }
-    f.setPlan({});
-    expect(await send(restarted, sessionId)).toMatchObject({ accepted: true });
-    await expect.poll(async () => (await restarted.live(sessionId, true)).status).toBe("idle");
-  }, 30_000);
+      const owner = host(f, nativeId);
+      const sessionId = nativeId ?? (await create(owner)).sessionId;
+      const requestId = randomUUID();
+      expect(await send(owner, sessionId, requestId)).toMatchObject({
+        accepted: false,
+        controlOutcome: confirmsOwnedTree ? "not-dispatched" : "unknown",
+      });
+      expect(await owner.live(sessionId, true)).toMatchObject({
+        status: confirmsOwnedTree ? "idle" : "outcome-unknown",
+        sendEnabled: confirmsOwnedTree,
+      });
+      const database = openManagedLedger(f.root)!;
+      try {
+        const row = database
+          .prepare("SELECT phase,result,evidence FROM managed_commands WHERE request_id=?")
+          .get(requestId) as { phase: string; result: string; evidence: string };
+        if (native) {
+          const commands = database
+            .prepare("SELECT request_id,evidence FROM managed_commands WHERE session_id=?")
+            .all(sessionId) as Array<{ request_id: string; evidence: string }>;
+          expect(
+            commands.map((row) => ({
+              requestId: row.request_id,
+              operation: JSON.parse(row.evidence).operation,
+            })),
+          ).toEqual([{ requestId, operation: "send" }]);
+        }
+        expect(row.phase).toBe(confirmsOwnedTree ? "resolved" : "prepared");
+        if (confirmsOwnedTree) {
+          expect(JSON.parse(row.result)).toMatchObject({ controlOutcome: "not-dispatched" });
+          expect(JSON.parse(row.evidence)).toMatchObject({
+            startupCleanup: { version: 2, cleanupKind: "mac-owned-process-tree" },
+          });
+        } else {
+          expect(row.result).toBeNull();
+          expect(JSON.parse(row.evidence)).not.toHaveProperty("startupCleanup");
+        }
+      } finally {
+        database.close();
+      }
+      await owner.shutdown();
+      const restarted = host(f, nativeId);
+      expect(await restarted.live(sessionId, true)).toMatchObject({
+        status: confirmsOwnedTree ? "idle" : "outcome-unknown",
+        sendEnabled: confirmsOwnedTree,
+      });
+      if (!confirmsOwnedTree) {
+        expect(f.frames().filter((frame) => frame.type === "user")).toEqual([]);
+        return;
+      }
+      f.setPlan({});
+      expect(await send(restarted, sessionId)).toMatchObject({ accepted: true });
+      await expect.poll(async () => (await restarted.live(sessionId, true)).status).toBe("idle");
+    },
+    30_000,
+  );
 
   it.each([
     "valid",
@@ -726,12 +772,9 @@ while IFS= read -r frame; do printf '%s\\n' "$frame" >> "$FAKE_LOG"; done
     "legacy-restored-later-turn",
     "legacy-restored-max-revision",
     "legacy-restored-released-send",
-    "legacy-restored-released-adopt",
     "legacy-restored-indexed-alias-send",
-    "legacy-restored-indexed-alias-adopt",
     "legacy-restored-indexed-alias-unseen-send",
-    "legacy-restored-indexed-alias-unseen-adopt",
-    "legacy-restored-indexed-alias-unseen-locked-adopt",
+    "legacy-restored-indexed-alias-unseen-locked-send",
     "ordinary-idle-no-legacy-proof",
     "foreign-mac-restored",
     "missing-kind-restored",
@@ -873,26 +916,17 @@ while IFS= read -r frame; do printf '%s\\n' "$frame" >> "$FAKE_LOG"; done
       if (releasedLegacy) {
         const actionRequestId = randomUUID();
         await expect(
-          restarted.request(
-            kind === "legacy-restored-released-send"
-              ? {
-                  operation: "send",
-                  sessionId,
-                  requestId: actionRequestId,
-                  deviceId: "browser-device",
-                  runtimeBootId: restarted.bootId,
-                  // The new host boot advances its own revision exactly once on first read.
-                  expectedRevision: record.snapshot.revision + previousHostRevision + 1,
-                  experimentalEnabled: true,
-                  text: "synthetic blocked retry",
-                }
-              : {
-                  operation: "adopt",
-                  sessionId,
-                  requestId: actionRequestId,
-                  deviceId: "browser-device",
-                },
-          ),
+          restarted.request({
+            operation: "send",
+            sessionId,
+            requestId: actionRequestId,
+            deviceId: "browser-device",
+            runtimeBootId: restarted.bootId,
+            // A new host boot advances its revision once on the first read.
+            expectedRevision: record.snapshot.revision + previousHostRevision + 1,
+            experimentalEnabled: true,
+            text: "synthetic blocked retry",
+          }),
         ).rejects.toThrow("control-outcome-unconfirmed");
         expect(JSON.parse(readFileSync(file, "utf8"))).toMatchObject({
           createdAt: record.createdAt,
@@ -921,10 +955,14 @@ while IFS= read -r frame; do printf '%s\\n' "$frame" >> "$FAKE_LOG"; done
           try {
             await expect(
               restarted.request({
-                operation: "adopt",
+                operation: "send",
                 sessionId: record.nativeId,
                 requestId: randomUUID(),
                 deviceId: "browser-device",
+                runtimeBootId: restarted.bootId,
+                expectedRevision: 0,
+                experimentalEnabled: true,
+                text: "synthetic blocked alias retry",
               }),
             ).rejects.toThrow("session-managed-by-another-runtime");
             expect(readFileSync(file, "utf8")).toBe(previousRecord);
@@ -945,25 +983,16 @@ while IFS= read -r frame; do printf '%s\\n' "$frame" >> "$FAKE_LOG"; done
         }
         const actionRequestId = randomUUID();
         await expect(
-          restarted.request(
-            kind.endsWith("-send")
-              ? {
-                  operation: "send",
-                  sessionId: record.nativeId,
-                  requestId: actionRequestId,
-                  deviceId: "browser-device",
-                  runtimeBootId: restarted.bootId,
-                  expectedRevision: 0,
-                  experimentalEnabled: true,
-                  text: "synthetic blocked alias retry",
-                }
-              : {
-                  operation: "adopt",
-                  sessionId: record.nativeId,
-                  requestId: actionRequestId,
-                  deviceId: "browser-device",
-                },
-          ),
+          restarted.request({
+            operation: "send",
+            sessionId: record.nativeId,
+            requestId: actionRequestId,
+            deviceId: "browser-device",
+            runtimeBootId: restarted.bootId,
+            expectedRevision: 0,
+            experimentalEnabled: true,
+            text: "synthetic blocked alias retry",
+          }),
         ).rejects.toThrow("control-outcome-unconfirmed");
         expect(existsSync(path.join(f.root, "claude-managed", `${record.nativeId}.json`))).toBe(
           false,

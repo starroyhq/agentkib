@@ -1,0 +1,17 @@
+[data-slot="composer-primary-action"] {
+  --action-color: var(--composer-action-color, var(--primary));
+  --action-background: color-mix(in oklab, var(--action-color) 58%, black);
+
+  background-color: var(--action-background);
+}
+
+@supports (color: oklch(from red min(l, 0.58) c h)) {
+  [data-slot="composer-primary-action"] {
+    /* Keep the theme hue while preserving contrast with the fixed white glyph. */
+    --action-background: oklch(from var(--action-color) min(l, 0.58) c h);
+  }
+}
+
+[data-slot="composer-primary-action"]:enabled:hover {
+  background-color: color-mix(in oklab, var(--action-background) 88%, black);
+}

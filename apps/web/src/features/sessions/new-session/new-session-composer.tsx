@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Popover } from "@base-ui/react/popover";
 import {
-  ArrowUp,
   Check,
   ChevronDown,
   CircleX,
@@ -11,60 +10,68 @@ import {
   ImageIcon,
   Layers,
   LoaderCircle,
-  Plus,
   Search,
   Shield,
   TriangleAlert,
   X,
 } from "lucide-react";
-import type { ManagedAgent, ManagedOptions } from "@agentkib/web-client";
+import {
+  newSessionProvider,
+  sessionProviderCapabilities,
+  type ManagedAgent,
+} from "@agentkib/web-client";
 import { AgentMark, agentName } from "@agentkib/agent-identity";
 import { sortSessions } from "@agentkib/session-catalog";
 import {
+  composerGoalCopy,
+  ComposerGoalFields,
+  ComposerPrimaryAction,
+  SessionComposerToolbar,
   dshAgentPresetText,
   fillCopy,
   NEW_SESSION_AGENTS,
+  NewSessionAddDraftChips,
   newSessionCopy,
   newSessionCreateFields,
-  PROMPT_AT_CREATE_AGENTS,
+  useNewSessionModel,
   newSessionPermissions,
+  newSessionAddCapabilities,
   newSessionPresets,
-  type NewSessionPermissionChoice,
+  planSlashOption,
+  SessionComposerInput,
+  slashCommandCopy,
+  useNewSessionAdd,
+  useSlashCommandMenu,
 } from "@agentkib/session-ui";
 import { Button } from "@/features/conversation/components/ui/button";
+import { Dialog, DialogContent, DialogTitle } from "@/features/conversation/components/ui/dialog";
 import { Disclosure, DisclosureSummary } from "@/features/conversation/components/ui/disclosure";
 import {
   DropdownMenu,
   DropdownMenuContent,
-  DropdownMenuGroup,
   DropdownMenuItem,
-  DropdownMenuLabel,
-  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/features/conversation/components/ui/dropdown-menu";
 import { Input } from "@/features/conversation/components/ui/input";
-import { Textarea } from "@/features/conversation/components/ui/textarea";
 import { cn } from "@/features/conversation/lib/utils";
 import { useSession } from "@/features/conversation/features/sessions/session-context";
 import {
   codexCopyForSurface,
   codexReason,
 } from "@/features/conversation/features/sessions/codex-copy";
-import { composerTerm } from "@/features/conversation/features/sessions/composer-layout-copy";
-import {
-  isSendEnter,
-  useEnterSends,
-} from "@/features/conversation/features/sessions/composer-shortcuts";
+import { composerLayoutCopy } from "@/features/conversation/features/sessions/composer-layout-copy";
 import { MAX_MESSAGE_LENGTH } from "@/features/conversation/features/sessions/session-model";
 import {
   offerNewSessionDraft,
   readNewSessionTarget,
   rememberNewSessionTarget,
+  type NewSessionDraft,
 } from "@/features/conversation/features/sessions/new-session-draft";
 import type { Locale } from "@/features/conversation/i18n";
 import { failureOf, useNewSession } from "./use-new-session";
 
 const MAX_FILES = 10;
+const startupSlashOptions = [] as const;
 const chip =
   "h-8 min-w-0 gap-1.5 rounded-full px-2.5 text-sm font-normal text-muted-foreground hover:text-foreground";
 
@@ -86,9 +93,8 @@ function recentWorkspaces(
 
 /**
  * Starts a session from this browser, as the desktop composer does: the workspace and Agent above,
- * the first message with its files, permissions, model and effort below. The session is created
- * first; its own composer then sends the message, so a message that cannot go out stays there as
- * the draft.
+ * the first message with its files, permissions and model settings below. The provider chooses
+ * whether the first message travels with create or through the new session's own composer.
  */
 export function NewSessionComposer({
   onCreated,
@@ -101,13 +107,14 @@ export function NewSessionComposer({
   /** The connection is lost: the draft can be written but not sent. */
   disabled?: boolean;
 }) {
-  const { locale, sessions, workspaces: catalogWorkspaces, access } = useSession();
+  const { locale, sessions, workspaces: catalogWorkspaces, access, client } = useSession();
   const fullAccess = access?.device?.accessMode === "full";
   const workspaces = useMemo(
     () => (catalogWorkspaces ?? []).filter((item) => !("remote" in item && item.remote)),
     [catalogWorkspaces],
   );
   const copy = newSessionCopy(locale);
+  const conversationCopy = codexCopyForSurface(locale, "web");
   const [target] = useState(readNewSessionTarget);
   const [agent, setAgent] = useState<ManagedAgent>(target.agent ?? "codex");
   const [workspaceId, setWorkspaceId] = useState(target.workspaceId ?? "");
@@ -118,22 +125,20 @@ export function NewSessionComposer({
   const [text, setText] = useState("");
   const [files, setFiles] = useState<File[]>([]);
   const [permission, setPermission] = useState<string>();
-  const [model, setModel] = useState("");
-  const [effort, setEffort] = useState("");
+  const [planning, setPlanning] = useState(false);
+  const [addMenuOpen, setAddMenuOpen] = useState(false);
   const [agentPreset, setAgentPreset] = useState<string>();
   const [sending, setSending] = useState(false);
-  const draft = useRef({ text, files });
-  useEffect(() => {
-    draft.current = { text, files };
-  }, [text, files]);
-  // An Agent that starts with its first message has sent it with the create.
-  const promptAtCreate = PROMPT_AT_CREATE_AGENTS.includes(agent);
+  const draft = useRef<NewSessionDraft>({ text, files });
+  // Reconciliation can finish after options have refreshed; use the mode of the submitted request.
+  const sentWithPrompt = useRef(false);
   // The composer stays busy until the new session opens.
   const handOff = async (sessionId: string) => {
     setSending(true);
-    if (!promptAtCreate) offerNewSessionDraft(sessionId, draft.current);
+    if (!sentWithPrompt.current) offerNewSessionDraft(sessionId, draft.current);
     setText("");
     setFiles([]);
+    add.clearDraftAdditions();
     try {
       await onCreated(sessionId);
     } finally {
@@ -142,6 +147,7 @@ export function NewSessionComposer({
   };
   const session = useNewSession({
     agent,
+    workspaceId: workspace?.id,
     // A create checked after its outcome was unknown opens the session it made, with this
     // composer's draft, only while that draft is still here.
     onReconciled: (sessionId, own) => {
@@ -149,40 +155,131 @@ export function NewSessionComposer({
     },
   });
   const options = session.options;
-  const enterSends = useEnterSends();
-  const composing = useRef(false);
+  const provider = newSessionProvider(agent, options);
+  const showsModelPicker = provider?.create.modelPicker === true;
+  const showsPermissionPicker = provider?.create.permissionPicker === true;
+  const promptAtCreate = provider?.create.mode === "with-first-message";
+  const locked = sending || session.busy;
+  const advancedAccess = fullAccess && access?.device?.advancedControl === true && session.ready;
+  const resourceAuthority = JSON.stringify([access?.bootId, access?.device?.id]);
+  const {
+    resourcesOffered,
+    resourcesAllowed,
+    goalsOffered,
+    goalsAllowed,
+    hideGoalBudget,
+    planField,
+    planOffered,
+    offersPlan,
+  } = newSessionAddCapabilities(
+    options,
+    sessionProviderCapabilities(agent)?.create,
+    advancedAccess,
+  );
+  const goalCopy = composerGoalCopy(locale);
+  const add = useNewSessionAdd({
+    agent,
+    workspaceId: workspace?.id,
+    client,
+    resourceAuthority,
+    resourcesAllowed,
+    resourcesOffered,
+    resourcesDisabledReason: session.optionsLoading ? copy.loadingOptions : copy.optionsUnavailable,
+    locked: locked || disabled,
+    offline: disabled,
+    resourceError: (error) => failureOf(error, locale).reason,
+    resourceReason: (code) => codexReason(locale, code, "web").text,
+  });
+  const { resources, goal } = add;
+  useEffect(() => {
+    draft.current = {
+      text,
+      files,
+      ...(resources.length ? { resources } : {}),
+      ...(goal ? { goal } : {}),
+    };
+  }, [text, files, resources, goal]);
+  const attachments =
+    access?.device?.attachments === true &&
+    (provider?.create.attachments ?? true) &&
+    !promptAtCreate;
   const fileInput = useRef<HTMLInputElement>(null);
   const [fileLimit, setFileLimit] = useState(false);
 
-  const models = options?.available ? (options.models ?? []) : [];
-  const defaultModel = options?.defaults?.model ?? models.find((item) => item.isDefault)?.id;
-  const modelId = model || defaultModel || undefined;
-  const shownEffort =
-    effort ||
-    (model
-      ? models.find((item) => item.id === model)?.defaultEffort
-      : (options?.defaults?.effort ?? undefined));
-  const permissions = newSessionPermissions(agent, options, locale, { fullAccess });
-  const shownPermission = permissions?.choices.find(
-    (item) => item.id === (permission ?? permissions.initial),
+  const sessionModel = useNewSessionModel({
+    agent,
+    workspaceId: workspace?.id,
+    authority: resourceAuthority,
+    options,
+    provider,
+  });
+  const { settings: modelSettings, modelId, shownEffort, shownTier } = sessionModel;
+  const permissions = showsPermissionPicker
+    ? newSessionPermissions(agent, options, locale, { fullAccess })
+    : undefined;
+  const canPickFiles = attachments && files.length < MAX_FILES;
+  const hasAddActions = attachments || planOffered || planning || resourcesOffered || goalsOffered;
+  const addDisabledReason = !hasAddActions
+    ? !access?.device?.attachments
+      ? conversationCopy.permission
+      : session.optionsLoading
+        ? copy.loadingOptions
+        : undefined
+    : undefined;
+  const permissionChoices = permissions?.choices.map((item) =>
+    planning && planField === "permissionMode" ? { ...item, disabled: true } : item,
   );
-  const { presets, defaultId: defaultPreset } = newSessionPresets(agent, options);
-  const preset = presets.find((item) => item.id === (agentPreset ?? defaultPreset));
+  const shownPermission =
+    permissionChoices?.find((item) => item.id === permission) ??
+    permissionChoices?.find((item) => item.id === permissions?.initial);
+  const { presets, defaultId: defaultPreset } = newSessionPresets(agent, options, provider?.create);
+  const preset =
+    presets.find((item) => item.id === agentPreset) ??
+    presets.find((item) => item.id === defaultPreset);
+  const optionStatus = session.optionsLoading ? copy.loadingOptions : copy.optionsUnavailable;
 
   const unavailableReason = session.optionsError
     ? failureOf(session.optionsError, locale).reason
     : options && !options.available
       ? codexReason(locale, options.reason, "web").text
       : undefined;
-  const locked = sending || session.busy;
+  const optionsLocked = locked || !options?.available;
+  const hasMessage = !!text.trim() || (attachments && files.length > 0);
+  const goalNeedsMessage = !!goal && !hasMessage && planning && planField === "mode";
+  const resourceNeedsMessage = resources.length > 0 && !hasMessage;
+  const resourceNeedsReselection = resources.some((item) => !item.available);
+  const sendLabel = goal && !hasMessage ? conversationCopy.goalCreate : copy.send;
   const canSend =
     !disabled &&
     session.ready &&
     !!options?.available &&
     !!workspace &&
+    (!planning || offersPlan) &&
     !locked &&
     !session.unknown &&
-    (promptAtCreate ? !!text.trim() && files.length === 0 : !!text.trim() || files.length > 0);
+    (!resources.length ||
+      (resourcesAllowed && !resourceNeedsMessage && !resourceNeedsReselection)) &&
+    (!goal || goalsAllowed) &&
+    !goalNeedsMessage &&
+    (attachments || files.length === 0) &&
+    (hasMessage || !!goal);
+  const changePlan = (enabled: boolean) => {
+    if (locked || (enabled && !offersPlan)) return false;
+    setPlanning(enabled);
+    return true;
+  };
+  const planOption = useMemo(() => planSlashOption(locale), [locale]);
+  const slash = useSlashCommandMenu({
+    value: text,
+    options: startupSlashOptions,
+    enabled: offersPlan && !locked,
+    catalogKnown: true,
+    side: "bottom",
+    locale,
+    label: agent === "codex" ? slashCommandCopy(locale).codexLabel : undefined,
+    plan: offersPlan ? { option: planOption, enter: () => changePlan(true) } : undefined,
+    onChoose: setText,
+  });
 
   async function send() {
     if (!canSend || !workspace) return;
@@ -191,24 +288,27 @@ export function NewSessionComposer({
       {
         agent,
         workspaceId: workspace.id,
-        model,
-        effort,
+        model: sessionModel.model,
+        effort: sessionModel.effort,
+        serviceTierId: sessionModel.chosenTier,
         shownModel: modelId,
         permission,
+        planning,
         preset: agentPreset,
         fullAccess,
       },
       options,
+      provider?.create,
     );
     rememberNewSessionTarget({ workspaceId: workspace.id, agent });
+    sentWithPrompt.current = promptAtCreate;
     const sessionId = await session.create(promptAtCreate ? { ...fields, prompt: text } : fields);
     if (sessionId) await handOff(sessionId);
     else setSending(false);
   }
 
   function addFiles(list: File[]) {
-    // Devin takes text only; its sessions get no attachments.
-    if (promptAtCreate) return;
+    if (!attachments) return;
     const room = MAX_FILES - files.length;
     setFileLimit(list.length > room);
     if (room > 0) setFiles((current) => [...current, ...list.slice(0, room)]);
@@ -233,219 +333,347 @@ export function NewSessionComposer({
       {fillCopy(copy.agentUnavailableHere, { reason: unavailableReason })}
     </Notice>
   ) : fileLimit ? (
-    <Notice tone="muted">{codexCopyForSurface(locale, "web").limit}</Notice>
+    <Notice tone="muted">{conversationCopy.limit}</Notice>
   ) : null;
 
   if (!workspaces.length) return null;
   return (
     <section aria-label={copy.newSession} className="@container grid w-full gap-2">
       {notice}
-      <form
-        className="grid gap-2 rounded-2xl border border-border bg-card p-2.5 shadow-sm transition-colors focus-within:border-ring/40"
-        onSubmit={(event) => {
-          event.preventDefault();
-          void send();
-        }}
-      >
-        {files.length > 0 && (
-          <ul className="flex flex-wrap gap-1.5 px-1 pt-1">
-            {files.map((file, index) => (
-              <li
-                key={`${file.name}:${index}`}
-                className="flex max-w-56 items-center gap-1.5 rounded-md border border-border bg-muted/40 py-1 pl-2 pr-1 text-xs"
-              >
-                {file.type.startsWith("image/") ? (
-                  <ImageIcon className="size-3.5 shrink-0" aria-hidden />
-                ) : (
-                  <FileText className="size-3.5 shrink-0" aria-hidden />
-                )}
-                <span className="truncate">{file.name}</span>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="content"
-                  className="grid size-5 shrink-0 place-items-center rounded text-muted-foreground"
-                  aria-label={fillCopy(copy.removeFile, { name: file.name })}
-                  disabled={locked}
-                  onClick={() => {
-                    setFileLimit(false);
-                    setFiles((current) => current.filter((_, at) => at !== index));
-                  }}
-                >
-                  <X className="size-3" aria-hidden />
-                </Button>
-              </li>
-            ))}
-          </ul>
-        )}
-        <Textarea
-          aria-label={copy.message}
-          // The home and the "+" panel open with the person about to type.
-          autoFocus={autoFocus}
-          className="max-h-48 min-h-12 resize-none border-0 bg-transparent px-2 py-1.5 text-base shadow-none focus-visible:ring-0 disabled:bg-transparent sm:text-sm dark:bg-transparent dark:disabled:bg-transparent"
-          rows={2}
-          value={text}
-          maxLength={MAX_MESSAGE_LENGTH}
-          placeholder={copy.placeholder}
+      <div className="flex min-w-0 flex-wrap items-center gap-1">
+        <WorkspacePicker
+          locale={locale}
+          workspaces={workspaces}
+          recent={recentWorkspaces(workspaces, sessions, 3)}
+          selected={workspace?.id}
           disabled={locked}
-          onChange={(event) => setText(event.target.value)}
-          onCompositionStart={() => {
-            composing.current = true;
-          }}
-          onCompositionEnd={() => {
-            composing.current = false;
-          }}
-          onKeyDown={(event) => {
-            if (!enterSends || !isSendEnter(event, composing.current)) return;
-            event.preventDefault();
-            if (!event.repeat) event.currentTarget.form?.requestSubmit();
-          }}
-          onPaste={(event) => {
-            const pasted = Array.from(event.clipboardData.files);
-            if (!pasted.length) return;
-            event.preventDefault();
-            addFiles(pasted);
+          onSelect={(id) => {
+            if (workspace?.id === id) return;
+            setAddMenuOpen(false);
+            if (provider?.create.catalogScope === "workspace") {
+              sessionModel.reset();
+              setAgentPreset(undefined);
+            }
+            setWorkspaceId(id);
           }}
         />
-        <Input
-          ref={fileInput}
-          type="file"
-          multiple
-          className="hidden"
-          aria-label={copy.attach}
-          onChange={(event) => {
-            addFiles(Array.from(event.target.files ?? []));
-            event.target.value = "";
-          }}
-        />
-        <div className="flex min-w-0 flex-wrap items-center gap-1">
-          <Button
-            type="button"
-            variant="ghost"
-            className="size-8 shrink-0 rounded-full bg-muted/60 p-0"
-            aria-label={copy.attach}
-            title={copy.attach}
-            disabled={locked || promptAtCreate || files.length >= MAX_FILES}
-            onClick={() => fileInput.current?.click()}
+        <DropdownMenu>
+          <DropdownMenuTrigger
+            render={<Button type="button" variant="ghost" className={chip} disabled={locked} />}
+            aria-label={`${copy.agent}: ${agentName(agent)}`}
           >
-            <Plus className="size-4" aria-hidden />
-          </Button>
-          <WorkspacePicker
-            locale={locale}
-            workspaces={workspaces}
-            recent={recentWorkspaces(workspaces, sessions, 3)}
-            selected={workspace?.id}
-            disabled={locked}
-            onSelect={setWorkspaceId}
-          />
+            <AgentMark agent={agent} size={14} />
+            <span className="truncate @max-[28rem]:sr-only">{agentName(agent)}</span>
+            {unavailableReason && (
+              <TriangleAlert className="size-3.5 shrink-0 text-amber-600" aria-hidden />
+            )}
+            <ChevronDown className="size-3.5 shrink-0" aria-hidden />
+          </DropdownMenuTrigger>
+          <DropdownMenuContent className="w-60">
+            {NEW_SESSION_AGENTS.map((item) => (
+              <DropdownMenuItem
+                key={item}
+                onClick={() => {
+                  if (item === agent) return;
+                  setAgent(item);
+                  sessionModel.reset();
+                  setPermission(undefined);
+                  setPlanning(false);
+                  setAddMenuOpen(false);
+                  setAgentPreset(undefined);
+                }}
+              >
+                <AgentMark agent={item} size={14} />
+                <span className="min-w-0 flex-1 truncate">{agentName(item)}</span>
+                {item === agent && <Check className="size-4" aria-hidden />}
+              </DropdownMenuItem>
+            ))}
+          </DropdownMenuContent>
+        </DropdownMenu>
+        {presets.length > 0 ? (
           <DropdownMenu>
             <DropdownMenuTrigger
-              render={<Button type="button" variant="ghost" className={chip} disabled={locked} />}
-              aria-label={`${copy.agent}: ${agentName(agent)}`}
+              render={
+                <Button type="button" variant="ghost" className={chip} disabled={optionsLocked} />
+              }
             >
-              <AgentMark agent={agent} size={14} />
-              <span className="truncate @max-[28rem]:sr-only">{agentName(agent)}</span>
-              {unavailableReason && (
-                <TriangleAlert className="size-3.5 shrink-0 text-amber-600" aria-hidden />
-              )}
+              <Layers className="size-3.5 shrink-0" aria-hidden />
+              <span className="@max-[28rem]:sr-only">{copy.preset}</span>
+              <span className="truncate text-foreground">
+                {preset ? dshAgentPresetText(preset, locale).name : ""}
+              </span>
               <ChevronDown className="size-3.5 shrink-0" aria-hidden />
             </DropdownMenuTrigger>
-            <DropdownMenuContent className="w-60">
-              {NEW_SESSION_AGENTS.map((item) => (
+            <DropdownMenuContent className="w-64">
+              {presets.map((item) => (
                 <DropdownMenuItem
-                  key={item}
-                  onClick={() => {
-                    setAgent(item);
-                    setModel("");
-                    setEffort("");
-                    setPermission(undefined);
-                    setAgentPreset(undefined);
-                  }}
+                  key={item.id}
+                  disabled={!!item.broken}
+                  onClick={() => setAgentPreset(item.id)}
                 >
-                  <AgentMark agent={item} size={14} />
-                  <span className="min-w-0 flex-1 truncate">{agentName(item)}</span>
-                  {item === agent && <Check className="size-4" aria-hidden />}
+                  <span className="grid min-w-0 flex-1">
+                    <span className="truncate">{dshAgentPresetText(item, locale).name}</span>
+                    {dshAgentPresetText(item, locale).description && (
+                      <span className="text-xs text-muted-foreground">
+                        {dshAgentPresetText(item, locale).description}
+                      </span>
+                    )}
+                  </span>
+                  {item.id === preset?.id && <Check className="size-4" aria-hidden />}
                 </DropdownMenuItem>
               ))}
             </DropdownMenuContent>
           </DropdownMenu>
-          {presets.length > 0 && (
-            <DropdownMenu>
-              <DropdownMenuTrigger
-                render={<Button type="button" variant="ghost" className={chip} disabled={locked} />}
-              >
-                <Layers className="size-3.5 shrink-0" aria-hidden />
-                <span className="@max-[28rem]:sr-only">{copy.preset}</span>
-                <span className="truncate text-foreground">
-                  {preset ? dshAgentPresetText(preset, locale).name : ""}
-                </span>
-                <ChevronDown className="size-3.5 shrink-0" aria-hidden />
-              </DropdownMenuTrigger>
-              <DropdownMenuContent className="w-64">
-                {presets.map((item) => (
-                  <DropdownMenuItem
-                    key={item.id}
-                    disabled={!!item.broken}
-                    onClick={() => setAgentPreset(item.id)}
+        ) : provider?.create.agentPresets === true ? (
+          <OptionPlaceholder
+            label={copy.preset}
+            status={optionStatus}
+            loading={session.optionsLoading}
+            icon={<Layers className="size-3.5 shrink-0" aria-hidden />}
+          />
+        ) : null}
+      </div>
+      <SessionComposerInput
+        onSubmit={() => void send()}
+        editor={{
+          "aria-label": copy.message,
+          autoFocus,
+          value: text,
+          maxLength: MAX_MESSAGE_LENGTH,
+          placeholder: planning ? conversationCopy.planPlaceholder : copy.placeholder,
+          disabled: locked,
+          onChange: (event) => setText(event.currentTarget.value),
+          ...slash.inputProps,
+        }}
+        onEditorKeyDown={slash.onKeyDown}
+        afterEditor={slash.menu}
+        attachments={{
+          inputRef: fileInput,
+          label: copy.attach,
+          disabled: !attachments || locked,
+          onFiles: addFiles,
+        }}
+        beforeEditor={
+          <>
+            {files.length > 0 && (
+              <ul className="flex flex-wrap gap-1.5 px-1 pt-1">
+                {files.map((file, index) => (
+                  <li
+                    key={`${file.name}:${index}`}
+                    className="flex max-w-56 items-center gap-1.5 rounded-md border border-border bg-muted/40 py-1 pl-2 pr-1 text-xs"
                   >
-                    <span className="grid min-w-0 flex-1">
-                      <span className="truncate">{dshAgentPresetText(item, locale).name}</span>
-                      {dshAgentPresetText(item, locale).description && (
-                        <span className="text-xs text-muted-foreground">
-                          {dshAgentPresetText(item, locale).description}
-                        </span>
-                      )}
-                    </span>
-                    {item.id === preset?.id && <Check className="size-4" aria-hidden />}
-                  </DropdownMenuItem>
+                    {file.type.startsWith("image/") ? (
+                      <ImageIcon className="size-3.5 shrink-0" aria-hidden />
+                    ) : (
+                      <FileText className="size-3.5 shrink-0" aria-hidden />
+                    )}
+                    <span className="truncate">{file.name}</span>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="content"
+                      className="grid size-5 shrink-0 place-items-center rounded text-muted-foreground"
+                      aria-label={fillCopy(copy.removeFile, { name: file.name })}
+                      disabled={locked}
+                      onClick={() => {
+                        setFileLimit(false);
+                        setFiles((current) => current.filter((_, at) => at !== index));
+                      }}
+                    >
+                      <X className="size-3" aria-hidden />
+                    </Button>
+                  </li>
                 ))}
-              </DropdownMenuContent>
-            </DropdownMenu>
-          )}
-          {permissions && shownPermission && (
-            <PermissionMenu
-              label={shownPermission.name}
-              title={permissions.title}
-              risky={shownPermission.risky}
-              disabled={locked}
-              items={permissions.choices}
-              selected={shownPermission.id}
-              onSelect={setPermission}
-            />
-          )}
-          <div className="ml-auto flex min-w-0 items-center gap-1">
-            {models.length > 0 && (
-              <ModelMenu
-                locale={locale}
-                models={models}
-                modelId={modelId}
-                effort={shownEffort}
-                disabled={locked}
-                onModel={(id) => {
-                  setModel(id);
-                  setEffort("");
-                }}
-                onEffort={setEffort}
-              />
+              </ul>
             )}
+            <NewSessionAddDraftChips
+              locale={locale}
+              resources={resources}
+              disabled={locked}
+              onRemoveResource={(id) =>
+                add.setResources(resources.filter((item) => item.id !== id))
+              }
+            />
+            {(resourceNeedsReselection || resourceNeedsMessage || goalNeedsMessage) && (
+              <p className="px-2 text-xs text-muted-foreground">
+                {resourceNeedsReselection
+                  ? conversationCopy.resourceRemoved
+                  : resourceNeedsMessage
+                    ? composerLayoutCopy[locale].resourceNeedsMessage
+                    : goalCopy.planNeedsMessage}
+              </p>
+            )}
+          </>
+        }
+        toolbar={
+          <SessionComposerToolbar
+            locale={locale}
+            add={{
+              scope: JSON.stringify([agent, workspace?.id, resourceAuthority]),
+              label: conversationCopy.addContext,
+              side: "bottom",
+              disabled: locked,
+              disabledReason: addDisabledReason,
+              open: addMenuOpen && hasAddActions && !locked,
+              onOpenChange: setAddMenuOpen,
+              attachment: attachments
+                ? {
+                    disabled: !canPickFiles,
+                    reason: !canPickFiles ? conversationCopy.limit : undefined,
+                    onPick: () => fileInput.current?.click(),
+                  }
+                : undefined,
+              resources: add.resourceBrowser,
+              goal: goalsOffered
+                ? {
+                    selected: !!goal,
+                    disabled: !goalsAllowed,
+                    reason: !goalsAllowed ? optionStatus : undefined,
+                    onOpen: add.openGoal,
+                  }
+                : undefined,
+              plan:
+                planOffered || planning
+                  ? {
+                      active: planning,
+                      disabled: !planning && !offersPlan,
+                      reason: !offersPlan ? optionStatus : undefined,
+                      onToggle: () => changePlan(!planning),
+                    }
+                  : undefined,
+            }}
+            permission={
+              permissions && permissionChoices
+                ? {
+                    label: shownPermission?.name ?? permissions.title,
+                    title: permissions.title,
+                    risky: shownPermission?.risky,
+                    disabled: optionsLocked,
+                    side: "bottom",
+                    items: permissionChoices,
+                    selected: shownPermission?.id,
+                    onSelect: setPermission,
+                  }
+                : undefined
+            }
+            permissionFallback={
+              !(permissions && permissionChoices) && showsPermissionPicker ? (
+                <OptionPlaceholder
+                  label={agent === "claude-code" ? copy.permissions[agent].title : copy.permission}
+                  status={optionStatus}
+                  loading={session.optionsLoading}
+                  icon={<Shield className="size-3.5 shrink-0" aria-hidden />}
+                />
+              ) : undefined
+            }
+            plan={
+              planning
+                ? {
+                    disabled: locked,
+                    onRemove: () => changePlan(false),
+                  }
+                : undefined
+            }
+            goal={
+              goal
+                ? {
+                    detail: goal.objective,
+                    disabled: locked,
+                    onOpen: add.openGoal,
+                    onRemove: add.clearGoal,
+                  }
+                : undefined
+            }
+            model={
+              modelSettings
+                ? {
+                    scope: sessionModel.scope,
+                    settings: modelSettings,
+                    selection: {
+                      modelId,
+                      effort: shownEffort,
+                      serviceTierId: shownTier || undefined,
+                    },
+                    disabled: optionsLocked,
+                    saving: false,
+                    side: "bottom",
+                    clearEffort: sessionModel.canClearEffort,
+                    onOpen: () => undefined,
+                    onChange: sessionModel.change,
+                  }
+                : undefined
+            }
+            modelFallback={
+              !modelSettings && showsModelPicker ? (
+                <OptionPlaceholder
+                  label={copy.model}
+                  status={optionStatus}
+                  loading={session.optionsLoading}
+                />
+              ) : undefined
+            }
+            action={
+              <ComposerPrimaryAction label={sendLabel} disabled={!canSend} loading={locked} />
+            }
+          />
+        }
+      />
+      {add.goalEditor && (
+        <Dialog open onOpenChange={(open) => !open && add.closeGoal()}>
+          <DialogContent closeLabel={goalCopy.close}>
+            <DialogTitle>{goalCopy.title}</DialogTitle>
+            <ComposerGoalFields
+              locale={locale}
+              objective={add.goalEditor.objective}
+              budget={add.goalEditor.budget}
+              hideBudget={hideGoalBudget}
+              disabled={locked || !goalsAllowed}
+              onObjectiveChange={(objective) => add.editGoal({ objective })}
+              onBudgetChange={(budget) => add.editGoal({ budget })}
+            />
             <Button
-              type="submit"
-              className="h-8 shrink-0 gap-1 rounded-full px-3"
-              aria-label={copy.send}
-              title={copy.send}
-              disabled={!canSend}
+              type="button"
+              disabled={locked || !goalsAllowed || !add.goalValid}
+              onClick={add.saveGoal}
             >
-              {locked ? (
-                <LoaderCircle className="size-4 animate-spin" aria-hidden />
-              ) : (
-                <ArrowUp className="size-4" aria-hidden />
-              )}
-              <span className="@max-[28rem]:sr-only">{copy.send}</span>
+              {goalCopy.saveDraft}
             </Button>
-          </div>
-        </div>
-      </form>
+          </DialogContent>
+        </Dialog>
+      )}
     </section>
+  );
+}
+
+function OptionPlaceholder({
+  label,
+  status,
+  loading,
+  icon,
+}: {
+  label: string;
+  status: string;
+  loading: boolean;
+  icon?: ReactNode;
+}) {
+  return (
+    <Button
+      type="button"
+      variant="ghost"
+      className={chip}
+      disabled
+      aria-busy={loading || undefined}
+      aria-label={`${label}: ${status}`}
+      title={status}
+    >
+      {icon}
+      <span className="truncate">{label}</span>
+      {loading ? (
+        <LoaderCircle className="size-3.5 shrink-0 motion-safe:animate-spin" aria-hidden />
+      ) : (
+        <ChevronDown className="size-3.5 shrink-0" aria-hidden />
+      )}
+    </Button>
   );
 }
 
@@ -472,130 +700,6 @@ function Notice({
       {icon && <span className="mt-0.5 shrink-0">{icon}</span>}
       <div className="min-w-0 flex-1">{children}</div>
     </div>
-  );
-}
-
-function PermissionMenu({
-  label,
-  title,
-  risky,
-  disabled,
-  items,
-  selected,
-  onSelect,
-}: {
-  label: string;
-  title: string;
-  risky: boolean;
-  disabled: boolean;
-  items: NewSessionPermissionChoice[];
-  selected?: string;
-  onSelect: (id: string) => void;
-}) {
-  return (
-    <DropdownMenu>
-      <DropdownMenuTrigger
-        render={
-          <Button
-            type="button"
-            variant="ghost"
-            className={cn(chip, risky && "text-orange-600 hover:text-orange-700")}
-            disabled={disabled}
-          />
-        }
-        aria-label={`${title}: ${label}`}
-      >
-        <Shield className="size-3.5 shrink-0" aria-hidden />
-        <span className="truncate @max-[28rem]:sr-only">{label}</span>
-        <ChevronDown className="size-3.5 shrink-0" aria-hidden />
-      </DropdownMenuTrigger>
-      <DropdownMenuContent className="w-72">
-        <DropdownMenuGroup>
-          <DropdownMenuLabel>{title}</DropdownMenuLabel>
-          {items.map((item) => (
-            <DropdownMenuItem
-              key={item.id}
-              className={cn("items-start", item.risky && "text-orange-600")}
-              onClick={() => onSelect(item.id)}
-            >
-              <span className="grid min-w-0 flex-1">
-                <span>{item.name}</span>
-                <span
-                  className={cn(
-                    "text-xs",
-                    item.risky ? "text-orange-600/80" : "text-muted-foreground",
-                  )}
-                >
-                  {item.description}
-                </span>
-              </span>
-              {item.id === selected && <Check className="mt-0.5 size-4" aria-hidden />}
-            </DropdownMenuItem>
-          ))}
-        </DropdownMenuGroup>
-      </DropdownMenuContent>
-    </DropdownMenu>
-  );
-}
-
-/** The model and its effort, as the session's own composer names them. */
-function ModelMenu({
-  locale,
-  models,
-  modelId,
-  effort,
-  disabled,
-  onModel,
-  onEffort,
-}: {
-  locale: Locale;
-  models: NonNullable<ManagedOptions["models"]>;
-  modelId?: string;
-  effort?: string;
-  disabled: boolean;
-  onModel: (id: string) => void;
-  onEffort: (effort: string) => void;
-}) {
-  const copy = codexCopyForSurface(locale, "web");
-  const current = models.find((item) => item.id === modelId);
-  const name = current?.name ?? modelId ?? "";
-  const efforts = current?.efforts ?? [];
-  const label = [name, effort ? composerTerm(locale, effort) : ""].filter(Boolean).join(" · ");
-  return (
-    <DropdownMenu>
-      <DropdownMenuTrigger
-        render={<Button type="button" variant="ghost" className={chip} disabled={disabled} />}
-        aria-label={`${copy.model}: ${label}`}
-      >
-        <span className="max-w-40 truncate @max-[28rem]:max-w-24">{label}</span>
-        <ChevronDown className="size-3.5 shrink-0" aria-hidden />
-      </DropdownMenuTrigger>
-      <DropdownMenuContent align="end" className="w-60">
-        <DropdownMenuGroup>
-          <DropdownMenuLabel>{copy.model}</DropdownMenuLabel>
-          {models.map((item) => (
-            <DropdownMenuItem key={item.id} onClick={() => onModel(item.id)}>
-              <span className="min-w-0 flex-1 truncate">{item.name ?? item.id}</span>
-              {item.id === current?.id && <Check className="size-4" aria-hidden />}
-            </DropdownMenuItem>
-          ))}
-        </DropdownMenuGroup>
-        {efforts.length > 0 && (
-          <>
-            <DropdownMenuSeparator />
-            <DropdownMenuGroup>
-              <DropdownMenuLabel>{copy.effort}</DropdownMenuLabel>
-              {efforts.map((item) => (
-                <DropdownMenuItem key={item} onClick={() => onEffort(item)}>
-                  <span className="min-w-0 flex-1">{composerTerm(locale, item)}</span>
-                  {item === effort && <Check className="size-4" aria-hidden />}
-                </DropdownMenuItem>
-              ))}
-            </DropdownMenuGroup>
-          </>
-        )}
-      </DropdownMenuContent>
-    </DropdownMenu>
   );
 }
 

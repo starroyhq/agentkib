@@ -39,11 +39,14 @@ import {
   claimManagedCommand,
   dispatchManagedCommand,
   finishManagedCommand,
+  observeManagedCommandCompletion,
   readUnknownManagedCommands,
   replayManagedCommand,
 } from "./managed-ledger";
 import { dshSessionDocument, type DshDocumentImage } from "./dsh-document";
 import type { DshManagedRuntime } from "./dsh-managed-runtime";
+import type { DshLocalTurnCheckpoint } from "./dsh-local-history";
+import type { DshWriterStatus } from "./dsh-writer";
 import type { UsageLimitView } from "./usage-limit";
 import { sanitizeSessionText } from "./session-handoff";
 import type { DocumentSource } from "./session-document-providers";
@@ -52,6 +55,7 @@ import { decodedSessionImage, sessionImageResult } from "./session-images";
 import type { DocumentOptions, SessionDocument } from "./session-model";
 import type { NativeSession } from "./session-store";
 import { dshTurnOrigin, type LeadTurnOrigin } from "./lead-turn-origin";
+import { projectContextUsage, type ContextUsage } from "./context-usage";
 
 const MAX_BODY = 8 * 1024 * 1024;
 const OFFLINE_MS = 45_000;
@@ -81,7 +85,12 @@ const MANAGED_START_TIMEOUT_MS = 30_000;
  */
 const MANAGED_SETTLE_MS = 10_000;
 /** Controls that can start DSH: the ones a session offers while no DSH runs. */
-const STARTING_CONTROLS = new Set(["send", "rename", "fork"]);
+const NATIVE_STATUS_UNKNOWN = "dsh-native-status-unknown";
+export const DSH_NATIVE_TURN_OBSERVED = "dsh-native-turn-observed";
+// A foreground tool can wait several minutes without an event. Age out the observation
+// when a held writer and an old open boundary are the only evidence left.
+const LOCAL_TURN_FRESH_MS = 30 * 60_000;
+const LOCAL_TURN_RETRY_GRACE_MS = 10_000;
 const CATALOG_LIMIT = 4096;
 const CURSOR_PREFIX = "dsh-v1:";
 export const DSH_EXECUTION_MODE = "dsh-follower";
@@ -97,6 +106,16 @@ function namedUuid(value: string): string {
 
 const uuid = z.string().uuid();
 const nativeIdSchema = z.string().min(1).max(256);
+const contextPressureSchema = z.object({
+  usedTokens: z.number().int().nonnegative(),
+  contextWindow: z.number().int().positive().optional(),
+});
+const contextReadingSchema = contextPressureSchema.extend({
+  nativeId: nativeIdSchema,
+  cwd: z.string().min(1).max(4096),
+  updatedAt: z.iso.datetime(),
+});
+type ContextReading = z.infer<typeof contextReadingSchema>;
 const catalogRowSchema = z
   .object({
     id: nativeIdSchema,
@@ -379,10 +398,13 @@ const servicesSchema = z
   .object({
     sessionController: z.boolean(),
     sessionQuery: z.boolean(),
+    turnScopedCancel: z.boolean().optional(),
+    contextUsage: z.boolean().optional(),
     approvals: z.boolean(),
     questions: z.boolean(),
     workspaceController: z.boolean().optional(),
     modelCatalog: z.boolean().optional(),
+    sessionModelSelection: z.boolean().optional(),
     createModelSelection: z.boolean().optional(),
     images: z.boolean().optional(),
     goals: z.boolean().optional(),
@@ -653,6 +675,20 @@ export interface DshBridgeOptions {
   workspaceFor(cwd: string): { id: string; path: string } | null;
   /** The root of a registered workspace, where a new DSH session starts; null if unknown. */
   workspacePath?(workspaceId: string): string | null;
+  /** Checks the existing native session's writer before offering or attempting a resume. */
+  writerStatus?(nativeId: string, cwd: string): DshWriterStatus;
+  /** Reads persisted history without starting a runtime. */
+  localHistory?(
+    nativeId: string,
+    cwd: string,
+    before: number | undefined,
+    limit: number,
+  ): Promise<DshBridgeHistoryPage | null>;
+  localTurn?(
+    nativeId: string,
+    cwd: string,
+    previous?: DshLocalTurnCheckpoint,
+  ): Promise<DshLocalTurnCheckpoint | null>;
   /** DSH sessions or the runtimes serving them changed in these workspaces; refresh listings. */
   sessionsChanged(workspaceIds: string[]): void;
   publish(
@@ -754,6 +790,11 @@ const within = (child: string, parent: string) =>
   child === parent || child.startsWith(parent.endsWith(path.sep) ? parent : `${parent}${path.sep}`);
 const turnIdOf = (turn: number | null | undefined) =>
   typeof turn === "number" ? `dsh-turn-${turn}` : null;
+const nativeTurn = (turnId: unknown) => {
+  if (typeof turnId !== "string" || !/^dsh-turn-[1-9]\d*$/.test(turnId)) return null;
+  const number = Number(turnId.slice("dsh-turn-".length));
+  return Number.isSafeInteger(number) ? number : null;
+};
 /**
  * Why a DSH turn ended, in the words reports use for Codex turns: a cancelled turn is DSH's
  * `aborted`, a failed one its `error`; `blocked`, `max-tokens` and `interrupted` (closed after
@@ -824,6 +865,7 @@ export function dshConversationEvents(
 ): ConversationEvent[] {
   const events: ConversationEvent[] = [];
   const calls = new Map<string, { name: string; index: number }>();
+  const aborted = new Map<string, { index: number; record: DshBridgeHistoryRecord }>();
   let turn: number | null = null;
   const base = (record: DshBridgeHistoryRecord) => ({
     timestamp: iso(record.time),
@@ -838,9 +880,13 @@ export function dshConversationEvents(
       case "turn-start":
         turn = record.turn;
         break;
-      case "turn-end":
-        turn = null;
+      case "turn-end": {
+        if (turn === record.turn) turn = null;
+        const turnId = turnIdOf(record.turn);
+        if (turnId && record.reason === "aborted")
+          aborted.set(turnId, { index: events.length, record });
         break;
+      }
       case "user": {
         // Each image is read on demand through the session (`DshBridge.image`), as other
         // agents' history images are; the ID names DSH's stored copy.
@@ -925,6 +971,20 @@ export function dshConversationEvents(
         break;
     }
   }
+  for (let index = events.length - 1; index >= 0 && aborted.size; index--) {
+    const event = events[index]!;
+    if (event.turn_id && aborted.delete(event.turn_id))
+      event.turn_meta = { ...event.turn_meta, outcome: "aborted" };
+  }
+  for (const [turnId, { index, record }] of [...aborted].reverse())
+    events.splice(index, 0, {
+      ...base(record),
+      id: `turn-end:${turnId}`,
+      kind: "agent-message",
+      turn_id: turnId,
+      content: null,
+      turn_meta: { outcome: "aborted" },
+    });
   return events;
 }
 
@@ -936,6 +996,11 @@ export class DshBridge {
   readonly root: string;
   #runtimes = new Map<string, Runtime>();
   #catalog = new Map<string, CatalogRow>();
+  #localTurns = new Map<
+    string,
+    { cwd: string; snapshot: DshLocalTurnCheckpoint; running: boolean; checkedAt: number }
+  >();
+  #localTurnRefresh?: Promise<void>;
   /** Canonical working directories, resolved once per row instead of on every listing. */
   #cwds = new Map<string, string>();
   #ids = new Map<string, string>();
@@ -964,6 +1029,11 @@ export class DshBridge {
   #quotaLimits = new Map<string, UsageLimitView>();
   /** Sessions whose latest turn end is being read, so one read serves a burst of reports. */
   #quotaReads = new Set<string>();
+  #contextReadings = new Map<string, ContextReading>();
+  #contextObserved = new Set<string>();
+  #contextCurrent = new Map<string, Runtime>();
+  #contextQueries = new Map<string, Runtime>();
+  #contextSaveTimer?: ReturnType<typeof setTimeout>;
   /** Native sessions with commands of unknown outcome, asked about again while DSH runs. */
   #unknownSessions = new Set<string>();
   /** When this run first saw each unconfirmed request. */
@@ -1022,10 +1092,12 @@ export class DshBridge {
       this.#cwds.clear();
       this.#ids.clear();
     }
+    this.#loadContextReadings();
     this.#timer = setInterval(() => {
       for (const runtime of [...this.#runtimes.values()])
         if (Date.now() - runtime.lastSeen > OFFLINE_MS) this.#drop(runtime);
       for (const nativeId of this.#unknownSessions) this.#autoReconcile(nativeId);
+      void this.refreshLocalTurns().catch(() => undefined);
     }, 5_000);
     this.#timer.unref();
     if (options.managed) {
@@ -1041,7 +1113,10 @@ export class DshBridge {
     return (this.options.platform ?? process.platform) === "darwin";
   }
   initialize(): void {
-    if (this.supported) void this.#listen().catch(() => (this.#startupFailed = true));
+    if (this.supported) {
+      void this.#listen().catch(() => (this.#startupFailed = true));
+      void this.refreshLocalTurns().catch(() => undefined);
+    }
   }
 
   // ---- catalog ----------------------------------------------------------------------------
@@ -1050,6 +1125,120 @@ export class DshBridge {
     if (this.#catalog.get(row.id)?.cwd !== row.cwd) this.#cwds.set(row.id, canonical(row.cwd));
     this.#catalog.set(row.id, row);
     this.#ids.set(this.options.sessionId(row.id), row.id);
+  }
+  #loadContextReadings(): void {
+    const file = path.join(this.root, "context-usage-v1.json");
+    try {
+      privatePath(file);
+      const stat = lstatSync(file);
+      if (
+        !stat.isFile() ||
+        stat.size > MAX_BODY ||
+        (process.getuid && stat.uid !== process.getuid())
+      )
+        return;
+      const readings = z
+        .array(contextReadingSchema)
+        .max(CATALOG_LIMIT)
+        .parse(JSON.parse(readFileSync(file, "utf8")));
+      for (const reading of readings)
+        if (this.#catalog.get(reading.nativeId)?.cwd === reading.cwd)
+          this.#contextReadings.set(reading.nativeId, reading);
+    } catch {
+      // The native projection can recreate a missing or damaged cache.
+    }
+  }
+  #saveContextReadings(): void {
+    clearTimeout(this.#contextSaveTimer);
+    this.#contextSaveTimer = undefined;
+    try {
+      privateJson(path.join(this.root, "context-usage-v1.json"), [
+        ...this.#contextReadings.values(),
+      ]);
+    } catch {
+      // Live readings remain available if saving the offline cache fails.
+    }
+  }
+  #contextUsage(nativeId: string, runtime?: Runtime | null): ContextUsage {
+    const reading = this.#contextReadings.get(nativeId);
+    if (reading && reading.cwd === this.#catalog.get(nativeId)?.cwd) {
+      const current =
+        runtime?.services.contextUsage === true && this.#contextCurrent.get(nativeId) === runtime;
+      return projectContextUsage({
+        available: true,
+        state: current ? (reading.contextWindow === undefined ? "pending" : "ready") : "stale",
+        historical: !current,
+        usedTokens: reading.usedTokens,
+        contextWindow: reading.contextWindow,
+        updatedAt: reading.updatedAt,
+      })!;
+    }
+    return runtime?.services.contextUsage === true
+      ? { available: true, state: "pending", reason: "usage-not-reported" }
+      : { available: false, state: "unavailable", reason: "usage-unavailable" };
+  }
+  #readContextUsage(nativeId: string, refresh = false): void {
+    const row = this.#catalog.get(nativeId);
+    if (!row || !this.options.workspaceFor(row.cwd)) return;
+    this.#contextObserved.add(nativeId);
+    const { runtime, state } = this.#state(nativeId);
+    // DSH's pressure and capacity update independently during a request. Read at rest so we
+    // never replace a complete cached reading halfway through switching to a different model.
+    if (
+      this.#closed ||
+      runtime?.services.contextUsage !== true ||
+      state?.status === "running" ||
+      state?.activity === "compacting" ||
+      this.#contextQueries.get(nativeId) === runtime ||
+      (!refresh && this.#contextCurrent.get(nativeId) === runtime)
+    )
+      return;
+    this.#contextQueries.set(nativeId, runtime);
+    void this.#command(runtime, {
+      commandId: randomUUID(),
+      type: "context-usage",
+      sessionId: nativeId,
+    })
+      .then((reply) => {
+        const latest = this.#state(nativeId);
+        if (
+          !reply.ok ||
+          this.#closed ||
+          latest.runtime !== runtime ||
+          latest.state?.status === "running" ||
+          latest.state?.activity === "compacting" ||
+          this.#catalog.get(nativeId)?.cwd !== row.cwd
+        )
+          return;
+        const pressure = contextPressureSchema.safeParse(reply.value);
+        if (!pressure.success) return;
+        const previous = this.#contextReadings.get(nativeId);
+        // Keep the last complete pair when DSH has not reported the new model's capacity.
+        if (
+          pressure.data.contextWindow === undefined &&
+          previous?.cwd === row.cwd &&
+          previous.contextWindow !== undefined
+        ) {
+          if (this.#contextCurrent.delete(nativeId)) this.#publish(nativeId);
+          return;
+        }
+        this.#contextCurrent.set(nativeId, runtime);
+        this.#contextReadings.delete(nativeId);
+        this.#contextReadings.set(nativeId, {
+          ...pressure.data,
+          nativeId,
+          cwd: row.cwd,
+          updatedAt: new Date().toISOString(),
+        });
+        if (this.#contextReadings.size > CATALOG_LIMIT)
+          this.#contextReadings.delete(this.#contextReadings.keys().next().value!);
+        this.#contextSaveTimer ??= setTimeout(() => this.#saveContextReadings(), 500);
+        this.#contextSaveTimer.unref();
+        this.#publish(nativeId);
+      })
+      .finally(() => {
+        if (this.#contextQueries.get(nativeId) === runtime) this.#contextQueries.delete(nativeId);
+      });
   }
   #saveCatalog(): void {
     if (this.#saveTimer) return;
@@ -1275,39 +1464,47 @@ export class DshBridge {
     const before = cursor === null ? undefined : Number(cursor.slice(CURSOR_PREFIX.length));
     if (before !== undefined && !Number.isSafeInteger(before))
       throw new Error("TRANSCRIPT_CURSOR_STALE");
-    let runtime =
-      this.#controlRuntime(nativeId) ??
-      this.#online().find((candidate) => candidate.services.sessionQuery);
-    // Someone opened the session while no DSH runs: start one in the background to read it.
-    // Failing that, the session shows what this run already read, and its state says why.
-    if (!runtime && this.#startable()) runtime = await this.#ensureManaged().catch(() => undefined);
+    const preferred = this.#controlRuntime(nativeId);
+    const runtime = preferred?.services.sessionQuery
+      ? preferred
+      : this.#online().find((candidate) => candidate.services.sessionQuery);
+    const size = Math.min(Math.max(limit, 1), 100);
     const key = `${nativeId}\n${cursor ?? ""}`;
-    if (!runtime) {
-      // No DSH to ask: show what this run already read. A session not read yet shows no history
-      // and its live state says DSH is not running; an older page never read cannot be shown.
-      const cached = this.#pages.get(key);
-      if (!cached && cursor !== null) throw new Error("dsh-runtime-offline");
-      this.#servedOffline.add(nativeId);
-      return cached?.page ?? { events: [], next_cursor: null, warnings: [] };
-    }
-    const result = await this.#command(
-      runtime,
-      {
-        commandId: randomUUID(),
-        type: "history",
-        sessionId: nativeId,
-        ...(before !== undefined ? { before } : {}),
-        limit: Math.min(Math.max(limit, 1), 100),
-      },
-      HISTORY_TIMEOUT_MS,
-    );
-    if (!result.ok)
-      throw new Error(
-        result.error === "timeout" ? "dsh-history-timeout" : "dsh-history-unavailable",
+    let page: DshBridgeHistoryPage | null = null;
+    let failure: string | undefined;
+    if (runtime) {
+      const result = await this.#command(
+        runtime,
+        {
+          commandId: randomUUID(),
+          type: "history",
+          sessionId: nativeId,
+          ...(before !== undefined ? { before } : {}),
+          limit: size,
+        },
+        HISTORY_TIMEOUT_MS,
       );
-    const page = result.value as DshBridgeHistoryPage;
-    if (!page || !Array.isArray(page.records) || page.sessionId !== nativeId)
-      throw new Error("dsh-history-unavailable");
+      const report = result.ok ? (result.value as DshBridgeHistoryPage | null) : null;
+      if (report?.sessionId === nativeId && Array.isArray(report.records)) {
+        page = report;
+        if (runtime === preferred)
+          for (const record of page.records)
+            if (record.kind === "turn-end" && record.reason === "aborted")
+              this.#observeStoppedTurn(nativeId, record.turn);
+      } else
+        failure = result.outcome === "timeout" ? "dsh-history-timeout" : "dsh-history-unavailable";
+    }
+    if (!page) {
+      this.#servedOffline.add(nativeId);
+      const cached = this.#pages.get(key);
+      if (cached) return cached.page;
+      const row = this.#catalog.get(nativeId);
+      if (row) page = (await this.options.localHistory?.(nativeId, row.cwd, before, size)) ?? null;
+      if (!page) {
+        if (failure || cursor !== null) throw new Error(failure ?? "dsh-runtime-offline");
+        return { events: [], next_cursor: null, warnings: [] };
+      }
+    }
     const history: ConversationEventPage = {
       events: dshConversationEvents(page.records),
       next_cursor:
@@ -1315,6 +1512,7 @@ export class DshBridge {
       warnings: [],
     };
     this.#cachePage(key, history);
+    if (cursor === null) this.#readContextUsage(nativeId);
     return history;
   }
   /**
@@ -1432,8 +1630,6 @@ export class DshBridge {
   documentStatus(nativeId: string): { status: "supported" | "unavailable"; reason?: string } {
     if (this.#readers(nativeId).length) return { status: "supported" };
     const listing = this.#online().filter((runtime) => runtime.summaries.has(nativeId));
-    // A handoff starts DSH in the background to read the session.
-    if (!listing.length && this.#startable()) return { status: "supported" };
     return {
       status: "unavailable",
       reason: listing.length ? "dsh-document-unavailable" : this.#offlineReason(false),
@@ -1442,14 +1638,10 @@ export class DshBridge {
   /**
    * A session's whole conversation for a handoff or search, from a DSH that can read it. Later
    * pages stop at the event the first one was read up to, so the pages agree with one another.
-   * `start` lets a handoff start DSH in the background; search indexing never starts it.
    */
   async conversation(
     nativeId: string,
-    start = false,
   ): Promise<{ revision: number | null; records: DshBridgeDocumentRecord[] }> {
-    if (start && !this.#readers(nativeId).length && this.#startable())
-      await this.#ensureManaged().catch(() => undefined);
     const preferred = this.#controlRuntime(nativeId);
     const runtime = preferred?.services.documents === true ? preferred : this.#readers(nativeId)[0];
     if (!runtime) throw new Error(this.documentStatus(nativeId).reason ?? "dsh-runtime-offline");
@@ -1493,7 +1685,7 @@ export class DshBridge {
     source: DocumentSource,
     options?: DocumentOptions,
   ): Promise<SessionDocument> {
-    const { records } = await this.conversation(nativeId, true);
+    const { records } = await this.conversation(nativeId);
     const images = new Map<string, DshDocumentImage | null>();
     let chars = 0;
     for (const record of records) {
@@ -1542,7 +1734,7 @@ export class DshBridge {
       .filter(
         (runtime) => runtime.states.get(nativeId)?.live || runtime.summaries.get(nativeId)?.live,
       )
-      .sort((a, b) => b.lastSeen - a.lastSeen)[0];
+      .sort((a, b) => Number(a.managed) - Number(b.managed) || b.lastSeen - a.lastSeen)[0];
     if (running) return running;
     // A DSH the user runs comes first; the one AgentKib started serves only without one.
     const resumable = online.filter((runtime) => runtime.services.sessionController);
@@ -1554,17 +1746,90 @@ export class DshBridge {
     runtime: Runtime | null;
     state: DshBridgeSessionState | null;
     ambiguous: boolean;
+    writerBlocked: boolean;
+    writerStatus: DshWriterStatus;
   } {
-    const runtime = this.#controlRuntime(nativeId);
+    const candidate = this.#controlRuntime(nativeId);
+    const state = candidate?.states.get(nativeId) ?? null;
+    const row = this.#catalog.get(nativeId);
+    // Only a bridge observing the in-process agent can report the writer's live state.
+    // A bridge that can read the same history may belong to an unrelated DSH process.
+    const writerStatus =
+      state?.live !== true && row
+        ? (this.options.writerStatus?.(nativeId, row.cwd) ?? "free")
+        : "free";
+    const writerBlocked = writerStatus !== "free";
+    const runtime = writerBlocked ? null : candidate;
     const ambiguous =
-      !runtime &&
+      !candidate &&
       this.#online().filter(
         (candidate) => candidate.services.sessionController && !candidate.managed,
       ).length > 1;
-    return { runtime, state: runtime?.states.get(nativeId) ?? null, ambiguous };
+    return { runtime, state: writerBlocked ? null : state, ambiguous, writerBlocked, writerStatus };
   }
-  #interactions(nativeId: string): DshBridgeInteraction[] {
-    const runtime = this.#controlRuntime(nativeId);
+
+  /** Follow only already-owned native sessions; no bridge commands or runtime starts. */
+  refreshLocalTurns(): Promise<void> {
+    if (this.#localTurnRefresh) return this.#localTurnRefresh;
+    if (this.#closed || !this.supported || !this.options.localTurn || !this.options.writerStatus)
+      return Promise.resolve();
+    this.#localTurnRefresh = this.#scanLocalTurns().finally(() => {
+      this.#localTurnRefresh = undefined;
+    });
+    return this.#localTurnRefresh;
+  }
+
+  async #scanLocalTurns(): Promise<void> {
+    const rows = [...this.#catalog.values()].filter(
+      (row) => !row.archived && row.origin !== "subagent",
+    );
+    let next = 0;
+    const scan = async () => {
+      while (!this.#closed && next < rows.length) {
+        const row = rows[next++]!;
+        await this.#readLocalTurn(row);
+      }
+    };
+    // Bounded parallelism while an initial scan reads several long histories.
+    await Promise.all([scan(), scan()]);
+  }
+
+  async #readLocalTurn(row: CatalogRow): Promise<void> {
+    const previous = this.#localTurns.get(row.id);
+    const eligible = () =>
+      this.#state(row.id).writerStatus === "held" && this.options.workspaceFor(row.cwd) !== null;
+    const held = eligible();
+    const snapshot = held
+      ? await this.options.localTurn!(
+          row.id,
+          row.cwd,
+          previous?.cwd === row.cwd ? previous.snapshot : undefined,
+        ).catch(() => null)
+      : null;
+    if (this.#closed || this.#catalog.get(row.id)?.cwd !== row.cwd) return;
+    if (!held || !eligible()) {
+      if (this.#localTurns.delete(row.id) && previous?.running) this.#publish(row.id);
+      return;
+    }
+    const now = Date.now();
+    if (!snapshot) {
+      // The latest frame may be writing. Keep the validated offset for retry without
+      // keeping a running mark indefinitely when the source cannot be read.
+      if (previous?.running && now - previous.checkedAt >= LOCAL_TURN_RETRY_GRACE_MS) {
+        this.#localTurns.set(row.id, { ...previous, running: false });
+        this.#publish(row.id);
+      }
+      return;
+    }
+    const fresh =
+      snapshot.lastEventAt !== null &&
+      snapshot.lastEventAt <= now &&
+      now - snapshot.lastEventAt <= LOCAL_TURN_FRESH_MS;
+    const running = !!snapshot.open && fresh;
+    this.#localTurns.set(row.id, { cwd: row.cwd, snapshot, running, checkedAt: now });
+    if (!!previous?.running !== running) this.#publish(row.id);
+  }
+  #interactions(nativeId: string, runtime = this.#state(nativeId).runtime): DshBridgeInteraction[] {
     return runtime
       ? [...runtime.interactions.values()].filter((item) => item.sessionId === nativeId)
       : [];
@@ -1640,6 +1905,7 @@ export class DshBridge {
     runtime.commands.clear();
     const affected = new Set([...runtime.summaries.keys(), ...runtime.states.keys()]);
     for (const id of affected) {
+      if (this.#contextCurrent.get(id) === runtime) this.#contextCurrent.delete(id);
       this.#touch(id);
       this.#publish(id);
     }
@@ -1657,8 +1923,16 @@ export class DshBridge {
     // it; otherwise a queue or steer sent while DSH streams would always look stale.
     const revised = new Set<string>();
     const historyChanged = new Set(report.historyChanged ?? []);
+    const refreshContext = new Set(historyChanged);
     let listChanged = false;
     if (report.services) {
+      if (report.services.contextUsage !== runtime.services.contextUsage)
+        for (const id of runtime.summaries.keys()) {
+          refreshContext.add(id);
+          changed.add(id);
+        }
+      if (report.services.sessionModelSelection !== runtime.services.sessionModelSelection)
+        for (const id of runtime.summaries.keys()) changed.add(id);
       // A plugin whose tool registry started after it registered: tell it the leads now.
       if (
         report.services.leadTools === true &&
@@ -1667,6 +1941,12 @@ export class DshBridge {
       ) {
         runtime.leadsChanged = true;
         runtime.waiting?.();
+      }
+      if (report.services.turnScopedCancel !== runtime.services.turnScopedCancel) {
+        for (const id of runtime.states.keys()) {
+          changed.add(id);
+          revised.add(id);
+        }
       }
       runtime.services = report.services;
     }
@@ -1711,6 +1991,7 @@ export class DshBridge {
       if (runtime.services.sessionQuery)
         for (const id of runtime.summaries.keys())
           if (this.#servedOffline.delete(id)) historyChanged.add(id);
+      for (const id of changed) if (!this.#contextCurrent.has(id)) refreshContext.add(id);
     }
     const queueChanged = new Set<string>();
     for (const state of report.states ?? []) {
@@ -1721,10 +2002,13 @@ export class DshBridge {
       if (stable(controlView(previous)) !== stable(controlView(state)))
         revised.add(state.sessionId);
       runtime.states.set(state.sessionId, state);
+      if (state.live) this.#localTurns.delete(state.sessionId);
       changed.add(state.sessionId);
       // A turn started or ended: whether it ended on the quota is read from the history.
       if (state.status === "running") this.#quotaLimits.delete(state.sessionId);
       else if (state.live && previous?.status === "running") this.#readQuota(state.sessionId);
+      if (previous?.status === "running" || previous?.activity === "compacting")
+        refreshContext.add(state.sessionId);
     }
     if (report.interactions) {
       const next = new Map(
@@ -1757,6 +2041,8 @@ export class DshBridge {
         ...(settingsChanged.has(id) ? ["settings"] : []),
       ]);
     }
+    for (const id of refreshContext)
+      if (this.#contextObserved.has(id)) this.#readContextUsage(id, true);
     // Every report, heartbeats included, is a chance to settle what is still unconfirmed.
     for (const nativeId of this.#unknownSessions) this.#autoReconcile(nativeId);
     if (listChanged)
@@ -1809,12 +2095,10 @@ export class DshBridge {
     if (!nativeId) throw new Error("session-unavailable");
     const row = this.#catalog.get(nativeId)!;
     const workspace = this.options.workspaceFor(row.cwd);
-    const { runtime, state, ambiguous } = this.#state(nativeId);
+    const { runtime, state, ambiguous, writerBlocked, writerStatus } = this.#state(nativeId);
     const online = !!runtime;
-    // No running DSH can take the session, but AgentKib can start one: the session reads as
-    // idle, and sending starts DSH in the background.
-    const startable = !online && !ambiguous && this.#startable();
-    const interactions = this.#interactions(nativeId);
+    const startable = !online && !writerBlocked && !ambiguous && this.#startable();
+    const interactions = this.#interactions(nativeId, runtime);
     const inflight = this.#inflight.get(id);
     // A request still waiting for its reply makes the session busy, not unconfirmed. Also
     // covers requests left unconfirmed by an earlier run of AgentKib.
@@ -1824,6 +2108,13 @@ export class DshBridge {
     if (unknown) this.#unknownSessions.add(nativeId);
     const controller = runtime?.services.sessionController === true;
     const running = state?.live === true && state.status === "running";
+    const localTurn = this.#localTurns.get(nativeId);
+    const observedRunning =
+      !!workspace &&
+      !row.archived &&
+      writerStatus === "held" &&
+      localTurn?.cwd === row.cwd &&
+      localTurn.running;
     // DSH would take a message during a compaction and hold it until the end; AgentKib waits for
     // the compaction to finish, as it does with the other agents.
     const compacting = state?.live === true && state.activity === "compacting";
@@ -1835,9 +2126,11 @@ export class DshBridge {
       : unknown
         ? "control-outcome-unconfirmed"
         : !online
-          ? startable
-            ? undefined
-            : this.#offlineReason(ambiguous)
+          ? observedRunning
+            ? DSH_NATIVE_TURN_OBSERVED
+            : writerBlocked || startable
+              ? NATIVE_STATUS_UNKNOWN
+              : this.#offlineReason(ambiguous)
           : !controller
             ? "dsh-session-controller-unavailable"
             : approval
@@ -1853,8 +2146,8 @@ export class DshBridge {
     const status = unknown
       ? "outcome-unknown"
       : !online
-        ? startable
-          ? "idle"
+        ? observedRunning
+          ? "running"
           : "unsupported"
         : approval
           ? "awaiting-approval"
@@ -1871,7 +2164,13 @@ export class DshBridge {
       runtimeBootId: this.options.bootId,
       executionMode: DSH_EXECUTION_MODE,
       // A DSH that AgentKib started runs in AgentKib's place: it stops when AgentKib quits.
-      executionLocation: runtime ? (runtime.managed ? "agentkib" : "external") : null,
+      executionLocation: runtime
+        ? runtime.managed
+          ? "agentkib"
+          : "external"
+        : observedRunning
+          ? "external"
+          : null,
       ownershipReason: null,
       connectionGeneration: runtime ? runtime.runtimeId : this.options.bootId,
       cliVersion: runtime ? `${runtime.dshVersion} (DeepSeek Harness)` : undefined,
@@ -1892,9 +2191,17 @@ export class DshBridge {
       queueEnabled: controllable && running && !compacting,
       // Not tied to a non-empty queue: clients refetch capabilities on status changes, not when
       // DSH's own client queues a message. Each edit checks that its item still waits.
-      queueEditEnabled: controllable,
+      queueEditEnabled: online && controllable,
       queuedCount: queue.length,
-      stopEnabled: controls && online && controller && !unknown && running && !!turnId,
+      stopEnabled:
+        controls &&
+        !!workspace &&
+        controller &&
+        runtime.services.turnScopedCancel === true &&
+        !inflight &&
+        !unknown &&
+        running &&
+        nativeTurn(turnId) !== null,
       approvals: approval
         ? interactions
             .filter((item) => item.kind === "approval")
@@ -1917,7 +2224,9 @@ export class DshBridge {
         ),
       streamText: running ? sanitizeSessionText(state?.streamText ?? "", { value: 0 }) : "",
       streamTextTruncated: running && state?.streamTruncated === true,
-      usage: { available: false, state: "unavailable", reason: "usage-unavailable" },
+      usage: workspace
+        ? this.#contextUsage(nativeId, runtime)
+        : { available: false, state: "unavailable" },
       usageLimit: running || !online ? null : (this.#quotaLimits.get(nativeId) ?? null),
     };
   }
@@ -1992,11 +2301,12 @@ export class DshBridge {
     const controllable = live.queueEditEnabled === true;
     const idle = controllable && live.status === "idle" && live.activity !== "compacting";
     const archived = this.#catalog.get(nativeId)?.archived === true;
+    const workspaceReadable = !!this.options.workspaceFor(this.#catalog.get(nativeId)!.cwd);
     const archivable = idle && services?.workspaceController === true;
     const commands = online && runtime ? this.#commandsFor(runtime, nativeId) : [];
-    // A permission preset applies to the next approval, also in a running turn, as in DSH.
     const presets =
       services?.permissions === true && commands.some((entry) => entry.name === "permission");
+    const modelSelection = services?.sessionModelSelection === true;
     const compactable = commands.some((entry) => entry.name === "compact");
     const goals = online && services?.goals === true;
     const flags: Record<string, boolean> = {
@@ -2006,19 +2316,18 @@ export class DshBridge {
       approve: (live.approvals as unknown[]).length > 0 && controls && online,
       answer: (live.questions as unknown[]).length > 0 && controls && online,
       inspect: true,
-      usage: false,
+      usage:
+        workspaceReadable &&
+        (services?.contextUsage === true || this.#contextReadings.has(nativeId)),
       context: false,
-      files: false,
+      files: workspaceReadable,
       reconcile: true,
-      adopt: false,
-      release: false,
-      resources: false,
+      resources: workspaceReadable,
       // Images go with any message DSH takes now: sent, queued or added to the running turn.
       attachments:
         services?.images === true &&
         (live.sendEnabled === true || live.queueEnabled === true || live.steerEnabled === true),
-      // A running turn keeps its model, so model changes wait for idle; a preset does not.
-      settings: (idle && services?.modelCatalog === true) || (controllable && presets),
+      settings: idle && (modelSelection || presets),
       "settings-state": online && (services?.modelCatalog === true || presets),
       queue: live.queueEnabled === true,
       "queue-list": online,
@@ -2073,7 +2382,7 @@ export class DshBridge {
                       controllable &&
                         !idle &&
                         live.activity !== "compacting" &&
-                        ((key === "settings" && services?.modelCatalog === true) ||
+                        ((key === "settings" && (modelSelection || presets)) ||
                           (key === "compact" && compactable) ||
                           (["archive", "unarchive"].includes(key) &&
                             services?.workspaceController === true))
@@ -2092,6 +2401,7 @@ export class DshBridge {
     const controls = value.experimentalEnabled === true;
     switch (value.operation) {
       case "live":
+        this.#readContextUsage(nativeId);
         return this.live(id, controls);
       case "capabilities":
         return this.capabilities(id, controls);
@@ -2103,8 +2413,25 @@ export class DshBridge {
           live: this.live(id, controls),
           reconciled: false,
         };
-      case "usage":
-        return { available: false, state: "unavailable", reason: "usage-unavailable" };
+      case "usage": {
+        if (!this.options.workspaceFor(this.#catalog.get(nativeId)!.cwd))
+          throw new Error("session-workspace-unavailable");
+        this.#readContextUsage(nativeId);
+        return this.#contextUsage(nativeId, this.#controlRuntime(nativeId));
+      }
+      case "resources":
+        if (!this.options.workspaceFor(this.#catalog.get(nativeId)!.cwd))
+          throw new Error("session-workspace-unavailable");
+        return {
+          available: true,
+          sessionId: id,
+          executionMode: DSH_EXECUTION_MODE,
+          revision: this.live(id, false).revision,
+          skills: [],
+          plugins: [],
+          apps: [],
+          contextReferences: { supportedTypes: [] },
+        };
       case "goal":
         return this.#goalState(id, nativeId);
       case "subagents":
@@ -2229,40 +2556,31 @@ export class DshBridge {
   leadCapable(id: string): boolean {
     const nativeId = this.#ids.get(id);
     if (!nativeId || !this.options.lead || this.#closed || !this.supported) return false;
-    const runtime = this.#controlRuntime(nativeId);
+    const { runtime, writerBlocked } = this.#state(nativeId);
     if (runtime)
       return runtime.services.sessionController === true && runtime.services.leadTools === true;
-    return this.#startable();
+    return !writerBlocked && this.#startable();
   }
   /**
    * Whether a new session can start now: exactly one running DSH that can take it. That DSH's
    * Agent presets come with it when it lists them; without them a session runs DSH's default.
-   * With `start` false a DSH that AgentKib could start is not started: the answer is then
-   * "available" without presets or models.
+   * If DSH can start on creation, the answer is "available" without presets or models.
    */
-  async createOptions(
-    includeModels = false,
-    { start = true }: { start?: boolean } = {},
-  ): Promise<{
+  async createOptions(includeModels = false): Promise<{
     available: boolean;
     reason?: string;
     agentPresets?: DshBridgeAgentPreset[];
+    nativeGoals?: true;
     models?: ReturnType<typeof modelChoices>;
     defaults?: { model: string | null; effort: string | null };
   }> {
     if (!this.supported) return { available: false, reason: "platform-unsupported" };
-    let runtime = this.#creator();
+    const runtime = this.#creator();
     if (runtime === "ambiguous") return { available: false, reason: "dsh-create-ambiguous" };
-    // Choosing DSH for a new session starts it in the background, the way the first Codex read
-    // starts an app-server; it stops again when nothing comes of it.
-    if (!runtime && this.#startable() && !start) return { available: true };
-    if (!runtime && this.#startable())
-      try {
-        runtime = await this.#ensureManaged();
-      } catch (error) {
-        return { available: false, reason: preflightReason(error) };
-      }
-    if (!runtime) return { available: false, reason: this.#offlineReason(false) };
+    if (!runtime)
+      return this.#startable()
+        ? { available: true }
+        : { available: false, reason: this.#offlineReason(false) };
     const [result, catalog] = await Promise.all([
       runtime.services.agentPresets === true
         ? this.#command(runtime, { commandId: randomUUID(), type: "presets" }, PRESETS_TIMEOUT_MS)
@@ -2280,6 +2598,7 @@ export class DshBridge {
     const defaultEffort = catalog?.default?.reasoningEffort;
     return {
       available: true,
+      ...(runtime.services.goals === true ? { nativeGoals: true } : {}),
       ...(roster?.success ? { agentPresets: roster.data.presets } : {}),
       ...(models.length
         ? {
@@ -2567,6 +2886,18 @@ export class DshBridge {
     const presets = this.#presets(runtime, nativeId);
     if (runtime.services.modelCatalog !== true && !presets)
       return unavailable("operation-unavailable");
+    // Native preset and Plan commands can change the current turn's next step.
+    const writable =
+      live.queueEditEnabled === true && live.status === "idle" && live.activity !== "compacting";
+    const blocked =
+      (live.reason as string | undefined) ??
+      (live.queueEditEnabled === true ? "session-busy" : "operation-unavailable");
+    const choice = (offered: boolean) =>
+      !offered
+        ? { available: false, reason: "operation-unavailable" }
+        : writable
+          ? { available: true }
+          : { available: false, reason: blocked };
     const [result, permissionResult] = await Promise.all([
       runtime.services.modelCatalog === true
         ? this.#command(runtime, { commandId: randomUUID(), type: "models", sessionId: nativeId })
@@ -2592,21 +2923,13 @@ export class DshBridge {
             id: option.value,
             ...presetPresentation(option),
           })),
-          policyWritable:
-            live.queueEditEnabled === true
-              ? { available: true }
-              : {
-                  available: false,
-                  reason: (live.reason as string | undefined) ?? "operation-unavailable",
-                },
+          policyWritable: choice(true),
           // DSH's `custom` (knobs matching no preset) is not a choice; leave the picker unset.
           policyId: policy.options.some((option) => option.value === policy.current)
             ? policy.current
             : null,
         }
       : null;
-    // Plan mode is DSH's collaboration mode, switched with its own `/plan` as in its window, also
-    // in a running turn; DSH applies it at the next step.
     const planOn = planSelected(policy?.plan);
     const planFields =
       planOn !== null && this.#commandsFor(runtime, nativeId).some((entry) => entry.name === "plan")
@@ -2616,13 +2939,7 @@ export class DshBridge {
               { id: "default", name: "Default" },
               { id: "plan", name: "Plan" },
             ],
-            writable:
-              live.queueEditEnabled === true
-                ? { available: true }
-                : {
-                    available: false,
-                    reason: (live.reason as string | undefined) ?? "operation-unavailable",
-                  },
+            writable: choice(true),
           }
         : null;
     const modeFields = planFields
@@ -2666,18 +2983,6 @@ export class DshBridge {
         ? { model: modelId(selection.provider, selection.model), effort: selection.reasoningEffort }
         : { model: null, effort: null };
     const current = values(catalog.selected ?? catalog.default);
-    const writable = live.queueEditEnabled === true && live.status === "idle";
-    // Why an offered choice cannot change now: a running turn keeps its model until it ends.
-    const blocked =
-      live.queueEditEnabled === true
-        ? "session-busy"
-        : ((live.reason as string | undefined) ?? "operation-unavailable");
-    const choice = (offered: boolean) =>
-      !offered
-        ? { available: false, reason: "operation-unavailable" }
-        : writable
-          ? { available: true }
-          : { available: false, reason: blocked };
     const selected = {
       ...current,
       ...(policyFields?.policyId ? { policyId: policyFields.policyId } : {}),
@@ -2695,8 +3000,11 @@ export class DshBridge {
       policies: policyFields?.policies ?? [],
       ...modeFields,
       writable: {
-        model: choice(catalog.models.length > 0),
-        effort: choice(catalog.models.some((model) => model.efforts.length > 0)),
+        model: choice(runtime.services.sessionModelSelection === true && catalog.models.length > 0),
+        effort: choice(
+          runtime.services.sessionModelSelection === true &&
+            catalog.models.some((model) => model.efforts.length > 0),
+        ),
         mode: modeWritable,
         policy: policyFields?.policyWritable ?? {
           available: false,
@@ -2886,6 +3194,18 @@ export class DshBridge {
       .catch(() => undefined)
       .finally(() => this.#reconciling.delete(nativeId));
   }
+  #observeStoppedTurn(nativeId: string, turn: number): void {
+    const id = this.options.sessionId(nativeId);
+    const turnId = turnIdOf(turn);
+    // An early history read must not resolve a receipt still being written by its dispatch.
+    if (!turnId || this.#ids.get(id) !== nativeId || this.#inflight.has(id)) return;
+    observeManagedCommandCompletion(
+      this.options.dataDir,
+      id,
+      { operation: "stop", nativeId, turnId, stopGuard: "turn-scoped" },
+      { ...this.#result(id, "", "accepted"), turnId },
+    );
+  }
   /**
    * Settle commands whose result never came back. A sent message carries its request ID into
    * DSH's record, so finding it means accepted; once DSH no longer works on it and enough time
@@ -2897,15 +3217,20 @@ export class DshBridge {
     const runtime = this.#controlRuntime(nativeId);
     const unknown = readUnknownManagedCommands(this.options.dataDir, id);
     const giveUp = this.options.reconcileGiveUpMs ?? RECONCILE_GIVE_UP_MS;
-    let reconciled = false;
-    const settle = (requestId: string, outcome: "accepted" | "not-dispatched", reason?: string) => {
+    const updates = new Set<"history" | "settings">();
+    const settle = (
+      operation: string,
+      requestId: string,
+      outcome: "accepted" | "not-dispatched",
+      reason?: string,
+    ) => {
       finishManagedCommand(
         this.options.dataDir,
         requestId,
         this.#result(id, requestId, outcome, reason),
       );
       this.#unknownSince.delete(requestId);
-      reconciled = true;
+      updates.add(operation === "settings" ? "settings" : "history");
     };
     for (const command of unknown) {
       // A command still waiting for its result is not unconfirmed yet.
@@ -2919,7 +3244,7 @@ export class DshBridge {
           const catalog = await this.#readModelCatalog(runtime, nativeId, true);
           if (catalog) verified = matchesSelection(catalog.selected, expected.data);
         }
-        if (this.#settleCreate(id, command.requestId, verified)) reconciled = true;
+        if (this.#settleCreate(id, command.requestId, verified)) updates.add("history");
         continue;
       }
       const since = this.#unknownSince.get(command.requestId) ?? Date.now();
@@ -2937,9 +3262,62 @@ export class DshBridge {
         const found = result.ok
           ? (result.value as { present?: boolean; inFlight?: boolean } | null)
           : null;
-        if (found?.present === true) settle(command.requestId, "accepted");
+        if (found?.present === true) settle(operation, command.requestId, "accepted");
         else if (found?.present === false && found.inFlight !== true && overdue)
-          settle(command.requestId, "not-dispatched", "dsh-message-not-recorded");
+          settle(operation, command.requestId, "not-dispatched", "dsh-message-not-recorded");
+        continue;
+      }
+      if (operation === "stop") {
+        const turn = nativeTurn(evidence.turnId);
+        if (turn === null || evidence.nativeId !== nativeId) continue;
+        let reason: string | null = null;
+        if (runtime.services.turnScopedCancel === true) {
+          const result = await this.#command(
+            runtime,
+            {
+              commandId: randomUUID(),
+              type: "verify-turn-end",
+              sessionId: nativeId,
+              turn,
+            },
+            HISTORY_TIMEOUT_MS,
+          );
+          const terminal = result.ok
+            ? (result.value as { sessionId?: unknown; turn?: unknown; reason?: unknown } | null)
+            : null;
+          if (
+            terminal?.sessionId === nativeId &&
+            terminal.turn === turn &&
+            typeof terminal.reason === "string"
+          )
+            reason = terminal.reason;
+        } else if (runtime.services.sessionQuery) {
+          const records = await this.#latestHistory(id);
+          const terminal = records
+            ?.reverse()
+            .find((record) => record.kind === "turn-end" && record.turn === turn);
+          if (terminal?.kind === "turn-end") reason = terminal.reason;
+        }
+        if (
+          !reason ||
+          this.#controlRuntime(nativeId) !== runtime ||
+          this.#inflight.get(id)?.requestId === command.requestId
+        )
+          continue;
+        if (reason === "aborted") {
+          const turnId = turnIdOf(turn)!;
+          finishManagedCommand(this.options.dataDir, command.requestId, {
+            ...this.#result(id, command.requestId, "accepted"),
+            turnId,
+            completed: true,
+            completionObserved: true,
+          });
+          this.#unknownSince.delete(command.requestId);
+          updates.add("history");
+        } else {
+          // The exact turn ended without the requested cancellation.
+          settle(operation, command.requestId, "not-dispatched", "stale-turn");
+        }
         continue;
       }
       if (!overdue) continue;
@@ -2975,32 +3353,31 @@ export class DshBridge {
       // copy that was made anyway still shows up in the session list.
       const applied = ["queue-delete", "queue-update", "queue-steer"].includes(operation)
         ? !queuedFor(state).some((item) => item.id === evidence.itemId)
-        : operation === "stop"
-          ? !(state?.status === "running" && turnIdOf(state.turn) === evidence.turnId)
-          : ["approve", "answer"].includes(operation)
-            ? !this.#interactions(nativeId).some((item) => item.id === evidence.interactionId)
-            : operation === "rename"
-              ? row?.title === evidence.title
-              : operation === "archive" || operation === "unarchive"
-                ? (row?.archived === true) === (evidence.archived === true)
-                : operation === "settings"
-                  ? (typeof evidence.preset !== "string" || preset === evidence.preset) &&
-                    (typeof evidence.plan !== "boolean" || plan === evidence.plan) &&
-                    (typeof evidence.provider !== "string" ||
-                      (selected?.provider === evidence.provider &&
-                        selected?.model === evidence.model &&
-                        (selected?.reasoningEffort ?? null) === (evidence.reasoningEffort ?? null)))
-                  : // A goal leaves its state: cleared, paused, continuing, or a new revision.
-                    operation.startsWith("goal-")
-                    ? evidence.goalAction === "clear"
-                      ? !goal
-                      : evidence.goalAction === "pause"
-                        ? goal?.phase === "paused"
-                        : evidence.goalAction === "resume"
-                          ? goal?.phase === "active" && goal.activation === "armed"
-                          : !!goal && goal.revision !== evidence.goalRevision
-                    : false;
+        : ["approve", "answer"].includes(operation)
+          ? !this.#interactions(nativeId).some((item) => item.id === evidence.interactionId)
+          : operation === "rename"
+            ? row?.title === evidence.title
+            : operation === "archive" || operation === "unarchive"
+              ? (row?.archived === true) === (evidence.archived === true)
+              : operation === "settings"
+                ? (typeof evidence.preset !== "string" || preset === evidence.preset) &&
+                  (typeof evidence.plan !== "boolean" || plan === evidence.plan) &&
+                  (typeof evidence.provider !== "string" ||
+                    (selected?.provider === evidence.provider &&
+                      selected?.model === evidence.model &&
+                      (selected?.reasoningEffort ?? null) === (evidence.reasoningEffort ?? null)))
+                : // A goal leaves its state: cleared, paused, continuing, or a new revision.
+                  operation.startsWith("goal-")
+                  ? evidence.goalAction === "clear"
+                    ? !goal
+                    : evidence.goalAction === "pause"
+                      ? goal?.phase === "paused"
+                      : evidence.goalAction === "resume"
+                        ? goal?.phase === "active" && goal.activation === "armed"
+                        : !!goal && goal.revision !== evidence.goalRevision
+                  : false;
       settle(
+        operation,
         command.requestId,
         applied ? "accepted" : "not-dispatched",
         applied ? undefined : "control-outcome-expired",
@@ -3010,9 +3387,15 @@ export class DshBridge {
       this.#unknownSessions.delete(nativeId);
       this.#reconciledAt.delete(nativeId);
     }
+    const reconciled = updates.size > 0;
     if (reconciled) {
       this.#touch(nativeId);
-      this.#publish(nativeId, true);
+      this.#publish(
+        nativeId,
+        updates.has("history"),
+        false,
+        updates.has("settings") ? ["settings"] : [],
+      );
       // Clients fencing these requests read their receipts again.
       this.options.publish(id, "invalidate", { domains: ["receipts"] }, this.live(id, controls));
     }
@@ -3141,20 +3524,26 @@ export class DshBridge {
     const fingerprint = digest(stable({ ...value, runtimeBootId: undefined })).toString("hex");
     const replay = replayManagedCommand(this.options.dataDir, requestId, fingerprint);
     if (replay) return replay;
-    // Sending, renaming or forking while no DSH runs starts one in the background. The request
-    // was decided on the state the client saw then; DSH registering moves the revision on.
+    // An explicit send can resume a session with no writer. Registering the new bridge can
+    // advance the revision from the one the user saw before the request.
     let started = false;
     if (
-      STARTING_CONTROLS.has(String(value.operation)) &&
+      value.operation === "send" &&
       value.experimentalEnabled === true &&
       value.runtimeBootId === this.options.bootId &&
       !this.#controlRuntime(nativeId) &&
       this.#startable()
     ) {
-      if (revision !== this.live(id, true).revision)
+      const live = this.live(id, true);
+      if (revision !== live.revision)
         return this.#result(id, requestId, "not-dispatched", "stale-dsh-revision");
-      if (this.#inflight.has(id))
-        return this.#result(id, requestId, "not-dispatched", "session-busy");
+      if (live.sendEnabled !== true)
+        return this.#result(
+          id,
+          requestId,
+          "not-dispatched",
+          live.reason === NATIVE_STATUS_UNKNOWN ? NATIVE_STATUS_UNKNOWN : "session-busy",
+        );
       try {
         await this.#ensureManaged();
       } catch (error) {
@@ -3171,8 +3560,8 @@ export class DshBridge {
       )
         throw new Error("control-unavailable");
       const live = this.live(id, true);
-      const runtime = this.#controlRuntime(nativeId);
-      if (!runtime) throw new Error("dsh-runtime-offline");
+      const { runtime, writerBlocked } = this.#state(nativeId);
+      if (!runtime) throw new Error(writerBlocked ? NATIVE_STATUS_UNKNOWN : "dsh-runtime-offline");
       if (revision !== live.revision && !started) throw new Error("stale-dsh-revision");
       if (this.#inflight.has(id)) throw new Error("session-busy");
       const text = (): string => {
@@ -3249,11 +3638,15 @@ export class DshBridge {
           };
           break;
         }
-        case "stop":
+        case "stop": {
+          if (runtime.services.turnScopedCancel !== true) throw new Error("dsh-stop-unavailable");
           if (live.stopEnabled !== true || value.turnId !== live.turnId)
             throw new Error("stale-turn");
-          command = { commandId, type: "cancel", sessionId: nativeId };
+          const turn = nativeTurn(value.turnId);
+          if (turn === null) throw new Error("stale-turn");
+          command = { commandId, type: "cancel-turn", sessionId: nativeId, turn };
           break;
+        }
         case "approve": {
           const approval = this.#interactions(nativeId).find(
             (item) => item.kind === "approval" && item.id === value.approvalId,
@@ -3334,7 +3727,12 @@ export class DshBridge {
           command = { commandId, type: "fork", sessionId: nativeId };
           break;
         case "settings": {
-          if (live.queueEditEnabled !== true) throw new Error("session-busy");
+          if (
+            live.queueEditEnabled !== true ||
+            live.status !== "idle" ||
+            live.activity === "compacting"
+          )
+            throw new Error("session-busy");
           const steps: Command[] = [];
           if (value.mode !== undefined) {
             // A plan switch goes alone, as DSH's own composer chip and `/plan` make it.
@@ -3361,7 +3759,6 @@ export class DshBridge {
             };
             break;
           }
-          // A preset applies to the next approval, also in a running turn, as in DSH's window.
           if (value.policyId !== undefined) {
             if (!this.#presets(runtime, nativeId)) throw new Error("operation-unavailable");
             // Read moments before by the same request, so this is a preset the user saw.
@@ -3418,9 +3815,8 @@ export class DshBridge {
               (current.reasoningEffort ?? null) === effort;
             // The settings dialog sends the model it shows along with a new preset.
             if (!unchanged || !steps.length) {
-              // A running turn keeps its model until it ends.
-              if (live.status !== "idle" || live.activity === "compacting")
-                throw new Error("session-busy");
+              if (runtime.services.sessionModelSelection !== true)
+                throw new Error("operation-unavailable");
               steps.push({
                 commandId: steps.length ? randomUUID() : commandId,
                 type: "selectModel",
@@ -3517,6 +3913,7 @@ export class DshBridge {
       ...(value.historyInputHash ? { historyInputHash: value.historyInputHash } : {}),
       // What an unconfirmed control acted on, for settling it from the state later.
       ...(command.type === "queue" ? { itemId: command.itemId } : {}),
+      ...(command.type === "cancel-turn" ? { stopGuard: "turn-scoped" } : {}),
       ...(command.type === "answer" ? { interactionId: command.interactionId } : {}),
       ...(command.type === "rename" ? { title: command.title } : {}),
       ...(command.type === "archive" ? { archived: command.archived } : {}),
@@ -3577,6 +3974,23 @@ export class DshBridge {
       }
       if (!result.ok && command.type === "goal-control")
         result = { ...result, error: goalRefusal(result.error) };
+      if (command.type === "cancel-turn") {
+        const receipt = result.ok
+          ? (result.value as { sessionId?: unknown; turn?: unknown; accepted?: unknown } | null)
+          : null;
+        if (
+          receipt?.sessionId !== nativeId ||
+          receipt.turn !== command.turn ||
+          receipt.accepted !== true
+        ) {
+          // Only refusals known to precede the native dispatch can settle it as not dispatched.
+          if (
+            result.ok ||
+            !["stale-turn", "dsh-stop-unavailable", "not-dispatched"].includes(result.error ?? "")
+          )
+            result = { ok: false, error: "unknown" };
+        }
+      }
       // Clients open a fork from the reply, as they do a Codex fork; still in flight, wait for
       // DSH to list it first.
       const child = result.ok ? (result.value as { sessionId?: unknown } | null)?.sessionId : null;
@@ -3613,8 +4027,19 @@ export class DshBridge {
         finishManagedCommand(this.options.dataDir, requestId, outcome);
       }
       this.#touch(nativeId);
-      this.#publish(nativeId, result.ok);
-      const settled = { ...outcome, live: this.live(id, true) };
+      // Settings refresh the model/permission projection. Real transcript changes are reported by DSH.
+      const settings = value.operation === "settings";
+      this.#publish(
+        nativeId,
+        result.ok && !settings,
+        false,
+        settings && outcome.accepted === true ? ["settings"] : [],
+      );
+      const settled = {
+        ...outcome,
+        ...(command.type === "cancel-turn" ? { turnId: turnIdOf(command.turn) } : {}),
+        live: this.live(id, true),
+      };
       // The stored result was built while this request still counted as unconfirmed, so its
       // snapshot says "outcome-unknown". A replay or a receipt would hand that to a client,
       // which would take it as the session's state.
@@ -3923,6 +4348,7 @@ export class DshBridge {
     this.#closed = true;
     clearInterval(this.#timer);
     clearInterval(this.#managedTimer);
+    if (this.#contextSaveTimer) this.#saveContextReadings();
     // The DSH this AgentKib started goes with it; a turn still running there is recorded by DSH
     // as interrupted. The user was told before quitting.
     await this.options.managed?.runtime.stop().catch(() => undefined);

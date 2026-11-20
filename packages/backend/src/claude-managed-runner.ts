@@ -758,7 +758,7 @@ export class ClaudeRunnerState {
    * answer, since the CLI withdrew any open approval or question first. It ends the turn as a
    * stop does, without the reset a new process needs.
    */
-  #interruptEnded(): void {
+  #interruptEnded(frame: JsonObject): void {
     this.interrupting = null;
     // Interrupted commands report `stopped` first (2.1.263, 2.1.323); anything still listed
     // ended with the turn.
@@ -768,7 +768,15 @@ export class ClaudeRunnerState {
     }
     this.status = "idle";
     this.lastOutcome = "cancelled";
-    this.terminalResult = null;
+    this.terminalResult = {
+      turnId: this.turnId,
+      success: false,
+      subtype: "error_during_execution",
+      terminalReason: "cancelled",
+      usage: object(frame.usage) ? structuredClone(frame.usage) : null,
+      modelUsage: object(frame.modelUsage) ? structuredClone(frame.modelUsage) : null,
+      costUsd: null,
+    };
     this.approvals = [];
     this.questions = [];
     this.pendingUser = null;
@@ -946,11 +954,30 @@ export class ClaudeRunnerState {
         break;
       }
       case "result":
-        if (this.interrupting !== null && this.initialized && this.#turnActive()) {
-          this.#interruptEnded();
+        if (this.#strayResult(frame)) return null;
+        if (
+          this.interrupting !== null &&
+          this.interrupting === this.turnId &&
+          this.initialized &&
+          this.#turnActive() &&
+          frame.subtype === "error_during_execution" &&
+          frame.is_error === true &&
+          ((frame.terminal_reason == null &&
+            !frame.api_error &&
+            !frame.api_error_status &&
+            !frame.errors?.length &&
+            !frame.result &&
+            !this.authFailed &&
+            !this.limitHit) ||
+            ["aborted", "aborted_streaming", "aborted_tools", "cancelled", "interrupted"].includes(
+              frame.terminal_reason,
+            )) &&
+          !this.approvals.length &&
+          !this.questions.length
+        ) {
+          this.#interruptEnded(frame);
           break;
         }
-        if (this.#strayResult(frame)) return null;
         if (this.foregroundTasks.size)
           throw new Error("Claude result with unresolved foreground tasks");
         // result usage is a per-turn aggregate; only the latest main-loop API input
@@ -978,6 +1005,7 @@ export class ClaudeRunnerState {
           );
         if (this.approvals.length || this.questions.length)
           throw new Error("Claude result with unresolved approvals");
+        if (this.interrupting === this.turnId) this.interrupting = null;
         this.terminalResult = {
           turnId: this.turnId,
           success:
@@ -2313,16 +2341,21 @@ export class ClaudeManagedRunnerProcess {
     await this.#writeInteraction(response);
   }
 
-  async stop(turnId: string, revision: number): Promise<void> {
+  async stop(turnId: string, revision: number): Promise<boolean> {
     this.state.assertCanStop(turnId, revision);
     if (!this.#child) throw new Error("Claude session has not started");
     // Where background work may outlive the turn, only the turn is ended, as Esc does in the
     // terminal; the process, and what runs in the background, stays.
-    if (this.state.backgroundTasksEnabled && (await this.#interrupt(turnId, revision))) return;
+    const interrupted =
+      this.state.backgroundTasksEnabled && (await this.#interrupt(turnId, revision));
+    if (this.state.turnId !== turnId) return false;
+    if (interrupted || (this.state.terminalResult && this.state.lastOutcome !== "cancelled"))
+      return this.state.lastOutcome === "cancelled";
     await this.#terminate();
     // The interrupt may have moved the revision on, or ended the turn, before it gave up.
     this.state.processStopped();
     this.#notify();
+    return true;
   }
 
   /**
@@ -2856,7 +2889,14 @@ export class ClaudeManagedRunnerProcess {
     const item = this.#lastAgentItem;
     if (frame.type !== "result" || !item || item.turn_id !== result.turnId) return;
     const meta: Record<string, unknown> = {
-      outcome: frame.is_error === true ? "failed" : result.success ? "completed" : "aborted",
+      outcome:
+        result.terminalReason === "cancelled"
+          ? "aborted"
+          : frame.is_error === true
+            ? "failed"
+            : result.success
+              ? "completed"
+              : "aborted",
     };
     if (Number.isSafeInteger(frame.duration_ms) && frame.duration_ms >= 0)
       meta.duration_ms = frame.duration_ms;

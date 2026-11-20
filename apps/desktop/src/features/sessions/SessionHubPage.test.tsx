@@ -287,7 +287,7 @@ describe("SessionHubPage", () => {
       expect(within(metric!).getByText(count)).toBeTruthy();
     }
     expect(screen.getByRole("heading", { name: "Recently updated" })).toBeTruthy();
-    expect(screen.getByRole("heading", { name: "Index status" })).toBeTruthy();
+    expect(screen.queryByRole("heading", { name: "Index status" })).not.toBeInTheDocument();
     expect(screen.queryByRole("textbox")).toBeNull();
     expect(screen.queryByRole("button", { name: /^(send|approve|stop|pair|connect)/i })).toBeNull();
     expect(api.sessionEvents).not.toHaveBeenCalled();
@@ -517,8 +517,14 @@ describe("SessionHubPage", () => {
   it("keeps cached records usable and surfaces workspace errors separately", () => {
     hub = { ...hub, errors: { [workspace.id]: "Index source unavailable" } };
     render(sessionSurface());
-    expect(screen.getByRole("alert")).toHaveTextContent("Cached history is preserved");
-    expect(screen.getByText("Index source unavailable")).toBeTruthy();
+    const alert = within(screen.getByRole("alert"));
+    expect(alert.getByText("Some sessions could not be read in 1 workspace.")).toBeVisible();
+    expect(alert.queryByText("Index source unavailable")).not.toBeInTheDocument();
+    fireEvent.click(alert.getByRole("button", { name: "Details" }));
+    expect(alert.getByText(workspace.name)).toBeVisible();
+    expect(alert.getByText("Index source unavailable")).toBeVisible();
+    fireEvent.click(alert.getByRole("button", { name: "Retry" }));
+    expect(hub.refresh).toHaveBeenCalledOnce();
     fireEvent.click(screen.getByRole("button", { name: /Review theme switching/ }));
     expect(hub.select).toHaveBeenCalledWith(readable.id);
   });

@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { sessionContinuationCopy, sessionContinuationListState } from "@agentkib/session-ui";
+import {
+  readStateCopy,
+  sessionContinuationCopy,
+  sessionContinuationListState,
+} from "@agentkib/session-ui";
+import type { Live } from "@agentkib/web-client";
+import type { ConversationSessionSummary } from "@/core/types";
+import { sessionWithObservedActivity } from "./session-labels";
 
 describe("runtime-only session list presentation", () => {
   it.each(["zh-CN", "zh-Hant", "en-US", "ja-JP"])(
@@ -63,13 +70,35 @@ describe("runtime-only session list presentation", () => {
         { ...session, continuation: { executionLocation: "external", ...continuation } },
         "en-US",
       );
-    expect(state({ status: "running" })).toEqual({ label: copy.running, active: true, dot: true });
+    expect(state({ status: "running" })).toEqual({
+      label: copy.runningIn("DeepSeek Harness"),
+      active: true,
+      dot: true,
+    });
+    expect(state({ status: "running", reason: "dsh-native-turn-observed" })).toEqual({
+      label: `${copy.runningIn("DeepSeek Harness")} · ${copy.dshTurnObservation}`,
+      active: true,
+      dot: true,
+    });
     expect(state({ status: "awaiting-approval", reason: "dsh-approval-pending" })).toEqual({
       label: copy.waiting,
       waiting: true,
       dot: true,
     });
     expect(state({ status: "idle" })).toBeUndefined();
+    expect(state({ status: "unsupported", reason: "dsh-native-status-unknown" })).toEqual({
+      label: copy.dshStatusUnknown,
+    });
+    expect(
+      sessionContinuationListState(
+        {
+          ...session,
+          continuation: { status: "unsupported", reason: "dsh-native-status-unknown" },
+          externalTurn: { status: "running" },
+        },
+        "zh-CN",
+      ),
+    ).toEqual({ label: "实时状态未知" });
     // Without a running DSH the session can only be read.
     expect(
       sessionContinuationListState({ ...session, availability: "metadata-only" }, "en-US"),
@@ -97,5 +126,58 @@ describe("runtime-only session list presentation", () => {
     );
     expect(state({ executionLocation: null, backgroundTasks: 1 })).toBeUndefined();
     expect(state({ executionLocation: "agentkib" })).toBeUndefined();
+  });
+
+  it("uses the selected live turn instead of stale directory activity and preserves unread", () => {
+    const session: ConversationSessionSummary = {
+      agent: "claude-code",
+      id: "thread",
+      workspace_id: "workspace",
+      availability: "readable",
+      archived: false,
+      sidechain: false,
+      continuation: { status: "running", executionLocation: "terminal" },
+      externalTurn: { status: "running", startedAt: null },
+      readState: {
+        source: "agentkib",
+        status: "unread",
+        freshness: "current",
+        version: "version",
+        firstUnread: { type: "threadStart" },
+        latestResult: null,
+      },
+    };
+    const idle: Live = {
+      sessionId: session.id,
+      status: "idle",
+      revision: 10,
+      sendEnabled: false,
+      approvals: [],
+    };
+    const state = (live: Live) =>
+      sessionContinuationListState(sessionWithObservedActivity(session, live), "en-US");
+    const unread = readStateCopy("en-US").manualUnread;
+    const copy = sessionContinuationCopy("en-US");
+    expect(state(idle)).toEqual({ label: unread, unread: true, dot: true });
+    expect(state({ ...idle, status: "awaiting-input" })).toMatchObject({
+      label: `${copy.waiting} · ${unread}`,
+      waiting: true,
+      unread: true,
+    });
+    expect(state({ ...idle, ownershipReason: "claude-owner-busy" })).toMatchObject({
+      label: `${copy.runningIn("Claude Code")} · ${unread}`,
+      active: true,
+      unread: true,
+    });
+    expect(sessionWithObservedActivity(session, { ...idle, sessionId: "other" })).toBe(session);
+  });
+
+  it("describes a running Codex follower as work in Codex", () => {
+    const session = { agent: "codex", availability: "readable" };
+    const continuation = { status: "running", executionLocation: "external" };
+    expect(sessionContinuationListState({ ...session, continuation }, "en-US")).toMatchObject({
+      label: sessionContinuationCopy("en-US").runningIn("Codex"),
+      active: true,
+    });
   });
 });

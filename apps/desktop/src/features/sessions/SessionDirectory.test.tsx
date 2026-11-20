@@ -9,7 +9,9 @@ import type { ConversationSessionSummary, WorkspaceSummary } from "@/core/types"
 import { readStateCopy, requestReadReview, sessionContinuationCopy } from "@agentkib/session-ui";
 import { SessionOverview } from "./SessionOverview";
 import { SessionDirectory } from "./SessionDirectory";
+import { SessionDirectoryAgentFilter } from "./SessionDirectoryAgentFilter";
 import { useSessionHub } from "./SessionHubContext";
+import { SessionRowMenu } from "./SessionRowMenu";
 import { filterSessions } from "./session-catalog";
 import { normalizeDirectoryOrder, useSessionViewStore } from "./session-view-store";
 
@@ -23,7 +25,7 @@ vi.mock("@agentkib/session-ui", async (original) => {
   return { ...actual, requestReadReview: vi.fn(actual.requestReadReview) };
 });
 // Row menus have their own tests (SessionRowMenu.test.tsx); they read the host on open only.
-vi.mock("./SessionRowMenu", () => ({ SessionRowMenu: () => null }));
+vi.mock("./SessionRowMenu", () => ({ SessionRowMenu: vi.fn(() => null) }));
 vi.mock("@/features/agents/AgentIcon", () => ({
   AgentIcon: ({ agent }: { agent: string }) => <span aria-hidden="true">{agent} icon</span>,
 }));
@@ -173,6 +175,20 @@ describe("SessionDirectory", () => {
   });
   afterEach(cleanup);
 
+  it("passes the lead's directory group to Worker assignment even under an Agent filter", () => {
+    const sameProject = { ...second, id: "same-project", workspace_id: first.workspace_id };
+    const execution = { ...sameProject, id: "execution", origin: "execution" as const };
+    hub.sessions = [first, second, sameProject, execution];
+    useSessionViewStore.setState({ agent: "codex" });
+
+    render(<SessionDirectory />);
+
+    const leadMenu = vi
+      .mocked(SessionRowMenu)
+      .mock.calls.find(([props]) => props.session === first);
+    expect(leadMenu?.[0].sessions?.map((item) => item.id)).toEqual([first.id, sameProject.id]);
+  });
+
   it("keeps unread dots on ordinary rows without a duplicate review card", () => {
     hub.sessions = [{ ...first, readState: unreadState }, second];
     const { container } = render(<SessionDirectory />);
@@ -185,6 +201,38 @@ describe("SessionDirectory", () => {
     expect(
       container.querySelector('.session-directory-trailing [data-unread="true"]'),
     ).not.toBeNull();
+  });
+
+  it("shows unread dots per Agent and clears them after the last unread session is read", () => {
+    const unreadFirst = { ...first, readState: unreadState };
+    const unreadOther = { ...first, id: "other-codex", readState: unreadState };
+    const readState = { ...unreadState, status: "read" as const, firstUnread: null };
+    hub.sessions = [unreadFirst, unreadOther, second];
+    useSessionViewStore.setState({ agent: "claude-code" });
+    const { rerender } = render(<SessionDirectory />);
+    const agents = within(screen.getByRole("group", { name: tr("conversations.agentFilter") }));
+    const all = agents.getByRole("button", { name: tr("sessions.allAgents") });
+    const codex = agents.getByRole("button", { name: "Codex" });
+    const claude = agents.getByRole("button", { name: "Claude Code" });
+
+    expect(codex).toHaveAccessibleDescription(readStateCopy("en-US").unread);
+    expect(codex.querySelector("[data-unread]")).toHaveClass("bg-primary");
+    expect(claude.querySelector("[data-unread]")).toBeNull();
+    expect(all.querySelector("[data-unread]")).toBeNull();
+
+    hub.sessions = [{ ...unreadFirst, readState }, unreadOther, second];
+    rerender(<SessionDirectory />);
+    expect(codex.querySelector("[data-unread]")).toBeInTheDocument();
+
+    hub.sessions = [
+      { ...unreadFirst, readState },
+      { ...unreadOther, readState },
+      { ...second, readState: unreadState },
+    ];
+    rerender(<SessionDirectory />);
+    expect(codex.querySelector("[data-unread]")).toBeNull();
+    expect(codex).not.toHaveAttribute("aria-description");
+    expect(claude.querySelector("[data-unread]")).toBeInTheDocument();
   });
 
   it("toggles all unread rows including running, manually unread and stale states", () => {
@@ -417,14 +465,16 @@ describe("SessionDirectory", () => {
         error_key: "errors.conversations.sourceUnavailable",
       },
     ];
-    const { container } = render(<SessionDirectory />);
+    const { container, rerender } = render(<SessionDirectory />);
     const text = tr("sessions.sourceUnavailable", { agent: "Antigravity" });
     expect(screen.getByText(text).closest(".session-directory-tree")).toBe(
       container.querySelector(".session-directory-tree"),
     );
     expect(screen.queryByText("Visible source")).toBeNull();
     expect(screen.queryByText("Uninstalled source")).toBeNull();
-    act(() => useSessionViewStore.getState().setAgent("claude-code"));
+    hub.sessions = [first, second];
+    rerender(<SessionDirectory onMenuOpenChange={vi.fn()} />);
+    fireEvent.click(screen.getByRole("button", { name: "Claude Code" }));
     expect(screen.queryByText(text)).toBeNull();
     act(() => {
       useSessionViewStore.getState().setAgent("all");
@@ -434,7 +484,7 @@ describe("SessionDirectory", () => {
   });
 
   it("does not carry another computer's source warning into the selected computer", () => {
-    hub.sessions = [];
+    hub.sessions = [first, second];
     hub.workspaces = [
       workspaces[0],
       {
@@ -463,7 +513,7 @@ describe("SessionDirectory", () => {
     act(() => useSessionViewStore.getState().setHost("remote-fixture"));
     expect(screen.queryByRole("status")).toBeNull();
     expect(screen.getByRole("alert")).toHaveTextContent("Antigravity");
-    act(() => useSessionViewStore.getState().setAgent("codex"));
+    fireEvent.click(screen.getByRole("button", { name: "Codex" }));
     expect(screen.queryByRole("alert")).toBeNull();
   });
 
@@ -488,64 +538,31 @@ describe("SessionDirectory", () => {
     },
   );
 
-  it.each(["zh-CN", "zh-Hant", "en-US", "ja-JP"] as const)(
-    "keeps unused index source errors neutral per workspace in %s",
-    async (locale) => {
-      await initializeI18n(locale);
-      hub.sessions = [
-        { ...first, agent: "antigravity" },
-        { ...second, agent: "claude-code" },
-      ];
-      hub.statuses = workspaces.map((workspace) => ({
-        workspace_id: workspace.id,
-        agent: "antigravity",
-        freshness: "unavailable",
-        session_count: 0,
-        error_key: "errors.conversations.sourceUnavailable",
-      }));
-      try {
-        const { container } = render(<SessionOverview />);
-        const items = container.querySelectorAll(".session-index-item");
-        expect(items).toHaveLength(2);
-        const used = within(items[0] as HTMLElement).getByText(
-          tr("errors.conversations.sourceUnavailable"),
-        );
-        const unused = within(items[1] as HTMLElement).getByText(
-          tr("errors.conversations.sourceUnavailable"),
-        );
-        expect(used).toHaveClass("text-destructive-text");
-        expect(unused).toHaveClass("text-muted-foreground");
-        expect(unused).not.toHaveClass("text-destructive-text");
-      } finally {
-        await initializeI18n("en-US");
-      }
-    },
-  );
-
-  it("keeps a previously populated source in attention even when no current session is visible", () => {
-    hub.sessions = [];
+  it("keeps index diagnostics out of the recent conversation overview", () => {
     hub.statuses = [
       {
         workspace_id: workspaces[0].id,
-        agent: "antigravity",
-        freshness: "unavailable",
-        session_count: 2,
-        error_key: "errors.conversations.sourceUnavailable",
+        agent: "codex",
+        freshness: "stale",
+        session_count: 1,
+        last_success_at: "2026-10-23T00:00:00Z",
       },
       {
         workspace_id: workspaces[1].id,
-        agent: "antigravity",
+        agent: "claude-code",
         freshness: "unavailable",
-        session_count: 0,
-        last_success_at: "2026-10-23T00:00:00Z",
-        error_detail: "Synthetic source read failed",
+        session_count: 1,
+        error_key: "errors.conversations.sourceUnavailable",
       },
     ];
+
     render(<SessionOverview />);
-    expect(screen.getByText(tr("errors.conversations.sourceUnavailable"))).toHaveClass(
-      "text-destructive-text",
-    );
-    expect(screen.getByText("Synthetic source read failed")).toHaveClass("text-muted-foreground");
+
+    expect(screen.getByRole("heading", { name: tr("sessions.recent") })).toBeVisible();
+    expect(screen.getByRole("button", { name: /Check sidebar selection/ })).toBeVisible();
+    expect(screen.getAllByRole("heading")).toHaveLength(1);
+    expect(screen.queryByText("Needs refresh")).toBeNull();
+    expect(screen.queryByText(tr("errors.conversations.sourceUnavailable"))).toBeNull();
   });
 
   it("keeps same-named workspace groups separate and exposes paths and the current session", () => {
@@ -789,36 +806,41 @@ describe("SessionDirectory", () => {
     expect(screen.queryByText("Pen design run")).toBeNull();
   });
 
-  it("keeps search and filter fields out of the directory and exposes filters in its menu", async () => {
+  it("moves the single-select Agent filter above the directory and keeps other filters in its menu", async () => {
     const user = userEvent.setup();
     const onMenuOpenChange = vi.fn();
-    render(<SessionDirectory onMenuOpenChange={onMenuOpenChange} />);
+    const { container } = render(<SessionDirectory onMenuOpenChange={onMenuOpenChange} />);
+    const agents = within(screen.getByRole("group", { name: tr("conversations.agentFilter") }));
+    const all = agents.getByRole("button", { name: tr("sessions.allAgents") });
+    const codex = agents.getByRole("button", { name: "Codex" });
+    const claude = agents.getByRole("button", { name: "Claude Code" });
+    const toolbar = container.querySelector("[data-session-directory-toolbar]")!;
+    expect(all.compareDocumentPosition(toolbar) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(screen.queryByRole("textbox")).toBeNull();
     expect(screen.queryByRole("combobox")).toBeNull();
     expect(screen.queryByText("Local history")).toBeNull();
     expect(screen.getByRole("button", { name: /Check sidebar selection/ })).toBeTruthy();
     expect(screen.getByRole("button", { name: /Inspect token layout/ })).toBeTruthy();
-    screen.getByRole("button", { name: tr("sessions.directoryOptions") }).focus();
-    await user.keyboard("{ArrowDown}");
-    expect(onMenuOpenChange).toHaveBeenLastCalledWith(true, expect.anything());
-    expect(screen.getByRole("menu").parentElement).toHaveClass("z-80");
-    (await screen.findByRole("menuitem", { name: "Agent filter" })).focus();
-    await user.keyboard("{ArrowRight}");
-    expect(await screen.findByRole("menuitemradio", { name: "All agents" })).toHaveAttribute(
-      "aria-checked",
-      "true",
-    );
-    expect(
-      screen.getAllByRole("menu").every((menu) => menu.parentElement?.classList.contains("z-80")),
-    ).toBe(true);
-    screen.getByRole("menuitemradio", { name: "Claude Code" }).focus();
+    expect(all).toHaveAttribute("aria-pressed", "true");
+    claude.focus();
     await user.keyboard("{Enter}");
+    expect(claude).toHaveAttribute("aria-pressed", "true");
+    expect(codex).toHaveAttribute("aria-pressed", "false");
+    expect(all).toHaveAttribute("aria-pressed", "false");
     expect(screen.queryByRole("button", { name: /Check sidebar selection/ })).toBeNull();
     expect(screen.getByRole("button", { name: /Inspect token layout/ })).toBeTruthy();
     screen.getByRole("button", { name: tr("sessions.directoryOptions") }).focus();
     await user.keyboard("{ArrowDown}");
+    expect(onMenuOpenChange).toHaveBeenLastCalledWith(true, expect.anything());
+    expect(screen.getByRole("menu").parentElement).toHaveClass("z-80");
+    expect(
+      screen.queryByRole("menuitem", { name: tr("conversations.agentFilter") }),
+    ).not.toBeInTheDocument();
     (await screen.findByRole("menuitem", { name: "Session history" })).focus();
     await user.keyboard("{ArrowRight}");
+    expect(
+      screen.getAllByRole("menu").every((menu) => menu.parentElement?.classList.contains("z-80")),
+    ).toBe(true);
     (await screen.findByRole("menuitemradio", { name: "No history content" })).focus();
     await user.keyboard("{Enter}");
     expect(screen.queryByRole("button", { name: /Inspect token layout/ })).toBeNull();
@@ -829,17 +851,41 @@ describe("SessionDirectory", () => {
     await user.keyboard("{Enter}");
     expect(onMenuOpenChange).toHaveBeenLastCalledWith(false, expect.anything());
     expect(useSessionViewStore.getState().agent).toBe("all");
+    expect(all).toHaveAttribute("aria-pressed", "true");
     expect(useSessionViewStore.getState().filter).toBe("current");
     expect(screen.getByRole("button", { name: /Check sidebar selection/ })).toBeTruthy();
   });
 
-  it("shows non-default filter chips and clears them independently", async () => {
+  it.each([
+    { kind: "no Agent", sessions: [] },
+    { kind: "one Agent", sessions: [first, archived] },
+  ])("hides the Agent strip with $kind in the directory", ({ sessions }) => {
+    hub.sessions = sessions;
+    render(<SessionDirectory />);
+    expect(screen.getByRole("button", { name: tr("sessions.directoryOptions") })).toBeVisible();
+    expect(
+      screen.queryByRole("group", { name: tr("conversations.agentFilter") }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("resets the hidden Agent filter when its last conversation disappears", () => {
+    useSessionViewStore.setState({ agent: "claude-code" });
+    const { rerender } = render(<SessionDirectory />);
+    expect(screen.queryByRole("button", { name: /Check sidebar selection/ })).toBeNull();
+    hub.sessions = [first];
+    rerender(<SessionDirectory onMenuOpenChange={vi.fn()} />);
+    expect(useSessionViewStore.getState().agent).toBe("all");
+    expect(screen.getByRole("button", { name: /Check sidebar selection/ })).toBeVisible();
+  });
+
+  it("clears the Agent independently using the strip and keeps the history filter chip", async () => {
     useSessionViewStore.setState({ agent: "claude-code", filter: "metadata" });
     const user = userEvent.setup();
     render(<SessionDirectory />);
-    await user.click(
-      screen.getByRole("button", { name: `${tr("sessions.clearAgentFilter")}: Claude Code` }),
-    );
+    expect(
+      screen.queryByRole("button", { name: `${tr("sessions.clearAgentFilter")}: Claude Code` }),
+    ).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: tr("sessions.allAgents") }));
     expect(useSessionViewStore.getState().agent).toBe("all");
     expect(useSessionViewStore.getState().filter).toBe("metadata");
     expect(screen.getByRole("button", { name: /Missing transcript/ })).toBeTruthy();
@@ -851,6 +897,183 @@ describe("SessionDirectory", () => {
     expect(useSessionViewStore.getState().filter).toBe("current");
     expect(screen.queryByRole("button", { name: /Missing transcript/ })).toBeNull();
     expect(screen.getByRole("button", { name: /Check sidebar selection/ })).toBeTruthy();
+  });
+
+  it("compacts a folder in order and reverses an interrupted Agent filter from its current progress", async () => {
+    hub.sessions = [first, first, second, first].map((session, index) => ({
+      ...session,
+      workspace_id: first.workspace_id,
+      id: `entry-${index + 1}`,
+      title: `Entry ${index + 1}`,
+    }));
+    vi.stubGlobal("CSS", { supports: () => true });
+    const originalBounds = HTMLElement.prototype.getBoundingClientRect;
+    const bounds = vi
+      .spyOn(HTMLElement.prototype, "getBoundingClientRect")
+      .mockImplementation(function (this: HTMLElement) {
+        if (this.matches(".session-workspace-heading, .session-directory-row")) {
+          const slot = this.parentElement;
+          const start =
+            Number.parseFloat(slot?.style.getPropertyValue("--directory-agent-fold-from") ?? "") ||
+            0;
+          const delta =
+            Number.parseFloat(slot?.style.getPropertyValue("--directory-agent-fold-delta") ?? "") ||
+            0;
+          const tree = this.closest<HTMLElement>(".session-directory-tree");
+          const progress = Number(
+            tree?.style.getPropertyValue("--directory-agent-filter-progress"),
+          );
+          return new DOMRect(0, start + delta * progress, 200, 32);
+        }
+        return originalBounds.call(this);
+      });
+    try {
+      const { container } = render(<SessionDirectory />);
+      const tree = container.querySelector<HTMLElement>(".session-directory-tree")!;
+      const animate = vi.fn(() => {
+        let resolve!: () => void;
+        const finished = new Promise<void>((done) => {
+          resolve = done;
+        });
+        return { finished, cancel: vi.fn(), resolve };
+      });
+      Object.defineProperty(tree, "animate", { value: animate });
+      const rows = () => Array.from(tree.querySelectorAll<HTMLElement>(".session-directory-row"));
+
+      fireEvent.click(screen.getByRole("button", { name: "Claude Code" }));
+      expect(animate).toHaveBeenCalledTimes(1);
+      expect(rows().map((row) => row.dataset.directoryAnchor)).toEqual([
+        "session:entry-1",
+        "session:entry-2",
+        "session:entry-3",
+        "session:entry-4",
+      ]);
+      expect(rows()[2].parentElement).not.toHaveAttribute("data-directory-agent-slot");
+      expect(rows()[3].parentElement).toHaveAttribute("inert");
+      expect(rows()[3].parentElement).toHaveStyle("--directory-agent-slot-delta: -1");
+      expect(rows()[0].parentElement).toHaveStyle("--directory-agent-fold-delta: -16px");
+      expect(rows()[3].parentElement).toHaveStyle("--directory-agent-fold-delta: -48px");
+      expect(screen.queryByRole("button", { name: /^Entry 4/ })).not.toBeInTheDocument();
+
+      tree.style.setProperty("--directory-agent-filter-progress", "0.5");
+      fireEvent.click(screen.getByRole("button", { name: tr("sessions.allAgents") }));
+      expect(animate).toHaveBeenCalledTimes(2);
+      expect(animate.mock.results[0].value.cancel).toHaveBeenCalledOnce();
+      expect(rows()[3].parentElement).toHaveStyle("--directory-agent-slot-start: 0.5");
+      expect(rows()[3].parentElement).toHaveStyle("--directory-agent-slot-delta: 0.5");
+      expect(rows()[3].parentElement).toHaveStyle("--directory-agent-fold-from: -24px");
+      await act(async () => animate.mock.results[0].value.resolve());
+      expect(tree).toHaveAttribute("data-directory-agent-motion");
+      await act(async () => animate.mock.results[1].value.resolve());
+      expect(tree).not.toHaveAttribute("data-directory-agent-motion");
+      expect(rows()).toHaveLength(4);
+    } finally {
+      bounds.mockRestore();
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("applies Agent filtering directly when reduced motion is enabled", () => {
+    vi.stubGlobal("CSS", { supports: () => true });
+    vi.stubGlobal("matchMedia", () => ({ matches: true }));
+    try {
+      const { container } = render(<SessionDirectory />);
+      const tree = container.querySelector(".session-directory-tree")!;
+      const animate = vi.fn();
+      Object.defineProperty(tree, "animate", { value: animate });
+
+      fireEvent.click(screen.getByRole("button", { name: "Claude Code" }));
+
+      expect(animate).not.toHaveBeenCalled();
+      expect(screen.queryByRole("button", { name: /Check sidebar selection/ })).toBeNull();
+      expect(screen.getByRole("button", { name: /Inspect token layout/ })).toBeVisible();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("crossfades direct Agent switches in the same folder and applies the latest choice", () => {
+    hub.sessions = [
+      first,
+      { ...second, workspace_id: first.workspace_id },
+      { ...first, id: "devin-only", agent: "devin", title: "Devin conversation" },
+    ];
+    useSessionViewStore.setState({ agent: "codex" });
+    const { container } = render(<SessionDirectory />);
+    const tree = container.querySelector(".session-directory-tree")!;
+    const heading = workspaceHeading(workspaces[0]);
+    const startViewTransition = vi.fn((_options: StartViewTransitionOptions) => ({
+      ready: Promise.resolve(),
+    }));
+    Object.defineProperty(tree, "startViewTransition", { value: startViewTransition });
+
+    fireEvent.click(screen.getByRole("button", { name: "Claude Code" }));
+    fireEvent.click(screen.getByRole("button", { name: "Devin" }));
+    expect(startViewTransition).toHaveBeenCalledTimes(2);
+    const firstUpdate = startViewTransition.mock.calls[0][0];
+    const lastUpdate = startViewTransition.mock.calls[1][0];
+    expect(lastUpdate.types).toEqual(["directory-agent-switch"]);
+    act(() => {
+      void lastUpdate.update?.();
+      void firstUpdate.update?.();
+    });
+
+    expect(workspaceHeading(workspaces[0])).toBe(heading);
+    expect(useSessionViewStore.getState().agent).toBe("devin");
+    expect(tree).not.toHaveAttribute("data-directory-agent-motion");
+    expect(tree.querySelectorAll(".session-directory-row")).toHaveLength(1);
+    expect(screen.getByRole("button", { name: /^Devin conversation/ })).toBeVisible();
+  });
+
+  it("shows the arrows for hidden Agents and scrolls without changing the selected Agent", () => {
+    const clientWidth = vi.spyOn(HTMLElement.prototype, "clientWidth", "get");
+    const scrollWidth = vi.spyOn(HTMLElement.prototype, "scrollWidth", "get");
+    let contentWidth = 120;
+    clientWidth.mockImplementation(function (this: HTMLElement) {
+      return this.hasAttribute("data-agent-filter-viewport") ? 120 : 0;
+    });
+    scrollWidth.mockImplementation(function (this: HTMLElement) {
+      return this.hasAttribute("data-agent-filter-viewport") ? contentWidth : 0;
+    });
+    try {
+      const onChange = vi.fn();
+      const { container } = render(
+        <SessionDirectoryAgentFilter
+          agents={["codex", "claude-code", "antigravity", "devin"]}
+          unreadAgents={new Set()}
+          value="all"
+          onChange={onChange}
+        />,
+      );
+      const group = within(screen.getByRole("group", { name: tr("conversations.agentFilter") }));
+      const viewport = container.querySelector<HTMLElement>("[data-agent-filter-viewport]")!;
+      const scrollBy = vi.fn<(options: ScrollToOptions) => void>();
+      Object.defineProperty(viewport, "scrollBy", { value: scrollBy });
+      const all = group.getByRole("button", { name: tr("sessions.allAgents") });
+      expect(within(viewport).getAllByRole("button")[0]).toBe(all);
+      expect(group.queryByRole("button", { name: "Scroll agents left" })).not.toBeInTheDocument();
+      expect(group.queryByRole("button", { name: "Scroll agents right" })).not.toBeInTheDocument();
+
+      contentWidth = 240;
+      fireEvent.scroll(viewport);
+      expect(group.queryByRole("button", { name: "Scroll agents left" })).not.toBeInTheDocument();
+      fireEvent.click(group.getByRole("button", { name: "Scroll agents right" }));
+      expect(scrollBy.mock.calls[0]?.[0].left).toBeGreaterThan(0);
+
+      fireEvent.scroll(viewport, { target: { scrollLeft: 64 } });
+      fireEvent.click(group.getByRole("button", { name: "Scroll agents left" }));
+      expect(scrollBy.mock.calls[1]?.[0].left).toBeLessThan(0);
+      expect(group.getByRole("button", { name: "Scroll agents right" })).toBeVisible();
+
+      fireEvent.scroll(viewport, { target: { scrollLeft: 120 } });
+      expect(group.queryByRole("button", { name: "Scroll agents right" })).not.toBeInTheDocument();
+      expect(group.getByRole("button", { name: "Scroll agents left" })).toBeVisible();
+      expect(all).toHaveAttribute("aria-pressed", "true");
+      expect(onChange).not.toHaveBeenCalled();
+    } finally {
+      clientWidth.mockRestore();
+      scrollWidth.mockRestore();
+    }
   });
 
   it("collapses one workspace independently and preserves expansion across remounts", () => {

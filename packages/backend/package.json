@@ -27,7 +27,9 @@
     "./native-context": "./src/native-context.ts",
     "./context-usage": "./src/context-usage.ts",
     "./native-version": "./src/native-version.ts",
-    "./session-activity": "./src/session-activity.ts"
+    "./session-activity": "./src/session-activity.ts",
+    "./local-runtime-ipc": "./src/local-runtime-ipc.ts",
+    "./local-runtime-service": "./src/local-runtime-service.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit"

@@ -2,16 +2,13 @@ import { readStateCopy, type SessionReadState } from "./read-state";
 import { NEW_SESSION_AGENTS } from "./new-session";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 
-export type SessionContinuationAgent = "Codex" | "Claude Code";
-export type SessionContinuationAction = () => void | Promise<void>;
-
 export type SessionContinuationCopy = {
   placeholder: string;
   starting: string;
   running: string;
   terminalConnected: string;
+  terminalAttached: string;
   terminalBadge: string;
-  terminalHint: string;
   terminalWatch: string;
   /** A turn that a connected terminal runs now. */
   terminalRunning: string;
@@ -22,13 +19,7 @@ export type SessionContinuationCopy = {
   groupRunning: (count: number) => string;
   groupWaiting: (count: number) => string;
   busy: (agent: string) => string;
-  choice: (agent: string) => string;
-  fork: string;
-  forkHint: (title: string) => string;
-  returnTo: (agent: string) => string;
-  returned: (agent: string) => string;
-  installPlugin: string;
-  codexQuit: string;
+  busyHint: (agent: string) => string;
   backgroundEnded: string;
   /** Managed Claude: AgentKib stopped the CLI after it started too many turns by itself. */
   backgroundLimit: string;
@@ -38,7 +29,6 @@ export type SessionContinuationCopy = {
   backgroundTurn: string;
   /** Managed Claude: background tasks that keep running after their turn. */
   backgroundRunning: (count: number, description: string | null) => string;
-  draftPreserved: string;
   ownerOpenedElsewhere: string;
   claudeWindowsUnsupported: string;
   codexVersionTooOld: string;
@@ -48,6 +38,9 @@ export type SessionContinuationCopy = {
   codexHandoff: string;
   codexHandleThere: string;
   dshConnected: string;
+  dshTurnObservation: string;
+  dshStatusUnknown: string;
+  dshStatusUnknownDetail: string;
   dshHandleThere: string;
   viewOnly: string;
   queued: string;
@@ -71,8 +64,8 @@ const continuationCopy: Record<string, SessionContinuationCopy> = {
     starting: "正在启动…",
     running: "在 AgentKib 中运行",
     terminalConnected: "在终端中运行 · 已连接",
+    terminalAttached: "终端已连接",
     terminalBadge: "终端",
-    terminalHint: "审批和提问在终端中处理",
     terminalWatch: "在终端中继续这条会话，这里会同步显示",
     terminalRunning: "在终端中运行",
     runningIn: (agent) => `在 ${agent} 中运行`,
@@ -80,13 +73,8 @@ const continuationCopy: Record<string, SessionContinuationCopy> = {
     groupRunning: (count) => `${count} 个运行中`,
     groupWaiting: (count) => `${count} 个在等你`,
     busy: (agent) => `正在 ${agent} 中使用`,
-    choice: (agent) => `这条会话正在 ${agent} 中使用。为避免两边同时写入，请选择：`,
-    fork: "分支会话并继续",
-    forkHint: (title) => `原会话不受影响，新会话会标“分支自 ${title}”`,
-    returnTo: (agent) => `回 ${agent} 继续`,
-    returned: (agent) => `这条会话在 AgentKib 中只读，${agent} 那边关闭后会自动恢复`,
-    installPlugin: "安装连接插件，以后自动连接",
-    codexQuit: "只关掉 Codex 的窗口可能不够，完全退出应用后才能在这里继续",
+    busyHint: (agent) =>
+      `这条会话正在 ${agent} 中使用，暂时无法在这里发送。草稿可继续编辑，占用解除后会自动恢复。`,
     backgroundEnded: "后台进程已结束，下次发送时会自动继续",
     backgroundLimit:
       "Claude Code 连续自动运行了太多轮，AgentKib 已停止它和后台任务。发送消息即可继续。",
@@ -95,7 +83,6 @@ const continuationCopy: Record<string, SessionContinuationCopy> = {
     backgroundTurn: "后台任务有了结果，Claude Code 正在继续",
     backgroundRunning: (count, description) =>
       count === 1 && description ? `后台运行中：${description}` : `${count} 个后台任务运行中`,
-    draftPreserved: "草稿已保留，回到这里后会恢复。",
     ownerOpenedElsewhere: "你在 Claude Code 里打开了这条会话，AgentKib 已停止，避免两边同时写入",
     claudeWindowsUnsupported: "Windows 上暂不支持在这里继续 Claude Code 会话",
     codexVersionTooOld: "Codex 版本过低，升级后可以在这里继续",
@@ -103,7 +90,10 @@ const continuationCopy: Record<string, SessionContinuationCopy> = {
     codexConnected: "在 Codex 中运行 · 已连接",
     codexHandoff: "在 Codex 中打开 · 发送时连接",
     codexHandleThere: "这项请求请在 Codex 中处理",
-    dshConnected: "在 DeepSeek Harness 中运行 · 已连接",
+    dshConnected: "DeepSeek Harness 已连接",
+    dshTurnObservation: "来自会话记录",
+    dshStatusUnknown: "实时状态未知",
+    dshStatusUnknownDetail: "DeepSeek Harness 桥接未连接，仍可查看历史和缓存。",
     dshHandleThere: "这项请求请在 DeepSeek Harness 中处理",
     viewOnly: "仅可查看",
     queued: "待发队列",
@@ -127,8 +117,8 @@ const continuationCopy: Record<string, SessionContinuationCopy> = {
     starting: "正在啟動…",
     running: "在 AgentKib 中執行",
     terminalConnected: "在終端中執行 · 已連線",
+    terminalAttached: "終端已連線",
     terminalBadge: "終端",
-    terminalHint: "核准和提問在終端中處理",
     terminalWatch: "在終端中繼續這段對話，這裡會同步顯示",
     terminalRunning: "在終端中執行",
     runningIn: (agent) => `在 ${agent} 中執行`,
@@ -136,13 +126,8 @@ const continuationCopy: Record<string, SessionContinuationCopy> = {
     groupRunning: (count) => `${count} 個執行中`,
     groupWaiting: (count) => `${count} 個在等你`,
     busy: (agent) => `正在 ${agent} 中使用`,
-    choice: (agent) => `這段對話正在 ${agent} 中使用。為避免兩邊同時寫入，請選擇：`,
-    fork: "分支對話並繼續",
-    forkHint: (title) => `原對話不受影響，新對話會標「分支自 ${title}」`,
-    returnTo: (agent) => `回 ${agent} 繼續`,
-    returned: (agent) => `這段對話在 AgentKib 中為唯讀，${agent} 那邊關閉後會自動恢復`,
-    installPlugin: "安裝連線外掛，以後自動連線",
-    codexQuit: "只關閉 Codex 的視窗可能不夠，完全結束應用程式後才能在這裡繼續",
+    busyHint: (agent) =>
+      `這段對話正在 ${agent} 中使用，暫時無法在這裡傳送。草稿可繼續編輯，占用解除後會自動恢復。`,
     backgroundEnded: "背景程序已結束，下次傳送訊息時會自動繼續",
     backgroundLimit:
       "Claude Code 連續自動執行了太多輪，AgentKib 已停止它和背景工作。傳送訊息即可繼續。",
@@ -151,7 +136,6 @@ const continuationCopy: Record<string, SessionContinuationCopy> = {
     backgroundTurn: "背景工作有了結果，Claude Code 正在繼續",
     backgroundRunning: (count, description) =>
       count === 1 && description ? `背景執行中：${description}` : `${count} 個背景工作執行中`,
-    draftPreserved: "草稿已保留，回到這裡後會恢復。",
     ownerOpenedElsewhere: "你在 Claude Code 裡開啟了這段對話，AgentKib 已停止，避免兩邊同時寫入",
     claudeWindowsUnsupported: "Windows 上暫不支援在這裡繼續 Claude Code 對話",
     codexVersionTooOld: "Codex 版本過舊，升級後可以在這裡繼續",
@@ -159,7 +143,10 @@ const continuationCopy: Record<string, SessionContinuationCopy> = {
     codexConnected: "在 Codex 中執行 · 已連線",
     codexHandoff: "在 Codex 中開啟 · 傳送時連線",
     codexHandleThere: "這項請求請在 Codex 中處理",
-    dshConnected: "在 DeepSeek Harness 中執行 · 已連線",
+    dshConnected: "DeepSeek Harness 已連線",
+    dshTurnObservation: "來自對話記錄",
+    dshStatusUnknown: "即時狀態未知",
+    dshStatusUnknownDetail: "DeepSeek Harness 橋接未連線，仍可查看記錄和快取。",
     dshHandleThere: "這項請求請在 DeepSeek Harness 中處理",
     viewOnly: "僅可查看",
     queued: "待發佇列",
@@ -183,8 +170,8 @@ const continuationCopy: Record<string, SessionContinuationCopy> = {
     starting: "起動中…",
     running: "AgentKib で実行中",
     terminalConnected: "ターミナルで実行中 · 接続済み",
+    terminalAttached: "ターミナルに接続済み",
     terminalBadge: "ターミナル",
-    terminalHint: "承認と質問はターミナルで対応してください",
     terminalWatch: "この会話はターミナルで続けてください。ここにも同期して表示されます。",
     terminalRunning: "ターミナルで実行中",
     runningIn: (agent) => `${agent} で実行中`,
@@ -192,17 +179,8 @@ const continuationCopy: Record<string, SessionContinuationCopy> = {
     groupRunning: (count) => `実行中 ${count}`,
     groupWaiting: (count) => `対応待ち ${count}`,
     busy: (agent) => `${agent} で使用中`,
-    choice: (agent) =>
-      `この会話は ${agent} で使用中です。同時に書き込まれないよう、操作を選んでください：`,
-    fork: "会話を分岐して続ける",
-    forkHint: (title) =>
-      `元の会話には影響しません。新しい会話には「${title} から分岐」と表示されます。`,
-    returnTo: (agent) => `${agent} で続ける`,
-    returned: (agent) =>
-      `この会話は AgentKib では閲覧のみです。${agent} 側で閉じると、ここで続けられるようになります。`,
-    installPlugin: "接続プラグインをインストールすると、次回から自動で接続されます",
-    codexQuit:
-      "Codex のウィンドウを閉じるだけでは不十分な場合があります。ここで続けるには、アプリを完全に終了してください。",
+    busyHint: (agent) =>
+      `この会話は ${agent} で使用中のため、ここからはまだ送信できません。下書きは編集でき、使用が終了すると自動的に再開できます。`,
     backgroundEnded:
       "バックグラウンドプロセスを終了しました。次のメッセージ送信時に自動で続行します。",
     backgroundLimit:
@@ -214,7 +192,6 @@ const continuationCopy: Record<string, SessionContinuationCopy> = {
       count === 1 && description
         ? `バックグラウンドで実行中：${description}`
         : `バックグラウンドタスク ${count} 件を実行中`,
-    draftPreserved: "下書きを保存しています。ここに戻ると復元されます。",
     ownerOpenedElsewhere:
       "Claude Code でこの会話が開かれたため、同時に書き込まれないよう AgentKib を停止しました。",
     claudeWindowsUnsupported: "Windows では、ここで Claude Code の会話を続ける機能はまだ使えません",
@@ -223,7 +200,11 @@ const continuationCopy: Record<string, SessionContinuationCopy> = {
     codexConnected: "Codex で実行中 · 接続済み",
     codexHandoff: "Codex で開いています · 送信時に接続",
     codexHandleThere: "このリクエストは Codex で対応してください",
-    dshConnected: "DeepSeek Harness で実行中 · 接続済み",
+    dshConnected: "DeepSeek Harness に接続済み",
+    dshTurnObservation: "会話履歴から確認",
+    dshStatusUnknown: "リアルタイムの状態は不明",
+    dshStatusUnknownDetail:
+      "DeepSeek Harness ブリッジに接続されていません。履歴とキャッシュは閲覧できます。",
     dshHandleThere: "このリクエストは DeepSeek Harness で対応してください",
     viewOnly: "閲覧のみ",
     queued: "送信待ちキュー",
@@ -247,8 +228,8 @@ const continuationCopy: Record<string, SessionContinuationCopy> = {
     starting: "Starting…",
     running: "Running in AgentKib",
     terminalConnected: "Running in terminal · Connected",
+    terminalAttached: "Terminal connected",
     terminalBadge: "Terminal",
-    terminalHint: "Handle approvals and questions in the terminal",
     terminalWatch: "Continue this session in the terminal. It stays in sync here.",
     terminalRunning: "Running in terminal",
     runningIn: (agent) => `Running in ${agent}`,
@@ -256,17 +237,8 @@ const continuationCopy: Record<string, SessionContinuationCopy> = {
     groupRunning: (count) => `${count} running`,
     groupWaiting: (count) => (count === 1 ? "1 needs you" : `${count} need you`),
     busy: (agent) => `In use in ${agent}`,
-    choice: (agent) =>
-      `This session is in use in ${agent}. To avoid both sides writing at once, choose:`,
-    fork: "Fork and continue",
-    forkHint: (title) =>
-      `The original session stays as is. The new one is marked "Forked from ${title}".`,
-    returnTo: (agent) => `Continue in ${agent}`,
-    returned: (agent) =>
-      `This session is view only in AgentKib. You can continue here once it's closed in ${agent}.`,
-    installPlugin: "Install the connection plugin to connect automatically",
-    codexQuit:
-      "Closing the Codex window may not be enough. Quit the app completely to continue here.",
+    busyHint: (agent) =>
+      `This session is in use in ${agent}, so sending here is unavailable. You can edit your draft; sending becomes available when the session is no longer in use.`,
     backgroundEnded:
       "The background process ended. It will resume automatically when you send your next message.",
     backgroundLimit:
@@ -280,7 +252,6 @@ const continuationCopy: Record<string, SessionContinuationCopy> = {
         : count === 1
           ? "1 background task running"
           : `${count} background tasks running`,
-    draftPreserved: "Your draft is kept and will be restored when you return here.",
     ownerOpenedElsewhere:
       "You opened this session in Claude Code. AgentKib stopped to avoid both sides writing at once.",
     claudeWindowsUnsupported: "Continuing Claude Code sessions here isn't supported on Windows yet",
@@ -289,7 +260,11 @@ const continuationCopy: Record<string, SessionContinuationCopy> = {
     codexConnected: "Running in Codex · Connected",
     codexHandoff: "Open in Codex · Connects when you send",
     codexHandleThere: "Handle this request in Codex",
-    dshConnected: "Running in DeepSeek Harness · Connected",
+    dshConnected: "Connected to DeepSeek Harness",
+    dshTurnObservation: "From session history",
+    dshStatusUnknown: "Live status unknown",
+    dshStatusUnknownDetail:
+      "The DeepSeek Harness bridge is disconnected. History and cached data are still available.",
     dshHandleThere: "Handle this request in DeepSeek Harness",
     viewOnly: "View only",
     queued: "Queued messages",
@@ -322,102 +297,29 @@ export function sessionContinuationCopy(locale: string): SessionContinuationCopy
   return continuationCopy[key];
 }
 
-export type SessionContinuationChoiceProps = {
-  locale: string;
-  agent: SessionContinuationAgent;
-  title: string;
-  onFork: SessionContinuationAction;
-  onReturn: SessionContinuationAction;
-  disabled?: boolean;
-  forkDisabled?: boolean;
-  hasDraft?: boolean;
-  /** Match the desktop input card and omit secondary instructions. */
-  compact?: boolean;
-  /** Offer only once a connected terminal accepts messages sent from AgentKib. */
-  pluginAction?: SessionContinuationAction;
-};
+/** An open terminal picker temporarily blocks writes while keeping the existing connection. */
+export function claudeTerminalDisplay(
+  copy: SessionContinuationCopy,
+  live: { status: string; reason?: string | null; terminalSend?: boolean; sendEnabled?: boolean },
+) {
+  const picking = live.status === "idle" && live.reason === "claude-model-picker-open";
+  return {
+    label: picking ? copy.terminalAttached : copy.terminalConnected,
+    reason: "",
+    tone: "muted" as const,
+    continuation:
+      picking || live.terminalSend || live.sendEnabled
+        ? ("terminal" as const)
+        : ("terminal-watch" as const),
+  };
+}
 
 const continuationButtonClass =
   "inline-flex min-h-11 w-full items-center justify-center rounded-md px-4 py-2 text-sm font-medium whitespace-normal transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50 sm:w-auto";
 
-export function SessionContinuationChoice({
-  locale,
-  agent,
-  title,
-  onFork,
-  onReturn,
-  disabled,
-  forkDisabled,
-  hasDraft,
-  compact = false,
-  pluginAction,
-}: SessionContinuationChoiceProps) {
-  const copy = sessionContinuationCopy(locale);
-  const choiceId = useId();
-  const hintId = useId();
-  return (
-    <div
-      role="group"
-      aria-labelledby={choiceId}
-      className={`flex min-w-0 flex-col gap-3 border border-border ${
-        compact
-          ? "session-composer-frame justify-between rounded-3xl bg-background p-2 shadow-sm md:p-3"
-          : "rounded-xl bg-muted/30 p-4"
-      }`}
-    >
-      <p id={choiceId} className="text-sm leading-6 text-foreground">
-        {copy.choice(agent)}
-      </p>
-      <div className="flex min-w-0 flex-wrap items-start gap-3">
-        <div className="flex min-w-0 basis-full flex-col items-start gap-1.5 sm:basis-auto sm:flex-1">
-          <button
-            type="button"
-            className={`${continuationButtonClass} bg-primary text-primary-foreground hover:bg-[var(--primary-hover-strong)]`}
-            aria-describedby={compact ? undefined : hintId}
-            disabled={disabled || forkDisabled}
-            onClick={onFork}
-          >
-            {copy.fork}
-          </button>
-          {!compact && (
-            <p id={hintId} className="text-xs leading-5 break-words text-muted-foreground">
-              {copy.forkHint(title)}
-            </p>
-          )}
-        </div>
-        <button
-          type="button"
-          className={`${continuationButtonClass} border border-border bg-background text-foreground hover:bg-muted`}
-          disabled={disabled}
-          onClick={onReturn}
-        >
-          {copy.returnTo(agent)}
-        </button>
-        {agent === "Claude Code" && pluginAction ? (
-          <button
-            type="button"
-            className={`${continuationButtonClass} text-muted-foreground underline underline-offset-4 hover:text-foreground`}
-            disabled={disabled}
-            onClick={pluginAction}
-          >
-            {copy.installPlugin}
-          </button>
-        ) : null}
-      </div>
-      {hasDraft ? (
-        <p role="status" className="text-xs leading-5 text-muted-foreground">
-          {copy.draftPreserved}
-        </p>
-      ) : null}
-      {agent === "Codex" && !compact ? (
-        <p className="text-xs leading-5 text-muted-foreground">{copy.codexQuit}</p>
-      ) : null}
-    </div>
-  );
-}
-
 export type SessionContinuationStatusProps = {
   label: string | null | undefined;
+  title?: string;
   active?: boolean;
   loading?: boolean;
   /** A turn runs now: the mark turns, as in the session lists. */
@@ -429,6 +331,7 @@ export type SessionContinuationStatusProps = {
 
 export function SessionContinuationStatus({
   label,
+  title,
   active,
   loading,
   running,
@@ -439,6 +342,7 @@ export function SessionContinuationStatus({
   return (
     <span
       role="status"
+      title={title}
       aria-busy={loading || undefined}
       className={`inline-flex max-w-full items-center gap-1.5 text-xs ${waiting ? waitingText : active || loading || running ? "text-primary-text" : "text-muted-foreground"} ${className ?? ""}`}
     >
@@ -454,60 +358,6 @@ export function SessionContinuationStatus({
       />
       <span className="min-w-0 break-words">{label}</span>
     </span>
-  );
-}
-
-/** Shown after the user chooses to continue in the other client instead of forking. */
-export function SessionContinuationReturned({
-  locale,
-  agent,
-  hasDraft,
-}: {
-  locale: string;
-  agent: SessionContinuationAgent;
-  hasDraft?: boolean;
-}) {
-  const copy = sessionContinuationCopy(locale);
-  return (
-    <div
-      role="status"
-      className="min-w-0 space-y-1.5 rounded-xl border border-border bg-muted/30 p-4"
-    >
-      <p className="text-sm leading-6 text-foreground">{copy.returned(agent)}</p>
-      {hasDraft ? (
-        <p className="text-xs leading-5 text-muted-foreground">{copy.draftPreserved}</p>
-      ) : null}
-      {agent === "Codex" ? (
-        <p className="text-xs leading-5 text-muted-foreground">{copy.codexQuit}</p>
-      ) : null}
-    </div>
-  );
-}
-
-export type SessionContinuationTerminalProps = {
-  locale: string;
-  stop?: { label: string; onStop: SessionContinuationAction; disabled?: boolean };
-};
-
-/** A connected terminal that cannot take messages from AgentKib is followed, not typed into. */
-export function SessionContinuationTerminal({ locale, stop }: SessionContinuationTerminalProps) {
-  const copy = sessionContinuationCopy(locale);
-  return (
-    <div className="flex min-w-0 flex-wrap items-center gap-3 rounded-xl border border-border bg-muted/30 p-4">
-      <p className="min-w-0 flex-1 basis-60 text-sm leading-6 text-foreground">
-        {copy.terminalWatch}
-      </p>
-      {stop ? (
-        <button
-          type="button"
-          className={`${continuationButtonClass} border border-border bg-background text-foreground hover:bg-muted`}
-          disabled={stop.disabled}
-          onClick={stop.onStop}
-        >
-          {stop.label}
-        </button>
-      ) : null}
-    </div>
   );
 }
 
@@ -670,6 +520,11 @@ export function SessionContinuationReadOnly({
 
 /** Statuses in which an approval or a question waits for the person. */
 const WAITING_STATUSES = ["awaiting-approval", "waiting-input"];
+const EXTERNAL_OWNERS: Partial<Record<string, string>> = {
+  codex: "Codex",
+  "claude-code": "Claude Code",
+  "deepseek-harness": "DeepSeek Harness",
+};
 const waitingText = "text-amber-700 dark:text-amber-300";
 /** A three-quarter ring that turns once a second, held still when motion is reduced. */
 const runningMark =
@@ -704,6 +559,44 @@ export type SessionListState = {
   unread?: boolean;
 };
 
+export function isDshNativeStatusUnknown(
+  state?: {
+    status: string;
+    reason?: string | null;
+    ownershipReason?: string | null;
+  } | null,
+) {
+  return (
+    state?.status === "unavailable" ||
+    state?.reason === "dsh-native-status-unknown" ||
+    state?.ownershipReason === "dsh-native-status-unknown"
+  );
+}
+
+export function dshNativeStatusDisplay(
+  state:
+    | { status: string; reason?: string | null; ownershipReason?: string | null }
+    | null
+    | undefined,
+  locale: string,
+) {
+  const copy = sessionContinuationCopy(locale);
+  if (state?.status === "running" && state.reason === "dsh-native-turn-observed")
+    return {
+      label: `${copy.runningIn("DeepSeek Harness")} · ${copy.dshTurnObservation}`,
+      reason: "",
+      tone: "active",
+      continuation: "dsh-observed",
+    } as const;
+  if (isDshNativeStatusUnknown(state))
+    return {
+      label: copy.dshStatusUnknown,
+      reason: copy.dshStatusUnknownDetail,
+      tone: "muted",
+      continuation: "status-unknown",
+    } as const;
+}
+
 /**
  * List presentation uses observed runtime state and never grants controls. In order: a request
  * waiting for the person, a turn running in AgentKib, in a connected terminal or in the Codex app,
@@ -728,6 +621,15 @@ export function sessionContinuationListState(
   const state = session.continuation;
   if (state?.status === "outcome-unknown" || state?.reason === "control-outcome-unconfirmed")
     return unread ? { label: unreadText, dot: true, unread: true } : undefined;
+  if (!session.archived && session.agent === "deepseek-harness") {
+    const native = dshNativeStatusDisplay(state, locale);
+    if (native)
+      return {
+        label: native.label + unreadLabel,
+        ...(native.continuation === "dsh-observed" ? { active: true, dot: true } : {}),
+        ...(unread ? { dot: true, unread: true } : {}),
+      };
+  }
   // An archived session keeps no live mark.
   if (!session.archived) {
     if (state && WAITING_STATUSES.includes(state.status))
@@ -737,15 +639,21 @@ export function sessionContinuationListState(
         dot: true,
         ...(unread ? { unread: true } : {}),
       };
-    if (state?.status === "running" || state?.status === "starting")
+    if (state?.status === "running" || state?.status === "starting") {
+      const externalOwner =
+        state.executionLocation === "external" ? EXTERNAL_OWNERS[session.agent] : undefined;
       return {
         label:
-          (state.executionLocation === "terminal" ? copy.terminalRunning : copy.running) +
-          unreadLabel,
+          (state.executionLocation === "terminal"
+            ? copy.terminalRunning
+            : externalOwner
+              ? copy.runningIn(externalOwner)
+              : copy.running) + unreadLabel,
         ...(unread ? { unread: true } : {}),
         active: true,
         dot: true,
       };
+    }
     if (session.externalTurn?.status === "running")
       return {
         label:

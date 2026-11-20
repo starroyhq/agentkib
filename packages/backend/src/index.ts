@@ -7,9 +7,12 @@ import {
   reconcileCursorNativeImport,
 } from "./cursor-native-import";
 import { CursorBridge } from "./cursor-bridge";
-import { ClaudeBridge } from "./claude-bridge";
-import { DshBridge } from "./dsh-bridge";
-import { DshManagedRuntime } from "./dsh-managed-runtime";
+import { ClaudeBridge, type ClaudeBridgeTarget } from "./claude-bridge";
+import { readClaudeTranscriptObservation } from "./claude-context-usage";
+import { DSH_NATIVE_TURN_OBSERVED, DshBridge } from "./dsh-bridge";
+import { readLocalDshHistory, readLocalDshTurn } from "./dsh-local-history";
+import { DshManagedRuntime, dshHome } from "./dsh-managed-runtime";
+import { dshSessionDirectory, probeDshWriter } from "./dsh-writer";
 import { createDshWorker, DshLaneWatch, DshLeadWatch } from "./dsh-lanes";
 import { listNativeImports } from "./session-native-imports";
 import {
@@ -89,6 +92,7 @@ import { randomUUID } from "node:crypto";
 import {
   PROTOCOL_VERSION,
   HISTORY_SEARCH_METHODS,
+  PROJECT_AGENT_MAX_WORKERS,
   RUNTIME_METHODS,
   SESSION_EVENT_NOTIFICATION,
   type RuntimeRpcError,
@@ -616,6 +620,8 @@ export class TypeScriptBackend {
           );
         };
         const dshPluginDirectory = this.environment.AGENTKIB_DSH_PLUGIN_DIR ?? "";
+        const dshEnvironment = { ...process.env, ...this.environment };
+        const dshStorage = dshHome(dshEnvironment);
         // DSH started in the background when none of the user's runs; the bridge decides when
         // and stops it on close.
         const dshManaged = dshPluginDirectory
@@ -623,7 +629,7 @@ export class TypeScriptBackend {
               dataDir,
               agentkibHome,
               pluginDirectory: dshPluginDirectory,
-              env: { ...process.env, ...this.environment },
+              env: dshEnvironment,
               onExit: (pid) => dshBridge.managedExited(pid),
             })
           : undefined;
@@ -648,6 +654,15 @@ export class TypeScriptBackend {
               }
             : {}),
           sessionId: (nativeId) => store.sessions.id("deepseek-harness", nativeId),
+          writerStatus: (nativeId, cwd) => probeDshWriter(nativeId, cwd, dshStorage),
+          localHistory: async (nativeId, cwd, before, limit) => {
+            const directory = dshSessionDirectory(nativeId, cwd, dshStorage);
+            return directory ? readLocalDshHistory(directory, nativeId, before, limit) : null;
+          },
+          localTurn: async (nativeId, cwd, previous) => {
+            const directory = dshSessionDirectory(nativeId, cwd, dshStorage);
+            return directory ? readLocalDshTurn(directory, nativeId, previous) : null;
+          },
           workspaceFor: registeredWorkspace,
           workspacePath: (workspaceId) => {
             try {
@@ -677,7 +692,7 @@ export class TypeScriptBackend {
           },
           publish: (id, type, payload, live) => {
             this.#publishSession(id, type, payload, live);
-            if (type === "state") {
+            if (type === "state" && live.reason !== DSH_NATIVE_TURN_OBSERVED) {
               this.#dshLanes?.observe(id, live);
               this.#dshLeads?.observe(id, live);
             }
@@ -729,10 +744,13 @@ export class TypeScriptBackend {
           {
             isSessionObserved: (sessionId) =>
               this.#sessionStream?.hasSubscribers(sessionId) ?? false,
+            isCatalogObserved: () => this.#sessionStream?.hasSubscribers("") ?? false,
             isSessionBridged: (sessionId) => {
-              this.#claudeBridge?.assertCanAdopt();
+              this.#claudeBridge?.assertRegistryValid();
               return this.#claudeBridge?.blocksManagedResume(sessionId) ?? false;
             },
+            retainedTerminalUsage: (sessionId, source, observation, readEarlier) =>
+              this.#claudeBridge?.retainedUsage(sessionId, source, observation, readEarlier),
             // On unless the person turned it off; a worker reads it when it starts.
             backgroundTasks: () => readPreferences(dataDir).claude_background_tasks !== false,
             leadTools: (sessionId) =>
@@ -799,9 +817,32 @@ export class TypeScriptBackend {
           (id) => claudeOwner.readStateTarget(id),
           () => this.#sessionStream?.publish("", "invalidate", { domains: ["catalog"] }),
           () => this.#sessionStream?.hasSubscribers("") ?? false,
+          (target) => this.#webRead?.codexActiveTurn(target) ?? null,
         );
+        const readTerminalObservation = (target: ClaudeBridgeTarget, searchEarlier: boolean) => {
+          const readers = this.#sessions!;
+          const source = readers.claudeControlWorkspace(
+            target.nativeId,
+            target.registeredWorkspace,
+          );
+          const transcript = readers.verifiedClaudeControlTarget(target.nativeId, source);
+          if (target.workspace !== source)
+            readers.verifyClaudeBridgeWorktree(target.nativeId, source, target.workspace);
+          const observation = readClaudeTranscriptObservation(
+            transcript,
+            target.nativeId,
+            searchEarlier ? "terminal-usage" : false,
+          );
+          // Recheck the source after the bounded optional read, without touching a native worker.
+          readers.verifiedClaudeControlTarget(target.nativeId, source);
+          if (target.workspace !== source)
+            readers.verifyClaudeBridgeWorktree(target.nativeId, source, target.workspace);
+          return observation;
+        };
         this.#claudeBridge = new ClaudeBridge({
           dataDir,
+          legacyDataDir: this.environment.AGENTKIB_LEGACY_DEV_DATA_DIR,
+          sessionIdForNative: (nativeId) => store.sessions.id("claude-code", nativeId),
           bootId: claudeOwner.bootId,
           pluginDirectory: this.environment.AGENTKIB_CLAUDE_PLUGIN_DIR ?? "",
           // A connected terminal session may be a Project Agent (docs/agents/project-agent.md).
@@ -828,7 +869,8 @@ export class TypeScriptBackend {
               return lead?.paused ? (lead.reason ?? "paused") : null;
             },
           },
-          target: (id, nativeId) => claudeOwner.nativeBridgeTarget(id, nativeId),
+          target: (id, nativeId, activeWorkspace) =>
+            claudeOwner.nativeBridgeTarget(id, nativeId, activeWorkspace),
           discoveryFile: path.join(
             this.environment.AGENTKIB_HOME ??
               path.join(
@@ -852,15 +894,35 @@ export class TypeScriptBackend {
             const id = store.sessions.id("claude-code", nativeId);
             if (!store.sessions.get(id))
               await this.#sessionIndex?.refresh({ workspaceId: workspace.id, force: true });
-            return claudeOwner.nativeBridgeTarget(id, nativeId);
+            const target = await claudeOwner.nativeBridgeTarget(id, nativeId, cwd);
+            if (target.workspaceId !== workspace.id) throw new Error("session-workspace-mismatch");
+            return target;
           },
           validate: (target, forControl, bindingId) => {
             if (readPreferences(dataDir).session_index_enabled === false)
               throw new Error("session-index-disabled");
             claudeOwner.validateNativeBridgeTarget(target, forControl, bindingId);
+            if (!forControl) {
+              const readers = this.#sessions!;
+              const source = readers.claudeControlWorkspace(
+                target.nativeId,
+                target.registeredWorkspace,
+              );
+              readers.verifiedClaudeControlTarget(target.nativeId, source);
+              if (target.workspace !== source)
+                readers.verifyClaudeBridgeWorktree(target.nativeId, source, target.workspace);
+            }
+          },
+          observation: (target) => readTerminalObservation(target, true),
+          permission: (target) => {
+            const recent = readTerminalObservation(target, false).permissionMode;
+            // A long tool result can push the last mode marker beyond the small usage tail.
+            return recent === undefined
+              ? (readTerminalObservation(target, true).permissionMode ?? null)
+              : recent;
           },
           publish: (id, type, payload, live) => this.#publishSession(id, type, payload, live),
-          completed: (target, turnId, aborted) =>
+          completed: (target, turnId, aborted, timing) =>
             this.#readStates?.recordTerminal(
               {
                 provider: "claude-code",
@@ -876,8 +938,9 @@ export class TypeScriptBackend {
                 turnId,
                 itemId: null,
                 outcome: aborted ? "cancelled" : "ended",
-                completedAt: new Date().toISOString(),
+                completedAt: timing.occurredAt ? new Date(timing.occurredAt).toISOString() : null,
               },
+              { turnStartedAt: timing.startedAt ? new Date(timing.startedAt).toISOString() : null },
             ),
         });
         this.#claudeBridge.initialize();
@@ -1072,6 +1135,10 @@ export class TypeScriptBackend {
       return this.#claudeManaged ? this.#claudeManaged.receipt(nativeReceipt) : nativeReceipt;
     }
     if (method === RUNTIME_METHODS.claudeManaged) return this.#requestClaudeManaged(params);
+    if (method === RUNTIME_METHODS.codexManaged && typeof params.sessionId === "string") {
+      const agent = this.#store!.sessions.get(params.sessionId)?.agent;
+      if (agent && agent !== "codex") throw new Error("unsupported-session-provider");
+    }
     if (method === RUNTIME_METHODS.codexManaged && params.operation === "options")
       return this.#withWebRead((owner) => owner.managedOptions());
     if (method === RUNTIME_METHODS.codexManaged && params.operation === "reconcile")
@@ -1094,10 +1161,9 @@ export class TypeScriptBackend {
       ["capabilities", "inspect"].includes(String(params.operation))
     )
       return this.#withWebRead((owner) => owner.managedQuery(params));
-    if (
-      method === RUNTIME_METHODS.codexManaged &&
-      ["create", "adopt", "release"].includes(String(params.operation))
-    )
+    if (method === RUNTIME_METHODS.codexManaged && params.operation === "create")
+      return this.#withWebRead((owner) => owner.sessionProviderCreate("codex", params));
+    if (method === RUNTIME_METHODS.codexManaged && params.operation === "release")
       return this.#withWebRead((owner) => owner.managedLifecycle(params));
     if (
       method === RUNTIME_METHODS.codexManaged &&
@@ -1185,11 +1251,20 @@ export class TypeScriptBackend {
           this.#claudeManaged!.hasManagedSession(params.sessionId)
           ? { cwd: null }
           : this.#withWebRead((owner) => owner.request(params));
-      // A new DSH session has no session ID yet; the bridge starts it in the running DSH.
-      if (params.operation === "dsh-create") {
-        if (!this.#dshBridge) throw new Error("session-unavailable");
-        return this.#dshBridge.create(params);
+      if (params.operation === "provider-options") {
+        const { agent, operation: _operation, ...scope } = params;
+        return this.#withWebRead((owner) => owner.sessionProviderOptions(agent, scope));
       }
+      if (params.operation === "provider-workspace-resources") {
+        const { agent, operation: _operation, ...scope } = params;
+        return this.#withWebRead((owner) => owner.sessionProviderWorkspaceResources(agent, scope));
+      }
+      if (params.operation === "provider-create") {
+        const { agent, operation: _operation, ...fields } = params;
+        return this.#withWebRead((owner) => owner.sessionProviderCreate(agent, fields));
+      }
+      if (params.operation === "dsh-create" || params.operation === "dsh-options")
+        return this.#requestDsh(params);
       // A Devin session has no ID until its first turn has run; the web reader starts it.
       if (params.operation === "devin-create")
         return this.#withWebRead((owner) => owner.devinCreate(params));
@@ -1215,13 +1290,6 @@ export class TypeScriptBackend {
       }
       if (params.operation === "devin-options")
         return this.#withWebRead((owner) => owner.devinOptions());
-      if (params.operation === "dsh-options")
-        return (
-          this.#dshBridge?.createOptions(params.includeModels === true) ?? {
-            available: false,
-            reason: "platform-unsupported",
-          }
-        );
       // Resolve the provider from persisted identity, never from a browser-supplied agent.
       // Fresh Claude sessions are not indexed until their first native transcript exists.
       if (typeof params.sessionId === "string" && params.operation !== "catalog") {
@@ -1257,15 +1325,8 @@ export class TypeScriptBackend {
       ) {
         return this.#withWebRead((owner) => owner.request(params));
       }
-      // Devin's settings are what AgentKib saved for its next turns, not a Codex ledger entry.
-      if (
-        params.operation === "settings-state" &&
-        typeof params.sessionId === "string" &&
-        this.#store!.sessions.get(params.sessionId)?.agent === "devin"
-      )
-        return this.#withWebRead((owner) => owner.devinSettingsState(params));
       if (params.operation === "settings-state")
-        return this.#withWebRead((owner) => owner.managedSettingsState(params));
+        return this.#withWebRead((owner) => owner.sessionProviderSettingsState(params));
       if (params.operation === "queue-list")
         return this.#withWebRead((owner) => owner.managedQueueList(params));
       if (["capabilities", "inspect"].includes(String(params.operation)))
@@ -1317,7 +1378,9 @@ export class TypeScriptBackend {
       return this.#withWebRead((owner) => owner.request(params)).then((value) => {
         if (!value || typeof value !== "object" || Array.isArray(value)) return value;
         const catalog = value as Record<string, unknown>;
-        const records = this.#claudeManaged!.catalog();
+        const claude = this.#claudeManaged!;
+        void claude.refreshExternalTurns().catch(() => undefined);
+        const records = claude.catalog();
         const managedIds = new Set(records.map((record) => record.id));
         const aliases = new Set(
           records.flatMap((record) =>
@@ -1354,7 +1417,7 @@ export class TypeScriptBackend {
             ? projection && typeof projection === "object" && !Array.isArray(projection)
               ? (projection as Record<string, unknown>)
               : undefined
-            : this.#claudeManaged!.catalogContinuation(row.id);
+            : claude.catalogContinuation(row.id);
           try {
             if (
               this.#claudeBridge?.handles(row.id) &&
@@ -1369,9 +1432,13 @@ export class TypeScriptBackend {
               reason: "claude-bridge-registry-invalid",
             };
           }
+          const externalTurn = !["terminal", "agentkib"].includes(String(live?.executionLocation))
+            ? claude.externalTurn(row.id)
+            : undefined;
+          const observedRow = externalTurn ? { ...row, externalTurn } : row;
           return live
             ? {
-                ...row,
+                ...observedRow,
                 continuation: {
                   status: live.status,
                   executionLocation: live.executionLocation,
@@ -1379,7 +1446,7 @@ export class TypeScriptBackend {
                   reason: live.reason,
                 },
               }
-            : row;
+            : observedRow;
         };
         const merged = [
           ...sessions.filter(
@@ -2314,21 +2381,50 @@ export class TypeScriptBackend {
     if (agent === undefined || agent === "codex") await this.#withWebRead(() => undefined);
     const codex = this.#webRead?.codexLeadCapable(sessionId) === true;
     const dsh = this.#dshBridge?.leadCapable(sessionId) === true;
+    const leadWorkspace = () =>
+      this.#claudeManaged?.managedWorkspace(sessionId) ??
+      this.#claudeBridge?.workspaceOf(sessionId) ??
+      (codex ? this.#webRead?.managedWorkspace(sessionId) : undefined) ??
+      (dsh ? this.#store?.sessions.get(sessionId)?.workspace_id : undefined);
     const worker = () => {
       const value = typeof params.worker === "string" ? params.worker : "";
       if (!value || value.length > 256) throw new Error("invalid-lead-request");
       return value;
     };
+    const localSessionIds = (value: unknown, limit: number): string[] => {
+      if (deviceId !== "agentkib-local-owner" || !Array.isArray(value) || value.length > limit)
+        throw new Error("invalid-lead-request");
+      return value.map((id) => {
+        if (typeof id !== "string" || !id || id.length > 256)
+          throw new Error("invalid-lead-request");
+        return id;
+      });
+    };
     let toolsChanged = false;
     switch (params.operation) {
       case "lead-status":
         break;
+      case "lead-assignment-options":
+        return orchestration.assignmentOptions(
+          sessionId,
+          leadWorkspace() ?? "",
+          localSessionIds(params.candidateIds, 20_000),
+        );
+      case "lead-assign-workers": {
+        const workers = localSessionIds(params.workers, PROJECT_AGENT_MAX_WORKERS);
+        const workspaceId = leadWorkspace();
+        if (!workspaceId) throw new Error("lead-requires-managed-claude");
+        const result = await orchestration.assignWorkers({
+          sessionId,
+          deviceId,
+          workspaceId,
+          workers,
+        });
+        toolsChanged = result.designated;
+        break;
+      }
       case "lead-designate": {
-        const workspaceId =
-          this.#claudeManaged?.managedWorkspace(sessionId) ??
-          this.#claudeBridge?.workspaceOf(sessionId) ??
-          (codex ? this.#webRead?.managedWorkspace(sessionId) : undefined) ??
-          (dsh ? this.#store?.sessions.get(sessionId)?.workspace_id : undefined);
+        const workspaceId = leadWorkspace();
         if (!workspaceId) throw new Error("lead-requires-managed-claude");
         const scope = params.scope && typeof params.scope === "object" ? params.scope : undefined;
         orchestration.designate({
@@ -2523,7 +2619,7 @@ export class TypeScriptBackend {
       // Listing workers never starts DSH; opening a DSH worker does, as a new DSH session does.
       dshOptions: async () =>
         this.#dshBridge
-          ? this.#dshBridge.createOptions(true, { start: false })
+          ? this.#dshBridge.createOptions(true)
           : { available: false, reason: "platform-unsupported" },
       lifecycle: async (value) => {
         if (value.agent !== "deepseek-harness")
@@ -2557,13 +2653,16 @@ export class TypeScriptBackend {
       },
       session: (sessionId) => {
         const summary = store.sessions.get(sessionId);
-        return summary
-          ? {
-              agent: summary.agent,
-              workspaceId: summary.workspace_id,
-              title: summary.title ?? null,
-            }
+        if (summary)
+          return {
+            agent: summary.agent,
+            workspaceId: summary.workspace_id,
+            title: summary.title ?? null,
+          };
+        const workspaceId = this.#webRead?.codexLeadCapable(sessionId)
+          ? this.#webRead.managedWorkspace(sessionId)
           : null;
+        return workspaceId ? { agent: "codex", workspaceId, title: null } : null;
       },
       managed: async (sessionId) =>
         store.sessions.get(sessionId)?.agent === "deepseek-harness"
@@ -2602,6 +2701,8 @@ export class TypeScriptBackend {
         (sessionId) => this.#sessionStream?.hasSubscribers(sessionId) ?? false,
         this.#sessionIndex,
         () => this.#sessionStream?.publish("", "invalidate", { domains: ["catalog"] }),
+        (request) => this.#dispatchClaudeManaged(request),
+        (request) => this.#dispatchDsh(request),
       );
       this.#webRead.observeLanes({
         turnEnded: (sessionId, turnId, outcome, durationMs) =>
@@ -2630,12 +2731,48 @@ export class TypeScriptBackend {
     return await operation(this.#webRead);
   }
 
+  #requestDsh(params: Record<string, unknown>) {
+    switch (params.operation) {
+      case "live":
+      case "capabilities":
+      case "inspect":
+      case "dsh-options":
+      case "dsh-create":
+      case "settings-state":
+      case "settings":
+      case "usage":
+      case "send":
+      case "stop":
+      case "approve":
+      case "answer":
+      case "steer":
+      case "queue-add":
+        return this.#withWebRead((owner) =>
+          owner.bridgedSessionProviderRequest("deepseek-harness", params),
+        );
+      default:
+        return this.#dispatchDsh(params);
+    }
+  }
+
   /**
    * A DSH session's state or control from a person's device. When the session is a lead's lane,
    * the lead hears that the person stepped in; the service's own controls do not come here.
    */
-  #requestDsh(params: Record<string, unknown>) {
+  async #dispatchDsh(params: Record<string, unknown>) {
     const bridge = this.#dshBridge;
+    if (params.operation === "dsh-options")
+      return (
+        bridge?.createOptions(params.includeModels === true) ?? {
+          available: false,
+          reason: "platform-unsupported",
+        }
+      );
+    // A new session has no ID yet; the bridge starts it in the chosen DSH runtime.
+    if (params.operation === "dsh-create") {
+      if (!bridge) throw new Error("session-unavailable");
+      return bridge.create(params);
+    }
     if (!bridge || typeof params.sessionId !== "string" || !bridge.handles(params.sessionId))
       throw new Error("session-unavailable");
     try {
@@ -2652,7 +2789,33 @@ export class TypeScriptBackend {
     return bridge.request(params);
   }
 
-  async #requestClaudeManaged(params: Record<string, unknown>) {
+  #requestClaudeManaged(params: Record<string, unknown>) {
+    switch (params.operation) {
+      case "live":
+      case "capabilities":
+      case "inspect":
+      case "options":
+      case "create":
+      case "settings-state":
+      case "settings-prepare":
+      case "settings":
+      case "usage":
+      case "send":
+      case "stop":
+      case "approve":
+      case "answer":
+      case "steer":
+      case "queue-add":
+        // The Claude transport also addresses sessions before their transcripts are indexed.
+        return this.#withWebRead((owner) =>
+          owner.bridgedSessionProviderRequest("claude-code", params),
+        );
+      default:
+        return this.#dispatchClaudeManaged(params);
+    }
+  }
+
+  async #dispatchClaudeManaged(params: Record<string, unknown>) {
     try {
       if (params.operation === "schedule-invalidate") {
         const deviceId = typeof params.deviceId === "string" ? params.deviceId : undefined;
@@ -2695,7 +2858,6 @@ export class TypeScriptBackend {
           writePreference(this.#dataDir, "claude_background_tasks", params.enabled);
         return { backgroundTasks: await this.#claudeManaged.backgroundTasksStatus() };
       }
-      if (params.operation === "adopt") this.#claudeBridge?.assertCanAdopt();
       if (
         ["bridge-status", "bridge-challenge", "bridge-disconnect", "bridge-auto-connect"].includes(
           String(params.operation),

@@ -90,7 +90,8 @@ describe("desktop startup flow", () => {
       'const appDisplayName = isDevelopmentApp ? "AgentKib Dev" : "AgentKib"',
     );
     expect(source).toContain("app.setName(appDisplayName)");
-    expect(source).toContain("AGENTKIB_APP_NAME: appDisplayName");
+    expect(source).toContain('AGENTKIB_APP_NAME: shared ? "AgentKib" : appDisplayName');
+    expect(source).toContain("enriched.app_name = appDisplayName");
   });
 
   it("bounds the benchmark client's shutdown request", () => {

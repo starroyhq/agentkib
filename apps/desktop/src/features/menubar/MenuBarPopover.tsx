@@ -235,11 +235,11 @@ export function MenuBarPopover() {
           <MenuBarNewSession
             workspaces={workspaces}
             notInstalled={notInstalled}
-            onCreated={(sessionId, text) =>
+            onCreated={(sessionId, draft) =>
               openMain({
                 page: "sessions",
                 session_id: sessionId,
-                draft: text,
+                ...(draft ? { draft } : {}),
                 configure_popover: false,
               })
             }

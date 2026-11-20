@@ -78,6 +78,7 @@ function Row({
         <SessionDirectoryTrailing
           session={session}
           sessions={sessions}
+          workerSessions={sessions}
           local={local}
           onChanged={changed}
           onDeleted={deleted}
@@ -106,7 +107,7 @@ afterEach(cleanup);
 
 describe("the desktop directory's shared trailing status slot", () => {
   it.each(["zh-CN", "zh-Hant", "en-US", "ja-JP"] as const)(
-    "prioritizes unread, then worktree, while retaining accessible runtime details in %s",
+    "shows unread, then the running turn, then the worktree in %s",
     (locale) => {
       initializeI18n(locale);
       const session = summary({
@@ -131,11 +132,24 @@ describe("the desktop directory's shared trailing status slot", () => {
       view.rerender(<Row session={{ ...session, readState: { ...unread, status: "read" } }} />);
       const afterRead = visualIndicator(view.container);
       expect(afterRead.querySelector("[data-unread]")).toBeNull();
-      expect(afterRead.querySelector("[data-worktree-mark]")).toHaveAttribute(
+      expect(afterRead.querySelector("[data-worktree-mark]")).toBeNull();
+      expect(afterRead.querySelector(".animate-spin")).toBeInTheDocument();
+
+      view.rerender(
+        <Row
+          session={{
+            ...session,
+            readState: { ...unread, status: "read" },
+            continuation: { status: "idle", executionLocation: "agentkib" },
+          }}
+        />,
+      );
+      const afterTurn = visualIndicator(view.container);
+      expect(afterTurn.querySelector("[data-worktree-mark]")).toHaveAttribute(
         "title",
         worktreeLabel(worktree, tr),
       );
-      expect(afterRead.querySelector(".animate-spin")).toBeNull();
+      expect(afterTurn.querySelector(".animate-spin")).toBeNull();
     },
   );
 

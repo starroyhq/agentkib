@@ -29,8 +29,14 @@ import type { QuotaSnapshot, RefreshJobStatus, SupportedLocale } from "../../src
 import { RUNTIME_METHODS, type RuntimeHandshakeResult } from "../generated/runtime-protocol";
 import { DesktopRuntimeHost, type RuntimeHostStatus, type RuntimeHost } from "./runtime-host";
 import { RuntimeRouter } from "./runtime-router";
-import { resolveApplicationDataDir } from "./application-data-dir";
+import { resolveDesktopRuntimeProfile } from "./application-data-dir";
+import { createLocalRuntimeTransport } from "./local-runtime-transport";
 import { createUtilityTransport } from "./utility-runtime-transport";
+import {
+  LOCAL_RUNTIME_PRESENCE,
+  LOCAL_RUNTIME_PRESENCE_CHANGED,
+  type LocalRuntimePresence,
+} from "@agentkib/backend/local-runtime-ipc";
 import { registerRuntimeIpc } from "./ipc/runtime";
 import { createIpcRegistrar } from "./ipc/registrar";
 import { ElectronNativeShell, resolveNativeShellTrayIcon } from "./native-shell";
@@ -100,6 +106,8 @@ let webAccess: WebAccessService | undefined;
 let lanWebAccess: WebAccessService | undefined;
 let conversationHub: ConversationHub | undefined;
 let runtimeHandshake: RuntimeHandshakeResult | undefined;
+let usesSharedRuntime = false;
+let runtimePresence: LocalRuntimePresence | undefined;
 let shutdownStarted = false;
 let quitApproved = false;
 let closeBehavior: "minimize-to-tray" | "quit" | undefined;
@@ -181,6 +189,7 @@ app.on("before-quit", (event) => {
   accountService?.shutdown();
   refreshCoordinator?.stop();
   skillSyncCoordinator?.stop();
+  applyRuntimeClientRole();
   traySessions?.stop();
   nativeShell?.destroy();
   void (async () => {
@@ -209,9 +218,17 @@ async function startApplication(): Promise<void> {
     (contents) => !!mainWindow && !mainWindow.isDestroyed() && contents === mainWindow.webContents,
   );
 
+  const profile = await resolveDesktopRuntimeProfile(
+    process.env,
+    process.platform,
+    isDevelopmentApp,
+  );
+  const shared = profile.shared;
+  usesSharedRuntime = shared !== undefined;
   const backendEnvironment = {
-    AGENTKIB_APP_FLAVOR: appFlavor,
-    AGENTKIB_APP_NAME: appDisplayName,
+    AGENTKIB_APP_FLAVOR: shared ? "ai.agentkib" : appFlavor,
+    AGENTKIB_APP_NAME: shared ? "AgentKib" : appDisplayName,
+    ...(shared ? { AGENTKIB_LEGACY_DEV_DATA_DIR: shared.legacyDevDataDir } : {}),
     AGENTKIB_APP_VERSION: app.getVersion(),
     AGENTKIB_LOCALE: normalizeSystemLocale(app.getLocale()),
     AGENTKIB_SYSTEM_THEME: nativeTheme.shouldUseDarkColors ? "dark" : "light",
@@ -226,13 +243,17 @@ async function startApplication(): Promise<void> {
   const typescriptHost = new DesktopRuntimeHost({
     executablePath: path.join(__dirname, "backend.cjs"),
     clientVersion: app.getVersion(),
-    createTransport: createUtilityTransport,
+    createTransport: shared
+      ? (options) =>
+          createLocalRuntimeTransport(options, {
+            root: shared.root,
+            dataDir: profile.dataDir,
+            electronPath: process.execPath,
+          })
+      : createUtilityTransport,
     environment: backendEnvironment,
   });
-  const selectedRuntimeHost: RuntimeHost = new RuntimeRouter(
-    typescriptHost,
-    await resolveApplicationDataDir(process.env, process.platform, isDevelopmentApp),
-  );
+  const selectedRuntimeHost: RuntimeHost = new RuntimeRouter(typescriptHost, profile.dataDir);
   runtimeHost = selectedRuntimeHost;
   selectedRuntimeHost.on("ready", (handshake: RuntimeHandshakeResult) => {
     runtimeHandshake = handshake;
@@ -241,7 +262,7 @@ async function startApplication(): Promise<void> {
     refreshCoordinator?.setRuntimeAvailable(true);
     costObservation.setRuntimeAvailable(true);
     nativeMemoryObservation.setRuntimeAvailable(true);
-    skillSyncCoordinator?.setRuntimeAvailable(true);
+    applyRuntimeClientRole();
     traySessions?.refresh(0);
     void initializeRuntimeServices().catch((error: unknown) => {
       process.stderr.write(`AgentKib runtime services failed: ${String(error)}\n`);
@@ -252,15 +273,14 @@ async function startApplication(): Promise<void> {
   });
   selectedRuntimeHost.on("exit", ({ expected }: { expected: boolean }) => {
     runtimeHandshake = undefined;
+    runtimePresence = undefined;
+    applyRuntimeClientRole();
     costObservation.setRuntimeAvailable(false);
     nativeMemoryObservation.setRuntimeAvailable(false);
     conversationHub?.unavailable();
     webAccess?.runtimeUnavailable();
     lanWebAccess?.runtimeUnavailable();
-    if (!expected) {
-      refreshCoordinator?.setRuntimeAvailable(false);
-      skillSyncCoordinator?.setRuntimeAvailable(false);
-    }
+    if (!expected) refreshCoordinator?.setRuntimeAvailable(false);
   });
   selectedRuntimeHost.on("restart-error", (error: unknown) => {
     process.stderr.write(`AgentKib runtime restart failed: ${String(error)}\n`);
@@ -276,7 +296,13 @@ async function startApplication(): Promise<void> {
     return requireRuntime().request(method, params);
   });
   selectedRuntimeHost.on("notification", (method: string, params: unknown) => {
-    if (method === NATIVE_MEMORY_CHANGED) sendRendererEvent("agentkib:native-memory-changed", {});
+    if (method === LOCAL_RUNTIME_PRESENCE_CHANGED && usesSharedRuntime) {
+      if (isRuntimePresence(params)) {
+        runtimePresence = params;
+        applyRuntimeClientRole();
+      }
+    } else if (method === NATIVE_MEMORY_CHANGED)
+      sendRendererEvent("agentkib:native-memory-changed", {});
     else if (method === "quota.updated") sendRendererEvent("agentkib:quota-updated", params);
     else if (method === "quota.costUpdated")
       sendRendererEvent("agentkib:local-cost-updated", params);
@@ -317,6 +343,7 @@ async function startApplication(): Promise<void> {
     claudeManagedRequest: (params) =>
       requestWhenRuntimeReady(RUNTIME_METHODS.claudeManaged, params),
     runtimeRequest: (params) => requestWhenRuntimeReady(RUNTIME_METHODS.webRequest, params),
+    sessionProviderRequest: (params) => requestWhenRuntimeReady(RUNTIME_METHODS.webRequest, params),
     verifiedCodex: process.platform === "darwin",
     verifiedClaudeManaged: process.platform === "darwin",
     enableClaudeScheduler: process.platform === "darwin",
@@ -358,6 +385,7 @@ async function startApplication(): Promise<void> {
       ? path.join(process.resourcesPath, "web")
       : path.resolve(app.getAppPath(), "../web/dist"),
   });
+  if (usesSharedRuntime) webAccess.setSharedRuntimePrimary(false);
   accountService = new DesktopAccountService({
     directory: path.join(electronDataPath, "account"),
     storage: {
@@ -397,6 +425,7 @@ async function startApplication(): Promise<void> {
     dataDir: path.join(electronDataPath, "web-lan"),
     staticDir: "",
   });
+  if (usesSharedRuntime) lanWebAccess.setSharedRuntimePrimary(false);
   await lanWebAccess.initialize();
   registerConversationIpc({ service: webAccess, hub: conversationHub, assertTrustedRenderer });
   sessionSource = traySessionSource(webAccess, conversationHub);
@@ -445,6 +474,7 @@ async function startApplication(): Promise<void> {
     runtime: requireRuntime,
     onState: (state) => sendRendererEvent("agentkib:skills:sync-state-changed", state),
   });
+  applyRuntimeClientRole();
 
   const updatePowerActivity = () => {
     const paused = systemSuspended || screenLocked;
@@ -613,8 +643,17 @@ function requestRendererQuitGuard(): void {
 async function quitWork(): Promise<{ title: string; agent: string }[]> {
   const source = sessionSource;
   if (!source) return [];
+  const readWork = async () => {
+    if (usesSharedRuntime && runtimeHandshake) {
+      const presence = await requireRuntime()
+        .request<LocalRuntimePresence>(LOCAL_RUNTIME_PRESENCE, {})
+        .catch(() => undefined);
+      if (presence && presence.peers > 0) return [];
+    }
+    return source.readSessions().catch(() => undefined);
+  };
   const sessions = await Promise.race([
-    source.readSessions().catch(() => undefined),
+    readWork(),
     new Promise<undefined>((resolve) => setTimeout(resolve, 2_000)),
   ]);
   return sessions
@@ -624,9 +663,37 @@ async function quitWork(): Promise<{ title: string; agent: string }[]> {
     : [];
 }
 
+function isRuntimePresence(value: unknown): value is LocalRuntimePresence {
+  return (
+    value != null &&
+    typeof value === "object" &&
+    "primary" in value &&
+    typeof value.primary === "boolean" &&
+    "peers" in value &&
+    typeof value.peers === "number" &&
+    Number.isSafeInteger(value.peers) &&
+    value.peers >= 0
+  );
+}
+
+function applyRuntimeClientRole(): void {
+  const ready = !shutdownStarted && runtimeHandshake !== undefined;
+  const primary = ready && (!usesSharedRuntime || runtimePresence?.primary === true);
+  refreshCoordinator?.setAutomaticEnabled(primary);
+  skillSyncCoordinator?.setRuntimeAvailable(primary);
+  if (usesSharedRuntime) {
+    webAccess?.setSharedRuntimePrimary(primary);
+    lanWebAccess?.setSharedRuntimePrimary(primary);
+  }
+}
+
 function withElectronRuntimeCapabilities(runtime: unknown): unknown {
   if (runtime === null || typeof runtime !== "object" || Array.isArray(runtime)) return runtime;
   const enriched = { ...(runtime as Record<string, unknown>) };
+  enriched.app_name = appDisplayName;
+  enriched.app_version = app.getVersion();
+  enriched.app_channel = isDevelopmentApp ? "development" : "stable";
+  enriched.updates_enabled = !isDevelopmentApp;
   enriched.tray_available = nativeShell?.trayAvailable ?? false;
   if (enriched.theme_preference === "system") {
     enriched.effective_theme = nativeTheme.shouldUseDarkColors ? "dark" : "light";

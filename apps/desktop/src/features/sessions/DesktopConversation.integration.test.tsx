@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   EmbeddedConversation as Conversation,
@@ -9,6 +10,7 @@ import {
 
 import { WebClient, type Access, type ConversationCatalog, type Live } from "@agentkib/web-client";
 import { sessionContinuationCopy } from "@agentkib/session-ui";
+import { conversationWords } from "@/core/i18n";
 import {
   permissionModeCopy,
   permissionModeSummaryCopy,
@@ -18,6 +20,7 @@ import {
   claudeConnectionReason,
 } from "./conversation/features/sessions/claude-connection-copy";
 import type { ConversationSubscription, SessionStreamEvent } from "@agentkib/conversation-state";
+import { webLayoutCopy } from "./conversation/features/sessions/web-layout-copy";
 import {
   createDesktopConversationAdapter,
   type DesktopConversationBridge,
@@ -363,7 +366,9 @@ describe("desktop embedded conversation", () => {
     expect(mutations()[0][1]).not.toHaveProperty("handoffConfirmed");
     expect(mutations()[0][1]).not.toHaveProperty("handoffFingerprint");
     await waitFor(() => expect(screen.getByRole("textbox", { name: "发送消息" })).toHaveValue(""));
-    const running = await screen.findByText(sessionContinuationCopy("zh-CN").running);
+    const running = await screen.findByRole("button", {
+      name: sessionContinuationCopy("zh-CN").running,
+    });
     expect(running).toBeVisible();
     expect(running.closest("[data-session-window-status-slot]")).not.toBeNull();
     expect(vi.mocked(bridge.request).mock.calls.some(([path]) => path === "managed/adopt")).toBe(
@@ -616,6 +621,7 @@ describe("desktop embedded conversation", () => {
       if (initial.executionMode === "claude-follower" && initial.terminalSend === undefined)
         initial = { ...initial, terminalSend: true };
       const listeners = new Set<(event: SessionStreamEvent<Live>) => void>();
+      const unavailableListeners = new Set<() => void>();
       const access: Access = {
         protocolVersion: 2,
         status: "approved",
@@ -713,7 +719,12 @@ describe("desktop embedded conversation", () => {
             listeners.delete(listener);
           };
         },
-        onUnavailable: () => () => {},
+        onUnavailable: (listener) => {
+          unavailableListeners.add(listener);
+          return () => {
+            unavailableListeners.delete(listener);
+          };
+        },
         onControlChanged: () => () => {},
       };
       let seq = 0;
@@ -733,7 +744,11 @@ describe("desktop embedded conversation", () => {
           };
           for (const listener of listeners) listener(event);
         });
-      return { bridge, patch };
+      return {
+        bridge,
+        patch,
+        disconnect: () => act(() => unavailableListeners.forEach((listener) => listener())),
+      };
     }
     const live = (permission?: Live["permission"]): Live => ({
       sessionId: "claude-session",
@@ -965,7 +980,9 @@ describe("desktop embedded conversation", () => {
         connectionGeneration: "lease-a",
       });
       expect(
-        await screen.findByText(sessionContinuationCopy("zh-CN").terminalConnected),
+        await screen.findByRole("button", {
+          name: sessionContinuationCopy("zh-CN").terminalConnected,
+        }),
       ).toBeVisible();
       expect(screen.queryByRole("button", { name: "交给 AgentKib" })).not.toBeInTheDocument();
       const draft = screen.getByRole("textbox", { name: "发送消息" });
@@ -986,9 +1003,15 @@ describe("desktop embedded conversation", () => {
       await waitFor(() =>
         expect(screen.queryByRole("button", { name: "发送" })).not.toBeInTheDocument(),
       );
-      expect(
-        screen.getByText(claudeConnectionCopy["zh-CN"].lostTitle, { selector: "aside strong" }),
-      ).toBeVisible();
+      const copy = claudeConnectionCopy["zh-CN"];
+      const dot = await screen.findByRole("button", { name: copy.lostTitle });
+      expect(dot.closest("[data-session-window-status-slot]")).not.toBeNull();
+      expect(screen.queryByText(copy.lostTitle)).toBeNull();
+      expect(screen.queryByText(copy.lost)).toBeNull();
+      dot.focus();
+      await userEvent.setup().keyboard("{Enter}");
+      const details = await screen.findByRole("dialog", { name: copy.lostTitle });
+      expect(within(details).getByText(copy.lost)).toBeVisible();
       patch({
         revision: 3,
         status: "idle",
@@ -1012,7 +1035,65 @@ describe("desktop embedded conversation", () => {
       ).toEqual([]);
     });
 
-    it("follows a terminal that cannot take messages without a dead input or handoff", async () => {
+    it("keeps the transport disconnect and reconnect action in the toolbar dot", async () => {
+      const locale = "en-US";
+      const words = conversationWords(locale);
+      const { bridge, disconnect } = await open(
+        {
+          ...live(),
+          executionMode: "claude-follower",
+          connectionGeneration: "lease-a",
+        },
+        locale,
+      );
+      const send = screen.getByRole("button", { name: words.send });
+      const draft = screen.getByRole("textbox", { name: words.message });
+      fireEvent.change(draft, { target: { value: "Keep my draft through reconnect" } });
+      await waitFor(() => expect(send).toBeEnabled());
+      const request = vi.mocked(bridge.request);
+      const original = request.getMockImplementation()!;
+      const subscribe = vi.mocked(bridge.subscribe);
+      const originalSubscribe = subscribe.getMockImplementation()!;
+      let unavailable = true;
+      request.mockClear();
+      request.mockImplementation(async (path, body) =>
+        unavailable
+          ? { status: 503, body: { error: "runtime_unavailable" } }
+          : original(path, body),
+      );
+      subscribe.mockImplementation(async (...args) => {
+        if (unavailable) throw new Error("runtime unavailable");
+        return originalSubscribe(...args);
+      });
+
+      disconnect();
+      const offline = webLayoutCopy[locale].offline;
+      const dot = await screen.findByRole("button", { name: offline });
+      await waitFor(() => expect(request).toHaveBeenCalledWith("access", undefined));
+      expect(dot.closest("[data-session-window-status-slot]")).not.toBeNull();
+      expect(screen.queryByText(offline)).toBeNull();
+      expect(screen.queryByText(words.error)).toBeNull();
+      expect(screen.queryByRole("button", { name: words.retry })).toBeNull();
+      expect(send).toBeDisabled();
+      expect(draft).toHaveValue("Keep my draft through reconnect");
+
+      await userEvent.setup().hover(dot);
+      const popup = await screen.findByRole("dialog", { name: offline });
+      expect(within(popup).getByText(offline)).toBeVisible();
+      expect(screen.getAllByText(offline)).toHaveLength(1);
+      expect(screen.getAllByRole("button", { name: words.retry })).toHaveLength(1);
+      request.mockClear();
+      unavailable = false;
+      fireEvent.click(within(popup).getByRole("button", { name: words.retry }));
+      await waitFor(() => expect(send).toBeEnabled());
+      expect(
+        request.mock.calls.some(([path]) => path.startsWith("live?sessionId=claude-session")),
+      ).toBe(true);
+      expect(screen.queryByText(offline)).toBeNull();
+      expect(draft).toHaveValue("Keep my draft through reconnect");
+    });
+
+    it("keeps an editable draft while following a terminal that cannot take messages", async () => {
       const { bridge } = await open({
         ...live(),
         executionMode: "claude-follower",
@@ -1022,10 +1103,15 @@ describe("desktop embedded conversation", () => {
         reason: "claude-follower-send-unverified",
       });
       expect(await screen.findByText(sessionContinuationCopy("zh-CN").terminalWatch)).toBeVisible();
-      // Said once: the bar replaces both the banner and the disabled composer.
       expect(screen.queryByText(claudeConnectionCopy["zh-CN"].sendUnverified)).toBeNull();
-      expect(screen.queryByRole("textbox", { name: "发送消息" })).toBeNull();
-      expect(screen.queryByRole("button", { name: "发送" })).toBeNull();
+      const editor = screen.getByRole("textbox", { name: "发送消息" });
+      expect(editor).toBeEnabled();
+      fireEvent.change(editor, { target: { value: "Keep terminal draft" } });
+      expect(editor).toHaveValue("Keep terminal draft");
+      const send = screen.getByRole("button", { name: "发送" });
+      expect(send).toBeDisabled();
+      fireEvent.click(send);
+      fireEvent.keyDown(editor, { key: "Enter" });
       expect(screen.queryByRole("button", { name: "交给 AgentKib" })).not.toBeInTheDocument();
       expect(vi.mocked(bridge.request).mock.calls.filter(([path]) => path === "send")).toHaveLength(
         0,
@@ -1033,7 +1119,7 @@ describe("desktop embedded conversation", () => {
     });
 
     it.each(["zh-CN", "zh-Hant", "en-US", "ja-JP"] as const)(
-      "renders authenticated reconnect failures in %s and clears them without enabling terminal controls",
+      "shows authenticated reconnect failures in the status popup in %s without enabling terminal controls",
       async (locale) => {
         const reason = "bridge-cli-too-old";
         const { bridge, patch } = await open(
@@ -1050,6 +1136,10 @@ describe("desktop embedded conversation", () => {
           },
           locale,
         );
+        const title = claudeConnectionCopy[locale].lostTitle;
+        const dot = await screen.findByRole("button", { name: title });
+        await userEvent.setup().click(dot);
+        const details = await screen.findByRole("dialog", { name: title });
         for (const failureReason of [
           reason,
           "bridge-cli-unsupported",
@@ -1059,7 +1149,8 @@ describe("desktop embedded conversation", () => {
           const failure = { reason: failureReason, cliVersion: "2.1.300" };
           patch({ reason: failureReason, bridgeConnectionFailure: failure });
           const text = claudeConnectionReason(locale, failureReason, "desktop", failure)!;
-          await waitFor(() => expect(screen.getAllByText(text)[0]).toBeVisible());
+          expect(await within(details).findByText(text)).toBeVisible();
+          expect(screen.getAllByText(text)).toHaveLength(1);
           expect(screen.queryByRole("textbox")).toBeNull();
           patch({ bridgeConnectionFailure: null });
           await waitFor(() => expect(screen.queryByText(text)).toBeNull());
@@ -1092,7 +1183,10 @@ describe("desktop embedded conversation", () => {
         ).toBeVisible();
         expect(screen.queryByText(/2\.1\.307/)).toBeNull();
         expect(document.querySelector("[data-terminal-compatibility]")).toBeNull();
-        expect(screen.queryByRole("textbox")).toBeNull();
+        expect(
+          screen.getByPlaceholderText(sessionContinuationCopy(locale).placeholder),
+        ).toBeEnabled();
+        expect(screen.getByRole("button", { name: conversationWords(locale).send })).toBeDisabled();
         expect(
           vi.mocked(bridge.request).mock.calls.filter(([path]) => path === "send"),
         ).toHaveLength(0);
@@ -1140,7 +1234,7 @@ describe("desktop embedded conversation", () => {
         sendEnabled: false,
         reason: "claude-terminal-approval",
       });
-      expect(await screen.findByText(sessionContinuationCopy("zh-CN").terminalHint)).toBeVisible();
+      expect(await screen.findByText(claudeConnectionCopy["zh-CN"].approval)).toBeVisible();
       expect(screen.getByRole("button", { name: "发送" })).toBeDisabled();
       expect(screen.queryByRole("button", { name: "交给 AgentKib" })).not.toBeInTheDocument();
     });
@@ -1150,12 +1244,12 @@ describe("desktop embedded conversation", () => {
       async (locale) => {
         const copy = sessionContinuationCopy(locale);
         const { bridge, patch } = await open({ ...live(), executionLocation: "agentkib" }, locale);
-        expect(await screen.findByText(copy.running)).toBeVisible();
+        expect(await screen.findByRole("button", { name: copy.running })).toBeVisible();
         patch({ revision: 2, executionLocation: null, continuationNotice: "background-ended" });
         const ended = await screen.findByText(copy.backgroundEnded);
         expect(ended).toHaveAttribute("role", "status");
         expect(ended.closest("aside")).toBeNull();
-        expect(screen.queryByText(copy.running)).toBeNull();
+        expect(screen.queryByRole("button", { name: copy.running })).toBeNull();
         expect(screen.getByPlaceholderText(copy.placeholder)).toBeEnabled();
         expect(
           vi.mocked(bridge.request).mock.calls.filter(([, body]) => body !== undefined),
@@ -1167,9 +1261,8 @@ describe("desktop embedded conversation", () => {
       async (locale) => {
         const copy = sessionContinuationCopy(locale);
         const { bridge, patch } = await open({ ...live(), executionLocation: "agentkib" }, locale);
-        fireEvent.change(screen.getByPlaceholderText(copy.placeholder), {
-          target: { value: "Keep conflict draft" },
-        });
+        const editor = screen.getByPlaceholderText(copy.placeholder);
+        fireEvent.change(editor, { target: { value: "Keep conflict draft" } });
         patch({
           revision: 2,
           sendEnabled: false,
@@ -1178,11 +1271,16 @@ describe("desktop embedded conversation", () => {
           reason: "owner-opened-elsewhere",
           continuationNotice: "owner-opened-elsewhere",
         });
-        expect(
-          await screen.findByRole("group", { name: copy.choice("Claude Code") }),
-        ).toBeVisible();
-        expect(screen.getAllByText(copy.ownerOpenedElsewhere)).toHaveLength(1);
-        expect(screen.queryByPlaceholderText(copy.placeholder)).toBeNull();
+        await waitFor(() => expect(screen.getAllByText(copy.ownerOpenedElsewhere)).toHaveLength(1));
+        expect(screen.getByPlaceholderText(copy.placeholder)).toBe(editor);
+        expect(editor).toBeEnabled();
+        expect(editor).toHaveValue("Keep conflict draft");
+        const send = screen.getByRole("button", { name: conversationWords(locale).send });
+        expect(send).toBeDisabled();
+        expect(screen.queryByText(/请选择：|請選擇：|choose:|操作を選んでください/)).toBeNull();
+        fireEvent.change(editor, { target: { value: "Edited conflict draft" } });
+        fireEvent.click(send);
+        fireEvent.keyDown(editor, { key: "Enter" });
         patch({
           revision: 3,
           sendEnabled: true,
@@ -1190,10 +1288,10 @@ describe("desktop embedded conversation", () => {
           ownershipReason: null,
           reason: "",
         });
-        expect(await screen.findByPlaceholderText(copy.placeholder)).toHaveValue(
-          "Keep conflict draft",
-        );
-        expect(screen.queryByRole("group", { name: copy.choice("Claude Code") })).toBeNull();
+        await waitFor(() => expect(send).toBeEnabled());
+        expect(screen.getByPlaceholderText(copy.placeholder)).toBe(editor);
+        expect(editor).toHaveValue("Edited conflict draft");
+        expect(screen.queryByText(/请选择：|請選擇：|choose:|操作を選んでください/)).toBeNull();
         expect(
           vi.mocked(bridge.request).mock.calls.filter(([, body]) => body !== undefined),
         ).toEqual([]);

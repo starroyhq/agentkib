@@ -1,5 +1,6 @@
 // Shared runtime protocol source of truth; the Electron compatibility entry is generated.
 export * from "./agents";
+export * from "./session-providers";
 export * from "./claude-commands";
 export * from "./codex-commands";
 export * from "./dsh-commands";
@@ -19,6 +20,7 @@ export {
 
 export const PROTOCOL_VERSION = 17 as const;
 export const CONVERSATION_PROTOCOL_VERSION = 2 as const;
+export const PROJECT_AGENT_MAX_WORKERS = 10;
 export const SESSION_EVENT_NOTIFICATION = "sessions.event" as const;
 export const RUNTIME_METHODS = {
   sessionsSubscribe: "sessions.subscribe",

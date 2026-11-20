@@ -1,4 +1,11 @@
-import { requestReadStateRefresh } from "@agentkib/session-ui";
+import {
+  ComposerPrimaryAction,
+  requestReadStateRefresh,
+  sessionContinuationCopy,
+  SessionComposerInput,
+  SessionComposerToolbar,
+  SessionDetail,
+} from "@agentkib/session-ui";
 import {
   createContext,
   useContext,
@@ -8,6 +15,7 @@ import {
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
   type Ref,
 } from "react";
 import {
@@ -30,6 +38,15 @@ import { PendingCenter } from "./features/sessions/pending-center";
 import { Button } from "@/components/ui/button";
 import { useSessionNavigate } from "./features/sessions/session-navigation";
 import { ConversationWindowTools } from "../conversation-window-tools";
+import {
+  useConversationDisplayLive,
+  useConversationDraft,
+  useDesktopConversationWindow,
+} from "../DesktopConversationWindow";
+import { desktopReadScope } from "../read-state-scope";
+import { webLayoutCopy } from "./features/sessions/web-layout-copy";
+import { codexCopy } from "./features/sessions/codex-copy";
+import { MAX_MESSAGE_LENGTH } from "./features/sessions/session-model";
 
 export type { ConversationClientBridge, WebClient } from "@agentkib/web-client";
 export type ConversationPanel = "files" | "actions" | "search" | "terminal";
@@ -83,6 +100,7 @@ function EmbeddedShell() {
   const [filesOpen, setFilesOpen] = useState(false);
   const [actionsOpen, setActionsOpen] = useState(false);
   const [terminalOpen, setTerminalOpen] = useState(false);
+  const [statusInToolbar, setStatusInToolbar] = useState(false);
   useImperativeHandle(
     props.controlsRef,
     () => ({
@@ -217,12 +235,17 @@ function EmbeddedShell() {
         setActionsOpen,
         terminalOpen,
         setTerminalOpen,
+        statusInToolbar,
       }}
     >
       <div className="agentkib-conversation flex min-h-0 flex-1 flex-col bg-background text-foreground">
-        <ConversationWindowTools filesOpen={filesOpen} onFilesOpenChange={setFilesOpen} />
+        <ConversationWindowTools
+          filesOpen={filesOpen}
+          onFilesOpenChange={setFilesOpen}
+          onStatusInToolbarChange={setStatusInToolbar}
+        />
         <PendingCenter compact />
-        {session.error && (
+        {session.error && (!statusInToolbar || session.online || session.incompatible) && (
           <p role="alert" className="px-4 py-2 text-sm text-destructive-text">
             {session.incompatible ? session.t.lanIncompatible : session.t.error}{" "}
             <Button
@@ -247,15 +270,89 @@ function EmbeddedShell() {
     </SessionPanelsContext>
   );
 }
+const noParkedSubscription = () => () => {};
+
+function ReturningConversationComposer({
+  id,
+  agent,
+  showStop,
+}: {
+  id: string;
+  agent?: string;
+  showStop: boolean;
+}) {
+  const { locale, t } = useSession();
+  const windowConversation = useDesktopConversationWindow();
+  const draft = useConversationDraft(id);
+  return (
+    <div className="w-full max-w-3xl shrink-0 self-center">
+      <SessionComposerInput
+        editorContextKey={id}
+        editor={{
+          id: "message",
+          "aria-label": t.message,
+          value: draft,
+          maxLength: MAX_MESSAGE_LENGTH,
+          onChange: (event) => {
+            if (windowConversation?.warmStreams.hasParked(id))
+              windowConversation.setDraft(id, event.currentTarget.value);
+          },
+          placeholder:
+            agent === "codex" || agent === "claude-code"
+              ? sessionContinuationCopy(locale).placeholder
+              : t.message,
+        }}
+        toolbar={
+          <SessionComposerToolbar
+            locale={locale}
+            add={{ label: codexCopy[locale].addContext, disabled: true }}
+            action={
+              <ComposerPrimaryAction
+                kind={showStop ? "stop" : "send"}
+                label={showStop ? t.stop : t.send}
+                disabled
+              />
+            }
+          />
+        }
+      />
+    </div>
+  );
+}
+
 function EmbeddedReader() {
   const props = useEmbedded();
   const params = useParams({ strict: false }) as { sessionId?: string };
-  const { choose, selected, sessions, t, excludedSessionIds } = useSession();
+  const session = useSession();
+  const { choose, selected, sessions, t, excludedSessionIds } = session;
+  const windowConversation = useDesktopConversationWindow();
   const navigate = useSessionNavigate();
   const id = params.sessionId;
+  const displayLive = useConversationDisplayLive(id === props.sessionId ? id : undefined);
   const excluded = !!id && excludedSessionIds.has(id);
   const readable = sessions.some(
     (session) => session.id === id && session.availability === "readable",
+  );
+  // The parked subscription and the window's verified catalog only authorize
+  // display of the retained history. The active reader still checks fresh access.
+  const preview = useSyncExternalStore(
+    windowConversation?.warmStreams.subscribeParked ?? noParkedSubscription,
+    () => {
+      if (
+        !id ||
+        id !== props.sessionId ||
+        selected === id ||
+        excluded ||
+        session.error ||
+        (session.access && session.access.status !== "approved") ||
+        windowConversation?.client !== session.client ||
+        !desktopReadScope().ready ||
+        !windowConversation.warmStreams.hasParked(id) ||
+        !props.readInitialCatalog?.(id)
+      )
+        return undefined;
+      return windowConversation.pageCache.peek(id);
+    },
   );
   useEffect(() => {
     // A parent selection changes before the memory router finishes navigation.
@@ -284,9 +381,29 @@ function EmbeddedReader() {
     props.externalNavigation,
   ]);
   if (excluded) return null;
-  return id && readable && selected === id ? (
-    <SessionReader />
-  ) : (
+  if (id && readable && selected === id) return <SessionReader />;
+  if (id && preview) {
+    const summary = props.readInitialCatalog?.(id)?.sessions.find((record) => record.id === id);
+    return (
+      <SessionDetail
+        layout="desktop"
+        sessionId={id}
+        locale={session.locale}
+        labels={t}
+        jumpLabel={webLayoutCopy[session.locale].jumpToLatest}
+        viewportRef={session.scroll}
+        history={{ page: preview, live: displayLive, externalTurn: summary?.externalTurn }}
+        composer={
+          <ReturningConversationComposer
+            id={id}
+            agent={summary?.agent}
+            showStop={!!(displayLive?.stopEnabled && displayLive.turnId)}
+          />
+        }
+      />
+    );
+  }
+  return (
     <div
       role="status"
       className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 p-6 text-center"

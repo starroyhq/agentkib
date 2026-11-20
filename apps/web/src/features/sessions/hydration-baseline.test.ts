@@ -2,6 +2,7 @@ import { act, cleanup, fireEvent, render, renderHook, screen } from "@testing-li
 import { createElement, useState } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createConversationStore, type SessionStreamEvent } from "@agentkib/conversation-state";
+import { createWarmSessionStreamPool, warmSessionAuthority } from "@agentkib/session-ui";
 import type {
   Access,
   ConversationEvent,
@@ -109,6 +110,10 @@ function setup(initial: ConversationEvent[]) {
     current: { items: [], authoritativeTurnIds: [], removedTurnIds: [] } as NativeCoverage,
   };
   const fixed = {
+    warmStreams: createWarmSessionStreamPool(client),
+    warmScope: warmSessionAuthority(access, 0),
+    warmNavigation: { current: {} },
+    liveValue: { current: undefined },
     streamReady: { current: false },
     controlReconciliationPending: { current: false },
     nativeCoverage,

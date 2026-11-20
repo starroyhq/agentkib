@@ -7,6 +7,7 @@ import type {
   ConversationCatalog,
   ConversationEventPage,
   Live,
+  SessionSettings,
   UserQuestionRequest,
 } from "@agentkib/web-client";
 import {
@@ -140,6 +141,7 @@ function createServer(initialLive: Live = idleLive) {
     live: initialLive,
     receipt: undefined as unknown,
     capabilities: undefined as unknown,
+    settings: undefined as SessionSettings | undefined,
     contextOptions: undefined as unknown,
     goals: undefined as unknown,
     mutation: undefined as ((path: string, init?: RequestInit) => Promise<Response>) | undefined,
@@ -147,8 +149,8 @@ function createServer(initialLive: Live = idleLive) {
   const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const path = String(input);
     if (state.mutation && init?.method === "POST") return state.mutation(path, init);
-    if (path.includes("/codex/session-settings?"))
-      return json({ error: { code: "unavailable" } }, 503);
+    if (path.includes("/codex/session-settings?") || path.includes("/managed/settings?"))
+      return state.settings ? json(state.settings) : json({ error: { code: "unavailable" } }, 503);
     if (path.includes("/codex/context-options?")) return json(state.contextOptions ?? {});
     if (path.includes("/codex/goals?")) return json(state.goals ?? {});
     if (path.includes("/codex/capabilities?") || path.includes("/managed/capabilities?"))
@@ -739,7 +741,9 @@ describe("advanced Codex receipt recovery", () => {
     await openSession();
     const writes = () =>
       server.fetcher.mock.calls.filter(
-        ([url, init]) => String(url).endsWith("/codex/rename") && init?.method === "POST",
+        ([url, init]) =>
+          String(url).endsWith("/managed/action") &&
+          JSON.parse(String(init?.body)).operation === "rename",
       );
     expect(writes()).toHaveLength(1);
     fireEvent.click(screen.getByRole("button", { name: "会话操作" }));
@@ -774,7 +778,7 @@ it("does not reload capabilities for streaming text revisions but does on manual
   };
   await openSession();
   const count = () =>
-    server.fetcher.mock.calls.filter(([url]) => String(url).includes("/codex/capabilities?"))
+    server.fetcher.mock.calls.filter(([url]) => String(url).includes("/managed/capabilities?"))
       .length;
   await waitFor(() => expect(count()).toBeGreaterThan(0));
   await act(async () => {
@@ -798,7 +802,7 @@ describe("Codex composer with the real session controller", () => {
     server.state.catalog = { ...catalog, sessions: [{ ...catalog.sessions[0], agent: "codex" }] };
     server.state.access = {
       ...approvedAccess,
-      device: { ...approvedAccess.device!, accessMode: "full" },
+      device: { ...approvedAccess.device!, accessMode: "full", advancedControl: true },
     };
     server.state.capabilities = {
       sessionId: "session",
@@ -828,8 +832,10 @@ describe("Codex composer with the real session controller", () => {
       server.state.mutation = async () => json({ accepted: true });
       await openSession();
       fireEvent.click(await screen.findByRole("button", { name: "添加上下文" }));
-      fireEvent.click(await screen.findByRole("checkbox"));
-      fireEvent.click(screen.getByRole("button", { name: "完成" }));
+      const add = within(await screen.findByRole("dialog", { name: "添加上下文" }));
+      fireEvent.click(add.getByRole("button", { name: "文件和文件夹" }));
+      fireEvent.click(await add.findByRole("checkbox", { name: /reference/ }));
+      fireEvent.click(add.getByRole("button", { name: "完成" }));
       const input = screen.getByLabelText("发送消息");
       const send = screen.getByRole("button", { name: "发送" });
       expect(send).toBeDisabled();
@@ -878,7 +884,9 @@ describe("Codex composer with the real session controller", () => {
       fireEvent.click(start);
       const writes = () =>
         server.fetcher.mock.calls.filter(
-          ([url, init]) => String(url).endsWith("/codex/goal-set") && init?.method === "POST",
+          ([url, init]) =>
+            String(url).endsWith("/managed/action") &&
+            JSON.parse(String(init?.body)).operation === "goal-set",
         );
       await waitFor(() => expect(writes()).toHaveLength(1));
       expect(observedPending).toBe(true);
@@ -951,3 +959,99 @@ describe("Claude managed workflow", () => {
     expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
   });
 });
+
+it.each([
+  { agent: "codex", executionMode: "codex-managed", field: "mode" },
+  { agent: "claude-code", executionMode: "claude-managed", field: "permissionMode" },
+] as const)(
+  "keeps $agent history and catalog while changing Plan mode",
+  async ({ agent, executionMode, field }) => {
+    const server = createServer({ ...idleLive, executionMode, runtimeBootId: "runtime" });
+    const available = { available: true };
+    const unavailable = { available: false };
+    const modes: NonNullable<SessionSettings["options"]["collaborationModes"]> = [
+      { id: "default", name: "Execute" },
+      { id: "plan", name: "Plan" },
+    ];
+    server.state.catalog = { ...catalog, sessions: [{ ...catalog.sessions[0]!, agent }] };
+    server.state.access = {
+      ...approvedAccess,
+      device: { ...approvedAccess.device!, accessMode: "full", advancedControl: true },
+    };
+    server.state.capabilities = {
+      sessionId: "session",
+      executionMode,
+      status: "idle",
+      features: { settings: available, "settings-state": available, send: available },
+    };
+    server.state.settings = {
+      sessionId: "session",
+      revision: 1,
+      available: true,
+      applicationStatus: "confirmed",
+      current: { [field]: "default" },
+      selected: { [field]: "default" },
+      defaults: {},
+      writable: {
+        mode: field === "mode" ? available : unavailable,
+        permissionMode: field === "permissionMode" ? available : unavailable,
+        model: unavailable,
+        effort: unavailable,
+        policy: unavailable,
+        serviceTier: unavailable,
+        restoreDefaults: unavailable,
+      },
+      options: {
+        models: [],
+        policies: [],
+        serviceTiers: [],
+        ...(field === "mode" ? { collaborationModes: modes } : { permissionModes: modes }),
+      },
+    };
+    const writes: string[] = [];
+    server.state.mutation = async (_path, init) => {
+      const request = JSON.parse(String(init?.body));
+      const mode = request[field];
+      writes.push(mode);
+      const settings = server.state.settings!;
+      server.state.settings = {
+        ...settings,
+        revision: settings.revision + 1,
+        current: { [field]: mode },
+        selected: { [field]: mode },
+      };
+      server.state.live = { ...server.state.live, revision: settings.revision + 1 };
+      return json({
+        accepted: true,
+        requestId: request.requestId,
+        sessionId: "session",
+        runtimeBootId: "runtime",
+      });
+    };
+
+    await openSession();
+    const history = screen.getByText("Secret history");
+    const broadReads = () =>
+      server.fetcher.mock.calls.filter(([url]) =>
+        /\/(access|catalog)$|\/events\?/.test(String(url)),
+      ).length;
+    const openPlan = async () => {
+      fireEvent.click(await screen.findByRole("button", { name: "添加上下文" }));
+      const plan = await screen.findByRole("button", { name: "计划模式" });
+      await waitFor(() => expect(plan).toBeEnabled());
+      return plan;
+    };
+    const enter = await openPlan();
+    const before = broadReads();
+    expect(enter).toHaveAttribute("aria-pressed", "false");
+    fireEvent.click(enter);
+    await waitFor(() => expect(writes).toEqual(["plan"]));
+    const exit = await openPlan();
+    await waitFor(() => expect(exit).toHaveAttribute("aria-pressed", "true"));
+    fireEvent.click(exit);
+    await waitFor(() => expect(writes).toEqual(["plan", "default"]));
+    expect(await openPlan()).toHaveAttribute("aria-pressed", "false");
+    expect(screen.getByText("Secret history")).toBe(history);
+    expect(broadReads()).toBe(before);
+  },
+);

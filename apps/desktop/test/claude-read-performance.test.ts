@@ -12,6 +12,7 @@ import {
   realpathSync,
   renameSync,
   rmSync,
+  symlinkSync,
   utimesSync,
   writeFileSync,
 } from "node:fs";
@@ -55,6 +56,7 @@ vi.mock("node:fs", async (importOriginal) => {
 });
 
 import { ClaudeManagedReadOwner } from "../../../packages/backend/src/claude-managed-read";
+import { ClaudeHostStateStore } from "../../../packages/backend/src/claude-host-state";
 import { ClaudeSessions } from "../../../packages/backend/src/claude-sessions";
 import { ClaudeSessionOwnerProbe } from "../../../packages/backend/src/claude-session-owner";
 import { Commands } from "../../../packages/backend/src/commands";
@@ -165,6 +167,174 @@ async function fixture(mebibytes = 0) {
   };
 }
 
+function bridgeWorktree(f: Awaited<ReturnType<typeof fixture>>, name = "orchestrator") {
+  const candidate = path.join(f.workspace, ".claude", "worktrees", name),
+    common = path.join(f.workspace, ".git"),
+    admin = path.join(common, "worktrees", name);
+  mkdirSync(candidate, { recursive: true });
+  mkdirSync(admin, { recursive: true });
+  writeFileSync(path.join(common, "HEAD"), "ref: refs/heads/main\n");
+  writeFileSync(path.join(admin, "HEAD"), `ref: refs/heads/${name}\n`);
+  writeFileSync(path.join(admin, "commondir"), "../..\n");
+  writeFileSync(path.join(admin, "gitdir"), `${path.join(candidate, ".git")}\n`);
+  writeFileSync(path.join(candidate, ".git"), `gitdir: ${admin}\n`);
+  const evidence = (extra: Record<string, unknown> = {}) => {
+    const row = JSON.parse(f.message("Synthetic worktree evidence", "assistant"));
+    appendFileSync(f.file, JSON.stringify({ ...row, cwd: candidate, ...extra }) + "\n");
+  };
+  return { candidate, common, admin, evidence };
+}
+
+describe("Claude bridge native worktree identity", () => {
+  it("verifies an EnterWorktree move with bounded main-transcript evidence", async () => {
+    const f = await fixture(24),
+      worktree = bridgeWorktree(f);
+    worktree.evidence();
+    io.bytes.clear();
+    const header = vi.spyOn(f.sessions, "verifiedClaudeControlTarget");
+    expect(() =>
+      f.sessions.verifyClaudeBridgeWorktree(f.nativeId, f.workspace, worktree.candidate),
+    ).not.toThrow();
+    expect(header).toHaveBeenCalledTimes(2);
+    expect(io.bytes.get(f.file) ?? 0).toBeLessThan(4 * 1024 * 1024);
+  });
+
+  it.each(["missing", "returned-to-root", "sidechain", "child", "metadata", "foreign", "no-id"])(
+    "rejects missing or conflicting main-session worktree evidence: %s",
+    async (kind) => {
+      const f = await fixture(),
+        worktree = bridgeWorktree(f);
+      if (kind === "returned-to-root") {
+        worktree.evidence();
+        appendFileSync(f.file, f.message("Returned to original working directory", "assistant"));
+      } else if (kind === "sidechain") worktree.evidence({ isSidechain: true });
+      else if (kind === "child") worktree.evidence({ agentId: "synthetic-child" });
+      else if (kind === "metadata") worktree.evidence({ isMeta: true });
+      else if (kind === "foreign") worktree.evidence({ sessionId: randomUUID() });
+      else if (kind === "no-id") worktree.evidence({ sessionId: null });
+      expect(() =>
+        f.sessions.verifyClaudeBridgeWorktree(f.nativeId, f.workspace, worktree.candidate),
+      ).toThrow("session-workspace-mismatch");
+    },
+  );
+
+  it("does not scan older history when main evidence is outside its tail budget", async () => {
+    const f = await fixture(),
+      worktree = bridgeWorktree(f);
+    worktree.evidence();
+    appendFileSync(
+      f.file,
+      JSON.stringify({ type: "progress", data: "x".repeat(600 * 1024) }) + "\n",
+    );
+    expect(() =>
+      f.sessions.verifyClaudeBridgeWorktree(f.nativeId, f.workspace, worktree.candidate),
+    ).toThrow("session-workspace-mismatch");
+  });
+
+  it("rejects a truncated final native record instead of using stale cwd evidence", async () => {
+    const f = await fixture(),
+      worktree = bridgeWorktree(f);
+    worktree.evidence();
+    appendFileSync(f.file, '{"type":"assistant","cwd":');
+    expect(() =>
+      f.sessions.verifyClaudeBridgeWorktree(f.nativeId, f.workspace, worktree.candidate),
+    ).toThrow("session-workspace-mismatch");
+  });
+
+  it.each(["uuid", "cwd", "sidechain"])(
+    "keeps the original transcript header proof after entering a worktree: %s",
+    async (changed) => {
+      const f = await fixture(),
+        worktree = bridgeWorktree(f);
+      worktree.evidence();
+      const rows = readFileSync(f.file, "utf8").split("\n"),
+        header = JSON.parse(rows[0]!);
+      if (changed === "uuid") header.sessionId = randomUUID();
+      else if (changed === "cwd") header.cwd = worktree.candidate;
+      else header.isSidechain = true;
+      rows[0] = JSON.stringify(header);
+      writeFileSync(f.file, rows.join("\n"));
+      expect(() =>
+        f.sessions.verifyClaudeBridgeWorktree(f.nativeId, f.workspace, worktree.candidate),
+      ).toThrow();
+    },
+  );
+
+  it.each(["plain-folder", "foreign-repository", "backlink", "nested", "traversal"])(
+    "rejects an unverified worktree directory: %s",
+    async (kind) => {
+      const f = await fixture(),
+        worktree = bridgeWorktree(f);
+      let candidate = worktree.candidate;
+      if (kind === "plain-folder") rmSync(path.join(candidate, ".git"));
+      else if (kind === "foreign-repository") {
+        const foreign = path.join(f.root, "foreign", ".git", "worktrees", "orchestrator");
+        mkdirSync(foreign, { recursive: true });
+        writeFileSync(path.join(foreign, "commondir"), "../..\n");
+        writeFileSync(path.join(foreign, "gitdir"), `${path.join(candidate, ".git")}\n`);
+        writeFileSync(path.join(candidate, ".git"), `gitdir: ${foreign}\n`);
+      } else if (kind === "backlink")
+        writeFileSync(path.join(worktree.admin, "gitdir"), `${path.join(f.workspace, ".git")}\n`);
+      else if (kind === "nested") {
+        candidate = path.join(candidate, "child");
+        mkdirSync(candidate);
+      } else
+        candidate = `${path.dirname(candidate)}${path.sep}ignored${path.sep}..${path.sep}orchestrator`;
+      if (kind === "traversal") mkdirSync(path.join(path.dirname(worktree.candidate), "ignored"));
+      worktree.evidence({ cwd: candidate });
+      expect(() =>
+        f.sessions.verifyClaudeBridgeWorktree(f.nativeId, f.workspace, candidate),
+      ).toThrow();
+    },
+  );
+
+  it.skipIf(process.platform === "win32")(
+    "rejects a candidate directory reached through a symlink",
+    async () => {
+      const f = await fixture(),
+        worktree = bridgeWorktree(f),
+        actual = `${worktree.candidate}-actual`;
+      worktree.evidence();
+      renameSync(worktree.candidate, actual);
+      symlinkSync(actual, worktree.candidate);
+      expect(() =>
+        f.sessions.verifyClaudeBridgeWorktree(f.nativeId, f.workspace, worktree.candidate),
+      ).toThrow("session-workspace-mismatch");
+    },
+  );
+
+  it.skipIf(process.platform === "win32")(
+    "rejects a symlink replacing the parent worktrees directory",
+    async () => {
+      const f = await fixture(),
+        worktree = bridgeWorktree(f),
+        directory = path.dirname(worktree.candidate),
+        actual = `${directory}-actual`;
+      worktree.evidence();
+      renameSync(directory, actual);
+      symlinkSync(actual, directory);
+      expect(() =>
+        f.sessions.verifyClaudeBridgeWorktree(f.nativeId, f.workspace, worktree.candidate),
+      ).toThrow("session-workspace-mismatch");
+    },
+  );
+
+  it("revalidates the original header and file version after reading worktree evidence", async () => {
+    const f = await fixture(),
+      worktree = bridgeWorktree(f);
+    worktree.evidence();
+    const original = f.sessions.verifiedClaudeControlTarget.bind(f.sessions);
+    let calls = 0;
+    vi.spyOn(f.sessions, "verifiedClaudeControlTarget").mockImplementation((id, workspace) => {
+      if (++calls === 2) appendFileSync(f.file, f.message("Changed after the tail read"));
+      return original(id, workspace);
+    });
+    expect(() =>
+      f.sessions.verifyClaudeBridgeWorktree(f.nativeId, f.workspace, worktree.candidate),
+    ).toThrow("session-workspace-mismatch");
+  });
+});
+
 /** Reference of the old #findNative observation path, including its complete document and hash. */
 async function legacyNativeObservation(f: Awaited<ReturnType<typeof fixture>>) {
   const listing = await f.sessions.list("claude-code", f.workspace);
@@ -190,6 +360,89 @@ async function legacyNativeObservation(f: Awaited<ReturnType<typeof fixture>>) {
 }
 
 describe("Claude read observation cost and identity boundaries", () => {
+  it("reads a saved main-session context count while an external terminal owns execution", async () => {
+    const f = await fixture();
+    appendFileSync(
+      f.file,
+      JSON.stringify({
+        type: "assistant",
+        sessionId: f.nativeId,
+        cwd: f.workspace,
+        uuid: randomUUID(),
+        isSidechain: false,
+        timestamp: "2026-11-18T02:06:43.033Z",
+        message: {
+          role: "assistant",
+          model: "native-model",
+          content: [],
+          usage: {
+            input_tokens: 2,
+            cache_read_input_tokens: 738221,
+            cache_creation_input_tokens: 184,
+          },
+        },
+      }) + "\n",
+    );
+    vi.spyOn(ClaudeSessionOwnerProbe.prototype, "check").mockResolvedValue({
+      kind: "interactive",
+      pid: 12345,
+      source: "agents",
+    });
+    const document = vi.spyOn(f.sessions, "document");
+    const fingerprint = vi.spyOn(f.sessions, "verifiedClaudeControlTarget");
+    // Ordinary native records can push the last assistant report outside the live read budget.
+    appendFileSync(
+      f.file,
+      JSON.stringify({ type: "progress", data: "x".repeat(600 * 1024) }) + "\n",
+    );
+    const live = await f.owner.live(f.id, true);
+    expect(live).toMatchObject({
+      sendEnabled: false,
+      ownershipReason: "claude-owner-busy",
+      usage: { available: false },
+    });
+    const usage = await f.owner.request({ operation: "usage", sessionId: f.id });
+    expect(usage).toMatchObject({ available: true, historical: true, usedTokens: 738407 });
+    expect(usage).not.toHaveProperty("contextWindow");
+    expect(usage).not.toHaveProperty("percent");
+    const settings = await f.owner.request({ operation: "settings-state", sessionId: f.id });
+    expect(settings).toMatchObject({
+      current: { model: null },
+      selected: { model: null },
+      historicalSettings: { model: "native-model" },
+    });
+    expect(document).not.toHaveBeenCalled();
+    expect(fingerprint).not.toHaveBeenCalled();
+  });
+
+  it("shows the last native model behind appended metadata without confirming pending settings", async () => {
+    const f = await fixture();
+    const assistant = JSON.parse(f.message("Synthetic last reply", "assistant"));
+    assistant.message.model = "native-model";
+    assistant.message.usage = { input_tokens: 24_606 };
+    appendFileSync(f.file, JSON.stringify(assistant) + "\n");
+    const adapterMetadata = JSON.stringify({ type: "progress", data: "x".repeat(256 * 1024) });
+    appendFileSync(f.file, (adapterMetadata + "\n").repeat(9));
+    new ClaudeHostStateStore(f.root, f.owner.bootId).update(f.id, (state) => {
+      state.settings = { model: "opus", effort: "max" };
+    });
+    const document = vi.spyOn(f.sessions, "document");
+
+    const settings = await f.owner.request({ operation: "settings-state", sessionId: f.id });
+    expect(settings).toMatchObject({
+      current: { model: null, effort: null },
+      selected: { model: "opus", effort: "max" },
+      historicalSettings: { model: "native-model" },
+      applicationStatus: "pending",
+      models: [],
+      writable: { model: { available: false }, effort: { available: false } },
+    });
+    expect(await f.owner.request({ operation: "usage", sessionId: f.id })).toMatchObject({
+      available: false,
+    });
+    expect(document).not.toHaveBeenCalled();
+  });
+
   it("uses one discovery and no complete document for an unmanaged live read and each history page", async () => {
     const f = await fixture();
     const discoveries = vi.spyOn(ClaudeSessions.prototype, "list");
@@ -329,9 +582,7 @@ describe("Claude read observation cost and identity boundaries", () => {
       const f = await fixture();
       await f.owner.live(f.id, true);
       await f.owner.events(f.id, null, 50);
-      const first = await f.owner.inspect(f.id);
       appendFileSync(f.file, f.message("Changed after observation"));
-      expect((await f.owner.inspect(f.id)).handoffFingerprint).not.toBe(first.handoffFingerprint);
       vi.spyOn(ClaudeSessionOwnerProbe.prototype, "check").mockResolvedValue({
         kind: "interactive",
         pid: 234567,
@@ -339,12 +590,20 @@ describe("Claude read observation cost and identity boundaries", () => {
       });
       await expect(
         f.owner.request({
-          operation: "adopt",
+          operation: "send",
           sessionId: f.id,
           requestId: randomUUID(),
           deviceId: "synthetic-device",
+          runtimeBootId: f.owner.bootId,
+          expectedRevision: (await f.owner.live(f.id, true)).revision,
+          experimentalEnabled: true,
+          text: "Continue the session",
         }),
-      ).rejects.toThrow("claude-owner-busy");
+      ).resolves.toMatchObject({
+        accepted: false,
+        error: "claude-owner-busy",
+        controlOutcome: "not-dispatched",
+      });
     },
   );
 

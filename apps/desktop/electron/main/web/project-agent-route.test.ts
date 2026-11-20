@@ -214,6 +214,7 @@ describe("Project Agent from a paired device", () => {
   });
 
   it("says so when it stops because the app quits, not when its settings change", async () => {
+    service.setSharedRuntimePrimary(false);
     const device = await phone();
     const invalidations = () =>
       managed.mock.calls

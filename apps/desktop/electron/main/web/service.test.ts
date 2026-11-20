@@ -1866,7 +1866,7 @@ describe("WebAccessService loopback security boundary", () => {
     }
   });
 
-  it("lets a device's newest stream replace its oldest one at the per-device limit", async () => {
+  it("replaces a device's half-open detail stream when the same session reconnects", async () => {
     await bootstrap();
     await pair();
     const registry = (service as unknown as { streams: Map<unknown, unknown> }).streams;
@@ -1883,6 +1883,53 @@ describe("WebAccessService loopback security boundary", () => {
       expect(replacement.chunks.join("")).not.toContain("event: unavailable");
       expect(registry.size).toBe(2);
       await vi.waitFor(() => expect(subscriptions.size).toBe(2));
+    } finally {
+      streams.forEach((stream) => stream.close());
+    }
+  });
+
+  it("keeps catalog streams for idle tabs on the same credential", async () => {
+    await bootstrap();
+    await pair();
+    const streams: ReturnType<typeof openStream>[] = [];
+    try {
+      streams.push(await openReadyStream(cookie, ""));
+      streams.push(await openReadyStream(cookie, ""));
+      expect(subscriptions.size).toBe(2);
+      for (const stream of streams)
+        expect(stream.chunks.join("")).not.toContain("event: unavailable");
+    } finally {
+      streams.forEach((stream) => stream.close());
+    }
+  });
+
+  it("keeps the catalog and three detail sessions live and only evicts the oldest detail", async () => {
+    await bootstrap();
+    await pair();
+    const streams: ReturnType<typeof openStream>[] = [];
+    try {
+      for (const id of ["", "a", "b", "c"]) streams.push(await openReadyStream(cookie, id));
+      const [catalog, a] = streams;
+      expect(subscriptions.size).toBe(4);
+      for (const stream of streams)
+        expect(stream.chunks.join("")).not.toContain("event: unavailable");
+
+      // The original A subscriber still receives updates after visiting B and C.
+      const baseline = streamEvents(a.chunks)[0];
+      hub.notification("sessions.event", {
+        ...baseline,
+        type: "state",
+        seq: 1,
+        cursor: "epoch-one:1",
+        payload: { revision: 5 },
+      });
+      await vi.waitFor(() => expect(streamEvents(a.chunks).at(-1)).toMatchObject({ seq: 1 }));
+
+      streams.push(await openReadyStream(cookie, "d"));
+      await vi.waitFor(() => expect(a.chunks.join("")).toContain("event: unavailable"));
+      await vi.waitFor(() => expect(subscriptions.size).toBe(4));
+      for (const stream of [catalog, ...streams.slice(2)])
+        expect(stream.chunks.join("")).not.toContain("event: unavailable");
     } finally {
       streams.forEach((stream) => stream.close());
     }
@@ -1962,7 +2009,7 @@ describe("WebAccessService loopback security boundary", () => {
       expect(rejected.headers["retry-after"]).toBe("3");
       expect(rejected.json()).toMatchObject({ error: "stream_limit" });
       expect(registry.size).toBe(16);
-      // A device at its own limit still replaces its oldest stream in a full table.
+      // Replacing an existing session needs no new slot in a full table.
       streams.push(await openReadyStream(devices[0]));
       await vi.waitFor(() => expect(streams[0].chunks.join("")).toContain("event: unavailable"));
       for (const stream of streams.slice(1))

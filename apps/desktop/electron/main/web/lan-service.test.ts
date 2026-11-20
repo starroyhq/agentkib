@@ -257,6 +257,16 @@ describe("hosted LAN transport", () => {
     expect((await http("/events?sessionId=session")).status).toBe(401);
     expect((await http(receipt)).status).toBe(401);
   });
+
+  it("reports a stale parent history cursor to a paired browser", async () => {
+    await bootstrap();
+    await pair();
+    runtime.mockRejectedValueOnce(new Error("TRANSCRIPT_CURSOR_STALE"));
+    expect(await http("/events?sessionId=session&cursor=old-source")).toMatchObject({
+      status: 409,
+      data: { error: "stale_cursor" },
+    });
+  });
   it("only preflights whitelisted routes, methods and headers", async () => {
     for (const method of ["GET", "POST"]) {
       expect(

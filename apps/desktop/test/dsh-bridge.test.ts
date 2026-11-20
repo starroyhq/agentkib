@@ -13,6 +13,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { PassThrough } from "node:stream";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { RUNTIME_METHODS, sessionProviderCapabilities } from "@agentkib/runtime-protocol";
 import {
   DshBridge,
   dshConversationEvents,
@@ -24,12 +25,18 @@ import {
   type DshLaneBridge,
 } from "../../../packages/backend/src/dsh-lanes";
 import { readControlReceipt } from "../../../packages/backend/src/control-receipt";
+import type { ContextUsage } from "../../../packages/backend/src/context-usage";
+import { TypeScriptBackend } from "../../../packages/backend/src/index";
+import { McpHub } from "../../../packages/backend/src/mcp-hub";
+import { RemoteAgent } from "../../../packages/backend/src/remote-agent";
+import { BackendStore } from "../../../packages/backend/src/store";
 import {
   createBridge,
   DSH_BRIDGE_PATHS,
   managedHost,
 } from "../../../packages/dsh-bridge-plugin/bridge.js";
 import { post } from "../../../packages/dsh-bridge-plugin/client.js";
+import * as dshClient from "../../../packages/dsh-bridge-plugin/client.js";
 import {
   dshBridgeCompatibility,
   dshBridgePluginCompatibility,
@@ -87,6 +94,7 @@ function fakeDsh(cwd: string) {
   const queueUpdates: any[] = [];
   const cancels: string[] = [];
   const selections: any[] = [];
+  let defaultModel = { provider: "deepseek", model: "deepseek-chat" };
   // DSH keeps each image in its own store, named after the digest of its bytes.
   const images = new Map<string, { ref: any; data: string }>();
   let imagesRefused = false;
@@ -152,6 +160,17 @@ function fakeDsh(cwd: string) {
     agents: {
       get: (id: string) => sessions.get(id)?.agent,
       list: () => [...sessions.values()].map((session) => session.agent),
+      turnBoundaryOf: (native: { id: string }) => {
+        const event = sessions
+          .get(native.id)
+          ?.events.slice()
+          .reverse()
+          .find((entry) => entry.type === "turn/start" || entry.type === "turn/end");
+        return {
+          openTurnStartSeq: event?.type === "turn/start" ? event.seq : null,
+          lastTurn: event?.data.turn ?? 0,
+        };
+      },
     },
     // DSH's tool registry; a plugin reaches one agent's own through `agent.ctx.tools`.
     tools: { register: () => () => undefined },
@@ -307,7 +326,7 @@ function fakeDsh(cwd: string) {
       },
       async modelCatalog() {
         return {
-          default: { provider: "deepseek", model: "deepseek-chat" },
+          default: defaultModel,
           routableProviders: ["deepseek", "mock/local"],
           groups: [
             {
@@ -334,9 +353,9 @@ function fakeDsh(cwd: string) {
         };
       },
       async selectModel(request: any) {
-        selections.push(request);
         const { sessionId: _sessionId, ...selected } = request;
-        sessions.get(request.sessionId)!.selection = selected;
+        sessions.get(request.sessionId)!.agent.model.select(selected);
+        defaultModel = selected;
         return { selected };
       },
       // The session's chosen model, read the way DSH's own model picker reads it.
@@ -571,7 +590,8 @@ function fakeDsh(cwd: string) {
       inbox: { nextTurn: [], nextStep: [] },
       session: { id, seq: 0 },
       model: {
-        select(selection: unknown) {
+        select(selection: Record<string, unknown>) {
+          selections.push({ sessionId: id, ...selection });
           sessions.get(id)!.selection = selection;
           append(id, "model/selection", selection);
         },
@@ -718,10 +738,19 @@ async function until<T>(read: () => T | undefined | false, ms = 5000): Promise<T
   }
 }
 
+type FakeContextPressure = { projectedTokens: number; contextWindow?: number };
+
 async function fixture({
   supportsCreateModelSelection = true,
+  dshVersion = "0.2.2-rc.3",
+  contextPressure,
   lead,
-}: { supportsCreateModelSelection?: boolean; lead?: DshBridgeOptions["lead"] } = {}) {
+}: {
+  supportsCreateModelSelection?: boolean;
+  dshVersion?: string;
+  contextPressure?: () => FakeContextPressure;
+  lead?: DshBridgeOptions["lead"];
+} = {}) {
   const root = realpathSync(mkdtempSync(path.join(tmpdir(), "ak-dsh-test-")));
   const workspace = path.join(root, "workspace");
   const agentkibHome = path.join(root, "agentkib-home");
@@ -749,10 +778,19 @@ async function fixture({
   bridge.initialize();
   const dsh = fakeDsh(workspace);
   if (!supportsCreateModelSelection) delete dsh.ctx.llm;
+  if (contextPressure) {
+    dsh.ctx.tokenMeter = { contextPressure };
+    const projections = dsh.ctx.sessionController.projections;
+    dsh.ctx.sessionController.projections = async (request: { sessionId: string }) => {
+      const projection = await projections(request);
+      if (projection) projection.values.contextPressure = contextPressure();
+      return projection;
+    };
+  }
   dsh.create("session-a", "First DSH session");
   const plugin = createBridge(dsh.ctx, {
     roots: [agentkibHome],
-    dshVersion: "0.2.1-rc.5",
+    dshVersion,
     discoveryMs: 50,
     debounceMs: 10,
     listThrottleMs: 20,
@@ -797,6 +835,178 @@ async function fixture({
 }
 
 describe("DeepSeek Harness bridge", () => {
+  it("browses its registered workspace without issuing a native command or enabling references", async () => {
+    const f = await fixture();
+    const before = f.dsh.executed.length;
+    expect(f.bridge.capabilities("ak-session-a", false).features).toMatchObject({
+      resources: { available: true },
+      files: { available: true },
+      context: { available: false },
+      usage: { available: false },
+    });
+    expect(
+      await f.bridge.request({ operation: "resources", sessionId: "ak-session-a" }),
+    ).toMatchObject({
+      available: true,
+      contextReferences: { supportedTypes: [] },
+      skills: [],
+      plugins: [],
+      apps: [],
+    });
+    expect(f.dsh.executed).toHaveLength(before);
+    expect(f.dsh.prompts).toEqual([]);
+  });
+
+  it.skipIf(process.platform !== "darwin")(
+    "routes the registered DSH provider and legacy requests to the same bridge and receipts",
+    async () => {
+      const root = realpathSync(mkdtempSync(path.join(tmpdir(), "ak-dsh-provider-")));
+      cleanups.push(() => rmSync(root, { recursive: true, force: true }));
+      const dataDir = path.join(root, "data");
+      const workspace = path.join(root, "workspace");
+      const agentkibHome = path.join(root, "agentkib-home");
+      mkdirSync(dataDir);
+      mkdirSync(workspace);
+      const store = new BackendStore(path.join(dataDir, "agentkib.db"));
+      store.sql.run(
+        "INSERT INTO workspaces(id,canonical_path,name,status,last_discovered_at) VALUES(?,?,?,?,?)",
+        "workspace",
+        workspace,
+        "Synthetic DSH workspace",
+        "healthy",
+        new Date().toISOString(),
+      );
+      store.close();
+      vi.spyOn(McpHub.prototype, "start").mockResolvedValue();
+      vi.spyOn(RemoteAgent.prototype, "start").mockResolvedValue();
+      const backend = new TypeScriptBackend({
+        HOME: root,
+        USERPROFILE: root,
+        AGENTKIB_HOME: agentkibHome,
+        AGENTKIB_DSH_PLUGIN_DIR: "",
+        CLAUDE_CONFIG_DIR: path.join(root, ".claude"),
+        CODEX_HOME: path.join(root, ".codex"),
+        DSH_HOME: path.join(root, ".dsh"),
+        PATH: "/usr/bin:/bin",
+      });
+      cleanups.push(() => backend.close());
+      const call = (method: string, params: Record<string, unknown>) =>
+        backend.handleAsync({ jsonrpc: "2.0", id: randomUUID(), method, params });
+      const rpc = async (method: string, params: Record<string, unknown>) => {
+        const response = await call(method, params);
+        if (response.error) throw new Error(JSON.stringify(response.error));
+        return response.result as Record<string, unknown>;
+      };
+      const web = (params: Record<string, unknown>) => rpc(RUNTIME_METHODS.webRequest, params);
+      await rpc("backend.initialize", { dataDir });
+      const dsh = fakeDsh(workspace);
+      dsh.create("session-a", "Existing DSH session");
+      const plugin = createBridge(dsh.ctx, {
+        roots: [agentkibHome],
+        dshVersion: "0.2.1-rc.5",
+        discoveryMs: 50,
+        debounceMs: 10,
+      });
+      cleanups.push(() => {
+        plugin.close();
+        dsh.close();
+      });
+      await until(() => [...plugin.hosts.values()].some((host) => host.watch.has("session-a")));
+
+      const agent = "deepseek-harness";
+      const provider = sessionProviderCapabilities(agent);
+      const baseOptions = await web({ operation: "provider-options", agent });
+      expect(baseOptions).toMatchObject({ available: true, provider });
+      expect(baseOptions).not.toHaveProperty("models");
+      const options = await web({ operation: "provider-options", agent, workspaceId: "workspace" });
+      expect(options).toMatchObject({
+        available: true,
+        provider,
+        models: expect.arrayContaining([
+          expect.objectContaining({ id: "deepseek/deepseek-chat", efforts: ["low", "high"] }),
+        ]),
+        agentPresets: expect.arrayContaining([expect.objectContaining({ id: "ptc" })]),
+      });
+      expect(await web({ operation: "dsh-options", includeModels: true })).toEqual(options);
+
+      const creation = {
+        requestId: randomUUID(),
+        deviceId: "device-1",
+        workspaceId: "workspace",
+        agentPreset: "ptc",
+        model: "deepseek/deepseek-chat",
+        effort: "high",
+      };
+      const result = await web({ operation: "provider-create", agent, ...creation });
+      expect(result).toMatchObject({
+        accepted: true,
+        completed: true,
+        sessionId: expect.any(String),
+      });
+      const sessionId = String(result.sessionId);
+      expect(await web({ operation: "dsh-create", ...creation })).toMatchObject({
+        accepted: true,
+        sessionId,
+      });
+      expect(dsh.creations).toHaveLength(1);
+      expect(dsh.creations[0]).toMatchObject({ cwd: workspace, agentPreset: "ptc" });
+      expect(dsh.prompts).toHaveLength(0);
+
+      const settings = () => web({ operation: "settings-state", sessionId });
+      await vi.waitFor(async () => {
+        expect(await settings()).toMatchObject({
+          available: true,
+          provider,
+          current: { model: creation.model, effort: "high" },
+          writable: { effort: { available: true } },
+        });
+      });
+      expect(await web({ operation: "usage", sessionId })).toEqual({
+        available: false,
+        state: "unavailable",
+        reason: "usage-unavailable",
+      });
+
+      const live = await web({ operation: "live", sessionId, experimentalEnabled: true });
+      const update = {
+        operation: "settings",
+        sessionId,
+        deviceId: creation.deviceId,
+        runtimeBootId: live.runtimeBootId,
+        expectedRevision: live.revision,
+        experimentalEnabled: true,
+        requestId: randomUUID(),
+        effort: "low",
+      };
+      // The Codex RPC cannot claim an indexed DSH session using its native boot and revision.
+      expect(await call(RUNTIME_METHODS.codexManaged, update)).toHaveProperty("error");
+      expect(
+        await web({
+          ...update,
+          requestId: randomUUID(),
+          expectedRevision: Number(live.revision) + 1,
+        }),
+      ).toMatchObject({ controlOutcome: "not-dispatched", reason: "stale-dsh-revision" });
+      expect(dsh.selections).toHaveLength(1);
+      expect(await web(update)).toMatchObject({ accepted: true });
+      expect(await web(update)).toMatchObject({ accepted: true });
+      expect(dsh.selections).toHaveLength(2);
+      expect(await settings()).toMatchObject({ current: { effort: "low" } });
+      expect(
+        await rpc(RUNTIME_METHODS.controlReceipt, {
+          requestId: update.requestId,
+          deviceId: creation.deviceId,
+        }),
+      ).toMatchObject({ found: true, status: "accepted", operation: "settings", sessionId });
+      expect(
+        await rpc(RUNTIME_METHODS.controlReceipt, {
+          requestId: update.requestId,
+          deviceId: "other-device",
+        }),
+      ).toMatchObject({ found: false });
+    },
+  );
+
   it("publishes a private discovery file and lists sessions of registered workspaces", async () => {
     const f = await fixture();
     const discovery = path.join(f.agentkibHome, "dsh-bridge", "discovery-v1.json");
@@ -974,8 +1184,126 @@ describe("DeepSeek Harness bridge", () => {
       turnId: "dsh-turn-1",
     });
     const stopped = await f.control("stop", { turnId: "dsh-turn-1" });
-    expect(stopped).toMatchObject({ accepted: true });
+    expect(stopped).toMatchObject({ accepted: true, completed: false });
     expect(f.dsh.cancels).toEqual(["session-a"]);
+  });
+
+  it.each(["0.2.1-rc.5", "0.2.2-rc.6"])(
+    "does not send an unscoped stop on DSH %s",
+    async (dshVersion) => {
+      const f = await fixture({ dshVersion });
+      await f.control("send", { text: "keep running" });
+      const live = await until(() => {
+        const value = f.bridge.live("ak-session-a", true);
+        return value.turnId === "dsh-turn-1" && value;
+      });
+      expect(live).toMatchObject({ stopEnabled: false, queueEnabled: true });
+      await expect(f.control("stop", { turnId: "dsh-turn-1" })).resolves.toMatchObject({
+        accepted: false,
+        controlOutcome: "not-dispatched",
+        reason: "dsh-stop-unavailable",
+      });
+      expect(f.dsh.cancels).toEqual([]);
+    },
+  );
+
+  it("rechecks the native turn after the host's reported state and ignores a prior turn's late end", async () => {
+    const f = await fixture();
+    await f.control("send", { text: "stop first only" });
+    await until(() => f.bridge.live("ak-session-a", true).turnId === "dsh-turn-1");
+    const session = f.dsh.sessions.get("session-a")!;
+    // Native switched turns while the Host still has the older report.
+    const ended = {
+      seq: session.events.length,
+      time: Date.now(),
+      type: "turn/end",
+      data: { turn: 1, reason: { kind: "completed" } },
+    };
+    const started = {
+      seq: ended.seq + 1,
+      time: Date.now(),
+      type: "turn/start",
+      data: { turn: 2 },
+    };
+    session.events.push(ended, started);
+    await expect(f.control("stop", { turnId: "dsh-turn-1" })).resolves.toMatchObject({
+      accepted: false,
+      controlOutcome: "not-dispatched",
+      reason: "stale-turn",
+    });
+    expect(f.dsh.cancels).toEqual([]);
+
+    f.dsh.emit("session/event", { id: "session-a" }, started);
+    await until(() => f.bridge.live("ak-session-a", true).turnId === "dsh-turn-2");
+    f.dsh.emit("agent/assistant-stream", {
+      agent: session.agent,
+      frame: { type: "chunk", chunk: { type: "text-delta", text: "next round" } },
+    });
+    f.dsh.emit("session/event", { id: "session-a" }, ended);
+    await until(() => f.bridge.live("ak-session-a", true).streamText === "next round");
+    expect(f.bridge.live("ak-session-a", true)).toMatchObject({
+      turnId: "dsh-turn-2",
+      stopEnabled: true,
+    });
+  });
+
+  it("settles a lost stop reply only from the target turn's explicit native end", async () => {
+    const f = await fixture();
+    await f.control("send", { text: "stop this turn" });
+    await until(() => f.bridge.live("ak-session-a", true).turnId === "dsh-turn-1");
+    const sendRequest = dshClient.post;
+    // Let the native cancellation request through and drop its transport acknowledgement.
+    let dropped = false;
+    const transport = vi.spyOn(dshClient, "post").mockImplementation((...args) => {
+      const [_, route, body] = args;
+      if (
+        route === DSH_BRIDGE_PATHS.result &&
+        body?.value?.accepted === true &&
+        body.value.sessionId === "session-a" &&
+        body.value.turn === 1
+      ) {
+        dropped = true;
+        return Promise.reject(new Error("test lost reply"));
+      }
+      return sendRequest(...args);
+    });
+    try {
+      const stopped = await f.control("stop", { turnId: "dsh-turn-1" });
+      expect(dropped).toBe(true);
+      expect(stopped).toMatchObject({ controlOutcome: "unknown", completed: false });
+      expect(f.dsh.cancels).toEqual(["session-a"]);
+      const check = () =>
+        readControlReceipt(f.bridge.options.dataDir, {
+          requestId: stopped.requestId,
+          deviceId: "device-1",
+        });
+      f.dsh.append("session-a", "turn/start", { turn: 2 });
+      f.dsh.append("session-a", "turn/end", { turn: 2, reason: { kind: "aborted" } });
+      f.dsh.append("session-a", "turn/start", { turn: 3 });
+      await f.bridge.request({ operation: "reconcile", sessionId: "ak-session-a" });
+      expect(check().status).toBe("unknown");
+      f.dsh.append("session-a", "turn/end", { turn: 1, reason: { kind: "aborted" } });
+      await until(() => check().status === "accepted");
+      expect(check()).toMatchObject({
+        turnId: "dsh-turn-1",
+        completionObserved: true,
+        ack: { completed: true, completionObserved: true },
+      });
+      expect(f.bridge.live("ak-session-a", true)).toMatchObject({
+        status: "running",
+        turnId: "dsh-turn-3",
+      });
+      const history = await f.bridge.events("session-a", null, 20);
+      expect(history.events).toContainEqual(
+        expect.objectContaining({
+          kind: "user-message",
+          turn_id: "dsh-turn-1",
+          turn_meta: { outcome: "aborted" },
+        }),
+      );
+    } finally {
+      transport.mockRestore();
+    }
   });
 
   it("keeps the control revision while DSH streams, so a queued message is not stale", async () => {
@@ -1401,6 +1729,58 @@ describe("DeepSeek Harness bridge", () => {
     expect(f.bridge.live("ak-session-a", true).executionLocation).toBe("external");
   });
 
+  it("keeps the last complete context reading across a partial reply and host restart", async () => {
+    let pressure: FakeContextPressure = { projectedTokens: 100 };
+    const f = await fixture({ contextPressure: () => pressure });
+    const sessionId = "ak-session-a";
+    const usage = () => f.bridge.live(sessionId, true).usage as ContextUsage;
+    const requestUsage = { operation: "usage", sessionId };
+    const updatePressure = (reading: FakeContextPressure) => {
+      pressure = reading;
+      f.dsh.append("session-a", "user/message", {
+        role: "user",
+        id: randomUUID(),
+        content: [{ type: "text", text: "Context changed" }],
+        source: { kind: "user" },
+      });
+    };
+
+    await f.bridge.request(requestUsage);
+    await vi.waitFor(() =>
+      expect(usage()).toMatchObject({ available: true, state: "pending", usedTokens: 100 }),
+    );
+    expect(usage().contextWindow).toBeUndefined();
+
+    updatePressure({ projectedTokens: 200, contextWindow: 1000 });
+    await vi.waitFor(() =>
+      expect(usage()).toMatchObject({
+        state: "ready",
+        usedTokens: 200,
+        contextWindow: 1000,
+        percent: 20,
+      }),
+    );
+    const complete = usage();
+
+    updatePressure({ projectedTokens: 300 });
+    const cached = {
+      available: true,
+      state: "stale",
+      historical: true,
+      usedTokens: 200,
+      contextWindow: 1000,
+      updatedAt: complete.updatedAt,
+    };
+    await vi.waitFor(() => expect(usage()).toMatchObject(cached));
+
+    f.plugin.close();
+    await f.bridge.close();
+    const reopened = new DshBridge({ ...f.bridge.options, bootId: randomUUID() });
+    cleanups.push(() => reopened.close());
+    expect(reopened.live(sessionId, true).usage).toMatchObject(cached);
+    await expect(reopened.request(requestUsage)).resolves.toMatchObject(cached);
+  });
+
   it("lists DSH sessions with empty history when no DSH ran since AgentKib started", async () => {
     const f = await fixture();
     f.plugin.close();
@@ -1457,10 +1837,20 @@ describe("DeepSeek Harness plugin projections", () => {
       failure: { code: "QUOTA", message: "x".repeat(500) },
     });
     expect(
-      historyRecord({ seq: 3, time: 1, type: "turn/end", data: { turn: 3, reason: { kind: "error", error: {} } } }),
+      historyRecord({
+        seq: 3,
+        time: 1,
+        type: "turn/end",
+        data: { turn: 3, reason: { kind: "error", error: {} } },
+      }),
     ).not.toHaveProperty("failure");
     expect(
-      historyRecord({ seq: 4, time: 1, type: "turn/end", data: { turn: 3, reason: { kind: "completed" } } }),
+      historyRecord({
+        seq: 4,
+        time: 1,
+        type: "turn/end",
+        data: { turn: 3, reason: { kind: "completed" } },
+      }),
     ).not.toHaveProperty("failure");
     expect(
       historyRecord({
@@ -1655,9 +2045,9 @@ describe("DeepSeek Harness plugin projections", () => {
     expect(features().rename.available).toBe(true);
     expect(features().fork.available).toBe(true);
     expect(features().unarchive).toEqual({ available: false, reason: "session-busy" });
-    // A permission preset applies to the next approval, so it still changes during the turn.
-    expect(features().settings).toEqual({ available: true });
-    // The model picker still reads, and says why it cannot change now.
+    // The native permission command can affect the current turn, so settings wait for idle.
+    expect(features().settings).toEqual({ available: false, reason: "session-busy" });
+    // Limits and selections remain readable.
     expect(
       (await f.bridge.request({
         operation: "settings-state",
@@ -1668,7 +2058,7 @@ describe("DeepSeek Harness plugin projections", () => {
       writable: {
         model: { available: false, reason: "session-busy" },
         effort: { available: false, reason: "session-busy" },
-        policy: { available: true },
+        policy: { available: false, reason: "session-busy" },
       },
     });
     expect(await f.control("settings", { effort: "high" })).toMatchObject({
@@ -1709,7 +2099,12 @@ describe("DeepSeek Harness plugin projections", () => {
     ]);
 
     // An effort change keeps the current model.
-    expect(await f.control("settings", { effort: "high" })).toMatchObject({ accepted: true });
+    f.publish.mockClear();
+    const changed = await f.control("settings", { effort: "high" });
+    expect(changed).toMatchObject({ accepted: true });
+    expect(f.publish.mock.calls.filter(([, type]) => type === "invalidate")).toEqual([
+      ["ak-session-a", "invalidate", { domains: ["settings"] }, changed.live],
+    ]);
     expect(f.dsh.selections.at(-1)).toEqual({
       sessionId: "session-a",
       provider: "deepseek",
@@ -1742,6 +2137,9 @@ describe("DeepSeek Harness plugin projections", () => {
       policyId: "workspace-write",
       mode: "default",
     });
+    expect(await settings()).toMatchObject({
+      defaults: { model: "deepseek/deepseek-chat", effort: null },
+    });
     expect(await f.control("settings", { model: "nobody/none" })).toMatchObject({
       controlOutcome: "not-dispatched",
       reason: "invalid-model",
@@ -1758,11 +2156,85 @@ describe("DeepSeek Harness plugin projections", () => {
     });
   });
 
+  it("keeps models readable and blocks unsafe writes without scoped model selection", async () => {
+    const f = await fixture({ supportsCreateModelSelection: false });
+    const state = await f.bridge.request({
+      operation: "settings-state",
+      sessionId: "ak-session-a",
+    });
+    expect(state).toMatchObject({
+      available: true,
+      current: { model: "deepseek/deepseek-chat", effort: null },
+      writable: {
+        model: { available: false },
+        effort: { available: false },
+        policy: { available: true },
+      },
+    });
+    expect(await f.control("settings", { effort: "high" })).toMatchObject({
+      controlOutcome: "not-dispatched",
+      reason: "operation-unavailable",
+    });
+    expect(
+      await f.control("settings", { model: "deepseek/deepseek-chat", policyId: "read-only" }),
+    ).toMatchObject({ accepted: true });
+    expect(f.dsh.selections).toEqual([]);
+  });
+
+  it("reconciles a lost DSH model settings reply without invalidating history", async () => {
+    const f = await fixture();
+    await until(
+      () =>
+        (f.bridge.capabilities("ak-session-a", true).features as Record<string, any>)[
+          "settings-state"
+        ].available,
+    );
+    await f.bridge.request({ operation: "settings-state", sessionId: "ak-session-a" });
+    const controller = f.dsh.ctx.sessionController;
+    const projections = controller.projections.bind(controller);
+    let dropReply = true;
+    controller.projections = (request: unknown) => {
+      if (dropReply && f.dsh.selections.length > 0) {
+        dropReply = false;
+        return new Promise(() => undefined);
+      }
+      return projections(request);
+    };
+    f.publish.mockClear();
+    const result = await f.control("settings", { effort: "high" });
+    expect(result).toMatchObject({ accepted: false, controlOutcome: "unknown" });
+
+    const receipt = () =>
+      readControlReceipt(f.bridge.options.dataDir, {
+        requestId: result.requestId,
+        deviceId: "device-1",
+      });
+    await vi.waitFor(
+      async () => {
+        await f.bridge.request({
+          operation: "reconcile",
+          sessionId: "ak-session-a",
+          experimentalEnabled: true,
+        });
+        expect(receipt()).toMatchObject({ found: true, status: "accepted" });
+      },
+      { timeout: 2000 },
+    );
+    expect(f.dsh.selections).toHaveLength(1);
+    expect(f.bridge.live("ak-session-a", true).reason).not.toBe("control-outcome-unconfirmed");
+    expect(
+      f.publish.mock.calls
+        .filter(([id, type]) => id === "ak-session-a" && type === "invalidate")
+        .flatMap(([, , payload]) => payload.domains),
+    ).toEqual(["settings", "receipts"]);
+  });
+
   it("starts a new DSH session in a registered workspace, once per request", async () => {
     const f = await fixture();
     // The new-task form offers DSH's Agent presets; a shipped one has no name of its own.
     expect(await f.bridge.createOptions()).toEqual({
       available: true,
+      nativeGoals: true,
       agentPresets: [
         { id: "standard", name: null, description: null, isDefault: true, broken: null },
         { id: "ptc", name: null, description: null, isDefault: false, broken: null },
@@ -1893,8 +2365,14 @@ describe("DeepSeek Harness plugin projections", () => {
       model: "deepseek-chat",
       reasoningEffort: "high",
     });
-    // The per-session route was recorded without using DSH's global default-setting command.
-    expect(f.dsh.selections).toEqual([]);
+    expect(f.dsh.selections).toEqual([
+      {
+        sessionId: nativeId,
+        provider: "deepseek",
+        model: "deepseek-chat",
+        reasoningEffort: "high",
+      },
+    ]);
     expect(f.dsh.prompts).toEqual([]);
     expect(
       await f.control("send", {
@@ -2297,8 +2775,15 @@ describe("DeepSeek Harness goals, commands, presets and subagents", () => {
       collaborationModes: [{ id: "default" }, { id: "plan" }],
       writable: { mode: { available: true } },
     });
+    f.publish.mockClear();
     expect(await f.control("settings", { mode: "plan" })).toMatchObject({ accepted: true });
     expect(f.dsh.executed.at(-1)).toBe("/plan");
+    await until(() =>
+      f.publish.mock.calls.some(
+        ([id, type, payload]) =>
+          id === "ak-session-a" && type === "invalidate" && payload.domains.includes("history"),
+      ),
+    );
     // A switch counts at once, as DSH's chip shows it, though DSH applies it at the next step.
     expect(f.dsh.planOf.get("session-a")).toEqual({ active: false, pending: true });
     expect((await settings()).current.mode).toBe("plan");
@@ -2383,27 +2868,28 @@ describe("DeepSeek Harness goals, commands, presets and subagents", () => {
       reason: "invalid-policy",
     });
 
-    // A preset changes during a turn; the model waits for the turn to end.
+    // The native preset changes the next approval of the current turn.
     await f.control("send", { text: "run the tests" });
     await until(() => f.bridge.live("ak-session-a", true).status === "running");
     await settings();
     expect(await f.control("settings", { policyId: "danger-full-access" })).toMatchObject({
-      accepted: true,
+      controlOutcome: "not-dispatched",
+      reason: "session-busy",
     });
-    expect(f.dsh.permissionOf.get("session-a")).toBe("danger-full-access");
+    expect(f.dsh.permissionOf.get("session-a")).toBe("workspace-write");
     expect(
       await f.control("settings", { model: "mock%2Flocal/m-1", policyId: "workspace-write" }),
     ).toMatchObject({ controlOutcome: "not-dispatched", reason: "session-busy" });
-    expect(f.dsh.permissionOf.get("session-a")).toBe("danger-full-access");
+    expect(f.dsh.permissionOf.get("session-a")).toBe("workspace-write");
 
     // Idle again: a new preset and a new model are two steps, preset first.
     f.dsh.finishTurn("session-a", "done");
     await until(() => f.bridge.live("ak-session-a", true).status === "idle");
     await settings();
     expect(
-      await f.control("settings", { model: "mock%2Flocal/m-1", policyId: "workspace-write" }),
+      await f.control("settings", { model: "mock%2Flocal/m-1", policyId: "read-only" }),
     ).toMatchObject({ accepted: true });
-    expect(f.dsh.permissionOf.get("session-a")).toBe("workspace-write");
+    expect(f.dsh.permissionOf.get("session-a")).toBe("read-only");
     expect(f.dsh.selections.at(-1)).toMatchObject({ provider: "mock/local", model: "m-1" });
   });
 
@@ -2709,6 +3195,8 @@ async function managedFixture(
     empty?: boolean;
     /** How long a background DSH takes to exit once told to stop. */
     stopDelayMs?: number;
+    writerStatus?: DshBridgeOptions["writerStatus"];
+    localTurn?: DshBridgeOptions["localTurn"];
   } = {},
 ) {
   const root = realpathSync(mkdtempSync(path.join(tmpdir(), "ak-dsh-managed-")));
@@ -2795,6 +3283,8 @@ async function managedFixture(
     workspaceFor: (cwd) =>
       cwd.startsWith(workspace) ? { id: "workspace", path: workspace } : null,
     workspacePath: (id) => (id === "workspace" ? workspace : null),
+    writerStatus: options.writerStatus,
+    localTurn: options.localTurn,
     sessionsChanged: () => undefined,
     publish: vi.fn(),
     managed: {
@@ -2835,21 +3325,112 @@ async function managedFixture(
     }) as Promise<Record<string, any>>;
   };
   const userDsh = () => createBridge(dsh.ctx, { ...pluginOptions, pid: 1111 });
-  return { root, agentkibHome, bridge, dsh, managed, starts, stops, send, userDsh, pluginOptions };
+  const create = () =>
+    bridge.create({ requestId: randomUUID(), deviceId: "device-1", workspaceId: "workspace" });
+  return {
+    root,
+    agentkibHome,
+    bridge,
+    dsh,
+    managed,
+    starts,
+    stops,
+    send,
+    create,
+    userDsh,
+    pluginOptions,
+  };
 }
 
 describe("DeepSeek Harness started in the background", () => {
+  it("publishes read-only running observations and clears them on turn end or writer release", async () => {
+    const writer = vi.fn<NonNullable<DshBridgeOptions["writerStatus"]>>(() => "held");
+    const now = Date.now();
+    const opened = {
+      dev: 1,
+      ino: 2,
+      size: 120,
+      mtimeMs: now,
+      seq: 10,
+      lastEventAt: now,
+      open: { turn: 7, startedAt: now },
+    };
+    const localTurn = vi.fn<NonNullable<DshBridgeOptions["localTurn"]>>(async () => opened);
+    const f = await managedFixture({ writerStatus: writer, localTurn });
+    const published = vi.mocked(f.bridge.options.publish);
+    published.mockClear();
+    await f.bridge.refreshLocalTurns();
+    const active = {
+      status: "running",
+      reason: "dsh-native-turn-observed",
+      executionLocation: "external",
+      turnId: null,
+      sendEnabled: false,
+      stopEnabled: false,
+      queueEnabled: false,
+    };
+    expect(f.bridge.live("ak-session-a", true)).toMatchObject(active);
+    expect(published).toHaveBeenCalledWith(
+      "ak-session-a",
+      "state",
+      expect.objectContaining(active),
+      expect.objectContaining(active),
+    );
+    expect(f.starts).toEqual([]);
+    published.mockClear();
+    await f.bridge.refreshLocalTurns();
+    expect(localTurn).toHaveBeenLastCalledWith("session-a", expect.any(String), opened);
+    expect(published).not.toHaveBeenCalled();
+
+    localTurn.mockResolvedValueOnce({ ...opened, size: 200, seq: 18, open: null });
+    await f.bridge.refreshLocalTurns();
+    expect(f.bridge.live("ak-session-a", true)).toMatchObject({
+      status: "unsupported",
+      reason: "dsh-native-status-unknown",
+    });
+    expect(published).toHaveBeenCalledTimes(1);
+
+    localTurn.mockResolvedValueOnce({ ...opened, lastEventAt: now - 31 * 60_000 });
+    await f.bridge.refreshLocalTurns();
+    expect(f.bridge.live("ak-session-a", true).status).toBe("unsupported");
+    await f.bridge.refreshLocalTurns();
+    expect(f.bridge.live("ak-session-a", true)).toMatchObject(active);
+
+    const user = f.userDsh();
+    cleanups.push(() => user.close());
+    await until(() => f.bridge.live("ak-session-a", true).status === "idle");
+    expect(f.bridge.live("ak-session-a", true).reason).toBeUndefined();
+    user.close();
+    await until(() => f.bridge.live("ak-session-a", true).cliVersion === undefined);
+    await f.bridge.refreshLocalTurns();
+    expect(f.bridge.live("ak-session-a", true)).toMatchObject(active);
+
+    writer.mockReturnValue("free");
+    await f.bridge.refreshLocalTurns();
+    expect(f.bridge.live("ak-session-a", true)).toMatchObject({
+      status: "unsupported",
+      executionLocation: null,
+      sendEnabled: true,
+    });
+    expect(f.starts).toEqual([]);
+  });
+
   it("lets a session be sent to while no DSH runs, and starts one to take it", async () => {
     const f = await managedFixture();
     const offline = f.bridge.live("ak-session-a", true);
     expect(offline).toMatchObject({
-      status: "idle",
+      status: "unsupported",
+      reason: "dsh-native-status-unknown",
       sendEnabled: true,
       executionLocation: null,
     });
-    expect(offline.reason).toBeUndefined();
     expect(f.bridge.capabilities("ak-session-a", true)).toMatchObject({
-      features: { send: { available: true }, stop: { available: false } },
+      features: {
+        send: { available: true },
+        stop: { available: false },
+        rename: { available: false },
+        fork: { available: false },
+      },
     });
 
     const sent = await f.send("hello from the phone");
@@ -2882,7 +3463,8 @@ describe("DeepSeek Harness started in the background", () => {
     await until(() => f.stops.length === 1, 3000);
     // The session can be sent to again; that starts DSH anew.
     expect(f.bridge.live("ak-session-a", true)).toMatchObject({
-      status: "idle",
+      status: "unsupported",
+      reason: "dsh-native-status-unknown",
       sendEnabled: true,
     });
     expect((await f.send("again")).controlOutcome).toBe("accepted");
@@ -2954,14 +3536,81 @@ describe("DeepSeek Harness started in the background", () => {
     expect(f.dsh.prompts).toHaveLength(0);
   });
 
-  it("starts DSH to read a session someone opens, but never for search", async () => {
+  it("only reads uncached history, documents and creation options with no runtime", async () => {
     const f = await managedFixture();
     await expect(f.bridge.conversation("session-a")).rejects.toThrow("dsh-runtime-offline");
+    expect(f.bridge.documentStatus("session-a")).toEqual({
+      status: "unavailable",
+      reason: "dsh-runtime-offline",
+    });
+    await expect(f.bridge.events("session-a", null, 20)).resolves.toMatchObject({ events: [] });
+    await expect(f.bridge.createOptions(true)).resolves.toEqual({ available: true });
     expect(f.starts).toHaveLength(0);
-    expect(f.bridge.documentStatus("session-a")).toEqual({ status: "supported" });
-    await f.bridge.events("session-a", null, 20);
+  });
+
+  it("follows the original agent once bridged and never resumes over an unobserved writer", async () => {
+    const writerStatus = vi.fn<NonNullable<DshBridgeOptions["writerStatus"]>>(() => "held");
+    const f = await managedFixture({ writerStatus });
+    const unknown = {
+      status: "unsupported",
+      reason: "dsh-native-status-unknown",
+      executionLocation: null,
+      sendEnabled: false,
+      stopEnabled: false,
+    };
+    expect(f.bridge.live("ak-session-a", true)).toMatchObject(unknown);
+    expect(await f.send("must not start")).toMatchObject({
+      controlOutcome: "not-dispatched",
+      reason: unknown.reason,
+    });
+    expect(f.starts).toHaveLength(0);
+    writerStatus.mockReturnValueOnce("unknown");
+    expect(f.bridge.live("ak-session-a", true)).toMatchObject(unknown);
+
+    // The background bridge can read this history but has no agent for this session.
+    const agents = f.dsh.ctx.agents.list;
+    f.dsh.ctx.agents.list = () =>
+      agents().filter((agent: { id: string }) => agent.id !== "session-a");
+    const list = f.dsh.ctx.sessionController.list;
+    f.dsh.ctx.sessionController.list = async () => {
+      const { items } = await list();
+      return {
+        items: items.map((item: { sessionId: string }) =>
+          item.sessionId === "session-a" ? { ...item, agentAvailable: false } : item,
+        ),
+      };
+    };
+    expect(await f.create()).toMatchObject({ controlOutcome: "accepted" });
     expect(f.starts).toHaveLength(1);
-    expect(f.bridge.live("ak-session-a", true).executionLocation).toBe("agentkib");
+    await f.bridge.events("session-a", null, 20);
+    expect(f.bridge.live("ak-session-a", true)).toMatchObject(unknown);
+    expect(await f.send("must not dispatch")).toMatchObject({
+      controlOutcome: "not-dispatched",
+      reason: unknown.reason,
+    });
+    expect(f.dsh.prompts).toHaveLength(0);
+
+    // The native process reports the real running turn, with no AgentKib send.
+    const native = fakeDsh(path.join(f.root, "workspace"));
+    native.create("session-a", "First DSH session");
+    const user = createBridge(native.ctx, { ...f.pluginOptions, pid: 1111 });
+    cleanups.push(() => {
+      user.close();
+      native.close();
+    });
+    await native.ctx.sessionController.prompt({
+      sessionId: "session-a",
+      content: [{ type: "text", text: "Already sent in native DSH" }],
+    });
+    await until(() => f.bridge.live("ak-session-a", true).status === "running");
+    expect(f.bridge.live("ak-session-a", true)).toMatchObject({
+      status: "running",
+      executionLocation: "external",
+      turnId: "dsh-turn-1",
+    });
+    user.close();
+    await until(() => f.bridge.live("ak-session-a", true).reason === unknown.reason);
+    expect(f.bridge.live("ak-session-a", true)).toMatchObject(unknown);
   });
 
   it("explains a session another DSH holds", async () => {
@@ -2980,6 +3629,9 @@ describe("DeepSeek Harness started in the background", () => {
 
   it("takes a DSH with no sessions yet as ready", async () => {
     const f = await managedFixture({ empty: true });
+    expect(await f.bridge.createOptions()).toEqual({ available: true });
+    expect(f.starts).toHaveLength(0);
+    expect(await f.create()).toMatchObject({ controlOutcome: "accepted" });
     const options = await f.bridge.createOptions();
     expect(options.available).toBe(true);
     expect(options.agentPresets?.map((preset) => preset.id)).toContain("standard");
@@ -2994,9 +3646,7 @@ describe("DeepSeek Harness started in the background", () => {
     await until(() => f.stops.length === 1, 3000);
     expect(f.bridge.live("ak-session-a", true).executionLocation).toBeNull();
     // A new session wanted meanwhile goes to a new DSH, not the one exiting.
-    const options = await f.bridge.createOptions();
-    expect(options.available).toBe(true);
-    expect(options.agentPresets?.length).toBeGreaterThan(0);
+    expect(await f.create()).toMatchObject({ controlOutcome: "accepted" });
     expect(f.starts).toHaveLength(2);
   });
 
@@ -3126,11 +3776,11 @@ describe("DeepSeek Harness sessions as a Project Agent's workers", () => {
 
   it("neither lists nor reads worker turns by starting DSH", async () => {
     const f = await managedFixture();
-    expect(await f.bridge.createOptions(true, { start: false })).toEqual({ available: true });
+    expect(await f.bridge.createOptions(true)).toEqual({ available: true });
     expect(await f.bridge.endedTurns("ak-session-a")).toEqual([]);
     expect(f.starts).toEqual([]);
     // A new session for the person still starts it.
-    expect(await f.bridge.createOptions(true)).toMatchObject({ available: true });
+    expect(await f.create()).toMatchObject({ controlOutcome: "accepted" });
     expect(f.starts).toHaveLength(1);
   });
 
@@ -3245,9 +3895,16 @@ describe("DeepSeek Harness sessions as a Project Agent's workers", () => {
     }> = [];
     const ended: unknown[][] = [];
     const waiting: unknown[][] = [];
+    let failRead = true;
     const watch = new DshLaneWatch({
       isLane: (id) => id === "lane",
-      endedTurns: async () => turns,
+      endedTurns: async () => {
+        if (failRead) {
+          failRead = false;
+          throw new Error("native history temporarily unavailable");
+        }
+        return turns;
+      },
       turnEnded: async (...args) => void ended.push(args),
       waiting: async (...args) => void waiting.push(args),
       retryMs: 10,

@@ -31,13 +31,14 @@ Devin 在 `subagent_heads` 里记下每个子代理的链头，子代理的消�
 每一轮由 AgentKib 启动一次非交互的 `devin -p`：新建时带上第一条消息，继续时加 `-r <会话 ID>`，第一条消息和之后的消息都写进只有当前用户可读的临时文件，用 `--prompt-file` 交给 Devin，这一轮结束后删除。进度从 Devin 的会话库读回，会话页每秒更新一次；停止会结束这个进程：先发 SIGINT；`devin -p` 不因 SIGINT 退出，1.5 秒后发 SIGTERM，5 秒后仍在运行则 SIGKILL。
 
 - **登录**：Devin CLI 作为自己的宿主，用 `devin auth login` 保存的登录；AgentKib 不读取也不保存凭据。Devin Desktop 的登录只交给它自己启动的 `devin acp`，不能给 CLI 用。`devin acp` 在 ACP 模式下有意不用 CLI 的登录、要求宿主提供 API Key，所以这里不用 ACP。CLI 没有登录时 AgentKib 不提示；用户在 AgentKib 里新建或发送时，才说明需要先在终端运行一次 `devin auth login`。 未登录或工作区未信任时，会话页输入框上方和新建失败的提示里说明原因；桌面端另有“在终端登录 Devin CLI”“在终端信任这个工作区”按钮，在终端里运行 `devin auth login`，或在工作区里运行 `devin` 让它询问是否信任。AgentKib 只启动命令，看不到输入的内容；这个入口只接受桌面端自己的请求，Web 和手机只显示说明。
-- **权限和模型**：用 Devin 自己的权限模式，对整轮生效：`accept-edits`（默认，自动批准只读工具和工作区内的文件修改）、`auto`（只自动批准只读工具）、`smart`、`dangerous`。`devin -p` 运行中不能询问，不在权限内的操作直接被拒绝，所以没有一轮中途的审批和提问。新建时选，或在会话页的“会话设置”里改；改动从下一轮生效，按 Devin 会话 ID 存在 AgentKib 数据目录的 `devin-session-settings.json` 里，AgentKib 重启后仍然有效。没选模型时继续会话不传 `--model`，Devin 沿用这个会话保存的模型，输入框里按它所属的模型家族显示（例如 `claude-opus-5-5-max` 显示为 Claude Opus 5.5）。`smart` 和 `dangerous` 只接受有完全访问权限的设备。Devin 会话库里的 `agent_mode` 只记新建时的模式，之后不更新；AgentKib 每一轮都传 `--permission-mode`。
+- **权限和模型**：用 Devin 自己的权限模式，对整轮生效：`accept-edits`（默认，自动批准只读工具和工作区内的文件修改）、`auto`（只自动批准只读工具）、`smart`、`dangerous`。`devin -p` 运行中不能询问，不在权限内的操作直接被拒绝，所以没有一轮中途的审批和提问。新建时选择首轮权限。桌面和 Web 的已有会话支持在运行中保存模型、推理强度和权限。下一轮 Devin 进程使用新设置。选择按 Devin 会话 ID 存在 AgentKib 数据目录的 `devin-session-settings.json` 里，AgentKib 重启后仍然有效。没选模型时继续会话沿用 Devin 保存的模型。输入框会显示可识别的模型家族、推理强度和速度。`smart` 和 `dangerous` 只接受有完全访问权限的设备。Devin 会话库里的 `agent_mode` 只记新建时的模式，之后不更新；AgentKib 每一轮都传 `--permission-mode`。
   用 3000.12.59 和 swe-2 在临时工作区实测：`auto` 下写文件被拒绝；`accept-edits` 下能写文件，但运行 shell 命令被拒绝。
 - **工作区信任**：不传 `--respect-workspace-trust false`。Devin 还没信任的工作区会拒绝运行，AgentKib 说明需要先在那个目录里运行一次 `devin` 并选择信任。读取重置时间时启动的交互式 `devin` 也不替用户回答信任提问（见“重置时间”）。
 - **会话锁**：Devin 在 `session_locks/<会话 ID>.lock` 里记下持有者的 PID，退出后文件仍留着。持有者仍是运行中的 Devin 进程（例如会话正在 Devin Desktop 或终端里打开）时，AgentKib 不发送，并提示到那边关掉后再发。
-- **模型**：新建时按 `devin models list --format json` 的模型家族列出，用 `--model <slug>` 传给 Devin，由它选具体变体；没有登录时列表为空，用 Devin 配置的默认模型。列表缓存 10 分钟。
+- **模型**：桌面首页和已有会话使用 `devin models list --format json` 提供的模型家族和具体变体。只选家族时把家族 slug 传给 Devin，由它选默认变体。选择推理强度或 Fast 时，AgentKib 匹配目录中真实存在的组合，把具体变体 ID 通过 `--model` 传给 Devin。目录中的特殊变体也可单独选择。已有会话的改动从下一轮生效。没有登录时列表为空，沿用 Devin 的默认配置。列表缓存 10 分钟。
 - **环境**：Devin 给 ACP 宿主（例如 Devin Desktop）下的进程设置 `ACP_BACKEND`，继承了它的 CLI 会不用自己的登录。AgentKib 启动 `devin` 时去掉这个变量。
-- **限制**：只能发送文字，不能带图片或文件；没有上下文用量。
+- **上下文用量**：已有会话复用上下文圆环。详情中的模型上限取自目录的 `max_context_tokens`。如果当前会话主链保存了同一模型变体的最近一次请求用量，可以显示该次请求的输入 token 和比例，并标明是历史记录。未找到匹配记录时，详情只显示已知的模型上限。日／周账户额度独立计算。
+- **附件限制**：只能发送文字，不能带图片或文件。
 - **回执**：新建、发送和停止都写入受控命令台账，结果不明时不会重复执行。新建要等 Devin 把会话写入会话库才返回会话 ID（最多 2 分钟）；超时视为结果不明，由回执核对。
 - **运行中的一轮**：会话目录里标为“在 AgentKib 中运行”，首页的“进行中”、菜单栏的计数和手机的实时活动都算它。退出 AgentKib 会结束 `devin -p`（SIGTERM），所以退出确认里会列出它。AgentKib 新建的会话第一轮就算在内。
 - **一轮的结果**：Devin 的会话库不记一轮在哪里结束，所以 AgentKib 在它运行的每一轮结束时，自己记下结果（完成、失败或被停止）作为已读状态，指向这一轮的提问和 Devin 的回答。之后和 Codex、Claude Code 会话一样：首页的“待查看”里有它，手机收到一轮结束的提醒，在桌面、Web 或手机上读到这条回答就标为已读。在 Devin Desktop 或终端里运行的轮次没有结果；AgentKib 没运行过任何一轮的会话没有待查看的内容。

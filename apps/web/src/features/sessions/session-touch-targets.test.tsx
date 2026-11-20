@@ -58,8 +58,8 @@ vi.mock("@/features/conversation/features/sessions/session-context", () => ({
 vi.mock("@/features/conversation/features/sessions/pending-center", () => ({
   PendingCenter: () => null,
 }));
-vi.mock("@/features/conversation/features/sessions/managed-tasks", () => ({
-  ManagedTasks: () => null,
+vi.mock("@/features/conversation/features/sessions/session-receipt-recovery", () => ({
+  SessionReceiptRecovery: () => null,
 }));
 vi.mock("@/features/conversation/features/history/history-search-controls", () => ({
   HistorySearchTrigger: () => null,

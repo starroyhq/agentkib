@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
+import { composerAddCopy } from "@agentkib/session-ui";
 import { useEffect } from "react";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -85,7 +86,7 @@ function fixture(attachments = true) {
       };
     if (operation === "events") return { events: [], warnings: [] };
     if (operation === "live") return live;
-    if (operation === "codex/capabilities")
+    if (operation === "managed/capabilities")
       return {
         sessionId: "session",
         status: "idle",
@@ -96,7 +97,7 @@ function fixture(attachments = true) {
           context: { available: true },
         },
       };
-    if (operation === "codex/session-settings")
+    if (operation === "managed/settings")
       return {
         sessionId: "session",
         revision: 1,
@@ -206,7 +207,14 @@ describe("desktop local attachment and permission copy", () => {
       const choose = within(dialog).getByRole("button", { name: chooseLabel });
       expect(choose).toBeEnabled();
       expect(dialog).not.toHaveTextContent(/手机|手機|phone|スマートフォン/);
+      const add = composerAddCopy(locale);
+      expect(within(dialog).queryByRole("checkbox")).not.toBeInTheDocument();
+      fireEvent.click(within(dialog).getByRole("button", { name: add.filesAndFolders }));
       fireEvent.click(await within(dialog).findByRole("checkbox", { name: /README.md/ }));
+      fireEvent.click(within(dialog).getByRole("button", { name: add.back }));
+      expect(within(dialog).getByRole("button", { name: add.filesAndFolders })).toHaveFocus();
+      fireEvent.click(within(dialog).getByRole("button", { name: add.filesAndFolders }));
+      expect(await within(dialog).findByRole("checkbox", { name: /README.md/ })).toBeChecked();
       fireEvent.click(
         within(dialog).getByRole("button", { name: composerLayoutCopy[locale].done }),
       );

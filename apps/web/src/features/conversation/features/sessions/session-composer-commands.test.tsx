@@ -17,8 +17,7 @@ const doubles = vi.hoisted(() => ({
   control: vi.fn(),
   codexAction: vi.fn(),
   panels: null as SessionPanels | null,
-  // Opens the composer's settings or goal dialog; rendered only with full access.
-  open: vi.fn<(dialog: "settings" | "goal") => boolean>(),
+  open: vi.fn<ComposerControlsHandle["open"]>(),
   // Turns plan mode on; the controls report whether it is on and can be switched.
   plan: vi.fn<() => boolean>(),
   planState: { on: false, available: false } as ComposerPlanState,
@@ -132,16 +131,14 @@ describe("slash commands in the Web composer", () => {
   it("lists only what a paired browser may run, and points the textarea at the active one", () => {
     const { input } = renderComposer("/");
     // No /config, /heapdump or /loop, and no /clear: AgentKib starts a new session instead.
-    // /model, /goal and /rename run or open AgentKib's own control.
+    // Local model and goal controls require their capabilities; rename remains reported.
     expect(options()).toEqual([
       "/probe-skillA probe skill (project)",
       "/code-reviewReview the diff",
       "/compactFree up context",
       "/output-style",
-      "/model[model]Change the next-turn model",
       "/rename[name]Rename the session in AgentKib",
       "/usageShow usage",
-      "/goal[objective]Set a persistent goal",
     ]);
     const listbox = screen.getByRole("listbox");
     const [first, second] = within(listbox).getAllByRole("option");
@@ -349,8 +346,8 @@ describe("slash commands in the Web composer", () => {
 
   it.each([
     ["/goal", "goal"],
-    ["/model", "settings"],
-    ["/effort", "settings"],
+    ["/model", "models"],
+    ["/effort", "effort"],
   ] as const)("opens AgentKib's control for %s without an argument", (text, dialog) => {
     doubles.session.access = { ...doubles.session.access!, device: fullDevice };
     doubles.open.mockReturnValue(true);
@@ -363,7 +360,7 @@ describe("slash commands in the Web composer", () => {
   });
 
   it("falls back when AgentKib's control cannot open here", async () => {
-    // Without full access there is no settings dialog; Claude Code reports the model instead.
+    // Without full access there is no model picker; Claude Code reports the model instead.
     const first = renderComposer("/model");
     fireEvent.submit(first.form);
     await waitFor(() => expect(doubles.control).toHaveBeenCalledOnce());
@@ -526,20 +523,20 @@ describe("Codex slash commands in the composer", () => {
     expect(doubles.control).not.toHaveBeenCalled();
   });
 
-  it("opens files and diffs, settings, or the session actions without an argument", () => {
+  it("opens the corresponding controls for bare Codex commands", () => {
     const setFilesOpen = vi.fn();
     const setActionsOpen = vi.fn();
     doubles.panels = { filesOpen: false, setFilesOpen, actionsOpen: false, setActionsOpen };
     doubles.session.access = { ...doubles.session.access!, device: fullDevice };
     doubles.open.mockReturnValue(true);
-    for (const text of ["/diff", "/permissions", "/archive"]) {
+    for (const text of ["/diff", "/permissions", "/status", "/model", "/archive"]) {
       const { input, form, unmount } = renderComposer(text);
       fireEvent.submit(form);
       expect(input).toHaveValue("");
       unmount();
     }
     expect(setFilesOpen).toHaveBeenCalledExactlyOnceWith(true);
-    expect(doubles.open).toHaveBeenCalledExactlyOnceWith("settings");
+    expect(doubles.open.mock.calls).toEqual([["permissions"], ["usage"], ["models"]]);
     expect(setActionsOpen).toHaveBeenCalledExactlyOnceWith(true);
     expect(doubles.control).not.toHaveBeenCalled();
     expect(doubles.codexAction).not.toHaveBeenCalled();

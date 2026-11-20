@@ -1,3 +1,9 @@
+import {
+  CODEX_MENU_COMMANDS,
+  claudeMenuCommands,
+  dshMenuCommands,
+  type SessionCapabilities,
+} from "@agentkib/web-client";
 import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent } from "react";
 
 /**
@@ -137,6 +143,79 @@ export function claudeSlashOptions(
     if (!handled(name)) return command;
     return { ...command, argumentHint: HANDLED[name], description: copy[name] };
   });
+}
+
+/** Add only controls AgentKib can handle locally; the CLI still owns its native catalog. */
+export function composerLocalSlashOptions(
+  commands: readonly SlashCommandOption[],
+  controls: { model: boolean; effort: boolean; goal: boolean },
+  locale: string,
+): SlashCommandOption[] {
+  const copy = slashCommandCopy(locale);
+  const offered = commands.filter(
+    (command) =>
+      !Object.hasOwn(controls, command.name) || controls[command.name as keyof typeof controls],
+  );
+  return [
+    ...offered,
+    ...(["model", "effort", "goal"] as const).flatMap((name) =>
+      controls[name] && !commands.some((command) => command.name === name)
+        ? [{ name, aliases: [], argumentHint: HANDLED[name], description: copy[name] }]
+        : [],
+    ),
+  ];
+}
+
+/** Merge local panels with the commands the device can actually send to the current executor. */
+export function sessionSlashOptions(
+  agent: string | undefined,
+  catalog: SessionCapabilities["commands"],
+  options: {
+    canSend: boolean;
+    claudeOwner: boolean;
+    dshOwner: boolean;
+    model: boolean;
+    goal: boolean;
+    locale: string;
+  },
+): SlashCommandOption[] {
+  const { locale, model, goal } = options;
+  const commands = options.canSend ? (catalog ?? []) : [];
+  const local = { model, effort: model, goal };
+  if (agent === "claude-code")
+    return composerLocalSlashOptions(
+      claudeSlashOptions(claudeMenuCommands(commands, options.claudeOwner), locale),
+      local,
+      locale,
+    );
+  const native =
+    agent === "codex"
+      ? codexSlashOptions(CODEX_MENU_COMMANDS, locale)
+      : agent === "deepseek-harness"
+        ? dshSlashOptions(dshMenuCommands(commands, options.dshOwner))
+        : [];
+  // Entries added to a provider's own catalog open panels. Only its native entries describe
+  // arguments that can be submitted to that provider.
+  const panels = composerLocalSlashOptions([], local, locale);
+  return [
+    ...native,
+    ...panels
+      .filter((panel) => !native.some((entry) => entry.name === panel.name))
+      .map(({ argumentHint: _hint, ...panel }) => panel),
+  ];
+}
+
+export function composerPanelShortcut(text: string, model: boolean, goal: boolean) {
+  switch (text.trim().toLowerCase()) {
+    case "/model":
+      return model ? "model" : undefined;
+    case "/effort":
+      return model ? "effort" : undefined;
+    case "/goal":
+      return goal ? "goal" : undefined;
+    default:
+      return undefined;
+  }
 }
 
 /** What each Codex menu command does in AgentKib, with the argument it takes. */
@@ -308,6 +387,7 @@ export function useSlashCommandMenu({
   catalogKnown,
   locale,
   label,
+  side = "top",
   plan,
   onChoose,
 }: {
@@ -320,6 +400,8 @@ export function useSlashCommandMenu({
   locale: string;
   /** The list's accessible name; Claude Code's commands by default. */
   label?: string;
+  /** Which edge of the composer anchors the menu. */
+  side?: "top" | "bottom";
   /**
    * Plan mode, as Codex's composer offers it: `/plan` turns it on rather than going into the
    * draft, also typed after a space. `enter` says whether it could.
@@ -399,7 +481,9 @@ export function useSlashCommandMenu({
     return true;
   };
   const menu = open ? (
-    <div className="absolute inset-x-0 bottom-full z-30 mb-2 rounded-lg bg-popover p-1 text-popover-foreground shadow-md ring-1 ring-foreground/10">
+    <div
+      className={`absolute inset-x-0 z-30 rounded-lg bg-popover p-1 text-popover-foreground shadow-md ring-1 ring-foreground/10 ${side === "bottom" ? "top-full mt-2" : "bottom-full mb-2"}`}
+    >
       {listOpen ? (
         <ul
           ref={list}

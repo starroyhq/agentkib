@@ -275,6 +275,32 @@ export function createBridge(ctx, options = {}) {
     state.version = bump();
     schedule();
   };
+  const turnBoundary = (agents, agent) => {
+    try {
+      return agents?.turnBoundaryOf?.(agent.session) ?? null;
+    } catch {
+      return null;
+    }
+  };
+  const openTurn = (boundary) =>
+    Number.isSafeInteger(boundary?.openTurnStartSeq) &&
+    boundary.openTurnStartSeq >= 0 &&
+    Number.isSafeInteger(boundary.lastTurn) &&
+    boundary.lastTurn > 0
+      ? boundary.lastTurn
+      : null;
+  const canCancelTurn = () => {
+    const agents = service("agents");
+    // These releases' controllers check ownership and abort synchronously. A native controller
+    // that may yield needs its own expected-turn argument. Method presence alone cannot prove that.
+    return (
+      (dshVersion === "0.2.2-rc.3" || dshVersion === "0.2.2-rc.5") &&
+      typeof agents?.get === "function" &&
+      typeof agents.turnBoundaryOf === "function" &&
+      typeof service("sessionController")?.cancel === "function" &&
+      typeof service("sessionQuery")?.observeSession === "function"
+    );
+  };
   /**
    * Which goal a change must name. It is part of what a control is decided on, so a goal changed
    * in DSH's own window makes AgentKib read it again before changing it.
@@ -302,6 +328,9 @@ export function createBridge(ctx, options = {}) {
     state.live = true;
     state.status = agent.status === "running" ? "running" : "idle";
     state.cursor = typeof agent.session?.seq === "number" ? agent.session.seq - 1 : state.cursor;
+    const boundary = turnBoundary(service("agents"), agent);
+    state.turn = state.status === "running" ? openTurn(boundary) : null;
+    state.turnEventSeq = state.cursor;
     state.queue = queueItems(agent);
     state.goal = goalRefOf(agent);
     touch(state);
@@ -336,11 +365,18 @@ export function createBridge(ctx, options = {}) {
     if (leadTools.get(String(agent.id))?.agent === agent) leadTools.delete(String(agent.id));
   });
   ctx.on("agent/status", ({ agent, status }) => {
+    if (
+      status === "idle" &&
+      agent.status === "running" &&
+      openTurn(turnBoundary(service("agents"), agent)) !== null
+    )
+      return;
     const state = stateOf(String(agent.id));
     state.live = true;
     state.status = status === "running" ? "running" : "idle";
     state.queue = queueItems(agent);
     if (state.status === "idle") {
+      state.turn = null;
       state.streamText = "";
       state.streamTruncated = false;
     }
@@ -373,8 +409,21 @@ export function createBridge(ctx, options = {}) {
     const state = states.get(sessionId);
     if (state) {
       state.cursor = Math.max(state.cursor, Number(event?.seq ?? -1));
-      if (event?.type === "turn/start") state.turn = event.data?.turn ?? null;
-      if (event?.type === "turn/end") {
+      if (
+        event?.type === "turn/start" &&
+        Number.isSafeInteger(event.seq) &&
+        event.seq > (state.turnEventSeq ?? -1)
+      ) {
+        state.turn = event.data?.turn ?? null;
+        state.turnEventSeq = event.seq;
+      }
+      if (
+        event?.type === "turn/end" &&
+        Number.isSafeInteger(event.seq) &&
+        event.seq > (state.turnEventSeq ?? -1) &&
+        event.data?.turn === state.turn
+      ) {
+        state.turnEventSeq = event.seq;
         state.turn = null;
         state.streamText = "";
         state.streamTruncated = false;
@@ -503,14 +552,16 @@ export function createBridge(ctx, options = {}) {
       return null;
     }
   }
-  function canSelectModelAtCreation(controller) {
+  function canRecordModelSelection(controller) {
     return (
-      typeof controller?.create === "function" &&
       typeof controller?.modelCatalog === "function" &&
       typeof controller?.projections === "function" &&
       typeof service("agents")?.get === "function" &&
       typeof service("llm")?.resolveCallConfig === "function"
     );
+  }
+  function canSelectModelAtCreation(controller) {
+    return typeof controller?.create === "function" && canRecordModelSelection(controller);
   }
   async function recordedModel(controller, sessionId) {
     const value = await controller.projections({ sessionId }, lifetime.signal);
@@ -518,9 +569,7 @@ export function createBridge(ctx, options = {}) {
     if (!selection || typeof selection !== "object") throw new Error("dsh-models-unavailable");
     return selection.next ?? selection.lastUsed ?? null;
   }
-  async function createSelection(controller, selection) {
-    if (!canSelectModelAtCreation(controller))
-      throw new Error("dsh-create-model-selection-unsupported");
+  async function validateModelSelection(controller, selection) {
     const catalog = modelsProjection(await controller.modelCatalog(), null);
     const model = catalog.models.find(
       (entry) => entry.provider === selection.provider && entry.model === selection.model,
@@ -532,11 +581,18 @@ export function createBridge(ctx, options = {}) {
     )
       throw new Error("unsupported-effort");
     try {
-      // Resolve adapter configuration before creating anything. This does not send a model request.
+      // Resolve adapter configuration without sending a model request.
       await service("llm").resolveCallConfig(selection);
     } catch {
       throw new Error("dsh-models-unavailable");
     }
+  }
+  function sameModelSelection(recorded, selection) {
+    return (
+      recorded?.provider === selection.provider &&
+      recorded.model === selection.model &&
+      (recorded.reasoningEffort ?? null) === (selection.reasoningEffort ?? null)
+    );
   }
   function setArchived(ids) {
     if (!Array.isArray(ids)) return;
@@ -813,6 +869,22 @@ export function createBridge(ctx, options = {}) {
     }
   }
 
+  async function verifyTurnEnd({ sessionId, turn }) {
+    const query = service("sessionQuery");
+    if (typeof query?.observeSession !== "function") throw new Error("history-unavailable");
+    const observation = await query.observeSession(sessionId, { projectionMode: "none" });
+    try {
+      if (observation.header?.id !== sessionId) throw new Error("history-unavailable");
+      const event = observation.events.findLast(
+        (entry) => entry?.type === "turn/end" && entry.data?.turn === turn,
+      );
+      const record = historyRecord(event);
+      return { sessionId, turn, reason: record?.reason ?? null };
+    } finally {
+      observation[Symbol.dispose]?.();
+    }
+  }
+
   /**
    * One page of a session's conversation, oldest first, for a handoff or search. DSH's current
    * model surface says which records a compaction replaced and in what order the model sees the
@@ -994,6 +1066,17 @@ export function createBridge(ctx, options = {}) {
     switch (command?.type) {
       case "history":
         return history(command);
+      case "context-usage": {
+        const values = await projections(String(command.sessionId));
+        const pressure = values.contextPressure;
+        if (!pressure) return null;
+        // DSH displays its estimate for the current context, including the effect of compaction.
+        const usedTokens = pressure.projectedTokens ?? pressure.pressureTokens;
+        return {
+          usedTokens,
+          contextWindow: pressure.contextWindow,
+        };
+      }
       case "document":
         return conversation(command);
       case "presets": {
@@ -1010,6 +1093,8 @@ export function createBridge(ctx, options = {}) {
       }
       case "verify":
         return present(command);
+      case "verify-turn-end":
+        return verifyTurnEnd(command);
       case "prompt": {
         const requestId = String(command.requestId);
         const controller = needController();
@@ -1057,8 +1142,30 @@ export function createBridge(ctx, options = {}) {
                 ? { kind: "steer" }
                 : { kind: "remove" },
         });
-      case "cancel":
-        return needController().cancel({ sessionId: String(command.sessionId) });
+      case "cancel-turn": {
+        if (!canCancelTurn()) throw new Error("dsh-stop-unavailable");
+        const { sessionId, turn } = command;
+        const agents = service("agents");
+        const agent = agents.get(sessionId);
+        if (
+          !Number.isSafeInteger(turn) ||
+          turn <= 0 ||
+          !agent ||
+          String(agent.id) !== sessionId ||
+          agent.status !== "running" ||
+          openTurn(turnBoundary(agents, agent)) !== turn
+        )
+          throw new Error("stale-turn");
+        try {
+          // Keep this in the same JavaScript turn as the native projection read above.
+          const receipt = needController().cancel({ sessionId });
+          return { sessionId, turn, accepted: receipt?.accepted === true };
+        } catch (error) {
+          if (error?.code === "session/not-found") throw new Error("stale-turn");
+          if (error?.code === "session/agent-busy") throw new Error("dsh-stop-unavailable");
+          throw error;
+        }
+      }
       case "rename": {
         const value = await needController().rename({
           sessionId: String(command.sessionId),
@@ -1075,7 +1182,11 @@ export function createBridge(ctx, options = {}) {
       case "create": {
         const controller = needController();
         const selection = command.modelSelection;
-        if (selection) await createSelection(controller, selection);
+        if (selection) {
+          if (!canSelectModelAtCreation(controller))
+            throw new Error("dsh-create-model-selection-unsupported");
+          await validateModelSelection(controller, selection);
+        }
         // DSH creates the session under the ID AgentKib reserved for it.
         const value = await controller.create({
           cwd: String(command.cwd),
@@ -1090,11 +1201,7 @@ export function createBridge(ctx, options = {}) {
             // model interface records the same selection locally for this just-created session.
             service("agents").get(sessionId).model.select(selection);
             const selected = await recordedModel(controller, sessionId);
-            if (
-              selected?.provider !== selection.provider ||
-              selected.model !== selection.model ||
-              (selected.reasoningEffort ?? null) !== (selection.reasoningEffort ?? null)
-            )
+            if (!sameModelSelection(selected, selection))
               throw new Error("dsh-create-model-not-applied");
             return {
               sessionId,
@@ -1134,13 +1241,42 @@ export function createBridge(ctx, options = {}) {
         return modelsProjection(catalog, selected);
       }
       case "selectModel": {
-        const value = await needController().selectModel({
-          sessionId: String(command.sessionId),
+        const controller = needController();
+        if (!canRecordModelSelection(controller) || typeof controller.resolveAgent !== "function")
+          throw new Error("operation-unavailable");
+        const sessionId = String(command.sessionId);
+        const selection = {
           provider: String(command.provider),
           model: String(command.model),
           ...(command.reasoningEffort ? { reasoningEffort: String(command.reasoningEffort) } : {}),
-        });
-        return { selected: value?.selected ?? null };
+        };
+        const agent = await agentFor(sessionId);
+        const apply = async () => {
+          await validateModelSelection(controller, selection);
+          if (
+            typeof agent.model?.select !== "function" ||
+            service("agents")?.get?.(sessionId) !== agent
+          )
+            throw new Error("operation-unavailable");
+          if (agent.status !== "idle" || states.get(sessionId)?.activity === "compacting")
+            throw new Error("session-busy");
+          // The controller's selectModel also updates the profile's default. Record the same
+          // choice through the Agent API, scoped to its session, as with initial selection.
+          agent.model.select(selection);
+          try {
+            const selected = await recordedModel(controller, sessionId);
+            if (sameModelSelection(selected, selection)) return { selected };
+          } catch {
+            // The choice may be recorded despite a failed read. Let the Host check its receipt.
+          }
+          throw new Error("unknown");
+        };
+        // Where the native controller exposes its admission lock, preserve the ordering with
+        // image prompts that are checked against this session's selected model.
+        const admission = controller.agents;
+        return typeof admission?.serializeImageAdmission === "function"
+          ? admission.serializeImageAdmission(agent, apply)
+          : apply();
       }
       case "goal": {
         const sessionId = String(command.sessionId);
@@ -1362,10 +1498,13 @@ export function createBridge(ctx, options = {}) {
     return {
       sessionController: typeof controller?.prompt === "function",
       sessionQuery: typeof query?.observeSession === "function",
+      turnScopedCancel: canCancelTurn(),
+      contextUsage: projects && typeof service("tokenMeter")?.contextPressure === "function",
       approvals: true,
       questions: typeof service("userQuestions")?.ask === "function",
       workspaceController: typeof service("workspaceController")?.archiveSession === "function",
       modelCatalog: typeof controller?.modelCatalog === "function",
+      sessionModelSelection: resolves && canRecordModelSelection(controller),
       createModelSelection: canSelectModelAtCreation(controller),
       images: typeof controller?.attachment === "function",
       goals: resolves && projects && typeof service("goals")?.get === "function",
@@ -1395,7 +1534,7 @@ export function createBridge(ctx, options = {}) {
     if (sessionCommands.length) body.sessionCommands = sessionCommands;
     const changed = [...states.values()].filter((state) => state.version > since);
     if (changed.length)
-      body.states = changed.map(({ version: _version, ...state }) => ({
+      body.states = changed.map(({ version: _version, turnEventSeq: _turnEventSeq, ...state }) => ({
         ...state,
         pending: [...interactions.values()].filter((item) => item.sessionId === state.sessionId)
           .length,

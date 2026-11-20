@@ -1,10 +1,12 @@
 // @vitest-environment node
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { randomUUID } from "node:crypto";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer, request } from "node:http";
+import { sessionProviderCapabilities } from "@agentkib/runtime-protocol";
+import { RuntimeRequestError } from "../runtime-host";
 import { WebAccessService, createWebControlState } from "./service";
 
 describe("trusted desktop conversation routes", () => {
@@ -118,6 +120,26 @@ describe("trusted desktop conversation routes", () => {
     });
   });
 
+  it("projects a stale cursor from the targeted desktop history route", async () => {
+    runtime.mockRejectedValueOnce(
+      new RuntimeRequestError({
+        code: -32000,
+        message: "request rejected",
+        data: { detail: "TRANSCRIPT_CURSOR_STALE" },
+      }),
+    );
+    expect(await service.localRequest("/events?sessionId=s&cursor=old-source")).toMatchObject({
+      status: 409,
+      body: { error: "stale_cursor" },
+    });
+    expect(runtime).toHaveBeenCalledExactlyOnceWith({
+      operation: "desktop-events",
+      sessionId: "s",
+      limit: 50,
+      cursor: "old-source",
+    });
+  });
+
   it.each(["compact", "terminals-clean", "delete"])(
     "sends the Codex %s action over the desktop route",
     async (operation) => {
@@ -147,7 +169,7 @@ describe("trusted desktop conversation routes", () => {
     },
   );
 
-  it("prepares Claude settings over the closed desktop route without fencing later preparation on failure", async () => {
+  it("isolates Claude settings preparation to its session and releases it after failure", async () => {
     await service.shutdown();
     const options = {
       available: true,
@@ -157,9 +179,15 @@ describe("trusted desktop conversation routes", () => {
       writable: {},
       models: [{ id: "fixture-model", efforts: [] }],
     };
+    let rejectPreparation: ((error: Error) => void) | undefined;
     const prepare = vi
       .fn()
-      .mockRejectedValueOnce(new Error("offline initialize failure"))
+      .mockImplementationOnce(
+        () =>
+          new Promise<never>((_resolve, reject) => {
+            rejectPreparation = reject;
+          }),
+      )
       .mockResolvedValue(options);
     runtime.mockImplementation(async (params) => {
       const operation = (params as { operation: string }).operation;
@@ -167,7 +195,13 @@ describe("trusted desktop conversation routes", () => {
         return { executionMode: "claude-managed", features: { settings: { available: true } } };
       const result = (await defaultRuntime(params)) as Record<string, unknown>;
       if (operation === "catalog")
-        return { ...result, sessions: [{ id: "s", workspace_id: "w", agent: "claude-code" }] };
+        return {
+          ...result,
+          sessions: [
+            { id: "s", workspace_id: "w", agent: "claude-code" },
+            { id: "other", workspace_id: "w", agent: "claude-code" },
+          ],
+        };
       return result;
     });
     service = new WebAccessService({
@@ -187,35 +221,58 @@ describe("trusted desktop conversation routes", () => {
       bootId: (access.body as { bootId: string }).bootId,
       expectedRevision: 4,
     };
-    expect((await service.localRequest("/managed/settings-prepare", body)).status).not.toBe(200);
+    const preparing = service.localRequest("/managed/settings-prepare", body);
+    try {
+      await vi.waitFor(() => expect(prepare).toHaveBeenCalledOnce());
+      expect(await service.localRequest("/managed/settings-prepare", body)).toMatchObject({
+        status: 409,
+        body: { error: "operation_busy" },
+      });
+      expect(await service.localRequest("/live?sessionId=other")).toMatchObject({ status: 200 });
+      expect(
+        await service.localRequest("/managed/settings-prepare", { ...body, sessionId: "other" }),
+      ).toMatchObject({ status: 200 });
+    } finally {
+      rejectPreparation?.(new Error("offline initialize failure"));
+      expect((await preparing).status).not.toBe(200);
+    }
     expect(await service.localRequest("/managed/settings-prepare", body)).toMatchObject({
       status: 200,
       body: { sessionId: "s", options: { models: [{ id: "fixture-model" }] } },
     });
-    expect(prepare).toHaveBeenCalledTimes(2);
-    expect(prepare.mock.calls[1][0]).toMatchObject({
+    expect(prepare).toHaveBeenCalledTimes(3);
+    expect(prepare.mock.calls[2][0]).toMatchObject({
       operation: "settings-prepare",
       sessionId: "s",
       runtimeBootId: "r",
       expectedRevision: 4,
       experimentalEnabled: true,
     });
-    expect(prepare.mock.calls[1][0]).not.toHaveProperty("requestId");
+    expect(prepare.mock.calls[2][0]).not.toHaveProperty("requestId");
   });
 
   it("scopes Claude's startup catalog to a registered workspace and forwards the launch selection", async () => {
     await service.shutdown();
     const models = [{ id: "fixture-model", resolvedModel: "fixture-model-v2", efforts: ["high"] }];
-    const claude = vi.fn(async (input: Record<string, unknown>) =>
-      input.operation === "create"
+    const provider = sessionProviderCapabilities("claude-code");
+    const claude = vi.fn(async (input: unknown) => {
+      const { operation, workspaceId } = input as Record<string, unknown>;
+      return operation === "provider-create"
         ? { accepted: true, sessionId: "new-claude" }
-        : { available: true, models: input.workspaceId === "w" ? models : [] },
-    );
+        : { available: true, provider, models: workspaceId === "w" ? models : [] };
+    });
+    const legacy = vi.fn(async () => ({ available: false }));
+    const receipt = vi.fn(async ({ requestId }: { requestId: string }) => ({
+      found: false,
+      requestId,
+    }));
     service = new WebAccessService({
       dataDir: directory,
       staticDir: directory,
       runtimeRequest: runtime,
-      claudeManagedRequest: (input) => claude(input as Record<string, unknown>),
+      claudeManagedRequest: legacy,
+      sessionProviderRequest: claude,
+      receiptRequest: receipt,
       verifiedClaudeManaged: true,
       desktopOrigin: "app://bundle",
       workspaceRequest: async () =>
@@ -234,34 +291,56 @@ describe("trusted desktop conversation routes", () => {
     });
     expect(await service.localRequest(`${options}&workspaceId=w`)).toMatchObject({
       status: 200,
-      body: { models },
+      body: { models, provider },
     });
     const access = await service.localRequest("/access");
+    const requestId = randomUUID();
+    const create = {
+      agent: "claude-code",
+      workspaceId: "w",
+      requestId,
+      bootId: (access.body as { bootId: string }).bootId,
+      model: "fixture-model",
+      effort: "high",
+      permissionMode: "plan",
+      verifyStartupModel: true,
+    };
+    expect(
+      await service.localRequest("/managed/create", { ...create, verifyStartupModel: false }),
+    ).toMatchObject({ status: 400, body: { error: "invalid_input" } });
     expect(
       await service.localRequest("/managed/create", {
-        agent: "claude-code",
-        workspaceId: "w",
-        requestId: randomUUID(),
-        bootId: (access.body as { bootId: string }).bootId,
-        model: "fixture-model",
-        effort: "high",
-        verifyStartupModel: true,
+        ...create,
+        permissionMode: "bypassPermissions",
       }),
+    ).toMatchObject({ status: 400, body: { error: "unsupported_permission_mode" } });
+    expect(
+      await service.localRequest("/managed/create", { ...create, prompt: "send after creating" }),
     ).toMatchObject({ status: 200, body: { accepted: true, sessionId: "new-claude" } });
     expect(claude.mock.calls.map(([input]) => input)).toEqual([
-      { operation: "options" },
-      { operation: "options", workspaceId: "w" },
+      { operation: "provider-options", agent: "claude-code" },
+      { operation: "provider-options", agent: "claude-code", workspaceId: "w" },
       expect.objectContaining({
-        operation: "create",
+        operation: "provider-create",
+        agent: "claude-code",
         workspaceId: "w",
         model: "fixture-model",
         effort: "high",
+        permissionMode: "plan",
         verifyStartupModel: true,
       }),
     ]);
+    expect(claude.mock.calls[2][0]).not.toHaveProperty("prompt");
+    expect(legacy).not.toHaveBeenCalled();
+    const retryId = randomUUID();
+    claude.mockRejectedValueOnce(new RuntimeRequestError({ code: -32000, message: "web-busy" }));
+    expect(
+      await service.localRequest("/managed/create", { ...create, requestId: retryId }),
+    ).toMatchObject({ status: 409, body: { error: "web-busy", controlOutcome: "not-dispatched" } });
+    expect(receipt.mock.calls.filter(([entry]) => entry.requestId === retryId)).toHaveLength(2);
     claude.mockImplementationOnce(async () => {
       workspaceRegistered = false;
-      return { available: true, models };
+      return { available: true, provider, models };
     });
     expect(await service.localRequest(`${options}&workspaceId=w`)).toMatchObject({ status: 403 });
   });
@@ -392,6 +471,72 @@ describe("trusted desktop conversation routes", () => {
     expect((await service.request({ operation: "status" })).running).toBe(false);
   });
 
+  it("browses and revalidates draft workspace references before sending", async () => {
+    await mkdir(join(directory, "notes"));
+    const file = join(directory, "notes", "topic.md");
+    await writeFile(file, "topic");
+    runtime.mockImplementation(async (params) => {
+      const input = params as { operation: string };
+      if (input.operation === "resources") return { revision: 4 };
+      if (input.operation === "capabilities")
+        return { features: { resources: { available: true } } };
+      return defaultRuntime(params);
+    });
+    const path = "/managed/resources?workspaceId=w&agent=codex";
+    const root = await service.localRequest(path);
+    expect(root).toMatchObject({ status: 200, body: { workspaceId: "w" } });
+    expect(root.body).not.toHaveProperty("sessionId");
+    expect(runtime).toHaveBeenCalledExactlyOnceWith({
+      operation: "provider-workspace-resources",
+      workspaceId: "w",
+      agent: "codex",
+    });
+    type Listing = { resources: Array<{ id: string; name: string; navigationId?: string }> };
+    const notes = (root.body as Listing).resources.find((row) => row.name === "notes")!;
+    const folder = await service.localRequest(`${path}&directoryId=${notes.navigationId}`);
+    const topic = (folder.body as Listing).resources.find((row) => row.name === "topic.md")!;
+    expect(topic.id).toMatch(/^[a-f0-9]{64}$/);
+    expect(
+      await service.localRequest(
+        path.replace("agent=codex", "agent=claude-code") + `&directoryId=${notes.navigationId}`,
+      ),
+    ).toMatchObject({ status: 404 });
+    expect(
+      await service.localRequest(path.replace("workspaceId=w", "workspaceId=outside")),
+    ).toMatchObject({ status: 403 });
+
+    const access = await service.localRequest("/access");
+    const send = (resourceId: string) =>
+      service.localRequest("/send", {
+        sessionId: "s",
+        text: "Read the notes",
+        requestId: randomUUID(),
+        expectedRevision: 4,
+        bootId: (access.body as { bootId: string }).bootId,
+        resourceIds: [resourceId],
+      });
+    await writeFile(file, "new longer topic");
+    expect(await send(topic.id)).toMatchObject({
+      status: 409,
+      body: { error: "artifact_changed" },
+    });
+    expect(
+      runtime.mock.calls.some(([params]) => (params as { operation: string }).operation === "send"),
+    ).toBe(false);
+    const refreshed = await service.localRequest(`${path}&directoryId=${notes.navigationId}`);
+    const currentTopic = (refreshed.body as Listing).resources.find(
+      (row) => row.name === "topic.md",
+    )!;
+    expect(await send(currentTopic.id)).toMatchObject({ status: 200, body: { accepted: true } });
+    expect(runtime).toHaveBeenCalledWith(
+      expect.objectContaining({
+        operation: "send",
+        sessionId: "s",
+        resourceRefs: [{ kind: "file", relativePath: "notes/topic.md" }],
+      }),
+    );
+  });
+
   it("keeps desktop preview tickets on a separate loopback listener across relay origin changes", async () => {
     const portProbe = createServer();
     await new Promise<void>((resolve) => portProbe.listen(0, "127.0.0.1", resolve));
@@ -455,7 +600,7 @@ describe("trusted desktop conversation routes", () => {
     await revoked.arrayBuffer();
   });
 
-  it.each(["create", "adopt", "release", "reconcile"])(
+  it.each(["create", "release", "reconcile"])(
     "notifies receipt observers when %s settles after timeout",
     async (operation) => {
       let finish!: (value: unknown) => void;
@@ -481,9 +626,7 @@ describe("trusted desktop conversation routes", () => {
       const pending = service.localRequest(`/managed/${operation}`, {
         bootId: (access.body as { bootId: string }).bootId,
         requestId: `late-${operation}`,
-        ...(operation === "create"
-          ? { workspaceId: "w" }
-          : { sessionId: "s", handoffConfirmed: true }),
+        ...(operation === "create" ? { workspaceId: "w" } : { sessionId: "s" }),
       });
       await vi.waitFor(() => expect(managed).toHaveBeenCalledOnce());
       expire();

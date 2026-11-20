@@ -41,19 +41,16 @@ const zh = {
   cancel: "取消",
   rowMenu: "会话菜单",
   name: "会话名称",
-  settings: "下一轮设置",
-  changeNextTurnModel: "更改下一轮模型",
+  settings: "会话设置",
+  changeNextTurnModel: "更改模型",
   model: "模型",
   effort: "思考强度",
   mode: "协作模式",
   default: "这台电脑默认",
   plan: "计划",
-  planOn: "计划模式已开启，按下关闭",
-  planOnTitle: "计划模式已开启 — 点击关闭",
-  planExitFailed: "退出计划模式失败",
   planPlaceholder: "描述你的任务以生成计划…",
   normal: "执行",
-  apply: "应用到下一轮",
+  apply: "保存设置",
   attachment: "添加附件",
   attachmentNote: "选择文件或粘贴图片；上传只暂存，发送后才加入会话。",
   previewAttachment: "预览附件",
@@ -80,7 +77,6 @@ const zh = {
   confirmation: "确认操作",
   close: "关闭",
   text: "消息内容",
-  conversationSettings: "会话设置",
   restoreDefaults: "恢复这台电脑默认",
   serviceTier: "服务档位",
   executionPolicy: "执行策略",
@@ -105,14 +101,8 @@ const zh = {
   goalRounds: "轮次",
   addContext: "添加上下文",
   uploadFromPhone: "选择附件文件",
-  computerFiles: "电脑文件与文件夹",
-  skillsPlugins: "技能、插件与应用",
-  resourceSearch: "搜索可用资源",
-  resourceEmpty: "没有可用资源",
-  resourceUnavailable: "这台电脑尚未提供受控上下文引用",
   resourceRemoved: "资源已失效，请重新选择",
   fullAccessRequired: "请使用新的完整授权码连接后操作",
-  directoryReference: "文件夹仅作为引用，不会递归上传",
   defaultOption: "默认",
 };
 type Copy = { [K in keyof typeof zh]: string };
@@ -157,19 +147,16 @@ export const codexCopy: Record<Locale, Copy> = {
     cancel: "取消",
     rowMenu: "對話選單",
     name: "對話名稱",
-    settings: "下一輪設定",
-    changeNextTurnModel: "變更下一輪模型",
+    settings: "對話設定",
+    changeNextTurnModel: "變更模型",
     model: "模型",
     effort: "思考強度",
     mode: "協作模式",
     default: "這台電腦預設",
     plan: "計畫",
-    planOn: "計畫模式已開啟，按下關閉",
-    planOnTitle: "計畫模式已開啟 — 點擊關閉",
-    planExitFailed: "退出計畫模式失敗",
     planPlaceholder: "描述你的任務以產生計畫…",
     normal: "執行",
-    apply: "套用至下一輪",
+    apply: "儲存設定",
     attachment: "新增附件",
     attachmentNote: "選取檔案或貼上圖片；上傳僅暫存，傳送後才加入對話。",
     uploading: "上傳中",
@@ -195,7 +182,6 @@ export const codexCopy: Record<Locale, Copy> = {
     confirmation: "確認操作",
     close: "關閉",
     text: "訊息內容",
-    conversationSettings: "對話設定",
     restoreDefaults: "恢復這台電腦預設",
     serviceTier: "服務等級",
     executionPolicy: "執行策略",
@@ -220,14 +206,8 @@ export const codexCopy: Record<Locale, Copy> = {
     goalRounds: "輪次",
     addContext: "新增上下文",
     uploadFromPhone: "選取附件檔案",
-    computerFiles: "電腦檔案與資料夾",
-    skillsPlugins: "技能、外掛與應用程式",
-    resourceSearch: "搜尋可用資源",
-    resourceEmpty: "沒有可用資源",
-    resourceUnavailable: "這台電腦尚未提供受控上下文引用",
     resourceRemoved: "資源已失效，請重新選取",
     fullAccessRequired: "請使用新的完整授權碼連線後操作",
-    directoryReference: "資料夾僅作為引用，不會遞迴上傳",
     defaultOption: "預設",
   },
   "en-US": {
@@ -273,19 +253,16 @@ export const codexCopy: Record<Locale, Copy> = {
     cancel: "Cancel",
     rowMenu: "Session menu",
     name: "Session name",
-    settings: "Next-turn settings",
-    changeNextTurnModel: "Change next-turn model",
+    settings: "Session settings",
+    changeNextTurnModel: "Change model",
     model: "Model",
     effort: "Reasoning effort",
     mode: "Collaboration mode",
     default: "Computer default",
     plan: "Plan",
-    planOn: "Plan mode on, press to turn off",
-    planOnTitle: "Plan mode on — click to turn off",
-    planExitFailed: "Could not leave Plan mode",
     planPlaceholder: "Describe your task to make a plan…",
     normal: "Execute",
-    apply: "Apply to next turn",
+    apply: "Save settings",
     attachment: "Add attachments",
     attachmentNote:
       "Choose files or paste images. Uploads are staged and only join the session when sent.",
@@ -313,7 +290,6 @@ export const codexCopy: Record<Locale, Copy> = {
     confirmation: "Confirm action",
     close: "Close",
     text: "Message text",
-    conversationSettings: "Session settings",
     restoreDefaults: "Restore computer defaults",
     serviceTier: "Service tier",
     executionPolicy: "Execution policy",
@@ -339,14 +315,8 @@ export const codexCopy: Record<Locale, Copy> = {
     goalRounds: "Rounds",
     addContext: "Add context",
     uploadFromPhone: "Choose attachment files",
-    computerFiles: "Computer files and folders",
-    skillsPlugins: "Skills, plugins and apps",
-    resourceSearch: "Search available resources",
-    resourceEmpty: "No resources available",
-    resourceUnavailable: "The computer does not provide controlled context references",
     resourceRemoved: "This resource is no longer valid. Select it again.",
     fullAccessRequired: "Reconnect with a new full-access code to use this control",
-    directoryReference: "Folders are referenced without recursively uploading their contents",
     defaultOption: "Default",
   },
   "ja-JP": {
@@ -393,19 +363,16 @@ export const codexCopy: Record<Locale, Copy> = {
     cancel: "キャンセル",
     rowMenu: "会話メニュー",
     name: "会話名",
-    settings: "次のターンの設定",
-    changeNextTurnModel: "次のターンのモデルを変更",
+    settings: "会話の設定",
+    changeNextTurnModel: "モデルを変更",
     model: "モデル",
     effort: "推論の強度",
     mode: "協調モード",
     default: "このコンピューターの既定値",
     plan: "計画",
-    planOn: "計画モードはオンです。押すとオフになります",
-    planOnTitle: "計画モードはオンです — クリックでオフ",
-    planExitFailed: "計画モードを終了できませんでした",
     planPlaceholder: "タスクを説明して計画を作成…",
     normal: "実行",
-    apply: "次のターンに適用",
+    apply: "設定を保存",
     attachment: "添付ファイルを追加",
     attachmentNote:
       "ファイルを選択するか画像を貼り付けます。アップロードは一時保存で、送信後に会話に追加されます。",
@@ -432,7 +399,6 @@ export const codexCopy: Record<Locale, Copy> = {
     confirmation: "操作を確認",
     close: "閉じる",
     text: "メッセージ内容",
-    conversationSettings: "会話の設定",
     restoreDefaults: "このコンピューターの既定値に戻す",
     serviceTier: "サービス階層",
     executionPolicy: "実行ポリシー",
@@ -457,14 +423,8 @@ export const codexCopy: Record<Locale, Copy> = {
     goalRounds: "ラウンド",
     addContext: "コンテキストを追加",
     uploadFromPhone: "添付ファイルを選択",
-    computerFiles: "コンピューターのファイルとフォルダー",
-    skillsPlugins: "スキル、プラグイン、アプリ",
-    resourceSearch: "利用可能なリソースを検索",
-    resourceEmpty: "利用可能なリソースはありません",
-    resourceUnavailable: "このコンピューターは制御されたコンテキスト参照を提供していません",
     resourceRemoved: "リソースが無効になりました。選択し直してください。",
     fullAccessRequired: "新しいフルアクセスコードで再接続してください",
-    directoryReference: "フォルダーは再帰アップロードせず参照として追加されます",
     defaultOption: "デフォルト",
   },
 };
@@ -472,13 +432,13 @@ export const codexCopy: Record<Locale, Copy> = {
 const reasons: Record<Locale, Record<string, string>> = {
   "zh-CN": {
     "unsupported-model":
-      "当前模型不在这台电脑已验证的模型列表中，本次消息尚未发送。请更改下一轮模型后再发送。",
+      "当前模型不在这台电脑已验证的模型列表中，本次消息尚未发送。请更改模型后再发送。",
     "native-model-unconfirmed":
       "无法确认源会话的模型，本次分支尚未创建。请先在 Codex 中明确源会话的模型和思考强度，再刷新重试。",
     "native-effort-unconfirmed":
       "无法确认源会话的思考强度，本次分支尚未创建。请先在 Codex 中明确源会话的模型和思考强度，再刷新重试。",
     "unsupported-effort":
-      "当前模型不支持所选思考强度，本次消息尚未发送。请调整下一轮模型或思考强度后再发送。",
+      "当前模型不支持所选思考强度，本次消息尚未发送。请调整模型或思考强度后再发送。",
     "codex-session-directory-unsafe":
       "会话目录是文件系统根目录或用户主目录，为保护文件，目前仅可查看。请在具体项目目录中使用 Codex 新建会话。",
     "session-directory-missing": "会话目录已不存在，目前仅可查看。请恢复该目录后刷新重试。",
@@ -574,10 +534,13 @@ const reasons: Record<Locale, Record<string, string>> = {
     "recovery-required": "暂时无法继续这条会话，请刷新状态后重试。",
     "native-session-unconfirmed": "无法确认这条会话的身份，请刷新状态后重试。",
     "follower-operation-unverified": "这项操作请在 Codex 中完成。",
+    "claude-follower-settings-unavailable": "请在 Claude Code 终端修改设置。",
+    "follower-resource-input-unsupported":
+      "当前执行方式支持浏览文件和文件夹，暂不支持将引用加入消息。",
     "control-disabled": "这台电脑上的 AgentKib 尚未开启执行控制。",
     "session-state-unavailable": "暂时无法读取会话状态，请刷新后重试。",
     "unsupported-codex-cli-version": "当前 Codex 版本未经兼容验证，此能力保持只读。",
-    "native-operation-not-integrated": "尚不支持通过远程访问执行此原客户端操作。",
+    "native-operation-not-integrated": "当前执行方式暂不支持这项操作。",
     "control-outcome-unconfirmed":
       "上次操作结果尚未确认。请刷新核对已保存请求的处理状态，勿重复提交；不会自动重发。",
     "claude-background-task":
@@ -589,7 +552,7 @@ const reasons: Record<Locale, Record<string, string>> = {
     "claude-auth-failed":
       "Claude Code 未通过认证：还没有登录，或 API key 被拒绝。请在这台电脑的终端里运行 claude，用 /login 登录；使用 API key 时，把它写进 ~/.claude/settings.json 的 env，或配置 apiKeyHelper。shell 配置文件里 export 的变量通常传不到 AgentKib（例如从程序坞打开时）。修好后直接重新发送，AgentKib 会用新的设置启动 Claude Code。",
     "claude-command-clear":
-      "/clear 会让 Claude Code 改用一条新会话，AgentKib 无法跟随，本次消息尚未发送。需要空白上下文时请新建会话，这条会话会保留；只想腾出上下文可以用 /compact，或在上下文用量里压缩上下文。",
+      "/clear 会让 Claude Code 改用一条新会话，AgentKib 无法跟随，本次消息尚未发送。需要空白上下文时请新建会话，这条会话会保留；只想腾出上下文可以用 /compact。",
     "claude-command-background":
       "/loop 和 /batch 会启动 AgentKib 无法监管的后台任务，本次消息尚未发送。要接着执行的消息可以加入待发队列，或使用持续目标。",
     "claude-command-goal":
@@ -597,13 +560,13 @@ const reasons: Record<Locale, Record<string, string>> = {
     "claude-command-rename":
       "/rename 只更改 Claude Code 中的名称，AgentKib 中的名称不会随之改变，本次消息尚未发送。请在 AgentKib 中重命名会话。",
     "claude-command-settings":
-      "带参数的 /model 和 /effort 只影响当前进程，AgentKib 无法保留，本次消息尚未发送。请在下一轮设置中更改模型或思考强度。",
+      "带参数的 /model 和 /effort 只影响当前进程，AgentKib 无法保留，本次消息尚未发送。请在会话设置中更改模型或思考强度。",
     "claude-command-owner-only":
       "这条命令可能更改这台电脑上的 Claude Code 设置或文件，只能在这台电脑上的 AgentKib 或终端中使用，本次消息尚未发送。",
     "claude-model-unsupported":
-      "下一轮设置只支持其中列出的模型，这个模型不在列表里，下一轮模型没有改动。请改用列出的模型，名称或完整模型 ID 都可以。",
+      "会话设置只支持其中列出的模型，这个模型不在列表里，模型没有改动。请改用列出的模型，名称或完整模型 ID 都可以。",
     "claude-effort-unsupported":
-      "下一轮设置的思考强度只能是 low、medium、high、xhigh 或 max，而且要是所选模型支持的级别。下一轮设置没有改动，请在下一轮设置里选择。",
+      "会话设置的思考强度只能是 low、medium、high、xhigh 或 max，而且要是所选模型支持的级别。会话设置没有改动，请在会话设置里选择。",
     "codex-command-agentkib":
       "AgentKib 用自己的操作代替这条 Codex 命令，但它现在不可用，本次消息尚未发送。请等当前轮次结束，或在这台电脑上检查这台设备的权限。",
     "codex-command-arguments":
@@ -617,13 +580,13 @@ const reasons: Record<Locale, Record<string, string>> = {
   },
   "zh-Hant": {
     "unsupported-model":
-      "目前模型不在這台電腦已驗證的模型清單中，本次訊息尚未傳送。請變更下一輪模型後再傳送。",
+      "目前模型不在這台電腦已驗證的模型清單中，本次訊息尚未傳送。請變更模型後再傳送。",
     "native-model-unconfirmed":
       "無法確認來源對話的模型，本次分支尚未建立。請先在 Codex 中明確設定來源對話的模型和思考強度，再重新整理後重試。",
     "native-effort-unconfirmed":
       "無法確認來源對話的思考強度，本次分支尚未建立。請先在 Codex 中明確設定來源對話的模型和思考強度，再重新整理後重試。",
     "unsupported-effort":
-      "目前模型不支援所選思考強度，本次訊息尚未傳送。請調整下一輪模型或思考強度後再傳送。",
+      "目前模型不支援所選思考強度，本次訊息尚未傳送。請調整模型或思考強度後再傳送。",
     "codex-session-directory-unsafe":
       "對話目錄是檔案系統根目錄或使用者主目錄，為保護檔案，目前僅可查看。請在具體專案目錄中使用 Codex 建立新對話。",
     "session-directory-missing": "對話目錄已不存在，目前僅可查看。請還原該目錄後重新整理再試。",
@@ -720,10 +683,13 @@ const reasons: Record<Locale, Record<string, string>> = {
     "recovery-required": "暫時無法繼續這段對話，請重新整理狀態後重試。",
     "native-session-unconfirmed": "無法確認這段對話的身分，請重新整理狀態後重試。",
     "follower-operation-unverified": "這項操作請在 Codex 中完成。",
+    "claude-follower-settings-unavailable": "請在 Claude Code 終端修改設定。",
+    "follower-resource-input-unsupported":
+      "目前執行方式支援瀏覽檔案和資料夾，暫不支援將引用加入訊息。",
     "control-disabled": "這台電腦上的 AgentKib 尚未啟用執行控制。",
     "session-state-unavailable": "暫時無法讀取對話狀態，請重新整理後重試。",
     "unsupported-codex-cli-version": "目前 Codex 版本未經相容驗證，此能力保持唯讀。",
-    "native-operation-not-integrated": "尚不支援透過遠端存取執行此原客戶端操作。",
+    "native-operation-not-integrated": "目前執行方式暫不支援這項操作。",
     "control-outcome-unconfirmed":
       "上次操作結果尚未確認。請重新整理核對已儲存請求的處理狀態，勿重複提交；不會自動重傳。",
     "claude-background-task":
@@ -735,7 +701,7 @@ const reasons: Record<Locale, Record<string, string>> = {
     "claude-auth-failed":
       "Claude Code 未通過驗證：尚未登入，或 API key 遭到拒絕。請在這台電腦的終端機執行 claude，用 /login 登入；使用 API key 時，請寫進 ~/.claude/settings.json 的 env，或設定 apiKeyHelper。shell 設定檔中 export 的變數通常傳不到 AgentKib（例如從 Dock 開啟時）。修正後直接重新傳送，AgentKib 會用新的設定啟動 Claude Code。",
     "claude-command-clear":
-      "/clear 會讓 Claude Code 改用一段新對話，AgentKib 無法跟隨，本次訊息尚未傳送。需要空白上下文時請建立新對話，這段對話會保留；只想騰出上下文可以使用 /compact，或在上下文用量裡壓縮上下文。",
+      "/clear 會讓 Claude Code 改用一段新對話，AgentKib 無法跟隨，本次訊息尚未傳送。需要空白上下文時請建立新對話，這段對話會保留；只想騰出上下文可以使用 /compact。",
     "claude-command-background":
       "/loop 和 /batch 會啟動 AgentKib 無法監管的背景任務，本次訊息尚未傳送。要接著執行的訊息可以加入待發佇列，或使用持續目標。",
     "claude-command-goal":
@@ -743,13 +709,13 @@ const reasons: Record<Locale, Record<string, string>> = {
     "claude-command-rename":
       "/rename 只變更 Claude Code 中的名稱，AgentKib 中的名稱不會隨之改變，本次訊息尚未傳送。請在 AgentKib 中重新命名對話。",
     "claude-command-settings":
-      "帶參數的 /model 和 /effort 只影響目前的程序，AgentKib 無法保留，本次訊息尚未傳送。請在下一輪設定中變更模型或思考強度。",
+      "帶參數的 /model 和 /effort 只影響目前的程序，AgentKib 無法保留，本次訊息尚未傳送。請在對話設定中變更模型或思考強度。",
     "claude-command-owner-only":
       "這個指令可能變更這台電腦上的 Claude Code 設定或檔案，只能在這台電腦上的 AgentKib 或終端機中使用，本次訊息尚未傳送。",
     "claude-model-unsupported":
-      "下一輪設定只支援其中列出的模型，這個模型不在清單中，下一輪模型沒有變更。請改用列出的模型，名稱或完整模型 ID 都可以。",
+      "對話設定只支援其中列出的模型，這個模型不在清單中，模型沒有變更。請改用列出的模型，名稱或完整模型 ID 都可以。",
     "claude-effort-unsupported":
-      "下一輪設定的思考強度只能是 low、medium、high、xhigh 或 max，而且要是所選模型支援的等級。下一輪設定沒有變更，請在下一輪設定中選擇。",
+      "對話設定的思考強度只能是 low、medium、high、xhigh 或 max，而且要是所選模型支援的等級。對話設定沒有變更，請在對話設定中選擇。",
     "codex-command-agentkib":
       "AgentKib 以自己的操作取代這個 Codex 指令，但它目前無法使用，本次訊息尚未傳送。請等目前輪次結束，或在這台電腦上檢查這台裝置的權限。",
     "codex-command-arguments":
@@ -763,13 +729,13 @@ const reasons: Record<Locale, Record<string, string>> = {
   },
   "en-US": {
     "unsupported-model":
-      "The current model is not in the model list verified on this computer. This message was not sent. Change the next-turn model before sending again.",
+      "The current model is not in the model list verified on this computer. This message was not sent. Change the model before sending again.",
     "native-model-unconfirmed":
       "The source session's model could not be confirmed. No branch was created. Set the source session's model and reasoning effort in Codex, then refresh to retry.",
     "native-effort-unconfirmed":
       "The source session's reasoning effort could not be confirmed. No branch was created. Set the source session's model and reasoning effort in Codex, then refresh to retry.",
     "unsupported-effort":
-      "The current model does not support the selected reasoning effort. This message was not sent. Adjust the next-turn model or reasoning effort before sending again.",
+      "The current model does not support the selected reasoning effort. This message was not sent. Adjust the model or reasoning effort before sending again.",
     "codex-session-directory-unsafe":
       "The session directory is a filesystem root or your home directory. This session is view only to protect your files. Start a new Codex session from a specific project directory.",
     "session-directory-missing":
@@ -886,12 +852,14 @@ const reasons: Record<Locale, Record<string, string>> = {
     "native-session-unconfirmed":
       "This session's identity could not be confirmed. Refresh its state and retry.",
     "follower-operation-unverified": "Use Codex for this action.",
+    "claude-follower-settings-unavailable": "Change settings in the Claude Code terminal.",
+    "follower-resource-input-unsupported":
+      "You can browse files and folders, but this executor cannot add references to messages.",
     "control-disabled": "Execution control is not enabled in AgentKib on this computer.",
     "session-state-unavailable": "Session state is unavailable. Refresh and retry.",
     "unsupported-codex-cli-version":
       "This Codex version has not passed compatibility verification. This capability remains read-only.",
-    "native-operation-not-integrated":
-      "This original-client operation is not available through remote access yet.",
+    "native-operation-not-integrated": "This executor does not support this action yet.",
     "control-outcome-unconfirmed":
       "The previous outcome is unconfirmed. Refresh to check the saved request; do not resubmit. It will not be sent again automatically.",
     "claude-background-task":
@@ -903,7 +871,7 @@ const reasons: Record<Locale, Record<string, string>> = {
     "claude-auth-failed":
       "Claude Code could not authenticate: it is not logged in, or the API key was rejected. Run claude in a terminal on this computer and log in with /login. For an API key, put it in the env block of ~/.claude/settings.json or configure apiKeyHelper. Variables exported in your shell profile usually do not reach AgentKib (for example when it is opened from the Dock). After fixing it, send again; AgentKib starts Claude Code with the new settings.",
     "claude-command-clear":
-      "/clear moves Claude Code to a new session that AgentKib cannot follow. This message was not sent. For an empty context, start a new session; this one is kept. To free up context, use /compact or Compact context under Context usage.",
+      "/clear moves Claude Code to a new session that AgentKib cannot follow. This message was not sent. For an empty context, start a new session; this one is kept. To free up context, use /compact.",
     "claude-command-background":
       "/loop and /batch start background work that AgentKib cannot supervise. This message was not sent. Add follow-up messages to Queued messages, or use a persistent goal.",
     "claude-command-goal":
@@ -911,13 +879,13 @@ const reasons: Record<Locale, Record<string, string>> = {
     "claude-command-rename":
       "/rename changes only the name in Claude Code, not the one in AgentKib. This message was not sent. Rename the session in AgentKib instead.",
     "claude-command-settings":
-      "/model and /effort with an argument change only the running process, which AgentKib cannot keep. This message was not sent. Change the model or reasoning effort in Next-turn settings.",
+      "/model and /effort with an argument change only the running process, which AgentKib cannot keep. This message was not sent. Change the model or reasoning effort in Session settings.",
     "claude-command-owner-only":
       "This command can change Claude Code settings or files on this computer, so it only runs from AgentKib on this computer or a terminal. This message was not sent.",
     "claude-model-unsupported":
-      "Next-turn settings support only the models they list, and this one is not listed. The next-turn model was not changed. Use a listed model, by its name or full model ID.",
+      "Session settings support only the models they list, and this one is not listed. The model was not changed. Use a listed model, by its name or full model ID.",
     "claude-effort-unsupported":
-      "Next-turn reasoning effort can be only low, medium, high, xhigh, or max, and only a level the selected model supports. Next-turn settings were not changed; choose a level in Next-turn settings.",
+      "Reasoning effort can be only low, medium, high, xhigh, or max, and only a level the selected model supports. Session settings were not changed; choose a level in Session settings.",
     "codex-command-agentkib":
       "AgentKib stands in for this Codex command with its own action, which is not available right now. This message was not sent. Wait for the current turn to end, or check this device's permissions on this computer.",
     "codex-command-arguments":
@@ -933,13 +901,13 @@ const reasons: Record<Locale, Record<string, string>> = {
   },
   "ja-JP": {
     "unsupported-model":
-      "現在のモデルはこのコンピューターで検証済みのモデル一覧にありません。このメッセージは送信されていません。次のターンのモデルを変更してから送信してください。",
+      "現在のモデルはこのコンピューターで検証済みのモデル一覧にありません。このメッセージは送信されていません。モデルを変更してから送信してください。",
     "native-model-unconfirmed":
       "元の会話のモデルを確認できないため、分岐は作成されていません。Codex で元の会話のモデルと思考強度を明示してから、再読み込みしてお試しください。",
     "native-effort-unconfirmed":
       "元の会話の思考強度を確認できないため、分岐は作成されていません。Codex で元の会話のモデルと思考強度を明示してから、再読み込みしてお試しください。",
     "unsupported-effort":
-      "現在のモデルは選択した思考強度に対応していません。このメッセージは送信されていません。次のターンのモデルまたは思考強度を調整してから送信してください。",
+      "現在のモデルは選択した思考強度に対応していません。このメッセージは送信されていません。モデルまたは思考強度を調整してから送信してください。",
     "codex-session-directory-unsafe":
       "会話のディレクトリがファイルシステムのルートまたはホームディレクトリのため、ファイルを保護するために閲覧のみになっています。個別のプロジェクトディレクトリで Codex の新しい会話を開始してください。",
     "session-directory-missing":
@@ -1061,11 +1029,14 @@ const reasons: Record<Locale, Record<string, string>> = {
     "native-session-unconfirmed":
       "この会話の識別情報を確認できません。状態を更新して再試行してください。",
     "follower-operation-unverified": "この操作は Codex で行ってください。",
+    "claude-follower-settings-unavailable": "Claude Code のターミナルで設定を変更してください。",
+    "follower-resource-input-unsupported":
+      "ファイルとフォルダーは閲覧できますが、現在の実行方式では参照をメッセージに追加できません。",
     "control-disabled": "このコンピューター上の AgentKib で実行操作が有効になっていません。",
     "session-state-unavailable": "会話の状態を取得できません。更新して再試行してください。",
     "unsupported-codex-cli-version":
       "この Codex バージョンは互換性が未検証のため、この機能は読み取り専用です。",
-    "native-operation-not-integrated": "元のクライアントのこの操作はリモートアクセスに未対応です。",
+    "native-operation-not-integrated": "現在の実行方式ではこの操作にまだ対応していません。",
     "control-outcome-unconfirmed":
       "前回の結果は未確認です。更新して保存済みリクエストの処理状況を確認し、再送しないでください。自動で再送しません。",
     "claude-background-task":
@@ -1077,7 +1048,7 @@ const reasons: Record<Locale, Record<string, string>> = {
     "claude-auth-failed":
       "Claude Code の認証に失敗しました。ログインしていないか、API キーが拒否されています。このコンピューターのターミナルで claude を実行し、/login でログインしてください。API キーを使う場合は ~/.claude/settings.json の env に書くか、apiKeyHelper を設定してください。シェルの設定ファイルで export した変数は、通常 AgentKib には届きません（Dock から開いた場合など）。修正したらそのまま再送信してください。AgentKib が新しい設定で Claude Code を起動します。",
     "claude-command-clear":
-      "/clear を実行すると Claude Code は新しい会話に切り替わり、AgentKib は追従できません。このメッセージは送信されていません。空のコンテキストが必要な場合は新しい会話を開始してください（この会話は残ります）。コンテキストを空けるだけなら /compact か、コンテキスト使用量の「コンテキストを圧縮」を使えます。",
+      "/clear を実行すると Claude Code は新しい会話に切り替わり、AgentKib は追従できません。このメッセージは送信されていません。空のコンテキストが必要な場合は新しい会話を開始してください（この会話は残ります）。コンテキストを空けるだけなら /compact を使えます。",
     "claude-command-background":
       "/loop と /batch は AgentKib が監督できないバックグラウンド作業を開始します。このメッセージは送信されていません。続けて実行したいメッセージは送信待ちキューに追加するか、継続目標を使ってください。",
     "claude-command-goal":
@@ -1085,13 +1056,13 @@ const reasons: Record<Locale, Record<string, string>> = {
     "claude-command-rename":
       "/rename は Claude Code 内の名前だけを変更し、AgentKib の名前は変わりません。このメッセージは送信されていません。AgentKib で会話の名前を変更してください。",
     "claude-command-settings":
-      "引数付きの /model と /effort は実行中のプロセスだけを変更し、AgentKib には保持されません。このメッセージは送信されていません。次のターンの設定でモデルまたは推論の強度を変更してください。",
+      "引数付きの /model と /effort は実行中のプロセスだけを変更し、AgentKib には保持されません。このメッセージは送信されていません。会話の設定でモデルまたは推論の強度を変更してください。",
     "claude-command-owner-only":
       "このコマンドはこのコンピューター上の Claude Code の設定やファイルを変更する可能性があるため、このコンピューター上の AgentKib またはターミナルからのみ実行できます。このメッセージは送信されていません。",
     "claude-model-unsupported":
-      "次のターンの設定で使えるのは一覧にあるモデルだけで、このモデルは一覧にありません。次のターンのモデルは変更されていません。一覧にあるモデルを、名前か完全なモデル ID で指定してください。",
+      "会話の設定で使えるのは一覧にあるモデルだけで、このモデルは一覧にありません。モデルは変更されていません。一覧にあるモデルを、名前か完全なモデル ID で指定してください。",
     "claude-effort-unsupported":
-      "次のターンの推論の強度は low、medium、high、xhigh、max のいずれかで、選択したモデルが対応しているものに限られます。次のターンの設定は変更されていません。次のターンの設定で選んでください。",
+      "推論の強度は low、medium、high、xhigh、max のいずれかで、選択したモデルが対応しているものに限られます。会話の設定は変更されていません。会話の設定で選んでください。",
     "codex-command-agentkib":
       "AgentKib はこの Codex のコマンドを独自の操作で代わりに行いますが、今は使えません。このメッセージは送信されていません。現在のターンが終わるのを待つか、このコンピューターでこのデバイスの権限を確認してください。",
     "codex-command-arguments":
@@ -1123,6 +1094,7 @@ export function codexReason(
   if (reason === "codex-owner-busy") return { text: continuation.busy("Codex") };
   if (reason === "codex-cli-version-too-old") return { text: continuation.codexVersionTooOld };
   if (reason === "claude-cli-too-old") return { text: continuation.claudeVersionTooOld };
+  if (reason === "dsh-native-status-unknown") return { text: continuation.dshStatusUnknown };
   const claudeReason = claudeConnectionReason(locale, reason, surface);
   if (claudeReason) return { text: claudeReason };
   if (

@@ -43,6 +43,7 @@ describe("`/plan` in the composer, as Codex's takes it", () => {
     const enter = vi.fn(() => true);
     render(<Composer enter={enter} />);
     const input = type("/plan");
+    expect(screen.getByRole("listbox").parentElement).toHaveClass("bottom-full", "mb-2");
     expect(within(screen.getByRole("listbox")).getAllByRole("option")[0]).toHaveTextContent(
       "/planTurn on Plan mode",
     );

@@ -37,8 +37,13 @@ export class ClaudeHostScheduler {
   private sessions = new Map<string, ClaudeScheduledSession>();
   private timer?: ReturnType<typeof setInterval>;
   private flight?: Promise<void>;
+  private sharedRuntimePrimary?: boolean;
 
   constructor(private readonly invoke: (input: unknown) => Promise<unknown>) {}
+
+  setSharedRuntimePrimary(primary: boolean): void {
+    this.sharedRuntimePrimary = primary;
+  }
 
   register(authority: ClaudeScheduleAuthority) {
     this.authorities.add(authority);
@@ -112,7 +117,7 @@ export class ClaudeHostScheduler {
         session.next ? session : previous ? { ...session, next: previous.next } : session,
       );
       if (session.paused && typeof session.continueAt === "number") {
-        if (Date.now() < session.continueAt) continue;
+        if (this.sharedRuntimePrimary === false || Date.now() < session.continueAt) continue;
         // The backend checks again that it is due; the next tick dispatches what it queued.
         await this.invoke({ operation: "schedule-continue", sessionId: session.sessionId }).catch(
           () => undefined,
@@ -128,14 +133,20 @@ export class ClaudeHostScheduler {
       const work = session.next;
       const authority = [...this.authorities].find((entry) => entry.owns(work.deviceId));
       if (!authority) {
-        await this.pause(session, "authorization-unavailable");
+        // The device can belong to a different desktop connected to the same runtime.
+        if (this.sharedRuntimePrimary === undefined)
+          await this.pause(session, "authorization-unavailable");
         continue;
       }
+      const ownershipChanged = () =>
+        this.sharedRuntimePrimary !== undefined &&
+        (!this.authorities.has(authority) || !authority.owns(work.deviceId));
       const epoch = this.epochs.get(work.deviceId) ?? 0;
       if (!authority.reserve(session.sessionId)) continue;
       let dispatched = false;
       try {
         await authority.authorize(session);
+        if (ownershipChanged()) continue;
         const prepared = (await this.invoke({
           operation: "schedule-prepare",
           sessionId: session.sessionId,
@@ -146,7 +157,9 @@ export class ClaudeHostScheduler {
           runtimeBootId: session.runtimeBootId,
         })) as Record<string, unknown>;
         if (prepared?.accepted !== true || typeof prepared.permitId !== "string") continue;
+        if (ownershipChanged()) continue;
         await authority.authorize(session);
+        if (ownershipChanged()) continue;
         if (!this.authorities.has(authority) || epoch !== (this.epochs.get(work.deviceId) ?? 0)) {
           await this.pause(session, "authorization-changed");
           continue;
@@ -162,8 +175,12 @@ export class ClaudeHostScheduler {
           runtimeBootId: prepared.runtimeBootId,
           permitId: prepared.permitId,
         })) as Record<string, unknown>;
-        if (outcome?.accepted !== true) await this.pause(session, "scheduled-dispatch-unconfirmed");
+        if (outcome?.accepted !== true && !ownershipChanged())
+          await this.pause(session, "scheduled-dispatch-unconfirmed");
       } catch {
+        // A replacement desktop can now authorize this item. A prepared but undispatched
+        // permit expires in the runtime without invalidating the replacement's authorization.
+        if (ownershipChanged()) continue;
         // Invalidate the prepared permit even when the backend's completion is uncertain.
         await this.invoke({ operation: "schedule-invalidate", deviceId: work.deviceId }).catch(
           () => undefined,

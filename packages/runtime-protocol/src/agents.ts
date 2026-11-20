@@ -1,3 +1,5 @@
+import type { LiveSessionAgent } from "./session-providers";
+
 /**
  * Agents AgentKib starts and controls through the host's managed APIs: create a session, send,
  * approve, answer and stop. Views and host checks that concern managed sessions read this list,
@@ -18,8 +20,8 @@ export function managedAgentOf(agent: unknown): ManagedAgent | null {
  * Agents whose sessions AgentKib opens live, following their turns and offering a composer: the
  * managed ones, and Antigravity, which it continues through ACP.
  */
-export const LIVE_SESSION_AGENTS: readonly string[] = [...MANAGED_AGENTS, "antigravity"];
+export const LIVE_SESSION_AGENTS: readonly LiveSessionAgent[] = [...MANAGED_AGENTS, "antigravity"];
 
-export function isLiveSessionAgent(agent: unknown): boolean {
-  return typeof agent === "string" && LIVE_SESSION_AGENTS.includes(agent);
+export function isLiveSessionAgent(agent: unknown): agent is LiveSessionAgent {
+  return typeof agent === "string" && LIVE_SESSION_AGENTS.some((entry) => entry === agent);
 }

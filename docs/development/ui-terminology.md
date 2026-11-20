@@ -146,7 +146,9 @@ D10、D11 的同 Agent 续接以“能否继续、在哪里运行”为准。用
 | Claude Code 终端已连接 | 在终端中运行 · 已连接 | 在終端中執行 · 已連線 | ターミナルで実行中 · 接続済み | Running in terminal · Connected |
 | 跟随 Codex 桌面端 | 在 Codex 中运行 · 已连接 | 在 Codex 中執行 · 已連線 | Codex で実行中 · 接続済み | Running in Codex · Connected |
 | 桌面端占着会话但没有窗口在用（发送时请它接上） | 在 Codex 中打开 · 发送时连接 | 在 Codex 中開啟 · 傳送時連線 | Codex で開いています · 送信時に接続 | Open in Codex · Connects when you send |
-| 已连接的 DeepSeek Harness | 在 DeepSeek Harness 中运行 · 已连接 | 在 DeepSeek Harness 中執行 · 已連線 | DeepSeek Harness で実行中 · 接続済み | Running in DeepSeek Harness · Connected |
+| 已连接的 DeepSeek Harness 会话空闲 | DeepSeek Harness 已连接 | DeepSeek Harness 已連線 | DeepSeek Harness に接続済み | Connected to DeepSeek Harness |
+| 已连接的 DeepSeek Harness 正在执行当前轮次 | 在 DeepSeek Harness 中运行 | 在 DeepSeek Harness 中執行 | DeepSeek Harness で実行中 | Running in DeepSeek Harness |
+| DeepSeek Harness 桥接未连接，无法确认原会话状态 | 实时状态未知 | 即時狀態未知 | リアルタイムの状態は不明 | Live status unknown |
 | 已连接终端的列表徽标 | 终端 | 終端 | ターミナル | Terminal |
 | 列表里有审批或提问在等 | 等待你 | 等待你 | 対応待ち | Needs you |
 | 连接的终端正在跑一轮 | 在终端中运行 | 在終端中執行 | ターミナルで実行中 | Running in terminal |
@@ -169,7 +171,7 @@ D10、D11 的同 Agent 续接以“能否继续、在哪里运行”为准。用
 
 空闲时不显示额外状态徽标。等待你用琥珀色；启动中、运行中、已连接终端、跟随 Codex 桌面端、外部占用、仅可查看使用中性色或主色；首页、侧栏和详情沿用同一概念。首页和侧栏只显示主机已经报告、不必检查其他客户端的状态，和手机一致：等待你（琥珀色圆点）；一轮正在运行（转动的圆环，悬停写出在 AgentKib、终端还是 Codex 应用里运行）；终端（连接终端里空闲的 Claude Code）；仅可查看。AgentKib 的后台进程空闲驻留、只在别处打开、结果待核对和已归档的会话不显示；“正在 {agent} 中使用”在打开会话后显示。分组标题在会话数前标出在等和运行中的数量，收起时仍显示。侧栏用圆点时，悬停及无障碍标签写出对应状态；仅可查看不增加运行圆点。同一个原因在一屏只说明一次。客户端版本、会话 ID、来源文件放在“会话操作 → 会话详情”，输入区不堆放这些技术信息。
 
-外部占用时才显示选择条，`{agent}` 使用实际产品名（Claude Code、Codex）；Codex 会话能跟随桌面端时直接显示输入框，不显示选择条。主要操作创建分支，原会话不受影响；返回该 Agent 的操作保持当前草稿，只说明在哪里继续，不提供续接命令，因为会话已经在那边打开。有文字、附件或引用草稿时，选择条及返回说明显示“草稿已保留，回到这里后会恢复。”，没有草稿时不显示。选择条定期检查占用，发送仍以执行电脑的权威检查为准。只读时给出具体原因；校验中、未知操作结果、连接异常、缺少权限分别解释，不能统一当作平台或版本不支持，也不能承诺自动重发。
+外部占用且暂时无法连接时，保留普通输入框及草稿，显示一行占用说明。`{agent}` 使用实际产品名（Claude Code、Codex）。桌面端可跟随时，页头显示已连接状态，并按当前执行能力开放发送。占用解除后自动恢复发送，分支仍可从会话操作菜单发起。只读时给出具体原因；校验中、未知操作结果、连接异常、缺少权限分别解释，不能统一当作平台或版本不支持，也不能承诺自动重发。
 
 | 提示用途 | 简体中文 | 繁體中文 | 日本語 | English |
 | --- | --- | --- | --- | --- |

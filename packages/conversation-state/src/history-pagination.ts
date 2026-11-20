@@ -199,6 +199,31 @@ export function beginHistoryPagination(
   };
 }
 
+/** A stale cursor invalidates all ranges from its source, but not the displayed rows. */
+export function rebaseHistoryPagination(
+  state: HistoryPagination,
+  expired: HistoryPaginationTicket,
+  latest: ConversationEventPage,
+  readOrder: number,
+): boolean {
+  const active = state.ranges.at(-1);
+  if (
+    expired.scope !== state.scope ||
+    active?.id !== expired.rangeId ||
+    active.cursor !== expired.cursor ||
+    active.version !== expired.version ||
+    (state.latestReadOrder !== undefined && readOrder <= state.latestReadOrder)
+  )
+    return false;
+  state.ranges.length = 0;
+  state.persisted.clear();
+  state.initialized = false;
+  state.ordinal = 0;
+  state.tailItemIds = [];
+  recordLatestHistoryPage(state, latest, readOrder);
+  return true;
+}
+
 /** A later latest page may add a gap without invalidating this range's read. */
 export function applyHistoryPagination(
   state: HistoryPagination,

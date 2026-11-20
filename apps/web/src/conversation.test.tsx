@@ -28,6 +28,7 @@ import {
   rememberPending,
 } from "@/features/conversation/features/sessions/pending-controls";
 import { catalogCopy } from "@/features/conversation/features/catalog/catalog-copy";
+import { publishSessionInvalidation } from "@/features/conversation/features/sessions/session-events";
 
 afterEach(cleanup);
 beforeEach(() => {
@@ -98,7 +99,7 @@ function fixture(lan = false) {
                       workspaces: [{ id: "workspace", name: "Project" }],
                       models: [],
                     }
-                  : operation === "codex/capabilities"
+                  : operation === "managed/capabilities"
                     ? {
                         sessionId: id,
                         executionMode: "codex-managed",
@@ -107,7 +108,7 @@ function fixture(lan = false) {
                       }
                     : operation === "codex/queue"
                       ? { sessionId: id, data: [] }
-                      : operation === "codex/archive"
+                      : operation === "managed/action"
                         ? { accepted: true }
                         : { available: false };
       return result as Result;
@@ -201,6 +202,170 @@ function emitSession(stream: SessionStreamHandlers, seq: number, type: string, p
 }
 
 describe("active control receipt ownership", () => {
+  it.each([
+    ["codex", "settings"],
+    ["claude-code", "settings"],
+    ["deepseek-harness", "settings"],
+    ["devin", "settings"],
+    ["claude-code", "open-model-picker"],
+  ] as const)(
+    "settles %s %s without marking the active request unknown or reloading the chat",
+    async (agent, action) => {
+      const { bridge, client, sessions, streams } = fixture();
+      sessions[0].agent = agent;
+      const pending = deferred<unknown>();
+      const request = client.request.bind(client);
+      const path = "managed/action";
+      const sending = vi
+        .spyOn(client, "request")
+        .mockImplementation((route, body, signal) =>
+          route === path ? pending.promise : request(route, body, signal),
+        );
+      vi.spyOn(client, "sessionCapabilities").mockImplementation(async (sessionId) => ({
+        sessionId,
+        executionMode: action === "open-model-picker" ? "claude-follower" : "codex-managed",
+        status: "idle",
+        features: { [action]: { available: true } },
+      }));
+      const receipt = vi.spyOn(client, "receipt").mockImplementation(async (requestId) => ({
+        found: false,
+        requestId,
+      }));
+      const catalog = vi.spyOn(client, "catalog");
+      const events = vi.spyOn(client, "events");
+      const subscribe = vi.spyOn(bridge, "stream");
+      const live = vi.spyOn(client, "live");
+      const view = renderHook(() => useSessionController({ client, embedded: true }));
+      await waitFor(() => expect(view.result.current.sessions).toHaveLength(2));
+      await act(async () => view.result.current.choose("first"));
+      await waitFor(() =>
+        expect(view.result.current.capabilities?.features[action]?.available).toBe(true),
+      );
+      expect(view.result.current.controlReady).toBe(true);
+      const loadedPage = view.result.current.page;
+      catalog.mockClear();
+      events.mockClear();
+      subscribe.mockClear();
+      let control!: ReturnType<typeof view.result.current.codexAction>;
+      act(() => {
+        control = view.result.current.codexAction(
+          action,
+          action === "settings" ? { model: "test-model" } : {},
+        );
+      });
+      await waitFor(() => expect(sending.mock.calls.some(([route]) => route === path)).toBe(true));
+      const scope = pendingScope("", "local");
+      const [own] = readPending(scope);
+      await act(async () =>
+        streams.get("first")!.event("control-changed", JSON.stringify({ sessionId: "first" })),
+      );
+      expect(receipt).not.toHaveBeenCalledWith(own.requestId);
+      expect(view.result.current.notice).toBeUndefined();
+      expect(view.result.current.settingsNotice).toMatchObject({
+        target: "model",
+        status: "writing",
+      });
+      expect(view.result.current.controlReady).toBe(true);
+      expect(view.result.current.canSend).toBe(false);
+      live.mockResolvedValueOnce({ ...view.result.current.live!, revision: 2 });
+      await act(async () => {
+        pending.resolve({ accepted: true, requestId: own.requestId, sessionId: "first" });
+        await control;
+      });
+      expect(readPending(scope)).toEqual([]);
+      expect(view.result.current.notice).toBeUndefined();
+      expect(view.result.current.settingsNotice).toBeUndefined();
+      expect(view.result.current.live?.revision).toBe(2);
+      expect(view.result.current.controlReady).toBe(true);
+      expect(view.result.current.page).toBe(loadedPage);
+      expect(events).not.toHaveBeenCalled();
+      expect(catalog).not.toHaveBeenCalled();
+      expect(subscribe).not.toHaveBeenCalled();
+      expect(sending.mock.calls.filter(([route]) => route === path)).toHaveLength(1);
+    },
+  );
+
+  it.each(["accepted", "not-dispatched", "wrong-revision", "missing-ack"] as const)(
+    "checks the exact settings receipt after a lost response (%s)",
+    async (status) => {
+      const { client, sessions } = fixture();
+      sessions[0].agent = "codex";
+      vi.spyOn(client, "sessionCapabilities").mockImplementation(async (sessionId) => ({
+        sessionId,
+        executionMode: "codex-managed",
+        status: "idle",
+        features: { settings: { available: true } },
+      }));
+      const write = vi.spyOn(client, "sessionAction").mockRejectedValue(new Error("response lost"));
+      const unconfirmed = status === "wrong-revision" || status === "missing-ack";
+      const receipt = vi.spyOn(client, "receipt").mockImplementation(async (requestId) => ({
+        found: true,
+        requestId,
+        sessionId: "first",
+        operation: "settings",
+        expectedRevision: status === "wrong-revision" ? 0 : 1,
+        status: status === "not-dispatched" ? status : "accepted",
+        ack:
+          status === "missing-ack"
+            ? undefined
+            : {
+                accepted: status !== "not-dispatched",
+                requestId,
+                sessionId: "first",
+              },
+        completionObserved: false,
+      }));
+      const events = vi.spyOn(client, "events");
+      const view = renderHook(() => useSessionController({ client, embedded: true }));
+      await waitFor(() => expect(view.result.current.sessions).toHaveLength(2));
+      await act(async () => view.result.current.choose("first"));
+      await waitFor(() =>
+        expect(view.result.current.capabilities?.features.settings?.available).toBe(true),
+      );
+      events.mockClear();
+      await act(async () =>
+        view.result.current.codexAction(
+          "settings",
+          status === "not-dispatched" ? { policyId: "read-only" } : { model: "test-model" },
+        ),
+      );
+      const own = write.mock.calls[0][1];
+      expect(receipt).toHaveBeenCalledExactlyOnceWith(own.requestId);
+      expect(write).toHaveBeenCalledExactlyOnceWith("settings", own, "codex");
+      expect(events).not.toHaveBeenCalled();
+      expect(view.result.current.notice).toBeUndefined();
+      if (unconfirmed || status === "not-dispatched")
+        expect(view.result.current.settingsNotice).toMatchObject({
+          target: unconfirmed ? "model" : "permissions",
+          status: unconfirmed ? "uncertain" : "notDispatched",
+        });
+      else expect(view.result.current.settingsNotice).toBeUndefined();
+      expect(view.result.current.controlReady).toBe(!unconfirmed);
+      expect(readPending(pendingScope("", "local")).map((entry) => entry.requestId)).toEqual(
+        unconfirmed ? [own.requestId] : [],
+      );
+      if (unconfirmed) {
+        expect(view.result.current.canSend).toBe(false);
+        receipt.mockResolvedValue({
+          found: true,
+          requestId: own.requestId,
+          sessionId: "first",
+          operation: "settings",
+          expectedRevision: 1,
+          status: "accepted",
+          ack: { accepted: true, requestId: own.requestId, sessionId: "first" },
+          completionObserved: true,
+        });
+        await act(async () => publishSessionInvalidation(client, "first", ["receipts"]));
+        expect(view.result.current.settingsNotice).toBeUndefined();
+        expect(view.result.current.controlReady).toBe(true);
+        expect(readPending(pendingScope("", "local"))).toEqual([]);
+        expect(events).not.toHaveBeenCalled();
+        expect(write).toHaveBeenCalledTimes(1);
+      }
+    },
+  );
+
   it("keeps a pending send distinct from an unknown receipt", async () => {
     const { client } = fixture();
     const pending = deferred<unknown>();
@@ -826,6 +991,31 @@ describe("history pagination refresh compatibility", () => {
     expect(view.result.current.page?.events).toEqual([...initial, tail]);
     expect(view.result.current.page?.next_cursor).toBeUndefined();
     expect(view.result.current.error).toBe(false);
+  });
+
+  it("shows history while the selected session's write receipt is still pending", async () => {
+    const { client } = fixture();
+    const view = renderHook(() => useSessionController({ client, embedded: true }));
+    await waitFor(() => expect(view.result.current.sessions).toHaveLength(2));
+    const requestId = crypto.randomUUID();
+    rememberPending(pendingScope(client.origin, "local"), {
+      requestId,
+      sessionId: "first",
+      kind: "send",
+    });
+    const pending = deferred<Awaited<ReturnType<WebClient["receipt"]>>>();
+    vi.spyOn(client, "receipt").mockReturnValue(pending.promise);
+    let choosing!: Promise<void>;
+    act(() => {
+      choosing = view.result.current.choose("first");
+    });
+
+    await waitFor(() => expect(view.result.current.page?.events[0]?.id).toBe("first-history"));
+    expect(view.result.current.canSend).toBe(false);
+    await act(async () => {
+      pending.resolve({ found: false, requestId });
+      await choosing;
+    });
   });
 
   it("places the first successful busy-selection baseline before an already delivered native tail", async () => {
@@ -2913,6 +3103,7 @@ describe("shared embedded conversation", () => {
               : view.result.current.earlier();
       });
       await waitFor(() => expect(finish).toEqual(expect.any(Function)));
+      await waitFor(() => expect(view.result.current.live?.sessionId).toBe("first"));
       act(() =>
         streams.get("first")!.event(
           "session-event",

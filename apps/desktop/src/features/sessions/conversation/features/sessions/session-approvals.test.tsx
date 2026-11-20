@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { createContext, useContext } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Approval } from "@agentkib/web-client";
 import { fillCopy, interactionCardCopy, type InteractionLocale } from "@agentkib/session-ui";
@@ -14,7 +15,11 @@ vi.mock("./session-operations", () => ({ SessionOperations: () => null }));
 vi.mock("./artifact-browser", () => ({ ArtifactBrowser: () => null }));
 
 type Session = ReturnType<typeof useSession>;
+const TestSession = createContext<Session | null>(null);
 let state: Session;
+function useTestSession() {
+  return useContext(TestSession) ?? state;
+}
 const locales = ["zh-CN", "zh-Hant", "en-US", "ja-JP"] as const;
 function approval(overrides: Partial<Approval> = {}): Approval {
   return {
@@ -50,7 +55,7 @@ beforeEach(() => {
     setModal: vi.fn(),
     control: vi.fn(),
   } as unknown as Session;
-  vi.mocked(useSession).mockImplementation(() => state);
+  vi.mocked(useSession).mockImplementation(useTestSession);
 });
 afterEach(cleanup);
 
@@ -159,7 +164,11 @@ describe("waiting approvals above the composer", () => {
       method: "item/fileChange/requestApproval",
     });
     state.live = { ...state.live!, approvals: [original] };
-    const view = render(<SessionReader />);
+    const view = render(
+      <TestSession value={state}>
+        <SessionReader />
+      </TestSession>,
+    );
     expect(
       within(card()).getByRole("heading", { name: "Allow Codex to edit the following files?" }),
     ).toBeVisible();
@@ -174,13 +183,21 @@ describe("waiting approvals above the composer", () => {
       t: conversationWords("zh-CN"),
       live: { ...state.live!, approvals: [original, next] },
     };
-    view.rerender(<SessionReader />);
+    view.rerender(
+      <TestSession value={state}>
+        <SessionReader />
+      </TestSession>,
+    );
     expect(
       within(card()).getByRole("heading", { name: "允许 Codex 编辑以下文件吗？" }),
     ).toBeVisible();
     expect(within(card()).getByText("1/2")).toBeVisible();
-    state.live = { ...state.live!, approvals: [next] };
-    view.rerender(<SessionReader />);
+    state = { ...state, live: { ...state.live!, approvals: [next] } };
+    view.rerender(
+      <TestSession value={state}>
+        <SessionReader />
+      </TestSession>,
+    );
     expect(screen.queryByText("1/2")).not.toBeInTheDocument();
     expect(within(card()).getByText("notes.md")).toBeVisible();
     expect(state.control).not.toHaveBeenCalled();
@@ -193,6 +210,7 @@ function acp() {
     current: { ...state.current!, agent: "antigravity" },
     access: {
       ...state.access!,
+      status: "approved",
       experimentalEnabled: true,
       device: {
         id: "device",

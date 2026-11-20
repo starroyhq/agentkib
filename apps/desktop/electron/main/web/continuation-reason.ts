@@ -46,6 +46,7 @@ export function continuationPreflightReason(
       "dsh-launcher-unavailable",
       "dsh-exited",
       "dsh-session-in-use",
+      "dsh-native-status-unknown",
       "goal-changed",
       "goal-action-unavailable",
       "goal-rounds-exhausted",

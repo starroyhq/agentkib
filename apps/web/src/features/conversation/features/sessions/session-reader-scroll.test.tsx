@@ -7,6 +7,7 @@ const conversationWords = (locale: keyof typeof dictionaries) => dictionaries[lo
 import { SessionReader } from "./session-reader";
 import { useSession } from "./session-context";
 import { webLayoutCopy } from "./web-layout-copy";
+import { contextUsageCopyForSurface } from "./context-usage-copy";
 
 vi.mock("./session-context", () => ({ useSession: vi.fn() }));
 vi.mock("./session-operations", () => ({ SessionOperations: () => null }));
@@ -148,6 +149,23 @@ afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
+});
+
+it("uses the same reader status slot for execution and compaction", () => {
+  state = { ...state, live: { ...state.live!, status: "running", turnId: "turn-1" } };
+  const view = reader();
+  const status = () => view.viewport.querySelector("[data-session-turn-status]");
+  expect(status()).toHaveAttribute("data-session-turn-status", "running");
+  state = { ...state, live: { ...state.live!, activity: "compacting" } };
+  view.update();
+  const copy = contextUsageCopyForSurface("en-US", "web");
+  expect(screen.getAllByText(copy.compacting)).toHaveLength(1);
+  expect(status()).toHaveAttribute("data-session-turn-status", "compacting");
+  expect(screen.queryByText(copy.compactingDetail)).not.toBeInTheDocument();
+
+  state = { ...state, online: false };
+  view.update();
+  expect(status()).toBeNull();
 });
 
 describe("reader follows user intent across transcript and viewport layout", () => {

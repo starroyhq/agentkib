@@ -6,6 +6,7 @@ export type SessionPanels = {
   setTerminalOpen?: (open: boolean) => void;
   actionsOpen: boolean;
   setActionsOpen: (open: boolean) => void;
+  statusInToolbar?: boolean;
 };
 export const SessionPanelsContext = createContext<SessionPanels | null>(null);
 export function useSessionPanels() {

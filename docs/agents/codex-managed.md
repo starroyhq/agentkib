@@ -1,6 +1,6 @@
 # Codex 托管执行
 
-Codex 同 Agent 续接统一使用 AgentKib 自己启动的 `codex app-server`，`executionMode` 为 `codex-managed`，支持 macOS、Linux 和 Windows 的这条链路。会话的写锁被其他进程持有、且 Codex 桌面端的本地 IPC 报告了这条会话的 owner 时，改为跟随该 owner（`codex-follower`，仅 macOS，见下文“跟随 Codex 桌面端”）；无法跟随时仍显示原有选择条，跟随也不作为续接失败后的自动回退。打开页面只观察，空闲会话发送时自动续接，不再勾选交接。创建与管理仍须对应设备授权；发送继续检查实验控制、工作区和未知回执。Web/Electron 负责授权，TypeScript backend 在每次操作前复核 canonical 路径、会话身份和同一 CODEX_HOME。
+Codex 同 Agent 续接统一使用 AgentKib 自己启动的 `codex app-server`，`executionMode` 为 `codex-managed`，支持 macOS、Linux 和 Windows 的这条链路。会话的写锁被其他进程持有、且 Codex 桌面端的本地 IPC 报告了这条会话的 owner 时，改为跟随该 owner（`codex-follower`，仅 macOS，见下文“跟随 Codex 桌面端”）；无法跟随时保留普通输入框及占用提示，按能力禁用发送，跟随也不作为续接失败后的自动回退。打开页面只观察，空闲会话发送时自动续接，不再勾选交接。创建与管理仍须对应设备授权；发送继续检查实验控制、工作区和未知回执。Web/Electron 负责授权，TypeScript backend 在每次操作前复核 canonical 路径、会话身份和同一 CODEX_HOME。
 
 ## RPC
 
@@ -10,11 +10,12 @@ Codex 同 Agent 续接统一使用 AgentKib 自己启动的 `codex app-server`�
 | --- | --- | --- |
 | options | 无 | `available`, `models:[{id,name,isDefault,efforts}]`, `policies`，不可用附 `reason` |
 | create | `workspaceId`, UUID `requestId`, 可选 `model`, `effort`, `policyId` | `sessionId`, `accepted`, `completed`, `runtimeBootId`, `live` |
-| adopt | 原有 opaque `sessionId`, UUID `requestId`；兼容字段不作为用户确认门 | 同上；保留原生 thread ID，仍做内部身份与占用校验 |
 | release | `sessionId`, UUID `requestId` | `released:true`, `accepted:true` |
 | reconcile | `sessionId`, UUID `requestId` | `reconciled:true` 和 `live`，或 `false` 和原因 |
 
 HTTP 另外携带 Electron `bootId`，由 Electron 验证，不直接传给 Runtime。托管 sessionId 为 64 位十六进制，对外不暴露原生路径。create 不接受首条消息；成功获取 sessionId 后再单独 send，避免创建回执丢失时重复执行首条消息。相同 requestId 和输入重试返回持久回执；同 ID 换输入会拒绝。
+
+不再提供独立的 `adopt` 操作或 HTTP 接口。打开旧会话和项目 Agent 的 `worker_open` 只读取、登记已验证身份；模型、权限与模式先保存设置，原生线程在原 `send` 请求中按需恢复。恢复与发送共用该次发送回执，仍检查原生身份、写锁和权限；初始化失败不会另留一条接管回执，也不会自动重发。旧版本已保存的接管回执继续只读核对。
 
 现有 `web.request` 对托管会话自动分派 `live`, `events`, `send`, `stop`, `approve`, `answer`。控制参数沿用 `runtimeBootId`, `expectedRevision`, UUID `requestId`, `experimentalEnabled:true`；审批/问答另外验证原生 `turnId` 和请求 ID。`events` 默认最新 50 条、页面内部按时间正序；`next_cursor` 向更早历史分页。catalog 合并持久托管记录，即使会话索引关闭或重建，托管任务仍可见。
 
@@ -24,9 +25,9 @@ HTTP 另外携带 Electron `bootId`，由 Electron 验证，不直接传给 Runt
 
 ## 执行策略与版本适配
 
-新建托管会话默认使用 `workspace-write-on-request`：`workspace-write`、`on-request`、人工 reviewer、sandbox network=false。完整授权浏览器可在主机返回的映射策略中显式切换为完全访问（不弹审批）或工作区写入／自动审核；新建时也可以直接选这三种映射策略之一，选默认以外的同样只限完整授权的设备（桌面按本机用户处理）。浏览器不能提交任意 sandbox 对象、cwd、CLI 参数、额外可写根或审核器参数。策略更新必须在空闲时携带当前 revision，由原生 settings 通知和 `thread/read` 回读确认后写入账本；后续 turn/start 从账本使用已确认策略，不再被固定默认值覆盖。旧记录缺少策略字段时仍使用原受限默认。
+新建托管会话默认使用 `workspace-write-on-request`：`workspace-write`、`on-request`、人工 reviewer、sandbox network=false。完整授权浏览器可在主机返回的映射策略中显式切换为完全访问（不弹审批）或工作区写入／自动审核；新建时也可以直接选这三种映射策略之一，选默认以外的同样只限完整授权的设备（桌面按本机用户处理）。浏览器不能提交任意 sandbox 对象、cwd、CLI 参数、额外可写根或审核器参数。策略更新携带当前修订号。AgentKib 管理的轮次运行中也可保存。宿主把选择与回执一起写入账本，下一次发送通过 `turn/start` 使用新策略。旧记录缺少策略字段时仍使用原受限默认。
 
-模型、思考强度和服务档位来自 `model/list`；Plan／执行模式来自实验协议 `collaborationMode/list`：runner 启动时读取一次，同时列出 `plan` 与 `default` 两个预设（按 `mode` 字段识别）才开放 Plan；读取失败或结构不符时 Plan 保持不可用，会话照常使用。0.163.0 与 0.147.0 都已对本地桩核对，见 [Codex 接入补齐验收](../../qa/codex-gaps-2026-10-28.md)。空闲时保存设置只改变 `selected`，不启动轮次；`current` 保留原生确认值，`applicationStatus` 区分 `pending`、`confirmed` 和 `unknown`。下一次显式发送在 `turn/start.collaborationMode` 传入选择，内外模型和强度一致，`developer_instructions:null` 由 Codex 加载内置指令。没有自定义计划提示词、隐藏空轮次或自动执行计划。实时链路里计划是原生 `plan` 项；原生记录里计划写在 Agent 回复的 `<proposed_plan>` 标签内，读历史时去掉这对标签，只显示计划正文。
+模型、思考强度和服务档位来自 `model/list`；Plan／执行模式来自实验协议 `collaborationMode/list`：runner 启动时读取一次，同时列出 `plan` 与 `default` 两个预设（按 `mode` 字段识别）才开放 Plan；读取失败或结构不符时 Plan 保持不可用，会话照常使用。0.163.0 与 0.147.0 都已对本地桩核对，见 [Codex 接入补齐验收](../../qa/codex-gaps-2026-10-28.md)。在 AgentKib 保存设置只改变 `selected`，不启动轮次；`current` 保留原生确认值，`applicationStatus` 区分 `pending`、`confirmed` 和 `unknown`。下一次显式发送在 `turn/start.collaborationMode` 传入选择，内外模型和强度一致，`developer_instructions:null` 由 Codex 加载内置指令。没有自定义计划提示词、隐藏空轮次或自动执行计划。实时链路里计划是原生 `plan` 项；原生记录里计划写在 Agent 回复的 `<proposed_plan>` 标签内，读历史时去掉这对标签，只显示计划正文。
 
 新建选项和没有 runner 的会话设置要读模型目录时，每次都得临时启动一个 app-server；它可能还要先从网络刷新共享的 `models_cache.json`（ChatGPT 桌面版内置的 Codex 与 PATH 上的 CLI 版本不同时，几乎每次都会刷新，实测约 3–4 秒）。所以电脑端按 CLI 文件身份、CODEX_HOME 和工作目录缓存最近一次的模型和预设：有缓存时立即返回，超过 5 分钟才在后台重读，只有第一次读取需要等待，重读失败保留旧结果。缓存只用于显示；有 runner 时设置照常读实时目录，发送和保存设置前仍按实时目录核对模型、强度和档位。
 
@@ -44,13 +45,13 @@ Goal 使用 `thread/goal/get/set/clear` 和原生事件。`goal-set` 的 `intent
 
 Codex 每条会话只允许一个进程写入。ChatGPT 桌面端用自己启动的 app-server 打开会话后会一直持有写锁（不显示的会话约 3 小时后才退订），AgentKib 的 `thread/resume` 因此被拒绝。为了不必分支或退出桌面端，AgentKib 像 VS Code 插件那样作为 follower 加入桌面端的本地 IPC：订阅 owner 的实时状态，把发送、停止和审批交给 owner 执行，写入的始终只有桌面端。
 
-- **何时跟随**：仅在 `live`／`capabilities` 发现写锁被其他进程持有、且没有其他阻断原因时尝试。连接 `<CODEX_HOME>/ipc/ipc.sock`，按原生 ID 做 owner discovery；成功后 `live` 返回 `executionMode: "codex-follower"`、`executionLocation: "external"`、`ownershipReason: null` 和 `workspaceId`。非 macOS、找不到 owner（例如锁在 CLI 或其他进程手里）、版本或协议不符、连接失败时回到原有的 `codex-owner-busy` 选择条，5 秒内不重复尝试，不向界面透出跟随失败的细节。写锁空闲时照常走托管链路。
+- **何时跟随**：仅在 `live`／`capabilities` 发现写锁被其他进程持有、且没有其他阻断原因时尝试。连接 `<CODEX_HOME>/ipc/ipc.sock`，按原生 ID 做 owner discovery；成功后 `live` 返回 `executionMode: "codex-follower"`、`executionLocation: "external"`、`ownershipReason: null` 和 `workspaceId`。非 macOS、找不到 owner（例如锁在 CLI 或其他进程手里）、版本或协议不符、连接失败时显示 `codex-owner-busy` 占用提示并保留可编辑草稿，5 秒内不重复尝试，不向界面透出跟随失败的细节。写锁空闲时照常走托管链路。
 - **桌面端还占着、但没有窗口在用**：桌面端的页面离开一条会话后，app-server 仍然加载着它、持有写锁，可以长达数小时没有任何窗口应答 owner discovery。这时只要桌面端（ChatGPT.app 或 Codex.app 的主进程）正在运行，`live` 仍报 `ownershipReason: "codex-owner-busy"`，但 `sendEnabled: true` 并带 `ownerHandoff: true`，`capabilities` 只开放发送和附件；桌面与 Web 显示输入框和“在 Codex 中打开 · 发送时连接”。发送时 AgentKib 先照常尝试续接，被写锁挡住后用 `open -g codex://threads/<id>` 请桌面端在后台（不抢焦点）打开这条会话，最多等 8 秒（`AGENTKIB_CODEX_HANDOFF_TIMEOUT_MS` 可改）找到 owner，再按上面的跟随链路把消息交给它，回执与跟随发送相同（`executionMode: "codex-follower"`）。只有发送会请桌面端打开：在 AgentKib 里打开、浏览会话不会让桌面端的页面跳动。桌面端没在运行时不打开链接（打开会启动 App），也不抢写锁、不自己续接；桌面端没有接手时这条消息不发出，草稿保留，一分钟内不再提供“发送时连接”。
-- **可用操作**：开放发送、停止和审批（命令与文件审批，按 owner 提供的决定，例如只给“允许一次”“取消轮次”时不显示“拒绝”）。发送可以带附件，与发送同条件开放：图片作为原生 `localImage`、其他文件作为文件引用文本交给 owner，与托管链路相同（2026-11-05 起）。分支照常可用；删除因写锁在桌面端而不可用（`codex-owner-busy`）。问答、设置、模型、Plan、追加、队列、压缩、目标、重命名、归档等返回 `follower-operation-unverified`（“这项操作请在 Codex 中完成。”），owner 的提问在 AgentKib 中只显示“这项请求请在 Codex 中处理”。执行使用桌面端这条会话的模型、权限和沙箱设置，不使用 AgentKib 的托管策略。
+- **可用操作**：开放发送、停止和审批，命令与文件审批采用 owner 提供的决定。附件与发送条件相同，图片作为原生 `localImage`，其他文件作为文件引用文本。分支照常可用，删除受原生写锁约束。当前 owner 的模型、强度、目录及同一安装的模型表均已核实时，空闲或运行中都可以为下一轮修改模型和强度。写入后的回执需与 owner 的设置回读和会话快照一致。Fast、权限、Plan、追加、队列、压缩、目标、重命名、归档和问答在 Codex 中处理。继续执行使用这条会话的原生策略和沙箱设置。
 - **状态与历史**：follower 只推送实时状态（运行状态、轮次、审批、流式文字）；对话内容仍以 250ms 快照从原生 rollout 读取，避免同一消息以两种身份重复出现。
 - **生命周期**：最多同时跟随 8 条会话；有 follower 时桌面端不会退订这条会话，所以没有订阅者且闲置 30 秒后断开跟随。owner 变化或断开时关闭连接，重新核对写锁：锁已释放则回到托管链路，发送时自动续接；不会在两条链路之间自动重发消息。
-- **授权与回执**：主机把 `codex-follower` 与 `codex-managed` 同样对待（工作区、设备权限、LAN 范围和回执查询）。控制回执记录 `executionMode: "codex-follower"` 和 `workspaceId`。结果未知时，发送与停止通过临时 app-server 的 `thread/read` 核对 `clientUserMessageId` 和轮次终态；审批在已连接的 follower 中确认对应请求已不再待处理，不重新建立连接。
-- **版本**：follower 要求 Desktop `26.917.62051` 或更新版本，按三段数字比较；IPC 方法版本固定（discovery 1、start-turn 2、interrupt 4、状态流 11 等），并继续核对 peer、owner、host、thread、revision 和原生 ACK。2026-11-02 已对本机 Desktop `26.1027.51404`（内置 codex-cli `0.166.0-alpha.5.1`）完成静态方法版本核对和真实验收，见 [跟随 Codex 桌面端验收](../../qa/codex-desktop-follow-2026-11-02.md)；2026-11-05 在 Desktop `26.1029.61003` 上验收了随消息发送图片，见 [二期 2b 验收](../../qa/dsh-integration-phase2b-2026-11-05.md)。满足门槛不代表其他版本已验收；内部协议没有兼容承诺。
+- **授权与回执**：主机继续核对工作区、设备权限、LAN 范围和回执访问。设置变更携带当前 owner 的 `writeScope` 和状态修订号，派发时再次校验。owner 明确拒绝时，AgentKib 保留当前设置。owner 确认已应用后，AgentKib 从同一 owner 的新快照和模型读取接口核对模型与强度，再确认成功。应用结果未知时保留回执供复核。发送、停止和审批沿用各自已有的原生证据。
+- **版本**：基础 follower 仍按 Desktop 最低版本 `26.917.62051` 和 IPC 方法契约校验。模型和强度写入依据已验证安装中的方法声明和实时回包，要求 `thread-follower-read-model-settings` v1 与 `thread-follower-update-thread-settings` v2。状态流按消息结构、增量顺序和会话身份判断兼容性。历史验收涵盖跟随发送、停止、审批与图片发送。见 [跟随 Codex 桌面端验收](../../qa/codex-desktop-follow-2026-11-02.md)及[二期 2b 验收](../../qa/dsh-integration-phase2b-2026-11-05.md)。
 - **限制**：只支持 macOS；桌面端必须已经加载这条会话；两端同时发送的竞争（RACE-022）、桌面端中途退出后的真实切换尚未实机验收。旧的 `#reconcileCodexFollower` 等遗留辅助函数暂保留，待单独清理。
 
 ### 原生状态与用量
@@ -63,13 +64,13 @@ Web 的模型、服务档位、策略和资源能力取自当前 app-server 的�
 
 ## 原 ID 自动续接与退出
 
-没有本机活动 runner 时，发送自动准备并续接同一原生 thread ID；源索引与 rollout 元数据共同验证 ID 和工作区。专用 app-server 在同一 canonical CODEX_HOME 上调用官方 thread/resume，由 Codex 自己原子获取每线程 writer lock。原 writer 未退出时，若 Codex 桌面端报告了这条会话的 owner，打开页面即改为跟随（见上文）；否则返回 `codex-owner-busy`，界面提供显式分支或返回 Codex 的选择，保留草稿并重新检查占用；“找不到 owner”不能作为排他证明。AgentKib 不停止共享 daemon、不删除 native lock、不复制 CODEX_HOME，也不默认 fork。原生 active goal 等恢复风险及未知结果仍按内部规则阻断，不因省去用户确认而放行。
+没有本机活动 runner 时，发送自动准备并续接同一原生 thread ID；源索引与 rollout 元数据共同验证 ID 和工作区。专用 app-server 在同一 canonical CODEX_HOME 上调用官方 thread/resume，由 Codex 自己原子获取每线程 writer lock。原 writer 未退出时，若 Codex 桌面端报告了这条会话的 owner，打开页面即改为跟随（见上文）；若桌面端仍运行且明确没有窗口应答，发送时尝试连接。暂时无法跟随时返回 `codex-owner-busy`，输入框保留草稿并继续检查写锁。需要分支时可从会话操作菜单发起。AgentKib 不停止共享 daemon、不删除 native lock、不复制 CODEX_HOME，也不默认 fork。原生 active goal 等恢复风险及未知结果仍按内部规则阻断，不因省去用户确认而放行。
 
 Codex 应用或 CLI 正在执行的轮次只用于显示。目录只看 `thread-writer-locks/` 里有锁文件的线程：锁被持有，并且 rollout 里最后开始的一轮还没有 `task_complete` 或 `turn_aborted`，才给会话加 `externalTurn: { status: "running", startedAt }`。只看最后开始的一轮，是因为分支和子代理线程的 rollout 开头带着父线程没有结束的轮次。锁未被持有，说明打开线程的客户端已经退出；锁文件比这一轮新，说明这一轮属于先前退出的客户端（Codex 释放时删除锁文件，新进程第一次取锁时清掉无人持有的旧文件）；rollout 超过 6 小时没有写入也不算运行。每条 rollout 第一次只读末尾 8 MiB，之后只读新增部分；末尾没有轮次事件时，用新版 Codex 自己的 `thread_history_*.sqlite` 轮次记录补齐，读不到就不显示。AgentKib 自己的 runner 在场时不显示这个字段；live 状态在 `codex-owner-busy` 时带同一字段。它不改变 `continuation`、发送、分支和占用裁决。
 
 旧托管记录缺少执行 cwd 时，自动续接在持锁期间重新核实并保存原生工作目录，与登记工作区边界分开。续接后首条发送可接受迟到的纯用量更新及重复通知，不因观察版本变化误报“本次操作未执行”；身份、设置、目标或轮次发生真实变化时仍拒绝派发，即使字段随后恢复原值也不放行。普通控制继续使用原有 revision 校验。
 
-登记工作区仅作为授权边界。接管和分支的执行目录取 UUID 已核实的 rollout `session_meta.cwd`，经 canonical 路径确认仍在登记工作区内后，单独保存为托管记录的 `cwd`，用于 app-server、恢复、分支、下一轮与工作区写入策略的可写根。登记工作区为 `/` 或用户主目录时，也只允许经过核实的安全子目录；会话自身目录为文件系统根或用户主目录时按“仅可查看”处理。目录缺失、不是目录、无法核实或位于授权范围外时给出具体原因，不回退到登记工作区。旧台账没有 `cwd` 时重新核实原生头部，不能把旧 `workspace` 当成执行目录。原有 ID、HOME、锁、版本和策略回包校验继续生效。
+登记工作区仅作为授权边界。恢复执行和分支的执行目录取 UUID 已核实的 rollout `session_meta.cwd`，经 canonical 路径确认仍在登记工作区内后，单独保存为托管记录的 `cwd`，用于 app-server、恢复、分支、下一轮与工作区写入策略的可写根。登记工作区为 `/` 或用户主目录时，也只允许经过核实的安全子目录；会话自身目录为文件系统根或用户主目录时按“仅可查看”处理。目录缺失、不是目录、无法核实或位于授权范围外时给出具体原因，不回退到登记工作区。旧台账没有 `cwd` 时重新核实原生头部，不能把旧 `workspace` 当成执行目录。原有 ID、HOME、锁、版本和策略回包校验继续生效。
 
 Codex 的 `workspace-write` 隐式允许 cwd，原生 `writableRoots` 仅列额外目录，空数组不表示 cwd 不可写。校验启动响应时，顶层与线程 cwd 必须匹配经过核实的执行目录，canonical 后的附加根不得扩大范围。两种工作区写入策略在启动配置和每轮请求中都显式排除 `/tmp` 与环境 `TMPDIR` 的默认额外授权，并要求原生响应的两个排除标记严格为 true；缺失或不确认时拒绝执行。该限制不改变用户显式选择完全访问策略的既有语义。
 
@@ -105,7 +106,7 @@ reconcile 读取原生 thread/read。send/steer/queue-add 必须找到对应 `us
 
 ## 压缩、后台终端与斜杠命令（2026-10-28）
 
-上下文用量对话框里的“压缩上下文”调用 `thread/compact/start`，与终端的 `/compact` 相同，只在空闲且可发送时开放。Codex 先回 `{}`，再开始压缩自己的轮次；主机最多等 5 秒，看到该轮开始后返回，之后按 `activity: compacting` 处理。
+桌面和 Web 输入框的 `/compact` 调用 `thread/compact/start`，只在空闲且可发送时开放。Codex 先回 `{}`，再开始压缩自己的轮次；主机最多等 5 秒，看到该轮开始后返回，之后按 `activity: compacting` 处理。
 
 `/stop` 调用 `thread/backgroundTerminals/clean`，结束仍在后台运行的命令。停止按钮仍只中断当前轮次（`turn/interrupt`），与终端里按 Esc 一致。后台终端随 runner 进程结束，所以 `terminals-clean` 只在 runner 运行时开放。
 

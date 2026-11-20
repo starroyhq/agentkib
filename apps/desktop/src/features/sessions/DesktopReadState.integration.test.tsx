@@ -6,7 +6,9 @@ import {
   ApiError,
   WebClient,
   type ConversationClientBridge,
+  type ConversationEvent,
   type ConversationReadState,
+  type Live,
 } from "@agentkib/web-client";
 import { EmbeddedConversation } from "./conversation/conversation";
 const state: ConversationReadState = {
@@ -20,10 +22,10 @@ const state: ConversationReadState = {
     turnId: "turn",
     itemId: null,
     outcome: "cancelled",
-    completedAt: null,
+    completedAt: "2026-11-19T06:17:05.000Z",
   },
 };
-const event = {
+const event: ConversationEvent = {
   id: "answer",
   kind: "agent-message",
   turn_id: "turn",
@@ -31,8 +33,18 @@ const event = {
   attachment_count: 0,
   truncated: false,
 };
-function setup(unknown = false) {
-  let readState = state;
+function setup({
+  unknown = false,
+  initial = state,
+  events = [event],
+  live = { sessionId: "s", status: "idle", revision: 1, sendEnabled: false, approvals: [] },
+}: {
+  unknown?: boolean;
+  initial?: ConversationReadState;
+  events?: ConversationEvent[];
+  live?: Live;
+} = {}) {
+  let readState = initial;
   const request = vi.fn(async (path: string, body?: unknown) => {
     const operation = path.split("?")[0];
     if (operation === "access")
@@ -62,13 +74,12 @@ function setup(unknown = false) {
           },
         ],
       };
-    if (operation === "events") return { events: [event], warnings: [] };
-    if (operation === "live")
-      return { sessionId: "s", status: "idle", revision: 1, sendEnabled: false, approvals: [] };
+    if (operation === "events") return { events, warnings: [] };
+    if (operation === "live") return live;
     if (operation === "read-state") {
       if (body) {
         if (unknown) throw new ApiError(409, "read_state_conflict");
-        readState = { ...state, status: "read" };
+        readState = { ...initial, status: "read" };
       }
       return { readState };
     }
@@ -102,7 +113,7 @@ describe("actual desktop reader read-state integration", () => {
   it.each([false, true])(
     "uses read permission with a fresh visible cancelled result, without business receipts or retrying an unknown ACK (%s)",
     async (unknown) => {
-      const f = setup(unknown);
+      const f = setup({ unknown });
       vi.spyOn(document, "hasFocus").mockReturnValue(true);
       vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
       vi.spyOn(window, "scrollTo").mockImplementation(() => {});
@@ -119,7 +130,7 @@ describe("actual desktop reader read-state integration", () => {
       }));
       Object.defineProperty(document, "elementFromPoint", {
         configurable: true,
-        value: () => document.querySelector('[data-event-id="answer"]'),
+        value: () => document.querySelector('[data-read-result="terminal"]'),
       });
       const view = render(
         <EmbeddedConversation
@@ -159,4 +170,44 @@ describe("actual desktop reader read-state integration", () => {
       );
     },
   );
+
+  it("keeps an older cancellation on its turn above a newer running turn", async () => {
+    const f = setup({
+      events: [
+        event,
+        { ...event, id: "new", turn_id: "new-turn", kind: "user-message", content: "New prompt" },
+        {
+          ...event,
+          id: "codex-turn-end:new-turn",
+          turn_id: "new-turn",
+          content: "",
+          turn_meta: { outcome: "aborted" },
+        },
+      ],
+      live: {
+        sessionId: "s",
+        revision: 2,
+        status: "running",
+        turnId: "new-turn",
+        sendEnabled: false,
+        approvals: [],
+      },
+    });
+    vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
+    vi.spyOn(window, "scrollTo").mockImplementation(() => {});
+    const view = render(
+      <EmbeddedConversation
+        client={f.client}
+        sessionId="s"
+        locale="en-US"
+        onSessionChange={vi.fn()}
+      />,
+    );
+    const prompt = await screen.findByText("New prompt");
+    const marker = await screen.findByText("Cancelled");
+    expect(marker).toHaveAttribute("data-read-result", "terminal");
+    expect(screen.getAllByText("Cancelled")).toHaveLength(1);
+    expect(marker.compareDocumentPosition(prompt) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(view.container.querySelector('[data-session-turn-status="running"]')).toBeVisible();
+  });
 });

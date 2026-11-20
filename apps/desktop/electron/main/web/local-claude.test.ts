@@ -118,6 +118,164 @@ describe("trusted Claude owner boundary", () => {
     ]);
     expect(deps.receipt).not.toHaveBeenCalled();
   });
+  it("checks the current local project group against the trusted catalog on assignment", async () => {
+    const workspace = (id: string, kind: "primary" | "worktree") => ({
+      id,
+      name: id,
+      path: `/test/${id}`,
+      checkout: {
+        repository_group_id: "repository",
+        primary_path: "/test/project",
+        kind,
+        status: "present",
+      },
+    });
+    const session = (id: string, workspace_id: string, fields = {}) => ({
+      id,
+      workspace_id,
+      agent: "codex",
+      availability: "readable",
+      ...fields,
+    });
+    vi.mocked(deps.runtime).mockResolvedValue({
+      workspaces: [
+        workspace("project", "primary"),
+        workspace("branch", "worktree"),
+        { id: "unrelated", name: "project", path: "/another/project" },
+      ],
+      sessions: [
+        session("lead", "project", { agent: "claude-code" }),
+        session("api", "branch", { origin: "execution" }),
+        session("other-workspace", "unrelated"),
+        session("already-worker", "project", {
+          orchestration: { role: "worker", leadId: "another-lead" },
+        }),
+        session("archived", "project", { archived: true }),
+        session("remote", "project", { remote: { host_id: "another-host" } }),
+      ],
+    });
+    for (const [worker, reason] of [
+      ["other-workspace", "worker-outside-project"],
+      ["archived", "worker-outside-project"],
+      ["remote", "worker-outside-project"],
+      ["already-worker", "session-is-a-worker"],
+    ])
+      await expect(
+        localClaudeRequest(deps, {
+          operation: "lead-assign-workers",
+          sessionId: "lead",
+          workers: [worker],
+        }),
+      ).rejects.toThrow(reason);
+    expect(deps.managed).not.toHaveBeenCalled();
+
+    await localClaudeRequest(deps, {
+      operation: "lead-assign-workers",
+      sessionId: "lead",
+      workers: ["api"],
+      deviceId: "phone",
+      scope: { workspaceIds: ["unrelated"] },
+    });
+    expect(deps.managed).toHaveBeenCalledExactlyOnceWith({
+      operation: "lead-assign-workers",
+      sessionId: "lead",
+      workers: ["api"],
+      deviceId: "agentkib-local-owner",
+    });
+    expect(vi.mocked(deps.runtime).mock.calls).toEqual(
+      Array.from({ length: 5 }, () => [{ operation: "catalog" }]),
+    );
+  });
+
+  it("forwards a batch of ten Workers and rejects eleven", async () => {
+    const workers = Array.from({ length: 11 }, (_, index) => `worker-${index + 1}`);
+    vi.mocked(deps.runtime).mockResolvedValue({
+      workspaces: [{ id: "project", name: "Project", path: "/test/project" }],
+      sessions: [
+        { id: "lead", workspace_id: "project", agent: "claude-code", availability: "readable" },
+        ...workers.map((id) => ({
+          id,
+          workspace_id: "project",
+          agent: "codex",
+          availability: "readable",
+        })),
+      ],
+    });
+    const request = { operation: "lead-assign-workers", sessionId: "lead" };
+    const selected = workers.slice(0, 10);
+    await localClaudeRequest(deps, { ...request, workers: selected });
+    expect(deps.managed).toHaveBeenCalledExactlyOnceWith({
+      ...request,
+      workers: selected,
+      deviceId: "agentkib-local-owner",
+    });
+    await expect(localClaudeRequest(deps, { ...request, workers })).rejects.toThrow(
+      "invalid-lead-request",
+    );
+    expect(deps.managed).toHaveBeenCalledTimes(1);
+  });
+
+  it("checks the sidebar's unique candidate IDs and aliases without rereading the catalog", async () => {
+    const request = { operation: "lead-assignment-options", sessionId: "lead" };
+    const assigned = {
+      sessionId: "native",
+      reason: "session-is-a-worker",
+      assigned: true,
+    };
+    const options = {
+      capable: true,
+      remaining: 10,
+      candidates: [{ sessionId: "managed", reason: null }, assigned],
+    };
+    vi.mocked(deps.managed).mockResolvedValueOnce(options);
+    await expect(
+      localClaudeRequest(deps, {
+        ...request,
+        candidateIds: ["managed", "native", "managed"],
+        deviceId: "phone",
+      }),
+    ).resolves.toEqual(options);
+    expect(deps.managed).toHaveBeenCalledExactlyOnceWith({
+      ...request,
+      candidateIds: ["managed", "native"],
+      deviceId: "agentkib-local-owner",
+    });
+    expect(deps.runtime).not.toHaveBeenCalled();
+  });
+
+  it("reads available slots when the sidebar has no Worker candidates", async () => {
+    const request = {
+      operation: "lead-assignment-options",
+      sessionId: "lead",
+      candidateIds: [],
+    };
+    await localClaudeRequest(deps, request);
+    expect(deps.managed).toHaveBeenCalledExactlyOnceWith({
+      ...request,
+      deviceId: "agentkib-local-owner",
+    });
+    expect(deps.runtime).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [undefined, "invalid-lead-request"],
+    ["worker", "invalid-lead-request"],
+    [Array<string>(20_001).fill("worker"), "invalid-lead-request"],
+    [Array<string>(1), "invalid_field"],
+    [[""], "invalid_field"],
+    [[42], "invalid_field"],
+    [["x".repeat(257)], "invalid_field"],
+  ])("rejects malformed Worker candidate IDs (%#)", async (candidateIds, reason) => {
+    await expect(
+      localClaudeRequest(deps, {
+        operation: "lead-assignment-options",
+        sessionId: "lead",
+        candidateIds,
+      }),
+    ).rejects.toThrow(reason);
+    expect(deps.managed).not.toHaveBeenCalled();
+    expect(deps.runtime).not.toHaveBeenCalled();
+  });
   it("rejects bridge management for a session outside the Claude catalog", async () => {
     await expect(
       localClaudeRequest(deps, {
@@ -185,38 +343,30 @@ describe("trusted Claude owner boundary", () => {
       deviceId: "agentkib-local-owner",
     });
   });
-  it("adopts without a manual confirmation while keeping the host owner boundary", async () => {
-    expect(
-      await localClaudeRequest(deps, {
+  it("rejects the removed adoption operation without dispatching it", async () => {
+    await expect(
+      localClaudeRequest(deps, {
         operation: "adopt",
         sessionId: "session",
         requestId: "adopt",
         deviceId: "spoofed",
-        handoffConfirmed: false,
         path: "/untrusted",
       }),
-    ).toMatchObject({ accepted: true });
-    expect(deps.managed).toHaveBeenLastCalledWith({
-      operation: "adopt",
-      sessionId: "session",
-      requestId: "adopt",
-      deviceId: "agentkib-local-owner",
-    });
+    ).rejects.toThrow("unsupported_operation");
+    expect(deps.managed).not.toHaveBeenCalled();
+    expect(deps.receipt).not.toHaveBeenCalled();
   });
-  it("preserves an explicitly supplied adoption fingerprint for the backend safety check", async () => {
-    await localClaudeRequest(deps, {
-      operation: "adopt",
-      sessionId: "session",
-      requestId: "adopt",
-      handoffFingerprint: "fingerprint",
-    });
-    expect(deps.managed).toHaveBeenLastCalledWith({
-      operation: "adopt",
-      sessionId: "session",
-      requestId: "adopt",
-      deviceId: "agentkib-local-owner",
-      handoffFingerprint: "fingerprint",
-    });
+  it("does not revive adoption when an old request has an unknown receipt", async () => {
+    deps.receipt = vi.fn(async ({ requestId }) => ({ found: true, requestId, status: "unknown" }));
+    await expect(
+      localClaudeRequest(deps, {
+        operation: "adopt",
+        sessionId: "session",
+        requestId: "adopt",
+      }),
+    ).rejects.toThrow("unsupported_operation");
+    expect(deps.managed).not.toHaveBeenCalled();
+    expect(deps.receipt).not.toHaveBeenCalled();
   });
   it.each([
     "claude-owner-busy",
@@ -241,7 +391,7 @@ describe("trusted Claude owner boundary", () => {
       error: "control_unavailable",
     });
   });
-  it.each(["send", "release", "adopt"])(
+  it.each(["send", "release", "reconcile"])(
     "keeps %s replay preflight failures unknown and uses only the host owner",
     async (operation) => {
       deps.receipt = vi.fn(async ({ requestId }) => ({
@@ -253,8 +403,8 @@ describe("trusted Claude owner boundary", () => {
         await localClaudeRequest(deps, {
           ...send,
           operation,
+          sessionId: operation === "reconcile" ? "" : send.sessionId,
           expectedRevision: -1,
-          ...(operation === "adopt" ? { handoffFingerprint: 42 } : {}),
           deviceId: "spoofed",
         }),
       ).toMatchObject({ accepted: false, controlOutcome: "unknown" });

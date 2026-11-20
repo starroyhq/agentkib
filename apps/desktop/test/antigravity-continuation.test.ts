@@ -1,11 +1,16 @@
 // @vitest-environment node
 import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { homeSessionGroups, workStoppedByQuit, type HomeSession } from "@agentkib/session-catalog";
 import { AntigravityManagedRunner } from "../../../packages/backend/src/antigravity-managed-runner";
 import { Commands } from "../../../packages/backend/src/commands";
+import {
+  claimManagedCommand,
+  dispatchManagedCommand,
+} from "../../../packages/backend/src/managed-ledger";
 import { SessionReaders } from "../../../packages/backend/src/session-readers";
 import type { NativeSession } from "../../../packages/backend/src/session-store";
 import { BackendStore } from "../../../packages/backend/src/store";
@@ -59,21 +64,43 @@ function fixture() {
     workspace,
   });
   vi.spyOn(readers, "antigravityControlExecutable").mockReturnValue("/synthetic/acp");
-  const state = { status: "idle", reason: null as string | null };
-  vi.spyOn(AntigravityManagedRunner, "connect").mockResolvedValue({
-    connected: true,
+  const state = { status: "idle", reason: null as string | null, revision: 0, connected: false };
+  const runner = {
+    get connected() {
+      return state.connected;
+    },
     snapshot: () => ({
       executionMode: "acp-managed",
       status: state.status,
-      revision: 1,
+      revision: state.revision,
       turnId: state.status === "idle" ? null : "turn",
       sendEnabled: state.status === "idle",
       stopEnabled: state.status !== "idle",
       approvals: [],
       reason: state.reason,
     }),
-    close: () => undefined,
-  } as unknown as AntigravityManagedRunner);
+    send: vi.fn(async (_text: string, revision: number, beforeDispatch?: () => void) => {
+      if (revision !== state.revision) throw new Error("stale Antigravity revision");
+      beforeDispatch?.();
+      state.revision++;
+    }),
+    close: () => {
+      state.connected = false;
+    },
+  } as unknown as AntigravityManagedRunner;
+  const connect = vi
+    .spyOn(AntigravityManagedRunner, "connect")
+    .mockImplementation(
+      async (_executable, _workspace, _nativeId, _env, _publish, _recover, initialRevision = 0) => {
+        Object.assign(state, {
+          connected: true,
+          status: "idle",
+          reason: null,
+          revision: initialRevision,
+        });
+        return runner;
+      },
+    );
   const web = new WebReadRequests(store, readers, root, () => 0n, environment);
   cleanups.push(() => web.closeAsync());
   const row = async () =>
@@ -82,15 +109,113 @@ function fixture() {
         sessions: Array<HomeSession & { continuation?: Record<string, unknown> }>;
       }
     ).sessions.find((session) => session.id === id)!;
-  return { web, id, state, row };
+  const live = async () =>
+    (await web.request({
+      operation: "live",
+      sessionId: id,
+      experimentalEnabled: true,
+    })) as { runtimeBootId: string; revision: number };
+  return { web, id, state, row, connect, live, root };
 }
 
 describe("Antigravity sessions run by AgentKib", () => {
+  it("keeps a newer revision when a disconnected transport is prepared by a subsequent send", async () => {
+    const f = fixture();
+    const first = await f.live();
+    await f.web.managedControl({
+      operation: "send",
+      sessionId: f.id,
+      requestId: randomUUID(),
+      runtimeBootId: first.runtimeBootId,
+      expectedRevision: first.revision,
+      experimentalEnabled: true,
+      text: "First message",
+    });
+    const previous = await f.live();
+    Object.assign(f.state, { connected: false, status: "failed", revision: previous.revision + 1 });
+    const inactive = await f.live();
+    expect(inactive).toMatchObject({ status: "idle", sendEnabled: true });
+    expect(inactive.revision).toBeGreaterThan(f.state.revision);
+    const send = (revision: number) =>
+      f.web.managedControl({
+        operation: "send",
+        sessionId: f.id,
+        requestId: randomUUID(),
+        runtimeBootId: inactive.runtimeBootId,
+        expectedRevision: revision,
+        experimentalEnabled: true,
+        text: "A subsequent message",
+      });
+    expect(f.connect).toHaveBeenCalledOnce();
+    await expect(send(previous.revision)).rejects.toThrow("stale-or-disabled-control");
+    expect(f.connect).toHaveBeenCalledOnce();
+    await expect(send(inactive.revision)).resolves.toMatchObject({ accepted: true });
+    expect(f.connect).toHaveBeenCalledTimes(2);
+    expect((await f.live()).revision).toBeGreaterThan(inactive.revision);
+  });
+
+  it("blocks controls on cached and disconnected transports while an original receipt is unknown", async () => {
+    const f = fixture();
+    const first = await f.live();
+    await f.web.managedControl({
+      operation: "send",
+      sessionId: f.id,
+      requestId: randomUUID(),
+      runtimeBootId: first.runtimeBootId,
+      expectedRevision: first.revision,
+      experimentalEnabled: true,
+      text: "First message",
+    });
+    const requestId = randomUUID();
+    claimManagedCommand(f.root, requestId, f.id, "unknown-message", "fixture", {
+      operation: "send",
+      executionMode: "antigravity-acp-managed",
+    });
+    dispatchManagedCommand(f.root, requestId);
+    for (const connected of [true, false]) {
+      f.state.connected = connected;
+      const live = await f.live();
+      expect(live).toMatchObject({
+        status: "outcome-unknown",
+        sendEnabled: false,
+        stopEnabled: false,
+      });
+      await expect(
+        f.web.managedControl({
+          operation: "send",
+          sessionId: f.id,
+          requestId: randomUUID(),
+          runtimeBootId: live.runtimeBootId,
+          expectedRevision: live.revision,
+          experimentalEnabled: true,
+          text: "Must not dispatch",
+        }),
+      ).rejects.toThrow("control-outcome-unconfirmed");
+    }
+    expect(f.connect).toHaveBeenCalledOnce();
+  });
+
   it("show a running turn and a permission it waits for in the catalog, as Devin's do", async () => {
     const f = fixture();
     // Before AgentKib holds a runner the row says nothing about a turn.
     expect((await f.row()).continuation).toBeUndefined();
-    await f.web.request({ operation: "live", sessionId: f.id, experimentalEnabled: true });
+    const live = (await f.web.request({
+      operation: "live",
+      sessionId: f.id,
+      experimentalEnabled: true,
+    })) as { runtimeBootId: string; revision: number };
+    expect((await f.row()).continuation).toBeUndefined();
+    expect(f.connect).not.toHaveBeenCalled();
+    await f.web.managedControl({
+      operation: "send",
+      sessionId: f.id,
+      requestId: randomUUID(),
+      runtimeBootId: live.runtimeBootId,
+      expectedRevision: live.revision,
+      experimentalEnabled: true,
+      text: "Continue the original session",
+    });
+    expect(f.connect).toHaveBeenCalledOnce();
     expect((await f.row()).continuation).toEqual({
       status: "idle",
       executionLocation: "agentkib",

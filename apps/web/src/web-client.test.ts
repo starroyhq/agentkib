@@ -45,6 +45,35 @@ describe("WebClient transport boundaries", () => {
     expect(transport.mock.calls[0][1].body).toBeUndefined();
   });
 
+  it("requests the native model picker only on the existing Claude session", async () => {
+    const transport = vi
+      .fn()
+      .mockResolvedValueOnce(json(access))
+      .mockResolvedValue(json({ accepted: true }));
+    const client = new WebClient(transport);
+    const body = {
+      requestId: "request",
+      sessionId: "terminal-session",
+      bootId: "boot",
+      expectedRevision: 2,
+    };
+    for (const agent of ["codex", "devin", "deepseek-harness"] as const)
+      await expect(client.sessionAction("open-model-picker", body, agent)).rejects.toMatchObject({
+        code: "operation_unavailable",
+      });
+    expect(transport).not.toHaveBeenCalled();
+    await client.access();
+    await client.sessionAction("open-model-picker", body, "claude-code");
+    expect(transport).toHaveBeenLastCalledWith(
+      "/api/web/v1/managed/action",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ ...body, operation: "open-model-picker", agent: "claude-code" }),
+      }),
+    );
+    expect(transport).toHaveBeenCalledTimes(2);
+  });
+
   it("does not contact an unpaired LAN host for a session image", async () => {
     const transport = vi.fn();
     const client = new WebClient(transport, "http://192.168.1.10:1422");
@@ -506,18 +535,17 @@ it("routes Claude managed reads and one-shot writes without changing the Codex d
   await client.access();
   transport.mockClear().mockRejectedValue(new Error("disconnected"));
   await expect(
-    client.managedAction("adopt", {
+    client.managedAction("release", {
       agent: "claude-code",
       sessionId: "session",
       bootId: "boot",
       requestId: "request",
-      handoffConfirmed: true,
-      handoffFingerprint: "snapshot",
+      expectedRevision: 2,
     }),
   ).rejects.toThrow("disconnected");
   expect(transport).toHaveBeenCalledTimes(1);
   expect(transport).toHaveBeenCalledWith(
-    "/api/web/v1/managed/adopt",
+    "/api/web/v1/managed/release",
     expect.objectContaining({
       method: "POST",
       headers: expect.objectContaining({ "X-AgentKib-Protocol": "2" }),

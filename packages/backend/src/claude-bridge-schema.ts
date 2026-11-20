@@ -57,6 +57,10 @@ export const bridgeSnapshotSchema = bridgeIdentitySchema.extend({
   messages: z.array(z.object({ role: z.enum(["user", "assistant"]), text })).max(4096),
   toolItems: z.array(bridgeToolSchema).max(256),
   streamText: text,
+  model: z.string().min(1).max(128).nullable().optional(),
+  modelPickerOpen: z.boolean().optional(),
+  compacting: z.boolean().optional(),
+  compactStartedAt: z.number().int().min(0).max(8_640_000_000_000_000).optional(),
   usage: z
     .object({
       tokens: revision.nullable(),
@@ -72,6 +76,7 @@ export const bridgeSnapshotSchema = bridgeIdentitySchema.extend({
     steer: z.boolean(),
     queue: z.boolean(),
     stop: z.boolean(),
+    modelPicker: z.boolean().optional(),
     approve: z.literal(false),
     answer: z.literal(false),
   }),
@@ -93,8 +98,15 @@ export const bridgeEventSchema = z.discriminatedUnion("type", [
     text,
     aborted: z.boolean(),
     revision,
+    occurredAt: z.number().int().positive().max(8_640_000_000_000_000).optional(),
+    startedAt: z.number().int().positive().max(8_640_000_000_000_000).optional(),
   }),
-  z.object({ type: z.enum(["tool-start", "tool-complete"]), tool: bridgeToolSchema, revision }),
+  z.object({
+    type: z.enum(["tool-start", "tool-complete"]),
+    turnId: id.optional(),
+    tool: bridgeToolSchema,
+    revision,
+  }),
   z.object({ type: z.literal("invalidated"), reason: z.string().max(256), revision }),
 ]);
 export const bridgeEventsSchema = bridgeLeaseSchema.extend({

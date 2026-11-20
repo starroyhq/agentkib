@@ -3,11 +3,12 @@ import "@testing-library/jest-dom/vitest";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import userEvent from "@testing-library/user-event";
-import type { CodexSessionSettings } from "@agentkib/web-client";
+import { sessionProviderCapabilities, type CodexSessionSettings } from "@agentkib/web-client";
 import { CodexComposerControls } from "./codex-session-controls";
 import { useSession } from "./session-context";
 import { codexCopy, codexReason } from "./codex-copy";
-import { composerModelCopy } from "./composer-model-copy";
+import { composerModelCopy, planModeCopy } from "@agentkib/session-ui";
+import { contextUsageCopy } from "./context-usage-copy";
 
 vi.mock("./session-context", () => ({ useSession: vi.fn() }));
 let state: ReturnType<typeof useSession>;
@@ -15,6 +16,7 @@ let props: Parameters<typeof CodexComposerControls>[0];
 const copy = codexCopy["en-US"];
 const settings: CodexSessionSettings = {
   sessionId: "session",
+  provider: sessionProviderCapabilities("deepseek-harness"),
   revision: 1,
   available: true,
   current: { modelId: "deepseek/deepseek-chat", effort: "low" },
@@ -55,7 +57,6 @@ beforeEach(() => {
       sessionSettings: vi.fn(async () => settings),
       sessionGoals: vi.fn(),
       sessionResources: vi.fn(),
-      codexSessionSettings: vi.fn(),
       codexGoals: vi.fn(),
       codexContextOptions: vi.fn(),
     },
@@ -67,23 +68,60 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe("DeepSeek Harness model settings in the composer", () => {
-  it("reads DSH's own models without showing a settings panel when there are no permissions", async () => {
+  it("reads DSH's own models without a permission picker when none is available", async () => {
     render(<CodexComposerControls {...props} />);
     await waitFor(() =>
       expect(state.client.sessionSettings).toHaveBeenCalledWith("session", "deepseek-harness"),
     );
     expect(await screen.findByRole("button", { name: /DeepSeek Chat/ })).toBeInTheDocument();
     expect(
-      screen.queryByRole("button", { name: copy.conversationSettings }),
+      screen.queryByRole("button", { name: new RegExp(`^${copy.executionPolicy}:`) }),
     ).not.toBeInTheDocument();
-    expect(state.client.codexSessionSettings).not.toHaveBeenCalled();
     expect(state.client.codexGoals).not.toHaveBeenCalled();
     // Without goal, resource or attachment capabilities there is nothing to add.
     expect(state.client.sessionGoals).not.toHaveBeenCalled();
-    expect(screen.queryByRole("button", { name: copy.addContext })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: copy.addContext })).toBeDisabled();
+    const gauge = screen.getByRole("img", { name: copy.contextUsage });
+    expect(gauge).toHaveAccessibleDescription(contextUsageCopy["en-US"].permission);
+    expect(gauge.querySelector("circle[pathLength]")).toBeNull();
   });
 
-  it("says once, while a turn runs, that the settings wait for it", async () => {
+  it("keeps permission presets accessible when the plugin offers no model settings", async () => {
+    vi.mocked(state.client.sessionSettings).mockResolvedValue({
+      ...settings,
+      current: { policyId: "read-only" },
+      writable: {
+        ...settings.writable,
+        model: { available: false },
+        effort: { available: false },
+        policy: { available: true },
+      },
+      options: {
+        ...settings.options,
+        models: [],
+        policies: [{ id: "read-only", name: "Read Only" }],
+      },
+    });
+    render(<CodexComposerControls {...props} />);
+    fireEvent.click(
+      await screen.findByRole("button", { name: new RegExp(`^${copy.executionPolicy}:`) }),
+    );
+    const menu = await screen.findByRole("menu");
+    expect(within(menu).getByRole("menuitem", { name: /^Read Only/ })).not.toHaveAttribute(
+      "aria-disabled",
+      "true",
+    );
+    const picker = composerModelCopy["en-US"];
+    expect(
+      screen.queryByRole("button", { name: new RegExp(`^${picker.chooseModel}:`) }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: new RegExp(`^${picker.chooseEffort}:`) }),
+    ).not.toBeInTheDocument();
+    expect(menu).not.toHaveTextContent(contextUsageCopy["en-US"].unavailableDetail);
+  });
+
+  it("greys settings the executor cannot write during a turn", async () => {
     const busy = { available: false, reason: "session-busy" };
     state = {
       ...state,
@@ -102,57 +140,75 @@ describe("DeepSeek Harness model settings in the composer", () => {
     } as unknown as ReturnType<typeof useSession>;
     render(<CodexComposerControls {...props} />);
     fireEvent.click(await screen.findByRole("button", { name: /DeepSeek Chat/ }));
-    expect(await screen.findByText(copy.settingsWhileRunning)).toBeInTheDocument();
-    expect(screen.queryByText(codexReason("en-US", "session-busy").text)).not.toBeInTheDocument();
+    const overview = within(await screen.findByRole("dialog"));
+    expect(overview.queryByRole("status")).not.toBeInTheDocument();
+    fireEvent.click(overview.getByRole("button", { name: "Select model: DeepSeek Chat" }));
+    const models = within(await screen.findByRole("dialog", { name: "Model" }));
+    const model = models.getByRole("button", { name: "DeepSeek Chat" });
+    expect(model).toBeDisabled();
+    fireEvent.click(model);
+    expect(state.codexAction).not.toHaveBeenCalled();
   });
 
-  it("switches the permission preset during a turn, while the model waits", async () => {
+  it("re-enables the permission preset only after an authorized idle read", async () => {
     const busy = { available: false, reason: "session-busy" };
+    const presetSettings = {
+      ...settings,
+      current: { ...settings.current, policyId: "workspace-write" },
+      options: {
+        ...settings.options,
+        policies: [
+          { id: "read-only", name: "Read Only" },
+          { id: "workspace-write", name: "Workspace write · ask when needed" },
+        ],
+      },
+    };
     state = {
       ...state,
       live: { sessionId: "session", status: "running", revision: 1 },
+      capabilities: {
+        ...state.capabilities!,
+        features: { ...state.capabilities!.features, settings: busy },
+      },
       client: {
         ...state.client,
         sessionSettings: vi.fn(async () => ({
-          ...settings,
-          current: { ...settings.current, policyId: "workspace-write" },
+          ...presetSettings,
           writable: {
             ...settings.writable,
             model: busy,
             effort: busy,
-            policy: { available: true },
-          },
-          options: {
-            ...settings.options,
-            policies: [
-              { id: "read-only", name: "Read Only" },
-              { id: "workspace-write", name: "Workspace write · ask when needed" },
-            ],
+            policy: busy,
           },
         })),
       },
     } as unknown as ReturnType<typeof useSession>;
-    render(<CodexComposerControls {...props} />);
-    const permissions = await screen.findByRole("button", { name: copy.conversationSettings });
+    const view = render(<CodexComposerControls {...props} />);
+    const permissions = await screen.findByRole("button", {
+      name: new RegExp(`^${copy.executionPolicy}:`),
+    });
     expect(permissions).toHaveTextContent("Workspace Write");
     fireEvent.click(permissions);
-    expect(await screen.findByText(copy.settingsWhileRunningModel)).toBeInTheDocument();
-    expect(screen.queryByText(copy.settingsWhileRunning)).not.toBeInTheDocument();
-    // A row's label also holds its reason text, so match the label's start.
-    const policy = screen.getByLabelText(copy.executionPolicy, { exact: false });
-    expect(policy).not.toBeDisabled();
-    // The select names the preset, not its ID.
-    expect(policy).toHaveTextContent("Workspace Write");
-    expect(policy).not.toHaveTextContent("workspace-write");
-    for (const label of [copy.model, copy.effort, copy.serviceTier])
-      expect(screen.queryByLabelText(label)).not.toBeInTheDocument();
-    const user = userEvent.setup();
-    await user.click(policy);
-    await user.click(await screen.findByRole("option", { name: "Read Only" }));
-    expect(policy).toHaveTextContent("Read Only");
-    const apply = screen.getByRole("button", { name: copy.apply });
-    expect(apply).toBeEnabled();
-    await user.click(apply);
+    const menu = await screen.findByRole("menu");
+    expect(within(menu).queryByRole("status")).not.toBeInTheDocument();
+    expect(within(menu).getByRole("menuitem", { name: /^Workspace Write/ })).toBeVisible();
+    expect(menu).not.toHaveTextContent("workspace-write");
+    const readOnly = within(menu).getByRole("menuitem", { name: /^Read Only/ });
+    expect(readOnly).toHaveAttribute("aria-disabled", "true");
+    fireEvent.click(readOnly);
+    expect(state.codexAction).not.toHaveBeenCalled();
+
+    vi.mocked(state.client.sessionSettings).mockResolvedValue({
+      ...presetSettings,
+      revision: 2,
+      writable: { ...settings.writable, policy: { available: true } },
+    });
+    state.live = { ...state.live!, status: "idle", revision: 2 };
+    state.capabilities!.features.settings = { available: true };
+    view.rerender(<CodexComposerControls {...props} />);
+    await waitFor(() => expect(readOnly).not.toHaveAttribute("aria-disabled", "true"));
+    await userEvent.click(readOnly);
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     expect(state.codexAction).toHaveBeenCalledExactlyOnceWith("settings", {
       policyId: "read-only",
     });
@@ -196,14 +252,60 @@ describe("DeepSeek Harness model settings in the composer", () => {
     ).not.toBeInTheDocument();
   });
 
-  it("shows DSH's plan mode in the composer and turns it off there, as DSH's chip does", async () => {
+  it("applies a staged goal once the first turn has finished and the controller is ready", async () => {
+    state.controlReady = true;
+    state.capabilities!.features.goal = { available: true };
+    state.capabilities!.features["goal-set"] = { available: true };
+    vi.mocked(state.client.sessionGoals).mockImplementation(async () => ({
+      sessionId: "session",
+      available: true,
+      revision: state.live!.revision!,
+      budget: "rounds",
+      actions: {
+        set: { available: true },
+        pause: { available: false },
+        resume: { available: false },
+        clear: { available: false },
+      },
+    }));
+    vi.mocked(state.codexAction).mockResolvedValue({ accepted: true });
+    const onStartupGoalHandled = vi.fn();
+    const startupGoal = { value: { objective: "Ship it" }, apply: true, afterRevision: 1 };
+    const controls = () => (
+      <CodexComposerControls
+        {...props}
+        startupGoal={startupGoal}
+        onStartupGoalHandled={onStartupGoalHandled}
+      />
+    );
+    const { rerender } = render(controls());
+    await waitFor(() => expect(state.client.sessionGoals).toHaveBeenCalled());
+    expect(state.codexAction).not.toHaveBeenCalled();
+    state.controlReady = false;
+    state.live = { ...state.live!, revision: 2 };
+    rerender(controls());
+    await waitFor(() => expect(state.client.sessionGoals).toHaveBeenCalledTimes(2));
+    expect(state.codexAction).not.toHaveBeenCalled();
+    state.controlReady = true;
+    rerender(controls());
+    await waitFor(() => expect(onStartupGoalHandled).toHaveBeenLastCalledWith(true));
+    expect(onStartupGoalHandled.mock.calls).toEqual([[false], [true]]);
+    expect(state.codexAction).toHaveBeenCalledExactlyOnceWith("goal-set", {
+      objective: "Ship it",
+      intent: "start",
+      tokenBudget: null,
+    });
+  });
+
+  it("shows DSH Plan mode in the add menu and exits it from the toolbar", async () => {
+    let mode = "plan";
     state = {
       ...state,
       client: {
         ...state.client,
         sessionSettings: vi.fn(async () => ({
           ...settings,
-          current: { ...settings.current, mode: "plan" },
+          current: { ...settings.current, mode },
           writable: { ...settings.writable, mode: { available: true } },
           options: {
             ...settings.options,
@@ -214,12 +316,28 @@ describe("DeepSeek Harness model settings in the composer", () => {
           },
         })),
       },
-      codexAction: vi.fn(async () => ({ accepted: true })),
+      codexAction: vi.fn(async () => {
+        mode = "default";
+        return true;
+      }),
     } as unknown as ReturnType<typeof useSession>;
     render(<CodexComposerControls {...props} />);
-    fireEvent.click(await screen.findByRole("button", { name: copy.planOn }));
     await waitFor(() =>
-      expect(state.codexAction).toHaveBeenCalledWith("settings", { mode: "default" }),
+      expect(screen.getByRole("button", { name: copy.addContext })).toBeEnabled(),
+    );
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: copy.addContext }));
+    const add = within(await screen.findByRole("dialog", { name: copy.addContext }));
+    expect(
+      add.getByRole("button", { name: planModeCopy("en-US").title, pressed: true }),
+    ).toBeVisible();
+    await user.keyboard("{Escape}");
+    await user.click(screen.getByRole("button", { name: "Exit Plan mode" }));
+    await waitFor(() =>
+      expect(state.codexAction).toHaveBeenCalledExactlyOnceWith("settings", { mode: "default" }),
+    );
+    await waitFor(() =>
+      expect(screen.queryByRole("button", { name: "Exit Plan mode" })).not.toBeInTheDocument(),
     );
   });
 
@@ -256,7 +374,7 @@ describe("DeepSeek Harness model settings in the composer", () => {
       await screen.findByRole("button", { name: `${picker.chooseEffort}: DeepSeek Chat` }),
     ).toBeInTheDocument();
     expect(
-      screen.queryByRole("button", { name: copy.conversationSettings }),
+      screen.queryByRole("button", { name: new RegExp(`^${copy.executionPolicy}:`) }),
     ).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: `${picker.chooseEffort}: DeepSeek Chat` }));
     const popup = await screen.findByRole("dialog");
@@ -266,7 +384,7 @@ describe("DeepSeek Harness model settings in the composer", () => {
     fireEvent.click(
       within(popup).getByRole("button", { name: `${picker.chooseModel}: DeepSeek Chat` }),
     );
-    const models = await screen.findByRole("dialog", { name: picker.chooseModel });
+    const models = await screen.findByRole("dialog", { name: picker.model });
     expect(within(models).getByText("DeepSeek")).toBeVisible();
     expect(within(models).getByText("Local")).toBeVisible();
     fireEvent.click(within(models).getByRole("button", { name: "Mock One" }));

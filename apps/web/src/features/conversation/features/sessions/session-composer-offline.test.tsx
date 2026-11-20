@@ -5,6 +5,7 @@ import { useState } from "react";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { UploadedAttachment } from "@agentkib/web-client";
+import { composerAddCopy } from "@agentkib/session-ui";
 import { SessionComposer } from "./session-composer";
 import { codexCopy } from "./codex-copy";
 import type { SessionController } from "./use-session-controller";
@@ -117,6 +118,33 @@ describe("composer drafts across connection changes", () => {
   });
   afterEach(cleanup);
 
+  it("opens the restricted attachment picker from + only for the authorized session", async () => {
+    const { rerender } = renderComposer();
+    const copy = codexCopy["en-US"];
+    const input = screen.getByLabelText(copy.attachment);
+    const pick = vi.spyOn(input, "click").mockImplementation(() => undefined);
+    const add = screen.getByRole("button", { name: copy.addContext });
+    fireEvent.click(add);
+    fireEvent.click(
+      await screen.findByRole("button", { name: composerAddCopy("en-US").attachment }),
+    );
+    expect(pick).toHaveBeenCalledOnce();
+    expect(add).toHaveAttribute("aria-expanded", "false");
+
+    fireEvent.click(add);
+    expect(
+      await screen.findByRole("button", { name: composerAddCopy("en-US").attachment }),
+    ).toBeEnabled();
+    doubles.session.capabilities = { ...doubles.session.capabilities!, sessionId: "previous" };
+    rerender(<SessionComposer />);
+    expect(add).toBeDisabled();
+    expect(add).toHaveAttribute("title", copy.permission);
+    expect(
+      screen.queryByRole("button", { name: composerAddCopy("en-US").attachment }),
+    ).not.toBeInTheDocument();
+    expect(pick).toHaveBeenCalledOnce();
+  });
+
   it.each(["codex", "claude-code"])(
     "keeps the %s draft editable and focused offline, then requires an explicit send after recovery",
     async (agent) => {
@@ -178,6 +206,19 @@ describe("composer drafts across connection changes", () => {
     doubles.session.busy = true;
     const { input, form } = renderComposer();
     expect(input).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
+    attemptSend(input, form);
+    expectNoDispatch();
+  });
+
+  it("keeps drafts editable but unsendable while only a settings write is outstanding", () => {
+    doubles.session.settingsOnlyBlocked = true;
+    doubles.session.busy = true;
+    doubles.session.controlReady = false;
+    doubles.session.canSend = false;
+    const { input, form } = renderComposer();
+    expect(input).toBeEnabled();
+    expect(input).toHaveValue("Original draft");
     expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
     attemptSend(input, form);
     expectNoDispatch();

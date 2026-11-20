@@ -23,6 +23,7 @@ export const NEW_SESSION_AGENTS: readonly NewSessionAgent[] = [
 export interface NewSessionOptions {
   available: boolean;
   reason?: string;
+  provider?: { create: NewSessionProviderCreate };
   models?: {
     id: string;
     name?: string;
@@ -31,6 +32,7 @@ export interface NewSessionOptions {
     defaultEffort?: string;
   }[];
   defaults?: { model?: string | null; effort?: string | null };
+  serviceTiers?: { id: string }[];
   policies?: { id: string }[];
   permissionModes?: { id: string }[];
   agentPresets?: {
@@ -41,6 +43,13 @@ export interface NewSessionOptions {
     broken: string | null;
   }[];
 }
+
+type NewSessionProviderCreate = {
+  serviceTiers: boolean;
+  agentPresets?: boolean;
+  verifyStartupModel?: boolean;
+  planMode?: "mode" | "permissionMode";
+};
 
 interface PermissionSpec {
   /** The create field the choice is sent in. */
@@ -87,9 +96,6 @@ const PERMISSIONS: Partial<Record<NewSessionAgent, PermissionSpec>> = {
 /** Agents whose session starts with its first message, sent along with the create. */
 export const PROMPT_AT_CREATE_AGENTS: readonly NewSessionAgent[] = ["devin"];
 
-/** Agents that start from one of their presets, chosen only when a session starts. */
-const PRESET_AGENTS: readonly NewSessionAgent[] = ["deepseek-harness"];
-
 export interface NewSessionPermissionChoice {
   id: string;
   name: string;
@@ -101,8 +107,8 @@ export interface NewSessionPermissions {
   /** The menu's heading in the Agent's own words. */
   title: string;
   choices: NewSessionPermissionChoice[];
-  /** The choice shown before the person picks one. */
-  initial: string;
+  /** The choice applied at startup without an explicit selection, if the Agent sends one. */
+  initial?: string;
 }
 
 function offeredPermissions(
@@ -131,14 +137,16 @@ export function newSessionPermissions(
   locale: InteractionLocale,
   { fullAccess = true }: { fullAccess?: boolean } = {},
 ): NewSessionPermissions | undefined {
-  const ids = offeredPermissions(agent, options, fullAccess);
+  const ids = offeredPermissions(agent, options, fullAccess).filter(
+    (id) => agent !== "claude-code" || id !== "plan",
+  );
   const spec = PERMISSIONS[agent];
   const words = newSessionCopy(locale).permissions[agent as keyof NewSessionCopy["permissions"]];
   if (!spec || !ids.length || !words) return undefined;
   const names = words.choices as Record<string, { name: string; description: string }>;
   return {
     title: words.title,
-    initial: ids[0]!,
+    initial: spec.sendShown ? ids[0] : undefined,
     choices: ids.map((id) => ({
       id,
       name: names[id]?.name ?? id,
@@ -149,21 +157,28 @@ export function newSessionPermissions(
 }
 
 /** The presets an Agent starts from, and the one it uses when none is chosen. */
-export function newSessionPresets(agent: NewSessionAgent, options: NewSessionOptions | undefined) {
-  const presets = PRESET_AGENTS.includes(agent) ? (options?.agentPresets ?? []) : [];
+export function newSessionPresets(
+  agent: NewSessionAgent,
+  options: NewSessionOptions | undefined,
+  create = options?.provider?.create,
+) {
+  const supportsPresets = create ? create.agentPresets === true : agent === "deepseek-harness";
+  const presets = supportsPresets ? (options?.agentPresets ?? []) : [];
   return { presets, defaultId: presets.find((item) => item.isDefault)?.id };
 }
 
 export interface NewSessionSelection {
   agent: NewSessionAgent;
   workspaceId: string;
-  /** The model and effort picked in the composer; empty for the Agent's defaults. */
+  /** The model and settings picked in the composer; empty for the Agent's defaults. */
   model?: string;
   effort?: string;
-  /** The model the composer shows, which a picked effort is sent with. */
+  serviceTierId?: string;
+  /** The model the composer shows, which a picked effort or tier is sent with. */
   shownModel?: string;
   /** The permission choice the person picked, if any. */
   permission?: string;
+  planning?: boolean;
   /** The preset the person picked, if any. */
   preset?: string;
   /** Whether this device has full access; see `newSessionPermissions`. */
@@ -176,37 +191,58 @@ export interface NewSessionCreateFields {
   workspaceId: string;
   model?: string;
   effort?: string;
+  serviceTierId?: string;
   policyId?: string;
+  mode?: "plan";
   permissionMode?: ClaudeStartMode | DevinStartMode;
   agentPreset?: string;
-  /** The first message, for an Agent in `PROMPT_AT_CREATE_AGENTS`. */
+  /** The first message for a provider that creates sessions with a message. */
   prompt?: string;
+  verifyStartupModel?: true;
 }
 
 export function newSessionCreateFields(
   selection: NewSessionSelection,
   options: NewSessionOptions | undefined,
+  create = options?.provider?.create,
 ): NewSessionCreateFields {
   const { agent, workspaceId, model, effort, shownModel, permission, preset } = selection;
+  const canChooseTier =
+    create?.serviceTiers ?? options?.serviceTiers?.some(({ id }) => id === selection.serviceTierId);
+  const serviceTierId = canChooseTier ? selection.serviceTierId : undefined;
   const spec = PERMISSIONS[agent];
   const ids = offeredPermissions(agent, options, selection.fullAccess ?? true);
+  const planMode = create?.planMode;
+  const requestedPermission =
+    selection.planning && planMode === "permissionMode" ? "plan" : permission;
   const sent =
-    permission && ids.includes(permission) ? permission : spec?.sendShown ? ids[0] : undefined;
-  const { defaultId } = newSessionPresets(agent, options);
+    requestedPermission && ids.includes(requestedPermission)
+      ? requestedPermission
+      : spec?.sendShown
+        ? ids[0]
+        : undefined;
+  const { presets, defaultId } = newSessionPresets(agent, options, create);
   return {
     // Hosts that predate other Agents read a create without one as Codex.
     ...(agent !== "codex" ? { agent } : {}),
     workspaceId,
-    // A chosen effort applies to the model displayed by the composer.
-    ...(model || effort ? { model: model || shownModel } : {}),
+    // Effort and service tier apply to the model displayed by the composer.
+    ...(model || effort || serviceTierId ? { model: model || shownModel } : {}),
     ...(effort ? { effort } : {}),
+    ...(serviceTierId ? { serviceTierId } : {}),
+    ...(selection.planning && planMode === "mode" ? { mode: "plan" as const } : {}),
+    ...(create?.verifyStartupModel && options?.models?.length && workspaceId && (model || effort)
+      ? { verifyStartupModel: true }
+      : {}),
     ...(spec && sent
       ? spec.field === "policyId"
         ? { policyId: sent }
         : { permissionMode: sent as ClaudeStartMode | DevinStartMode }
       : {}),
     // Without a choice an Agent starts its own default preset.
-    ...(preset && preset !== defaultId ? { agentPreset: preset } : {}),
+    ...(preset && preset !== defaultId && presets.some(({ id, broken }) => id === preset && !broken)
+      ? { agentPreset: preset }
+      : {}),
   };
 }
 
@@ -224,6 +260,10 @@ const copy = {
     agent: "Agent",
     notInstalled: "未安装",
     preset: "预设",
+    permission: "权限",
+    model: "模型",
+    loadingOptions: "正在加载选项…",
+    optionsUnavailable: "选项不可用",
     attach: "添加文件",
     send: "发送",
     details: "详情",
@@ -268,11 +308,10 @@ const copy = {
         },
       },
       "claude-code": {
-        title: "权限",
+        title: "工具权限",
         choices: {
-          default: { name: "默认", description: "修改文件和运行命令前先问你" },
+          default: { name: "手动审批", description: "修改文件和运行命令前先问你" },
           acceptEdits: { name: "自动接受编辑", description: "直接修改文件，运行命令前仍会问你" },
-          plan: { name: "计划模式", description: "只读和规划，不修改文件" },
         },
       },
     },
@@ -290,6 +329,10 @@ const copy = {
     agent: "Agent",
     notInstalled: "未安裝",
     preset: "預設",
+    permission: "權限",
+    model: "模型",
+    loadingOptions: "正在載入選項…",
+    optionsUnavailable: "選項無法使用",
     attach: "新增檔案",
     send: "傳送",
     details: "詳細資料",
@@ -334,11 +377,10 @@ const copy = {
         },
       },
       "claude-code": {
-        title: "權限",
+        title: "工具權限",
         choices: {
-          default: { name: "預設", description: "修改檔案和執行指令前先問你" },
+          default: { name: "手動核准", description: "修改檔案和執行指令前先問你" },
           acceptEdits: { name: "自動接受編輯", description: "直接修改檔案，執行指令前仍會問你" },
-          plan: { name: "計畫模式", description: "只讀取和規劃，不修改檔案" },
         },
       },
     },
@@ -356,6 +398,10 @@ const copy = {
     agent: "Agent",
     notInstalled: "Not installed",
     preset: "Preset",
+    permission: "Permissions",
+    model: "Model",
+    loadingOptions: "Loading options…",
+    optionsUnavailable: "Options unavailable",
     attach: "Add files",
     send: "Send",
     details: "Details",
@@ -413,14 +459,16 @@ const copy = {
         },
       },
       "claude-code": {
-        title: "Permissions",
+        title: "Tool permissions",
         choices: {
-          default: { name: "Default", description: "Ask before editing files or running commands" },
+          default: {
+            name: "Manual approval",
+            description: "Ask before editing files or running commands",
+          },
           acceptEdits: {
             name: "Accept edits",
             description: "Edit files directly; still ask before running commands",
           },
-          plan: { name: "Plan mode", description: "Read and plan only; no file changes" },
         },
       },
     },
@@ -438,6 +486,10 @@ const copy = {
     agent: "Agent",
     notInstalled: "未インストール",
     preset: "プリセット",
+    permission: "権限",
+    model: "モデル",
+    loadingOptions: "選択肢を読み込み中…",
+    optionsUnavailable: "選択肢を利用できません",
     attach: "ファイルを追加",
     send: "送信",
     details: "詳細",
@@ -499,19 +551,15 @@ const copy = {
         },
       },
       "claude-code": {
-        title: "権限",
+        title: "ツール権限",
         choices: {
           default: {
-            name: "デフォルト",
+            name: "手動承認",
             description: "ファイルの変更やコマンドの実行前に確認します",
           },
           acceptEdits: {
             name: "編集を自動承認",
             description: "ファイルは直接変更し、コマンドの実行前には確認します",
-          },
-          plan: {
-            name: "プランモード",
-            description: "読み取りと計画のみで、ファイルは変更しません",
           },
         },
       },

@@ -25,6 +25,8 @@ import { openManagedLedger } from "../../../packages/backend/src/managed-ledger"
 import { CLAUDE_BRIDGE_COMPATIBILITY, type ClaudeBridgeSnapshot } from "@agentkib/runtime-protocol";
 import { createConversationState, reduceSessionStreamEvent } from "@agentkib/conversation-state";
 import { register as registerPlugin } from "../../../packages/claude-bridge-plugin/hooks/register.js";
+import type { ClaudeTranscriptObservation } from "../../../packages/backend/src/claude-context-usage";
+import type { ClaudeObservedPermissionMode } from "../../../packages/backend/src/claude-managed-runner";
 
 const cleanups: Array<() => Promise<void>> = [];
 afterEach(async () => {
@@ -32,7 +34,12 @@ afterEach(async () => {
   for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
 });
 
-async function fixture(timeout = 1000, lead?: BridgeLead) {
+async function fixture(
+  timeout = 1000,
+  lead?: BridgeLead,
+  observation?: (target: ClaudeBridgeTarget) => ClaudeTranscriptObservation,
+  permission?: (target: ClaudeBridgeTarget) => ClaudeObservedPermissionMode | null,
+) {
   const root = realpathSync(mkdtempSync(path.join(tmpdir(), "ak-bridge-test-")));
   const workspace = path.join(root, "workspace");
   mkdirSync(workspace);
@@ -52,6 +59,8 @@ async function fixture(timeout = 1000, lead?: BridgeLead) {
     platform: "darwin" as const,
     commandTimeoutMs: timeout,
     publish,
+    observation,
+    permission,
     target: async (id: string, nativeId?: string) => {
       if (!valid || id !== target.sessionId || (nativeId && nativeId !== target.nativeId))
         throw new Error("source unavailable");
@@ -181,7 +190,11 @@ async function fixture(timeout = 1000, lead?: BridgeLead) {
     runtimeBootId: options.bootId,
     expectedRevision: live().revision,
     experimentalEnabled: true,
-    ...(operation === "send" ? { text: "synthetic message" } : { turnId: live().turnId }),
+    ...(operation === "send"
+      ? { text: "synthetic message" }
+      : operation === "open-model-picker"
+        ? {}
+        : { turnId: live().turnId }),
     ...extra,
   });
   const poll = () => post("/v1/commands", { afterCommandId: null, waitMs: 0 });
@@ -221,6 +234,9 @@ async function fixture(timeout = 1000, lead?: BridgeLead) {
     invalidate: () => {
       valid = false;
     },
+    restore: () => {
+      valid = true;
+    },
     async reconnect() {
       const response = await http(
         "/v1/reconnect",
@@ -244,6 +260,381 @@ async function fixture(timeout = 1000, lead?: BridgeLead) {
 }
 
 describe.skipIf(process.platform === "win32")("native Claude borrowed-host broker", () => {
+  it("reads a verified permission marker independently of native usage and never makes auto writable", async () => {
+    const observed = vi.fn(() => ({ usage: { available: false } }));
+    const permission = vi.fn((): ClaudeObservedPermissionMode | null => "auto");
+    const f = await fixture(1000, undefined, observed, permission);
+    await f.events({
+      type: "snapshot",
+      snapshot: {
+        ...f.snapshot,
+        model: "native-model",
+        usage: { tokens: 20, window: 100, percent: 20, observedAt: 1 },
+      },
+    });
+    observed.mockClear();
+    expect(f.live()).toMatchObject({
+      permission: { mode: "auto" },
+      usage: { state: "ready", usedTokens: 20 },
+    });
+    expect(
+      await f.bridge.request({ operation: "settings-state", sessionId: f.target.sessionId }),
+    ).toMatchObject({
+      current: { permissionMode: "auto" },
+      permissionModes: [],
+      writable: { permissionMode: { available: false } },
+    });
+    expect(observed).not.toHaveBeenCalled();
+    expect(permission).toHaveBeenCalledWith(f.target);
+    permission.mockImplementation(() => {
+      throw new Error("source changed");
+    });
+    expect(f.live()).toMatchObject({
+      permission: { mode: null },
+      usage: { state: "ready", usedTokens: 20 },
+    });
+    f.invalidate();
+    permission.mockClear();
+    expect(f.live()).toMatchObject({ permission: { mode: null } });
+    expect(permission).not.toHaveBeenCalled();
+  });
+
+  it("reads the terminal model and workspace browser without granting native settings or references", async () => {
+    const observed = vi.fn(() => ({
+      model: "historical-model",
+      permissionMode: "auto" as const,
+      usage: {
+        available: true,
+        state: "stale" as const,
+        historical: true as const,
+        usedTokens: 12,
+      },
+    }));
+    const f = await fixture(1000, undefined, observed);
+    await f.events({
+      type: "snapshot",
+      snapshot: { ...f.snapshot, model: "native-current-model" },
+    });
+    const state = await f.bridge.request({
+      operation: "settings-state",
+      sessionId: f.target.sessionId,
+    });
+    expect(state).toMatchObject({
+      available: true,
+      executionMode: "claude-follower",
+      current: { model: "native-current-model", effort: null, permissionMode: "auto" },
+      selected: { model: "native-current-model" },
+      historicalSettings: { model: "historical-model" },
+      defaults: {},
+    });
+    expect(
+      Object.values((state as { writable: object }).writable).every(
+        (field) => field.available === false,
+      ),
+    ).toBe(true);
+    expect(f.bridge.capabilities(f.target.sessionId, false)).toMatchObject({
+      features: {
+        resources: { available: true },
+        "settings-state": { available: true },
+        context: { available: false, reason: "follower-resource-input-unsupported" },
+        settings: { available: false, reason: "claude-follower-settings-unavailable" },
+        attachments: { available: false, reason: "claude-follower-attachments-unavailable" },
+        "goal-set": { available: false, reason: "native-operation-not-integrated" },
+      },
+    });
+    expect(
+      await f.bridge.request({ operation: "resources", sessionId: f.target.sessionId }),
+    ).toMatchObject({ available: true, contextReferences: { supportedTypes: [] } });
+    await expect(
+      f.bridge.request({ operation: "settings", sessionId: f.target.sessionId, model: "other" }),
+    ).rejects.toThrow("operation-unavailable");
+    expect((await f.poll()).body.commands).toEqual([]);
+    expect(f.live()).toMatchObject({ permission: { mode: "auto" } });
+    expect(observed).toHaveBeenCalledWith(f.target);
+    f.invalidate();
+    observed.mockClear();
+    await expect(
+      f.bridge.request({ operation: "settings-state", sessionId: f.target.sessionId }),
+    ).rejects.toThrow("session-unavailable");
+    await expect(
+      f.bridge.request({ operation: "resources", sessionId: f.target.sessionId }),
+    ).rejects.toThrow("session-unavailable");
+    expect(f.live().usage).toMatchObject({ available: false });
+    expect(f.live()).toMatchObject({ permission: { mode: null } });
+    expect(f.bridge.capabilities(f.target.sessionId, true)).toMatchObject({
+      features: {
+        settings: { available: false, reason: "claude-bridge-session-unavailable" },
+        context: { available: false, reason: "claude-bridge-session-unavailable" },
+        attachments: { available: false, reason: "claude-bridge-session-unavailable" },
+      },
+    });
+    expect(observed).not.toHaveBeenCalled();
+  });
+
+  it("preserves native partial usage, keeps saved usage separate and clears it during compaction", async () => {
+    const observed = vi.fn(() => ({
+      model: "model",
+      usage: {
+        available: true,
+        state: "stale" as const,
+        historical: true as const,
+        usedTokens: 99,
+        contextWindow: 1000,
+      },
+    }));
+    const f = await fixture(1000, undefined, observed);
+    expect(f.live().usage).toMatchObject({ historical: true, usedTokens: 99, contextWindow: 1000 });
+    await f.events({
+      type: "snapshot",
+      snapshot: {
+        ...f.snapshot,
+        model: "model",
+        usage: { tokens: 24, window: null, percent: null, observedAt: 1 },
+      },
+    });
+    observed.mockClear();
+    expect(f.live().usage).toEqual({
+      available: true,
+      state: "stale",
+      usedTokens: 24,
+      reason: "model-context-window-unavailable",
+      revision: f.live().revision,
+      updatedAt: "1970-01-01T00:00:00.001Z",
+    });
+    expect(observed).not.toHaveBeenCalled();
+    await f.events({
+      type: "snapshot",
+      snapshot: {
+        ...f.snapshot,
+        model: "new-model",
+        usage: { tokens: null, window: 1000000, percent: null, observedAt: 2 },
+      },
+    });
+    expect(f.live().usage).toMatchObject({
+      available: true,
+      state: "pending",
+      contextWindow: 1000000,
+    });
+    expect(f.live().usage).not.toHaveProperty("usedTokens");
+    expect(f.live().usage).not.toHaveProperty("percent");
+    expect(
+      await f.bridge.request({ operation: "settings-state", sessionId: f.target.sessionId }),
+    ).toMatchObject({ current: { maxContextTokens: 1000000 } });
+    await f.events({
+      type: "snapshot",
+      snapshot: { ...f.snapshot, model: "model", compacting: true },
+    });
+    observed.mockClear();
+    expect(f.live()).toMatchObject({
+      activity: "compacting",
+      usage: { available: true, state: "pending", reason: "session-compacting" },
+    });
+    expect(
+      await f.bridge.request({ operation: "settings-state", sessionId: f.target.sessionId }),
+    ).not.toHaveProperty("historicalUsage", expect.anything());
+    expect(observed).not.toHaveBeenCalled();
+    await f.manage("bridge-disconnect");
+    expect(f.live().usage).toMatchObject({ available: false });
+    expect(f.bridge.capabilities(f.target.sessionId, true)).toMatchObject({
+      features: { resources: { available: false }, "settings-state": { available: false } },
+    });
+  });
+
+  it("orders saved reports against the native compaction start even when snapshots arrive late", async () => {
+    const started = 1700000000000;
+    const saved: ClaudeTranscriptObservation = {
+      model: "model",
+      usage: {
+        available: true,
+        historical: true,
+        state: "stale",
+        usedTokens: 99,
+        updatedAt: new Date(started - 10).toISOString(),
+      },
+    };
+    const f = await fixture(1000, undefined, () => saved);
+    const settings = () =>
+      f.bridge.request({ operation: "settings-state", sessionId: f.target.sessionId });
+    const snapshot = { ...f.snapshot, model: "model", compactStartedAt: started };
+    await f.events({ type: "snapshot", snapshot: { ...snapshot, compacting: true } });
+    expect(f.live().usage).toMatchObject({
+      state: "pending",
+      updatedAt: new Date(started).toISOString(),
+    });
+    await f.events({ type: "snapshot", snapshot });
+    expect(f.live().usage).not.toHaveProperty("usedTokens");
+    expect(await settings()).not.toHaveProperty("historicalUsage");
+    saved.usage = {
+      ...saved.usage,
+      usedTokens: 13,
+      updatedAt: new Date(started + 2).toISOString(),
+      reason: "claude-post-compaction-usage",
+    };
+    expect(f.live().usage).toEqual(saved.usage);
+    expect(await settings()).toMatchObject({ historicalUsage: saved.usage });
+    // Even if the whole next compaction passed between polls, its watermark travels with the snapshot.
+    await f.events({ type: "snapshot", snapshot: { ...snapshot, compactStartedAt: started + 15 } });
+    expect(f.live().usage).not.toHaveProperty("usedTokens");
+    expect(await settings()).not.toHaveProperty("historicalUsage");
+  });
+
+  it("pairs saved occupancy with the connected model's window for live and settings reads", async () => {
+    const saved: ClaudeTranscriptObservation = {
+      model: "model",
+      usage: {
+        available: true,
+        state: "stale",
+        historical: true,
+        usedTokens: 24606,
+        reason: "claude-post-compaction-usage",
+        updatedAt: new Date(1000).toISOString(),
+      },
+    };
+    const f = await fixture(1000, undefined, () => saved);
+    const settings = () =>
+      f.bridge.request({ operation: "settings-state", sessionId: f.target.sessionId });
+    const reportWindow = (model: string | null, window: number) =>
+      f.events({
+        type: "snapshot",
+        snapshot: {
+          ...f.snapshot,
+          model,
+          usage: { tokens: null, window, percent: null, observedAt: 1010 },
+        },
+      });
+    await reportWindow("model", 1000000);
+    const expected = { ...saved.usage, contextWindow: 1000000 };
+    expect(f.live().usage).toEqual(expected);
+    expect(await settings()).toMatchObject({ historicalUsage: expected });
+    await reportWindow(null, 1000000);
+    const relative = { ...expected, reason: "claude-post-compaction-current-window" };
+    expect(f.live().usage).toEqual(relative);
+    expect(await settings()).toMatchObject({ historicalUsage: relative });
+    saved.usage.updatedAt = new Date(1011).toISOString();
+    expect(f.live().usage).toEqual(saved.usage);
+    saved.usage.updatedAt = new Date(1000).toISOString();
+    saved.usage.reason = "model-context-window-unavailable";
+    expect(f.live().usage).toEqual(saved.usage);
+    await reportWindow("model", 1000000);
+    expect(f.live().usage).toMatchObject({ usedTokens: 24606, contextWindow: 1000000 });
+    expect(f.live().usage).not.toHaveProperty("reason");
+    await reportWindow("model", 10000);
+    expect(f.live().usage).toEqual(saved.usage);
+    await reportWindow("another-model", 1000000);
+    expect(f.live().usage).not.toHaveProperty("usedTokens");
+    expect(await settings()).not.toHaveProperty("historicalUsage");
+  });
+
+  it.each([null, 25_000])(
+    "retains a verified terminal window through terminal exit and restart when native tokens are %s",
+    async (tokens) => {
+      const saved: ClaudeTranscriptObservation = {
+        model: "claude-opus-5-5",
+        usage: {
+          available: true,
+          historical: true,
+          state: "stale",
+          usedTokens: 24_606,
+          reason: "claude-post-compaction-usage",
+          updatedAt: new Date(1_000).toISOString(),
+        },
+      };
+      const f = await fixture(1_000, undefined, () => saved);
+      const report = {
+        ...f.snapshot,
+        usage: { tokens, window: 1_000_000, percent: null, observedAt: 1_010 },
+      };
+      expect((await f.events({ type: "snapshot", snapshot: report })).status).toBe(200);
+      const persisted = path.join(f.bridge.root, "context-usage-v1.json");
+      expect(statSync(persisted).mode & 0o777).toBe(0o600);
+      const retained = {
+        ...saved.usage,
+        contextWindow: 1_000_000,
+        reason: "claude-post-compaction-current-window",
+      };
+      expect(
+        (
+          await f.events(
+            {
+              type: "snapshot",
+              snapshot: {
+                ...report,
+                revision: 1,
+                status: "disconnected",
+                usage: null,
+                capabilities: {
+                  read: false,
+                  send: false,
+                  steer: false,
+                  queue: false,
+                  stop: false,
+                  approve: false,
+                  answer: false,
+                },
+              },
+            },
+            { type: "invalidated", reason: "native-session-ended", revision: 1 },
+          )
+        ).status,
+      ).toBe(200);
+      expect(await f.manage("bridge-status")).toMatchObject({ connected: false, hasBinding: true });
+      expect(f.live().usage).toEqual(retained);
+      await f.restart(false);
+      expect(f.live().usage).toEqual(retained);
+      expect(f.bridge.retainedUsage(f.target.sessionId, f.target, saved)).toEqual(retained);
+      expect(
+        f.bridge.retainedUsage(
+          f.target.sessionId,
+          { ...f.target, workspaceId: "other-workspace" },
+          saved,
+        ),
+      ).toBeUndefined();
+      expect(
+        f.bridge.retainedUsage(f.target.sessionId, f.target, {
+          ...saved,
+          usage: { ...saved.usage, updatedAt: new Date(1_011).toISOString() },
+        }),
+      ).toBeUndefined();
+      f.invalidate();
+      expect(f.bridge.retainedUsage(f.target.sessionId, f.target, saved)).toBeUndefined();
+      f.restore();
+      await f.manage("bridge-disconnect");
+      expect(f.bridge.retainedUsage(f.target.sessionId, f.target, saved)).toBeUndefined();
+      expect(f.live().usage).not.toHaveProperty("contextWindow");
+    },
+  );
+
+  it.each([{ compacting: true, compactStartedAt: 1_015 }, { model: "different-model" }])(
+    "does not revive a window invalidated by a native change: %j",
+    async (changed) => {
+      const saved: ClaudeTranscriptObservation = {
+        model: "model",
+        usage: {
+          available: true,
+          historical: true,
+          state: "stale",
+          usedTokens: 24_606,
+          updatedAt: new Date(1_000).toISOString(),
+        },
+      };
+      const f = await fixture(1_000, undefined, () => saved);
+      const verified = {
+        ...f.snapshot,
+        model: "model",
+        usage: { tokens: null, window: 1_000_000, percent: null, observedAt: 1_010 },
+      };
+      await f.events({ type: "snapshot", snapshot: verified });
+      expect(f.live().usage).toMatchObject({ contextWindow: 1_000_000 });
+      await f.events({
+        type: "snapshot",
+        snapshot: { ...f.snapshot, model: "model", ...changed },
+      });
+      await f.restart(false);
+      expect(f.bridge.retainedUsage(f.target.sessionId, f.target, saved)).toBeUndefined();
+      expect(f.live().usage).not.toHaveProperty("contextWindow");
+    },
+  );
+
   it("recovers actual production-hook overflow through the real broker without losing turn identity", async () => {
     const f = await fixture();
     await f.manage("bridge-disconnect");
@@ -267,6 +658,7 @@ describe.skipIf(process.platform === "win32")("native Claude borrowed-host broke
       session: {
         id: async () => f.target.nativeId,
         cwd: async () => f.target.workspace,
+        root: async () => f.target.workspace,
         version: async () => ({ version: "2.1.301" }),
         messages: async () => [],
         usage: async () => null,
@@ -794,7 +1186,7 @@ describe.skipIf(process.platform === "win32")("native Claude borrowed-host broke
       if (state === "revoked") await f.manage("bridge-disconnect");
       else f.invalidate();
       expect(await f.http("/v1/reconnect", f.reconnectFailure, f.connection.token)).toMatchObject({
-        status: 410,
+        status: state === "revoked" ? 410 : 409,
       });
       expect(f.live()).toHaveProperty("bridgeConnectionFailure", null);
       if (state === "invalid-source")
@@ -1168,6 +1560,82 @@ describe.skipIf(process.platform === "win32")("native Claude borrowed-host broke
     expect(await result).toMatchObject({ accepted: true, completed: true });
     expect(f.live().sendEnabled).toBe(true);
   });
+  it("opens a supported idle terminal's chooser without a turn or an unverified model change", async () => {
+    const f = await fixture();
+    const settings = () =>
+      f.bridge.request({ operation: "settings-state", sessionId: f.target.sessionId });
+    expect(f.live().modelPickerEnabled).toBe(false);
+    await expect(f.bridge.request(f.control("open-model-picker"))).rejects.toThrow(
+      "operation-unavailable",
+    );
+    const snapshot = {
+      ...f.snapshot,
+      model: "claude-sonnet",
+      capabilities: { ...f.snapshot.capabilities, modelPicker: true },
+    };
+    await f.events({ type: "snapshot", snapshot });
+    const input = f.control("open-model-picker");
+    expect(f.live().modelPickerEnabled).toBe(true);
+    await expect(f.bridge.request({ ...input, text: "claude-haiku" })).rejects.toThrow(
+      "invalid-managed-control",
+    );
+    const opened = f.bridge.request(input);
+    const [command] = (await f.poll()).body.commands;
+    expect(command).toEqual({
+      commandId: expect.any(String),
+      kind: "open-model-picker",
+      expectedRevision: snapshot.revision,
+    });
+    await f.post("/v1/results", {
+      commandId: command.commandId,
+      status: "accepted",
+      revision: snapshot.revision,
+    });
+    const receipt = await opened;
+    expect(receipt).toMatchObject({ controlOutcome: "accepted", completed: false });
+    expect(await f.bridge.request(input)).toEqual(receipt);
+    expect((await f.poll()).body.commands).toEqual([]);
+    expect(await settings()).toMatchObject({ current: { model: "claude-sonnet" } });
+    await f.events({ type: "snapshot", snapshot: { ...snapshot, model: "claude-haiku" } });
+    expect(await settings()).toMatchObject({ current: { model: "claude-haiku" } });
+    await f.events({
+      type: "snapshot",
+      snapshot: { ...snapshot, status: "waiting", waiting: "permission" },
+    });
+    expect(f.live().modelPickerEnabled).toBe(false);
+    await expect(f.bridge.request(f.control("open-model-picker"))).rejects.toThrow(
+      "operation-unavailable",
+    );
+    expect((await f.poll()).body.commands).toEqual([]);
+  });
+  it("scopes a lost chooser receipt to the chooser and accepts its late receipt during a send", async () => {
+    const f = await fixture(200);
+    await f.events({
+      type: "snapshot",
+      snapshot: { ...f.snapshot, capabilities: { ...f.snapshot.capabilities, modelPicker: true } },
+    });
+    const input = f.control("open-model-picker");
+    const first = f.bridge.request(input);
+    const [picker] = (await f.poll()).body.commands;
+    expect(await first).toMatchObject({ controlOutcome: "unknown" });
+    expect(f.live()).toMatchObject({
+      status: "idle",
+      sendEnabled: true,
+      modelPickerEnabled: false,
+    });
+    await expect(f.bridge.request(f.control("open-model-picker"))).rejects.toThrow(
+      "operation-unavailable",
+    );
+    const send = f.bridge.request(f.control());
+    const [message] = (await f.poll()).body.commands;
+    await f.post("/v1/results", { commandId: picker.commandId, status: "accepted", revision: 0 });
+    expect(await f.bridge.request(input)).toMatchObject({ accepted: true, completed: false });
+    expect(f.live().modelPickerEnabled).toBe(false);
+    await f.post("/v1/results", { commandId: message.commandId, status: "rejected", revision: 0 });
+    expect(await send).toMatchObject({ controlOutcome: "not-dispatched" });
+    expect(f.live().modelPickerEnabled).toBe(true);
+    expect((await f.poll()).body.commands).toEqual([]);
+  });
   it("rejects a concurrent second send without queueing", async () => {
     const f = await fixture();
     const first = f.bridge.request(f.control());
@@ -1215,25 +1683,35 @@ describe.skipIf(process.platform === "win32")("native Claude borrowed-host broke
     expect(f.live().sendEnabled).toBe(true);
     expect((await f.poll()).body.commands).toEqual([]);
   });
-  it("recovers only a matching late acknowledgement, without replay", async () => {
-    const f = await fixture(30);
-    const input = f.control();
-    const first = f.bridge.request(input);
-    const command = (await f.poll()).body.commands[0];
-    expect(await first).toMatchObject({ controlOutcome: "unknown" });
-    const turnId = randomUUID();
-    await f.events(
-      { type: "turn-start", turnId, revision: 1 },
-      { type: "turn-complete", turnId, revision: 2, text: "reply", aborted: false },
-    );
-    await f.post("/v1/results", {
-      commandId: command.commandId,
-      status: "accepted",
-      revision: 2,
-      turnId,
-    });
-    expect(await f.bridge.request(input)).toMatchObject({ accepted: true, completed: true });
-  });
+  it.each([false, true])(
+    "recovers a matching late acknowledgement without replay (restart: %s)",
+    async (restart) => {
+      const f = await fixture(30);
+      const input = f.control();
+      const first = f.bridge.request(input);
+      const command = (await f.poll()).body.commands[0];
+      expect(await first).toMatchObject({ controlOutcome: "unknown" });
+      const turnId = randomUUID();
+      await f.events(
+        { type: "turn-start", turnId, revision: 1 },
+        { type: "turn-complete", turnId, revision: 2, text: "reply", aborted: false },
+      );
+      if (restart) {
+        await f.restart();
+        await f.events({ type: "snapshot", snapshot: { ...f.snapshot, revision: 2 } });
+        expect(await f.bridge.request(input)).toMatchObject({ controlOutcome: "unknown" });
+        expect((await f.poll()).body.commands).toEqual([]);
+      }
+      await f.post("/v1/results", {
+        commandId: command.commandId,
+        status: "accepted",
+        revision: 2,
+        turnId,
+      });
+      expect(await f.bridge.request(input)).toMatchObject({ accepted: true, completed: true });
+      expect(f.live().sendEnabled).toBe(true);
+    },
+  );
   it("requires the exact current turn to cancel and does not kill a host process", async () => {
     const f = await fixture();
     const turnId = randomUUID();
@@ -1506,9 +1984,28 @@ describe.skipIf(process.platform === "win32")("native Claude borrowed-host broke
       streamText: "",
       reason: "claude-bridge-session-unavailable",
     });
-    expect((await f.poll()).status).toBe(410);
+    expect(await f.poll()).toMatchObject({
+      status: 409,
+      body: { error: "bridge-lease-expired" },
+    });
     await f.bridge.close();
     expect(await first).toMatchObject({ controlOutcome: "not-dispatched" });
+  });
+  it("reconnects the same binding when a temporarily unavailable source passes validation again", async () => {
+    const f = await fixture();
+    const { bindingId, leaseId } = f.connection;
+    f.invalidate();
+    expect(await f.poll()).toMatchObject({ status: 409, body: { error: "bridge-lease-expired" } });
+    expect(await f.post("/v1/reconnect", f.hello)).toMatchObject({
+      status: 409,
+      body: { error: "bridge-lease-expired" },
+    });
+    expect(f.live()).toMatchObject({ sendEnabled: false });
+    f.restore();
+    expect(await f.reconnect()).toMatchObject({ status: 200, body: { bindingId } });
+    expect(f.connection.leaseId).not.toBe(leaseId);
+    await f.events({ type: "snapshot", snapshot: f.snapshot });
+    expect(f.live()).toMatchObject({ status: "idle", sendEnabled: true });
   });
   it("marks an event gap until a verified replacement snapshot and ignores duplicates", async () => {
     const f = await fixture();
@@ -1598,6 +2095,58 @@ describe.skipIf(process.platform === "win32")("native Claude borrowed-host broke
       status: "running",
       reason: "claude-terminal-permission-unconfirmed",
     });
+  });
+  it("shows the model chooser as idle and only displays tool events from a confirmed turn", async () => {
+    const f = await fixture();
+    const historicalTool = { id: "old", name: "Read", input: "", status: "completed" };
+    const currentTool = { ...historicalTool, id: "current", status: "running" };
+    f.publish.mockClear();
+    await f.events({
+      type: "snapshot",
+      snapshot: {
+        ...f.snapshot,
+        status: "running",
+        modelPickerOpen: true,
+        toolItems: [historicalTool],
+      },
+    });
+    expect(f.live()).toMatchObject({
+      status: "idle",
+      reason: "claude-model-picker-open",
+      turnId: null,
+      terminalSend: false,
+      sendEnabled: false,
+      queueEnabled: false,
+      modelPickerEnabled: false,
+    });
+    expect(f.publish.mock.calls.some(([, type]) => type === "item-upsert")).toBe(false);
+
+    const turnId = randomUUID();
+    await f.events(
+      { type: "turn-start", turnId, revision: 1 },
+      { type: "tool-start", turnId, tool: currentTool, revision: 1 },
+      { type: "tool-complete", turnId: randomUUID(), tool: historicalTool, revision: 1 },
+    );
+    expect(f.live()).toMatchObject({ status: "running", turnId });
+    expect(
+      f.publish.mock.calls
+        .filter(([, type]) => type === "item-upsert")
+        .map(([, , item]) => item.id),
+    ).toEqual(["claude-follower-tool:current"]);
+
+    await f.events({
+      type: "snapshot",
+      snapshot: { ...f.snapshot, revision: 2, modelPickerOpen: false },
+    });
+    expect(f.live()).toMatchObject({ status: "idle", terminalSend: true, sendEnabled: true });
+    expect(f.publish).toHaveBeenCalledWith(
+      f.target.sessionId,
+      "snapshot",
+      expect.objectContaining({
+        replaceItemIds: ["claude-follower-tool:current"],
+      }),
+      expect.anything(),
+    );
   });
   it("expires old leases and clears text when a plugin reloads", async () => {
     const f = await fixture();
@@ -1759,7 +2308,7 @@ describe.skipIf(process.platform === "win32")(
     it("names the feature and gives a lead its tools, its reports and its calls", async () => {
       const l = terminalLead();
       const f = await fixture(1000, l.lead);
-      expect(f.connection.features).toEqual(["lead-tools"]);
+      expect(f.connection.features).toEqual(["lead-tools", "open-model-picker"]);
       expect(f.bridge.leadCapable(f.target.sessionId)).toBe(false);
       expect((await leadPoll(f)).body).toEqual({ commands: [], lead: null });
       expect(f.bridge.leadCapable(f.target.sessionId)).toBe(true);
@@ -1839,7 +2388,7 @@ describe.skipIf(process.platform === "win32")(
 
     it("offers nothing of it without a lead hook, nor to a plugin that did not ask", async () => {
       const plain = await fixture();
-      expect(plain.connection).not.toHaveProperty("features");
+      expect(plain.connection.features).toEqual(["open-model-picker"]);
       expect((await leadPoll(plain)).body).toEqual({ commands: [] });
       expect(plain.bridge.leadCapable(plain.target.sessionId)).toBe(false);
       const l = terminalLead();

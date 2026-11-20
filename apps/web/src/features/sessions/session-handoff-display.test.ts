@@ -1,9 +1,6 @@
 import { sessionContinuationCopy } from "@agentkib/session-ui";
 import { describe, expect, it } from "vitest";
-import {
-  sessionDisplayState,
-  sessionNextAction,
-} from "@/features/conversation/features/sessions/session-display-state";
+import { sessionDisplayState } from "@/features/conversation/features/sessions/session-display-state";
 import type { SessionController } from "@/features/conversation/features/sessions/use-session-controller";
 
 function fixture(): SessionController {
@@ -57,7 +54,7 @@ describe("handoff-aware session presentation", () => {
       state.live!.sendEnabled = true;
       state.capabilities!.features.send = { available: true };
       state.canSend = true;
-      expect(sessionNextAction(state)).toBeUndefined();
+      expect(sessionDisplayState(state)).not.toHaveProperty("nextAction");
       expect(sessionDisplayState(state)).toMatchObject({
         label: "",
         reason: "",
@@ -84,17 +81,33 @@ describe("handoff-aware session presentation", () => {
   it("keeps an idle Codex session ready without a badge or manual resume", () => {
     const state = codexFixture();
     state.capabilities!.features.resume = { available: true };
-    expect(sessionNextAction(state)).toBeUndefined();
+    expect(sessionDisplayState(state)).not.toHaveProperty("nextAction");
     expect(sessionDisplayState(state)).toMatchObject({
       label: "",
       reason: "",
       continuation: "idle",
     });
   });
+  it("does not infer a settings-only fence after the controller excludes it", () => {
+    const state = codexFixture();
+    state.controlReady = false;
+    state.canSend = false;
+    state.settingsNotice = {
+      sessionId: "session",
+      scope: "scope",
+      target: "model",
+      status: "uncertain",
+    };
+    state.settingsOnlyBlocked = false;
+    expect(sessionDisplayState(state)).toMatchObject({ label: "Verifying state", loading: true });
+    state.settingsOnlyBlocked = true;
+    expect(sessionDisplayState(state)).toMatchObject({ label: "", continuation: "idle" });
+    expect(state.canSend).toBe(false);
+  });
   it("does not require management permission to send to an automatically continued Codex session", () => {
     const state = codexFixture();
     state.access!.device!.manage = false;
-    expect(sessionNextAction(state)).toBeUndefined();
+    expect(sessionDisplayState(state)).not.toHaveProperty("nextAction");
     expect(sessionDisplayState(state).continuation).toBe("idle");
   });
   it("identifies the external Codex owner without a handoff action or warning color", () => {
@@ -106,7 +119,7 @@ describe("handoff-aware session presentation", () => {
       ownershipReason: "codex-owner-busy",
       reason: "codex-owner-busy",
     });
-    expect(sessionNextAction(state)).toBeUndefined();
+    expect(sessionDisplayState(state)).not.toHaveProperty("nextAction");
     expect(sessionDisplayState(state)).toMatchObject({
       label: "In use in Codex",
       continuation: "busy",
@@ -116,7 +129,7 @@ describe("handoff-aware session presentation", () => {
   it("returns a retired Codex session to idle without asking for resume confirmation", () => {
     const state = codexFixture();
     state.live!.status = "released";
-    expect(sessionNextAction(state)).toBeUndefined();
+    expect(sessionDisplayState(state)).not.toHaveProperty("nextAction");
     expect(sessionDisplayState(state)).toMatchObject({ label: "", continuation: "idle" });
   });
   const blocked: [string, (state: SessionController) => void][] = [
@@ -207,7 +220,7 @@ describe("handoff-aware session presentation", () => {
     [
       "unavailable adoption capability",
       (s) => {
-        s.capabilities!.features.adopt = { available: false };
+        Object.assign(s.capabilities!.features, { adopt: { available: false } });
       },
     ],
     [
@@ -272,9 +285,8 @@ describe("handoff-aware session presentation", () => {
   it.each(blocked)("does not advertise an executable handoff for %s", (_name, mutate) => {
     const state = fixture();
     mutate(state);
-    expect(sessionNextAction(state)).toBeUndefined();
     const result = sessionDisplayState(state);
-    expect(result.nextAction).toBeUndefined();
+    expect(result).not.toHaveProperty("nextAction");
     expect(result.label).not.toBe("Handoff required");
     expect(result.label).not.toBe("Resume required");
     expect(state.canSend).toBe(false);
@@ -325,14 +337,14 @@ describe("handoff-aware session presentation", () => {
     const state = fixture();
     mutate(state);
     expect(sessionDisplayState(state)).toMatchObject({ label, tone: "muted" });
-    expect(sessionDisplayState(state).nextAction).toBeUndefined();
+    expect(sessionDisplayState(state)).not.toHaveProperty("nextAction");
     expect(sessionDisplayState(state).reason.length).toBeGreaterThan(0);
   });
   it("does not claim that a failed native resume capability can be entered without the separate managed capability", () => {
     const state = fixture();
     state.current!.agent = "codex";
-    state.capabilities!.features.adopt = { available: false };
-    expect(sessionNextAction(state)).toBeUndefined();
+    Object.assign(state.capabilities!.features, { adopt: { available: false } });
+    expect(sessionDisplayState(state)).not.toHaveProperty("nextAction");
   });
   it("continues to report send readiness only from the existing dispatch decision", () => {
     const state = fixture();
@@ -340,7 +352,7 @@ describe("handoff-aware session presentation", () => {
     state.canSend = true;
     state.capabilities!.features.send = { available: true };
     expect(sessionDisplayState(state)).toMatchObject({ label: "", continuation: "idle" });
-    expect(sessionDisplayState(state).nextAction).toBeUndefined();
+    expect(sessionDisplayState(state)).not.toHaveProperty("nextAction");
   });
   it("uses the same neutral ownership state for both Agents in all four locales", () => {
     for (const locale of ["en-US", "zh-CN", "zh-Hant", "ja-JP"] as const) {
@@ -352,6 +364,7 @@ describe("handoff-aware session presentation", () => {
       ] as const) {
         state.current!.agent = agent;
         state.live!.ownershipReason = reason;
+        state.live!.reason = reason;
         expect(sessionDisplayState(state)).toMatchObject({
           label: sessionContinuationCopy(locale).busy(name),
           reason: "",

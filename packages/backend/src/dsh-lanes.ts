@@ -139,6 +139,8 @@ export class DshLaneWatch {
     }
     void this.options
       .endedTurns(sessionId)
+      // A read failure leaves the exact turn unverified, just like a delayed history write.
+      .catch(() => [])
       .then((turns) => {
         const turn = turns.find((item) => item.turnId === turnId);
         if (!turn) {

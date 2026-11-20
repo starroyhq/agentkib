@@ -80,7 +80,6 @@ export function isConversationPath(path: string, post: boolean) {
         "/attachments",
         "/attachments/delete",
         "/managed/create",
-        "/managed/adopt",
         "/managed/release",
         "/managed/reconcile",
         "/managed/action",

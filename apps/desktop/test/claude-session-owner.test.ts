@@ -104,6 +104,22 @@ function fixture() {
 }
 
 describe.skipIf(process.platform === "win32")("Claude session ownership probe", () => {
+  it("observes working terminal activity from the native registry without launching Claude", async () => {
+    const f = fixture();
+    const statusUpdatedAt = Date.now() - 2000;
+    const cwd = "/work/verified";
+    f.process(101);
+    f.process(202);
+    f.record(101, { status: "working", statusUpdatedAt, cwd });
+    f.record(202, { status: "working", statusUpdatedAt, cwd, procStart: "bad birth time" });
+    f.record(303, { status: "working", statusUpdatedAt, cwd });
+    await expect(f.probe.activeRegistryTurns()).resolves.toEqual([
+      { nativeId, pid: 101, cwd, startedAt: new Date(statusUpdatedAt).toISOString() },
+    ]);
+    expect(f.run.mock.calls.map(([program]) => program)).toEqual(["/bin/ps"]);
+    f.record(101, { status: "shell", statusUpdatedAt, cwd });
+    await expect(f.probe.activeRegistryTurns()).resolves.toEqual([]);
+  });
   it("reports an idle session without spawning a Claude session", async () => {
     const f = fixture();
     await expect(f.probe.check(nativeId)).resolves.toEqual({ kind: "idle" });

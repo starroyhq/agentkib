@@ -18,6 +18,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { WebSocket } from "ws";
 import { once } from "node:events";
+import { sessionProviderCapabilities } from "@agentkib/runtime-protocol";
 import { AttachmentStore } from "../electron/main/web/attachments";
 import { WebAccessService, createWebControlState } from "../electron/main/web/service";
 import { TypeScriptBackend } from "../../../packages/backend/src/index";
@@ -201,6 +202,7 @@ describe.skipIf(process.platform !== "darwin")(
         staticDir: directory,
         desktopOrigin: "app://bundle",
         runtimeRequest: (params) => rpc("web.request", params),
+        sessionProviderRequest: (params) => rpc("web.request", params),
         claudeManagedRequest: (params) => rpc("claude.managed", params),
         managedRequest: (params) => rpc("codex.managed", params),
         receiptRequest: (params) => rpc("control.receipt", params),
@@ -645,6 +647,61 @@ describe.skipIf(process.platform !== "darwin")(
       expect(conflict.status).not.toBe(200);
     });
 
+    it("uses one Claude provider for workspace options, creation replay and fresh settings and usage", async () => {
+      const provider = sessionProviderCapabilities("claude-code");
+      const options = await http("/managed/options?agent=claude-code&workspaceId=workspace");
+      expect(options.status, JSON.stringify(options.body)).toBe(200);
+      expect(options.body).toMatchObject({
+        provider,
+        models: expect.arrayContaining([expect.objectContaining({ id: "fixture-model" })]),
+      });
+
+      const startup = {
+        workspaceId: "workspace",
+        model: "fixture-model",
+        effort: "high",
+        verifyStartupModel: true,
+      };
+      expect(
+        await rpc("web.request", {
+          operation: "provider-create",
+          agent: "claude-code",
+          ...startup,
+          model: "low-model",
+          deviceId,
+          requestId: randomUUID(),
+        }),
+      ).toMatchObject({
+        accepted: false,
+        controlOutcome: "not-dispatched",
+        reason: "unsupported-effort",
+      });
+
+      const requestId = randomUUID();
+      const created = await http("/managed/create", {
+        agent: "claude-code",
+        bootId,
+        requestId,
+        ...startup,
+      });
+      expect(created.status, JSON.stringify(created.body)).toBe(200);
+      const { sessionId } = created.body;
+      expect(created.body).toMatchObject({ accepted: true, sessionId: expect.any(String) });
+      expect(
+        await rpc("claude.managed", { operation: "create", requestId, deviceId, ...startup }),
+      ).toMatchObject({
+        accepted: true,
+        sessionId,
+      });
+      expect(await rpc("web.request", { operation: "settings-state", sessionId })).toMatchObject({
+        provider,
+        executionMode: "claude-managed",
+      });
+      expect((await prepareSettings(sessionId)).body).toMatchObject({ provider });
+      const usage = { operation: "usage", sessionId };
+      expect(await rpc("web.request", usage)).toEqual(await rpc("claude.managed", usage));
+    });
+
     it.each([false, true])(
       "preserves an explicitly named Claude task after its first native turn (legacy=%s)",
       async (legacy) => {
@@ -678,12 +735,8 @@ describe.skipIf(process.platform !== "darwin")(
             expectedRevision: (await live(sessionId)).revision,
           });
           expect(released.status, JSON.stringify(released.body)).toBe(200);
-          await rpc("claude.managed", {
-            operation: "adopt",
-            sessionId,
-            requestId: randomUUID(),
-            deviceId,
-          });
+          expect((await send(sessionId, "Continue the named session")).status).toBe(200);
+          await idle(sessionId);
           const resumedCatalog = await http("/catalog");
           expect(resumedCatalog.status, JSON.stringify(resumedCatalog.body)).toBe(200);
           expect(resumedCatalog.body.sessions.find((row: any) => row.id === sessionId)?.title).toBe(
@@ -893,7 +946,7 @@ describe.skipIf(process.platform !== "darwin")(
       await idle(sessionId);
     });
 
-    it("publishes completed settings preparation to the actual subscriber without a live refresh or user turn", async () => {
+    it("keeps isolated settings catalogue preparation out of target session events", async () => {
       const sessionId = await create();
       const subscription = await rpc("sessions.subscribe", { sessionId });
       const states: Array<Record<string, unknown>> = [];
@@ -911,11 +964,11 @@ describe.skipIf(process.platform !== "darwin")(
         const prepared = await prepareSettings(sessionId);
         expect(prepared.status, JSON.stringify(prepared.body)).toBe(200);
         expect(prepared.body.options.models[0].id).toBe("fixture-model");
-        expect(states.some((state) => state.status === "starting")).toBe(true);
-        expect(states.at(-1)).toMatchObject({
+        expect(states).toEqual([]);
+        expect(await live(sessionId)).toMatchObject({
           status: "idle",
           sendEnabled: true,
-          stopEnabled: false,
+          executionLocation: null,
         });
         expect(frames().filter((row) => row.type === "control_request")).toHaveLength(1);
         expect(frames().filter((row) => row.type === "user")).toEqual([]);
@@ -925,7 +978,7 @@ describe.skipIf(process.platform !== "darwin")(
       }
     });
 
-    it("publishes recovered idle to the actual subscriber while the settings startup request still reports failure", async () => {
+    it("keeps target session idle when isolated settings catalogue preparation fails", async () => {
       const sessionId = await create();
       const subscription = await rpc("sessions.subscribe", { sessionId });
       const states: Array<Record<string, unknown>> = [];
@@ -944,8 +997,8 @@ describe.skipIf(process.platform !== "darwin")(
         const prepared = await prepareSettings(sessionId);
         expect(prepared.status).toBeGreaterThanOrEqual(400);
         expect(prepared.body.error).toBeTruthy();
-        expect(states.some((state) => state.status === "starting")).toBe(true);
-        expect(states.at(-1)).toMatchObject({
+        expect(states).toEqual([]);
+        expect(await live(sessionId)).toMatchObject({
           status: "idle",
           sendEnabled: true,
           executionLocation: null,
@@ -1028,6 +1081,8 @@ describe.skipIf(process.platform !== "darwin")(
     it("preserves the inherited native permission mode when HTTP changes only the model", async () => {
       writeFileSync(modeFile, "inherited-plan");
       const sessionId = await create();
+      expect((await send(sessionId, "Initialize the session")).status).toBe(200);
+      await idle(sessionId);
       const options = await prepareSettings(sessionId);
       expect(options.status, JSON.stringify(options.body)).toBe(200);
       expect(options.body.current.permissionMode).toBe("plan");
@@ -1117,6 +1172,8 @@ describe.skipIf(process.platform !== "darwin")(
       async (mode) => {
         writeFileSync(modeFile, mode);
         const sessionId = await create();
+        expect((await send(sessionId, "Initialize the session")).status).toBe(200);
+        await idle(sessionId);
         const options = await prepareSettings(sessionId);
         expect(options.status).toBe(200);
         expect(options.body.selected.modelId).toBeUndefined();
@@ -1148,6 +1205,8 @@ describe.skipIf(process.platform !== "darwin")(
           permissionMode: "plan",
         });
         expect(configured.status, JSON.stringify(configured.body)).toBe(200);
+        expect((await send(sessionId, "Initialize configured settings")).status).toBe(200);
+        await idle(sessionId);
         const changed = await action(sessionId, "settings", { model, effort: null });
         expect(changed.status, JSON.stringify(changed.body)).toBe(200);
         const state = (await http(`/managed/settings?sessionId=${sessionId}`)).body;
@@ -1160,7 +1219,7 @@ describe.skipIf(process.platform !== "darwin")(
           expect.arrayContaining(["--model", model, "--permission-mode", "plan"]),
         );
         expect(args).not.toContain("--effort");
-        expect(frames().filter((row) => row.type === "user")).toEqual([]);
+        expect(frames().filter((row) => row.type === "user")).toHaveLength(1);
       },
     );
 
@@ -1267,7 +1326,7 @@ describe.skipIf(process.platform !== "darwin")(
       // Its worker tools run without asking: being made a Project Agent is the authorization.
       expect(first.slice(-2)).toEqual(["--allowedTools", "mcp__agentkib_workers"]);
       expect(frames().find((row) => row.workers)).toMatchObject({
-        workers: { paused: false, workers: [], maxWorkers: 4 },
+        workers: { paused: false, workers: [], maxWorkers: 10 },
       });
       // Its settings change. Only a change of what it may decide changes its tools: the next
       // message starts a worker with an endpoint that offers them.
@@ -1665,6 +1724,8 @@ describe.skipIf(process.platform !== "darwin")(
 
     it("keeps a rejected native settings acknowledgement unknown and never replays its controls", async () => {
       const sessionId = await create();
+      expect((await send(sessionId, "Initialize the session")).status).toBe(200);
+      await idle(sessionId);
       await prepareSettings(sessionId);
       writeFileSync(modeFile, "settings-rejected");
       const requestId = randomUUID();
@@ -1688,7 +1749,7 @@ describe.skipIf(process.platform !== "darwin")(
       expect((await http("/managed/action", body)).body.controlOutcome).toBe("unknown");
       await shared.claudeScheduler!.tick();
       expect(frames().filter((row) => row.type === "control_request")).toHaveLength(controls);
-      expect(frames().filter((row) => row.type === "user")).toHaveLength(0);
+      expect(frames().filter((row) => row.type === "user")).toHaveLength(1);
     });
 
     it("filters sensitive resources and rejects changed file and directory references before dispatch", async () => {

@@ -6,7 +6,9 @@ import {
   type SessionActionBody,
   type CodexOptions,
   type CodexQueue,
+  type CodexSessionSettings,
 } from "@agentkib/web-client";
+import { ComposerModelPicker } from "@agentkib/session-ui";
 import { Button } from "../../components/ui/button";
 import { Input } from "../../components/ui/input";
 import { Dialog } from "../../components/dialog";
@@ -18,6 +20,7 @@ import {
 } from "./operation-layout";
 import { useSession } from "./session-context";
 import { webLayoutCopy } from "./web-layout-copy";
+import { composerLayoutCopy } from "./composer-layout-copy";
 import { codexCopyForSurface, codexReason } from "./codex-copy";
 import { blockedWhileCompacting } from "./session-activity";
 import { contextUsageCopyForSurface } from "./context-usage-copy";
@@ -51,6 +54,8 @@ export function CodexTools({
     access,
     live,
     refresh,
+    settingsNotice,
+    t,
   } = session;
   const copy = codexCopyForSurface(locale, "web");
   const agentCopy = sessionAgentCopy[locale];
@@ -76,9 +81,6 @@ export function CodexTools({
   const [queue, setQueue] = useState<CodexQueue>();
   const [options, setOptions] = useState<CodexOptions>();
   const [name, setName] = useState("");
-  const [model, setModel] = useState("");
-  const [effort, setEffort] = useState("");
-  const [mode, setMode] = useState<"" | "default" | "plan">("");
   const [editing, setEditing] = useState("");
   const [text, setText] = useState("");
   const [queueError, setQueueError] = useState("");
@@ -89,9 +91,6 @@ export function CodexTools({
     setContext(undefined);
     setQueue(undefined);
     setOptions(undefined);
-    setModel("");
-    setEffort("");
-    setMode("");
     setEditing("");
     setText("");
     setConfirmDelete(false);
@@ -142,7 +141,7 @@ export function CodexTools({
       }
     };
     void load();
-    if (!isClaude && !isDsh)
+    if (!isClaude && !isDsh && access.device?.accessMode !== "full")
       void client
         .request<CodexOptions>("managed/options", undefined, abort.signal)
         .then((value) => {
@@ -168,6 +167,7 @@ export function CodexTools({
     client,
     access?.status,
     access?.device?.id,
+    access?.device?.accessMode,
     revision,
     copy.queueTooLarge,
     copy.unavailableQueue,
@@ -227,8 +227,8 @@ export function CodexTools({
       Partial<SessionActionBody>,
       "requestId" | "bootId" | "sessionId" | "expectedRevision"
     > = {},
-  ) {
-    if (!enabled(action)) return;
+  ): Promise<boolean> {
+    if (!enabled(action)) return false;
     setOperation(true);
     try {
       const result = await codexAction(action, fields);
@@ -247,6 +247,7 @@ export function CodexTools({
         setText("");
         setRevision((n) => n + 1);
       }
+      return !!result;
     } finally {
       setOperation(false);
     }
@@ -297,6 +298,53 @@ export function CodexTools({
     queue?.data?.filter(
       (item) => item.status === "pending" || (!isClaude && item.status === undefined),
     ) ?? [];
+  const limitedSettings = !isClaude && !isDsh && access?.device?.accessMode !== "full";
+  // A follower write requires a fresh privileged settings read from the current owner.
+  const followerModelReadOnly =
+    live?.sessionId === selected && live.executionMode === "codex-follower";
+  const limitedModelWritable = enabled("settings") && !followerModelReadOnly;
+  const observedSettings =
+    live?.sessionId === selected && live.settings?.sessionId === selected
+      ? live.settings
+      : undefined;
+  const limitedModel: CodexSessionSettings | undefined =
+    limitedSettings && options?.available
+      ? {
+          sessionId: selected,
+          revision: live?.revision ?? 0,
+          available: true,
+          current: observedSettings?.current ?? {
+            modelId: live?.sessionId === selected ? live.model : undefined,
+          },
+          selected: observedSettings?.selected,
+          defaults: {},
+          writable: {
+            model: { available: limitedModelWritable },
+            effort: { available: limitedModelWritable },
+            mode: { available: false },
+            serviceTier: { available: false },
+            policy: { available: false },
+            restoreDefaults: { available: false },
+          },
+          options: {
+            models: (options.models ?? []).map((model) => ({
+              ...model,
+              efforts: model.efforts ?? [],
+              serviceTierIds: [],
+            })),
+            serviceTiers: [],
+            policies: [],
+          },
+        }
+      : undefined;
+  const settingsStatus =
+    settingsNotice?.status === "uncertain"
+      ? composerLayoutCopy[locale].settingsUnknown
+      : settingsNotice?.status === "notDispatched"
+        ? settingsNotice.reason
+          ? codexReason(locale, settingsNotice.reason, "web").text
+          : t.notDispatched
+        : undefined;
   return (
     <>
       {showTrigger && (
@@ -404,68 +452,28 @@ export function CodexTools({
             )}
           </OperationGroup>
           {isClaude && ownership}
-          {!isClaude && !isDsh && access?.device?.accessMode !== "full" && (
+          {limitedSettings && (
             <OperationGroup title={copy.settings}>
-              <OperationRow className="grid gap-3 sm:grid-cols-3">
-                <label className="grid gap-1.5">
-                  <span className="text-xs text-muted-foreground">{copy.model}</span>
-                  <select
-                    className="block w-full rounded-md border bg-background p-2"
-                    value={model}
-                    onChange={(e) => {
-                      setModel(e.target.value);
-                      setEffort("");
-                    }}
-                  >
-                    <option value="">{copy.keep}</option>
-                    {options?.models?.map((item) => (
-                      <option key={item.id} value={item.id}>
-                        {item.name || item.id}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label className="grid gap-1.5">
-                  <span className="text-xs text-muted-foreground">{copy.effort}</span>
-                  <select
-                    className="block w-full rounded-md border bg-background p-2"
-                    value={effort}
-                    onChange={(e) => setEffort(e.target.value)}
-                  >
-                    <option value="">{copy.keep}</option>
-                    {options?.models
-                      ?.find((item) => item.id === model)
-                      ?.efforts?.map((item) => (
-                        <option key={item}>{item}</option>
-                      ))}
-                  </select>
-                </label>
-                <label className="grid gap-1.5">
-                  <span className="text-xs text-muted-foreground">{copy.mode}</span>
-                  <select
-                    className="block w-full rounded-md border bg-background p-2"
-                    value={mode}
-                    onChange={(e) => setMode(e.target.value as "" | "default" | "plan")}
-                  >
-                    <option value="">{copy.keep}</option>
-                    <option value="default">{copy.normal}</option>
-                    <option value="plan">{copy.plan}</option>
-                  </select>
-                </label>
+              <OperationRow className="flex-wrap">
+                <ComposerModelPicker
+                  locale={locale}
+                  settings={limitedModel}
+                  selection={limitedModel?.selected ?? limitedModel?.current}
+                  disabled={!limitedModelWritable}
+                  readOnly={followerModelReadOnly}
+                  saving={operation}
+                  side="bottom"
+                  onOpen={() => {}}
+                  onChange={(change) =>
+                    limitedModelWritable ? run("settings", change) : Promise.resolve(false)
+                  }
+                />
               </OperationRow>
-              <OperationRow>
-                {actionButton(
-                  "settings",
-                  copy.apply,
-                  {
-                    ...(model ? { model } : {}),
-                    ...(effort ? { effort } : {}),
-                    ...(mode ? { mode } : {}),
-                  },
-                  true,
-                  "default",
-                )}
-              </OperationRow>
+              {settingsStatus && (
+                <p role="status" className="text-xs text-muted-foreground">
+                  {settingsStatus}
+                </p>
+              )}
             </OperationGroup>
           )}
           {queueReadable && (queue || queueError) && (

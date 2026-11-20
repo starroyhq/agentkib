@@ -14,12 +14,14 @@ import { Button } from "@/components/ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { displaySessionTitle } from "@/features/workspace/session-title";
 import { useSessionHub } from "./SessionHubContext";
+import { useConversationDisplayLive } from "./DesktopConversationWindow";
 import { useSessionViewStore } from "./session-view-store";
 import {
   orchestrationLabel,
   sessionAgentNames,
   sessionRecordLabel,
   sessionSourceLabel,
+  sessionWithObservedActivity,
   worktreeLabel,
 } from "./session-labels";
 import { SessionDirectoryControls } from "./SessionDirectoryControls";
@@ -28,6 +30,10 @@ import { SessionDirectoryEntry } from "./SessionDirectoryEntry";
 import { SessionDirectoryTrailing } from "./SessionDirectoryTrailing";
 import { SessionDirectoryHoverCard } from "./SessionDirectoryHoverCard";
 import { SessionDirectorySourceNotices } from "./SessionSourceNotices";
+import {
+  DirectoryAgentFilterSlot,
+  useSessionDirectoryAgentMotion,
+} from "./session-directory-agent-motion";
 
 function directoryPosition(element: HTMLElement, scope: string) {
   const viewport = element.getBoundingClientRect();
@@ -47,6 +53,9 @@ export function SessionDirectory({
 }: { onMenuOpenChange?: (open: boolean) => void } = {}) {
   const { formatDateTime, locale, tr } = useI18n();
   const hub = useSessionHub();
+  const selected =
+    !hub.selected?.remote && hub.selected?.availability === "readable" ? hub.selected : undefined;
+  const selectedLive = useConversationDisplayLive(selected?.id);
   const view = useSessionViewStore(
     useShallow((state) => ({
       agent: state.agent,
@@ -83,6 +92,8 @@ export function SessionDirectory({
   }, [directoryReady]);
   const {
     groups,
+    allGroups,
+    orderGroups,
     orderedGroups,
     draggingId,
     dropTargetId,
@@ -93,9 +104,24 @@ export function SessionDirectory({
     dropBefore,
     moveByKeyboard,
   } = useSessionDirectoryOrder({ ...hub, filtered: directorySessions });
+  const agentMotion = useSessionDirectoryAgentMotion({
+    viewport: scrollRef,
+    ready: hub.enabled && directoryReady,
+    agent: view.agent,
+    scope: JSON.stringify([view.filter, view.host, view.unreadOnly]),
+    sessions: hub.sessions,
+    workspaces: hub.workspaces,
+    groups: orderedGroups,
+    allGroups,
+    orderGroups,
+  });
   useLayoutEffect(() => {
     const element = scrollRef.current;
     if (!element || !directoryReady) return;
+    if (agentMotion.active) {
+      position.current = undefined;
+      return;
+    }
     const previous = position.current;
     if (previous?.scope === positionScope && previous.scroll > 0) {
       const top = element.getBoundingClientRect().top;
@@ -110,7 +136,14 @@ export function SessionDirectory({
     }
     position.current = directoryPosition(element, positionScope);
     setScrollTop(element.scrollTop);
-  }, [directorySessions, hub.workspaces, directoryReady, positionScope, setScrollTop]);
+  }, [
+    agentMotion.active,
+    directorySessions,
+    hub.workspaces,
+    directoryReady,
+    positionScope,
+    setScrollTop,
+  ]);
   // A revealed session can sit in its repository's group rather than its own workspace's.
   const revealed = useSessionViewStore((state) => state.revealedSessionId);
   const revealedGroup = revealed
@@ -126,17 +159,22 @@ export function SessionDirectory({
       aria-label={tr("sessions.directory")}
     >
       <div
-        className="session-directory-header relative shrink-0 pl-1 pr-3 after:pointer-events-none after:absolute after:inset-x-0 after:bottom-0 after:h-px after:bg-sidebar-border after:opacity-0 after:transition-opacity data-[scrolled=true]:after:opacity-100 motion-reduce:after:transition-none"
+        className="session-directory-header relative shrink-0 after:pointer-events-none after:absolute after:inset-x-0 after:bottom-0 after:h-px after:bg-sidebar-border after:opacity-0 after:transition-opacity data-[scrolled=true]:after:opacity-100 motion-reduce:after:transition-none"
         data-scrolled={directoryReady && view.scrolled}
       >
-        <SessionDirectoryControls onMenuOpenChange={onMenuOpenChange} />
+        <SessionDirectoryControls
+          onAgentChange={agentMotion.selectAgent}
+          onMenuOpenChange={onMenuOpenChange}
+        />
       </div>
       <div
         className="session-directory-tree min-h-0 flex-1 overflow-auto overscroll-contain pl-2 pr-2 pb-3"
+        data-directory-agent-motion={agentMotion.active || undefined}
         ref={scrollRef}
         onScroll={(event) => {
           if (directoryReady && event.target === event.currentTarget) {
-            position.current = directoryPosition(event.currentTarget, positionScope);
+            if (!agentMotion.active)
+              position.current = directoryPosition(event.currentTarget, positionScope);
             view.setScrollTop(event.currentTarget.scrollTop);
           }
         }}
@@ -145,10 +183,22 @@ export function SessionDirectory({
           {tr("sessions.reorderHint")}
         </p>
         {hub.statuses?.some((status) => status.error_key) && <SessionDirectorySourceNotices />}
-        {orderedGroups.map((group, index) => {
+        {agentMotion.displayed.map((group, index) => {
           const { workspace, sessions: workspaceSessions, label } = group;
+          const workspaceKey = `workspace:${group.id}`;
+          const hostKey = `host:${workspace.remote?.host_id ?? ""}`;
+          const groupVisible = agentMotion.isVisible(workspaceKey);
+          const groupStart = agentMotion.startSize(workspaceKey);
           const expanded = view.unreadOnly || !view.collapsed[group.id];
           const sessions = sessionOrder(workspaceSessions, view.sessionOrder[group.id] ?? []);
+          const workerSessions = allGroups.find((item) => item.id === group.id)?.sessions ?? [];
+          if (selectedLive) {
+            const index = sessions.findIndex(
+              (session) => !session.remote && session.id === selectedLive.sessionId,
+            );
+            if (index !== -1)
+              sessions[index] = sessionWithObservedActivity(sessions[index], selectedLive);
+          }
           const worktreeNames = group.worktrees.join("\n");
           const activity = sessionGroupActivity(sessions, locale);
           const groupDescription = [
@@ -165,101 +215,114 @@ export function SessionDirectory({
               {!!hub.remoteHosts?.length &&
                 view.host === "all" &&
                 (index === 0 ||
-                  orderedGroups[index - 1].workspace.remote?.host_id !==
+                  agentMotion.displayed[index - 1].workspace.remote?.host_id !==
                     workspace.remote?.host_id) && (
-                  <div className="session-host-heading flex items-center gap-2 px-3 pt-3 pb-2 text-[11px] font-medium tracking-wide text-muted-foreground uppercase">
-                    <Monitor size={14} aria-hidden="true" />
-                    <strong className="min-w-0 flex-1 truncate">
-                      {workspace.remote?.host_name ?? tr("sessions.local")}
-                    </strong>
-                    {workspace.remote && (
-                      <small>
-                        {tr(
-                          workspace.remote.online ? "remote.state.online" : "remote.state.offline",
-                        )}
-                      </small>
-                    )}
-                  </div>
+                  <DirectoryAgentFilterSlot
+                    from={agentMotion.startSize(hostKey)}
+                    visible={agentMotion.isVisible(hostKey)}
+                  >
+                    <div className="session-host-heading flex items-center gap-2 px-3 pt-3 pb-2 text-[11px] font-medium tracking-wide text-muted-foreground uppercase">
+                      <Monitor size={14} aria-hidden="true" />
+                      <strong className="min-w-0 flex-1 truncate">
+                        {workspace.remote?.host_name ?? tr("sessions.local")}
+                      </strong>
+                      {workspace.remote && (
+                        <small>
+                          {tr(
+                            workspace.remote.online
+                              ? "remote.state.online"
+                              : "remote.state.offline",
+                          )}
+                        </small>
+                      )}
+                    </div>
+                  </DirectoryAgentFilterSlot>
                 )}
               <Collapsible
-                className="session-workspace mb-1"
+                className="session-workspace"
                 key={group.id}
                 open={expanded}
+                inert={!groupVisible}
+                aria-hidden={!groupVisible || undefined}
                 onOpenChange={() => {
                   if (!view.unreadOnly) view.toggleWorkspace(group.id);
                 }}
               >
-                <SessionDirectoryHoverCard
-                  title={label}
-                  details={[groupDescription.split("\n").slice(1).join("\n"), activity.label]
-                    .filter(Boolean)
-                    .join("\n")}
-                  disabled={!!draggingId}
-                >
-                  <CollapsibleTrigger
-                    data-directory-anchor={`workspace:${group.id}`}
-                    render={
-                      <Button
-                        variant="bare"
-                        size="content"
-                        draggable
-                        className={cn(
-                          "session-workspace-heading session-directory-draggable flex min-h-8 w-full items-center justify-start gap-2 rounded-xl border border-transparent px-3 py-1 text-left transition-colors hover:bg-sidebar-accent/70 cursor-grab active:cursor-grabbing [&_svg]:shrink-0 [&_strong]:min-w-0 [&_strong]:truncate [&_strong]:font-semibold [&_span]:text-muted-foreground",
-                          draggingId === `workspace:${group.id}` &&
-                            "session-directory-dragging opacity-[0.45]",
-                          dropTargetId === group.id &&
-                            (dropAfter
-                              ? "session-directory-drop-after bg-sidebar-accent shadow-[inset_0_-2px_0_var(--ring)]"
-                              : "session-directory-drop-before bg-sidebar-accent shadow-[inset_0_2px_0_var(--ring)]"),
-                        )}
-                        onDragStart={(event) =>
-                          startDrag(
-                            event,
-                            { kind: "workspace", workspaceId: group.id },
-                            `workspace:${group.id}`,
-                          )
-                        }
-                        onDragEnd={finishDrag}
-                        onDragOver={(event) =>
-                          allowDrop(event, { kind: "workspace", workspaceId: group.id })
-                        }
-                        onDrop={(event) =>
-                          dropBefore(event, { kind: "workspace", workspaceId: group.id })
-                        }
-                        onKeyDown={(event) =>
-                          moveByKeyboard(event, { kind: "workspace", workspaceId: group.id })
-                        }
-                        aria-describedby="session-directory-reorder-hint"
-                        aria-keyshortcuts="Alt+ArrowUp Alt+ArrowDown"
-                      />
-                    }
-                    aria-description={groupDescription}
+                <DirectoryAgentFilterSlot from={groupStart} visible={groupVisible}>
+                  <SessionDirectoryHoverCard
+                    title={label}
+                    details={[groupDescription.split("\n").slice(1).join("\n"), activity.label]
+                      .filter(Boolean)
+                      .join("\n")}
+                    disabled={!!draggingId || !groupVisible}
                   >
-                    {sessionCollection(workspace.id) ? (
-                      <MessageSquare size={16} aria-hidden="true" />
-                    ) : !expanded ? (
-                      <Folder size={16} aria-hidden="true" />
-                    ) : (
-                      <FolderOpen size={16} aria-hidden="true" />
-                    )}
-                    <strong>{label}</strong>
-                    {!expanded && activity.label && (
-                      <span className="ml-auto -mr-3 flex h-5 w-8 shrink-0 items-center justify-center">
-                        <SessionContinuationDot
-                          label={activity.label}
-                          active={activity.running > 0 && activity.waiting === 0}
-                          waiting={activity.waiting > 0}
+                    <CollapsibleTrigger
+                      data-directory-anchor={`workspace:${group.id}`}
+                      render={
+                        <Button
+                          variant="bare"
+                          size="content"
+                          draggable
+                          className={cn(
+                            "session-workspace-heading session-directory-draggable flex min-h-8 w-full items-center justify-start gap-2 rounded-xl border border-transparent px-3 py-1 text-left transition-colors hover:bg-sidebar-accent/70 cursor-grab active:cursor-grabbing [&_svg]:shrink-0 [&_strong]:min-w-0 [&_strong]:truncate [&_strong]:font-semibold [&_span]:text-muted-foreground",
+                            draggingId === `workspace:${group.id}` &&
+                              "session-directory-dragging opacity-[0.45]",
+                            dropTargetId === group.id &&
+                              (dropAfter
+                                ? "session-directory-drop-after bg-sidebar-accent shadow-[inset_0_-2px_0_var(--ring)]"
+                                : "session-directory-drop-before bg-sidebar-accent shadow-[inset_0_2px_0_var(--ring)]"),
+                          )}
+                          onDragStart={(event) =>
+                            startDrag(
+                              event,
+                              { kind: "workspace", workspaceId: group.id },
+                              `workspace:${group.id}`,
+                            )
+                          }
+                          onDragEnd={finishDrag}
+                          onDragOver={(event) =>
+                            allowDrop(event, { kind: "workspace", workspaceId: group.id })
+                          }
+                          onDrop={(event) =>
+                            dropBefore(event, { kind: "workspace", workspaceId: group.id })
+                          }
+                          onKeyDown={(event) =>
+                            moveByKeyboard(event, { kind: "workspace", workspaceId: group.id })
+                          }
+                          aria-describedby="session-directory-reorder-hint"
+                          aria-keyshortcuts="Alt+ArrowUp Alt+ArrowDown"
                         />
-                      </span>
-                    )}
-                  </CollapsibleTrigger>
-                </SessionDirectoryHoverCard>
+                      }
+                      aria-description={groupDescription}
+                    >
+                      {sessionCollection(workspace.id) ? (
+                        <MessageSquare size={16} aria-hidden="true" />
+                      ) : !expanded ? (
+                        <Folder size={16} aria-hidden="true" />
+                      ) : (
+                        <FolderOpen size={16} aria-hidden="true" />
+                      )}
+                      <strong>{label}</strong>
+                      {!expanded && activity.label && (
+                        <span className="ml-auto -mr-3 flex h-5 w-8 shrink-0 items-center justify-center">
+                          <SessionContinuationDot
+                            label={activity.label}
+                            active={activity.running > 0 && activity.waiting === 0}
+                            waiting={activity.waiting > 0}
+                          />
+                        </span>
+                      )}
+                    </CollapsibleTrigger>
+                  </SessionDirectoryHoverCard>
+                </DirectoryAgentFilterSlot>
                 <CollapsibleContent
                   className="session-workspace-items h-[var(--collapsible-panel-height)] overflow-hidden opacity-100 transition-[height,opacity] duration-[180ms] ease-out motion-reduce:transition-none data-[starting-style]:h-0 data-[starting-style]:opacity-0 data-[ending-style]:h-0 data-[ending-style]:opacity-0"
                   inert={!expanded}
                   aria-hidden={!expanded || undefined}
                 >
                   {sessions.map((session) => {
+                    const sessionKey = `session:${session.id}`;
+                    const sessionVisible = agentMotion.isVisible(sessionKey);
                     const owner =
                       hub.workspaces.find((item) => item.id === session.workspace_id) ?? workspace;
                     const title = displaySessionTitle(session.title, tr);
@@ -274,114 +337,124 @@ export function SessionDirectory({
                       .join("\n");
                     const status = sessionContinuationListState(session, locale);
                     return (
-                      <div
+                      <DirectoryAgentFilterSlot
                         key={session.id}
-                        data-directory-anchor={`session:${session.id}`}
-                        className={cn(
-                          "session-directory-row group/session flex min-h-8 items-center gap-1 rounded-xl transition-colors hover:bg-sidebar-accent/70",
-                          hub.selected?.id === session.id && "bg-sidebar-accent",
-                        )}
+                        from={agentMotion.startSize(sessionKey)}
+                        visible={sessionVisible}
+                        sessionKey={sessionKey}
                       >
-                        <SessionDirectoryHoverCard
-                          title={title}
-                          details={[
-                            description.split("\n").slice(1).join("\n"),
-                            session.orchestration
-                              ? orchestrationLabel(session.orchestration, hub.sessions, tr)
-                              : "",
-                            status?.label,
-                          ]
-                            .filter(Boolean)
-                            .join("\n")}
-                          disabled={!!draggingId}
+                        <div
+                          data-directory-anchor={sessionKey}
+                          className={cn(
+                            "session-directory-row group/session flex min-h-8 items-center gap-1 rounded-xl transition-colors hover:bg-sidebar-accent/70",
+                            hub.selected?.id === session.id && "bg-sidebar-accent",
+                          )}
                         >
-                          <Button
-                            variant="bare"
-                            size="content"
-                            data-session-entry
-                            draggable
-                            className={cn(
-                              "session-directory-item session-directory-draggable flex min-h-8 min-w-0 flex-1 items-center gap-2 rounded-xl border border-transparent pl-5 pr-3 py-1 text-left transition-colors cursor-grab active:cursor-grabbing [&>div]:shrink-0 [&_strong]:truncate aria-[current=page]:font-medium",
-                              draggingId === `session:${session.id}` &&
-                                "session-directory-dragging opacity-[0.45]",
-                              dropTargetId === session.id &&
-                                (dropAfter
-                                  ? "session-directory-drop-after bg-sidebar-accent shadow-[inset_0_-2px_0_var(--ring)]"
-                                  : "session-directory-drop-before bg-sidebar-accent shadow-[inset_0_2px_0_var(--ring)]"),
-                            )}
-                            onDragStart={(event) =>
-                              startDrag(
-                                event,
-                                { kind: "session", workspaceId: group.id, sessionId: session.id },
-                                `session:${session.id}`,
-                              )
-                            }
-                            onDragEnd={finishDrag}
-                            onDragOver={(event) =>
-                              allowDrop(event, {
-                                kind: "session",
-                                workspaceId: group.id,
-                                sessionId: session.id,
-                              })
-                            }
-                            onDrop={(event) =>
-                              dropBefore(event, {
-                                kind: "session",
-                                workspaceId: group.id,
-                                sessionId: session.id,
-                              })
-                            }
-                            onKeyDown={(event) =>
-                              moveByKeyboard(event, {
-                                kind: "session",
-                                workspaceId: group.id,
-                                sessionId: session.id,
-                              })
-                            }
-                            aria-describedby="session-directory-reorder-hint"
-                            aria-keyshortcuts="Alt+ArrowUp Alt+ArrowDown"
-                            aria-current={hub.selected?.id === session.id ? "page" : undefined}
-                            onClick={() => {
-                              if (view.unreadOnly && session.readState?.status === "unread")
-                                requestReadReview(
-                                  session.id,
-                                  session.readState,
-                                  session.remote
-                                    ? `remote:${session.remote.host_id}`
-                                    : "desktop-local",
-                                );
-                              hub.select(session.id);
-                            }}
-                            aria-description={description}
+                          <SessionDirectoryHoverCard
+                            title={title}
+                            details={[
+                              description.split("\n").slice(1).join("\n"),
+                              session.orchestration
+                                ? orchestrationLabel(session.orchestration, hub.sessions, tr)
+                                : "",
+                              status?.label,
+                            ]
+                              .filter(Boolean)
+                              .join("\n")}
+                            disabled={!!draggingId || !sessionVisible}
                           >
-                            <SessionDirectoryEntry
-                              session={session}
-                              sessions={hub.sessions}
-                              selected={hub.selected?.id === session.id}
-                              hideIndicators
-                            />
-                          </Button>
-                        </SessionDirectoryHoverCard>
-                        {/* A paired host's sessions are managed on that host. */}
-                        <SessionDirectoryTrailing
-                          session={session}
-                          sessions={hub.sessions}
-                          local={!owner.remote}
-                          onChanged={() => void hub.refresh()}
-                          onDeleted={() => {
-                            if (hub.selected?.id === session.id) hub.select(undefined, true);
-                            void hub.refresh();
-                          }}
-                        />
-                      </div>
+                            <Button
+                              variant="bare"
+                              size="content"
+                              data-session-entry
+                              draggable
+                              className={cn(
+                                "session-directory-item session-directory-draggable flex min-h-8 min-w-0 flex-1 items-center gap-2 rounded-xl border border-transparent pl-5 pr-3 py-1 text-left transition-colors cursor-grab active:cursor-grabbing [&>div]:shrink-0 [&_strong]:truncate aria-[current=page]:font-medium",
+                                draggingId === `session:${session.id}` &&
+                                  "session-directory-dragging opacity-[0.45]",
+                                dropTargetId === session.id &&
+                                  (dropAfter
+                                    ? "session-directory-drop-after bg-sidebar-accent shadow-[inset_0_-2px_0_var(--ring)]"
+                                    : "session-directory-drop-before bg-sidebar-accent shadow-[inset_0_2px_0_var(--ring)]"),
+                              )}
+                              onDragStart={(event) =>
+                                startDrag(
+                                  event,
+                                  { kind: "session", workspaceId: group.id, sessionId: session.id },
+                                  `session:${session.id}`,
+                                )
+                              }
+                              onDragEnd={finishDrag}
+                              onDragOver={(event) =>
+                                allowDrop(event, {
+                                  kind: "session",
+                                  workspaceId: group.id,
+                                  sessionId: session.id,
+                                })
+                              }
+                              onDrop={(event) =>
+                                dropBefore(event, {
+                                  kind: "session",
+                                  workspaceId: group.id,
+                                  sessionId: session.id,
+                                })
+                              }
+                              onKeyDown={(event) =>
+                                moveByKeyboard(event, {
+                                  kind: "session",
+                                  workspaceId: group.id,
+                                  sessionId: session.id,
+                                })
+                              }
+                              aria-describedby="session-directory-reorder-hint"
+                              aria-keyshortcuts="Alt+ArrowUp Alt+ArrowDown"
+                              aria-current={hub.selected?.id === session.id ? "page" : undefined}
+                              onClick={() => {
+                                if (view.unreadOnly && session.readState?.status === "unread")
+                                  requestReadReview(
+                                    session.id,
+                                    session.readState,
+                                    session.remote
+                                      ? `remote:${session.remote.host_id}`
+                                      : "desktop-local",
+                                  );
+                                hub.select(session.id);
+                              }}
+                              aria-description={description}
+                            >
+                              <SessionDirectoryEntry
+                                session={session}
+                                sessions={hub.sessions}
+                                selected={hub.selected?.id === session.id}
+                                hideIndicators
+                              />
+                            </Button>
+                          </SessionDirectoryHoverCard>
+                          {/* A paired host's sessions are managed on that host. */}
+                          <SessionDirectoryTrailing
+                            session={session}
+                            sessions={hub.sessions}
+                            workerSessions={workerSessions}
+                            local={!owner.remote && sessionVisible}
+                            onChanged={() => void hub.refresh()}
+                            onDeleted={() => {
+                              if (hub.selected?.id === session.id) hub.select(undefined, true);
+                              void hub.refresh();
+                            }}
+                          />
+                        </div>
+                      </DirectoryAgentFilterSlot>
                     );
                   })}
                 </CollapsibleContent>
+                <DirectoryAgentFilterSlot from={groupStart} visible={groupVisible}>
+                  <div className="h-1" aria-hidden="true" />
+                </DirectoryAgentFilterSlot>
               </Collapsible>
             </Fragment>
           );
         })}
-        {hub.enabled && !hub.loading && !hub.catalogError && !groups.length && (
+        {hub.enabled && !hub.loading && !hub.catalogError && !agentMotion.displayed.length && (
           <div className="session-directory-empty p-[18px_10px] text-center text-muted-foreground">
             <p>{tr(hub.sessions.length ? "sessions.noMatches" : "sessions.noSessions")}</p>
             {hub.sessions.length > 0 && (

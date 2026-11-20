@@ -97,6 +97,7 @@ export class AntigravityManagedRunner {
     env: NodeJS.ProcessEnv,
     publish?: AntigravityManagedRunner["publish"],
     recoverHistory?: AntigravityManagedRunner["recoverHistory"],
+    initialRevision = 0,
   ): Promise<AntigravityManagedRunner> {
     if (!path.isAbsolute(executable) || !path.isAbsolute(workspace) || !sessionId)
       throw new Error("invalid Antigravity session target");
@@ -112,6 +113,8 @@ export class AntigravityManagedRunner {
       publish,
       recoverHistory,
     );
+    // Replacing a retired transport must not make an old control revision current again.
+    runner.#revision = initialRevision;
     try {
       const initialize = await client.initialize();
       const initialized = await runner.#waitForResponse(initialize, "initialize", deadline);
@@ -133,7 +136,7 @@ export class AntigravityManagedRunner {
       runner.#updateCount = 0;
       runner.#legacyMessageIndex = 0;
       runner.#status = "idle";
-      runner.#revision = 0;
+      runner.#revision = initialRevision;
       runner.#publishSnapshot();
       runner.#pump = runner.#consume();
       return runner;

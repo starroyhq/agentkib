@@ -69,11 +69,16 @@ function fixture() {
     `#!/bin/sh
 dir="$(dirname "$0")"
 if [ "$1" = "auth" ]; then echo "Logged in as tester"; exit 0; fi
+if [ "$1" = "models" ]; then cat "$dir/models.json"; exit; fi
 if [ $# -eq 0 ]; then echo start >> "$dir/usage.log"; exec "${process.execPath}" "$dir/repl.mjs"; fi
 while [ $# -gt 0 ]; do
   if [ "$1" = "--prompt-file" ]; then cat "$2" >> "$dir/prompts.log"; echo >> "$dir/prompts.log"; shift; fi
+  if [ "$1" = "--model" ]; then echo "$2" >> "$dir/models.log"; shift; fi
+  if [ "$1" = "--permission-mode" ]; then echo "$2" >> "$dir/permissions.log"; shift; fi
+  if [ "$1" = "-r" ]; then echo "$2" >> "$dir/resume.log"; shift; fi
   shift
 done
+while [ -f "$dir/hold-turn" ]; do sleep 0.05; done
 [ -f "$dir/turn-sleep" ] && sleep "$(cat "$dir/turn-sleep")"
 [ -f "$dir/turn-stderr" ] && cat "$dir/turn-stderr" >&2
 exit "$(cat "$dir/turn-code" 2>/dev/null || echo 0)"
@@ -97,13 +102,17 @@ process.stdin.on("data", (chunk) => {
 process.on("SIGHUP", () => process.exit(0));
 `,
   );
-  const turn = ({ sleep = 0, stderr = "", code = 0 } = {}) => {
+  const turn = ({ sleep = 0, stderr = "", code = 0, hold = false } = {}) => {
     writeFileSync(path.join(bin, "turn-sleep"), String(sleep));
     writeFileSync(path.join(bin, "turn-stderr"), stderr);
     writeFileSync(path.join(bin, "turn-code"), String(code));
+    if (hold) writeFileSync(path.join(bin, "hold-turn"), "");
+    else rmSync(path.join(bin, "hold-turn"), { force: true });
   };
   const usage = (...lines: string[]) =>
     writeFileSync(path.join(bin, "usage-panel"), ` Usage\n${lines.join("")}\n`);
+  const models = (families: unknown[]) =>
+    writeFileSync(path.join(bin, "models.json"), JSON.stringify({ families }));
   const log = (name: string) =>
     existsSync(path.join(bin, name)) ? readFileSync(path.join(bin, name), "utf8") : "";
   const store = new BackendStore(path.join(root, "agentkib.db"));
@@ -194,6 +203,7 @@ process.on("SIGHUP", () => process.exit(0));
     events,
     turn,
     usage,
+    models,
     log,
     web: open(),
     /** AgentKib quits and starts again on the same data. */
@@ -248,6 +258,264 @@ process.on("SIGHUP", () => process.exit(0));
 }
 
 describe.runIf(process.platform !== "win32")("Devin sessions run by AgentKib", () => {
+  it("browses its verified workspace without launching Devin or enabling native resource references", async () => {
+    const f = fixture();
+    const run = vi.spyOn(Commands.prototype, "run");
+    expect(await f.features()).toMatchObject({
+      resources: { available: true },
+      files: { available: true },
+      context: { available: false },
+    });
+    expect(await f.web.request({ operation: "resources", sessionId: f.id })).toMatchObject({
+      available: true,
+      executionMode: "devin-print",
+      contextReferences: { supportedTypes: [] },
+    });
+    expect(run).not.toHaveBeenCalled();
+    await expect(
+      f.control("send", {
+        text: "synthetic blocked ref",
+        resourceRefs: [{ kind: "file", relativePath: "readme.md" }],
+      }),
+    ).rejects.toThrow("attachments-unsupported");
+    expect(run).not.toHaveBeenCalled();
+  });
+
+  const family = "claude-opus-5.5";
+  const variant = (suffix: string, tokens = 1_000_000) => ({
+    model_uid: `claude-opus-5-5-${suffix}`,
+    label: `Claude Opus 5.5 ${suffix}`,
+    max_context_tokens: tokens,
+  });
+
+  it("uses the advertised Devin variant on the next turn and keeps unsupported choices out", async () => {
+    const f = fixture();
+    f.models([
+      {
+        slug: family,
+        family_label: "Claude Opus 5.5",
+        variants: [variant("low"), variant("high"), variant("high-fast")],
+      },
+      {
+        slug: "claude-opus-4.6",
+        family_label: "Claude Opus 4.6",
+        variants: [
+          { model_uid: "claude-opus-4-6", max_context_tokens: 200_000 },
+          {
+            model_uid: "claude-opus-4-6-thinking-1m",
+            label: "Claude Opus 4.6 Thinking 1M",
+            max_context_tokens: 1_000_000,
+          },
+        ],
+      },
+    ]);
+    vi.spyOn(f.readers, "devinSessionModel").mockReturnValue(variant("high").model_uid);
+    const context = vi.spyOn(f.readers, "devinLastContextInput").mockReturnValue({
+      usedTokens: 45_600,
+      updatedAt: "2026-11-16T00:00:00Z",
+    });
+    await expect(f.web.sessionProviderOptions("devin", { workspaceId: "" })).rejects.toThrow();
+    const options = await f.web.sessionProviderOptions("devin", { workspaceId: "workspace" });
+    expect(options).toMatchObject({
+      provider: {
+        create: { mode: "with-first-message", attachments: false },
+        models: { selection: "variants" },
+        contextUsage: "last-request",
+      },
+      serviceTiers: [{ id: "fast", name: "Fast" }],
+      models: expect.arrayContaining([
+        {
+          id: family,
+          name: "Claude Opus 5.5",
+          efforts: ["low", "high"],
+          serviceTierIds: ["fast"],
+          maxContextTokens: 1_000_000,
+          variants: expect.any(Array),
+        },
+        expect.objectContaining({ id: "claude-opus-4-6-thinking-1m", maxContextTokens: 1_000_000 }),
+      ]),
+    });
+    expect(
+      (options.models as { id: string }[]).find((model) => model.id === "claude-opus-4.6"),
+    ).not.toHaveProperty("maxContextTokens");
+    const state = () =>
+      f.web.sessionProviderSettingsState({ operation: "settings-state", sessionId: f.id });
+    expect(await state()).toMatchObject({
+      provider: options.provider,
+      current: { model: family, effort: "high", maxContextTokens: 1_000_000 },
+      historicalUsage: {
+        available: true,
+        state: "stale",
+        historical: true,
+        reason: "devin-last-model-request",
+        usedTokens: 45_600,
+        contextWindow: 1_000_000,
+      },
+      writable: { effort: { available: true }, serviceTier: { available: true } },
+    });
+    expect(context).toHaveBeenCalledWith("brisk-otter", f.workspace, variant("high").model_uid);
+    const usage = () => f.web.request({ operation: "usage", sessionId: f.id });
+    expect(await usage()).toEqual({
+      available: true,
+      state: "stale",
+      historical: true,
+      reason: "devin-last-model-request",
+      usedTokens: 45_600,
+      contextWindow: 1_000_000,
+      updatedAt: "2026-11-16T00:00:00Z",
+    });
+    context.mockReturnValueOnce({ usedTokens: 1_000_001, updatedAt: "2026-11-16T00:00:00Z" });
+    expect(await usage()).toEqual({ available: false, state: "unavailable" });
+    await expect(
+      f.web.sessionProviderSettingsState({
+        operation: "settings-state",
+        sessionId: f.id,
+        agent: "codex",
+      }),
+    ).rejects.toThrow();
+    expect(await f.control("settings", { model: family })).toMatchObject({ accepted: true });
+    expect(await state()).toMatchObject({ current: { model: family, effort: "high" } });
+    expect(await f.control("settings", { serviceTier: "fast" })).toMatchObject({ accepted: true });
+    const fast = await state();
+    expect(fast).toMatchObject({
+      current: {
+        model: family,
+        effort: "high",
+        serviceTier: "fast",
+        variantId: variant("high-fast").model_uid,
+      },
+    });
+    expect(fast).not.toHaveProperty("historicalUsage");
+    expect(await usage()).toEqual({ available: false, state: "unavailable" });
+    expect(await f.control("settings", { effort: "low" })).toMatchObject({
+      accepted: false,
+      controlOutcome: "not-dispatched",
+      reason: "unsupported-effort",
+    });
+    await f.restart();
+    expect(await state()).toMatchObject({ current: { effort: "high", serviceTier: "fast" } });
+    expect(f.log("prompts.log")).toBe("");
+    expect(f.log("resume.log")).toBe("");
+    f.turn();
+    expect(await f.send("Hello")).toMatchObject({ accepted: true });
+    await f.ended();
+    expect(f.log("models.log")).toBe(`${variant("high-fast").model_uid}\n`);
+    expect(f.log("resume.log")).toBe("brisk-otter\n");
+    expect(await f.control("settings", { serviceTier: null })).toMatchObject({ accepted: true });
+    const normal = await state();
+    expect(normal).toMatchObject({
+      current: { model: family, effort: "high", variantId: variant("high").model_uid },
+    });
+    expect(normal.current).not.toHaveProperty("serviceTier");
+    expect(normal).not.toHaveProperty("usage");
+    expect(await f.control("settings", { resetDefaults: true })).toMatchObject({ accepted: true });
+    await f.send("Hello");
+    await f.ended();
+    expect(f.log("models.log")).toBe(`${variant("high-fast").model_uid}\n`);
+  });
+
+  it("saves model, effort, and permissions during a turn for the next process only", async () => {
+    const f = fixture();
+    f.models([{ slug: family, variants: [variant("low"), variant("high")] }]);
+    const state = () =>
+      f.web.sessionProviderSettingsState({ operation: "settings-state", sessionId: f.id });
+
+    await f.control("settings", { model: family, effort: "high", permissionMode: "auto" });
+    f.turn({ hold: true });
+    expect(await f.send("First turn")).toMatchObject({ accepted: true });
+    const running = await f.live();
+    expect(running).toMatchObject({ status: "running", sendEnabled: false });
+    expect(await f.features()).toMatchObject({
+      send: { available: false },
+      settings: { available: true },
+    });
+    expect(await state()).toMatchObject({
+      writable: {
+        model: { available: true },
+        effort: { available: true },
+        permissionMode: { available: true },
+      },
+    });
+
+    const update = {
+      requestId: randomUUID(),
+      expectedRevision: running.revision,
+      model: family,
+      effort: "low",
+      permissionMode: "accept-edits",
+    };
+    const receipt = await f.control("settings", update);
+    expect(receipt).toMatchObject({ accepted: true, completed: true, appliesTo: "next-turn" });
+    expect(await f.control("settings", update)).toEqual(receipt);
+    await expect(f.control("settings", { ...update, requestId: randomUUID() })).rejects.toThrow(
+      "stale-or-disabled-control",
+    );
+    expect(await f.live()).toMatchObject({ status: "running", turnId: running.turnId });
+    expect(await state()).toMatchObject({
+      current: { model: family, effort: "high", permissionMode: "auto" },
+      selected: { model: family, effort: "low", permissionMode: "accept-edits" },
+    });
+
+    f.turn();
+    await f.ended();
+    expect(f.log("models.log")).toBe(`${variant("high").model_uid}\n`);
+    expect(f.log("permissions.log")).toBe("auto\n");
+    expect(await f.send("Second turn")).toMatchObject({ accepted: true });
+    await f.ended();
+    expect(f.log("models.log")).toBe(`${variant("high").model_uid}\n${variant("low").model_uid}\n`);
+    expect(f.log("permissions.log")).toBe("auto\naccept-edits\n");
+  });
+
+  it("starts Devin with the concrete model selected by effort and tier", async () => {
+    const f = fixture();
+    f.models([
+      { slug: family, variants: [variant("high"), variant("high-fast"), variant("max-fast")] },
+    ]);
+    const { native } = await f.readers.resolve(f.id);
+    const created = { ...native, native_ref: "new-otter", created_at: new Date().toISOString() };
+    vi.spyOn(f.readers, "list").mockImplementation(async () => ({
+      sessions: f.log("prompts.log") ? [native, created] : [native],
+      incomplete: false,
+    }));
+    f.turn();
+    const request = {
+      operation: "devin-create",
+      requestId: randomUUID(),
+      deviceId: "phone",
+      workspaceId: "workspace",
+      prompt: "Hello",
+      model: family,
+      effort: "high",
+      serviceTier: "fast",
+    };
+    await expect(f.web.devinCreate({ ...request, operation: "create" })).rejects.toThrow();
+    expect(await f.web.devinCreate({ ...request, effort: "low" })).toMatchObject({
+      accepted: false,
+      controlOutcome: "not-dispatched",
+      reason: "unsupported-effort",
+    });
+    expect(
+      await f.web.devinCreate({ ...request, requestId: randomUUID(), effort: undefined }),
+    ).toMatchObject({
+      accepted: false,
+      controlOutcome: "not-dispatched",
+      reason: "unsupported-service-tier",
+    });
+    expect(f.log("prompts.log")).toBe("");
+    const { operation, ...fields } = request;
+    const create = { ...fields, requestId: randomUUID() };
+    const createdResult = await f.web.sessionProviderCreate("devin", create);
+    expect(createdResult).toMatchObject({
+      accepted: true,
+      sessionId: f.store.sessions.id("devin", created.native_ref),
+    });
+    expect(await f.web.devinCreate({ ...create, operation })).toEqual(createdResult);
+    await expect(
+      f.web.sessionProviderCreate("devin", { ...create, prompt: "Changed" }),
+    ).rejects.toThrow("request-id-reused-with-different-input");
+    expect(f.log("models.log")).toBe(`${variant("high-fast").model_uid}\n`);
+  });
+
   it("names the session's workspace in its live state and in what it publishes", async () => {
     const f = fixture();
     expect(await f.live()).toMatchObject({

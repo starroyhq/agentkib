@@ -1,6 +1,7 @@
 import { act, cleanup, renderHook } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { useRef, useState } from "react";
+import { createWarmSessionStreamPool, warmSessionAuthority } from "@agentkib/session-ui";
 import type {
   Access,
   ConversationEventPage,
@@ -8,7 +9,11 @@ import type {
   SessionStreamHandlers,
   WebClient,
 } from "@agentkib/web-client";
-import { useSessionLive } from "@/features/conversation/features/sessions/use-session-live";
+import { ApiError } from "@agentkib/web-client";
+import {
+  useSessionLive,
+  type WarmSessionNavigation,
+} from "@/features/conversation/features/sessions/use-session-live";
 import { subscribeSessionInvalidation } from "@/features/conversation/features/sessions/session-events";
 import {
   createHistoryPagination,
@@ -47,7 +52,7 @@ const envelope = (seq: number, type: string, payload: unknown) => ({
   type,
   payload,
 });
-function setup(hasDurablePending = () => false) {
+function setup(hasDurablePending = () => false, isSettingsWriteActive?: () => boolean) {
   const handlers: SessionStreamHandlers[] = [];
   const close = vi.fn();
   const client = {
@@ -59,6 +64,7 @@ function setup(hasDurablePending = () => false) {
     events: vi.fn(),
     live: vi.fn().mockResolvedValue(initial),
   } as unknown as WebClient;
+  const warmStreams = createWarmSessionStreamPool(client);
   const fail = vi.fn(),
     readBusy = vi.fn(),
     clear = vi.fn(),
@@ -71,6 +77,9 @@ function setup(hasDurablePending = () => false) {
     const [online, setOnline] = useState(false);
     const [ready, setControlReady] = useState(false);
     const [usageEpoch, setUsageEpoch] = useState("");
+    const warmNavigation = useRef<WarmSessionNavigation>({});
+    const liveValue = useRef(live);
+    liveValue.current = live;
     const selection = useRef("s"),
       generation = useRef(0),
       liveDelivery = useRef(0);
@@ -87,6 +96,10 @@ function setup(hasDurablePending = () => false) {
     });
     selection.current = selected;
     useSessionLive({
+      warmStreams,
+      warmScope: warmSessionAuthority(access, 0),
+      warmNavigation,
+      liveValue,
       streamReady,
       controlReconciliationPending,
       nativeCoverage,
@@ -107,6 +120,7 @@ function setup(hasDurablePending = () => false) {
       setOnline,
       setError,
       hasDurablePending,
+      isSettingsWriteActive,
       readinessEpoch,
       refreshRequired,
       setControlReady,
@@ -129,13 +143,88 @@ function setup(hasDurablePending = () => false) {
   });
   const emit = (seq: number, type: string, payload: unknown, stream = handlers.at(-1)!) =>
     act(() => stream.event("session-event", JSON.stringify(envelope(seq, type, payload))));
-  return { ...view, client, handlers, close, emit, clear, fail, setError };
+  return { ...view, client, handlers, close, emit, clear, fail, readBusy, setError };
 }
 afterEach(() => {
   cleanup();
   vi.useRealTimers();
 });
 describe("native conversation event delivery", () => {
+  it.each([false, true])(
+    "retrieves history after a local settings write settles without broad refresh (late busy: %s)",
+    async (lateBusy) => {
+      vi.useFakeTimers();
+      let changingSettings = true;
+      const view = setup(
+        () => false,
+        () => changingSettings,
+      );
+      const row = (id: string) => ({
+        id,
+        kind: "agent-message" as const,
+        content: id,
+        attachment_count: 0,
+        truncated: false,
+      });
+      let reject!: (error: ApiError) => void;
+      vi.mocked(view.client.events)
+        .mockImplementationOnce(() => new Promise((_, fail) => (reject = fail)))
+        .mockResolvedValueOnce({ events: [row("native plan result")], warnings: [] });
+      view.emit(0, "snapshot", { live: initial });
+      act(() => view.result.current.setPage({ events: [row("earlier message")], warnings: [] }));
+      view.emit(1, "invalidate", { domains: ["history"] });
+      const settled = async () => {
+        changingSettings = false;
+        await act(async () =>
+          view.handlers[0].event("control-changed", JSON.stringify({ sessionId: "s" })),
+        );
+      };
+      if (lateBusy) await settled();
+      await act(async () => reject(new ApiError(409, "operation_busy")));
+      expect(view.client.events).toHaveBeenCalledOnce();
+      expect(view.result.current.page?.events.map(({ id }) => id)).toEqual(["earlier message"]);
+      if (!lateBusy) {
+        view.emit(2, "invalidate", { domains: ["history"] });
+        await act(async () => vi.advanceTimersByTimeAsync(200));
+        expect(view.client.events).toHaveBeenCalledOnce();
+        await settled();
+      }
+      await act(async () => vi.advanceTimersByTimeAsync(50));
+      expect(view.client.events).toHaveBeenCalledTimes(2);
+      expect(view.readBusy).not.toHaveBeenCalled();
+      expect(view.fail).not.toHaveBeenCalled();
+      expect(view.result.current.page?.events.map(({ id }) => id)).toEqual(
+        expect.arrayContaining(["earlier message", "native plan result"]),
+      );
+    },
+  );
+
+  it("keeps broad contention recovery for unrelated history reads", async () => {
+    const view = setup();
+    vi.mocked(view.client.events).mockRejectedValueOnce(new ApiError(409, "operation_busy"));
+    view.emit(0, "snapshot", { live: initial });
+    await act(async () => view.emit(1, "invalidate", { domains: ["history"] }));
+    expect(view.readBusy).toHaveBeenCalledOnce();
+  });
+
+  it("resumes ordinary contention recovery if the post-settings history read is still busy", async () => {
+    vi.useFakeTimers();
+    const view = setup(
+      () => false,
+      () => true,
+    );
+    vi.mocked(view.client.events).mockRejectedValue(new ApiError(409, "operation_busy"));
+    view.emit(0, "snapshot", { live: initial });
+    await act(async () => view.emit(1, "invalidate", { domains: ["history"] }));
+    expect(view.readBusy).not.toHaveBeenCalled();
+    await act(async () =>
+      view.handlers[0].event("control-changed", JSON.stringify({ sessionId: "s" })),
+    );
+    await act(async () => vi.advanceTimersByTimeAsync(50));
+    expect(view.client.events).toHaveBeenCalledTimes(2);
+    expect(view.readBusy).toHaveBeenCalledOnce();
+  });
+
   it("publishes the native observation epoch and ignores usage from a retired epoch", () => {
     const view = setup();
     view.emit(0, "snapshot", {

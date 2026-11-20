@@ -36,8 +36,8 @@ vi.mock("@tanstack/react-router", () => ({
 vi.mock("@/features/conversation/features/catalog/session-catalog", () => ({
   SessionCatalog: () => null,
 }));
-vi.mock("@/features/conversation/features/sessions/managed-tasks", () => ({
-  ManagedTasks: () => null,
+vi.mock("@/features/conversation/features/sessions/session-receipt-recovery", () => ({
+  SessionReceiptRecovery: () => null,
 }));
 vi.mock("@/features/conversation/features/sessions/pending-center", () => ({
   PendingCenter: () => null,

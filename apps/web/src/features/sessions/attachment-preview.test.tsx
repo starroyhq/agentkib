@@ -2,7 +2,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { UploadedAttachment } from "@agentkib/web-client";
 import { dictionaries } from "@/features/conversation/i18n";
-import { CodexComposer } from "@/features/conversation/features/sessions/codex-composer";
+import { SessionComposer } from "@/features/conversation/features/sessions/session-composer";
 import { useSession } from "@/features/conversation/features/sessions/session-context";
 
 vi.mock("@/features/conversation/features/sessions/session-context", () => ({
@@ -69,7 +69,7 @@ function choose(file = new File(["image-bytes"], "image.png", { type: "image/png
 
 describe("local attachment preview", () => {
   it("shows a local thumbnail and enlarged image before sending only the opaque ID", async () => {
-    render(<CodexComposer />);
+    render(<SessionComposer />);
     const file = choose();
     expect(createObjectURL).toHaveBeenCalledWith(file);
     const preview = screen.getByRole("button", { name: "预览附件: image.png" });
@@ -96,7 +96,7 @@ describe("local attachment preview", () => {
   });
 
   it("revokes a removed thumbnail while preserving other selected attachments", async () => {
-    render(<CodexComposer />);
+    render(<SessionComposer />);
     choose();
     choose(new File(["second"], "second.jpg", { type: "image/jpeg" }));
     await waitFor(() => expect(screen.getAllByText("100%")).toHaveLength(2));
@@ -123,7 +123,7 @@ describe("local attachment preview", () => {
           });
         },
       );
-      const view = render(<CodexComposer />);
+      const view = render(<SessionComposer />);
       choose();
       fireEvent.click(screen.getByRole("button", { name: "预览附件: image.png" }));
       if (action === "unmount") view.unmount();
@@ -138,7 +138,7 @@ describe("local attachment preview", () => {
                   device: { ...state.access!.device!, attachments: false },
                 },
               };
-        view.rerender(<CodexComposer />);
+        view.rerender(<SessionComposer />);
       }
       expect(signal?.aborted).toBe(true);
       expect(revokeObjectURL).toHaveBeenCalledExactlyOnceWith("blob:local-preview-1");
@@ -151,7 +151,7 @@ describe("local attachment preview", () => {
 
   it("discards a failed upload preview and lets the user select a fresh file", async () => {
     vi.mocked(state.client.uploadAttachment).mockRejectedValueOnce(new Error("upload failed"));
-    render(<CodexComposer />);
+    render(<SessionComposer />);
     choose();
     await waitFor(() =>
       expect(revokeObjectURL).toHaveBeenCalledExactlyOnceWith("blob:local-preview-1"),
@@ -168,7 +168,7 @@ describe("local attachment preview", () => {
   });
 
   it("releases an undecodable image without preventing an otherwise valid attachment send", async () => {
-    render(<CodexComposer />);
+    render(<SessionComposer />);
     choose();
     fireEvent.error(
       screen.getByRole("button", { name: "预览附件: image.png" }).querySelector("img")!,
@@ -181,7 +181,7 @@ describe("local attachment preview", () => {
   it.each(["image/svg+xml", "text/html"])(
     "does not create an executable preview for %s",
     async (mime) => {
-      render(<CodexComposer />);
+      render(<SessionComposer />);
       choose(
         new File(["<script>fetch('https://example.invalid')</script>"], "document", { type: mime }),
       );
@@ -194,7 +194,7 @@ describe("local attachment preview", () => {
 
   it("retains the preview for an unknown send result and clears it only after acceptance", async () => {
     vi.mocked(state.control).mockResolvedValue(undefined);
-    const view = render(<CodexComposer />);
+    const view = render(<SessionComposer />);
     choose();
     await screen.findByText("100%");
     fireEvent.click(screen.getByRole("button", { name: "发送" }));
@@ -202,7 +202,7 @@ describe("local attachment preview", () => {
     expect(revokeObjectURL).not.toHaveBeenCalled();
     expect(screen.getByRole("button", { name: "预览附件: image.png" })).toBeVisible();
     state = { ...state, notice: "accepted" };
-    view.rerender(<CodexComposer />);
+    view.rerender(<SessionComposer />);
     expect(revokeObjectURL).toHaveBeenCalledExactlyOnceWith("blob:local-preview-1");
     expect(screen.queryByRole("button", { name: "预览附件: image.png" })).not.toBeInTheDocument();
   });
@@ -215,7 +215,7 @@ describe("local attachment preview", () => {
           finish = resolve;
         }),
     );
-    const view = render(<CodexComposer />);
+    const view = render(<SessionComposer />);
     choose();
     await screen.findByText("100%");
     fireEvent.click(screen.getByRole("button", { name: "发送" }));
@@ -224,7 +224,7 @@ describe("local attachment preview", () => {
       selected: "second",
       capabilities: { ...state.capabilities!, sessionId: "second" },
     };
-    view.rerender(<CodexComposer />);
+    view.rerender(<SessionComposer />);
     choose(new File(["next"], "next.png", { type: "image/png" }));
     await screen.findByText("100%");
     await act(async () => finish(true));

@@ -38,7 +38,7 @@ AgentKib is one desktop application assembled from several cooperating parts:
 | Electron main process | `apps/desktop/electron/main/`                                 | Window lifecycle, tray, native shell integration, updates, runtime hosting, and privileged IPC                             |
 | Electron preload      | `apps/desktop/electron/preload/`                              | Narrow bridge exposed to the renderer                                                                                      |
 | React renderer        | `apps/desktop/src/`                                           | Routes, screens, state, and user interaction                                                                               |
-| TypeScript backend    | `packages/backend/`, `apps/desktop/electron/backend-entry.ts` | Application settings, workspace/discovery writes and cached reads in an independently restartable Electron utility process |
+| TypeScript backend    | `packages/backend/`, `apps/desktop/electron/backend-entry.ts` | Application settings, workspace/discovery writes, cached reads and Agent sessions in a shared local runtime |
 | Quota sidecar         | Prepared under `apps/desktop/resources/quota/`                | Pinned, patched platform collectors for separate quota and local-cost collection; see [build and verification](development/quota-collector.md) |
 | Runtime protocol      | `packages/runtime-protocol/src/index.ts`                      | Shared contract generated for Electron                                                                                     |
 
@@ -48,7 +48,7 @@ The Electron main process and packaged application use the TypeScript backend ex
 
 `pnpm dev` and packaged applications start only the TypeScript backend. Electron supplies the bundled Node runtime. Native file replacement and rollback use the staged Koffi module, unpacked from ASAR for installed apps. The build commands generate the shared protocol and stage required native artifacts in the order defined in `apps/desktop/package.json`.
 
-`apps/desktop/electron.vite.config.ts` configures electron-vite for the main process, preload, and React renderer. Development uses renderer HMR and watches the main/preload bundles. The backend and its workers retain an independent Vite build in `vite.backend.config.ts`, followed by native-module staging; restart `pnpm dev` after changing backend code. Vitest configuration lives in `vitest.config.ts`. Release jobs can still build the renderer (`build:web`) and Electron processes (`electron:build`) separately, and electron-builder packages the existing `dist/` and `dist-electron/` output directories.
+`apps/desktop/electron.vite.config.ts` configures electron-vite for the main process, preload, and React renderer. `pnpm dev` builds main and preload once and runs renderer HMR. Renderer changes, including those in shared UI packages, keep the Electron client connected to the local runtime. Restart Dev to apply changes to main or preload. The backend and its workers use an independent Vite build in `vite.backend.config.ts`, followed by native-module staging. Vitest configuration lives in `vitest.config.ts`. Release jobs can still build the renderer (`build:web`) and Electron processes (`electron:build`) separately, and electron-builder packages the existing `dist/` and `dist-electron/` output directories.
 
 ### Start development
 
@@ -56,15 +56,17 @@ The Electron main process and packaged application use the TypeScript backend ex
 pnpm dev
 ```
 
-This launches **AgentKib Dev** with identifier `ai.agentkib.dev`. Its database, preferences, caches, MCP packages, and other application data are isolated from the stable `ai.agentkib` application. Development startup does not copy, migrate, or merge stable data.
+This launches **AgentKib Dev** with its own Electron window profile. Dev and stable automatically attach to the same per-user TypeScript runtime. The first client can start the runtime, both clients receive the same Agent session events, and the runtime stays up while either client is connected. It uses the existing stable application data directory and one authenticated local socket or pipe.
 
-On macOS, development data is stored under:
+Close any older standalone AgentKib version before launching the shared runtime. Existing stable terminal credentials are reused. The runtime also reuses eligible legacy Dev Claude credentials when the native session and registered workspace match and outstanding commands are settled. The old Dev database remains available in isolated mode.
 
-```text
-~/Library/Application Support/ai.agentkib.dev
+To test backend or database changes with the isolated Dev profile, use:
+
+```bash
+AGENTKIB_DEV_ISOLATED=1 pnpm dev
 ```
 
-On Windows it is stored under `%LOCALAPPDATA%\ai.agentkib.dev`. Linux uses the corresponding system application-data location.
+Restart all clients and let the shared runtime exit before starting it with rebuilt backend code. On macOS the old Dev profile is under `~/Library/Application Support/ai.agentkib.dev`. On Windows it is under `%LOCALAPPDATA%\ai.agentkib.dev`. Linux uses the corresponding system application-data location.
 
 ### Validation commands
 
@@ -163,13 +165,13 @@ AgentKib 由多个协作部分组成一个桌面应用：
 | Electron main process | `apps/desktop/electron/main/`                                 | 窗口生命周期、托盘、原生系统集成、更新、Runtime 托管和高权限 IPC                   |
 | Electron preload      | `apps/desktop/electron/preload/`                              | 向 renderer 暴露收窄后的桥接接口                                                   |
 | React renderer        | `apps/desktop/src/`                                           | 路由、界面、状态和用户交互                                                         |
-| TypeScript backend    | `packages/backend/`、`apps/desktop/electron/backend-entry.ts` | 在可独立重启的 Electron utility process 中处理应用设置、工作区／发现写入及缓存读取 |
+| TypeScript backend    | `packages/backend/`、`apps/desktop/electron/backend-entry.ts` | 在共享本地服务中处理应用设置、工作区和发现写入、缓存读取及 Agent 会话 |
 | Quota sidecar         | 准备到 `apps/desktop/resources/quota/`                        | 分平台采集本机额度数据                                                             |
 | Runtime protocol      | 由 `apps/desktop/scripts/generate-runtime-protocol.mjs` 生成  | 在开发和构建前生成 Electron 与 TypeScript backend 的共享协议                       |
 
 `pnpm dev` 和正式安装版只启动 TypeScript backend。Electron 使用自带的 Node runtime。原生文件替换和回滚使用暂存的 Koffi 预编译模块，安装版会从 ASAR 解包。`pnpm dev`、`pnpm build` 和 `pnpm dist:electron` 会按照 `apps/desktop/package.json` 定义的顺序生成共享协议并暂存所需原生产物；不要手工编辑生成协议或其转出文件。
 
-`apps/desktop/electron.vite.config.ts` 统一配置 electron-vite 的主进程、preload 和 React renderer。开发环境支持 renderer HMR，并监听主进程和 preload 的重新构建。Backend 及其 worker 保留 `vite.backend.config.ts` 独立编译和原生模块暂存流程；修改 Backend 代码后需重启 `pnpm dev`。Vitest 配置位于 `vitest.config.ts`。发布流程仍可通过 `build:web` 和 `electron:build` 分别构建 renderer 与 Electron 进程，electron-builder 继续打包现有的 `dist/` 和 `dist-electron/` 目录。
+`apps/desktop/electron.vite.config.ts` 统一配置 electron-vite 的主进程、preload 和 React renderer。`pnpm dev` 在启动时构建主进程和 preload，运行期间热更新 renderer。界面和共享 UI 包的改动会保留当前 Electron 客户端与本地服务的连接。主进程或 preload 改动需要重启 Dev。Backend 及其 worker 通过 `vite.backend.config.ts` 独立编译，再暂存原生模块。Vitest 配置位于 `vitest.config.ts`。发布流程仍可通过 `build:web` 和 `electron:build` 分别构建 renderer 与 Electron 进程，electron-builder 继续打包现有的 `dist/` 和 `dist-electron/` 目录。
 
 ### 启动开发环境
 
@@ -185,15 +187,17 @@ AgentKib 由多个协作部分组成一个桌面应用：
 pnpm dev
 ```
 
-该命令启动 identifier 为 `ai.agentkib.dev` 的 **AgentKib Dev**。它的数据库、偏好、缓存、MCP 包及其他应用数据与正式版 `ai.agentkib` 隔离。开发启动不会复制、迁移或合并正式版数据。
+该命令启动 **AgentKib Dev**，它保留独立的 Electron 窗口配置。Dev 和正式版自动连接同一系统用户的 TypeScript 运行时。先打开的客户端可以启动服务，两边收到同一份 Agent 会话事件。仍有客户端连接时，服务继续运行。运行时使用正式版原有数据目录，通过认证的本地 socket 或命名管道通信。
 
-macOS 开发数据位于：
+升级后先退出还在运行的旧版独立后端。正式版终端沿用现有凭据。旧 Dev 的 Claude 凭据在原生会话和已登记工作区一致、且历史命令已确认时自动续用。旧 Dev 数据库可通过隔离模式查看。
 
-```text
-~/Library/Application Support/ai.agentkib.dev
+需要验证后端或数据库改动时，可用隔离模式启动 Dev。
+
+```bash
+AGENTKIB_DEV_ISOLATED=1 pnpm dev
 ```
 
-Windows 位于 `%LOCALAPPDATA%\ai.agentkib.dev`，Linux 使用对应的系统应用数据目录。
+要以新构建启动共享后端，退出两个客户端并等共享服务结束。旧 Dev 数据目录在 macOS 为 `~/Library/Application Support/ai.agentkib.dev`，Windows 为 `%LOCALAPPDATA%\ai.agentkib.dev`，Linux 使用对应的系统应用数据目录。
 
 ### 验证命令
 

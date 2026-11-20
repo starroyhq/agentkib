@@ -1,4 +1,5 @@
 import { EventEmitter } from "node:events";
+import { LOCAL_RUNTIME_PRESENCE } from "@agentkib/backend/local-runtime-ipc";
 import {
   BACKEND_INITIALIZE,
   TYPESCRIPT_READ_METHODS,
@@ -181,7 +182,8 @@ export class RuntimeRouter extends EventEmitter implements RuntimeHost {
   async #dispatch<TResult>(method: string, params: unknown): Promise<TResult> {
     if (
       method === RUNTIME_METHODS.sessionsSubscribe ||
-      method === RUNTIME_METHODS.sessionsUnsubscribe
+      method === RUNTIME_METHODS.sessionsUnsubscribe ||
+      method === LOCAL_RUNTIME_PRESENCE
     )
       return this.typescript.request<TResult>(method, params);
     if (method === NATIVE_CONTEXT) return this.typescript.request<TResult>(method, params);
@@ -203,7 +205,6 @@ export class RuntimeRouter extends EventEmitter implements RuntimeHost {
       [
         "options",
         "create",
-        "adopt",
         "release",
         "reconcile",
         "resume",
@@ -260,6 +261,7 @@ export class RuntimeRouter extends EventEmitter implements RuntimeHost {
         "queue-update",
         "queue-delete",
         "queue-steer",
+        "open-model-picker",
         "queue-reorder",
         "rename",
         "archive",
@@ -273,6 +275,8 @@ export class RuntimeRouter extends EventEmitter implements RuntimeHost {
         "terminals-clean",
         "dsh-create",
         "dsh-options",
+        "provider-create",
+        "provider-options",
         "devin-create",
         "devin-options",
         "devin-terminal",
@@ -297,6 +301,7 @@ export class RuntimeRouter extends EventEmitter implements RuntimeHost {
         "usage",
         "goal",
         "resources",
+        "provider-workspace-resources",
         "session-directory",
         "read-state",
         "read-state-update",

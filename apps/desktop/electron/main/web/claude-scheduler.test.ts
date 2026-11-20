@@ -1,9 +1,13 @@
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   ClaudeHostScheduler,
   type ClaudeScheduledSession,
   type ClaudeScheduleAuthority,
 } from "./claude-scheduler";
+import { createWebControlState, WebAccessService } from "./service";
 
 const cleanups: Array<() => void> = [];
 afterEach(() => {
@@ -155,5 +159,110 @@ describe("shared Claude host scheduler", () => {
     f.session.next = null;
     await f.scheduler.tick();
     expect(f.authority.settled).toHaveBeenCalledWith("session");
+  });
+
+  it("leaves another desktop's browser work to the authorized desktop", async () => {
+    const f = fixture();
+    f.scheduler.setSharedRuntimePrimary(false);
+    f.session.next!.deviceId = "other-phone";
+    await f.scheduler.tick();
+    expect(f.operations()).toEqual(["schedule-list"]);
+
+    f.session.next!.deviceId = "phone";
+    await f.scheduler.tick();
+    expect(f.operations().slice(1)).toEqual([
+      "schedule-list",
+      "schedule-prepare",
+      "schedule-dispatch",
+    ]);
+  });
+
+  it("leaves a prepared permit to expire when a replacement desktop takes over", async () => {
+    const f = fixture();
+    f.scheduler.setSharedRuntimePrimary(true);
+    let resolvePrepare!: (value: unknown) => void;
+    f.invoke.mockImplementation(async (input) => {
+      const { operation } = input as Record<string, unknown>;
+      if (operation === "schedule-list") return { sessions: [f.session] };
+      if (operation === "schedule-prepare")
+        return new Promise((resolve) => {
+          resolvePrepare = resolve;
+        });
+      return { accepted: true };
+    });
+    const tick = f.scheduler.tick();
+    await expect.poll(() => f.operations().at(-1)).toBe("schedule-prepare");
+    f.authority.owns = () => false;
+    f.scheduler.setSharedRuntimePrimary(false);
+    resolvePrepare({
+      accepted: true,
+      permitId: "permit",
+      expectedRevision: 8,
+      runtimeBootId: "runtime",
+    });
+    await tick;
+    expect(f.operations()).toEqual(["schedule-list", "schedule-prepare"]);
+    expect(f.authority.release).toHaveBeenCalledWith("session");
+  });
+
+  it("lets only the primary desktop queue a due usage-limit continuation", async () => {
+    const f = fixture();
+    Object.assign(f.session, { paused: true, continueAt: Date.now(), next: null });
+    f.scheduler.setSharedRuntimePrimary(false);
+    await f.scheduler.tick();
+    expect(f.operations()).toEqual(["schedule-list"]);
+    f.scheduler.setSharedRuntimePrimary(true);
+    await f.scheduler.tick();
+    expect(f.operations().slice(1)).toEqual(["schedule-list", "schedule-continue"]);
+  });
+
+  it("moves local scheduling to the elected Web service without pausing the shared queue", async () => {
+    const root = await mkdtemp(join(tmpdir(), "ak-shared-scheduler-"));
+    const f = fixture();
+    f.unregister();
+    f.session.next!.deviceId = "agentkib-local-owner";
+    f.session.next!.requiresAttachments = false;
+    const make = (profile: string, primary: boolean) => {
+      const control = createWebControlState();
+      const service = new WebAccessService({
+        dataDir: join(root, profile),
+        staticDir: root,
+        runtimeRequest: async () => ({}),
+        workspaceRequest: async () => [{ id: "workspace", name: "Workspace", path: root }],
+        claudeManagedRequest: f.invoke,
+        enableClaudeScheduler: true,
+        verifiedClaudeManaged: true,
+        sharedControl: control,
+      });
+      service.setSharedRuntimePrimary(primary);
+      return { service, scheduler: control.claudeScheduler! };
+    };
+    const first = make("formal", true);
+    const second = make("dev", false);
+    try {
+      await first.service.initialize();
+      await second.service.initialize();
+      await second.scheduler.tick();
+      expect(f.operations()).toEqual(["schedule-list"]);
+      await first.scheduler.tick();
+      expect(f.operations().slice(1)).toEqual([
+        "schedule-list",
+        "schedule-prepare",
+        "schedule-dispatch",
+      ]);
+
+      first.service.setSharedRuntimePrimary(false);
+      second.service.setSharedRuntimePrimary(true);
+      await first.service.dispose();
+      await second.scheduler.tick();
+      expect(f.operations().slice(4)).toEqual([
+        "schedule-list",
+        "schedule-prepare",
+        "schedule-dispatch",
+      ]);
+    } finally {
+      await Promise.all([first.service.dispose(), second.service.dispose()]);
+      await rm(root, { recursive: true, force: true });
+    }
   });
 });

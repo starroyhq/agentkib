@@ -1,9 +1,11 @@
 import { DesktopHistorySearch } from "./DesktopHistorySearch";
 import { readStateCopy } from "@agentkib/session-ui";
+import { useEffect, useMemo } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { Bell, ListFilter, SlidersHorizontal, X } from "lucide-react";
-import { useI18n } from "@/core/useI18n";
+import { AGENT_KINDS } from "@/core/agents";
 import type { AgentKind } from "@/core/types";
+import { useI18n } from "@/core/useI18n";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -20,11 +22,13 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { useSessionHub } from "./SessionHubContext";
 import { useSessionViewStore, type SessionRecordFilter } from "./session-view-store";
-import { sessionAgentNames } from "./session-labels";
+import { SessionDirectoryAgentFilter } from "./SessionDirectoryAgentFilter";
 
 export function SessionDirectoryControls({
+  onAgentChange,
   onMenuOpenChange,
 }: {
+  onAgentChange: (agent: AgentKind | "all") => void;
   onMenuOpenChange?: (open: boolean) => void;
 }) {
   const { tr, locale } = useI18n();
@@ -46,19 +50,43 @@ export function SessionDirectoryControls({
       resetFilters: state.resetFilters,
     })),
   );
-  const agents = [...new Set(hub.sessions.map((session) => session.agent))];
+  const { agents, unreadAgents } = useMemo(() => {
+    const present = new Set<AgentKind>();
+    const unreadAgents = new Set<AgentKind>();
+    for (const session of hub.sessions) {
+      present.add(session.agent);
+      if (session.readState?.status === "unread") unreadAgents.add(session.agent);
+    }
+    return { agents: AGENT_KINDS.filter((agent) => present.has(agent)), unreadAgents };
+  }, [hub.sessions]);
+  const agent = view.agent;
+  const setAgent = view.setAgent;
+  const hasAgentFilter = agents.length > 1;
+  const agentFilterAvailable = hasAgentFilter && (agent === "all" || agents.includes(agent));
+  useEffect(() => {
+    if (hub.ready && hub.enabled && agent !== "all" && !agentFilterAvailable) setAgent("all");
+  }, [hub.ready, hub.enabled, agent, agentFilterAvailable, setAgent]);
+
   const activeFilterCount =
-    Number(view.agent !== "all") +
     Number(view.filter !== "current") +
     Number(view.host !== "all") +
     Number(view.execution) +
     Number(view.collections);
   const filtersActive = activeFilterCount > 0;
   return (
-    <div className="session-directory-controls grid gap-3 px-1 pt-3 pb-2">
+    <div
+      className={`session-directory-controls grid pb-2 ${hasAgentFilter ? "gap-1 pt-0.5" : "gap-3 pt-3"}`}
+    >
+      <SessionDirectoryAgentFilter
+        agents={agents}
+        unreadAgents={unreadAgents}
+        value={agentFilterAvailable ? agent : "all"}
+        onChange={onAgentChange}
+        disabled={!hub.enabled}
+      />
       <div
         data-session-directory-toolbar
-        className="flex min-h-9 items-center justify-between gap-2 px-1.5"
+        className="flex min-h-9 items-center justify-between gap-2 pr-5.5 pl-3.5"
       >
         <div className="flex min-w-0 items-center gap-2">
           <ListFilter size={15} className="shrink-0 text-muted-foreground" aria-hidden="true" />
@@ -121,26 +149,6 @@ export function SessionDirectoryControls({
                 </DropdownMenuSub>
               )}
               <DropdownMenuSub>
-                <DropdownMenuSubTrigger>{tr("conversations.agentFilter")}</DropdownMenuSubTrigger>
-                <DropdownMenuSubContent className="min-w-44" positionerClassName="z-80">
-                  <DropdownMenuRadioGroup
-                    value={view.agent}
-                    onValueChange={(value) => view.setAgent(value as AgentKind | "all")}
-                  >
-                    <DropdownMenuRadioItem value="all">
-                      {tr("sessions.allAgents")}
-                    </DropdownMenuRadioItem>
-                    {[...new Set([...agents, ...(view.agent === "all" ? [] : [view.agent])])].map(
-                      (agent) => (
-                        <DropdownMenuRadioItem key={agent} value={agent}>
-                          {sessionAgentNames[agent]}
-                        </DropdownMenuRadioItem>
-                      ),
-                    )}
-                  </DropdownMenuRadioGroup>
-                </DropdownMenuSubContent>
-              </DropdownMenuSub>
-              <DropdownMenuSub>
                 <DropdownMenuSubTrigger>{tr("conversations.filterLabel")}</DropdownMenuSubTrigger>
                 <DropdownMenuSubContent className="min-w-44" positionerClassName="z-80">
                   <DropdownMenuRadioGroup
@@ -169,7 +177,7 @@ export function SessionDirectoryControls({
               </DropdownMenuCheckboxItem>
               <DropdownMenuSeparator />
               <DropdownMenuItem
-                disabled={!filtersActive && !view.unreadOnly}
+                disabled={!filtersActive && !view.unreadOnly && agent === "all"}
                 onClick={view.resetFilters}
               >
                 {tr("sessions.clearFilters")}
@@ -180,7 +188,7 @@ export function SessionDirectoryControls({
         </div>
       </div>
       {filtersActive && (
-        <div className="flex flex-wrap gap-1.5 px-1.5">
+        <div className="flex flex-wrap gap-1.5 pr-5.5 pl-3.5">
           {view.host !== "all" && (
             <Button
               variant="outline"
@@ -193,19 +201,6 @@ export function SessionDirectoryControls({
                 ? tr("sessions.local")
                 : (hub.remoteHosts?.find((host) => host.id === view.host)?.name ??
                   tr("remote.hostFilter"))}
-              <X size={12} aria-hidden="true" />
-            </Button>
-          )}
-          {view.agent !== "all" && (
-            <Button
-              variant="outline"
-              size="sm"
-              className="h-7 gap-1 rounded-full px-2 text-xs"
-              aria-label={`${tr("sessions.clearAgentFilter")}: ${sessionAgentNames[view.agent]}`}
-              disabled={!hub.enabled}
-              onClick={() => view.setAgent("all")}
-            >
-              {sessionAgentNames[view.agent]}
               <X size={12} aria-hidden="true" />
             </Button>
           )}

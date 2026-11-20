@@ -22,6 +22,14 @@ import type {
   HistoryReference,
   ResolvedHistoryReference,
   HistorySearchStatus,
+  SessionActivity,
+  SessionApprovalKind,
+  SessionCommandMenu,
+  SessionExecution,
+  SessionFeedback,
+  SessionProviderDeclaration,
+  SessionQueueItemActions,
+  SubagentCatalog,
 } from "@agentkib/runtime-protocol";
 export type {
   ClaudeCommandAccess,
@@ -54,6 +62,19 @@ export type {
   HistorySearchStatus,
   HistorySearchHit,
   HistoryRecordKind,
+  BasicSessionProviderCapabilities,
+  SessionActivity,
+  SessionActivityCapabilities,
+  SessionActivityKind,
+  SessionApprovalKind,
+  SessionCommandEntry,
+  SessionCommandMenu,
+  SessionExecution,
+  SessionFeedback,
+  SessionProviderDeclaration,
+  SessionQueueAction,
+  SessionQueueItemActions,
+  SubagentCatalog,
 } from "@agentkib/runtime-protocol";
 export {
   isLiveSessionAgent,
@@ -333,6 +354,8 @@ export interface Access {
   experimentalEnabled: boolean;
 }
 export interface Approval {
+  /** Normalized request kind; decision values and available options keep their native form. */
+  presentation?: SessionApprovalKind;
   requestId: string | number;
   turnId: string;
   method: string;
@@ -405,6 +428,12 @@ export interface UsageLimitNotice {
 }
 export interface Live {
   sessionId: string;
+  /** Execution evidence from the provider. It does not authorize controls. */
+  execution?: SessionExecution;
+  feedback?: readonly SessionFeedback[];
+  /** Public child summaries already projected onto the parent stream. */
+  subagents?: SubagentCatalog & { available?: false };
+  activities?: readonly SessionActivity[];
   /** Backend incarnation captured by this state, distinct from the access boot id. */
   runtimeBootId?: string;
   status: string;
@@ -610,6 +639,10 @@ export interface LivePermission {
 }
 export interface SessionCapabilities {
   sessionId: string;
+  provider?: SessionProviderDeclaration;
+  execution?: SessionExecution;
+  commandMenu?: SessionCommandMenu;
+  feedback?: readonly SessionFeedback[];
   executionMode: string;
   status: string;
   reason?: string;
@@ -756,6 +789,7 @@ export interface ManagedActionBody {
   prompt?: string;
 }
 export interface ManagedActionResult {
+  feedback?: readonly SessionFeedback[];
   accepted?: boolean;
   completed?: boolean;
   controlOutcome?: "accepted" | "not-dispatched" | "unknown";
@@ -775,6 +809,8 @@ export interface UploadedAttachment {
 }
 export interface CodexQueueItem {
   id: string;
+  /** Only present when the provider knows availability for this item. */
+  actions?: SessionQueueItemActions;
   status?: "pending" | "claimed" | "dispatched" | "unknown";
   hasAttachments?: boolean;
   clientUserMessageId?: string;
@@ -968,6 +1004,7 @@ export {
 } from "./session-model-display";
 
 export interface SessionActionResult {
+  feedback?: readonly SessionFeedback[];
   accepted?: boolean;
   completed?: boolean;
   requestId?: string;

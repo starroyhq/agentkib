@@ -1,13 +1,97 @@
 import type { ManagedAgent } from "./agents";
+import type { SubagentStatus } from "./subagents";
 
 export const SESSION_RESOURCE_LIMIT = 10;
+
+export type SessionQueueAction =
+  | "list"
+  | "add"
+  | "update"
+  | "delete"
+  | "reorder"
+  | "start"
+  | "pause"
+  | "resume"
+  | "steer";
+
+export interface SessionExecution {
+  owner: "agentkib" | "terminal" | "native-app" | "external" | null;
+  observed: boolean;
+  confidence: "live" | "inferred" | "unknown";
+}
+
+export interface SessionFeedback {
+  code: string;
+  params?: Readonly<Record<string, string | number | boolean>>;
+}
+
+export type SessionApprovalKind =
+  | "command"
+  | "files"
+  | "network"
+  | "permissions"
+  | "tool"
+  | "mcp"
+  | "unknown";
+
+export interface SessionActionAvailability {
+  available: boolean;
+  reason?: string;
+}
+
+export type SessionQueueItemActions = Partial<
+  Record<"update" | "delete" | "steer", SessionActionAvailability>
+>;
+
+export interface SessionCommandEntry {
+  name: string;
+  description?: string;
+  argumentHint?: string;
+  aliases?: readonly string[];
+  /** A client command names an existing resolver, which can use the arguments to choose an action. */
+  run: { kind: "native" } | { kind: "client"; command: string };
+}
+
+export type SessionCommandMenu =
+  | { state: "unverified" }
+  | { state: "ready"; entries: readonly SessionCommandEntry[] };
+
+export type SessionActivityKind = "background-task" | "subagent" | "terminal";
+
+export interface SessionActivity {
+  /** Opaque identity scoped to the parent session. */
+  id: string;
+  kind: SessionActivityKind;
+  title: string;
+  status: SubagentStatus;
+  startedAt?: string | null;
+  endedAt?: string | null;
+  /** A readable subagent's ID in this parent's subagents API. */
+  childId?: string;
+  actions?: { stop?: SessionActionAvailability };
+}
+
+export interface SessionActivityCapabilities {
+  kinds: readonly SessionActivityKind[];
+  canStopIndividually: boolean;
+  canOpenSubagentHistory: boolean;
+}
+
+interface SessionProviderIntegrationCapabilities {
+  commands?: { source: "built-in" | "reported" | "none" };
+  queue?: { actions: readonly SessionQueueAction[] };
+  /** The provider's native integration, even when no session is connected to it. */
+  connection?: { kind: "native-app" | "terminal-bridge" | "plugin-bridge" | "acp" };
+  permissionField?: "policyId" | "permissionMode";
+  activities?: SessionActivityCapabilities;
+}
 
 /**
  * Stable provider capabilities. A session's live capabilities and the device's grants still
  * determine what can be used now. Model lists and writable fields come from the provider's
  * runtime response.
  */
-export interface SessionProviderCapabilities {
+export interface SessionProviderCapabilities extends SessionProviderIntegrationCapabilities {
   history: { readState: boolean };
   operations: { execution: boolean };
   /** Stable session toolbar slots; live grants determine whether each action can run. */
@@ -46,7 +130,16 @@ export interface SessionProviderCapabilities {
   contextUsage: "live" | "last-request" | "unsupported";
 }
 
-const PROVIDERS = {
+export interface BasicSessionProviderCapabilities extends SessionProviderIntegrationCapabilities {
+  composer: { surface: "basic" };
+  history: { readState: false };
+  operations: { execution: false };
+  contextUsage: SessionProviderCapabilities["contextUsage"];
+  controls: readonly ("send" | "stop" | "approve")[];
+}
+
+// The legacy options and settings responses serialize this declaration verbatim.
+const MANAGED_CAPABILITIES = {
   codex: {
     history: { readState: true },
     operations: { execution: true },
@@ -173,8 +266,65 @@ const PROVIDERS = {
   },
 } satisfies Record<ManagedAgent, SessionProviderCapabilities>;
 
-export type SessionProviderAgent = keyof typeof PROVIDERS;
-export type LiveSessionAgent = SessionProviderAgent | "antigravity";
+const PROVIDERS = {
+  codex: {
+    ...MANAGED_CAPABILITIES.codex,
+    commands: { source: "built-in" },
+    queue: { actions: ["list", "add", "update", "delete", "reorder", "start"] },
+    connection: { kind: "native-app" },
+    permissionField: "policyId",
+    activities: {
+      kinds: ["subagent", "terminal"],
+      canStopIndividually: false,
+      canOpenSubagentHistory: true,
+    },
+  },
+  "claude-code": {
+    ...MANAGED_CAPABILITIES["claude-code"],
+    commands: { source: "reported" },
+    queue: { actions: ["list", "add", "update", "delete", "reorder", "pause", "resume"] },
+    connection: { kind: "terminal-bridge" },
+    permissionField: "permissionMode",
+    activities: {
+      kinds: ["background-task", "subagent"],
+      canStopIndividually: false,
+      canOpenSubagentHistory: true,
+    },
+  },
+  "deepseek-harness": {
+    ...MANAGED_CAPABILITIES["deepseek-harness"],
+    commands: { source: "reported" },
+    queue: { actions: ["list", "add", "update", "delete", "steer"] },
+    connection: { kind: "plugin-bridge" },
+    permissionField: "policyId",
+    activities: { kinds: ["subagent"], canStopIndividually: false, canOpenSubagentHistory: true },
+  },
+  devin: {
+    ...MANAGED_CAPABILITIES.devin,
+    commands: { source: "none" },
+    queue: { actions: [] },
+    permissionField: "permissionMode",
+    activities: { kinds: ["subagent"], canStopIndividually: false, canOpenSubagentHistory: true },
+  },
+  antigravity: {
+    history: { readState: false },
+    operations: { execution: false },
+    composer: { surface: "basic" },
+    contextUsage: "live",
+    controls: ["send", "stop", "approve"],
+    commands: { source: "none" },
+    queue: { actions: [] },
+    connection: { kind: "acp" },
+    activities: { kinds: [], canStopIndividually: false, canOpenSubagentHistory: false },
+  },
+} satisfies Record<ManagedAgent, SessionProviderCapabilities> &
+  Record<"antigravity", BasicSessionProviderCapabilities>;
+
+export type SessionProviderAgent = keyof typeof MANAGED_CAPABILITIES;
+export type LiveSessionAgent = keyof typeof PROVIDERS;
+export type SessionProviderDeclaration =
+  | SessionProviderCapabilities
+  | BasicSessionProviderCapabilities;
 
 export type ReadStateProvider = {
   [Agent in SessionProviderAgent]: (typeof PROVIDERS)[Agent]["history"]["readState"] extends true
@@ -183,13 +333,19 @@ export type ReadStateProvider = {
 }[SessionProviderAgent];
 
 export function isSessionProviderAgent(agent: unknown): agent is SessionProviderAgent {
-  return typeof agent === "string" && Object.hasOwn(PROVIDERS, agent);
+  return typeof agent === "string" && Object.hasOwn(MANAGED_CAPABILITIES, agent);
 }
 
 /** The providers wired through the shared session registry. */
 export function sessionProviderCapabilities(
   agent: unknown,
 ): SessionProviderCapabilities | undefined {
+  return isSessionProviderAgent(agent) ? MANAGED_CAPABILITIES[agent] : undefined;
+}
+
+/** Includes the basic provider and integration capabilities for the typed session API. */
+export function sessionProviderDeclaration(agent: unknown): SessionProviderDeclaration | undefined {
+  if (agent === "antigravity") return PROVIDERS.antigravity;
   return isSessionProviderAgent(agent) ? PROVIDERS[agent] : undefined;
 }
 
@@ -205,8 +361,11 @@ export function sessionDetailCapabilities(agent: unknown): {
       history: provider.history,
       operations: provider.operations,
     };
+  if (agent === "antigravity") {
+    const { composer, history, operations } = PROVIDERS.antigravity;
+    return { composer, history, operations };
+  }
   return {
-    ...(agent === "antigravity" ? { composer: { surface: "basic" } } : {}),
     history: { readState: false },
     operations: { execution: false },
   };

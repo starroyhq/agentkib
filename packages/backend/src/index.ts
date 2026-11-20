@@ -1,6 +1,7 @@
 import { Context } from "./context";
 import { SessionReaders } from "./session-readers";
-import { SessionSubagentSnapshots } from "./session-subagent-snapshots";
+import { SessionSubagentSnapshots, type SubagentSnapshot } from "./session-subagent-snapshots";
+import { subagentActivities } from "./session-activities";
 import {
   continueCursorNativeImport,
   CursorImportOutcomeUnknownError,
@@ -735,7 +736,12 @@ export class TypeScriptBackend {
             publish: (sessionId, type, payload, live) =>
               this.#publishSession(sessionId, type, payload, live),
             alias: (sessionId, previousId, itemId, live) =>
-              this.#sessionStream?.aliasItem(sessionId, previousId, itemId, live),
+              this.#sessionStream?.aliasItem(
+                sessionId,
+                previousId,
+                itemId,
+                this.#withChildActivities(live, this.#childSnapshots.current(sessionId, live)),
+              ),
             catalogChanged: () =>
               this.#sessionStream?.publish("", "invalidate", { domains: ["catalog"] }),
             forgetIndexed: (ids) =>
@@ -1009,9 +1015,10 @@ export class TypeScriptBackend {
             // Keep optional child summaries on the existing parent stream. A failure must not
             // break the parent conversation or preserve an unverified running count.
             delete live.subagents;
-            live.subagents = await this.#childSnapshots.read(sessionId, live, async () =>
+            const subagents = await this.#childSnapshots.read(sessionId, live, async () =>
               this.#request(RUNTIME_METHODS.webRequest, { operation: "subagents", sessionId }),
             );
+            live.subagents = subagents;
             const readHistory = async () => {
               // Polled every 250 ms. A kept cursor per poll would push the cursors that
               // clients hold for older pages out of the shared cache within seconds.
@@ -1079,7 +1086,7 @@ export class TypeScriptBackend {
                   : await readHistory();
             const follower = this.#webRead?.readFollowerSnapshot(sessionId);
             return {
-              live,
+              live: this.#withChildActivities(live, subagents),
               ...(follower ? mergeCodexFollowerSnapshot(history, follower) : history),
             };
           },
@@ -2922,6 +2929,19 @@ export class TypeScriptBackend {
     return this.#preferences();
   }
 
+  #withChildActivities(live: Record<string, unknown>, subagents?: SubagentSnapshot) {
+    if (live.executionMode !== "claude-managed" || !subagents || subagents.available === false)
+      return live;
+    const activities = Array.isArray(live.activities) ? live.activities : [];
+    return {
+      ...live,
+      activities: [
+        ...activities.filter((item) => item.kind === "background-task"),
+        ...subagentActivities(subagents),
+      ],
+    };
+  }
+
   #publishSession(
     sessionId: string,
     type: SessionStreamEvent["type"],
@@ -2930,7 +2950,18 @@ export class TypeScriptBackend {
     textItem?: Record<string, unknown>,
   ) {
     if (type === "invalidate") this.#childSnapshots.invalidate(sessionId || undefined);
-    else this.#childSnapshots.publish(sessionId, live ?? payload);
+    else {
+      const state = live ?? payload;
+      this.#childSnapshots.publish(sessionId, state);
+      // CLI notifications can have partial child lists. Keep the children
+      // already known in this binding when projecting a replacement activities array.
+      const withActivities = this.#withChildActivities(
+        state,
+        this.#childSnapshots.current(sessionId, state),
+      );
+      if (payload === state) payload = withActivities;
+      if (live) live = withActivities;
+    }
     if (type === "invalidate") this.#snapshotHistory?.invalidate(sessionId || undefined);
     this.#sessionStream?.publish(sessionId, type, payload, live, textItem);
     if (sessionId && type === "state") {

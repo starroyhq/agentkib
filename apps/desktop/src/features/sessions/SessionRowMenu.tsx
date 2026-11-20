@@ -77,16 +77,6 @@ export function SessionRowMenu({
     !session.archived &&
     !session.sidechain &&
     session.orchestration?.role !== "worker";
-  const reason = (action: SessionManagementAction) => {
-    const value = features?.[action]?.reason;
-    if (action === "delete" && value === "codex-owner-busy") return copy.deleteOwnerBusy;
-    if (
-      action === "delete" &&
-      (value === "claude-owner-busy" || value === "claude-background-session-running")
-    )
-      return copy.deleteClaudeOwnerBusy;
-    return codexReason(locale, value).text;
-  };
   const available = (action: SessionManagementAction) =>
     !busy && features?.[action]?.available === true;
   async function run(action: SessionManagementAction, fields: { name?: string } = {}) {
@@ -121,15 +111,8 @@ export function SessionRowMenu({
   const archive = features?.archive ?? features?.unarchive;
   const archiveAction: SessionManagementAction = session.archived ? "unarchive" : "archive";
   const item = (action: SessionManagementAction, label: string, select: () => void) => (
-    <DropdownMenuItem
-      disabled={!available(action)}
-      className="grid max-w-72 justify-items-start gap-0.5"
-      onClick={select}
-    >
-      <span>{label}</span>
-      {features && !available(action) && !busy && (
-        <span className="text-xs whitespace-normal text-muted-foreground">{reason(action)}</span>
-      )}
+    <DropdownMenuItem disabled={!available(action)} onClick={select}>
+      {label}
     </DropdownMenuItem>
   );
   return (

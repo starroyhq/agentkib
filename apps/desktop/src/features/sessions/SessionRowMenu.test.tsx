@@ -134,15 +134,35 @@ describe("a session row's menu on the desktop", () => {
     );
   });
 
-  it("explains an unavailable delete and a refused one", async () => {
-    features({ delete: { available: false, reason: "codex-owner-busy" } });
-    open(summary("codex"));
-    expect(await screen.findByText(copy.deleteOwnerBusy)).toBeVisible();
-    expect(screen.getByRole("menuitem", { name: new RegExp(copy.delete) })).toHaveAttribute(
-      "aria-disabled",
-      "true",
-    );
-    cleanup();
+  it.each(["codex", "claude-code", "deepseek-harness"])(
+    "shows only disabled action labels for %s",
+    async (agent) => {
+      features({
+        rename: { available: false, reason: "follower-operation-unverified" },
+        ...(agent === "codex"
+          ? { archive: { available: false, reason: "follower-operation-unverified" } }
+          : {}),
+        delete: { available: false, reason: "codex-owner-busy" },
+      });
+      open(summary(agent));
+      const remove = await screen.findByRole("menuitem", { name: copy.delete });
+      const rename = screen.getByRole("menuitem", { name: copy.rename });
+      const items =
+        agent === "codex"
+          ? [rename, screen.getByRole("menuitem", { name: copy.archive }), remove]
+          : [rename, remove];
+      for (const item of items) {
+        expect(item).toHaveAttribute("aria-disabled", "true");
+        fireEvent.click(item);
+      }
+      expect(screen.queryByText(copy.deleteOwnerBusy)).not.toBeInTheDocument();
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+      expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+      expect(client.sessionAction).not.toHaveBeenCalled();
+    },
+  );
+
+  it("explains a delete refused after confirmation", async () => {
     features({ delete: { available: true } });
     client.sessionAction.mockRejectedValue(
       new ApiError(409, "claude-desktop-session", "not-dispatched"),

@@ -112,11 +112,16 @@ describe.skipIf(process.platform !== "darwin")(
         req.end(body ? JSON.stringify(body) : undefined);
       });
     }
-    function plugin<T>(path: string, body: unknown, authenticated = true): Promise<HttpResult<T>> {
+    function plugin<T>(
+      path: string,
+      body: unknown,
+      authenticated = true,
+      socketPath = ticket.socketPath,
+    ): Promise<HttpResult<T>> {
       return new Promise((resolve, reject) => {
         const req = request(
           {
-            socketPath: ticket.socketPath,
+            socketPath,
             path,
             method: "POST",
             headers: {
@@ -413,6 +418,47 @@ describe.skipIf(process.platform !== "darwin")(
       } finally {
         if (fixture.directory) rmSync(fixture.directory, { recursive: true, force: true });
       }
+    });
+
+    it("distinguishes an unregistered workspace from an unindexed session during automatic pairing", async () => {
+      const discovery = join(directory, "home", ".agentkib", "claude-bridge", "auto-v1.json");
+      await vi.waitFor(() => expect(existsSync(discovery)).toBe(true));
+      const { socketPath, autoKey } = JSON.parse(readFileSync(discovery, "utf8")) as {
+        socketPath: string;
+        autoKey: string;
+      };
+      const hello = {
+        autoKey,
+        protocol: 1,
+        cliVersion: "2.1.301",
+        pluginVersion: "0.4.0",
+        nativeCapabilities: {
+          version: 1,
+          available: [
+            "session-identity",
+            "session-messages",
+            "session-usage",
+            "credential-store",
+            "credential-read",
+          ],
+        },
+        instanceId: randomUUID(),
+      };
+      const autoPair = (id: string, cwd: string) =>
+        plugin(CLAUDE_BRIDGE_PATHS.autoPair, { ...hello, nativeId: id, cwd }, false, socketPath);
+
+      const unregistered = await autoPair(nativeId, join(directory, "home"));
+      expect(unregistered.status).toBe(409);
+      expect(unregistered.body).toEqual({
+        error: "bridge-auto-unavailable",
+        reason: "workspace-not-registered",
+      });
+      const unindexed = await autoPair(randomUUID(), workspace);
+      expect(unindexed.status).toBe(409);
+      expect(unindexed.body).toEqual({
+        error: "bridge-auto-unavailable",
+        reason: "session-not-indexed",
+      });
     });
 
     it("keeps indexed history while connecting the original execution host and denies Web bridge management", async () => {

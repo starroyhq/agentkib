@@ -1695,8 +1695,8 @@ describe("Claude Code native session plugin", () => {
     await f.run("prompt.submit", { text: "native prompt after credential removal" });
     for (let tick = 0; tick < 40; tick++) await f.tick();
     expect(f.calls.filter((call) => call.url.endsWith("/reconnect"))).toHaveLength(1);
-    expect((await f.run("command.run", { command: "agentkib-status", args: "" })).text).toContain(
-      "not connected",
+    expect((await f.run("command.run", { command: "agentkib-status", args: "" })).text).toBe(
+      "The saved AgentKib connection for this session could not be read. Generate a new connection code in AgentKib and run it in this terminal.",
     );
     expect(f.dispatches).toBe(0);
     expect(f.stops).toBe(0);
@@ -1767,7 +1767,7 @@ describe("Claude Code native session plugin", () => {
           ),
       ).toBe(true);
       expect((await f.run("command.run", { command: "agentkib-status", args: "" })).text).toContain(
-        "not connected",
+        reason === "deleted-credential" ? "saved AgentKib connection" : "not connected",
       );
       expect(f.dispatches).toBe(0);
     },
@@ -2429,7 +2429,7 @@ describe("Claude Code native session plugin", () => {
     f.nextHttpResponse("/v1/commands", { status: 410, body: { error: "bridge-binding-revoked" } });
     await f.tick();
     expect((await f.run("command.run", { command: "agentkib-status", args: "" })).text).toContain(
-      "not connected",
+      "This session was disconnected or cleared in AgentKib. Generate a new connection code",
     );
     await f.run("ui.render", { component: "AbovePrompt", props: { isWorking: false } });
     const connected = await f.run("command.run", { command: "agentkib-connect", args: f.ticket });

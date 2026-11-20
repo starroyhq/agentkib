@@ -2009,21 +2009,37 @@ export class ClaudeBridge {
           throw error;
         }
         const hello = bridgeIdentitySchema.extend({ autoKey: z.string() }).strip().parse(value);
-        if (this.#declined.has(hello.nativeId)) throw new Error("bridge-auto-declined");
+        if (this.#declined.has(hello.nativeId)) {
+          reply(409, { error: "bridge-auto-declined", reason: "session-disconnected" });
+          return;
+        }
         let target: ClaudeBridgeTarget;
         try {
           // A brand-new session may not be indexed yet; the terminal retries later.
           target = await this.options.autoTarget!(hello.nativeId, hello.cwd);
-        } catch {
-          throw new Error("bridge-auto-unavailable");
+        } catch (error) {
+          const reason = error instanceof Error ? error.message : undefined;
+          reply(409, {
+            error: "bridge-auto-unavailable",
+            reason:
+              reason === "workspace-not-registered" || reason === "session-not-indexed"
+                ? reason
+                : undefined,
+          });
+          return;
         }
-        if (this.#disabledWorkspaces.has(target.workspaceId))
-          throw new Error("bridge-auto-disabled");
+        if (this.#disabledWorkspaces.has(target.workspaceId)) {
+          reply(409, { error: "bridge-auto-disabled", reason: "auto-connect-disabled" });
+          return;
+        }
         this.options.validate(target, false);
         if (hello.nativeId !== target.nativeId || hello.cwd !== target.workspace)
           throw new Error("bridge-identity-mismatch");
         const existing = this.#bindings.get(target.sessionId);
-        if (existing?.revoked) throw new Error("bridge-auto-declined");
+        if (existing?.revoked) {
+          reply(409, { error: "bridge-auto-declined", reason: "session-disconnected" });
+          return;
+        }
         reply(200, this.#bind(target, hello, true));
         return;
       }

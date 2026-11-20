@@ -36,6 +36,13 @@ const INCOMPATIBLE_ERRORS = [
 // after later turns: a workspace switched back on connects, and a version
 // refusal reaches the AgentKib dialog once the new session is indexed.
 const AUTO_FINAL_ERRORS = ["bridge-auto-declined", "unsupported-native-identity"];
+// A more specific refusal in another discovered Runtime can explain the same
+// session better than an unrelated Runtime with no registered workspace.
+const AUTO_RETRY_REASONS = [
+  "workspace-not-registered",
+  "session-not-indexed",
+  "auto-connect-disabled",
+];
 // A Project Agent (docs/agents/project-agent.md): when the Runtime names this feature, a session
 // it makes one gets its worker tools here, under this plugin's name, and its reports as queued
 // messages. A Runtime that does not name it hears nothing of it.
@@ -225,6 +232,7 @@ export function initialState() {
     instanceId: crypto.randomUUID(),
     connection: null,
     connectionFailure: null,
+    connectionStatusReason: null,
     socketPath: null,
     credentialPath: null,
     revision: 0,
@@ -791,6 +799,7 @@ function invalidate(state, reason) {
   state.closed = true;
   state.connection = null;
   state.connectionFailure = null;
+  state.connectionStatusReason = null;
   state.needsReconnect = false;
   state.pairingGeneration = null;
   state.pairingRecoveryGeneration = null;
@@ -832,6 +841,8 @@ async function request($, state, path, body, authenticated = true) {
   }
   if ([401, 403, 410].includes(response?.status)) {
     invalidate(state, "binding-revoked");
+    if (authenticated && response.status === 410 && decoded?.error === "bridge-binding-revoked")
+      state.connectionStatusReason = "session-disconnected";
     throw new Error("binding-revoked");
   }
   if (!response?.ok || typeof response.text !== "string")
@@ -1643,6 +1654,7 @@ async function connectOnce($, state, ticket, generation) {
 
 async function adopt($, state, observed, response) {
   state.connection = connectionFrom(response);
+  state.connectionStatusReason = null;
   state.modelPickerSupported = undefined;
   state.leadUnavailable = null;
   state.leadToolsKey = null;
@@ -1778,16 +1790,30 @@ async function reconnectOnce($, state) {
   const path = await $.store.get(`credentialPath:${previousIdentity.nativeId}`);
   if (state.generation !== generation || state.closed) throw new Error("stale-reconnect");
   if (typeof path !== "string" || !path.startsWith("/") || path.includes("\0")) {
+    state.connectionStatusReason = null;
     state.needsReconnect = false;
     return;
   }
   // A terminal with no saved binding does not need history/file/store-write
   // probes on startup. Every actual reconnect still repeats the full probe.
-  const credential = JSON.parse(await $.fs.read(path));
+  let credential;
+  try {
+    credential = JSON.parse(await $.fs.read(path));
+  } catch (error) {
+    if (state.generation === generation && !state.closed)
+      state.connectionStatusReason = "saved-connection-unreadable";
+    throw error;
+  }
   if (state.generation !== generation || state.closed) throw new Error("stale-reconnect");
-  if (safeSocket(credential?.socketPath) && !(await runtimeReachable($, credential.socketPath)))
-    throw new Error("bridge-unavailable");
-  if (state.generation !== generation || state.closed) throw new Error("stale-reconnect");
+  if (safeSocket(credential?.socketPath)) {
+    const reachable = await runtimeReachable($, credential.socketPath);
+    if (state.generation !== generation || state.closed) throw new Error("stale-reconnect");
+    if (!reachable) {
+      state.connectionStatusReason = "agentkib-unreachable";
+      throw new Error("bridge-unavailable");
+    }
+  }
+  state.connectionStatusReason = null;
   const observed = await probeCapabilities($, state);
   if (state.generation !== generation || state.closed) throw new Error("stale-reconnect");
   if (
@@ -1930,10 +1956,16 @@ export async function autoConnect($, state) {
       requireGeneration(state, generation, "stale-auto-connect");
       if (reachable) sources.push(source);
     }
-    if (!sources.length) return;
+    if (!sources.length) {
+      state.connectionStatusReason = discovered.length
+        ? "agentkib-unreachable"
+        : "agentkib-not-found";
+      return;
+    }
     // After /clear or /resume the previous conversation's identity no longer applies.
     if (state.closed) state.identity = null;
     generation = ++state.generation;
+    let statusReason = null;
     const observed = await probeCapabilities($, state);
     if (observed.nativeId !== nativeId) throw new Error("stale-auto-connect");
     for (const source of sources) {
@@ -1972,12 +2004,34 @@ export async function autoConnect($, state) {
         return;
       }
       if (AUTO_FINAL_ERRORS.includes(decoded?.error)) {
+        state.connectionStatusReason =
+          response?.status === 409 && decoded.error === "bridge-auto-declined"
+            ? "session-disconnected"
+            : null;
+        if (state.connectionStatusReason) state.connectionFailure = null;
         state.autoDone.add(nativeId);
         return;
       }
+      // Legacy Runtime errors distinguish disabled workspaces and revocations.
+      // Its unavailable error alone cannot distinguish registration from indexing.
+      if (response?.status !== 409) continue;
+      const reason =
+        decoded?.error === "bridge-auto-disabled"
+          ? "auto-connect-disabled"
+          : decoded?.error === "bridge-auto-unavailable" &&
+              ["workspace-not-registered", "session-not-indexed"].includes(decoded.reason)
+            ? decoded.reason
+            : null;
+      if (AUTO_RETRY_REASONS.indexOf(reason) > AUTO_RETRY_REASONS.indexOf(statusReason))
+        statusReason = reason;
       // A stale key or a session not indexed yet: try the next source, then back off.
     }
+    if (statusReason) state.connectionFailure = null;
+    state.connectionStatusReason = statusReason;
   } catch (error) {
+    // A delegated reconnect can already have recorded its own diagnosis.
+    if (state.generation === generation && !state.connection && !state.needsReconnect)
+      state.connectionStatusReason = null;
     // The local probe found this plugin or CLI unusable; retrying cannot change that.
     if (
       state.generation === generation &&
@@ -1998,6 +2052,27 @@ export async function autoConnect($, state) {
       state.autoDelayTicks = AUTO_BACKOFF_TICKS[Math.max(tries - 1, 0)];
     }
     state.autoConnecting = false;
+  }
+}
+
+function connectionStatusText(reason) {
+  switch (reason) {
+    case "agentkib-not-found":
+      return "AgentKib is not running or could not be found. Open AgentKib on this computer and wait for automatic connection.";
+    case "agentkib-unreachable":
+      return "AgentKib is not responding on this computer. Open AgentKib and wait for this terminal to connect.";
+    case "saved-connection-unreadable":
+      return "The saved AgentKib connection for this session could not be read. Generate a new connection code in AgentKib and run it in this terminal.";
+    case "workspace-not-registered":
+      return "This terminal's workspace is not registered in AgentKib. Add it in AgentKib, then wait for automatic connection.";
+    case "session-not-indexed":
+      return "AgentKib has not indexed this Claude Code session yet. Make sure session indexing is enabled in AgentKib, then start or continue the conversation in this terminal and wait for automatic connection.";
+    case "auto-connect-disabled":
+      return "Automatic connection is disabled for this workspace. Enable it in AgentKib or generate a new connection code.";
+    case "session-disconnected":
+      return "This session was disconnected or cleared in AgentKib. Generate a new connection code in AgentKib and run it in this terminal.";
+    default:
+      return "AgentKib bridge is not connected. Check the terminal connection in AgentKib or generate a new connection code.";
   }
 }
 
@@ -2088,7 +2163,7 @@ export function register(on) {
               state.connectionFailure.reason,
               state.connectionFailure.cliVersion,
             )
-          : "AgentKib bridge is not connected.",
+          : connectionStatusText(state.connectionStatusReason),
   }));
   on("ui.render", { component: "AbovePrompt" }, async ($, e, next) => {
     // Reloading the plugin into a running terminal may not replay session.start.

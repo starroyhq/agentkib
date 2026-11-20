@@ -102,22 +102,15 @@ function WorkspaceActions({
         <RefreshCw size={15} className={busy ? "animate-spin" : ""} />
       </Button>
       {showReview && (
-        <span className="grid justify-items-end gap-1">
-          <Button
-            className="h-9 rounded-lg px-3"
-            onClick={() => void onReview()}
-            disabled={reviewDisabled || locked}
-            aria-describedby={reviewDisabledReason ? "workspace-review-reason" : undefined}
-          >
-            <GitCompareArrows size={15} />
-            {tr("workspace.reviewChanges")}
-          </Button>
-          {reviewDisabledReason && (
-            <span id="workspace-review-reason" className="max-w-64 text-xs text-muted-foreground">
-              {reviewDisabledReason}
-            </span>
-          )}
-        </span>
+        <Button
+          className="h-9 rounded-lg px-3"
+          onClick={() => void onReview()}
+          disabled={reviewDisabled || locked}
+          title={reviewDisabledReason}
+        >
+          <GitCompareArrows size={15} />
+          {tr("workspace.reviewChanges")}
+        </Button>
       )}
     </div>
   );

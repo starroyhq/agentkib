@@ -12,7 +12,10 @@ import { CodexTools } from "@/features/conversation/features/sessions/codex-tool
 import { SessionComposer } from "@/features/conversation/features/sessions/session-composer";
 import { useSession } from "@/features/conversation/features/sessions/session-context";
 import { dictionaries } from "@/features/conversation/i18n";
-import { codexCopyForSurface } from "@/features/conversation/features/sessions/codex-copy";
+import {
+  codexCopyForSurface,
+  codexReason,
+} from "@/features/conversation/features/sessions/codex-copy";
 import { webLayoutCopy } from "@/features/conversation/features/sessions/web-layout-copy";
 import { publishSessionInvalidation } from "@/features/conversation/features/sessions/session-events";
 vi.mock("@tanstack/react-router", () => ({ useNavigate: () => vi.fn() }));
@@ -718,11 +721,27 @@ describe("Session delete", () => {
     fireEvent.click(screen.getByRole("button", { name: copy.deleteConfirm }));
     await waitFor(() => expect(state.codexAction).toHaveBeenCalledExactlyOnceWith("delete", {}));
   });
-  it("says another Codex process has to quit first", () => {
-    prepare({ delete: { available: false, reason: "codex-owner-busy" } });
+  const forkReason = codexReason("zh-CN", "session-busy", "web").text;
+  it.each([
+    ["session-busy", forkReason],
+    ["codex-owner-busy", copy.deleteOwnerBusy],
+  ])("keeps unavailable management actions' reasons in their titles (%s)", (reason, text) => {
+    prepare({
+      fork: { available: false, reason: "session-busy" },
+      delete: { available: false, reason },
+    });
     render(<CodexTools open />);
-    expect(screen.getByRole("button", { name: copy.delete })).toBeDisabled();
-    expect(screen.getByText(copy.deleteOwnerBusy)).toBeVisible();
+    const management = within(
+      screen.getByRole("region", { name: webLayoutCopy["zh-CN"].management }),
+    );
+    const fork = management.getByRole("button", { name: copy.fork });
+    const remove = management.getByRole("button", { name: copy.delete });
+    expect(fork).toBeDisabled();
+    expect(fork).toHaveAttribute("title", forkReason);
+    expect(remove).toBeDisabled();
+    expect(remove).toHaveAttribute("title", text);
+    expect(management.queryByText(forkReason)).not.toBeInTheDocument();
+    expect(management.queryByText(text)).not.toBeInTheDocument();
   });
   it("offers no delete where the computer reports none", () => {
     prepare({ rename: { available: true } });

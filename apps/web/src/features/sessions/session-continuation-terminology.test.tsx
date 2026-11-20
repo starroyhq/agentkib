@@ -37,8 +37,7 @@ const wording = [
   {
     locale: "zh-CN",
     actionFork: "分支会话",
-    busyHint:
-      "这条会话正在 Claude Code 中使用，暂时无法在这里发送。草稿可继续编辑，占用解除后会自动恢复。",
+    busyHint: "这条会话正在 Claude Code 中使用。",
     placeholder: "继续这条会话…",
     terminalHint: "审批和提问在终端中处理",
     choice: "这条会话正在 Claude Code 中使用。为避免两边同时写入，请选择：",
@@ -60,8 +59,7 @@ const wording = [
   {
     locale: "zh-Hant",
     actionFork: "分支對話",
-    busyHint:
-      "這段對話正在 Claude Code 中使用，暫時無法在這裡傳送。草稿可繼續編輯，占用解除後會自動恢復。",
+    busyHint: "這段對話正在 Claude Code 中使用。",
     placeholder: "繼續這段對話…",
     terminalHint: "核准和提問在終端中處理",
     choice: "這段對話正在 Claude Code 中使用。為避免兩邊同時寫入，請選擇：",
@@ -83,8 +81,7 @@ const wording = [
   {
     locale: "en-US",
     actionFork: "Fork session",
-    busyHint:
-      "This session is in use in Claude Code, so sending here is unavailable. You can edit your draft; sending becomes available when the session is no longer in use.",
+    busyHint: "This session is in use in Claude Code.",
     placeholder: "Continue this session…",
     terminalHint: "Handle approvals and questions in the terminal",
     choice: "This session is in use in Claude Code. To avoid both sides writing at once, choose:",
@@ -110,8 +107,7 @@ const wording = [
   {
     locale: "ja-JP",
     actionFork: "会話を分岐",
-    busyHint:
-      "この会話は Claude Code で使用中のため、ここからはまだ送信できません。下書きは編集でき、使用が終了すると自動的に再開できます。",
+    busyHint: "この会話は Claude Code で使用中です。",
     placeholder: "この会話を続ける…",
     terminalHint: "承認と質問はターミナルで対応してください",
     choice: "この会話は Claude Code で使用中です。同時に書き込まれないよう、操作を選んでください：",

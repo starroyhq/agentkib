@@ -73,8 +73,7 @@ const continuationCopy: Record<string, SessionContinuationCopy> = {
     groupRunning: (count) => `${count} 个运行中`,
     groupWaiting: (count) => `${count} 个在等你`,
     busy: (agent) => `正在 ${agent} 中使用`,
-    busyHint: (agent) =>
-      `这条会话正在 ${agent} 中使用，暂时无法在这里发送。草稿可继续编辑，占用解除后会自动恢复。`,
+    busyHint: (agent) => `这条会话正在 ${agent} 中使用。`,
     backgroundEnded: "后台进程已结束，下次发送时会自动继续",
     backgroundLimit:
       "Claude Code 连续自动运行了太多轮，AgentKib 已停止它和后台任务。发送消息即可继续。",
@@ -126,8 +125,7 @@ const continuationCopy: Record<string, SessionContinuationCopy> = {
     groupRunning: (count) => `${count} 個執行中`,
     groupWaiting: (count) => `${count} 個在等你`,
     busy: (agent) => `正在 ${agent} 中使用`,
-    busyHint: (agent) =>
-      `這段對話正在 ${agent} 中使用，暫時無法在這裡傳送。草稿可繼續編輯，占用解除後會自動恢復。`,
+    busyHint: (agent) => `這段對話正在 ${agent} 中使用。`,
     backgroundEnded: "背景程序已結束，下次傳送訊息時會自動繼續",
     backgroundLimit:
       "Claude Code 連續自動執行了太多輪，AgentKib 已停止它和背景工作。傳送訊息即可繼續。",
@@ -179,8 +177,7 @@ const continuationCopy: Record<string, SessionContinuationCopy> = {
     groupRunning: (count) => `実行中 ${count}`,
     groupWaiting: (count) => `対応待ち ${count}`,
     busy: (agent) => `${agent} で使用中`,
-    busyHint: (agent) =>
-      `この会話は ${agent} で使用中のため、ここからはまだ送信できません。下書きは編集でき、使用が終了すると自動的に再開できます。`,
+    busyHint: (agent) => `この会話は ${agent} で使用中です。`,
     backgroundEnded:
       "バックグラウンドプロセスを終了しました。次のメッセージ送信時に自動で続行します。",
     backgroundLimit:
@@ -237,8 +234,7 @@ const continuationCopy: Record<string, SessionContinuationCopy> = {
     groupRunning: (count) => `${count} running`,
     groupWaiting: (count) => (count === 1 ? "1 needs you" : `${count} need you`),
     busy: (agent) => `In use in ${agent}`,
-    busyHint: (agent) =>
-      `This session is in use in ${agent}, so sending here is unavailable. You can edit your draft; sending becomes available when the session is no longer in use.`,
+    busyHint: (agent) => `This session is in use in ${agent}.`,
     backgroundEnded:
       "The background process ended. It will resume automatically when you send your next message.",
     backgroundLimit:

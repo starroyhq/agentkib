@@ -258,9 +258,8 @@ export function CodexTools({
     fields = {},
     itemAvailable = true,
     size: "default" | "sm" = "sm",
-    withReason = true,
   ) => (
-    <div className="min-w-0 max-w-full space-y-1">
+    <div className="min-w-0 max-w-full">
       <Button
         type="button"
         variant="outline"
@@ -272,28 +271,14 @@ export function CodexTools({
       >
         {label}
       </Button>
-      {withReason && !enabled(action) && (
-        <p className="max-w-64 text-xs text-muted-foreground">{reason(action)}</p>
-      )}
     </div>
   );
-  // The management buttons that are off, and why. One reason for all of them is said once under
-  // the row; different reasons stay under their own buttons.
   const archiveAction: SessionAction | null =
     capabilities?.features.archive || capabilities?.features.unarchive
       ? current.archived
         ? "unarchive"
         : "archive"
       : null;
-  const managementActions: SessionAction[] = [
-    ...(archiveAction ? [archiveAction] : []),
-    "fork",
-    ...(capabilities?.features.delete ? (["delete"] as const) : []),
-  ];
-  const blockedReasons = new Set(
-    managementActions.filter((action) => !enabled(action)).map((action) => reason(action)),
-  );
-  const sharedReason = blockedReasons.size === 1 ? [...blockedReasons][0]! : null;
   const pendingQueue =
     queue?.data?.filter(
       (item) => item.status === "pending" || (!isClaude && item.status === undefined),
@@ -388,11 +373,10 @@ export function CodexTools({
                     {},
                     true,
                     "default",
-                    sharedReason === null,
                   )}
-                {actionButton("fork", copy.fork, {}, true, "default", sharedReason === null)}
+                {actionButton("fork", copy.fork, {}, true, "default")}
                 {capabilities?.features.delete && (
-                  <div className="min-w-0 max-w-full space-y-1">
+                  <div className="min-w-0 max-w-full">
                     <Button
                       type="button"
                       variant="outline"
@@ -403,15 +387,9 @@ export function CodexTools({
                     >
                       {copy.delete}
                     </Button>
-                    {sharedReason === null && !enabled("delete") && (
-                      <p className="max-w-64 text-xs text-muted-foreground">{reason("delete")}</p>
-                    )}
                   </div>
                 )}
               </div>
-              {sharedReason !== null && (
-                <p className="text-xs leading-5 text-muted-foreground">{sharedReason}</p>
-              )}
             </OperationRow>
             {confirmDelete && (
               <OperationRow className="block">

@@ -9,7 +9,11 @@ import {
 } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
-import { sessionCollection, type SessionCollection } from "@agentkib/runtime-protocol";
+import {
+  sessionCollection,
+  type SessionCollection,
+  type SubagentCatalog,
+} from "@agentkib/runtime-protocol";
 import { CodexSessions } from "./codex-sessions";
 import { codexRollouts } from "./codex-rollout-files";
 import { ClaudeSessions } from "./claude-sessions";
@@ -243,6 +247,13 @@ export class SessionReaders {
   subagentObservationId(parent: SubagentParent, id: string, observations: SubagentObservation[]) {
     return this.#subagents.observationId(parent, id, observations);
   }
+
+  async activitySubagentsForDevin(sessionId: string): Promise<SubagentCatalog | undefined> {
+    const source = await this.resolve(sessionId);
+    if (source.native.agent !== "devin" || source.native.sidechain) return;
+    return this.#devin.activitySubagents(source.native.native_ref, source.workspace, sessionId);
+  }
+
   async subagentsForSession(
     sessionId: string,
     childId?: string,

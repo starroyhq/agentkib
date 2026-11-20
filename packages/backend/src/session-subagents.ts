@@ -73,10 +73,14 @@ const name = (value: unknown, fallback: string) =>
     : fallback;
 const record = (value: unknown): value is Record<string, any> =>
   value !== null && typeof value === "object" && !Array.isArray(value);
-const scopedId = (parent: SubagentParent, salt: string, id: string) =>
+type SubagentIdentity = Pick<SubagentParent, "sessionId" | "nativeId" | "agent">;
+const scopedId = (parent: SubagentIdentity, salt: string, id: string) =>
   createHmac("sha256", salt)
     .update(`subagent:${parent.sessionId}:${parent.nativeId}:${parent.agent}:${id}`)
     .digest("hex");
+
+export const subagentObservationId = (parent: SubagentIdentity, salt: string, id: string) =>
+  scopedId(parent, salt, `call:${id}`);
 
 /** Safe synchronous projection for native progress publications; never forwards private fields. */
 export function projectSubagentObservations(
@@ -87,7 +91,7 @@ export function projectSubagentObservations(
   const ids = new Map(
     observations
       .filter((value) => safeId.test(value.id))
-      .map((value) => [value.id, scopedId(parent, salt, `call:${value.id}`)]),
+      .map((value) => [value.id, subagentObservationId(parent, salt, value.id)]),
   );
   const agents: SubagentSummary[] = observations
     .slice(0, MAX_CHILDREN)

@@ -1,7 +1,7 @@
 import { Context } from "./context";
 import { SessionReaders } from "./session-readers";
 import { SessionSubagentSnapshots, type SubagentSnapshot } from "./session-subagent-snapshots";
-import { subagentActivities } from "./session-activities";
+import { withSessionActivities } from "./session-activities";
 import {
   continueCursorNativeImport,
   CursorImportOutcomeUnknownError,
@@ -10,7 +10,7 @@ import {
 import { CursorBridge } from "./cursor-bridge";
 import { ClaudeBridge, type ClaudeBridgeTarget } from "./claude-bridge";
 import { readClaudeTranscriptObservation } from "./claude-context-usage";
-import { DSH_NATIVE_TURN_OBSERVED, DshBridge } from "./dsh-bridge";
+import { DSH_EXECUTION_MODE, DSH_NATIVE_TURN_OBSERVED, DshBridge } from "./dsh-bridge";
 import { readLocalDshHistory, readLocalDshTurn } from "./dsh-local-history";
 import { DshManagedRuntime, dshHome } from "./dsh-managed-runtime";
 import { dshSessionDirectory, probeDshWriter } from "./dsh-writer";
@@ -82,7 +82,7 @@ import { parameters } from "./rpc";
 import { z } from "zod";
 import os from "node:os";
 import { devinExecutable } from "./devin-executable";
-import { devinChildEnvironment } from "./devin-managed-runner";
+import { DEVIN_EXECUTION_MODE, devinChildEnvironment } from "./devin-managed-runner";
 import { BACKEND_INSPECT } from "./migration";
 import { RpcFault } from "./rpc";
 import { Commands } from "./commands";
@@ -98,6 +98,7 @@ import {
   SESSION_EVENT_NOTIFICATION,
   type RuntimeRpcError,
   type SessionStreamEvent,
+  type SubagentCatalog,
 } from "@agentkib/runtime-protocol";
 import { SessionStreamHub } from "./session-stream";
 import { mergeCodexFollowerSnapshot } from "./codex-follower-stream";
@@ -205,6 +206,7 @@ export class TypeScriptBackend {
   #sessionStream?: SessionStreamHub;
   #snapshotHistory?: SessionSnapshotHistory;
   #childSnapshots = new SessionSubagentSnapshots();
+  #activitySnapshots = new SessionSubagentSnapshots(2_000, new Set(["deepseek-harness", "devin"]));
   #cursorBridge?: CursorBridge;
   #claudeBridge?: ClaudeBridge;
   #dshBridge?: DshBridge;
@@ -273,6 +275,7 @@ export class TypeScriptBackend {
     this.#snapshotHistory?.invalidate();
     this.#snapshotHistory = undefined;
     this.#childSnapshots.invalidate();
+    this.#activitySnapshots.invalidate();
     this.#storage?.cancel();
     this.#storage = undefined;
     this.#quota = undefined;
@@ -740,7 +743,7 @@ export class TypeScriptBackend {
                 sessionId,
                 previousId,
                 itemId,
-                this.#withChildActivities(live, this.#childSnapshots.current(sessionId, live)),
+                withSessionActivities(live, this.#childSnapshots.current(sessionId, live)),
               ),
             catalogChanged: () =>
               this.#sessionStream?.publish("", "invalidate", { domains: ["catalog"] }),
@@ -1015,9 +1018,7 @@ export class TypeScriptBackend {
             // Keep optional child summaries on the existing parent stream. A failure must not
             // break the parent conversation or preserve an unverified running count.
             delete live.subagents;
-            const subagents = await this.#childSnapshots.read(sessionId, live, async () =>
-              this.#request(RUNTIME_METHODS.webRequest, { operation: "subagents", sessionId }),
-            );
+            const subagents = await this.#readStreamSubagents(sessionId, live);
             live.subagents = subagents;
             const readHistory = async () => {
               // Polled every 250 ms. A kept cursor per poll would push the cursors that
@@ -1086,7 +1087,12 @@ export class TypeScriptBackend {
                   : await readHistory();
             const follower = this.#webRead?.readFollowerSnapshot(sessionId);
             return {
-              live: this.#withChildActivities(live, subagents),
+              live: withSessionActivities(
+                live,
+                this.#usesStreamSubagents(live)
+                  ? subagents
+                  : this.#currentActivitySubagents(sessionId, live),
+              ),
               ...(follower ? mergeCodexFollowerSnapshot(history, follower) : history),
             };
           },
@@ -2929,17 +2935,55 @@ export class TypeScriptBackend {
     return this.#preferences();
   }
 
-  #withChildActivities(live: Record<string, unknown>, subagents?: SubagentSnapshot) {
-    if (live.executionMode !== "claude-managed" || !subagents || subagents.available === false)
-      return live;
-    const activities = Array.isArray(live.activities) ? live.activities : [];
-    return {
-      ...live,
-      activities: [
-        ...activities.filter((item) => item.kind === "background-task"),
-        ...subagentActivities(subagents),
-      ],
-    };
+  #usesStreamSubagents(live: Record<string, unknown>): boolean {
+    return (
+      live.executionMode === "claude-managed" ||
+      live.executionMode === "codex-managed" ||
+      live.executionMode === "codex-follower"
+    );
+  }
+
+  #activityScope(
+    sessionId: string,
+    live: Record<string, unknown>,
+  ): (Record<string, unknown> & { activityBinding?: string }) | undefined {
+    if (live.executionMode === DEVIN_EXECUTION_MODE) return { ...live, activityBinding: undefined };
+    if (live.executionMode !== DSH_EXECUTION_MODE) return undefined;
+    const activityBinding = this.#dshBridge?.activitySubagentScope(sessionId);
+    return activityBinding ? { ...live, activityBinding } : undefined;
+  }
+
+  async #readStreamSubagents(sessionId: string, live: Record<string, unknown>) {
+    const scope = this.#activityScope(sessionId, live);
+    const readLegacy = async () =>
+      this.#request(RUNTIME_METHODS.webRequest, { operation: "subagents", sessionId });
+    let devinRead: Promise<SubagentCatalog | undefined> | undefined;
+    const readDevin = async () =>
+      (devinRead ??= this.#sessions?.activitySubagentsForDevin(sessionId));
+    // Share the Devin chain read. The legacy stream cache still applies its original agent filter.
+    const legacy = this.#childSnapshots.read(
+      sessionId,
+      live,
+      live.executionMode === DEVIN_EXECUTION_MODE ? readDevin : readLegacy,
+    );
+    const activities = scope
+      ? this.#activitySnapshots.read(sessionId, scope, async () =>
+          scope.activityBinding
+            ? this.#dshBridge?.activitySubagents(sessionId, scope.activityBinding)
+            : readDevin(),
+        )
+      : undefined;
+    const [subagents] = await Promise.all([legacy, activities]);
+    return subagents;
+  }
+
+  #currentActivitySubagents(
+    sessionId: string,
+    live: Record<string, unknown>,
+  ): SubagentSnapshot | undefined {
+    if (this.#usesStreamSubagents(live)) return this.#childSnapshots.current(sessionId, live);
+    const scope = this.#activityScope(sessionId, live);
+    return scope ? this.#activitySnapshots.current(sessionId, scope) : undefined;
   }
 
   #publishSession(
@@ -2949,15 +2993,21 @@ export class TypeScriptBackend {
     live?: Record<string, unknown>,
     textItem?: Record<string, unknown>,
   ) {
-    if (type === "invalidate") this.#childSnapshots.invalidate(sessionId || undefined);
-    else {
+    if (type === "invalidate") {
+      this.#childSnapshots.invalidate(sessionId || undefined);
+      this.#activitySnapshots.invalidate(sessionId || undefined);
+    } else {
       const state = live ?? payload;
       this.#childSnapshots.publish(sessionId, state);
       // CLI notifications can have partial child lists. Keep the children
       // already known in this binding when projecting a replacement activities array.
-      const withActivities = this.#withChildActivities(
+      const withActivities = withSessionActivities(
         state,
-        this.#childSnapshots.current(sessionId, state),
+        this.#currentActivitySubagents(sessionId, state),
+        type === "state" &&
+          (this.#usesStreamSubagents(state) ||
+            state.executionMode === DSH_EXECUTION_MODE ||
+            state.executionMode === DEVIN_EXECUTION_MODE),
       );
       if (payload === state) payload = withActivities;
       if (live) live = withActivities;

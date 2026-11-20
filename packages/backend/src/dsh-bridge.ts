@@ -33,6 +33,7 @@ import {
   type DshBridgeSessionState,
   type DshBridgeSessionSummary,
   type SessionStreamEvent,
+  type SubagentCatalog,
 } from "@agentkib/runtime-protocol";
 import { acquirePortableFileLease } from "./managed-session-lock";
 import {
@@ -63,6 +64,7 @@ const OFFLINE_MS = 45_000;
 const DISCONNECT_GRACE_MS = 3_000;
 const POLL_MS = 20_000;
 const HISTORY_TIMEOUT_MS = 15_000;
+const ACTIVITY_READ_TIMEOUT_MS = 2_000;
 /** DSH lists its Agent presets from memory; the new-task form waits for them. */
 const PRESETS_TIMEOUT_MS = 5_000;
 const CREATE_MODELS_TIMEOUT_MS = 5_000;
@@ -636,6 +638,7 @@ type CommandWaiter = {
 type Runtime = {
   token: string;
   runtimeId: string;
+  activityScope: string;
   dshVersion: string;
   pluginVersion: string;
   pid: number;
@@ -660,6 +663,7 @@ type Runtime = {
   commands: Map<string, CommandWaiter>;
 };
 type Inflight = { requestId: string; commandId: string; runtime: string };
+type ChildListing = { ids: Map<string, string>; catalog: SubagentCatalog };
 
 export interface DshBridgeOptions {
   dataDir: string;
@@ -1014,10 +1018,9 @@ export class DshBridge {
   /** Likewise the permission presets, so a preset change names one the user was shown. */
   #permissions = new Map<string, DshPermissions>();
   /** Each parent's last listing of its subagents, with the native session behind each ID. */
-  #children = new Map<
-    string,
-    { runtime: string; at: number; ids: Map<string, string>; catalog: Record<string, unknown> }
-  >();
+  #children = new Map<string, { runtime: string; at: number } & ChildListing>();
+  #activityChildren = new Map<string, { scope: string; ids: Map<string, string> }>();
+  #childReads = new Map<string, { runtime: Runtime; promise: Promise<ChildListing | undefined> }>();
   readonly #subagentSalt = randomBytes(32);
   #answered = new Map<string, { by: "native" | "agentkib" | "cancelled"; at: number }>();
   /** Pages by `<session>\n<cursor>`, oldest first. */
@@ -3102,12 +3105,60 @@ export class DshBridge {
   #childId(parent: string, child: string): string {
     return createHmac("sha256", this.#subagentSalt).update(`${parent}\0${child}`).digest("hex");
   }
+
+  #activitySubagentRuntime(nativeId: string): Runtime | undefined {
+    const { runtime } = this.#state(nativeId);
+    return runtime?.services.subagents === true ? runtime : undefined;
+  }
+
+  activitySubagentScope(id: string): string | undefined {
+    const nativeId = this.#ids.get(id);
+    return nativeId ? this.#activitySubagentRuntime(nativeId)?.activityScope : undefined;
+  }
+
+  /** Activities never reuse the phone's idle cache or a listing from a disconnected runtime. */
+  async activitySubagents(
+    id: string,
+    expectedScope?: string,
+  ): Promise<SubagentCatalog | undefined> {
+    const nativeId = this.#ids.get(id);
+    if (!nativeId) return;
+    const runtime = this.#activitySubagentRuntime(nativeId);
+    if (!runtime || (expectedScope !== undefined && expectedScope !== runtime.activityScope))
+      return;
+    // A slow optional read must not stall the live snapshot. Other callers may still
+    // use the same command until its regular deadline, without sending another one.
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const listing = await Promise.race([
+      this.#readChildren(id, nativeId, runtime),
+      new Promise<undefined>((resolve) => {
+        timer = setTimeout(() => resolve(undefined), ACTIVITY_READ_TIMEOUT_MS);
+        timer.unref();
+      }),
+    ]).finally(() => clearTimeout(timer));
+    if (this.#activitySubagentRuntime(nativeId) !== runtime || !listing) return;
+    this.#activityChildren.set(nativeId, { scope: runtime.activityScope, ids: listing.ids });
+    if (this.#activityChildren.size > 64)
+      this.#activityChildren.delete(this.#activityChildren.keys().next().value!);
+    return listing.catalog;
+  }
+
+  #readChildren(id: string, nativeId: string, runtime: Runtime): Promise<ChildListing | undefined> {
+    const current = this.#childReads.get(id);
+    if (current?.runtime === runtime) return current.promise;
+    const promise = this.#queryChildren(id, nativeId, runtime).finally(() => {
+      if (this.#childReads.get(id)?.promise === promise) this.#childReads.delete(id);
+    });
+    this.#childReads.set(id, { runtime, promise });
+    return promise;
+  }
+
   /**
    * The direct children DSH lists for a session; DSH shows them read-only too. Phones ask every
    * few seconds, so a listing is reused briefly, longer for a parent that is not running.
    */
-  async #subagents(id: string, nativeId: string): Promise<Record<string, unknown>> {
-    const empty = { version: 1, sessionId: id, agents: [], truncated: false };
+  async #subagents(id: string, nativeId: string): Promise<SubagentCatalog> {
+    const empty: SubagentCatalog = { version: 1, sessionId: id, agents: [], truncated: false };
     const runtime = this.#controlRuntime(nativeId);
     if (!runtime || runtime.services.subagents !== true) {
       this.#children.delete(nativeId);
@@ -3117,30 +3168,43 @@ export class DshBridge {
     const ttl = this.#state(nativeId).state?.live ? 2_000 : 30_000;
     if (cached && cached.runtime === runtime.token && Date.now() - cached.at < ttl)
       return cached.catalog;
+    const listing = await this.#readChildren(id, nativeId, runtime);
+    if (!listing) return cached?.catalog ?? empty;
+    this.#children.set(nativeId, { runtime: runtime.token, at: Date.now(), ...listing });
+    if (this.#children.size > 64) this.#children.delete(this.#children.keys().next().value!);
+    return listing.catalog;
+  }
+
+  async #queryChildren(
+    id: string,
+    nativeId: string,
+    runtime: Runtime,
+  ): Promise<ChildListing | undefined> {
     const result = await this.#command(runtime, {
       commandId: randomUUID(),
       type: "subagents",
       sessionId: nativeId,
     });
     const parsed = result.ok ? subagentsSchema.safeParse(result.value) : null;
-    if (!parsed?.success) return cached?.catalog ?? empty;
+    if (!parsed?.success) return;
     const ids = new Map<string, string>();
-    const agents = parsed.data.agents.map((child) => {
+    const agents: SubagentCatalog["agents"] = parsed.data.agents.map((child) => {
       const childId = this.#childId(nativeId, child.sessionId);
+      const updatedAt = iso(child.createdAt);
       ids.set(childId, child.sessionId);
       return {
         id: childId,
         name: child.label?.replace(/[\p{Cc}\p{Cf}]/gu, "").trim() || "DeepSeek Harness",
         agent: "deepseek-harness",
         status: child.status,
-        ...(iso(child.createdAt) ? { updatedAt: iso(child.createdAt) } : {}),
+        ...(updatedAt ? { updatedAt } : {}),
         readable: true,
       };
     });
-    const catalog = { version: 1, sessionId: id, agents, truncated: parsed.data.truncated };
-    this.#children.set(nativeId, { runtime: runtime.token, at: Date.now(), ids, catalog });
-    if (this.#children.size > 64) this.#children.delete(this.#children.keys().next().value!);
-    return catalog;
+    return {
+      ids,
+      catalog: { version: 1, sessionId: id, agents, truncated: parsed.data.truncated },
+    };
   }
   /** One page of a child's history, read like any DSH session's. */
   async #subagentEvents(
@@ -3161,6 +3225,11 @@ export class DshBridge {
     const cursor =
       value.cursor === null || value.cursor === undefined ? null : String(value.cursor);
     let child = this.#children.get(nativeId)?.ids.get(childId);
+    if (!child) {
+      const activity = this.#activityChildren.get(nativeId);
+      if (activity && this.#activitySubagentRuntime(nativeId)?.activityScope === activity.scope)
+        child = activity.ids.get(childId);
+    }
     if (!child) {
       await this.#subagents(id, nativeId);
       child = this.#children.get(nativeId)?.ids.get(childId);
@@ -4233,6 +4302,7 @@ export class DshBridge {
           this.#runtimes.set(token, {
             token,
             runtimeId: hello.runtimeId,
+            activityScope: randomUUID(),
             dshVersion:
               dshBridgeCompatibility(hello.dshVersion) === "invalid" ? "unknown" : hello.dshVersion,
             pluginVersion: hello.pluginVersion,

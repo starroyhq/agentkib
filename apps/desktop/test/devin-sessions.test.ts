@@ -4,9 +4,12 @@ import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { RUNTIME_METHODS, type SessionSubscription } from "@agentkib/runtime-protocol";
 import { DevinSessions } from "../../../packages/backend/src/devin-sessions";
 import { sources } from "../../../packages/backend/src/context-sources";
+import { BackendStore } from "../../../packages/backend/src/store";
 import { AUTO_CONTINUE_TEXT } from "../../../packages/backend/src/usage-limit";
+import { startBackend } from "./session-baseline/harness";
 
 const cleanup: (() => void)[] = [];
 afterEach(() => {
@@ -639,5 +642,102 @@ describe("Devin subagents", () => {
   it("has no subagents where Devin keeps no subagent table", () => {
     const { home, project, id } = fixture();
     expect(new DevinSessions({ HOME: home }).subagents(id, project, "parent-1").agents).toEqual([]);
+  });
+
+  it("projects unknown Devin activities and links only readable child chains", async () => {
+    const { home, project, file, id } = fixture();
+    const db = new DatabaseSync(file);
+    db.exec(`CREATE TABLE subagent_heads (session_id TEXT NOT NULL, agent_id TEXT NOT NULL,
+      chain_node_id INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+      PRIMARY KEY (session_id, agent_id))`);
+    const node = db.prepare("INSERT INTO message_nodes VALUES (NULL,?,?,?,?,?,?)");
+    node.run(
+      id,
+      40,
+      null,
+      JSON.stringify({
+        role: "user",
+        content: "Verify the build",
+        metadata: { is_user_input: true },
+      }),
+      1_794_400_100,
+      null,
+    );
+    node.run("far-away", 50, null, '{"role":"system"}', 1_794_400_100, null);
+    const head = db.prepare("INSERT INTO subagent_heads VALUES (?,?,?,?)");
+    head.run(id, "readable-native-child", 40, 1_794_400_102);
+    head.run(id, "foreign-native-child", 50, 1_794_400_101);
+    db.close();
+
+    const data = path.join(home, "backend");
+    const environment = {
+      HOME: home,
+      DEVIN_SESSIONS_DIR: path.dirname(path.dirname(file)),
+      PATH: path.join(home, "bin"),
+    };
+    const runtime = await startBackend({
+      data,
+      workspace: project,
+      environment,
+      indexSessions: true,
+    });
+    try {
+      const store = new BackendStore(path.join(data, "agentkib.db"));
+      const sessionId = store.sessions.id("devin", id);
+      try {
+        store.sessions.sync(
+          "workspace",
+          "devin",
+          new DevinSessions(environment).list(project).sessions,
+        );
+      } finally {
+        store.close();
+      }
+      const readable = DevinSessions.subagentId(sessionId, "readable-native-child");
+      const foreign = DevinSessions.subagentId(sessionId, "foreign-native-child");
+      const web = (operation: string, fields: Record<string, unknown> = {}) =>
+        runtime.rpc(RUNTIME_METHODS.webRequest, { operation, sessionId, ...fields });
+      const subscription = (await runtime.rpc(RUNTIME_METHODS.sessionsSubscribe, {
+        sessionId,
+      })) as SessionSubscription;
+      try {
+        const snapshot = subscription.events.find(({ type }) => type === "snapshot")?.payload
+          .live as
+          | {
+              activities: { childId?: string }[];
+            }
+          | undefined;
+        expect(snapshot).toMatchObject({
+          subagents: { agents: [], available: false },
+          activities: [
+            {
+              id: readable,
+              childId: readable,
+              kind: "subagent",
+              title: "Verify the build",
+              status: "unknown",
+            },
+            { id: foreign, kind: "subagent", title: "Devin", status: "unknown" },
+          ],
+        });
+        expect(snapshot?.activities[1]).not.toHaveProperty("childId");
+        expect(await web("live", { experimentalEnabled: true })).not.toHaveProperty("activities");
+        expect(await web("subagent-events", { subagentId: readable })).toMatchObject({
+          events: [{ content: "Verify the build" }],
+        });
+        expect(await web("subagents")).toMatchObject({
+          agents: [
+            { id: readable, readable: true },
+            { id: foreign, readable: true },
+          ],
+        });
+      } finally {
+        await runtime.rpc(RUNTIME_METHODS.sessionsUnsubscribe, {
+          subscriptionId: subscription.subscriptionId,
+        });
+      }
+    } finally {
+      await runtime.close();
+    }
   });
 });

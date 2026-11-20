@@ -253,6 +253,10 @@ describe("parent stream subagent snapshot cache", () => {
     { previous: live(), next: live("replacement-native") },
     { previous: live(), next: live("native-parent", "replacement-boot") },
     { previous: live(), next: { ...live(), workspaceId: "replacement-workspace" } },
+    {
+      previous: { ...live(), activityBinding: "previous-connection" },
+      next: { ...live(), activityBinding: "replacement-connection" },
+    },
   ])(
     "never places a publication from a replacement parent scope into the old poll ($next)",
     async ({ previous, next }) => {

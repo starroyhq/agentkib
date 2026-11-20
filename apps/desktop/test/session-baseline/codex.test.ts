@@ -1,9 +1,23 @@
 // @vitest-environment node
 import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import {
+  appendFileSync,
+  mkdirSync,
+  mkdtempSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
+import {
+  RUNTIME_METHODS,
+  sessionProviderDeclaration,
+  type SessionActivity,
+  type SessionSubscription,
+} from "@agentkib/runtime-protocol";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CodexAppServerSession } from "../../../../packages/backend/src/codex-app-server";
 import { CodexDesktopApp } from "../../../../packages/backend/src/codex-desktop-app";
@@ -333,6 +347,119 @@ describe("Codex session baseline through HTTP and backend RPC", () => {
       sendEnabled: true,
       stopEnabled: false,
       turnId: null,
+    });
+  });
+
+  it("publishes parent-scoped Codex subagent activity in stream snapshots and preserves child history", async () => {
+    const sessionId = await create();
+    const childNativeId = randomUUID();
+    const childTurnId = "offline-worker-turn";
+    const codexHome = join(root, "home", ".codex");
+    const sessions = join(codexHome, "sessions");
+    const writeRollout = (id: string, source: unknown, rows: Body[]) => {
+      const transcript = join(sessions, `rollout-${id}.jsonl`);
+      writeFileSync(
+        transcript,
+        [{ type: "session_meta", payload: { id, cwd: workspace, source } }, ...rows]
+          .map((row) => JSON.stringify(row))
+          .join("\n") + "\n",
+      );
+      return transcript;
+    };
+    mkdirSync(sessions, { recursive: true });
+    const parent = writeRollout(threadId, "cli", [
+      { type: "event_msg", payload: { type: "task_started", turn_id: turnId } },
+      {
+        type: "response_item",
+        payload: { type: "SubAgentActivity", kind: "started", agent_thread_id: childNativeId },
+      },
+    ]);
+    const childSource = { subagent: { thread_spawn: { parent_thread_id: threadId } } };
+    const child = writeRollout(childNativeId, childSource, [
+      { type: "event_msg", payload: { type: "task_started", turn_id: childTurnId } },
+      {
+        type: "event_msg",
+        timestamp: "2026-11-20T00:00:00Z",
+        payload: { type: "agent_message", message: "Offline child result" },
+      },
+    ]);
+    const state = new DatabaseSync(join(codexHome, "state_5.sqlite"));
+    try {
+      state.exec(
+        "CREATE TABLE threads(id TEXT PRIMARY KEY,rollout_path TEXT,cwd TEXT,title TEXT,source TEXT)",
+      );
+      const add = state.prepare("INSERT INTO threads VALUES(?,?,?,?,?)");
+      add.run(threadId, parent, workspace, "Offline parent", JSON.stringify("cli"));
+      add.run(childNativeId, child, workspace, "Offline worker", JSON.stringify(childSource));
+    } finally {
+      state.close();
+    }
+
+    expect(sessionProviderDeclaration("codex")?.activities).toEqual({
+      kinds: ["subagent"],
+      canStopIndividually: false,
+      canOpenSubagentHistory: true,
+    });
+    await control(sessionId, "/send", "send", { text: "Start parent work" });
+    expect(await live(sessionId)).not.toHaveProperty("activities");
+    const children = await host.http(`/subagents?sessionId=${sessionId}`);
+    expect(children).toMatchObject({
+      status: 200,
+      body: {
+        agents: [
+          { id: expect.stringMatching(/^[a-f0-9]{64}$/), status: "running", readable: true },
+        ],
+      },
+    });
+    const rpc = backend!.rpc;
+    const streamLive = async () => {
+      const subscription = (await rpc(RUNTIME_METHODS.sessionsSubscribe, {
+        sessionId,
+      })) as SessionSubscription;
+      try {
+        return subscription.events.find(({ type }) => type === "snapshot")?.payload.live as Record<
+          string,
+          unknown
+        >;
+      } finally {
+        await rpc(RUNTIME_METHODS.sessionsUnsubscribe, {
+          subscriptionId: subscription.subscriptionId,
+        });
+      }
+    };
+    const published = (await streamLive()).activities as SessionActivity[];
+    expect(published).toMatchObject([
+      { id: expect.any(String), kind: "subagent", title: "Offline worker", status: "running" },
+    ]);
+    const activity = published[0]!;
+    expect(activity.childId).toMatch(/^[a-f0-9]{64}$/);
+    expect(activity.actions).toBeUndefined();
+    expect(JSON.stringify(published)).not.toContain(childNativeId);
+    expect(JSON.stringify(published)).not.toContain(workspace);
+    expect(children).toMatchObject({
+      body: { agents: [{ id: activity.childId, status: "running", readable: true }] },
+    });
+    expect(
+      await host.http(`/subagent/events?sessionId=${sessionId}&subagentId=${activity.childId}`),
+    ).toMatchObject({
+      status: 200,
+      body: {
+        subagentId: activity.childId,
+        events: expect.arrayContaining([
+          expect.objectContaining({ content: "Offline child result" }),
+        ]),
+      },
+    });
+
+    appendFileSync(
+      child,
+      JSON.stringify({
+        type: "event_msg",
+        payload: { type: "task_complete", turn_id: childTurnId },
+      }) + "\n",
+    );
+    await expect.poll(streamLive, { timeout: 3_500 }).toMatchObject({
+      activities: [{ id: activity.id, childId: activity.childId, status: "completed" }],
     });
   });
 

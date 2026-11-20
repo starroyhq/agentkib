@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { LoaderCircle } from "lucide-react";
 import type { HistorySearchStatus } from "@agentkib/web-client";
 import { historyCopy } from "@/features/sessions/conversation/features/history/history-copy";
 import { HistoryCoverageStatus } from "@/features/sessions/conversation/features/history/history-search";
@@ -9,13 +10,17 @@ import {
 import { useI18n } from "@/core/useI18n";
 import { Button } from "@/components/ui/button";
 import { SettingsSection, SettingsNotice } from "./components/SettingsLayout";
+
+type IndexOperation = "toggle" | "clear" | "rebuild";
+
 export function HistorySearchSettings() {
   const { locale } = useI18n();
   const c = historyCopy[locale];
   const [client] = useState(createDesktopConversationClient);
   const [status, setStatus] = useState<HistorySearchStatus>();
   const [supported, setSupported] = useState(false);
-  const [busy, setBusy] = useState(false);
+  const [activeOperation, setActiveOperation] = useState<IndexOperation>();
+  const busy = activeOperation !== undefined;
   const [error, setError] = useState(false);
   const epoch = useRef(0);
   const mounted = useRef(false);
@@ -73,13 +78,13 @@ export function HistorySearchSettings() {
       clearInterval(timer);
     };
   }, [client, supported, status?.enabled, busy]);
-  async function run(operation: "toggle" | "clear" | "rebuild") {
+  async function run(operation: IndexOperation) {
     if (mutating.current) return;
     mutating.current = true;
     const generation = ++epoch.current;
     for (const read of reads.current) read.abort();
     reads.current.clear();
-    setBusy(true);
+    setActiveOperation(operation);
     setError(false);
     try {
       const value =
@@ -93,10 +98,12 @@ export function HistorySearchSettings() {
       if (mounted.current && generation === epoch.current) setError(true);
     } finally {
       mutating.current = false;
-      if (mounted.current && generation === epoch.current) setBusy(false);
+      if (mounted.current && generation === epoch.current) setActiveOperation(undefined);
     }
   }
   if (!supported) return null;
+  const spinner = <LoaderCircle className="motion-safe:animate-spin" aria-hidden />;
+  const loadingTitle = busy ? c.loading : undefined;
   return (
     <SettingsSection title={c.settings}>
       <p className="text-sm text-muted-foreground">{c.settingsInfo}</p>
@@ -109,25 +116,37 @@ export function HistorySearchSettings() {
         </>
       )}
       <div className="flex flex-wrap gap-2">
-        <Button variant="outline" disabled={busy || !status} onClick={() => void run("toggle")}>
+        <Button
+          variant="outline"
+          disabled={busy || !status}
+          title={loadingTitle}
+          aria-busy={activeOperation === "toggle" || undefined}
+          onClick={() => void run("toggle")}
+        >
+          {activeOperation === "toggle" && spinner}
           {status?.enabled ? c.disable : c.enable}
         </Button>
-        <Button variant="outline" disabled={busy} onClick={() => void run("clear")}>
+        <Button
+          variant="outline"
+          disabled={busy}
+          title={loadingTitle}
+          aria-busy={activeOperation === "clear" || undefined}
+          onClick={() => void run("clear")}
+        >
+          {activeOperation === "clear" && spinner}
           {c.clear}
         </Button>
         <Button
           variant="outline"
           disabled={busy || !status?.enabled}
+          title={loadingTitle}
+          aria-busy={activeOperation === "rebuild" || undefined}
           onClick={() => void run("rebuild")}
         >
+          {activeOperation === "rebuild" && spinner}
           {c.rebuild}
         </Button>
       </div>
-      {busy && (
-        <p role="status" className="text-xs">
-          {c.loading}
-        </p>
-      )}
       {error && (
         <SettingsNotice tone="error" role="alert">
           {c.error}

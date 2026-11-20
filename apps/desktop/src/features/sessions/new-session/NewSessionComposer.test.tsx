@@ -19,6 +19,7 @@ import {
   planModeCopy,
 } from "@agentkib/session-ui";
 import { initializeI18n } from "@/core/i18n";
+import { composerLayoutCopy } from "../conversation/features/sessions/composer-layout-copy";
 import { takeNewSessionDraft } from "../conversation/features/sessions/new-session-draft";
 import { NewSessionComposer, type NewSessionComposerProps } from "./NewSessionComposer";
 
@@ -451,14 +452,21 @@ describe("NewSessionComposer", () => {
       target: { value: "4000" },
     });
     await user.click(screen.getByRole("button", { name: goalCopy.saveDraft }));
-    expect(screen.getByRole("button", { name: "Start goal" })).toBeDisabled();
-    expect(screen.getByText(goalCopy.planNeedsMessage)).toBeVisible();
+    const startGoal = screen.getByRole("button", { name: "Start goal" });
+    expect(startGoal).toBeDisabled();
+    expect(startGoal).toHaveAttribute("title", goalCopy.planNeedsMessage);
+    expect(startGoal).not.toHaveClass("disabled:pointer-events-none");
+    expect(screen.queryByText(goalCopy.planNeedsMessage)).not.toBeInTheDocument();
     await user.click(addContext());
     await user.click(await screen.findByRole("button", { name: addCopy.filesAndFolders }));
     await user.click(await screen.findByRole("checkbox", { name: /docs/ }));
     await user.click(screen.getByRole("button", { name: "Open folder: docs" }));
     await user.click(await screen.findByRole("checkbox", { name: /Guide.md/ }));
     await user.click(screen.getByRole("button", { name: "Done" }));
+    const resourceNeedsMessage = composerLayoutCopy["en-US"].resourceNeedsMessage;
+    expect(startGoal).toBeDisabled();
+    expect(startGoal).toHaveAttribute("title", resourceNeedsMessage);
+    expect(screen.queryByText(resourceNeedsMessage)).not.toBeInTheDocument();
     expect(doubles.client.newSessionResources.mock.calls.map((call) => call.slice(0, 3))).toEqual([
       ["north", "codex", undefined],
       ["north", "codex", "opaque-nav"],
@@ -466,6 +474,7 @@ describe("NewSessionComposer", () => {
     expect(doubles.client.managedAction).not.toHaveBeenCalled();
 
     await write("Review this project before updating the docs");
+    expect(send()).toHaveAttribute("title", "Send");
     await user.click(send());
     await waitFor(() => expect(props.onCreated).toHaveBeenCalledWith("created"));
     expect(doubles.client.managedAction).toHaveBeenCalledExactlyOnceWith("create", {

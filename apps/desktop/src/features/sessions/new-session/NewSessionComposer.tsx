@@ -271,6 +271,13 @@ export function NewSessionComposer(props: NewSessionComposerProps) {
   const resourceNeedsMessage = resources.length > 0 && !hasMessage;
   const resourceNeedsReselection = resources.some((item) => !item.available);
   const goalNeedsMessage = !!goal && !hasMessage && planning && planField === "mode";
+  const sendDisabledReason = resourceNeedsReselection
+    ? undefined
+    : resourceNeedsMessage
+      ? composerLayoutCopy[locale].resourceNeedsMessage
+      : goalNeedsMessage
+        ? goalCopy.planNeedsMessage
+        : undefined;
   const sendLabel = goal && !hasMessage ? codexCopy[locale].goalCreate : copy.send;
   const canSend =
     session.ready &&
@@ -565,13 +572,9 @@ export function NewSessionComposer(props: NewSessionComposerProps) {
                 add.setResources(resources.filter((item) => item.id !== id))
               }
             />
-            {(resourceNeedsReselection || resourceNeedsMessage || goalNeedsMessage) && (
+            {resourceNeedsReselection && (
               <p className="px-2 text-xs text-muted-foreground">
-                {resourceNeedsReselection
-                  ? codexCopy[locale].resourceRemoved
-                  : resourceNeedsMessage
-                    ? composerLayoutCopy[locale].resourceNeedsMessage
-                    : goalCopy.planNeedsMessage}
+                {codexCopy[locale].resourceRemoved}
               </p>
             )}
           </>
@@ -687,7 +690,13 @@ export function NewSessionComposer(props: NewSessionComposerProps) {
               ) : undefined
             }
             action={
-              <ComposerPrimaryAction label={sendLabel} disabled={!canSend} loading={locked} />
+              <ComposerPrimaryAction
+                label={sendLabel}
+                title={sendDisabledReason}
+                showDisabledTitle={!!sendDisabledReason}
+                disabled={!canSend}
+                loading={locked}
+              />
             }
           />
         }

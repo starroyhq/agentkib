@@ -118,7 +118,7 @@ describe("trusted Claude owner boundary", () => {
     ]);
     expect(deps.receipt).not.toHaveBeenCalled();
   });
-  it("opens Worker assignment for the row's local project and checks the group again on save", async () => {
+  it("checks the current local project group against the trusted catalog on assignment", async () => {
     const workspace = (id: string, kind: "primary" | "worktree") => ({
       id,
       name: id,
@@ -146,7 +146,6 @@ describe("trusted Claude owner boundary", () => {
       sessions: [
         session("lead", "project", { agent: "claude-code" }),
         session("api", "branch", { origin: "execution" }),
-        session("other-claude", "project", { agent: "claude-code" }),
         session("other-workspace", "unrelated"),
         session("already-worker", "project", {
           orchestration: { role: "worker", leadId: "another-lead" },
@@ -155,22 +154,10 @@ describe("trusted Claude owner boundary", () => {
         session("remote", "project", { remote: { host_id: "another-host" } }),
       ],
     });
-    await localClaudeRequest(deps, {
-      operation: "lead-assignment-options",
-      sessionId: "lead",
-      candidateIds: ["other-workspace"],
-    });
-    expect(deps.managed).toHaveBeenLastCalledWith({
-      operation: "lead-assignment-options",
-      sessionId: "lead",
-      candidateIds: expect.arrayContaining(["api", "other-claude", "already-worker"]),
-      deviceId: "agentkib-local-owner",
-    });
-    const request = vi.mocked(deps.managed).mock.lastCall?.[0] as { candidateIds: string[] };
-    expect(request.candidateIds).toHaveLength(3);
-
     for (const [worker, reason] of [
       ["other-workspace", "worker-outside-project"],
+      ["archived", "worker-outside-project"],
+      ["remote", "worker-outside-project"],
       ["already-worker", "session-is-a-worker"],
     ])
       await expect(
@@ -180,7 +167,7 @@ describe("trusted Claude owner boundary", () => {
           workers: [worker],
         }),
       ).rejects.toThrow(reason);
-    expect(deps.managed).toHaveBeenCalledTimes(1);
+    expect(deps.managed).not.toHaveBeenCalled();
 
     await localClaudeRequest(deps, {
       operation: "lead-assign-workers",
@@ -189,47 +176,105 @@ describe("trusted Claude owner boundary", () => {
       deviceId: "phone",
       scope: { workspaceIds: ["unrelated"] },
     });
-    expect(deps.managed).toHaveBeenLastCalledWith({
+    expect(deps.managed).toHaveBeenCalledExactlyOnceWith({
       operation: "lead-assign-workers",
       sessionId: "lead",
       workers: ["api"],
       deviceId: "agentkib-local-owner",
     });
-    expect(deps.runtime).toHaveBeenCalledTimes(4);
+    expect(vi.mocked(deps.runtime).mock.calls).toEqual(
+      Array.from({ length: 5 }, () => [{ operation: "catalog" }]),
+    );
   });
-  it("keeps the saved ID for a Worker shown under a managed session alias", async () => {
+
+  it("forwards a batch of ten Workers and rejects eleven", async () => {
+    const workers = Array.from({ length: 11 }, (_, index) => `worker-${index + 1}`);
+    vi.mocked(deps.runtime).mockResolvedValue({
+      workspaces: [{ id: "project", name: "Project", path: "/test/project" }],
+      sessions: [
+        { id: "lead", workspace_id: "project", agent: "claude-code", availability: "readable" },
+        ...workers.map((id) => ({
+          id,
+          workspace_id: "project",
+          agent: "codex",
+          availability: "readable",
+        })),
+      ],
+    });
+    const request = { operation: "lead-assign-workers", sessionId: "lead" };
+    const selected = workers.slice(0, 10);
+    await localClaudeRequest(deps, { ...request, workers: selected });
+    expect(deps.managed).toHaveBeenCalledExactlyOnceWith({
+      ...request,
+      workers: selected,
+      deviceId: "agentkib-local-owner",
+    });
+    await expect(localClaudeRequest(deps, { ...request, workers })).rejects.toThrow(
+      "invalid-lead-request",
+    );
+    expect(deps.managed).toHaveBeenCalledTimes(1);
+  });
+
+  it("checks the sidebar's unique candidate IDs and aliases without rereading the catalog", async () => {
     const request = { operation: "lead-assignment-options", sessionId: "lead" };
     const assigned = {
       sessionId: "native",
       reason: "session-is-a-worker",
       assigned: true,
     };
-    vi.mocked(deps.runtime).mockResolvedValue({
-      workspaces: [{ id: "w", name: "App", path: "/test/app" }],
-      sessions: [
-        { id: "lead", workspace_id: "w", agent: "claude-code", availability: "readable" },
-        {
-          id: "managed",
-          workspace_id: "w",
-          agent: "codex",
-          availability: "readable",
-          indexedSessionIds: ["native"],
-        },
-      ],
-    });
-    vi.mocked(deps.managed).mockResolvedValueOnce({
+    const options = {
       capable: true,
-      remaining: 1,
+      remaining: 10,
       candidates: [{ sessionId: "managed", reason: null }, assigned],
-    });
-    await expect(localClaudeRequest(deps, request)).resolves.toMatchObject({
-      candidates: [assigned],
-    });
-    expect(deps.managed).toHaveBeenLastCalledWith({
+    };
+    vi.mocked(deps.managed).mockResolvedValueOnce(options);
+    await expect(
+      localClaudeRequest(deps, {
+        ...request,
+        candidateIds: ["managed", "native", "managed"],
+        deviceId: "phone",
+      }),
+    ).resolves.toEqual(options);
+    expect(deps.managed).toHaveBeenCalledExactlyOnceWith({
       ...request,
       candidateIds: ["managed", "native"],
       deviceId: "agentkib-local-owner",
     });
+    expect(deps.runtime).not.toHaveBeenCalled();
+  });
+
+  it("reads available slots when the sidebar has no Worker candidates", async () => {
+    const request = {
+      operation: "lead-assignment-options",
+      sessionId: "lead",
+      candidateIds: [],
+    };
+    await localClaudeRequest(deps, request);
+    expect(deps.managed).toHaveBeenCalledExactlyOnceWith({
+      ...request,
+      deviceId: "agentkib-local-owner",
+    });
+    expect(deps.runtime).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [undefined, "invalid-lead-request"],
+    ["worker", "invalid-lead-request"],
+    [Array<string>(20_001).fill("worker"), "invalid-lead-request"],
+    [Array<string>(1), "invalid_field"],
+    [[""], "invalid_field"],
+    [[42], "invalid_field"],
+    [["x".repeat(257)], "invalid_field"],
+  ])("rejects malformed Worker candidate IDs (%#)", async (candidateIds, reason) => {
+    await expect(
+      localClaudeRequest(deps, {
+        operation: "lead-assignment-options",
+        sessionId: "lead",
+        candidateIds,
+      }),
+    ).rejects.toThrow(reason);
+    expect(deps.managed).not.toHaveBeenCalled();
+    expect(deps.runtime).not.toHaveBeenCalled();
   });
   it("rejects bridge management for a session outside the Claude catalog", async () => {
     await expect(

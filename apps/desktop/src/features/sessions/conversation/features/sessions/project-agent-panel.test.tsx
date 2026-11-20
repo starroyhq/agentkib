@@ -165,17 +165,19 @@ describe("Project Agent panel", () => {
     ).toBeChecked();
     expect(screen.getByRole("checkbox", { name: "Workers' file change approvals" })).toBeChecked();
     expect(screen.getByRole("checkbox", { name: "Workers' questions" })).not.toBeChecked();
-    fireEvent.change(screen.getByRole("spinbutton", { name: "Most workers" }), {
-      target: { value: "6" },
-    });
-    request.mockResolvedValueOnce(agent({ scope: { ...scope, maxLanes: 6 } }));
+    const mostWorkers = screen.getByRole("spinbutton", { name: "Most workers" });
+    expect(mostWorkers).toHaveValue(4);
+    expect(mostWorkers).toHaveAttribute("max", "10");
+    fireEvent.change(mostWorkers, { target: { value: "11" } });
+    expect(mostWorkers).toHaveValue(10);
+    request.mockResolvedValueOnce(agent({ scope: { ...scope, maxLanes: 10 } }));
     await act(async () => {
       fireEvent.click(screen.getByRole("button", { name: "Save" }));
     });
     expect(request).toHaveBeenLastCalledWith({
       operation: "lead-update",
       sessionId: "lead-1",
-      scope: { ...scope, maxLanes: 6 },
+      scope: { ...scope, maxLanes: 10 },
     });
     expect(screen.getByRole("button", { name: "Change settings…" })).toBeInTheDocument();
   });

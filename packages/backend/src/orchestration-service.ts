@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { PROJECT_AGENT_MAX_WORKERS } from "@agentkib/runtime-protocol";
 import { sanitizeSessionText } from "./session-handoff";
 import {
   openLeadEndpoint,
@@ -439,7 +440,7 @@ export class OrchestrationService {
   }): Promise<{ designated: boolean }> {
     if (!workers.length || new Set(workers).size !== workers.length)
       throw new Error("invalid-lead-request");
-    if (workers.length > 8) throw new Error("worker-limit-reached");
+    if (workers.length > PROJECT_AGENT_MAX_WORKERS) throw new Error("worker-limit-reached");
     if (workers.includes(sessionId)) throw new Error("session-is-a-project-agent");
     const candidates = await Promise.all(
       workers.map(async (id) => {
@@ -568,7 +569,11 @@ export class OrchestrationService {
       scope.policies.some((policy) => !(LANE_POLICIES as readonly string[]).includes(policy))
     )
       throw new Error("invalid-lead-policies");
-    if (!Number.isSafeInteger(scope.maxLanes) || scope.maxLanes < 1 || scope.maxLanes > 8)
+    if (
+      !Number.isSafeInteger(scope.maxLanes) ||
+      scope.maxLanes < 1 ||
+      scope.maxLanes > PROJECT_AGENT_MAX_WORKERS
+    )
       throw new Error("invalid-lead-lane-limit");
     if (
       !Number.isSafeInteger(scope.maxAutoTurns) ||

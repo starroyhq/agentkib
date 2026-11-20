@@ -191,6 +191,7 @@ export function SessionDirectory({
           const groupStart = agentMotion.startSize(workspaceKey);
           const expanded = view.unreadOnly || !view.collapsed[group.id];
           const sessions = sessionOrder(workspaceSessions, view.sessionOrder[group.id] ?? []);
+          const workerSessions = allGroups.find((item) => item.id === group.id)?.sessions ?? [];
           if (selectedLive) {
             const index = sessions.findIndex(
               (session) => !session.remote && session.id === selectedLive.sessionId,
@@ -433,6 +434,7 @@ export function SessionDirectory({
                           <SessionDirectoryTrailing
                             session={session}
                             sessions={hub.sessions}
+                            workerSessions={workerSessions}
                             local={!owner.remote && sessionVisible}
                             onChanged={() => void hub.refresh()}
                             onDeleted={() => {

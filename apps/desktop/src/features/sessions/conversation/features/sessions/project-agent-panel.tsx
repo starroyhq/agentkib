@@ -1,3 +1,4 @@
+import { PROJECT_AGENT_MAX_WORKERS } from "@agentkib/runtime-protocol";
 import { projectAgentCopy } from "@agentkib/session-ui";
 import { useCallback, useEffect, useState } from "react";
 import { desktopApi } from "@/core/desktop";
@@ -187,9 +188,14 @@ export function ProjectAgentPanel() {
             <Input
               type="number"
               min={1}
-              max={8}
+              max={PROJECT_AGENT_MAX_WORKERS}
               value={form.maxLanes}
-              onChange={(event) => setForm({ ...form, maxLanes: bounded(event.target.value, 8) })}
+              onChange={(event) =>
+                setForm({
+                  ...form,
+                  maxLanes: bounded(event.target.value, PROJECT_AGENT_MAX_WORKERS),
+                })
+              }
             />
           </label>
           <label className="grid gap-1.5">

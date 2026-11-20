@@ -15,12 +15,14 @@ import { WorktreeMark } from "./WorktreeMark";
 export function SessionDirectoryTrailing({
   session,
   sessions,
+  workerSessions,
   local,
   onChanged,
   onDeleted,
 }: {
   session: ConversationSessionSummary;
   sessions: ConversationSessionSummary[];
+  workerSessions: ConversationSessionSummary[];
   local: boolean;
   onChanged: () => void;
   onDeleted: () => void;
@@ -92,7 +94,7 @@ export function SessionDirectoryTrailing({
       {hasMenu && (
         <SessionRowMenu
           session={session}
-          sessions={sessions}
+          sessions={workerSessions}
           onChanged={onChanged}
           onDeleted={onDeleted}
         />

@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { Check } from "lucide-react";
 import { projectAgentCopy } from "@agentkib/session-ui";
 import { useAppDialogs } from "@/components/AppDialogProvider";
 import { Button } from "@/components/ui/button";
@@ -10,14 +11,13 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { NativeCheckbox } from "@/components/ui/native-checkbox";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { desktopApi } from "@/core/desktop";
 import type { ConversationSessionSummary } from "@/core/types";
 import { useI18n } from "@/core/useI18n";
 import { AgentIcon } from "@/features/agents/AgentIcon";
 import { displaySessionTitle } from "@/features/workspace/session-title";
-import { sessionAgentNames, worktreeLabel } from "./session-labels";
+import { worktreeLabel } from "./session-labels";
 import { workerAssignmentCopy } from "./worker-assignment-copy";
 
 type Candidate = {
@@ -33,10 +33,14 @@ type AssignmentOptions = {
   candidates: Candidate[];
 };
 
-async function assignmentOptions(sessionId: string): Promise<AssignmentOptions> {
+async function assignmentOptions(
+  sessionId: string,
+  candidateIds: string[],
+): Promise<AssignmentOptions> {
   const value = (await desktopApi().claude.request({
     operation: "lead-assignment-options",
     sessionId,
+    candidateIds,
   })) as Partial<AssignmentOptions> | null;
   if (
     !value ||
@@ -48,6 +52,13 @@ async function assignmentOptions(sessionId: string): Promise<AssignmentOptions> 
   )
     throw new Error("invalid-lead-assignment-options");
   return value as AssignmentOptions;
+}
+
+function hasAssignmentRole(candidate: Candidate | undefined) {
+  return (
+    candidate?.reason === "session-is-a-worker" ||
+    candidate?.reason === "session-is-a-project-agent"
+  );
 }
 
 export function SessionWorkerAssignmentDialog({
@@ -65,43 +76,64 @@ export function SessionWorkerAssignmentDialog({
   const copy = workerAssignmentCopy[locale];
   const management = projectAgentCopy(locale);
   const dialogs = useAppDialogs();
-  const [options, setOptions] = useState<AssignmentOptions>();
-  const [readFailed, setReadFailed] = useState(false);
+  const [response, setResponse] = useState<{ key: string; value: AssignmentOptions | null }>();
   const [revision, setRevision] = useState(0);
   const [selected, setSelected] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
   const cancel = useRef<HTMLButtonElement>(null);
-  const catalog = useMemo(() => {
-    const rows = new Map<string, ConversationSessionSummary>();
+  const pending = useRef<{ key: string; promise: Promise<AssignmentOptions | null> } | undefined>(
+    undefined,
+  );
+  const candidateRows = useMemo(() => {
+    const leadIds = new Set([session.id, ...(session.indexedSessionIds ?? [])]);
+    const usedIds = new Set([...leadIds, ...sessions.map((row) => row.id)]);
+    const rows: { row: ConversationSessionSummary; aliases: string[] }[] = [];
     for (const row of sessions) {
-      if (row.remote) continue;
-      rows.set(row.id, row);
-      for (const id of row.indexedSessionIds ?? []) {
-        if (!rows.has(id)) rows.set(id, row);
-      }
+      if (row.remote || row.sidechain || leadIds.has(row.id)) continue;
+      const assigned =
+        row.orchestration?.role === "worker" && leadIds.has(row.orchestration.leadId);
+      if (!assigned && (row.archived || row.availability !== "readable")) continue;
+      const aliases = (row.indexedSessionIds ?? []).filter((id) => {
+        if (usedIds.has(id)) return false;
+        usedIds.add(id);
+        return true;
+      });
+      rows.push({ row, aliases });
     }
     return rows;
-  }, [sessions]);
+  }, [session.id, session.indexedSessionIds, sessions]);
+  // The same set of IDs can be republished with updated titles or in a different order.
+  const candidateKey = JSON.stringify(
+    candidateRows.flatMap(({ row, aliases }) => [row.id, ...aliases]).sort(),
+  );
+  const requestKey = JSON.stringify([session.id, candidateKey, revision]);
+  const result = response?.key === requestKey ? response.value : undefined;
+  const options = result ?? undefined;
+  const readFailed = result === null;
 
   useEffect(() => {
     let active = true;
-    void assignmentOptions(session.id).then(
-      (state) => {
-        if (active) setOptions(state);
-      },
-      () => {
-        if (active) setReadFailed(true);
-      },
-    );
+    const request =
+      pending.current?.key === requestKey
+        ? pending.current
+        : {
+            key: requestKey,
+            promise: assignmentOptions(session.id, JSON.parse(candidateKey) as string[]).catch(
+              () => null,
+            ),
+          };
+    pending.current = request;
+    void request.promise.then((value) => {
+      if (pending.current === request) pending.current = undefined;
+      if (active) setResponse({ key: requestKey, value });
+    });
     return () => {
       active = false;
     };
-  }, [session.id, revision]);
+  }, [session.id, candidateKey, requestKey]);
 
   function reload() {
-    setReadFailed(false);
-    setOptions(undefined);
     setSelected([]);
     setRevision((version) => version + 1);
   }
@@ -136,8 +168,26 @@ export function SessionWorkerAssignmentDialog({
   }
 
   const active = options?.capable && options.remaining > 0;
-  const candidates = options?.candidates ?? [];
-  const remaining = options ? Math.max(0, options.remaining - selected.length) : 0;
+  const statuses = new Map(
+    options?.candidates.map((candidate) => [candidate.sessionId, candidate]),
+  );
+  const candidates = candidateRows.flatMap(({ row, aliases }) => {
+    const canonical = statuses.get(row.id);
+    // An older assignment can reference an indexed ID. Keep it for removing that assignment.
+    const linked = aliases.map((id) => statuses.get(id)).find(hasAssignmentRole);
+    const candidate = hasAssignmentRole(canonical) ? canonical : (linked ?? canonical);
+    return candidate ? [{ row, candidate }] : [];
+  });
+  const eligible = new Set(
+    candidates
+      .filter(({ candidate }) => !candidate.assigned && !candidate.reason)
+      .map(({ row }) => row.id),
+  );
+  const workers =
+    active && !options.reason
+      ? selected.filter((id) => eligible.has(id)).slice(0, options.remaining)
+      : [];
+  const remaining = options ? options.remaining - workers.length : 0;
   return (
     <Dialog open onOpenChange={(open) => !open && !busy && onClose()}>
       <DialogContent className="sm:max-w-lg" initialFocus={cancel}>
@@ -173,49 +223,42 @@ export function SessionWorkerAssignmentDialog({
             )}
             {candidates.length > 0 && (
               <div className="max-h-[50vh] space-y-1 overflow-y-auto">
-                {candidates.map((candidate) => {
-                  const row = catalog.get(candidate.sessionId);
-                  const title = displaySessionTitle(row?.title, tr);
-                  const checked = selected.includes(candidate.sessionId);
-                  const unavailable =
-                    candidate.reason ??
-                    (options.capable
-                      ? (options.reason ??
-                        (!checked && remaining === 0 ? "worker-limit-reached" : null))
-                      : "lead-requires-managed-claude");
-                  const disabledReason = candidate.assigned
-                    ? copy.assigned
-                    : unavailable
-                      ? (copy.reasons[unavailable] ??
-                        (options.capable ? copy.unavailable : copy.cannotLead))
-                      : null;
-                  const detail = row
-                    ? [
-                        sessionAgentNames[row.agent],
-                        row.worktree ? worktreeLabel(row.worktree, tr) : null,
-                      ]
-                        .filter(Boolean)
-                        .join(" · ")
+                {candidates.map(({ row, candidate }) => {
+                  const title = displaySessionTitle(row.title, tr);
+                  const checked = candidate.assigned === true || workers.includes(row.id);
+                  const unavailable = candidate.assigned
+                    ? null
+                    : (candidate.reason ??
+                      (options.capable
+                        ? (options.reason ??
+                          (!checked && remaining === 0 ? "worker-limit-reached" : null))
+                        : "lead-requires-managed-claude"));
+                  const disabledReason = unavailable
+                    ? (copy.reasons[unavailable] ??
+                      (options.capable ? copy.unavailable : copy.cannotLead))
                     : null;
-                  const label = (
-                    <label
-                      className={`flex min-w-0 flex-1 items-center gap-3 rounded-md px-2 py-2 ${disabledReason ? "opacity-50" : "cursor-pointer hover:bg-muted"}`}
+                  const detail = row.worktree ? worktreeLabel(row.worktree, tr) : null;
+                  const rowButton = (
+                    <Button
+                      variant="ghost"
+                      size="content"
+                      className="min-w-0 flex-1 justify-start gap-2.5 rounded-md px-2 py-2 text-left font-normal aria-pressed:border-primary"
+                      aria-label={title}
+                      aria-description={candidate.assigned ? copy.assigned : undefined}
+                      aria-pressed={checked}
+                      disabled={busy || !!disabledReason}
+                      onClick={() => {
+                        if (candidate.assigned) {
+                          void remove(candidate, title);
+                          return;
+                        }
+                        setSelected(
+                          checked ? workers.filter((id) => id !== row.id) : [...workers, row.id],
+                        );
+                      }}
                     >
-                      <NativeCheckbox
-                        aria-label={title}
-                        checked={checked}
-                        disabled={busy || !!disabledReason}
-                        onChange={(event) => {
-                          const enabled = event.target.checked;
-                          setSelected((ids) =>
-                            enabled
-                              ? [...ids, candidate.sessionId]
-                              : ids.filter((id) => id !== candidate.sessionId),
-                          );
-                        }}
-                      />
-                      {row && <AgentIcon agent={row.agent} compact />}
-                      <span className="min-w-0">
+                      <AgentIcon agent={row.agent} compact />
+                      <span className="min-w-0 flex-1">
                         <span className="block truncate">{title}</span>
                         {detail && (
                           <span className="block truncate text-xs text-muted-foreground">
@@ -223,10 +266,11 @@ export function SessionWorkerAssignmentDialog({
                           </span>
                         )}
                       </span>
-                    </label>
+                      {checked && <Check className="size-4 text-primary-text" aria-hidden />}
+                    </Button>
                   );
                   return (
-                    <div key={candidate.sessionId} className="flex items-center gap-2">
+                    <div key={row.id} className="flex items-center gap-2">
                       {disabledReason ? (
                         <Tooltip
                           onOpenChange={(open, details) => {
@@ -240,27 +284,17 @@ export function SessionWorkerAssignmentDialog({
                                 aria-label={title}
                                 aria-description={disabledReason}
                                 tabIndex={0}
-                                className="min-w-0 flex-1 rounded-md focus-visible:ring-2 focus-visible:ring-ring"
+                                className="flex min-w-0 flex-1 rounded-md focus-visible:ring-2 focus-visible:ring-ring"
                               />
                             }
                             delay={300}
                           >
-                            {label}
+                            {rowButton}
                           </TooltipTrigger>
                           <TooltipContent role="tooltip">{disabledReason}</TooltipContent>
                         </Tooltip>
                       ) : (
-                        label
-                      )}
-                      {candidate.assigned && (
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          disabled={busy}
-                          onClick={() => void remove(candidate, title)}
-                        >
-                          {management.removeWorker}
-                        </Button>
+                        rowButton
                       )}
                     </div>
                   );
@@ -275,8 +309,8 @@ export function SessionWorkerAssignmentDialog({
             {tr("common.cancel")}
           </Button>
           <Button
-            disabled={!active || !selected.length || busy}
-            onClick={() => void change({ operation: "lead-assign-workers", workers: selected })}
+            disabled={!workers.length || busy}
+            onClick={() => void change({ operation: "lead-assign-workers", workers })}
           >
             {copy.assign}
           </Button>

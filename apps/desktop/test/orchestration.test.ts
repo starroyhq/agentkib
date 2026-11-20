@@ -130,6 +130,7 @@ describe("lead registry", () => {
       paused: true,
       reason: "restart-confirmation-required",
       bootId: "boot-2",
+      scope: { maxLanes: 4 },
     });
     expect(() =>
       second.create({
@@ -180,7 +181,7 @@ describe("orchestration service", () => {
       scope: {
         workspaceIds: ["w1"],
         policies: ["workspace-write-on-request"],
-        maxLanes: 4,
+        maxLanes: 10,
         maxAutoTurns: 25,
       },
       paused: false,
@@ -369,7 +370,7 @@ describe("orchestration service", () => {
         ]),
       ).toEqual({
         capable: true,
-        remaining: 2,
+        remaining: 8,
         candidates: [
           { sessionId: "existing-api", reason: "session-is-a-worker", assigned: true },
           { sessionId: "elsewhere", reason: "workspace-not-allowed" },
@@ -384,6 +385,38 @@ describe("orchestration service", () => {
         remaining: 0,
         reason: "delegation-paused",
       });
+      expect(calls).toEqual([]);
+    });
+
+    it("allows ten workers in one assignment and refuses an eleventh without partial changes", async () => {
+      const sessions = Array.from({ length: 11 }, (_, index) => `existing-${index + 1}`);
+      const { lanes, calls } = host({
+        session: (id) =>
+          sessions.includes(id) ? { agent: "codex", workspaceId: "w1", title: null } : null,
+      });
+      const orchestration = service(lanes);
+      expect(await orchestration.assignmentOptions(LEAD, "w1", [])).toMatchObject({
+        capable: true,
+        remaining: 10,
+      });
+      await expect(orchestration.assignWorkers({ ...OWNER, workers: sessions })).rejects.toThrow(
+        "worker-limit-reached",
+      );
+      expect(orchestration.status(LEAD)).toBeNull();
+
+      const workers = sessions.slice(0, 10);
+      await expect(orchestration.assignWorkers({ ...OWNER, workers })).resolves.toEqual({
+        designated: true,
+      });
+      const lead = orchestration.status(LEAD);
+      expect(lead?.lanes.map((lane) => lane.sessionId)).toEqual(workers);
+      expect(await orchestration.assignmentOptions(LEAD, "w1", [])).toMatchObject({
+        remaining: 0,
+      });
+      await expect(
+        orchestration.assignWorkers({ ...OWNER, workers: sessions.slice(10) }),
+      ).rejects.toThrow("worker-limit-reached");
+      expect(orchestration.status(LEAD)).toEqual(lead);
       expect(calls).toEqual([]);
     });
 
@@ -972,7 +1005,7 @@ describe("orchestration service", () => {
         orchestration.update({ sessionId: LEAD, deviceId: DEVICE, scope: { workspaceIds: [] } }),
       ).rejects.toThrow("invalid-lead-workspaces");
       await expect(
-        orchestration.update({ sessionId: LEAD, deviceId: DEVICE, scope: { maxLanes: 9 } }),
+        orchestration.update({ sessionId: LEAD, deviceId: DEVICE, scope: { maxLanes: 11 } }),
       ).rejects.toThrow("invalid-lead-lane-limit");
       await expect(
         orchestration.update({ sessionId: "elsewhere", deviceId: DEVICE, scope: {} }),
@@ -988,7 +1021,7 @@ describe("orchestration service", () => {
       expect(await orchestration.leadTools(LEAD)).toEqual(before);
       expect(orchestration.status(LEAD)).toMatchObject({
         deviceId: DEVICE,
-        scope: { workspaceIds: ["w1", "w2"], maxLanes: 4, maxAutoTurns: 10, approvals: [] },
+        scope: { workspaceIds: ["w1", "w2"], maxLanes: 10, maxAutoTurns: 10, approvals: [] },
       });
       // Deciding approvals changes its tools. The CLI running now keeps its endpoint until the
       // next one asks for its tools.

@@ -1,4 +1,5 @@
 import type { DatabaseSync } from "node:sqlite";
+import { PROJECT_AGENT_MAX_WORKERS } from "@agentkib/runtime-protocol";
 import { openManagedLedger } from "./managed-ledger";
 
 /**
@@ -21,7 +22,10 @@ export type LanePolicy = (typeof LANE_POLICIES)[number];
 export const LEAD_APPROVALS = ["file-change", "command"] as const;
 export type LeadApproval = (typeof LEAD_APPROVALS)[number];
 
-export const LEAD_DEFAULTS = Object.freeze({ maxLanes: 4, maxAutoTurns: 25 });
+export const LEAD_DEFAULTS = Object.freeze({
+  maxLanes: PROJECT_AGENT_MAX_WORKERS,
+  maxAutoTurns: 25,
+});
 const MAX_RECORDS = 200;
 const MAX_REPORTED_TURNS = 64;
 const MAX_PENDING_REPORTS = 32;

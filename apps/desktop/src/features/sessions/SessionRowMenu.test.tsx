@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
+import { StrictMode } from "react";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -9,6 +10,7 @@ import { AppDialogProvider } from "@/components/AppDialogProvider";
 import type { ConversationSessionSummary } from "@/core/types";
 import { codexCopy, codexReason } from "./conversation/features/sessions/codex-copy";
 import { SessionRowMenu } from "./SessionRowMenu";
+import { SessionWorkerAssignmentDialog } from "./SessionWorkerAssignmentDialog";
 
 const { client, claudeRequest } = vi.hoisted(() => ({
   client: {
@@ -170,28 +172,48 @@ describe("a session row's menu on the desktop", () => {
       { ...summary("codex"), id: "available", title: "Available Worker" },
       { ...summary("codex"), id: "coordinator", title: "Project coordinator" },
       { ...summary("deepseek-harness"), id: "occupied", title: "Existing Worker" },
+      { ...summary("codex", true), id: "archived" },
+      { ...summary("codex"), id: "sidechain", sidechain: true },
+      { ...summary("codex"), id: "metadata-only", availability: "metadata-only" as const },
+      {
+        ...summary("codex"),
+        id: "remote",
+        remote: {
+          host_id: "host",
+          host_name: "Remote host",
+          original_id: "remote",
+          online: true,
+          last_synced_at: "",
+        },
+      },
     ];
     claudeRequest
       .mockResolvedValueOnce({
         capable: true,
-        remaining: 1,
+        remaining: 10,
         candidates: [
           { sessionId: "available", reason: null },
           { sessionId: "coordinator", reason: "session-is-a-project-agent" },
           { sessionId: "occupied", reason: "session-is-a-worker" },
+          { sessionId: "missing", reason: "session-is-a-worker" },
         ],
       })
       .mockResolvedValueOnce({ lead: { sessionId: "lead" } });
     features({});
     const onChanged = vi.fn();
     open(session, { sessions, onChanged });
-    await user.click(await screen.findByRole("menuitem", { name: "Assign Workers…" }));
+    await user.click(await screen.findByRole("menuitem", { name: "Assign Workers" }));
     const dialog = await screen.findByRole("dialog", {
       name: "Assign Workers to “Synthetic session”",
     });
-    const eligible = await within(dialog).findByRole("checkbox", { name: "Available Worker" });
-    const otherLead = within(dialog).getByRole("checkbox", { name: "Project coordinator" });
-    const existingWorker = within(dialog).getByRole("checkbox", { name: "Existing Worker" });
+    const eligible = await within(dialog).findByRole("button", { name: "Available Worker" });
+    const otherLead = within(dialog).getByRole("button", { name: "Project coordinator" });
+    const existingWorker = within(dialog).getByRole("button", { name: "Existing Worker" });
+    expect(within(dialog).queryByRole("checkbox")).not.toBeInTheDocument();
+    expect(within(dialog).queryByText("Untitled session")).not.toBeInTheDocument();
+    expect(within(dialog).queryByText("Codex")).not.toBeInTheDocument();
+    expect(within(dialog).queryByText("DeepSeek Harness")).not.toBeInTheDocument();
+    expect(within(dialog).getByText("10 Worker slots remaining")).toBeVisible();
     expect(otherLead).toBeDisabled();
     expect(existingWorker).toBeDisabled();
     expect(screen.queryByText("This session is already a Project Agent")).not.toBeInTheDocument();
@@ -205,24 +227,73 @@ describe("a session row's menu on the desktop", () => {
     expect(await screen.findByRole("tooltip")).toHaveTextContent(
       "This session is already a Project Agent",
     );
-    await user.click(eligible);
+    act(() => eligible.focus());
+    await user.keyboard(" ");
+    expect(eligible).toHaveAttribute("aria-pressed", "true");
+    expect(within(dialog).getByText("9 Worker slots remaining")).toBeVisible();
     await user.click(within(dialog).getByRole("button", { name: "Assign" }));
     expect(claudeRequest.mock.calls).toEqual([
-      [{ operation: "lead-assignment-options", sessionId: "lead" }],
+      [
+        {
+          operation: "lead-assignment-options",
+          sessionId: "lead",
+          candidateIds: ["available", "coordinator", "occupied"],
+        },
+      ],
       [{ operation: "lead-assign-workers", sessionId: "lead", workers: ["available"] }],
     ]);
     await waitFor(() => expect(onChanged).toHaveBeenCalledOnce());
   });
 
-  it("allows an assigned Worker to be removed from the same dialog", async () => {
+  it("requests eligibility once in Strict Mode and uses updated directory titles locally", async () => {
     const user = userEvent.setup();
     const session = { ...summary("codex"), id: "lead" };
-    const sessions = [session, { ...summary("codex"), id: "worker", title: "My Worker" }];
+    const worker = { ...summary("codex"), id: "worker", title: "Original title" };
+    claudeRequest.mockImplementation(async ({ candidateIds }: { candidateIds: string[] }) => ({
+      capable: true,
+      remaining: 10,
+      candidates: candidateIds.map((sessionId) => ({ sessionId, reason: null })),
+    }));
+    const content = (sessions: ConversationSessionSummary[]) => (
+      <StrictMode>
+        <AppDialogProvider>
+          <SessionWorkerAssignmentDialog session={session} sessions={sessions} onClose={() => {}} />
+        </AppDialogProvider>
+      </StrictMode>
+    );
+    const { rerender } = render(content([session, worker]));
+    await user.click(await screen.findByRole("button", { name: "Original title" }));
+    rerender(content([{ ...worker, title: "Updated title" }, session]));
+    expect(screen.getByRole("button", { name: "Updated title" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    expect(claudeRequest).toHaveBeenCalledTimes(1);
+    rerender(content([session]));
+    expect(screen.getByRole("button", { name: "Assign" })).toBeDisabled();
+    expect(await screen.findByText("There are no other sessions in this project.")).toBeVisible();
+    expect(claudeRequest).toHaveBeenLastCalledWith({
+      operation: "lead-assignment-options",
+      sessionId: "lead",
+      candidateIds: [],
+    });
+  });
+
+  it("keeps the assigned alias for removal and offers the canonical Worker after it", async () => {
+    const user = userEvent.setup();
+    const session = { ...summary("codex"), id: "lead" };
+    const sessions = [
+      session,
+      { ...summary("codex"), id: "worker", title: "My Worker", indexedSessionIds: ["indexed"] },
+    ];
     claudeRequest
       .mockResolvedValueOnce({
         capable: true,
         remaining: 0,
-        candidates: [{ sessionId: "worker", reason: "session-is-a-worker", assigned: true }],
+        candidates: [
+          { sessionId: "worker", reason: null },
+          { sessionId: "indexed", reason: "session-is-a-worker", assigned: true },
+        ],
       })
       .mockResolvedValueOnce({ lead: { sessionId: "lead" } })
       .mockResolvedValueOnce({
@@ -233,18 +304,29 @@ describe("a session row's menu on the desktop", () => {
     features({});
     const onChanged = vi.fn();
     open(session, { sessions, onChanged });
-    await user.click(await screen.findByRole("menuitem", { name: "Assign Workers…" }));
-    const remove = await screen.findByRole("button", { name: "Remove" });
-    expect(screen.getByRole("checkbox", { name: "My Worker" })).toBeDisabled();
-    await user.click(remove);
+    await user.click(await screen.findByRole("menuitem", { name: "Assign Workers" }));
+    const assigned = await screen.findByRole("button", { name: "My Worker", pressed: true });
+    expect(assigned).toBeEnabled();
+    expect(screen.queryByRole("button", { name: "Remove" })).not.toBeInTheDocument();
+    expect(claudeRequest).toHaveBeenCalledExactlyOnceWith({
+      operation: "lead-assignment-options",
+      sessionId: "lead",
+      candidateIds: ["indexed", "worker"],
+    });
+    await user.click(assigned);
+    const canceled = await screen.findByRole("alertdialog");
+    await user.click(within(canceled).getByRole("button", { name: "Cancel" }));
+    expect(claudeRequest).toHaveBeenCalledTimes(1);
+
+    await user.click(screen.getByRole("button", { name: "My Worker", pressed: true }));
     const confirmation = await screen.findByRole("alertdialog");
     await user.click(within(confirmation).getByRole("button", { name: "Remove" }));
     await waitFor(() => expect(onChanged).toHaveBeenCalledOnce());
     expect(claudeRequest).toHaveBeenCalledWith({
       operation: "lead-worker-remove",
       sessionId: "lead",
-      worker: "worker",
+      worker: "indexed",
     });
-    await waitFor(() => expect(screen.getByRole("checkbox", { name: "My Worker" })).toBeEnabled());
+    expect(await screen.findByRole("button", { name: "My Worker", pressed: false })).toBeEnabled();
   });
 });

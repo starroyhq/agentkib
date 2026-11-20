@@ -78,6 +78,7 @@ function Row({
         <SessionDirectoryTrailing
           session={session}
           sessions={sessions}
+          workerSessions={sessions}
           local={local}
           onChanged={changed}
           onDeleted={deleted}

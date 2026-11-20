@@ -1326,7 +1326,7 @@ describe.skipIf(process.platform !== "darwin")(
       // Its worker tools run without asking: being made a Project Agent is the authorization.
       expect(first.slice(-2)).toEqual(["--allowedTools", "mcp__agentkib_workers"]);
       expect(frames().find((row) => row.workers)).toMatchObject({
-        workers: { paused: false, workers: [], maxWorkers: 4 },
+        workers: { paused: false, workers: [], maxWorkers: 10 },
       });
       // Its settings change. Only a change of what it may decide changes its tools: the next
       // message starts a worker with an endpoint that offers them.

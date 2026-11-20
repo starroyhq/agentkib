@@ -11,6 +11,7 @@ import { SessionOverview } from "./SessionOverview";
 import { SessionDirectory } from "./SessionDirectory";
 import { SessionDirectoryAgentFilter } from "./SessionDirectoryAgentFilter";
 import { useSessionHub } from "./SessionHubContext";
+import { SessionRowMenu } from "./SessionRowMenu";
 import { filterSessions } from "./session-catalog";
 import { normalizeDirectoryOrder, useSessionViewStore } from "./session-view-store";
 
@@ -24,7 +25,7 @@ vi.mock("@agentkib/session-ui", async (original) => {
   return { ...actual, requestReadReview: vi.fn(actual.requestReadReview) };
 });
 // Row menus have their own tests (SessionRowMenu.test.tsx); they read the host on open only.
-vi.mock("./SessionRowMenu", () => ({ SessionRowMenu: () => null }));
+vi.mock("./SessionRowMenu", () => ({ SessionRowMenu: vi.fn(() => null) }));
 vi.mock("@/features/agents/AgentIcon", () => ({
   AgentIcon: ({ agent }: { agent: string }) => <span aria-hidden="true">{agent} icon</span>,
 }));
@@ -173,6 +174,20 @@ describe("SessionDirectory", () => {
     }));
   });
   afterEach(cleanup);
+
+  it("passes the lead's directory group to Worker assignment even under an Agent filter", () => {
+    const sameProject = { ...second, id: "same-project", workspace_id: first.workspace_id };
+    const execution = { ...sameProject, id: "execution", origin: "execution" as const };
+    hub.sessions = [first, second, sameProject, execution];
+    useSessionViewStore.setState({ agent: "codex" });
+
+    render(<SessionDirectory />);
+
+    const leadMenu = vi
+      .mocked(SessionRowMenu)
+      .mock.calls.find(([props]) => props.session === first);
+    expect(leadMenu?.[0].sessions?.map((item) => item.id)).toEqual([first.id, sameProject.id]);
+  });
 
   it("keeps unread dots on ordinary rows without a duplicate review card", () => {
     hub.sessions = [{ ...first, readState: unreadState }, second];

@@ -15,7 +15,7 @@ type WorkerAssignmentCopy = {
 
 export const workerAssignmentCopy: Record<SupportedLocale, WorkerAssignmentCopy> = {
   "zh-CN": {
-    menu: "指派 Worker…",
+    menu: "指派 Worker",
     title: (lead) => `为「${lead}」指派 Worker`,
     assign: "确认指派",
     empty: "此项目中没有其他会话。",
@@ -36,7 +36,7 @@ export const workerAssignmentCopy: Record<SupportedLocale, WorkerAssignmentCopy>
     },
   },
   "zh-Hant": {
-    menu: "指派 Worker…",
+    menu: "指派 Worker",
     title: (lead) => `為「${lead}」指派 Worker`,
     assign: "確認指派",
     empty: "此專案中沒有其他對話。",
@@ -57,7 +57,7 @@ export const workerAssignmentCopy: Record<SupportedLocale, WorkerAssignmentCopy>
     },
   },
   "ja-JP": {
-    menu: "ワーカーを割り当てる…",
+    menu: "ワーカーを割り当てる",
     title: (lead) => `「${lead}」にワーカーを割り当てる`,
     assign: "割り当てる",
     empty: "このプロジェクトにほかのセッションがありません。",
@@ -79,7 +79,7 @@ export const workerAssignmentCopy: Record<SupportedLocale, WorkerAssignmentCopy>
     },
   },
   "en-US": {
-    menu: "Assign Workers…",
+    menu: "Assign Workers",
     title: (lead) => `Assign Workers to “${lead}”`,
     assign: "Assign",
     empty: "There are no other sessions in this project.",

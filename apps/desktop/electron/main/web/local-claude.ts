@@ -3,7 +3,7 @@ import { continuationPreflightReason } from "./continuation-reason";
 import { AttachmentStore } from "./attachments";
 import { replayClaudeAttachments, settleClaudeAttachments } from "./claude-attachment-receipts";
 import { historyInputHash } from "./history-references";
-import type { HistoryReference } from "@agentkib/runtime-protocol";
+import { PROJECT_AGENT_MAX_WORKERS, type HistoryReference } from "@agentkib/runtime-protocol";
 import {
   groupSessions,
   type CatalogSession,
@@ -37,17 +37,12 @@ const field = (value: unknown, max = 256): string => {
 type AssignmentSession = CatalogSession & {
   sidechain?: boolean;
   remote?: unknown;
-  indexedSessionIds?: string[];
   orchestration?: { role: "lead" | "worker"; leadId?: string };
 };
 
-async function localWorkerAssignment(
-  deps: LocalClaudeDependencies,
-  input: Record<string, unknown>,
-  operation: "lead-assignment-options" | "lead-assign-workers",
-) {
+async function assignLocalWorkers(deps: LocalClaudeDependencies, input: Record<string, unknown>) {
   const sessionId = field(input.sessionId);
-  const workers = operation === "lead-assign-workers" ? assignmentWorkers(input.workers) : [];
+  const workers = assignmentWorkers(input.workers);
   const catalog = record(await deps.runtime({ operation: "catalog" }));
   if (!Array.isArray(catalog.sessions) || !Array.isArray(catalog.workspaces))
     throw new Error("orchestration-unavailable");
@@ -70,21 +65,6 @@ async function localWorkerAssignment(
       ((!session.archived && session.availability === "readable") ||
         session.orchestration?.leadId === sessionId),
   );
-  if (operation === "lead-assignment-options") {
-    const candidateIds = [
-      ...new Set(
-        candidates.flatMap((session) => [session.id, ...(session.indexedSessionIds ?? [])]),
-      ),
-    ];
-    const result = await deps.managed({
-      operation,
-      sessionId,
-      candidateIds,
-      deviceId: OWNER,
-    });
-    return projectAssignmentOptions(result, candidates);
-  }
-
   const byId = new Map(candidates.map((session) => [session.id, session]));
   for (const id of workers) {
     const candidate = byId.get(id);
@@ -92,32 +72,17 @@ async function localWorkerAssignment(
     if (candidate.orchestration?.role === "lead") throw new Error("session-is-a-project-agent");
     if (candidate.orchestration?.role === "worker") throw new Error("session-is-a-worker");
   }
-  return deps.managed({ operation, sessionId, workers, deviceId: OWNER });
+  return deps.managed({ operation: "lead-assign-workers", sessionId, workers, deviceId: OWNER });
 }
 
-/** Keep one visible row when an older assignment is recorded under a session's indexed ID. */
-function projectAssignmentOptions(result: unknown, sessions: AssignmentSession[]) {
-  const options = record(result);
-  if (!Array.isArray(options.candidates)) return result;
-  const rows = options.candidates as { sessionId: string; reason: string | null }[];
-  const byId = new Map(rows.map((row) => [row.sessionId, row]));
-  const roleIsAssigned = (row: (typeof rows)[number] | undefined) =>
-    row?.reason === "session-is-a-worker" || row?.reason === "session-is-a-project-agent";
-  return {
-    ...options,
-    candidates: sessions.flatMap((session) => {
-      const canonical = byId.get(session.id);
-      const linked = (session.indexedSessionIds ?? [])
-        .map((id) => byId.get(id))
-        .find(roleIsAssigned);
-      const row = roleIsAssigned(canonical) ? canonical : (linked ?? canonical);
-      return row ? [row] : [];
-    }),
-  };
+function assignmentCandidateIds(value: unknown): string[] {
+  // Keep the request within the shared backend's candidate limit.
+  if (!Array.isArray(value) || value.length > 20_000) throw new Error("invalid-lead-request");
+  return [...new Set(Array.from(value, (id) => field(id)))];
 }
 
 function assignmentWorkers(value: unknown): string[] {
-  if (!Array.isArray(value) || value.length < 1 || value.length > 8)
+  if (!Array.isArray(value) || value.length < 1 || value.length > PROJECT_AGENT_MAX_WORKERS)
     throw new Error("invalid-lead-request");
   return value.map((worker) => field(worker));
 }
@@ -186,8 +151,14 @@ async function localClaudeRequestInner(
 ): Promise<unknown> {
   const input = record(raw);
   const operation = field(input.operation, 32);
-  if (operation === "lead-assignment-options" || operation === "lead-assign-workers")
-    return localWorkerAssignment(deps, input, operation);
+  if (operation === "lead-assignment-options")
+    return deps.managed({
+      operation,
+      sessionId: field(input.sessionId),
+      candidateIds: assignmentCandidateIds(input.candidateIds),
+      deviceId: OWNER,
+    });
+  if (operation === "lead-assign-workers") return assignLocalWorkers(deps, input);
   if (operation === "options") return deps.managed({ operation });
   // The DeepSeek Harness connection is per computer, not per session: its status, and whether
   // AgentKib starts DSH in the background.

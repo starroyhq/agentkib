@@ -45,12 +45,19 @@ describe("Project Agent panel on Web", () => {
     render(<ProjectAgentPanel />);
     await act(async () => undefined);
     fireEvent.click(screen.getByRole("button", { name: "Make Project Agent…" }));
+    const mostWorkers = screen.getByRole("spinbutton", { name: "Most workers" });
+    expect(mostWorkers).toHaveValue(10);
+    expect(mostWorkers).toHaveAttribute("max", "10");
     manageProjectAgent.mockResolvedValueOnce({ lead });
     await act(async () => {
       fireEvent.click(screen.getByRole("button", { name: "Make Project Agent" }));
     });
     expect(manageProjectAgent).toHaveBeenLastCalledWith(
-      expect.objectContaining({ operation: "designate", sessionId: "lead-1" }),
+      expect.objectContaining({
+        operation: "designate",
+        sessionId: "lead-1",
+        scope: expect.objectContaining({ maxLanes: 10 }),
+      }),
     );
     expect(screen.getByRole("button", { name: "Pause delegation" })).toBeInTheDocument();
   });
@@ -113,9 +120,9 @@ describe("Project Agent panel on Web", () => {
       sessionId: "lead-1",
     });
     fireEvent.click(screen.getByRole("button", { name: "Change settings…" }));
-    fireEvent.change(screen.getByRole("spinbutton", { name: "Most workers" }), {
-      target: { value: "2" },
-    });
+    const mostWorkers = screen.getByRole("spinbutton", { name: "Most workers" });
+    expect(mostWorkers).toHaveValue(4);
+    fireEvent.change(mostWorkers, { target: { value: "2" } });
     manageProjectAgent.mockResolvedValueOnce({ lead });
     await act(async () => {
       fireEvent.click(screen.getByRole("button", { name: "Save" }));

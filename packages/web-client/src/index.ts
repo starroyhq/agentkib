@@ -1,6 +1,6 @@
 export { mergeCatalogSessions, isStaleCatalogRead, retryStaleCatalogRead } from "./catalog";
 export type { IncompleteSessionSource } from "./catalog";
-export { SESSION_RESOURCE_LIMIT } from "@agentkib/runtime-protocol";
+export { PROJECT_AGENT_MAX_WORKERS, SESSION_RESOURCE_LIMIT } from "@agentkib/runtime-protocol";
 
 import {
   managedAgentOf,

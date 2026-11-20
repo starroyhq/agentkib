@@ -90,6 +90,7 @@ import { randomUUID } from "node:crypto";
 import {
   PROTOCOL_VERSION,
   HISTORY_SEARCH_METHODS,
+  PROJECT_AGENT_MAX_WORKERS,
   RUNTIME_METHODS,
   SESSION_EVENT_NOTIFICATION,
   type RuntimeRpcError,
@@ -2397,7 +2398,7 @@ export class TypeScriptBackend {
           localSessionIds(params.candidateIds, 20_000),
         );
       case "lead-assign-workers": {
-        const workers = localSessionIds(params.workers, 8);
+        const workers = localSessionIds(params.workers, PROJECT_AGENT_MAX_WORKERS);
         const workspaceId = leadWorkspace();
         if (!workspaceId) throw new Error("lead-requires-managed-claude");
         const result = await orchestration.assignWorkers({

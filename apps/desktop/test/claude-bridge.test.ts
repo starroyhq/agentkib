@@ -27,6 +27,7 @@ import { createConversationState, reduceSessionStreamEvent } from "@agentkib/con
 import { register as registerPlugin } from "../../../packages/claude-bridge-plugin/hooks/register.js";
 import type { ClaudeTranscriptObservation } from "../../../packages/backend/src/claude-context-usage";
 import type { ClaudeObservedPermissionMode } from "../../../packages/backend/src/claude-managed-runner";
+import { projectAgentFixture } from "./fixtures/project-agent";
 
 const cleanups: Array<() => Promise<void>> = [];
 afterEach(async () => {
@@ -2304,6 +2305,27 @@ describe.skipIf(process.platform === "win32")(
     }
     const leadPoll = (f: Awaited<ReturnType<typeof fixture>>, extra: object = {}) =>
       f.post("/v1/commands", { afterCommandId: null, waitMs: 0, leadTools: true, ...extra });
+
+    it("offers only assigned-worker tools and refuses retired calls through the bridge", async () => {
+      const lead = projectAgentFixture("indexed-session", "workspace");
+      cleanups.push(lead.close);
+      const f = await fixture(1000, {
+        tools: (id) => lead.service.leadToolSpecs(id),
+        call: (id, name, input) => lead.service.call(id, name, input),
+      });
+      const offered = (await leadPoll(f)).body;
+      expect(offered.lead.tools.map(({ name }: { name: string }) => name)).toEqual([
+        "worker_list",
+        "worker_send",
+        "worker_read",
+        "worker_stop",
+      ]);
+      for (const name of ["worker_open", "worker_close"]) {
+        const call = await f.post("/v1/lead-call", { name, input: {} });
+        expect(call.status).toBe(200);
+        expect(JSON.parse(call.body.text)).toEqual({ accepted: false, reason: "tool-not-offered" });
+      }
+    });
 
     it("names the feature and gives a lead its tools, its reports and its calls", async () => {
       const l = terminalLead();

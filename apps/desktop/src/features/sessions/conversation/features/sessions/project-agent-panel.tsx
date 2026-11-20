@@ -1,4 +1,3 @@
-import { PROJECT_AGENT_MAX_WORKERS } from "@agentkib/runtime-protocol";
 import { projectAgentCopy } from "@agentkib/session-ui";
 import { useCallback, useEffect, useState } from "react";
 import { desktopApi } from "@/core/desktop";
@@ -22,9 +21,6 @@ type ProjectAgent = {
   paused: boolean;
   reason: string | null;
   scope: {
-    workspaceIds: string[];
-    policies: string[];
-    maxLanes: number;
     maxAutoTurns: number;
     approvals?: string[];
     answers?: boolean;
@@ -47,21 +43,16 @@ const request = (params: Record<string, unknown>) =>
   Promise.resolve().then(() => desktopApi().claude.request(params));
 
 /**
- * Whether this Claude Code, Codex or DeepSeek Harness session is a Project Agent: it opens
- * workers (Codex or DeepSeek Harness sessions) and hears from them as reports. Its scope is set
- * here, on this computer.
+ * Shows the Project Agent and its assigned Workers. Its delegation settings are edited locally.
  */
 export function ProjectAgentPanel() {
-  const { locale, selected, workspaces, choose, formatCatalogTime } = useSession();
+  const { locale, selected, choose, formatCatalogTime } = useSession();
   const text = projectAgentCopy(locale);
   const [agent, setAgent] = useState<ProjectAgent | null>();
   const [form, setForm] = useState<null | {
-    workspaceIds: string[];
-    autoReview: boolean;
     approveFiles: boolean;
     approveCommands: boolean;
     answers: boolean;
-    maxLanes: number;
     maxAutoTurns: number;
   }>(null);
   const [busy, setBusy] = useState(false);
@@ -117,50 +108,15 @@ export function ProjectAgentPanel() {
   if (!agent || !selected) return null;
   const errorText = error ? (text.errors[error] ?? text.failed) : null;
   const formOf = (scope: ProjectAgent["scope"]) => ({
-    workspaceIds: scope.workspaceIds,
-    autoReview: scope.policies.includes("workspace-write-auto-review"),
     approveFiles: scope.approvals?.includes("file-change") ?? false,
     approveCommands: scope.approvals?.includes("command") ?? false,
     answers: scope.answers ?? false,
-    maxLanes: scope.maxLanes,
     maxAutoTurns: scope.maxAutoTurns,
   });
 
   if (form) {
-    const toggleWorkspace = (id: string, on: boolean) =>
-      setForm({
-        ...form,
-        workspaceIds: on
-          ? [...form.workspaceIds, id]
-          : form.workspaceIds.filter((value) => value !== id),
-      });
-    const bounded = (value: string, max: number) =>
-      Math.min(max, Math.max(1, Math.trunc(Number(value)) || 1));
     return (
       <OperationGroup title={text.title}>
-        <OperationRow className="block">
-          <fieldset className="grid gap-1.5">
-            <legend className="mb-1.5 text-xs text-muted-foreground">{text.workspaces}</legend>
-            {(workspaces ?? []).map((workspace) => (
-              <label key={workspace.id} className="flex items-center gap-2">
-                <NativeCheckbox
-                  checked={form.workspaceIds.includes(workspace.id)}
-                  onChange={(event) => toggleWorkspace(workspace.id, event.target.checked)}
-                />
-                <span className="truncate">{workspace.name}</span>
-              </label>
-            ))}
-          </fieldset>
-        </OperationRow>
-        <OperationRow>
-          <label className="flex items-center gap-2">
-            <NativeCheckbox
-              checked={form.autoReview}
-              onChange={(event) => setForm({ ...form, autoReview: event.target.checked })}
-            />
-            <span>{text.autoReview}</span>
-          </label>
-        </OperationRow>
         <OperationRow className="block">
           <fieldset className="grid gap-1.5">
             <legend className="mb-1.5 text-xs text-muted-foreground">{text.decides}</legend>
@@ -182,22 +138,7 @@ export function ProjectAgentPanel() {
             <p className="text-xs leading-5 text-muted-foreground">{text.decidesNote}</p>
           </fieldset>
         </OperationRow>
-        <OperationRow className="grid grid-cols-2 items-start gap-3">
-          <label className="grid gap-1.5">
-            <span className="text-xs text-muted-foreground">{text.maxWorkers}</span>
-            <Input
-              type="number"
-              min={1}
-              max={PROJECT_AGENT_MAX_WORKERS}
-              value={form.maxLanes}
-              onChange={(event) =>
-                setForm({
-                  ...form,
-                  maxLanes: bounded(event.target.value, PROJECT_AGENT_MAX_WORKERS),
-                })
-              }
-            />
-          </label>
+        <OperationRow>
           <label className="grid gap-1.5">
             <span className="text-xs text-muted-foreground">{text.maxAutoTurns}</span>
             <Input
@@ -206,7 +147,13 @@ export function ProjectAgentPanel() {
               max={100}
               value={form.maxAutoTurns}
               onChange={(event) =>
-                setForm({ ...form, maxAutoTurns: bounded(event.target.value, 100) })
+                setForm({
+                  ...form,
+                  maxAutoTurns: Math.min(
+                    100,
+                    Math.max(1, Math.trunc(Number(event.target.value)) || 1),
+                  ),
+                })
               }
             />
           </label>
@@ -219,16 +166,11 @@ export function ProjectAgentPanel() {
             {text.cancel}
           </Button>
           <Button
-            disabled={busy || !form.workspaceIds.length}
+            disabled={busy}
             onClick={() =>
               void run({
                 operation: "lead-update",
                 scope: {
-                  workspaceIds: form.workspaceIds,
-                  policies: form.autoReview
-                    ? ["workspace-write-on-request", "workspace-write-auto-review"]
-                    : ["workspace-write-on-request"],
-                  maxLanes: form.maxLanes,
                   maxAutoTurns: form.maxAutoTurns,
                   approvals: [
                     ...(form.approveFiles ? ["file-change"] : []),

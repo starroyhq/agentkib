@@ -55,6 +55,7 @@ import { WebReadRequests } from "../../../packages/backend/src/web-read";
 import { TypeScriptBackend } from "../../../packages/backend/src/index";
 import { McpHub } from "../../../packages/backend/src/mcp-hub";
 import { RemoteAgent } from "../../../packages/backend/src/remote-agent";
+import { projectAgentFixture } from "./fixtures/project-agent";
 
 const nativeId = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
 const forkId = "aaaaaaaa-bbbb-4ccc-8ddd-ffffffffffff";
@@ -523,8 +524,14 @@ function fixture(
 describe("a Codex Project Agent's thread", () => {
   it("starts with its worker tools, and again without them once it no longer leads", async () => {
     const f = fixture();
-    let url: string | null = "http://127.0.0.1:43123/lead-capability";
-    f.web.leadEndpoints(async (id) => (id === f.summary.id ? url : null));
+    const lead = projectAgentFixture(f.summary.id, f.summary.workspace_id);
+    cleanups.push(lead.close);
+    const endpoint = (await lead.service.leadTools(f.summary.id)) as {
+      mcpServers: { agentkib_workers: { url: string } };
+    };
+    const url = endpoint.mcpServers.agentkib_workers.url;
+    let enabled = true;
+    f.web.leadEndpoints(async (id) => (enabled && id === f.summary.id ? url : null));
     const attached = () =>
       f.requests.filter(({ method }) => ["thread/start", "thread/resume"].includes(method));
     const config = () =>
@@ -532,8 +539,39 @@ describe("a Codex Project Agent's thread", () => {
     expect(await f.send()).toMatchObject({ accepted: true });
     expect(config()).toMatchObject({ "mcp_servers.agentkib_workers.url": url });
     expect(f.web.codexLeadCapable(f.summary.id)).toBe(true);
+    const headers: Record<string, string> = {
+      "content-type": "application/json",
+      accept: "application/json, text/event-stream",
+    };
+    const request = (body: Record<string, unknown>) =>
+      fetch(String(config()?.["mcp_servers.agentkib_workers.url"]), {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ jsonrpc: "2.0", ...body }),
+      });
+    const initialize = await request({
+      id: 1,
+      method: "initialize",
+      params: {
+        protocolVersion: "2025-03-26",
+        capabilities: {},
+        clientInfo: { name: "offline-codex", version: "1" },
+      },
+    });
+    expect(initialize.ok).toBe(true);
+    headers["mcp-session-id"] = String(initialize.headers.get("mcp-session-id"));
+    await initialize.json();
+    await request({ method: "notifications/initialized" });
+    const listed = await request({ id: 2, method: "tools/list" });
+    const { result } = await listed.json();
+    expect(result.tools.map(({ name }: { name: string }) => name)).toEqual([
+      "worker_list",
+      "worker_send",
+      "worker_read",
+      "worker_stop",
+    ]);
     // Released while its turn runs: the thread starts again once the turn ends.
-    url = null;
+    enabled = false;
     await f.web.restartManagedRunner(f.summary.id);
     const server = f.servers.at(-1)!;
     expect(server.closed).toBe(false);

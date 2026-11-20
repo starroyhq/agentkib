@@ -45,20 +45,20 @@ describe("Project Agent panel on Web", () => {
     render(<ProjectAgentPanel />);
     await act(async () => undefined);
     fireEvent.click(screen.getByRole("button", { name: "Make Project Agent…" }));
-    const mostWorkers = screen.getByRole("spinbutton", { name: "Most workers" });
-    expect(mostWorkers).toHaveValue(10);
-    expect(mostWorkers).toHaveAttribute("max", "10");
+    expect(screen.queryByRole("group", { name: "Workspaces workers may use" })).toBeNull();
+    expect(screen.queryByRole("spinbutton", { name: "Most workers" })).toBeNull();
+    expect(screen.getByRole("spinbutton", { name: "Most automatic turns in a row" })).toHaveValue(
+      25,
+    );
     manageProjectAgent.mockResolvedValueOnce({ lead });
     await act(async () => {
       fireEvent.click(screen.getByRole("button", { name: "Make Project Agent" }));
     });
-    expect(manageProjectAgent).toHaveBeenLastCalledWith(
-      expect.objectContaining({
-        operation: "designate",
-        sessionId: "lead-1",
-        scope: expect.objectContaining({ maxLanes: 10 }),
-      }),
-    );
+    expect(manageProjectAgent).toHaveBeenLastCalledWith({
+      operation: "designate",
+      sessionId: "lead-1",
+      scope: { approvals: [], answers: false, maxAutoTurns: 25 },
+    });
     expect(screen.getByRole("button", { name: "Pause delegation" })).toBeInTheDocument();
   });
 
@@ -120,19 +120,22 @@ describe("Project Agent panel on Web", () => {
       sessionId: "lead-1",
     });
     fireEvent.click(screen.getByRole("button", { name: "Change settings…" }));
-    const mostWorkers = screen.getByRole("spinbutton", { name: "Most workers" });
-    expect(mostWorkers).toHaveValue(4);
-    fireEvent.change(mostWorkers, { target: { value: "2" } });
+    expect(
+      screen.queryByRole("checkbox", { name: "Let workers use Codex auto-review" }),
+    ).toBeNull();
+    const automaticTurns = screen.getByRole("spinbutton", {
+      name: "Most automatic turns in a row",
+    });
+    expect(automaticTurns).toHaveValue(25);
+    fireEvent.change(automaticTurns, { target: { value: "5" } });
     manageProjectAgent.mockResolvedValueOnce({ lead });
     await act(async () => {
       fireEvent.click(screen.getByRole("button", { name: "Save" }));
     });
-    expect(manageProjectAgent).toHaveBeenLastCalledWith(
-      expect.objectContaining({
-        operation: "update",
-        sessionId: "lead-1",
-        scope: expect.objectContaining({ workspaceIds: ["w1"], maxLanes: 2 }),
-      }),
-    );
+    expect(manageProjectAgent).toHaveBeenLastCalledWith({
+      operation: "update",
+      sessionId: "lead-1",
+      scope: { approvals: [], answers: false, maxAutoTurns: 5 },
+    });
   });
 });

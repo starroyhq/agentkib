@@ -13,11 +13,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import { DshBridge } from "../../../packages/backend/src/dsh-bridge";
-import {
-  createDshWorker,
-  DshLaneWatch,
-  DshLeadWatch,
-} from "../../../packages/backend/src/dsh-lanes";
+import { DshLaneWatch, DshLeadWatch } from "../../../packages/backend/src/dsh-lanes";
 import { haltOwnTurns } from "../../../packages/backend/src/lead-turn-origin";
 import { DshManagedRuntime } from "../../../packages/backend/src/dsh-managed-runtime";
 import { MessageLeadReports } from "../../../packages/backend/src/message-lead-reports";
@@ -248,29 +244,14 @@ async function sandbox(port: number) {
     await bridge.close();
     await runtime.stop();
   });
-  // What a new worker's preset took: read, changed, read back.
-  const presetSteps: string[] = [];
   const lanes: LaneHost = {
-    options: async () => ({ available: false }),
-    dshOptions: () => bridge.createOptions(true),
-    lifecycle: async ({ agent: _agent, ...value }) =>
-      createDshWorker(
-        {
-          create: (request) => bridge.create(request),
-          request: (request) => {
-            presetSteps.push(String(request.operation));
-            return bridge.request(request);
-          },
-          live: (id, controls) => bridge.live(id, controls),
-        },
-        value,
-      ),
     control: (value) => bridge.request(value),
     live: async (sessionId) => bridge.live(sessionId, true),
     events: async (sessionId, limit) =>
       (await bridge.events(bridge.nativeId(sessionId)!, null, limit)).events as unknown as Json[],
     endedTurns: (sessionId) => bridge.endedTurns(sessionId),
-    session: () => null,
+    session: (id) =>
+      bridge.handles(id) ? { agent: "deepseek-harness", workspaceId: "w1", title: null } : null,
     managed: async (sessionId) => bridge.handles(sessionId),
     workspaces: () => [{ id: "w1", name: "Project" }],
   };
@@ -323,7 +304,7 @@ async function sandbox(port: number) {
   cleanups.push(() => leads?.close());
   const history = async (sessionId: string) =>
     (await bridge.events(bridge.nativeId(sessionId)!, null, 50)).events as unknown as Json[];
-  return { bridge, runtime, orchestration, reports, presetSteps, history };
+  return { bridge, runtime, orchestration, reports, history };
 }
 
 describe.skipIf(
@@ -479,51 +460,58 @@ describe.skipIf(
     expect(delivered()).toHaveLength(1);
   }, 100_000);
 
-  it("opens a DSH worker in workspace-write, sends it a task and reports its turn", async () => {
+  it("keeps an assigned DSH worker's preset, sends it a task and reports its turn", async () => {
     const model = await provider();
-    const { bridge, runtime, orchestration, reports, presetSteps } = await sandbox(model.port);
+    const { bridge, runtime, orchestration, reports } = await sandbox(model.port);
     const lead = "lead-session";
     orchestration.designate({ sessionId: lead, deviceId: DEVICE, workspaceId: "w1" });
     const call = async (name: string, input: Json) =>
       JSON.parse((await orchestration.call(lead, name, input)).text) as Json;
 
     // Listing workers does not start DSH.
-    expect((await call("worker_list", {})).deepseekHarness).toEqual({ available: true });
+    expect(await call("worker_list", {})).toEqual({ paused: false, workers: [] });
     expect(runtime.phase).toBe("stopped");
 
-    const opened = await call("worker_open", {
-      name: "ds",
-      agent: "deepseek-harness",
-      workspace: "w1",
+    const worker = await bridge.create({
+      requestId: randomUUID(),
+      deviceId: DEVICE,
+      workspaceId: "w1",
     });
-    expect(opened).toMatchObject({ accepted: true, worker: "ds", agent: "deepseek-harness" });
-    expect(runtime.phase).toBe("running");
-    // DSH's default here is full access; the worker was moved to workspace-write.
-    const settings = (await bridge.request({
-      operation: "settings-state",
-      sessionId: opened.session,
-      experimentalEnabled: true,
-    })) as Json;
-    expect(settings.current.policyId).toBe("workspace-write");
-    expect(presetSteps).toEqual(["settings-state", "settings", "settings-state"]);
-    expect(
-      ((await call("worker_list", {})).deepseekHarness.models as Json[]).map((entry) => entry.id),
-    ).toContain("mock/mock-model");
+    expect(worker).toMatchObject({ accepted: true, sessionId: expect.any(String) });
+    const workerSessionId = String(worker.sessionId);
+    const currentPolicy = async () =>
+      ((await bridge.request({
+        operation: "settings-state",
+        sessionId: workerSessionId,
+        experimentalEnabled: true,
+      })) as Json).current.policyId;
+    const policyBeforeAssignment = await currentPolicy();
+    expect(typeof policyBeforeAssignment).toBe("string");
+    await orchestration.assignWorkers({
+      sessionId: lead,
+      deviceId: DEVICE,
+      workspaceId: "w1",
+      workers: [workerSessionId],
+    });
+    expect(await currentPolicy()).toBe(policyBeforeAssignment);
+    expect(await call("worker_list", {})).toMatchObject({
+      workers: [{ worker: "worker-1", agent: "deepseek-harness", session: workerSessionId }],
+    });
 
     expect(
       await call("worker_send", {
-        worker: "ds",
+        worker: "worker-1",
         text: "BRIEF-1: write the summary.",
         title: "Summary",
       }),
     ).toMatchObject({ accepted: true, operation: "send" });
     await until(() => reports.length > 0, 120_000);
     expect(reports[0]).toMatch(
-      /^\[AgentKib report\] Worker "ds" \(DeepSeek Harness\) · turn ended: completed after \d+s\n/,
+      /^\[AgentKib report\] Worker "worker-1" \(DeepSeek Harness\) · turn ended: completed after \d+s\n/,
     );
     expect(reports[0]).toContain(REPLY);
     expect(JSON.stringify(model.requests)).toContain("BRIEF-1: write the summary.");
-    expect(await call("worker_read", { worker: "ds" })).toMatchObject({
+    expect(await call("worker_read", { worker: "worker-1" })).toMatchObject({
       status: "idle",
       title: "Summary",
       replies: [expect.objectContaining({ text: REPLY })],
@@ -533,28 +521,28 @@ describe.skipIf(
     expect(reports).toHaveLength(1);
   }, 240_000);
 
-  it("lets a DSH session lead: it opens a DSH worker with its own tools and hears the report", async () => {
-    // The lead calls worker_open, then worker_send, then answers; a report gets an answer too.
+  it("lets a DSH session brief its assigned worker and hear the report", async () => {
+    // The lead lists its assigned workers, sends the brief, and answers the report.
     const model = await provider((body) => {
       const tools = ((body.tools ?? []) as Json[]).map((tool) => tool.function?.name);
       const messages = body.messages as Json[];
       const last = messages.map((message) => message.role).lastIndexOf("user");
       const asked = JSON.stringify(messages[last]?.content ?? "");
       const results = messages.slice(last + 1).filter((message) => message.role === "tool").length;
-      if (!tools.includes("worker_open")) return { text: REPLY };
+      if (!tools.includes("worker_list")) return { text: REPLY };
       if (asked.includes("[AgentKib report]")) return { text: "LEAD-ACK" };
       if (results === 0)
         return {
           tool: {
-            name: "worker_open",
-            arguments: { name: "ds", agent: "deepseek-harness", workspace: "w1" },
+            name: "worker_list",
+            arguments: {},
           },
         };
       if (results === 1)
         return {
           tool: {
             name: "worker_send",
-            arguments: { worker: "ds", text: "BRIEF-2: write the summary.", title: "Summary" },
+            arguments: { worker: "worker-1", text: "BRIEF-2: write the summary.", title: "Summary" },
           },
         };
       return { text: "LEAD-SENT" };
@@ -569,7 +557,18 @@ describe.skipIf(
     expect(created).toMatchObject({ accepted: true });
     const lead = created.sessionId as string;
     await until(() => bridge.leadCapable(lead), 30_000);
-    orchestration.designate({ sessionId: lead, deviceId: DEVICE, workspaceId: "w1" });
+    const worker = await bridge.create({
+      requestId: randomUUID(),
+      deviceId: DEVICE,
+      workspaceId: "w1",
+    });
+    expect(worker).toMatchObject({ accepted: true, sessionId: expect.any(String) });
+    await orchestration.assignWorkers({
+      sessionId: lead,
+      deviceId: DEVICE,
+      workspaceId: "w1",
+      workers: [String(worker.sessionId)],
+    });
     bridge.leadChanged();
 
     // The person asks the lead to delegate.
@@ -593,11 +592,11 @@ describe.skipIf(
       return events.some((event) => event.kind === "agent-message" && event.content === "LEAD-ACK");
     }, 150_000);
     const status = orchestration.status(lead)!;
-    expect(status.lanes).toMatchObject([{ name: "ds", agent: "deepseek-harness" }]);
+    expect(status.lanes).toMatchObject([{ name: "worker-1", agent: "deepseek-harness" }]);
     expect(status.autoTurns).toBe(1);
     expect(reports).toHaveLength(1);
     expect(reports[0]).toMatch(
-      /^\[AgentKib report\] Worker "ds" \(DeepSeek Harness\) · turn ended: completed/,
+      /^\[AgentKib report\] Worker "worker-1" \(DeepSeek Harness\) · turn ended: completed/,
     );
     const events = await history(lead);
     expect(
@@ -614,16 +613,20 @@ describe.skipIf(
     const workerRequests = model.requests.filter((body) =>
       JSON.stringify(body.messages).includes("BRIEF-2: write the summary."),
     );
-    const leadRequests = model.requests.filter((body) => named(body).includes("worker_open"));
+    const leadRequests = model.requests.filter((body) => named(body).includes("worker_list"));
     expect(workerRequests.length).toBeGreaterThan(0);
     expect(leadRequests.length).toBeGreaterThan(0);
-    for (const body of workerRequests.filter((item) => !named(item).includes("worker_open")))
+    for (const body of leadRequests) {
+      expect(named(body)).not.toContain("worker_open");
+      expect(named(body)).not.toContain("worker_close");
+    }
+    for (const body of workerRequests.filter((item) => !named(item).includes("worker_list")))
       expect(named(body).some((name) => String(name).startsWith("worker_"))).toBe(false);
     // The worker's own requests are the ones where BRIEF-2 is the user's message.
     expect(
       workerRequests.some(
         (body) =>
-          !named(body).includes("worker_open") &&
+          !named(body).includes("worker_list") &&
           JSON.stringify((body.messages as Json[]).at(-1)).includes("BRIEF-2"),
       ),
     ).toBe(true);

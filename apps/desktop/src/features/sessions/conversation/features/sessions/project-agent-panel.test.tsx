@@ -156,28 +156,34 @@ describe("Project Agent panel", () => {
       worker: "codex-1",
       sessionId: "lead-1",
     });
-    expect(screen.getByText("No workers yet. Ask this session to open one.")).toBeInTheDocument();
-    // Its settings: the setup form again, with what it may do now.
-    fireEvent.click(screen.getByRole("button", { name: "Change settings…" }));
-    expect(screen.getByRole("checkbox", { name: "app" })).toBeChecked();
     expect(
-      screen.getByRole("checkbox", { name: "Let workers use Codex auto-review" }),
-    ).toBeChecked();
+      screen.getByText("Assign workers from the desktop session directory."),
+    ).toBeInTheDocument();
+    // A legacy host response can carry old settings. Only delegation settings are editable.
+    fireEvent.click(screen.getByRole("button", { name: "Change settings…" }));
+    expect(screen.queryByRole("group", { name: "Workspaces workers may use" })).toBeNull();
+    expect(
+      screen.queryByRole("checkbox", { name: "Let workers use Codex auto-review" }),
+    ).toBeNull();
+    expect(screen.queryByRole("spinbutton", { name: "Most workers" })).toBeNull();
     expect(screen.getByRole("checkbox", { name: "Workers' file change approvals" })).toBeChecked();
     expect(screen.getByRole("checkbox", { name: "Workers' questions" })).not.toBeChecked();
-    const mostWorkers = screen.getByRole("spinbutton", { name: "Most workers" });
-    expect(mostWorkers).toHaveValue(4);
-    expect(mostWorkers).toHaveAttribute("max", "10");
-    fireEvent.change(mostWorkers, { target: { value: "11" } });
-    expect(mostWorkers).toHaveValue(10);
-    request.mockResolvedValueOnce(agent({ scope: { ...scope, maxLanes: 10 } }));
+    const automaticTurns = screen.getByRole("spinbutton", {
+      name: "Most automatic turns in a row",
+    });
+    expect(automaticTurns).toHaveValue(25);
+    fireEvent.change(automaticTurns, { target: { value: "101" } });
+    expect(automaticTurns).toHaveValue(100);
+    fireEvent.click(screen.getByRole("checkbox", { name: "Workers' questions" }));
+    const update = { approvals: ["file-change"], answers: true, maxAutoTurns: 100 };
+    request.mockResolvedValueOnce(agent({ scope: { ...scope, ...update } }));
     await act(async () => {
       fireEvent.click(screen.getByRole("button", { name: "Save" }));
     });
     expect(request).toHaveBeenLastCalledWith({
       operation: "lead-update",
       sessionId: "lead-1",
-      scope: { ...scope, maxLanes: 10 },
+      scope: update,
     });
     expect(screen.getByRole("button", { name: "Change settings…" })).toBeInTheDocument();
   });

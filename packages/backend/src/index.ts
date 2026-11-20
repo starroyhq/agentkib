@@ -13,7 +13,7 @@ import { DSH_NATIVE_TURN_OBSERVED, DshBridge } from "./dsh-bridge";
 import { readLocalDshHistory, readLocalDshTurn } from "./dsh-local-history";
 import { DshManagedRuntime, dshHome } from "./dsh-managed-runtime";
 import { dshSessionDirectory, probeDshWriter } from "./dsh-writer";
-import { createDshWorker, DshLaneWatch, DshLeadWatch } from "./dsh-lanes";
+import { DshLaneWatch, DshLeadWatch } from "./dsh-lanes";
 import { listNativeImports } from "./session-native-imports";
 import {
   continueNativeImport,
@@ -2398,6 +2398,17 @@ export class TypeScriptBackend {
       this.#claudeBridge?.workspaceOf(sessionId) ??
       (codex ? this.#webRead?.managedWorkspace(sessionId) : undefined) ??
       (dsh ? this.#store?.sessions.get(sessionId)?.workspace_id : undefined);
+    const authorizedWorkspaces = (): string[] | undefined => {
+      const ids = params.authorizedWorkspaceIds;
+      if (ids === undefined) return;
+      if (
+        !Array.isArray(ids) ||
+        ids.length > PROJECT_AGENT_MAX_WORKERS + 1 ||
+        ids.some((id) => typeof id !== "string" || !id || id.length > 256)
+      )
+        throw new Error("invalid-lead-request");
+      return ids;
+    };
     const worker = () => {
       const value = typeof params.worker === "string" ? params.worker : "";
       if (!value || value.length > 256) throw new Error("invalid-lead-request");
@@ -2454,7 +2465,7 @@ export class TypeScriptBackend {
         orchestration.pause(sessionId);
         break;
       case "lead-resume":
-        orchestration.resume(sessionId, deviceId);
+        orchestration.resume(sessionId, deviceId, authorizedWorkspaces(), leadWorkspace());
         break;
       // The person changes what it may do, as setting it up again would.
       case "lead-update": {
@@ -2465,6 +2476,8 @@ export class TypeScriptBackend {
           sessionId,
           deviceId,
           scope: scope as Parameters<OrchestrationService["update"]>[0]["scope"],
+          authorizedWorkspaceIds: authorizedWorkspaces(),
+          workspaceId: leadWorkspace(),
         });
         break;
       }
@@ -2495,7 +2508,7 @@ export class TypeScriptBackend {
     if (params.operation !== "lead-status")
       this.#sessionStream?.publish("", "invalidate", { domains: ["catalog"] });
     return {
-      lead: await orchestration.overview(sessionId),
+      lead: await orchestration.overview(sessionId, leadWorkspace()),
       // Whether it could be one: a Claude Code or Codex session AgentKib runs, a connected
       // terminal, or a DSH session whose DSH can take the tools.
       capable: orchestration.isLeadCapable(sessionId),
@@ -2626,20 +2639,6 @@ export class TypeScriptBackend {
     const dsh = (sessionId: unknown) =>
       typeof sessionId === "string" && this.#dshBridge?.handles(sessionId) ? this.#dshBridge : null;
     return {
-      options: () =>
-        this.#withWebRead((owner) => owner.managedOptions()) as Promise<Record<string, unknown>>,
-      // Listing workers never starts DSH; opening a DSH worker does, as a new DSH session does.
-      dshOptions: async () =>
-        this.#dshBridge
-          ? this.#dshBridge.createOptions(true)
-          : { available: false, reason: "platform-unsupported" },
-      lifecycle: async (value) => {
-        if (value.agent !== "deepseek-harness")
-          return this.#withWebRead((owner) => owner.managedLifecycle(value));
-        if (!this.#dshBridge) throw new Error("dsh-bridge-unavailable");
-        const { agent: _agent, ...create } = value;
-        return createDshWorker(this.#dshBridge, create);
-      },
       control: (value) =>
         dsh(value.sessionId)?.request(value) ??
         this.#withWebRead((owner) => owner.managedControl(value)),

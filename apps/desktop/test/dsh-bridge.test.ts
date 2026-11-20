@@ -37,6 +37,7 @@ import {
 } from "../../../packages/dsh-bridge-plugin/bridge.js";
 import { post } from "../../../packages/dsh-bridge-plugin/client.js";
 import * as dshClient from "../../../packages/dsh-bridge-plugin/client.js";
+import { projectAgentFixture } from "./fixtures/project-agent";
 import {
   dshBridgeCompatibility,
   dshBridgePluginCompatibility,
@@ -3941,6 +3942,41 @@ describe("DeepSeek Harness sessions as a Project Agent's workers", () => {
 });
 
 describe("DeepSeek Harness sessions as Project Agents", () => {
+  it("registers assigned-worker tools and refuses retired calls through the plugin bridge", async () => {
+    const lead = projectAgentFixture("ak-session-a", "workspace");
+    try {
+      const f = await fixture({
+        lead: {
+          sessions: () => ["ak-session-a"],
+          tools: (id) => lead.service.leadToolSpecs(id),
+          call: (id, name, input) => lead.service.call(id, name, input),
+        },
+      });
+      await until(() => f.dsh.toolsOf("session-a").length === 4);
+      expect(f.dsh.toolsOf("session-a").map(({ name }: { name: string }) => name)).toEqual([
+        "worker_list",
+        "worker_send",
+        "worker_read",
+        "worker_stop",
+      ]);
+      const token = [...f.plugin.hosts.values()][0]!.token;
+      const discovery = JSON.parse(
+        readFileSync(path.join(f.agentkibHome, "dsh-bridge", "discovery-v1.json"), "utf8"),
+      );
+      for (const name of ["worker_open", "worker_close"]) {
+        const result = await post(discovery.socketPath, DSH_BRIDGE_PATHS.leadCall, {
+          token,
+          sessionId: "session-a",
+          name,
+          input: {},
+        });
+        expect(JSON.parse(result.text)).toEqual({ accepted: false, reason: "tool-not-offered" });
+      }
+    } finally {
+      await lead.close();
+    }
+  });
+
   const SPECS = [
     {
       name: "worker_list",

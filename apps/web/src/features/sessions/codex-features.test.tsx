@@ -581,6 +581,7 @@ describe("Codex composer", () => {
   });
 
   it("uses the durable Codex action path for goal changes", async () => {
+    state.current = { id: "s", agent: "codex" } as typeof state.current;
     state = {
       ...state,
       access: { ...state.access!, device: { ...state.access!.device!, accessMode: "full" } },

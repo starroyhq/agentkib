@@ -32,6 +32,9 @@ afterEach(() => {
 });
 
 describe("DeepSeek Harness connection panel", () => {
+  const switchName = "Start DeepSeek Harness when needed";
+  const serviceUnavailable = "AgentKib's connection service is not running.";
+
   it("keeps the last status while a control turns reads away, and reports a real failure", async () => {
     request.mockResolvedValueOnce(connected);
     render(<DshBridgePanel />);
@@ -48,7 +51,10 @@ describe("DeepSeek Harness connection panel", () => {
     await act(async () => {
       await vi.advanceTimersByTimeAsync(5000);
     });
-    expect(screen.queryByText("AgentKib's connection service is not running.")).toBeNull();
+    expect(screen.getByRole("switch", { name: switchName })).not.toHaveAttribute(
+      "title",
+      serviceUnavailable,
+    );
     expect(
       screen.getByText("Connected to 1 running DeepSeek Harness instance"),
     ).toBeInTheDocument();
@@ -56,7 +62,33 @@ describe("DeepSeek Harness connection panel", () => {
     await act(async () => {
       await vi.advanceTimersByTimeAsync(5000);
     });
-    expect(screen.getByText("AgentKib's connection service is not running.")).toBeInTheDocument();
+    const toggle = screen.getByRole("switch", { name: switchName });
+    expect(toggle).toHaveAttribute("aria-disabled", "true");
+    expect(toggle).toHaveAttribute("title", serviceUnavailable);
+    expect(screen.queryByText(serviceUnavailable)).not.toBeInTheDocument();
+  });
+
+  it("keeps registered controls visible before the first read and on an unsupported platform", async () => {
+    request.mockResolvedValue({ supported: false, reason: "platform-unsupported" });
+    render(<DshBridgePanel />);
+    const toggle = screen.getByRole("switch", { name: switchName });
+    expect(toggle).toHaveAttribute("aria-disabled", "true");
+    expect(toggle).toHaveAttribute("title", "Reading connection settings.");
+    fireEvent.click(screen.getByRole("button", { name: "Install the AgentKib plugin" }));
+    expect(screen.getByRole("button", { name: "Copy directory" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Copy command" })).toBeDisabled();
+
+    await act(async () => undefined);
+    const reason = "Only macOS is supported for now.";
+    expect(toggle).toHaveAttribute("title", reason);
+    for (const name of ["Copy directory", "Copy command"]) {
+      const button = screen.getByRole("button", { name });
+      expect(button).toBeDisabled();
+      expect(button).toHaveAttribute("title", reason);
+    }
+    expect(screen.queryByText(reason)).not.toBeInTheDocument();
+    fireEvent.click(toggle);
+    expect(request).toHaveBeenCalledExactlyOnceWith({ operation: "dsh-bridge-status" });
   });
 
   it("shows an unverified DSH version as just its version", async () => {
@@ -115,6 +147,7 @@ describe("DeepSeek Harness connection panel", () => {
     render(<DshBridgePanel />);
     await act(async () => undefined);
     expect(screen.getByText(install.pluginDirectory)).toBeInTheDocument();
+    expect(screen.getByRole("switch", { name: switchName })).not.toHaveAttribute("aria-disabled");
     cleanup();
     // AgentKib starts one when needed: installing is optional again.
     request.mockResolvedValue({

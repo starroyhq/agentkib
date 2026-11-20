@@ -95,10 +95,12 @@ export function CopyField({
   value,
   label,
   copiedLabel,
+  disabledReason,
 }: {
   value: string;
   label: string;
   copiedLabel: string;
+  disabledReason?: string;
 }) {
   const [copied, setCopied] = useState(false);
   useEffect(() => {
@@ -108,14 +110,20 @@ export function CopyField({
   }, [copied]);
   return (
     <div className="flex min-w-0 items-center gap-1 rounded-lg border border-border/70 bg-muted/40 py-1 pr-1 pl-3">
-      <code className="min-w-0 flex-1 truncate font-mono text-xs" title={value}>
-        {value}
-      </code>
+      {disabledReason && !value ? (
+        <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">{label}</span>
+      ) : (
+        <code className="min-w-0 flex-1 truncate font-mono text-xs" title={value}>
+          {value}
+        </code>
+      )}
       <Button
         variant="ghost"
         size="icon-sm"
-        aria-label={copied ? copiedLabel : label}
-        title={copied ? copiedLabel : label}
+        className="disabled:pointer-events-auto"
+        aria-label={copied && !disabledReason ? copiedLabel : label}
+        title={disabledReason ?? (copied ? copiedLabel : label)}
+        disabled={!!disabledReason}
         onClick={() =>
           void navigator.clipboard.writeText(value).then(
             () => setCopied(true),

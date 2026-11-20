@@ -694,10 +694,28 @@ it("keeps cached controls visible across an executor change and browses without 
   fireEvent.keyDown(nativePermissions, { key: "Escape" });
   expect(state.client.prepareSessionSettings).not.toHaveBeenCalled();
   fireEvent.click(screen.getByRole("button", { name: codexCopy["en-US"].addContext }));
+  const goalLabels = codexCopy["en-US"];
   const goalAction = screen.getByRole("button", { name: composerGoalCopy("en-US").title });
-  expect(goalAction).toBeDisabled();
+  expect(goalAction).toBeEnabled();
   fireEvent.click(goalAction);
-  expect(screen.queryByText("This executor does not support this action yet.")).toBeNull();
+  const goalDialog = within(await screen.findByRole("dialog", { name: goalLabels.goals }));
+  const unavailableReason = "This executor does not support this action yet.";
+  const objective = goalDialog.getByRole("textbox", { name: goalLabels.goalObjective });
+  const budget = goalDialog.getByRole("spinbutton", { name: goalLabels.goalBudget });
+  for (const field of [objective, budget]) {
+    expect(field).toBeDisabled();
+    expect(field.closest("[title]")).toHaveAttribute("title", unavailableReason);
+  }
+  for (const name of [goalLabels.goalCreate, goalLabels.goalPause, goalLabels.goalClear]) {
+    const button = goalDialog.getByRole("button", { name });
+    expect(button).toBeDisabled();
+    expect(button).toHaveAttribute("title", unavailableReason);
+    expect(button).not.toHaveClass("disabled:pointer-events-none");
+  }
+  expect(goalDialog.queryByText(unavailableReason)).not.toBeInTheDocument();
+  expect(goalDialog.queryByText(goalLabels.goalUnavailable)).not.toBeInTheDocument();
+  fireEvent.click(goalDialog.getByRole("button", { name: goalLabels.close }));
+  fireEvent.click(screen.getByRole("button", { name: goalLabels.addContext }));
   fireEvent.click(await screen.findByRole("button", { name: "Files and folders" }));
   await waitFor(() => expect(state.client.sessionResources).toHaveBeenCalled());
   expect(

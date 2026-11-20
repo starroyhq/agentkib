@@ -78,12 +78,16 @@ describe("DeepSeek Harness model settings in the composer", () => {
       screen.queryByRole("button", { name: new RegExp(`^${copy.executionPolicy}:`) }),
     ).not.toBeInTheDocument();
     expect(state.client.codexGoals).not.toHaveBeenCalled();
-    // Without goal, resource or attachment capabilities there is nothing to add.
     expect(state.client.sessionGoals).not.toHaveBeenCalled();
-    expect(screen.getByRole("button", { name: copy.addContext })).toBeDisabled();
     const gauge = screen.getByRole("img", { name: copy.contextUsage });
     expect(gauge).toHaveAccessibleDescription(contextUsageCopy["en-US"].permission);
     expect(gauge.querySelector("circle[pathLength]")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: copy.addContext }));
+    fireEvent.click(await screen.findByRole("button", { name: copy.goals }));
+    const goalDialog = within(await screen.findByRole("dialog", { name: copy.goals }));
+    expect(goalDialog.getByRole("textbox", { name: copy.goalObjective })).toBeDisabled();
+    expect(goalDialog.queryByRole("spinbutton")).not.toBeInTheDocument();
+    expect(state.client.sessionGoals).not.toHaveBeenCalled();
   });
 
   it("keeps permission presets accessible when the plugin offers no model settings", async () => {
@@ -214,7 +218,7 @@ describe("DeepSeek Harness model settings in the composer", () => {
     });
   });
 
-  it("explains nothing about pausing, resuming or clearing while there is no goal", async () => {
+  it("keeps pause and clear disabled while there is no goal", async () => {
     const unavailable = { available: false, reason: "goal-action-unavailable" };
     state = {
       ...state,
@@ -247,9 +251,22 @@ describe("DeepSeek Harness model settings in the composer", () => {
     fireEvent.click(await screen.findByRole("button", { name: copy.goals }));
     expect(await screen.findByLabelText(copy.goalObjective)).toBeVisible();
     expect(screen.getByRole("button", { name: copy.goalCreate })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: copy.goalPause })).toBeDisabled();
+    expect(screen.getByRole("button", { name: copy.goalClear })).toBeDisabled();
     expect(
       screen.queryByText(codexReason("en-US", "goal-action-unavailable").text),
     ).not.toBeInTheDocument();
+  });
+
+  it("omits the goal for a provider without a registered goal control", async () => {
+    state.current = { ...state.current!, agent: "devin" };
+    state.capabilities!.features.goal = { available: true };
+    state.capabilities!.features.resources = { available: true };
+    render(<CodexComposerControls {...props} />);
+    fireEvent.click(await screen.findByRole("button", { name: copy.addContext }));
+    expect(await screen.findByRole("button", { name: "Files and folders" })).toBeVisible();
+    expect(screen.queryByRole("button", { name: copy.goals })).not.toBeInTheDocument();
+    expect(state.client.sessionGoals).not.toHaveBeenCalled();
   });
 
   it("applies a staged goal once the first turn has finished and the controller is ready", async () => {

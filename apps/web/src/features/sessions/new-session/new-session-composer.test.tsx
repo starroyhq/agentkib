@@ -16,6 +16,7 @@ import {
   composerModelCopy,
   planModeCopy,
 } from "@agentkib/session-ui";
+import { composerLayoutCopy } from "@/features/conversation/features/sessions/composer-layout-copy";
 import { takeNewSessionDraft } from "@/features/conversation/features/sessions/new-session-draft";
 import { publishSessionInvalidation } from "@/features/conversation/features/sessions/session-events";
 import { NewSessionComposer } from "./new-session-composer";
@@ -577,8 +578,11 @@ describe("Web NewSessionComposer", () => {
     expect(screen.getByRole("listbox").parentElement).toHaveClass("top-full", "mt-2");
     expect(fireEvent.keyDown(message(), { key: "Enter" })).toBe(false);
     expect(message()).toHaveValue("");
-    expect(screen.getByRole("button", { name: "Start goal" })).toBeDisabled();
-    expect(screen.getByText(goalCopy.planNeedsMessage)).toBeVisible();
+    const startGoal = screen.getByRole("button", { name: "Start goal" });
+    expect(startGoal).toBeDisabled();
+    expect(startGoal).toHaveAttribute("title", goalCopy.planNeedsMessage);
+    expect(startGoal).not.toHaveClass("disabled:pointer-events-none");
+    expect(screen.queryByText(goalCopy.planNeedsMessage)).not.toBeInTheDocument();
     expect(client.managedAction).not.toHaveBeenCalled();
 
     await write("Check the setup guide");
@@ -654,6 +658,10 @@ describe("Web NewSessionComposer", () => {
     expect(screen.queryByRole("checkbox", { name: /Previous.md/ })).not.toBeInTheDocument();
     await user.click(screen.getByRole("checkbox", { name: /Current.md/ }));
     await user.click(screen.getByRole("button", { name: "Done" }));
+    const resourceNeedsMessage = composerLayoutCopy["en-US"].resourceNeedsMessage;
+    expect(send()).toBeDisabled();
+    expect(send()).toHaveAttribute("title", resourceNeedsMessage);
+    expect(screen.queryByText(resourceNeedsMessage)).not.toBeInTheDocument();
     await write("Review the current file");
 
     fixture.session.access = { ...(fixture.session.access as Access), bootId: "new-boot" };
@@ -662,6 +670,7 @@ describe("Web NewSessionComposer", () => {
       await screen.findByText("This resource is no longer valid. Select it again."),
     ).toBeVisible();
     expect(send()).toBeDisabled();
+    expect(send()).toHaveAttribute("title", "Send");
     expect(client.managedAction).not.toHaveBeenCalled();
     await user.click(screen.getByRole("button", { name: /Remove Current.md/ }));
     await waitFor(() => expect(send()).toBeEnabled());

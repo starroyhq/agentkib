@@ -76,11 +76,22 @@ function fixture() {
   return { bridge, pending };
 }
 describe("content search settings with the real desktop client", () => {
-  it.each(["Disable and clear index", "Clear index", "Rebuild index"])(
-    "keeps %s authoritative when an older poll settles",
-    async (label) => {
+  const actions = [
+    { label: "Disable and clear index", operationPath: "history/configure" },
+    { label: "Clear index", operationPath: "history/clear" },
+    { label: "Rebuild index", operationPath: "history/rebuild" },
+  ];
+  it.each(actions)(
+    "keeps $label authoritative when an older poll settles",
+    async ({ label, operationPath }) => {
       vi.useFakeTimers();
       const { bridge, pending } = fixture();
+      const mutation = deferred<void>();
+      const respond = vi.mocked(bridge.request).getMockImplementation()!;
+      vi.mocked(bridge.request).mockImplementation(async (path, body, id) => {
+        if (path === operationPath) await mutation.promise;
+        return respond(path, body, id);
+      });
       render(<HistorySearchSettings />);
       await act(async () => {});
       expect(screen.getByText("1 / 4 KiB")).toBeTruthy();
@@ -95,15 +106,31 @@ describe("content search settings with the real desktop client", () => {
         fireEvent.click(screen.getByRole("button", { name: label }));
       });
       expect(bridge.cancelRead).toHaveBeenCalledWith(request[2]);
+      for (const action of actions) {
+        const button = screen.getByRole<HTMLButtonElement>("button", { name: action.label });
+        expect(button.disabled).toBe(true);
+        expect(button.getAttribute("title")).toBe("Loading…");
+        expect(button.getAttribute("aria-busy")).toBe(action.label === label ? "true" : null);
+        expect(Boolean(button.querySelector('svg[aria-hidden="true"]'))).toBe(
+          action.label === label,
+        );
+      }
+      expect(screen.queryByText("Loading…")).toBeNull();
+      await act(async () => mutation.resolve(undefined));
+      expect(screen.queryByRole("button", { busy: true })).toBeNull();
       expect(screen.getByText("0 / 4 KiB")).toBeTruthy();
       await act(async () => {
         pending.resolve({ status: 200, body: status(true, 4096) });
       });
       expect(screen.getByText("0 / 4 KiB")).toBeTruthy();
       const toggle = screen.getByRole("button", {
-        name: label.startsWith("Disable") ? "Enable content indexing" : "Disable and clear index",
+        name:
+          operationPath === "history/configure"
+            ? "Enable content indexing"
+            : "Disable and clear index",
       }) as HTMLButtonElement;
       expect(toggle.disabled).toBe(false);
+      expect(toggle.title).toBe("");
     },
   );
   it("can clear and rebuild a damaged cache when its initial status is unavailable", async () => {

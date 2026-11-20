@@ -1,5 +1,7 @@
 import { useEffect, useState } from "react";
+import { Copy } from "lucide-react";
 import { desktopApi } from "@/core/desktop";
+import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import {
   CopyField,
@@ -61,6 +63,9 @@ const copy: Record<
     copied: string;
     unsupported: string;
     unavailable: string;
+    loading: string;
+    autoStartUnavailable: string;
+    installUnavailable: string;
   }
 > = {
   "zh-CN": {
@@ -89,6 +94,9 @@ const copy: Record<
     copied: "已复制",
     unsupported: "当前只支持 macOS。",
     unavailable: "AgentKib 的连接服务没有启动。",
+    loading: "正在读取连接设置。",
+    autoStartUnavailable: "当前运行时未提供自动启动设置。",
+    installUnavailable: "当前运行时未提供插件安装信息。",
   },
   "zh-Hant": {
     title: "DeepSeek Harness 連線",
@@ -116,6 +124,9 @@ const copy: Record<
     copied: "已複製",
     unsupported: "目前只支援 macOS。",
     unavailable: "AgentKib 的連線服務沒有啟動。",
+    loading: "正在讀取連線設定。",
+    autoStartUnavailable: "目前的執行環境未提供自動啟動設定。",
+    installUnavailable: "目前的執行環境未提供外掛安裝資訊。",
   },
   "ja-JP": {
     title: "DeepSeek Harness の接続",
@@ -144,6 +155,9 @@ const copy: Record<
     copied: "コピーしました",
     unsupported: "現在は macOS のみ対応しています。",
     unavailable: "AgentKib の接続サービスが起動していません。",
+    loading: "接続設定を読み込んでいます。",
+    autoStartUnavailable: "現在のランタイムでは自動起動を設定できません。",
+    installUnavailable: "現在のランタイムではプラグインのインストール情報を取得できません。",
   },
   "en-US": {
     title: "DeepSeek Harness connection",
@@ -173,8 +187,46 @@ const copy: Record<
     copied: "Copied",
     unsupported: "Only macOS is supported for now.",
     unavailable: "AgentKib's connection service is not running.",
+    loading: "Reading connection settings.",
+    autoStartUnavailable: "The current runtime does not provide an automatic start setting.",
+    installUnavailable: "The current runtime does not provide plugin installation details.",
   },
 };
+
+function InstallCopyField({
+  value,
+  label,
+  copiedLabel,
+  disabledReason,
+}: {
+  value: string;
+  label: string;
+  copiedLabel: string;
+  disabledReason?: string;
+}) {
+  if (!disabledReason) return <CopyField value={value} label={label} copiedLabel={copiedLabel} />;
+  return (
+    <div className="flex min-w-0 items-center gap-1 rounded-lg border border-border/70 bg-muted/40 py-1 pr-1 pl-3">
+      {value ? (
+        <code className="min-w-0 flex-1 truncate font-mono text-xs" title={value}>
+          {value}
+        </code>
+      ) : (
+        <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">{label}</span>
+      )}
+      <Button
+        variant="ghost"
+        size="icon-sm"
+        className="disabled:pointer-events-auto"
+        aria-label={label}
+        title={disabledReason}
+        disabled
+      >
+        <Copy aria-hidden />
+      </Button>
+    </div>
+  );
+}
 
 /**
  * Status and settings of the per-computer DeepSeek Harness connection: whether AgentKib starts DSH
@@ -208,11 +260,25 @@ export function DshBridgePanel() {
       clearInterval(timer);
     };
   }, []);
-  if (!status) return null;
-  const runtimes = status.runtimes ?? [];
-  const command = status.installInstructions?.split("\n").find((line) => !line.startsWith("#"));
-  const autoStart = status.autoStart;
+  const runtimes = status?.runtimes ?? [];
+  const directory = status?.pluginDirectory ?? "";
+  const command =
+    status?.installInstructions?.split("\n").find((line) => line.trim() && !line.startsWith("#")) ??
+    "";
+  const autoStart = status?.autoStart;
+  const bridgeReason = !status
+    ? text.loading
+    : status.supported === false
+      ? text.unsupported
+      : status.reason === "dsh-bridge-unavailable"
+        ? text.unavailable
+        : undefined;
+  const switchReason =
+    bridgeReason ?? (!autoStart ? text.autoStartUnavailable : switching ? text.loading : undefined);
+  const directoryReason = bridgeReason ?? (!directory ? text.installUnavailable : undefined);
+  const commandReason = bridgeReason ?? (!command ? text.installUnavailable : undefined);
   const toggle = (enabled: boolean) => {
+    if (switchReason) return;
     setSwitching(true);
     void desktopApi()
       .claude.request({ operation: "dsh-auto-start", enabled })
@@ -232,73 +298,75 @@ export function DshBridgePanel() {
       : autoStart.reason === "dsh-version-unsupported"
         ? text.versionUnsupported
         : text.noLauncher;
-  const supported = status.supported !== false;
   // Installing matters when nothing is connected and AgentKib cannot start DSH itself; otherwise
   // the steps stay folded.
-  const installFirst = !runtimes.length && !(autoStart?.enabled && autoStart.available);
+  const canInstall = !directoryReason || !commandReason;
+  const installFirst =
+    canInstall && !runtimes.length && !(autoStart?.enabled && autoStart.available);
   return (
     <OperationGroup title={text.title}>
-      <OperationRow>
-        {!supported ? (
-          <p className="text-muted-foreground">{text.unsupported}</p>
-        ) : status.reason === "dsh-bridge-unavailable" ? (
-          <p className="text-muted-foreground">{text.unavailable}</p>
-        ) : runtimes.length ? (
-          <OperationCopy
-            title={
-              <span className="flex items-center gap-2">
-                <span
-                  className="size-1.5 shrink-0 rounded-full bg-emerald-500"
-                  aria-hidden="true"
-                />
-                <span className="truncate">{text.connected(runtimes.length)}</span>
-              </span>
-            }
-          >
-            {runtimes.map((runtime) => (
-              <p key={runtime.runtimeId}>
-                {text.version(runtime.dshVersion)}
-                {runtime.managed && ` · ${text.background}`}
-                {!runtime.sessionController && ` · ${text.readOnly}`}
-              </p>
-            ))}
-          </OperationCopy>
-        ) : (
-          <p className="text-muted-foreground">{offline}</p>
-        )}
-      </OperationRow>
-      {supported && autoStart && (
+      {!bridgeReason && (
         <OperationRow>
-          <OperationCopy title={text.autoStart}>{text.autoStartHint}</OperationCopy>
-          <Switch
-            checked={autoStart.enabled}
-            disabled={switching}
-            aria-label={text.autoStart}
-            onCheckedChange={toggle}
-          />
+          {runtimes.length ? (
+            <OperationCopy
+              title={
+                <span className="flex items-center gap-2">
+                  <span
+                    className="size-1.5 shrink-0 rounded-full bg-emerald-500"
+                    aria-hidden="true"
+                  />
+                  <span className="truncate">{text.connected(runtimes.length)}</span>
+                </span>
+              }
+            >
+              {runtimes.map((runtime) => (
+                <p key={runtime.runtimeId}>
+                  {text.version(runtime.dshVersion)}
+                  {runtime.managed && ` · ${text.background}`}
+                  {!runtime.sessionController && ` · ${text.readOnly}`}
+                </p>
+              ))}
+            </OperationCopy>
+          ) : (
+            <p className="text-muted-foreground">{offline}</p>
+          )}
         </OperationRow>
       )}
-      {supported && (status.pluginDirectory || command) && (
-        <OperationDisclosure title={text.install} defaultOpen={installFirst}>
-          {status.pluginDirectory && (
-            <div className="grid gap-1.5">
-              <p className="text-xs leading-5 text-muted-foreground">{text.desktop}</p>
-              <CopyField
-                value={status.pluginDirectory}
-                label={text.copyDirectory}
-                copiedLabel={text.copied}
-              />
-            </div>
+      <OperationRow>
+        <OperationCopy title={text.autoStart}>{!switchReason && text.autoStartHint}</OperationCopy>
+        <Switch
+          checked={autoStart?.enabled ?? false}
+          disabled={!!switchReason}
+          title={switchReason}
+          aria-label={text.autoStart}
+          onCheckedChange={toggle}
+        />
+      </OperationRow>
+      <OperationDisclosure key={String(canInstall)} title={text.install} defaultOpen={installFirst}>
+        <div className="grid gap-1.5">
+          {!directoryReason && (
+            <p className="text-xs leading-5 text-muted-foreground">{text.desktop}</p>
           )}
-          {command && (
-            <div className="grid gap-1.5">
-              <p className="text-xs leading-5 text-muted-foreground">{text.cli}</p>
-              <CopyField value={command} label={text.copy} copiedLabel={text.copied} />
-              <p className="text-xs leading-5 text-muted-foreground">{text.restart}</p>
-            </div>
+          <InstallCopyField
+            value={directory}
+            label={text.copyDirectory}
+            copiedLabel={text.copied}
+            disabledReason={directoryReason}
+          />
+        </div>
+        <div className="grid gap-1.5">
+          {!commandReason && <p className="text-xs leading-5 text-muted-foreground">{text.cli}</p>}
+          <InstallCopyField
+            value={command}
+            label={text.copy}
+            copiedLabel={text.copied}
+            disabledReason={commandReason}
+          />
+          {!commandReason && (
+            <p className="text-xs leading-5 text-muted-foreground">{text.restart}</p>
           )}
-        </OperationDisclosure>
-      )}
+        </div>
+      </OperationDisclosure>
     </OperationGroup>
   );
 }

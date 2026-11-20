@@ -380,12 +380,12 @@ describe("WorkspaceSessionsPage", () => {
     );
     fireEvent.click(await screen.findByRole("button", { name: "Connect a Cursor window" }));
     const dialog = await screen.findByRole("dialog", { name: "Cursor IDE · normal window" });
-    expect(
-      await within(dialog).findByText(
-        "Cursor IDE native import currently supports macOS with Cursor 3.22.12 or 3.23.12.",
-      ),
-    ).toBeVisible();
-    expect(within(dialog).getByRole("button", { name: "Connect a Cursor window" })).toBeDisabled();
+    const reason =
+      "Cursor IDE native import currently supports macOS with Cursor 3.22.12 or 3.23.12.";
+    const connect = within(dialog).getByRole("button", { name: "Connect a Cursor window" });
+    await waitFor(() => expect(connect).toHaveAttribute("title", reason));
+    expect(connect).toBeDisabled();
+    expect(within(dialog).queryByText(reason)).not.toBeInTheDocument();
     expect(
       vi.mocked(api.cursorBridge).mock.calls.every(([request]) => request.action === "status"),
     ).toBe(true);

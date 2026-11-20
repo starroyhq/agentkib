@@ -153,15 +153,35 @@ export function CursorBridgePanel({
       if (active.current) setBundleVersion(bundle.version);
     });
   const selected = status?.bindings.find((binding) => binding.id === bindingId);
+  const actionReason = workspace.remote
+    ? tr("handoff.cursor.localOnly")
+    : disabled || pending
+      ? tr("common.loading")
+      : undefined;
+  const connectionReason =
+    actionReason ??
+    (status?.supported === false
+      ? tr("handoff.cursor.platformUnavailable")
+      : !status
+        ? statusQuery.error
+          ? localizeMessage(statusQuery.error)
+          : tr("common.loading")
+        : undefined);
+  const bindingReason =
+    connectionReason ?? (!selected ? tr("handoff.cursor.selectWindow") : undefined);
 
   return (
     <div className="col-span-full grid gap-3 rounded-lg border border-border p-3 text-xs">
-      <p className="m-0 text-muted-foreground">{tr("handoff.cursor.install")}</p>
+      {status?.supported && (
+        <p className="m-0 text-muted-foreground">{tr("handoff.cursor.install")}</p>
+      )}
       <div className="flex flex-wrap gap-2">
         <Button
           size="sm"
           variant="outline"
-          disabled={disabled || pending || !!workspace.remote}
+          className="disabled:pointer-events-auto"
+          disabled={!!actionReason}
+          title={actionReason}
           onClick={() => void reveal()}
         >
           {tr("handoff.cursor.revealBundle")}
@@ -170,7 +190,9 @@ export function CursorBridgePanel({
           <Button
             size="sm"
             variant="outline"
-            disabled={disabled || pending || !status?.supported}
+            className="disabled:pointer-events-auto"
+            disabled={!!connectionReason}
+            title={connectionReason}
             onClick={() => void connect()}
           >
             {tr("handoff.cursor.connect")}
@@ -179,7 +201,9 @@ export function CursorBridgePanel({
         <Button
           size="sm"
           variant="ghost"
-          disabled={disabled || pending || !!workspace.remote}
+          className="disabled:pointer-events-auto"
+          disabled={!!actionReason}
+          title={actionReason}
           onClick={() => void act(refresh)}
         >
           {tr("handoff.cursor.refresh")}
@@ -187,12 +211,6 @@ export function CursorBridgePanel({
       </div>
       {bundleVersion && (
         <span>{tr("handoff.cursor.bundleVerified", { version: bundleVersion })}</span>
-      )}
-      {status && !status.supported && (
-        <p className="m-0 text-muted-foreground">{tr("handoff.cursor.platformUnavailable")}</p>
-      )}
-      {workspace.remote && (
-        <p className="m-0 text-muted-foreground">{tr("handoff.cursor.localOnly")}</p>
       )}
       {challenge && (
         <div className="grid gap-2 rounded-md bg-muted/40 p-3">
@@ -207,8 +225,9 @@ export function CursorBridgePanel({
           <Button
             size="sm"
             variant="outline"
-            className="w-fit"
-            disabled={disabled || pending}
+            className="w-fit disabled:pointer-events-auto"
+            disabled={!!actionReason}
+            title={actionReason}
             onClick={() =>
               void act(async () => {
                 if (!navigator.clipboard) throw new Error("Clipboard unavailable");
@@ -224,12 +243,12 @@ export function CursorBridgePanel({
         {tr("handoff.cursor.window")}
         <Select
           value={bindingId || null}
-          disabled={disabled || pending || !status?.supported || fixedBinding}
+          disabled={!!connectionReason || fixedBinding}
           onValueChange={(value) => {
             if (value !== null) onBindingChange(String(value));
           }}
         >
-          <SelectTrigger aria-label={tr("handoff.cursor.window")}>
+          <SelectTrigger aria-label={tr("handoff.cursor.window")} title={connectionReason}>
             <SelectValue>
               {selected
                 ? `${selected.profile} · ${selected.id.slice(0, 8)} · Cursor ${selected.version}`
@@ -254,41 +273,44 @@ export function CursorBridgePanel({
       <span className="break-all text-muted-foreground">
         {tr("handoff.cursor.boundWorkspace", { path: workspace.path })}
       </span>
-      {selected && (
-        <div className="flex gap-2">
+      <div className="flex gap-2">
+        <Button
+          size="sm"
+          variant="ghost"
+          className="disabled:pointer-events-auto"
+          disabled={!!bindingReason}
+          title={bindingReason}
+          onClick={() => selected && void connect(selected.id)}
+        >
+          {tr("handoff.cursor.reconnect")}
+        </Button>
+        {!fixedBinding && (
           <Button
             size="sm"
             variant="ghost"
-            disabled={disabled || pending}
-            onClick={() => void connect(selected.id)}
+            className="disabled:pointer-events-auto"
+            disabled={!!bindingReason}
+            title={bindingReason}
+            onClick={() => {
+              if (!selected) return;
+              void act(async () => {
+                await api.cursorBridge({
+                  action: "disconnect",
+                  workspaceId: workspace.id,
+                  bindingId: selected.id,
+                });
+                if (!active.current) return;
+                setChallenge((current) =>
+                  current?.bindingId === selected.id ? undefined : current,
+                );
+                await refresh();
+              });
+            }}
           >
-            {tr("handoff.cursor.reconnect")}
+            {tr("handoff.cursor.disconnect")}
           </Button>
-          {!fixedBinding && (
-            <Button
-              size="sm"
-              variant="ghost"
-              disabled={disabled || pending}
-              onClick={() =>
-                void act(async () => {
-                  await api.cursorBridge({
-                    action: "disconnect",
-                    workspaceId: workspace.id,
-                    bindingId: selected.id,
-                  });
-                  if (!active.current) return;
-                  setChallenge((current) =>
-                    current?.bindingId === selected.id ? undefined : current,
-                  );
-                  await refresh();
-                })
-              }
-            >
-              {tr("handoff.cursor.disconnect")}
-            </Button>
-          )}
-        </div>
-      )}
+        )}
+      </div>
       {error !== "" && (
         <p role="alert" className="m-0 text-destructive-text">
           {localizeMessage(error)}

@@ -9,6 +9,7 @@ import {
   forgetSessionModelDisplay,
   rememberSessionModelDisplay,
   sessionProviderCapabilities,
+  type CodexGoalState,
   type CodexSessionSettings,
 } from "@agentkib/web-client";
 import { CodexComposerControls, type ComposerControlsHandle } from "./codex-session-controls";
@@ -203,6 +204,48 @@ describe("Claude's plan mode in the composer", () => {
       expect(state.codexAction).toHaveBeenCalledWith("settings", { permissionMode: "default" }),
     );
   });
+});
+
+it("keeps a local goal draft separate from a native read that later loses its grant", async () => {
+  const { title, objective, saveDraft } = composerGoalCopy("en-US");
+  const draftGrant = { "goal-draft": { available: true } };
+  state.capabilities = { ...state.capabilities!, features: draftGrant };
+  const read = deferred<CodexGoalState>();
+  state.client.sessionGoals = vi.fn(() => read.promise);
+  const onStageGoal = vi.fn();
+  const controls = <CodexComposerControls {...props} onStageGoal={onStageGoal} />;
+  const { rerender } = render(controls);
+
+  fireEvent.click(screen.getByRole("button", { name: codexCopy["en-US"].addContext }));
+  fireEvent.click(await screen.findByRole("button", { name: title }));
+  const dialog = within(await screen.findByRole("dialog", { name: title }));
+  const field = dialog.getByRole("textbox", { name: objective });
+
+  state.capabilities = {
+    ...state.capabilities,
+    features: { ...draftGrant, goal: { available: true } },
+  };
+  rerender(<CodexComposerControls {...props} onStageGoal={onStageGoal} />);
+  await waitFor(() => expect(state.client.sessionGoals).toHaveBeenCalled());
+  await act(async () =>
+    read.resolve({
+      sessionId: "session",
+      available: true,
+      revision: 1,
+      goal: { objective: "Private native objective", status: "active" },
+      actions: {
+        set: { available: false },
+        pause: { available: false },
+        resume: { available: false },
+        clear: { available: false },
+      },
+    }),
+  );
+  state.capabilities = { ...state.capabilities, features: draftGrant };
+  rerender(<CodexComposerControls {...props} onStageGoal={onStageGoal} />);
+  expect(field).toHaveValue("");
+  expect(dialog.getByRole("button", { name: saveDraft })).toBeDisabled();
+  expect(onStageGoal).not.toHaveBeenCalled();
 });
 
 it("stages a goal without a native operation until an imported Claude conversation sends and becomes idle", async () => {
@@ -965,10 +1008,28 @@ it("keeps cached controls visible across an executor change and browses without 
   fireEvent.keyDown(nativePermissions, { key: "Escape" });
   expect(state.client.prepareSessionSettings).not.toHaveBeenCalled();
   fireEvent.click(screen.getByRole("button", { name: codexCopy["en-US"].addContext }));
+  const goalLabels = codexCopy["en-US"];
   const goalAction = screen.getByRole("button", { name: composerGoalCopy("en-US").title });
-  expect(goalAction).toBeDisabled();
+  expect(goalAction).toBeEnabled();
   fireEvent.click(goalAction);
-  expect(screen.queryByText("This executor does not support this action yet.")).toBeNull();
+  const goalDialog = within(await screen.findByRole("dialog", { name: goalLabels.goals }));
+  const unavailableReason = "This executor does not support this action yet.";
+  const objective = goalDialog.getByRole("textbox", { name: goalLabels.goalObjective });
+  const budget = goalDialog.getByRole("spinbutton", { name: goalLabels.goalBudget });
+  for (const field of [objective, budget]) {
+    expect(field).toBeDisabled();
+    expect(field.closest("[title]")).toHaveAttribute("title", unavailableReason);
+  }
+  for (const name of [goalLabels.goalCreate, goalLabels.goalPause, goalLabels.goalClear]) {
+    const button = goalDialog.getByRole("button", { name });
+    expect(button).toBeDisabled();
+    expect(button).toHaveAttribute("title", unavailableReason);
+    expect(button).not.toHaveClass("disabled:pointer-events-none");
+  }
+  expect(goalDialog.queryByText(unavailableReason)).not.toBeInTheDocument();
+  expect(goalDialog.queryByText(goalLabels.goalUnavailable)).not.toBeInTheDocument();
+  fireEvent.click(goalDialog.getByRole("button", { name: goalLabels.close }));
+  fireEvent.click(screen.getByRole("button", { name: goalLabels.addContext }));
   fireEvent.click(await screen.findByRole("button", { name: "Files and folders" }));
   await waitFor(() => expect(state.client.sessionResources).toHaveBeenCalled());
   expect(

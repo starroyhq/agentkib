@@ -679,7 +679,10 @@ describe("native Plan and Goal projection", () => {
       });
       render(<SessionComposer />);
       fireEvent.click(await screen.findByRole("button", { name: "持续目标" }));
-      expect(!!screen.queryByRole("button", { name: "暂停" })).toBe(status === "active");
+      const pause = screen.queryByRole("button", { name: "暂停" });
+      if (status === "active") expect(pause).toBeEnabled();
+      else if (status === "complete") expect(pause).toBeDisabled();
+      else expect(pause).not.toBeInTheDocument();
       expect(!!screen.queryByRole("button", { name: "恢复并继续执行" })).toBe(
         ["paused", "blocked"].includes(status),
       );

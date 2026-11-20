@@ -48,6 +48,11 @@ function deferred<T>() {
   });
   return { promise, resolve, reject };
 }
+async function waitForReconnect() {
+  const button = screen.getByRole("button", { name: "Reconnect selected window" });
+  await waitFor(() => expect(button).toBeEnabled());
+  return button;
+}
 describe("Cursor bridge connection UI", () => {
   beforeAll(() => initializeI18n("en-US"));
   beforeEach(() => {
@@ -73,7 +78,7 @@ describe("Cursor bridge connection UI", () => {
         onStatusChange={vi.fn()}
       />,
     );
-    const reconnect = await screen.findByRole("button", { name: "Reconnect selected window" });
+    const reconnect = await waitForReconnect();
     vi.useFakeTimers();
     await act(async () => {
       fireEvent.click(reconnect);
@@ -104,7 +109,7 @@ describe("Cursor bridge connection UI", () => {
         return statusReads++ === 0 ? Promise.resolve(status) : refresh.promise;
       });
       const view = render(panel());
-      const reconnect = await screen.findByRole("button", { name: "Reconnect selected window" });
+      const reconnect = await waitForReconnect();
       vi.useFakeTimers();
       await act(async () => {
         fireEvent.click(reconnect);
@@ -155,7 +160,7 @@ describe("Cursor bridge connection UI", () => {
       return Promise.resolve(status);
     });
     render(panel());
-    const reconnect = await screen.findByRole("button", { name: "Reconnect selected window" });
+    const reconnect = await waitForReconnect();
     vi.useFakeTimers();
     await act(async () => {
       fireEvent.click(reconnect);
@@ -192,7 +197,7 @@ describe("Cursor bridge connection UI", () => {
         return status;
       });
       const view = render(panel());
-      await screen.findByRole("button", { name: "Reconnect selected window" });
+      await waitForReconnect();
       vi.useFakeTimers();
       await act(async () => {
         fireEvent.click(
@@ -232,12 +237,45 @@ describe("Cursor bridge connection UI", () => {
         onStatusChange={vi.fn()}
       />,
     );
-    expect(
-      screen.getByText("Connect Cursor from a local workspace on this computer."),
-    ).toBeVisible();
-    expect(screen.getByRole("button", { name: "Connect a Cursor window" })).toBeDisabled();
+    const reason = "Connect Cursor from a local workspace on this computer.";
+    for (const name of [
+      "Show verified extension bundle",
+      "Connect a Cursor window",
+      "Refresh connections",
+      "Reconnect selected window",
+      "Disconnect selected window",
+    ]) {
+      const button = screen.getByRole("button", { name });
+      expect(button).toBeDisabled();
+      expect(button).toHaveAttribute("title", reason);
+    }
+    const windowSelect = screen.getByRole("combobox", { name: "Connected Cursor window" });
+    expect(windowSelect).toBeDisabled();
+    expect(windowSelect).toHaveAttribute("title", reason);
+    expect(screen.queryByText(reason)).not.toBeInTheDocument();
     await act(async () => {});
     expect(api.cursorBridge).not.toHaveBeenCalled();
+  });
+  it("keeps native connection controls visible with a reason on unsupported platforms", async () => {
+    vi.mocked(api.cursorBridge).mockResolvedValue({ ...status, supported: false });
+    render(panel());
+    const reason =
+      "Cursor IDE native import currently supports macOS with Cursor 3.22.12 or 3.23.12.";
+    const windowSelect = screen.getByRole("combobox", { name: "Connected Cursor window" });
+    await waitFor(() => expect(windowSelect).toHaveAttribute("title", reason));
+    expect(windowSelect).toBeDisabled();
+    expect(screen.queryByText(reason)).not.toBeInTheDocument();
+    for (const name of [
+      "Connect a Cursor window",
+      "Reconnect selected window",
+      "Disconnect selected window",
+    ]) {
+      const button = screen.getByRole("button", { name });
+      expect(button).toBeDisabled();
+      expect(button).toHaveAttribute("title", reason);
+    }
+    expect(screen.getByRole("button", { name: "Show verified extension bundle" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Refresh connections" })).toBeEnabled();
   });
   it("never chooses a profile automatically when connection status arrives", async () => {
     const onBindingChange = vi.fn();
@@ -263,5 +301,26 @@ describe("Cursor bridge connection UI", () => {
     );
     expect(onBindingChange).not.toHaveBeenCalled();
     expect(screen.getByText("Choose the intended profile and window")).toBeVisible();
+    for (const name of ["Reconnect selected window", "Disconnect selected window"]) {
+      const button = screen.getByRole("button", { name });
+      expect(button).toBeDisabled();
+      expect(button).toHaveAttribute("title", "Choose the intended profile and window");
+    }
+  });
+  it("only offers reconnect for recovery with a fixed binding", async () => {
+    render(
+      <CursorBridgePanel
+        workspace={workspace}
+        bindingId={offline.id}
+        disabled={false}
+        onBindingChange={vi.fn()}
+        onStatusChange={vi.fn()}
+        fixedBinding
+      />,
+    );
+    await waitForReconnect();
+    expect(screen.getByRole("combobox", { name: "Connected Cursor window" })).toBeDisabled();
+    expect(screen.queryByRole("button", { name: "Connect a Cursor window" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Disconnect selected window" })).toBeNull();
   });
 });

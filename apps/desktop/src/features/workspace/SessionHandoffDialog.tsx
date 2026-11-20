@@ -82,7 +82,7 @@ export function SessionHandoffDialog({
       : defaultTarget,
   );
   const [format, setFormat] = useState<HandoffFormat>(initialRequest?.format ?? "markdown");
-  const [cursorSurface, setCursorSurface] = useState<"ide" | "cli" | "agents-window">(
+  const [cursorSurface, setCursorSurface] = useState<"ide" | "cli">(
     initialRequest?.targetSurface === "cursor-ide" ? "ide" : "cli",
   );
   const [bindingId, setBindingId] = useState(initialRequest?.bindingId ?? "");
@@ -161,6 +161,15 @@ export function SessionHandoffDialog({
   const mcpSetupStatus = draft?.capabilities?.mcp_setup.status;
   const nativeCapabilityReason =
     draft?.capabilities?.native_resume.reason ?? draft?.native_capability.reason;
+  const nativeResumeStatus =
+    draft?.capabilities?.native_resume.status ??
+    (draft?.native_capability.supported ? "supported" : "unsupported");
+  const nativeResumeTitle =
+    nativeResumeStatus !== "supported" && nativeCapabilityReason
+      ? tr(`handoff.capabilityReason.${nativeCapabilityReason}`, {
+          defaultValue: nativeCapabilityReason,
+        })
+      : undefined;
 
   const showDraft = (nextDraft: SessionHandoffDraft) => {
     setDraft(nextDraft);
@@ -403,7 +412,9 @@ export function SessionHandoffDialog({
               <code className="ml-auto max-w-[55%] truncate font-mono">{draft.filename}</code>
             </div>
             <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
-              <span>{tr(`handoff.mode.${draft.mode}`)}</span>
+              <span title={draft.capabilities ? undefined : nativeResumeTitle}>
+                {tr(`handoff.mode.${draft.mode}`)}
+              </span>
               <span>
                 {tr("handoff.fullEstimate", {
                   tokens: formatEstimatedTokens(draft.window_stats.estimated_total_tokens),
@@ -455,15 +466,21 @@ export function SessionHandoffDialog({
                 </strong>
                 <div className="grid gap-2 sm:grid-cols-2">
                   {(Object.keys(capabilityLabels) as Array<keyof typeof capabilityLabels>).map(
-                    (capability) => (
-                      <div
-                        className="flex items-center justify-between gap-3 rounded-md bg-background px-2.5 py-2 text-xs"
-                        key={capability}
-                      >
-                        <span>{tr(capabilityLabels[capability])}</span>
-                        <CapabilityStatus status={draft.capabilities[capability].status} />
-                      </div>
-                    ),
+                    (capability) => {
+                      const { status } = draft.capabilities[capability];
+                      const nativeUnavailable =
+                        capability === "native_resume" && status !== "supported";
+                      return (
+                        <div
+                          className={`flex items-center justify-between gap-3 rounded-md bg-background px-2.5 py-2 text-xs${nativeUnavailable ? " text-muted-foreground" : ""}`}
+                          key={capability}
+                          title={nativeUnavailable ? nativeResumeTitle : undefined}
+                        >
+                          <span>{tr(capabilityLabels[capability])}</span>
+                          <CapabilityStatus status={status} muted={nativeUnavailable} />
+                        </div>
+                      );
+                    },
                   )}
                 </div>
               </div>
@@ -506,14 +523,6 @@ export function SessionHandoffDialog({
                   </Button>
                 )}
               </div>
-            )}
-            {nativeCapabilityReason && (
-              <p className="m-0 text-xs text-muted-foreground">
-                {tr(`handoff.capabilityReason.${nativeCapabilityReason}`) ===
-                `handoff.capabilityReason.${nativeCapabilityReason}`
-                  ? nativeCapabilityReason
-                  : tr(`handoff.capabilityReason.${nativeCapabilityReason}`)}
-              </p>
             )}
             {reasoningExcluded && (
               <div className="flex items-start gap-2 rounded-lg border border-blue-500/20 bg-blue-500/5 px-3 py-2 text-sm text-foreground">
@@ -595,7 +604,7 @@ export function SessionHandoffDialog({
                       value={cursorSurface}
                       disabled={busy}
                       onValueChange={(value) => {
-                        if (value === "ide" || value === "cli" || value === "agents-window") {
+                        if (value === "ide" || value === "cli") {
                           reset();
                           setCursorSurface(value);
                           setError("");
@@ -608,11 +617,19 @@ export function SessionHandoffDialog({
                       <SelectContent>
                         <SelectGroup>
                           <SelectLabel>{tr("handoff.cursor.surface")}</SelectLabel>
-                          {(["ide", "cli", "agents-window"] as const).map((surface) => (
+                          {(["ide", "cli"] as const).map((surface) => (
                             <SelectItem key={surface} value={surface}>
                               {tr(`handoff.cursor.surface.${surface}`)}
                             </SelectItem>
                           ))}
+                          <SelectItem
+                            value="agents-window"
+                            disabled
+                            className="data-disabled:pointer-events-auto"
+                            title={tr("handoff.cursor.agentsUnavailable")}
+                          >
+                            {tr("handoff.cursor.surface.agents-window")}
+                          </SelectItem>
                         </SelectGroup>
                       </SelectContent>
                     </Select>
@@ -631,11 +648,7 @@ export function SessionHandoffDialog({
                     />
                   ) : (
                     <p className="col-span-full m-0 text-xs text-muted-foreground">
-                      {tr(
-                        cursorSurface === "cli"
-                          ? "handoff.cursor.cliDetail"
-                          : "handoff.cursor.agentsUnavailable",
-                      )}
+                      {tr("handoff.cursor.cliDetail")}
                     </p>
                   )}
                 </>
@@ -809,17 +822,23 @@ const capabilityLabels = {
   interactive_launch: "handoff.capabilities.interactiveLaunch",
 } as const;
 
-function CapabilityStatus({ status }: { status: ContinuationCapabilityStatus }) {
+function CapabilityStatus({
+  status,
+  muted,
+}: {
+  status: ContinuationCapabilityStatus;
+  muted: boolean;
+}) {
   const { tr } = useI18n();
   return (
     <span
       className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${
-        status === "supported"
-          ? "bg-emerald-500/10 text-emerald-700"
-          : status === "unavailable"
-            ? "bg-amber-500/10 text-amber-700"
-            : status === "unsupported"
-              ? "bg-muted text-muted-foreground"
+        muted || status === "unsupported"
+          ? "bg-muted text-muted-foreground"
+          : status === "supported"
+            ? "bg-emerald-500/10 text-emerald-700"
+            : status === "unavailable"
+              ? "bg-amber-500/10 text-amber-700"
               : "bg-primary/10 text-primary-text"
       }`}
     >

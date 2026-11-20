@@ -2,6 +2,7 @@
 
 import "@testing-library/jest-dom/vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import type { ComponentProps } from "react";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { api } from "@/core/api";
@@ -221,6 +222,31 @@ describe("SessionHandoffDialog", () => {
     );
     expect(screen.getByRole("button", { name: "Inspect transferable content" })).toBeDisabled();
     expect(api.prepareSessionHandoff).not.toHaveBeenCalled();
+  });
+
+  it("keeps the unverified Cursor Agents Window visible and disabled in the selector", async () => {
+    const reason =
+      "Agents Window native import has not been verified. Choose a normal IDE window or CLI.";
+    const user = userEvent.setup();
+    render(
+      <SessionHandoffDialog
+        workspace={workspace}
+        session={session}
+        targetAgents={["cursor"]}
+        onClose={vi.fn()}
+        onPlanned={vi.fn()}
+        onMcpConnectionPlanned={vi.fn()}
+      />,
+    );
+
+    const product = await screen.findByRole("combobox", { name: "Cursor product" });
+    await user.click(product);
+    const agentsWindow = await screen.findByRole("option", { name: "Cursor Agents Window" });
+    expect(agentsWindow).toHaveAttribute("aria-disabled", "true");
+    expect(agentsWindow).toHaveAttribute("title", reason);
+    await user.click(agentsWindow);
+    expect(product).toHaveTextContent("Cursor CLI");
+    expect(screen.queryByText(reason)).not.toBeInTheDocument();
   });
 
   it("passes IDE surface and binding through both preview and approved planning", async () => {
@@ -519,11 +545,18 @@ describe("SessionHandoffDialog", () => {
     ).toBe(false);
   });
 
-  it("does not present a short non-empty session as zero tokens", async () => {
+  it("keeps a short session's file handoff available when native resume is unsupported", async () => {
     vi.mocked(api.prepareSessionHandoff).mockResolvedValue({
       status: "ready",
       draft: {
         ...draft,
+        mode: "handoff-file",
+        native_capability: { supported: false, beta: false, reason: "target-not-supported" },
+        capabilities: {
+          ...capabilities,
+          target_agent: "cursor",
+          native_resume: { status: "unsupported", reason: "target-not-supported" },
+        },
         window_strategy: "full",
         window_stats: {
           ...draft.window_stats,
@@ -557,9 +590,13 @@ describe("SessionHandoffDialog", () => {
     expect(screen.queryByText(/Full history ≈0k Token/)).toBeNull();
     expect(screen.queryByText(/cannot retrieve AgentKib private archives yet/)).toBeNull();
     expect(screen.queryByRole("button", { name: /Connect .* MCP/ })).toBeNull();
-    expect(
-      (screen.getByRole("button", { name: "Review import changes" }) as HTMLButtonElement).disabled,
-    ).toBe(false);
+    const reason = "This Agent does not support native session import yet.";
+    const nativeResume = screen.getByTitle(reason);
+    expect(nativeResume).toHaveTextContent("Native resume");
+    expect(nativeResume).toHaveTextContent("Unsupported");
+    expect(nativeResume).toHaveClass("text-muted-foreground");
+    expect(screen.queryByText(reason)).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Review import changes" })).toBeEnabled();
   });
   it("keeps target conversion losses behind acknowledgement and passes the frozen target fingerprint", async () => {
     const planned = {

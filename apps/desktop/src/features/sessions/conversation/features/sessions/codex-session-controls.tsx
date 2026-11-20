@@ -43,7 +43,6 @@ import {
   type NewSessionGoalDraft,
 } from "@agentkib/session-ui";
 import { Button } from "@/components/ui/button";
-import { Disclosure, DisclosureSummary } from "@/components/ui/disclosure";
 import { Dialog } from "../../components/dialog";
 import { useSession } from "./session-context";
 import { settingsNoticeGroup, type SettingsNotice } from "./use-session-controller";
@@ -92,22 +91,6 @@ function unavailable(error: unknown) {
   return error instanceof ApiError ? error.code : "request_failed";
 }
 
-/** Which goal actions the panel offers: starting one always; with a goal, clearing it and
- * resuming it once stopped or pausing it while active. */
-function offersGoalAction(
-  goal: { status: string } | undefined,
-  action: "set" | "pause" | "resume" | "clear",
-) {
-  if (action === "set") return true;
-  if (!goal) return false;
-  if (action === "pause") return goal.status === "active";
-  if (action === "resume")
-    return ["paused", "blocked", "budgetLimited", "usageLimited", "budget-exhausted"].includes(
-      goal.status,
-    );
-  return true;
-}
-
 export function CodexComposerControls({
   composerCapabilities,
   resources,
@@ -150,6 +133,9 @@ export function CodexComposerControls({
   const modelPanel = useComposerModelPanel();
   const usageGauge = useRef<ContextUsageGaugeHandle>(null);
   const agentCopy = sessionAgentCopy[locale];
+  const goalProvider =
+    current?.id === selected ? sessionProviderCapabilities(current.agent) : undefined;
+  const goalRegistered = goalProvider?.composer?.goal === true;
   const {
     feature,
     settingsReadable,
@@ -159,42 +145,27 @@ export function CodexComposerControls({
     settingsAccessDenied,
     reservesModelSlot,
     reservesPermissionSlot,
+    goalReadable: canReadGoal,
     goalDraftOffered,
-    goalOffered,
     planOffered,
-    goalReadable,
     resourcesReadable,
     resourcesOffered,
     attachmentOffered,
     attachmentAllowed,
-  } =
-    composerCapabilities ??
-    existingSessionComposerCapabilities({
-      access,
-      agent: current?.agent,
-      currentId: current?.id,
-      capabilities,
-      sessionId: selected,
-      legacyReads: !managedAgent && typeof client.sessionCapabilities !== "function",
-    });
+  } = composerCapabilities ??
+  existingSessionComposerCapabilities({
+    access,
+    agent: current?.agent,
+    currentId: current?.id,
+    capabilities,
+    sessionId: selected,
+    legacyReads: !managedAgent && typeof client.sessionCapabilities !== "function",
+  });
+  const goalReadable = goalRegistered && canReadGoal;
   const layout = composerLayoutCopy[locale];
   const term = (value: string) => composerTerm(locale, value);
   const reason = (code?: string) => codexReason(locale, code).text;
   const reasonTitle = (code?: string) => (code ? reason(code) : undefined);
-  const reasonDetail = (code?: string) => {
-    const value = codexReason(locale, code);
-    return (
-      <div className="text-xs text-muted-foreground">
-        {value.text}
-        {value.technical && (
-          <Disclosure className="mt-1">
-            <DisclosureSummary>{layout.details}</DisclosureSummary>
-            <code className="break-all">{value.technical}</code>
-          </Disclosure>
-        )}
-      </div>
-    );
-  };
   const loadGeneration = useRef(0);
   const loadFlight = useRef<
     | {
@@ -227,10 +198,10 @@ export function CodexComposerControls({
   const modelAccess = useRef(access);
   modelAccess.current = access;
   const displayAgent = current?.id === selected ? current.agent : undefined;
-  const [dialog, setDialog] = useState<"goal" | "goal-draft">();
-  const offerGoalDraft =
-    goalDraftOffered && feature("goal-set")?.available !== true && !!onStageGoal;
-  const editingGoalDraft = dialog === "goal-draft";
+  const [goalDialog, setGoalDialog] = useState<"goal" | "goal-draft">();
+  const offersGoalDraft =
+    goalRegistered && goalDraftOffered && feature("goal-set")?.available !== true && !!onStageGoal;
+  const editingGoalDraft = goalDialog === "goal-draft";
   const goalCopy = composerGoalCopy(locale);
   const [addOpen, setAddOpen] = useState(false);
   const [permissionOpen, setPermissionOpen] = useState(false);
@@ -588,7 +559,7 @@ export function CodexComposerControls({
       bootId: access?.bootId,
       deviceId: access?.device?.id,
     };
-    setDialog(undefined);
+    setGoalDialog(undefined);
     setPermissionOpen(false);
     setAddOpen(false);
 
@@ -664,7 +635,7 @@ export function CodexComposerControls({
       live.revision !== undefined &&
       live.revision !== null
     )
-      void load(true, dialog === "goal" || applyingStartupGoal);
+      void load(true, goalDialog === "goal" || applyingStartupGoal);
   }, [
     full,
     load,
@@ -673,7 +644,7 @@ export function CodexComposerControls({
     live?.sessionId,
     live?.status,
     live?.revision,
-    dialog,
+    goalDialog,
     applyingStartupGoal,
   ]);
 
@@ -756,6 +727,39 @@ export function CodexComposerControls({
     settingsSource?.execution !== settingsExecutionScope ||
     (live?.revision !== undefined && settings?.revision !== live.revision);
   const goalReadStale = live?.revision !== undefined && goal?.revision !== live.revision;
+  const goalSnapshot = goalReadable && goal?.sessionId === selected ? goal : undefined;
+  const activeGoal = goalSnapshot?.available ? goalSnapshot.goal : undefined;
+  const goalStatus = activeGoal?.status;
+  const retryGoal = ["budgetLimited", "usageLimited", "budget-exhausted"].includes(
+    goalStatus ?? "",
+  );
+  const resumeGoal = retryGoal || goalStatus === "paused" || goalStatus === "blocked";
+  const goalTurnAction = resumeGoal ? "resume" : "pause";
+  const goalActionsLocked =
+    disabled || busy || saving || compacting || goalReadStale || !goalSnapshot?.available;
+  const goalLockReason = compacting
+    ? reason("session-compacting")
+    : goalReadable && goalReadStale
+      ? layout.connecting
+      : disabled || busy || saving
+        ? reason("session-busy")
+        : undefined;
+  const goalActionDisabled = (action: keyof CodexGoalState["actions"]) =>
+    goalActionsLocked ||
+    !goalSnapshot?.actions?.[action]?.available ||
+    feature(`goal-${action}`)?.available !== true;
+  const goalActionTitle = (action: keyof CodexGoalState["actions"]) =>
+    reasonTitle(
+      goalSnapshot?.actions?.[action]?.reason ||
+        feature(`goal-${action}`)?.reason ||
+        (!goalSnapshot?.available
+          ? goalSnapshot?.reason ||
+            feature("goal")?.reason ||
+            (goalReadable ? goalError : undefined)
+          : undefined),
+    ) ??
+    goalLockReason ??
+    (!goalSnapshot?.available ? copy.goalUnavailable : undefined);
   const prepareSettings = () => {
     if (!settingsReadable || !online) return;
     if (
@@ -884,12 +888,18 @@ export function CodexComposerControls({
     setAddOpen(false);
   };
   const openGoal = () => {
+    if (!goalRegistered) return;
     closeAdd();
-    if (offerGoalDraft) {
-      setDialog("goal-draft");
+    if (offersGoalDraft) {
+      // Keep background native reads from replacing the local draft.
+      goalDraftRevision.current = goalSnapshot?.revision ?? 0;
+      setGoalDirty(false);
+      setObjective(startupGoal?.value.objective ?? "");
+      setTokenBudget(startupGoal?.value.tokenBudget?.toString() ?? "");
+      setGoalDialog("goal-draft");
       return;
     }
-    setDialog("goal");
+    setGoalDialog("goal");
     if (goalReadable && goalReadStale) void load();
   };
   const openModel = (page: "models" | "effort", refresh = false) =>
@@ -903,7 +913,7 @@ export function CodexComposerControls({
   const goalObjective = stagedGoal?.objective ?? objective;
   const goalBudget = stagedGoal ? (stagedGoal.tokenBudget?.toString() ?? "") : tokenBudget;
   const savedGoal =
-    goal?.sessionId === selected ? goal.goal : live?.sessionId === selected ? live.goal : undefined;
+    goalReadable && !goalSnapshot && live?.sessionId === selected ? live.goal : activeGoal;
   const selectedGoalDetail = savedGoal
     ? `${term(savedGoal.status)} · ${savedGoal.objective}`
     : startupGoal && goalObjective;
@@ -922,7 +932,7 @@ export function CodexComposerControls({
   };
   const closeGoal = () => {
     if (editingGoalDraft) resetGoalDraftEditor();
-    setDialog(undefined);
+    setGoalDialog(undefined);
   };
   const discardStartupGoal = () => {
     if (savedGoal || !startupGoal || goalDraftLocked || mutationFlight.current) return;
@@ -942,11 +952,14 @@ export function CodexComposerControls({
   const parsedBudget = goalBudget ? Number(goalBudget) : undefined;
   const budgetValid =
     parsedBudget === undefined || (Number.isSafeInteger(parsedBudget) && parsedBudget > 0);
-  const parsedGoalDraft = editingGoalDraft ? parseGoalDraft(goalObjective, goalBudget) : undefined;
-  const goalDraftDisabled = !offerGoalDraft || goalDraftLocked;
+  const goalDraft = editingGoalDraft ? parseGoalDraft(goalObjective, goalBudget) : undefined;
+  const goalDraftDisabled = !offersGoalDraft || goalDraftLocked;
+  const goalDraftTitle = !offersGoalDraft
+    ? (reasonTitle(feature("goal-draft")?.reason) ?? copy.goalUnavailable)
+    : undefined;
   const saveGoalDraft = () => {
-    if (goalDraftDisabled || !parsedGoalDraft) return;
-    onStageGoal?.(parsedGoalDraft);
+    if (goalDraftDisabled || !goalDraft) return;
+    onStageGoal?.(goalDraft);
     closeGoal();
   };
   const settingsWriteLocked = composerSettingsWriteLocked({
@@ -1016,6 +1029,7 @@ export function CodexComposerControls({
     // A submitted draft has at most one automatic dispatch. The existing action
     // controller owns its receipt, including after a reconnect.
     if (
+      !goalReadable ||
       !startupGoal?.apply ||
       attemptedStartupGoal.current === startupGoal.value ||
       !selected ||
@@ -1058,7 +1072,7 @@ export function CodexComposerControls({
         changePermissionOpen(true);
         return true;
       }
-      if (!goalReadable && !offerGoalDraft) return false;
+      if (!goalReadable && !offersGoalDraft) return false;
       openGoal();
       return true;
     },
@@ -1083,24 +1097,42 @@ export function CodexComposerControls({
       {settingsMessage}
     </p>
   );
-  const goalFields = dialog && (
-    <ComposerGoalFields
-      locale={locale}
-      objective={goalObjective}
-      budget={goalBudget}
-      disabled={
-        editingGoalDraft ? !offerGoalDraft || goalDraftLocked : busy || saving || compacting
+
+  const changeGoalField = (field: "objective" | "budget", value: string) => {
+    editGoal();
+    if (field === "objective") setObjective(value);
+    else setTokenBudget(value);
+  };
+  const goalFieldObjective =
+    editingGoalDraft || goalSnapshot?.available ? goalObjective : (stagedGoal?.objective ?? "");
+  const goalFieldBudget =
+    editingGoalDraft || goalSnapshot?.available
+      ? goalBudget
+      : (stagedGoal?.tokenBudget?.toString() ?? "");
+  const goalFieldsDisabled = editingGoalDraft ? goalDraftDisabled : goalActionDisabled("set");
+  const goalBudgetType =
+    (editingGoalDraft ? undefined : goalSnapshot?.budget) ?? goalProvider?.create.goalBudget;
+  const goalFields = goalDialog && (
+    <div
+      className="space-y-3"
+      title={
+        goalFieldsDisabled
+          ? editingGoalDraft
+            ? goalDraftTitle
+            : goalActionTitle("set")
+          : undefined
       }
-      hideBudget={goal?.budget === "rounds"}
-      onObjectiveChange={(value) => {
-        editGoal();
-        setObjective(value);
-      }}
-      onBudgetChange={(value) => {
-        editGoal();
-        setTokenBudget(value);
-      }}
-    />
+    >
+      <ComposerGoalFields
+        locale={locale}
+        objective={goalFieldObjective}
+        budget={goalFieldBudget}
+        disabled={goalFieldsDisabled}
+        hideBudget={goalBudgetType === "rounds"}
+        onObjectiveChange={(value) => changeGoalField("objective", value)}
+        onBudgetChange={(value) => changeGoalField("budget", value)}
+      />
+    </div>
   );
 
   return (
@@ -1163,11 +1195,9 @@ export function CodexComposerControls({
                 onSelect: setResources,
               }
             : undefined,
-          goal: goalOffered
+          goal: goalRegistered
             ? {
                 selected: !!startupGoal || !!savedGoal,
-                disabled: !goalReadable && !offerGoalDraft && !startupGoal,
-                reason: reasonTitle(feature("goal")?.reason ?? feature("goal-draft")?.reason),
                 onOpen: openGoal,
               }
             : undefined,
@@ -1215,7 +1245,7 @@ export function CodexComposerControls({
             : undefined
         }
         goal={
-          savedGoal || startupGoal
+          goalRegistered && (savedGoal || startupGoal)
             ? {
                 detail: selectedGoalDetail,
                 disabled: !savedGoal && goalDraftLocked,
@@ -1287,7 +1317,7 @@ export function CodexComposerControls({
         modelFeedback={modelMessage && settingsFeedback}
       />
       {!permissionMessage && !modelMessage && settingsFeedback}
-      {dialog && (
+      {goalRegistered && goalDialog && (
         <Dialog
           panel
           description={editingGoalDraft ? undefined : `${layout.selected}: ${resources.length}`}
@@ -1295,122 +1325,81 @@ export function CodexComposerControls({
             editingGoalDraft ? (
               <Button
                 type="button"
-                disabled={goalDraftDisabled || !parsedGoalDraft}
+                className="disabled:pointer-events-auto"
+                disabled={goalDraftDisabled || !goalDraft}
+                title={goalDraftTitle}
                 onClick={saveGoalDraft}
               >
                 {goalCopy.saveDraft}
               </Button>
-            ) : goal?.available ? (
+            ) : (
               <div className="flex flex-wrap gap-2">
                 <Button
                   type="button"
-                  className="min-h-11"
+                  className="min-h-11 disabled:pointer-events-auto"
                   disabled={
-                    busy ||
-                    saving ||
-                    compacting ||
+                    goalActionDisabled("set") ||
                     goalChanged ||
-                    goalReadStale ||
-                    !goal.actions.set?.available ||
-                    feature("goal-set")?.available !== true ||
                     !goalObjective.trim() ||
                     !budgetValid
                   }
-                  title={reasonTitle(goal.actions.set?.reason || feature("goal-set")?.reason)}
+                  title={goalActionTitle("set")}
                   onClick={() => {
                     disarmStartupGoal();
                     void mutate("goal-set", {
                       objective: goalObjective.trim(),
-                      intent: goal.goal ? "update" : "start",
+                      intent: activeGoal ? "update" : "start",
                       tokenBudget: parsedBudget ?? null,
                     });
                   }}
                 >
-                  {goal.goal ? copy.goalUpdate : copy.goalCreate}
+                  {activeGoal ? copy.goalUpdate : copy.goalCreate}
                 </Button>
-                {goal.goal && offersGoalAction(goal.goal, "resume") ? (
-                  <Button
-                    type="button"
-                    variant="outline"
-                    disabled={
-                      busy ||
-                      saving ||
-                      compacting ||
-                      goalReadStale ||
-                      !goal.actions.resume?.available ||
-                      feature("goal-resume")?.available !== true
-                    }
-                    title={reasonTitle(
-                      goal.actions.resume?.reason || feature("goal-resume")?.reason,
-                    )}
-                    onClick={() => void mutate("goal-resume")}
-                  >
-                    {["budgetLimited", "usageLimited", "budget-exhausted"].includes(
-                      goal.goal.status,
-                    )
-                      ? layout.tryResume
-                      : copy.goalResume}
-                  </Button>
-                ) : offersGoalAction(goal.goal, "pause") ? (
-                  <Button
-                    type="button"
-                    variant="outline"
-                    disabled={
-                      busy ||
-                      saving ||
-                      compacting ||
-                      goalReadStale ||
-                      !goal.actions.pause?.available ||
-                      feature("goal-pause")?.available !== true
-                    }
-                    title={reasonTitle(goal.actions.pause?.reason || feature("goal-pause")?.reason)}
-                    onClick={() => void mutate("goal-pause")}
-                  >
-                    {copy.goalPause}
-                  </Button>
-                ) : null}
                 <Button
                   type="button"
                   variant="outline"
-                  className="min-h-11"
+                  className="disabled:pointer-events-auto"
                   disabled={
-                    busy ||
-                    saving ||
-                    compacting ||
-                    goalReadStale ||
-                    !goal.actions.clear?.available ||
-                    feature("goal-clear")?.available !== true
+                    (!resumeGoal && goalStatus !== "active") || goalActionDisabled(goalTurnAction)
                   }
-                  title={reasonTitle(goal.actions.clear?.reason || feature("goal-clear")?.reason)}
+                  title={goalActionTitle(goalTurnAction)}
+                  onClick={() => void mutate(`goal-${goalTurnAction}`)}
+                >
+                  {retryGoal ? layout.tryResume : resumeGoal ? copy.goalResume : copy.goalPause}
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="min-h-11 disabled:pointer-events-auto"
+                  disabled={!activeGoal || goalActionDisabled("clear")}
+                  title={goalActionTitle("clear")}
                   onClick={() => void mutate("goal-clear")}
                 >
                   {copy.goalClear}
                 </Button>
               </div>
-            ) : undefined
+            )
           }
           title={copy.goals}
           closeLabel={copy.close}
           onClose={closeGoal}
         >
-          {!editingGoalDraft && goalReadStale && (goal?.available || !!goalError) && (
-            <div role="status" className="mb-3 text-xs text-muted-foreground">
-              {layout.connecting}
-              <Button type="button" variant="outline" onClick={() => void load()}>
-                {layout.reloadDraft}
-              </Button>
-            </div>
-          )}
+          {!editingGoalDraft &&
+            goalReadable &&
+            goalReadStale &&
+            (goalSnapshot?.available || !!goalError) && (
+              <div role="status" className="mb-3 text-xs text-muted-foreground">
+                {layout.connecting}
+                <Button type="button" variant="outline" onClick={() => void load()}>
+                  {layout.reloadDraft}
+                </Button>
+              </div>
+            )}
           {editingGoalDraft ? (
             goalFields
-          ) : !goal?.available ? (
-            <p role="status" className="text-sm text-muted-foreground">
-              {copy.goalUnavailable}
-              {reason(goal?.reason || goalError)}
-            </p>
           ) : (
             <section className="space-y-3">
-              {goalChanged && (
+              {goalSnapshot?.available && goalChanged && (
                 <div role="status" className="text-xs">
                   {layout.nativeChanged}
                   {!goalReadStale && (
@@ -1420,8 +1409,8 @@ export function CodexComposerControls({
                       onClick={() => {
                         goalDraftRevision.current = undefined;
                         setGoalDirty(false);
-                        setObjective(goal.goal?.objective ?? "");
-                        setTokenBudget(goal.goal?.tokenBudget?.toString() ?? "");
+                        setObjective(activeGoal?.objective ?? "");
+                        setTokenBudget(activeGoal?.tokenBudget?.toString() ?? "");
                       }}
                     >
                       {layout.reloadDraft}
@@ -1429,59 +1418,44 @@ export function CodexComposerControls({
                   )}
                 </div>
               )}
-              {mutationError?.group === "goal" && (
+              {goalSnapshot?.available && mutationError?.group === "goal" && (
                 <p role="alert" className="text-xs text-destructive-text">
                   {reason(mutationError.reason)}
                 </p>
               )}
-              {goal.goal && (
+              {activeGoal && (
                 <dl className="grid grid-cols-2 gap-2 rounded-lg border p-3 text-xs">
                   <dt>{copy.goalStatus}</dt>
                   <dd>
-                    {term(goal.goal.status)}
-                    {goal.goal.detail && (
-                      <span className="block text-muted-foreground">{goal.goal.detail}</span>
+                    {term(activeGoal.status)}
+                    {activeGoal.detail && (
+                      <span className="block text-muted-foreground">{activeGoal.detail}</span>
                     )}
                   </dd>
-                  {goal.goal.rounds ? (
+                  {activeGoal.rounds ? (
                     <>
                       <dt>{copy.goalRounds}</dt>
-                      <dd>{`${goal.goal.rounds.used} / ${goal.goal.rounds.limit}`}</dd>
+                      <dd>{`${activeGoal.rounds.used} / ${activeGoal.rounds.limit}`}</dd>
                     </>
                   ) : (
                     <>
                       <dt>{copy.goalUsage}</dt>
                       <dd>
-                        {goal.goal.tokensUsed?.toLocaleString() ?? copy.unavailable}
-                        {goal.goal.tokenBudget
-                          ? ` / ${goal.goal.tokenBudget.toLocaleString()}`
+                        {activeGoal.tokensUsed?.toLocaleString() ?? copy.unavailable}
+                        {activeGoal.tokenBudget
+                          ? ` / ${activeGoal.tokenBudget.toLocaleString()}`
                           : ""}
                       </dd>
                       <dt>{copy.goalElapsed}</dt>
                       <dd>
-                        {goal.goal.elapsedMs === undefined
+                        {activeGoal.elapsedMs === undefined
                           ? copy.unavailable
-                          : `${Math.round(goal.goal.elapsedMs / 1000)}s`}
+                          : `${Math.round(activeGoal.elapsedMs / 1000)}s`}
                       </dd>
                     </>
                   )}
                 </dl>
               )}
-              {/* Why an action this goal offers is unavailable; with no goal only starting one. */}
-              {(["set", "pause", "resume", "clear"] as const)
-                .filter(
-                  (action) =>
-                    offersGoalAction(goal.goal, action) &&
-                    (!goal.actions[action]?.available ||
-                      feature(`goal-${action}`)?.available !== true),
-                )
-                .map((action) => (
-                  <div key={action}>
-                    {reasonDetail(
-                      goal.actions[action]?.reason || feature(`goal-${action}`)?.reason,
-                    )}
-                  </div>
-                ))}
               {goalFields}
             </section>
           )}

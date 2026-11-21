@@ -9,7 +9,7 @@ import { readControlReceipt } from "../../../packages/backend/src/control-receip
 import {
   SerialSessionQueue,
   type SerialQueueTarget,
-} from "../../../packages/backend/src/serial-session-queue";
+} from "../../../packages/backend/src/sessions/serial-session-queue";
 
 const directories: string[] = [];
 afterEach(async () => {

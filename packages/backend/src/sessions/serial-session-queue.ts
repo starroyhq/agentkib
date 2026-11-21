@@ -5,7 +5,7 @@ import {
   validClaudeDeviceId,
   type ClaudeHostState,
   type ClaudeHostWork,
-} from "./agents/claude/claude-host-state";
+} from "../agents/claude/claude-host-state";
 
 export type SerialQueueTarget = {
   agent: "devin" | "antigravity";

@@ -5,7 +5,7 @@ import JSON5 from "json5";
 import { normalizeDiscoveryCandidates } from "./discovery-scan-roots";
 import { isReparseOrSymlink } from "./native-files";
 import { fileTime } from "./asset-scanner";
-import { resolveClaudeConfig } from "./claude-config";
+import { resolveClaudeConfig } from "./agents/claude/claude-config";
 import { userHome } from "./mcp-config-read";
 import { jsonTimestamp } from "./session-history";
 import { Sql } from "./sql";

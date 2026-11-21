@@ -10,7 +10,7 @@ import { Commands } from "./commands";
 import { sources } from "./context-sources";
 import { antigravitySources } from "./context-antigravity";
 import { claudeSections, stripBlockComments } from "./context-claude";
-import { readClaudeVersion } from "./claude-version";
+import { readClaudeVersion } from "./agents/claude/claude-version";
 import {
   CONTEXT_NOTE_PREFIX,
   budgetWarning,

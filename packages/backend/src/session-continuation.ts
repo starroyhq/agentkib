@@ -15,9 +15,9 @@ import {
 } from "node:fs";
 import path from "node:path";
 import { parse as parseToml } from "smol-toml";
-import { claudeConfigFiles, resolveClaudeConfig } from "./claude-config";
-import { claudeProjectKey } from "./claude-project-path";
-import { probeClaudeSessionFormat } from "./claude-session-probe";
+import { claudeConfigFiles, resolveClaudeConfig } from "./agents/claude/claude-config";
+import { claudeProjectKey } from "./agents/claude/claude-project-path";
+import { probeClaudeSessionFormat } from "./agents/claude/claude-session-probe";
 import { resolveCommand } from "./command-resolution";
 import { devinExecutable } from "./agents/devin/devin-executable";
 import type { DshBridge } from "./agents/dsh/dsh-bridge";

@@ -1,5 +1,5 @@
 import path from "node:path";
-import { resolveClaudeConfig } from "./claude-config";
+import { resolveClaudeConfig } from "./agents/claude/claude-config";
 import { userHome } from "./mcp-config-read";
 import { pathIdentity } from "./paths";
 import { compareUtf8 } from "./workspaces";

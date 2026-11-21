@@ -20,9 +20,12 @@ import {
   assertClaudeConfigWritable,
   claudeConfigFiles,
   resolveClaudeConfig,
-} from "./claude-config";
-import { claudeProjectKey } from "./claude-project-path";
-import { verifyClaudeTranscript, type ClaudeNativeExpectation } from "./claude-native-verify";
+} from "./agents/claude/claude-config";
+import { claudeProjectKey } from "./agents/claude/claude-project-path";
+import {
+  verifyClaudeTranscript,
+  type ClaudeNativeExpectation,
+} from "./agents/claude/claude-native-verify";
 import { resolveCommand } from "./command-resolution";
 import { Commands } from "./commands";
 import type { DshBridge } from "./agents/dsh/dsh-bridge";

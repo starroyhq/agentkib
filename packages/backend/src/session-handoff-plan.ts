@@ -10,8 +10,8 @@ import {
   assertClaudeConfigWritable,
   claudeConfigFiles,
   resolveClaudeConfig,
-} from "./claude-config";
-import { claudeProjectKey } from "./claude-project-path";
+} from "./agents/claude/claude-config";
+import { claudeProjectKey } from "./agents/claude/claude-project-path";
 import { buildSessionArchive } from "./session-archive";
 import { planSessionWindow, renderHandoff, sanitizeHandoffExport } from "./session-handoff";
 import type { DocumentOptions, SessionDocument } from "./session-model";

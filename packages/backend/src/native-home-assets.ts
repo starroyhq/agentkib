@@ -4,7 +4,7 @@ import path from "node:path";
 import { canonicalize, pathIdentity } from "./paths";
 import { isReparseOrSymlink } from "./native-files";
 import { fileTime, inspectSkill } from "./asset-scanner";
-import { resolveClaudeConfig } from "./claude-config";
+import { resolveClaudeConfig } from "./agents/claude/claude-config";
 import { userHome } from "./mcp-config-read";
 import type { CatalogAsset } from "./workspaces";
 

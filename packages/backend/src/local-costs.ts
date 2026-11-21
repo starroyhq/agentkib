@@ -9,7 +9,7 @@ import type {
 import type { Commands } from "./commands";
 import type { BackendStore } from "./store";
 import { localDay, parseLocalCosts, type CostBackend } from "./local-cost-parser";
-import { claudeConfigDirVariable } from "./claude-config";
+import { claudeConfigDirVariable } from "./agents/claude/claude-config";
 
 export interface PreparedCostCollector {
   environment: NodeJS.ProcessEnv;

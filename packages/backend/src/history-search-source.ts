@@ -8,7 +8,7 @@ import { sessionIdentity, type SessionStore, type NativeSession } from "./sessio
 import { sanitizeHandoffExport, sanitizeSessionText } from "./session-handoff";
 import { GrokSessions } from "./grok-sessions";
 import { CodexSessions } from "./agents/codex/codex-sessions";
-import { ClaudeSessions } from "./claude-sessions";
+import { ClaudeSessions } from "./agents/claude/claude-sessions";
 import { HermesSessions } from "./hermes-sessions";
 import { OpenClawSessions } from "./openclaw-sessions";
 import {

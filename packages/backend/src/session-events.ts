@@ -1,5 +1,5 @@
 import type { ConversationToolDetail, ConversationTurnMeta } from "@agentkib/runtime-protocol";
-import { sessionTitle } from "./codex-sessions";
+import { sessionTitle } from "./agents/codex/codex-sessions";
 import { MAX_MESSAGE_BYTES, toolStatus, truncateUtf8 } from "./session-event-values";
 import { jsonTimestamp } from "./session-history";
 export { MAX_MESSAGE_BYTES, toolStatus, truncateUtf8 };

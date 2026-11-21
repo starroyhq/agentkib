@@ -2,12 +2,12 @@ import path from "node:path";
 import { z } from "zod";
 import type { SessionCollection } from "@agentkib/runtime-protocol";
 import type { NativeSessionSource } from "./codex-sessions";
-import { readManagedCatalogSnapshot } from "./managed-ledger";
-import { canonicalize, pathIdentity } from "./paths";
-import { within, withinIdentity } from "./files";
-import type { SessionReaders } from "./session-readers";
-import type { BackendStore } from "./store";
-import type { NativeSession } from "./session-store";
+import { readManagedCatalogSnapshot } from "../../managed-ledger";
+import { canonicalize, pathIdentity } from "../../paths";
+import { within, withinIdentity } from "../../files";
+import type { SessionReaders } from "../../session-readers";
+import type { BackendStore } from "../../store";
+import type { NativeSession } from "../../session-store";
 
 export const managedRecordSchema = z.object({
   id: z.string(),

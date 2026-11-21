@@ -4,7 +4,7 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { pathToFileURL } from "node:url";
 import type { SubagentCatalog } from "@agentkib/runtime-protocol";
-import { sessionTitle } from "../../codex-sessions";
+import { sessionTitle } from "../codex/codex-sessions";
 import { acpToolCall, toolEventBytes, type ToolContext } from "../../conversation-tools";
 import { within } from "../../files";
 import { userHome } from "../../mcp-config-read";

@@ -3,7 +3,7 @@ import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { codexTurnErrorEvent } from "../../../packages/backend/src/codex-turn-error";
+import { codexTurnErrorEvent } from "../../../packages/backend/src/agents/codex/codex-turn-error";
 import { openManagedLedger } from "../../../packages/backend/src/managed-ledger";
 import { LeadRegistry } from "../../../packages/backend/src/orchestration-registry";
 import {

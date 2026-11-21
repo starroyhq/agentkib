@@ -138,8 +138,15 @@ async function buildWorker(source) {
   const dependencies = Object.entries(manifest.dependencies)
     .filter(([, version]) => !version.startsWith("workspace:"))
     .map(([name]) => name);
+  const backend = path.join(source, "packages/backend/src");
+  const movedCatalog = "agents/codex/managed-session-catalog";
+  const catalog = statSync(path.join(backend, `${movedCatalog}.ts`), {
+    throwIfNoEntry: false,
+  })?.isFile()
+    ? movedCatalog
+    : "managed-session-catalog";
   const exports = {
-    "managed-session-catalog": "managedCatalogProjection, readManagedCatalog",
+    [catalog]: "managedCatalogProjection, readManagedCatalog",
     "managed-ledger": "retainManagedLedgerReaders, saveManagedRecord",
     "session-readers": "SessionReaders",
     store: "BackendStore",
@@ -163,7 +170,7 @@ async function buildWorker(source) {
             ? Object.entries(exports)
                 .map(
                   ([file, names]) =>
-                    `export { ${names} } from ${JSON.stringify(path.join(source, `packages/backend/src/${file}.ts`))};`,
+                    `export { ${names} } from ${JSON.stringify(path.join(backend, `${file}.ts`))};`,
                 )
                 .join("\n")
             : undefined,

@@ -7,7 +7,7 @@ import { SessionReaders } from "./session-readers";
 import { sessionIdentity, type SessionStore, type NativeSession } from "./session-store";
 import { sanitizeHandoffExport, sanitizeSessionText } from "./session-handoff";
 import { GrokSessions } from "./grok-sessions";
-import { CodexSessions } from "./codex-sessions";
+import { CodexSessions } from "./agents/codex/codex-sessions";
 import { ClaudeSessions } from "./claude-sessions";
 import { HermesSessions } from "./hermes-sessions";
 import { OpenClawSessions } from "./openclaw-sessions";

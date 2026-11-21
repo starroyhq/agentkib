@@ -1,4 +1,4 @@
-import { Commands } from "./commands";
+import { Commands } from "../../commands";
 
 /**
  * The Codex desktop app on macOS, shipped inside ChatGPT.app or as a standalone Codex.app. Its

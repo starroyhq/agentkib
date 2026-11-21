@@ -13,7 +13,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { CodexSessions } from "../../../packages/backend/src/codex-sessions";
+import { CodexSessions } from "../../../packages/backend/src/agents/codex/codex-sessions";
 import { Sql } from "../../../packages/backend/src/sql";
 
 vi.mock("node:fs", async (importOriginal) => {

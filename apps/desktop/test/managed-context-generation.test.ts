@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { ManagedCodexState } from "../../../packages/backend/src/managed-codex-state";
+import { ManagedCodexState } from "../../../packages/backend/src/agents/codex/managed-codex-state";
 
 const nativeId = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
 const record = {

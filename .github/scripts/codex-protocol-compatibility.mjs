@@ -122,7 +122,7 @@ export function contractFor(selector) {
 
 export async function minimumVersion() {
   const source = await readFile(
-    path.join(repository, "packages/backend/src/codex-runtime-preflight.ts"),
+    path.join(repository, "packages/backend/src/agents/codex/codex-runtime-preflight.ts"),
     "utf8",
   );
   const version = /MINIMUM_CODEX_WRITER_VERSION = "(\d+\.\d+\.\d+)"/.exec(source)?.[1];

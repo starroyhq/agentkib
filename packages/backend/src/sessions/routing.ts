@@ -68,6 +68,14 @@ export const sessionQuerySchema = z.strictObject({
   experimentalEnabled: z.boolean().optional(),
 });
 
+export const sessionSettingsStateSchema = z
+  .object({
+    operation: z.literal("settings-state"),
+    sessionId: z.string().min(1).max(256),
+    includeHistorical: z.boolean().optional(),
+  })
+  .strict();
+
 export function isSessionOperation(operation: unknown): operation is SessionProviderOperation {
   return typeof operation === "string" && Object.hasOwn(sessionResultProjectors, operation);
 }

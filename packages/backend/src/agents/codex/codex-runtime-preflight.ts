@@ -1,5 +1,5 @@
 import { statSync } from "node:fs";
-import { Commands } from "./commands";
+import { Commands } from "../../commands";
 import { codexExecutables } from "./codex-executable";
 
 export const MINIMUM_CODEX_WRITER_VERSION = "0.147.0";

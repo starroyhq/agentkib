@@ -1,16 +1,16 @@
 import { EventEmitter } from "node:events";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { CodexAppServerSession } from "../../../packages/backend/src/codex-app-server";
+import type { CodexAppServerSession } from "../../../packages/backend/src/agents/codex/codex-app-server";
 import {
   CodexFollowerConnection,
   codexFollowerManifestSupportsSettings,
-} from "../../../packages/backend/src/codex-follower-connection";
-import { CodexFollowerBridge } from "../../../packages/backend/src/codex-follower-bridge";
-import { CodexFollowerState } from "../../../packages/backend/src/codex-follower-state";
+} from "../../../packages/backend/src/agents/codex/codex-follower-connection";
+import { CodexFollowerBridge } from "../../../packages/backend/src/agents/codex/codex-follower-bridge";
+import { CodexFollowerState } from "../../../packages/backend/src/agents/codex/codex-follower-state";
 import {
   ManagedCodexEventBridge,
   ManagedCodexState,
-} from "../../../packages/backend/src/managed-codex-state";
+} from "../../../packages/backend/src/agents/codex/managed-codex-state";
 import { versionAtLeast } from "../../../packages/backend/src/native-version";
 
 const threadId = "01234567-89ab-cdef-0123-456789abcdef";

@@ -164,18 +164,24 @@ try {
   ).run(thread.id);
   db.close();
 
-  const source = "packages/backend/src/codex-read-state.ts";
-  const previous = execFileSync("git", ["show", `${baselineRef}:${source}`], {
+  const source = "packages/backend/src/agents/codex/codex-read-state.ts";
+  const baselineSource =
+    execFileSync("git", ["ls-tree", "--name-only", baselineRef, "--", source], {
+      cwd: repo,
+      encoding: "utf8",
+    }).trim() || "packages/backend/src/codex-read-state.ts";
+  const previous = execFileSync("git", ["show", `${baselineRef}:${baselineSource}`], {
     cwd: repo,
     encoding: "utf8",
   });
   const baselinePath = path.join(root, "baseline-observer.ts");
   await fs.writeFile(
     baselinePath,
-    previous.replace(
-      /from "\.\/(.*?)"/g,
-      (_, name) => `from ${JSON.stringify(path.join(repo, "packages/backend/src", name))}`,
-    ),
+    previous.replace(/from "(\.{1,2}\/[^"]+)"/g, (_, name) => {
+      // Both baseline layouts use the current app-server transport.
+      const directory = path.dirname(name === "./codex-app-server" ? source : baselineSource);
+      return `from ${JSON.stringify(path.resolve(repo, directory, name))}`;
+    }),
   );
   vite = await createServer({
     root: path.join(repo, "apps/desktop"),

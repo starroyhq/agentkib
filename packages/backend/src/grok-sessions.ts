@@ -2,7 +2,7 @@ import path from "node:path";
 import { userHome } from "./mcp-config-read";
 import { readText } from "./files";
 import { finiteJson } from "./config-merge";
-import { sessionTitle } from "./codex-sessions";
+import { sessionTitle } from "./agents/codex/codex-sessions";
 import { compareUtf8 } from "./workspaces";
 import {
   belongsToWorkspace,

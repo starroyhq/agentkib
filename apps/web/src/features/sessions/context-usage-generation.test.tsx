@@ -3,7 +3,7 @@ import { cleanup, renderHook } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import type { Live } from "@agentkib/web-client";
 import type { SessionStreamEvent } from "../../../../../packages/runtime-protocol/src";
-import { ManagedCodexState } from "../../../../../packages/backend/src/managed-codex-state";
+import { ManagedCodexState } from "../../../../../packages/backend/src/agents/codex/managed-codex-state";
 import { SessionStreamHub } from "../../../../../packages/backend/src/session-stream";
 import { useObservedContextUsage } from "@/features/conversation/features/sessions/context-usage";
 

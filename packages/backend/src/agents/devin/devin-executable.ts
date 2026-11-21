@@ -1,6 +1,6 @@
 import path from "node:path";
 import { statSync } from "node:fs";
-import { applicationDirectories } from "../../codex-executable";
+import { applicationDirectories } from "../codex/codex-executable";
 import { resolveCommands } from "../../command-resolution";
 import { userHome } from "../../mcp-config-read";
 import { pathIdentity } from "../../paths";

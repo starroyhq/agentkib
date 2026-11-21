@@ -6,11 +6,11 @@ import {
   type ConversationEvent,
   type SessionStreamEvent,
 } from "@agentkib/conversation-state";
-import { CodexFollowerState } from "../../../packages/backend/src/codex-follower-state";
+import { CodexFollowerState } from "../../../packages/backend/src/agents/codex/codex-follower-state";
 import {
   CodexFollowerStream,
   mergeCodexFollowerSnapshot,
-} from "../../../packages/backend/src/codex-follower-stream";
+} from "../../../packages/backend/src/agents/codex/codex-follower-stream";
 import { SessionStreamHub } from "../../../packages/backend/src/session-stream";
 
 type Item = Record<string, unknown>;

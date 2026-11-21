@@ -3,11 +3,11 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { CodexAppServerSession } from "../../../packages/backend/src/codex-app-server";
+import type { CodexAppServerSession } from "../../../packages/backend/src/agents/codex/codex-app-server";
 import {
   ManagedCodexEventBridge,
   ManagedCodexState,
-} from "../../../packages/backend/src/managed-codex-state";
+} from "../../../packages/backend/src/agents/codex/managed-codex-state";
 import {
   createManagedSnapshotWriter,
   readManagedRecord,

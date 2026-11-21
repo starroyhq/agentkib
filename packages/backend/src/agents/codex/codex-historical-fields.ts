@@ -1,8 +1,8 @@
 import { readSync } from "node:fs";
 import { zstdDecompressSync } from "node:zlib";
-import { projectContextUsage } from "./context-usage";
+import { projectContextUsage } from "../../context-usage";
 import { isCompressedRollout } from "./codex-rollout-files";
-import { jsonTimestamp } from "./session-history";
+import { jsonTimestamp } from "../../session-history";
 
 export interface CodexHistoricalSettings {
   modelId?: string;

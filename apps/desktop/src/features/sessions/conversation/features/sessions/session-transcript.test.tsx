@@ -5,7 +5,7 @@ import { StrictMode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ConversationEvent } from "@agentkib/web-client";
 import { createConversationStore, type SessionStreamEvent } from "@agentkib/conversation-state";
-import { CodexFollowerStream } from "../../../../../../../../packages/backend/src/codex-follower-stream";
+import { CodexFollowerStream } from "../../../../../../../../packages/backend/src/agents/codex/codex-follower-stream";
 import { SessionTranscript } from "@agentkib/session-ui";
 
 const props = {

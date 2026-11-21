@@ -14,8 +14,8 @@ import {
   CodexRuntimePreflight,
   codexServerVersion,
   codexVersionSupportsWriterLock,
-} from "../../../packages/backend/src/codex-runtime-preflight";
-import { codexDesktopExecutables } from "../../../packages/backend/src/codex-executable";
+} from "../../../packages/backend/src/agents/codex/codex-runtime-preflight";
+import { codexDesktopExecutables } from "../../../packages/backend/src/agents/codex/codex-executable";
 import { Commands } from "../../../packages/backend/src/commands";
 import {
   acquirePortableFileLease,
@@ -136,7 +136,13 @@ describe("Codex writer preflight", () => {
         const value = table[program];
         if (value === undefined) throw new Error(`unexpected ${program}`);
         if (value instanceof Error) throw value;
-        return { bytes: Buffer.from(value), error: "", success: true, truncated: false, exitCode: 0 };
+        return {
+          bytes: Buffer.from(value),
+          error: "",
+          success: true,
+          truncated: false,
+          exitCode: 0,
+        };
       });
 
     it("falls back to the desktop app's CLI when the one on PATH is too old", async () => {
@@ -170,7 +176,11 @@ describe("Codex writer preflight", () => {
       const unreadable = install("codex");
       const current = install("codex-current");
       const old = install("codex-old");
-      versions({ [unreadable]: "codex (dev build)", [current]: "codex-cli 0.155.1", [old]: "codex-cli 0.120.0" });
+      versions({
+        [unreadable]: "codex (dev build)",
+        [current]: "codex-cli 0.155.1",
+        [old]: "codex-cli 0.120.0",
+      });
       for (const [candidates, expected] of [
         [[unreadable, current], current],
         [[old, unreadable], unreadable],

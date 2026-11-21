@@ -121,7 +121,7 @@ import {
   type SubagentCatalog,
 } from "@agentkib/runtime-protocol";
 import { SessionStreamHub } from "./session-stream";
-import { mergeCodexFollowerSnapshot } from "./codex-follower-stream";
+import { mergeCodexFollowerSnapshot } from "./agents/codex/codex-follower-stream";
 import { SessionSnapshotHistory } from "./session-snapshot-history";
 import { retainManagedLedgerReaders } from "./managed-ledger";
 import { MessageLeadReports } from "./message-lead-reports";
@@ -2849,15 +2849,7 @@ export class TypeScriptBackend {
       // an owner to a store that has already been closed or replaced.
       if (this.#store !== store)
         throw new RpcFault(-32000, "Backend initialization changed while loading web services");
-      const claude = this.#claudeSessionProvider;
-      // The legacy web reader builds the shared registry in its constructor. Install the
-      // runtime's Claude provider there too, for options, resources and generic creation.
-      const RuntimeWebRead = class extends WebReadRequests {
-        override claudeSessionProvider() {
-          return claude ?? super.claudeSessionProvider();
-        }
-      };
-      this.#webRead ??= new RuntimeWebRead(
+      this.#webRead ??= new WebReadRequests(
         store,
         sessions,
         dataDir,
@@ -2868,9 +2860,10 @@ export class TypeScriptBackend {
         (sessionId) => this.#sessionStream?.hasSubscribers(sessionId) ?? false,
         this.#sessionIndex,
         () => this.#sessionStream?.publish("", "invalidate", { domains: ["catalog"] }),
-        undefined,
+        this.#claudeSessionProvider,
         this.#dshSessionProvider,
         (sessionId, operation) => this.#workerObserver.controlled(sessionId, operation),
+        async (request) => this.#requestWebSession(request),
       );
       this.#webRead.observeLanes({
         turnEnded: this.#workerObserver.turnEnded,

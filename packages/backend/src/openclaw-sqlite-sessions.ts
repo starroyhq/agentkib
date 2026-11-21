@@ -4,7 +4,7 @@ import { existsSync, lstatSync } from "node:fs";
 import path from "node:path";
 import { isReparseOrSymlink } from "./native-files";
 import { belongsToWorkspace, jsonTimestamp, stableNativeRef } from "./session-history";
-import { sessionTitle } from "./codex-sessions";
+import { sessionTitle } from "./agents/codex/codex-sessions";
 import { finishDocument, type DocumentSource } from "./session-document-providers";
 import type { SessionDocument } from "./session-model";
 import type { NativeSession } from "./session-store";

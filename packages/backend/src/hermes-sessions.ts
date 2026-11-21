@@ -5,7 +5,7 @@ import { isDirectory } from "./paths";
 import { isFile } from "./files";
 import { userHome } from "./mcp-config-read";
 import { isReparseOrSymlink } from "./native-files";
-import { sessionTitle } from "./codex-sessions";
+import { sessionTitle } from "./agents/codex/codex-sessions";
 import { Sql } from "./sql";
 import { finiteJson } from "./config-merge";
 import {

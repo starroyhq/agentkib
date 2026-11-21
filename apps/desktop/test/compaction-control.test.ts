@@ -8,12 +8,12 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   CodexAppServerError,
   CodexAppServerSession,
-} from "../../../packages/backend/src/codex-app-server";
-import { CodexRuntimePreflight } from "../../../packages/backend/src/codex-runtime-preflight";
-import { CodexFollowerBridge } from "../../../packages/backend/src/codex-follower-bridge";
-import { CodexFollowerConnection } from "../../../packages/backend/src/codex-follower-connection";
-import { CodexFollowerState } from "../../../packages/backend/src/codex-follower-state";
-import { CodexSessions } from "../../../packages/backend/src/codex-sessions";
+} from "../../../packages/backend/src/agents/codex/codex-app-server";
+import { CodexRuntimePreflight } from "../../../packages/backend/src/agents/codex/codex-runtime-preflight";
+import { CodexFollowerBridge } from "../../../packages/backend/src/agents/codex/codex-follower-bridge";
+import { CodexFollowerConnection } from "../../../packages/backend/src/agents/codex/codex-follower-connection";
+import { CodexFollowerState } from "../../../packages/backend/src/agents/codex/codex-follower-state";
+import { CodexSessions } from "../../../packages/backend/src/agents/codex/codex-sessions";
 import { Commands } from "../../../packages/backend/src/commands";
 import type { CursorBridge } from "../../../packages/backend/src/cursor-bridge";
 import {

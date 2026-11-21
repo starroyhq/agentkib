@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   codexDesktopListed,
   codexThreadLink,
-} from "../../../packages/backend/src/codex-desktop-app";
+} from "../../../packages/backend/src/agents/codex/codex-desktop-app";
 
 describe("Codex desktop app", () => {
   it("links to a thread by its UUID only", () => {

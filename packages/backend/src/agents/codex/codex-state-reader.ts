@@ -1,6 +1,6 @@
 import { accessSync, constants, statSync, type BigIntStats } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
-import { Sql, type Row } from "./sql";
+import { Sql, type Row } from "../../sql";
 
 const QUERY_BATCH_SIZE = 500;
 const MAX_CACHED_IDS = 20_000;

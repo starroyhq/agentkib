@@ -19,7 +19,7 @@ import path from "node:path";
 import { Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { constants as zlib, createZstdDecompress, zstdDecompressSync } from "node:zlib";
-import { isReparseOrSymlink } from "./native-files";
+import { isReparseOrSymlink } from "../../native-files";
 
 /**
  * Codex compresses the rollout of an idle thread in place: `x.jsonl` becomes

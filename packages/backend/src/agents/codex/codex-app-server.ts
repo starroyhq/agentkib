@@ -1,7 +1,7 @@
 import type { ChildProcess } from "node:child_process";
 import { EventEmitter } from "node:events";
 import spawn from "cross-spawn";
-import { windowsProcessTree, type NativeProcessTree } from "./native-process";
+import { windowsProcessTree, type NativeProcessTree } from "../../native-process";
 
 const FRAME_LIMIT = 4 * 1024 * 1024;
 const REQUEST_TIMEOUT_MS = 12_000;

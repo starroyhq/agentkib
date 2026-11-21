@@ -26,7 +26,7 @@ import {
 import type { BackendStore } from "./store";
 import type { SessionReaders } from "./session-readers";
 import type { SessionIndex } from "./session-index";
-import { projectPairedManagedSessions } from "./managed-session-catalog";
+import { projectPairedManagedSessions } from "./agents/codex/managed-session-catalog";
 import { catalogCheckouts } from "./git-checkouts";
 import type { ConversationReadStates } from "./conversation-read-state";
 

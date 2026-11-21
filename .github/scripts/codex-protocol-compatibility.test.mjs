@@ -105,7 +105,7 @@ test("the minimum version is held to what every supported CLI offers", async () 
 
 test("versions come from the backend's minimum or an exact release", async () => {
   const source = await readFile(
-    new URL("../../packages/backend/src/codex-runtime-preflight.ts", import.meta.url),
+    new URL("../../packages/backend/src/agents/codex/codex-runtime-preflight.ts", import.meta.url),
     "utf8",
   );
   const minimum = /MINIMUM_CODEX_WRITER_VERSION = "([^"]+)"/.exec(source)[1];
@@ -161,9 +161,11 @@ test("the workflow checks both ends daily and on protocol changes, read-only", a
   assert.match(workflow, /node --test \.github\/scripts\/codex-protocol-compatibility\.test\.mjs/);
   for (const watched of [
     ".github/scripts/codex-protocol-compatibility*.mjs",
-    "packages/backend/src/managed-codex-state.ts",
+    "packages/backend/src/agents/codex/managed-codex-state.ts",
     "packages/backend/src/web-read.ts",
-    "packages/backend/src/codex-runtime-preflight.ts",
+    "packages/backend/src/agents/codex/codex-app-server.ts",
+    "packages/backend/src/agents/codex/codex-runtime-preflight.ts",
+    "packages/backend/src/agents/codex/session-provider.ts",
   ])
     assert.ok(workflow.includes(`- ${watched}`), watched);
 });

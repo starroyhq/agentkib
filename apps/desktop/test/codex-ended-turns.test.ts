@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it } from "vitest";
-import { CodexExternalTurns } from "../../../packages/backend/src/codex-external-turns";
+import { CodexExternalTurns } from "../../../packages/backend/src/agents/codex/codex-external-turns";
 
 const cleanups: Array<() => void> = [];
 afterEach(() => {

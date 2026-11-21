@@ -8,19 +8,22 @@ import {
 import type { BackendStore } from "./store";
 import type { SessionReaders } from "./session-readers";
 import { resolveClaudeConfig } from "./claude-config";
-import { codexRollouts } from "./codex-rollout-files";
+import { codexRollouts } from "./agents/codex/codex-rollout-files";
 import {
   CodexReadStateObserver,
   type CodexReadActiveTurn,
   type CodexReadTarget,
-} from "./codex-read-state";
+} from "./agents/codex/codex-read-state";
 import { conversationReadKey, ReadStateLedger } from "./read-state-ledger";
 import { observeReadHistory } from "./read-state-history";
-import { hasManagedCatalogWorkspace, managedRecordSchema } from "./managed-session-catalog";
+import {
+  hasManagedCatalogWorkspace,
+  managedRecordSchema,
+} from "./agents/codex/managed-session-catalog";
 import { readManagedRecord } from "./managed-ledger";
 import { canonicalize, pathIdentity } from "./paths";
 import { within } from "./files";
-import { codexExecutable } from "./codex-executable";
+import { codexExecutable } from "./agents/codex/codex-executable";
 import { devinSessionHome } from "./agents/devin/devin-sessions";
 
 /**

@@ -14,7 +14,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { zstdCompressSync } from "node:zlib";
-import { codexRollouts } from "../../../packages/backend/src/codex-rollout-files";
+import { codexRollouts } from "../../../packages/backend/src/agents/codex/codex-rollout-files";
 import {
   SessionSubagents,
   projectSubagentObservations,

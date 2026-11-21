@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { createContextUsageGeneration, projectContextUsage } from "./context-usage";
+import { createContextUsageGeneration, projectContextUsage } from "../../context-usage";
 import { codexTurnEndEvent, codexTurnMeta } from "./codex-turn-end";
 import { codexErrorText, codexTurnErrorEvent } from "./codex-turn-error";
 

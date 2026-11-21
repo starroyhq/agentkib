@@ -2292,7 +2292,9 @@ export class TypeScriptBackend {
     control: (value) =>
       this.#withWebRead((owner) => owner.managedControl(value)) as Promise<Record<string, unknown>>,
     queue: (sessionId) =>
-      this.#withWebRead((owner) => owner.managedQueueList({ sessionId, limit: 100 })) as Promise<{
+      this.#withWebRead((owner) =>
+        owner.managedQueueList({ operation: "queue-list", sessionId, limit: 100 }),
+      ) as Promise<{
         data?: Array<Record<string, unknown>>;
       }>,
   });

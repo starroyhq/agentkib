@@ -522,6 +522,116 @@ function fixture(
 }
 
 describe("a Codex Project Agent's thread", () => {
+  it("merges consecutive Worker reports queued through the backend into one automatic turn", async () => {
+    const f = fixture(true);
+    const sessionId = f.summary.id;
+    expect(await f.send()).toMatchObject({ accepted: true });
+    f.servers.at(-1)!.complete();
+    await vi.waitFor(async () => expect(await f.live()).toMatchObject({ status: "idle" }));
+    await f.web.closeAsync();
+
+    const workerId = "offline-worker";
+    saveManagedRecord(f.root, {
+      ...readManagedRecord(f.root, sessionId)!,
+      id: workerId,
+      native_id: null,
+      adopted: false,
+    });
+    writeFileSync(
+      path.join(f.root, "preferences.json"),
+      JSON.stringify({ session_index_enabled: false, session_content_search_enabled: false }),
+    );
+    vi.spyOn(McpHub.prototype, "start").mockResolvedValue();
+    vi.spyOn(RemoteAgent.prototype, "start").mockResolvedValue();
+    const observe = vi.spyOn(WebReadRequests.prototype, "observeLanes");
+    const backend = new TypeScriptBackend({
+      HOME: f.home,
+      CODEX_HOME: f.home,
+      PATH: f.bin,
+    });
+    cleanups.push(() => backend.closeAsync());
+    const rpc = async (method: string, params: unknown) => {
+      const response = await backend.handleAsync({
+        jsonrpc: "2.0",
+        id: randomUUID(),
+        method,
+        params,
+      });
+      expect(response.error).toBeUndefined();
+      return response.result;
+    };
+    const deviceId = "agentkib-local-owner";
+    const lead = (operation: string, fields: Record<string, unknown> = {}) =>
+      rpc("session.request", {
+        host: { target: "claude-code", request: { operation, sessionId, deviceId, ...fields } },
+      });
+    const codex = (request: Record<string, unknown>) =>
+      rpc("session.request", {
+        host: { request: { sessionId, experimentalEnabled: true, ...request } },
+      });
+
+    const queued: Array<{ id: string; clientUserMessageId: unknown; input: unknown }> = [];
+    f.intercept((method, params) => {
+      if (method === "thread/queue/list") return { data: queued, nextCursor: null };
+      if (method === "thread/queue/add") {
+        const queuedSubmission = {
+          id: `report-${queued.length + 1}`,
+          clientUserMessageId: params.clientUserMessageId,
+          input: params.input,
+        };
+        queued.push(queuedSubmission);
+        return { queuedSubmission };
+      }
+      if (method === "thread/queue/update") {
+        const target = queued.find(({ id }) => id === params.queuedSubmissionId);
+        if (!target) throw new Error("unexpected queued report");
+        target.input = params.input;
+        return { queuedSubmission: target };
+      }
+    });
+
+    await rpc("backend.initialize", { dataDir: f.root });
+    expect(await lead("lead-assign-workers", { workers: [workerId] })).toMatchObject({
+      lead: { workers: [{ sessionId: workerId }], autoTurns: 0 },
+    });
+    const state = (await codex({ operation: "live" })) as Record<string, unknown>;
+    expect(
+      await codex({
+        operation: "send",
+        requestId: randomUUID(),
+        deviceId,
+        runtimeBootId: state.runtimeBootId,
+        expectedRevision: state.revision,
+        text: "Review the project",
+      }),
+    ).toMatchObject({ accepted: true });
+    expect(await codex({ operation: "live" })).toMatchObject({ status: "running" });
+
+    const observer = observe.mock.lastCall![0]!;
+    observer.turnEnded(workerId, "worker-turn-one", "completed", null, undefined, "First reply");
+    await vi.waitFor(() => {
+      expect(queued).toHaveLength(1);
+      expect(
+        readControlReceipt(f.root, { requestId: queued[0]!.clientUserMessageId, deviceId }),
+      ).toMatchObject({ status: "accepted", operation: "queue-add" });
+    });
+    const queueMutations = () =>
+      f.methods.filter(
+        (method) => method === "thread/queue/add" || method === "thread/queue/update",
+      );
+    observer.turnEnded(workerId, "worker-turn-two", "completed", null, undefined, "Second reply");
+    await vi.waitFor(() => expect(queueMutations()).toHaveLength(2));
+
+    expect(queueMutations()).toEqual(["thread/queue/add", "thread/queue/update"]);
+    expect(queued).toHaveLength(1);
+    expect(queued[0]!.input).toEqual([
+      expect.objectContaining({ text: expect.stringMatching(/First reply[\s\S]+Second reply/) }),
+    ]);
+    await vi.waitFor(async () =>
+      expect(await lead("lead-status")).toMatchObject({ lead: { paused: false, autoTurns: 1 } }),
+    );
+  });
+
   it("starts with its worker tools, and again without them once it no longer leads", async () => {
     const f = fixture();
     const lead = projectAgentFixture(f.summary.id, f.summary.workspace_id);

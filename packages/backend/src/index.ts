@@ -2843,6 +2843,7 @@ export class TypeScriptBackend {
         () => this.#sessionStream?.publish("", "invalidate", { domains: ["catalog"] }),
         (request) => this.#dispatchClaudeManaged(request),
         this.#dshSessionProvider,
+        (sessionId, operation) => this.#workerObserver.controlled(sessionId, operation),
       );
       this.#webRead.observeLanes({
         turnEnded: this.#workerObserver.turnEnded,

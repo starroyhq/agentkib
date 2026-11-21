@@ -58,8 +58,7 @@ import {
   type FollowerModelSettings,
 } from "./codex-follower-state";
 import { CodexFollowerStream } from "./codex-follower-stream";
-import { AcpUndispatchedError } from "./antigravity-acp";
-import { AntigravityManagedRunner } from "./antigravity-managed-runner";
+import { AntigravitySessionProvider } from "./agents/antigravity/session-provider";
 import { devinExecutable } from "./devin-executable";
 import { devinSessionHome } from "./devin-sessions";
 import { devinLimitReset, readDevinUsage, type DevinUsageWindow } from "./devin-usage";
@@ -88,7 +87,6 @@ import { projectContextUsage, type ContextUsage } from "./context-usage";
 import { SerialSessionQueue } from "./serial-session-queue";
 import type { SessionProviderRegistry, SessionProviders } from "./session-provider";
 import { createSessionProviders, withProviderCapabilities } from "./sessions/providers";
-import { validateAntigravityControl } from "./sessions/validate/antigravity";
 import { validateClaudeControl } from "./sessions/validate/claude-code";
 import { validateCodexControl } from "./sessions/validate/codex";
 import { validateDevinControl } from "./sessions/validate/devin";
@@ -511,14 +509,6 @@ type CodexFollowerRecord = {
   lastUsed: number;
 };
 
-type AntigravityRunnerRecord = {
-  runner: AntigravityManagedRunner;
-  nativeId: string;
-  workspaceId: string;
-  workspace: string;
-  lastUsed: number;
-};
-
 type ManagedModelOption = {
   id: string;
   isDefault: boolean;
@@ -632,19 +622,7 @@ export class WebReadRequests {
   }
 
   antigravitySessionProvider(): SessionProviders["antigravity"] {
-    return {
-      agent: "antigravity",
-      validateControl: validateAntigravityControl,
-      live: (sessionId) => this.#antigravityLive(sessionId),
-      query: (request) => this.#antigravityQuery(request),
-      control: (request) =>
-        this.#managedControlAdmission(request, (validated, fingerprint) =>
-          this.#antigravityControl(validated, fingerprint),
-        ),
-      contextUsage: async (sessionId) =>
-        normalizeContextUsage(await this.#antigravityLive(sessionId)),
-      queue: (request) => this.managedQueueList(request),
-    };
+    return this.#antigravity;
   }
 
   // New-session options and settings without a runner each start an app-server.
@@ -718,9 +696,7 @@ export class WebReadRequests {
     string,
     Promise<{ follower: CodexFollowerRecord; revision: number } | undefined>
   >();
-  #antigravityRunners = new Map<string, AntigravityRunnerRecord>();
-  #antigravityRetiredRevisions = new Map<string, number>();
-  #antigravityRunnerFlights = new Map<string, Promise<AntigravityRunnerRecord>>();
+  readonly #antigravity: AntigravitySessionProvider;
   #devinRunners = new Map<
     string,
     {
@@ -777,7 +753,33 @@ export class WebReadRequests {
     readonly catalogChanged?: () => void,
     readonly requestClaudeProvider?: (request: Record<string, unknown>) => Promise<unknown>,
     dshProvider = new DshSessionProvider(),
+    antigravityPersonControlled?: (sessionId: string, operation: string) => void,
   ) {
+    this.#antigravity = new AntigravitySessionProvider({
+      store,
+      sessions,
+      dataDir,
+      environment,
+      runtimeBootId: this.#bootId,
+      publishConversationEvent,
+      observeTurn: (sessionId) => ({
+        waiting: (turnId) =>
+          this.#observeLane((observer) => observer.waiting(sessionId, turnId, "awaiting-approval")),
+        ended: (turnId, outcome, durationMs, replyText) =>
+          this.#observeLane((observer) =>
+            observer.turnEnded(sessionId, turnId, outcome, durationMs, undefined, replyText),
+          ),
+      }),
+      admitControl: (request, execute) => this.#managedControlAdmission(request, execute),
+      queue: (request) => this.managedQueueList(request),
+      readSession: (request) => this.request(request),
+      querySession: (request) => this.managedQuery(request),
+      settingsState: (request) => this.sessionProviderSettingsState(request),
+      controlSession: (request) => this.managedControl(request),
+      personControlled: antigravityPersonControlled,
+      normalizeContextUsage,
+      compactingRejection,
+    });
     this.sessionProviders = createSessionProviders(this, dshProvider);
     this.#codex = new CodexAppServerReader(environment);
     this.#preflight = new CodexRuntimePreflight(environment);
@@ -835,9 +837,7 @@ export class WebReadRequests {
 
   async #close(): Promise<void> {
     const pending = [this.#codex.closeAsync()];
-    for (const record of this.#antigravityRunners.values()) record.runner.close();
-    this.#antigravityRunners.clear();
-    this.#antigravityRetiredRevisions.clear();
+    this.#antigravity.close();
     for (const record of this.#devinRunners.values()) record.runner.close();
     this.#devinRunners.clear();
     for (const follower of this.#codexFollowers.values()) follower.bridge.close();
@@ -1767,7 +1767,7 @@ export class WebReadRequests {
       case "devin":
         return this.#devinLive(sessionId);
       case "antigravity":
-        return this.#antigravityLive(sessionId);
+        return this.#antigravity.live(sessionId);
       default:
         throw new Error("session-unavailable");
     }
@@ -1778,10 +1778,9 @@ export class WebReadRequests {
       const target =
         typeof value.sessionId === "string" ? this.#serialQueueTarget(value.sessionId) : null;
       if (!target || value.operation !== "send") throw new Error("invalid-scheduled-operation");
+      if (target.agent === "antigravity") return this.#antigravity.control(value, beforeDispatch);
       return this.#managedControlAdmission(value, (request, fingerprint) =>
-        target.agent === "devin"
-          ? this.#devinControl(request, fingerprint, beforeDispatch)
-          : this.#antigravityControl(request, fingerprint, beforeDispatch),
+        this.#devinControl(request, fingerprint, beforeDispatch),
       );
     });
   }
@@ -2547,69 +2546,6 @@ export class WebReadRequests {
           request.experimentalEnabled === true,
         )),
       },
-    };
-  }
-
-  async #antigravityQuery(request: z.infer<typeof managedQuerySchema>) {
-    const live = await this.#antigravityLive(request.sessionId);
-    if (live.status === "unsupported") {
-      if (request.operation !== "capabilities") return live;
-      return {
-        ...live,
-        features: Object.fromEntries(
-          ["send", "stop", "approve", "answer", "inspect", "resume", "usage"].map((operation) => [
-            operation,
-            { available: false, reason: live.reason },
-          ]),
-        ),
-      };
-    }
-    const experimental = request.experimentalEnabled === true;
-    const approvals = Array.isArray(live.approvals) ? live.approvals : [];
-    const reason = experimental ? live.reason : "control-disabled";
-    const features = {
-      send:
-        experimental && live.status === "idle" && live.sendEnabled === true
-          ? { available: true }
-          : {
-              available: false,
-              reason:
-                live.activity === "compacting" ? "session-compacting" : (reason ?? "session-busy"),
-            },
-      stop:
-        experimental && live.stopEnabled === true
-          ? { available: true }
-          : { available: false, reason: reason ?? "session-not-running" },
-      approve:
-        experimental && approvals.some((item) => isObject(item) && item.supported === true)
-          ? { available: true }
-          : { available: false, reason: reason ?? "no-supported-approval" },
-      answer: { available: false, reason: "unsupported-operation" },
-      inspect: { available: true },
-      resume: { available: false, reason: "unsupported-operation" },
-      usage:
-        isObject(live.usage) && live.usage.available === true
-          ? { available: true }
-          : { available: false, reason: "usage-not-reported" },
-    };
-    if (request.operation === "capabilities")
-      return {
-        sessionId: request.sessionId,
-        executionMode: "acp-managed",
-        runtimeBootId: this.#bootId,
-        status: live.status,
-        reason: live.reason,
-        features,
-      };
-    return {
-      sessionId: request.sessionId,
-      executionMode: "acp-managed",
-      runtimeBootId: this.#bootId,
-      status: live.status,
-      revision: live.revision,
-      turnId: live.turnId,
-      approvals,
-      reason: live.reason,
     };
   }
 
@@ -5934,7 +5870,7 @@ export class WebReadRequests {
           if (isSessionSummary(session) && "agent" in session && session.agent === "devin")
             return this.#devinContinuation(session);
           if (isSessionSummary(session) && "agent" in session && session.agent === "antigravity")
-            return this.#antigravityContinuation(session);
+            return this.#antigravity.continuation(session);
           if (!isSessionSummary(session) || !("agent" in session) || session.agent !== "codex")
             return session;
           const runner = this.#managedRunners.get(session.id);
@@ -6767,351 +6703,12 @@ export class WebReadRequests {
     );
   }
 
-  async #antigravityLive(sessionId: string): Promise<Record<string, unknown>> {
-    try {
-      const target = await this.#antigravityTarget(sessionId);
-      this.sessions.antigravityControlExecutable();
-      const cached = this.#antigravityRunners.get(sessionId);
-      const unknown =
-        cached?.runner.snapshot().status === "outcome-unknown" ||
-        managedSessionHasUnknownCommands(this.dataDir, sessionId);
-      const snapshot =
-        cached?.runner.connected &&
-        cached.runner.snapshot().status !== "failed" &&
-        cached?.nativeId === target.nativeId &&
-        cached.workspaceId === target.workspaceId &&
-        pathIdentity(cached.workspace) === pathIdentity(target.workspace)
-          ? cached.runner.snapshot()
-          : {
-              executionMode: "acp-managed",
-              status: "idle",
-              revision: this.#antigravityInactiveRevision(sessionId, cached),
-              turnId: null,
-              sendEnabled: true,
-              stopEnabled: false,
-              approvals: [],
-              reason: null,
-            };
-      return {
-        ...snapshot,
-        ...(unknown
-          ? {
-              status: "outcome-unknown",
-              sendEnabled: false,
-              stopEnabled: false,
-              reason: "control-outcome-unconfirmed",
-            }
-          : {}),
-        sessionId,
-        runtimeBootId: this.#bootId,
-        // Restricted devices may control sessions in their workspaces only.
-        workspaceId: target.workspaceId,
-      };
-    } catch (error) {
-      return {
-        sessionId,
-        executionMode: "acp-managed",
-        runtimeBootId: this.#bootId,
-        workspaceId: this.store.sessions.get(sessionId)?.workspace_id ?? null,
-        status: "unsupported",
-        revision: 0,
-        turnId: null,
-        sendEnabled: false,
-        stopEnabled: false,
-        approvals: [],
-        reason: error instanceof Error ? error.message : "open-in-original-client",
-      };
-    }
+  antigravityWorkerAvailable(sessionId: string) {
+    return this.#antigravity.workerAvailable(sessionId);
   }
 
-  async #antigravityTarget(sessionId: string) {
-    if (
-      process.platform !== "darwin" &&
-      process.platform !== "win32" &&
-      process.platform !== "linux"
-    )
-      throw new Error("platform-unsupported");
-    const summary = this.store.sessions.get(sessionId);
-    if (!summary || summary.agent !== "antigravity" || summary.availability !== "readable")
-      throw new Error("session-unavailable");
-    const resolved = await this.sessions.resolve(sessionId);
-    if (resolved.native.agent !== "antigravity") throw new Error("session-not-antigravity");
-    if (resolved.native.native_ref.startsWith("antigravity-local-v1-"))
-      throw new Error("session-read-only");
-    if (resolved.native.sidechain) throw new Error("auxiliary-session-not-controllable");
-    const nativeId = resolved.native.native_ref;
-    const workspace = canonicalize(resolved.workspace);
-    const workspaceId = summary.workspace_id;
-    const registeredWorkspace = canonicalize(this.store.workspacePath(workspaceId));
-    if (!within(workspace, registeredWorkspace)) throw new Error("session-workspace-mismatch");
-    return { nativeId, workspaceId, workspace };
-  }
-
-  async antigravityWorkerAvailable(sessionId: string): Promise<boolean> {
-    const live = await this.#antigravityLive(sessionId);
-    return ["idle", "running", "waiting-approval"].includes(String(live.status));
-  }
-
-  /** Read visible replies not yet persisted by ACP without starting a second transport. */
-  async antigravityWorkerEvents(
-    sessionId: string,
-    limit: number,
-  ): Promise<Record<string, unknown>[] | null> {
-    try {
-      const target = await this.#antigravityTarget(sessionId);
-      const cached = this.#antigravityRunners.get(sessionId);
-      if (
-        !cached?.runner.connected ||
-        cached.nativeId !== target.nativeId ||
-        cached.workspaceId !== target.workspaceId ||
-        pathIdentity(cached.workspace) !== pathIdentity(target.workspace)
-      )
-        return null;
-      const replies = cached.runner.recentWorkerReplies(limit);
-      return replies.length ? replies : null;
-    } catch {
-      // An unavailable native projection can still have readable history.
-      return null;
-    }
-  }
-
-  async #antigravityRunner(sessionId: string): Promise<AntigravityRunnerRecord> {
-    const { nativeId, workspaceId, workspace } = await this.#antigravityTarget(sessionId);
-    const cached = this.#antigravityRunners.get(sessionId);
-    if (
-      cached?.runner.connected &&
-      !["failed"].includes(String(cached.runner.snapshot().status)) &&
-      cached.nativeId === nativeId &&
-      cached.workspaceId === workspaceId &&
-      pathIdentity(cached.workspace) === pathIdentity(workspace)
-    ) {
-      cached.lastUsed = Date.now();
-      return cached;
-    }
-    const initialRevision = this.#antigravityInactiveRevision(sessionId, cached);
-    if (cached) {
-      this.#antigravityRetiredRevisions.set(sessionId, initialRevision - 1);
-      this.#antigravityRunners.delete(sessionId);
-      cached.runner.close();
-    }
-    const pending = this.#antigravityRunnerFlights.get(sessionId);
-    if (pending) return pending;
-    const flight = this.#connectAntigravityRunner(
-      sessionId,
-      workspaceId,
-      workspace,
-      nativeId,
-      initialRevision,
-    );
-    this.#antigravityRunnerFlights.set(sessionId, flight);
-    try {
-      return await flight;
-    } finally {
-      if (this.#antigravityRunnerFlights.get(sessionId) === flight)
-        this.#antigravityRunnerFlights.delete(sessionId);
-    }
-  }
-
-  #antigravityInactiveRevision(sessionId: string, cached?: AntigravityRunnerRecord): number {
-    const last =
-      cached?.runner.snapshot().revision ?? this.#antigravityRetiredRevisions.get(sessionId);
-    return typeof last === "number" && Number.isSafeInteger(last) && last >= 0 ? last + 1 : 0;
-  }
-
-  async #connectAntigravityRunner(
-    sessionId: string,
-    workspaceId: string,
-    workspace: string,
-    nativeId: string,
-    initialRevision: number,
-  ): Promise<AntigravityRunnerRecord> {
-    if (this.#antigravityRunners.size >= 8) {
-      const candidates = [...this.#antigravityRunners.entries()]
-        .filter(([, value]) => ["idle", "failed"].includes(String(value.runner.snapshot().status)))
-        .sort(([, left], [, right]) => left.lastUsed - right.lastUsed);
-      const [retireId, retire] = candidates[0] ?? [];
-      if (!retireId || !retire) throw new Error("live-session-limit");
-      this.#antigravityRetiredRevisions.set(
-        retireId,
-        this.#antigravityInactiveRevision(retireId, retire) - 1,
-      );
-      this.#antigravityRunners.delete(retireId);
-      retire.runner.close();
-    }
-    const runner = await AntigravityManagedRunner.connect(
-      this.sessions.antigravityControlExecutable(),
-      workspace,
-      nativeId,
-      { ...process.env, ...this.environment },
-      (type, payload, live) => {
-        const current = { ...live, sessionId, runtimeBootId: this.#bootId, workspaceId };
-        const eventPayload = isObject(payload.live) ? { ...payload, live: current } : payload;
-        this.publishConversationEvent?.(sessionId, type, eventPayload, current);
-      },
-      async () => {
-        const replay = await this.sessions.antigravityReadHandoff(nativeId);
-        const events = replay.messages;
-        if (events.length > 100_000) throw new Error("Antigravity history recovery limit exceeded");
-        let bytes = 0;
-        const items = events.map((event) => {
-          const item = {
-            ...event,
-            turn_id: event.turn_id ?? event.id,
-            ephemeral: false,
-          };
-          bytes += Buffer.byteLength(JSON.stringify(item));
-          return item;
-        });
-        if (bytes > 16 * 1024 * 1024)
-          throw new Error("Antigravity history recovery limit exceeded");
-        return items;
-      },
-      initialRevision,
-      {
-        waiting: (turnId) =>
-          this.#observeLane((observer) => observer.waiting(sessionId, turnId, "awaiting-approval")),
-        ended: (turnId, outcome, durationMs, replyText) =>
-          this.#observeLane((observer) =>
-            observer.turnEnded(sessionId, turnId, outcome, durationMs, undefined, replyText),
-          ),
-      },
-    );
-    try {
-      const latest = await this.sessions.resolve(sessionId);
-      const latestRoot = canonicalize(this.store.workspacePath(workspaceId));
-      if (
-        latest.native.agent !== "antigravity" ||
-        latest.native.sidechain ||
-        latest.native.native_ref !== nativeId ||
-        latest.summary.workspace_id !== workspaceId ||
-        pathIdentity(canonicalize(latest.workspace)) !== pathIdentity(workspace) ||
-        !within(canonicalize(latest.workspace), latestRoot)
-      )
-        throw new Error("session-unavailable");
-      const record = { runner, nativeId, workspaceId, workspace, lastUsed: Date.now() };
-      this.#antigravityRunners.set(sessionId, record);
-      return record;
-    } catch (error) {
-      runner.close();
-      throw error;
-    }
-  }
-
-  async #antigravityControl(
-    request: z.infer<typeof managedControlSchema>,
-    fingerprint: string,
-    beforeNativeDispatch?: () => void,
-  ) {
-    if (request.effort === null || request.serviceTier === null)
-      throw new Error("unsupported-setting-clear");
-    const runtimeBootId = this.#bootId;
-    if (!request.experimentalEnabled || request.runtimeBootId !== runtimeBootId)
-      throw new Error("stale-or-disabled-control");
-    if (managedSessionHasUnknownCommands(this.dataDir, request.sessionId))
-      throw new Error("control-outcome-unconfirmed");
-    const before = await this.#antigravityLive(request.sessionId);
-    if (before.revision !== request.expectedRevision) throw new Error("stale-or-disabled-control");
-    if (before.status === "unsupported")
-      throw new Error(typeof before.reason === "string" ? before.reason : "session-unavailable");
-    const cached = this.#antigravityRunners.get(request.sessionId);
-    if (!cached?.runner.connected || cached.runner.snapshot().status === "failed") {
-      if (request.operation !== "send") throw new Error("session-not-running");
-      if (!before.sendEnabled)
-        throw new Error(typeof before.reason === "string" ? before.reason : "session-unavailable");
-      if (typeof request.text !== "string") throw new Error("missing-text");
-    }
-    const record = await this.#antigravityRunner(request.sessionId);
-    const live = record.runner.snapshot();
-    if (activityBlocks(live, request.operation)) return compactingRejection(request, this.#bootId);
-    if (request.expectedRevision !== live.revision) throw new Error("stale-or-disabled-control");
-    const claimed = claimManagedCommand(
-      this.dataDir,
-      request.requestId,
-      request.sessionId,
-      fingerprint,
-      request.deviceId ?? null,
-      {
-        operation: request.operation,
-        workspaceId: this.store.sessions.get(request.sessionId)?.workspace_id ?? null,
-        runtimeBootId,
-        expectedRevision: request.expectedRevision,
-        turnId: request.turnId ?? null,
-        nativeRequestId: request.approvalId ?? null,
-        executionMode: "antigravity-acp-managed",
-        ...(request.historyInputHash ? { historyInputHash: request.historyInputHash } : {}),
-      },
-    );
-    if (claimed) return claimed;
-    let finishReport!: (accepted: boolean) => void;
-    const sendAccepted = new Promise<boolean>((resolve) => {
-      finishReport = resolve;
-    });
-    let dispatched = false;
-    const beforeDispatch = () => {
-      assertActivityAllows(record.runner.snapshot(), request.operation);
-      try {
-        beforeNativeDispatch?.();
-      } catch (error) {
-        throw new AcpUndispatchedError(
-          error instanceof Error ? error.message : "control-preflight-rejected",
-        );
-      }
-      dispatchManagedCommand(this.dataDir, request.requestId);
-      dispatched = true;
-    };
-    try {
-      if (request.operation === "send") {
-        if (typeof request.text !== "string") throw new Error("missing-text");
-        await record.runner.send(request.text, request.expectedRevision, beforeDispatch, {
-          requestId: request.requestId,
-          accepted: sendAccepted,
-        });
-      } else if (request.operation === "stop") {
-        if (typeof request.turnId !== "string") throw new Error("missing-turn");
-        await record.runner.stop(request.turnId, request.expectedRevision, beforeDispatch);
-      } else if (request.operation === "approve") {
-        if (
-          request.approvalId === undefined ||
-          typeof request.turnId !== "string" ||
-          typeof request.decision !== "string"
-        )
-          throw new Error("missing-approval-decision");
-        await record.runner.approve(
-          String(request.approvalId),
-          request.turnId,
-          request.decision,
-          request.expectedRevision,
-          beforeDispatch,
-        );
-      } else {
-        throw new Error("control-unavailable");
-      }
-      record.lastUsed = Date.now();
-      const result = {
-        accepted: true,
-        completed: false,
-        sessionId: request.sessionId,
-        requestId: request.requestId,
-        runtimeBootId,
-      };
-      finishManagedCommand(this.dataDir, request.requestId, result);
-      finishReport(true);
-      return result;
-    } catch (error) {
-      finishReport(false);
-      const outcomeUnknown = dispatched || record.runner.snapshot().status === "outcome-unknown";
-      const result = {
-        accepted: false,
-        completed: false,
-        sessionId: request.sessionId,
-        controlOutcome: outcomeUnknown ? "unknown" : "not-dispatched",
-        reason: error instanceof Error ? error.message : "control-preflight-rejected",
-        requestId: request.requestId,
-        runtimeBootId,
-      };
-      if (!outcomeUnknown) finishManagedCommand(this.dataDir, request.requestId, result);
-      return result;
-    }
+  antigravityWorkerEvents(sessionId: string, limit: number) {
+    return this.#antigravity.workerEvents(sessionId, limit);
   }
 
   #devinHost(
@@ -7439,38 +7036,6 @@ export class WebReadRequests {
         executionLocation: "agentkib",
         ownershipReason: null,
         reason: live.reason ?? null,
-      },
-    };
-  }
-
-  /**
-   * An Antigravity row of the catalog while AgentKib holds the session's ACP runner, as for
-   * Devin: its turns run in the `antigravity` process AgentKib started, which quitting ends. A
-   * turn waiting for a permission waits for the person, as a Codex approval does.
-   */
-  #antigravityContinuation<T extends { id: string }>(session: T): T {
-    const live = this.#antigravityRunners.get(session.id)?.runner.snapshot();
-    if (!live) return session;
-    const status =
-      live.status === "running"
-        ? "running"
-        : live.status === "waiting-approval"
-          ? "awaiting-approval"
-          : live.status === "outcome-unknown"
-            ? "outcome-unknown"
-            : "idle";
-    return {
-      ...session,
-      continuation: {
-        status,
-        executionLocation: "agentkib",
-        ownershipReason: null,
-        reason:
-          status === "outcome-unknown"
-            ? "control-outcome-unconfirmed"
-            : typeof live.reason === "string"
-              ? live.reason
-              : null,
       },
     };
   }

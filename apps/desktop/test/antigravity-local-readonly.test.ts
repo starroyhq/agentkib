@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { AntigravityManagedRunner } from "../../../packages/backend/src/antigravity-managed-runner";
+import { AntigravityManagedRunner } from "../../../packages/backend/src/agents/antigravity/antigravity-managed-runner";
 import { Commands } from "../../../packages/backend/src/commands";
 import { SessionReaders } from "../../../packages/backend/src/session-readers";
 import { BackendStore } from "../../../packages/backend/src/store";

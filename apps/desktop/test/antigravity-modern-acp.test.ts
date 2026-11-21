@@ -13,11 +13,11 @@ import path from "node:path";
 import { performance } from "node:perf_hooks";
 import { PassThrough } from "node:stream";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { AntigravitySessions } from "../../../packages/backend/src/antigravity-sessions";
+import { AntigravitySessions } from "../../../packages/backend/src/agents/antigravity/antigravity-sessions";
 import {
   AntigravityAcp,
   verifyAcpControlIdentity,
-} from "../../../packages/backend/src/antigravity-acp";
+} from "../../../packages/backend/src/agents/antigravity/antigravity-acp";
 import { parseAcpJson, stringifyAcpJson } from "../../../packages/backend/src/acp-json";
 import * as commands from "../../../packages/backend/src/command-resolution";
 

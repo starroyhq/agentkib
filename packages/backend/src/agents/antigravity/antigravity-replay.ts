@@ -1,8 +1,8 @@
 import { performance } from "node:perf_hooks";
 import { AcpCompactionState } from "./antigravity-acp";
-import { acpObject, acpTimestamp, stringifyAcpJson } from "./acp-json";
-import { hasText, property, trimWhitespace, type ConversationEvent } from "./session-events";
-import type { SessionDocument } from "./session-model";
+import { acpObject, acpTimestamp, stringifyAcpJson } from "../../acp-json";
+import { hasText, property, trimWhitespace, type ConversationEvent } from "../../session-events";
+import type { SessionDocument } from "../../session-model";
 type Turn = SessionDocument["turns"][number];
 type Block = Turn["blocks"][number];
 type Loss = SessionDocument["losses"][number]["code"];

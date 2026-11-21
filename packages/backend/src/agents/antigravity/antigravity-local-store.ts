@@ -12,10 +12,10 @@ import { homedir } from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import type { ConversationEvent, ConversationEventPage } from "./session-events";
-import { MAX_MESSAGE_BYTES, MAX_PAGE_BYTES, truncateUtf8 } from "./session-events";
-import { pathIdentity } from "./paths";
-import { timestamp } from "./timestamps";
+import type { ConversationEvent, ConversationEventPage } from "../../session-events";
+import { MAX_MESSAGE_BYTES, MAX_PAGE_BYTES, truncateUtf8 } from "../../session-events";
+import { pathIdentity } from "../../paths";
+import { timestamp } from "../../timestamps";
 
 export type AntigravityLocalSurface = "app" | "ide";
 export interface AntigravityLocalRecord {

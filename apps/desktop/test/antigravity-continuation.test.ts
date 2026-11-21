@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { homeSessionGroups, workStoppedByQuit, type HomeSession } from "@agentkib/session-catalog";
-import { AntigravityManagedRunner } from "../../../packages/backend/src/antigravity-managed-runner";
+import { AntigravityManagedRunner } from "../../../packages/backend/src/agents/antigravity/antigravity-managed-runner";
 import { Commands } from "../../../packages/backend/src/commands";
 import {
   claimManagedCommand,

@@ -15,7 +15,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
-import { AntigravityLocalStore } from "../../../packages/backend/src/antigravity-local-store";
+import { AntigravityLocalStore } from "../../../packages/backend/src/agents/antigravity/antigravity-local-store";
 const cleanup: (() => void)[] = [];
 afterEach(() => {
   for (const fn of cleanup.splice(0).reverse()) fn();

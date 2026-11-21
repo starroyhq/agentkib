@@ -21,9 +21,9 @@ import {
   AntigravityAcp,
   acpCompatibility,
   verifyAcpControlIdentity,
-} from "../../../packages/backend/src/antigravity-acp";
-import { AntigravityManagedRunner } from "../../../packages/backend/src/antigravity-managed-runner";
-import { parseAntigravityReplay } from "../../../packages/backend/src/antigravity-replay";
+} from "../../../packages/backend/src/agents/antigravity/antigravity-acp";
+import { AntigravityManagedRunner } from "../../../packages/backend/src/agents/antigravity/antigravity-managed-runner";
+import { parseAntigravityReplay } from "../../../packages/backend/src/agents/antigravity/antigravity-replay";
 import { parseAcpJson, stringifyAcpJson } from "../../../packages/backend/src/acp-json";
 
 const cleanups: Array<() => void> = [];

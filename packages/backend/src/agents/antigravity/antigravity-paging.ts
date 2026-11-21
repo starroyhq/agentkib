@@ -1,7 +1,7 @@
 import { performance } from "node:perf_hooks";
 import { parseAntigravityReplay } from "./antigravity-replay";
 import type { AntigravitySession } from "./antigravity-sessions";
-import type { ConversationEvent, ConversationEventPage } from "./session-events";
+import type { ConversationEvent, ConversationEventPage } from "../../session-events";
 export interface AntigravityHistory {
   executable(): string;
   resolve(nativeRef: string, deadline: number): Promise<AntigravitySession>;

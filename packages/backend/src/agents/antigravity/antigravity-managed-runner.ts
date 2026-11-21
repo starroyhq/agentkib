@@ -7,12 +7,12 @@ import {
   AntigravityAcp as AcpClient,
   verifyAcpControlIdentity,
 } from "./antigravity-acp";
-import { sanitizeHandoffExport } from "./session-handoff";
+import { sanitizeHandoffExport } from "../../session-handoff";
 import {
   createContextUsageGeneration,
   projectContextUsage,
   type ContextUsage,
-} from "./context-usage";
+} from "../../context-usage";
 
 const ATTACH_TIMEOUT_MS = 15_000;
 const POLL_MS = 100;

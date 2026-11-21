@@ -4,10 +4,13 @@ import { mkdir, mkdtemp, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
+import { RUNTIME_METHODS } from "@agentkib/runtime-protocol";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { AntigravityAcp } from "../../../../packages/backend/src/antigravity-acp";
+import { AntigravityAcp } from "../../../../packages/backend/src/agents/antigravity/antigravity-acp";
+import { AntigravitySessionProvider } from "../../../../packages/backend/src/agents/antigravity/session-provider";
 import { ClaudeManagedReadOwner } from "../../../../packages/backend/src/claude-managed-read";
 import { OrchestrationService } from "../../../../packages/backend/src/orchestration-service";
+import type { SessionProviderResponse } from "../../../../packages/backend/src/session-provider";
 import { SessionReaders } from "../../../../packages/backend/src/session-readers";
 import type { NativeSession } from "../../../../packages/backend/src/session-store";
 import { BackendStore } from "../../../../packages/backend/src/store";
@@ -429,6 +432,77 @@ describe("Antigravity session baseline through HTTP, backend RPC and ACP frames"
     }
     expect(acp.spawn).not.toHaveBeenCalled();
     expect(acp.frames).toEqual([]);
+  });
+
+  it("keeps the serial queue on the typed RPC without opening another ACP transport", async () => {
+    const provider = vi.spyOn(AntigravitySessionProvider.prototype, "request");
+    const interventions = vi.spyOn(OrchestrationService.prototype, "laneControlled");
+    const scope = { sessionId, deviceId: host.deviceId, experimentalEnabled: true };
+    const request = (operation: string, fields: Record<string, unknown> = {}) =>
+      backend.rpc(RUNTIME_METHODS.sessionRequest, { operation, ...scope, ...fields });
+    const initial = (await request("live")) as SessionProviderResponse<"live">;
+    expect(initial).toMatchObject({
+      operation: "live",
+      result: { sessionId, status: "idle", revision: 0, execution: { owner: "agentkib" } },
+    });
+    const { runtimeBootId } = initial.result;
+    expect(await request("capabilities")).toMatchObject({
+      operation: "capabilities",
+      result: {
+        sessionId,
+        runtimeBootId,
+        execution: { owner: "agentkib" },
+        features: { send: allowed, "queue-list": allowed, "queue-add": allowed },
+      },
+    });
+    expect(acp.spawn).not.toHaveBeenCalled();
+
+    expect(
+      await request("send", {
+        requestId: randomUUID(),
+        runtimeBootId,
+        expectedRevision: initial.result.revision,
+        text: "Start the ACP turn",
+      }),
+    ).toMatchObject({ operation: "send", result: { accepted: true, sessionId } });
+    const running = (await request("live")) as SessionProviderResponse<"live">;
+    expect(running.result).toMatchObject({ sessionId, status: "running", sendEnabled: false });
+
+    const requestId = randomUUID();
+    const text = "Follow up after the ACP turn";
+    expect(
+      await request("queue-add", {
+        requestId,
+        runtimeBootId,
+        expectedRevision: running.result.revision,
+        text,
+      }),
+    ).toMatchObject({
+      operation: "queue-add",
+      result: { accepted: true, completed: false, requestId, sessionId },
+    });
+    expect(await request("queue-list")).toMatchObject({
+      operation: "queue-list",
+      result: { sessionId, paused: false, data: [{ status: "pending", text }] },
+    });
+    expect(provider.mock.calls.map(([value]) => value.operation)).toEqual([
+      "live",
+      "capabilities",
+      "send",
+      "live",
+      "queue-add",
+      "queue-list",
+    ]);
+    expect(interventions.mock.calls.filter(([id]) => id === sessionId)).toEqual([
+      [sessionId, "send"],
+      [sessionId, "queue-add"],
+    ]);
+    expect(acp.spawn).toHaveBeenCalledTimes(1);
+    expect(acp.frames.map(({ method }) => method)).toEqual([
+      "initialize",
+      "session/load",
+      "session/prompt",
+    ]);
   });
 
   it("dispatches prompt, permission choice and cancellation to the attached ACP session", async () => {

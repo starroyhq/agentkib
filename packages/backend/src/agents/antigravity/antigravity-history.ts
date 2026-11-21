@@ -1,8 +1,8 @@
 import { AntigravitySessions } from "./antigravity-sessions";
 import { AntigravityLocalStore, type AntigravityLocalRecord } from "./antigravity-local-store";
 import { AntigravityLocalRuntime } from "./antigravity-local-runtime";
-import type { NativeSession } from "./session-store";
-import { pathIdentity } from "./paths";
+import type { NativeSession } from "../../session-store";
+import { pathIdentity } from "../../paths";
 
 const PREFIX = "antigravity-local-v1-";
 export function antigravityLocalRef(surface: "app" | "ide", id: string): string {

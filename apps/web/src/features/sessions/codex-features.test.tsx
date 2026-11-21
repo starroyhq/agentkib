@@ -17,7 +17,7 @@ import {
   codexReason,
 } from "@/features/conversation/features/sessions/codex-copy";
 import { webLayoutCopy } from "@/features/conversation/features/sessions/web-layout-copy";
-import { publishSessionInvalidation } from "@/features/conversation/features/sessions/session-events";
+import { publishSessionInvalidation } from "@agentkib/conversation-state";
 vi.mock("@tanstack/react-router", () => ({ useNavigate: () => vi.fn() }));
 vi.mock("@/features/conversation/features/sessions/session-context", () => ({
   useSession: vi.fn(),

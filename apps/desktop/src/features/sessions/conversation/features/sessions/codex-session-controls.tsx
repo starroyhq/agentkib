@@ -48,7 +48,7 @@ import { useSession } from "./session-context";
 import { settingsNoticeGroup, type SettingsNotice } from "./use-session-controller";
 import { composerLayoutCopy, composerTerm } from "./composer-layout-copy";
 import { codexCopy, codexReason } from "./codex-copy";
-import { subscribeSessionInvalidation } from "./session-events";
+import { subscribeSessionInvalidation } from "@agentkib/conversation-state";
 import {
   contextUsagePercent,
   ContextUsageGauge,

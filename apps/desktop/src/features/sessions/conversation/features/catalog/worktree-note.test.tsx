@@ -3,8 +3,7 @@ import "@testing-library/jest-dom/vitest";
 import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 import type { SessionWorktree } from "@agentkib/web-client";
-import { worktreeChip } from "./worktree-copy";
-import { WorktreeNote } from "./worktree-note";
+import { worktreeChip, WorktreeNote } from "@agentkib/session-ui";
 
 const worktree: SessionWorktree = {
   repository_group_id: "repo",

@@ -1,4 +1,4 @@
-import { isBusyRead } from "./conversation/features/sessions/session-read-retry";
+import { isBusyRead } from "@agentkib/session-ui";
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import type { EmbeddedConversationHandle } from "./conversation/conversation";
 import { RefreshCw } from "lucide-react";

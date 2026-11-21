@@ -1,10 +1,9 @@
-import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
   claudeConnectionCopy,
   claudeConnectionCopyForSurface,
   claudeConnectionReason,
-} from "./claude-connection-copy";
+} from "@agentkib/session-ui";
 
 const cases = [
   {
@@ -200,17 +199,5 @@ describe("terminal connection guide copy", () => {
       expect(claudeConnectionReason(locale, reason)).toBe(expected);
     }
     expect(claudeConnectionReason(locale, "unrecognized-private-detail")).toBeUndefined();
-  });
-
-  it("keeps desktop and Web connection presentation mirrored", () => {
-    const desktop = readFileSync(new URL("./claude-connection-copy.ts", import.meta.url), "utf8");
-    const web = readFileSync(
-      new URL(
-        "../../../../../../../web/src/features/conversation/features/sessions/claude-connection-copy.ts",
-        import.meta.url,
-      ),
-      "utf8",
-    );
-    expect(desktop).toBe(web);
   });
 });

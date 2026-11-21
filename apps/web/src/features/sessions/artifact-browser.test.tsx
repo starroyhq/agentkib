@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import userEvent from "@testing-library/user-event";
 import type { ArtifactEntry, ArtifactTicket } from "@agentkib/web-client";
 import { ArtifactBrowser } from "@/features/conversation/features/sessions/artifact-browser";
-import { artifactCopy } from "@/features/conversation/features/sessions/artifact-copy";
+import { artifactCopy } from "@agentkib/session-ui";
 import {
   ArtifactPanel,
   ArtifactWorkspace,

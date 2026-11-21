@@ -1,5 +1,5 @@
 import type { Locale } from "../../i18n";
-import { surfaceText, type SessionSurface } from "./session-surface-copy";
+import { surfaceText, type SessionSurface } from "@agentkib/session-ui";
 const copy: Record<string, [string, string]> = {
   "无法读取已保存的请求标识。": [
     "無法讀取已儲存的請求識別碼。",

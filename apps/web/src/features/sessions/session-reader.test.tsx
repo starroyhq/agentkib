@@ -5,7 +5,7 @@ import { dictionaries } from "@/features/conversation/i18n";
 import { SessionReader } from "@/features/conversation/features/sessions/session-reader";
 import { useSession } from "@/features/conversation/features/sessions/session-context";
 import { webLayoutCopy } from "@/features/conversation/features/sessions/web-layout-copy";
-import { claudeConnectionReason } from "@/features/conversation/features/sessions/claude-connection-copy";
+import { claudeConnectionReason } from "@agentkib/session-ui";
 import { codexReason } from "@/features/conversation/features/sessions/codex-copy";
 
 vi.mock("@/features/conversation/features/sessions/session-context", () => ({

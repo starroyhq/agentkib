@@ -1,10 +1,9 @@
 import { AlertTriangle } from "lucide-react";
 import type { Live } from "@agentkib/web-client";
-import { usageLimitNotice } from "@agentkib/session-ui";
+import { usageLimitNotice, type SessionSurface } from "@agentkib/session-ui";
 import { Button } from "@/components/ui/button";
 import type { SupportedLocale as Locale } from "@/core/types";
 import { codexReason } from "./codex-copy";
-import type { SessionSurface } from "./session-surface-copy";
 
 type Retry = NonNullable<Live["apiRetry"]>;
 type Agent = "Claude Code" | "Codex";

@@ -22,9 +22,8 @@ import { useSession } from "./session-context";
 import { webLayoutCopy } from "./web-layout-copy";
 import { composerLayoutCopy } from "./composer-layout-copy";
 import { codexCopyForSurface, codexReason } from "./codex-copy";
-import { blockedWhileCompacting } from "./session-activity";
-import { contextUsageCopyForSurface } from "./context-usage-copy";
-import { subscribeSessionInvalidation } from "./session-events";
+import { blockedWhileCompacting, contextUsageCopyForSurface } from "@agentkib/session-ui";
+import { subscribeSessionInvalidation } from "@agentkib/conversation-state";
 import { sessionAgentCopy } from "./session-agent-copy";
 
 export function CodexTools({

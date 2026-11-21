@@ -1,7 +1,7 @@
 import { Link } from "@tanstack/react-router";
 import { Monitor, Smartphone, ShieldCheck, ArrowRight } from "lucide-react";
 import { ConnectionPreferences } from "./connection-preferences";
-import { useAppearance } from "@/features/conversation/features/preferences/use-appearance";
+import { useAppearance } from "@agentkib/session-ui";
 import { useEnvironment } from "@/providers/environment";
 import type { Locale } from "@/features/conversation/i18n";
 

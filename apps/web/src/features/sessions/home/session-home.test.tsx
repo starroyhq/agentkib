@@ -1,14 +1,16 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Approval, ConversationSessionSummary, Live } from "@agentkib/web-client";
-import { homeSessionCopy, interactionCardCopy, readStateCopy } from "@agentkib/session-ui";
-import { dictionaries } from "@/features/conversation/i18n";
-import { publishSessionInvalidation } from "@/features/conversation/features/sessions/session-events";
 import {
+  homeSessionCopy,
+  interactionCardCopy,
+  readStateCopy,
   pendingScope,
   readPending,
   rememberPending,
-} from "@/features/conversation/features/sessions/pending-controls";
+} from "@agentkib/session-ui";
+import { dictionaries } from "@/features/conversation/i18n";
+import { publishSessionInvalidation } from "@agentkib/conversation-state";
 import { HomeAttentionProvider } from "./home-attention";
 import { HomeViewContext, SessionHome } from "./session-home";
 

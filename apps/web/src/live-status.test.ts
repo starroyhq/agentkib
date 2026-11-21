@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { dictionaries } from "@/features/conversation/i18n";
-import { unavailableReasonText } from "@/features/conversation/live-status";
+import { unavailableReasonText } from "@agentkib/session-ui";
 
 describe.each(Object.entries(dictionaries))("unavailable reason in %s", (_locale, words) => {
   it("only recommends opening the original client for an absent owner", () => {

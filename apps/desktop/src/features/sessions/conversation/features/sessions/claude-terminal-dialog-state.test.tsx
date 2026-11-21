@@ -5,7 +5,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vite
 import { initializeI18n } from "@/core/i18n";
 import type { SessionController } from "./use-session-controller";
 import { ClaudeBridgePanel } from "./claude-bridge-panel";
-import { claudeConnectionCopy } from "./claude-connection-copy";
+import { claudeConnectionCopy } from "@agentkib/session-ui";
 
 const state = vi.hoisted(() => ({ session: {} as SessionController, request: vi.fn() }));
 vi.mock("./session-context", () => ({ useSession: () => state.session }));

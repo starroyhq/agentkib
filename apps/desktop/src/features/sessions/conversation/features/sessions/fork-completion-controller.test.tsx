@@ -13,13 +13,11 @@ import {
   type SessionActionResult,
 } from "@agentkib/web-client";
 import { useSessionController } from "@/features/sessions/conversation/features/sessions/use-session-controller";
-import {
-  pendingScope,
-  readPending,
-} from "@/features/sessions/conversation/features/sessions/pending-controls";
-import { publishSessionInvalidation } from "@/features/sessions/conversation/features/sessions/session-events";
+import { pendingScope, readPending } from "@agentkib/session-ui";
+import { publishSessionInvalidation } from "@agentkib/conversation-state";
 
-vi.mock("@/features/sessions/conversation/features/preferences/use-appearance", () => ({
+vi.mock("@agentkib/session-ui", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@agentkib/session-ui")>()),
   useAppearance: () => {},
 }));
 vi.mock("@/features/sessions/conversation/features/sessions/use-session-live", () => ({

@@ -1,4 +1,4 @@
-import type { NewSessionDraft } from "@agentkib/session-ui";
+import type { NewSessionDraft } from "../../new-session-draft";
 import { managedAgentOf, type ManagedAgent } from "@agentkib/web-client";
 
 /**
@@ -6,8 +6,6 @@ import { managedAgentOf, type ManagedAgent } from "@agentkib/web-client";
  * session; the session's own composer sends this, so a message that cannot go out yet stays there
  * as its draft. Held in memory only, like any unsent draft.
  */
-export type { NewSessionDraft } from "@agentkib/session-ui";
-
 /** A first message goes out by itself only this soon after it was written. */
 const SEND_WINDOW_MS = 60_000;
 const drafts = new Map<string, { draft: NewSessionDraft; at: number }>();

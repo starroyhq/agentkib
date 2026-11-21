@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { managedText } from "@/features/conversation/features/sessions/managed-copy";
 import source from "@/features/conversation/features/sessions/session-receipt-recovery.tsx?raw";
-import { surfaceText } from "@/features/conversation/features/sessions/session-surface-copy";
+import { surfaceText } from "@agentkib/session-ui";
 
 const calls = [
   ...source.matchAll(

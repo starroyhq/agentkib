@@ -1,6 +1,6 @@
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { catalogCopy } from "@/features/conversation/features/catalog/catalog-copy";
+import { catalogCopy } from "@agentkib/session-ui";
 import { dictionaries } from "@/features/conversation/i18n";
 
 const session = vi.hoisted(() => ({ value: {} as Record<string, unknown> }));

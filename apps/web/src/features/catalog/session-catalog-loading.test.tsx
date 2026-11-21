@@ -18,7 +18,7 @@ import {
 import { RouterProvider } from "@tanstack/react-router";
 import { WebApplication, makeRouter } from "@/router";
 import { dictionaries, type Locale } from "@/features/conversation/i18n";
-import { catalogCopyForSurface } from "@/features/conversation/features/catalog/catalog-copy";
+import { catalogCopyForSurface } from "@agentkib/session-ui";
 import { useSessionController } from "@/features/conversation/features/sessions/use-session-controller";
 
 class CatalogEventSource {

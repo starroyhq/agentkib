@@ -2,7 +2,7 @@
 import "@testing-library/jest-dom/vitest";
 import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
-import { OrchestrationNote, orchestrationText } from "./orchestration-note";
+import { OrchestrationNote, orchestrationText } from "@agentkib/session-ui";
 
 afterEach(cleanup);
 

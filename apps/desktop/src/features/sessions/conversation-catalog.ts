@@ -1,5 +1,5 @@
 import { desktopReadScope, subscribeDesktopReadScope } from "./read-state-scope";
-import { isBusyRead, retryBusyRead } from "./conversation/features/sessions/session-read-retry";
+import { isBusyRead, retryBusyRead } from "@agentkib/session-ui";
 import { useEffect } from "react";
 import { create } from "zustand";
 import { ApiError, type ConversationCatalog } from "@agentkib/web-client";

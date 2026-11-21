@@ -1,6 +1,10 @@
-import { surfaceCopy, surfaceText, type SessionSurface } from "./session-surface-copy";
-import { sessionContinuationCopy } from "@agentkib/session-ui";
-import { claudeConnectionReason } from "./claude-connection-copy";
+import {
+  surfaceCopy,
+  surfaceText,
+  type SessionSurface,
+  sessionContinuationCopy,
+  claudeConnectionReason,
+} from "@agentkib/session-ui";
 import { localizedUnavailableReasonText } from "../../live-status";
 type Locale = "zh-CN" | "zh-Hant" | "en-US" | "ja-JP";
 const zh = {

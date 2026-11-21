@@ -1,6 +1,6 @@
-import { continuationResources } from "./continuation-draft";
-import { takeNewSessionDraft } from "./new-session-draft";
 import {
+  continuationResources,
+  takeNewSessionDraft,
   agentKibCommand,
   agentKibPanel,
   existingSessionComposerCapabilities,
@@ -22,13 +22,15 @@ import {
   unsupportedEffortReason,
   useSlashCommandMenu,
   type AgentKibPanel,
+  runningSendAction,
+  useSendWhileRunning,
+  claudeConnectionCopyForSurface,
+  validHistoryMessage,
+  contextUsageCopyForSurface,
 } from "@agentkib/session-ui";
 import { SessionReadOnly } from "./session-read-only";
-import { runningSendAction, useSendWhileRunning } from "../preferences/send-while-running";
-import { claudeConnectionCopyForSurface } from "./claude-connection-copy";
 import { SessionSendQueue } from "./dsh-queue";
 import { HistoryReferenceChips } from "../history/history-search-controls";
-import { validHistoryMessage } from "../history/history-reference-model";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { AlertTriangle, CornerDownRight, ListPlus, MoreHorizontal, X } from "lucide-react";
@@ -47,11 +49,10 @@ import {
 import { Dialog } from "../../components/dialog";
 import { useSession } from "./session-context";
 import { ContextUsageGauge, type ContextUsageHandle } from "./context-usage";
-import { contextUsageCopyForSurface } from "./context-usage-copy";
 import { sessionDisplayState } from "./session-display-state";
 import { composerLayoutCopy } from "./composer-layout-copy";
 import { codexCopyForSurface, codexReason } from "./codex-copy";
-import { MAX_MESSAGE_LENGTH } from "./session-model";
+import { MAX_MESSAGE_LENGTH } from "@agentkib/conversation-state";
 import {
   CodexComposerControls,
   type CodexResource,

@@ -7,7 +7,7 @@ import { SessionReader } from "@/features/sessions/conversation/features/session
 import { SessionPanelsContext } from "@/features/sessions/conversation/features/sessions/session-panels";
 import type { SessionController } from "@/features/sessions/conversation/features/sessions/use-session-controller";
 import { conversationWords } from "@/core/i18n";
-import { claudeConnectionCopy } from "@/features/sessions/conversation/features/sessions/claude-connection-copy";
+import { claudeConnectionCopy } from "@agentkib/session-ui";
 
 type Locale = "zh-CN" | "zh-Hant" | "en-US" | "ja-JP";
 let session: SessionController;
@@ -24,7 +24,9 @@ vi.mock("@/features/sessions/conversation/features/sessions/context-usage", () =
 vi.mock("@/features/sessions/conversation/features/sessions/artifact-browser", () => ({
   ArtifactBrowser: () => null,
 }));
-vi.mock("@/features/sessions/conversation/features/sessions/session-transcript", () => ({
+vi.mock("@agentkib/session-ui", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@agentkib/session-ui")>()),
+
   SessionTranscript: () => null,
 }));
 vi.mock("@/features/sessions/conversation/features/history/history-search-controls", () => ({

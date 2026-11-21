@@ -1,5 +1,5 @@
 import type { SupportedLocale as Locale } from "@/core/types";
-import { surfaceCopy, type SessionSurface } from "./session-surface-copy";
+import { surfaceCopy, type SessionSurface } from "@agentkib/session-ui";
 export const managedErrorCopy: Record<
   Locale,
   { failed: string; connection: string; unconfirmed: string; details: string }

@@ -7,7 +7,7 @@ const conversationWords = (locale: keyof typeof dictionaries) => dictionaries[lo
 import { SessionReader } from "./session-reader";
 import { useSession } from "./session-context";
 import { webLayoutCopy } from "./web-layout-copy";
-import { contextUsageCopyForSurface } from "./context-usage-copy";
+import { contextUsageCopyForSurface } from "@agentkib/session-ui";
 
 vi.mock("./session-context", () => ({ useSession: vi.fn() }));
 vi.mock("./session-operations", () => ({ SessionOperations: () => null }));

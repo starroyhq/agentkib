@@ -14,17 +14,15 @@ import {
   useSessionLive,
   type WarmSessionNavigation,
 } from "@/features/conversation/features/sessions/use-session-live";
-import { subscribeSessionInvalidation } from "@/features/conversation/features/sessions/session-events";
 import {
+  subscribeSessionInvalidation,
   createHistoryPagination,
   recordLatestHistoryPage,
-} from "@/features/conversation/features/sessions/history-pagination";
-import {
   beginHistoryRead,
   completeHistoryRead,
   failHistoryRead,
   type NativeCoverage,
-} from "@/features/conversation/features/sessions/session-model";
+} from "@agentkib/conversation-state";
 
 const access: Access = {
   protocolVersion: 2,

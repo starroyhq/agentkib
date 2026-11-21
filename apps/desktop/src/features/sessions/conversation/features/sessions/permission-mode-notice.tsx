@@ -3,7 +3,7 @@ import type { LivePermission } from "@agentkib/web-client";
 import type { SupportedLocale as Locale } from "@/core/types";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { cn } from "../../lib/utils";
-import { permissionModeCopy, permissionModeSummaryCopy } from "./permission-mode-copy";
+import { permissionModeCopy, permissionModeSummaryCopy } from "@agentkib/session-ui";
 
 /**
  * Tells the user when a Claude session runs where actions are no longer approved one by one

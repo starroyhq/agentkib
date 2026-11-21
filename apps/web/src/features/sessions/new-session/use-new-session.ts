@@ -15,11 +15,8 @@ import {
   type ManagedAgent,
   type ManagedOptions,
 } from "@agentkib/web-client";
-import type { NewSessionCreateFields } from "@agentkib/session-ui";
-import { useSession } from "@/features/conversation/features/sessions/session-context";
-import { codexReason } from "@/features/conversation/features/sessions/codex-copy";
-import { managedErrorCopyForSurface } from "@/features/conversation/features/sessions/managed-error-copy";
 import {
+  type NewSessionCreateFields,
   forgetPending,
   pendingCreateMatches,
   pendingScope,
@@ -27,8 +24,11 @@ import {
   rememberPending,
   subscribePending,
   type PendingControl,
-} from "@/features/conversation/features/sessions/pending-controls";
-import { subscribeSessionInvalidation } from "@/features/conversation/features/sessions/session-events";
+} from "@agentkib/session-ui";
+import { useSession } from "@/features/conversation/features/sessions/session-context";
+import { codexReason } from "@/features/conversation/features/sessions/codex-copy";
+import { managedErrorCopyForSurface } from "@/features/conversation/features/sessions/managed-error-copy";
+import { subscribeSessionInvalidation } from "@agentkib/conversation-state";
 import type { Locale } from "@/features/conversation/i18n";
 
 /** Why nothing was created, in the words the old new-task form used, with the code as detail. */

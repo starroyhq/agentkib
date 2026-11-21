@@ -44,6 +44,11 @@ import {
   slashCommandCopy,
   useNewSessionAdd,
   useSlashCommandMenu,
+  offerNewSessionDraft,
+  readNewSessionTarget,
+  rememberNewSessionTarget,
+  type NewSessionDraft,
+  type NewSessionTarget,
 } from "@agentkib/session-ui";
 import { Button } from "@/components/ui/button";
 import { Disclosure, DisclosureSummary } from "@/components/ui/disclosure";
@@ -63,14 +68,7 @@ import { cn } from "cn";
 import { codexCopy, codexReason } from "../conversation/features/sessions/codex-copy";
 import { composerLayoutCopy } from "../conversation/features/sessions/composer-layout-copy";
 import { Dialog } from "../conversation/components/dialog";
-import { MAX_MESSAGE_LENGTH } from "../conversation/features/sessions/session-model";
-import {
-  offerNewSessionDraft,
-  readNewSessionTarget,
-  rememberNewSessionTarget,
-  type NewSessionDraft,
-  type NewSessionTarget,
-} from "../conversation/features/sessions/new-session-draft";
+import { MAX_MESSAGE_LENGTH } from "@agentkib/conversation-state";
 import { failureOf, useNewSession } from "./use-new-session";
 
 const MAX_FILES = 10;

@@ -8,7 +8,7 @@ import {
   type DesktopConversationBridge,
 } from "@/core/conversation-bridge";
 import { EmbeddedConversation } from "../../conversation";
-import { pendingScope, readPending, rememberPending } from "./pending-controls";
+import { pendingScope, readPending, rememberPending } from "@agentkib/session-ui";
 
 const labels = [
   ["zh-CN", "待处理中心", "汇总本页已查看会话的待处理事项及当前访问尚未确认的请求。"],

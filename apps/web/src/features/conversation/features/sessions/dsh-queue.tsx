@@ -9,7 +9,11 @@ import {
   Trash2,
 } from "lucide-react";
 import { ApiError, type SessionQueue } from "@agentkib/web-client";
-import { sessionQueuePanel, type SessionQueuePanelAgent } from "@agentkib/session-ui";
+import {
+  sessionQueuePanel,
+  type SessionQueuePanelAgent,
+  retryBusyRead,
+} from "@agentkib/session-ui";
 import { Button } from "../../components/ui/button";
 import { Input } from "../../components/ui/input";
 import {
@@ -19,8 +23,7 @@ import {
   DropdownMenuTrigger,
 } from "../../components/ui/dropdown-menu";
 import { useSession } from "./session-context";
-import { subscribeSessionInvalidation } from "./session-events";
-import { retryBusyRead } from "./session-read-retry";
+import { subscribeSessionInvalidation } from "@agentkib/conversation-state";
 import { codexCopy, codexCopyForSurface, codexReason } from "./codex-copy";
 import { sessionAgentCopy } from "./session-agent-copy";
 

@@ -162,7 +162,7 @@ type SharedSessionPlatform = {
       onFilesOpenChange(open: boolean): void;
       onStatusInToolbarChange(shown: boolean): void;
     }>;
-    Toaster?: ComponentType;
+    Toaster?: ComponentType<{ locale: InteractionLocale }>;
     success(message: string, options?: NoticeOptions): void;
     error(message: string, options?: NoticeOptions): void;
     dismiss(id?: string | number): void;

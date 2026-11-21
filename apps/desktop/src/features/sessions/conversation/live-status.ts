@@ -1,23 +1,9 @@
-import { conversationWords, type ConversationWords as Words } from "@/core/i18n";
+import { unavailableReasonText } from "@agentkib/session-ui";
+import { conversationWords } from "@/core/i18n";
 
 export function localizedUnavailableReasonText(
   reason: string,
   locale: Parameters<typeof conversationWords>[0],
 ): string {
   return unavailableReasonText(reason, conversationWords(locale));
-}
-
-/** Only known reason codes get specific advice; never render raw runtime errors. */
-export function unavailableReasonText(reason: string, words: Words): string {
-  switch (reason) {
-    case "open-in-original-client":
-      return words.openOriginalClient;
-    case "unverified-installation":
-      return words.unverifiedInstallation;
-    case "platform-unsupported":
-    case "provider-unsupported":
-      return words.unsupportedControl;
-    default:
-      return words.unavailable;
-  }
 }

@@ -1,6 +1,9 @@
-import type { SessionSurface } from "./session-surface-copy";
-import { claudeConnectionCopyForSurface, claudeConnectionReason } from "./claude-connection-copy";
-import { sessionContinuationCopy } from "@agentkib/session-ui";
+import {
+  type SessionSurface,
+  claudeConnectionCopyForSurface,
+  claudeConnectionReason,
+  sessionContinuationCopy,
+} from "@agentkib/session-ui";
 import type { SessionController } from "./use-session-controller";
 
 const reconnectCompatibilityReasons = new Set([

@@ -10,13 +10,8 @@ import type {
   SessionSettings,
   UserQuestionRequest,
 } from "@agentkib/web-client";
-import {
-  pendingScope,
-  readPending,
-  rememberPending,
-} from "@/features/conversation/features/sessions/pending-controls";
+import { pendingScope, readPending, rememberPending, catalogCopy } from "@agentkib/session-ui";
 import { WebApplication, makeRouter } from "@/router";
-import { catalogCopy } from "@/features/conversation/features/catalog/catalog-copy";
 
 class FakeEventSource {
   static instances: FakeEventSource[] = [];

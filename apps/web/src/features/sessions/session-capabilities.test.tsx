@@ -1,7 +1,7 @@
 import { act, cleanup, renderHook } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { WebClient, type Access, type CodexCapabilities, type Live } from "@agentkib/web-client";
-import { useSessionCapabilities } from "@/features/conversation/features/sessions/use-session-capabilities";
+import { useSessionCapabilities } from "@agentkib/session-ui";
 
 function deferred<T>() {
   let resolve!: (value: T) => void;

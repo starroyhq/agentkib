@@ -10,11 +10,11 @@ import {
   readPending,
   subscribePending,
   type PendingControl,
-} from "./pending-controls";
+  catalogCopy,
+  interactionCopy,
+} from "@agentkib/session-ui";
 import { codexCopy } from "./codex-copy";
-import { catalogCopy } from "../catalog/catalog-copy";
 import { approvalSummary } from "./approval-summary";
-import { interactionCopy } from "../interactions/interaction-copy";
 
 export function PendingCenter({ compact = false }: { compact?: boolean }) {
   const {

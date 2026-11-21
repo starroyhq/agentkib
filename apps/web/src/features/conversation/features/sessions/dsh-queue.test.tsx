@@ -7,7 +7,7 @@ import { ApiError, WebClient, type SessionQueue } from "@agentkib/web-client";
 import { dispatchSessionAction } from "@agentkib/session-ui";
 import { SessionSendQueue } from "./dsh-queue";
 import { useSession } from "./session-context";
-import { publishSessionInvalidation } from "./session-events";
+import { publishSessionInvalidation } from "@agentkib/conversation-state";
 
 vi.mock("./session-context", () => ({ useSession: vi.fn() }));
 

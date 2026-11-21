@@ -9,16 +9,14 @@ import {
 } from "./conversation/conversation";
 
 import { WebClient, type Access, type ConversationCatalog, type Live } from "@agentkib/web-client";
-import { sessionContinuationCopy } from "@agentkib/session-ui";
-import { conversationWords } from "@/core/i18n";
 import {
+  sessionContinuationCopy,
   permissionModeCopy,
   permissionModeSummaryCopy,
-} from "./conversation/features/sessions/permission-mode-copy";
-import {
   claudeConnectionCopy,
   claudeConnectionReason,
-} from "./conversation/features/sessions/claude-connection-copy";
+} from "@agentkib/session-ui";
+import { conversationWords } from "@/core/i18n";
 import type { ConversationSubscription, SessionStreamEvent } from "@agentkib/conversation-state";
 import { webLayoutCopy } from "./conversation/features/sessions/web-layout-copy";
 import {

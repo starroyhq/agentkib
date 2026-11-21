@@ -26,7 +26,7 @@ import { useHistoryContinuation } from "./useHistoryContinuation";
 import { useSessionHub } from "./SessionHubContext";
 import { hasDesktopConversation } from "@/core/conversation-bridge";
 import { useSessionViewStore } from "./session-view-store";
-import { claudeConnectionCopy } from "./conversation/features/sessions/claude-connection-copy";
+import { claudeConnectionCopy } from "@agentkib/session-ui";
 
 export function SessionWindowToolbar() {
   const { tr, locale } = useI18n();

@@ -1,16 +1,17 @@
 import { isLiveSessionAgent } from "@agentkib/web-client";
-import type { SessionSurface } from "./session-surface-copy";
-import { claudeConnectionCopyForSurface, claudeConnectionReason } from "./claude-connection-copy";
-import type { SessionController } from "./use-session-controller";
-import { codexReason } from "./codex-copy";
-import { contextUsageCopyForSurface } from "./context-usage-copy";
-import { webLayoutCopy } from "./web-layout-copy";
-import { managedControlCopyForSurface } from "./managed-control-copy";
 import {
+  type SessionSurface,
+  claudeConnectionCopyForSurface,
+  claudeConnectionReason,
+  contextUsageCopyForSurface,
   claudeTerminalDisplay,
   dshNativeStatusDisplay,
   sessionContinuationCopy,
 } from "@agentkib/session-ui";
+import type { SessionController } from "./use-session-controller";
+import { codexReason } from "./codex-copy";
+import { webLayoutCopy } from "./web-layout-copy";
+import { managedControlCopyForSurface } from "./managed-control-copy";
 import { claudeReconnectFailureReason } from "./claude-session-banner";
 
 type State = Pick<

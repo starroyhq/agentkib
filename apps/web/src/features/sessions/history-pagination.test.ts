@@ -1,13 +1,13 @@
 import { describe, expect, it } from "vitest";
 import type { ConversationEvent, ConversationEventPage } from "@agentkib/web-client";
-import { loadEarlierHistoryBatch } from "@agentkib/conversation-state";
 import {
+  loadEarlierHistoryBatch,
   applyHistoryPagination,
   beginHistoryPagination,
   createHistoryPagination,
   historyPaginationCursor,
   recordLatestHistoryPage,
-} from "@/features/conversation/features/sessions/history-pagination";
+} from "@agentkib/conversation-state";
 
 const page = (ids: string[], next_cursor?: string): ConversationEventPage => ({
   events: ids.map((id) => ({

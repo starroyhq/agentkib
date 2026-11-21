@@ -1,5 +1,5 @@
 import { CLAUDE_BRIDGE_CLI_VERSION, claudeBridgeCompatibility } from "@agentkib/web-client";
-import { surfaceCopy, type SessionSurface } from "./session-surface-copy";
+import { surfaceCopy, type SessionSurface } from "../../session-surface-copy";
 type Locale = "zh-CN" | "zh-Hant" | "en-US" | "ja-JP";
 
 const zh = {

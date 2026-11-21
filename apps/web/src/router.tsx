@@ -9,7 +9,7 @@ import {
 import { routeTree } from "@/routeTree.gen";
 import type { EnvironmentOptions } from "@/providers/environment";
 export { Dialog } from "@/features/conversation/components/dialog";
-export { mergeLatestPage } from "@/features/conversation/features/sessions/session-model";
+export { mergeLatestPage } from "@agentkib/conversation-state";
 
 export function makeRouter(options: EnvironmentOptions = {}, memory = false) {
   // Consume legacy connection links before the hash becomes the router's URL.

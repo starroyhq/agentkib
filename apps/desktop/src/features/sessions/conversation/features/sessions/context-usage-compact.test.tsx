@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ContextUsage } from "@agentkib/web-client";
 import { ContextUsageGauge } from "./context-usage";
 import { useSession } from "./session-context";
-import { contextUsageCopy } from "./context-usage-copy";
+import { contextUsageCopy } from "@agentkib/session-ui";
 import { codexCopy } from "./codex-copy";
 
 vi.mock("./session-context", () => ({ useSession: vi.fn() }));

@@ -1,10 +1,5 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import {
-  forgetPending,
-  pendingScope,
-  readPending,
-  rememberPending,
-} from "@/features/conversation/features/sessions/pending-controls";
+import { forgetPending, pendingScope, readPending, rememberPending } from "@agentkib/session-ui";
 
 beforeEach(() => sessionStorage.clear());
 describe("pending Codex identities", () => {

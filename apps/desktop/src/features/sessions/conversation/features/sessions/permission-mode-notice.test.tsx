@@ -3,7 +3,7 @@ import "@testing-library/jest-dom/vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 import { PermissionModeNotice } from "./permission-mode-notice";
-import { permissionModeCopy, permissionModeSummaryCopy } from "./permission-mode-copy";
+import { permissionModeCopy, permissionModeSummaryCopy } from "@agentkib/session-ui";
 
 describe("compact Claude permission notice", () => {
   afterEach(cleanup);

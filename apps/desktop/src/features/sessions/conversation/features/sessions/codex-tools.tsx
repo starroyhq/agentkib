@@ -14,9 +14,8 @@ import { OperationDisclosure, OperationGroup, OperationRow } from "./operation-l
 import { useSession } from "./session-context";
 import { webLayoutCopy } from "./web-layout-copy";
 import { codexCopy, codexReason } from "./codex-copy";
-import { blockedWhileCompacting } from "./session-activity";
-import { contextUsageCopy } from "./context-usage-copy";
-import { subscribeSessionInvalidation } from "./session-events";
+import { blockedWhileCompacting, contextUsageCopy } from "@agentkib/session-ui";
+import { subscribeSessionInvalidation } from "@agentkib/conversation-state";
 import { sessionAgentCopy } from "./session-agent-copy";
 
 export function CodexTools({

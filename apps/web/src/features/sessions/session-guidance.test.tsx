@@ -23,7 +23,8 @@ vi.mock("@/features/conversation/features/sessions/use-session-live", () => ({
     }, [streamReady, selected, setControlReady]);
   },
 }));
-vi.mock("@/features/conversation/features/preferences/use-appearance", () => ({
+vi.mock("@agentkib/session-ui", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@agentkib/session-ui")>()),
   useAppearance: () => {},
 }));
 vi.mock("@/features/conversation/features/sessions/session-context", () => ({

@@ -7,8 +7,7 @@ import { sessionProviderCapabilities, type CodexSessionSettings } from "@agentki
 import { CodexComposerControls } from "./codex-session-controls";
 import { useSession } from "./session-context";
 import { codexCopy, codexReason } from "./codex-copy";
-import { composerModelCopy, planModeCopy } from "@agentkib/session-ui";
-import { contextUsageCopy } from "./context-usage-copy";
+import { composerModelCopy, planModeCopy, contextUsageCopy } from "@agentkib/session-ui";
 
 vi.mock("./session-context", () => ({ useSession: vi.fn() }));
 let state: ReturnType<typeof useSession>;

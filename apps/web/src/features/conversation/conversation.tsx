@@ -19,6 +19,7 @@ import {
   useParams,
 } from "@tanstack/react-router";
 import { LoaderCircle } from "lucide-react";
+import { SessionPlatformProvider } from "@agentkib/session-ui";
 import type { WebClient } from "@agentkib/web-client";
 import type { Locale } from "./i18n";
 import { SessionProvider, useSession } from "./features/sessions/session-context";
@@ -29,6 +30,7 @@ import { PendingCenter } from "./features/sessions/pending-center";
 import { Button } from "./components/ui/button";
 import { webLayoutCopy } from "./features/sessions/web-layout-copy";
 import { useSessionNavigate } from "./features/sessions/session-navigation";
+import { webSessionPlatform } from "./session-platform";
 
 export type { ConversationClientBridge, WebClient } from "@agentkib/web-client";
 export type ConversationPanel = "files" | "actions" | "search";
@@ -59,9 +61,11 @@ function useEmbedded() {
 function EmbeddedRoot() {
   const { client, locale } = useEmbedded();
   return (
-    <SessionProvider client={client} embedded initialLocale={locale}>
-      <EmbeddedShell />
-    </SessionProvider>
+    <SessionPlatformProvider platform={webSessionPlatform}>
+      <SessionProvider client={client} embedded initialLocale={locale}>
+        <EmbeddedShell />
+      </SessionProvider>
+    </SessionPlatformProvider>
   );
 }
 function EmbeddedShell() {

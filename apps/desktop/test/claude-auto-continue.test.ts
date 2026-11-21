@@ -12,13 +12,17 @@ import {
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { ClaudeBridge } from "../../../packages/backend/src/agents/claude/claude-bridge";
 import { ClaudeManagedReadOwner } from "../../../packages/backend/src/agents/claude/claude-managed-read";
 import { ClaudeManagedRunnerProcess } from "../../../packages/backend/src/agents/claude/claude-managed-runner";
 import {
   ClaudeSessionOwnerProbe,
   type ClaudeOwnerObservationShare,
 } from "../../../packages/backend/src/agents/claude/claude-session-owner";
+import { ClaudeSessionProvider } from "../../../packages/backend/src/agents/claude/session-provider";
 import { acquirePortableFileLease } from "../../../packages/backend/src/managed-session-lock";
+import { readControlReceipt } from "../../../packages/backend/src/control-receipt";
+import type { WorkerRestartRequest } from "../../../packages/backend/src/orchestration-service";
 import type { Commands } from "../../../packages/backend/src/commands";
 import type { SessionReaders } from "../../../packages/backend/src/session-readers";
 import type { BackendStore } from "../../../packages/backend/src/store";
@@ -340,6 +344,163 @@ async function rejectedControl(action: Promise<unknown>) {
     return { accepted: false, error: error instanceof Error ? error.message : String(error) };
   }
 }
+
+describe.skipIf(!["darwin", "linux"].includes(process.platform))(
+  "managed Claude Worker restart",
+  () => {
+    async function restartRequest(owner: ClaudeManagedReadOwner, sessionId: string) {
+      const live = await owner.live(sessionId, true);
+      return {
+        sessionId,
+        workspaceId: "workspace",
+        deviceId: "agentkib-local-owner",
+        requestId: randomUUID(),
+        runtimeBootId: owner.bootId,
+        expectedRevision: Number(live.revision),
+        turnId: typeof live.turnId === "string" && live.turnId ? live.turnId : null,
+        experimentalEnabled: true,
+      } satisfies WorkerRestartRequest;
+    }
+
+    it("retires a running Worker, preserving its transcript, pending queue and resume identity", async () => {
+      const f = fixture();
+      const { id, nativeId } = f.create();
+      expect(await f.control(id, "send", { text: "hold result" })).toMatchObject({
+        accepted: true,
+      });
+      await expect.poll(async () => (await f.owner.live(id, true)).status).toBe("running");
+      expect(await f.control(id, "queue-add", { text: "keep me waiting" })).toMatchObject({
+        accepted: true,
+      });
+      const queue = () => f.owner.request({ operation: "queue-list", sessionId: id });
+      const waiting = await queue();
+      expect(waiting).toMatchObject({
+        data: [{ status: "pending", input: [{ type: "text", text: "keep me waiting" }] }],
+      });
+      const transcript = path.join(f.root, "home", ".claude", `${nativeId}.jsonl`);
+      await expect.poll(() => existsSync(transcript)).toBe(true);
+      const history = readFileSync(transcript, "utf8");
+      const runner = f.runner(nativeId);
+      const restart = await restartRequest(f.owner, id);
+      const beforeDispatch = vi.fn();
+      const result = await f.owner.restartWorker(restart, beforeDispatch);
+      expect(result).toMatchObject({ accepted: true, controlOutcome: "accepted" });
+      expect(runner.hasWorker).toBe(false);
+      expect(await queue()).toMatchObject({ data: (waiting as { data: unknown }).data });
+      expect(readFileSync(transcript, "utf8")).toBe(history);
+      expect(
+        readControlReceipt(f.root, {
+          requestId: restart.requestId,
+          deviceId: restart.deviceId,
+        }),
+      ).toMatchObject({ status: "accepted", operation: "worker-restart" });
+
+      await f.dispatch(id);
+      expect(f.runner(nativeId)).not.toBe(runner);
+      expect(
+        f
+          .frames()
+          .filter((frame) => frame.started)
+          .at(-1),
+      ).toMatchObject({
+        args: expect.arrayContaining([`--resume=${nativeId}`]),
+      });
+      expect(readFileSync(transcript, "utf8").startsWith(history)).toBe(true);
+      expect(await f.owner.restartWorker(restart, beforeDispatch)).toEqual(result);
+      expect(beforeDispatch).toHaveBeenCalledTimes(1);
+    });
+
+    it("refuses a Worker with an external owner", async () => {
+      const f = fixture();
+      const { id, nativeId } = f.create();
+      await f.dispatch(id);
+      const restart = await restartRequest(f.owner, id);
+      const runner = f.runner(nativeId);
+      await f.startExternal(nativeId);
+      const beforeDispatch = vi.fn();
+      expect(await f.owner.restartWorker(restart, beforeDispatch)).toMatchObject({
+        accepted: false,
+        controlOutcome: "not-dispatched",
+        reason: "worker-restart-user-only",
+      });
+      expect(runner.hasWorker).toBe(true);
+      expect(beforeDispatch).not.toHaveBeenCalled();
+    });
+
+    it("keeps the terminal binding out of the managed restart path", async () => {
+      const f = fixture();
+      const { id, nativeId } = f.create();
+      await f.dispatch(id);
+      const provider = new ClaudeSessionProvider(
+        f.owner,
+        {
+          sessionOperations: new Map(),
+          handles: (sessionId: string) => sessionId === id,
+          blocksManagedResume: () => true,
+        } as unknown as ClaudeBridge,
+        (_value, result) => result,
+        () => {},
+      );
+      const beforeDispatch = vi.fn();
+      expect(
+        await provider.restartWorker(await restartRequest(f.owner, id), beforeDispatch),
+      ).toMatchObject({
+        accepted: false,
+        controlOutcome: "not-dispatched",
+        reason: "worker-restart-user-only",
+      });
+      expect(f.runner(nativeId).hasWorker).toBe(true);
+      expect(beforeDispatch).not.toHaveBeenCalled();
+    });
+
+    it("does not terminate when the dispatch-time permission check fails", async () => {
+      const f = fixture();
+      const { id, nativeId } = f.create();
+      await f.dispatch(id);
+      const restart = await restartRequest(f.owner, id);
+      expect(
+        await f.owner.restartWorker(restart, () => {
+          throw new Error("delegation-paused");
+        }),
+      ).toMatchObject({
+        accepted: false,
+        controlOutcome: "not-dispatched",
+        reason: "delegation-paused",
+      });
+      expect(f.runner(nativeId).hasWorker).toBe(true);
+    });
+
+    it("replays a lost restart confirmation without dispatching twice", async () => {
+      const f = fixture();
+      const { id, nativeId } = f.create();
+      await f.dispatch(id);
+      const restart = await restartRequest(f.owner, id);
+      const runner = f.runner(nativeId);
+      const nativeRestart = vi
+        .spyOn(runner, "restartForDelegation")
+        .mockImplementationOnce(async (_revision, dispatch) => {
+          dispatch();
+          throw new Error("lost cleanup confirmation");
+        });
+      const beforeDispatch = vi.fn();
+      expect(await f.owner.restartWorker(restart, beforeDispatch)).toMatchObject({
+        accepted: false,
+        controlOutcome: "unknown",
+        reason: "control-outcome-unconfirmed",
+      });
+      expect(await f.owner.restartWorker(restart, beforeDispatch)).toMatchObject({
+        accepted: false,
+        controlOutcome: "unknown",
+        reason: "control-outcome-unconfirmed",
+      });
+      expect(
+        await f.owner.restartWorker({ ...restart, requestId: randomUUID() }, beforeDispatch),
+      ).toMatchObject({ accepted: false, controlOutcome: "unknown" });
+      expect(nativeRestart).toHaveBeenCalledTimes(1);
+      expect(beforeDispatch).toHaveBeenCalledTimes(1);
+    });
+  },
+);
 
 describe.skipIf(!["darwin", "linux"].includes(process.platform))(
   "Claude automatic continuation ownership boundaries (offline CLI)",

@@ -4072,12 +4072,13 @@ describe("DeepSeek Harness sessions as Project Agents", () => {
           call: (id, name, input) => lead.service.call(id, name, input),
         },
       });
-      await until(() => f.dsh.toolsOf("session-a").length === 4);
+      await until(() => f.dsh.toolsOf("session-a").length === 5);
       expect(f.dsh.toolsOf("session-a").map(({ name }: { name: string }) => name)).toEqual([
         "worker_list",
         "worker_send",
         "worker_read",
         "worker_stop",
+        "worker_restart",
       ]);
       const token = [...f.plugin.hosts.values()][0]!.token;
       const discovery = JSON.parse(

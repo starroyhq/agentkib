@@ -1229,6 +1229,7 @@ describe("orchestration service", () => {
       "worker_send",
       "worker_read",
       "worker_stop",
+      "worker_restart",
     ]);
     for (const [name, args] of [
       ["worker_open", { name: "api", workspace: "w1" }],
@@ -1274,11 +1275,11 @@ describe("orchestration service", () => {
     await ended[1].listTools();
     for (let index = 0; index < 2; index++) {
       const next = await connect();
-      expect((await next.listTools()).tools).toHaveLength(4);
+      expect((await next.listTools()).tools).toHaveLength(5);
     }
     await expect(ended[0].listTools()).rejects.toThrow();
     await expect(ended[2].listTools()).rejects.toThrow();
-    expect((await ended[1].listTools()).tools).toHaveLength(4);
+    expect((await ended[1].listTools()).tools).toHaveLength(5);
   });
 
   describe("deciding for workers", () => {

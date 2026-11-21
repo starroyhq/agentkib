@@ -31,6 +31,7 @@ import { CodexDesktopApp } from "../../../packages/backend/src/agents/codex/code
 import { AUTO_CONTINUE_TEXT } from "../../../packages/backend/src/usage-limit";
 import * as codexFollowerLocks from "../../../packages/backend/src/agents/codex/codex-follower-operation-lock";
 import { CodexRuntimePreflight } from "../../../packages/backend/src/agents/codex/codex-runtime-preflight";
+import { CodexSessionProvider } from "../../../packages/backend/src/agents/codex/session-provider";
 import { readControlReceipt } from "../../../packages/backend/src/control-receipt";
 import {
   claimManagedCommand,
@@ -521,6 +522,108 @@ function fixture(
   };
 }
 
+describe("restarting an AgentKib Codex worker", () => {
+  async function runningWorker() {
+    const f = fixture(true);
+    const provider = f.web.codexSessionProvider();
+    if (!(provider instanceof CodexSessionProvider)) throw new Error("missing Codex provider");
+    expect(await f.send()).toMatchObject({ accepted: true });
+    const live = await f.live();
+    const request = {
+      sessionId: f.summary.id,
+      workspaceId: f.summary.workspace_id,
+      deviceId: "project-owner",
+      requestId: randomUUID(),
+      runtimeBootId: String(live.runtimeBootId),
+      expectedRevision: Number(live.revision),
+      turnId: String(live.turnId),
+      experimentalEnabled: true as const,
+    };
+    return { f, provider, request };
+  }
+
+  it("interrupts the same thread, preserving its native queue and history", async () => {
+    const { f, provider, request } = await runningWorker();
+    const pending = { id: "pending", input: [{ type: "text", text: "Queued user message" }] };
+    f.intercept((method) => {
+      if (method === "thread/queue/list") return { data: [pending], nextCursor: null };
+      if (method === "turn/interrupt") return {};
+    });
+    const check = vi.fn();
+    await expect(provider.restartWorker(request, check)).resolves.toMatchObject({
+      accepted: true,
+      controlOutcome: "accepted",
+    });
+    await expect(provider.restartWorker(request, check)).resolves.toMatchObject({
+      accepted: true,
+      controlOutcome: "accepted",
+    });
+    expect(check).toHaveBeenCalledTimes(1);
+    expect(f.requests.filter(({ method }) => method === "turn/interrupt")).toEqual([
+      { method: "turn/interrupt", params: { threadId: nativeId, turnId: "new-turn" } },
+    ]);
+    expect(
+      readControlReceipt(f.root, { requestId: request.requestId, deviceId: request.deviceId }),
+    ).toMatchObject({
+      operation: "stop",
+      status: "accepted",
+    });
+    expect(f.servers[0]?.connected).toBe(true);
+    expect(f.start).toHaveBeenCalledTimes(1);
+    await expect(
+      f.web.managedQueueList({ operation: "queue-list", sessionId: request.sessionId }),
+    ).resolves.toMatchObject({ data: [pending] });
+    await expect(
+      f.readers.events({ sessionId: request.sessionId, limit: 25 }),
+    ).resolves.toMatchObject({
+      events: expect.arrayContaining([expect.objectContaining({ content: "Earlier answer" })]),
+    });
+  });
+
+  it("leaves the idle process running when it cannot prove a safe retirement", async () => {
+    const { f, provider, request } = await runningWorker();
+    f.servers[0]!.complete();
+    await expect.poll(async () => (await f.live()).status).toBe("idle");
+    const check = vi.fn();
+    await expect(
+      provider.restartWorker({ ...request, turnId: null }, check),
+    ).resolves.toMatchObject({
+      accepted: false,
+      controlOutcome: "not-dispatched",
+      reason: "worker-restart-unsupported",
+    });
+    expect(check).not.toHaveBeenCalled();
+    expect(f.servers[0]?.connected).toBe(true);
+  });
+
+  it("rejects a restart if its delegation changed before dispatch", async () => {
+    const { f, provider, request } = await runningWorker();
+    await expect(
+      provider.restartWorker(request, () => {
+        throw new Error("delegation-paused");
+      }),
+    ).resolves.toMatchObject({
+      accepted: false,
+      controlOutcome: "not-dispatched",
+      reason: "delegation-paused",
+    });
+    expect(f.methods).not.toContain("turn/interrupt");
+  });
+
+  it("replays an uncertain interrupt receipt without dispatching again", async () => {
+    const { f, provider, request } = await runningWorker();
+    f.exitOn("turn/interrupt");
+    const check = vi.fn();
+    for (let attempt = 0; attempt < 2; attempt++)
+      await expect(provider.restartWorker(request, check)).resolves.toMatchObject({
+        accepted: false,
+        controlOutcome: "unknown",
+      });
+    expect(check).toHaveBeenCalledTimes(1);
+    expect(f.methods.filter((method) => method === "turn/interrupt")).toHaveLength(1);
+  });
+});
+
 describe("a Codex Project Agent's thread", () => {
   it("merges consecutive Worker reports queued through the backend into one automatic turn", async () => {
     const f = fixture(true);
@@ -679,6 +782,7 @@ describe("a Codex Project Agent's thread", () => {
       "worker_send",
       "worker_read",
       "worker_stop",
+      "worker_restart",
     ]);
     // Released while its turn runs: the thread starts again once the turn ends.
     enabled = false;

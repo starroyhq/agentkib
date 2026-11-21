@@ -12,7 +12,8 @@ import {
   replayManagedCommand,
   saveManagedUsageLimit,
 } from "../../managed-ledger";
-import { canonicalize, pathIdentity } from "../../paths";
+import type { WorkerRestartRequest, WorkerRestartResult } from "../../orchestration-service";
+import { canonicalize, lexicalPathIdentity, pathIdentity } from "../../paths";
 import { conversationReadKey, ReadStateLedger } from "../../read-state-ledger";
 import type { SerialQueueTarget } from "../../sessions/serial-session-queue";
 import {
@@ -330,6 +331,75 @@ export class DevinSessionProvider implements DevinExecutor, TypedSessionProvider
     return this.host.admitControl(value, (request, fingerprint) =>
       this.#executeControl(request, fingerprint, beforeNativeDispatch),
     );
+  }
+
+  /** A print turn owns its process. The next send starts a new process with the same native ID. */
+  async restartWorker(
+    request: WorkerRestartRequest,
+    beforeDispatch: () => void,
+  ): Promise<WorkerRestartResult> {
+    const { workspaceId, turnId, ...control } = request;
+    const { sessionId } = request;
+    const reject = (reason: string): WorkerRestartResult => ({
+      accepted: false,
+      controlOutcome: "not-dispatched",
+      reason,
+    });
+    try {
+      const result = await this.host.admitControl(
+        { ...control, operation: "stop", ...(turnId === null ? {} : { turnId }) },
+        async (stop, fingerprint) => {
+          const record = this.#runners.get(sessionId);
+          // A record can exist merely because a client read live state. Only a running
+          // process owned by this provider can be recycled.
+          const nativeId = record?.runner.nativeId;
+          if (!record || !nativeId) return reject("worker-restart-user-only");
+          const snapshot = record.runner.snapshot();
+          if (snapshot.stopEnabled !== true)
+            return reject(snapshot.cancelling ? "worker-not-running" : "worker-restart-user-only");
+          const sameTarget = () => {
+            const target = this.host.serialQueueTarget(sessionId);
+            if (
+              target?.agent !== "devin" ||
+              target.workspaceId !== workspaceId ||
+              record.workspaceId !== workspaceId ||
+              this.#runners.get(sessionId) !== record ||
+              this.host.store.sessions.id("devin", nativeId) !== sessionId
+            )
+              return false;
+            try {
+              return (
+                lexicalPathIdentity(canonicalize(this.host.store.workspacePath(workspaceId))) ===
+                lexicalPathIdentity(record.runner.workspace)
+              );
+            } catch {
+              return false;
+            }
+          };
+          if (!sameTarget()) return reject("workspace-not-allowed");
+          if (this.host.isShuttingDown()) return reject("control-unavailable");
+          return this.#executeControl(stop, fingerprint, () => {
+            if (!sameTarget()) throw new Error("workspace-not-allowed");
+            if (this.host.isShuttingDown()) throw new Error("control-unavailable");
+            beforeDispatch();
+          });
+        },
+      );
+      if (isObject(result)) {
+        if (result.accepted === true) return { accepted: true, controlOutcome: "accepted" };
+        const reason = typeof result.reason === "string" ? result.reason : "worker-restart-failed";
+        if (result.controlOutcome === "unknown") {
+          return { accepted: false, controlOutcome: "unknown", reason };
+        }
+        return reject(reason);
+      }
+      return reject("worker-restart-failed");
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : "worker-restart-failed";
+      if (reason === "control-outcome-unconfirmed")
+        return { accepted: false, controlOutcome: "unknown", reason };
+      return reject(reason);
+    }
   }
 
   request<Request extends SessionProviderRequest>(

@@ -308,11 +308,11 @@ describe.skipIf(process.platform === "win32")("Devin session HTTP baseline", () 
     expect(f.calls).toEqual(
       expect.arrayContaining([
         {
-          method: "web.request",
+          method: "session.request",
           params: { operation: "provider-options", agent: "devin", workspaceId },
         },
         ...["live", "capabilities", "inspect"].map((operation) => ({
-          method: "web.request",
+          method: "session.request",
           params: { operation, sessionId, experimentalEnabled: true },
         })),
       ]),
@@ -361,7 +361,7 @@ describe.skipIf(process.platform === "win32")("Devin session HTTP baseline", () 
       ),
     ).toEqual([
       {
-        method: "web.request",
+        method: "session.request",
         params: {
           operation: "provider-create",
           agent: "devin",
@@ -536,7 +536,7 @@ describe.skipIf(process.platform === "win32")("Devin session HTTP baseline", () 
     );
     expect(controls).toEqual([
       {
-        method: "web.request",
+        method: "session.request",
         params: {
           ...rpcControl,
           operation: "settings",
@@ -547,7 +547,7 @@ describe.skipIf(process.platform === "win32")("Devin session HTTP baseline", () 
         },
       },
       {
-        method: "web.request",
+        method: "session.request",
         params: {
           ...rpcControl,
           operation: "send",
@@ -557,7 +557,7 @@ describe.skipIf(process.platform === "win32")("Devin session HTTP baseline", () 
         },
       },
       {
-        method: "web.request",
+        method: "session.request",
         params: {
           ...rpcControl,
           operation: "stop",
@@ -615,7 +615,7 @@ describe.skipIf(process.platform === "win32")("Devin session HTTP baseline", () 
     }
     const dispatched = f.calls.filter(
       ({ method, params }) =>
-        method === "web.request" &&
+        method === "session.request" &&
         ["steer", "approve", "answer"].includes((params as { operation: string }).operation),
     );
     expect(dispatched).toEqual([]);

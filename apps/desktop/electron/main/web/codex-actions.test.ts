@@ -183,6 +183,45 @@ it("projects queue contents without host paths", async () => {
     sessionId: "session",
     data: [{ id: "q", text: "keep", hasAttachments: true }],
   });
+  const managedQueue = await http("/managed/queue?sessionId=session");
+  expect(managedQueue.data).toEqual({
+    ...queue.data,
+    paused: false,
+    requiresResume: false,
+  });
+});
+it("keeps the operation in the legacy path authoritative", async () => {
+  await pair({ advancedControl: true });
+  const queued = await http("/codex/queue-add", { ...action(), operation: "delete" });
+  expect(queued.status).toBe(200);
+  expect(runtime).toHaveBeenCalledWith(
+    expect.objectContaining({ operation: "queue-add", text: "append" }),
+  );
+  expect(runtime).not.toHaveBeenCalledWith(expect.objectContaining({ operation: "delete" }));
+});
+it("keeps Codex read aliases scoped to Codex sessions", async () => {
+  runtime.mockImplementation(async (input) => {
+    if ((input as { operation: string }).operation === "catalog")
+      return { sessions: [{ id: "session", agent: "devin", workspace_id: "workspace" }] };
+    return runtimeHandler(input);
+  });
+
+  for (const route of ["capabilities", "queue", "session-settings", "goals", "context-options"]) {
+    expect(await service.localRequest(`/codex/${route}?sessionId=session`)).toMatchObject({
+      status: 403,
+      body: { error: "workspace_not_authorized" },
+    });
+  }
+  expect(
+    new Set(runtime.mock.calls.map(([input]) => (input as { operation: string }).operation)),
+  ).toEqual(new Set(["catalog"]));
+});
+it("keeps Codex context options scoped to a session even with a workspace query", async () => {
+  await pair({ advancedControl: true });
+  expect(await http("/codex/context-options?workspaceId=workspace")).toMatchObject({
+    status: 400,
+    data: { error: "invalid_input" },
+  });
 });
 it("uploads bounded input, converts only trusted IDs and keeps native dispatch idempotent", async () => {
   await pair({ advancedControl: true, attachments: true });

@@ -335,7 +335,7 @@ describe.skipIf(process.platform !== "darwin")("DeepSeek Harness HTTP behavior b
       ),
     );
     expect(host.calls).toContainEqual({
-      method: "web.request",
+      method: "session.request",
       params: expect.objectContaining({
         operation,
         requestId,
@@ -395,7 +395,7 @@ describe.skipIf(process.platform !== "darwin")("DeepSeek Harness HTTP behavior b
       },
     });
     expect(host.calls).toContainEqual({
-      method: "web.request",
+      method: "session.request",
       params: {
         operation: "provider-create",
         agent,
@@ -541,11 +541,11 @@ describe.skipIf(process.platform !== "darwin")("DeepSeek Harness HTTP behavior b
     expect(host.calls).toEqual(
       expect.arrayContaining([
         {
-          method: "web.request",
+          method: "session.request",
           params: { operation: "provider-options", agent, workspaceId: "workspace" },
         },
         ...["capabilities", "inspect", "live"].map((operation) => ({
-          method: "web.request",
+          method: "session.request",
           params: expect.objectContaining({ operation, sessionId, experimentalEnabled: true }),
         })),
       ]),

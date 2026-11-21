@@ -6,6 +6,7 @@ import {
   type SessionProviderRequest,
   type SessionProviderResponse,
 } from "../session-provider";
+import { parameters } from "../rpc";
 
 export type SessionMethod =
   | typeof RUNTIME_METHODS.codexManaged
@@ -22,6 +23,35 @@ const sessionMethods: ReadonlySet<string> = new Set<SessionMethod>([
 
 export function isSessionMethod(method: string): method is SessionMethod {
   return sessionMethods.has(method);
+}
+
+const hostSessionEnvelope = z.strictObject({
+  host: z.strictObject({
+    target: z.enum(["codex", "claude-code"]).optional(),
+    request: z.record(z.string(), z.unknown()),
+  }),
+});
+
+export type HostSessionRequest = z.infer<typeof hostSessionEnvelope>["host"];
+
+/** Host callers retain the raw results used by the existing admission and HTTP projection. */
+export function readHostSessionRequest(
+  method: SessionMethod,
+  params: Record<string, unknown>,
+): HostSessionRequest | undefined {
+  switch (method) {
+    case RUNTIME_METHODS.sessionRequest:
+      // The marker reserves the envelope even if its value is malformed.
+      return Object.hasOwn(params, "host")
+        ? parameters(hostSessionEnvelope, params).host
+        : undefined;
+    case RUNTIME_METHODS.codexManaged:
+      return { target: "codex", request: params };
+    case RUNTIME_METHODS.claudeManaged:
+      return { target: "claude-code", request: params };
+    case RUNTIME_METHODS.webRequest:
+      return { request: params };
+  }
 }
 
 const sessionId = z.string().min(1).max(256);

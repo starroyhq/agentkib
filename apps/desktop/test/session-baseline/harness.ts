@@ -10,8 +10,11 @@ import { McpHub } from "../../../../packages/backend/src/mcp-hub";
 import { RemoteAgent } from "../../../../packages/backend/src/remote-agent";
 import { BackendStore } from "../../../../packages/backend/src/store";
 import { RuntimeRequestError } from "../../electron/main/runtime-host";
-import { createWebControlState, WebAccessService } from "../../electron/main/web/service";
-import type { HostControlValidationResult } from "@agentkib/backend/session-control-validation";
+import {
+  createWebControlState,
+  WebAccessService,
+  type HostSessionRequest,
+} from "../../electron/main/web/service";
 
 export type Rpc = (method: string, params: unknown) => Promise<unknown>;
 
@@ -117,7 +120,11 @@ export async function startHost({
   rpc: Rpc;
   enableClaudeScheduler?: boolean;
 }) {
-  const calls: { method: string; params: unknown }[] = [];
+  const calls: {
+    method: string;
+    params: unknown;
+    target?: HostSessionRequest["host"]["target"];
+  }[] = [];
   const dispatch = (method: string) => (params: unknown) => {
     calls.push({ method, params });
     return rpc(method, params);
@@ -127,16 +134,12 @@ export async function startHost({
     dataDir: join(root, "host"),
     staticDir: root,
     desktopOrigin: "app://bundle",
-    runtimeRequest: dispatch("web.request"),
-    validateSessionControl: (call) =>
-      dispatch("web.request")({
-        operation: "provider-validate-control",
-        call,
-      }) as Promise<HostControlValidationResult>,
-    sessionProviderRequest: dispatch("web.request"),
+    sessionRequest: (input) => {
+      const { request: params, target } = input.host;
+      calls.push({ method: "session.request", params, ...(target ? { target } : {}) });
+      return rpc("session.request", input);
+    },
     historyRequest: (method, params) => dispatch(method)(params),
-    managedRequest: dispatch("codex.managed"),
-    claudeManagedRequest: dispatch("claude.managed"),
     receiptRequest: dispatch("control.receipt"),
     workspaceRequest: async () => [{ id: "workspace", name: "Offline workspace", path: workspace }],
     verifiedCodex: true,

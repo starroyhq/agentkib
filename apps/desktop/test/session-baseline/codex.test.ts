@@ -253,7 +253,7 @@ describe("Codex session baseline through HTTP and backend RPC", () => {
     expect(
       host.calls.find((call) => (call.params as Body).operation === "provider-create"),
     ).toEqual({
-      method: "web.request",
+      method: "session.request",
       params: {
         operation: "provider-create",
         agent: "codex",
@@ -274,7 +274,7 @@ describe("Codex session baseline through HTTP and backend RPC", () => {
       body: { executionMode: "codex-managed", revision: expect.any(Number) },
     });
     expect(host.calls).toContainEqual({
-      method: "web.request",
+      method: "session.request",
       params: { operation: "live", sessionId, experimentalEnabled: true },
     });
     return live.body;
@@ -310,7 +310,7 @@ describe("Codex session baseline through HTTP and backend RPC", () => {
         (call) => (call.params as Body).requestId === requestId && (call.params as Body).operation,
       ),
     ).toMatchObject({
-      method: "web.request",
+      method: "session.request",
       params: {
         operation,
         deviceId: host.deviceId,
@@ -555,7 +555,7 @@ describe("Codex session baseline through HTTP and backend RPC", () => {
       });
     }
     const queueRead = {
-      method: "web.request",
+      method: "session.request",
       params: { operation: "queue-list", sessionId },
     };
     expect(
@@ -675,7 +675,7 @@ describe("Codex session baseline through HTTP and backend RPC", () => {
       },
     });
     expect(host.calls).toContainEqual({
-      method: "web.request",
+      method: "session.request",
       params: { operation: "provider-options", agent: "codex" },
     });
     const sessionId = await create();
@@ -708,7 +708,7 @@ describe("Codex session baseline through HTTP and backend RPC", () => {
     });
     for (const operation of ["capabilities", "inspect"]) {
       expect(host.calls).toContainEqual({
-        method: "web.request",
+        method: "session.request",
         params: { operation, sessionId, experimentalEnabled: true },
       });
     }

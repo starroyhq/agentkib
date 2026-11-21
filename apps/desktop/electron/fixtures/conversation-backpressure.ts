@@ -67,7 +67,7 @@ const service = new WebAccessService({
   sharedControl: createWebControlState(),
   dataDir: path.join(scratch, "service"),
   staticDir: scratch,
-  runtimeRequest: async () => {
+  sessionRequest: async () => {
     throw new Error("Backpressure acceptance must not invoke native controls");
   },
 });

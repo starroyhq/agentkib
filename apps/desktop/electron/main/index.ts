@@ -5,7 +5,6 @@ import { readFile, writeFile, mkdir, rename } from "node:fs/promises";
 import path from "node:path";
 import { homedir } from "node:os";
 import { WebAccessService, createWebControlState } from "./web/service";
-import type { HostControlValidationResult } from "@agentkib/backend/session-control-validation";
 import { acceptanceSession } from "./web/acceptance";
 import { ConversationHub } from "./conversation-hub";
 import { registerConversationIpc } from "./ipc/conversation";
@@ -340,16 +339,7 @@ async function startApplication(): Promise<void> {
         RUNTIME_METHODS.listWorkspaces,
         {},
       ),
-    managedRequest: (params) => requestWhenRuntimeReady(RUNTIME_METHODS.codexManaged, params),
-    claudeManagedRequest: (params) =>
-      requestWhenRuntimeReady(RUNTIME_METHODS.claudeManaged, params),
-    runtimeRequest: (params) => requestWhenRuntimeReady(RUNTIME_METHODS.webRequest, params),
-    sessionProviderRequest: (params) => requestWhenRuntimeReady(RUNTIME_METHODS.webRequest, params),
-    validateSessionControl: (call) =>
-      requestWhenRuntimeReady<HostControlValidationResult>(RUNTIME_METHODS.webRequest, {
-        operation: "provider-validate-control",
-        call,
-      }),
+    sessionRequest: (params) => requestWhenRuntimeReady(RUNTIME_METHODS.sessionRequest, params),
     verifiedCodex: process.platform === "darwin",
     verifiedClaudeManaged: process.platform === "darwin",
     enableClaudeScheduler: process.platform === "darwin",

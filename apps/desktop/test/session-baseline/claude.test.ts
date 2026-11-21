@@ -116,7 +116,7 @@ describe.skipIf(process.platform === "win32")(
       });
       const sessionId = String(response.body.sessionId);
       expect(host.calls).toContainEqual({
-        method: "web.request",
+        method: "session.request",
         params: {
           operation: "provider-create",
           agent,
@@ -136,7 +136,7 @@ describe.skipIf(process.platform === "win32")(
         body: { executionMode, revision: expect.any(Number) },
       });
       expect(host.calls).toContainEqual({
-        method: "web.request",
+        method: "session.request",
         params: { operation: "live", sessionId, experimentalEnabled: true },
       });
       return response.body;
@@ -165,7 +165,7 @@ describe.skipIf(process.platform === "win32")(
       });
       expect(host.calls).toContainEqual(
         expect.objectContaining({
-          method: "web.request",
+          method: "session.request",
           params: expect.objectContaining({
             operation,
             requestId,
@@ -357,7 +357,7 @@ describe.skipIf(process.platform === "win32")(
         },
       });
       expect(host.calls).toContainEqual({
-        method: "web.request",
+        method: "session.request",
         params: { operation: "provider-options", agent, workspaceId: "workspace" },
       });
       const sessionId = await create();
@@ -384,7 +384,8 @@ describe.skipIf(process.platform === "win32")(
       expect(cli.frames()).toEqual(beforeReads);
       for (const operation of ["capabilities", "inspect"]) {
         expect(host.calls).toContainEqual({
-          method: "claude.managed",
+          method: "session.request",
+          target: "claude-code",
           params: { operation, sessionId, experimentalEnabled: true },
         });
       }

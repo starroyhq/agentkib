@@ -183,7 +183,9 @@ describe("RuntimeRouter read-only Codex continuation", () => {
     const received = vi.fn(() => result);
     host.handler = received;
     expect(await router.request(RUNTIME_METHODS.webRequest, params)).toBe(result);
-    expect(received).toHaveBeenCalledExactlyOnceWith(RUNTIME_METHODS.webRequest, params);
+    expect(received).toHaveBeenCalledExactlyOnceWith(RUNTIME_METHODS.sessionRequest, {
+      host: { request: params },
+    });
     await router.stop();
   });
 
@@ -196,7 +198,9 @@ describe("RuntimeRouter read-only Codex continuation", () => {
     const received = vi.fn(() => result);
     host.handler = received;
     expect(await router.request(RUNTIME_METHODS.webRequest, params)).toBe(result);
-    expect(received).toHaveBeenCalledExactlyOnceWith(RUNTIME_METHODS.webRequest, params);
+    expect(received).toHaveBeenCalledExactlyOnceWith(RUNTIME_METHODS.sessionRequest, {
+      host: { request: params },
+    });
     await router.stop();
   });
   it.each([
@@ -210,7 +214,9 @@ describe("RuntimeRouter read-only Codex continuation", () => {
     const received = vi.fn(() => result);
     host.handler = received;
     expect(await router.request(RUNTIME_METHODS.webRequest, params)).toBe(result);
-    expect(received).toHaveBeenCalledExactlyOnceWith(RUNTIME_METHODS.webRequest, params);
+    expect(received).toHaveBeenCalledExactlyOnceWith(RUNTIME_METHODS.sessionRequest, {
+      host: { request: params },
+    });
     await router.stop();
   });
   it.each(["read-state", "read-state-update"])(
@@ -230,7 +236,9 @@ describe("RuntimeRouter read-only Codex continuation", () => {
       const received = vi.fn(() => result);
       host.handler = received;
       expect(await router.request(RUNTIME_METHODS.webRequest, params)).toBe(result);
-      expect(received).toHaveBeenCalledExactlyOnceWith(RUNTIME_METHODS.webRequest, params);
+      expect(received).toHaveBeenCalledExactlyOnceWith(RUNTIME_METHODS.sessionRequest, {
+        host: { request: params },
+      });
       await router.stop();
     },
   );
@@ -243,12 +251,14 @@ describe("RuntimeRouter read-only Codex continuation", () => {
     const received = vi.fn(() => result);
     host.handler = received;
     expect(await router.request(RUNTIME_METHODS.webRequest, params)).toBe(result);
-    expect(received).toHaveBeenCalledExactlyOnceWith(RUNTIME_METHODS.webRequest, params);
+    expect(received).toHaveBeenCalledExactlyOnceWith(RUNTIME_METHODS.sessionRequest, {
+      host: { request: params },
+    });
     await router.stop();
   });
 });
 
-describe("RuntimeRouter Codex controls", () => {
+describe("RuntimeRouter session controls", () => {
   it.each([
     [RUNTIME_METHODS.webRequest, "compact"],
     [RUNTIME_METHODS.webRequest, "terminals-clean"],
@@ -266,7 +276,8 @@ describe("RuntimeRouter Codex controls", () => {
     [RUNTIME_METHODS.codexManaged, "compact"],
     [RUNTIME_METHODS.codexManaged, "terminals-clean"],
     [RUNTIME_METHODS.codexManaged, "delete"],
-  ])("forwards %s %s to the TypeScript backend once", async (method, operation) => {
+    [RUNTIME_METHODS.claudeManaged, "lead-status"],
+  ])("adapts %s %s to the single session channel once", async (method, operation) => {
     const host = new Host();
     const router = new RuntimeRouter(host);
     await router.start();
@@ -275,7 +286,73 @@ describe("RuntimeRouter Codex controls", () => {
     const received = vi.fn(() => result);
     host.handler = received;
     expect(await router.request(method, params)).toBe(result);
-    expect(received).toHaveBeenCalledExactlyOnceWith(method, params);
+    const target =
+      method === RUNTIME_METHODS.codexManaged
+        ? "codex"
+        : method === RUNTIME_METHODS.claudeManaged
+          ? "claude-code"
+          : undefined;
+    expect(received).toHaveBeenCalledExactlyOnceWith(RUNTIME_METHODS.sessionRequest, {
+      host: { ...(target ? { target } : {}), request: params },
+    });
+    await router.stop();
+  });
+
+  it.each([
+    { operation: "live", sessionId: "session" },
+    { host: { target: "codex", request: { operation: "options" } } },
+    { host: { target: "claude-code", request: { operation: "lead-status", sessionId: "lead" } } },
+    {
+      host: { request: { operation: "provider-validate-control", call: { sessionId: "session" } } },
+    },
+    { host: { request: { operation: "queue-pause", sessionId: "session" } } },
+  ])("forwards session.request intact and preserves the response", async (params) => {
+    const host = new Host();
+    const router = new RuntimeRouter(host);
+    await router.start();
+    const result = { accepted: true };
+    const received = vi.fn((_method: string, _params: unknown) => result);
+    host.handler = received;
+
+    expect(await router.request(RUNTIME_METHODS.sessionRequest, params)).toBe(result);
+    expect(received).toHaveBeenCalledExactlyOnceWith(RUNTIME_METHODS.sessionRequest, params);
+    expect(received.mock.calls[0]?.[1]).toBe(params);
+    await router.stop();
+  });
+
+  it("returns a session control failure without retrying through an older channel", async () => {
+    const host = new Host();
+    const router = new RuntimeRouter(host);
+    await router.start();
+    const params = { host: { request: { operation: "send", sessionId: "session" } } };
+    const failure = new Error("fixture control failed");
+    const received = vi.fn(() => {
+      throw failure;
+    });
+    host.handler = received;
+
+    await expect(router.request(RUNTIME_METHODS.sessionRequest, params)).rejects.toBe(failure);
+    expect(received).toHaveBeenCalledExactlyOnceWith(RUNTIME_METHODS.sessionRequest, params);
+    await router.stop();
+  });
+
+  it.each([
+    [RUNTIME_METHODS.codexManaged, "out-of-scope"],
+    [RUNTIME_METHODS.webRequest, "out-of-scope"],
+    [RUNTIME_METHODS.webRequest, "provider-validate-control"],
+    [RUNTIME_METHODS.webRequest, "queue-pause"],
+    [RUNTIME_METHODS.webRequest, "queue-resume"],
+  ])("retains the operation allowlist for incoming %s %s", async (method, operation) => {
+    const host = new Host();
+    const router = new RuntimeRouter(host);
+    await router.start();
+    const received = vi.fn();
+    host.handler = received;
+
+    await expect(router.request(method, { operation })).rejects.toBeInstanceOf(
+      RuntimeUnavailableError,
+    );
+    expect(received).not.toHaveBeenCalled();
     await router.stop();
   });
 });

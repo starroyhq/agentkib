@@ -1,10 +1,17 @@
 // @vitest-environment node
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { rmSync } from "node:fs";
 import { join } from "node:path";
+import { RUNTIME_METHODS } from "@agentkib/runtime-protocol";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ClaudeManagedRunnerProcess } from "../../../../packages/backend/src/agents/claude/claude-managed-runner";
 import { Commands } from "../../../../packages/backend/src/commands";
+import { readControlReceipt } from "../../../../packages/backend/src/control-receipt";
+import {
+  claimManagedCommand,
+  dispatchManagedCommand,
+  finishManagedCommand,
+} from "../../../../packages/backend/src/managed-ledger";
 import { createFakeClaude } from "../fixtures/claude-fake-cli";
 import { startBackend, startHost } from "./harness";
 
@@ -24,6 +31,7 @@ describe.skipIf(process.platform === "win32")(
     let cli: ReturnType<typeof createFakeClaude>;
     let backend: Awaited<ReturnType<typeof startBackend>> | undefined;
     let host: Awaited<ReturnType<typeof startHost>>;
+    const dataDir = () => join(cli.root, "backend");
     beforeEach(async () => {
       cli = createFakeClaude("agentkib-baseline-claude-");
       const run = Commands.prototype.run;
@@ -47,8 +55,19 @@ describe.skipIf(process.platform === "win32")(
           return run.call(this, program, args, options);
         },
       );
+      await openRuntime();
+      host = await startHost({
+        root: cli.root,
+        workspace: cli.workspace,
+        rpc: (method, params) => backend!.rpc(method, params),
+        enableClaudeScheduler: true,
+      });
+    });
+
+    async function openRuntime(reuseData = false) {
       backend = await startBackend({
-        data: join(cli.root, "backend"),
+        data: dataDir(),
+        reuseData,
         workspace: cli.workspace,
         environment: {
           ...cli.environment,
@@ -58,13 +77,7 @@ describe.skipIf(process.platform === "win32")(
           AGENTKIB_HOME: join(cli.environment.HOME, ".agentkib"),
         },
       });
-      host = await startHost({
-        root: cli.root,
-        workspace: cli.workspace,
-        rpc: backend.rpc,
-        enableClaudeScheduler: true,
-      });
-    });
+    }
 
     afterEach(async () => {
       try {
@@ -202,6 +215,233 @@ describe.skipIf(process.platform === "win32")(
       });
       expect(cli.frames()).toEqual([]);
     });
+
+    const submit = (request: Body) => backend!.rpc(RUNTIME_METHODS.claudeManaged, request);
+    const findReceipt = (requestId: string, deviceId = host.deviceId) =>
+      backend!.rpc(RUNTIME_METHODS.controlReceipt, { requestId, deviceId });
+
+    async function receiptRequest(sessionId: string, operation = "send") {
+      const view = await live(sessionId);
+      return {
+        operation,
+        sessionId,
+        requestId: randomUUID(),
+        deviceId: host.deviceId,
+        expectedRevision: view.revision,
+        runtimeBootId: view.runtimeBootId,
+        experimentalEnabled: true,
+        text: "Receipt baseline",
+      };
+    }
+
+    it("returns the same send acknowledgment once and isolates it by device", async () => {
+      cli.setPlan({ noResult: true });
+      const sessionId = await create();
+      const request = await receiptRequest(sessionId);
+      const ack = await submit(request);
+      expect(ack).toMatchObject({
+        accepted: true,
+        completed: false,
+        requestId: request.requestId,
+        sessionId,
+        runtimeBootId: request.runtimeBootId,
+        controlOutcome: "accepted",
+      });
+      await expect(submit(Object.fromEntries(Object.entries(request).reverse()))).resolves.toEqual(
+        ack,
+      );
+      await expect(submit({ ...request, text: "Different input" })).rejects.toThrow(
+        "request-id-reused-with-different-input",
+      );
+      const otherDevice = "baseline-other-device";
+      await expect(submit({ ...request, deviceId: otherDevice })).rejects.toThrow(
+        "request-id-reused-with-different-input",
+      );
+      await expect(findReceipt(request.requestId, otherDevice)).resolves.toEqual({
+        found: false,
+        requestId: request.requestId,
+      });
+      expect(await host.http("/requests/" + request.requestId)).toEqual({
+        status: 200,
+        body: {
+          found: true,
+          requestId: request.requestId,
+          sessionId,
+          workspaceId: "workspace",
+          operation: "send",
+          executionMode,
+          runtimeBootId: request.runtimeBootId,
+          expectedRevision: request.expectedRevision,
+          turnId: null,
+          status: "accepted",
+          completionObserved: false,
+          ack,
+        },
+      });
+      await expect
+        .poll(userFrames)
+        .toMatchObject([
+          { uuid: request.requestId, message: { role: "user", content: request.text } },
+        ]);
+    });
+
+    it("serializes duplicate sends while the first native dispatch is pending", async () => {
+      cli.setPlan({ noResult: true });
+      const sessionId = await create();
+      const request = await receiptRequest(sessionId);
+      const { promise: release, resolve } = Promise.withResolvers<void>();
+      const send = ClaudeManagedRunnerProcess.prototype.send;
+      const recorded = vi
+        .spyOn(ClaudeManagedRunnerProcess.prototype, "send")
+        .mockImplementationOnce(async function (...args) {
+          await send.apply(this, args);
+          await release;
+        });
+      const first = submit(request);
+      void first.catch(() => undefined);
+      let duplicate: Promise<unknown> | undefined;
+      try {
+        await expect
+          .poll(userFrames)
+          .toMatchObject([
+            { uuid: request.requestId, message: { role: "user", content: request.text } },
+          ]);
+        expect(
+          readControlReceipt(dataDir(), {
+            requestId: request.requestId,
+            deviceId: request.deviceId,
+          }),
+        ).toMatchObject({ found: true, status: "unknown", ack: null });
+        duplicate = submit(request);
+        void duplicate.catch(() => undefined);
+      } finally {
+        resolve();
+        await first;
+      }
+      const ack = await first;
+      expect(ack).toMatchObject({ accepted: true, controlOutcome: "accepted" });
+      await expect(duplicate).resolves.toEqual(ack);
+      await expect(findReceipt(request.requestId)).resolves.toMatchObject({
+        found: true,
+        status: "accepted",
+        ack,
+      });
+      expect(recorded).toHaveBeenCalledTimes(1);
+    });
+
+    it("replays send and host queue acknowledgments after reboot with a fresh boot ID", async () => {
+      const sessionId = await create();
+      const send = await receiptRequest(sessionId);
+      const sent = await submit(send);
+      await expect.poll(() => live(sessionId)).toMatchObject({ status: "idle" });
+      const queue = await receiptRequest(sessionId, "queue-add");
+      const queued = await submit(queue);
+      const receipts = await Promise.all(
+        [send, queue].map(({ requestId }) => findReceipt(requestId)),
+      );
+      expect(receipts).toMatchObject([
+        { status: "accepted", completionObserved: true, ack: sent },
+        { status: "accepted", operation: "queue-add", ack: queued },
+      ]);
+
+      await backend!.close();
+      backend = undefined;
+      await openRuntime(true);
+      const { runtimeBootId } = await live(sessionId);
+      expect(runtimeBootId).toBeTypeOf("string");
+      expect(runtimeBootId).not.toBe(send.runtimeBootId);
+      await expect(submit(send)).rejects.toThrow("invalid-managed-control");
+      await expect(submit({ ...send, runtimeBootId })).resolves.toEqual(sent);
+      await expect(submit({ ...queue, runtimeBootId })).resolves.toEqual(queued);
+      await expect(
+        Promise.all([send, queue].map(({ requestId }) => findReceipt(requestId))),
+      ).resolves.toEqual(receipts);
+      expect(userFrames()).toHaveLength(1);
+      expect(await host.http("/managed/queue?sessionId=" + sessionId)).toMatchObject({
+        status: 200,
+        body: { data: [{ text: queue.text, status: "pending" }] },
+      });
+    });
+
+    it.each([
+      { operation: "send", dispatched: false },
+      { operation: "queue-add", dispatched: false },
+      { operation: "send", dispatched: true },
+    ])(
+      "reads a preexisting $operation fingerprint (dispatched: $dispatched)",
+      async ({ operation, dispatched }) => {
+        const sessionId = await create();
+        const request = {
+          ...(await receiptRequest(sessionId, operation)),
+          input: undefined,
+          ...(operation === "send" ? { schedulePermitId: randomUUID() } : {}),
+        };
+        // Legacy send omits absent keys and its transient permit. The host transaction
+        // includes an explicit undefined input as null. Both omit the runtime boot ID.
+        const fingerprint = createHash("sha256")
+          .update(
+            JSON.stringify({
+              deviceId: request.deviceId,
+              expectedRevision: request.expectedRevision,
+              experimentalEnabled: request.experimentalEnabled,
+              ...(operation === "queue-add" ? { input: null } : {}),
+              operation,
+              requestId: request.requestId,
+              sessionId,
+              text: request.text,
+            }),
+          )
+          .digest("hex");
+        expect(
+          claimManagedCommand(
+            dataDir(),
+            request.requestId,
+            sessionId,
+            fingerprint,
+            request.deviceId,
+            {
+              operation,
+              workspaceId: "workspace",
+              runtimeBootId: "previous-backend",
+              executionMode,
+            },
+          ),
+        ).toBeNull();
+
+        if (dispatched) {
+          dispatchManagedCommand(dataDir(), request.requestId);
+          await expect(findReceipt(request.requestId)).resolves.toMatchObject({
+            found: true,
+            status: "unknown",
+            completionObserved: false,
+            ack: null,
+          });
+          await expect(submit(request)).resolves.toEqual({
+            accepted: false,
+            completed: false,
+            requestId: request.requestId,
+            controlOutcome: "unknown",
+            reason: "control-outcome-unconfirmed",
+          });
+        } else {
+          const ack = {
+            accepted: true,
+            completed: false,
+            controlOutcome: "accepted",
+            requestId: request.requestId,
+            sessionId,
+            runtimeBootId: "previous-backend",
+          };
+          finishManagedCommand(dataDir(), request.requestId, ack);
+          await expect(submit(request)).resolves.toEqual(ack);
+          await expect(findReceipt(request.requestId)).resolves.toMatchObject({
+            status: "accepted",
+            ack,
+          });
+        }
+        expect(userFrames()).toEqual([]);
+      },
+    );
 
     it("passes send and next-priority steering to the CLI, queues locally, and stops", async () => {
       cli.setPlan({ noResult: true });

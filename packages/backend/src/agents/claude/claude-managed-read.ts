@@ -111,7 +111,7 @@ import {
   readUnknownManagedCommands,
   openManagedLedger,
 } from "../../managed-ledger";
-import { admitControlReceipt } from "../../sessions/control-receipts";
+import { admitControlReceipt, bindControlReceipt } from "../../sessions/control-receipts";
 
 // Defined in claude-version.ts (imported above for this file's own checks); still exported from here.
 export { supportsClaudeVersion } from "./claude-version";
@@ -2094,7 +2094,12 @@ export class ClaudeManagedReadOwner {
     let externallyDispatched = false;
     const claimExternalEffect = () => {
       onExternalClaim();
-      const prior = receipt.claim(id, value.deviceId, {
+      const externalReceipt = bindControlReceipt(
+        this.dataDir,
+        value.requestId,
+        claudeCommandFingerprintInput(value),
+      );
+      const prior = externalReceipt.claim(id, value.deviceId, {
         operation,
         workspaceId: record.workspaceId,
         executionMode: "claude-managed",
@@ -2102,7 +2107,7 @@ export class ClaudeManagedReadOwner {
         ...(value.publicInputHash ? { publicInputHash: value.publicInputHash } : {}),
       });
       if (prior) throw new Error("control-outcome-unconfirmed");
-      receipt.dispatch();
+      externalReceipt.dispatch();
       this.#activeHostClaims.set(id, value.requestId);
       externallyDispatched = true;
     };

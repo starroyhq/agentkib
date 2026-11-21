@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSyn
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ClaudeSessions } from "../../../packages/backend/src/claude-sessions";
+import { ClaudeSessions } from "../../../packages/backend/src/agents/claude/claude-sessions";
 import * as commandResolution from "../../../packages/backend/src/command-resolution";
 import { Commands } from "../../../packages/backend/src/commands";
 import { scanNativeMcp } from "../../../packages/backend/src/mcp-native-scan";
@@ -338,14 +338,17 @@ describe("source guard", () => {
   it("reads the variable in one module", () => {
     // `env.CLAUDE_CONFIG_DIR` or a quoted name passed to a lookup; prose in messages is fine.
     expect(mentions(/\.CLAUDE_CONFIG_DIR\b|["'`]CLAUDE_CONFIG_DIR["'`]/)).toEqual([
-      "claude-config.ts",
+      "agents/claude/claude-config.ts",
     ]);
   });
 
   it("builds the global config and usage cache paths in one module", () => {
     // context-claude.ts only lists `.claude.json` among the names it never reads for imports.
-    expect(mentions(/\.claude\.json/)).toEqual(["claude-config.ts", "context-claude.ts"]);
-    expect(mentions(/stats-cache\.json/)).toEqual(["claude-config.ts"]);
+    expect(mentions(/\.claude\.json/)).toEqual([
+      "agents/claude/claude-config.ts",
+      "context-claude.ts",
+    ]);
+    expect(mentions(/stats-cache\.json/)).toEqual(["agents/claude/claude-config.ts"]);
   });
 
   it("does not rebuild the default directory from the home directory", () => {

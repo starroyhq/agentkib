@@ -22,8 +22,9 @@ import { sessionProviderCapabilities } from "@agentkib/runtime-protocol";
 import { AttachmentStore } from "../electron/main/web/attachments";
 import { WebAccessService, createWebControlState } from "../electron/main/web/service";
 import { TypeScriptBackend } from "../../../packages/backend/src/index";
-import { ClaudeHostStateStore } from "../../../packages/backend/src/claude-host-state";
-import { ClaudeSessionOwnerProbe } from "../../../packages/backend/src/claude-session-owner";
+import { WebReadRequests } from "../../../packages/backend/src/web-read";
+import { ClaudeHostStateStore } from "../../../packages/backend/src/agents/claude/claude-host-state";
+import { ClaudeSessionOwnerProbe } from "../../../packages/backend/src/agents/claude/claude-session-owner";
 import { Commands } from "../../../packages/backend/src/commands";
 import { BackendStore } from "../../../packages/backend/src/store";
 import { McpHub } from "../../../packages/backend/src/mcp-hub";
@@ -617,6 +618,7 @@ describe.skipIf(process.platform !== "darwin")(
     }, 10_000);
 
     it("creates with the true device and routes fresh Claude reads, send and receipts through the actual owner", async () => {
+      const legacyClaudeRoute = vi.spyOn(WebReadRequests.prototype, "claudeSessionProviderRequest");
       const sessionId = await create();
       const state = await live(sessionId);
       expect(state.executionMode).toBe("claude-managed");
@@ -651,6 +653,7 @@ describe.skipIf(process.platform !== "darwin")(
         text: "different",
       });
       expect(conflict.status).not.toBe(200);
+      expect(legacyClaudeRoute).not.toHaveBeenCalled();
     });
 
     it("uses one Claude provider for workspace options, creation replay and fresh settings and usage", async () => {

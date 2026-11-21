@@ -20,24 +20,24 @@ import {
 import path from "node:path";
 import { homedir } from "node:os";
 import { claudeResumeCommand } from "./claude-resume-command";
-import { conversationReadKey, ReadStateLedger } from "./read-state-ledger";
-import type { ReadStateTarget } from "./conversation-read-state";
+import { conversationReadKey, ReadStateLedger } from "../../read-state-ledger";
+import type { ReadStateTarget } from "../../conversation-read-state";
 import { ClaudeSessionOwnerProbe, type ClaudeOwnerObservationShare } from "./claude-session-owner";
-import { validHistoryControl } from "./history-control-schema";
-import type { Commands } from "./commands";
-import type { ClaudeControlMetadataShare, SessionReaders } from "./session-readers";
-import type { BackendStore } from "./store";
-import { canonicalize, pathIdentity } from "./paths";
-import { within } from "./files";
-import { restrictRemotePath } from "./remote-tls";
-import { acquirePortableFileLease } from "./managed-session-lock";
+import { validHistoryControl } from "../../history-control-schema";
+import type { Commands } from "../../commands";
+import type { ClaudeControlMetadataShare, SessionReaders } from "../../session-readers";
+import type { BackendStore } from "../../store";
+import { canonicalize, pathIdentity } from "../../paths";
+import { within } from "../../files";
+import { restrictRemotePath } from "../../remote-tls";
+import { acquirePortableFileLease } from "../../managed-session-lock";
 import {
   LEAD_ALLOWED_TOOLS,
   mergeMcpConfigs,
   type LaneEndedTurn,
   type WorkerObserver,
-} from "./orchestration-service";
-import { userHome } from "./mcp-config-read";
+} from "../../orchestration-service";
+import { userHome } from "../../mcp-config-read";
 import {
   CLAUDE_BACKGROUND_TASKS_MINIMUM,
   readClaudeInstallation,
@@ -60,7 +60,7 @@ import {
 } from "./claude-session-files";
 import { ClaudeTurnMetaStore } from "./claude-turn-meta";
 import { claudeWorkerHistoryTurns, claudeWorkerUnobservedTurns } from "./claude-worker-turns";
-import type { ConversationEventPage } from "./session-events";
+import type { ConversationEventPage } from "../../session-events";
 import {
   assertClaudeConfigWritable,
   isClaudeConfigDirSet,
@@ -80,10 +80,10 @@ import {
   usageLimitAutoContinue,
   usageLimitContinue,
   usageLimitView,
-} from "./usage-limit";
+} from "../../usage-limit";
 import { createClaudeGoalReportEndpoint } from "./claude-goal-report";
-import { projectContextUsage } from "./context-usage";
-import { prepareClaudeActivities } from "./session-activities";
+import { projectContextUsage } from "../../context-usage";
+import { prepareClaudeActivities } from "../../session-activities";
 import {
   readClaudeTranscriptModel,
   readClaudeTranscriptObservation,
@@ -93,7 +93,7 @@ import {
   projectSubagentObservations,
   type SubagentObservation,
   type SubagentParent,
-} from "./session-subagents";
+} from "../../session-subagents";
 import {
   ClaudeManagedRunnerProcess,
   ClaudeUndispatchedError,
@@ -111,7 +111,7 @@ import {
   replayManagedCommand,
   readUnknownManagedCommands,
   openManagedLedger,
-} from "./managed-ledger";
+} from "../../managed-ledger";
 
 // Defined in claude-version.ts (imported above for this file's own checks); still exported from here.
 export { supportsClaudeVersion } from "./claude-version";
@@ -254,6 +254,13 @@ export type ClaudeContinuationOptions = {
     readEarlier?: () => ClaudeTranscriptObservation,
   ) => ClaudeTranscriptObservation["usage"] | undefined;
   isCatalogObserved?: () => boolean;
+};
+
+export type ClaudeManagedSessionOperation = (value: Record<string, unknown>) => Promise<unknown>;
+type ClaudeManagedOperation = (value: Record<string, unknown>, sessionId?: string) => unknown;
+type ClaudeManagedOperationScope = {
+  value: Record<string, unknown>;
+  id: string;
 };
 
 /** Manages Claude session ownership, CLI runners, and read-side state. */
@@ -515,27 +522,186 @@ export class ClaudeManagedReadOwner {
       throw new AggregateError(failures, "Claude managed runner shutdown failed");
   }
 
+  #operation(run: ClaudeManagedOperation): ClaudeManagedSessionOperation {
+    return (value) => this.#requestOperation(value, run);
+  }
+
+  #sessionOperation(
+    run: (scope: ClaudeManagedOperationScope) => unknown,
+  ): ClaudeManagedSessionOperation {
+    return this.#operation((value, id) => {
+      if (!id) throw new Error("missing-session");
+      return run({ value, id });
+    });
+  }
+
+  readonly #sessionControl = this.#sessionOperation(({ value, id }) => this.#control(value, id));
+  readonly #hostOperation = this.#sessionOperation(({ value, id }) => this.#hostControl(value, id));
+  readonly #scheduleOperation = this.#sessionOperation(({ value, id }) =>
+    this.#schedule(value, id),
+  );
+  readonly #subagentOperation = this.#sessionOperation(({ value, id }) =>
+    this.subagents(id, value),
+  );
+
+  /** The typed and legacy routes run the same native operation under the same session locks. */
+  readonly sessionOperations: ReadonlyMap<string, ClaudeManagedSessionOperation> = new Map([
+    ["options", this.#operation((value) => this.options(value.workspaceId))],
+    [
+      "workspace-resources",
+      this.#operation((value) => this.#workspaceResources(value.workspaceId as string)),
+    ],
+    ["create", this.#operation((value) => this.#create(value))],
+    ["release", this.#sessionOperation(({ value, id }) => this.#release(value, id))],
+    ["send", this.#sessionControl],
+    ["steer", this.#sessionControl],
+    ["stop", this.#sessionControl],
+    ["approve", this.#sessionControl],
+    ["answer", this.#sessionControl],
+    [
+      "live",
+      this.#sessionOperation(({ id, value }) => this.live(id, value.experimentalEnabled === true)),
+    ],
+    [
+      "capabilities",
+      this.#sessionOperation(({ id, value }) =>
+        this.capabilities(id, value.experimentalEnabled === true),
+      ),
+    ],
+    [
+      "inspect",
+      this.#sessionOperation(({ id, value }) =>
+        this.inspect(id, value.experimentalEnabled === true),
+      ),
+    ],
+    ["resume-command", this.#sessionOperation(({ id }) => this.resumeCommand(id))],
+    ["context", this.#sessionOperation(({ id }) => this.context(id))],
+    [
+      "events",
+      this.#sessionOperation(({ id, value }) =>
+        this.events(id, value.cursor, value.limit, value.retainCursor !== false),
+      ),
+    ],
+    ["subagents", this.#subagentOperation],
+    ["subagent-events", this.#subagentOperation],
+    ["settings-state", this.#sessionOperation(({ id }) => this.settingsState(id))],
+    [
+      "settings-prepare",
+      this.#sessionOperation(({ value, id }) => this.#prepareSettings(value, id)),
+    ],
+    [
+      "goal",
+      this.#sessionOperation(async ({ id }) => {
+        await this.#live(id, false);
+        return {
+          available: true,
+          goal: this.#hostState.read(id).goal,
+          revision: (await this.#live(id, false)).revision,
+          executionMode: "claude-managed",
+        };
+      }),
+    ],
+    ["resources", this.#sessionOperation(({ id }) => this.#resources(id))],
+    [
+      "queue-list",
+      this.#sessionOperation(async ({ id }) => {
+        await this.#live(id, false);
+        return this.#queue(id);
+      }),
+    ],
+    ["schedule-list", this.#operation((_value, id) => this.#scheduleList(id))],
+    [
+      "schedule-invalidate",
+      this.#operation((value, id) => {
+        this.invalidateSchedulePermits(id, value.deviceId as string | undefined);
+        return { ok: true };
+      }),
+    ],
+    ["schedule-prepare", this.#scheduleOperation],
+    ["schedule-dispatch", this.#scheduleOperation],
+    ["schedule-pause", this.#scheduleOperation],
+    ["schedule-resume", this.#scheduleOperation],
+    ["schedule-continue", this.#sessionOperation(({ id }) => this.#continueAfterLimit(id))],
+    ["settings", this.#hostOperation],
+    ["queue-add", this.#hostOperation],
+    ["queue-update", this.#hostOperation],
+    ["queue-delete", this.#hostOperation],
+    ["queue-reorder", this.#hostOperation],
+    ["queue-resume", this.#hostOperation],
+    ["queue-pause", this.#hostOperation],
+    ["usage-limit-cancel", this.#hostOperation],
+    ["usage-limit-continue", this.#hostOperation],
+    ["rename", this.#hostOperation],
+    ["goal-set", this.#hostOperation],
+    ["goal-pause", this.#hostOperation],
+    ["goal-resume", this.#hostOperation],
+    ["goal-clear", this.#hostOperation],
+    ["fork", this.#hostOperation],
+    [
+      "usage",
+      this.#sessionOperation(async ({ id }) => {
+        const live = await this.#live(id, false);
+        const usage =
+          !this.#runners.get(id)?.hasWorker &&
+          (!isObject(live.usage) || live.usage.available !== true)
+            ? this.#savedTranscriptObservation(id, { searchEarlier: true }).usage
+            : live.usage;
+        return {
+          ...projectContextUsage(
+            usage ?? { available: false, state: "unavailable" },
+            Number(live.revision),
+          ),
+          executionMode: "claude-managed",
+        };
+      }),
+    ],
+    ["reconcile", this.#sessionOperation(({ value, id }) => this.#reconcile(value, id))],
+    ["delete", this.#sessionOperation(({ value, id }) => this.#delete(value, id))],
+    [
+      "session-image",
+      this.#operation((value, id) => {
+        if (
+          !id ||
+          typeof value.imageId !== "string" ||
+          !value.imageId ||
+          value.imageId.length > 512
+        )
+          throw new Error("session-image-invalid");
+        return this.image(id, value.imageId);
+      }),
+    ],
+  ]);
+
   async request(value: unknown): Promise<unknown> {
     if (!isObject(value) || typeof value.operation !== "string") throw new Error("invalid-request");
+    const operation = this.sessionOperations.get(value.operation);
+    if (operation) return operation(value);
+    return this.#requestOperation(value, () => {
+      throw new Error(`unsupported-Claude-managed-operation:${value.operation}`);
+    });
+  }
+
+  async #requestOperation(
+    value: Record<string, unknown>,
+    operation: ClaudeManagedOperation,
+  ): Promise<unknown> {
+    if (!isObject(value) || typeof value.operation !== "string") throw new Error("invalid-request");
+    const { operation: name } = value;
     const id = typeof value.sessionId === "string" ? value.sessionId : undefined;
-    if (value.operation === "schedule-pause" || value.operation === "schedule-invalidate")
+    if (name === "schedule-pause" || name === "schedule-invalidate")
       this.invalidateSchedulePermits(
         id,
         typeof value.deviceId === "string" ? value.deviceId : undefined,
       );
     if (this.#shuttingDown) throw new Error("session-unavailable");
-    if (value.operation === "session-image") {
-      if (!id || typeof value.imageId !== "string" || !value.imageId || value.imageId.length > 512)
-        throw new Error("session-image-invalid");
-      // Media reads do not acquire execution ownership or wait for controls.
-      return this.image(id, value.imageId);
-    }
+    // Media reads do not acquire execution ownership or wait for controls.
+    if (name === "session-image") return operation(value, id);
     if (id && this.continuation.isSessionObserved?.(id)) this.#observed.add(id);
-    const run = () => this.#requestLocked(value, id);
+    const run = () => this.#requestLocked(name, () => operation(value, id), id);
     return id ? this.#serializeSession(id, run) : run();
   }
 
-  async #requestLocked(value: Record<string, any>, id?: string): Promise<unknown> {
+  async #requestLocked(operation: string, run: () => unknown, id?: string): Promise<unknown> {
     const readOperations = new Set([
       "live",
       "capabilities",
@@ -555,14 +721,14 @@ export class ClaudeManagedReadOwner {
     const ownedHere = id !== undefined && this.#ownerLocks.has(id);
     const hasRunner = id !== undefined && this.#runners.has(id);
     const release =
-      hasRecord && readOperations.has(value.operation) && !ownedHere && !hasRunner
+      hasRecord && readOperations.has(operation) && !ownedHere && !hasRunner
         ? this.#tryLock(id!)
         : null;
-    if (hasRecord && readOperations.has(value.operation) && !release && !ownedHere && !hasRunner)
+    if (hasRecord && readOperations.has(operation) && !release && !ownedHere && !hasRunner)
       throw new Error("session-managed-by-another-runtime");
     if (release) this.#ownerLocks.set(id!, release);
     try {
-      return await this.#requestRead(value, id);
+      return await run();
     } finally {
       if (release && !this.#runners.has(id!)) {
         this.#ownerLocks.delete(id!);
@@ -583,126 +749,6 @@ export class ClaudeManagedReadOwner {
       return await current;
     } finally {
       if (this.#sessionQueues.get(id) === tail) this.#sessionQueues.delete(id);
-    }
-  }
-
-  async #requestRead(value: Record<string, any>, id?: string): Promise<unknown> {
-    switch (value.operation) {
-      case "options":
-        return this.options(value.workspaceId);
-      case "workspace-resources":
-        return this.#workspaceResources(value.workspaceId);
-      case "create":
-        return this.#create(value);
-      case "release":
-        if (!id) throw new Error("missing-session");
-        return this.#release(value, id);
-      case "send":
-      case "steer":
-      case "stop":
-      case "approve":
-      case "answer":
-        if (!id) throw new Error("missing-session");
-        return this.#control(value, id);
-      case "live":
-        if (!id) throw new Error("missing-session");
-        return this.live(id, value.experimentalEnabled === true);
-      case "capabilities":
-        if (!id) throw new Error("missing-session");
-        return this.capabilities(id, value.experimentalEnabled === true);
-      case "inspect":
-        if (!id) throw new Error("missing-session");
-        return this.inspect(id, value.experimentalEnabled === true);
-      case "resume-command":
-        if (!id) throw new Error("missing-session");
-        return this.resumeCommand(id);
-      case "context":
-        if (!id) throw new Error("missing-session");
-        return this.context(id);
-      case "events":
-        if (!id) throw new Error("missing-session");
-        return this.events(id, value.cursor, value.limit, value.retainCursor !== false);
-      case "subagents":
-      case "subagent-events":
-        if (!id) throw new Error("missing-session");
-        return this.subagents(id, value);
-      case "settings-state":
-        if (!id) throw new Error("missing-session");
-        return this.settingsState(id);
-      case "settings-prepare":
-        if (!id) throw new Error("missing-session");
-        return this.#prepareSettings(value, id);
-      case "goal":
-        if (!id) throw new Error("missing-session");
-        await this.#live(id, false);
-        return {
-          available: true,
-          goal: this.#hostState.read(id).goal,
-          revision: (await this.#live(id, false)).revision,
-          executionMode: "claude-managed",
-        };
-      case "resources":
-        if (!id) throw new Error("missing-session");
-        return this.#resources(id);
-      case "queue-list":
-        if (!id) throw new Error("missing-session");
-        await this.#live(id, false);
-        return this.#queue(id);
-      case "schedule-list":
-        return this.#scheduleList(id);
-      case "schedule-invalidate":
-        this.invalidateSchedulePermits(id, value.deviceId);
-        return { ok: true };
-      case "schedule-prepare":
-      case "schedule-dispatch":
-      case "schedule-pause":
-      case "schedule-resume":
-        if (!id) throw new Error("missing-session");
-        return this.#schedule(value, id);
-      case "schedule-continue":
-        if (!id) throw new Error("missing-session");
-        return this.#continueAfterLimit(id);
-      case "settings":
-      case "queue-add":
-      case "queue-update":
-      case "queue-delete":
-      case "queue-reorder":
-      case "queue-resume":
-      case "queue-pause":
-      case "usage-limit-cancel":
-      case "usage-limit-continue":
-      case "rename":
-      case "goal-set":
-      case "goal-pause":
-      case "goal-resume":
-      case "goal-clear":
-      case "fork":
-        if (!id) throw new Error("missing-session");
-        return this.#hostControl(value, id);
-      case "usage": {
-        if (!id) throw new Error("missing-session");
-        const live = await this.#live(id, false);
-        const usage =
-          !this.#runners.get(id)?.hasWorker &&
-          (!isObject(live.usage) || live.usage.available !== true)
-            ? this.#savedTranscriptObservation(id, { searchEarlier: true }).usage
-            : live.usage;
-        return {
-          ...projectContextUsage(
-            usage ?? { available: false, state: "unavailable" },
-            Number(live.revision),
-          ),
-          executionMode: "claude-managed",
-        };
-      }
-      case "reconcile":
-        if (!id) throw new Error("missing-session");
-        return this.#reconcile(value, id);
-      case "delete":
-        if (!id) throw new Error("missing-session");
-        return this.#delete(value, id);
-      default:
-        throw new Error(`unsupported-Claude-managed-operation:${value.operation}`);
     }
   }
 

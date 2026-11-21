@@ -38,7 +38,7 @@ import {
   bridgePollSchema,
   bridgeResultSchema,
 } from "./claude-bridge-schema";
-import { acquirePortableFileLease } from "./managed-session-lock";
+import { acquirePortableFileLease } from "../../managed-session-lock";
 import {
   acknowledgeDispatchedManagedCommand,
   claimManagedCommand,
@@ -47,14 +47,14 @@ import {
   observeManagedCommandCompletion,
   readUnknownManagedCommands,
   replayManagedCommand,
-} from "./managed-ledger";
-import { validHistoryControl } from "./history-control-schema";
-import { sanitizeSessionText } from "./session-handoff";
-import { terminalSubagentActivities } from "./session-activities";
+} from "../../managed-ledger";
+import { validHistoryControl } from "../../history-control-schema";
+import { sanitizeSessionText } from "../../session-handoff";
+import { terminalSubagentActivities } from "../../session-activities";
 import type { ClaudeTranscriptObservation } from "./claude-context-usage";
-import type { ContextUsage } from "./context-usage";
+import type { ContextUsage } from "../../context-usage";
 import type { ClaudeObservedPermissionMode } from "./claude-managed-runner";
-import type { WorkerObserver } from "./orchestration-service";
+import type { WorkerObserver } from "../../orchestration-service";
 
 const MAX_BODY = 1024 * 1024;
 const HEARTBEAT_MS = 35_000;
@@ -85,6 +85,13 @@ const bindingSchema = z
   })
   .strict();
 type Binding = z.infer<typeof bindingSchema>;
+type ClaudeBridgeSessionScope = {
+  value: Record<string, unknown>;
+  id: string;
+  row: Binding;
+  controls: boolean;
+};
+type ClaudeBridgeSessionOperation = (value: Record<string, unknown>) => Promise<unknown>;
 const bindingRegistrySchema = z
   .object({ version: z.literal(1), bindings: z.array(bindingSchema).max(64) })
   .strict();
@@ -1349,28 +1356,40 @@ export class ClaudeBridge {
       ),
     };
   }
-  async request(value: Record<string, unknown>): Promise<unknown> {
+  #sessionScope(value: Record<string, unknown>): ClaudeBridgeSessionScope {
     const id = z.string().min(1).max(256).parse(value.sessionId);
     this.#assertLegacySettled(id);
     const row = this.#bindings.get(id);
     if (!row) throw new Error("session-unavailable");
-    const controls = value.experimentalEnabled === true;
-    switch (value.operation) {
-      case "live":
-        return this.live(id, controls);
-      case "capabilities":
-        return this.capabilities(id, controls);
-      case "inspect":
-        return {
-          sessionId: id,
-          sourceSessionId: row.target.nativeId,
-          workspaceId: row.target.workspaceId,
-          live: this.live(id, controls),
-          reconciled: false,
-        };
-      case "usage":
-        return this.live(id, false).usage;
-      case "settings-state": {
+    return { value, id, row, controls: value.experimentalEnabled === true };
+  }
+
+  #sessionOperation(
+    run: (scope: ClaudeBridgeSessionScope) => unknown,
+  ): ClaudeBridgeSessionOperation {
+    return async (value) => run(this.#sessionScope(value));
+  }
+
+  readonly #sessionControl = this.#sessionOperation(({ value, row }) => this.#control(value, row));
+
+  /** Select by the original operation and keep the request intact for receipt validation. */
+  readonly sessionOperations: ReadonlyMap<string, ClaudeBridgeSessionOperation> = new Map([
+    ["live", this.#sessionOperation(({ id, controls }) => this.live(id, controls))],
+    ["capabilities", this.#sessionOperation(({ id, controls }) => this.capabilities(id, controls))],
+    [
+      "inspect",
+      this.#sessionOperation(({ id, row, controls }) => ({
+        sessionId: id,
+        sourceSessionId: row.target.nativeId,
+        workspaceId: row.target.workspaceId,
+        live: this.live(id, controls),
+        reconciled: false,
+      })),
+    ],
+    ["usage", this.#sessionOperation(({ id }) => this.live(id, false).usage)],
+    [
+      "settings-state",
+      this.#sessionOperation(({ id, row }) => {
         if (!this.#sourceReadable(row)) throw new Error("session-unavailable");
         const snapshot = this.#online(id) ? this.#connections.get(id)?.snapshot : null;
         const observation =
@@ -1412,8 +1431,11 @@ export class ClaudeBridge {
             ].map((key) => [key, readonly]),
           ),
         };
-      }
-      case "resources":
+      }),
+    ],
+    [
+      "resources",
+      this.#sessionOperation(({ id, row }) => {
         if (!this.#sourceReadable(row)) throw new Error("session-unavailable");
         return {
           available: true,
@@ -1425,7 +1447,11 @@ export class ClaudeBridge {
           apps: [],
           contextReferences: { supportedTypes: [] },
         };
-      case "context":
+      }),
+    ],
+    [
+      "context",
+      this.#sessionOperation(({ row }) => {
         this.options.validate(row.target, false, row.bindingId);
         return {
           available: true,
@@ -1433,27 +1459,36 @@ export class ClaudeBridge {
           projectId: null,
           branchAtCreation: null,
         };
-      case "reconcile":
-        return {
-          accepted: false,
-          completed: false,
-          reconciled: false,
-          sessionId: id,
-          live: this.live(id, controls),
-          reason: row.inflight ? "control-outcome-unconfirmed" : "read-only-reconciliation",
-        };
-      case "queue-list":
-        return this.#queueList(id);
-      case "send":
-      case "stop":
-      case "steer":
-      case "queue-add":
-      case "queue-delete":
-      case "open-model-picker":
-        return this.#control(value, row);
-      default:
-        throw new Error("operation-unavailable");
-    }
+      }),
+    ],
+    [
+      "reconcile",
+      this.#sessionOperation(({ id, controls, row }) => ({
+        accepted: false,
+        completed: false,
+        reconciled: false,
+        sessionId: id,
+        live: this.live(id, controls),
+        reason: row.inflight ? "control-outcome-unconfirmed" : "read-only-reconciliation",
+      })),
+    ],
+    ["queue-list", this.#sessionOperation(({ id }) => this.#queueList(id))],
+    ["send", this.#sessionControl],
+    ["stop", this.#sessionControl],
+    ["steer", this.#sessionControl],
+    ["queue-add", this.#sessionControl],
+    ["queue-delete", this.#sessionControl],
+    ["open-model-picker", this.#sessionControl],
+  ]);
+
+  async request(value: Record<string, unknown>): Promise<unknown> {
+    const { operation } = value;
+    const handler =
+      typeof operation === "string" ? this.sessionOperations.get(operation) : undefined;
+    if (handler) return handler(value);
+    // Legacy callers validate the target before receiving an unsupported-operation error.
+    this.#sessionScope(value);
+    throw new Error("operation-unavailable");
   }
   /** The terminal's waiting messages, in the shape of a managed queue; read-only. */
   #queueList(id: string): Record<string, unknown> {

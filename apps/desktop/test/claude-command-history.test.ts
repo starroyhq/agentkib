@@ -4,11 +4,11 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { SessionPaging } from "../../../packages/backend/src/session-paging";
-import { ClaudeManagedRunnerProcess } from "../../../packages/backend/src/claude-managed-runner";
+import { ClaudeManagedRunnerProcess } from "../../../packages/backend/src/agents/claude/claude-managed-runner";
 import {
   claudeCommandInvocation,
   claudeCommandOutput,
-} from "../../../packages/backend/src/claude-command-records";
+} from "../../../packages/backend/src/agents/claude/claude-command-records";
 import { createFakeClaude } from "./fixtures/claude-fake-cli";
 
 // Rows and frames follow what CLI 2.1.311 wrote and sent for slash commands against the local API

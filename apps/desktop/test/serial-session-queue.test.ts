@@ -4,7 +4,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ClaudeHostStateStore } from "../../../packages/backend/src/claude-host-state";
+import { ClaudeHostStateStore } from "../../../packages/backend/src/agents/claude/claude-host-state";
 import { readControlReceipt } from "../../../packages/backend/src/control-receipt";
 import {
   SerialSessionQueue,

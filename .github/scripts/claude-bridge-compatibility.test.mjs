@@ -35,7 +35,7 @@ test("the workflow runs once per UTC day and preserves manual, PR and read-only 
     ".github/scripts/claude-bridge-compatibility*.mjs",
     "packages/claude-bridge-plugin/**",
     "packages/runtime-protocol/src/claude-bridge.ts",
-    "packages/backend/src/claude-bridge*.ts",
+    "packages/backend/src/agents/claude/claude-bridge*.ts",
     "apps/desktop/scripts/stage-claude-bridge.mjs",
     "apps/desktop/test/claude-bridge*.test.ts",
   ]);

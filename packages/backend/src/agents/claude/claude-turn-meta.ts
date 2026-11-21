@@ -1,5 +1,5 @@
 import type { ConversationTurnMeta } from "@agentkib/runtime-protocol";
-import { openManagedLedger } from "./managed-ledger";
+import { openManagedLedger } from "../../managed-ledger";
 
 /**
  * Turn ends of managed Claude sessions. A print-mode transcript records no `system/turn_duration`

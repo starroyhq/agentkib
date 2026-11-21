@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { SessionPaging } from "../../../packages/backend/src/session-paging";
-import { claudeTaskNotification } from "../../../packages/backend/src/claude-command-records";
+import { claudeTaskNotification } from "../../../packages/backend/src/agents/claude/claude-command-records";
 
 // Rows follow what Claude Code 2.1.263, 2.1.299 and 2.1.322 wrote when a background command, a
 // Monitor or a background agent ended and the CLI started a turn of its own (captured against a

@@ -2,7 +2,7 @@ import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync }
 import os from "node:os";
 import path from "node:path";
 import type { Catalog } from "../../../../packages/backend/src/catalog";
-import { claudeProjectKey } from "../../../../packages/backend/src/claude-project-path";
+import { claudeProjectKey } from "../../../../packages/backend/src/agents/claude/claude-project-path";
 import { Commands } from "../../../../packages/backend/src/commands";
 import { Context, type ClaudeContextInternals } from "../../../../packages/backend/src/context";
 import { McpBuiltins } from "../../../../packages/backend/src/mcp-builtin";

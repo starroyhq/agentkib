@@ -9,11 +9,11 @@ import {
   formatTermination,
   frameOrigin,
   terminationCodeOf,
-} from "../../../packages/backend/src/claude-frame-policy";
+} from "../../../packages/backend/src/agents/claude/claude-frame-policy";
 import {
   CLAUDE_MANAGED_VERIFIED_THROUGH,
   isNewerThanVerified,
-} from "../../../packages/backend/src/claude-version";
+} from "../../../packages/backend/src/agents/claude/claude-version";
 
 // Pure functions of the frame policy. Nothing here starts a process or reads a configuration.
 

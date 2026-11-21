@@ -8,7 +8,7 @@ import {
   claudeTurnTokens,
   type ClaudeHostGoal,
   type ClaudeHostWork,
-} from "../../../packages/backend/src/claude-host-state";
+} from "../../../packages/backend/src/agents/claude/claude-host-state";
 import { openManagedLedger } from "../../../packages/backend/src/managed-ledger";
 
 const directories: string[] = [];

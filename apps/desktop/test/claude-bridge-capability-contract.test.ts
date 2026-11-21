@@ -5,7 +5,7 @@ import { request } from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { ClaudeBridge } from "../../../packages/backend/src/claude-bridge";
+import { ClaudeBridge } from "../../../packages/backend/src/agents/claude/claude-bridge";
 import { register } from "../../../packages/claude-bridge-plugin/hooks/register.js";
 
 type Value = Record<string, any>;

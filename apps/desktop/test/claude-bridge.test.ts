@@ -19,14 +19,14 @@ import {
   ClaudeBridge,
   type BridgeLead,
   type ClaudeBridgeTarget,
-} from "../../../packages/backend/src/claude-bridge";
+} from "../../../packages/backend/src/agents/claude/claude-bridge";
 import { readControlReceipt } from "../../../packages/backend/src/control-receipt";
 import { openManagedLedger } from "../../../packages/backend/src/managed-ledger";
 import { CLAUDE_BRIDGE_COMPATIBILITY, type ClaudeBridgeSnapshot } from "@agentkib/runtime-protocol";
 import { createConversationState, reduceSessionStreamEvent } from "@agentkib/conversation-state";
 import { register as registerPlugin } from "../../../packages/claude-bridge-plugin/hooks/register.js";
-import type { ClaudeTranscriptObservation } from "../../../packages/backend/src/claude-context-usage";
-import type { ClaudeObservedPermissionMode } from "../../../packages/backend/src/claude-managed-runner";
+import type { ClaudeTranscriptObservation } from "../../../packages/backend/src/agents/claude/claude-context-usage";
+import type { ClaudeObservedPermissionMode } from "../../../packages/backend/src/agents/claude/claude-managed-runner";
 import { projectAgentFixture } from "./fixtures/project-agent";
 import { OrchestrationService } from "../../../packages/backend/src/orchestration-service";
 

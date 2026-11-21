@@ -12,12 +12,12 @@ import {
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ClaudeManagedReadOwner } from "../../../packages/backend/src/claude-managed-read";
-import { ClaudeManagedRunnerProcess } from "../../../packages/backend/src/claude-managed-runner";
+import { ClaudeManagedReadOwner } from "../../../packages/backend/src/agents/claude/claude-managed-read";
+import { ClaudeManagedRunnerProcess } from "../../../packages/backend/src/agents/claude/claude-managed-runner";
 import {
   ClaudeSessionOwnerProbe,
   type ClaudeOwnerObservationShare,
-} from "../../../packages/backend/src/claude-session-owner";
+} from "../../../packages/backend/src/agents/claude/claude-session-owner";
 import { acquirePortableFileLease } from "../../../packages/backend/src/managed-session-lock";
 import type { Commands } from "../../../packages/backend/src/commands";
 import type { SessionReaders } from "../../../packages/backend/src/session-readers";

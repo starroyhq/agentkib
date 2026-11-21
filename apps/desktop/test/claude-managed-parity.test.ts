@@ -18,9 +18,9 @@ import {
   ClaudeManagedReadOwner,
   ClaudeHostControlPreflightError,
   type ClaudeContinuationOptions,
-} from "../../../packages/backend/src/claude-managed-read";
-import { ClaudeHostStateStore } from "../../../packages/backend/src/claude-host-state";
-import { ClaudeManagedRunnerProcess } from "../../../packages/backend/src/claude-managed-runner";
+} from "../../../packages/backend/src/agents/claude/claude-managed-read";
+import { ClaudeHostStateStore } from "../../../packages/backend/src/agents/claude/claude-host-state";
+import { ClaudeManagedRunnerProcess } from "../../../packages/backend/src/agents/claude/claude-managed-runner";
 import {
   claimManagedCommand,
   dispatchManagedCommand,

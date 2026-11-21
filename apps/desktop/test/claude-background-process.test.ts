@@ -6,7 +6,7 @@ import {
   type ClaudeRunnerOptions,
   type ClaudeRunnerSnapshot,
   type ClaudeRunnerTerminalResult,
-} from "../../../packages/backend/src/claude-managed-runner";
+} from "../../../packages/backend/src/agents/claude/claude-managed-runner";
 import { createFakeClaude, processAlive, type FakeClaudePlan } from "./fixtures/claude-fake-cli";
 
 // The managed process with background work allowed, against a scripted stand-in for the CLI. The

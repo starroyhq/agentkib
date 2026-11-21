@@ -15,7 +15,7 @@ import {
   ClaudeManagedRunnerProcess,
   ClaudeRunnerState,
   type ClaudeRunnerTerminalResult,
-} from "../../../packages/backend/src/claude-managed-runner";
+} from "../../../packages/backend/src/agents/claude/claude-managed-runner";
 
 // Every frame is hand-built after the stream-json shape of the Agent SDK reference: assistant,
 // user and stream_event frames carry parent_tool_use_id (null on the main thread, the spawning

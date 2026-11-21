@@ -6,7 +6,7 @@ import { Commands, type CommandOutput } from "../../../packages/backend/src/comm
 import {
   ClaudeSessionOwnerProbe,
   type ClaudeOwnerObservationShare,
-} from "../../../packages/backend/src/claude-session-owner";
+} from "../../../packages/backend/src/agents/claude/claude-session-owner";
 
 const nativeId = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
 const childId = "bbbbbbbb-bbbb-4ccc-8ddd-eeeeeeeeeeee";

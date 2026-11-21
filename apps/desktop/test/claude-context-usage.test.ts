@@ -11,7 +11,7 @@ import {
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { readClaudeTranscriptObservation } from "../../../packages/backend/src/claude-context-usage";
+import { readClaudeTranscriptObservation } from "../../../packages/backend/src/agents/claude/claude-context-usage";
 import { projectContextUsage } from "../../../packages/backend/src/context-usage";
 
 const roots: string[] = [];

@@ -5,8 +5,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   ClaudeHostControlPreflightError,
   ClaudeManagedReadOwner,
-} from "../../../packages/backend/src/claude-managed-read";
-import { ClaudeHostStateStore } from "../../../packages/backend/src/claude-host-state";
+} from "../../../packages/backend/src/agents/claude/claude-managed-read";
+import { ClaudeHostStateStore } from "../../../packages/backend/src/agents/claude/claude-host-state";
 import type { BackendStore } from "../../../packages/backend/src/store";
 import type { SessionReaders } from "../../../packages/backend/src/session-readers";
 import type { Commands } from "../../../packages/backend/src/commands";

@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { ClaudeRunnerState } from "../../../packages/backend/src/claude-managed-runner";
-import { ClaudeTurnFailure } from "../../../packages/backend/src/claude-frame-policy";
+import { ClaudeRunnerState } from "../../../packages/backend/src/agents/claude/claude-managed-runner";
+import { ClaudeTurnFailure } from "../../../packages/backend/src/agents/claude/claude-frame-policy";
 
 // Stopping a turn with the CLI's `interrupt` control request where background work is allowed,
 // so that only the turn ends. The captures in fixtures/claude-interrupt are frames of the real

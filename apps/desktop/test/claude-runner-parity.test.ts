@@ -7,7 +7,7 @@ import {
   ClaudeManagedRunnerProcess,
   type ClaudeRunnerOptions,
   type ClaudeRunnerTerminalResult,
-} from "../../../packages/backend/src/claude-managed-runner";
+} from "../../../packages/backend/src/agents/claude/claude-managed-runner";
 
 const cleanups: Array<() => void | Promise<void>> = [];
 afterEach(async () => {

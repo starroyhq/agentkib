@@ -55,10 +55,10 @@ vi.mock("node:fs", async (importOriginal) => {
   };
 });
 
-import { ClaudeManagedReadOwner } from "../../../packages/backend/src/claude-managed-read";
-import { ClaudeHostStateStore } from "../../../packages/backend/src/claude-host-state";
-import { ClaudeSessions } from "../../../packages/backend/src/claude-sessions";
-import { ClaudeSessionOwnerProbe } from "../../../packages/backend/src/claude-session-owner";
+import { ClaudeManagedReadOwner } from "../../../packages/backend/src/agents/claude/claude-managed-read";
+import { ClaudeHostStateStore } from "../../../packages/backend/src/agents/claude/claude-host-state";
+import { ClaudeSessions } from "../../../packages/backend/src/agents/claude/claude-sessions";
+import { ClaudeSessionOwnerProbe } from "../../../packages/backend/src/agents/claude/claude-session-owner";
 import { Commands } from "../../../packages/backend/src/commands";
 import type { CursorBridge } from "../../../packages/backend/src/cursor-bridge";
 import { SessionReaders } from "../../../packages/backend/src/session-readers";

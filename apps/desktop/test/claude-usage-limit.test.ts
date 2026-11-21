@@ -7,9 +7,9 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   ClaudeHostStateStore,
   type ClaudeHostWork,
-} from "../../../packages/backend/src/claude-host-state";
-import { ClaudeRunnerState } from "../../../packages/backend/src/claude-managed-runner";
-import { ClaudeTurnFailure } from "../../../packages/backend/src/claude-frame-policy";
+} from "../../../packages/backend/src/agents/claude/claude-host-state";
+import { ClaudeRunnerState } from "../../../packages/backend/src/agents/claude/claude-managed-runner";
+import { ClaudeTurnFailure } from "../../../packages/backend/src/agents/claude/claude-frame-policy";
 import {
   AUTO_CONTINUE_TEXT,
   armUsageLimit,

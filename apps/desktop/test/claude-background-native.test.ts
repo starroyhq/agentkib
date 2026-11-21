@@ -25,7 +25,7 @@ import {
   ClaudeManagedRunnerProcess,
   type ClaudeRunnerSnapshot,
   type ClaudeRunnerTerminalResult,
-} from "../../../packages/backend/src/claude-managed-runner";
+} from "../../../packages/backend/src/agents/claude/claude-managed-runner";
 import {
   LEAD_ALLOWED_TOOLS,
   OrchestrationService,

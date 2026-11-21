@@ -1,5 +1,5 @@
 import { closeSync, constants, fstatSync, lstatSync, openSync, readSync } from "node:fs";
-import type { ContextUsage } from "./context-usage";
+import type { ContextUsage } from "../../context-usage";
 import {
   normalizeObservedPermissionMode,
   type ClaudeObservedPermissionMode,

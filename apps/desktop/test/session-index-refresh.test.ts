@@ -11,7 +11,7 @@ import {
   type SessionAgent,
   type NativeListing,
 } from "../../../packages/backend/src/session-readers";
-import { ClaudeSessions } from "../../../packages/backend/src/claude-sessions";
+import { ClaudeSessions } from "../../../packages/backend/src/agents/claude/claude-sessions";
 import { migrateSharedSchema } from "../../../packages/backend/src/store-migrations";
 import { Sql } from "../../../packages/backend/src/sql";
 

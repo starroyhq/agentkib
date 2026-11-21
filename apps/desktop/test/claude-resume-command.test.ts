@@ -3,7 +3,7 @@ import { mkdtempSync, mkdirSync, realpathSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { claudeResumeCommand } from "../../../packages/backend/src/claude-resume-command";
+import { claudeResumeCommand } from "../../../packages/backend/src/agents/claude/claude-resume-command";
 
 const nativeId = "00000000-0000-4000-8000-000000000001";
 

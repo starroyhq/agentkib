@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { readClaudeSettings } from "../../../packages/backend/src/claude-settings";
+import { readClaudeSettings } from "../../../packages/backend/src/agents/claude/claude-settings";
 import { virtualIo, type VirtualNode } from "./fixtures/claude-virtual-io";
 
 function settingsFixture(

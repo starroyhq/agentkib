@@ -7,7 +7,7 @@ import {
   markPossiblyOverwritten,
   readClaudeGlobalWrites,
   recordClaudeGlobalWrite,
-} from "../../../packages/backend/src/claude-global-writes";
+} from "../../../packages/backend/src/agents/claude/claude-global-writes";
 import { Commands } from "../../../packages/backend/src/commands";
 import { McpManager } from "../../../packages/backend/src/mcp";
 import { McpManagement } from "../../../packages/backend/src/mcp-management";

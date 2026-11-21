@@ -18,8 +18,8 @@ import {
   type FileChange,
 } from "../../../packages/backend/src/change-plan";
 import { applyRequest } from "../../../packages/backend/src/changes";
-import { ClaudeConfigError } from "../../../packages/backend/src/claude-config";
-import { ClaudeManagedReadOwner } from "../../../packages/backend/src/claude-managed-read";
+import { ClaudeConfigError } from "../../../packages/backend/src/agents/claude/claude-config";
+import { ClaudeManagedReadOwner } from "../../../packages/backend/src/agents/claude/claude-managed-read";
 import * as commandResolution from "../../../packages/backend/src/command-resolution";
 import { Commands } from "../../../packages/backend/src/commands";
 import { canonicalize } from "../../../packages/backend/src/paths";

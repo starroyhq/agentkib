@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ClaudeManagedRunnerProcess } from "../../../packages/backend/src/claude-managed-runner";
+import { ClaudeManagedRunnerProcess } from "../../../packages/backend/src/agents/claude/claude-managed-runner";
 
 afterEach(() => vi.restoreAllMocks());
 

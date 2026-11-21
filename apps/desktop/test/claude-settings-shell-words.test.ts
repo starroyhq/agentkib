@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { redactText } from "../../../packages/backend/src/claude-settings";
+import { redactText } from "../../../packages/backend/src/agents/claude/claude-settings";
 import { contextFixture, type ContextFixture } from "./fixtures/claude-context";
 
 const fixtures: ContextFixture[] = [];

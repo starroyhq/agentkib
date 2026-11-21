@@ -10,7 +10,7 @@ import {
 } from "node:fs";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ClaudeManagedReadOwner } from "../../../packages/backend/src/claude-managed-read";
+import { ClaudeManagedReadOwner } from "../../../packages/backend/src/agents/claude/claude-managed-read";
 import { Commands } from "../../../packages/backend/src/commands";
 import { readControlReceipt } from "../../../packages/backend/src/control-receipt";
 import type { CursorBridge } from "../../../packages/backend/src/cursor-bridge";

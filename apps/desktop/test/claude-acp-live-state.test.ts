@@ -4,11 +4,11 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { PassThrough } from "node:stream";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ClaudeRunnerState } from "../../../packages/backend/src/claude-managed-runner";
+import { ClaudeRunnerState } from "../../../packages/backend/src/agents/claude/claude-managed-runner";
 import {
   ClaudeManagedReadOwner,
   supportsClaudeVersion,
-} from "../../../packages/backend/src/claude-managed-read";
+} from "../../../packages/backend/src/agents/claude/claude-managed-read";
 import {
   claimManagedCommand,
   dispatchManagedCommand,

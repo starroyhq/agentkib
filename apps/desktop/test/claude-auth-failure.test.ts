@@ -5,9 +5,9 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   ClaudeManagedRunnerProcess,
   ClaudeRunnerState,
-} from "../../../packages/backend/src/claude-managed-runner";
-import { ClaudeManagedReadOwner } from "../../../packages/backend/src/claude-managed-read";
-import { ClaudeTurnFailure } from "../../../packages/backend/src/claude-frame-policy";
+} from "../../../packages/backend/src/agents/claude/claude-managed-runner";
+import { ClaudeManagedReadOwner } from "../../../packages/backend/src/agents/claude/claude-managed-read";
+import { ClaudeTurnFailure } from "../../../packages/backend/src/agents/claude/claude-frame-policy";
 import type { BackendStore } from "../../../packages/backend/src/store";
 import type { SessionReaders } from "../../../packages/backend/src/session-readers";
 import type { Commands } from "../../../packages/backend/src/commands";

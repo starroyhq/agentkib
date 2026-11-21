@@ -34,7 +34,7 @@ import {
   PROBE_MAX_BYTES,
   PROBE_MAX_RECORDS,
   probeClaudeSessionFormat,
-} from "../../../packages/backend/src/claude-session-probe";
+} from "../../../packages/backend/src/agents/claude/claude-session-probe";
 import {
   assistantRecord,
   jsonl,

@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { RUNTIME_METHODS } from "@agentkib/runtime-protocol";
 import { TypeScriptBackend } from "../../../packages/backend/src/index";
 import { BACKEND_INITIALIZE } from "../../../packages/backend/src/migration";
-import { ClaudeManagedReadOwner } from "../../../packages/backend/src/claude-managed-read";
+import { ClaudeManagedReadOwner } from "../../../packages/backend/src/agents/claude/claude-managed-read";
 import { McpHub } from "../../../packages/backend/src/mcp-hub";
 import { RemoteAgent } from "../../../packages/backend/src/remote-agent";
 import { BackendStore } from "../../../packages/backend/src/store";
@@ -70,23 +70,34 @@ async function fixture(managed = true, agent: "claude-code" | "codex" = "claude-
       if (unavailable) throw new Error("session-unavailable");
       return version;
     });
-  const provider = vi
-    .spyOn(
-      agent === "codex" ? WebReadRequests.prototype : ClaudeManagedReadOwner.prototype,
-      "request",
-    )
-    .mockImplementation(async (params) => {
-      params = params as Record<string, unknown>;
-      if (params.operation === "subagents") return { subagents: [] };
-      if (params.operation === "live") return { sessionId: params.sessionId, status, revision: 1 };
-      if (params.operation === "events")
-        return {
-          events: [{ id: "message", content: version }],
-          warnings: [],
-          next_cursor: "history-v1-private-cursor",
-        };
-      throw new Error("Unexpected observation operation");
-    });
+  const provider = vi.fn(async (params: Record<string, unknown>) => {
+    if (params.operation === "subagents") return { subagents: [] };
+    if (params.operation === "live") return { sessionId: params.sessionId, status, revision: 1 };
+    if (params.operation === "events")
+      return {
+        events: [{ id: "message", content: version }],
+        warnings: [],
+        next_cursor: "history-v1-private-cursor",
+      };
+    throw new Error("Unexpected observation operation");
+  });
+  if (agent === "codex") {
+    vi.spyOn(WebReadRequests.prototype, "request").mockImplementation((value) =>
+      provider(value as Record<string, unknown>),
+    );
+  } else {
+    // The Claude Provider calls the native read methods under the original session locks.
+    vi.spyOn(ClaudeManagedReadOwner.prototype, "live").mockImplementation((sessionId) =>
+      provider({ operation: "live", sessionId }),
+    );
+    vi.spyOn(ClaudeManagedReadOwner.prototype, "events").mockImplementation(
+      (sessionId, cursor, limit, retainCursor) =>
+        provider({ operation: "events", sessionId, cursor, limit, retainCursor }),
+    );
+    vi.spyOn(ClaudeManagedReadOwner.prototype, "subagents").mockImplementation((_sessionId, value) =>
+      provider(value),
+    );
+  }
   const backend = new TypeScriptBackend({ HOME: root, CLAUDE_CONFIG_DIR: config, PATH: bin });
   cleanups.push(() => backend.closeAsync());
   const request = async (method: string, params: Record<string, unknown>) => {

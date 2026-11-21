@@ -10,8 +10,8 @@ import {
 } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
-import type { Commands } from "./commands";
-import { resolveCommand } from "./command-resolution";
+import type { Commands } from "../../commands";
+import { resolveCommand } from "../../command-resolution";
 import { resolveClaudeConfig } from "./claude-config";
 
 export type ClaudeSessionOwnership =

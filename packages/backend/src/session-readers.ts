@@ -15,7 +15,6 @@ import {
   type SubagentCatalog,
 } from "@agentkib/runtime-protocol";
 import { CodexSessions } from "./agents/codex/codex-sessions";
-import { codexRollouts } from "./agents/codex/codex-rollout-files";
 import { ClaudeSessions } from "./agents/claude/claude-sessions";
 import { GrokSessions } from "./grok-sessions";
 import { OpenClawSessions } from "./openclaw-sessions";
@@ -41,17 +40,22 @@ import { Commands } from "./commands";
 import { parameters, optionalString, unsigned } from "./rpc";
 import type { ConversationEventPage } from "./session-events";
 import type { DocumentOptions, SessionDocument } from "./session-model";
-import type { DshBridge } from "./agents/dsh/dsh-bridge";
-import {
-  readClaudeDocument,
-  readCodexDocument,
-  readEventDocument,
-} from "./session-document-providers";
+import { readEventDocument } from "./session-document-providers";
 import { canonicalize, pathIdentity } from "./paths";
 import { within } from "./files";
 import { handoffActive, handoffCheckpoint, readHandoff } from "./handoff-work";
 import { readCheckout } from "./git-checkouts";
 import { isReparseOrSymlink } from "./native-files";
+import {
+  withSessionDirectory,
+  type DshSessionSource,
+  type NativeListing,
+  type SessionHistoryContext,
+  type SessionHistoryProvider,
+} from "./sessions/history-provider";
+import { getSessionProviderReader } from "./sessions/providers";
+
+export type { DshSessionSource, NativeListing } from "./sessions/history-provider";
 
 const canonicalizePath = canonicalize;
 const claudeBridgeFileVersion = (metadata: BigIntStats) =>
@@ -123,15 +127,8 @@ export const SESSION_AGENTS = [
   "devin",
 ] as const;
 export type SessionAgent = (typeof SESSION_AGENTS)[number];
-/** DeepSeek Harness history and its images come from the running DSH through its AgentKib plugin. */
-export type DshSessionSource = Pick<DshBridge, "list" | "events" | "image" | "document">;
 /** One catalog call may share discovery; every metadata target still verifies its own header. */
 export type ClaudeControlMetadataShare = { current?: ReturnType<ClaudeSessions["list"]> };
-
-export interface NativeListing {
-  sessions: NativeSession[];
-  incomplete: boolean;
-}
 
 /** Revalidate indexed workspace ownership before resolving an opaque reference in native history. */
 export class SessionReaders {
@@ -148,9 +145,7 @@ export class SessionReaders {
   #paging = new SessionPaging();
   #subagents: SessionSubagents;
   #subagentCandidates = new Map<string, { at: number; candidates: CodexSubagentSource[] }>();
-  // Opaque IDs cannot be reversed. Remember only the native lookup key, never
-  // ownership or a transcript path: each resolve still revalidates the live index.
-  #codexNativeRefs = new Map<string, string>();
+  #history = new Map<string, SessionHistoryProvider>();
   constructor(
     readonly store: Pick<SessionStore, "get" | "id" | "workspacePath" | "identitySalt">,
     commands: Commands,
@@ -169,6 +164,29 @@ export class SessionReaders {
     this.#cursor = new CursorSessions(env);
     this.#cursorIde = new CursorIdeSessions(cursorBridge);
     this.#devin = new DevinSessions(env);
+    const context: SessionHistoryContext = {
+      store,
+      codex: this.#codex,
+      claude: this.#claude,
+      antigravity: this.#antigravity,
+      devin: this.#devin,
+      dsh,
+      paging: this.#paging,
+      imageScope: (native, workspace) => this.#imageScope(native, workspace),
+      resolveSession: (sessionId) => this.resolve(sessionId),
+      verifiedCodexControlDirectory: (nativeRef) => this.verifiedCodexControlDirectory(nativeRef),
+      verifiedCodexSubagentParent: (sessionId, nativeId, workspace) =>
+        this.verifiedCodexSubagentParent(sessionId, nativeId, workspace),
+      verifiedClaudeImageSource: (id) => this.verifiedClaudeReadSource(id),
+      verifiedClaudeNativeSource: (nativeRef, workspace) => {
+        const source = this.#verifiedClaudeControlSource(nativeRef, workspace);
+        return { native: source.session, transcript: source.transcript };
+      },
+    };
+    for (const agent of SESSION_AGENTS) {
+      const reader = getSessionProviderReader(agent);
+      if (reader) this.#history.set(agent, reader.history(context));
+    }
   }
   close(): void {
     this.#codex.close();
@@ -176,7 +194,7 @@ export class SessionReaders {
     this.#paging.clear();
     this.#subagents.clear();
     this.#subagentCandidates.clear();
-    this.#codexNativeRefs.clear();
+    for (const reader of this.#history.values()) reader.clear?.();
   }
   /** Children never pass through the ordinary catalog/control resolver. */
   async subagentsForNative(
@@ -195,30 +213,9 @@ export class SessionReaders {
     const cached = this.#subagentCandidates.get(cacheKey);
     const candidates: CodexSubagentSource[] =
       cached && Date.now() - cached.at < 2_000 ? cached.candidates : [];
-    if (parent.agent === "codex" && candidates !== cached?.candidates) {
-      const seen = new Set([parent.nativeId]);
-      let parents = new Set([parent.nativeId]);
-      for (let depth = 0; depth < 8 && candidates.length < 128; depth++) {
-        const listing = this.#codex.list(parent.workspace, {
-          parents,
-          limit: 128 - candidates.length,
-        });
-        const next = new Set<string>();
-        for (const source of listing.sessions) {
-          if (seen.has(source.session.native_ref) || !source.session.spawned_by_session_id)
-            continue;
-          seen.add(source.session.native_ref);
-          next.add(source.session.native_ref);
-          candidates.push({
-            nativeId: source.session.native_ref,
-            parentNativeId: source.session.spawned_by_session_id,
-            name: source.session.title ?? "Codex",
-            transcript: source.transcript,
-          });
-        }
-        if (!next.size) break;
-        parents = next;
-      }
+    const reader = this.#history.get(parent.agent);
+    if (reader?.collectSubagentCandidates && candidates !== cached?.candidates) {
+      reader.collectSubagentCandidates(parent, candidates);
       this.#subagentCandidates.set(cacheKey, { at: Date.now(), candidates });
       if (this.#subagentCandidates.size > 64)
         this.#subagentCandidates.delete(this.#subagentCandidates.keys().next().value!);
@@ -250,8 +247,8 @@ export class SessionReaders {
 
   async activitySubagentsForDevin(sessionId: string): Promise<SubagentCatalog | undefined> {
     const source = await this.resolve(sessionId);
-    if (source.native.agent !== "devin" || source.native.sidechain) return;
-    return this.#devin.activitySubagents(source.native.native_ref, source.workspace, sessionId);
+    if (source.native.sidechain) return;
+    return this.#history.get(source.native.agent)?.activitySubagents?.(source, sessionId);
   }
 
   async subagentsForSession(
@@ -264,35 +261,17 @@ export class SessionReaders {
     observation?: Pick<SubagentParent, "connected" | "observerId">,
   ) {
     const source = await this.resolve(sessionId);
-    // Devin keeps its subagents as chains of the same session's message tree.
-    if (source.native.agent === "devin" && !source.native.sidechain)
-      return childId
-        ? this.#devin.subagentEvents(
-            source.native.native_ref,
-            source.workspace,
-            sessionId,
-            childId,
-            cursor,
-            limit,
-          )
-        : this.#devin.subagents(source.native.native_ref, source.workspace, sessionId);
+    const reader = this.#history.get(source.native.agent);
+    if (reader?.subagents && !source.native.sidechain)
+      return reader.subagents({ ...source, sessionId, childId, cursor, limit });
     if (
       !source.transcript ||
-      !["codex", "claude-code"].includes(source.native.agent) ||
+      !reader?.subagentParent ||
       source.native.origin === "auxiliary" ||
       source.native.sidechain
     )
       throw new Error("session-not-controllable");
-    const parent =
-      source.native.agent === "codex"
-        ? this.verifiedCodexSubagentParent(sessionId, source.native.native_ref, source.workspace)
-        : {
-            sessionId,
-            nativeId: source.native.native_ref,
-            workspace: source.workspace,
-            transcript: source.transcript,
-            agent: "claude-code" as const,
-          };
+    const parent = reader.subagentParent({ ...source, transcript: source.transcript }, sessionId);
     return this.subagentsForNative(
       { ...parent, running, turnId, ...observation },
       childId,
@@ -603,29 +582,18 @@ export class SessionReaders {
     selection: { matches?: (nativeRef: string) => boolean } = {},
   ): Promise<NativeListing> {
     const collection = sessionCollection(workspace);
-    // The index keeps each session's directory so the catalog can recognize git worktrees.
-    const withDirectory = (source: { cwd: string | null; session: NativeSession }) => ({
-      ...source.session,
-      cwd: source.cwd,
-    });
-    if (collection) {
-      if (agent !== "codex") return { sessions: [], incomplete: false };
-      const listing = this.#codex.list(null, { collection, matches: selection.matches });
-      return {
-        sessions: listing.sessions.map(withDirectory),
-        incomplete: listing.incomplete,
-      };
-    }
+    const reader = this.#history.get(agent);
+    if (collection)
+      return (
+        reader?.listCollection?.(collection, selection.matches) ?? {
+          sessions: [],
+          incomplete: false,
+        }
+      );
+    if (reader) return reader.list(workspace, selection.matches);
     switch (agent) {
       case "opencode":
         return { sessions: await this.#opencode.list(workspace), incomplete: false };
-      case "antigravity":
-        return this.#antigravity.list(workspace);
-      case "deepseek-harness":
-        // Workers without a bridge list nothing rather than a stale or partial set.
-        return this.dsh ? this.dsh.list(workspace) : { sessions: [], incomplete: false };
-      case "devin":
-        return this.#devin.list(workspace);
       case "cursor": {
         const cli = this.#cursor.list(workspace);
         try {
@@ -640,31 +608,18 @@ export class SessionReaders {
       }
       default: {
         const provider =
-          agent === "codex"
-            ? this.#codex
-            : agent === "claude-code"
-              ? this.#claude
-              : agent === "grok-build"
-                ? this.#grok
-                : agent === "open-claw"
-                  ? this.#openclaw
-                  : this.#hermes;
-        const listing =
-          agent === "codex"
-            ? this.#codex.list(workspace, { matches: selection.matches })
-            : provider.list(workspace);
+          agent === "grok-build"
+            ? this.#grok
+            : agent === "open-claw"
+              ? this.#openclaw
+              : this.#hermes;
+        const listing = provider.list(workspace);
         return {
-          sessions: listing.sessions.map(withDirectory),
+          sessions: listing.sessions.map(withSessionDirectory),
           incomplete: listing.incomplete,
         };
       }
     }
-  }
-  #rememberCodexNativeRef(id: string, nativeRef: string): void {
-    this.#codexNativeRefs.delete(id);
-    this.#codexNativeRefs.set(id, nativeRef);
-    if (this.#codexNativeRefs.size > 1_024)
-      this.#codexNativeRefs.delete(this.#codexNativeRefs.keys().next().value!);
   }
   async resolve(id: string) {
     const summary = this.store.get(id);
@@ -673,51 +628,19 @@ export class SessionReaders {
     if (!(SESSION_AGENTS as readonly string[]).includes(agent))
       throw new Error("Conversation provider is unavailable");
     const collection = sessionCollection(summary.workspace_id);
+    const reader = this.#history.get(agent);
     if (collection) {
-      if (agent !== "codex") throw new Error("Conversation provider is unavailable");
-      const source = this.#codex
-        .list(null, {
-          collection,
-          nativeRef: this.#codexNativeRefs.get(id),
-          matches: (nativeRef) => this.store.id(agent, nativeRef) === id,
-        })
-        .sessions.find(
-          (candidate) =>
-            candidate.collection === collection &&
-            this.store.id(agent, candidate.session.native_ref) === id,
-        );
+      if (!reader?.resolveCollection) throw new Error("Conversation provider is unavailable");
+      const source = reader.resolveCollection(id, collection);
       if (!source) throw new Error("Conversation transcript is no longer available");
-      this.#rememberCodexNativeRef(id, source.session.native_ref);
-      return {
-        summary,
-        native: source.session,
-        workspace: source.cwd,
-        transcript: source.transcript,
-      };
+      return { summary, ...source };
     }
     const workspace = this.store.workspacePath(summary.workspace_id);
-    if (agent === "codex" || agent === "claude-code") {
-      // Resolve ownership and the transcript together for this request. Readers
-      // still check the file itself, and the next request discovers it afresh.
-      const listing =
-        agent === "codex"
-          ? // Classify and read the header of this one thread, not every thread in the folder.
-            this.#codex.list(workspace, {
-              nativeRef: this.#codexNativeRefs.get(id),
-              matches: (nativeRef) => this.store.id(agent, nativeRef) === id,
-            })
-          : this.#claude.list(workspace);
-      const source = listing.sessions.find(
-        (candidate) => this.store.id(agent, candidate.session.native_ref) === id,
-      );
+    if (reader?.resolve) {
+      // Resolve ownership and the transcript together for each request.
+      const source = reader.resolve(id, workspace);
       if (!source) throw new Error("Conversation transcript is no longer available");
-      if (agent === "codex") this.#rememberCodexNativeRef(id, source.session.native_ref);
-      return {
-        summary,
-        native: { ...source.session, cwd: source.cwd },
-        workspace,
-        transcript: source.transcript,
-      };
+      return { summary, ...source };
     }
     const listing = await this.list(agent as SessionAgent, workspace);
     const native = listing.sessions.find(
@@ -756,15 +679,17 @@ export class SessionReaders {
     }
   }
   async #image(sessionId: string, imageId: string) {
-    if (this.store.get(sessionId)?.agent === "claude-code") {
-      const source = this.verifiedClaudeReadSource(sessionId);
+    const agent = this.store.get(sessionId)?.agent;
+    const imageSource = agent ? this.#history.get(agent)?.imageSource : undefined;
+    if (imageSource) {
+      const source = imageSource(sessionId);
       const result = await this.#readImage(
         source.native,
         source.workspace,
         imageId,
         source.transcript,
       );
-      const current = this.verifiedClaudeReadSource(sessionId);
+      const current = imageSource(sessionId);
       if (
         current.nativeId !== source.nativeId ||
         current.workspaceId !== source.workspaceId ||
@@ -798,37 +723,23 @@ export class SessionReaders {
     options?: { codexDirectory: string },
   ) {
     if (!nativeRef || nativeRef.length > 4096) throw new Error("invalid-request");
+    const reader = this.#history.get(agent);
     if (options) {
-      if (agent !== "codex") throw new Error("invalid-request");
-      const cwd = canonicalize(options.codexDirectory);
-      if (!lstatSync(cwd).isDirectory() || !within(cwd, canonicalize(workspace)))
-        throw new Error("session-workspace-mismatch");
-      const verify = () => {
-        const identity = this.verifiedCodexControlDirectory(nativeRef);
-        if (
-          !identity ||
-          identity.id !== nativeRef.toLowerCase() ||
-          pathIdentity(canonicalize(identity.cwd)) !== pathIdentity(cwd)
-        )
-          throw new Error("unverified-session-identity");
-      };
-      verify();
-      const source = this.#codex
-        .list(null, { nativeRefs: [nativeRef] })
-        .sessions.find(
-          (candidate) =>
-            candidate.session.native_ref.toLowerCase() === nativeRef.toLowerCase() &&
-            candidate.session.origin !== "auxiliary",
-        );
-      if (!source) throw new Error("session-image-unavailable");
-      const result = await this.#readImage(source.session, workspace, imageId, source.transcript);
-      verify();
+      if (!reader?.nativeDirectorySource) throw new Error("invalid-request");
+      const source = reader.nativeDirectorySource(
+        nativeRef,
+        workspace,
+        options.codexDirectory,
+        "session-image-unavailable",
+      );
+      const result = await this.#readImage(source.native, workspace, imageId, source.transcript);
+      source.verify();
       return result;
     }
-    if (agent === "claude-code") {
-      const source = this.#verifiedClaudeControlSource(nativeRef, workspace);
-      const result = await this.#readImage(source.session, workspace, imageId, source.transcript);
-      this.#verifiedClaudeControlSource(nativeRef, workspace);
+    if (reader?.nativeWorkspaceSource) {
+      const source = reader.nativeWorkspaceSource(nativeRef, workspace);
+      const result = await this.#readImage(source.native, workspace, imageId, source.transcript);
+      reader.nativeWorkspaceSource(nativeRef, workspace);
       return result;
     }
     throw new Error("session-image-unavailable");
@@ -841,17 +752,9 @@ export class SessionReaders {
     ]);
   }
   async #readImage(native: NativeSession, workspace: string, imageId: string, transcript?: string) {
-    // DSH keeps its images in its own store and reads them for the session that refers to them.
-    if (native.agent === "deepseek-harness") {
-      if (!this.dsh) throw new Error("session-image-unavailable");
-      return this.dsh.image(native.native_ref, imageId);
-    }
-    // Devin keeps a message's images in its own store, checked against this workspace.
-    if (native.agent === "devin") return this.#devin.image(native.native_ref, workspace, imageId);
-    if (!transcript || (native.agent !== "codex" && native.agent !== "claude-code"))
-      throw new Error("session-image-unavailable");
-    const file = native.agent === "codex" ? await codexRollouts.plain(transcript) : transcript;
-    return this.#paging.image(file, imageId, this.#imageScope(native, workspace));
+    const reader = this.#history.get(native.agent);
+    if (!reader?.image) throw new Error("session-image-unavailable");
+    return reader.image({ native, workspace, imageId, transcript });
   }
   /** `retain` false keeps no cursor; see [SessionPaging.read]. */
   async eventsForNative(
@@ -865,31 +768,17 @@ export class SessionReaders {
   ): Promise<ConversationEventPage> {
     if (!nativeRef || nativeRef.length > 4096 || limit < 1 || limit > 100)
       throw new Error("invalid-request");
+    const reader = this.#history.get(agent);
     if (options) {
-      if (agent !== "codex") throw new Error("invalid-request");
-      const cwd = canonicalize(options.codexDirectory);
-      if (!lstatSync(cwd).isDirectory() || !within(cwd, canonicalize(workspace)))
-        throw new Error("session-workspace-mismatch");
-      const verify = () => {
-        const identity = this.verifiedCodexControlDirectory(nativeRef);
-        if (
-          !identity ||
-          identity.id !== nativeRef.toLowerCase() ||
-          pathIdentity(canonicalize(identity.cwd)) !== pathIdentity(cwd)
-        )
-          throw new Error("unverified-session-identity");
-      };
-      verify();
-      const source = this.#codex
-        .list(null, { nativeRefs: [nativeRef] })
-        .sessions.find(
-          (candidate) =>
-            candidate.session.native_ref.toLowerCase() === nativeRef.toLowerCase() &&
-            candidate.session.origin !== "auxiliary",
-        );
-      if (!source) throw new Error("session-unavailable");
+      if (!reader?.nativeDirectorySource) throw new Error("invalid-request");
+      const source = reader.nativeDirectorySource(
+        nativeRef,
+        workspace,
+        options.codexDirectory,
+        "session-unavailable",
+      );
       const page = await this.#readEvents(
-        { ...source.session, cwd },
+        { ...source.native, cwd: source.cwd },
         workspace,
         cursor,
         limit,
@@ -897,12 +786,12 @@ export class SessionReaders {
         retain,
         options.imageScanBudget,
       );
-      verify();
+      source.verify();
       return page;
     }
-    if (agent === "claude-code") {
-      const source = this.#verifiedClaudeControlSource(nativeRef, workspace);
-      return this.#readEvents(source.session, workspace, cursor, limit, source.transcript, retain);
+    if (reader?.nativeWorkspaceSource) {
+      const source = reader.nativeWorkspaceSource(nativeRef, workspace);
+      return this.#readEvents(source.native, workspace, cursor, limit, source.transcript, retain);
     }
     const listing = await this.list(agent, workspace);
     const native = listing.sessions.find(
@@ -922,36 +811,18 @@ export class SessionReaders {
   ): Promise<ConversationEventPage> {
     const ref = native.native_ref,
       agent = native.agent;
+    const reader = this.#history.get(agent);
+    if (reader)
+      return reader.events({
+        native,
+        workspace,
+        offset,
+        count,
+        transcript,
+        retain,
+        imageScanBudget,
+      });
     switch (agent) {
-      case "codex":
-      case "claude-code": {
-        // Pages seek backwards, so a compressed Codex rollout is read from a
-        // decompressed copy with the same offsets.
-        const page = async (file: string) =>
-          this.#paging.read(
-            agent === "codex" ? await codexRollouts.plain(file) : file,
-            offset,
-            count,
-            agent,
-            // Collections pass an ID here; only an absolute root shortens paths.
-            { workspace, cwd: native.cwd ?? workspace },
-            retain,
-            this.#imageScope(native, workspace),
-            imageScanBudget,
-          );
-        if (transcript) return page(transcript);
-        const provider = agent === "codex" ? this.#codex : this.#claude;
-        const source = provider
-          .list(null)
-          .sessions.find((value) => value.session.native_ref === ref);
-        if (!source)
-          throw new Error(
-            agent === "codex"
-              ? "Codex session is no longer available"
-              : "Claude session is no longer available",
-          );
-        return page(source.transcript);
-      }
       case "grok-build":
         return this.#paging.read(
           this.#grok.resolve(ref).transcript,
@@ -975,50 +846,23 @@ export class SessionReaders {
       }
       case "opencode":
         return this.#opencode.readEvents(workspace, ref, offset, count);
-      case "antigravity":
-        return this.#antigravity.readEvents(ref, offset, count, workspace);
       case "cursor":
         return ref.startsWith("cursor-ide-v1-")
           ? this.#cursorIde.events(ref, workspace, offset, count)
           : this.#cursor.events(ref, offset, count);
-      case "deepseek-harness":
-        if (!this.dsh) throw new Error("Conversation provider is unavailable");
-        return this.dsh.events(ref, offset, count);
-      case "devin":
-        return this.#devin.events(ref, workspace, offset, count);
       default:
         throw new Error("Conversation provider is unavailable");
     }
   }
-  /** `options` only change how Claude Code sources are read; every other source ignores them. */
   async document(sessionId: string, options?: DocumentOptions): Promise<SessionDocument> {
     const summary = this.store.get(sessionId);
     if (!summary) throw new Error("Conversation metadata is no longer available");
-    // DSH history comes from the running DSH through its plugin, which the handoff read worker
-    // cannot reach, so it is read here even during a handoff.
-    if (summary.agent === "deepseek-harness") {
+    // Readers backed by a live bridge must run in the host even during a handoff.
+    const hostReader = this.#history.get(summary.agent);
+    if (hostReader?.hostDocument) {
       if (summary.availability !== "readable")
         throw new Error("Conversation transcript is no longer available");
-      if (!this.dsh) throw new Error("Conversation provider is unavailable");
-      const { native } = await this.resolve(sessionId);
-      const document = await this.dsh.document(
-        native.native_ref,
-        {
-          agent: "deepseek-harness",
-          workspace_id: summary.workspace_id,
-          title: summary.title,
-          created_at: summary.created_at,
-          updated_at: summary.updated_at,
-          git_branch: summary.git_branch,
-        },
-        options,
-      );
-      if (handoffActive()) {
-        handoffCheckpoint();
-        if (JSON.stringify(this.store.get(sessionId)) !== JSON.stringify(summary))
-          throw new Error("Conversation ownership changed while reading history");
-      }
-      return document;
+      return hostReader.hostDocument(sessionId, summary, options);
     }
     if (handoffActive()) {
       const workspace = sessionCollection(summary.workspace_id)
@@ -1056,36 +900,14 @@ export class SessionReaders {
     if (!(SESSION_AGENTS as readonly string[]).includes(summary.agent))
       throw new Error("Conversation provider is unavailable");
     const { native, workspace, transcript } = await this.resolve(sessionId);
-    if (native.agent === "codex") {
-      if (!transcript) throw new Error("Codex session is no longer available");
-      return readCodexDocument(
-        summary as Parameters<typeof readCodexDocument>[0],
-        await codexRollouts.plain(transcript),
-      );
-    }
-    if (native.agent === "claude-code") {
-      if (!transcript) throw new Error("Claude session is no longer available");
-      return readClaudeDocument(
-        summary as Parameters<typeof readClaudeDocument>[0],
-        transcript,
-        native.sidechain,
-        options,
-      );
-    }
+    const reader = this.#history.get(native.agent);
+    if (reader?.document)
+      return reader.document({ summary, native, workspace, transcript, options });
     if (native.agent === "opencode")
       return this.#opencode.readDocument(workspace, native.native_ref, {
         ...summary,
         agent: native.agent,
       });
-    if (native.agent === "antigravity")
-      return this.#antigravity.readDocument(native.native_ref, { ...summary, agent: native.agent });
-    if (native.agent === "devin")
-      return this.#devin.document(
-        native.native_ref,
-        workspace,
-        { ...summary, agent: native.agent },
-        options,
-      );
     if (native.agent === "cursor")
       return native.native_ref.startsWith("cursor-ide-v1-")
         ? this.#cursorIde.document(native, summary.workspace_id, workspace)

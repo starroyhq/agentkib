@@ -25,7 +25,11 @@ import type { SessionProviderRegistry, SessionProviders } from "./session-provid
 import type { SessionReaders } from "./session-readers";
 import { admitManagedControl, type ApplyManagedControl } from "./sessions/control-admission";
 import type { LaneObserver } from "./sessions/lane-observer";
-import { createSessionProviders, withProviderCapabilities } from "./sessions/providers";
+import {
+  createSessionProviders,
+  getSessionProviderReader,
+  withProviderCapabilities,
+} from "./sessions/providers";
 import {
   sessionQuerySchema as managedQuerySchema,
   sessionSettingsStateSchema,
@@ -736,29 +740,7 @@ export class WebReadRequests {
           return registered.has(session.workspace_id) && !aliases.has(session.id);
         },
       );
-      sessions.push(
-        ...managed.map((record) => ({
-          id: record.id,
-          workspace_id: record.workspace_id,
-          agent: "codex",
-          // The thread's title as Codex lists it: the name the person or a Codex client gave
-          // it, else Codex's own title from its first message. The record's title (a
-          // placeholder for a session AgentKib created) shows only until Codex has the thread.
-          title: nativeByOwner.get(record.id)?.title?.trim() || record.title,
-          created_at: record.created_at,
-          updated_at: nativeByOwner.get(record.id)?.updated_at ?? record.created_at,
-          message_count: null,
-          git_branch: null,
-          origin: "interactive",
-          archived: record.archived,
-          sidechain: false,
-          availability: "readable",
-          indexedSessionIds: [...(aliasesByOwner.get(record.id) ?? [])],
-          executionMode: "codex-managed",
-          sourceSessionId: record.source_session_id ?? null,
-          forked_from_session_id: record.source_session_id ?? null,
-        })),
-      );
+      sessions.push(...this.#codex.catalogRows(managed, aliasesByOwner, nativeByOwner));
       const runtime = this.#codex.catalogRuntime(sessions, enabled);
       if (this.indexGeneration() !== generation || indexEnabled(this.dataDir) !== enabled)
         throw new Error("catalog-stale");
@@ -768,6 +750,13 @@ export class WebReadRequests {
         : [];
       const checkouts = catalogCheckouts(this.store, this.environment);
       const externalTurns = this.#codex.externalTurnsBySession(managed, aliasesByOwner, enabled);
+      const catalogProviders = {
+        codex: this.#codex,
+        devin: this.#devin,
+        antigravity: this.#antigravity,
+        codexRuntime: runtime,
+        codexExternalTurns: externalTurns,
+      };
       return {
         codexRuntimeReason: runtime?.reason === "codex-cli-version-too-old" ? runtime.reason : null,
         complete: catalog.complete && incompleteSources.length === 0,
@@ -778,13 +767,14 @@ export class WebReadRequests {
             .map(({ id, name, path }) => ({ id, name, path })),
         ),
         sessions: checkouts.sessions(sessions).map((session) => {
-          if (isSessionSummary(session) && "agent" in session && session.agent === "devin")
-            return this.#devin.continuation(session);
-          if (isSessionSummary(session) && "agent" in session && session.agent === "antigravity")
-            return this.#antigravity.continuation(session);
-          if (!isSessionSummary(session) || !("agent" in session) || session.agent !== "codex")
+          if (
+            !isSessionSummary(session) ||
+            !("agent" in session) ||
+            typeof session.agent !== "string"
+          )
             return session;
-          return this.#codex.catalogContinuation(session, runtime, externalTurns);
+          const reader = getSessionProviderReader(session.agent);
+          return reader?.catalog?.(session, catalogProviders) ?? session;
         }),
         indexEnabled: enabled || managed.length > 0,
       };

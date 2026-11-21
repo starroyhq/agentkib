@@ -1,50 +1,32 @@
-import { homedir } from "node:os";
-import {
-  isReadStateProvider,
-  type ReadStateProvider,
-  type ConversationReadResult,
-  type ConversationReadState,
-} from "@agentkib/runtime-protocol";
+import type { ConversationReadResult, ConversationReadState } from "@agentkib/runtime-protocol";
 import type { BackendStore } from "./store";
 import type { SessionReaders } from "./session-readers";
-import { resolveClaudeConfig } from "./agents/claude/claude-config";
-import { codexRollouts } from "./agents/codex/codex-rollout-files";
-import {
-  CodexReadStateObserver,
-  type CodexReadActiveTurn,
-  type CodexReadTarget,
-} from "./agents/codex/codex-read-state";
 import { conversationReadKey, ReadStateLedger } from "./read-state-ledger";
-import { observeReadHistory } from "./read-state-history";
-import {
-  hasManagedCatalogWorkspace,
-  managedRecordSchema,
-} from "./agents/codex/managed-session-catalog";
-import { readManagedRecord } from "./managed-ledger";
 import { canonicalize, pathIdentity } from "./paths";
 import { within } from "./files";
-import { codexExecutable } from "./agents/codex/codex-executable";
-import { devinSessionHome } from "./agents/devin/devin-sessions";
+import { getSessionProviderReader, sessionProviderReaders } from "./sessions/providers";
+import type {
+  NativeReadStateObserver,
+  NativeReadStateTarget,
+  ReadStateActiveTurn,
+  ReadStateProvider,
+  ReadStateTarget,
+} from "./sessions/read-state-provider";
 
-/**
- * Codex and Claude Code record each turn's end in their transcripts. Devin's history does not, so
- * a Devin session's results are only the turns AgentKib ran, recorded as each ended
- * (`WebReadRequests.observeResults`), and the ledger is its whole read state.
- */
-export interface ReadStateTarget {
-  provider: ReadStateProvider;
-  home: string;
-  nativeId: string;
-  workspace: string;
-  transcript: string | null;
-}
-type Target = ReadStateTarget & { key: string };
+export type { ReadStateTarget } from "./sessions/read-state-provider";
+
+type Target = ReadStateTarget & { key: string; reader: ReadStateProvider };
 type Candidate = {
-  provider: ReadStateProvider;
+  reader: ReadStateProvider;
   target?: Target;
   touched: number;
   stale: boolean;
 };
+
+function readStateProvider(agent: unknown): ReadStateProvider | undefined {
+  return typeof agent === "string" ? getSessionProviderReader(agent)?.readState : undefined;
+}
+
 const unknown = (source: ConversationReadState["source"]): ConversationReadState => ({
   source,
   status: "unknown",
@@ -53,20 +35,6 @@ const unknown = (source: ConversationReadState["source"]): ConversationReadState
   firstUnread: null,
   latestResult: null,
 });
-/** A thread with no turns yet has nothing to review. */
-const nothingToRead: ConversationReadState = {
-  source: "codex-native",
-  status: "read",
-  freshness: "current",
-  version: null,
-  firstUnread: null,
-  latestResult: null,
-};
-/** A Devin session none of whose turns AgentKib ran has no result to review either. */
-const devinState = (state: ConversationReadState): ConversationReadState =>
-  state.status === "unknown" && !state.latestResult && !state.firstUnread
-    ? { ...nothingToRead, source: "agentkib" }
-    : state;
 function readStateFailure(error: unknown): Error {
   return error instanceof Error &&
     ["read-state-conflict", "read-state-unavailable", "read-state-unsupported"].includes(
@@ -79,7 +47,8 @@ function readStateFailure(error: unknown): Error {
 /** Host-wide observation, with acknowledgements isolated by the authenticated reader scope. */
 export class ConversationReadStates {
   readonly ledger: ReadStateLedger;
-  #native: CodexReadStateObserver;
+  readonly #native = new Map<ReadStateProvider, NativeReadStateObserver>();
+  readonly #managedReaders: NonNullable<ReadStateProvider["managed"]>[] = [];
   #candidates = new Map<string, Candidate>();
   #timer: ReturnType<typeof setInterval>;
   #cursor = 0;
@@ -87,7 +56,7 @@ export class ConversationReadStates {
   #polling = false;
   #closed = false;
   #flights = new Map<string, Promise<Target>>();
-  #sources = new Map<string, "codex-native" | "agentkib">();
+  #sources = new Map<string, ConversationReadState["source"]>();
   #lastNative = new Map<string, ConversationReadState>();
   constructor(
     readonly store: BackendStore,
@@ -97,10 +66,16 @@ export class ConversationReadStates {
     readonly claudeManagedTarget: (id: string) => ReadStateTarget | null,
     readonly changed: () => void,
     readonly observed: () => boolean,
-    codexActiveTurn?: CodexReadActiveTurn,
+    activeTurn?: ReadStateActiveTurn,
   ) {
     this.ledger = new ReadStateLedger(dataDir);
-    this.#native = new CodexReadStateObserver(environment, changed, undefined, codexActiveTurn);
+    for (const { readState } of sessionProviderReaders()) {
+      if (readState?.native)
+        this.#native.set(readState, readState.native.observe(environment, changed, activeTurn));
+      if (readState?.managed) this.#managedReaders.push(readState.managed);
+    }
+    // A managed session may have a readable identity before it appears in the index.
+    this.#managedReaders.sort((left, right) => left.priority - right.priority);
     this.#timer = setInterval(() => void this.#poll(), 5_000);
     this.#timer.unref();
   }
@@ -108,92 +83,59 @@ export class ConversationReadStates {
   async close(): Promise<void> {
     this.#closed = true;
     clearInterval(this.#timer);
-    await this.#native.close();
+    await Promise.all([...this.#native.values()].map((observer) => observer.close()));
   }
 
-  #nativeTarget(target: Target): CodexReadTarget | null {
-    if (target.provider !== "codex") return null;
-    const executable = codexExecutable(this.environment);
-    return executable ? { ...target, executable } : null;
+  #nativeTarget(target: Target) {
+    const observer = this.#native.get(target.reader);
+    const executable = target.reader.native?.executable(this.environment);
+    return observer && executable ? { observer, target: { ...target, executable } } : null;
+  }
+
+  async #resolveIndexed(id: string): Promise<ReadStateTarget> {
+    const reader = readStateProvider(this.store.sessions.get(id)?.agent);
+    if (!reader) throw new Error("read-state-unsupported");
+    const source = await this.sessions.resolve(id);
+    if (!source.workspace) throw new Error("read-state-unavailable");
+    const nativeReader = readStateProvider(source.native.agent);
+    const workspace = nativeReader?.indexedWorkspace
+      ? nativeReader.indexedWorkspace(this, source)
+      : source.workspace;
+    if (!workspace || !within(canonicalize(workspace), canonicalize(source.workspace)))
+      throw new Error("read-state-unavailable");
+    return {
+      provider: reader.agent,
+      home: reader.home(this),
+      nativeId: source.native.native_ref,
+      workspace,
+      transcript: "transcript" in source ? (source.transcript ?? null) : null,
+    };
   }
 
   async #resolve(id: string): Promise<Target> {
     const flight = this.#flights.get(id);
     if (flight) return flight;
-    // A Devin session keeps its native ID and folder: the observer's polls need not look again.
     const known = this.#candidates.get(id)?.target;
-    if (known?.provider === "devin" && this.store.sessions.get(id)?.agent === "devin") return known;
+    if (known?.reader.reuseTarget && this.store.sessions.get(id)?.agent === known.provider)
+      return known;
     const work = (async (): Promise<Target> => {
-      const claude = this.claudeManagedTarget(id);
-      let target: ReadStateTarget;
-      if (claude) target = claude;
-      else {
-        const stored = readManagedRecord(this.dataDir, id);
-        const parsed = managedRecordSchema.safeParse(stored);
-        if (parsed.success) {
-          const record = parsed.data;
-          if (
-            !hasManagedCatalogWorkspace(this.store, record) ||
-            pathIdentity(record.home) !== pathIdentity(this.sessions.codexHome()) ||
-            !record.native_id
-          )
-            throw new Error("read-state-unavailable");
-          let transcript: string | null = null;
-          const alias = this.store.sessions.id("codex", record.native_id);
-          if (this.store.sessions.get(alias)) {
-            const source = await this.sessions.resolve(alias);
-            transcript = "transcript" in source ? (source.transcript ?? null) : null;
-          }
-          const verified = this.sessions.verifiedCodexControlDirectory(record.native_id);
-          if (
-            !verified ||
-            !within(canonicalize(verified.cwd), canonicalize(record.workspace)) ||
-            (record.cwd !== undefined && pathIdentity(verified.cwd) !== pathIdentity(record.cwd))
-          )
-            throw new Error("read-state-unavailable");
-          transcript ??= this.sessions.verifiedCodexReadTranscript(
-            record.native_id,
-            record.workspace,
-          );
-          target = {
-            provider: "codex",
-            home: record.home,
-            nativeId: record.native_id,
-            workspace: verified.cwd,
-            transcript,
-          };
-        } else {
-          const provider = this.store.sessions.get(id)?.agent;
-          if (!isReadStateProvider(provider)) throw new Error("read-state-unsupported");
-          const source = await this.sessions.resolve(id);
-          if (!source.workspace) throw new Error("read-state-unavailable");
-          const workspace =
-            source.native.agent === "codex"
-              ? this.sessions.verifiedCodexControlDirectory(source.native.native_ref)?.cwd
-              : source.workspace;
-          if (!workspace) throw new Error("read-state-unavailable");
-          if (!within(canonicalize(workspace), canonicalize(source.workspace)))
-            throw new Error("read-state-unavailable");
-          target = {
-            provider,
-            home:
-              provider === "codex"
-                ? this.sessions.codexHome()
-                : provider === "devin"
-                  ? devinSessionHome(this.environment)
-                  : resolveClaudeConfig(this.environment, this.environment.HOME ?? homedir()).dir,
-            nativeId: source.native.native_ref,
-            workspace,
-            transcript: "transcript" in source ? (source.transcript ?? null) : null,
-          };
-        }
+      let target: ReadStateTarget | null = null;
+      for (const managed of this.#managedReaders) {
+        const resolved = managed.resolve(this, id);
+        if (!resolved) continue;
+        target = resolved instanceof Promise ? await resolved : resolved;
+        break;
       }
+      target ??= await this.#resolveIndexed(id);
+      const reader = readStateProvider(target.provider);
+      if (!reader) throw new Error("read-state-unsupported");
       const result = {
         ...target,
+        reader,
         key: conversationReadKey(target.provider, target.home, target.nativeId),
       };
       const candidate = this.#candidates.get(id) ?? {
-        provider: target.provider,
+        reader,
         touched: Date.now(),
         stale: true,
       };
@@ -213,19 +155,20 @@ export class ConversationReadStates {
 
   async #observe(target: Target, scope: string): Promise<ConversationReadState> {
     const native = this.#nativeTarget(target);
+    const nativeSource = target.reader.native?.source;
     const sourceKey = JSON.stringify([target.key, scope]);
-    if (native) {
-      const value = await this.#native.refresh(native, scope);
+    if (native && nativeSource) {
+      const value = await native.observer.refresh(native.target, scope);
       if (this.#closed) throw new Error("read-state-unavailable");
       if (value) {
         if (value.status === "unknown") {
           const persisted = this.ledger.nativeSnapshot(target.key)?.state;
           if (persisted?.status === "unread")
-            return { ...persisted, source: "codex-native", freshness: "stale", version: null };
+            return { ...persisted, source: nativeSource, freshness: "stale", version: null };
         }
-        this.#sources.set(sourceKey, "codex-native");
+        this.#sources.set(sourceKey, nativeSource);
         this.#lastNative.set(sourceKey, value);
-        const revision = this.#native.revision(native);
+        const revision = native.observer.revision(native.target);
         if (revision && value.freshness === "current") {
           try {
             this.ledger.saveNative(target.key, value, revision);
@@ -235,34 +178,31 @@ export class ConversationReadStates {
         }
         return value;
       }
-    } else if (target.provider === "codex") {
+    } else if (nativeSource) {
       // Missing executable is temporary; never silently switch an authoritative source.
       const previous =
         this.#lastNative.get(sourceKey) ?? this.ledger.nativeSnapshot(target.key)?.state;
       return {
-        ...(previous ?? unknown("codex-native")),
-        source: "codex-native",
+        ...(previous ?? unknown(nativeSource)),
+        source: nativeSource,
         freshness: "stale",
         version: null,
       };
     }
     const before = this.ledger.get(target.key, scope);
+    const { ledgerOnly, readTranscript, observeTranscript } = target.reader;
     try {
-      this.ledger.retryObservations(target.key, target.provider === "devin");
-      // The results recorded as AgentKib's turns ended are all there is to read.
-      if (target.provider === "devin") return devinState(this.ledger.get(target.key, scope));
-      if (target.transcript) {
-        const file =
-          target.provider === "codex"
-            ? await codexRollouts.plain(target.transcript)
-            : target.transcript;
+      this.ledger.retryObservations(target.key, !!ledgerOnly);
+      if (ledgerOnly) return ledgerOnly(this.ledger.get(target.key, scope));
+      if (target.transcript && observeTranscript) {
+        const file = readTranscript ? await readTranscript(target.transcript) : target.transcript;
         if (this.#closed) throw new Error("read-state-unavailable");
-        const observation = observeReadHistory(this.ledger, target.key, target.provider, file);
+        const observation = observeTranscript(this.ledger, target.key, file);
         if (observation.changed || (before.status === "unknown" && observation.complete))
           this.changed();
         if (native && this.#sources.get(sourceKey) !== "agentkib" && observation.complete) {
           const persisted = this.ledger.nativeSnapshot(target.key);
-          const verified = persisted?.state ?? this.#native.lastVerified(native, scope);
+          const verified = persisted?.state ?? native.observer.lastVerified(native.target, scope);
           if (verified && !this.ledger.handoff(target.key, scope, verified, persisted?.fingerprint))
             return { ...this.ledger.get(target.key, scope), freshness: "stale", version: null };
           this.#sources.set(sourceKey, "agentkib");
@@ -282,20 +222,12 @@ export class ConversationReadStates {
     }
   }
 
-  /** Codex writes a thread AgentKib started only with its first message. */
-  #unwrittenCodexThread(id: string): boolean {
-    const parsed = managedRecordSchema.safeParse(readManagedRecord(this.dataDir, id));
-    return (
-      parsed.success &&
-      !!parsed.data.native_id &&
-      pathIdentity(parsed.data.home) === pathIdentity(this.sessions.codexHome()) &&
-      !this.sessions.codexThreadWritten(parsed.data.native_id)
-    );
-  }
-
   async get(id: string, scope: string): Promise<ConversationReadState> {
     if (this.#closed) throw new Error("read-state-unavailable");
-    if (this.#unwrittenCodexThread(id)) return nothingToRead;
+    for (const managed of this.#managedReaders) {
+      const state = managed.beforeGet?.(this, id);
+      if (state) return state;
+    }
     const target = await this.#resolve(id);
     if (this.#closed) throw new Error("read-state-unavailable");
     const value = await this.#observe(target, scope).catch((error: unknown) => {
@@ -323,11 +255,16 @@ export class ConversationReadStates {
     if (current.version !== expectedVersion || (current.latestResult?.id ?? null) !== seenResultId)
       throw new Error("read-state-conflict");
     const native = this.#nativeTarget(target);
-    if (current.source === "codex-native") {
+    if (current.source !== "agentkib") {
       if (!native) throw new Error("read-state-unavailable");
-      const state = await this.#native.update(native, scope, expectedVersion, seenResultId);
+      const state = await native.observer.update(
+        native.target,
+        scope,
+        expectedVersion,
+        seenResultId,
+      );
       if (this.#closed) throw new Error("read-state-unavailable");
-      const revision = this.#native.revision(native);
+      const revision = native.observer.revision(native.target);
       if (revision) {
         try {
           this.ledger.saveNative(target.key, state, revision);
@@ -352,50 +289,49 @@ export class ConversationReadStates {
   project<T>(rows: T[], scope: string): T[] {
     const now = Date.now();
     const fallbackKeys = new Map<string, boolean>();
-    let codexCli: string | null | undefined;
+    const executables = new Map<ReadStateProvider, string | null>();
     const projections = rows.map((row) => {
       if (
         !row ||
         typeof row !== "object" ||
         !("id" in row) ||
         !("agent" in row) ||
-        typeof row.id !== "string" ||
-        !isReadStateProvider(row.agent)
+        typeof row.id !== "string"
       )
         return { row };
+      const reader = readStateProvider(row.agent);
+      if (!reader) return { row };
       let candidate = this.#candidates.get(row.id);
       if (!candidate) {
         if (this.#candidates.size >= 20_000) return { row };
-        candidate = { provider: row.agent, touched: now, stale: true };
+        candidate = { reader, touched: now, stale: true };
         this.#candidates.set(row.id, candidate);
       }
       candidate.touched = now;
       const { target, stale } = candidate;
-      if (!target)
-        return {
-          row,
-          state: unknown(candidate.provider === "codex" ? "codex-native" : "agentkib"),
-        };
-      if (target.provider === "codex" && codexCli === undefined)
-        codexCli = codexExecutable(this.environment);
-      const executable = target.provider === "codex" ? codexCli : null;
-      if (executable) {
-        const state = this.#native.cached({ ...target, executable }, scope);
-        if (state) return { row, state, stale };
-      } else if (candidate.provider === "codex") {
-        return { row, state: unknown("codex-native") };
+      const nativeSource = candidate.reader.native?.source;
+      if (!target) return { row, state: unknown(nativeSource ?? "agentkib") };
+      let executable = executables.get(target.reader);
+      if (executable === undefined && target.reader.native) {
+        executable = target.reader.native.executable(this.environment);
+        executables.set(target.reader, executable);
       }
-      fallbackKeys.set(target.key, candidate.provider === "codex");
-      return { row, fallbackKey: target.key, stale, devin: target.provider === "devin" };
+      if (executable) {
+        const state = this.#native.get(target.reader)?.cached({ ...target, executable }, scope);
+        if (state) return { row, state, stale };
+      } else if (nativeSource) {
+        return { row, state: unknown(nativeSource) };
+      }
+      fallbackKeys.set(target.key, !!nativeSource);
+      return { row, fallbackKey: target.key, stale, ledgerOnly: target.reader.ledgerOnly };
     });
     const fallbackStates = this.ledger.catalogStates(fallbackKeys, scope);
-    return projections.map(({ row, state, fallbackKey, stale, devin }) => {
-      const kept = fallbackKey ? fallbackStates.get(fallbackKey) : undefined;
-      const readState = fallbackKey
-        ? devin
-          ? devinState(kept ?? unknown("agentkib"))
-          : (kept ?? unknown("agentkib"))
-        : state;
+    return projections.map(({ row, state, fallbackKey, stale, ledgerOnly }) => {
+      let readState = state;
+      if (fallbackKey) {
+        const kept = fallbackStates.get(fallbackKey) ?? unknown("agentkib");
+        readState = ledgerOnly ? ledgerOnly(kept) : kept;
+      }
       return readState
         ? { ...row, readState: stale ? { ...readState, freshness: "stale" } : readState }
         : row;
@@ -417,13 +353,19 @@ export class ConversationReadStates {
       const ids = [...this.#candidates.keys()];
       const count = Math.min(20, ids.length);
       const deadline = Date.now() + 4_500;
-      const homes = new Map<string, CodexReadTarget>();
+      const homes = new Map<
+        string,
+        { observer: NativeReadStateObserver; target: NativeReadStateTarget }
+      >();
       for (const candidate of this.#candidates.values()) {
-        const target = candidate.target && this.#nativeTarget(candidate.target);
-        if (target) homes.set(pathIdentity(target.home), target);
+        const native = candidate.target && this.#nativeTarget(candidate.target);
+        if (native) homes.set(pathIdentity(native.target.home), native);
       }
-      const native = [...homes.values()];
-      if (native.length) await this.#native.pollPage(native[this.#homeCursor++ % native.length]!);
+      const pages = [...homes.values()];
+      if (pages.length) {
+        const { observer, target } = pages[this.#homeCursor++ % pages.length]!;
+        await observer.pollPage(target);
+      }
       let freshnessChanged = false;
       for (let n = 0; n < count && !this.#closed && Date.now() < deadline; n++) {
         const id = ids[this.#cursor++ % ids.length]!;
@@ -454,8 +396,7 @@ export class ConversationReadStates {
     this.ledger.record(
       conversationReadKey(target.provider, target.home, target.nativeId),
       result,
-      // No transcript backs a Devin session's results: nothing older is left to scan.
-      target.provider === "devin",
+      !!readStateProvider(target.provider)?.ledgerOnly,
       options?.turnStartedAt,
     );
     this.changed();

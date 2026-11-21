@@ -9,6 +9,7 @@ import {
   type ApplyManagedControl,
   type managedControlSchema,
 } from "../../sessions/control-admission";
+import type { NativeSession } from "../../session-store";
 import type { BackendStore } from "../../store";
 import type { SessionReaders } from "../../session-readers";
 import { enrichLedgerImages } from "../../session-image-matching";
@@ -6502,6 +6503,34 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
       throw new Error("session-unavailable");
     this.#assertManagedHome(latest);
     return events;
+  }
+
+  catalogRows(
+    managed: ReturnType<typeof readManagedCatalog>["records"],
+    aliasesByOwner: ReadonlyMap<string, ReadonlySet<string>>,
+    nativeByOwner: ReadonlyMap<string, Pick<NativeSession, "title" | "updated_at">>,
+  ) {
+    return managed.map((record) => ({
+      id: record.id,
+      workspace_id: record.workspace_id,
+      agent: "codex",
+      // The thread's title as Codex lists it: the name the person or a Codex client gave
+      // it, else Codex's own title from its first message. The record's title (a
+      // placeholder for a session AgentKib created) shows only until Codex has the thread.
+      title: nativeByOwner.get(record.id)?.title?.trim() || record.title,
+      created_at: record.created_at,
+      updated_at: nativeByOwner.get(record.id)?.updated_at ?? record.created_at,
+      message_count: null,
+      git_branch: null,
+      origin: "interactive",
+      archived: record.archived,
+      sidechain: false,
+      availability: "readable",
+      indexedSessionIds: [...(aliasesByOwner.get(record.id) ?? [])],
+      executionMode: "codex-managed",
+      sourceSessionId: record.source_session_id ?? null,
+      forked_from_session_id: record.source_session_id ?? null,
+    }));
   }
 
   catalogRuntime(sessions: readonly { id: string }[], enabled: boolean) {

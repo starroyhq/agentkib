@@ -11,6 +11,7 @@ import { RemoteAgent } from "../../../../packages/backend/src/remote-agent";
 import { BackendStore } from "../../../../packages/backend/src/store";
 import { RuntimeRequestError } from "../../electron/main/runtime-host";
 import { createWebControlState, WebAccessService } from "../../electron/main/web/service";
+import type { HostControlValidationResult } from "@agentkib/backend/session-control-validation";
 
 export type Rpc = (method: string, params: unknown) => Promise<unknown>;
 
@@ -127,6 +128,11 @@ export async function startHost({
     staticDir: root,
     desktopOrigin: "app://bundle",
     runtimeRequest: dispatch("web.request"),
+    validateSessionControl: (call) =>
+      dispatch("web.request")({
+        operation: "provider-validate-control",
+        call,
+      }) as Promise<HostControlValidationResult>,
     sessionProviderRequest: dispatch("web.request"),
     historyRequest: (method, params) => dispatch(method)(params),
     managedRequest: dispatch("codex.managed"),

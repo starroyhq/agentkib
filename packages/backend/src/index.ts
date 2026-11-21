@@ -62,6 +62,7 @@ import {
   restrictSessionCommands,
   type SessionMethod,
 } from "./sessions/routing";
+import { hostControlValidationSchema, runProviderValidation } from "./sessions/validate/control";
 import { RemoteGateways } from "./remote-gateways";
 import { RemoteAgent } from "./remote-agent";
 import { WorkspaceStorageOwner } from "./storage";
@@ -2462,6 +2463,15 @@ export class TypeScriptBackend {
     if (method === RUNTIME_METHODS.sessionRequest) return this.#requestTypedSession(params);
     if (method === RUNTIME_METHODS.claudeManaged) return this.#requestClaudeManaged(params);
     if (method === RUNTIME_METHODS.codexManaged) return this.#requestCodexSession(params);
+    if (params.operation === "provider-validate-control") {
+      const call = hostControlValidationSchema.parse(params.call);
+      const agent =
+        this.#store!.sessions.get(call.sessionId)?.agent ??
+        (this.#claudeManaged?.hasManagedSession(call.sessionId) ? "claude-code" : "codex");
+      return this.#withWebRead((owner) =>
+        runProviderValidation(call, agent, owner.sessionProviders.typed(agent)?.validateControl),
+      );
+    }
     if (
       typeof params.sessionId === "string" &&
       typeof params.operation === "string" &&

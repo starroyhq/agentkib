@@ -225,6 +225,7 @@ type Connection = {
   publishedTools: Map<string, ClaudeBridgeTool>;
   /** The plugin can register a Project Agent's tools (feature `lead-tools`). */
   leadTools?: boolean;
+  leadReportsPaused?: boolean;
 };
 /** A report on its way into a terminal Project Agent's outbox. */
 type QueuedReport = { id: string; text: string; offered?: true };
@@ -250,6 +251,7 @@ export interface BridgeLead {
   selfTurn?(sessionId: string): { stopAs: string } | null;
   /** Why its delegation is paused, or null; the terminal tells the person. */
   paused?(sessionId: string): string | null;
+  reportPauseChanged?(sessionId: string, paused: boolean): void;
 }
 interface BridgeOptions {
   dataDir: string;
@@ -299,6 +301,16 @@ interface BridgeOptions {
 const MAX_QUEUED_REPORTS = 16;
 /** A report that joins one still waiting stays under this, as merged Claude host reports do. */
 const MAX_REPORT_TEXT = 32_000;
+const LEAD_RATE_LIMIT_PAUSE = "lead-rate-limit-pause";
+const reportQueueSchema = z
+  .array(
+    z.object({
+      id: uuid,
+      text: z.string().max(MAX_REPORT_TEXT),
+      offered: z.literal(true).optional(),
+    }),
+  )
+  .max(MAX_QUEUED_REPORTS);
 
 function privatePath(value: string, directory = false): void {
   if (!path.isAbsolute(value) || path.normalize(value) !== value)
@@ -327,12 +339,12 @@ function privateJson(file: string, value: unknown): void {
     rmSync(temporary, { force: true });
   }
 }
-function readLegacyJson(file: string): unknown {
+function readLegacyJson(file: string, maxBytes = MAX_BODY): unknown {
   privatePath(file);
   const stat = lstatSync(file);
   if (
     !stat.isFile() ||
-    stat.size > MAX_BODY ||
+    stat.size > maxBytes ||
     (stat.mode & 0o077) !== 0 ||
     (process.getuid && stat.uid !== process.getuid())
   )
@@ -592,6 +604,38 @@ export class ClaudeBridge {
     });
   }
 
+  #reportFile(bindingId: string): string {
+    return path.join(this.root, "lead-reports", `${bindingId}.json`);
+  }
+
+  #reportQueue(sessionId: string): QueuedReport[] {
+    const cached = this.#reports.get(sessionId);
+    if (cached) return cached;
+    const row = this.#bindings.get(sessionId);
+    if (!row || row.revoked) return [];
+    const file = this.#reportFile(row.bindingId);
+    // JSON uses up to six bytes for each escaped UTF-16 code unit.
+    const queued = existsSync(file)
+      ? reportQueueSchema.parse(
+          readLegacyJson(file, MAX_QUEUED_REPORTS * (MAX_REPORT_TEXT * 6 + 100)),
+        )
+      : [];
+    this.#reports.set(sessionId, queued);
+    return queued;
+  }
+
+  #saveReports(row: Binding, reports: QueuedReport[]): void {
+    privateJson(this.#reportFile(row.bindingId), reports);
+    this.#reports.set(row.target.sessionId, reports);
+  }
+
+  #forgetReports(row: Binding): void {
+    this.#reports.delete(row.target.sessionId);
+    const file = this.#reportFile(row.bindingId);
+    privatePath(file);
+    rmSync(file, { force: true });
+  }
+
   #saveContextWindows(): void {
     const active = new Set(
       [...this.#bindings.values()].filter((row) => !row.revoked).map((row) => row.bindingId),
@@ -791,6 +835,7 @@ export class ClaudeBridge {
       if (row) {
         row.revoked = true;
         this.#save();
+        this.#forgetReports(row);
         if (this.#contextWindows.delete(row.bindingId)) this.#saveContextWindows();
         rmSync(this.#credentialPath(row.bindingId), { force: true });
         // Respect the disconnect: automatic pairing must not reconnect this session.
@@ -1765,6 +1810,7 @@ export class ClaudeBridge {
       ) {
         this.#bindings.delete(id);
         rmSync(this.#credentialPath(binding.bindingId), { force: true });
+        this.#forgetReports(binding);
       }
     }
     if (auto && !old && this.#bindings.size >= 64) this.#evictAutoBinding();
@@ -1784,6 +1830,7 @@ export class ClaudeBridge {
     this.#writeCredential(row);
     if (old) {
       if (this.#contextWindows.delete(old.bindingId)) this.#saveContextWindows();
+      this.#forgetReports(old);
       rmSync(this.#credentialPath(old.bindingId), { force: true });
       this.#autoBindings.delete(old.bindingId);
     }
@@ -1805,16 +1852,22 @@ export class ClaudeBridge {
 
   /** What this Runtime takes beyond the 0.4.0 messages; a plugin uses only what is named. */
   #features(): { features: string[] } {
+    const lead = this.options.lead;
     return {
-      features: CLAUDE_BRIDGE_FEATURES.filter(
-        (feature) => feature !== "lead-tools" || !!this.options.lead,
-      ),
+      features: [
+        ...CLAUDE_BRIDGE_FEATURES.filter((feature) => feature !== "lead-tools" || !!lead),
+        ...(lead ? [LEAD_RATE_LIMIT_PAUSE] : []),
+      ],
     };
   }
 
   /** Whether this session's terminal can take a Project Agent's tools now. */
   leadCapable(sessionId: string): boolean {
     return this.#connections.get(sessionId)?.leadTools === true;
+  }
+
+  leadReportsPaused(sessionId: string): boolean {
+    return this.#connections.get(sessionId)?.leadReportsPaused === true;
   }
 
   /** The session became a Project Agent or stopped being one: its poll answers at once. */
@@ -1829,7 +1882,7 @@ export class ClaudeBridge {
 
   /** Reports waiting for this terminal to take them. */
   queuedReports(sessionId: string): number {
-    return this.#reports.get(sessionId)?.length ?? 0;
+    return this.#reportQueue(sessionId).length;
   }
 
   /**
@@ -1837,17 +1890,21 @@ export class ClaudeBridge {
    * submits it as a turn once the terminal is idle. True when it joined one still waiting.
    */
   queueReport(sessionId: string, text: string): boolean {
-    if (!this.#bindings.has(sessionId)) throw new Error("session-unavailable");
-    const queued = this.#reports.get(sessionId) ?? [];
+    const row = this.#bindings.get(sessionId);
+    if (!row || row.revoked) throw new Error("session-unavailable");
+    if (text.length > MAX_REPORT_TEXT) throw new Error("report-too-long");
+    const queued = [...this.#reportQueue(sessionId)];
     const last = queued.at(-1);
     if (last && !last.offered && last.text.length + text.length + 2 <= MAX_REPORT_TEXT) {
-      last.text = `${last.text}\n\n${text}`;
+      queued[queued.length - 1] = { id: last.id, text: `${last.text}\n\n${text}` };
+      this.#saveReports(row, queued);
       return true;
     }
     if (queued.length >= MAX_QUEUED_REPORTS) throw new Error("report-queue-full");
     queued.push({ id: randomUUID(), text });
-    this.#reports.set(sessionId, queued);
-    this.#connections.get(sessionId)?.wake?.();
+    this.#saveReports(row, queued);
+    const connection = this.#connections.get(sessionId);
+    if (!connection?.leadReportsPaused) connection?.wake?.();
     return false;
   }
   /** Frees room for a new automatic binding by dropping the oldest idle automatic one. */
@@ -1862,6 +1919,7 @@ export class ClaudeBridge {
         continue;
       // Resuming that terminal later pairs it again automatically.
       this.#bindings.delete(id);
+      this.#forgetReports(row);
       this.#autoBindings.delete(row.bindingId);
       if (this.#contextWindows.delete(row.bindingId)) this.#saveContextWindows();
       rmSync(this.#credentialPath(row.bindingId), { force: true });
@@ -2208,15 +2266,29 @@ export class ClaudeBridge {
       if (request.url === CLAUDE_BRIDGE_PATHS.commands) {
         const input = bridgePollSchema.parse(value);
         if (connection.pollActive) throw new Error("bridge-poll-already-active");
-        connection.pollActive = true;
         const sessionId = row.target.sessionId;
         if (input.leadTools !== undefined && this.options.lead)
           connection.leadTools = input.leadTools;
+        if (
+          connection.leadTools &&
+          input.leadReportsPaused !== undefined &&
+          connection.leadReportsPaused !== input.leadReportsPaused &&
+          this.options.lead?.tools(sessionId)
+        ) {
+          const previous = connection.leadReportsPaused;
+          connection.leadReportsPaused = input.leadReportsPaused;
+          try {
+            this.options.lead.reportPauseChanged?.(sessionId, input.leadReportsPaused);
+          } catch (error) {
+            connection.leadReportsPaused = previous;
+            throw error;
+          }
+        }
         if (input.takenReports?.length) {
           const taken = new Set(input.takenReports);
-          const left = (this.#reports.get(sessionId) ?? []).filter((item) => !taken.has(item.id));
-          if (left.length) this.#reports.set(sessionId, left);
-          else this.#reports.delete(sessionId);
+          const queued = this.#reportQueue(sessionId);
+          const left = queued.filter((item) => !taken.has(item.id));
+          if (left.length !== queued.length) this.#saveReports(row, left);
         }
         // What a terminal Project Agent needs: its tools, and the reports for it to queue.
         const lead = () => {
@@ -2230,15 +2302,28 @@ export class ClaudeBridge {
             /* The session is offered no tools rather than losing its commands. */
           }
           if (!tools) return { lead: null };
-          const reports = (this.#reports.get(sessionId) ?? []).slice(0, 4).map((report) => {
-            // Once offered, this ID must name the same text until the plugin acknowledges it.
-            report.offered = true;
-            return { id: report.id, text: report.text };
-          });
-          return { lead: { tools, reports, paused } };
+          const orderedTools = [...tools].sort(
+            (a, b) => Number(a.name === "worker_restart") - Number(b.name === "worker_restart"),
+          );
+          const queued = connection.leadReportsPaused ? [] : this.#reportQueue(sessionId);
+          const offered = queued.slice(0, 4);
+          if (offered.some((report) => !report.offered))
+            this.#saveReports(row, [
+              ...offered.map((report) => ({ ...report, offered: true as const })),
+              ...queued.slice(offered.length),
+            ]);
+          const reports = offered.map(({ id, text }) => ({ id, text }));
+          return { lead: { tools: orderedTools, reports, paused } };
         };
+        connection.pollActive = true;
         try {
-          if (!connection.pending && !this.#reports.get(sessionId)?.length && input.waitMs)
+          if (
+            !connection.pending &&
+            (connection.leadReportsPaused ||
+              !connection.leadTools ||
+              !this.#reportQueue(sessionId).length) &&
+            input.waitMs
+          )
             await new Promise<void>((resolve) => {
               const done = () => {
                 clearTimeout(timer);
@@ -2251,17 +2336,18 @@ export class ClaudeBridge {
               connection.wake = done;
               response.once("close", done);
             });
+          if (response.destroyed) return;
+          if (this.#connections.get(sessionId) !== connection) {
+            reply(409, { error: "bridge-lease-expired" });
+            return;
+          }
           const pending = connection.pending;
-          if (
-            pending &&
-            !pending.delivered &&
-            this.#connections.get(row.target.sessionId) === connection
-          ) {
+          if (pending && !pending.delivered) {
             this.options.validate(row.target, true, row.bindingId);
-            if (response.destroyed) return;
+            const offered = lead();
             dispatchManagedCommand(this.options.dataDir, pending.requestId);
             pending.delivered = true;
-            reply(200, { commands: [pending.command], ...lead() });
+            reply(200, { commands: [pending.command], ...offered });
           } else reply(200, { commands: [], ...lead() });
         } finally {
           connection.pollActive = false;

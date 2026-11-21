@@ -14,8 +14,11 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { zstdCompressSync } from "node:zlib";
 import { afterEach, describe, expect, it } from "vitest";
-import { RolloutCache, resolveRollout } from "../../../packages/backend/src/codex-rollout-files";
-import { CodexSessions } from "../../../packages/backend/src/codex-sessions";
+import {
+  RolloutCache,
+  resolveRollout,
+} from "../../../packages/backend/src/agents/codex/codex-rollout-files";
+import { CodexSessions } from "../../../packages/backend/src/agents/codex/codex-sessions";
 import { readJsonlSearchSource } from "../../../packages/backend/src/history-search-source-jsonl";
 import { SessionPaging } from "../../../packages/backend/src/session-paging";
 

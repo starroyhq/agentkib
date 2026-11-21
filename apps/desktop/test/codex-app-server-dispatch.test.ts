@@ -7,7 +7,7 @@ import {
   CodexAppServerSession,
   CodexAppServerError,
   codexWriterBusy,
-} from "../../../packages/backend/src/codex-app-server";
+} from "../../../packages/backend/src/agents/codex/codex-app-server";
 
 const { spawn, tree } = vi.hoisted(() => ({
   spawn: vi.fn(),

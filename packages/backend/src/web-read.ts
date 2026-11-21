@@ -27,41 +27,41 @@ import {
   managedCatalogProjection,
   managedRecordSchema,
   readManagedCatalog,
-} from "./managed-session-catalog";
+} from "./agents/codex/managed-session-catalog";
 import { canonicalize, pathIdentity } from "./paths";
 import { within } from "./files";
 import { catalogCheckouts } from "./git-checkouts";
 import { conversationReadKey, ReadStateLedger } from "./read-state-ledger";
-import { codexTurnMeta, isCodexTurnEndEvent } from "./codex-turn-end";
-import { codexExecutable } from "./codex-executable";
+import { codexTurnMeta, isCodexTurnEndEvent } from "./agents/codex/codex-turn-end";
+import { codexExecutable } from "./agents/codex/codex-executable";
 import {
   CodexAppServerReader,
   CodexAppServerSession,
   codexThreadMissing,
   codexWriterBusy,
-} from "./codex-app-server";
+} from "./agents/codex/codex-app-server";
 import {
   CodexRuntimePreflight,
   codexReleaseSupportsWriterLock,
   codexServerVersion,
-} from "./codex-runtime-preflight";
-import { CodexCatalogCache } from "./codex-catalog-cache";
-import { CodexExternalTurns, type EndedTurn, type ExternalTurn } from "./codex-external-turns";
-import { codexResumeCommand } from "./codex-resume-command";
-import { CodexFollowerBridge } from "./codex-follower-bridge";
-import { CodexFollowerConnection } from "./codex-follower-connection";
-import { CodexDesktopApp } from "./codex-desktop-app";
+} from "./agents/codex/codex-runtime-preflight";
+import { CodexCatalogCache } from "./agents/codex/codex-catalog-cache";
+import { CodexExternalTurns, type EndedTurn, type ExternalTurn } from "./agents/codex/codex-external-turns";
+import { codexResumeCommand } from "./agents/codex/codex-resume-command";
+import { CodexFollowerBridge } from "./agents/codex/codex-follower-bridge";
+import { CodexFollowerConnection } from "./agents/codex/codex-follower-connection";
+import { CodexDesktopApp } from "./agents/codex/codex-desktop-app";
 import {
   parseFollowerModelSettings,
   sameFollowerModelSettings,
   type CodexFollowerState,
   type FollowerModelSettings,
-} from "./codex-follower-state";
-import { CodexFollowerStream } from "./codex-follower-stream";
+} from "./agents/codex/codex-follower-state";
+import { CodexFollowerStream } from "./agents/codex/codex-follower-stream";
 import { AntigravitySessionProvider } from "./agents/antigravity/session-provider";
 import { DevinSessionProvider } from "./agents/devin/session-provider";
-import { ManagedCodexState, elicitationResponse } from "./managed-codex-state";
-import { ManagedCodexEventBridge } from "./managed-codex-state";
+import { ManagedCodexState, elicitationResponse } from "./agents/codex/managed-codex-state";
+import { ManagedCodexEventBridge } from "./agents/codex/managed-codex-state";
 import { projectContextUsage, type ContextUsage } from "./context-usage";
 import { SerialSessionQueue } from "./serial-session-queue";
 import type { SessionProviderRegistry, SessionProviders } from "./session-provider";
@@ -72,7 +72,7 @@ import { sessionQuerySchema as managedQuerySchema } from "./sessions/routing";
 import { DshSessionProvider } from "./agents/dsh/session-provider";
 import { activityBlocks, assertActivityAllows } from "./session-activity";
 import { acquireManagedSessionLease, existingFileLeaseBusy } from "./managed-session-lock";
-import { acquireCodexFollowerOperationLock } from "./codex-follower-operation-lock";
+import { acquireCodexFollowerOperationLock } from "./agents/codex/codex-follower-operation-lock";
 import {
   acknowledgeDispatchedManagedCommand,
   annotateManagedCommand,
@@ -94,7 +94,7 @@ import {
   saveManagedUsageLimit,
 } from "./managed-ledger";
 import { CodexLeadTurns } from "./lead-turn-origin";
-import { CodexTitleThreads, codexUserMessageText, threadTitleModel } from "./codex-thread-title";
+import { CodexTitleThreads, codexUserMessageText, threadTitleModel } from "./agents/codex/codex-thread-title";
 import {
   AUTO_CONTINUE_TEXT,
   armUsageLimit,

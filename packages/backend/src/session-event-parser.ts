@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import type { ConversationTurnMeta } from "@agentkib/runtime-protocol";
-import { sessionTitle } from "./codex-sessions";
+import { sessionTitle } from "./agents/codex/codex-sessions";
 import {
   claudeToolDetail,
   claudeToolResult,
@@ -12,8 +12,8 @@ import {
   type ToolContext,
 } from "./conversation-tools";
 import { jsonTimestamp } from "./session-history";
-import { codexErrorText, codexTurnErrorEvent } from "./codex-turn-error";
-import { codexTurnEndEvent } from "./codex-turn-end";
+import { codexErrorText, codexTurnErrorEvent } from "./agents/codex/codex-turn-error";
+import { codexTurnEndEvent } from "./agents/codex/codex-turn-end";
 import { isAutoContinueText } from "./usage-limit";
 import {
   claudeCommandInvocation,

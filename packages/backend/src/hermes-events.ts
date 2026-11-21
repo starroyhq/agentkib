@@ -3,7 +3,7 @@ import { nativeFileIdentity } from "./native-files";
 import { Sql } from "./sql";
 import { stableNativeRef } from "./session-history";
 import { textTimestamp } from "./hermes-sessions";
-import { sessionTitle } from "./codex-sessions";
+import { sessionTitle } from "./agents/codex/codex-sessions";
 import { compareUtf8 } from "./workspaces";
 import {
   hasText,

@@ -19,10 +19,10 @@ import {
   type SessionSubscription,
 } from "@agentkib/runtime-protocol";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { CodexAppServerSession } from "../../../../packages/backend/src/codex-app-server";
-import { CodexDesktopApp } from "../../../../packages/backend/src/codex-desktop-app";
-import { CodexFollowerBridge } from "../../../../packages/backend/src/codex-follower-bridge";
-import { CodexRuntimePreflight } from "../../../../packages/backend/src/codex-runtime-preflight";
+import { CodexAppServerSession } from "../../../../packages/backend/src/agents/codex/codex-app-server";
+import { CodexDesktopApp } from "../../../../packages/backend/src/agents/codex/codex-desktop-app";
+import { CodexFollowerBridge } from "../../../../packages/backend/src/agents/codex/codex-follower-bridge";
+import { CodexRuntimePreflight } from "../../../../packages/backend/src/agents/codex/codex-runtime-preflight";
 import type { SessionProviderResponse } from "../../../../packages/backend/src/session-provider";
 import { WebReadRequests } from "../../../../packages/backend/src/web-read";
 import { startBackend, startHost } from "./harness";

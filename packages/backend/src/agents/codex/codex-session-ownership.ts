@@ -2,7 +2,7 @@ import { readFileSync, statSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import type { SessionCollection } from "@agentkib/runtime-protocol";
-import { pathIdentity } from "./paths";
+import { pathIdentity } from "../../paths";
 
 type RecordValue = Record<string, unknown>;
 const record = (value: unknown): RecordValue =>

@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import { userHome } from "./mcp-config-read";
 import { isReparseOrSymlink } from "./native-files";
 import { belongsToWorkspace, stableNativeRef } from "./session-history";
-import { sessionTitle } from "./codex-sessions";
+import { sessionTitle } from "./agents/codex/codex-sessions";
 import type { NativeSession } from "./session-store";
 import type { ConversationEventPage } from "./session-events";
 import { MAX_MESSAGE_BYTES, MAX_PAGE_BYTES } from "./session-events";

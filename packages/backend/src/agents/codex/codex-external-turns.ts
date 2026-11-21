@@ -12,10 +12,10 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { isCompressedRollout, resolveRollout } from "./codex-rollout-files";
 import { CodexSessions } from "./codex-sessions";
-import { existingFileLeaseBusy } from "./managed-session-lock";
-import { isReparseOrSymlink } from "./native-files";
-import { Sql } from "./sql";
-import { timestamp } from "./timestamps";
+import { existingFileLeaseBusy } from "../../managed-session-lock";
+import { isReparseOrSymlink } from "../../native-files";
+import { Sql } from "../../sql";
+import { timestamp } from "../../timestamps";
 
 /**
  * A turn that a Codex client outside AgentKib, such as the Codex app or the CLI, is running

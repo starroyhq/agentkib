@@ -3,7 +3,7 @@ import { performance } from "node:perf_hooks";
 import { resolveCommand } from "../../command-resolution";
 import { canonicalize, pathIdentity } from "../../paths";
 import { compareUtf8 } from "../../workspaces";
-import { sessionTitle } from "../../codex-sessions";
+import { sessionTitle } from "../codex/codex-sessions";
 import { hasText } from "../../session-events";
 import type { NativeSession } from "../../session-store";
 import { acpObject, acpTimestamp, stringifyAcpJson } from "../../acp-json";

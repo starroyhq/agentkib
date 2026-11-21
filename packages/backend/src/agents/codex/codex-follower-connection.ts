@@ -4,8 +4,8 @@ import * as fs from "node:fs";
 import { createRequire } from "node:module";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
-import { nativeBindings } from "./native-files";
-import { versionAtLeast } from "./native-version";
+import { nativeBindings } from "../../native-files";
+import { versionAtLeast } from "../../native-version";
 
 const CLIENT_TYPE = "agentkib-codex-bridge";
 const MAX_FRAME_BYTES = 64 * 1024 * 1024;

@@ -6,11 +6,11 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   CodexReadStateObserver,
   type CodexReadTarget,
-} from "../../../packages/backend/src/codex-read-state";
+} from "../../../packages/backend/src/agents/codex/codex-read-state";
 import {
   CodexAppServerError,
   type CodexAppServerSession,
-} from "../../../packages/backend/src/codex-app-server";
+} from "../../../packages/backend/src/agents/codex/codex-app-server";
 
 const cleanups: Array<() => unknown> = [];
 afterEach(async () => {

@@ -121,7 +121,7 @@ import {
   type SubagentCatalog,
 } from "@agentkib/runtime-protocol";
 import { SessionStreamHub } from "./session-stream";
-import { mergeCodexFollowerSnapshot } from "./codex-follower-stream";
+import { mergeCodexFollowerSnapshot } from "./agents/codex/codex-follower-stream";
 import { SessionSnapshotHistory } from "./session-snapshot-history";
 import { retainManagedLedgerReaders } from "./managed-ledger";
 import { MessageLeadReports } from "./message-lead-reports";

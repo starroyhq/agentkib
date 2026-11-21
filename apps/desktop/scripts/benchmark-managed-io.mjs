@@ -126,7 +126,13 @@ if (process.argv[2] === "--worker") {
     const results = [];
     for (const { label, root } of roots) {
       const ledger = path.join(root, "packages/backend/src/managed-ledger.ts");
-      const state = path.join(root, "packages/backend/src/managed-codex-state.ts");
+      const movedState = path.join(
+        root,
+        "packages/backend/src/agents/codex/managed-codex-state.ts",
+      );
+      const state = statSync(movedState, { throwIfNoEntry: false })?.isFile()
+        ? movedState
+        : path.join(root, "packages/backend/src/managed-codex-state.ts");
       assert.ok(statSync(ledger).isFile() && statSync(state).isFile());
       const entry = path.join(root, ".managed-io-benchmark-entry.ts");
       const output = await build({

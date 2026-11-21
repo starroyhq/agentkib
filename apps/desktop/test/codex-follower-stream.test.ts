@@ -1,9 +1,9 @@
 // @vitest-environment node
 import { EventEmitter } from "node:events";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { CodexFollowerBridge } from "../../../packages/backend/src/codex-follower-bridge";
-import { CodexFollowerConnection } from "../../../packages/backend/src/codex-follower-connection";
-import type { CodexFollowerState } from "../../../packages/backend/src/codex-follower-state";
+import { CodexFollowerBridge } from "../../../packages/backend/src/agents/codex/codex-follower-bridge";
+import { CodexFollowerConnection } from "../../../packages/backend/src/agents/codex/codex-follower-connection";
+import type { CodexFollowerState } from "../../../packages/backend/src/agents/codex/codex-follower-state";
 
 type JsonRecord = Record<string, unknown>;
 type Snapshot = ReturnType<CodexFollowerState["streamSnapshot"]>;

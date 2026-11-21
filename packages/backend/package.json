@@ -8,7 +8,7 @@
     "./migration": "./src/migration.ts",
     "./session-store": "./src/session-store.ts",
     "./sql": "./src/sql.ts",
-    "./codex-sessions": "./src/codex-sessions.ts",
+    "./codex-sessions": "./src/agents/codex/codex-sessions.ts",
     "./claude-sessions": "./src/claude-sessions.ts",
     "./grok-sessions": "./src/grok-sessions.ts",
     "./openclaw-sessions": "./src/openclaw-sessions.ts",

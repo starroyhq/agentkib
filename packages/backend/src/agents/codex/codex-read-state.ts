@@ -2,8 +2,8 @@ import { createHash } from "node:crypto";
 import { statSync } from "node:fs";
 import type { ConversationReadResult, ConversationReadState } from "@agentkib/runtime-protocol";
 import { CodexAppServerError, CodexAppServerSession } from "./codex-app-server";
-import { pathIdentity } from "./paths";
-import { codexTerminalResults } from "./read-state-history";
+import { pathIdentity } from "../../paths";
+import { codexTerminalResults } from "../../read-state-history";
 
 export interface CodexReadTarget {
   key: string;

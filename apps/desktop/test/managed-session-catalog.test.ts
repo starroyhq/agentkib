@@ -19,7 +19,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { zstdCompressSync } from "node:zlib";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { CodexSessions } from "../../../packages/backend/src/codex-sessions";
+import { CodexSessions } from "../../../packages/backend/src/agents/codex/codex-sessions";
 import { Commands } from "../../../packages/backend/src/commands";
 import type { CursorBridge } from "../../../packages/backend/src/cursor-bridge";
 import {
@@ -34,16 +34,16 @@ import {
   projectPairedManagedSessions,
   readManagedCatalog,
   type ManagedCatalogRecord,
-} from "../../../packages/backend/src/managed-session-catalog";
+} from "../../../packages/backend/src/agents/codex/managed-session-catalog";
 import { RemoteAgent } from "../../../packages/backend/src/remote-agent";
 import type { RemoteTlsRequestHandler } from "../../../packages/backend/src/remote-tls";
 import { SessionIndex } from "../../../packages/backend/src/session-index";
 import { SessionReaders } from "../../../packages/backend/src/session-readers";
 import { BackendStore } from "../../../packages/backend/src/store";
 import { WebReadRequests } from "../../../packages/backend/src/web-read";
-import { CodexAppServerSession } from "../../../packages/backend/src/codex-app-server";
-import { CodexFollowerBridge } from "../../../packages/backend/src/codex-follower-bridge";
-import { CodexRuntimePreflight } from "../../../packages/backend/src/codex-runtime-preflight";
+import { CodexAppServerSession } from "../../../packages/backend/src/agents/codex/codex-app-server";
+import { CodexFollowerBridge } from "../../../packages/backend/src/agents/codex/codex-follower-bridge";
+import { CodexRuntimePreflight } from "../../../packages/backend/src/agents/codex/codex-runtime-preflight";
 
 const remote = vi.hoisted(() => ({ serve: undefined as RemoteTlsRequestHandler | undefined }));
 vi.mock("node:os", async (original) => ({

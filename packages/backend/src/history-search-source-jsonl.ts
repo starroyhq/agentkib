@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { closeSync, constants, fstatSync, lstatSync, openSync, readSync } from "node:fs";
-import { decompressedChunks, isCompressedRollout } from "./codex-rollout-files";
+import { decompressedChunks, isCompressedRollout } from "./agents/codex/codex-rollout-files";
 import { isReparseOrSymlink } from "./native-files";
 import { messageText } from "./session-events";
 import { jsonTimestamp } from "./session-history";

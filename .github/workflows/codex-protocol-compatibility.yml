@@ -9,10 +9,11 @@ on:
     paths:
       - .github/workflows/codex-protocol-compatibility.yml
       - .github/scripts/codex-protocol-compatibility*.mjs
-      - packages/backend/src/managed-codex-state.ts
+      - packages/backend/src/agents/codex/managed-codex-state.ts
       - packages/backend/src/web-read.ts
-      - packages/backend/src/codex-app-server.ts
-      - packages/backend/src/codex-runtime-preflight.ts
+      - packages/backend/src/agents/codex/codex-app-server.ts
+      - packages/backend/src/agents/codex/codex-runtime-preflight.ts
+      - packages/backend/src/agents/codex/session-provider.ts
 
 permissions:
   contents: read

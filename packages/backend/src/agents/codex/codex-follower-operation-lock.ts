@@ -1,7 +1,7 @@
 import { closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
-import { nativeBindings } from "./native-files";
+import { nativeBindings } from "../../native-files";
 
 const active = new Set<string>();
 

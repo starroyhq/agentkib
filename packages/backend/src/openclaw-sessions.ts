@@ -11,7 +11,7 @@ import {
   safeOpenClawSqliteAuthority,
   type OpenClawSqliteSession,
 } from "./openclaw-sqlite-sessions";
-import { sessionTitle } from "./codex-sessions";
+import { sessionTitle } from "./agents/codex/codex-sessions";
 import {
   belongsToWorkspace,
   historyOrder,

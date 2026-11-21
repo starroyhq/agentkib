@@ -18,7 +18,7 @@ import {
 } from "../../../packages/backend/src/session-images";
 import { SessionPaging } from "../../../packages/backend/src/session-paging";
 import { enrichLedgerImages } from "../../../packages/backend/src/session-image-matching";
-import { codexRollouts } from "../../../packages/backend/src/codex-rollout-files";
+import { codexRollouts } from "../../../packages/backend/src/agents/codex/codex-rollout-files";
 import type {
   ConversationEvent,
   HistoryFormat,

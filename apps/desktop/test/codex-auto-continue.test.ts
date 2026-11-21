@@ -17,20 +17,20 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   CodexAppServerError,
   CodexAppServerSession,
-} from "../../../packages/backend/src/codex-app-server";
-import { CodexFollowerBridge } from "../../../packages/backend/src/codex-follower-bridge";
+} from "../../../packages/backend/src/agents/codex/codex-app-server";
+import { CodexFollowerBridge } from "../../../packages/backend/src/agents/codex/codex-follower-bridge";
 import {
   CodexTitleThreads,
   parseThreadTitle,
   threadTitleModel,
   threadTitlePrompt,
-} from "../../../packages/backend/src/codex-thread-title";
-import { CodexFollowerConnection } from "../../../packages/backend/src/codex-follower-connection";
-import { CodexFollowerState } from "../../../packages/backend/src/codex-follower-state";
-import { CodexDesktopApp } from "../../../packages/backend/src/codex-desktop-app";
+} from "../../../packages/backend/src/agents/codex/codex-thread-title";
+import { CodexFollowerConnection } from "../../../packages/backend/src/agents/codex/codex-follower-connection";
+import { CodexFollowerState } from "../../../packages/backend/src/agents/codex/codex-follower-state";
+import { CodexDesktopApp } from "../../../packages/backend/src/agents/codex/codex-desktop-app";
 import { AUTO_CONTINUE_TEXT } from "../../../packages/backend/src/usage-limit";
-import * as codexFollowerLocks from "../../../packages/backend/src/codex-follower-operation-lock";
-import { CodexRuntimePreflight } from "../../../packages/backend/src/codex-runtime-preflight";
+import * as codexFollowerLocks from "../../../packages/backend/src/agents/codex/codex-follower-operation-lock";
+import { CodexRuntimePreflight } from "../../../packages/backend/src/agents/codex/codex-runtime-preflight";
 import { readControlReceipt } from "../../../packages/backend/src/control-receipt";
 import {
   claimManagedCommand,
@@ -41,14 +41,14 @@ import {
   readUnknownManagedCommands,
   saveManagedRecord,
 } from "../../../packages/backend/src/managed-ledger";
-import { ManagedCodexState } from "../../../packages/backend/src/managed-codex-state";
+import { ManagedCodexState } from "../../../packages/backend/src/agents/codex/managed-codex-state";
 import {
   acquireManagedSessionLease,
   acquirePortableFileLease,
 } from "../../../packages/backend/src/managed-session-lock";
 import * as managedSessionLocks from "../../../packages/backend/src/managed-session-lock";
 import { SessionReaders } from "../../../packages/backend/src/session-readers";
-import { CodexSessions } from "../../../packages/backend/src/codex-sessions";
+import { CodexSessions } from "../../../packages/backend/src/agents/codex/codex-sessions";
 import type { Commands } from "../../../packages/backend/src/commands";
 import { BackendStore } from "../../../packages/backend/src/store";
 import { WebReadRequests } from "../../../packages/backend/src/web-read";

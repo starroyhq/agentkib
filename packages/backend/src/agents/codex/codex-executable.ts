@@ -1,7 +1,7 @@
 import path from "node:path";
 import { statSync } from "node:fs";
-import { resolveCommand, resolveCommands } from "./command-resolution";
-import { pathIdentity } from "./paths";
+import { resolveCommand, resolveCommands } from "../../command-resolution";
+import { pathIdentity } from "../../paths";
 
 /**
  * Where the Codex desktop app keeps the CLI it runs, inside its bundle. ChatGPT.app 26.1106

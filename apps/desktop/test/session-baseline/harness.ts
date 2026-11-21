@@ -23,29 +23,33 @@ export async function startBackend({
   workspace,
   environment,
   indexSessions = false,
+  reuseData = false,
 }: {
   data: string;
   workspace: string;
   environment: NodeJS.ProcessEnv & { HOME: string };
   indexSessions?: boolean;
+  reuseData?: boolean;
 }) {
-  await mkdir(data, { recursive: true });
-  await writeFile(
-    join(data, "preferences.json"),
-    JSON.stringify({ session_index_enabled: indexSessions }),
-  );
-  const store = new BackendStore(join(data, "agentkib.db"));
-  try {
-    store.sql.run(
-      "INSERT INTO workspaces(id,canonical_path,name,status,last_discovered_at) VALUES(?,?,?,?,?)",
-      "workspace",
-      workspace,
-      "Offline workspace",
-      "healthy",
-      "2026-11-20T00:00:00Z",
+  if (!reuseData) {
+    await mkdir(data, { recursive: true });
+    await writeFile(
+      join(data, "preferences.json"),
+      JSON.stringify({ session_index_enabled: indexSessions }),
     );
-  } finally {
-    store.close();
+    const store = new BackendStore(join(data, "agentkib.db"));
+    try {
+      store.sql.run(
+        "INSERT INTO workspaces(id,canonical_path,name,status,last_discovered_at) VALUES(?,?,?,?,?)",
+        "workspace",
+        workspace,
+        "Offline workspace",
+        "healthy",
+        "2026-11-20T00:00:00Z",
+      );
+    } finally {
+      store.close();
+    }
   }
 
   // Keep the real request dispatcher and provider registry. Background indexers and

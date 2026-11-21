@@ -37,13 +37,11 @@ import {
 } from "@agentkib/runtime-protocol";
 import { acquirePortableFileLease } from "../../managed-session-lock";
 import {
-  claimManagedCommand,
-  dispatchManagedCommand,
   finishManagedCommand,
   observeManagedCommandCompletion,
   readUnknownManagedCommands,
-  replayManagedCommand,
 } from "../../managed-ledger";
+import { admitControlReceipt } from "../../sessions/control-receipts";
 import { dshSessionDocument, type DshDocumentImage } from "./dsh-document";
 import type { DshManagedRuntime } from "./dsh-managed-runtime";
 import type { DshLocalTurnCheckpoint } from "./dsh-local-history";
@@ -2703,9 +2701,12 @@ export class DshBridge {
         : z.string().min(1).max(128).parse(value.agentPreset);
     const result = (outcome: string, extra: Record<string, unknown> = {}) =>
       this.#created(requestId, outcome, extra);
-    const fingerprint = digest(stable({ ...value, runtimeBootId: undefined })).toString("hex");
-    const replay = replayManagedCommand(this.options.dataDir, requestId, fingerprint);
-    if (replay) return replay;
+    const receipt = admitControlReceipt(
+      this.options.dataDir,
+      requestId,
+      stable({ ...value, runtimeBootId: undefined }),
+    );
+    if (receipt.previous) return receipt.previous;
     let runtime: Runtime;
     let cwd: string;
     let modelSelection: DshCreateSelection | undefined;
@@ -2743,7 +2744,7 @@ export class DshBridge {
     const nativeId = `session-${randomUUID()}`;
     const id = this.options.sessionId(nativeId);
     const commandId = randomUUID();
-    const prior = claimManagedCommand(this.options.dataDir, requestId, id, fingerprint, deviceId, {
+    const prior = receipt.claim(id, deviceId, {
       operation: "create",
       commandId,
       runtimeId: runtime.runtimeId,
@@ -2771,7 +2772,7 @@ export class DshBridge {
           ...(modelSelection ? { modelSelection } : {}),
         },
         undefined,
-        () => dispatchManagedCommand(this.options.dataDir, requestId),
+        receipt.dispatch,
       );
       const child = sent.ok ? (sent.value as { sessionId?: unknown } | null)?.sessionId : undefined;
       if (typeof child === "string" && child) made = child;
@@ -2799,7 +2800,7 @@ export class DshBridge {
     const outcome = sent.ok
       ? result("accepted", { sessionId: this.options.sessionId(made) })
       : result("not-dispatched", { reason: dshRefusal(sent.error) });
-    finishManagedCommand(this.options.dataDir, requestId, outcome);
+    receipt.finish(outcome);
     return outcome;
   }
   /**
@@ -3637,9 +3638,12 @@ export class DshBridge {
       .regex(/^[A-Za-z0-9_:-]+$/)
       .parse(value.deviceId);
     const revision = z.number().safe().int().nonnegative().parse(value.expectedRevision);
-    const fingerprint = digest(stable({ ...value, runtimeBootId: undefined })).toString("hex");
-    const replay = replayManagedCommand(this.options.dataDir, requestId, fingerprint);
-    if (replay) return replay;
+    const receipt = admitControlReceipt(
+      this.options.dataDir,
+      requestId,
+      stable({ ...value, runtimeBootId: undefined }),
+    );
+    if (receipt.previous) return receipt.previous;
     // An explicit send can resume a session with no writer. Registering the new bridge can
     // advance the revision from the one the user saw before the request.
     let started = false;
@@ -4046,22 +4050,13 @@ export class DshBridge {
         ? { goalAction: command.action, goalRevision: command.goalRevision ?? null }
         : {}),
     };
-    const prior = claimManagedCommand(
-      this.options.dataDir,
-      requestId,
-      id,
-      fingerprint,
-      deviceId,
-      evidence,
-    );
+    const prior = receipt.claim(id, deviceId, evidence);
     if (prior) return prior;
     this.#inflight.set(id, { requestId, commandId, runtime: runtime.token });
     this.#touch(nativeId);
     this.#publish(nativeId);
     try {
-      let result = await this.#command(runtime, command, undefined, () =>
-        dispatchManagedCommand(this.options.dataDir, requestId),
-      );
+      let result = await this.#command(runtime, command, undefined, receipt.dispatch);
       // A command a person typed ran once DSH matched it; its answer is in the session's
       // history, as in DSH's own window. One AgentKib runs for its own control must succeed.
       const typed = ["send", "steer", "queue-add"].includes(String(value.operation));
@@ -4116,7 +4111,7 @@ export class DshBridge {
       let outcome: Record<string, unknown>;
       if (result.ok && refused) {
         outcome = this.#result(id, requestId, "not-dispatched", refused);
-        finishManagedCommand(this.options.dataDir, requestId, outcome);
+        receipt.finish(outcome);
       } else if (result.ok) {
         const found = (result.value as { found?: boolean } | null)?.found;
         if (command.type === "answer" && found === false) {
@@ -4131,7 +4126,7 @@ export class DshBridge {
           if (forked)
             outcome = { ...outcome, sessionId: this.options.sessionId(forked), completed: true };
         }
-        finishManagedCommand(this.options.dataDir, requestId, outcome);
+        receipt.finish(outcome);
       } else if (result.error === "unknown") {
         // Delivered, but the plugin never reported back. Keep it unknown; never resend. The
         // running DSH is asked about it again until its record or state settles it.
@@ -4140,7 +4135,7 @@ export class DshBridge {
         this.#unknownSince.set(requestId, Date.now());
       } else {
         outcome = this.#result(id, requestId, "not-dispatched", dshRefusal(result.error));
-        finishManagedCommand(this.options.dataDir, requestId, outcome);
+        receipt.finish(outcome);
       }
       this.#touch(nativeId);
       // Settings refresh the model/permission projection. Real transcript changes are reported by DSH.
@@ -4159,8 +4154,7 @@ export class DshBridge {
       // The stored result was built while this request still counted as unconfirmed, so its
       // snapshot says "outcome-unknown". A replay or a receipt would hand that to a client,
       // which would take it as the session's state.
-      if (outcome.controlOutcome !== "unknown")
-        finishManagedCommand(this.options.dataDir, requestId, settled);
+      if (outcome.controlOutcome !== "unknown") receipt.finish(settled);
       return settled;
     } finally {
       this.#inflight.delete(id);

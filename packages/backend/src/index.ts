@@ -2871,6 +2871,7 @@ export class TypeScriptBackend {
         undefined,
         this.#dshSessionProvider,
         (sessionId, operation) => this.#workerObserver.controlled(sessionId, operation),
+        async (request) => this.#requestWebSession(request),
       );
       this.#webRead.observeLanes({
         turnEnded: this.#workerObserver.turnEnded,

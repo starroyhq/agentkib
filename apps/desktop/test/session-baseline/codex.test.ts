@@ -19,10 +19,12 @@ import {
   type SessionSubscription,
 } from "@agentkib/runtime-protocol";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { CodexSessionProvider } from "../../../../packages/backend/src/agents/codex/session-provider";
 import { CodexAppServerSession } from "../../../../packages/backend/src/agents/codex/codex-app-server";
 import { CodexDesktopApp } from "../../../../packages/backend/src/agents/codex/codex-desktop-app";
 import { CodexFollowerBridge } from "../../../../packages/backend/src/agents/codex/codex-follower-bridge";
 import { CodexRuntimePreflight } from "../../../../packages/backend/src/agents/codex/codex-runtime-preflight";
+import { OrchestrationService } from "../../../../packages/backend/src/orchestration-service";
 import type { SessionProviderResponse } from "../../../../packages/backend/src/session-provider";
 import { WebReadRequests } from "../../../../packages/backend/src/web-read";
 import { startBackend, startHost } from "./harness";
@@ -409,6 +411,56 @@ describe("Codex session baseline through HTTP and backend RPC", () => {
         expectedRevision: state.result.revision,
       }),
     ).rejects.toThrow("unsupported-session-provider-operation");
+  });
+
+  it("dispatches a flat typed send once and replays its receipt through both raw RPCs", async () => {
+    const sessionId = await create();
+    const state = await live(sessionId);
+    const rpc = backend!.rpc;
+    const requestId = randomUUID();
+    const request = {
+      operation: "send",
+      sessionId,
+      deviceId: host.deviceId,
+      requestId,
+      expectedRevision: state.revision,
+      experimentalEnabled: true,
+      runtimeBootId: state.runtimeBootId,
+      text: "Start work through the typed provider",
+    };
+    const typedRequest = vi.spyOn(CodexSessionProvider.prototype, "request");
+    const laneControlled = vi.spyOn(OrchestrationService.prototype, "laneControlled");
+
+    const typed = (await rpc(
+      RUNTIME_METHODS.sessionRequest,
+      request,
+    )) as SessionProviderResponse<"send">;
+    expect(typed).toMatchObject({
+      operation: "send",
+      result: {
+        accepted: true,
+        completed: false,
+        sessionId,
+        requestId,
+        runtimeBootId: state.runtimeBootId,
+      },
+    });
+    expect(laneControlled.mock.calls).toEqual([[sessionId, "send"]]);
+
+    expect(
+      await rpc(RUNTIME_METHODS.sessionRequest, { host: { target: "codex", request } }),
+    ).toEqual(typed.result);
+    expect(await rpc(RUNTIME_METHODS.codexManaged, request)).toEqual(typed.result);
+    expect(typedRequest.mock.calls).toEqual([[request]]);
+    expect(laneControlled.mock.calls).toEqual([
+      [sessionId, "send"],
+      [sessionId, "send"],
+      [sessionId, "send"],
+    ]);
+    expect(nativeCalls.filter(({ method }) => method === "turn/start")).toMatchObject([
+      { params: { threadId, clientUserMessageId: requestId, input: textInput(request.text) } },
+    ]);
+    await receipt(requestId, "send", sessionId, typed.result);
   });
 
   it("publishes parent-scoped Codex subagent activity in stream snapshots and preserves child history", async () => {

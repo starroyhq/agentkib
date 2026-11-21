@@ -31,11 +31,13 @@ AgentKib 运行的 Claude Code、Codex、DeepSeek Harness（DSH）和 Devin 会�
 
 ## 项目 Agent
 
-- Claude Code 项目 Agent：Worker 的汇报在它自己的队列里等，重置后先送汇报。
-- Codex 项目 Agent：等待重置期间委派暂停（`usage-limit`），汇报留着；自动继续成功，或用户在这个会话里发消息，委派就继续并送出汇报。
+- 由 AgentKib 运行的 Claude Code 项目 Agent：Worker 汇报在会话自己的队列里等，重置后按原有规则派发。
+- Codex 项目 Agent：等待期间委派暂停（`usage-limit`）。自动继续成功、查活确认限额解除，或用户在这个会话里发消息后，委派继续，暂存的汇报合成一条送出。
+- DSH 项目 Agent：DSH 没有重置时间，暂存的汇报等用户在项目 Agent 会话里发消息，或在面板里恢复委派后再送出。
+- Worker：项目 Agent 收到限额类型和已知的重置、续跑时间。限额仍生效时，`worker_send` 返回 `worker-usage-limited`。缺少重置时间时，等会话解除限额。需要手动继续时，复用手机的“需要你处理”提醒。
 
 ## 没有做的
 
 - 接近上限的预警（Claude Code 的 `allowed_warning`、Codex 的用量百分比）不在会话里提示，额度页面照旧显示。
-- 连接终端的 Claude Code 会话由终端里的 Claude Code 自己处理上限。
+- 连接终端的 Claude Code 会话由终端里的 Claude Code 自己处理上限，插件和桥接目前没有传递限额状态。
 - Windows 上读不出 Devin 的重置时间（没有 `script(1)`），Devin 会话只有提示。

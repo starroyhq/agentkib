@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import {
   displaySessionTitle,
   homeSessionGroups,
+  isSessionVisible,
   type HomeNeed,
   type HomeSession,
 } from "@agentkib/session-catalog";
@@ -104,7 +105,7 @@ const COMPUTER_NAME_LIMIT = 64;
 type SessionState = `needs:${HomeNeed}` | "running" | "result:completed" | "result:failed";
 interface PendingAlert {
   kind: PushAlertKind;
-  state: SessionState;
+  state: SessionState | "supervision";
   session: HomeSession;
   at: number;
   /** A Project Agent's result held while its work went on (`#leadBusy`). */
@@ -161,6 +162,7 @@ export class PushNotifier {
   readonly #activityEndDelayMs: number;
   readonly #tickMs: number;
   #states = new Map<string, SessionState>();
+  #supervision = new Set<string>();
   /** The last catalog snapshot, for what a Project Agent's alert waits on. */
   #sessions: readonly HomeSession[] = [];
   #known = false;
@@ -224,6 +226,34 @@ export class PushNotifier {
           });
       }
     }
+    const supervision = new Set<string>();
+    for (const session of sessions) {
+      const role = session.orchestration;
+      if (
+        (role?.role !== "lead" && role?.role !== "worker") ||
+        !("requiresUser" in role) ||
+        role.requiresUser !== true ||
+        session.remote ||
+        session.archived ||
+        session.availability !== "readable" ||
+        !isSessionVisible(session)
+      )
+        continue;
+      supervision.add(session.id);
+      // An existing approval, question or other request already gives the phone an alert.
+      if (
+        this.#known &&
+        !this.#supervision.has(session.id) &&
+        !next.get(session.id)?.startsWith("needs:")
+      )
+        this.#pending.set(session.id, {
+          kind: "verify",
+          state: "supervision",
+          session,
+          at: now,
+        });
+    }
+    this.#supervision = supervision;
     this.#states = next;
     this.#known = true;
     const working = [...groups.needsYou, ...groups.running];
@@ -315,9 +345,13 @@ export class PushNotifier {
     const present = this.#options.present?.() ?? false;
     for (const [id, alert] of this.#pending) {
       const result = alert.kind === "completed" || alert.kind === "failed";
+      const current =
+        alert.state === "supervision"
+          ? this.#supervision.has(id)
+          : this.#states.get(id) === alert.state;
       // A Project Agent's turn ended while its work goes on: one alert once all of it stops,
       // counted from when that is seen.
-      if (result && this.#states.get(id) === alert.state) {
+      if (result && current) {
         if (this.#leadBusy(id)) {
           alert.held = true;
           continue;
@@ -328,7 +362,7 @@ export class PushNotifier {
         }
       }
       const expired = now - alert.at > (result ? RESULT_HOLD_MS : NEED_HOLD_MS);
-      if (this.#states.get(id) !== alert.state || expired) this.#pending.delete(id);
+      if (!current || expired) this.#pending.delete(id);
       else if (!present) {
         this.#pending.delete(id);
         this.#sendAlert(alert, now, targets);

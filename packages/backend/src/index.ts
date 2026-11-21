@@ -74,6 +74,7 @@ import {
   ClaudeHostControlPreflightError,
   ClaudeManagedReadOwner,
 } from "./agents/claude/claude-managed-read";
+import { ClaudeHostStateStore } from "./agents/claude/claude-host-state";
 import {
   OrchestrationService,
   type LaneHost,
@@ -123,9 +124,13 @@ import {
 import { SessionStreamHub } from "./session-stream";
 import { mergeCodexFollowerSnapshot } from "./agents/codex/codex-follower-stream";
 import { SessionSnapshotHistory } from "./session-snapshot-history";
-import { retainManagedLedgerReaders } from "./managed-ledger";
+import {
+  readManagedRecord,
+  readManagedUsageLimit,
+  retainManagedLedgerReaders,
+} from "./managed-ledger";
 import { MessageLeadReports } from "./message-lead-reports";
-import { usageLimitAutoContinue } from "./usage-limit";
+import { parseUsageLimit, usageLimitAutoContinue, usageLimitView } from "./usage-limit";
 import { BackendStore } from "./store";
 import { canonicalize } from "./paths";
 import {
@@ -777,7 +782,7 @@ export class TypeScriptBackend {
         this.#orchestration = new OrchestrationService(
           dataDir,
           leadOwner.bootId,
-          this.#laneHost(store),
+          this.#laneHost(store, dataDir, leadOwner.bootId),
           (sessionId) =>
             leadOwner.hasManagedSession(sessionId) ||
             terminal(sessionId) ||
@@ -795,7 +800,11 @@ export class TypeScriptBackend {
           (sessionId) =>
             leadOwner.queuedReports(sessionId) +
             (this.#claudeBridge?.queuedReports(sessionId) ?? 0),
-          (sessionId) => this.#webRead?.usageLimited(sessionId) === true,
+          (sessionId) => {
+            if (dshBridge.handles(sessionId))
+              return dshBridge.live(sessionId, false).usageLimit != null ? "manual-resume" : false;
+            return this.#webRead?.usageLimited(sessionId) === true;
+          },
         );
         leadOwner.observeWorkers(this.#workerObserver);
         this.#dshLeads?.close();
@@ -2283,7 +2292,9 @@ export class TypeScriptBackend {
     control: (value) =>
       this.#withWebRead((owner) => owner.managedControl(value)) as Promise<Record<string, unknown>>,
     queue: (sessionId) =>
-      this.#withWebRead((owner) => owner.managedQueueList({ sessionId, limit: 100 })) as Promise<{
+      this.#withWebRead((owner) =>
+        owner.managedQueueList({ operation: "queue-list", sessionId, limit: 100 }),
+      ) as Promise<{
         data?: Array<Record<string, unknown>>;
       }>,
   });
@@ -2365,7 +2376,9 @@ export class TypeScriptBackend {
     isWorker: (sessionId) => !!this.#orchestration?.registry.leadOfLane(sessionId),
   };
 
-  #laneHost(store: BackendStore): LaneHost {
+  #laneHost(store: BackendStore, dataDir: string, claudeBootId: string): LaneHost {
+    const startedAt = Date.now();
+    const claudeHostState = new ClaudeHostStateStore(dataDir, claudeBootId);
     const dsh = (sessionId: string) =>
       this.#dshBridge?.handles(sessionId) ? this.#dshBridge : null;
     const session = (sessionId: string) => {
@@ -2393,9 +2406,79 @@ export class TypeScriptBackend {
         ? this.#claudeSessionProvider!.native(request)
         : this.#withWebRead((owner) => owner.request(request)))) as Record<string, unknown>;
     };
+    const claudeLimit = (sessionId: string) =>
+      usageLimitView(claudeHostState.peek(sessionId)?.usageLimit, claudeBootId);
     return {
       session,
       live,
+      observe: async (sessionId) => {
+        const bridge = dsh(sessionId);
+        if (bridge) return bridge.live(sessionId, false);
+        const indexed = store.sessions.get(sessionId);
+        const agent = indexed?.agent ?? session(sessionId)?.agent;
+        if (agent === "codex") {
+          return this.#withWebRead(async (owner) => {
+            if (owner.usageLimited(sessionId))
+              return (await owner.request({ operation: "live", sessionId })) as Record<
+                string,
+                unknown
+              >;
+            // The resident runner already checkpoints progress. An indexed lookup avoids the
+            // full live path's catalog read and never starts following the Codex app.
+            const record = readManagedRecord(dataDir, sessionId);
+            const snapshot = record?.snapshot;
+            if (
+              owner.runnerHasLeadTools(sessionId) !== null &&
+              snapshot &&
+              typeof snapshot === "object"
+            )
+              return { ...snapshot, workspaceId: record.workspace_id };
+            return { status: indexed || record ? "idle" : "unavailable" };
+          });
+        }
+        if (agent === "devin") {
+          if (indexed?.availability !== "readable")
+            return { status: "unavailable", reason: "session-unavailable" };
+          // Devin's live read can allocate a runner. Its quota is already in the command ledger.
+          const kept = readManagedUsageLimit(dataDir, sessionId);
+          const limit =
+            kept && Date.now() - kept.savedAt < 7 * 24 * 60 * 60_000
+              ? parseUsageLimit(kept.limit, "devin")
+              : null;
+          return {
+            status: "idle",
+            usageLimit:
+              limit && usageLimitView(limit, kept!.savedAt >= startedAt ? limit.bootId : ""),
+            // /usage can spend one check interval looking up the reset after a fresh hit.
+            usageLimitPending:
+              !!limit && limit.manual === "reset-unknown" && Date.now() - kept!.savedAt < 20_000,
+          };
+        }
+        if (agent !== "claude-code")
+          return (await this.#withWebRead((owner) =>
+            owner.request({ operation: "live", sessionId }),
+          )) as Record<string, unknown>;
+        const terminal = this.#claudeBridge;
+        const claude = this.#claudeManaged;
+        if (
+          terminal?.handles(sessionId) &&
+          (terminal.blocksManagedResume(sessionId) || !claude?.managedWorkspace(sessionId))
+        )
+          return terminal.live(sessionId, false);
+        // An idle managed session needs no transcript or ownership probe. Use the existing
+        // host queue ledger for its quota and the in-memory runner status for active turns.
+        if (claude?.managedWorkspace(sessionId)) {
+          const state = claude.catalogContinuation(sessionId);
+          if (state?.status === "running") return claude.live(sessionId, false);
+          return { status: "idle", ...state, usageLimit: claudeLimit(sessionId) };
+        }
+        return live(sessionId);
+      },
+      managedLeadNeedsUser: (sessionId) => {
+        if (!this.#claudeManaged?.managedWorkspace(sessionId)) return false;
+        const limit = claudeLimit(sessionId);
+        return limit !== null && limit.continueAt === null && limit.manual !== null;
+      },
       control: (value) => {
         if (typeof value.sessionId !== "string") throw new Error("session-unavailable");
         const bridge = dsh(value.sessionId);

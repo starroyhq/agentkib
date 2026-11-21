@@ -25,6 +25,7 @@ export type LeadApproval = (typeof LEAD_APPROVALS)[number];
 export const LEAD_DEFAULTS = Object.freeze({
   maxLanes: PROJECT_AGENT_MAX_WORKERS,
   maxAutoTurns: 25,
+  stallMinutes: 10,
 });
 const MAX_RECORDS = 200;
 const MAX_REPORTED_TURNS = 64;
@@ -38,6 +39,8 @@ export type LeadScope = {
   maxLanes: number;
   /** Turns the lead may be started in a row without the user speaking (reports and its own). */
   maxAutoTurns: number;
+  /** Minutes a running Worker may go without progress before it is reported as stalled. */
+  stallMinutes?: number;
   /** Approvals the lead may decide for its lanes; none when absent, as in earlier records. */
   approvals?: LeadApproval[];
   /** Whether the lead may answer its lanes' question cards; no when absent. */
@@ -196,7 +199,14 @@ export class LeadRegistry {
   #readRecord(record: string): { lead: Lead; unsupportedLanes: unknown[] } {
     const { lanes, ...stored } = JSON.parse(record) as Omit<Lead, "lanes"> & { lanes?: unknown };
     if (stored.version !== 1 || !Array.isArray(lanes)) throw new Error("invalid-lead-record");
-    const lead: Lead = { ...stored, lanes: [] };
+    const lead: Lead = {
+      ...stored,
+      scope: {
+        ...stored.scope,
+        stallMinutes: stored.scope.stallMinutes ?? LEAD_DEFAULTS.stallMinutes,
+      },
+      lanes: [],
+    };
     const unsupportedLanes: unknown[] = [];
     for (const lane of lanes as unknown[]) {
       if (lane && typeof lane === "object" && !Array.isArray(lane)) {

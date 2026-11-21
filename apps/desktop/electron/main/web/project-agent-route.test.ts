@@ -177,7 +177,7 @@ describe("Project Agent from a paired device", () => {
     expect(
       await call({
         operation: "update",
-        scope: { maxLanes: 3, workspaceIds: ["elsewhere"], maxAutoTurns: 15 },
+        scope: { maxLanes: 3, workspaceIds: ["elsewhere"], maxAutoTurns: 15, stallMinutes: 18 },
       }),
     ).toMatchObject({ status: 200, data: { lead: { scope: { maxLanes: 10 } } } });
     for (const operation of ["stop-worker", "remove-worker"])
@@ -191,7 +191,7 @@ describe("Project Agent from a paired device", () => {
         operation: "lead-update",
         sessionId: "claude-session",
         deviceId: device.id,
-        scope: { maxAutoTurns: 15 },
+        scope: { maxAutoTurns: 15, stallMinutes: 18 },
         authorizedWorkspaceIds: ["first"],
       },
       {

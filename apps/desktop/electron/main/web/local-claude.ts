@@ -199,7 +199,24 @@ async function localClaudeRequestInner(
       ...((operation === "lead-designate" || operation === "lead-update") &&
       input.scope &&
       typeof input.scope === "object"
-        ? { scope: input.scope }
+        ? {
+            scope:
+              operation === "lead-update" && !Array.isArray(input.scope)
+                ? Object.fromEntries(
+                    Object.entries(input.scope).filter(([key]) =>
+                      [
+                        "workspaceIds",
+                        "policies",
+                        "maxLanes",
+                        "maxAutoTurns",
+                        "stallMinutes",
+                        "approvals",
+                        "answers",
+                      ].includes(key),
+                    ),
+                  )
+                : input.scope,
+          }
         : {}),
       // The worker, by its session, that the person lets go or stops.
       ...(operation === "lead-worker-remove" || operation === "lead-worker-stop"

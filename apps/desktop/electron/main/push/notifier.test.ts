@@ -45,6 +45,14 @@ function session(id: string, state?: State, title = `Task ${id}`): HomeSession {
   return base;
 }
 
+function requiringSupervision(
+  session: HomeSession,
+  role: "lead" | "worker" = "worker",
+): HomeSession {
+  const orchestration = { role, requiresUser: true };
+  return { ...session, orchestration };
+}
+
 const settle = () => new Promise((resolve) => setImmediate(resolve));
 
 function harness() {
@@ -92,6 +100,57 @@ function alertOf(input: PushSendInput) {
 }
 
 describe("push alerts", () => {
+  it("uses the existing verification alert for new supervision incidents", async () => {
+    const test = harness();
+    const worker = session("worker", "failed");
+    const lead = session("lead");
+    const supervised = [requiringSupervision(worker), requiringSupervision(lead, "lead")];
+    test.notifier.update([session("worker", "running"), lead]);
+    test.notifier.update(supervised);
+    await settle();
+    expect(test.take().map((input) => alertOf(input))).toEqual([
+      expect.objectContaining({ v: 1, kind: "verify", sessionId: "worker" }),
+      expect.objectContaining({ v: 1, kind: "verify", sessionId: "lead" }),
+    ]);
+
+    test.notifier.update(supervised);
+    await settle();
+    expect(test.take()).toEqual([]);
+    test.notifier.update([worker, lead]);
+    test.notifier.update([requiringSupervision(worker), lead]);
+    await settle();
+    expect(test.take().map((input) => alertOf(input))).toEqual([
+      expect.objectContaining({ kind: "verify", sessionId: "worker" }),
+    ]);
+  });
+
+  it("keeps approval alerts and cancels a resolved supervision incident before sending", async () => {
+    const test = harness();
+    test.context.present = true;
+    test.notifier.update([session("worker"), session("approval")]);
+    test.notifier.update([
+      requiringSupervision(session("worker")),
+      requiringSupervision(session("approval", "approval")),
+      requiringSupervision({ ...session("hidden"), origin: "auxiliary" }),
+      requiringSupervision({ ...session("remote"), remote: true }),
+    ]);
+    await settle();
+    expect(test.take()).toEqual([]);
+
+    test.notifier.update([
+      session("worker"),
+      requiringSupervision(session("approval", "approval")),
+      requiringSupervision({ ...session("hidden"), origin: "auxiliary" }),
+      requiringSupervision({ ...session("remote"), remote: true }),
+    ]);
+    test.context.present = false;
+    test.notifier.refresh();
+    await settle();
+    expect(test.take().map((input) => alertOf(input))).toEqual([
+      expect.objectContaining({ kind: "approval", sessionId: "approval" }),
+    ]);
+  });
+
   it("alerts when a session starts waiting or a turn seen working ends", async () => {
     const test = harness();
     test.notifier.update([session("a", "running"), session("b"), session("c", "completed")]);

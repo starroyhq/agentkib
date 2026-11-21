@@ -227,7 +227,7 @@ type Connection = {
   leadTools?: boolean;
 };
 /** A report on its way into a terminal Project Agent's outbox. */
-type QueuedReport = { id: string; text: string };
+type QueuedReport = { id: string; text: string; offered?: true };
 /** A Project Agent in a terminal (docs/agents/project-agent.md); `orchestration-service.ts`. */
 export interface BridgeLead {
   /** Its worker tools, or null when the session directs none. */
@@ -1840,7 +1840,7 @@ export class ClaudeBridge {
     if (!this.#bindings.has(sessionId)) throw new Error("session-unavailable");
     const queued = this.#reports.get(sessionId) ?? [];
     const last = queued.at(-1);
-    if (last && last.text.length + text.length + 2 <= MAX_REPORT_TEXT) {
+    if (last && !last.offered && last.text.length + text.length + 2 <= MAX_REPORT_TEXT) {
       last.text = `${last.text}\n\n${text}`;
       return true;
     }
@@ -2229,11 +2229,13 @@ export class ClaudeBridge {
           } catch {
             /* The session is offered no tools rather than losing its commands. */
           }
-          return {
-            lead: tools
-              ? { tools, reports: (this.#reports.get(sessionId) ?? []).slice(0, 4), paused }
-              : null,
-          };
+          if (!tools) return { lead: null };
+          const reports = (this.#reports.get(sessionId) ?? []).slice(0, 4).map((report) => {
+            // Once offered, this ID must name the same text until the plugin acknowledges it.
+            report.offered = true;
+            return { id: report.id, text: report.text };
+          });
+          return { lead: { tools, reports, paused } };
         };
         try {
           if (!connection.pending && !this.#reports.get(sessionId)?.length && input.waitMs)

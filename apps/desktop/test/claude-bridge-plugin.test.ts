@@ -440,6 +440,7 @@ describe("Claude Code native session plugin as a Project Agent", () => {
     const registered: Value[] = [];
     const logs: string[] = [];
     let lead: Value | null = null;
+    let ignoreTakenReports = false;
     let answer: Value = { text: '{"workers":[]}', isError: false };
     const f = await fixture({
       configure(api) {
@@ -458,8 +459,15 @@ describe("Claude Code native session plugin as a Project Agent", () => {
           const value = JSON.parse(response.text);
           if ((url.endsWith("/pair") || url.endsWith("/reconnect")) && options.feature !== false)
             return { ...response, text: JSON.stringify({ ...value, features: ["lead-tools"] }) };
-          if (url.endsWith("/commands") && lead)
+          if (url.endsWith("/commands") && lead) {
+            const taken: string[] = JSON.parse(init.body).takenReports ?? [];
+            if (taken.length && !ignoreTakenReports)
+              lead = {
+                ...lead,
+                reports: lead.reports.filter(({ id }: Value) => !taken.includes(id)),
+              };
             return { ...response, text: JSON.stringify({ ...value, lead }) };
+          }
           if (url.endsWith("/lead-call")) return { ...response, text: JSON.stringify(answer) };
           return response;
         };
@@ -474,6 +482,9 @@ describe("Claude Code native session plugin as a Project Agent", () => {
       polls,
       setLead(value: Value | null) {
         lead = value;
+      },
+      repeatOffers(value: boolean) {
+        ignoreTakenReports = value;
       },
       setAnswer(value: Value) {
         answer = value;
@@ -492,6 +503,27 @@ describe("Claude Code native session plugin as a Project Agent", () => {
     description: "List your workers.",
     inputSchema: { type: "object", properties: {} },
   };
+
+  async function appendNativeReport(f: Awaited<ReturnType<typeof fixture>>, text: string) {
+    // Native re-entry skips this Mod's prompt.submit hook, but still exposes the entry
+    // in the session and the main turn that processed it.
+    await f.run("session.append", {
+      door: "prompt",
+      origin: { kind: "plugin", name: "agentkib-bridge", asUser: true },
+      uuid: randomUUID(),
+      message: { type: "user", content: [{ type: "text", text }] },
+    });
+  }
+
+  async function nativeReportTurn(
+    f: Awaited<ReturnType<typeof fixture>>,
+    text: string,
+    turnId: string,
+  ) {
+    await appendNativeReport(f, text);
+    await f.run("turn.start", { text, turnId });
+    await f.run("turn.complete", { answer: "Observed the report.", isAborted: false, turnId });
+  }
 
   it("registers the worker tools AgentKib gives it and runs their calls through AgentKib", async () => {
     const l = await leading();
@@ -536,7 +568,7 @@ describe("Claude Code native session plugin as a Project Agent", () => {
     ).toMatchObject({ name: "worker_close", input: { worker: "api" } });
   });
 
-  it("queues each report as a message of its own and says so once it holds it", async () => {
+  it("submits a queued report only after the Runtime accepts its acknowledgment", async () => {
     const l = await leading();
     const report = {
       id: randomUUID(),
@@ -545,11 +577,9 @@ describe("Claude Code native session plugin as a Project Agent", () => {
     const before = l.f.dispatches;
     l.setLead({ tools: [tool], reports: [report] });
     await l.f.tick();
-    // The terminal is idle: the report went out as the next prompt, AgentKib's.
-    expect(l.f.dispatches).toBe(before + 1);
+    expect(l.f.dispatches).toBe(before);
     await l.f.tick();
     expect(l.polls().at(-1)).toMatchObject({ takenReports: [report.id] });
-    // Listed again before the Runtime heard of it, it is not sent twice.
     expect(l.f.dispatches).toBe(before + 1);
     await l.f.flush();
     expect(
@@ -558,12 +588,211 @@ describe("Claude Code native session plugin as a Project Agent", () => {
         .filter((entry) => entry.event.type === "turn-start")
         .map((entry) => entry.event.origin),
     ).toContain("agentkib");
-    // Once the Runtime has dropped it, it is not mentioned again.
-    l.setLead({ tools: [tool], reports: [] });
-    await l.f.tick();
+    // Once the Runtime has dropped it, the acknowledgment no longer repeats.
     await l.f.tick();
     expect(l.polls().at(-1)).not.toHaveProperty("takenReports");
   });
+
+  it("sends a report once after a lost acknowledgment and repeated offer", async () => {
+    const l = await leading();
+    const report = { id: randomUUID(), text: "[AgentKib report] Worker finished" };
+    const submitted: string[] = [];
+    l.f.setSubmit(async ({ text }) => {
+      submitted.push(text);
+      await nativeReportTurn(l.f, text, randomUUID());
+      return { text };
+    });
+    l.setLead({ tools: [tool], reports: [report] });
+    await l.f.tick();
+    expect(submitted).toEqual([]);
+
+    let lost = false;
+    l.f.setHttpInterceptor(async (url) => {
+      if (url.endsWith("/commands") && l.polls().at(-1)?.takenReports && !lost) {
+        lost = true;
+        throw new Error("synthetic acknowledgment was lost before reaching the Runtime");
+      }
+    });
+    await l.f.tick();
+    expect(lost).toBe(true);
+    expect(l.polls().at(-1)).toMatchObject({ takenReports: [report.id] });
+    expect(submitted).toEqual([]);
+
+    l.repeatOffers(true);
+    await l.f.tick();
+    expect(l.f.calls.some(({ url }) => url.endsWith("/v1/reconnect"))).toBe(true);
+    expect(l.polls().at(-1)).toMatchObject({ takenReports: [report.id] });
+    expect(submitted).toEqual([]);
+
+    l.repeatOffers(false);
+    await l.f.tick();
+    await l.f.tick();
+    await l.f.flush();
+    expect(submitted).toEqual([report.text]);
+    expect(l.f.snapshots().at(-1).outbox).toEqual([]);
+  });
+
+  it("delivers the next report after the terminal completed a Worker cancellation report", async () => {
+    const l = await leading();
+    const cancellation = {
+      id: randomUUID(),
+      text: '[AgentKib report] Worker "api" (Codex) · turn ended: cancelled',
+    };
+    const followUp = {
+      id: randomUUID(),
+      text: '[AgentKib report] Worker "api" (Codex) · waiting for approval',
+    };
+    const submitted: string[] = [];
+    const cancellationTurn = randomUUID();
+    l.f.setSubmit(async ({ text }) => {
+      submitted.push(text);
+      const turnId = text === cancellation.text ? cancellationTurn : randomUUID();
+      await nativeReportTurn(l.f, text, turnId);
+      // Losing the submit echo must not erase a turn that the native hooks confirmed.
+      return text === cancellation.text ? {} : { text };
+    });
+
+    l.setLead({ tools: [tool], reports: [cancellation] });
+    await l.f.tick();
+    await l.f.tick();
+    expect(l.f.events().map(({ event }) => event)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: "turn-start",
+          turnId: cancellationTurn,
+          origin: "agentkib",
+        }),
+        expect.objectContaining({
+          type: "turn-complete",
+          turnId: cancellationTurn,
+          aborted: false,
+        }),
+      ]),
+    );
+
+    l.setLead({ tools: [tool], reports: [followUp] });
+    await l.f.tick();
+    await l.f.tick();
+    await l.f.flush();
+
+    expect(submitted).toEqual([cancellation.text, followUp.text]);
+    expect(l.f.snapshots().at(-1).outbox).toEqual([]);
+  });
+
+  it("keeps a report ahead of later queued messages while acknowledging it", async () => {
+    const l = await leading();
+    const report = { id: randomUUID(), text: "[AgentKib report] Worker finished" };
+    const queuedText = "Please verify the changes.";
+    const submitted: string[] = [];
+    l.f.setSubmit(async ({ text }) => {
+      submitted.push(text);
+      await nativeReportTurn(l.f, text, randomUUID());
+      return { text };
+    });
+    l.repeatOffers(true);
+    l.setLead({ tools: [tool], reports: [report] });
+    await l.f.tick();
+    await l.f.deliver({
+      kind: "queue",
+      commandId: randomUUID(),
+      requestId: randomUUID(),
+      text: queuedText,
+    });
+    await l.f.tick();
+    expect(submitted).toEqual([]);
+
+    l.repeatOffers(false);
+    await l.f.tick();
+    await l.f.tick();
+    expect(submitted).toEqual([report.text, queuedText]);
+  });
+
+  it.each([false, true])(
+    "reconciles a late native turn after submit (reconnect: %s)",
+    async (reconnect) => {
+      const l = await leading();
+      const report = { id: randomUUID(), text: "[AgentKib report] Worker finished" };
+      l.f.setSubmit(async ({ text }) => {
+        await appendNativeReport(l.f, text);
+        return {};
+      });
+      l.setLead({ tools: [tool], reports: [report] });
+      await l.f.tick();
+      await l.f.tick();
+      await l.f.flush();
+      expect(l.f.dispatches).toBe(1);
+      expect(l.f.snapshots().at(-1).outbox).toMatchObject([{ id: report.id }]);
+      if (reconnect) {
+        l.f.nextHttpResponse("/v1/commands", {
+          status: 409,
+          body: { error: "bridge-lease-expired" },
+        });
+        await l.f.tick();
+        await l.f.tick();
+        expect(l.f.calls.some(({ url }) => url.endsWith("/v1/reconnect"))).toBe(true);
+      }
+
+      const turnId = randomUUID();
+      await l.f.run("turn.start", { text: report.text, turnId });
+      await l.f.run("turn.complete", { answer: "Observed the report.", isAborted: false, turnId });
+      await l.f.tick();
+
+      expect(l.f.dispatches).toBe(1);
+      expect(l.f.snapshots().at(-1).outbox).toEqual([]);
+      expect(l.f.events().map(({ event }) => event)).toContainEqual(
+        expect.objectContaining({ type: "turn-start", turnId, origin: "agentkib" }),
+      );
+    },
+  );
+
+  it.each(["reconnect", "terminal input"] as const)(
+    "delivers later reports without replaying an unconfirmed report after %s",
+    async (recovery) => {
+      const l = await leading();
+      const unconfirmed = { id: randomUUID(), text: "[AgentKib report] First Worker report" };
+      const followUp = { id: randomUUID(), text: "[AgentKib report] Later Worker report" };
+      const submitted: string[] = [];
+      l.f.setSubmit(async ({ text }) => {
+        submitted.push(text);
+        if (text === followUp.text) await nativeReportTurn(l.f, text, randomUUID());
+        return { text };
+      });
+
+      l.setLead({ tools: [tool], reports: [unconfirmed] });
+      await l.f.tick();
+      await l.f.tick();
+      await l.f.flush();
+      // An echo without native origin and a matching turn is still inconclusive.
+      expect(l.f.snapshots().at(-1).outbox).toMatchObject([
+        { id: unconfirmed.id, status: "unknown" },
+      ]);
+      if (recovery === "reconnect") {
+        l.f.nextHttpResponse("/v1/commands", {
+          status: 409,
+          body: { error: "bridge-lease-expired" },
+        });
+        await l.f.tick();
+        await l.f.tick();
+        expect(l.f.calls.some(({ url }) => url.endsWith("/v1/reconnect"))).toBe(true);
+      } else {
+        // Even identical wording typed by the person is a distinct native turn.
+        const turnId = randomUUID();
+        await l.f.run("prompt.submit", { text: unconfirmed.text, origin: { kind: "composer" } });
+        await l.f.run("turn.start", { text: unconfirmed.text, turnId });
+        await l.f.run("turn.complete", { answer: "User turn.", isAborted: false, turnId });
+        expect(l.f.events().map(({ event }) => event)).toContainEqual(
+          expect.objectContaining({ type: "turn-start", turnId, origin: "terminal" }),
+        );
+      }
+
+      // A duplicate offer may not turn a local unknown result into another submission.
+      l.setLead({ tools: [tool], reports: [unconfirmed, followUp] });
+      await l.f.tick();
+      await l.f.tick();
+
+      expect(submitted).toEqual([unconfirmed.text, followUp.text]);
+    },
+  );
 
   it("tells the terminal when delegation pauses and resumes, once a change", async () => {
     const l = await leading();

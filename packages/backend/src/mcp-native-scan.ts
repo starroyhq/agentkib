@@ -19,7 +19,7 @@ import { readClaudeSettings, type ClaudeSettings, type McpPolicyEntry } from "./
 import { isSensitiveExternalPath } from "./context-claude";
 import { defaultIo } from "./context-claude-sources";
 import type { Agent } from "./doctor-files";
-import { devinConfigHome } from "./devin-sessions";
+import { devinConfigHome } from "./agents/devin/devin-sessions";
 import { canonicalize, pathIdentity } from "./paths";
 import { compareUtf8 } from "./workspaces";
 import type { BackendStore } from "./store";

@@ -14,7 +14,7 @@ import { GrokSessions } from "./grok-sessions";
 import { CodexSessionOwnership } from "./codex-session-ownership";
 import { OpenClawSessions } from "./openclaw-sessions";
 import { HermesSessions } from "./hermes-sessions";
-import { DevinSessions, devinConfigHome, devinDataHome } from "./devin-sessions";
+import { DevinSessions, devinConfigHome, devinDataHome } from "./agents/devin/devin-sessions";
 import { scanNativeHomeAssets } from "./native-home-assets";
 import { resolveCommand } from "./command-resolution";
 import { utcNow, type DiscoveryCandidate } from "./workspaces";

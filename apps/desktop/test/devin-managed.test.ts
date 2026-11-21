@@ -17,7 +17,7 @@ import type { Commands } from "../../../packages/backend/src/commands";
 import {
   devinDesktopExecutables,
   devinExecutables,
-} from "../../../packages/backend/src/devin-executable";
+} from "../../../packages/backend/src/agents/devin/devin-executable";
 import {
   DevinManagedRunner,
   devinChildEnvironment,
@@ -27,8 +27,8 @@ import {
   devinSessionLockedElsewhere,
   resolveDevinModel,
   type DevinRunnerHost,
-} from "../../../packages/backend/src/devin-managed-runner";
-import { DevinSessionSettings } from "../../../packages/backend/src/devin-session-settings";
+} from "../../../packages/backend/src/agents/devin/devin-managed-runner";
+import { DevinSessionSettings } from "../../../packages/backend/src/agents/devin/devin-session-settings";
 import { devinUsageLimitHit, holdUsageLimit } from "../../../packages/backend/src/usage-limit";
 import { collectUsage } from "../../../packages/backend/src/usage-providers";
 

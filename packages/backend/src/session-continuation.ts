@@ -19,7 +19,7 @@ import { claudeConfigFiles, resolveClaudeConfig } from "./claude-config";
 import { claudeProjectKey } from "./claude-project-path";
 import { probeClaudeSessionFormat } from "./claude-session-probe";
 import { resolveCommand } from "./command-resolution";
-import { devinExecutable } from "./devin-executable";
+import { devinExecutable } from "./agents/devin/devin-executable";
 import type { DshBridge } from "./agents/dsh/dsh-bridge";
 import { isReparseOrSymlink } from "./native-files";
 import { versionAtLeast } from "./native-version";

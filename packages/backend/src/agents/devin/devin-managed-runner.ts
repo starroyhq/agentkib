@@ -4,7 +4,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { devinSessionDatabase } from "./devin-sessions";
-import { devinUsageLimitHit, type UsageLimitHit, type UsageLimitView } from "./usage-limit";
+import { devinUsageLimitHit, type UsageLimitHit, type UsageLimitView } from "../../usage-limit";
 
 /**
  * Devin CLI runs each turn non-interactively (`devin -p`), so it is its own host and uses the

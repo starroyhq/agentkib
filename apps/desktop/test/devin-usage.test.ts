@@ -7,7 +7,7 @@ import {
   devinLimitReset,
   devinUsageWindows,
   readDevinUsage,
-} from "../../../packages/backend/src/devin-usage";
+} from "../../../packages/backend/src/agents/devin/devin-usage";
 
 const roots: string[] = [];
 afterEach(() => {

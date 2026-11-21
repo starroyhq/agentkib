@@ -21,7 +21,7 @@ import { readManagedRecord } from "./managed-ledger";
 import { canonicalize, pathIdentity } from "./paths";
 import { within } from "./files";
 import { codexExecutable } from "./codex-executable";
-import { devinSessionHome } from "./devin-sessions";
+import { devinSessionHome } from "./agents/devin/devin-sessions";
 
 /**
  * Codex and Claude Code record each turn's end in their transcripts. Devin's history does not, so

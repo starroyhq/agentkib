@@ -24,7 +24,7 @@ import { OpenCodeSessions } from "./opencode-sessions";
 import { AntigravityHistory } from "./agents/antigravity/antigravity-history";
 import { CursorSessions } from "./cursor-sessions";
 import { CursorIdeSessions } from "./cursor-ide-sessions";
-import { DevinSessions } from "./devin-sessions";
+import { DevinSessions } from "./agents/devin/devin-sessions";
 import type { CursorBridge } from "./cursor-bridge";
 import { readOpenClawSqliteDocument, readOpenClawSqliteEvents } from "./openclaw-sqlite-sessions";
 import { SessionPaging } from "./session-paging";

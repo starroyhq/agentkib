@@ -1,7 +1,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync } from "node:fs";
-import { plainTerminalText } from "./conversation-tools";
-import type { UsageLimitHit, UsageLimitKind } from "./usage-limit";
+import { plainTerminalText } from "../../conversation-tools";
+import type { UsageLimitHit, UsageLimitKind } from "../../usage-limit";
 
 /**
  * When a Devin usage limit resets, as Devin itself shows it. `devin -p` names no reset time, and

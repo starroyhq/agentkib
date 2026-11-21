@@ -12,7 +12,7 @@ import {
 } from "./context-files";
 import { openCodeInstructionPatterns } from "./default-manifest";
 import { globMatches } from "./context-glob";
-import { devinConfigHome } from "./devin-sessions";
+import { devinConfigHome } from "./agents/devin/devin-sessions";
 import { userHome } from "./mcp-config-read";
 export function sensitive(value: string): boolean {
   const name = path.basename(value).toLowerCase();

@@ -9,8 +9,8 @@ import {
 } from "node:fs";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ClaudeManagedReadOwner } from "../../../packages/backend/src/claude-managed-read";
-import { ClaudeSessions } from "../../../packages/backend/src/claude-sessions";
+import { ClaudeManagedReadOwner } from "../../../packages/backend/src/agents/claude/claude-managed-read";
+import { ClaudeSessions } from "../../../packages/backend/src/agents/claude/claude-sessions";
 import { Commands } from "../../../packages/backend/src/commands";
 import type { CursorBridge } from "../../../packages/backend/src/cursor-bridge";
 import { SessionReaders } from "../../../packages/backend/src/session-readers";

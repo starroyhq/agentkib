@@ -4,11 +4,11 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { mkdirSync, chmodSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { homedir } from "node:os";
-import { MacOwnedProcessTree } from "./mac-owned-process-tree";
-import { acquirePortableFileLease } from "./managed-session-lock";
-import { truncateUtf8 } from "./session-events";
-import { sanitizeSessionText } from "./session-handoff";
-import { claudeToolDetail, claudeToolResult, compactClaudeInput } from "./conversation-tools";
+import { MacOwnedProcessTree } from "../../mac-owned-process-tree";
+import { acquirePortableFileLease } from "../../managed-session-lock";
+import { truncateUtf8 } from "../../session-events";
+import { sanitizeSessionText } from "../../session-handoff";
+import { claudeToolDetail, claudeToolResult, compactClaudeInput } from "../../conversation-tools";
 import { claudeCommandInvocation, claudeCommandOutput } from "./claude-command-records";
 import {
   boundedUnknownFields,
@@ -28,11 +28,11 @@ import {
   createContextUsageGeneration,
   projectContextUsage,
   type ContextUsage,
-} from "./context-usage";
+} from "../../context-usage";
 import type { ClaudeCommandEntry } from "@agentkib/runtime-protocol";
 import { ClaudeSubagentState, type ClaudeSubagentSnapshot } from "./claude-subagent-state";
-import type { ConversationEvent } from "./session-events";
-import { claudeUsageLimitHit, type UsageLimitHit } from "./usage-limit";
+import type { ConversationEvent } from "../../session-events";
+import { claudeUsageLimitHit, type UsageLimitHit } from "../../usage-limit";
 
 const MAX_TEXT = 4 * 1024 * 1024;
 const MAX_LINE = 6 * MAX_TEXT + 1024 * 1024;

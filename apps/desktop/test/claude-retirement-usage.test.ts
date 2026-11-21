@@ -3,11 +3,11 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ClaudeManagedReadOwner } from "../../../packages/backend/src/claude-managed-read";
+import { ClaudeManagedReadOwner } from "../../../packages/backend/src/agents/claude/claude-managed-read";
 import {
   ClaudeManagedRunnerProcess,
   type ClaudeRunnerSnapshot,
-} from "../../../packages/backend/src/claude-managed-runner";
+} from "../../../packages/backend/src/agents/claude/claude-managed-runner";
 import type { Commands } from "../../../packages/backend/src/commands";
 import type { SessionReaders } from "../../../packages/backend/src/session-readers";
 import type { BackendStore } from "../../../packages/backend/src/store";

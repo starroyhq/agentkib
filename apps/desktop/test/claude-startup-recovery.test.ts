@@ -8,9 +8,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   ClaudeManagedRunnerProcess,
   ClaudeUndispatchedError,
-} from "../../../packages/backend/src/claude-managed-runner";
-import { ClaudeManagedReadOwner } from "../../../packages/backend/src/claude-managed-read";
-import { ClaudeSessionOwnerProbe } from "../../../packages/backend/src/claude-session-owner";
+} from "../../../packages/backend/src/agents/claude/claude-managed-runner";
+import { ClaudeManagedReadOwner } from "../../../packages/backend/src/agents/claude/claude-managed-read";
+import { ClaudeSessionOwnerProbe } from "../../../packages/backend/src/agents/claude/claude-session-owner";
 import { openManagedLedger } from "../../../packages/backend/src/managed-ledger";
 import {
   claimManagedCommand,

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { claudeModelOption } from "@agentkib/runtime-protocol";
-import type { ClaudeModelOption } from "../../../packages/backend/src/claude-managed-runner";
+import type { ClaudeModelOption } from "../../../packages/backend/src/agents/claude/claude-managed-runner";
 
 // The list CLI 2.1.311 reports at initialize (offline, local API stub), trimmed to what matters.
 const models: ClaudeModelOption[] = [

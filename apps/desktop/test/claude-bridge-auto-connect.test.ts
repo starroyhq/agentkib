@@ -13,7 +13,7 @@ import {
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ClaudeBridge, type ClaudeBridgeTarget } from "../../../packages/backend/src/claude-bridge";
+import { ClaudeBridge, type ClaudeBridgeTarget } from "../../../packages/backend/src/agents/claude/claude-bridge";
 
 const cleanups: Array<() => Promise<void>> = [];
 afterEach(async () => {

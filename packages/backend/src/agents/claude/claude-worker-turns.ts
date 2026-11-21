@@ -1,9 +1,9 @@
 import { closeSync, constants, fstatSync, lstatSync, openSync, readSync } from "node:fs";
-import { isReparseOrSymlink } from "./native-files";
-import type { LaneEndedTurn } from "./orchestration-service";
-import { historyReadResult } from "./read-state-history";
-import type { ReadCheckpoint } from "./read-state-ledger";
-import { jsonTimestamp } from "./session-history";
+import { isReparseOrSymlink } from "../../native-files";
+import type { LaneEndedTurn } from "../../orchestration-service";
+import { historyReadResult } from "../../read-state-history";
+import type { ReadCheckpoint } from "../../read-state-ledger";
+import { jsonTimestamp } from "../../session-history";
 
 const MAX_HISTORY_BYTES = 4 * 1024 * 1024;
 const MAX_TURNS = 50;

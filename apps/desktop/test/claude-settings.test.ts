@@ -1,7 +1,7 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { readClaudeSettings, redactText } from "../../../packages/backend/src/claude-settings";
+import { readClaudeSettings, redactText } from "../../../packages/backend/src/agents/claude/claude-settings";
 import { claudeSections } from "../../../packages/backend/src/context-claude";
 import { defaultIo } from "../../../packages/backend/src/context-claude-sources";
 import { contextFixture, type ContextFixture } from "./fixtures/claude-context";

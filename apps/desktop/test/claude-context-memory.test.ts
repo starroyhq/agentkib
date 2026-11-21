@@ -1,8 +1,8 @@
 import { symlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { resolveRepoRoot } from "../../../packages/backend/src/claude-memory";
-import { claudeProjectKey } from "../../../packages/backend/src/claude-project-path";
+import { resolveRepoRoot } from "../../../packages/backend/src/agents/claude/claude-memory";
+import { claudeProjectKey } from "../../../packages/backend/src/agents/claude/claude-project-path";
 import { defaultIo } from "../../../packages/backend/src/context-claude-sources";
 import { contextFixture, type ContextFixture } from "./fixtures/claude-context";
 import { virtualIo } from "./fixtures/claude-virtual-io";

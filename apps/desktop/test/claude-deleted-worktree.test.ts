@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSyn
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ClaudeManagedReadOwner } from "../../../packages/backend/src/claude-managed-read";
+import { ClaudeManagedReadOwner } from "../../../packages/backend/src/agents/claude/claude-managed-read";
 import { Commands } from "../../../packages/backend/src/commands";
 import type { CursorBridge } from "../../../packages/backend/src/cursor-bridge";
 import { recordedDirectory, SessionReaders } from "../../../packages/backend/src/session-readers";

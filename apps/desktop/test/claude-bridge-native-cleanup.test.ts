@@ -15,7 +15,7 @@ import { createServer, request, type IncomingMessage, type ServerResponse } from
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { ClaudeBridge } from "../../../packages/backend/src/claude-bridge";
+import { ClaudeBridge } from "../../../packages/backend/src/agents/claude/claude-bridge";
 import { finishClaudeBridgeNative } from "./fixtures/claude-bridge-native-cleanup";
 import { createClaudeBridgeNativeEvidence } from "./fixtures/claude-bridge-native-evidence";
 

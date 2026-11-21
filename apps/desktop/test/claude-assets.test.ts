@@ -2,8 +2,8 @@ import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { readClaudeAssets } from "../../../packages/backend/src/claude-assets";
-import { readClaudeSettings } from "../../../packages/backend/src/claude-settings";
+import { readClaudeAssets } from "../../../packages/backend/src/agents/claude/claude-assets";
+import { readClaudeSettings } from "../../../packages/backend/src/agents/claude/claude-settings";
 import { isSensitiveExternalPath } from "../../../packages/backend/src/context-claude";
 import { scanNativeMcp } from "../../../packages/backend/src/mcp-native-scan";
 import { canonicalize } from "../../../packages/backend/src/paths";

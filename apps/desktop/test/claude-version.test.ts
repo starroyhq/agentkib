@@ -1,12 +1,12 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { supportsClaudeVersion as viaManagedRead } from "../../../packages/backend/src/claude-managed-read";
+import { supportsClaudeVersion as viaManagedRead } from "../../../packages/backend/src/agents/claude/claude-managed-read";
 import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import {
   readClaudeInstallation,
   readClaudeVersion,
   supportsClaudeVersion,
-} from "../../../packages/backend/src/claude-version";
+} from "../../../packages/backend/src/agents/claude/claude-version";
 import { contextFixture, type ContextFixture } from "./fixtures/claude-context";
 
 const fixtures: ContextFixture[] = [];

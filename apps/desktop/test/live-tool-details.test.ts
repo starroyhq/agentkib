@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ClaudeManagedRunnerProcess } from "../../../packages/backend/src/claude-managed-runner";
+import { ClaudeManagedRunnerProcess } from "../../../packages/backend/src/agents/claude/claude-managed-runner";
 import { ManagedCodexState } from "../../../packages/backend/src/managed-codex-state";
 import {
   createManagedSnapshotWriter,

@@ -13,7 +13,7 @@ import {
   isClaudeConfigDirSet,
   resolveClaudeConfig,
   type ClaudeConfigInvalidReason,
-} from "../../../packages/backend/src/claude-config";
+} from "../../../packages/backend/src/agents/claude/claude-config";
 
 const roots: string[] = [];
 afterEach(() => {

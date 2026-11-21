@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSyn
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ClaudeSessions } from "../../../packages/backend/src/claude-sessions";
+import { ClaudeSessions } from "../../../packages/backend/src/agents/claude/claude-sessions";
 import * as commandResolution from "../../../packages/backend/src/command-resolution";
 import { Commands } from "../../../packages/backend/src/commands";
 import { scanNativeMcp } from "../../../packages/backend/src/mcp-native-scan";

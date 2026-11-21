@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSyn
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { ClaudeSessions } from "../../../packages/backend/src/claude-sessions";
+import { ClaudeSessions } from "../../../packages/backend/src/agents/claude/claude-sessions";
 
 const roots: string[] = [];
 afterEach(() => {

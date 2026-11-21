@@ -8,8 +8,9 @@ import {
   reconcileCursorNativeImport,
 } from "./cursor-native-import";
 import { CursorBridge } from "./cursor-bridge";
-import { ClaudeBridge, type ClaudeBridgeTarget } from "./claude-bridge";
-import { readClaudeTranscriptObservation } from "./claude-context-usage";
+import { ClaudeBridge, type ClaudeBridgeTarget } from "./agents/claude/claude-bridge";
+import { readClaudeTranscriptObservation } from "./agents/claude/claude-context-usage";
+import { ClaudeSessionProvider } from "./agents/claude/session-provider";
 import { DSH_EXECUTION_MODE, DSH_NATIVE_TURN_OBSERVED, DshBridge } from "./agents/dsh/dsh-bridge";
 import { readLocalDshHistory, readLocalDshTurn } from "./agents/dsh/dsh-local-history";
 import { DshManagedRuntime, dshHome } from "./agents/dsh/dsh-managed-runtime";
@@ -49,7 +50,7 @@ import { McpHub, type McpNetworkSettings } from "./mcp-hub";
 import { McpOAuth } from "./mcp-oauth";
 import { planSessionMcpConnection } from "./mcp-continuation";
 import { mcpConnectionInfo, planMcpConnection, verifyMcpConnection } from "./mcp-connection";
-import { markPossiblyOverwritten } from "./claude-global-writes";
+import { markPossiblyOverwritten } from "./agents/claude/claude-global-writes";
 import { scanNativeMcp } from "./mcp-native-scan";
 import { planNativeMcpMigration } from "./mcp-migration-plan";
 import { webDiff } from "./web-diff";
@@ -69,7 +70,10 @@ import { RemoteGateways } from "./remote-gateways";
 import { RemoteAgent } from "./remote-agent";
 import { WorkspaceStorageOwner } from "./storage";
 import { QuotaOwner } from "./quota";
-import { ClaudeHostControlPreflightError, ClaudeManagedReadOwner } from "./claude-managed-read";
+import {
+  ClaudeHostControlPreflightError,
+  ClaudeManagedReadOwner,
+} from "./agents/claude/claude-managed-read";
 import {
   OrchestrationService,
   type LaneHost,
@@ -79,7 +83,7 @@ import {
 import { createRelayCsr } from "./relay-csr";
 import { readControlReceipt } from "./control-receipt";
 import { ConversationReadStates } from "./conversation-read-state";
-import { resolveClaudeConfig } from "./claude-config";
+import { resolveClaudeConfig } from "./agents/claude/claude-config";
 import { WorkspaceApplications } from "./workspace-applications";
 import { nativeContext } from "./native-context";
 import { discoverScanRoots } from "./discovery-scan-roots";
@@ -192,6 +196,7 @@ export class TypeScriptBackend {
   #activitySnapshots = new SessionSubagentSnapshots(2_000, new Set(["deepseek-harness", "devin"]));
   #cursorBridge?: CursorBridge;
   #claudeBridge?: ClaudeBridge;
+  #claudeSessionProvider?: ClaudeSessionProvider;
   #dshBridge?: DshBridge;
   #dshSessionProvider = new DshSessionProvider();
   /** Reports DeepSeek Harness workers' turns from the states the DSH bridge publishes. */
@@ -272,6 +277,7 @@ export class TypeScriptBackend {
     this.#dshLeads = undefined;
     void this.#claudeBridge?.close();
     this.#claudeBridge = undefined;
+    this.#claudeSessionProvider = undefined;
     void this.#dshBridge?.close();
     this.#dshBridge = undefined;
     this.#dshSessionProvider = new DshSessionProvider();
@@ -329,6 +335,7 @@ export class TypeScriptBackend {
     this.#dshLeads = undefined;
     this.#claudeManaged = undefined;
     this.#claudeBridge = undefined;
+    this.#claudeSessionProvider = undefined;
     this.#dshBridge = undefined;
     this.#dshSessionProvider = new DshSessionProvider();
     this.#mcpHub = undefined;
@@ -954,6 +961,12 @@ export class TypeScriptBackend {
               { turnStartedAt: timing.startedAt ? new Date(timing.startedAt).toISOString() : null },
             ),
         });
+        this.#claudeSessionProvider = new ClaudeSessionProvider(
+          claudeOwner,
+          this.#claudeBridge,
+          (params, result) => this.#deleted(params, result),
+          this.#workerObserver.controlled,
+        );
         this.#claudeBridge.observeWorkers(this.#workerObserver);
         this.#claudeBridge.initialize();
         dshBridge.initialize();
@@ -2377,7 +2390,7 @@ export class TypeScriptBackend {
       if (bridge) return bridge.live(sessionId, true);
       const request = { operation: "live", sessionId, experimentalEnabled: true };
       return (await (session(sessionId)?.agent === "claude-code"
-        ? this.#dispatchClaudeManaged(request)
+        ? this.#claudeSessionProvider!.native(request)
         : this.#withWebRead((owner) => owner.request(request)))) as Record<string, unknown>;
     };
     return {
@@ -2388,7 +2401,7 @@ export class TypeScriptBackend {
         const bridge = dsh(value.sessionId);
         if (bridge) return bridge.request(value);
         if (session(value.sessionId)?.agent === "claude-code")
-          return this.#dispatchClaudeManaged(value);
+          return this.#claudeSessionProvider!.native(value);
         return this.#withWebRead((owner) => owner.managedControl(value));
       },
       events: async (sessionId, limit) => {
@@ -2503,20 +2516,18 @@ export class TypeScriptBackend {
     const response =
       agent === "deepseek-harness"
         ? await this.#dshSessionProvider.request(request)
-        : await this.#withWebRead((owner) => {
-            const provider = owner.sessionProviders.typed(
-              agent,
-              request.operation === "create" ||
-                (request.operation === "settings-prepare" && agent !== "claude-code")
-                ? undefined
-                : async (value) =>
-                    agent === "claude-code"
-                      ? this.#requestClaudeManaged(legacySessionFields(value))
-                      : this.#requestWebSession(legacySessionFields(value)),
-            );
-            if (!provider) throw new Error("unsupported-session-provider");
-            return provider.request(request);
-          });
+        : agent === "claude-code"
+          ? await this.#claudeSessionProvider!.request(request)
+          : await this.#withWebRead((owner) => {
+              const provider = owner.sessionProviders.typed(
+                agent,
+                request.operation === "create" || request.operation === "settings-prepare"
+                  ? undefined
+                  : async (value) => this.#requestWebSession(legacySessionFields(value)),
+              );
+              if (!provider) throw new Error("unsupported-session-provider");
+              return provider.request(request);
+            });
     return restrictSessionCommands(request, response);
   }
 
@@ -2838,7 +2849,15 @@ export class TypeScriptBackend {
       // an owner to a store that has already been closed or replaced.
       if (this.#store !== store)
         throw new RpcFault(-32000, "Backend initialization changed while loading web services");
-      this.#webRead ??= new WebReadRequests(
+      const claude = this.#claudeSessionProvider;
+      // The legacy web reader builds the shared registry in its constructor. Install the
+      // runtime's Claude provider there too, for options, resources and generic creation.
+      const RuntimeWebRead = class extends WebReadRequests {
+        override claudeSessionProvider() {
+          return claude ?? super.claudeSessionProvider();
+        }
+      };
+      this.#webRead ??= new RuntimeWebRead(
         store,
         sessions,
         dataDir,
@@ -2849,7 +2868,7 @@ export class TypeScriptBackend {
         (sessionId) => this.#sessionStream?.hasSubscribers(sessionId) ?? false,
         this.#sessionIndex,
         () => this.#sessionStream?.publish("", "invalidate", { domains: ["catalog"] }),
-        (request) => this.#dispatchClaudeManaged(request),
+        undefined,
         this.#dshSessionProvider,
         (sessionId, operation) => this.#workerObserver.controlled(sessionId, operation),
       );
@@ -2891,42 +2910,11 @@ export class TypeScriptBackend {
   }
 
   #requestClaudeManaged(params: Record<string, unknown>) {
-    switch (params.operation) {
-      case "live":
-      case "capabilities":
-      case "inspect":
-      case "options":
-      case "create":
-      case "settings-state":
-      case "settings-prepare":
-      case "settings":
-      case "usage":
-      case "send":
-      case "stop":
-      case "approve":
-      case "answer":
-      case "steer":
-      case "queue-add":
-        // The Claude transport also addresses sessions before their transcripts are indexed.
-        return this.#withWebRead((owner) => owner.claudeSessionProviderRequest(params)).then(
-          (result) => {
-            if (
-              typeof params.sessionId === "string" &&
-              result &&
-              typeof result === "object" &&
-              "accepted" in result &&
-              result.accepted === true
-            )
-              this.#workerObserver.controlled(params.sessionId, String(params.operation));
-            return result;
-          },
-        );
-      default:
-        return this.#dispatchClaudeManaged(params);
-    }
+    return this.#claudeSessionProvider!.legacy(params) ?? this.#requestClaudeHost(params);
   }
 
-  async #dispatchClaudeManaged(params: Record<string, unknown>) {
+  /** Compatibility operations the desktop historically carries on claude.managed. */
+  async #requestClaudeHost(params: Record<string, unknown>) {
     try {
       const operation = String(params.operation);
       if (operation === "schedule-list") {
@@ -2994,20 +2982,11 @@ export class TypeScriptBackend {
       }
       if (
         ["bridge-status", "bridge-challenge", "bridge-disconnect", "bridge-auto-connect"].includes(
-          String(params.operation),
+          operation,
         )
       )
         return this.#claudeBridge!.management(params);
-      if (
-        typeof params.sessionId === "string" &&
-        params.operation !== "events" &&
-        params.operation !== "resume-command" &&
-        this.#claudeBridge?.handles(params.sessionId) &&
-        this.#claudeBridge?.blocksManagedResume(params.sessionId)
-      )
-        return this.#claudeBridge.request(params);
-      const result = this.#claudeManaged!.request(params);
-      return await (params.operation === "delete" ? this.#deleted(params, result) : result);
+      return this.#claudeSessionProvider!.native(params);
     } catch (error) {
       if (error instanceof ClaudeHostControlPreflightError) return error.result;
       throw error;

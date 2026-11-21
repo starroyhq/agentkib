@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 import {
   ClaudeManagedRunnerProcess,
   ClaudeRunnerState,
-} from "../../../packages/backend/src/claude-managed-runner";
+} from "../../../packages/backend/src/agents/claude/claude-managed-runner";
 import { createFakeClaude } from "./fixtures/claude-fake-cli";
 
 const assistant = (content: unknown[], parent: string | null = null) => ({

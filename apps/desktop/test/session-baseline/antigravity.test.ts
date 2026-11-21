@@ -8,7 +8,7 @@ import { RUNTIME_METHODS } from "@agentkib/runtime-protocol";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AntigravityAcp } from "../../../../packages/backend/src/agents/antigravity/antigravity-acp";
 import { AntigravitySessionProvider } from "../../../../packages/backend/src/agents/antigravity/session-provider";
-import { ClaudeManagedReadOwner } from "../../../../packages/backend/src/claude-managed-read";
+import { ClaudeManagedReadOwner } from "../../../../packages/backend/src/agents/claude/claude-managed-read";
 import { OrchestrationService } from "../../../../packages/backend/src/orchestration-service";
 import type { SessionProviderResponse } from "../../../../packages/backend/src/session-provider";
 import { SessionReaders } from "../../../../packages/backend/src/session-readers";

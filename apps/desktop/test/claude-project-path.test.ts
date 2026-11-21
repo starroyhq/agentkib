@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { claudeProjectKey } from "../../../packages/backend/src/claude-project-path";
+import { claudeProjectKey } from "../../../packages/backend/src/agents/claude/claude-project-path";
 
 /** The key, or the refusal reason when the directory Claude Code would use cannot be known. */
 function resolve(cwd: string, env: NodeJS.ProcessEnv = {}) {

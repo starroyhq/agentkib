@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ClaudeSessions } from "../../../packages/backend/src/claude-sessions";
+import { ClaudeSessions } from "../../../packages/backend/src/agents/claude/claude-sessions";
 import { SessionIndex } from "../../../packages/backend/src/session-index";
 import { SessionStore, type NativeSession } from "../../../packages/backend/src/session-store";
 import { Sql } from "../../../packages/backend/src/sql";

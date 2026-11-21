@@ -6,8 +6,8 @@ import {
   ClaudeManagedRunnerProcess,
   ClaudeRunnerState,
   type ClaudeRunnerOptions,
-} from "../../../packages/backend/src/claude-managed-runner";
-import { ClaudeManagedReadOwner } from "../../../packages/backend/src/claude-managed-read";
+} from "../../../packages/backend/src/agents/claude/claude-managed-runner";
+import { ClaudeManagedReadOwner } from "../../../packages/backend/src/agents/claude/claude-managed-read";
 import {
   claimManagedCommand,
   dispatchManagedCommand,

@@ -19,7 +19,7 @@ vi.mock("node:fs", async (importOriginal) => {
   };
 });
 
-import { ClaudeSessions } from "../../../packages/backend/src/claude-sessions";
+import { ClaudeSessions } from "../../../packages/backend/src/agents/claude/claude-sessions";
 
 const roots: string[] = [];
 afterEach(() => {

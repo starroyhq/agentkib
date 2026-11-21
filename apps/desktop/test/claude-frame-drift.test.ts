@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { ClaudeRunnerState } from "../../../packages/backend/src/claude-managed-runner";
-import { ClaudeProtocolError } from "../../../packages/backend/src/claude-frame-policy";
+import { ClaudeRunnerState } from "../../../packages/backend/src/agents/claude/claude-managed-runner";
+import { ClaudeProtocolError } from "../../../packages/backend/src/agents/claude/claude-frame-policy";
 
 // What the runner state does with frames it does not fully understand. Every frame is hand-built
 // after the stream-json shape of the Agent SDK reference and the 2.1.285 QA capture. No Claude

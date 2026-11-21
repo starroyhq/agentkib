@@ -4,9 +4,9 @@ import os from "node:os";
 import path from "node:path";
 import spawn from "cross-spawn";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { claudeProjectKey } from "../../../packages/backend/src/claude-project-path";
-import { verifyClaudeTranscript } from "../../../packages/backend/src/claude-native-verify";
-import * as claudeSessionProbe from "../../../packages/backend/src/claude-session-probe";
+import { claudeProjectKey } from "../../../packages/backend/src/agents/claude/claude-project-path";
+import { verifyClaudeTranscript } from "../../../packages/backend/src/agents/claude/claude-native-verify";
+import * as claudeSessionProbe from "../../../packages/backend/src/agents/claude/claude-session-probe";
 import {
   launchPreparedHandoff,
   verifyNativeSession,

@@ -6,7 +6,7 @@ import { expect, it } from "vitest";
 import {
   claudeWorkerHistoryTurns,
   claudeWorkerUnobservedTurns,
-} from "../../../packages/backend/src/claude-worker-turns";
+} from "../../../packages/backend/src/agents/claude/claude-worker-turns";
 
 it("recovers bounded, confirmed parent turns and does not duplicate live completions", () => {
   const root = mkdtempSync(path.join(tmpdir(), "agentkib-claude-worker-history-"));

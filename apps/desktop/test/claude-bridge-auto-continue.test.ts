@@ -13,10 +13,10 @@ import {
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ClaudeBridge, type ClaudeBridgeTarget } from "../../../packages/backend/src/claude-bridge";
-import { ClaudeManagedReadOwner } from "../../../packages/backend/src/claude-managed-read";
-import { ClaudeManagedRunnerProcess } from "../../../packages/backend/src/claude-managed-runner";
-import { ClaudeSessionOwnerProbe } from "../../../packages/backend/src/claude-session-owner";
+import { ClaudeBridge, type ClaudeBridgeTarget } from "../../../packages/backend/src/agents/claude/claude-bridge";
+import { ClaudeManagedReadOwner } from "../../../packages/backend/src/agents/claude/claude-managed-read";
+import { ClaudeManagedRunnerProcess } from "../../../packages/backend/src/agents/claude/claude-managed-runner";
+import { ClaudeSessionOwnerProbe } from "../../../packages/backend/src/agents/claude/claude-session-owner";
 import { TypeScriptBackend } from "../../../packages/backend/src/index";
 import { BackendStore } from "../../../packages/backend/src/store";
 import { McpHub } from "../../../packages/backend/src/mcp-hub";

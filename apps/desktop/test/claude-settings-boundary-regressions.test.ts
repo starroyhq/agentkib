@@ -1,6 +1,6 @@
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { readClaudeSettings, redactText } from "../../../packages/backend/src/claude-settings";
+import { readClaudeSettings, redactText } from "../../../packages/backend/src/agents/claude/claude-settings";
 import { scanNativeMcp } from "../../../packages/backend/src/mcp-native-scan";
 import { BackendStore } from "../../../packages/backend/src/store";
 import { contextFixture, type ContextFixture } from "./fixtures/claude-context";

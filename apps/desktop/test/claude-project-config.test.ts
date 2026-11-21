@@ -3,7 +3,7 @@ import {
   claudeProjectKeyForm,
   hasClaudeProjects,
   readClaudeProjectEntry,
-} from "../../../packages/backend/src/claude-project-config";
+} from "../../../packages/backend/src/agents/claude/claude-project-config";
 
 const server = (name: string) => ({
   [name]: { type: "http", url: `https://example.test/${name}` },

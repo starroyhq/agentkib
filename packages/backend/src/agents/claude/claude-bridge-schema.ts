@@ -4,7 +4,7 @@ import {
   claudeBridgePluginCompatibility,
   missingClaudeBridgeCapabilities,
 } from "@agentkib/runtime-protocol";
-import { safeTerminalSubagentTitle } from "../../claude-bridge-plugin/hooks/terminal-subagents.js";
+import { safeTerminalSubagentTitle } from "../../../../claude-bridge-plugin/hooks/terminal-subagents.js";
 
 // What the terminal plugin sends. A plugin of another AgentKib release connects too, so a field
 // this Runtime does not know is dropped rather than failing the message; values it reads stay exact.

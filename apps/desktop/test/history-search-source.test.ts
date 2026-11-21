@@ -30,7 +30,7 @@ import {
 } from "../../../packages/backend/src/history-search-source-jsonl";
 import { HistorySearchStore } from "../../../packages/backend/src/history-search-store";
 import { sessionIdentity, type NativeSession } from "../../../packages/backend/src/session-store";
-import { ClaudeSessions } from "../../../packages/backend/src/claude-sessions";
+import { ClaudeSessions } from "../../../packages/backend/src/agents/claude/claude-sessions";
 import { GrokSessions } from "../../../packages/backend/src/grok-sessions";
 import { HermesSessions } from "../../../packages/backend/src/hermes-sessions";
 import { OpenClawSessions } from "../../../packages/backend/src/openclaw-sessions";

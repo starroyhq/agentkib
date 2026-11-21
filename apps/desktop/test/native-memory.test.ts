@@ -15,7 +15,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { BackendStore } from "../../../packages/backend/src/store";
 import { NativeMemoryOwner } from "../../../packages/backend/src/native-memory";
-import { redactText } from "../../../packages/backend/src/claude-settings";
+import { redactText } from "../../../packages/backend/src/agents/claude/claude-settings";
 
 const io = vi.hoisted(() => ({
   opens: [] as string[],

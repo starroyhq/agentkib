@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { RUNTIME_METHODS } from "@agentkib/runtime-protocol";
 import { TypeScriptBackend } from "../../../packages/backend/src/index";
 import { BACKEND_INITIALIZE } from "../../../packages/backend/src/migration";
-import { ClaudeManagedReadOwner } from "../../../packages/backend/src/claude-managed-read";
+import { ClaudeManagedReadOwner } from "../../../packages/backend/src/agents/claude/claude-managed-read";
 import { McpHub } from "../../../packages/backend/src/mcp-hub";
 import { RemoteAgent } from "../../../packages/backend/src/remote-agent";
 import { BackendStore } from "../../../packages/backend/src/store";

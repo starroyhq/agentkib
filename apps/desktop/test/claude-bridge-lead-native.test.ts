@@ -10,7 +10,7 @@ import { cpSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } f
 import path from "node:path";
 import { homedir, tmpdir } from "node:os";
 import { describe, expect, it } from "vitest";
-import { ClaudeBridge, type ClaudeBridgeTarget } from "../../../packages/backend/src/claude-bridge";
+import { ClaudeBridge, type ClaudeBridgeTarget } from "../../../packages/backend/src/agents/claude/claude-bridge";
 import { OrchestrationService } from "../../../packages/backend/src/orchestration-service";
 
 type Json = Record<string, any>;

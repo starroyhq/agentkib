@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { ClaudeRunnerState } from "../../../packages/backend/src/claude-managed-runner";
-import { ClaudeProtocolError } from "../../../packages/backend/src/claude-frame-policy";
+import { ClaudeRunnerState } from "../../../packages/backend/src/agents/claude/claude-managed-runner";
+import { ClaudeProtocolError } from "../../../packages/backend/src/agents/claude/claude-frame-policy";
 
 // Background work (Bash commands, Monitor, sub-agents) and the turns the CLI starts by itself to
 // report on it. The captures in

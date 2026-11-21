@@ -6,7 +6,7 @@ import {
   createClaudeGoalReportEndpoint,
   type ClaudeGoalReport,
   type ClaudeGoalReportBinding,
-} from "../../../packages/backend/src/claude-goal-report";
+} from "../../../packages/backend/src/agents/claude/claude-goal-report";
 
 const requireBackend = createRequire(
   new URL("../../../packages/backend/package.json", import.meta.url),

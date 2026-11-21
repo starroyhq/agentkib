@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { rmSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ClaudeManagedRunnerProcess } from "../../../../packages/backend/src/claude-managed-runner";
+import { ClaudeManagedRunnerProcess } from "../../../../packages/backend/src/agents/claude/claude-managed-runner";
 import { Commands } from "../../../../packages/backend/src/commands";
 import { createFakeClaude } from "../fixtures/claude-fake-cli";
 import { startBackend, startHost } from "./harness";

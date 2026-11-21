@@ -12,7 +12,7 @@ import { BACKEND_INITIALIZE } from "../../../packages/backend/src/migration";
 import { BackendStore } from "../../../packages/backend/src/store";
 import { McpHub } from "../../../packages/backend/src/mcp-hub";
 import { RemoteAgent } from "../../../packages/backend/src/remote-agent";
-import { claudeProjectKey } from "../../../packages/backend/src/claude-project-path";
+import { claudeProjectKey } from "../../../packages/backend/src/agents/claude/claude-project-path";
 import { canonicalize } from "../../../packages/backend/src/paths";
 import { Context } from "../../../packages/backend/src/context";
 import { Commands } from "../../../packages/backend/src/commands";

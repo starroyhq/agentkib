@@ -1,7 +1,7 @@
 import { frameOrigin } from "./claude-frame-policy";
-import { claudeToolDetail, redactToolText } from "./conversation-tools";
-import { truncateUtf8 } from "./session-event-values";
-import type { ConversationEvent } from "./session-events";
+import { claudeToolDetail, redactToolText } from "../../conversation-tools";
+import { truncateUtf8 } from "../../session-event-values";
+import type { ConversationEvent } from "../../session-events";
 
 type Json = Record<string, unknown>;
 export type ClaudeSubagentStatus =

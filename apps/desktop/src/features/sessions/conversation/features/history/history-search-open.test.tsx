@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import "@testing-library/jest-dom/vitest";
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   ApiError,
@@ -11,9 +11,15 @@ import {
   type HistoryLocatedRecord,
   type HistorySearchStatus,
 } from "@agentkib/web-client";
-import { HistorySearchPanel, historyAccessScope } from "./history-search";
-import { createHistoryOpenLock, historySessionTarget } from "./history-session-target";
-import { historyCopy } from "./history-copy";
+import {
+  HistorySearchPanel,
+  historyAccessScope,
+  createHistoryOpenLock,
+  historySessionTarget,
+  historyCopy,
+} from "@agentkib/session-ui";
+import { isSessionVisible } from "@agentkib/session-catalog";
+import { render } from "../../desktop-reader-test-utils";
 
 afterEach(() => {
   cleanup();
@@ -332,6 +338,10 @@ it("releases only the matching opening token and ignores aborted or obsolete gen
 it("rejects ambiguous or unverified aliases instead of guessing a conversation route", () => {
   const f = fixture();
   const owner = { ...f.catalog.sessions[0], id: "managed", indexedSessionIds: ["source"] };
-  expect(historySessionTarget(record, [owner, { ...owner, id: "second-owner" }])).toBeUndefined();
-  expect(historySessionTarget(record, [{ ...owner, origin: "unknown" }])).toBeUndefined();
+  expect(
+    historySessionTarget(record, [owner, { ...owner, id: "second-owner" }], isSessionVisible),
+  ).toBeUndefined();
+  expect(
+    historySessionTarget(record, [{ ...owner, origin: "unknown" }], isSessionVisible),
+  ).toBeUndefined();
 });

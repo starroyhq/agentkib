@@ -1,6 +1,6 @@
 import { useEffect, useRef } from "react";
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
-import { SessionReader } from "@/features/conversation/features/sessions/session-reader";
+import { SessionReader } from "@/features/conversation/features/sessions/web-session-reader";
 import { buttonVariants } from "@/features/conversation/components/ui/button";
 import { cn } from "@/features/conversation/lib/utils";
 import { useSession } from "@/features/conversation/features/sessions/session-context";

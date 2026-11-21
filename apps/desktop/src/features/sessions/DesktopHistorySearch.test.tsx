@@ -13,7 +13,8 @@ vi.mock("@/core/conversation-bridge", () => ({
   hasDesktopConversation: () => true,
 }));
 vi.mock("./SessionHubContext", () => ({ useSessionHub: () => ({ selected: undefined, select }) }));
-vi.mock("./conversation/features/history/history-search", () => ({
+vi.mock("@agentkib/session-ui", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@agentkib/session-ui")>()),
   HistorySearchLauncher: ({
     onOpenSession,
   }: {

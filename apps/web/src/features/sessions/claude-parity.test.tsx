@@ -21,7 +21,7 @@ import {
 import { WebApplication } from "@/router";
 import { codexCopyForSurface } from "@/features/conversation/features/sessions/codex-copy";
 import { composerLayoutCopy } from "@/features/conversation/features/sessions/composer-layout-copy";
-import { webLayoutCopy } from "@/features/conversation/features/sessions/web-layout-copy";
+import { webLayoutCopy } from "@agentkib/session-ui";
 import { useSessionController } from "@/features/conversation/features/sessions/use-session-controller";
 
 // Exercise the real provider, controller and WebClient against the public API,

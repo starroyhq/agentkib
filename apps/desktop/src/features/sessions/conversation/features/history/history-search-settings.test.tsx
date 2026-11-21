@@ -2,7 +2,7 @@
 
 import "@testing-library/jest-dom/vitest";
 import { useState } from "react";
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import {
   createMemoryHistory,
@@ -29,8 +29,8 @@ import { useAppStore } from "@/stores/app-store";
 import { useWorkspaceStore } from "@/features/workspace/workspace-store";
 import { DesktopHistorySearch } from "@/features/sessions/DesktopHistorySearch";
 import { EmbeddedConversation } from "../../conversation";
-import { HistorySearchPanel, historyAccessScope } from "./history-search";
-import { historyCopy } from "./history-copy";
+import { HistorySearchPanel, historyAccessScope, historyCopy } from "@agentkib/session-ui";
+import { render } from "../../desktop-reader-test-utils";
 
 const doubles = vi.hoisted(() => ({
   client: undefined as WebClient | undefined,

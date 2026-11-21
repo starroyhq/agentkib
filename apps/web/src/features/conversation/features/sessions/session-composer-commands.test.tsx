@@ -46,7 +46,6 @@ vi.mock("./codex-session-controls", () => ({
   },
 }));
 vi.mock("./context-usage", () => ({ ContextUsageGauge: () => null }));
-vi.mock("../history/history-search-controls", () => ({ HistoryReferenceChips: () => null }));
 
 // Entries as CLI 2.1.311 reported them (descriptions shortened); probe-skill is synthetic.
 const catalog: ClaudeCommandEntry[] = [

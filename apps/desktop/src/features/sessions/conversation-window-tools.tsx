@@ -8,7 +8,7 @@ import { Button } from "@/components/ui/button";
 import { useSession } from "./conversation/features/sessions/session-context";
 import { claudeSessionBanner } from "./conversation/features/sessions/claude-session-banner";
 import { sessionDisplayState } from "./conversation/features/sessions/session-display-state";
-import { webLayoutCopy } from "./conversation/features/sessions/web-layout-copy";
+import { webLayoutCopy } from "@agentkib/session-ui";
 import { useSessionViewStore } from "./session-view-store";
 import { useSessionPanels } from "./conversation/features/sessions/session-panels";
 

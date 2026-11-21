@@ -26,7 +26,6 @@ vi.mock("./session-context", () => ({
   },
 }));
 vi.mock("./session-panels", () => ({ useSessionPanels: () => doubles.panels }));
-vi.mock("../history/history-search-controls", () => ({ HistoryReferenceChips: () => null }));
 
 const catalog: ClaudeCommandEntry[] = [
   { name: "loop", builtin: true, aliases: ["proactive"] },

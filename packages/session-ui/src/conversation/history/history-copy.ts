@@ -1,4 +1,5 @@
-import type { SupportedLocale as Locale } from "@/core/types";
+import type { InteractionLocale as Locale } from "../../interaction-model";
+import type { SessionPlatform } from "../../session-platform";
 const en = {
   queryLimit: "Use at most 256 Unicode characters.",
   cachedAt: "Indexed",
@@ -274,3 +275,34 @@ export const historyCopy: Record<Locale, Copy> = {
   "zh-Hant": tw,
   "ja-JP": ja,
 };
+
+const workspaceCopy: Record<Locale, Pick<Copy, "disabled" | "local">> = {
+  "en-US": {
+    disabled:
+      "Conversation content indexing is off. Ask the owner of the computer running AgentKib to enable it in AgentKib under Settings → Privacy → Conversation content search.",
+    local: "Only the computer running AgentKib",
+  },
+  "zh-CN": {
+    disabled:
+      "正文索引未开启，请联系电脑所有者，在电脑上的 AgentKib“设置 → 隐私 → 会话正文搜索”中启用。",
+    local: "仅运行 AgentKib 的电脑",
+  },
+  "zh-Hant": {
+    disabled:
+      "正文索引未開啟，請聯絡電腦擁有者，在電腦上的 AgentKib「設定 → 隱私 → 對話正文搜尋」中啟用。",
+    local: "僅執行 AgentKib 的電腦",
+  },
+  "ja-JP": {
+    disabled:
+      "本文のインデックスは無効です。コンピューターの所有者に、コンピューター上の AgentKib の「設定 → プライバシー → 会話本文の検索」で有効にするよう依頼してください。",
+    local: "AgentKib を実行しているコンピューターのみ",
+  },
+};
+
+export function historySearchCopy(
+  locale: Locale,
+  entry: SessionPlatform["historySearch"]["entry"],
+) {
+  const copy = historyCopy[locale];
+  return entry === "workspace" ? { ...copy, ...workspaceCopy[locale] } : copy;
+}

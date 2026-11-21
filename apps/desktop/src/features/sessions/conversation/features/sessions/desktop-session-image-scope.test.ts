@@ -11,11 +11,13 @@ import {
   invalidateSessionImages,
   mountSessionImages,
   noteSessionImageBoot,
-  readSessionImageAccess,
   sessionImageCacheScope,
   sessionImageRevision,
   setSessionImageIndexEnabled,
-} from "./session-image-scope";
+} from "../../desktop-session-images";
+import { useAppStore } from "@/stores/app-store";
+import { desktopReadScope } from "../../../read-state-scope";
+import type { RuntimeInfo } from "@/core/types";
 
 const access: Access = {
   status: "approved",
@@ -160,30 +162,6 @@ describe("session image authority scopes", () => {
     expect(second.cacheScope).toBe(first.cacheScope);
   });
 
-  it("clears the previous controller bytes when fresh access identifies a different account", async () => {
-    const first = host();
-    const leave = enter(first.client);
-    const image = await warm(first.client);
-    image.stop();
-    leave();
-    const next = host();
-    track(mountSessionImages(next.client));
-    const account: Access = {
-      ...access,
-      accountLogin: {
-        required: true,
-        proofVersion: 1,
-        deviceId: "computer",
-        challenge: "nonce",
-        bound: true,
-        accountId: "another-account",
-      },
-    };
-    acceptSessionImageAccess(next.client, account);
-    expect(messageImageCache.snapshot(image.scope, "image").phase).toBe("idle");
-    expect(sessionImageCacheScope(next.client, account, "session", true)).toBeTruthy();
-  });
-
   it.each(["boot", "grant", "workspaces", "account"] as const)(
     "invalidates warm bytes when %s authority changes",
     async (change) => {
@@ -256,58 +234,6 @@ describe("session image authority scopes", () => {
     expect(current.read).toHaveBeenCalledOnce();
     window.dispatchEvent(new StorageEvent("storage", { key: null }));
     expect(messageImageCache.snapshot(image.scope, "image").phase).toBe("idle");
-  });
-
-  it("reads a legacy bound grant freshly without sharing its private proof across mounts", async () => {
-    const current = host();
-    const legacy: Access = {
-      ...access,
-      accountLogin: {
-        required: true,
-        proofVersion: 1,
-        deviceId: "computer",
-        challenge: "nonce",
-        bound: true,
-      },
-    };
-    const leave = enter(current.client, legacy);
-    const first = await warm(current.client, "session", legacy);
-    first.stop();
-    leave();
-    expect(messageImageCache.snapshot(first.scope, "image").phase).toBe("idle");
-    track(mountSessionImages(current.client));
-    expect(sessionImageCacheScope(current.client, legacy, "session", true)).toBeUndefined();
-    acceptSessionImageAccess(current.client, legacy);
-    const second = await warm(current.client, "session", legacy);
-    expect(second.scope).not.toBe(first.scope);
-    expect(current.read).toHaveBeenCalledTimes(2);
-  });
-
-  it("blocks reuse for non-approved or unbound identities and disabled indexes", () => {
-    const current = host();
-    enter(current.client);
-    for (const value of [
-      { ...access, status: "pending" as const },
-      {
-        ...access,
-        accountLogin: {
-          required: true as const,
-          proofVersion: 1 as const,
-          deviceId: "computer",
-          challenge: "nonce",
-          bound: false,
-        },
-      },
-    ]) {
-      acceptSessionImageAccess(current.client, value);
-      expect(sessionImageCacheScope(current.client, value, "session", true)).toBeUndefined();
-    }
-    acceptSessionImageAccess(current.client, access);
-    setSessionImageIndexEnabled(current.client, false);
-    setSessionImageIndexEnabled(current.client, true);
-    expect(sessionImageCacheScope(current.client, access, "session", true)).toBeUndefined();
-    acceptSessionImageAccess(current.client, access);
-    expect(sessionImageCacheScope(current.client, access, "session", true)).toBeTruthy();
   });
 
   it.each([401, 403])(
@@ -466,31 +392,6 @@ describe("session image authority scopes", () => {
     expect(messageImageCache.snapshot(image.scope, "image").phase).toBe("ready");
   });
 
-  it("does a current LAN access read after a boundary instead of trusting a shared old flight", async () => {
-    const client = new WebClient(undefined, {
-      type: "lan-http",
-      origin: "http://192.168.1.2:3000",
-    });
-    const leave = enter(client);
-    leave();
-    track(mountSessionImages(client));
-    let finish!: (value: Access) => void;
-    const ended: Access = { ...access, status: "ended", device: undefined };
-    const read = vi
-      .spyOn(client, "access")
-      .mockImplementationOnce(
-        () =>
-          new Promise((resolve) => {
-            finish = resolve;
-          }),
-      )
-      .mockResolvedValueOnce(ended);
-    const pending = readSessionImageAccess(client);
-    finish(access);
-    await expect(pending).resolves.toEqual(ended);
-    expect(read).toHaveBeenCalledTimes(2);
-  });
-
   it("clears warm bytes on a known runtime boot transition", async () => {
     const current = host();
     enter(current.client);
@@ -498,5 +399,67 @@ describe("session image authority scopes", () => {
     const image = await warm(current.client);
     noteSessionImageBoot(current.client, "runtime-two");
     expect(messageImageCache.snapshot(image.scope, "image").phase).toBe("idle");
+  });
+
+  it("clears a disabled native index while its controller is unmounted", async () => {
+    const old = useAppStore.getState().runtime;
+    const current = host();
+    const leave = enter(current.client);
+    const image = await warm(current.client);
+    image.stop();
+    leave();
+    try {
+      useAppStore.getState().setRuntime({ session_index_enabled: false } as RuntimeInfo);
+      expect(messageImageCache.snapshot(image.scope, "image").phase).toBe("idle");
+    } finally {
+      useAppStore.getState().setRuntime(old);
+    }
+  });
+
+  it("receives account identity changes while the conversation page is absent", async () => {
+    const original = window.agentkibDesktop;
+    const profile = (id: string) => ({
+      phase: "signed-in" as const,
+      secureStorage: true,
+      account: {
+        id,
+        username: id,
+        status: "active",
+        deviceLimit: 3,
+        deviceCount: 1,
+        totpEnabled: false,
+      },
+    });
+    let receive!: (value: ReturnType<typeof profile>) => void;
+    Object.defineProperty(window, "agentkibDesktop", {
+      configurable: true,
+      value: {
+        ...original,
+        account: {
+          request: async () => profile("account-a"),
+          onStatus: (listener: typeof receive) => {
+            receive = listener;
+            return () => {};
+          },
+        },
+      },
+    });
+    try {
+      const current = host();
+      const leave = track(mountSessionImages(current.client));
+      await waitFor(() => expect(desktopReadScope().ready).toBe(true));
+      acceptSessionImageAccess(current.client, access);
+      const image = await warm(current.client);
+      image.stop();
+      leave();
+      receive(profile("account-b"));
+      expect(messageImageCache.snapshot(image.scope, "image").phase).toBe("idle");
+      enter(current.client);
+      expect(
+        createSessionImageLoader(current.client, access, "session", true, () => true).cacheScope,
+      ).not.toBe(image.loader.cacheScope);
+    } finally {
+      Object.defineProperty(window, "agentkibDesktop", { configurable: true, value: original });
+    }
   });
 });

@@ -36,17 +36,7 @@ import {
   unavailableReasonText,
   useAppearance,
 } from "@agentkib/session-ui";
-import {
-  mountSessionImages,
-  acceptSessionImageAccess,
-  invalidateSessionImages,
-  sessionImageRevision,
-  readSessionImageAccess,
-  setSessionImageIndexEnabled,
-  forgetSessionImages,
-  restoreSessionImages,
-  noteSessionImageBoot,
-} from "./session-image-scope";
+import { sessionImages } from "../../session-platform";
 import type { ResolvedHistoryReference } from "@agentkib/web-client";
 import {
   createConversationStore,
@@ -244,7 +234,7 @@ export function useSessionController({
   const setLive = useCallback(
     (value: SetStateAction<Live | undefined>) => {
       let next = typeof value === "function" ? value(liveValue.current) : value;
-      noteSessionImageBoot(client, next?.runtimeBootId);
+      sessionImages.noteSessionImageBoot(client, next?.runtimeBootId);
       if (!next) entryNotice.current = undefined;
       else {
         if (entryNotice.current?.sessionId !== next.sessionId)
@@ -554,11 +544,11 @@ export function useSessionController({
     warmStreams,
   ]);
   const clearEndedImageAccess = useCallback(() => {
-    invalidateSessionImages(client);
+    sessionImages.invalidateSessionImages(client);
     clear();
   }, [client, clear]);
   const disconnectImages = useCallback(() => {
-    invalidateSessionImages(client);
+    sessionImages.invalidateSessionImages(client);
     disconnect?.();
   }, [client, disconnect]);
   const leaveSession = useCallback(() => {
@@ -619,9 +609,9 @@ export function useSessionController({
       for (const record of previous ?? [])
         if (!readable.has(record.id)) {
           warmStreams.discardParked(record.id);
-          forgetSessionImages(client, record.id);
+          sessionImages.forgetSessionImages(client, record.id);
         }
-      for (const record of readableEvidence) restoreSessionImages(client, record.id);
+      for (const record of readableEvidence) sessionImages.restoreSessionImages(client, record.id);
       catalogRecords.current = usable ? records : undefined;
       const listed = (record: ConversationSessionSummary) =>
         isSessionListed(record, { execution: showExecutionValue.current });
@@ -655,7 +645,7 @@ export function useSessionController({
         e instanceof ApiError &&
         (e.status === 401 || e.status === 403 || e.code === "access_ended")
       )
-        invalidateSessionImages(client);
+        sessionImages.invalidateSessionImages(client);
       if (e instanceof ApiError && e.code === "access_ended") {
         if (isLan) client.reset();
         clear();
@@ -694,12 +684,12 @@ export function useSessionController({
     (stillCurrent?: () => boolean) => {
       const g = generation.current;
       const epoch = ++accessEpoch.current;
-      let imageRevision = sessionImageRevision(client);
+      let imageRevision = sessionImages.sessionImageRevision(client);
       const flight = (async () => {
         for (let imageAttempt = 0; ; imageAttempt++) {
           let next: Access;
           try {
-            next = await readSessionImageAccess(client);
+            next = await sessionImages.readSessionImageAccess(client);
           } catch (error) {
             if (g !== generation.current) return;
             if (epoch !== accessEpoch.current) return accessFlight.current;
@@ -712,9 +702,10 @@ export function useSessionController({
           // the refresh and leave its control fence set indefinitely.
           if (epoch !== accessEpoch.current) return accessFlight.current;
           if (stillCurrent && !stillCurrent()) return;
-          if (imageRevision !== sessionImageRevision(client)) {
+          const imageScopeChanged = imageRevision !== sessionImages.sessionImageRevision(client);
+          if (imageScopeChanged) {
             if (imageAttempt >= 2) throw new DOMException("Access scope changed", "AbortError");
-            imageRevision = sessionImageRevision(client);
+            imageRevision = sessionImages.sessionImageRevision(client);
             continue;
           }
           const old = accessRef.current;
@@ -742,7 +733,7 @@ export function useSessionController({
               durablePending.current = pending;
             }
           }
-          acceptSessionImageAccess(client, next);
+          sessionImages.acceptSessionImageAccess(client, next);
           accessRef.current = next;
           observeForkNavigation();
           if (isLan && next.status === "ended") client.reset();
@@ -923,12 +914,12 @@ export function useSessionController({
           throw new ApiError(409, "operation_busy");
         if (catalogOrder === catalogReadOrder.current) {
           if (!catalog.indexEnabled) {
-            setSessionImageIndexEnabled(client, false);
+            sessionImages.setSessionImageIndexEnabled(client, false);
             clear();
             setIndexEnabled(false);
             return;
           }
-          setSessionImageIndexEnabled(client, true);
+          sessionImages.setSessionImageIndexEnabled(client, true);
           setIndexEnabled(true);
           acceptCatalog(catalog.sessions, catalog);
           setWorkspaces(catalog.workspaces);
@@ -1159,7 +1150,7 @@ export function useSessionController({
   );
   useEffect(
     () =>
-      mountSessionImages(client, () => {
+      sessionImages.mountSessionImages(client, () => {
         void syncAccess().catch((error) => fail(error));
       }),
     [client, syncAccess, fail],
@@ -1291,12 +1282,12 @@ export function useSessionController({
               continue;
             }
             if (!catalog.indexEnabled) {
-              setSessionImageIndexEnabled(client, false);
+              sessionImages.setSessionImageIndexEnabled(client, false);
               clear();
               setIndexEnabled(false);
               break;
             }
-            setSessionImageIndexEnabled(client, true);
+            sessionImages.setSessionImageIndexEnabled(client, true);
             setIndexEnabled(true);
             acceptCatalog(catalog.sessions, catalog);
             setWorkspaces(catalog.workspaces);
@@ -1401,7 +1392,7 @@ export function useSessionController({
               state.epoch !== previous.epoch ||
               state.runtimeBootId !== previous.runtimeBootId;
             if (advanced) {
-              noteSessionImageBoot(client, state.runtimeBootId);
+              sessionImages.noteSessionImageBoot(client, state.runtimeBootId);
               wakeDeferredRefresh();
               if (
                 event.type === "snapshot" ||
@@ -1665,7 +1656,7 @@ export function useSessionController({
   );
   async function post(path: string, body: unknown) {
     if (mutating.current) return;
-    if (path.replace(/^\//, "") === "logout") invalidateSessionImages(client);
+    if (path.replace(/^\//, "") === "logout") sessionImages.invalidateSessionImages(client);
     mutating.current = true;
     setBusy(true);
     setError(!!nativeCoverage.current.historyRecoveryFailed);
@@ -1836,7 +1827,7 @@ export function useSessionController({
    */
   function dropDeletedSession(id: string) {
     catalogReadOrder.current++;
-    forgetSessionImages(client, id);
+    sessionImages.forgetSessionImages(client, id);
     excludedIds.current = new Set([...excludedIds.current, id]);
     catalogSessions.current = catalogSessions.current.filter((session) => session.id !== id);
     catalogRecords.current = catalogRecords.current?.filter((session) => session.id !== id);

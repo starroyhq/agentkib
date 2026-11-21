@@ -23,7 +23,6 @@ vi.mock("./session-context", () => ({
 }));
 vi.mock("./session-panels", () => ({ useSessionPanels: () => null }));
 vi.mock("./context-usage", () => ({ ContextUsageGauge: () => null }));
-vi.mock("../history/history-search-controls", () => ({ HistoryReferenceChips: () => null }));
 vi.mock("./codex-session-controls", () => ({ CodexComposerControls: () => null }));
 
 function deferred<T>() {

@@ -7,7 +7,7 @@ import { Dialog } from "../../components/dialog";
 import { CodexTools } from "./codex-tools";
 import { SessionReceiptRecovery } from "./session-receipt-recovery";
 import { useSession } from "./session-context";
-import { webLayoutCopy } from "./web-layout-copy";
+import { webLayoutCopy } from "@agentkib/session-ui";
 import { ClaudeBackgroundSetting } from "./claude-background-setting";
 import { ProjectAgentPanel } from "./project-agent-panel";
 import { ClaudeBridgePanel } from "./claude-bridge-panel";

@@ -1,4 +1,4 @@
-import { HistorySearchTrigger } from "./features/history/history-search-controls";
+import { WebHistorySearchTrigger } from "./features/history/web-history-search";
 import {
   createContext,
   useContext,
@@ -23,12 +23,12 @@ import { SessionPlatformProvider } from "@agentkib/session-ui";
 import type { WebClient } from "@agentkib/web-client";
 import type { Locale } from "./i18n";
 import { SessionProvider, useSession } from "./features/sessions/session-context";
-import { SessionReader } from "./features/sessions/session-reader";
+import { SessionReader } from "./features/sessions/web-session-reader";
 import { SessionDialogs } from "./features/sessions/session-dialogs";
 import { SessionPanelsContext } from "./features/sessions/session-panels";
 import { PendingCenter } from "./features/sessions/pending-center";
 import { Button } from "./components/ui/button";
-import { webLayoutCopy } from "./features/sessions/web-layout-copy";
+import { webLayoutCopy } from "@agentkib/session-ui";
 import { useSessionNavigate } from "./features/sessions/session-navigation";
 import { webSessionPlatform } from "./session-platform";
 
@@ -132,7 +132,7 @@ function EmbeddedShell() {
           data-conversation-toolbar
           className="flex shrink-0 items-center justify-end gap-2 border-b px-4 py-2"
         >
-          <HistorySearchTrigger />
+          <WebHistorySearchTrigger />
           <PendingCenter compact />
           {session.selected && (
             <>

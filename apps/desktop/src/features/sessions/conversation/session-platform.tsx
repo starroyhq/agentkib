@@ -1,3 +1,5 @@
+import { agentName } from "@agentkib/agent-identity";
+import { isSessionVisible } from "@agentkib/session-catalog";
 import { createWarmSessionStreamPool, type SessionPlatform } from "@agentkib/session-ui";
 import type { WebClient } from "@agentkib/web-client";
 import { useMemo, useState, type ComponentProps } from "react";
@@ -54,7 +56,9 @@ import { ConversationWindowTools } from "../conversation-window-tools";
 import { useDesktopConversationWindow } from "../DesktopConversationWindow";
 import { desktopReadScope, subscribeDesktopReadScope } from "../read-state-scope";
 import { Dialog as SessionDialog } from "./components/dialog";
-import { LivePreview } from "./features/sessions/live-preview";
+import { LivePreview } from "./desktop-live-preview";
+
+export { desktopSessionImages as sessionImages } from "./desktop-session-images";
 
 function DesktopDialogContent({
   closeLabel: _closeLabel,
@@ -169,6 +173,15 @@ function subscribeImageInvalidation(invalidate: () => void) {
   };
 }
 
+export const desktopSessionReadScope: SessionPlatform["readScope"] = {
+  getSnapshot: getReadSnapshot,
+  subscribe: subscribeReadScope,
+  getImageSnapshot: getReadSnapshot,
+  imageInvalidationSource: () => globalThis.window?.agentkibDesktop,
+  subscribeImageInvalidation,
+  refreshContext: () => "desktop-local",
+};
+
 export function useDesktopSessionPlatform(client: WebClient): SessionPlatform {
   const openSettings = useOptionalAppNavigationContext()?.app.openSettings;
   const hasDesktopBridge = !!globalThis.window?.agentkibDesktop;
@@ -187,6 +200,8 @@ export function useDesktopSessionPlatform(client: WebClient): SessionPlatform {
       historySearch: {
         entry: "window",
         filter: "select",
+        agentName,
+        isSessionVisible,
         openIndexSettings: openSettings ? () => openSettings("privacy") === true : undefined,
       },
       preview: { canOpen: (access) => access?.device?.files === true, Panel: LivePreview },
@@ -204,12 +219,7 @@ export function useDesktopSessionPlatform(client: WebClient): SessionPlatform {
         error: toast.error,
         dismiss: toast.dismiss,
       },
-      readScope: {
-        getSnapshot: getReadSnapshot,
-        subscribe: subscribeReadScope,
-        subscribeImageInvalidation,
-        refreshContext: () => "desktop-local",
-      },
+      readScope: desktopSessionReadScope,
       desktop: hasDesktopBridge
         ? {
             isMacOS,

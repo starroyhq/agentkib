@@ -7,7 +7,7 @@ import { SessionReceiptRecovery } from "./session-receipt-recovery";
 import { TOUCH_TARGET } from "./operation-layout";
 import { ProjectAgentPanel } from "./project-agent-panel";
 import { useSession } from "./session-context";
-import { webLayoutCopy } from "./web-layout-copy";
+import { webLayoutCopy } from "@agentkib/session-ui";
 export function SessionOperations({
   open,
   onOpenChange,

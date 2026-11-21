@@ -1,4 +1,3 @@
-import { isSessionVisible } from "@agentkib/session-catalog";
 import type {
   ConversationSessionSummary,
   HistoryLocatedRecord,
@@ -33,6 +32,7 @@ export function createHistoryOpenLock() {
 export function historySessionTarget(
   record: HistoryLocatedRecord,
   sessions: ConversationSessionSummary[],
+  isSessionVisible: (session: ConversationSessionSummary) => boolean,
 ): ConversationSessionSummary | undefined {
   const visible = sessions.filter(
     (session) =>

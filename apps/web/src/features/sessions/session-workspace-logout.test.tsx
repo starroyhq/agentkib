@@ -42,9 +42,9 @@ vi.mock("@/features/conversation/features/sessions/session-receipt-recovery", ()
 vi.mock("@/features/conversation/features/sessions/pending-center", () => ({
   PendingCenter: () => null,
 }));
-vi.mock("@/features/conversation/features/history/history-search-controls", () => ({
-  HistorySearchTrigger: () => null,
-  HistorySearchControls: () => null,
+vi.mock("@/features/conversation/features/history/web-history-search", () => ({
+  WebHistorySearchTrigger: () => null,
+  WebHistorySearchControls: () => null,
 }));
 
 function hostFixture(readOnly = false) {

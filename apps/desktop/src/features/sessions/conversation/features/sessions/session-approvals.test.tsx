@@ -1,18 +1,18 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
-import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { cleanup, fireEvent, screen, within } from "@testing-library/react";
+import { render } from "@/features/sessions/conversation/desktop-reader-test-utils";
 import { createContext, useContext } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Approval } from "@agentkib/web-client";
 import { fillCopy, interactionCardCopy, type InteractionLocale } from "@agentkib/session-ui";
 import { conversationWords } from "@/core/i18n";
-import { SessionReader } from "./session-reader";
+import { SessionReader } from "./desktop-session-reader";
 import { useSession } from "./session-context";
 import { codexReason } from "./codex-copy";
 
 vi.mock("./session-context", () => ({ useSession: vi.fn() }));
 vi.mock("./session-operations", () => ({ SessionOperations: () => null }));
-vi.mock("./artifact-browser", () => ({ ArtifactBrowser: () => null }));
 
 type Session = ReturnType<typeof useSession>;
 const TestSession = createContext<Session | null>(null);

@@ -1,10 +1,11 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
 import { useState } from "react";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, screen } from "@testing-library/react";
+import { render } from "@/features/sessions/conversation/desktop-reader-test-utils";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { codexReason } from "./codex-copy";
-import { SessionReader } from "./session-reader";
+import { SessionReader } from "./desktop-session-reader";
 import type { SessionController } from "./use-session-controller";
 const state = vi.hoisted(() => ({ session: {} as SessionController }));
 vi.mock("./session-context", () => ({
@@ -19,9 +20,7 @@ vi.mock("@agentkib/session-ui", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@agentkib/session-ui")>()),
   SessionTranscript: () => null,
 }));
-vi.mock("./artifact-browser", () => ({ ArtifactBrowser: () => null }));
 vi.mock("./context-usage", () => ({ ContextUsageGauge: () => null }));
-vi.mock("../history/history-search-controls", () => ({ HistoryReferenceChips: () => null }));
 const live = (patch: Record<string, unknown>) =>
   ({
     sessionId: "s",

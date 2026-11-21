@@ -26,11 +26,11 @@ import {
   useSendWhileRunning,
   claudeConnectionCopyForSurface,
   validHistoryMessage,
+  HistoryReferenceChips,
   contextUsageCopyForSurface,
 } from "@agentkib/session-ui";
-import { SessionReadOnly } from "./session-read-only";
+import { SessionReadOnly } from "@agentkib/session-ui";
 import { SessionSendQueue } from "./dsh-queue";
-import { HistoryReferenceChips } from "../history/history-search-controls";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { AlertTriangle, CornerDownRight, ListPlus, MoreHorizontal, X } from "lucide-react";
@@ -687,8 +687,10 @@ export function SessionComposer({
     !uploads.length &&
     !resources.length &&
     !startupGoal
-  )
-    return <SessionReadOnly reason={display.reason} />;
+  ) {
+    const info = { reason: display.reason, local: false };
+    return <SessionReadOnly session={session} {...info} notify={toast.success} />;
+  }
   return (
     <div className="relative w-full max-w-3xl shrink-0 self-center space-y-2">
       {display.continuation === "busy" && (
@@ -781,7 +783,16 @@ export function SessionComposer({
         afterEditor={
           <>
             {slash.menu}
-            <HistoryReferenceChips />
+            <HistoryReferenceChips
+              access={access}
+              locale={locale}
+              references={historyReferences}
+              message={message}
+              disabled={busy || notice === "uncertain"}
+              onRemove={(item) =>
+                setHistoryReferences(historyReferences.filter((entry) => entry !== item))
+              }
+            />
             {uploads.length > 0 && (
               <ul className="space-y-2">
                 {uploads.map((item) => (

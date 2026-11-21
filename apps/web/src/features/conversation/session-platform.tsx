@@ -1,3 +1,5 @@
+import { agentName } from "@agentkib/agent-identity";
+import { isSessionVisible } from "@agentkib/session-catalog";
 import {
   capabilityAccessBinding,
   createWarmSessionStreamPool,
@@ -46,9 +48,11 @@ import { Sheet, SheetClose, SheetContent, SheetTitle } from "./components/ui/she
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "./components/ui/tabs";
 import { Textarea } from "./components/ui/textarea";
 import { codexCopyForSurface } from "./features/sessions/codex-copy";
-import { LivePreview } from "./features/sessions/live-preview";
+import { LivePreview } from "./web-live-preview";
 import { TOUCH_TARGET } from "./features/sessions/operation-layout";
 import { dictionaries, type Locale } from "./i18n";
+
+export { webSessionImages as sessionImages } from "./web-session-images";
 
 function useWebSessionRetention(client: WebClient) {
   // Keep room for requests while the selected session and catalog streams are open.
@@ -74,6 +78,42 @@ function WebSessionToaster({ locale }: { locale: Locale }) {
     />
   );
 }
+
+export const webSessionReadScope: SessionPlatform["readScope"] = {
+  getSnapshot(access) {
+    const account = access?.accountLogin;
+    const ready =
+      access?.status === "approved" &&
+      !!access.bootId &&
+      !!access.device?.id &&
+      (!account || account.bound);
+    return {
+      key: JSON.stringify([
+        capabilityAccessBinding(access ?? undefined),
+        access?.historySearchScope,
+        account?.bound,
+        account?.accountId,
+        account?.deviceId,
+      ]),
+      ready,
+      identityKey: ready ? (account ? account.accountId : "paired-computer-owner") : undefined,
+    };
+  },
+  // Web receives access changes and index status through the session controller.
+  subscribe: () => () => {},
+  getImageSnapshot(access) {
+    const account = access?.accountLogin;
+    return {
+      ready: true,
+      identityKey: account?.required
+        ? account.bound
+          ? account.accountId
+          : undefined
+        : "paired-computer-owner",
+    };
+  },
+  refreshContext: (client) => client,
+};
 
 export const webSessionPlatform: SessionPlatform = {
   kind: "web",
@@ -124,10 +164,12 @@ export const webSessionPlatform: SessionPlatform = {
   copy: {
     words: (locale) => dictionaries[locale],
     formatDateTime: (value, locale) =>
-      (typeof value === "string" ? new Date(value) : value).toLocaleString(locale),
+      new Intl.DateTimeFormat(locale, { dateStyle: "medium", timeStyle: "short" }).format(
+        new Date(value),
+      ),
   },
   navigation: { preferences: { placement: "workspace" } },
-  historySearch: { entry: "workspace", filter: "native-select" },
+  historySearch: { entry: "workspace", filter: "native-select", agentName, isSessionVisible },
   preview: {
     canOpen: (access) =>
       access?.device?.accessMode === "full" &&
@@ -148,28 +190,5 @@ export const webSessionPlatform: SessionPlatform = {
     error: toast.error,
     dismiss: toast.dismiss,
   },
-  readScope: {
-    getSnapshot(access) {
-      const account = access?.accountLogin;
-      const ready =
-        access?.status === "approved" &&
-        !!access.bootId &&
-        !!access.device?.id &&
-        (!account || account.bound);
-      return {
-        key: JSON.stringify([
-          capabilityAccessBinding(access ?? undefined),
-          access?.historySearchScope,
-          account?.bound,
-          account?.accountId,
-          account?.deviceId,
-        ]),
-        ready,
-        identityKey: ready ? (account ? account.accountId : "paired-computer-owner") : undefined,
-      };
-    },
-    // Web receives access changes and index status through the session controller.
-    subscribe: () => () => {},
-    refreshContext: (client) => client,
-  },
+  readScope: webSessionReadScope,
 };

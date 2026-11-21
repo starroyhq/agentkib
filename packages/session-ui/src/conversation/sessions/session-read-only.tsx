@@ -1,10 +1,25 @@
-import { SessionContinuationReadOnly, sessionContinuationCopy } from "@agentkib/session-ui";
+import { SessionContinuationReadOnly, sessionContinuationCopy } from "../../session-continuation";
+import type { Access, ConversationSessionSummary, WebClient } from "@agentkib/web-client";
+import type { InteractionLocale } from "../../interaction-model";
 import { useCallback } from "react";
-import { toast } from "sonner";
-import { useSession } from "./session-context";
 
-export function SessionReadOnly({ reason }: { reason?: string | null }) {
-  const { selected, current, client, access, locale } = useSession();
+export function SessionReadOnly({
+  session: { selected, current, client, access, locale },
+  reason,
+  local,
+  notify,
+}: {
+  session: {
+    selected: string;
+    current?: ConversationSessionSummary;
+    client: WebClient;
+    access?: Access;
+    locale: InteractionLocale;
+  };
+  reason?: string | null;
+  local?: boolean;
+  notify: (message: string) => void;
+}) {
   const currentId = current?.id;
   const agent = current?.agent;
   const accessStatus = access?.status;
@@ -34,7 +49,8 @@ export function SessionReadOnly({ reason }: { reason?: string | null }) {
         locale={locale}
         reason={reason}
         loadCommand={loadCommand}
-        onCopied={() => toast.success(copy.commandCopied)}
+        onCopied={() => notify(copy.commandCopied)}
+        local={local}
       />
     </div>
   );

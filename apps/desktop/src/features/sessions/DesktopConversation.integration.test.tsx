@@ -18,7 +18,7 @@ import {
 } from "@agentkib/session-ui";
 import { conversationWords } from "@/core/i18n";
 import type { ConversationSubscription, SessionStreamEvent } from "@agentkib/conversation-state";
-import { webLayoutCopy } from "./conversation/features/sessions/web-layout-copy";
+import { webLayoutCopy } from "@agentkib/session-ui";
 import {
   createDesktopConversationAdapter,
   type DesktopConversationBridge,

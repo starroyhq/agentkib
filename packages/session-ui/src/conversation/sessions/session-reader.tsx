@@ -1,50 +1,112 @@
-import { agentName } from "@agentkib/agent-identity";
+import { MAX_MESSAGE_LENGTH } from "@agentkib/conversation-state";
 import {
   isLiveSessionAgent,
   sessionProviderCapabilities,
   sessionProviderDeclaration,
+  type ConversationEvent,
+  type ConversationSessionSummary,
+  type ResolvedHistoryReference,
+  type SessionProviderCapabilities,
 } from "@agentkib/web-client";
+import type { ComponentProps, ComponentType, ReactNode } from "react";
+import { SessionArtifactBrowser, type SessionArtifactBrowserProps } from "../../artifact-browser";
+import { ArtifactWorkspace } from "../../artifact-panel";
+import { SessionActivities } from "../../session-activities";
+import { sessionComposerSurface } from "../../session-composer-access";
+import { SessionDetail, type SessionDetailProps } from "../../session-detail";
 import {
-  desktopReadScope as currentDesktopReadScope,
-  useDesktopReadScope,
-} from "../../../read-state-scope";
-import { codexCopy, codexReason } from "./codex-copy";
-import { claudeComposerNotice, claudeSessionBanner } from "./claude-session-banner";
-import { HistoryReferenceChips } from "../history/history-search-controls";
-import {
-  validHistoryMessage,
-  SessionTranscript,
-  sessionComposerSurface,
-  SessionActivities,
-  SessionDetail,
-  SessionDetailHeader,
   BasicSessionComposer,
   SessionDetailComposerNotices,
-  SessionInteractionDock,
   SessionDetailReadOnlyFooter,
-  useSessionDetailReadState,
-} from "@agentkib/session-ui";
-import { SessionOperations } from "./session-operations";
-import { useSessionPanels } from "./session-panels";
-import { ContextUsageGauge } from "./context-usage";
-import { SessionComposer } from "./session-composer";
-import { basicSendQueue } from "./dsh-queue";
-import { MAX_MESSAGE_LENGTH } from "@agentkib/conversation-state";
-import { useSession } from "./session-context";
-import { ArtifactBrowser } from "./artifact-browser";
-import { ArtifactWorkspace } from "./artifact-panel";
-import { useMemo } from "react";
-import {
-  createSessionImageLoader,
-  sessionImageCacheScope,
-  sessionImageRevision,
-} from "./session-image-scope";
+} from "../../session-detail-composer";
+import { SessionDetailHeader } from "../../session-detail-header";
+import { useSessionDetailReadState } from "../../session-detail-read-state";
+import { SessionInteractionDock } from "../../session-interaction-dock";
+import { useSessionPlatform } from "../../session-platform";
+import type { SessionTranscriptProps } from "../../session-transcript";
+import { HistoryReferenceChips } from "../history/history-search-controls";
+import { validHistoryMessage } from "../history/history-reference-model";
 import { webLayoutCopy } from "./web-layout-copy";
-import { useConversationDisplayLive } from "../../../DesktopConversationWindow";
-export function SessionReader() {
-  const session = useSession();
-  const explainReason = (reason: string) => codexReason(session.locale, reason).text;
-  const desktopReadScope = useDesktopReadScope();
+
+type ReadState = Parameters<typeof useSessionDetailReadState>[0];
+type InteractionState = ComponentProps<typeof SessionInteractionDock>["session"];
+type History = SessionDetailProps["history"];
+type ReaderSession = ReadState["session"] &
+  InteractionState &
+  SessionArtifactBrowserProps["session"] & {
+    t: SessionDetailProps["labels"] &
+      Omit<ComponentProps<typeof BasicSessionComposer>["labels"], "addContext"> &
+      Readonly<Record<string, string>>;
+    historyReferences?: readonly ResolvedHistoryReference[];
+    setHistoryReferences: (references: ResolvedHistoryReference[]) => void;
+    sessions?: ConversationSessionSummary[];
+    sourceTitle: (id: string) => string;
+    setModal: (value: ConversationEvent | undefined) => void;
+    earlier?: History["loadEarlier"];
+    historyDetailTurnId?: string;
+    loadingEarlier?: boolean;
+    canSend: boolean;
+    message: string;
+    setMessage: (value: string) => void;
+    control: (action: "send" | "stop") => unknown;
+    liveContentVersion?: number;
+    historySearchOpen: boolean;
+    pendingSend?: NonNullable<History["pending"]> & { sessionId: string };
+    actionUnavailableReason?: string | null;
+  };
+
+export type ReaderContextUsageProps = {
+  source?: SessionProviderCapabilities["contextUsage"];
+  capacity?: number;
+};
+
+type SessionReaderProps = {
+  session: ReaderSession;
+  agent: string;
+  addContextLabel: string;
+  explainReason: (reason: string) => string;
+  panels?: {
+    filesOpen: boolean;
+    setFilesOpen: (open: boolean) => void;
+    actionsOpen: boolean;
+    setActionsOpen: (open: boolean) => void;
+    terminalOpen?: boolean;
+  } | null;
+  banner?: { title: string; body: string } | null;
+  composerBanner: boolean;
+  connectionNoticeInToolbar?: boolean;
+  displayLive?: History["turnLive"];
+  localAuthority?: ReadState["localAuthority"];
+  imageLoader?: History["imageLoader"];
+  queue: { list?: ReactNode; action?: ReactNode };
+  Transcript?: ComponentType<SessionTranscriptProps>;
+  Operations: ComponentType<{ open: boolean; onOpenChange: (open: boolean) => void }>;
+  Composer: ComponentType<{
+    connectionStatusInBanner: boolean;
+    connectionNoticeInToolbar?: boolean;
+  }>;
+  ContextUsage: ComponentType<ReaderContextUsageProps>;
+};
+
+export function SessionReader({
+  session,
+  agent,
+  addContextLabel,
+  explainReason,
+  panels,
+  banner,
+  composerBanner,
+  connectionNoticeInToolbar,
+  displayLive,
+  localAuthority,
+  imageLoader,
+  queue,
+  Transcript,
+  Operations,
+  Composer,
+  ContextUsage,
+}: SessionReaderProps) {
+  const { kind } = useSessionPlatform();
   const {
     historyReferences = [],
     t,
@@ -70,36 +132,7 @@ export function SessionReader() {
     control,
     liveContentVersion,
     client,
-    indexEnabled,
-    imageRequestVersion,
   } = session;
-  const displayLive = useConversationDisplayLive(selected);
-  const imageCacheRevision = sessionImageRevision(client);
-  const imageCacheScope = sessionImageCacheScope(client, access, selected, indexEnabled !== false);
-  const imageLoader = useMemo(() => {
-    const version = imageRequestVersion?.();
-    return createSessionImageLoader(
-      client,
-      access,
-      selected,
-      indexEnabled !== false,
-      () =>
-        sessionImageRevision(client) === imageCacheRevision &&
-        sessionImageCacheScope(client, access, selected, indexEnabled !== false) ===
-          imageCacheScope &&
-        currentDesktopReadScope().key === desktopReadScope.key &&
-        imageRequestVersion?.() === version,
-    );
-  }, [
-    client,
-    access,
-    selected,
-    indexEnabled,
-    imageRequestVersion,
-    desktopReadScope.key,
-    imageCacheRevision,
-    imageCacheScope,
-  ]);
   const selectedLive = live?.sessionId === selected ? live : undefined;
   const selectedSettings =
     selectedLive?.settings?.sessionId === selected ? selectedLive.settings : undefined;
@@ -117,17 +150,12 @@ export function SessionReader() {
       ? (selectedLive?.usage ?? selectedSettings?.usage)?.historical === true ||
         (contextLimit !== undefined && Number.isSafeInteger(contextLimit) && contextLimit > 0)
       : contextUsageSource === "live" || current?.agent === "antigravity";
-  const banner = current?.agent === "claude-code" ? claudeSessionBanner(session) : null;
-  const panels = useSessionPanels();
-  const connectionNoticeInToolbar = !!(banner?.connection && panels?.statusInToolbar);
-  const inlineBanner = connectionNoticeInToolbar ? null : banner;
+
+  const inlineBanner =
+    !connectionNoticeInToolbar && !composerBanner ? (banner ?? undefined) : undefined;
   const readObservation = useSessionDetailReadState({
     session,
-    localAuthority: {
-      key: desktopReadScope.key,
-      ready: desktopReadScope.ready,
-      isCurrent: () => currentDesktopReadScope().key === desktopReadScope.key,
-    },
+    localAuthority,
     blocked:
       !!session.modal ||
       session.historySearchOpen ||
@@ -142,11 +170,11 @@ export function SessionReader() {
     session.pendingSend?.sessionId === selected ? session.pendingSend : undefined;
   if (!access || !selected) return null;
   const composerSurface = sessionComposerSurface(current, access);
-  const queue = basicSendQueue(session);
   return (
     <ArtifactWorkspace
       browser={
-        <ArtifactBrowser
+        <SessionArtifactBrowser
+          session={session}
           key={selected}
           open={panels?.filesOpen ?? false}
           onOpenChange={(open) => panels?.setFilesOpen(open)}
@@ -155,13 +183,13 @@ export function SessionReader() {
       }
     >
       <SessionDetail
-        layout="desktop"
+        layout={kind}
         sessionId={selected}
         locale={locale}
         labels={t}
         jumpLabel={webLayoutCopy[locale].jumpToLatest}
         viewportRef={scroll}
-        Transcript={SessionTranscript}
+        Transcript={Transcript}
         history={{
           page,
           live: selectedLive,
@@ -178,7 +206,7 @@ export function SessionReader() {
           readObservation,
         }}
         operations={
-          <SessionOperations
+          <Operations
             key={`operations-${selected}`}
             open={panels?.actionsOpen ?? false}
             onOpenChange={(open) => panels?.setActionsOpen(open)}
@@ -190,7 +218,7 @@ export function SessionReader() {
             session={current}
             forkTitle={forkSource ? session.sourceTitle(forkSource.id) : t.untitled}
             sourceTitle={session.sourceTitle}
-            banner={inlineBanner && !claudeComposerNotice(inlineBanner) ? inlineBanner : undefined}
+            banner={inlineBanner}
             executionMode={selectedLive?.executionMode}
           />
         }
@@ -199,9 +227,7 @@ export function SessionReader() {
             <SessionDetailComposerNotices
               agent={current?.agent}
               accessMode={access.device?.accessMode}
-              banner={
-                claudeComposerNotice(banner) && !session.pendingSend ? banner?.body : undefined
-              }
+              banner={composerBanner && !session.pendingSend ? banner?.body : undefined}
               background={
                 <SessionActivities
                   sessionId={selected}
@@ -214,7 +240,7 @@ export function SessionReader() {
               interactions={
                 <SessionInteractionDock
                   session={session}
-                  agent={agentName(current?.agent)}
+                  agent={agent}
                   explainReason={explainReason}
                 />
               }
@@ -232,8 +258,8 @@ export function SessionReader() {
               hasSeparateBanner={!!banner}
             />
             {composerSurface === "managed" ? (
-              <SessionComposer
-                connectionStatusInBanner={!!banner && !claudeComposerNotice(banner)}
+              <Composer
+                connectionStatusInBanner={!!banner && !composerBanner}
                 connectionNoticeInToolbar={connectionNoticeInToolbar}
                 key={selected}
               />
@@ -242,7 +268,7 @@ export function SessionReader() {
                 key={selected}
                 sessionId={selected}
                 locale={locale}
-                labels={{ ...t, addContext: codexCopy[locale].addContext }}
+                labels={{ ...t, addContext: addContextLabel }}
                 value={message}
                 busy={busy}
                 canSend={
@@ -259,8 +285,21 @@ export function SessionReader() {
                 onStop={() => void control("stop")}
                 beforeComposer={queue.list}
                 actions={queue.action}
-                references={<HistoryReferenceChips />}
-                contextUsage={<ContextUsageGauge />}
+                references={
+                  <HistoryReferenceChips
+                    access={access}
+                    locale={locale}
+                    references={historyReferences}
+                    message={message}
+                    disabled={busy || notice === "uncertain"}
+                    onRemove={(item) =>
+                      session.setHistoryReferences(
+                        historyReferences.filter((entry) => entry !== item),
+                      )
+                    }
+                  />
+                }
+                contextUsage={<ContextUsage />}
               />
             ) : (
               <SessionDetailReadOnlyFooter
@@ -269,7 +308,7 @@ export function SessionReader() {
                   access.device?.accessMode === "full" &&
                   access.device.advancedControl &&
                   showReadOnlyUsage && (
-                    <ContextUsageGauge source={contextUsageSource} limit={contextLimit} />
+                    <ContextUsage source={contextUsageSource} capacity={contextLimit} />
                   )
                 }
                 message={

@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render as renderUi, screen, waitFor } from "@testing-library/react";
+import type { ReactElement, ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   localPreviewLabel,
@@ -10,12 +11,17 @@ import {
   type ConversationEvent,
 } from "@agentkib/web-client";
 import { api } from "@/core/api";
-import { ArtifactBrowser } from "./artifact-browser";
-import { artifactCopy, livePreviewCopy } from "@agentkib/session-ui";
-import { LivePreview } from "./live-preview";
-import { useSession } from "./session-context";
+import {
+  artifactCopy,
+  livePreviewCopy,
+  SessionArtifactBrowser,
+  SessionPlatformProvider,
+  type ArtifactBrowserControls,
+  type SessionArtifactBrowserProps,
+} from "@agentkib/session-ui";
+import { LivePreview as DesktopLivePreview } from "../../desktop-live-preview";
+import { useDesktopSessionPlatform } from "../../session-platform";
 
-vi.mock("./session-context", () => ({ useSession: vi.fn() }));
 vi.mock("@/core/api", () => ({ api: { openExternal: vi.fn() } }));
 const copy = livePreviewCopy("en-US");
 const event = (content: string) => ({
@@ -25,7 +31,21 @@ const event = (content: string) => ({
   attachment_count: 0,
   truncated: false,
 });
-let state: ReturnType<typeof useSession>;
+let state: SessionArtifactBrowserProps["session"];
+function ArtifactBrowser(controls: ArtifactBrowserControls) {
+  return <SessionArtifactBrowser session={state} {...controls} />;
+}
+function LivePreview() {
+  return <DesktopLivePreview {...state} />;
+}
+function Platform({ children }: { children: ReactNode }) {
+  const platform = useDesktopSessionPlatform(state.client);
+  return <SessionPlatformProvider platform={platform}>{children}</SessionPlatformProvider>;
+}
+function render(ui: ReactElement) {
+  return renderUi(ui, { wrapper: Platform });
+}
+
 function prepare(texts: string[], streamText?: string) {
   state = {
     locale: "en-US",
@@ -41,8 +61,7 @@ function prepare(texts: string[], streamText?: string) {
         throw new Error(`unexpected ${path}`);
       }),
     },
-  } as unknown as ReturnType<typeof useSession>;
-  vi.mocked(useSession).mockImplementation(() => state);
+  } as unknown as SessionArtifactBrowserProps["session"];
 }
 beforeEach(() => {
   vi.mocked(api.openExternal).mockReset().mockResolvedValue(undefined);

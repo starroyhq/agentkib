@@ -12,7 +12,7 @@ import { Input } from "@/components/ui/input";
 import { Dialog } from "../../components/dialog";
 import { OperationDisclosure, OperationGroup, OperationRow } from "./operation-layout";
 import { useSession } from "./session-context";
-import { webLayoutCopy } from "./web-layout-copy";
+import { webLayoutCopy } from "@agentkib/session-ui";
 import { codexCopy, codexReason } from "./codex-copy";
 import { blockedWhileCompacting, contextUsageCopy } from "@agentkib/session-ui";
 import { subscribeSessionInvalidation } from "@agentkib/conversation-state";

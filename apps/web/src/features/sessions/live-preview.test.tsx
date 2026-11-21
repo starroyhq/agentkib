@@ -1,9 +1,24 @@
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import {
+  cleanup,
+  fireEvent,
+  render as renderUi,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
+import type { ReactElement, ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "@agentkib/web-client";
-import { ArtifactBrowser } from "@/features/conversation/features/sessions/artifact-browser";
-import { artifactCopy, livePreviewCopy } from "@agentkib/session-ui";
-import { LivePreview } from "@/features/conversation/features/sessions/live-preview";
+import {
+  artifactCopy,
+  livePreviewCopy,
+  SessionArtifactBrowser,
+  SessionPlatformProvider,
+  type ArtifactBrowserControls,
+  type SessionArtifactBrowserProps,
+} from "@agentkib/session-ui";
+import { LivePreview as WebLivePreview } from "@/features/conversation/web-live-preview";
+import { webSessionPlatform } from "@/features/conversation/session-platform";
 
 let session: {
   client: { request: ReturnType<typeof vi.fn> };
@@ -17,9 +32,25 @@ let session: {
   page?: { events: { id: string; kind: string; content: string }[] };
   live?: { streamText?: string };
 };
-vi.mock("@/features/conversation/features/sessions/session-context", () => ({
-  useSession: () => session,
-}));
+function ArtifactBrowser(controls: ArtifactBrowserControls) {
+  return (
+    <SessionArtifactBrowser
+      session={session as unknown as SessionArtifactBrowserProps["session"]}
+      {...controls}
+    />
+  );
+}
+function LivePreview() {
+  return <WebLivePreview {...(session as unknown as SessionArtifactBrowserProps["session"])} />;
+}
+function Platform({ children }: { children: ReactNode }) {
+  return (
+    <SessionPlatformProvider platform={webSessionPlatform}>{children}</SessionPlatformProvider>
+  );
+}
+function render(ui: ReactElement) {
+  return renderUi(ui, { wrapper: Platform });
+}
 const copy = livePreviewCopy("en-US", "web");
 let tickets = 0;
 beforeEach(() => {

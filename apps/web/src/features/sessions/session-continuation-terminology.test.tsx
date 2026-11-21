@@ -1,9 +1,10 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
 import { createContext, useContext, useState } from "react";
-import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { cleanup, fireEvent, screen, within } from "@testing-library/react";
+import { render } from "@/features/conversation/web-reader-test-utils";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { SessionReader } from "@/features/conversation/features/sessions/session-reader";
+import { SessionReader } from "@/features/conversation/features/sessions/web-session-reader";
 import { SessionPanelsContext } from "@/features/conversation/features/sessions/session-panels";
 import type { SessionController } from "@/features/conversation/features/sessions/use-session-controller";
 import { dictionaries } from "@/features/conversation/i18n";
@@ -22,16 +23,10 @@ vi.mock("@/features/conversation/features/sessions/session-navigation", () => ({
 vi.mock("@/features/conversation/features/sessions/context-usage", () => ({
   ContextUsageGauge: () => null,
 }));
-vi.mock("@/features/conversation/features/sessions/artifact-browser", () => ({
-  ArtifactBrowser: () => null,
-}));
 vi.mock("@agentkib/session-ui", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@agentkib/session-ui")>()),
 
   SessionTranscript: () => null,
-}));
-vi.mock("@/features/conversation/features/history/history-search-controls", () => ({
-  HistoryReferenceChips: () => null,
 }));
 
 // Product acceptance literals deliberately do not come from the dictionaries being tested.

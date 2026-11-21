@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import "@testing-library/jest-dom/vitest";
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
@@ -12,8 +12,8 @@ import {
   type HistorySearchHit,
   type HistorySearchStatus,
 } from "@agentkib/web-client";
-import { HistorySearchPanel, historyAccessScope } from "./history-search";
-import { historyCopy } from "./history-copy";
+import { HistorySearchPanel, historyAccessScope, historyCopy } from "@agentkib/session-ui";
+import { render } from "../../desktop-reader-test-utils";
 
 const timestamp = "2026-10-16T16:30:00+08:00";
 const indexedAt = "2026-10-16T17:45:00+08:00";

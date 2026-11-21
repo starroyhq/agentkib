@@ -1,5 +1,5 @@
 // @vitest-environment node
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -17,6 +17,10 @@ import {
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DshBridge } from "../../../../packages/backend/src/agents/dsh/dsh-bridge";
 import { DshSessionProvider } from "../../../../packages/backend/src/agents/dsh/session-provider";
+import {
+  claimManagedCommand,
+  finishManagedCommand,
+} from "../../../../packages/backend/src/managed-ledger";
 import { discover, post } from "../../../../packages/dsh-bridge-plugin/client.js";
 import { startBackend, startHost, type Rpc } from "./harness";
 
@@ -63,6 +67,7 @@ async function startFakePlugin(agentkibHome: string, workspace: string) {
   let policy = "workspace-write";
   let interactions: DshBridgeInteraction[] = [];
   const commands: DshBridgeCommand[] = [];
+  let promptGate: Promise<void> | undefined;
   const idleState = (sessionId: string): DshBridgeSessionState => ({
     sessionId,
     live: true,
@@ -120,6 +125,9 @@ async function startFakePlugin(agentkibHome: string, workspace: string) {
         };
       }
       case "prompt": {
+        const gate = promptGate;
+        promptGate = undefined;
+        if (gate) await gate;
         const state = stateFor(command.sessionId);
         if (state.status === "idle") {
           state.status = "running";
@@ -217,6 +225,11 @@ async function startFakePlugin(agentkibHome: string, workspace: string) {
   });
   return {
     drainCommands: () => commands.splice(0).map(({ commandId: _commandId, ...command }) => command),
+    holdNextPrompt() {
+      const { promise, resolve } = Promise.withResolvers<void>();
+      promptGate = promise;
+      return resolve;
+    },
     async interact(interaction: DshBridgeInteraction) {
       const state = stateFor(interaction.sessionId);
       state.status = "running";
@@ -239,18 +252,16 @@ describe.skipIf(process.platform !== "darwin")("DeepSeek Harness HTTP behavior b
   let plugin: Awaited<ReturnType<typeof startFakePlugin>>;
   let rpc: Rpc;
   let sessionId: string;
+  let closeRuntime: () => Promise<void>;
   const cleanups: Array<() => Promise<unknown>> = [];
 
-  beforeEach(async () => {
-    root = await realpath(await mkdtemp(join(tmpdir(), "ak-baseline-dsh-")));
-    cleanups.push(() => rm(root, { recursive: true, force: true }));
-    workspace = join(root, "workspace");
+  async function openRuntime(reuseData = false) {
     const agentkibHome = join(root, ".agentkib");
-    await mkdir(workspace);
     const backend = await startBackend({
       data: join(root, "data"),
       workspace,
       indexSessions: true,
+      reuseData,
       environment: {
         HOME: root,
         USERPROFILE: root,
@@ -266,13 +277,32 @@ describe.skipIf(process.platform !== "darwin")("DeepSeek Harness HTTP behavior b
       },
     });
     rpc = backend.rpc;
-    cleanups.push(backend.close);
-    plugin = await startFakePlugin(agentkibHome, workspace);
-    cleanups.push(plugin.close);
-    host = await startHost({ root, workspace, rpc: backend.rpc });
+    try {
+      plugin = await startFakePlugin(agentkibHome, workspace);
+    } catch (error) {
+      await backend.close();
+      throw error;
+    }
+    closeRuntime = async () => {
+      try {
+        await plugin.close();
+      } finally {
+        await backend.close();
+      }
+    };
+  }
+
+  beforeEach(async () => {
+    root = await realpath(await mkdtemp(join(tmpdir(), "ak-baseline-dsh-")));
+    cleanups.push(() => rm(root, { recursive: true, force: true }));
+    workspace = join(root, "workspace");
+    await mkdir(workspace);
+    await openRuntime();
+    cleanups.push(() => closeRuntime());
+    host = await startHost({ root, workspace, rpc: (method, params) => rpc(method, params) });
     cleanups.push(host.dispose);
 
-    const catalog = (await backend.rpc("web.request", { operation: "catalog" })) as {
+    const catalog = (await rpc("web.request", { operation: "catalog" })) as {
       sessions: { id: string; agent: string }[];
     };
     const [session] = catalog.sessions;
@@ -676,6 +706,233 @@ describe.skipIf(process.platform !== "darwin")("DeepSeek Harness HTTP behavior b
       legacyRequest.mockRestore();
       typedRequest.mockRestore();
     }
+  });
+
+  async function receiptSend() {
+    const { body: live } = await getLive();
+    const request = {
+      operation: "send",
+      sessionId,
+      requestId: randomUUID(),
+      deviceId: host.deviceId,
+      runtimeBootId: String(live.runtimeBootId),
+      expectedRevision: live.revision,
+      experimentalEnabled: true,
+      text: "Receipt baseline",
+    };
+    return request;
+  }
+
+  const submit = (request: Record<string, unknown>) => rpc(RUNTIME_METHODS.sessionRequest, request);
+  const findReceipt = (requestId: string, deviceId: string) =>
+    rpc(RUNTIME_METHODS.controlReceipt, { requestId, deviceId });
+
+  it("rejects reuse with different input or another device and only reveals the original receipt", async () => {
+    const request = await receiptSend();
+    const result = await submit(request);
+    const receiptPath = "/requests/" + request.requestId;
+    const receipt = await host.http(receiptPath);
+    expect(receipt).toEqual({
+      status: 200,
+      body: {
+        found: true,
+        requestId: request.requestId,
+        sessionId,
+        workspaceId: "workspace",
+        operation: "send",
+        executionMode: "dsh-follower",
+        runtimeBootId: request.runtimeBootId,
+        expectedRevision: request.expectedRevision,
+        turnId: null,
+        status: "accepted",
+        completionObserved: false,
+        ack: expect.objectContaining({
+          requestId: request.requestId,
+          accepted: true,
+          completed: false,
+          controlOutcome: "accepted",
+        }),
+      },
+    });
+    expect(plugin.drainCommands()).toEqual([
+      {
+        type: "prompt",
+        sessionId: nativeId,
+        requestId: request.requestId,
+        mode: "queue",
+        content: [{ type: "text", text: request.text }],
+      },
+    ]);
+
+    await expect(submit({ ...request, text: "Different input" })).rejects.toThrow(
+      "request-id-reused-with-different-input",
+    );
+    const other = await startHost({
+      root: join(root, "other"),
+      workspace,
+      rpc: (method, params) => rpc(method, params),
+    });
+    cleanups.push(other.dispose);
+    expect(other.deviceId).not.toBe(host.deviceId);
+    await expect(other.http(receiptPath)).resolves.toEqual({
+      status: 200,
+      body: { found: false, requestId: request.requestId },
+    });
+    await expect(submit({ ...request, deviceId: other.deviceId })).rejects.toThrow(
+      "request-id-reused-with-different-input",
+    );
+    const reordered = Object.fromEntries(Object.entries(request).reverse());
+    await expect(submit(reordered)).resolves.toEqual(result);
+    await expect(host.http(receiptPath)).resolves.toEqual(receipt);
+    expect(plugin.drainCommands()).toEqual([]);
+  });
+
+  it("does not dispatch a second prompt while its first reply is pending", async () => {
+    const request = await receiptSend();
+    const release = plugin.holdNextPrompt();
+    const first = submit(request);
+    try {
+      const pending = {
+        found: true,
+        requestId: request.requestId,
+        sessionId,
+        workspaceId: "workspace",
+        operation: "send",
+        executionMode: "dsh-follower",
+        runtimeBootId: request.runtimeBootId,
+        expectedRevision: request.expectedRevision,
+        turnId: null,
+        status: "unknown",
+        completionObserved: false,
+        ack: null,
+      };
+      await vi.waitFor(async () => {
+        await expect(findReceipt(request.requestId, host.deviceId)).resolves.toEqual(pending);
+      });
+      await expect(submit(request)).resolves.toMatchObject({
+        operation: "send",
+        result: {
+          accepted: false,
+          completed: false,
+          requestId: request.requestId,
+          controlOutcome: "unknown",
+          reason: "control-outcome-unconfirmed",
+        },
+      });
+      expect(plugin.drainCommands()).toEqual([
+        {
+          type: "prompt",
+          sessionId: nativeId,
+          requestId: request.requestId,
+          mode: "queue",
+          content: [{ type: "text", text: request.text }],
+        },
+      ]);
+    } finally {
+      release();
+      await first;
+    }
+    await expect(submit(request)).resolves.toEqual(await first);
+    expect(plugin.drainCommands()).toEqual([]);
+  });
+
+  it("retains send and create receipts across a backend restart", async () => {
+    const send = await receiptSend();
+    const create = {
+      operation: "provider-create",
+      agent,
+      workspaceId: "workspace",
+      deviceId: host.deviceId,
+      requestId: randomUUID(),
+      model,
+      effort: "high",
+    };
+    const sent = await submit(send);
+    const submitCreate = () => submit({ host: { request: create } });
+    const created = await submitCreate();
+    await expect(submitCreate()).resolves.toEqual(created);
+    const paths = [send, create].map(({ requestId }) => "/requests/" + requestId);
+    const receipts = await Promise.all(paths.map((path) => host.http(path)));
+    expect(receipts).toMatchObject([
+      {
+        status: 200,
+        body: { found: true, status: "accepted", operation: "send", completionObserved: false },
+      },
+      {
+        status: 200,
+        body: {
+          found: true,
+          status: "accepted",
+          operation: "create",
+          completionObserved: true,
+          ack: { accepted: true, completed: true, sessionId: expect.any(String) },
+        },
+      },
+    ]);
+    expect(plugin.drainCommands().map(({ type }) => type)).toEqual(["prompt", "create"]);
+
+    await closeRuntime();
+    closeRuntime = async () => {};
+    await openRuntime(true);
+    const { body: live } = await getLive();
+    expect(live.runtimeBootId).toBeTypeOf("string");
+    expect(live.runtimeBootId).not.toBe(send.runtimeBootId);
+
+    await expect(Promise.all(paths.map((path) => host.http(path)))).resolves.toEqual(receipts);
+    await expect(submit({ ...send, runtimeBootId: live.runtimeBootId })).resolves.toEqual(sent);
+    await expect(submitCreate()).resolves.toEqual(created);
+    expect(plugin.drainCommands()).toEqual([]);
+  });
+
+  it("replays an existing DSH receipt with mixed-case question IDs", async () => {
+    const live = (await getLive()).body;
+    const dataDir = join(root, "data");
+    const requestId = randomUUID();
+    // Persist a fingerprint using the old DSH ordering. Code-point order puts B before a.
+    const original = {
+      answers: { a: ["A"], B: ["B"] },
+      deviceId: host.deviceId,
+      expectedRevision: live.revision,
+      experimentalEnabled: true,
+      operation: "answer",
+      questionId: randomUUID(),
+      requestId,
+      sessionId,
+      turnId,
+    };
+    const fingerprint = createHash("sha256").update(JSON.stringify(original)).digest("hex");
+    const ack = {
+      accepted: true,
+      completed: false,
+      controlOutcome: "accepted",
+      requestId,
+      sessionId,
+      runtimeBootId: "previous-backend",
+    };
+    expect(
+      claimManagedCommand(dataDir, requestId, sessionId, fingerprint, host.deviceId, {
+        operation: "answer",
+        workspaceId: "workspace",
+        executionMode: "dsh-follower",
+        runtimeBootId: ack.runtimeBootId,
+        expectedRevision: original.expectedRevision,
+        turnId,
+      }),
+    ).toBeNull();
+    finishManagedCommand(dataDir, requestId, ack);
+
+    await expect(
+      submit({
+        ...original,
+        runtimeBootId: live.runtimeBootId,
+        answers: { B: ["B"], a: ["A"] },
+      }),
+    ).resolves.toEqual({ operation: "answer", result: ack });
+    await expect(host.http("/requests/" + requestId)).resolves.toMatchObject({
+      status: 200,
+      body: { found: true, status: "accepted", ack },
+    });
+    expect(plugin.drainCommands()).toEqual([]);
   });
 
   it("maps approvals and answers to the native interaction protocol", async () => {

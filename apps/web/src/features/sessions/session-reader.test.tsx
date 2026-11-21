@@ -1,10 +1,11 @@
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
+import { render } from "@/features/conversation/web-reader-test-utils";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ConversationEvent } from "@agentkib/web-client";
 import { dictionaries } from "@/features/conversation/i18n";
-import { SessionReader } from "@/features/conversation/features/sessions/session-reader";
+import { SessionReader } from "@/features/conversation/features/sessions/web-session-reader";
 import { useSession } from "@/features/conversation/features/sessions/session-context";
-import { webLayoutCopy } from "@/features/conversation/features/sessions/web-layout-copy";
+import { webLayoutCopy } from "@agentkib/session-ui";
 import { claudeConnectionReason } from "@agentkib/session-ui";
 import { codexReason } from "@/features/conversation/features/sessions/codex-copy";
 
@@ -14,15 +15,12 @@ vi.mock("@/features/conversation/features/sessions/session-context", () => ({
 vi.mock("@/features/conversation/features/sessions/session-operations", () => ({
   SessionOperations: () => null,
 }));
-vi.mock("@/features/conversation/features/sessions/artifact-browser", () => ({
-  ArtifactBrowser: () => null,
-}));
 
 let state: ReturnType<typeof useSession>;
 function message(id: string, content: string): ConversationEvent {
   return { id, content, kind: "agent-message", attachment_count: 0, truncated: false };
 }
-const latest = webLayoutCopy["zh-CN"].newMessages;
+const latest = webLayoutCopy["zh-CN"].jumpToLatest;
 
 beforeEach(() => {
   state = {
@@ -413,7 +411,7 @@ describe("conversation reading position", () => {
     await waitFor(() => expect(node.scrollTop).toBe(1200));
   });
 
-  it("does not report earlier pages or replay of the same tail as new messages", () => {
+  it("preserves the reading position and keeps the return-to-bottom control after prepending history", () => {
     const view = render(<SessionReader />);
     const node = moveTo(100);
     fireEvent.click(screen.getByRole("button", { name: dictionaries["zh-CN"].earlier }));
@@ -427,7 +425,7 @@ describe("conversation reading position", () => {
     };
     view.rerender(<SessionReader />);
     expect(node.scrollTop).toBe(100);
-    expect(screen.queryByRole("button", { name: latest })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: latest })).toBeVisible();
   });
 
   it("notifies once for incremental text and clears the notice near the bottom", async () => {

@@ -19,7 +19,7 @@ import {
   TOUCH_TARGET,
 } from "./operation-layout";
 import { useSession } from "./session-context";
-import { webLayoutCopy } from "./web-layout-copy";
+import { webLayoutCopy } from "@agentkib/session-ui";
 import { composerLayoutCopy } from "./composer-layout-copy";
 import { codexCopyForSurface, codexReason } from "./codex-copy";
 import { blockedWhileCompacting, contextUsageCopyForSurface } from "@agentkib/session-ui";

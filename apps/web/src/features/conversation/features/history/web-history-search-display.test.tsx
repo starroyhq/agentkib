@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import "@testing-library/jest-dom/vitest";
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   WebClient,
@@ -11,8 +11,8 @@ import {
   type HistorySearchHit,
   type HistorySearchStatus,
 } from "@agentkib/web-client";
-import { HistorySearchPanel, historyAccessScope } from "./history-search";
-import { historyCopy } from "./history-copy";
+import { HistorySearchPanel, historyAccessScope, historyCopy } from "@agentkib/session-ui";
+import { render } from "@/features/conversation/web-reader-test-utils";
 
 const timestamp = "2026-10-16T16:30:00+08:00";
 const indexedAt = "2026-10-16T17:45:00+08:00";
@@ -112,17 +112,20 @@ function fixture(overrides: Partial<HistorySearchHit> = {}) {
   return { client, catalog, source, hit, props };
 }
 function localizedTime(value: string, locale: (typeof locales)[number]) {
-  return new Date(value).toLocaleString(locale);
+  return new Intl.DateTimeFormat(locale, { dateStyle: "medium", timeStyle: "short" }).format(
+    new Date(value),
+  );
 }
 async function resultButton() {
   return await screen.findByRole("button", { name: /Source history/ });
 }
+
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
 });
 
-describe("localized history result metadata", () => {
+describe("history search Web presentation", () => {
   it.each(locales)(
     "formats message and index times in %s while retaining exact machine timestamps",
     async (locale) => {
@@ -144,94 +147,6 @@ describe("localized history result metadata", () => {
       );
     },
   );
-
-  it("uses existing display names and safe fallback names for multiple agents without changing their identity", async () => {
-    const f = fixture();
-    const entries = [
-      ["claude-code", "Claude Code"],
-      ["codex", "Codex"],
-      ["deepseek-harness", "DeepSeek Harness"],
-      ["custom-agent", "custom-agent"],
-      ["", "Agent"],
-    ];
-    vi.mocked(f.client.historySearch).mockResolvedValue({
-      hits: entries.map(([agent], index) => ({
-        ...f.hit,
-        agent,
-        title: null,
-        location: { ...f.hit.location, recordId: `record-${index}` },
-        snippet: `needle ${index}`,
-      })),
-      status,
-      nextCursor: null,
-      limited: false,
-    });
-    render(<HistorySearchPanel {...f.props} locale="en-US" />);
-    await screen.findByRole("button", { name: /DeepSeek Harness/ });
-    for (const [, name] of entries)
-      expect(screen.getByText(name, { selector: "strong" })).toBeVisible();
-    expect(vi.mocked(f.client.historySearch).mock.results).toHaveLength(1);
-  });
-
-  it.each([null, "", "not-a-date", "   "])(
-    "renders an explicit fallback for missing or invalid time %j",
-    async (value) => {
-      const f = fixture({ timestamp: value, indexedAt: "invalid-index-time" });
-      render(<HistorySearchPanel {...f.props} locale="zh-CN" />);
-      const button = await resultButton();
-      expect(within(button).getAllByText(historyCopy["zh-CN"].unknownTime)).toHaveLength(2);
-      expect(button.querySelector("time")).toBeNull();
-      expect(button).not.toHaveTextContent("Invalid Date");
-      expect(button).not.toHaveTextContent("invalid-index-time");
-    },
-  );
-
-  it("updates retained results after a locale change without modifying the original timestamp", async () => {
-    const f = fixture();
-    const view = render(<HistorySearchPanel {...f.props} locale="en-US" />);
-    expect((await resultButton()).querySelector("time")).toHaveTextContent(
-      localizedTime(timestamp, "en-US"),
-    );
-    view.rerender(<HistorySearchPanel {...f.props} locale="ja-JP" />);
-    await waitFor(() =>
-      expect(
-        screen.getByRole("button", { name: /Source history/ }).querySelector("time"),
-      ).toHaveTextContent(localizedTime(timestamp, "ja-JP")),
-    );
-    expect(
-      screen.getByRole("button", { name: /Source history/ }).querySelector("time"),
-    ).toHaveAttribute("datetime", timestamp);
-    expect(f.hit.timestamp).toBe(timestamp);
-  });
-
-  it("preserves highlighted result opening, exact excerpt references and source-session navigation", async () => {
-    const f = fixture();
-    render(<HistorySearchPanel {...f.props} locale="zh-Hant" />);
-    const button = await resultButton();
-    expect(button.querySelector("mark")).toHaveTextContent("needle");
-    fireEvent.click(button);
-    const source = await screen.findByRole("region", { name: historyCopy["zh-Hant"].source });
-    expect(f.client.historyLocate).toHaveBeenCalledExactlyOnceWith(
-      f.source.location,
-      expect.any(AbortSignal),
-    );
-    const excerpt = within(source).getByRole("textbox", { name: historyCopy["zh-Hant"].excerpt });
-    fireEvent.select(excerpt, { target: { selectionStart: 7, selectionEnd: 13 } });
-    fireEvent.click(within(source).getByRole("button", { name: historyCopy["zh-Hant"].quote }));
-    await screen.findByText(historyCopy["zh-Hant"].added);
-    expect(f.client.historyReferences).toHaveBeenCalledExactlyOnceWith(
-      [{ ...f.source.location, contentHash: "hash", start: 7, end: 13 }],
-      expect.any(AbortSignal),
-    );
-    expect(f.props.onReference).toHaveBeenCalledOnce();
-    fireEvent.click(
-      within(source).getByRole("button", { name: historyCopy["zh-Hant"].openSession }),
-    );
-    await waitFor(() =>
-      expect(f.props.onOpenSession).toHaveBeenCalledExactlyOnceWith(f.catalog.sessions[0]),
-    );
-    expect(f.catalog.sessions[0].agent).toBe("claude-code");
-  });
 
   it("displays the Agent name while submitting the original Agent filter ID", async () => {
     const f = fixture();

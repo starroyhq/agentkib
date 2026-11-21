@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { LoaderCircle } from "lucide-react";
 import type { HistorySearchStatus } from "@agentkib/web-client";
-import { historyCopy } from "@/features/sessions/conversation/features/history/history-copy";
-import { HistoryCoverageStatus } from "@/features/sessions/conversation/features/history/history-search";
+import { agentName } from "@agentkib/agent-identity";
+import { HistoryCoverageStatus, historyCopy } from "@agentkib/session-ui";
 import {
   createDesktopConversationClient,
   hasDesktopConversation,
@@ -109,7 +109,7 @@ export function HistorySearchSettings() {
       <p className="text-sm text-muted-foreground">{c.settingsInfo}</p>
       {status && (
         <>
-          <HistoryCoverageStatus status={status} locale={locale} />
+          <HistoryCoverageStatus status={status} locale={locale} agentName={agentName} />
           <p className="text-xs text-muted-foreground">
             {Math.ceil(status.bytes / 1024)} / {Math.ceil(status.limitBytes / 1024)} KiB
           </p>

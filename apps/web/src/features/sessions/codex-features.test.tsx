@@ -16,7 +16,7 @@ import {
   codexCopyForSurface,
   codexReason,
 } from "@/features/conversation/features/sessions/codex-copy";
-import { webLayoutCopy } from "@/features/conversation/features/sessions/web-layout-copy";
+import { webLayoutCopy } from "@agentkib/session-ui";
 import { publishSessionInvalidation } from "@agentkib/conversation-state";
 vi.mock("@tanstack/react-router", () => ({ useNavigate: () => vi.fn() }));
 vi.mock("@/features/conversation/features/sessions/session-context", () => ({

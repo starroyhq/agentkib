@@ -5,7 +5,7 @@ import {
   requestReadStateRefresh,
   SessionContinuationStatus,
 } from "@agentkib/session-ui";
-import { HistorySearchTrigger } from "@/features/conversation/features/history/history-search-controls";
+import { WebHistorySearchTrigger } from "@/features/conversation/features/history/web-history-search";
 import { Outlet, useLocation, useNavigate } from "@tanstack/react-router";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import {
@@ -33,7 +33,7 @@ import { PendingCenter } from "@/features/conversation/features/sessions/pending
 import { SessionPanelsContext } from "@/features/conversation/features/sessions/session-panels";
 import { sessionDisplayState } from "@/features/conversation/features/sessions/session-display-state";
 import { codexCopyForSurface } from "@/features/conversation/features/sessions/codex-copy";
-import { webLayoutCopy } from "@/features/conversation/features/sessions/web-layout-copy";
+import { webLayoutCopy } from "@agentkib/session-ui";
 import { cn } from "@/features/conversation/lib/utils";
 import { sessionAccessCopy } from "./session-access-copy";
 import { HomeAttentionProvider, useHomeAttention } from "./home/home-attention";
@@ -376,7 +376,7 @@ function WorkspaceShell() {
                 <RefreshCw className="size-3.5" />
               </Button>
             </header>
-            <HistorySearchTrigger />
+            <WebHistorySearchTrigger />
             <SessionCatalog
               readContext={session.client}
               pendingSessions={pendingMarks}

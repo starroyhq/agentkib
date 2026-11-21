@@ -1,5 +1,6 @@
 import { useState } from "react";
-import { HistorySearchLauncher } from "./conversation/features/history/history-search";
+import { HistorySearchLauncher, SessionPlatformProvider } from "@agentkib/session-ui";
+import { useDesktopSessionPlatform } from "./conversation/session-platform";
 import {
   createDesktopConversationClient,
   hasDesktopConversation,
@@ -11,6 +12,7 @@ import { useSessionViewStore } from "./session-view-store";
 export function DesktopHistorySearch() {
   const [client] = useState(createDesktopConversationClient);
   const { locale } = useI18n();
+  const platform = useDesktopSessionPlatform(client);
   const { selected, select } = useSessionHub();
   if (!hasDesktopConversation()) return null;
   const embedded =
@@ -19,22 +21,24 @@ export function DesktopHistorySearch() {
     selected.availability === "readable" &&
     ["codex", "claude-code", "antigravity"].includes(selected.agent);
   return (
-    <HistorySearchLauncher
-      client={client}
-      locale={locale}
-      iconOnly
-      onOpen={embedded ? () => requestConversationPanel("search") : undefined}
-      onOpenSession={(source) => {
-        useSessionViewStore.getState().revealSession({
-          ...source,
-          created_at: source.created_at ?? undefined,
-          git_branch: source.git_branch ?? undefined,
-          forked_from_session_id: source.forked_from_session_id ?? undefined,
-          spawned_by_session_id: source.spawned_by_session_id ?? undefined,
-          worktree: source.worktree ?? undefined,
-        });
-        select(source.id);
-      }}
-    />
+    <SessionPlatformProvider platform={platform}>
+      <HistorySearchLauncher
+        client={client}
+        locale={locale}
+        iconOnly
+        onOpen={embedded ? () => requestConversationPanel("search") : undefined}
+        onOpenSession={(source) => {
+          useSessionViewStore.getState().revealSession({
+            ...source,
+            created_at: source.created_at ?? undefined,
+            git_branch: source.git_branch ?? undefined,
+            forked_from_session_id: source.forked_from_session_id ?? undefined,
+            spawned_by_session_id: source.spawned_by_session_id ?? undefined,
+            worktree: source.worktree ?? undefined,
+          });
+          select(source.id);
+        }}
+      />
+    </SessionPlatformProvider>
   );
 }

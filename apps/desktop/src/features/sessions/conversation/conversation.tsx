@@ -33,7 +33,7 @@ import { LoaderCircle } from "lucide-react";
 import type { ConversationCatalog, WebClient } from "@agentkib/web-client";
 import type { SupportedLocale as Locale } from "@/core/types";
 import { SessionProvider, useSession } from "./features/sessions/session-context";
-import { SessionReader } from "./features/sessions/session-reader";
+import { SessionReader } from "./features/sessions/desktop-session-reader";
 import { SessionDialogs } from "./features/sessions/session-dialogs";
 import { SessionPanelsContext } from "./features/sessions/session-panels";
 import { PendingCenter } from "./features/sessions/pending-center";
@@ -46,7 +46,7 @@ import {
   useDesktopConversationWindow,
 } from "../DesktopConversationWindow";
 import { desktopReadScope } from "../read-state-scope";
-import { webLayoutCopy } from "./features/sessions/web-layout-copy";
+import { webLayoutCopy } from "@agentkib/session-ui";
 import { codexCopy } from "./features/sessions/codex-copy";
 import { useDesktopSessionPlatform } from "./session-platform";
 

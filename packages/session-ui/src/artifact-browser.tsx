@@ -6,6 +6,7 @@ import {
   useState,
   type ComponentProps,
   type ComponentType,
+  type JSXElementConstructor,
   type ReactNode,
 } from "react";
 import {
@@ -24,7 +25,9 @@ import {
   ApiError,
   type Access,
   type ArtifactEntry,
+  type ConversationEventPage,
   type ConversationSessionSummary,
+  type Live,
   type WebClient,
   type ArtifactListing,
   type ArtifactTicket,
@@ -34,11 +37,13 @@ import type { Dialog } from "@base-ui/react/dialog";
 import type { Select as SelectPrimitive } from "@base-ui/react/select";
 import type { Tabs as TabsPrimitive } from "@base-ui/react/tabs";
 import { artifactCopy } from "./artifact-copy";
-import type { ArtifactPanelProps } from "./artifact-panel";
+import { ArtifactPanel, type ArtifactPanelProps } from "./artifact-panel";
+import type { InteractionLocale } from "./interaction-model";
+import { useSessionPlatform } from "./session-platform";
 import type { SessionSurface } from "./session-surface-copy";
 
 interface ArtifactBrowserUI {
-  Button: ComponentType<
+  Button: JSXElementConstructor<
     ComponentProps<"button"> & { variant?: "ghost" | "outline"; size?: "icon" | "content" }
   >;
   Input: ComponentType<ComponentProps<"input">>;
@@ -64,6 +69,43 @@ export interface ArtifactBrowserControls {
   open?: boolean;
   onOpenChange?: (open: boolean) => void;
   showTrigger?: boolean;
+}
+
+export type SessionArtifactBrowserProps = ArtifactBrowserControls & {
+  session: ComponentProps<typeof ArtifactBrowser>["session"] & {
+    locale: InteractionLocale;
+    origin?: string;
+    page?: ConversationEventPage;
+    live?: Live;
+  };
+};
+
+export function SessionArtifactBrowser({ session, ...controls }: SessionArtifactBrowserProps) {
+  const { components, kind, preview } = useSessionPlatform();
+  const { access, client, locale, page, live } = session;
+  const scope = JSON.stringify([
+    session.origin,
+    access?.status,
+    access?.bootId,
+    access?.device?.id,
+    access?.historySearchScope,
+    access?.accountLogin?.bound,
+    access?.accountLogin?.accountId,
+  ]);
+  return (
+    <ArtifactBrowser
+      key={scope}
+      {...controls}
+      session={session}
+      surface={kind}
+      components={{ ...components, ArtifactPanel }}
+      livePreview={
+        preview.canOpen(access) ? (
+          <preview.Panel client={client} locale={locale} page={page} live={live} />
+        ) : undefined
+      }
+    />
+  );
 }
 
 type Root = { id: string; name: string };

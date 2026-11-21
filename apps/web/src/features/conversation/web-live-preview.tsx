@@ -1,47 +1,27 @@
-import { useEffect, useId, useMemo, useRef, useState, type FormEvent } from "react";
-import { ArrowLeft, ExternalLink, Globe, LoaderCircle, RotateCw } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { ArrowLeft, ExternalLink, LoaderCircle, RotateCw } from "lucide-react";
 import {
   ApiError,
   localPreviewLabel,
-  localPreviewTargets,
-  localPreviewTexts,
-  parseLocalPreviewTarget,
   type LivePreviewTicket,
   type LocalPreviewTarget,
 } from "@agentkib/web-client";
-import { Button, buttonVariants } from "../../components/ui/button";
-import { Input } from "../../components/ui/input";
-import { livePreviewCopy } from "@agentkib/session-ui";
-import { useSession } from "./session-context";
+import { Button, buttonVariants } from "./components/ui/button";
+import {
+  LivePreviewFrame,
+  LivePreviewPicker,
+  livePreviewCopy,
+  type LivePreviewProps,
+} from "@agentkib/session-ui";
 
-/** A dev server's address is in recent output; older loaded pages are not scanned. */
-const SCANNED_EVENTS = 200;
-/**
- * The page keeps the preview origin, isolated from the app. It may not navigate the window,
- * open windows or start downloads.
- */
-const FRAME_SANDBOX = "allow-scripts allow-same-origin allow-forms allow-modals";
 const ICON_BUTTON = "size-8 shrink-0 rounded-md text-muted-foreground";
 
 /**
  * Pages served on the computer running AgentKib. Each opened page gets a ticket from the host,
  * which shows it through the isolated preview origin; reloading asks for a new one.
  */
-export function LivePreview() {
-  const { client, page, live, locale } = useSession();
+export function LivePreview({ client, page, live, locale }: LivePreviewProps) {
   const copy = livePreviewCopy(locale, "web");
-  const inputId = useId();
-  const errorId = useId();
-  const events = page?.events;
-  const streamText = live?.streamText;
-  const detected = useMemo(
-    () =>
-      localPreviewTargets([
-        ...localPreviewTexts((events ?? []).slice(-SCANNED_EVENTS)),
-        streamText ?? "",
-      ]),
-    [events, streamText],
-  );
   const [target, setTarget] = useState<LocalPreviewTarget>();
   const [ticket, setTicket] = useState<LivePreviewTicket>();
   const [opening, setOpening] = useState(false);
@@ -86,12 +66,6 @@ export function LivePreview() {
     setTicket(undefined);
     setFailure("");
     setOpening(false);
-  }
-  function submit(event: FormEvent) {
-    event.preventDefault();
-    const typed = parseLocalPreviewTarget(address);
-    setInvalid(!typed);
-    if (typed) void open(typed);
   }
   if (target)
     return (
@@ -141,14 +115,7 @@ export function LivePreview() {
           )}
         </div>
         {ticket ? (
-          <iframe
-            key={ticket.url}
-            title={copy.frame}
-            src={ticket.url}
-            sandbox={FRAME_SANDBOX}
-            referrerPolicy="no-referrer"
-            className="min-h-0 w-full flex-1 border-0 bg-white"
-          />
+          <LivePreviewFrame key={ticket.url} title={copy.frame} url={ticket.url} />
         ) : (
           <div className="min-h-0 flex-1 p-4">
             {opening && (
@@ -173,62 +140,16 @@ export function LivePreview() {
       </div>
     );
   return (
-    <div className="min-h-0 flex-1 space-y-5 overflow-y-auto overscroll-contain p-4 pb-[max(1rem,env(safe-area-inset-bottom))]">
-      <p className="text-xs leading-5 text-muted-foreground">{copy.intro}</p>
-      <section className="space-y-1">
-        <h3 className="text-[11px] font-medium text-muted-foreground">{copy.found}</h3>
-        {detected.length ? (
-          <ul className="min-w-0 divide-y divide-border/60">
-            {detected.map((item) => (
-              <li key={item.port} className="min-w-0">
-                <Button
-                  variant="ghost"
-                  size="content"
-                  className="flex min-h-11 w-full min-w-0 items-center justify-start gap-3 rounded-lg px-2 py-2 text-left font-normal hover:bg-muted/60"
-                  title={item.url}
-                  onClick={() => void open(item)}
-                >
-                  <Globe className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
-                  <span className="min-w-0 flex-1 truncate font-mono text-xs">
-                    {localPreviewLabel(item)}
-                  </span>
-                </Button>
-              </li>
-            ))}
-          </ul>
-        ) : (
-          <p className="py-2 text-xs text-muted-foreground">{copy.none}</p>
-        )}
-      </section>
-      <form className="space-y-2" onSubmit={submit}>
-        <label htmlFor={inputId} className="block text-[11px] font-medium text-muted-foreground">
-          {copy.address}
-        </label>
-        <div className="flex gap-2">
-          <Input
-            id={inputId}
-            value={address}
-            placeholder={copy.placeholder}
-            autoComplete="off"
-            spellCheck={false}
-            aria-invalid={invalid || undefined}
-            aria-describedby={invalid ? errorId : undefined}
-            className="h-11 flex-1 bg-background font-mono text-xs sm:h-9"
-            onChange={(event) => {
-              setAddress(event.target.value);
-              setInvalid(false);
-            }}
-          />
-          <Button type="submit" className="min-h-11 sm:min-h-9" disabled={!address.trim()}>
-            {copy.open}
-          </Button>
-        </div>
-        {invalid && (
-          <p id={errorId} role="alert" className="text-xs text-destructive-text">
-            {copy.invalid}
-          </p>
-        )}
-      </form>
-    </div>
+    <LivePreviewPicker
+      locale={locale}
+      surface="web"
+      page={page}
+      live={live}
+      address={address}
+      invalid={invalid}
+      onAddressChange={setAddress}
+      onInvalidChange={setInvalid}
+      onOpen={open}
+    />
   );
 }

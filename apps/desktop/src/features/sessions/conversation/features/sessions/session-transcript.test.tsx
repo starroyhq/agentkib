@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { StrictMode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ConversationEvent } from "@agentkib/web-client";
@@ -38,6 +38,17 @@ function event(
     tool_status: "completed",
     attachment_count: 0,
     truncated: false,
+  };
+}
+
+function fileEdit(id: string, turnId: string, path: string, added: number): ConversationEvent {
+  return {
+    ...event(id, "tool-summary", turnId),
+    tool: {
+      kind: "edit",
+      title: path,
+      content: [{ type: "diff", path, change: "update", added, removed: 0, preview: `+${id}` }],
+    },
   };
 }
 
@@ -211,6 +222,7 @@ describe("production transcript identity", () => {
     const toggle = screen.getByRole("button", { name: /Process/ });
     fireEvent.click(toggle);
     const firstRow = view.container.querySelector('[data-event-id="first"]');
+    expect(firstRow).toBeVisible();
     view.rerender(
       <SessionTranscript
         {...props}
@@ -468,8 +480,10 @@ describe("production transcript identity", () => {
     expect(screen.queryByRole("button", { name: /pnpm test/ })).toBeNull();
     const card = screen.getByRole("heading", { name: /Edited 1 file/ }).closest("section")!;
     expect(card).toBeVisible();
-    expect(view.container.querySelector('[data-event-id="answer"]')?.nextElementSibling).toBe(card);
-    expect(card.nextElementSibling).toHaveAttribute("data-message-actions");
+    const answerRow = view.container.querySelector('[data-event-id="answer"]')!;
+    const actions = answerRow.parentElement!.querySelector("[data-message-actions]")!;
+    expect(answerRow.nextElementSibling).toBe(card);
+    expect(card.nextElementSibling).toBe(actions);
     fireEvent.click(process);
     expect(view.container.querySelector('[data-event-id="wrapper"]')).toBeNull();
     const shellToggle = screen.getByRole("button", { name: /pnpm test/ });
@@ -478,7 +492,8 @@ describe("production transcript identity", () => {
       "1 failed",
     );
     expect(view.container.querySelectorAll("[data-turn-file-changes]")).toHaveLength(1);
-    fireEvent.click(screen.getByRole("button", { name: /Show diff: src\/app\.ts/ }));
+    expect(screen.getByRole("heading", { name: /Edited 1 file/ }).closest("section")).toBe(card);
+    fireEvent.click(within(card).getByRole("button", { name: /Show diff: src\/app\.ts/ }));
     expect(screen.getAllByText("+b")[0]).toBeVisible();
     expect(props.onTool).not.toHaveBeenCalled();
   });
@@ -504,6 +519,9 @@ describe("production transcript identity", () => {
       screen.getByRole("button", { name: "second-instance Completed" }),
     );
     expect(firstBody).not.toBe(secondBody);
+    fireEvent.click(firstToggle);
+    expect(document.getElementById(firstToggle.getAttribute("aria-controls")!)).toBeNull();
+    expect(document.getElementById(secondToggle.getAttribute("aria-controls")!)).toBe(secondBody);
   });
 
   it("keeps the terminal disclosure open while loading an interrupted turn's earlier details", () => {
@@ -568,5 +586,84 @@ describe("production transcript identity", () => {
     fireEvent.click(toggle);
     expect(screen.queryByText("working-commentary")).toBeNull();
     expect(screen.getByText("final-answer")).toBeVisible();
+  });
+
+  it("keeps file cards separate by turn while filling in earlier records", () => {
+    const shared = "src/shared.ts";
+    const answer = (id: string, turnId: string): ConversationEvent => ({
+      ...event(id, "agent-message", turnId),
+      message_phase: "final_answer",
+      turn_meta: { outcome: "completed" },
+    });
+    const history = [
+      fileEdit("first-edit", "first-turn", shared, 2),
+      answer("first-answer", "first-turn"),
+      event("second-question", "user-message", "second-turn"),
+      fileEdit("second-edit", "second-turn", shared, 7),
+      answer("second-answer", "second-turn"),
+    ];
+    const view = render(<SessionTranscript {...props} events={history} hasEarlier />);
+    const cards = () =>
+      Array.from(view.container.querySelectorAll<HTMLElement>("[data-turn-file-changes]"));
+    const [first, second] = cards();
+    expect(cards()).toHaveLength(2);
+    expect(within(first).getByText(/Partial history/)).toBeVisible();
+    expect(within(second).queryByText(/Partial history/)).toBeNull();
+    expect(within(first).getAllByText("+2")[0]).toBeVisible();
+    expect(within(second).getAllByText("+7")[0]).toBeVisible();
+    fireEvent.click(within(first).getByRole("button", { name: /Show diff: src\/shared\.ts/ }));
+    expect(within(first).getByText("+first-edit")).toBeVisible();
+
+    view.rerender(
+      <SessionTranscript
+        {...props}
+        events={[
+          event("first-question", "user-message", "first-turn"),
+          fileEdit("earlier-edit", "first-turn", "src/earlier.ts", 1),
+          ...history,
+        ]}
+      />,
+    );
+    expect(cards()).toEqual([first, second]);
+    expect(within(first).queryByText(/Partial history/)).toBeNull();
+    expect(within(first).getByText("src/earlier.ts")).toBeVisible();
+    expect(within(first).getByText("+first-edit")).toBeVisible();
+    expect(within(second).queryByText("src/earlier.ts")).toBeNull();
+  });
+
+  it("shows applied edits after an interrupted turn and keeps active or unattributed edits in tool rows", () => {
+    const interrupted = "interrupted-turn";
+    const active = "active-turn";
+    const history: ConversationEvent[] = [
+      { ...fileEdit("legacy-edit", "legacy-turn", "src/legacy.ts", 9), turn_id: undefined },
+      event("interrupted-question", "user-message", interrupted),
+      fileEdit("applied-edit", interrupted, "src/applied.ts", 2),
+      { ...fileEdit("declined-edit", interrupted, "src/declined.ts", 8), tool_status: "declined" },
+      {
+        ...event(`codex-turn-end:${interrupted}`, "agent-message", interrupted),
+        content: "",
+        turn_meta: { outcome: "aborted" },
+      },
+      event("active-question", "user-message", active),
+      fileEdit("active-edit", active, "src/active.ts", 4),
+    ];
+    const view = render(<SessionTranscript {...props} events={history} liveTurnId={active} />);
+    const cards = view.container.querySelectorAll<HTMLElement>("[data-turn-file-changes]");
+    expect(cards).toHaveLength(1);
+    expect(within(cards[0]).getByText("src/applied.ts")).toBeVisible();
+    expect(within(cards[0]).queryByText("src/declined.ts")).toBeNull();
+    const terminal = screen.getByRole("button", { name: /Interrupted/ });
+    expect(
+      terminal.compareDocumentPosition(cards[0]) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    const activeMessage = Array.from(
+      view.container.querySelectorAll<HTMLElement>('[data-message-role="assistant"]'),
+    ).at(-1)!;
+    const activeToolToggle = within(activeMessage).getByRole("button", {
+      name: /Process · 1 tools/,
+    });
+    fireEvent.click(activeToolToggle);
+    expect(screen.getByRole("button", { name: /src\/active\.ts/ })).toBeVisible();
+    expect(view.container.querySelectorAll("[data-turn-file-changes]")).toHaveLength(1);
   });
 });

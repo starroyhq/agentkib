@@ -1,4 +1,5 @@
-import { act, cleanup, fireEvent, render, renderHook, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, renderHook, screen } from "@testing-library/react";
+import { render } from "@/features/conversation/web-reader-test-utils";
 import { createElement, useState } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
@@ -18,18 +19,15 @@ import type {
 } from "@agentkib/web-client";
 import { dictionaries } from "@/features/conversation/i18n";
 import { useSessionLive } from "@/features/conversation/features/sessions/use-session-live";
-import { SessionReader } from "@/features/conversation/features/sessions/session-reader";
+import { SessionReader } from "@/features/conversation/features/sessions/web-session-reader";
 import { useSession } from "@/features/conversation/features/sessions/session-context";
-import { webLayoutCopy } from "@/features/conversation/features/sessions/web-layout-copy";
+import { webLayoutCopy } from "@agentkib/session-ui";
 
 vi.mock("@/features/conversation/features/sessions/session-context", () => ({
   useSession: vi.fn(),
 }));
 vi.mock("@/features/conversation/features/sessions/session-operations", () => ({
   SessionOperations: () => null,
-}));
-vi.mock("@/features/conversation/features/sessions/artifact-browser", () => ({
-  ArtifactBrowser: () => null,
 }));
 
 const access: Access = {
@@ -250,7 +248,7 @@ describe("Codex hydration baselines", () => {
     expect(ids(view.result.current.page!.events)).toEqual(["older", "newer", "new-live"]);
   });
 
-  it("does not announce replayed history text as a new reply, but still announces later live output", () => {
+  it("preserves the reading position and shows the return-to-bottom control through hydration and live output", () => {
     const view = setup([message("newer", "turn", "partial")]);
     const scroll = { current: null as HTMLElement | null };
     vi.mocked(useSession).mockImplementation(
@@ -283,9 +281,7 @@ describe("Codex hydration baselines", () => {
     view.emit(event);
     reader.rerender(createElement(SessionReader));
     expect(viewport.scrollTop).toBe(100);
-    expect(
-      screen.queryByRole("button", { name: webLayoutCopy["zh-CN"].newMessages }),
-    ).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: webLayoutCopy["zh-CN"].jumpToLatest })).toBeVisible();
     view.emit({
       ...event,
       seq: 1,
@@ -294,6 +290,7 @@ describe("Codex hydration baselines", () => {
       payload: message("new-live", "next-turn"),
     });
     reader.rerender(createElement(SessionReader));
-    expect(screen.getByRole("button", { name: webLayoutCopy["zh-CN"].newMessages })).toBeVisible();
+    expect(screen.getByRole("button", { name: webLayoutCopy["zh-CN"].jumpToLatest })).toBeVisible();
+    expect(viewport.scrollTop).toBe(100);
   });
 });

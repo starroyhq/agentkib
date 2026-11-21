@@ -1,16 +1,16 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, screen } from "@testing-library/react";
+import { render } from "@/features/sessions/conversation/desktop-reader-test-utils";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { conversationWords } from "@/core/i18n";
-import { SessionReader } from "./session-reader";
+import { SessionReader } from "./desktop-session-reader";
 import { useSession } from "./session-context";
-import { webLayoutCopy } from "./web-layout-copy";
+import { webLayoutCopy } from "@agentkib/session-ui";
 import { contextUsageCopy } from "@agentkib/session-ui";
 
 vi.mock("./session-context", () => ({ useSession: vi.fn() }));
 vi.mock("./session-operations", () => ({ SessionOperations: () => null }));
-vi.mock("./artifact-browser", () => ({ ArtifactBrowser: () => null }));
 
 type Session = ReturnType<typeof useSession>;
 let state: Session;
@@ -283,7 +283,7 @@ describe("reader follows user intent across transcript and viewport layout", () 
     const bottom = screen.getByRole("button", { name: webLayoutCopy["en-US"].jumpToLatest });
     expect(bottom).toBeVisible();
     expect(bottom.textContent).toBe("");
-    expect(screen.queryByText(webLayoutCopy["en-US"].newMessages)).not.toBeInTheDocument();
+    expect(screen.queryByText(webLayoutCopy["en-US"].jumpToLatest)).not.toBeInTheDocument();
     fireEvent.click(bottom);
     flushFrames();
     expect(view.viewport.scrollTop).toBe(600);
@@ -314,7 +314,7 @@ describe("reader follows user intent across transcript and viewport layout", () 
     fireEvent.wheel(view.viewport, { deltaY: -600 });
     view.viewport.scrollTop = 0;
     fireEvent.scroll(view.viewport);
-    state.earlier = vi.fn(async () => {
+    const loadEarlier = vi.fn(async () => {
       contentHeight += 300;
       state = {
         ...state,
@@ -325,10 +325,11 @@ describe("reader follows user intent across transcript and viewport layout", () 
       view.viewport.scrollTop = 300;
       fireEvent.scroll(view.viewport);
     });
+    state = { ...state, earlier: loadEarlier };
     view.update();
     await act(async () => fireEvent.click(screen.getByRole("button", { name: state.t.earlier })));
     resize();
-    expect(state.earlier).toHaveBeenCalledOnce();
+    expect(loadEarlier).toHaveBeenCalledOnce();
     expect(screen.getByText("Older page")).toBeInTheDocument();
     expect(view.viewport.scrollTop).toBe(300);
     expect(

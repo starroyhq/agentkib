@@ -1,5 +1,11 @@
 import type { createTranscriptPageCache } from "@agentkib/conversation-state";
-import type { Access, ConversationEventPage, Live, WebClient } from "@agentkib/web-client";
+import type {
+  Access,
+  ConversationEventPage,
+  ConversationSessionSummary,
+  Live,
+  WebClient,
+} from "@agentkib/web-client";
 import type { Collapsible } from "@base-ui/react/collapsible";
 import type { Dialog } from "@base-ui/react/dialog";
 import type { Menu } from "@base-ui/react/menu";
@@ -13,7 +19,7 @@ import {
   type ReactNode,
 } from "react";
 import type { ArtifactBrowser } from "./artifact-browser";
-import type { createArtifactPanels } from "./artifact-panel";
+import type { ArtifactPanelsUI } from "./artifact-panel";
 import type { InteractionLocale } from "./interaction-model";
 import type { WarmSessionStreamPool } from "./warm-session-stream";
 
@@ -37,7 +43,7 @@ type SessionDialogProps = {
 };
 
 type ArtifactComponents = ComponentProps<typeof ArtifactBrowser>["components"];
-type ArtifactPanelComponents = Parameters<typeof createArtifactPanels>[0];
+type ArtifactPanelComponents = ArtifactPanelsUI;
 
 type SessionPlatformComponents = Omit<ArtifactComponents, "ArtifactPanel" | "Button"> &
   Omit<ArtifactPanelComponents, "ResizableHandle"> & {
@@ -132,6 +138,8 @@ type SharedSessionPlatform = {
   historySearch: {
     entry: "window" | "workspace";
     filter: "select" | "native-select";
+    agentName(agent: string): string;
+    isSessionVisible(session: ConversationSessionSummary): boolean;
     openIndexSettings?(): boolean;
   };
   preview: {
@@ -175,6 +183,12 @@ type SharedSessionPlatform = {
       indexEnabled?: boolean;
     };
     subscribe(listener: () => void): () => void;
+    getImageSnapshot(access?: Access): {
+      ready: boolean;
+      indexEnabled?: boolean;
+      identityKey?: string;
+    };
+    imageInvalidationSource?(): object | undefined;
     subscribeImageInvalidation?(listener: () => void): () => void;
     refreshContext(client: WebClient): object | string;
   };

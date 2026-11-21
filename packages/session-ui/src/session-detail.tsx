@@ -117,14 +117,7 @@ export function SessionDetail({
   }, [sticky, sessionId]);
 
   const liveStreamText = live?.status !== "idle" ? live?.streamText : undefined;
-  const previous = useRef({
-    sessionId,
-    events: page?.events,
-    stream: live?.streamText,
-    liveContentVersion,
-  });
-  const [hasNewMessages, setHasNewMessages] = useState(false);
-  const { awayFromBottom, following, contentRef, pause, resume } = useTranscriptFollow({
+  const { awayFromBottom, contentRef, pause, resume } = useTranscriptFollow({
     viewportRef,
     sessionId,
     enabled: true,
@@ -136,31 +129,7 @@ export function SessionDetail({
       activeLabel,
       composerHeight,
     ],
-    onFollowingChange: (value) => {
-      if (value && !sticky) setHasNewMessages(false);
-    },
   });
-  useLayoutEffect(() => {
-    if (sticky) return;
-    const prior = previous.current;
-    const events = page?.events;
-    const stream = live?.streamText;
-    if (prior.sessionId !== sessionId) setHasNewMessages(false);
-    else if (!following.current && prior.liveContentVersion !== liveContentVersion) {
-      // Prepending history leaves existing content intact. A live delta can update
-      // an earlier message while a more recent tool row remains last.
-      const last = prior.events?.at(-1);
-      const previousItems = new Map(prior.events?.map((item) => [item.id, item]));
-      const changedText = events?.some((item) => {
-        const old = previousItems.get(item.id);
-        return old && old.content !== item.content;
-      });
-      const appended =
-        last && events?.at(-1)?.id !== last.id && events?.some((item) => item.id === last.id);
-      if (changedText || appended || (stream && stream !== prior.stream)) setHasNewMessages(true);
-    }
-    previous.current = { sessionId, events, stream, liveContentVersion };
-  }, [sticky, sessionId, page?.events, live?.streamText, liveContentVersion, following]);
 
   const composerArea = (
     <div
@@ -172,7 +141,7 @@ export function SessionDetail({
       }
       role={sticky ? undefined : "status"}
     >
-      {(sticky ? awayFromBottom : hasNewMessages) && (
+      {awayFromBottom && (
         <button
           type="button"
           aria-label={jumpLabel}
@@ -181,10 +150,7 @@ export function SessionDetail({
               ? "absolute -top-12 left-1/2 size-10 -translate-x-1/2 justify-center p-0"
               : "mx-auto mb-2 min-h-9 w-fit gap-2 px-3 text-xs"
           }`}
-          onClick={() => {
-            resume();
-            if (!sticky) setHasNewMessages(false);
-          }}
+          onClick={resume}
         >
           <ArrowDown size={sticky ? 20 : 16} aria-hidden="true" />
           {!sticky && jumpLabel}

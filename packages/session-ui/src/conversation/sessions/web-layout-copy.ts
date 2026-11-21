@@ -1,4 +1,4 @@
-import type { Locale } from "../../i18n";
+import type { InteractionLocale as Locale } from "../../interaction-model";
 
 const zh = {
   actions: "会话操作",
@@ -24,7 +24,7 @@ const zh = {
   help: "使用说明",
   pending: "待处理",
   preferences: "外观与语言",
-  newMessages: "有新消息，返回最新",
+  jumpToLatest: "返回底部",
 };
 type Copy = { [K in keyof typeof zh]: string };
 export const webLayoutCopy: Record<Locale, Copy> = {
@@ -53,7 +53,7 @@ export const webLayoutCopy: Record<Locale, Copy> = {
     help: "使用說明",
     pending: "待處理",
     preferences: "外觀與語言",
-    newMessages: "有新訊息，返回最新",
+    jumpToLatest: "回到底部",
   },
   "en-US": {
     actions: "Session actions",
@@ -79,7 +79,7 @@ export const webLayoutCopy: Record<Locale, Copy> = {
     help: "Help",
     pending: "Pending",
     preferences: "Appearance & language",
-    newMessages: "New messages — jump to latest",
+    jumpToLatest: "Scroll to bottom",
   },
   "ja-JP": {
     actions: "会話の操作",
@@ -105,6 +105,6 @@ export const webLayoutCopy: Record<Locale, Copy> = {
     help: "使い方",
     pending: "対応待ち",
     preferences: "外観と言語",
-    newMessages: "新しいメッセージ · 最新へ移動",
+    jumpToLatest: "一番下へ移動",
   },
 };

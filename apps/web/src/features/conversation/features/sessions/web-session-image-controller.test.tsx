@@ -8,7 +8,7 @@ import {
   screen,
   waitFor,
 } from "@testing-library/react";
-import { useLayoutEffect, useMemo } from "react";
+import { useLayoutEffect } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   ApiError,
@@ -22,15 +22,14 @@ import {
   clearMessageImageCache,
   messageImageCache,
   messageImageScope,
+  useSessionImageLoader,
 } from "@agentkib/session-ui";
 import { useSessionController } from "./use-session-controller";
 import {
   createSessionImageLoader,
-  forgetSessionImages,
-  restoreSessionImages,
   invalidateSessionImages,
-  sessionImageRevision,
-} from "./session-image-scope";
+  webSessionImages,
+} from "../../web-session-images";
 
 const data = { mimeType: "image/png", base64: "iVBORw0KGgo=" };
 const released = new Set<() => void>();
@@ -175,20 +174,6 @@ afterEach(() => {
 });
 
 describe("controller image-cache boundaries", () => {
-  it("retains decoded images through leaving a conversation and an ordinary history refresh", async () => {
-    const host = await start();
-    const image = await warm(host);
-    act(() => host.result.current.leaveSession());
-    expect(messageImageCache.snapshot(image.scope, "image").phase).toBe("ready");
-    await act(async () => {
-      await host.result.current.choose("session");
-      await host.result.current.refresh(false, true);
-    });
-    const again = await warm(host);
-    expect(again.scope).toBe(image.scope);
-    expect(host.images).toHaveBeenCalledOnce();
-  });
-
   it("clears all image bytes for logout before another approved access can reuse them", async () => {
     const host = await start();
     const image = await warm(host);
@@ -197,35 +182,6 @@ describe("controller image-cache boundaries", () => {
     });
     expect(messageImageCache.snapshot(image.scope, "image").phase).toBe("idle");
     expect(host.result.current.access?.status).toBe("ended");
-  });
-
-  it("preserves bytes on controller unmount but verifies access before a new controller reuses them", async () => {
-    const host = await start();
-    const image = await warm(host);
-    host.unmount();
-    expect(messageImageCache.snapshot(image.scope, "image").phase).toBe("ready");
-    let finish!: (value: Access) => void;
-    host.state.accessGate = new Promise((resolve) => {
-      finish = resolve;
-    });
-    const next = renderHook(() =>
-      useSessionController({ client: host.client, embedded: true, initialLocale: "en-US" }),
-    );
-    expect(next.result.current.access).toBeUndefined();
-    expect(
-      createSessionImageLoader(host.client, next.result.current.access, "session", true, () => true)
-        .cacheScope,
-    ).toBeUndefined();
-    await act(async () => {
-      finish({ ...host.state.access });
-    });
-    await waitFor(() => expect(next.result.current.sessions).toHaveLength(1));
-    await act(async () => {
-      await next.result.current.choose("session");
-    });
-    const resumed = await warm({ ...host, ...next });
-    expect(resumed.scope).toBe(image.scope);
-    expect(host.images).toHaveBeenCalledOnce();
   });
 
   it("invalidates cache before the explicit disconnect callback runs", async () => {
@@ -246,79 +202,6 @@ describe("controller image-cache boundaries", () => {
     expect(host.result.current.access?.status).toBe("ended");
   });
 
-  it("keeps incomplete-source images but clears a confirmed removed conversation", async () => {
-    const host = await start();
-    const image = await warm(host);
-    host.state.catalog = {
-      ...host.state.catalog,
-      complete: false,
-      incompleteSources: [{ workspaceId: "workspace", agent: "claude-code" }],
-      sessions: [],
-    };
-    await act(async () => {
-      await host.result.current.refresh(false, true);
-    });
-    expect(messageImageCache.snapshot(image.scope, "image").phase).toBe("ready");
-    host.state.catalog = {
-      ...host.state.catalog,
-      complete: true,
-      incompleteSources: [],
-      sessions: [],
-    };
-    await act(async () => {
-      await host.result.current.refresh(false, true);
-    });
-    expect(messageImageCache.snapshot(image.scope, "image").phase).toBe("idle");
-  });
-
-  it("restores a newly readable catalog row without accepting its old image success or denial", async () => {
-    const host = await start();
-    const first = await warm(host);
-    let success!: (value: typeof data) => void, failure!: (error: Error) => void;
-    host.images
-      .mockImplementationOnce(
-        () =>
-          new Promise((resolve) => {
-            success = resolve;
-          }),
-      )
-      .mockImplementationOnce(
-        () =>
-          new Promise((_resolve, reject) => {
-            failure = reject;
-          }),
-      );
-    const oldSuccess = first.loader("old-success", new AbortController().signal);
-    const oldFailure = first.loader("old-failure", new AbortController().signal);
-    const original = host.state.catalog.sessions[0];
-    host.state.catalog = {
-      ...host.state.catalog,
-      sessions: [{ ...original, availability: "metadata-only" }],
-    };
-    await act(async () => {
-      await host.result.current.refresh(false, true);
-    });
-    expect(
-      createSessionImageLoader(host.client, host.result.current.access, "session", true, () => true)
-        .cacheScope,
-    ).toBeUndefined();
-    host.state.catalog = {
-      ...host.state.catalog,
-      sessions: [{ ...original, availability: "readable" }],
-    };
-    await act(async () => {
-      await host.result.current.refresh(false, true);
-    });
-    const next = await warm(host);
-    expect(next.scope).not.toBe(first.scope);
-    success(data);
-    failure(new ApiError(403, "forbidden"));
-    await expect(oldSuccess).rejects.toMatchObject({ name: "AbortError" });
-    await expect(oldFailure).rejects.toMatchObject({ name: "AbortError" });
-    expect(messageImageCache.snapshot(next.scope, "image").phase).toBe("ready");
-    expect(host.images).toHaveBeenCalledTimes(4);
-  });
-
   it("shows unavailable after a current image 403 and retries HTTP only after explicit access refresh", async () => {
     const host = fixture();
     host.images.mockRejectedValue(new ApiError(403, "forbidden"));
@@ -336,19 +219,14 @@ describe("controller image-cache boundaries", () => {
         controller = current;
       }, [current]);
       const { client, access, selected, indexEnabled, imageRequestVersion } = current;
-      const version = imageRequestVersion(),
-        imageEpoch = sessionImageRevision(client);
-      const loader = useMemo(
-        () =>
-          createSessionImageLoader(
-            client,
-            access,
-            selected,
-            indexEnabled,
-            () => imageRequestVersion() === version && sessionImageRevision(client) === imageEpoch,
-          ),
-        [client, access, selected, indexEnabled, imageRequestVersion, version, imageEpoch],
-      );
+      const loader = useSessionImageLoader({
+        images: webSessionImages,
+        client,
+        access,
+        sessionId: selected,
+        indexEnabled,
+        requestVersion: imageRequestVersion,
+      });
       return (
         <>
           <p>{access?.status}</p>
@@ -408,73 +286,6 @@ describe("controller image-cache boundaries", () => {
       expect(screen.queryByText("Loading image")).toBeNull();
     });
     expect(host.images).toHaveBeenCalledTimes(2);
-  });
-
-  it("finishes an access read while an unrelated session is withdrawn and restored", async () => {
-    const host = await start();
-    const read = vi.spyOn(host.client, "access");
-    let finish!: (value: Access) => void;
-    host.state.accessGate = new Promise((resolve) => {
-      finish = resolve;
-    });
-    let pending!: Promise<void>;
-    act(() => {
-      pending = host.result.current.refresh(false, true);
-    });
-    createSessionImageLoader(host.client, host.result.current.access, "other", true, () => true);
-    forgetSessionImages(host.client, "other");
-    restoreSessionImages(host.client, "other");
-    await act(async () => {
-      finish({ ...host.state.access });
-      await pending;
-    });
-    expect(read).toHaveBeenCalledOnce();
-    expect(host.result.current.access?.status).toBe("approved");
-    expect(host.result.current.page?.events[0]?.id).toBe("reply");
-  });
-
-  it("rechecks current access after a true authority boundary instead of leaving its read unfinished", async () => {
-    const host = await start();
-    const read = vi.spyOn(host.client, "access");
-    let finish!: (value: Access) => void;
-    const before = host.state.access;
-    host.state.accessGate = new Promise((resolve) => {
-      finish = resolve;
-    });
-    let pending!: Promise<void>;
-    act(() => {
-      pending = host.result.current.refresh(false, true);
-    });
-    invalidateSessionImages(host.client);
-    host.state.accessGate = undefined;
-    host.state.access = { ...before, historySearchScope: "current-grant" };
-    await act(async () => {
-      finish(before);
-      await pending;
-    });
-    expect(read).toHaveBeenCalledTimes(2);
-    expect(host.result.current.access?.historySearchScope).toBe("current-grant");
-    expect(host.result.current.page?.events[0]?.id).toBe("reply");
-  });
-
-  it("clears bytes when indexing is disabled and does not authorize them with old access", async () => {
-    const host = await start();
-    const image = await warm(host);
-    host.state.catalog = { ...host.state.catalog, indexEnabled: false };
-    await act(async () => {
-      await host.result.current.refresh(false, true);
-    });
-    expect(host.result.current.indexEnabled).toBe(false);
-    expect(messageImageCache.snapshot(image.scope, "image").phase).toBe("idle");
-    expect(
-      createSessionImageLoader(
-        host.client,
-        host.result.current.access,
-        "session",
-        false,
-        () => true,
-      ).cacheScope,
-    ).toBeUndefined();
   });
 
   it.each([401, 403])(

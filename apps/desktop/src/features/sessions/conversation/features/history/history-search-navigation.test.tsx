@@ -11,7 +11,7 @@ import {
   type HistorySearchStatus,
 } from "@agentkib/web-client";
 import { EmbeddedConversation, type EmbeddedConversationHandle } from "../../conversation";
-import { historyCopy } from "./history-copy";
+import { historyCopy } from "@agentkib/session-ui";
 import { codexCopy } from "../sessions/codex-copy";
 
 afterEach(() => {

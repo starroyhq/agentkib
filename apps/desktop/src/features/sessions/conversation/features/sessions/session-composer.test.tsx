@@ -36,7 +36,6 @@ vi.mock("./session-context", () => ({
 }));
 vi.mock("./session-panels", () => ({ useSessionPanels: () => doubles.panels }));
 vi.mock("./context-usage", () => ({ ContextUsageGauge: () => null }));
-vi.mock("../history/history-search-controls", () => ({ HistoryReferenceChips: () => null }));
 vi.mock("./codex-session-controls", () => ({
   CodexComposerControls: ({
     action,

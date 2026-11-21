@@ -1,13 +1,25 @@
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render as renderUi,
+  screen,
+  waitFor,
+} from "@testing-library/react";
+import type { ReactElement, ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import userEvent from "@testing-library/user-event";
 import type { ArtifactEntry, ArtifactTicket } from "@agentkib/web-client";
-import { ArtifactBrowser } from "@/features/conversation/features/sessions/artifact-browser";
-import { artifactCopy } from "@agentkib/session-ui";
 import {
+  artifactCopy,
   ArtifactPanel,
   ArtifactWorkspace,
-} from "@/features/conversation/features/sessions/artifact-panel";
+  SessionArtifactBrowser,
+  SessionPlatformProvider,
+  type ArtifactBrowserControls,
+  type SessionArtifactBrowserProps,
+} from "@agentkib/session-ui";
+import { webSessionPlatform } from "@/features/conversation/session-platform";
 
 let session: {
   client: { request: ReturnType<typeof vi.fn> };
@@ -17,9 +29,22 @@ let session: {
   locale: string;
   embedded?: boolean;
 };
-vi.mock("@/features/conversation/features/sessions/session-context", () => ({
-  useSession: () => session,
-}));
+function ArtifactBrowser(controls: ArtifactBrowserControls) {
+  return (
+    <SessionArtifactBrowser
+      session={session as unknown as SessionArtifactBrowserProps["session"]}
+      {...controls}
+    />
+  );
+}
+function Platform({ children }: { children: ReactNode }) {
+  return (
+    <SessionPlatformProvider platform={webSessionPlatform}>{children}</SessionPlatformProvider>
+  );
+}
+function render(ui: ReactElement) {
+  return renderUi(ui, { wrapper: Platform });
+}
 const file = (id: string, previewKind: ArtifactEntry["previewKind"], name = id): ArtifactEntry => ({
   id,
   name,
@@ -344,13 +369,11 @@ describe("ArtifactBrowser", () => {
         removeEventListener: vi.fn(),
       })),
     );
-    const view = render(<ArtifactBrowser />, {
-      wrapper: ({ children }) => (
-        <ArtifactWorkspace browser={children}>
-          <button>Continue chat</button>
-        </ArtifactWorkspace>
-      ),
-    });
+    const view = render(
+      <ArtifactWorkspace browser={<ArtifactBrowser />}>
+        <button>Continue chat</button>
+      </ArtifactWorkspace>,
+    );
     fireEvent.click(screen.getByRole("button", { name: "Files & artifacts" }));
     fireEvent.click(await screen.findByRole("button", { name: "movie.mp4" }));
     await waitFor(() => expect(view.container.querySelector("video")).not.toBeNull());

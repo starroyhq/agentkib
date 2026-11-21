@@ -27,6 +27,33 @@ export {
 } from "./conversation/history/history-reference-model";
 export { interactionCopy } from "./conversation/interactions/interaction-copy";
 export { approvalSummary } from "./conversation/sessions/approval-summary";
+export {
+  SessionReader,
+  type ReaderContextUsageProps,
+} from "./conversation/sessions/session-reader";
+export { SessionReadOnly } from "./conversation/sessions/session-read-only";
+export { webLayoutCopy } from "./conversation/sessions/web-layout-copy";
+export {
+  createSessionImageScope,
+  useSessionImageLoader,
+} from "./conversation/sessions/session-image-scope";
+export {
+  HistorySearchDialog,
+  HistorySearchLauncher,
+  HistorySearchPanel,
+  HistoryCoverageStatus,
+  historyAccessScope,
+} from "./conversation/history/history-search";
+export {
+  HistorySearchControls,
+  HistorySearchTrigger,
+  HistoryReferenceChips,
+} from "./conversation/history/history-search-controls";
+export { historyCopy, historySearchCopy } from "./conversation/history/history-copy";
+export {
+  createHistoryOpenLock,
+  historySessionTarget,
+} from "./conversation/history/history-session-target";
 export { PreferencesDialog } from "./conversation/preferences/preferences-dialog";
 export { useAppearance } from "./conversation/preferences/use-appearance";
 export {
@@ -274,8 +301,18 @@ export { catalogCopy, catalogCopyForSurface } from "./catalog-copy";
 export { worktreeCopy, worktreeLabel, worktreeChip } from "./worktree-copy";
 export { OrchestrationIcon, OrchestrationNote, orchestrationText } from "./orchestration-note";
 export { WorktreeMark, WorktreeNote } from "./worktree-note";
-export { ArtifactBrowser, type ArtifactBrowserControls } from "./artifact-browser";
-export { createArtifactPanels } from "./artifact-panel";
+export {
+  ArtifactBrowser,
+  SessionArtifactBrowser,
+  type ArtifactBrowserControls,
+  type SessionArtifactBrowserProps,
+} from "./artifact-browser";
+export { ArtifactPanel, ArtifactWorkspace, type ArtifactPanelsUI } from "./artifact-panel";
+export {
+  LivePreviewPicker,
+  LivePreviewFrame,
+  type LivePreviewProps,
+} from "./conversation/sessions/live-preview";
 export { artifactCopy } from "./artifact-copy";
 export {
   ArtifactPreview,

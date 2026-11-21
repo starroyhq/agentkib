@@ -1,4 +1,3 @@
-import { agentName } from "@agentkib/agent-identity";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { Search } from "lucide-react";
 import {
@@ -14,24 +13,10 @@ import {
   type HistoryLocation,
   type ResolvedHistoryReference,
 } from "@agentkib/web-client";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { NativeCheckbox } from "@/components/ui/native-checkbox";
-import {
-  Select,
-  SelectContent,
-  SelectGroup,
-  SelectItem,
-  SelectLabel,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
-import { Textarea } from "@/components/ui/textarea";
-import { Dialog } from "../../components/dialog";
-import type { SupportedLocale as Locale } from "@/core/types";
-import { historyCopy } from "./history-copy";
-import { formatDateTime } from "@/core/i18n";
-import { useOptionalAppNavigationContext } from "@/features/app/AppNavigationContext";
+import type { InteractionLocale as Locale } from "../../interaction-model";
+import { useSessionPlatform } from "../../session-platform";
+import { historyCopy, historySearchCopy } from "./history-copy";
+import { HistorySearchFilters } from "./history-search-filters";
 import {
   createHistoryOpenLock,
   historyLocationKey,
@@ -39,14 +24,15 @@ import {
 } from "./history-session-target";
 
 function HistoryTimestamp({ value, locale }: { value?: string | null; locale: Locale }) {
+  const { copy } = useSessionPlatform();
   return value && Number.isFinite(Date.parse(value)) ? (
-    <time dateTime={value}>{formatDateTime(value, locale)}</time>
+    <time dateTime={value}>{copy.formatDateTime(value, locale)}</time>
   ) : (
     <span>{historyCopy[locale].unknownTime}</span>
   );
 }
 
-export function historyAccessScope(access: Access | undefined): string {
+export function historyAccessScope(access: Access | null | undefined): string {
   return access?.status === "approved" && access.historySearch
     ? JSON.stringify([access.bootId, access.device?.id, access.historySearchScope])
     : "";
@@ -86,9 +72,11 @@ export function HighlightedHistoryText({
 export function HistoryCoverageStatus({
   status,
   locale,
+  agentName,
 }: {
   status: HistorySearchStatus;
   locale: Locale;
+  agentName: (agent: string) => string;
 }) {
   const c = historyCopy[locale],
     v = status.coverage;
@@ -156,8 +144,13 @@ export function HistorySearchPanel({
   onScopeEnded,
   onSettingsOpened,
 }: HistorySearchPanelProps) {
-  const c = historyCopy[locale];
-  const appNavigation = useOptionalAppNavigationContext();
+  const { components, historySearch } = useSessionPlatform();
+  const { Button, Input } = components;
+  const { agentName, entry, filter, isSessionVisible, openIndexSettings } = historySearch;
+  const workspaceEntry = entry === "workspace";
+  const c = historySearchCopy(locale, entry);
+  const Excerpt = workspaceEntry ? "textarea" : components.Textarea;
+  const HitButton = workspaceEntry ? "button" : Button;
   const [query, setQuery] = useState(initialQuery);
   const queryValid = Array.from(query).length <= 256;
   const [workspace, setWorkspace] = useState("");
@@ -442,7 +435,7 @@ export function HistorySearchPanel({
         throw new ApiError(409, "history_source_changed");
       const target =
         currentCatalog.indexEnabled && currentStatus.enabled
-          ? historySessionTarget(fresh, currentCatalog.sessions)
+          ? historySessionTarget(fresh, currentCatalog.sessions, isSessionVisible)
           : undefined;
       if (!target) throw new Error("history_session_unavailable");
       if (
@@ -495,113 +488,107 @@ export function HistorySearchPanel({
       if (generation === request.current) setBusy(false);
     }
   }
+  function backToResults() {
+    request.current++;
+    inFlight.current?.abort();
+    setLocated(undefined);
+    setOpenConfirmation(undefined);
+    setBusy(false);
+  }
   return (
-    <div className="flex min-h-0 flex-col gap-4" data-history-search>
+    <div
+      className={`flex min-h-0 flex-col ${workspaceEntry ? "gap-3" : "gap-4"}`}
+      data-history-search
+    >
+      {workspaceEntry && <p className="text-xs text-muted-foreground">{c.local}</p>}
       <form
-        className="flex items-center gap-2"
+        className={workspaceEntry ? "flex gap-2" : "flex items-center gap-2"}
         onSubmit={(event) => {
           event.preventDefault();
           void search();
         }}
       >
-        <div className="relative min-w-0 flex-1">
-          <Search
-            aria-hidden="true"
-            className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground"
-          />
+        {workspaceEntry ? (
           <Input
             aria-label={c.query}
             placeholder={c.query}
             value={query}
-            className="h-10 pl-9"
             onChange={(event) => setQuery(event.target.value)}
           />
-        </div>
+        ) : (
+          <div className="relative min-w-0 flex-1">
+            <Search
+              aria-hidden="true"
+              className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground"
+            />
+            <Input
+              aria-label={c.query}
+              placeholder={c.query}
+              value={query}
+              className="h-10 pl-9"
+              onChange={(event) => setQuery(event.target.value)}
+            />
+          </div>
+        )}
         <Button type="submit" disabled={!query.trim() || !queryValid || busy || !status?.enabled}>
           {c.search}
         </Button>
       </form>
-      <fieldset className="space-y-3 rounded-lg border p-4">
-        <legend className="px-1 text-sm font-medium">{c.source}</legend>
-        <div className="grid gap-2 sm:grid-cols-3">
-          <Select
-            value={workspace || "__all_workspaces__"}
-            onValueChange={(value) =>
-              setWorkspace(value === "__all_workspaces__" ? "" : (value ?? ""))
-            }
-          >
-            <SelectTrigger className="h-10 w-full" aria-label={c.allWorkspaces}>
-              <SelectValue>
-                {workspace
-                  ? (catalog?.workspaces?.find((item) => item.id === workspace)?.name.trim() ??
-                    workspace)
-                  : c.allWorkspaces}
-              </SelectValue>
-            </SelectTrigger>
-            <SelectContent>
-              <SelectGroup>
-                <SelectLabel>{c.workspace}</SelectLabel>
-                <SelectItem value="__all_workspaces__">{c.allWorkspaces}</SelectItem>
-                {catalog?.workspaces?.map((w) => (
-                  <SelectItem key={w.id} value={w.id}>
-                    {w.name.trim() || w.id}
-                  </SelectItem>
-                ))}
-              </SelectGroup>
-            </SelectContent>
-          </Select>
-          <Select
-            value={agent || "__all_agents__"}
-            onValueChange={(value) => setAgent(value === "__all_agents__" ? "" : (value ?? ""))}
-          >
-            <SelectTrigger className="h-10 w-full" aria-label={c.allAgents}>
-              <SelectValue>{agent ? agentName(agent) : c.allAgents}</SelectValue>
-            </SelectTrigger>
-            <SelectContent>
-              <SelectGroup>
-                <SelectLabel>{c.allAgents}</SelectLabel>
-                <SelectItem value="__all_agents__">{c.allAgents}</SelectItem>
-                {[...new Set(catalog?.sessions.map((s) => s.agent) ?? [])].map((a) => (
-                  <SelectItem key={a} value={a}>
-                    {agentName(a)}
-                  </SelectItem>
-                ))}
-              </SelectGroup>
-            </SelectContent>
-          </Select>
-          <Select
-            value={kind || "__all_kinds__"}
-            onValueChange={(value) => setKind(value === "__all_kinds__" ? "" : (value ?? ""))}
-          >
-            <SelectTrigger className="h-10 w-full" aria-label={c.allKinds}>
-              <SelectValue>
-                {kind === "messages" ? c.messages : kind === "tools" ? c.tools : c.allKinds}
-              </SelectValue>
-            </SelectTrigger>
-            <SelectContent>
-              <SelectGroup>
-                <SelectLabel>{c.allKinds}</SelectLabel>
-                <SelectItem value="__all_kinds__">{c.allKinds}</SelectItem>
-                <SelectItem value="messages">{c.messages}</SelectItem>
-                <SelectItem value="tools">{c.tools}</SelectItem>
-              </SelectGroup>
-            </SelectContent>
-          </Select>
-        </div>
-        <label className="mt-3 flex items-center gap-2 text-xs text-muted-foreground">
-          <NativeCheckbox checked={archived} onChange={(e) => setArchived(e.target.checked)} />
-          {c.archived}
-        </label>
-      </fieldset>
-      {status && <HistoryCoverageStatus status={status} locale={locale} />}
+      <HistorySearchFilters
+        mode={filter}
+        sourceLabel={c.source}
+        archived={{ checked: archived, label: c.archived, onChange: setArchived }}
+        filters={[
+          {
+            id: "workspaces",
+            label: c.allWorkspaces,
+            groupLabel: c.workspace,
+            value: workspace,
+            selectedLabel: workspace
+              ? (catalog?.workspaces?.find((item) => item.id === workspace)?.name.trim() ??
+                workspace)
+              : c.allWorkspaces,
+            onChange: setWorkspace,
+            options: (catalog?.workspaces ?? []).map(({ id, name }) => ({
+              value: id,
+              label: name.trim() || id,
+            })),
+          },
+          {
+            id: "agents",
+            label: c.allAgents,
+            groupLabel: c.allAgents,
+            value: agent,
+            selectedLabel: agent ? agentName(agent) : c.allAgents,
+            onChange: setAgent,
+            options: [...new Set(catalog?.sessions.map((session) => session.agent) ?? [])].map(
+              (value) => ({ value, label: agentName(value) }),
+            ),
+          },
+          {
+            id: "kinds",
+            label: c.allKinds,
+            groupLabel: c.allKinds,
+            value: kind,
+            selectedLabel:
+              kind === "messages" ? c.messages : kind === "tools" ? c.tools : c.allKinds,
+            onChange: setKind,
+            options: [
+              { value: "messages", label: c.messages },
+              { value: "tools", label: c.tools },
+            ],
+          },
+        ]}
+      />
+      {status && <HistoryCoverageStatus status={status} locale={locale} agentName={agentName} />}
       {status?.enabled === false && (
         <div className="space-y-2">
           <p role="status">{c.disabled}</p>
-          {appNavigation && (
+          {openIndexSettings && (
             <Button
               variant="outline"
               onClick={() => {
-                if (appNavigation.app.openSettings("privacy") === true) onSettingsOpened?.();
+                if (openIndexSettings()) onSettingsOpened?.();
               }}
             >
               {c.openSettings}
@@ -625,38 +612,59 @@ export function HistorySearchPanel({
         </p>
       )}
       {located ? (
-        <section className="space-y-4 rounded-lg border p-4" aria-label={c.source}>
-          <div className="flex flex-wrap items-start justify-between gap-3">
-            <div className="min-w-0">
-              <p className="text-xs font-medium text-muted-foreground">{c.source}</p>
-              <strong className="mt-1 block min-w-0 break-words text-sm">
-                {located.title || agentName(located.agent)}
-              </strong>
-            </div>
-            <Button
-              variant="outline"
-              onClick={() => {
-                request.current++;
-                inFlight.current?.abort();
-                setLocated(undefined);
-                setOpenConfirmation(undefined);
-                setBusy(false);
-              }}
-            >
-              {c.back}
-            </Button>
-          </div>
-          <div className="flex flex-wrap gap-2 text-xs text-muted-foreground">
-            <span className="rounded-md bg-muted px-2 py-1">
-              {c.workspace}: {workspaceName(located.workspaceId)}
-            </span>
-            <span className="rounded-md bg-muted px-2 py-1">
-              {c[located.kind]} {located.toolName}
-            </span>
-          </div>
+        <section
+          className={
+            workspaceEntry ? "space-y-3 rounded-lg border p-3" : "space-y-4 rounded-lg border p-4"
+          }
+          aria-label={c.source}
+        >
+          {workspaceEntry ? (
+            <>
+              <div className="flex flex-wrap items-center gap-2">
+                <Button variant="ghost" onClick={backToResults}>
+                  {c.back}
+                </Button>
+                <strong className="min-w-0 break-words text-sm">
+                  {located.title || agentName(located.agent)}
+                </strong>
+                <span className="text-xs text-muted-foreground">
+                  {c[located.kind]} {located.toolName}
+                </span>
+              </div>
+              <p className="break-words text-xs text-muted-foreground">
+                {c.workspace}: {workspaceName(located.workspaceId)}
+              </p>
+            </>
+          ) : (
+            <>
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <p className="text-xs font-medium text-muted-foreground">{c.source}</p>
+                  <strong className="mt-1 block min-w-0 break-words text-sm">
+                    {located.title || agentName(located.agent)}
+                  </strong>
+                </div>
+                <Button variant="outline" onClick={backToResults}>
+                  {c.back}
+                </Button>
+              </div>
+              <div className="flex flex-wrap gap-2 text-xs text-muted-foreground">
+                <span className="rounded-md bg-muted px-2 py-1">
+                  {c.workspace}: {workspaceName(located.workspaceId)}
+                </span>
+                <span className="rounded-md bg-muted px-2 py-1">
+                  {c[located.kind]} {located.toolName}
+                </span>
+              </div>
+            </>
+          )}
           <pre
             tabIndex={0}
-            className="max-h-[35dvh] overflow-auto whitespace-pre-wrap break-words rounded-md border bg-muted/30 p-4 text-xs leading-6"
+            className={
+              workspaceEntry
+                ? "max-h-[35dvh] overflow-auto whitespace-pre-wrap break-words rounded bg-muted/40 p-3 text-xs"
+                : "max-h-[35dvh] overflow-auto whitespace-pre-wrap break-words rounded-md border bg-muted/30 p-4 text-xs leading-6"
+            }
           >
             <HighlightedHistoryText
               text={located.content}
@@ -710,7 +718,7 @@ export function HistorySearchPanel({
             <>
               <label className="block text-xs">
                 {c.selection}
-                <Textarea
+                <Excerpt
                   aria-label={c.excerpt}
                   readOnly
                   value={located.content}
@@ -741,9 +749,8 @@ export function HistorySearchPanel({
       ) : (
         <div className="max-h-[45dvh] space-y-2 overflow-auto">
           {result?.hits.map((hit: HistorySearchHit, index) => (
-            <Button
-              variant="bare"
-              size="content"
+            <HitButton
+              {...(!workspaceEntry && { variant: "bare", size: "content" })}
               type="button"
               key={`${JSON.stringify(hit.location)}:${index}`}
               disabled={busy}
@@ -767,7 +774,7 @@ export function HistorySearchPanel({
                 </small>
               )}
               {hit.stale && <small>{c.stale}</small>}
-            </Button>
+            </HitButton>
           ))}
           {result && !result.hits.length && <p role="status">{c.empty}</p>}
           {result?.limited && <p className="text-xs">{c.limited}</p>}
@@ -786,13 +793,17 @@ export function HistorySearchPanel({
   );
 }
 export function HistorySearchDialog(props: HistorySearchPanelProps & { onClose: () => void }) {
-  const c = historyCopy[props.locale];
+  const {
+    components: { SessionDialog },
+    historySearch: { entry },
+  } = useSessionPlatform();
+  const c = historySearchCopy(props.locale, entry);
   return (
-    <Dialog
+    <SessionDialog
       panel
-      className="md:max-w-2xl"
+      className={entry === "window" ? "md:max-w-2xl" : undefined}
       title={c.title}
-      description={c.local}
+      description={entry === "window" ? c.local : undefined}
       closeLabel={c.close}
       onClose={props.onClose}
     >
@@ -807,10 +818,10 @@ export function HistorySearchDialog(props: HistorySearchPanelProps & { onClose: 
           props.onClose();
         }}
       />
-    </Dialog>
+    </SessionDialog>
   );
 }
-/** Desktop surfaces outside SessionProvider share the same source reader. */
+/** Search entry independent of the active conversation. */
 export function HistorySearchLauncher({
   client,
   locale,
@@ -826,6 +837,11 @@ export function HistorySearchLauncher({
   onOpen?: () => void;
   onOpenSession?: (session: ConversationSessionSummary) => void | Promise<void>;
 }) {
+  const {
+    components: { Button },
+    historySearch: { entry },
+  } = useSessionPlatform();
+  const windowEntry = entry === "window";
   const [access, setAccess] = useState<{ client: WebClient; value: Access }>();
   const [open, setOpen] = useState(false);
   const [pending, setPending] = useState(false);
@@ -887,29 +903,38 @@ export function HistorySearchLauncher({
     <>
       <Button
         type="button"
-        variant={iconOnly ? "ghost" : "outline"}
+        variant={!windowEntry || iconOnly ? "ghost" : "outline"}
         className={
-          iconOnly
-            ? `size-8 shrink-0 rounded-lg p-0 ${error ? "text-destructive-text" : "text-muted-foreground hover:text-foreground"}`
-            : "h-10 w-full justify-start gap-2 rounded-xl bg-background px-3 text-sm font-normal shadow-sm"
+          !windowEntry
+            ? undefined
+            : iconOnly
+              ? `size-8 shrink-0 rounded-lg p-0 ${error ? "text-destructive-text" : "text-muted-foreground hover:text-foreground"}`
+              : "h-10 w-full justify-start gap-2 rounded-xl bg-background px-3 text-sm font-normal shadow-sm"
         }
-        aria-label={historyCopy[locale].title}
+        aria-label={windowEntry ? historyCopy[locale].title : undefined}
         title={
-          iconOnly ? (error ? historyCopy[locale].error : historyCopy[locale].title) : undefined
+          windowEntry && iconOnly
+            ? error
+              ? historyCopy[locale].error
+              : historyCopy[locale].title
+            : undefined
         }
-        aria-busy={pending || undefined}
+        aria-busy={windowEntry && pending ? true : undefined}
         disabled={pending}
         onClick={() => void openSearch()}
       >
         <Search
-          size={iconOnly ? 15 : 16}
-          className={iconOnly ? undefined : "text-muted-foreground"}
+          size={windowEntry && iconOnly ? 15 : 16}
+          className={windowEntry && !iconOnly ? "text-muted-foreground" : undefined}
           aria-hidden="true"
         />
-        {!iconOnly && historyCopy[locale].title}
+        {(!windowEntry || !iconOnly) && historyCopy[locale].title}
       </Button>
       {error && (
-        <p role="alert" className={iconOnly ? "sr-only" : "text-sm text-destructive-text"}>
+        <p
+          role="alert"
+          className={windowEntry && iconOnly ? "sr-only" : "text-sm text-destructive-text"}
+        >
           {historyCopy[locale].error}
         </p>
       )}

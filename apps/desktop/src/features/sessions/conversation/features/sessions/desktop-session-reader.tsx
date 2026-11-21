@@ -1,0 +1,68 @@
+import { agentName } from "@agentkib/agent-identity";
+import {
+  SessionReader as SharedSessionReader,
+  SessionTranscript,
+  useSessionImageLoader,
+  type ReaderContextUsageProps,
+} from "@agentkib/session-ui";
+import { codexCopy, codexReason } from "./codex-copy";
+import { claudeComposerNotice, claudeSessionBanner } from "./claude-session-banner";
+import { SessionOperations } from "./session-operations";
+import { SessionComposer } from "./session-composer";
+import { useSessionPanels } from "./session-panels";
+import { useSession } from "./session-context";
+import { ContextUsageGauge } from "./context-usage";
+import { basicSendQueue } from "./dsh-queue";
+import { desktopSessionImages } from "../../desktop-session-images";
+import {
+  desktopReadScope as currentDesktopReadScope,
+  useDesktopReadScope,
+} from "../../../read-state-scope";
+import { useConversationDisplayLive } from "../../../DesktopConversationWindow";
+
+function ReaderContextUsage({ source, capacity }: ReaderContextUsageProps) {
+  return <ContextUsageGauge source={source} limit={capacity} />;
+}
+
+export function SessionReader() {
+  const session = useSession();
+  const panels = useSessionPanels();
+  const { client, access, selected, locale, current, indexEnabled, imageRequestVersion } = session;
+  const desktopRead = useDesktopReadScope();
+  const displayLive = useConversationDisplayLive(selected);
+  const imageLoader = useSessionImageLoader({
+    images: desktopSessionImages,
+    client,
+    access,
+    sessionId: selected,
+    indexEnabled,
+    requestVersion: imageRequestVersion,
+    scopeKey: desktopRead.key,
+    getScope: currentDesktopReadScope,
+  });
+  const banner = current?.agent === "claude-code" ? claudeSessionBanner(session) : null;
+  return (
+    <SharedSessionReader
+      session={session}
+      panels={panels}
+      agent={agentName(current?.agent)}
+      addContextLabel={codexCopy[locale].addContext}
+      explainReason={(reason) => codexReason(locale, reason).text}
+      banner={banner}
+      composerBanner={claudeComposerNotice(banner)}
+      connectionNoticeInToolbar={!!(banner?.connection && panels?.statusInToolbar)}
+      displayLive={displayLive}
+      localAuthority={{
+        key: desktopRead.key,
+        ready: desktopRead.ready,
+        isCurrent: () => currentDesktopReadScope().key === desktopRead.key,
+      }}
+      imageLoader={imageLoader}
+      queue={basicSendQueue(session)}
+      Transcript={SessionTranscript}
+      Operations={SessionOperations}
+      Composer={SessionComposer}
+      ContextUsage={ReaderContextUsage}
+    />
+  );
+}

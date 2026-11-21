@@ -61,8 +61,8 @@ vi.mock("@/features/conversation/features/sessions/pending-center", () => ({
 vi.mock("@/features/conversation/features/sessions/session-receipt-recovery", () => ({
   SessionReceiptRecovery: () => null,
 }));
-vi.mock("@/features/conversation/features/history/history-search-controls", () => ({
-  HistorySearchTrigger: () => null,
+vi.mock("@/features/conversation/features/history/web-history-search", () => ({
+  WebHistorySearchTrigger: () => null,
 }));
 afterEach(() => {
   cleanup();

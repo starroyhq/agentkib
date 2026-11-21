@@ -1,8 +1,10 @@
 import {
   HistorySearchPanel,
   historyAccessScope,
-} from "@/features/sessions/conversation/features/history/history-search";
-import { historyCopy } from "@/features/sessions/conversation/features/history/history-copy";
+  historyCopy,
+  SessionPlatformProvider,
+} from "@agentkib/session-ui";
+import { useDesktopSessionPlatform } from "@/features/sessions/conversation/session-platform";
 import {
   createDesktopConversationClient,
   hasDesktopConversation,
@@ -86,6 +88,7 @@ export function GlobalSearchDialog({
 }) {
   const { formatDateTime, tr, locale } = useI18n();
   const [historyClient] = useState(createDesktopConversationClient);
+  const historyPlatform = useDesktopSessionPlatform(historyClient);
   const [historyScope, setHistoryScope] = useState("");
   const [historyMode, setHistoryMode] = useState(false);
   useEffect(() => {
@@ -282,17 +285,19 @@ export function GlobalSearchDialog({
               <ArrowLeft size={16} />
               {tr("search.backResults")}
             </Button>
-            <HistorySearchPanel
-              client={historyClient}
-              locale={locale}
-              scope={historyScope}
-              initialQuery={query}
-              onSettingsOpened={() => onOpenChange(false)}
-              onScopeEnded={() => {
-                setHistoryMode(false);
-                setHistoryScope("");
-              }}
-            />
+            <SessionPlatformProvider platform={historyPlatform}>
+              <HistorySearchPanel
+                client={historyClient}
+                locale={locale}
+                scope={historyScope}
+                initialQuery={query}
+                onSettingsOpened={() => onOpenChange(false)}
+                onScopeEnded={() => {
+                  setHistoryMode(false);
+                  setHistoryScope("");
+                }}
+              />
+            </SessionPlatformProvider>
           </div>
         ) : asset ? (
           <>

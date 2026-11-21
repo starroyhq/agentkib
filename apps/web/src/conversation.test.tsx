@@ -20,9 +20,15 @@ import {
   type ResolvedHistoryReference,
 } from "@agentkib/web-client";
 import { EmbeddedConversation } from "@/features/conversation/conversation";
-import { HistoryCoverageStatus } from "@/features/conversation/features/history/history-search";
+import { agentName } from "@agentkib/agent-identity";
 import { useSessionController } from "@/features/conversation/features/sessions/use-session-controller";
-import { pendingScope, readPending, rememberPending, catalogCopy } from "@agentkib/session-ui";
+import {
+  HistoryCoverageStatus,
+  pendingScope,
+  readPending,
+  rememberPending,
+  catalogCopy,
+} from "@agentkib/session-ui";
 import { publishSessionInvalidation } from "@agentkib/conversation-state";
 
 afterEach(cleanup);
@@ -3438,7 +3444,7 @@ const historyStatus: HistorySearchStatus = {
 };
 describe("history coverage status", () => {
   it("separates complete Cursor messages from unsupported tools and overall coverage", () => {
-    render(<HistoryCoverageStatus status={historyStatus} locale="en-US" />);
+    render(<HistoryCoverageStatus agentName={agentName} status={historyStatus} locale="en-US" />);
 
     const sources = screen.getByRole("list", { name: "Source coverage" });
     expect(sources.textContent).toBe("Cursor: Messages Supported · Tool records Not supported");
@@ -3461,6 +3467,7 @@ describe("history coverage status", () => {
       };
       render(
         <HistoryCoverageStatus
+          agentName={agentName}
           status={{
             ...historyStatus,
             coverage,
@@ -3743,7 +3750,11 @@ describe("history references through the shared conversation provider", () => {
       "Cursor: Messages Supported · Tool records Not supported",
     );
     const indexedAt = "2026-10-08T00:00:00.000Z";
-    const indexedTime = await screen.findByText(new Date(indexedAt).toLocaleString("en-US"), {
+    const expectedTime = new Intl.DateTimeFormat("en-US", {
+      dateStyle: "medium",
+      timeStyle: "short",
+    }).format(new Date(indexedAt));
+    const indexedTime = await screen.findByText(expectedTime, {
       selector: "time",
       exact: true,
       normalizer: (value) => value,

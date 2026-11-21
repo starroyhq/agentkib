@@ -1,8 +1,8 @@
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { WebClient, type Access, type HistorySearchStatus } from "@agentkib/web-client";
-import { HistorySearchPanel, historyAccessScope } from "./history-search";
-import { historyCopy } from "./history-copy";
+import { HistorySearchPanel, historyAccessScope, historyCopy } from "@agentkib/session-ui";
+import { render } from "@/features/conversation/web-reader-test-utils";
 
 afterEach(() => {
   cleanup();

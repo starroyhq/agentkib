@@ -10,7 +10,7 @@ import {
 } from "@agentkib/session-ui";
 import type { SessionController } from "./use-session-controller";
 import { codexReason } from "./codex-copy";
-import { webLayoutCopy } from "./web-layout-copy";
+import { webLayoutCopy } from "@agentkib/session-ui";
 import { managedControlCopyForSurface } from "./managed-control-copy";
 import { claudeReconnectFailureReason } from "./claude-session-banner";
 

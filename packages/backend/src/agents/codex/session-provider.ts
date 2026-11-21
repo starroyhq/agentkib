@@ -100,6 +100,7 @@ import {
 } from "../../usage-limit";
 
 import type { LaneObserver } from "../../sessions/lane-observer";
+import type { WorkerRestartRequest, WorkerRestartResult } from "../../orchestration-service";
 import { readManagedRecords, type ManagedRecord } from "./managed-records";
 
 const FOLLOWER_RETRY_MS = 5_000;
@@ -577,6 +578,71 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
       return;
     }
     await this.#closeManagedRunner(sessionId, runner);
+  }
+
+  /** Interrupts a managed worker's active turn without closing its thread or native queue. */
+  async restartWorker(
+    input: WorkerRestartRequest,
+    beforeDispatch: () => void,
+  ): Promise<WorkerRestartResult> {
+    const { workspaceId, turnId, sessionId, requestId, deviceId, runtimeBootId, expectedRevision } =
+      input;
+    if (!turnId)
+      return {
+        accepted: false,
+        controlOutcome: "not-dispatched",
+        reason: "worker-restart-unsupported",
+      };
+    let result: unknown;
+    let authorized = false;
+    try {
+      result = await this.host.runOperation(() =>
+        this.host.admitControl(
+          {
+            operation: "stop",
+            sessionId,
+            requestId,
+            deviceId,
+            runtimeBootId,
+            expectedRevision,
+            turnId,
+            experimentalEnabled: input.experimentalEnabled,
+          },
+          (request, fingerprint) =>
+            this.#codexControl(request, fingerprint, {
+              workspaceId,
+              beforeDispatch: () => {
+                beforeDispatch();
+                authorized = true;
+              },
+            }),
+        ),
+      );
+    } catch (error) {
+      return {
+        accepted: false,
+        controlOutcome: authorized ? "unknown" : "not-dispatched",
+        reason: authorized
+          ? "control-outcome-unconfirmed"
+          : error instanceof Error
+            ? error.message
+            : "control-preflight-rejected",
+      };
+    }
+    if (isObject(result)) {
+      const accepted = result.accepted === true;
+      const reason = result.reason ?? result.error;
+      return {
+        accepted,
+        controlOutcome: accepted
+          ? "accepted"
+          : result.controlOutcome === "unknown"
+            ? "unknown"
+            : "not-dispatched",
+        ...(typeof reason === "string" ? { reason } : {}),
+      };
+    }
+    return { accepted: false, controlOutcome: "unknown", reason: "control-outcome-unconfirmed" };
   }
 
   isManagedSession(sessionId: string): boolean {
@@ -2904,7 +2970,11 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
     }
   }
 
-  async #codexControl(request: SettingsControl, fingerprint: string) {
+  async #codexControl(
+    request: SettingsControl,
+    fingerprint: string,
+    workerRestart?: { workspaceId: string; beforeDispatch: () => void },
+  ) {
     let record = readManagedRecords(this.host.dataDir, this.host.store).find(
       (item) => item.id === request.sessionId,
     );
@@ -2943,6 +3013,15 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
       if (request.deviceId) this.#codexSenders.set(request.sessionId, request.deviceId);
     }
     let runner = this.#managedRunners.get(request.sessionId);
+    if (workerRestart) {
+      if (record && record.workspace_id !== workerRestart.workspaceId)
+        throw new Error("workspace-not-allowed");
+      // A Project Agent may interrupt only the host's own runner. Never follow a different
+      // writer or acquire a new one when ownership changed since its live observation.
+      if (!record || record.released || !runner) throw new Error("worker-restart-user-only");
+      if (!runner.session.connected || runner.retiring)
+        throw new Error("worker-restart-unsupported");
+    }
     let resumedControlState: string | undefined;
     let prepared = false;
     const claim = (workspaceId: string) =>
@@ -3387,6 +3466,7 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
         if (
           this.#managedRunners.get(request.sessionId) !== dispatchRunner ||
           !dispatchRunner.session.connected ||
+          (workerRestart && dispatchRunner.retiring) ||
           !latest ||
           latest.native_id !== record.native_id ||
           latest.native_id !== dispatchRunner.state.nativeId ||
@@ -3424,6 +3504,7 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
       };
       const beforeDispatch = () => {
         assertDispatchable();
+        workerRestart?.beforeDispatch();
         dispatchManagedCommand(this.host.dataDir, request.requestId);
       };
       let response: unknown;

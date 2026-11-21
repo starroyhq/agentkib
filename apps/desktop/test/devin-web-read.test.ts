@@ -12,12 +12,19 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { homeSessionGroups, workStoppedByQuit, type HomeSession } from "@agentkib/session-catalog";
+import { DevinManagedRunner } from "../../../packages/backend/src/agents/devin/devin-managed-runner";
+import type { DevinSessionProvider } from "../../../packages/backend/src/agents/devin/session-provider";
 import { Commands } from "../../../packages/backend/src/commands";
+import { readControlReceipt } from "../../../packages/backend/src/control-receipt";
 import { ConversationReadStates } from "../../../packages/backend/src/conversation-read-state";
 import { readManagedUsageLimit } from "../../../packages/backend/src/managed-ledger";
-import { OrchestrationService } from "../../../packages/backend/src/orchestration-service";
+import {
+  OrchestrationService,
+  type WorkerRestartRequest,
+} from "../../../packages/backend/src/orchestration-service";
 import { SessionReaders } from "../../../packages/backend/src/session-readers";
 import type { ConversationEvent } from "../../../packages/backend/src/session-events";
 import type { NativeSession } from "../../../packages/backend/src/session-store";
@@ -781,6 +788,132 @@ describe.runIf(process.platform !== "win32")("a Devin turn's result", () => {
     // Each reader keeps its own place: the phone's has not read it yet.
     expect(await reads.get(f.id, "local")).toMatchObject({ status: "unread" });
   });
+});
+
+describe.runIf(process.platform !== "win32")("restart of a managed Devin Worker", () => {
+  async function restart(f: ReturnType<typeof fixture>) {
+    const provider = f.web.devinSessionProvider() as DevinSessionProvider;
+    const live = await f.live();
+    const request: WorkerRestartRequest = {
+      sessionId: f.id,
+      workspaceId: "workspace",
+      deviceId: "phone",
+      requestId: randomUUID(),
+      runtimeBootId: String(live.runtimeBootId),
+      expectedRevision: Number(live.revision),
+      turnId: typeof live.turnId === "string" ? live.turnId : null,
+      experimentalEnabled: true,
+    };
+    const admit = vi.fn();
+    const { requestId, deviceId } = request;
+    return {
+      admit,
+      send: () => provider.restartWorker(request, admit),
+      receipt: () => readControlReceipt(f.root, { requestId, deviceId }),
+    };
+  }
+
+  it("recycles only its running process and keeps the native session and its host queue", async () => {
+    const f = fixture();
+    const cliData = path.join(f.environment.DEVIN_SESSIONS_DIR, "cli");
+    mkdirSync(cliData, { recursive: true });
+    const native = new DatabaseSync(path.join(cliData, "sessions.db"));
+    try {
+      native.exec(`
+        CREATE TABLE sessions(id TEXT PRIMARY KEY, working_directory TEXT, title TEXT,
+          created_at INTEGER, last_activity_at INTEGER, hidden INTEGER, main_chain_id INTEGER);
+        CREATE TABLE message_nodes(session_id TEXT, node_id INTEGER, parent_node_id INTEGER,
+          chat_message TEXT, metadata TEXT, created_at INTEGER);
+      `);
+      native
+        .prepare("INSERT INTO sessions VALUES ('brisk-otter', ?, 'Fixture', 1, 2, 0, 2)")
+        .run(f.workspace);
+      const insert = native.prepare(
+        "INSERT INTO message_nodes VALUES ('brisk-otter', ?, ?, ?, NULL, ?)",
+      );
+      insert.run(
+        1,
+        null,
+        JSON.stringify({ role: "user", content: "Hello", metadata: { is_user_input: true } }),
+        1,
+      );
+      insert.run(2, 1, JSON.stringify({ role: "assistant", content: "Done." }), 2);
+    } finally {
+      native.close();
+    }
+    f.turn({ hold: true });
+    expect(await f.send("Running work")).toMatchObject({ accepted: true });
+    await expect.poll(() => f.log("resume.log")).toBe("brisk-otter\n");
+    const queue = () => f.web.managedQueueList({ operation: "queue-list", sessionId: f.id });
+    const history = () => f.web.request({ operation: "events", sessionId: f.id, limit: 20 });
+    expect(await f.control("queue-add", { text: "Waiting work" })).toMatchObject({
+      accepted: true,
+    });
+    expect(await f.control("queue-pause")).toMatchObject({ accepted: true });
+    const pending = await queue();
+    expect(pending).toMatchObject({
+      paused: true,
+      data: [{ status: "pending", text: "Waiting work" }],
+    });
+    const previous = await history();
+    expect(previous).toMatchObject({
+      events: expect.arrayContaining([
+        expect.objectContaining({ kind: "user-message", content: "Hello" }),
+        expect.objectContaining({ kind: "agent-message", content: "Done." }),
+      ]),
+    });
+
+    const { admit, send, receipt } = await restart(f);
+    const result = await send();
+    expect(result).toEqual({ accepted: true, controlOutcome: "accepted" });
+    expect(receipt()).toMatchObject({ status: "accepted" });
+    expect(await send()).toEqual(result);
+    expect(admit).toHaveBeenCalledTimes(1);
+    await f.ended();
+    expect(await queue()).toEqual(pending);
+    expect(await history()).toEqual(previous);
+
+    f.turn();
+    expect(await f.send("Continue the same conversation")).toMatchObject({
+      sessionId: f.id,
+      accepted: true,
+    });
+    await f.ended();
+    expect(f.log("resume.log").trim().split("\n")).toEqual(["brisk-otter", "brisk-otter"]);
+  }, 15_000);
+
+  it("refuses a session when AgentKib owns no process for it", async () => {
+    const f = fixture();
+    const { admit, send } = await restart(f);
+    expect(await send()).toEqual({
+      accepted: false,
+      controlOutcome: "not-dispatched",
+      reason: "worker-restart-user-only",
+    });
+    expect(admit).not.toHaveBeenCalled();
+    expect(f.log("resume.log")).toBe("");
+  });
+
+  it("replays an unknown stop receipt without sending another signal", async () => {
+    const f = fixture();
+    f.turn({ hold: true });
+    expect(await f.send("Running work")).toMatchObject({ accepted: true });
+    const nativeStop = DevinManagedRunner.prototype.stop;
+    const stop = vi.spyOn(DevinManagedRunner.prototype, "stop").mockImplementation(async function (
+      this: DevinManagedRunner,
+      ...args
+    ) {
+      await nativeStop.call(this, ...args);
+      throw new Error("stop-acknowledgement-lost");
+    });
+    const { admit, send, receipt } = await restart(f);
+    expect(await send()).toMatchObject({ accepted: false, controlOutcome: "unknown" });
+    expect(receipt()).toMatchObject({ status: "unknown" });
+    expect(await send()).toMatchObject({ accepted: false, controlOutcome: "unknown" });
+    expect(admit).toHaveBeenCalledTimes(1);
+    expect(stop).toHaveBeenCalledTimes(1);
+    await f.ended();
+  }, 15_000);
 });
 
 describe.runIf(process.platform !== "win32")("an assigned Devin Worker", () => {

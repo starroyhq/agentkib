@@ -36,6 +36,8 @@ import {
   mergeMcpConfigs,
   type LaneEndedTurn,
   type WorkerObserver,
+  type WorkerRestartRequest,
+  type WorkerRestartResult,
 } from "../../orchestration-service";
 import { userHome } from "../../mcp-config-read";
 import {
@@ -4918,6 +4920,140 @@ export class ClaudeManagedReadOwner {
 
   async live(id: string, controls = false) {
     return this.#live(id, controls);
+  }
+
+  /** Host-internal control. End only this session's owned process, keeping its queue and history. */
+  restartWorker(
+    request: WorkerRestartRequest,
+    beforeDispatch: () => void,
+  ): Promise<WorkerRestartResult> {
+    const { sessionId: id, requestId, deviceId } = request;
+    return this.#serializeSession(id, async () => {
+      const refused = (
+        reason: string,
+        controlOutcome: "not-dispatched" | "unknown" = "not-dispatched",
+      ): WorkerRestartResult => ({
+        accepted: false,
+        controlOutcome,
+        requestId,
+        reason,
+      });
+      let dispatched = false;
+      let claimed = false;
+      let replay: WorkerRestartResult | undefined;
+      try {
+        if (
+          !sessionIdPattern.test(id) ||
+          !uuidPattern.test(requestId) ||
+          !validClaudeDeviceId(deviceId) ||
+          request.experimentalEnabled !== true ||
+          !Number.isSafeInteger(request.expectedRevision) ||
+          request.expectedRevision < 0
+        )
+          return refused("invalid-managed-control");
+        const value = { ...request, operation: "worker-restart" };
+        const fingerprint = claudeCommandFingerprint(value);
+        const prior = replayManagedCommand(this.dataDir, requestId, fingerprint);
+        if (prior) return prior as WorkerRestartResult;
+        if (this.#shuttingDown) return refused("session-unavailable");
+        if (request.runtimeBootId !== this.bootId) return refused("stale-runtime-boot");
+
+        const record = this.#load(id);
+        if (!record || record.released || this.#isSessionBridged(record))
+          return refused("worker-restart-user-only");
+        this.#validate(record);
+        if (request.workspaceId !== record.workspaceId) return refused("workspace-not-allowed");
+        if (managedSessionHasUnknownCommands(this.dataDir, id))
+          return refused("control-outcome-unconfirmed", "unknown");
+        const runner = this.#runners.get(id);
+        const pid = runner?.processId;
+        if (!runner?.hasWorker || !this.#ownerLocks.has(id) || pid == null)
+          return refused("worker-restart-not-ready");
+
+        const live = await this.#live(id, true);
+        const owner = await this.#ownership.check(record.nativeId, pid, this.#freshObservation());
+        if (owner.kind !== "idle") return refused("worker-restart-user-only");
+        const snapshot = runner.snapshot();
+        if (live.status === "outcome-unknown" || snapshot.status === "outcome-unknown")
+          return refused("control-outcome-unconfirmed", "unknown");
+        if (live.executionLocation === "external" || this.#isSessionBridged(record))
+          return refused("worker-restart-user-only");
+        if (
+          this.#shuttingDown ||
+          this.#runners.get(id) !== runner ||
+          runner.processId !== pid ||
+          live.workspaceId !== record.workspaceId ||
+          live.executionLocation !== "agentkib" ||
+          live.ownershipReason ||
+          this.#starting.has(id)
+        )
+          return refused("worker-restart-not-ready");
+        const hostRevision = this.#hostState.peek(id)?.revision ?? 0;
+        if (
+          request.expectedRevision !== live.revision ||
+          request.expectedRevision !== snapshot.revision + hostRevision ||
+          request.turnId !== (snapshot.turnId || null)
+        )
+          return refused("stale-Claude-revision");
+
+        await runner.restartForDelegation(snapshot.revision, () => {
+          const receipt = claimManagedCommand(this.dataDir, requestId, id, fingerprint, deviceId, {
+            operation: value.operation,
+            workspaceId: record.workspaceId,
+            executionMode: "claude-managed",
+            runtimeBootId: this.bootId,
+            expectedRevision: request.expectedRevision,
+            turnId: request.turnId,
+          });
+          if (receipt) {
+            replay = receipt as WorkerRestartResult;
+            throw new Error("worker-restart-already-claimed");
+          }
+          claimed = true;
+          beforeDispatch();
+          dispatchManagedCommand(this.dataDir, requestId);
+          dispatched = true;
+        });
+        if (runner.hasWorker) throw new Error("control-outcome-unconfirmed");
+        if (snapshot.status !== "idle" && snapshot.turnId) {
+          new ReadStateLedger(this.dataDir).record(
+            conversationReadKey("claude-code", record.home, record.nativeId),
+            {
+              id: `turn:${snapshot.turnId}`,
+              turnId: snapshot.turnId,
+              itemId: null,
+              outcome: "cancelled",
+              completedAt: new Date().toISOString(),
+            },
+          );
+          this.#hostState.complete(id, snapshot.turnId, {
+            success: false,
+            usage: null,
+            cancelled: true,
+          });
+        }
+        this.invalidateSchedulePermits(id);
+        await this.#goalEndpoints.get(id)?.close();
+        this.#goalEndpoints.delete(id);
+        await this.#retireGoalRunner(id);
+        const result = {
+          accepted: true,
+          completed: true,
+          controlOutcome: "accepted",
+          requestId,
+          sessionId: id,
+          runtimeBootId: this.bootId,
+        } as const;
+        finishManagedCommand(this.dataDir, requestId, result);
+        return result;
+      } catch (error) {
+        if (replay) return replay;
+        if (dispatched) return refused("control-outcome-unconfirmed", "unknown");
+        const result = refused(error instanceof Error ? error.message : "worker-restart-failed");
+        if (claimed) finishManagedCommand(this.dataDir, requestId, result);
+        return result;
+      }
+    });
   }
 
   /** Bounded identity discovery for a borrowed native host; this never transfers execution. */

@@ -11,6 +11,7 @@ import { CursorBridge } from "./cursor-bridge";
 import { ClaudeBridge, type ClaudeBridgeTarget } from "./agents/claude/claude-bridge";
 import { readClaudeTranscriptObservation } from "./agents/claude/claude-context-usage";
 import { ClaudeSessionProvider } from "./agents/claude/session-provider";
+import type { CodexSessionProvider } from "./agents/codex/session-provider";
 import { DSH_EXECUTION_MODE, DSH_NATIVE_TURN_OBSERVED, DshBridge } from "./agents/dsh/dsh-bridge";
 import { readLocalDshHistory, readLocalDshTurn } from "./agents/dsh/dsh-local-history";
 import { DshManagedRuntime, dshHome } from "./agents/dsh/dsh-managed-runtime";
@@ -103,6 +104,7 @@ import { parameters } from "./rpc";
 import { z } from "zod";
 import os from "node:os";
 import { devinExecutable } from "./agents/devin/devin-executable";
+import type { DevinSessionProvider } from "./agents/devin/session-provider";
 import { DEVIN_EXECUTION_MODE, devinChildEnvironment } from "./agents/devin/devin-managed-runner";
 import { BACKEND_INSPECT } from "./migration";
 import { RpcFault } from "./rpc";
@@ -2486,6 +2488,40 @@ export class TypeScriptBackend {
         if (session(value.sessionId)?.agent === "claude-code")
           return this.#claudeSessionProvider!.native(value);
         return this.#withWebRead((owner) => owner.managedControl(value));
+      },
+      restart: async (request, beforeDispatch) => {
+        const target = session(request.sessionId);
+        if (!target || target.workspaceId !== request.workspaceId)
+          return {
+            accepted: false,
+            controlOutcome: "not-dispatched",
+            reason: "workspace-not-allowed",
+          };
+        switch (target.agent) {
+          case "claude-code":
+            if (this.#claudeSessionProvider)
+              return this.#claudeSessionProvider.restartWorker(request, beforeDispatch);
+            break;
+          case "codex":
+            return this.#withWebRead((owner) =>
+              (owner.codexSessionProvider() as CodexSessionProvider).restartWorker(
+                request,
+                beforeDispatch,
+              ),
+            );
+          case "devin":
+            return this.#withWebRead((owner) =>
+              (owner.devinSessionProvider() as DevinSessionProvider).restartWorker(
+                request,
+                beforeDispatch,
+              ),
+            );
+        }
+        return {
+          accepted: false,
+          controlOutcome: "not-dispatched",
+          reason: "worker-restart-unsupported",
+        };
       },
       events: async (sessionId, limit) => {
         const bridge = dsh(sessionId);

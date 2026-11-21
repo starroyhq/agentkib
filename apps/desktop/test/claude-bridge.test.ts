@@ -2550,6 +2550,7 @@ describe.skipIf(process.platform === "win32")(
         "worker_send",
         "worker_read",
         "worker_stop",
+        "worker_restart",
       ]);
       for (const name of ["worker_open", "worker_close"]) {
         const call = await f.post("/v1/lead-call", { name, input: {} });

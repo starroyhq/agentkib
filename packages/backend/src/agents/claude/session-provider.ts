@@ -6,6 +6,7 @@ import {
   type SessionQuery,
   type TypedSessionProvider,
 } from "../../session-provider";
+import type { WorkerRestartRequest, WorkerRestartResult } from "../../orchestration-service";
 import { withProviderCapabilities } from "../../sessions/providers";
 import { legacySessionFields, sessionQuerySchema } from "../../sessions/routing";
 import { validateClaudeControl } from "../../sessions/validate/claude-code";
@@ -214,6 +215,24 @@ export class ClaudeSessionProvider implements SessionProvider, TypedSessionProvi
 
   control(value: Record<string, unknown>) {
     return this.native(value);
+  }
+
+  restartWorker(
+    request: WorkerRestartRequest,
+    beforeDispatch: () => void,
+  ): Promise<WorkerRestartResult> {
+    const { sessionId, requestId } = request;
+    if (
+      this.bridge.handles(sessionId) &&
+      (this.bridge.blocksManagedResume(sessionId) || !this.managed.hasManagedSession(sessionId))
+    )
+      return Promise.resolve({
+        accepted: false,
+        controlOutcome: "not-dispatched",
+        requestId,
+        reason: "worker-restart-user-only",
+      });
+    return this.managed.restartWorker(request, beforeDispatch);
   }
 
   contextUsage(sessionId: string) {

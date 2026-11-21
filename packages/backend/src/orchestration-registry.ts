@@ -30,6 +30,8 @@ export const LEAD_DEFAULTS = Object.freeze({
 const MAX_RECORDS = 200;
 const MAX_REPORTED_TURNS = 64;
 const MAX_PENDING_REPORTS = 32;
+const WORKER_RESTART_WINDOW_MS = 60 * 60_000;
+const MAX_WORKER_RESTARTS = 3;
 
 export type LeadScope = {
   /** Workspaces new lanes may be created in; the lead's own one by default. */
@@ -89,6 +91,7 @@ export type LeadRecord = {
     | "open"
     | "send"
     | "stop"
+    | "restart"
     | "approve"
     | "answer"
     | "report"
@@ -129,6 +132,17 @@ type NewLead = Omit<
 
 const TABLE =
   "CREATE TABLE IF NOT EXISTS orchestration_leads(session_id TEXT PRIMARY KEY, record TEXT NOT NULL)";
+const RESTART_TABLE =
+  "CREATE TABLE IF NOT EXISTS orchestration_worker_restarts(" +
+  "request_id TEXT PRIMARY KEY, session_id TEXT NOT NULL, device_id TEXT NOT NULL, " +
+  "attempted_at INTEGER NOT NULL, pending INTEGER NOT NULL);" +
+  "CREATE INDEX IF NOT EXISTS orchestration_worker_restarts_session " +
+  "ON orchestration_worker_restarts(session_id, attempted_at)";
+
+type WorkerRestartWindow = {
+  retryAt: number | null;
+  pending: { requestId: string; deviceId: string } | null;
+};
 
 export class LeadRegistry {
   constructor(
@@ -267,6 +281,101 @@ export class LeadRegistry {
       const value = fn(lead);
       lead.revision++;
       return { lead, value };
+    });
+  }
+
+  #restartWindow(database: DatabaseSync, sessionId: string, now: number): WorkerRestartWindow {
+    const rows = database
+      .prepare(
+        "SELECT request_id,device_id,attempted_at,pending FROM orchestration_worker_restarts " +
+          "WHERE session_id=? AND (attempted_at>? OR pending=1) ORDER BY attempted_at",
+      )
+      .all(sessionId, now - WORKER_RESTART_WINDOW_MS) as Array<{
+      request_id: string;
+      device_id: string;
+      attempted_at: number;
+      pending: number;
+    }>;
+    const recent = rows.filter((row) => row.attempted_at > now - WORKER_RESTART_WINDOW_MS);
+    const pending = rows.find((row) => row.pending === 1);
+    return {
+      retryAt:
+        recent.length >= MAX_WORKER_RESTARTS
+          ? recent[recent.length - MAX_WORKER_RESTARTS]!.attempted_at + WORKER_RESTART_WINDOW_MS
+          : null,
+      pending: pending ? { requestId: pending.request_id, deviceId: pending.device_id } : null,
+    };
+  }
+
+  workerRestartWindow(sessionId: string, now = Date.now()): WorkerRestartWindow {
+    const database = openManagedLedger(this.dataDir);
+    if (!database) return { retryAt: null, pending: null };
+    try {
+      if (
+        !database
+          .prepare("SELECT 1 FROM sqlite_master WHERE name='orchestration_worker_restarts'")
+          .get()
+      )
+        return { retryAt: null, pending: null };
+      return this.#restartWindow(database, sessionId, now);
+    } finally {
+      database.close();
+    }
+  }
+
+  /** The Worker session keeps its budget when the person changes its assignment or host restarts. */
+  reserveWorkerRestart(
+    leadId: string,
+    lane: Pick<Lane, "id" | "sessionId">,
+    deviceId: string,
+    requestId: string,
+    now = Date.now(),
+  ): WorkerRestartWindow {
+    return this.#transaction(leadId, (lead, database) => {
+      if (!lead?.lanes.some((item) => item.id === lane.id && item.sessionId === lane.sessionId))
+        throw new Error("worker-unavailable");
+      if (lead.paused || lead.deviceId !== deviceId) throw new Error("delegation-paused");
+      database.exec(RESTART_TABLE);
+      const window = this.#restartWindow(database, lane.sessionId, now);
+      if (window.pending || window.retryAt !== null) return { lead, value: window };
+      database
+        .prepare("DELETE FROM orchestration_worker_restarts WHERE attempted_at<=? AND pending=0")
+        .run(now - WORKER_RESTART_WINDOW_MS);
+      database
+        .prepare(
+          "INSERT INTO orchestration_worker_restarts(request_id,session_id,device_id,attempted_at,pending) VALUES(?,?,?,?,1)",
+        )
+        .run(requestId, lane.sessionId, deviceId, now);
+      addLeadRecord(lead, "restart", lane.id, requestId, "pending");
+      lead.revision++;
+      return { lead, value: window };
+    });
+  }
+
+  finishWorkerRestart(
+    leadId: string,
+    lane: Pick<Lane, "id" | "sessionId">,
+    requestId: string,
+    outcome: "accepted" | "not-dispatched" | "unknown",
+  ): void {
+    this.#transaction(leadId, (lead, database) => {
+      if (outcome !== "unknown") {
+        const action =
+          outcome === "accepted"
+            ? "UPDATE orchestration_worker_restarts SET pending=0"
+            : "DELETE FROM orchestration_worker_restarts";
+        database
+          .prepare(`${action} WHERE request_id=? AND session_id=?`)
+          .run(requestId, lane.sessionId);
+      }
+      const record = lead?.records.find(
+        (item) => item.requestId === requestId && item.kind === "restart",
+      );
+      if (record && lead) {
+        record.outcome = outcome;
+        lead.revision++;
+      }
+      return { lead, value: undefined };
     });
   }
 

@@ -2361,6 +2361,40 @@ export class ClaudeManagedRunnerProcess {
     return true;
   }
 
+  /** Retire the owned process without losing work that exists only in its memory. */
+  async restartForDelegation(revision: number, dispatch: () => void): Promise<void> {
+    if (
+      !this.#child ||
+      !this.state.initialized ||
+      this.#retiring ||
+      this.#configuring ||
+      this.#startupAttempt ||
+      this.#terminating ||
+      this.state.activity === "compacting" ||
+      this.state.backgroundTasks.size > 0 ||
+      this.state.hasScheduledWork()
+    )
+      throw new Error("worker-restart-not-ready");
+    if (revision !== this.state.revision) throw new Error("stale-Claude-revision");
+    if (this.state.status === "idle") {
+      dispatch();
+      await this.retireIfInactive();
+      return;
+    }
+    // An accepted steer can still be waiting in the CLI's input queue until the turn ends.
+    if (this.#steeringIds.size > 0) throw new Error("worker-restart-native-input-pending");
+    this.state.assertCanStop(this.state.turnId, revision);
+    dispatch();
+    this.#retiring = true;
+    try {
+      await this.#terminate();
+      this.state.processStopped();
+      this.#notify();
+    } finally {
+      this.#retiring = false;
+    }
+  }
+
   /**
    * Asks the CLI to end the running turn (`interrupt`, with `cancel_queued` for messages added to
    * the turn that it still holds). Verified with 2.1.263, 2.1.299 and 2.1.323: it acknowledges at

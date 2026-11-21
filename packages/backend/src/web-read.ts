@@ -19,7 +19,7 @@ import { DshSessionProvider } from "./agents/dsh/session-provider";
 import { projectContextUsage, type ContextUsage } from "./context-usage";
 import type { ReadStateTarget } from "./conversation-read-state";
 import { catalogCheckouts } from "./git-checkouts";
-import { SerialSessionQueue } from "./serial-session-queue";
+import { SerialSessionQueue } from "./sessions/serial-session-queue";
 import type { SessionIndex } from "./session-index";
 import type { SessionProviderRegistry, SessionProviders } from "./session-provider";
 import type { SessionReaders } from "./session-readers";

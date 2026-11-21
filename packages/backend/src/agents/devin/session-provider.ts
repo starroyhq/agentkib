@@ -14,7 +14,7 @@ import {
 } from "../../managed-ledger";
 import { canonicalize, pathIdentity } from "../../paths";
 import { conversationReadKey, ReadStateLedger } from "../../read-state-ledger";
-import type { SerialQueueTarget } from "../../serial-session-queue";
+import type { SerialQueueTarget } from "../../sessions/serial-session-queue";
 import {
   sessionResultProjectors,
   type SessionProviderRequest,

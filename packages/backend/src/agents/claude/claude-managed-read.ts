@@ -71,7 +71,7 @@ import {
 import {
   ClaudeHostStateStore,
   validClaudeDeviceId,
-  claudeCommandFingerprint,
+  claudeCommandFingerprintInput,
   type ClaudeHostWork,
   type ClaudeSettings,
 } from "./claude-host-state";
@@ -106,14 +106,12 @@ import {
   validateClaudeContent,
 } from "./claude-managed-runner";
 import {
-  claimManagedCommand,
-  dispatchManagedCommand,
   finishManagedCommand,
   managedSessionHasUnknownCommands,
-  replayManagedCommand,
   readUnknownManagedCommands,
   openManagedLedger,
 } from "../../managed-ledger";
+import { admitControlReceipt, bindControlReceipt } from "../../sessions/control-receipts";
 
 // Defined in claude-version.ts (imported above for this file's own checks); still exported from here.
 export { supportsClaudeVersion } from "./claude-version";
@@ -811,22 +809,14 @@ export class ClaudeManagedReadOwner {
       const logical = { ...value };
       delete logical.runtimeBootId;
       delete logical.schedulePermitId;
-      const fingerprint = createHash("sha256").update(stableJson(logical)).digest("hex");
-      const prior = replayManagedCommand(this.dataDir, value.requestId, fingerprint);
-      if (prior) return prior;
-      const claimed = claimManagedCommand(
-        this.dataDir,
-        value.requestId,
-        id,
-        fingerprint,
-        value.deviceId,
-        {
-          operation: value.operation,
-          executionMode: "claude-managed",
-          runtimeBootId: this.bootId,
-          ...(value.publicInputHash ? { publicInputHash: value.publicInputHash } : {}),
-        },
-      );
+      const receipt = admitControlReceipt(this.dataDir, value.requestId, stableJson(logical));
+      if (receipt.previous) return receipt.previous;
+      const claimed = receipt.claim(id, value.deviceId, {
+        operation: value.operation,
+        executionMode: "claude-managed",
+        runtimeBootId: this.bootId,
+        ...(value.publicInputHash ? { publicInputHash: value.publicInputHash } : {}),
+      });
       if (claimed) return claimed;
       const result = {
         accepted: false,
@@ -838,7 +828,7 @@ export class ClaudeManagedReadOwner {
         error: reason,
         ...(value.publicInputHash ? { publicInputHash: value.publicInputHash } : {}),
       };
-      finishManagedCommand(this.dataDir, value.requestId, result);
+      receipt.finish(result);
       return result;
     } finally {
       if (!owned && !this.#runners.get(id)?.hasWorker) {
@@ -893,9 +883,8 @@ export class ClaudeManagedReadOwner {
     const logical = { ...value };
     delete logical.runtimeBootId;
     delete logical.schedulePermitId;
-    const fingerprint = createHash("sha256").update(stableJson(logical)).digest("hex");
-    const prior = replayManagedCommand(this.dataDir, requestId, fingerprint);
-    if (prior) return prior;
+    const receipt = admitControlReceipt(this.dataDir, requestId, stableJson(logical));
+    if (receipt.previous) return receipt.previous;
     if (
       operation === "steer" &&
       !supportsClaudeVersion((await this.#installationVersion()) ?? "", "2.1.286")
@@ -1047,14 +1036,7 @@ export class ClaudeManagedReadOwner {
     let reservedRunnerSlot = false;
     try {
       if (operation === "send") reservedRunnerSlot = await this.#reserveRunner(id);
-      const claimed = claimManagedCommand(
-        this.dataDir,
-        requestId,
-        id,
-        fingerprint,
-        value.deviceId,
-        evidence,
-      );
+      const claimed = receipt.claim(id, value.deviceId, evidence);
       if (claimed) {
         if (newlyAcquiredOwnerLock) {
           const release = this.#ownerLocks.get(id);
@@ -1069,7 +1051,7 @@ export class ClaudeManagedReadOwner {
       this.#save(record);
       let dispatched = false;
       if (operation !== "send") {
-        dispatchManagedCommand(this.dataDir, requestId);
+        receipt.dispatch();
         dispatched = true;
       }
       let runner = existingRunner;
@@ -1108,7 +1090,7 @@ export class ClaudeManagedReadOwner {
                   this.#hostState.dispatched(id, permit.item.id);
                   this.#permits.delete(value.schedulePermitId);
                 }
-                dispatchManagedCommand(this.dataDir, requestId);
+                receipt.dispatch();
                 dispatched = true;
                 this.#senders.set(id, value.deviceId);
               },
@@ -1187,7 +1169,7 @@ export class ClaudeManagedReadOwner {
           ...(value.publicInputHash ? { publicInputHash: value.publicInputHash } : {}),
           live: await this.#live(id, true),
         };
-        finishManagedCommand(this.dataDir, requestId, result);
+        receipt.finish(result);
         return result;
       } catch (error) {
         const current = this.#load(id);
@@ -1211,7 +1193,7 @@ export class ClaudeManagedReadOwner {
           error: error instanceof Error ? error.message : String(error),
           ...(value.publicInputHash ? { publicInputHash: value.publicInputHash } : {}),
         };
-        if (!unknown) finishManagedCommand(this.dataDir, requestId, result);
+        if (!unknown) receipt.finish(result);
         const terminal = this.#streamLive(id, runner.snapshot(), current);
         try {
           this.#publishConversationEvent?.(id, "state", terminal, terminal);
@@ -2043,12 +2025,12 @@ export class ClaudeManagedReadOwner {
       (typeof value.publicInputHash !== "string" || !/^[a-f0-9]{64}$/.test(value.publicInputHash))
     )
       throw new Error("invalid-public-input-hash");
-    const prior = replayManagedCommand(
+    const receipt = admitControlReceipt(
       this.dataDir,
       value.requestId,
-      claudeCommandFingerprint(value),
+      claudeCommandFingerprintInput(value),
     );
-    if (prior) return prior;
+    if (receipt.previous) return receipt.previous;
     if (!supportsClaudeVersion((await this.#installationVersion()) ?? "", "2.1.286"))
       throw new Error("unsupported-Claude-version");
     let record = this.#load(id);
@@ -2112,22 +2094,20 @@ export class ClaudeManagedReadOwner {
     let externallyDispatched = false;
     const claimExternalEffect = () => {
       onExternalClaim();
-      const prior = claimManagedCommand(
+      const externalReceipt = bindControlReceipt(
         this.dataDir,
         value.requestId,
-        id,
-        claudeCommandFingerprint(value),
-        value.deviceId,
-        {
-          operation,
-          workspaceId: record.workspaceId,
-          executionMode: "claude-managed",
-          runtimeBootId: this.bootId,
-          ...(value.publicInputHash ? { publicInputHash: value.publicInputHash } : {}),
-        },
+        claudeCommandFingerprintInput(value),
       );
+      const prior = externalReceipt.claim(id, value.deviceId, {
+        operation,
+        workspaceId: record.workspaceId,
+        executionMode: "claude-managed",
+        runtimeBootId: this.bootId,
+        ...(value.publicInputHash ? { publicInputHash: value.publicInputHash } : {}),
+      });
       if (prior) throw new Error("control-outcome-unconfirmed");
-      dispatchManagedCommand(this.dataDir, value.requestId);
+      externalReceipt.dispatch();
       this.#activeHostClaims.set(id, value.requestId);
       externallyDispatched = true;
     };
@@ -2994,9 +2974,8 @@ export class ClaudeManagedReadOwner {
     const workspace = canonicalize(this.store.workspacePath(workspaceId));
     const logical = { ...value };
     delete logical.runtimeBootId;
-    const fingerprint = createHash("sha256").update(stableJson(logical)).digest("hex");
-    const prior = replayManagedCommand(this.dataDir, requestId, fingerprint);
-    if (prior) return prior;
+    const receipt = admitControlReceipt(this.dataDir, requestId, stableJson(logical));
+    if (receipt.previous) return receipt.previous;
 
     if (value.verifyStartupModel && (selectedSettings.model || selectedSettings.effort)) {
       const catalog = await this.#readNewSessionCatalog(workspace, installation, true).catch(
@@ -3046,20 +3025,13 @@ export class ClaudeManagedReadOwner {
         runtimeBootId: this.bootId,
         executionMode: "claude-managed",
       };
-      const claimed = claimManagedCommand(
-        this.dataDir,
-        requestId,
-        id,
-        fingerprint,
-        value.deviceId,
-        evidence,
-      );
+      const claimed = receipt.claim(id, value.deviceId, evidence);
       if (claimed) {
         this.#ownerLocks.set(id, release);
         retainLock = true;
         return claimed;
       }
-      dispatchManagedCommand(this.dataDir, requestId);
+      receipt.dispatch();
       const now = new Date().toISOString();
       const name =
         typeof value.name === "string" && value.name.trim().length > 0 ? value.name : "Claude Code";
@@ -3125,7 +3097,7 @@ export class ClaudeManagedReadOwner {
         runtimeBootId: this.bootId,
         live,
       };
-      finishManagedCommand(this.dataDir, requestId, result);
+      receipt.finish(result);
       this.#ownerLocks.set(id, release);
       retainLock = true;
       return result;
@@ -3255,9 +3227,8 @@ export class ClaudeManagedReadOwner {
       throw new Error("invalid-managed-release");
     const logical = { ...value };
     delete logical.runtimeBootId;
-    const fingerprint = createHash("sha256").update(stableJson(logical)).digest("hex");
-    const prior = replayManagedCommand(this.dataDir, requestId, fingerprint);
-    if (prior) return prior;
+    const receipt = admitControlReceipt(this.dataDir, requestId, stableJson(logical));
+    if (receipt.previous) return receipt.previous;
 
     this.#privateDirectory(false);
     const ownerRelease = this.#ownerLocks.get(id);
@@ -3286,16 +3257,9 @@ export class ClaudeManagedReadOwner {
         inputFingerprint: null,
         executionMode: "claude-managed",
       };
-      const claimed = claimManagedCommand(
-        this.dataDir,
-        requestId,
-        id,
-        fingerprint,
-        value.deviceId,
-        evidence,
-      );
+      const claimed = receipt.claim(id, value.deviceId, evidence);
       if (claimed) return claimed;
-      dispatchManagedCommand(this.dataDir, requestId);
+      receipt.dispatch();
       const runner = this.#runners.get(id);
       if (runner) {
         await runner.shutdown();
@@ -3314,7 +3278,7 @@ export class ClaudeManagedReadOwner {
         runtimeBootId: this.bootId,
         controlOutcome: "accepted",
       };
-      finishManagedCommand(this.dataDir, requestId, result);
+      receipt.finish(result);
       await this.#publishReleasedPermission(id);
       return result;
     } finally {
@@ -3358,9 +3322,12 @@ export class ClaudeManagedReadOwner {
       Object.keys(value).some((key) => !allowed.has(key))
     )
       throw new Error("invalid-managed-control");
-    const fingerprint = claudeCommandFingerprint(value);
-    const prior = replayManagedCommand(this.dataDir, requestId, fingerprint);
-    if (prior) return prior;
+    const receipt = admitControlReceipt(
+      this.dataDir,
+      requestId,
+      claudeCommandFingerprintInput(value),
+    );
+    if (receipt.previous) return receipt.previous;
     if (value.runtimeBootId !== this.bootId) throw new Error("stale-runtime-boot");
     let workspaceId: string | null = null;
     const outcome = (fields: Record<string, unknown>, request = requestId) => ({
@@ -3370,7 +3337,7 @@ export class ClaudeManagedReadOwner {
       runtimeBootId: this.bootId,
     });
     const claim = () =>
-      claimManagedCommand(this.dataDir, requestId, id, fingerprint, value.deviceId, {
+      receipt.claim(id, value.deviceId, {
         operation: "delete",
         workspaceId,
         executionMode: "claude-managed",
@@ -3390,7 +3357,7 @@ export class ClaudeManagedReadOwner {
       });
       const claimed = claim();
       if (claimed) return claimed;
-      finishManagedCommand(this.dataDir, requestId, result);
+      receipt.finish(result);
       return result;
     };
     if (!supportsClaudeManagedRunner()) return reject("platform-unsupported");
@@ -3451,7 +3418,7 @@ export class ClaudeManagedReadOwner {
       }
       const claimed = claim();
       if (claimed) return claimed;
-      dispatchManagedCommand(this.dataDir, requestId);
+      receipt.dispatch();
       // AgentKib's own worker and its scheduled work end first; nothing writes the session after.
       this.invalidateSchedulePermits(id);
       if (record) this.#hostState.pause(id, "delete-requested");
@@ -3476,7 +3443,7 @@ export class ClaudeManagedReadOwner {
           error: "claude-delete-failed",
           reason: "claude-delete-failed",
         });
-        finishManagedCommand(this.dataDir, requestId, result);
+        receipt.finish(result);
         return result;
       }
       deleted = true;
@@ -3487,7 +3454,7 @@ export class ClaudeManagedReadOwner {
         deleted: true,
         controlOutcome: "accepted",
       });
-      finishManagedCommand(this.dataDir, requestId, result);
+      receipt.finish(result);
       for (const earlier of unconfirmed)
         finishManagedCommand(
           this.dataDir,
@@ -3872,9 +3839,8 @@ export class ClaudeManagedReadOwner {
       throw new Error("invalid-managed-reconcile");
     const logical = { ...value };
     delete logical.runtimeBootId;
-    const fingerprint = createHash("sha256").update(stableJson(logical)).digest("hex");
-    const prior = replayManagedCommand(this.dataDir, requestId, fingerprint);
-    if (prior) return prior;
+    const receipt = admitControlReceipt(this.dataDir, requestId, stableJson(logical));
+    if (receipt.previous) return receipt.previous;
     const record = this.#load(id);
     if (!record || record.released || !this.#validateForReconcile(record))
       throw new Error("session-unavailable");
@@ -3885,14 +3851,7 @@ export class ClaudeManagedReadOwner {
       executionMode: "claude-managed",
       runtimeBootId: this.bootId,
     };
-    const claimed = claimManagedCommand(
-      this.dataDir,
-      requestId,
-      id,
-      fingerprint,
-      value.deviceId,
-      evidence,
-    );
+    const claimed = receipt.claim(id, value.deviceId, evidence);
     if (claimed) return claimed;
     const result = {
       accepted: true,
@@ -3904,7 +3863,7 @@ export class ClaudeManagedReadOwner {
       reconciled: live.status === "idle",
       live,
     };
-    finishManagedCommand(this.dataDir, requestId, result);
+    receipt.finish(result);
     return result;
   }
 
@@ -4939,7 +4898,7 @@ export class ClaudeManagedReadOwner {
         reason,
       });
       let dispatched = false;
-      let claimed = false;
+      let finishReceipt: ((result: Record<string, unknown>) => void) | undefined;
       let replay: WorkerRestartResult | undefined;
       try {
         if (
@@ -4952,9 +4911,12 @@ export class ClaudeManagedReadOwner {
         )
           return refused("invalid-managed-control");
         const value = { ...request, operation: "worker-restart" };
-        const fingerprint = claudeCommandFingerprint(value);
-        const prior = replayManagedCommand(this.dataDir, requestId, fingerprint);
-        if (prior) return prior as WorkerRestartResult;
+        const receipt = admitControlReceipt(
+          this.dataDir,
+          requestId,
+          claudeCommandFingerprintInput(value),
+        );
+        if (receipt.previous) return receipt.previous as WorkerRestartResult;
         if (this.#shuttingDown) return refused("session-unavailable");
         if (request.runtimeBootId !== this.bootId) return refused("stale-runtime-boot");
 
@@ -4997,7 +4959,7 @@ export class ClaudeManagedReadOwner {
           return refused("stale-Claude-revision");
 
         await runner.restartForDelegation(snapshot.revision, () => {
-          const receipt = claimManagedCommand(this.dataDir, requestId, id, fingerprint, deviceId, {
+          const prior = receipt.claim(id, deviceId, {
             operation: value.operation,
             workspaceId: record.workspaceId,
             executionMode: "claude-managed",
@@ -5005,13 +4967,13 @@ export class ClaudeManagedReadOwner {
             expectedRevision: request.expectedRevision,
             turnId: request.turnId,
           });
-          if (receipt) {
-            replay = receipt as WorkerRestartResult;
+          if (prior) {
+            replay = prior as WorkerRestartResult;
             throw new Error("worker-restart-already-claimed");
           }
-          claimed = true;
+          finishReceipt = receipt.finish;
           beforeDispatch();
-          dispatchManagedCommand(this.dataDir, requestId);
+          receipt.dispatch();
           dispatched = true;
         });
         if (runner.hasWorker) throw new Error("control-outcome-unconfirmed");
@@ -5044,13 +5006,13 @@ export class ClaudeManagedReadOwner {
           sessionId: id,
           runtimeBootId: this.bootId,
         } as const;
-        finishManagedCommand(this.dataDir, requestId, result);
+        receipt.finish(result);
         return result;
       } catch (error) {
         if (replay) return replay;
         if (dispatched) return refused("control-outcome-unconfirmed", "unknown");
         const result = refused(error instanceof Error ? error.message : "worker-restart-failed");
-        if (claimed) finishManagedCommand(this.dataDir, requestId, result);
+        finishReceipt?.(result);
         return result;
       }
     });

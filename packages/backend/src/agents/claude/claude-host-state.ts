@@ -1,6 +1,11 @@
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import { openManagedLedger } from "../../managed-ledger";
+import {
+  controlReceiptFingerprint,
+  finishControlReceiptInTransaction,
+  replayControlReceiptInTransaction,
+} from "../../sessions/control-receipts";
 import type {
   ClaudeObservedPermissionMode,
   ClaudeRunnerOptionsSnapshot,
@@ -147,10 +152,10 @@ const stable = (value: unknown): string => {
       .join(",")}}`;
   return JSON.stringify(value) ?? "null";
 };
-export function claudeCommandFingerprint(value: Record<string, unknown>): string {
+export function claudeCommandFingerprintInput(value: Record<string, unknown>): string {
   const copy = { ...value };
   delete copy.runtimeBootId;
-  return createHash("sha256").update(stable(copy)).digest("hex");
+  return stable(copy);
 }
 
 /** Claude orchestration never enters managed_sessions: that catalog belongs to Codex. */
@@ -295,18 +300,16 @@ export class ClaudeHostStateStore {
     const requestId = value.requestId;
     if (typeof requestId !== "string" || !validClaudeDeviceId(value.deviceId))
       throw new Error("invalid-managed-control");
-    const fingerprint = claudeCommandFingerprint(value);
+    const fingerprint = controlReceiptFingerprint(claudeCommandFingerprintInput(value));
     const receiptSessionId = receipt?.sessionId ?? sessionId;
     return this.#transaction(sessionId, (state, database) => {
-      const previous = database
-        .prepare("SELECT fingerprint,result FROM managed_commands WHERE request_id=?")
-        .get(requestId) as { fingerprint: string; result: string | null } | undefined;
-      if (previous) {
-        if (previous.fingerprint !== fingerprint)
-          throw new Error("request-id-reused-with-different-input");
-        if (previous.result) return JSON.parse(previous.result) as Record<string, unknown>;
-        if (!resolveDispatched) throw new Error("control-outcome-unconfirmed");
-      }
+      const previous = replayControlReceiptInTransaction(
+        database,
+        requestId,
+        fingerprint,
+        resolveDispatched,
+      );
+      if (previous !== undefined) return previous;
       const payload = mutate(state);
       state.revision++;
       const result = {
@@ -321,29 +324,25 @@ export class ClaudeHostStateStore {
           : {}),
         ...payload,
       };
-      database
-        .prepare(
-          "INSERT INTO managed_commands(request_id,session_id,fingerprint,phase,result,device_id,evidence,claim_version) VALUES(?,?,?,'resolved',?,?,?,1) ON CONFLICT(request_id) DO UPDATE SET phase='resolved',result=excluded.result",
-        )
-        .run(
-          requestId,
-          receiptSessionId,
-          fingerprint,
-          JSON.stringify(result),
-          value.deviceId as string,
-          JSON.stringify({
-            operation: value.operation,
-            workspaceId,
-            executionMode: receipt?.executionMode ?? "claude-managed",
-            runtimeBootId: this.bootId,
-            ...(typeof value.publicInputHash === "string"
-              ? { publicInputHash: value.publicInputHash }
-              : {}),
-            ...(typeof value.historyInputHash === "string"
-              ? { historyInputHash: value.historyInputHash }
-              : {}),
-          }),
-        );
+      finishControlReceiptInTransaction(database, {
+        requestId,
+        sessionId: receiptSessionId,
+        fingerprint,
+        result,
+        deviceId: value.deviceId as string,
+        evidence: {
+          operation: value.operation,
+          workspaceId,
+          executionMode: receipt?.executionMode ?? "claude-managed",
+          runtimeBootId: this.bootId,
+          ...(typeof value.publicInputHash === "string"
+            ? { publicInputHash: value.publicInputHash }
+            : {}),
+          ...(typeof value.historyInputHash === "string"
+            ? { historyInputHash: value.historyInputHash }
+            : {}),
+        },
+      });
       return result;
     });
   }

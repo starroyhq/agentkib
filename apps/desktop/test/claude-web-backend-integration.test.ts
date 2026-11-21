@@ -1340,7 +1340,7 @@ describe.skipIf(process.platform !== "darwin")(
       // Its worker tools run without asking: being made a Project Agent is the authorization.
       expect(first.slice(-2)).toEqual(["--allowedTools", "mcp__agentkib_workers"]);
       expect(frames().find((row) => row.workers)).toMatchObject({
-        workerTools: ["worker_list", "worker_send", "worker_read", "worker_stop"],
+        workerTools: ["worker_list", "worker_send", "worker_read", "worker_stop", "worker_restart"],
         retiredTools: [
           { accepted: false, reason: "tool-not-offered" },
           { accepted: false, reason: "tool-not-offered" },

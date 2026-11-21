@@ -193,8 +193,15 @@ export class RuntimeRouter extends EventEmitter implements RuntimeHost {
       return this.typescript.request<TResult>(method, params);
     if (method === RUNTIME_METHODS.controlReceipt)
       return this.typescript.request<TResult>(method, params);
-    if (method === RUNTIME_METHODS.claudeManaged) {
+    if (method === RUNTIME_METHODS.sessionRequest)
       return this.typescript.request<TResult>(method, params);
+
+    // Keep the old entry points' admission rules when accepting older callers.
+    // The canonical channel lets the backend own operation validation.
+    if (method === RUNTIME_METHODS.claudeManaged) {
+      return this.typescript.request<TResult>(RUNTIME_METHODS.sessionRequest, {
+        host: { target: "claude-code", request: params },
+      });
     }
     if (
       method === RUNTIME_METHODS.codexManaged &&
@@ -235,7 +242,9 @@ export class RuntimeRouter extends EventEmitter implements RuntimeHost {
         "terminals-clean",
       ].includes(String(params.operation))
     ) {
-      return this.typescript.request<TResult>(method, params);
+      return this.typescript.request<TResult>(RUNTIME_METHODS.sessionRequest, {
+        host: { target: "codex", request: params },
+      });
     }
     if (
       method === RUNTIME_METHODS.webRequest &&
@@ -280,17 +289,6 @@ export class RuntimeRouter extends EventEmitter implements RuntimeHost {
         "devin-create",
         "devin-options",
         "devin-terminal",
-      ].includes(String(params.operation))
-    ) {
-      return this.typescript.request<TResult>(method, params);
-    }
-    if (
-      method === RUNTIME_METHODS.webRequest &&
-      typeof params === "object" &&
-      params !== null &&
-      !Array.isArray(params) &&
-      "operation" in params &&
-      [
         "diff",
         "catalog",
         "events",
@@ -310,7 +308,9 @@ export class RuntimeRouter extends EventEmitter implements RuntimeHost {
         "subagent-events",
       ].includes(String(params.operation))
     )
-      return this.typescript.request<TResult>(method, params);
+      return this.typescript.request<TResult>(RUNTIME_METHODS.sessionRequest, {
+        host: { request: params },
+      });
     if (
       method === RUNTIME_METHODS.prepareSessionHandoff ||
       method === RUNTIME_METHODS.planSessionHandoff ||

@@ -1,4 +1,8 @@
 // @vitest-environment node
+import {
+  validateEmbeddedControl,
+  type HostControlValidationCall,
+} from "@agentkib/backend/session-control-validation";
 import { randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { createServer, request, Server } from "node:http";
@@ -63,9 +67,10 @@ async function fixture(lan = false) {
     verifiedDshFollower: true,
     verifiedDevinManaged: true,
     verifiedAntigravityManaged: true,
-    runtimeRequest: async (value) => {
-      const input = value as Record<string, unknown>;
+    sessionRequest: async ({ host: { request: input } }) => {
       if (input.operation === "catalog") return { sessions, workspaces };
+      if (input.operation === "provider-validate-control")
+        return validateEmbeddedControl(input.call as HostControlValidationCall);
       const session = sessions.find(({ id }) => id === input.sessionId);
       if (!session) throw new Error("unknown-fixture-session");
       if (input.operation === "capabilities")

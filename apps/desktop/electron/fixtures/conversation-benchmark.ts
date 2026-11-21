@@ -7,7 +7,11 @@ import { pathToFileURL } from "node:url";
 import { DesktopRuntimeHost } from "../main/runtime-host";
 import { RuntimeRouter } from "../main/runtime-router";
 import { ConversationHub } from "../main/conversation-hub";
-import { WebAccessService, createWebControlState } from "../main/web/service";
+import {
+  WebAccessService,
+  createWebControlState,
+  type HostSessionRequest,
+} from "../main/web/service";
 import { registerConversationIpc } from "../main/ipc/conversation";
 import { RUNTIME_METHODS } from "../generated/runtime-protocol";
 
@@ -26,6 +30,8 @@ const runtimeHost = new DesktopRuntimeHost({
 const runtime = new RuntimeRouter(runtimeHost, path.join(scratch, "backend"));
 const hub = new ConversationHub((method, params) => runtime.request(method, params));
 runtime.on("notification", (method: string, params: unknown) => hub.notification(method, params));
+const requestSession = <T>(params: HostSessionRequest) =>
+  runtime.request<T>(RUNTIME_METHODS.sessionRequest, params);
 const service = new WebAccessService({
   conversationHub: hub,
   sharedControl: createWebControlState(),
@@ -33,8 +39,7 @@ const service = new WebAccessService({
   staticDir: path.join(scratch, "renderer"),
   desktopOrigin: "file://",
   verifiedCodex: true,
-  runtimeRequest: (params) => runtime.request(RUNTIME_METHODS.webRequest, params),
-  managedRequest: (params) => runtime.request(RUNTIME_METHODS.codexManaged, params),
+  sessionRequest: requestSession,
   receiptRequest: (params) => runtime.request(RUNTIME_METHODS.controlReceipt, params),
   workspaceRequest: () => runtime.request(RUNTIME_METHODS.listWorkspaces, {}),
 });
@@ -62,18 +67,20 @@ async function benchmark() {
   const workspace = await runtime.request<{ id: string }>(RUNTIME_METHODS.addWorkspace, {
     path: path.join(scratch!, "workspace"),
   });
-  const created = await runtime.request<{ sessionId: string; accepted: boolean }>(
-    RUNTIME_METHODS.codexManaged,
-    {
-      operation: "create",
-      workspaceId: workspace.id,
-      deviceId: "conversation-benchmark-device",
-      requestId: randomUUID(),
-      policyId: "workspace-write-on-request",
-      model: "mock-model",
-      effort: "medium",
+  const created = await requestSession<{ sessionId: string; accepted: boolean }>({
+    host: {
+      target: "codex",
+      request: {
+        operation: "create",
+        workspaceId: workspace.id,
+        deviceId: "conversation-benchmark-device",
+        requestId: randomUUID(),
+        policyId: "workspace-write-on-request",
+        model: "mock-model",
+        effort: "medium",
+      },
     },
-  );
+  });
   if (!created.accepted) throw new Error("Mock managed session creation was rejected");
   await service.initialize();
   const renderer = pathToFileURL(

@@ -336,7 +336,7 @@ describe("Antigravity session baseline through HTTP, backend RPC and ACP frames"
     };
     expect(response).toEqual({ status: 200, body: acknowledgement });
     expect(host.calls).toContainEqual({
-      method: "web.request",
+      method: "session.request",
       params: {
         operation,
         sessionId,
@@ -426,7 +426,7 @@ describe("Antigravity session baseline through HTTP, backend RPC and ACP frames"
     });
     for (const operation of ["capabilities", "inspect", "live"]) {
       expect(host.calls).toContainEqual({
-        method: "web.request",
+        method: "session.request",
         params: { operation, sessionId, experimentalEnabled: true },
       });
     }

@@ -58,8 +58,10 @@ import { DshSessionProvider } from "./agents/dsh/session-provider";
 import {
   isSessionMethod,
   legacySessionFields,
+  readHostSessionRequest,
   readSessionRequest,
   restrictSessionCommands,
+  type HostSessionRequest,
   type SessionMethod,
 } from "./sessions/routing";
 import { hostControlValidationSchema, runProviderValidation } from "./sessions/validate/control";
@@ -981,8 +983,8 @@ export class TypeScriptBackend {
           runtimeBootId,
           async (sessionId) => {
             if (sessionId === "") {
-              const catalog = await this.#request(RUNTIME_METHODS.webRequest, {
-                operation: "catalog",
+              const catalog = await this.#request(RUNTIME_METHODS.sessionRequest, {
+                host: { request: { operation: "catalog" } },
               });
               return {
                 live:
@@ -995,10 +997,8 @@ export class TypeScriptBackend {
             }
             // Claude's live and history reads share an ownership lock. Keep them
             // sequential so this runtime does not contend with itself on restart.
-            const liveValue = await this.#request(RUNTIME_METHODS.webRequest, {
-              operation: "live",
-              sessionId,
-              experimentalEnabled: true,
+            const liveValue = await this.#request(RUNTIME_METHODS.sessionRequest, {
+              host: { request: { operation: "live", sessionId, experimentalEnabled: true } },
             });
             const live =
               liveValue && typeof liveValue === "object" && !Array.isArray(liveValue)
@@ -1012,12 +1012,16 @@ export class TypeScriptBackend {
             const readHistory = async () => {
               // Polled every 250 ms. A kept cursor per poll would push the cursors that
               // clients hold for older pages out of the shared cache within seconds.
-              const pageValue = await this.#request(RUNTIME_METHODS.webRequest, {
-                operation: "events",
-                sessionId,
-                cursor: null,
-                limit: 100,
-                retainCursor: false,
+              const pageValue = await this.#request(RUNTIME_METHODS.sessionRequest, {
+                host: {
+                  request: {
+                    operation: "events",
+                    sessionId,
+                    cursor: null,
+                    limit: 100,
+                    retainCursor: false,
+                  },
+                },
               });
               const page =
                 pageValue && typeof pageValue === "object" && !Array.isArray(pageValue)
@@ -2460,9 +2464,13 @@ export class TypeScriptBackend {
   }
 
   #routeSession(method: SessionMethod, params: Record<string, unknown>) {
-    if (method === RUNTIME_METHODS.sessionRequest) return this.#requestTypedSession(params);
-    if (method === RUNTIME_METHODS.claudeManaged) return this.#requestClaudeManaged(params);
-    if (method === RUNTIME_METHODS.codexManaged) return this.#requestCodexSession(params);
+    const host = readHostSessionRequest(method, params);
+    return host ? this.#requestHostSession(host) : this.#requestTypedSession(params);
+  }
+
+  #requestHostSession({ target, request: params }: HostSessionRequest) {
+    if (target === "claude-code") return this.#requestClaudeManaged(params);
+    if (target === "codex") return this.#requestCodexSession(params);
     if (params.operation === "provider-validate-control") {
       const call = hostControlValidationSchema.parse(params.call);
       const agent =
@@ -3058,7 +3066,9 @@ export class TypeScriptBackend {
   async #readStreamSubagents(sessionId: string, live: Record<string, unknown>) {
     const scope = this.#activityScope(sessionId, live);
     const readLegacy = async () =>
-      this.#request(RUNTIME_METHODS.webRequest, { operation: "subagents", sessionId });
+      this.#request(RUNTIME_METHODS.sessionRequest, {
+        host: { request: { operation: "subagents", sessionId } },
+      });
     let devinRead: Promise<SubagentCatalog | undefined> | undefined;
     const readDevin = async () =>
       (devinRead ??= this.#sessions?.activitySubagentsForDevin(sessionId));

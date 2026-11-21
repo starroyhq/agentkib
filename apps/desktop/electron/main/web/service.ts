@@ -547,6 +547,13 @@ const API_ROUTES: Record<"GET" | "POST", Record<string, RouteSpec>> = {
     "/attachments/delete": { lan: true },
   },
 };
+const CODEX_READ_ALIASES: ReadonlyMap<string, string> = new Map([
+  ["/codex/capabilities", "/managed/capabilities"],
+  ["/codex/queue", "/managed/queue"],
+  ["/codex/session-settings", "/managed/settings"],
+  ["/codex/goals", "/managed/goals"],
+  ["/codex/context-options", "/managed/resources"],
+]);
 // 回执查询带动态 ID；控制请求结果不确定时客户端靠它恢复，LAN 也需要能预检。
 const RECEIPT_ROUTE = /^\/requests\/[^/]+$/;
 function routeSpec(method: string | undefined, path: string): RouteSpec | undefined {
@@ -665,6 +672,12 @@ const DEFAULT: WebConfig = {
   experimentalEnabled: false,
 };
 
+type SessionTarget = "codex" | "claude-code";
+export type HostSessionRequest = {
+  host: { target?: SessionTarget; request: Record<string, unknown> };
+};
+type SessionDispatch = (params: unknown) => Promise<unknown>;
+
 /** Local-only transport. Authentication is independent of native certificate pairing. */
 export class WebAccessService {
   private readonly localDevice: WebDevice = {
@@ -735,20 +748,21 @@ export class WebAccessService {
   private unregisterScheduler?: () => void;
   private managedSocket?: { close(): void };
   private contextArtifactRefs = new Map<string, RememberedContextResource>();
+  private readonly codexSessionRequest?: SessionDispatch;
+  private readonly claudeSessionRequest?: SessionDispatch;
   constructor(
     private readonly options: {
       conversationHub?: ConversationHub;
       desktopOrigin?: string;
       dataDir: string;
       staticDir: string;
-      runtimeRequest: (params: unknown) => Promise<unknown>;
+      sessionRequest?: (input: HostSessionRequest) => Promise<unknown>;
       historyRequest?: (method: string, params: unknown) => Promise<unknown>;
-      managedRequest?: (params: unknown) => Promise<unknown>;
-      claudeManagedRequest?: (params: unknown) => Promise<unknown>;
-      sessionProviderRequest?: (params: unknown) => Promise<unknown>;
-      validateSessionControl?: (
-        call: HostControlValidationCall,
-      ) => Promise<HostControlValidationResult>;
+      /** In-process request fakes can supply only the session targets they implement. */
+      runtimeRequest?: SessionDispatch;
+      managedRequest?: SessionDispatch;
+      claudeManagedRequest?: SessionDispatch;
+      sessionProviderRequest?: SessionDispatch;
       receiptRequest?: (params: { requestId: string; deviceId: string }) => Promise<unknown>;
       createRelayCsr?: (params: {
         privateKeyDer: string;
@@ -792,6 +806,10 @@ export class WebAccessService {
       onPairingRequested?: () => void;
     },
   ) {
+    if (options.sessionRequest || options.managedRequest)
+      this.codexSessionRequest = (params) => this.requestSession(params, "codex");
+    if (options.sessionRequest || options.claudeManagedRequest)
+      this.claudeSessionRequest = (params) => this.requestSession(params, "claude-code");
     this.attachmentStore = new AttachmentStore(join(options.dataDir, "attachments"));
     if (options.sharedControl) {
       this.active = options.sharedControl.active;
@@ -817,14 +835,28 @@ export class WebAccessService {
       throw new Error("invalid_acceptance_session");
     if (
       (options.enableClaudeScheduler || options.enableSerialSessionScheduler) &&
-      options.claudeManagedRequest
+      this.claudeSessionRequest
     ) {
       this.scheduler =
         options.sharedControl?.claudeScheduler ??
-        new ClaudeHostScheduler(options.claudeManagedRequest, !options.enableClaudeScheduler);
+        new ClaudeHostScheduler(this.claudeSessionRequest, !options.enableClaudeScheduler);
       if (options.sharedControl) options.sharedControl.claudeScheduler = this.scheduler;
     }
   }
+  private readonly requestSession = (params: unknown, target?: SessionTarget): Promise<unknown> => {
+    const request = params as Record<string, unknown>;
+    if (this.options.sessionRequest)
+      return this.options.sessionRequest({ host: { request, ...(target ? { target } : {}) } });
+    const dispatch =
+      target === "codex"
+        ? this.options.managedRequest
+        : target === "claude-code"
+          ? this.options.claudeManagedRequest
+          : request.operation === "provider-options" || request.operation === "provider-create"
+            ? (this.options.sessionProviderRequest ?? this.options.runtimeRequest)
+            : this.options.runtimeRequest;
+    return dispatch?.(request) ?? Promise.reject(new Error("runtime_unavailable"));
+  };
   private get admission() {
     return this.options.sharedControl?.admission ?? this.controlAdmission;
   }
@@ -846,7 +878,7 @@ export class WebAccessService {
   }
 
   async localClaude(input: unknown): Promise<unknown> {
-    if (!this.options.claudeManagedRequest || !this.options.receiptRequest)
+    if (!this.claudeSessionRequest || !this.options.receiptRequest)
       throw new Error("runtime_unavailable");
     if (
       input &&
@@ -956,8 +988,8 @@ export class WebAccessService {
     try {
       const result = await localClaudeRequest(
         {
-          managed: (params) => invoke(this.options.claudeManagedRequest!, params),
-          runtime: (params) => invoke(this.options.runtimeRequest, params),
+          managed: (params) => invoke(this.claudeSessionRequest!, params),
+          runtime: (params) => invoke(this.requestSession, params),
           receipt: this.options.receiptRequest,
           attachments: this.attachmentStore,
           history: async (body) => {
@@ -1243,12 +1275,11 @@ export class WebAccessService {
   private invalidateScheduledDevice(deviceId: string, reason: string, quitting = false) {
     return (
       this.scheduler?.invalidate(deviceId, reason, quitting) ??
-      this.options
-        .claudeManagedRequest?.({
-          operation: "schedule-invalidate",
-          deviceId,
-          ...(quitting ? { quitting: true } : {}),
-        })
+      this.claudeSessionRequest?.({
+        operation: "schedule-invalidate",
+        deviceId,
+        ...(quitting ? { quitting: true } : {}),
+      })
         .then(() => undefined)
         .catch(() => undefined) ??
       Promise.resolve()
@@ -1745,7 +1776,7 @@ export class WebAccessService {
     }
     const result = this.status();
     try {
-      if (this.options.mode === "lan" || !this.options.managedRequest) return result;
+      if (this.options.mode === "lan" || !this.codexSessionRequest) return result;
       result.workspaces = await this.registeredWorkspaces();
     } catch {
       /* Settings remain available when the runtime is offline. */
@@ -3586,7 +3617,7 @@ export class WebAccessService {
       experimentalEnabled: this.controlsEnabled(sessionId, this.grant(hash, permission)),
     };
     const claude = session.agent === "claude-code";
-    const claudeRequest = this.options.claudeManagedRequest;
+    const claudeRequest = this.claudeSessionRequest;
     if (claude && !claudeRequest) throw new HttpError(409, "unsupported_host");
     const result = await this.runtime(request, claude ? claudeRequest!(request) : undefined);
     const latest = this.grant(hash, permission);
@@ -4036,9 +4067,12 @@ export class WebAccessService {
       },
       fullAccess: this.isFullAccess(settings ? this.grant(hash, permission) : admission.device),
     };
-    const validate = this.options.validateSessionControl;
-    const result = validate
-      ? ((await this.runtime({}, validate(call), true)) as HostControlValidationResult)
+    const result = this.options.sessionRequest
+      ? ((await this.runtime(
+          { operation: "provider-validate-control", call },
+          undefined,
+          true,
+        )) as HostControlValidationResult)
       : validateEmbeddedControl(call);
     if ("error" in result) throw new HttpError(result.status, result.error);
     // A device can lose full access while the Provider is checking its settings.
@@ -4317,7 +4351,7 @@ export class WebAccessService {
     control.dispatched = true;
     let settingsConfirmed = false;
     const pending = Promise.resolve()
-      .then(() => this.options.runtimeRequest(params))
+      .then(() => this.requestSession(params))
       .then((result) => {
         if (!settingsControl) return result;
         settingsConfirmed =
@@ -4392,7 +4426,7 @@ export class WebAccessService {
     body: Record<string, unknown>,
   ) {
     if (this.options.mode === "lan") throw new HttpError(403, "capability_unavailable");
-    const request = this.options.claudeManagedRequest;
+    const request = this.claudeSessionRequest;
     if (!request) throw new HttpError(503, "capability_unavailable");
     if (
       Object.keys(body).some((key) => !["sessionId", "operation", "scope", "worker"].includes(key))
@@ -4521,7 +4555,7 @@ export class WebAccessService {
       throw new HttpError(400, "invalid_revision");
     if (
       !this.options.verifiedClaudeManaged ||
-      !this.options.claudeManagedRequest ||
+      !this.claudeSessionRequest ||
       !this.controlsEnabled(sessionId, device)
     )
       throw new HttpError(403, "session_control_not_allowed");
@@ -4579,7 +4613,7 @@ export class WebAccessService {
       };
       // Initialization has no command receipt. Keep only this session reserved
       // until the real preparation settles, even if the HTTP request times out.
-      const pending = this.options.claudeManagedRequest(params).finally(() => {
+      const pending = this.claudeSessionRequest(params).finally(() => {
         this.active.delete(sessionId);
         this.notifyControlChanged(sessionId);
       });
@@ -4885,10 +4919,13 @@ export class WebAccessService {
     return this.json(res, 200, result);
   }
   private sessionProviderOperation(agent: ManagedAgent, operation: "options" | "create") {
-    const dispatch = this.options.sessionProviderRequest;
-    if (!dispatch || !sessionProviderCapabilities(agent)) return;
+    if (
+      !(this.options.sessionRequest || this.options.sessionProviderRequest) ||
+      !sessionProviderCapabilities(agent)
+    )
+      return;
     return (params: unknown) =>
-      dispatch({
+      this.requestSession({
         ...(params as Record<string, unknown>),
         agent,
         operation: `provider-${operation}`,
@@ -4915,10 +4952,10 @@ export class WebAccessService {
 
     switch (agent) {
       case "codex":
-        return this.options.managedRequest?.({ operation: "options" }) ?? unsupported;
+        return this.codexSessionRequest?.({ operation: "options" }) ?? unsupported;
       case "claude-code":
         return (
-          this.options.claudeManagedRequest?.({
+          this.claudeSessionRequest?.({
             operation: "options",
             ...(workspaceId && this.options.verifiedClaudeManaged ? { workspaceId } : {}),
           }) ?? unsupported
@@ -4961,18 +4998,18 @@ export class WebAccessService {
       (() => {
         switch (agent) {
           case "codex":
-            return this.options.managedRequest;
+            return this.codexSessionRequest;
           case "claude-code":
-            return this.options.claudeManagedRequest;
+            return this.claudeSessionRequest;
           case "deepseek-harness":
             return (value: unknown) =>
-              this.options.runtimeRequest({
+              this.requestSession({
                 ...(value as Record<string, unknown>),
                 operation: "dsh-create",
               });
           case "devin":
             return (value: unknown) =>
-              this.options.runtimeRequest({
+              this.requestSession({
                 ...(value as Record<string, unknown>),
                 operation: "devin-create",
               });
@@ -5407,7 +5444,7 @@ export class WebAccessService {
   private runtimeCall(params: unknown): Promise<unknown> {
     const catalog = snapshotField(params, "operation") === "catalog";
     const readerScope = this.readerScope();
-    const read = this.options.runtimeRequest(
+    const read = this.requestSession(
       catalog ? { ...(params as Record<string, unknown>), readerScope } : params,
     );
     if (
@@ -5630,7 +5667,7 @@ export class WebAccessService {
       return this.static(req, res);
     }
     res.setHeader("Cache-Control", "no-store");
-    const path = url.pathname.replace(/^\/api\/web\/v1/, "");
+    const requestedPath = url.pathname.replace(/^\/api\/web\/v1/, "");
     if (!url.pathname.startsWith("/api/web/v1/")) throw new HttpError(404, "not_found");
     if (lan && req.method === "OPTIONS") {
       const method = req.headers["access-control-request-method"];
@@ -5639,7 +5676,7 @@ export class WebAccessService {
         .map((header) => header.trim().toLowerCase())
         .filter(Boolean);
       if (
-        !lanPreflightAllowed(method, path) ||
+        !lanPreflightAllowed(method, requestedPath) ||
         headers.some(
           (header) =>
             ![
@@ -5663,7 +5700,7 @@ export class WebAccessService {
       res.end();
       return;
     }
-    if (req.method === "GET" && path === "/info")
+    if (req.method === "GET" && requestedPath === "/info")
       return this.json(res, 200, {
         // Legacy hosted clients check this before authentication or any reads.
         // Negotiate realtime separately so their history and receipt access survives.
@@ -5672,9 +5709,21 @@ export class WebAccessService {
         transport: lan ? "lan" : "local",
         capabilities: { read: true, send: this.controlsEnabled(), approve: this.controlsEnabled() },
       });
-    control.request = isControlRequest(req.method, path);
+    control.request = isControlRequest(req.method, requestedPath);
     if (control.request && req.headers["x-agentkib-protocol"] !== "2")
       throw new HttpError(409, "incompatible_protocol");
+    // Protocol and LAN rules use the public route. The shared handlers keep its Codex scope.
+    const legacyOperation =
+      req.method === "POST" && requestedPath.startsWith("/codex/")
+        ? requestedPath.slice(7)
+        : undefined;
+    const path =
+      legacyOperation !== undefined
+        ? "/managed/action"
+        : req.method === "GET"
+          ? (CODEX_READ_ALIASES.get(requestedPath) ?? requestedPath)
+          : requestedPath;
+    const legacyCodex = path !== requestedPath;
     let browser = trustedLocal
       ? ({ csrf: "desktop-local", expiresAt: Number.MAX_SAFE_INTEGER } as Browser)
       : this.browsers.get(hash);
@@ -5861,8 +5910,15 @@ export class WebAccessService {
         }
         return this.json(res, 200, await this.options.historyRequest(method, body));
       }
-      if (path.startsWith("/codex/"))
-        return this.admitSessionAction(res, hash, path.slice(7), body, control);
+      if (path === "/managed/action")
+        return this.admitSessionAction(
+          res,
+          hash,
+          legacyOperation ?? this.field(body.operation, 64),
+          body,
+          control,
+          !legacyCodex,
+        );
       if (path === "/attachments/delete") {
         if (lan) throw new HttpError(403, "attachments_require_same_origin");
         const device = this.grant(hash, "attachments");
@@ -6002,17 +6058,8 @@ export class WebAccessService {
             body.sessionId !== undefined
               ? await this.codexScope(this.field(body.sessionId), hash, false, false)
               : this.field(body.workspaceId);
-        return this.json(res, 200, await this.options.runtimeRequest(params));
+        return this.json(res, 200, await this.requestSession(params));
       }
-      if (path === "/managed/action")
-        return this.admitSessionAction(
-          res,
-          hash,
-          this.field(body.operation, 64),
-          body,
-          control,
-          true,
-        );
       if (path.startsWith("/managed/"))
         return this.manage(req, res, hash, path.slice(9), body, control);
       if (path === "/artifact-tickets") {
@@ -6294,7 +6341,7 @@ export class WebAccessService {
         if (operation === "send" && body.attachmentIds !== undefined) {
           const device = this.grant(hash, "attachments");
           await this.codexScope(sessionId, hash, true, false);
-          const capabilities = (await this.options.runtimeRequest({
+          const capabilities = (await this.requestSession({
             operation: "capabilities",
             sessionId,
             experimentalEnabled: true,
@@ -6354,7 +6401,7 @@ export class WebAccessService {
         }
         if (operation === "send" && body.resourceIds !== undefined) {
           this.fullAccess(hash);
-          const capabilities = (await this.options.runtimeRequest({
+          const capabilities = (await this.requestSession({
             operation: "capabilities",
             sessionId,
             experimentalEnabled: true,
@@ -6406,8 +6453,8 @@ export class WebAccessService {
           ["claude-managed", "claude-follower"].includes(
             String((snapshot as { executionMode?: string }).executionMode),
           ) && this.options.receiptRequest
-            ? dispatchClaude(this.options.runtimeRequest, this.options.receiptRequest, params)
-            : this.options.runtimeRequest(params)
+            ? dispatchClaude(this.requestSession, this.options.receiptRequest, params)
+            : this.requestSession(params)
         ).finally(() => {
           this.active.delete(sessionId);
           this.admission = false;
@@ -6537,12 +6584,9 @@ export class WebAccessService {
       this.grant(hash, "attachments");
       return this.json(res, 200, { attachments });
     }
-    if (path === "/managed/resources" && url.searchParams.has("workspaceId"))
+    if (!legacyCodex && path === "/managed/resources" && url.searchParams.has("workspaceId"))
       return this.json(res, 200, await this.newSessionResources(hash, url));
     if (
-      path === "/codex/session-settings" ||
-      path === "/codex/goals" ||
-      path === "/codex/context-options" ||
       path === "/managed/settings" ||
       path === "/managed/goals" ||
       path === "/managed/resources"
@@ -6551,10 +6595,10 @@ export class WebAccessService {
       // 与 projectCapabilities 一致：settings-state/usage/goal/context 都属于 advancedControl，
       // 只读设备即便是 full 模式也不能读取。
       const device = this.fullAccess(hash, "advancedControl");
-      const scope = await this.sessionScope(sessionId, hash, false, !path.startsWith("/managed/"));
+      const scope = await this.sessionScope(sessionId, hash, false, legacyCodex);
       const workspaceId = scope.workspace_id;
       let result: unknown;
-      if (path === "/codex/session-settings" || path === "/managed/settings") {
+      if (path === "/managed/settings") {
         const settings = await this.runtime({
           operation: "settings-state",
           sessionId,
@@ -6576,7 +6620,7 @@ export class WebAccessService {
                 return undefined;
               });
         result = { sessionId, ...this.projectSettings(settings, usage) };
-      } else if (path === "/codex/goals" || path === "/managed/goals") {
+      } else if (path === "/managed/goals") {
         const goal = await this.runtime({ operation: "goal", sessionId });
         this.fullAccess(hash, "advancedControl");
         const capabilities = await this.runtime({
@@ -6597,7 +6641,7 @@ export class WebAccessService {
       }
       if (this.fullAccess(hash, "advancedControl").id !== device.id)
         throw new HttpError(401, "access_ended");
-      await this.codexScope(sessionId, hash, false, !path.startsWith("/managed/"));
+      await this.codexScope(sessionId, hash, false, legacyCodex);
       return this.json(res, 200, result);
     }
     if (path === "/managed/project-agent")
@@ -6605,18 +6649,18 @@ export class WebAccessService {
         operation: "status",
         sessionId: url.searchParams.get("sessionId"),
       });
-    if (path === "/managed/capabilities" || path === "/codex/capabilities")
-      return this.readSessionCapabilities(res, hash, url, path === "/codex/capabilities");
-    if (path === "/codex/queue" || path === "/managed/queue") {
-      if (path === "/managed/queue" && this.options.mode === "lan")
+    if (path === "/managed/capabilities")
+      return this.readSessionCapabilities(res, hash, url, legacyCodex);
+    if (path === "/managed/queue") {
+      if (!legacyCodex && this.options.mode === "lan")
         throw new HttpError(403, "capability_unavailable");
       const sessionId = this.field(url.searchParams.get("sessionId"));
       const device = this.grant(hash, "advancedControl");
-      await this.codexScope(sessionId, hash, false, path === "/codex/queue");
+      await this.codexScope(sessionId, hash, false, legacyCodex);
       if (this.grant(hash, "advancedControl").id !== device.id)
         throw new HttpError(401, "access_ended");
       const result = await this.runtime({ operation: "queue-list", sessionId });
-      await this.codexScope(sessionId, hash, false, path === "/codex/queue");
+      await this.codexScope(sessionId, hash, false, legacyCodex);
       if (this.grant(hash, "advancedControl").id !== device.id)
         throw new HttpError(401, "access_ended");
       if ((result as { reason?: string }).reason === "queue-too-large")
@@ -6629,7 +6673,7 @@ export class WebAccessService {
         ).data ?? [];
       return this.json(res, 200, {
         sessionId,
-        ...(path === "/managed/queue"
+        ...(!legacyCodex
           ? {
               paused: snapshotField(result, "paused") === true,
               requiresResume: snapshotField(result, "requiresResume") === true,

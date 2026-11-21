@@ -1,9 +1,9 @@
 import path from "node:path";
 import { statSync } from "node:fs";
-import { applicationDirectories } from "./codex-executable";
-import { resolveCommands } from "./command-resolution";
-import { userHome } from "./mcp-config-read";
-import { pathIdentity } from "./paths";
+import { applicationDirectories } from "../../codex-executable";
+import { resolveCommands } from "../../command-resolution";
+import { userHome } from "../../mcp-config-read";
+import { pathIdentity } from "../../paths";
 
 /** Devin Desktop runs the CLI it bundles here; the app does not put it on PATH. */
 const DESKTOP_CLI = "Devin.app/Contents/Resources/app/extensions/windsurf/devin/bin/devin";

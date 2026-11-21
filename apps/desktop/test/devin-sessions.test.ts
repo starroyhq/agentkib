@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { RUNTIME_METHODS, type SessionSubscription } from "@agentkib/runtime-protocol";
-import { DevinSessions } from "../../../packages/backend/src/devin-sessions";
+import { DevinSessions } from "../../../packages/backend/src/agents/devin/devin-sessions";
 import { sources } from "../../../packages/backend/src/context-sources";
 import { BackendStore } from "../../../packages/backend/src/store";
 import { AUTO_CONTINUE_TEXT } from "../../../packages/backend/src/usage-limit";

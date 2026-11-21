@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
-import { DEVIN_PERMISSION_MODES } from "../devin-managed-runner";
+import { DEVIN_PERMISSION_MODES } from "../agents/devin/devin-managed-runner";
 import { historyReferenceSchema, validHistoryControl } from "../history-control-schema";
 import { replayManagedCommand } from "../managed-ledger";
 

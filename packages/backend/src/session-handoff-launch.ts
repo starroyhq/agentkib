@@ -35,7 +35,7 @@ import { withinLexical } from "./files";
 import { markNativeImportLaunched, nativeImportLaunchInfo } from "./session-native-import-owner";
 import { openClawInteractive } from "./openclaw-native-import";
 import { requireUniqueContinuationWorkspace } from "./workspace-identity";
-import { devinExecutable } from "./devin-executable";
+import { devinExecutable } from "./agents/devin/devin-executable";
 
 const agentSchema = z.enum([
   "codex",

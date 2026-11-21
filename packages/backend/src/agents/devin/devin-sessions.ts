@@ -4,24 +4,24 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { pathToFileURL } from "node:url";
 import type { SubagentCatalog } from "@agentkib/runtime-protocol";
-import { sessionTitle } from "./codex-sessions";
-import { acpToolCall, toolEventBytes, type ToolContext } from "./conversation-tools";
-import { within } from "./files";
-import { userHome } from "./mcp-config-read";
-import { isProbeWorkspace } from "./paths";
-import { finishDocument, type DocumentSource } from "./session-document-providers";
+import { sessionTitle } from "../../codex-sessions";
+import { acpToolCall, toolEventBytes, type ToolContext } from "../../conversation-tools";
+import { within } from "../../files";
+import { userHome } from "../../mcp-config-read";
+import { isProbeWorkspace } from "../../paths";
+import { finishDocument, type DocumentSource } from "../../session-document-providers";
 import {
   MAX_PAGE_BYTES,
   truncateUtf8,
   type ConversationEvent,
   type ConversationEventPage,
   type ConversationImage,
-} from "./session-events";
-import { jsonTimestamp } from "./session-history";
-import { decodedSessionImage, sessionImageResult } from "./session-images";
-import type { DocumentOptions, SessionDocument } from "./session-model";
-import type { NativeSession } from "./session-store";
-import { AUTO_CONTINUE_TEXT } from "./usage-limit";
+} from "../../session-events";
+import { jsonTimestamp } from "../../session-history";
+import { decodedSessionImage, sessionImageResult } from "../../session-images";
+import type { DocumentOptions, SessionDocument } from "../../session-model";
+import type { NativeSession } from "../../session-store";
+import { AUTO_CONTINUE_TEXT } from "../../usage-limit";
 
 type Row = Record<string, unknown>;
 type Turn = SessionDocument["turns"][number];

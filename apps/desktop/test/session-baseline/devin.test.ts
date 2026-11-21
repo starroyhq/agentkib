@@ -11,9 +11,12 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { afterEach, describe, expect, it } from "vitest";
-import { DevinSessionSettings } from "../../../../packages/backend/src/devin-session-settings";
-import { DevinSessions } from "../../../../packages/backend/src/devin-sessions";
+import { RUNTIME_METHODS } from "@agentkib/runtime-protocol";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { DevinSessionProvider } from "../../../../packages/backend/src/agents/devin/session-provider";
+import { OrchestrationService } from "../../../../packages/backend/src/orchestration-service";
+import { DevinSessionSettings } from "../../../../packages/backend/src/agents/devin/devin-session-settings";
+import { DevinSessions } from "../../../../packages/backend/src/agents/devin/devin-sessions";
 import { BackendStore } from "../../../../packages/backend/src/store";
 import { startBackend, startHost } from "./harness";
 
@@ -567,6 +570,76 @@ describe.skipIf(process.platform === "win32")("Devin session HTTP baseline", () 
         },
       },
     ]);
+  });
+
+  it("uses the typed Provider for first-message creation and the shared serial queue", async () => {
+    const f = await fixture();
+    const provider = vi.spyOn(DevinSessionProvider.prototype, "request");
+    const interventions = vi.spyOn(OrchestrationService.prototype, "laneControlled");
+    cleanups.push(() => {
+      provider.mockRestore();
+      interventions.mockRestore();
+    });
+
+    const deviceId = f.deviceId;
+    const rpc = (operation: string, fields: Record<string, unknown>) =>
+      f.rpc(RUNTIME_METHODS.sessionRequest, { operation, deviceId, ...fields });
+    const prompt = "Start the typed Devin session";
+    const { createdId: sessionId } = f;
+    expect(
+      await rpc("create", { agent: "devin", requestId: requestIds.create, workspaceId, prompt }),
+    ).toMatchObject({
+      operation: "create",
+      result: { accepted: true, completed: true, sessionId },
+    });
+    const { body } = await f.live(sessionId);
+    expect(body).toMatchObject({ status: "running", revision: 1, sendEnabled: false });
+    const scope = { sessionId, experimentalEnabled: true };
+    expect(await rpc("capabilities", scope)).toMatchObject({
+      operation: "capabilities",
+      result: {
+        execution: { owner: "agentkib" },
+        features: { "queue-list": { available: true }, "queue-add": { available: true } },
+      },
+    });
+
+    const control = { ...scope, runtimeBootId: body.runtimeBootId };
+    const text = "Keep this message in the queue";
+    await expect(
+      rpc("queue-add", { ...control, requestId: requestIds.send, expectedRevision: 0, text }),
+    ).rejects.toThrow("stale-or-disabled-control");
+    expect(
+      await rpc("queue-add", {
+        ...control,
+        requestId: requestIds.queue,
+        expectedRevision: 1,
+        text,
+      }),
+    ).toMatchObject({
+      operation: "queue-add",
+      result: { accepted: true, completed: false, sessionId, requestId: requestIds.queue },
+    });
+    const legacyQueue = (await f.rpc("web.request", { operation: "queue-list", sessionId })) as {
+      data: Array<{ id: string }>;
+    };
+    expect(legacyQueue.data).toMatchObject([{ status: "pending", text }]);
+    expect(await rpc("queue-list", scope)).toMatchObject({
+      operation: "queue-list",
+      result: { sessionId, data: [{ id: legacyQueue.data[0]!.id, status: "pending", text }] },
+    });
+    expect(provider.mock.calls.map(([value]) => value.operation)).toEqual([
+      "create",
+      "capabilities",
+      "queue-add",
+      "queue-add",
+      "queue-list",
+    ]);
+    expect(interventions.mock.calls.filter(([id]) => id === sessionId)).toEqual([
+      [sessionId, "queue-add"],
+    ]);
+    expect(
+      f.runtimeCalls().filter((call) => Array.isArray(call.args) && call.args[0] === "-p"),
+    ).toMatchObject([{ prompt }]);
   });
 
   it("refuses native steering, approval and answers but shares the host queue for print turns", async () => {

@@ -3,7 +3,7 @@ import { promises as fs } from "node:fs";
 import spawn from "cross-spawn";
 import path from "node:path";
 import { resolveCommand, resolveCommands } from "./command-resolution";
-import { devinDesktopExecutables } from "./devin-executable";
+import { devinDesktopExecutables } from "./agents/devin/devin-executable";
 import { pathIdentity } from "./paths";
 import { windowsProcessTree, type NativeProcessTree } from "./native-process";
 

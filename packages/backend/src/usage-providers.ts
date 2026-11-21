@@ -5,7 +5,7 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { claudeConfigFiles, resolveClaudeConfig } from "./claude-config";
 import type { Commands } from "./commands";
-import { devinSessionDatabase } from "./devin-sessions";
+import { devinSessionDatabase } from "./agents/devin/devin-sessions";
 
 export type UsageQuality = "exact" | "estimated" | "incomplete";
 export type DatePrecision = "exact" | "day" | "aggregate";

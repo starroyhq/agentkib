@@ -56,6 +56,7 @@ import { WebReadRequests } from "../../../packages/backend/src/web-read";
 import { TypeScriptBackend } from "../../../packages/backend/src/index";
 import { McpHub } from "../../../packages/backend/src/mcp-hub";
 import { RemoteAgent } from "../../../packages/backend/src/remote-agent";
+import { OrchestrationService } from "../../../packages/backend/src/orchestration-service";
 import { projectAgentFixture } from "./fixtures/project-agent";
 
 const nativeId = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
@@ -237,6 +238,7 @@ function fixture(
   let exitOn: string | undefined;
   let serverUserAgent: string | null = null;
   let deleteFailure: unknown;
+  let startThreadId = nativeId;
   /** Answers a request first when it returns anything; an Error is thrown. */
   let intercept:
     | ((method: string, params: Record<string, unknown>, server: OfflineServer) => unknown)
@@ -333,7 +335,7 @@ function fixture(
             id:
               method === "thread/fork"
                 ? forkId
-                : ((params as { threadId?: string }).threadId ?? nativeId),
+                : ((params as { threadId?: string }).threadId ?? startThreadId),
             cwd: wrongReplyCwd === "thread" ? workspace : executionCwd,
             status: { type: "idle" },
             turns: [],
@@ -510,6 +512,9 @@ function fixture(
     setServerUserAgent: (value: string | null) => {
       serverUserAgent = value;
     },
+    setStartThreadId: (value: string) => {
+      startThreadId = value;
+    },
     setTurnFailure: (error: unknown) => {
       turnFailure = error;
     },
@@ -625,6 +630,121 @@ describe("restarting an AgentKib Codex worker", () => {
 });
 
 describe("a Codex Project Agent's thread", () => {
+  it.each(["idle retirement", "backend shutdown"] as const)(
+    "starts the first assigned Worker task after %s closes its unwritten native thread",
+    async (retirement) => {
+      const f = fixture(true);
+      const emptyThreadId = "11111111-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+      const replacementId = "22222222-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+      f.setStartThreadId(emptyThreadId);
+      const created = await f.web.sessionProviderCreate("codex", {
+        requestId: randomUUID(),
+        deviceId: "fixture",
+        workspaceId: "workspace",
+        policyId: "workspace-write-on-request",
+        model: "model-a",
+      });
+      expect(created).toMatchObject({ accepted: true });
+      const worker = created.sessionId as string;
+      expect(f.methods).not.toContain("turn/start");
+      const initialServer = f.servers.at(-1)!;
+      let web = f.web;
+      if (retirement === "idle retirement") {
+        f.leave();
+        await vi.waitFor(() => expect(initialServer.closed).toBe(true), { timeout: 3_000 });
+      } else {
+        await f.web.closeAsync();
+        expect(initialServer.closed).toBe(true);
+        web = new WebReadRequests(f.store, f.readers, f.root, () => 0n, {
+          HOME: f.root,
+          CODEX_HOME: f.home,
+          PATH: f.bin,
+        });
+        cleanups.push(() => web.closeAsync());
+      }
+
+      // Codex writes a thread with its first message. The server that allocated this
+      // transient ID is gone, and the new server cannot resume it.
+      f.intercept((method, params) =>
+        method === "thread/resume" && params.threadId === emptyThreadId
+          ? new CodexAppServerError({ code: -32600, message: "thread not found" })
+          : undefined,
+      );
+      f.setStartThreadId(replacementId);
+      const delivered: string[] = [];
+      const lead = new OrchestrationService(
+        f.root,
+        "fixture-boot",
+        {
+          control: (request) => web.managedControl(request),
+          live: (sessionId) =>
+            web.request({ operation: "live", sessionId, experimentalEnabled: true }),
+          events: async (sessionId, limit) =>
+            (
+              (await web.request({ operation: "events", sessionId, limit })) as {
+                events: Array<Record<string, unknown>>;
+              }
+            ).events,
+          session: (sessionId) =>
+            sessionId === worker ? { agent: "codex", workspaceId: "workspace", title: null } : null,
+          managed: async () => true,
+          workspaces: () => [{ id: "workspace", name: "Fixture" }],
+        },
+        (id) => id === "project-agent",
+        (_id, _deviceId, report) => {
+          delivered.push(report);
+          return false;
+        },
+      );
+      cleanups.push(() => lead.close());
+      web.observeLanes({
+        turnEnded: (...args) => void lead.laneTurnEnded(...args),
+        waiting: () => {},
+      });
+      await lead.assignWorkers({
+        sessionId: "project-agent",
+        deviceId: "fixture",
+        workspaceId: "workspace",
+        workers: [worker],
+      });
+      const result = await lead.call("project-agent", "worker_send", {
+        worker: "worker-1",
+        text: "Do the first task.",
+      });
+      expect(JSON.parse(result.text), result.text).toMatchObject({
+        accepted: true,
+        operation: "send",
+      });
+      expect(f.requests.filter(({ method }) => method === "thread/resume")).toEqual([]);
+      const dispatched = f.requests.filter(({ method }) => method === "turn/start");
+      expect(dispatched).toHaveLength(1);
+      expect(dispatched[0]?.params).toMatchObject({
+        threadId: replacementId,
+        input: [expect.objectContaining({ type: "text", text: "Do the first task." })],
+      });
+      expect(readManagedRecord(f.root, worker)).toMatchObject({
+        id: worker,
+        native_id: replacementId,
+      });
+      const server = f.servers.at(-1)!;
+      server.emit("notification", {
+        method: "item/completed",
+        params: {
+          threadId: replacementId,
+          turnId: "new-turn",
+          item: { type: "agentMessage", id: "first-reply", text: "First task complete." },
+        },
+      });
+      server.emit("notification", {
+        method: "turn/completed",
+        params: { threadId: replacementId, turn: { id: "new-turn", status: "completed" } },
+      });
+      await vi.waitFor(() =>
+        expect(delivered).toEqual([expect.stringContaining("First task complete.")]),
+      );
+    },
+  );
+
   it("merges consecutive Worker reports queued through the backend into one automatic turn", async () => {
     const f = fixture(true);
     const sessionId = f.summary.id;

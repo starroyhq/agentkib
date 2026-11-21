@@ -37,6 +37,7 @@ const HISTORY_DATABASE = /^thread_history_(\d+)\.sqlite$/;
 const TURN_EVENTS = ["task_started", "task_complete", "turn_aborted"];
 const TURN_MARKERS = TURN_EVENTS.map((type) => Buffer.from(`"${type}"`));
 const EVENT_MARKER = Buffer.from('"event_msg"');
+const AGENT_MESSAGE_MARKER = Buffer.from('"agent_message"');
 const CHUNK_BYTES = 64 * 1024;
 /** How far back from its end a rollout is read for its latest turn. */
 const MAX_SCAN_BYTES = 8 * 1024 * 1024;
@@ -58,7 +59,14 @@ type TurnEvent = { started: boolean; aborted: boolean; turnId: string | null; at
 /** The latest turn to start in a thread. */
 type Turn = { id: string | null; open: boolean; startedAt: string | null };
 /** Where a rollout was read up to, and its latest turn there. */
-type Scan = { file: string; dev: number; ino: number; offset: number; turn: Turn | null };
+type Scan = {
+  file: string;
+  dev: number;
+  ino: number;
+  offset: number;
+  turn: Turn | null;
+  outputOffset: number | null;
+};
 /** Where a rollout was read up to for ended turns: the turns begun and not ended, the ended. */
 type EndedScan = {
   file: string;
@@ -131,6 +139,15 @@ export class CodexExternalTurns {
     } catch {
       return null;
     }
+  }
+
+  /** A lock-verified external turn and the latest observed assistant output in its rollout. */
+  workerTurnOf(threadId: string) {
+    const externalTurn = this.turnOf(threadId);
+    const scan = this.#scans.get(threadId.toLowerCase());
+    return externalTurn && scan
+      ? { externalTurn, workerProgress: `${scan.dev}:${scan.ino}:${scan.outputOffset ?? ""}` }
+      : null;
   }
 
   /**
@@ -381,7 +398,12 @@ export class CodexExternalTurns {
         const bytes = readAt(fd, previous.offset, stat.size - previous.offset);
         let start = 0;
         for (let end = bytes.indexOf(10); end >= 0; end = bytes.indexOf(10, start)) {
-          scan.turn = nextTurn(scan.turn, turnEvent(bytes.subarray(start, end)));
+          const line = bytes.subarray(start, end);
+          const event = turnEvent(line);
+          if (event?.started) scan.outputOffset = null;
+          scan.turn = nextTurn(scan.turn, event);
+          if (scan.turn?.open && assistantOutput(line, scan.turn.id))
+            scan.outputOffset = previous.offset + end;
           start = end + 1;
         }
         // The bytes after the last newline are a line still being written.
@@ -394,6 +416,7 @@ export class CodexExternalTurns {
           dev: stat.dev,
           ino: stat.ino,
           offset: latest.offset,
+          outputOffset: latest.outputOffset,
           // A turn that began before the bytes read is found in Codex's own turn history.
           turn: latest.turn ?? (floor > 0 ? projectedTurn(home, threadId, floor, stat.size) : null),
         };
@@ -431,6 +454,24 @@ function readAt(fd: number, position: number, length: number): Buffer {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** Tool polling and waiting results can append rows without the turn making progress. */
+function assistantOutput(line: Buffer, turnId: string | null = null): boolean {
+  if (line[0] !== 0x7b || line.indexOf(AGENT_MESSAGE_MARKER) < 0) return false;
+  try {
+    const row: unknown = JSON.parse(line.toString("utf8"));
+    if (!isRecord(row) || row.type !== "event_msg" || !isRecord(row.payload)) return false;
+    const payload = row.payload;
+    return (
+      payload.type === "agent_message" &&
+      typeof payload.message === "string" &&
+      payload.message.length > 0 &&
+      (!turnId || payload.turn_id === undefined || payload.turn_id === turnId)
+    );
+  } catch {
+    return false;
+  }
 }
 
 /** The turn event of one rollout line, if it is one. */
@@ -482,15 +523,19 @@ function latestTurn(
   fd: number,
   size: number,
   floor: number,
-): { offset: number; turn: Turn | null } {
+): { offset: number; turn: Turn | null; outputOffset: number | null } {
   let offset: number | undefined;
+  let outputOffset: number | null = null;
   /** The turns that ended after the latest start found so far. */
   const ended = new Set<string | null>();
   /** Later parts of the line that ends at the first newline of the chunk read last. */
   let tail: Buffer[] = [];
-  const read = (line: Buffer): Turn | undefined => {
+  const read = (line: Buffer, position: number): Turn | undefined => {
     const event = turnEvent(line);
-    if (!event) return undefined;
+    if (!event) {
+      if (outputOffset === null && assistantOutput(line)) outputOffset = position;
+      return undefined;
+    }
     if (!event.started) {
       ended.add(event.turnId);
       return undefined;
@@ -501,6 +546,7 @@ function latestTurn(
     return { id: event.turnId, open, startedAt: open ? event.at : null };
   };
   let position = size;
+  let lineEnd = size;
   while (position > floor) {
     const start = Math.max(floor, position - CHUNK_BYTES);
     const chunk = readAt(fd, start, position - start);
@@ -512,23 +558,25 @@ function latestTurn(
       if (offset === undefined) offset = start + newline + 1;
       else {
         const line = chunk.subarray(newline + 1, end);
-        const turn = read(tail.length ? Buffer.concat([line, ...tail]) : line);
-        if (turn) return { offset, turn };
+        const turn = read(tail.length ? Buffer.concat([line, ...tail]) : line, lineEnd);
+        if (turn) return { offset, turn, outputOffset };
       }
       tail = [];
+      lineEnd = start + newline;
       end = newline;
     }
     // Before the first newline, the bytes either begin the file or continue an earlier line.
     if (offset === undefined) continue;
     tail.unshift(chunk.subarray(0, end));
     if (start === 0) {
-      const turn = read(Buffer.concat(tail));
-      if (turn) return { offset, turn };
+      const turn = read(Buffer.concat(tail), lineEnd);
+      if (turn) return { offset, turn, outputOffset };
     }
   }
   return {
     offset: offset ?? floor,
     turn: ended.size ? { id: null, open: false, startedAt: null } : null,
+    outputOffset,
   };
 }
 

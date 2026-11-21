@@ -2857,8 +2857,18 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
       const cwd = this.#managedCwd(record);
       const home = this.#assertManagedHome(record);
       this.host.assertOpen();
+      // A closed, never-written native thread is not resumable. Keep the logical
+      // session and let its first turn open a native thread under the same lease.
+      const startNewThread =
+        request.operation === "send" &&
+        record.snapshot?.unwrittenNativeThread === true &&
+        !record.adopted &&
+        !record.source_session_id &&
+        !this.host.sessions.codexThreadWritten(record.native_id) &&
+        !existingFileLeaseBusy(path.join(home, "thread-writer-locks", `${record.native_id}.lock`));
       const starting: ManagedRecord = {
         ...record,
+        ...(startNewThread ? { native_id: null } : {}),
         cwd,
         released: false,
         snapshot: { ...record.snapshot, status: "starting", reason: null },
@@ -4945,6 +4955,22 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
 
   async live(sessionId: string, enabled: boolean) {
     const live = await this.#managedLive(sessionId, enabled);
+    return this.#liveWithLimit(sessionId, live);
+  }
+
+  /** Worker reads need output evidence and external ownership, even when no page is open. */
+  workerLive(sessionId: string, controls: boolean) {
+    return this.host.runOperation(async () => {
+      const resident = this.#managedRunners.get(sessionId);
+      const live =
+        !controls && resident?.session.connected && !resident.retiring
+          ? resident.state.snapshot(this.host.runtimeBootId, false)
+          : await this.#managedLive(sessionId, controls, true);
+      return this.#liveWithLimit(sessionId, live);
+    });
+  }
+
+  #liveWithLimit(sessionId: string, live: Record<string, unknown>) {
     const limit = this.#codexLimits.get(sessionId)?.limit;
     return live.executionMode === "codex-managed"
       ? { ...live, usageLimit: usageLimitView(limit, this.host.runtimeBootId) }
@@ -5008,10 +5034,12 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
     };
   }
 
-  async #inactiveRecord(sessionId: string): Promise<ManagedRecord> {
-    const stored = readManagedRecords(this.host.dataDir, this.host.store).find(
+  async #inactiveRecord(
+    sessionId: string,
+    stored = readManagedRecords(this.host.dataDir, this.host.store).find(
       (record) => record.id === sessionId,
-    );
+    ) ?? null,
+  ): Promise<ManagedRecord> {
     if (stored) {
       if (
         pathIdentity(canonicalize(this.host.store.workspacePath(stored.workspace_id))) !==
@@ -5111,7 +5139,11 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
     }
   }
 
-  async #inactiveLive(record: ManagedRecord, controls: boolean): Promise<Record<string, unknown>> {
+  async #inactiveLive(
+    record: ManagedRecord,
+    controls: boolean,
+    worker = false,
+  ): Promise<Record<string, unknown>> {
     const checked = await this.#preflight.check();
     let reason = checked.reason;
     try {
@@ -5142,6 +5174,11 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
       this.host.runtimeBootId,
       false,
     );
+    const externalId =
+      ownershipReason && record.native_id && this.#isCodexHome(record.home)
+        ? record.native_id
+        : null;
+    const workerTurn = worker && externalId ? this.#externalTurns.workerTurnOf(externalId) : null;
     return {
       ...state,
       status: retiring
@@ -5164,10 +5201,12 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
       }),
       executionLocation: starting || retiring ? "agentkib" : ownershipReason ? "external" : null,
       ownershipReason,
-      externalTurn:
-        ownershipReason && record.native_id && this.#isCodexHome(record.home)
-          ? this.#externalTurns.turnOf(record.native_id)
+      externalTurn: worker
+        ? (workerTurn?.externalTurn ?? null)
+        : externalId
+          ? this.#externalTurns.turnOf(externalId)
           : null,
+      ...(workerTurn ? { workerProgress: workerTurn.workerProgress } : {}),
       sendEnabled: controls && reason === null && !starting,
       stopEnabled: false,
       approvals: [],
@@ -5285,6 +5324,25 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
       try {
         // Persist retirement while the lease still excludes a new runtime.
         beforeRelease?.();
+        if (runner.written === false && runner.state.turnsStarted === 0 && runner.state.nativeId) {
+          const record = readManagedRecord(this.host.dataDir, id);
+          if (
+            record?.adopted === false &&
+            record.archived !== true &&
+            !record.source_session_id &&
+            record.workspace_id === runner.state.record.workspace_id &&
+            record.home === runner.state.record.home &&
+            record.native_id === runner.state.nativeId &&
+            isObject(record.snapshot) &&
+            record.snapshot.revision === runner.state.revision &&
+            !managedSessionHasUnknownCommands(this.host.dataDir, id)
+          ) {
+            // thread/start allocated an ID, but Codex creates its durable state at
+            // the first turn. Record this before giving up the native process.
+            record.snapshot = { ...record.snapshot, unwrittenNativeThread: true };
+            saveManagedRecord(this.host.dataDir, record);
+          }
+        }
       } catch (error) {
         runner.retirementFailed = true;
         throw error;
@@ -5585,18 +5643,24 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
   async #managedLive(
     sessionId: string,
     experimentalEnabled = false,
+    worker = false,
   ): Promise<Record<string, unknown>> {
-    const managed = readManagedRecords(this.host.dataDir, this.host.store).find(
-      (record) => record.id === sessionId,
-    );
+    // The unattended Worker read only looks up its own row. Ordinary live reads keep their
+    // catalog recovery path.
+    const row = worker ? readManagedRecord(this.host.dataDir, sessionId) : null;
+    const managed = worker
+      ? row && managedRecordSchema.parse(row)
+      : readManagedRecords(this.host.dataDir, this.host.store).find(
+          (record) => record.id === sessionId,
+        );
     if (!managed) {
       try {
-        const record = await this.#inactiveRecord(sessionId);
-        let inactive = await this.#inactiveLive(record, experimentalEnabled);
+        const record = await this.#inactiveRecord(sessionId, worker ? null : undefined);
+        let inactive = await this.#inactiveLive(record, experimentalEnabled, worker);
         if (experimentalEnabled && inactive.reason === "control-outcome-unconfirmed")
           inactive = (await this.#recoverCodexReceipts(record)) ?? inactive;
         return (
-          (await this.#desktopFollowerLive(record, inactive, experimentalEnabled)) ??
+          (await this.#desktopFollowerLive(record, inactive, experimentalEnabled, worker)) ??
           (await this.#desktopHandoffLive(record, inactive, experimentalEnabled)) ??
           inactive
         );
@@ -5670,11 +5734,11 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
       await this.#closeManagedRunner(sessionId, resident);
     }
 
-    let inactive = await this.#inactiveLive(managed, experimentalEnabled);
+    let inactive = await this.#inactiveLive(managed, experimentalEnabled, worker);
     if (experimentalEnabled && inactive.reason === "control-outcome-unconfirmed")
       inactive = (await this.#recoverCodexReceipts(managed)) ?? inactive;
     return (
-      (await this.#desktopFollowerLive(managed, inactive, experimentalEnabled)) ??
+      (await this.#desktopFollowerLive(managed, inactive, experimentalEnabled, worker)) ??
       (await this.#desktopHandoffLive(managed, inactive, experimentalEnabled)) ??
       inactive
     );
@@ -5759,6 +5823,7 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
         readManagedRecords(this.host.dataDir, this.host.store).find(
           (item) => item.id === sessionId,
         ) ?? (await this.#inactiveRecord(sessionId));
+      this.host.assertOpen();
       if (latest.native_id !== nativeId || latest.workspace_id !== record.workspace_id)
         throw new Error("session-unavailable");
       const follower = {
@@ -5864,6 +5929,7 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
     record: ManagedRecord,
     inactive: Record<string, unknown>,
     controls: boolean,
+    worker = false,
   ): Promise<Record<string, unknown> | undefined> {
     if (
       inactive.ownershipReason !== "codex-owner-busy" ||
@@ -5878,12 +5944,52 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
     if (!CodexFollowerConnection.supported()) return undefined;
     const miss = this.#followerMisses.get(record.id);
     if (miss !== undefined && Date.now() - miss < FOLLOWER_RETRY_MS) return undefined;
+    // Passive checks may follow a proven running turn. For an idle lock, only inspect
+    // an already attached owner's active turn and leave the normal idle expiry alone.
+    const cached =
+      worker && !controls && !isObject(inactive.externalTurn)
+        ? this.#attachedCodexFollower(record)
+        : null;
+    if (
+      worker &&
+      !controls &&
+      !isObject(inactive.externalTurn) &&
+      !cached?.bridge.selectedState?.activeTurn()
+    )
+      return undefined;
     try {
-      const follower = await this.#desktopFollower(record);
-      const state = await follower.bridge.observeLive();
-      follower.lastUsed = Date.now();
+      const follower = cached ?? (await this.#desktopFollower(record));
+      const state = cached?.bridge.selectedState ?? (await follower.bridge.observeLive());
+      if (!cached) follower.lastUsed = Date.now();
       this.#ownerMissing.delete(record.id);
-      return this.#followerLive(record, state, controls);
+      const live = this.#followerLive(record, state, controls);
+      if (!worker) return live;
+      const active = typeof live.turnId === "string" ? live.turnId : null;
+      const nativeTurn = isObject(inactive.externalTurn) ? inactive.externalTurn.turnId : null;
+      const nativeProgress =
+        nativeTurn && active && nativeTurn !== active ? null : inactive.workerProgress;
+      const { items } = follower.stream.snapshot();
+      const output = active
+        ? items.filter((item) => item.turn_id === active && item.kind === "agent-message").at(-1)
+        : undefined;
+      const content = typeof output?.content === "string" ? output.content : "";
+      // The owner can briefly say idle while the lock and rollout still prove an open turn.
+      // A new owner item or text is progress, but a tool status refresh is not.
+      return {
+        ...live,
+        externalTurn: inactive.externalTurn,
+        ...(active || typeof nativeProgress === "string"
+          ? {
+              workerProgress: JSON.stringify([
+                nativeProgress,
+                output?.id,
+                content.length,
+                content.slice(-128),
+              ]),
+            }
+          : {}),
+        ...(output?.truncated === true ? { streamTextTruncated: true } : {}),
+      };
     } catch (error) {
       const follower = this.#codexFollowers.get(record.id);
       if (follower) {

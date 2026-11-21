@@ -272,6 +272,94 @@ describe("Project Agent supervision", () => {
     expect(delivered).toHaveLength(2);
   });
 
+  it("reports a silent Codex turn despite repeated tool-wait revisions", async () => {
+    const { delivered, lives, tick, read } = await supervised({ scope: { stallMinutes: 3 } });
+    const live = {
+      executionMode: "codex-managed",
+      status: "running",
+      turnId: "silent-command",
+      streamText: "",
+    };
+    for (let seconds = 0; seconds <= 190; seconds += 10) {
+      // The runtime may publish a tool wait again while this same command is still running.
+      lives.set(WORKER, { ...live, revision: 8 + Math.floor(seconds / 30) });
+      await tick(seconds * 1000);
+    }
+    expect(delivered).toHaveLength(1);
+    expect(delivered[0]).toContain("may be stalled");
+    expect((await read()).noProgressForMs).toBe(190_000);
+  });
+
+  it("shows occupied Codex sessions without a proven running turn as busy", async () => {
+    const { orchestration, lives, list, read, calls } = await supervised();
+    lives.set(WORKER, {
+      executionMode: "codex-managed",
+      executionLocation: "external",
+      ownershipReason: "codex-owner-busy",
+      reason: "codex-owner-busy",
+      status: "idle",
+      sendEnabled: false,
+    });
+    expect(await list()).toMatchObject({ status: "busy", reason: "codex-owner-busy" });
+    expect(await read()).toMatchObject({ status: "busy", reason: "codex-owner-busy" });
+    expect(await read()).not.toHaveProperty("noProgressForMs");
+    expect(
+      parse(await orchestration.call(LEAD, "worker_send", { worker: "worker-1", text: "next" })),
+    ).toMatchObject({ accepted: false, reason: "codex-owner-busy" });
+    expect(calls).toHaveLength(0);
+  });
+
+  it("uses externalTurn for a followed Codex Worker and obeys the owner's queue capability", async () => {
+    const { orchestration, lives, list, read, calls, delivered, tick } = await supervised({
+      scope: { stallMinutes: 3 },
+    });
+    const followed = {
+      executionMode: "codex-follower",
+      executionLocation: "external",
+      status: "idle",
+      sendEnabled: true,
+      queueEnabled: false,
+      streamText: "",
+      externalTurn: {
+        status: "running",
+        turnId: "desktop-turn",
+        startedAt: new Date(now).toISOString(),
+      },
+    };
+    lives.set(WORKER, followed);
+    await tick(0);
+    await tick(190_000);
+    expect(await list()).toMatchObject({ status: "running", noProgressForMs: 190_000 });
+    expect(await read()).toMatchObject({ status: "running", noProgressForMs: 190_000 });
+    expect(delivered).toHaveLength(1);
+    const send = () =>
+      orchestration.call(LEAD, "worker_send", { worker: "worker-1", text: "next" });
+    expect(parse(await send())).toMatchObject({
+      accepted: false,
+      reason: "follower-operation-unverified",
+    });
+    expect(calls).toHaveLength(0);
+    lives.set(WORKER, { ...followed, queueEnabled: true });
+    expect(parse(await send())).toMatchObject({ accepted: true, operation: "queue-add" });
+    expect(calls).toEqual([expect.objectContaining({ operation: "queue-add" })]);
+  });
+
+  it("starts a new clock when the followed owner advances before its rollout", async () => {
+    const { lives, tick, delivered, read } = await supervised({ scope: { stallMinutes: 3 } });
+    const followed = {
+      executionMode: "codex-follower",
+      status: "running",
+      streamText: "",
+      externalTurn: { status: "running", turnId: "old-turn" },
+    };
+    lives.set(WORKER, { ...followed, turnId: "old-turn" });
+    await tick(0);
+    lives.set(WORKER, { ...followed, turnId: "new-turn" });
+    await tick(180_001);
+    expect(delivered).toHaveLength(0);
+    expect((await read()).noProgressForMs).toBe(0);
+  });
+
   it("gives Devin time to read a reset and never treats its runner revision as progress", async () => {
     const { delivered, lives, tick, read } = await supervised({ agent: "devin" });
     lives.set(WORKER, {

@@ -22,7 +22,7 @@ import { sessionProviderCapabilities } from "@agentkib/runtime-protocol";
 import { AttachmentStore } from "../electron/main/web/attachments";
 import { WebAccessService, createWebControlState } from "../electron/main/web/service";
 import { TypeScriptBackend } from "../../../packages/backend/src/index";
-import { WebReadRequests } from "../../../packages/backend/src/web-read";
+import { ClaudeSessionProvider } from "../../../packages/backend/src/agents/claude/session-provider";
 import { ClaudeHostStateStore } from "../../../packages/backend/src/agents/claude/claude-host-state";
 import { ClaudeSessionOwnerProbe } from "../../../packages/backend/src/agents/claude/claude-session-owner";
 import { Commands } from "../../../packages/backend/src/commands";
@@ -618,7 +618,7 @@ describe.skipIf(process.platform !== "darwin")(
     }, 10_000);
 
     it("creates with the true device and routes fresh Claude reads, send and receipts through the actual owner", async () => {
-      const legacyClaudeRoute = vi.spyOn(WebReadRequests.prototype, "claudeSessionProviderRequest");
+      const claudeRoute = vi.spyOn(ClaudeSessionProvider.prototype, "legacy");
       const sessionId = await create();
       const state = await live(sessionId);
       expect(state.executionMode).toBe("claude-managed");
@@ -653,7 +653,12 @@ describe.skipIf(process.platform !== "darwin")(
         text: "different",
       });
       expect(conflict.status).not.toBe(200);
-      expect(legacyClaudeRoute).not.toHaveBeenCalled();
+      expect(claudeRoute).toHaveBeenCalledWith(
+        expect.objectContaining({ operation: "live", sessionId }),
+      );
+      expect(claudeRoute).toHaveBeenCalledWith(
+        expect.objectContaining({ operation: "send", sessionId, deviceId, requestId }),
+      );
     });
 
     it("uses one Claude provider for workspace options, creation replay and fresh settings and usage", async () => {

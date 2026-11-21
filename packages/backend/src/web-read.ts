@@ -97,6 +97,28 @@ function normalizeContextUsage(snapshot: { usage?: unknown; reason?: unknown }):
   );
 }
 
+function unavailableClaudeProvider(): SessionProviders["claude-code"] {
+  const reject = async () => {
+    throw new Error("claude-managed-unavailable");
+  };
+  return {
+    agent: "claude-code",
+    validateControl: validateClaudeControl,
+    createOperation: "create",
+    live: reject,
+    query: reject,
+    options: reject,
+    workspaceResources: reject,
+    create: reject,
+    settingsState: reject,
+    prepareSettings: reject,
+    control: reject,
+    updateSettings: reject,
+    contextUsage: reject,
+    queue: reject,
+  };
+}
+
 export class WebReadRequests {
   readonly #codex: CodexSessionProvider;
   readonly sessionProviders: SessionProviderRegistry;
@@ -106,24 +128,7 @@ export class WebReadRequests {
   }
 
   claudeSessionProvider(): SessionProviders["claude-code"] {
-    return {
-      agent: "claude-code",
-      validateControl: validateClaudeControl,
-      live: (sessionId, experimentalEnabled) =>
-        this.#claudeProvider({ operation: "live", sessionId, experimentalEnabled }),
-      query: (request) => this.#claudeProvider({ ...request }),
-      createOperation: "create",
-      options: ({ workspaceId }) => this.#claudeProvider({ operation: "options", workspaceId }),
-      workspaceResources: (workspaceId) =>
-        this.#claudeProvider({ operation: "workspace-resources", workspaceId }),
-      create: (request) => this.#claudeProvider(request),
-      settingsState: (request) => this.#claudeProvider(request),
-      prepareSettings: (request) => this.#claudeProvider(request),
-      control: (request) => this.#claudeProvider(request),
-      updateSettings: (request) => this.#claudeProvider(request),
-      contextUsage: (sessionId) => this.#claudeProvider({ operation: "usage", sessionId }),
-      queue: (request) => this.#claudeProvider({ ...request }),
-    };
+    return this.claudeProvider;
   }
 
   devinSessionProvider(): SessionProviders["devin"] {
@@ -166,7 +171,7 @@ export class WebReadRequests {
     readonly isSessionObserved?: (sessionId: string) => boolean,
     readonly sessionIndex?: SessionIndex,
     readonly catalogChanged?: () => void,
-    readonly requestClaudeProvider?: (request: Record<string, unknown>) => Promise<unknown>,
+    private readonly claudeProvider = unavailableClaudeProvider(),
     dshProvider = new DshSessionProvider(),
     personControlled?: (sessionId: string, operation: string) => void,
     requestCodexSession?: (request: Record<string, unknown>) => Promise<unknown>,
@@ -256,11 +261,6 @@ export class WebReadRequests {
           domains: ["queue", "receipts", "capabilities"],
         }),
     );
-  }
-
-  async #claudeProvider(request: Record<string, unknown>) {
-    if (!this.requestClaudeProvider) throw new Error("claude-managed-unavailable");
-    return this.requestClaudeProvider(request);
   }
 
   close(): void {
@@ -425,43 +425,6 @@ export class WebReadRequests {
   #sessionProviderForSession(sessionId: string) {
     // Newly created Codex sessions may only be present in the managed ledger until indexed.
     return this.sessionProviders.get(this.store.sessions.get(sessionId)?.agent ?? "codex");
-  }
-
-  /** The backend transport resolves the bridge owner before sending its native request here. */
-  async claudeSessionProviderRequest(value: Record<string, unknown>): Promise<unknown> {
-    const provider = this.sessionProviders.require("claude-code");
-    switch (value.operation) {
-      case "options":
-        return withProviderCapabilities(provider, await provider.options(value), true);
-      case "create":
-        return provider.create(value);
-      case "settings-state":
-        return withProviderCapabilities(provider, await provider.settingsState(value));
-      case "settings-prepare":
-        if (!provider.prepareSettings) throw new Error("unsupported-session-provider-operation");
-        return withProviderCapabilities(provider, await provider.prepareSettings(value));
-      case "settings":
-        return provider.updateSettings(value);
-      case "live": {
-        if (typeof value.sessionId !== "string") throw new Error("invalid-request");
-        return provider.live(value.sessionId, value.experimentalEnabled === true);
-      }
-      case "capabilities":
-      case "inspect":
-        return provider.query(managedQuerySchema.parse(value));
-      case "send":
-      case "stop":
-      case "approve":
-      case "answer":
-      case "steer":
-      case "queue-add":
-        return provider.control(value);
-      case "usage":
-        if (typeof value.sessionId === "string") return provider.contextUsage(value.sessionId);
-        return this.#claudeProvider(value);
-      default:
-        throw new Error("unsupported-session-provider-operation");
-    }
   }
 
   managedReconcile(value: unknown) {

@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Dialog } from "../../components/dialog";
 import { useSession } from "./session-context";
 import {
+  approvalSummary,
   pendingScope,
   readPending,
   subscribePending,
@@ -14,7 +15,6 @@ import {
   interactionCopy,
 } from "@agentkib/session-ui";
 import { codexCopy } from "./codex-copy";
-import { approvalSummary } from "./approval-summary";
 
 export function PendingCenter({ compact = false }: { compact?: boolean }) {
   const {

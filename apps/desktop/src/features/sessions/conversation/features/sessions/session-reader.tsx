@@ -1,3 +1,4 @@
+import { agentName } from "@agentkib/agent-identity";
 import {
   isLiveSessionAgent,
   sessionProviderCapabilities,
@@ -19,6 +20,7 @@ import {
   SessionDetailHeader,
   BasicSessionComposer,
   SessionDetailComposerNotices,
+  SessionInteractionDock,
   SessionDetailReadOnlyFooter,
   useSessionDetailReadState,
 } from "@agentkib/session-ui";
@@ -27,7 +29,6 @@ import { useSessionPanels } from "./session-panels";
 import { ContextUsageGauge } from "./context-usage";
 import { SessionComposer } from "./session-composer";
 import { basicSendQueue } from "./dsh-queue";
-import { SessionInteractionDock } from "../interactions/interaction-dock";
 import { MAX_MESSAGE_LENGTH } from "@agentkib/conversation-state";
 import { useSession } from "./session-context";
 import { ArtifactBrowser } from "./artifact-browser";
@@ -42,6 +43,7 @@ import { webLayoutCopy } from "./web-layout-copy";
 import { useConversationDisplayLive } from "../../../DesktopConversationWindow";
 export function SessionReader() {
   const session = useSession();
+  const explainReason = (reason: string) => codexReason(session.locale, reason).text;
   const desktopReadScope = useDesktopReadScope();
   const {
     historyReferences = [],
@@ -209,14 +211,20 @@ export function SessionReader() {
                   client={client}
                 />
               }
-              interactions={<SessionInteractionDock />}
+              interactions={
+                <SessionInteractionDock
+                  session={session}
+                  agent={agentName(current?.agent)}
+                  explainReason={explainReason}
+                />
+              }
               live={selectedLive}
               notice={notice}
               noticeSource={session.noticeSource}
               noticeReason={noticeReason}
               noticeText={
                 notice === "notDispatched" && (session.actionUnavailableReason || noticeReason)
-                  ? codexReason(locale, (session.actionUnavailableReason || noticeReason)!).text
+                  ? explainReason((session.actionUnavailableReason || noticeReason)!)
                   : notice
                     ? t[notice]
                     : undefined

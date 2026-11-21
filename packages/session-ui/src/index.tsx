@@ -26,6 +26,7 @@ export {
   validHistoryMessage,
 } from "./conversation/history/history-reference-model";
 export { interactionCopy } from "./conversation/interactions/interaction-copy";
+export { approvalSummary } from "./conversation/sessions/approval-summary";
 export { PreferencesDialog } from "./conversation/preferences/preferences-dialog";
 export { useAppearance } from "./conversation/preferences/use-appearance";
 export {

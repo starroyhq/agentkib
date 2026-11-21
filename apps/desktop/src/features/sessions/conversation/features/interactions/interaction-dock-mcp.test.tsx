@@ -1,14 +1,14 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
-import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { agentName } from "@agentkib/agent-identity";
+import { SessionInteractionDock } from "@agentkib/session-ui";
 import type { Approval } from "@agentkib/web-client";
-import { SessionInteractionDock } from "./interaction-dock";
-import { useSession } from "../sessions/session-context";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import type { ComponentProps } from "react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { codexReason } from "../sessions/codex-copy";
 
-vi.mock("../sessions/session-context", () => ({ useSession: vi.fn() }));
-
-type Session = ReturnType<typeof useSession>;
+type Session = ComponentProps<typeof SessionInteractionDock>["session"];
 let state: Session;
 // As the host projects the MCP requests CLI 0.163.0 sent while a local MCP stub ran.
 const toolApproval: Approval = {
@@ -42,7 +42,13 @@ const form: Approval = {
 };
 function show(request: Approval) {
   state = { ...state, live: { ...state.live!, approvals: [request] } };
-  render(<SessionInteractionDock />);
+  render(
+    <SessionInteractionDock
+      session={state}
+      agent={agentName("codex")}
+      explainReason={(reason) => codexReason(state.locale, reason).text}
+    />,
+  );
   return screen.getByRole("region", { name: "Approval required" });
 }
 
@@ -54,19 +60,25 @@ beforeEach(() => {
     online: true,
     controlReady: true,
     canStop: false,
-    current: { id: "session", agent: "codex" },
-    access: { protocolVersion: 2, experimentalEnabled: true, device: { approve: true } },
+    access: {
+      protocolVersion: 2,
+      experimentalEnabled: true,
+      status: "approved",
+      bootId: "boot",
+      csrfToken: "fixture",
+      device: { id: "device", name: "Fixture", approve: true, send: false },
+    },
     live: {
       sessionId: "session",
       status: "awaiting-approval",
       revision: 3,
       sendEnabled: false,
+      stopEnabled: false,
       approvals: [],
     },
     setModal: vi.fn(),
     control: vi.fn(),
-  } as unknown as Session;
-  vi.mocked(useSession).mockImplementation(() => state);
+  };
 });
 afterEach(cleanup);
 

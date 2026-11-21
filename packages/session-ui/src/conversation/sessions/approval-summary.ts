@@ -1,5 +1,5 @@
 import type { Approval } from "@agentkib/web-client";
-import type { SupportedLocale } from "@/core/types";
+import type { InteractionLocale } from "../../interaction-model";
 
 const operations = {
   "zh-CN": { command: "执行命令", files: "文件变更", permissions: "权限请求" },
@@ -12,7 +12,11 @@ const operations = {
   "ja-JP": { command: "コマンド実行", files: "ファイル変更", permissions: "権限リクエスト" },
 };
 
-export function approvalSummary(approval: Approval, locale: SupportedLocale, unknownTool: string) {
+export function approvalSummary(
+  approval: Approval,
+  locale: InteractionLocale,
+  unknownTool: string,
+) {
   if (typeof approval.toolName === "string" && approval.toolName.trim())
     return approval.toolName.trim();
   const call = approval.toolCall;

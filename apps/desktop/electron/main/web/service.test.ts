@@ -1420,7 +1420,7 @@ describe("WebAccessService loopback security boundary", () => {
   );
 
   it.each(
-    ["codex-managed", "claude-managed"].flatMap((executionMode) =>
+    ["codex-managed", "claude-managed", "dsh-follower"].flatMap((executionMode) =>
       [false, true].map((allowed) => ({ executionMode, allowed })),
     ),
   )(
@@ -1481,6 +1481,18 @@ describe("WebAccessService loopback security boundary", () => {
         await vi.waitFor(() => expect(streamEvents(stream.chunks)).toHaveLength(3));
         expect(streamEvents(stream.chunks)[2].payload).toEqual({ revision: 6 });
         expect(runtime).toHaveBeenCalledTimes(1);
+        if (!allowed) {
+          const response = await http("/api/web/v1/send", {
+            method: "POST",
+            body: { sessionId: "s", text: "x", requestId: "send", bootId, expectedRevision: 4 },
+          });
+          expect(response.status).toBe(403);
+          expect(response.json()).toMatchObject({ error: "provider_control_not_allowed" });
+          expect(runtime.mock.calls.map(([params]) => params)).toEqual([
+            expect.objectContaining({ operation: "live" }),
+            expect.objectContaining({ operation: "live" }),
+          ]);
+        }
       } finally {
         stream.close();
       }

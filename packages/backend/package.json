@@ -28,6 +28,7 @@
     "./context-usage": "./src/context-usage.ts",
     "./native-version": "./src/native-version.ts",
     "./session-activity": "./src/session-activity.ts",
+    "./session-control-validation": "./src/sessions/validate/control.ts",
     "./local-runtime-ipc": "./src/local-runtime-ipc.ts",
     "./local-runtime-service": "./src/local-runtime-service.ts"
   },

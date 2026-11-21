@@ -2,7 +2,6 @@ import { createHash, randomBytes, randomInt, randomUUID } from "node:crypto";
 import {
   HISTORY_SEARCH_METHODS,
   SESSION_RESOURCE_LIMIT,
-  claudeModelOption,
   managedAgentOf,
   sessionProviderCapabilities,
   type HistoryReference,
@@ -18,6 +17,14 @@ import {
 } from "./history-references";
 import { EventEmitter } from "node:events";
 import { projectContextUsage } from "@agentkib/backend/context-usage";
+import {
+  isSerialQueueMode,
+  serialQueueRequiresSend,
+  validateEmbeddedControl,
+  type HostControlValidationCall,
+  type HostControlValidationResult,
+  type ProviderValidation,
+} from "@agentkib/backend/session-control-validation";
 import { createServer, ServerResponse, type Server } from "node:http";
 import { gzipSync } from "node:zlib";
 import { mkdir, readFile, realpath, rename, stat, writeFile } from "node:fs/promises";
@@ -127,13 +134,6 @@ function managedActionInputHash(operation: string, body: Record<string, unknown>
     .digest("hex");
 }
 
-function serialQueueMode(mode: unknown): boolean {
-  return ["devin-print", "acp-managed", "antigravity-acp-managed"].includes(String(mode));
-}
-
-function serialQueueRequiresSend(operation: string): boolean {
-  return ["queue-add", "queue-update", "queue-resume"].includes(operation);
-}
 export function isPrivateIPv4(address: string): boolean {
   const parts = address.split(".");
   if (parts.length !== 4 || parts.some((p) => !/^(0|[1-9]\d{0,2})$/.test(p) || Number(p) > 255))
@@ -385,6 +385,28 @@ class HttpError extends Error {
     super(message);
   }
 }
+type ActionOutcome = { request: boolean; dispatched: boolean; priorUncertain: boolean };
+type ActionAdmission = {
+  hash: string;
+  operation: string;
+  body: Record<string, unknown>;
+  control: ActionOutcome;
+  permission: ReturnType<WebAccessService["codexPermission"]>;
+  device: WebDevice;
+  sessionId: string;
+  requestId: string;
+  workspaceId: string;
+  legacyCodex: boolean;
+  opensPicker: boolean;
+  settingsControl: boolean;
+  prior: Record<string, unknown> | undefined;
+  publicInputHash: string | undefined;
+};
+type ActionDispatch = {
+  dispatched: boolean;
+  newlyPinnedDevice?: string;
+  historyScopeKey?: string;
+};
 const token = () => randomBytes(32).toString("base64url");
 const digest = (value: string) => createHash("sha256").update(value).digest("hex");
 const MAX_AGE = 30 * 24 * 60 * 60 * 1000;
@@ -590,15 +612,14 @@ function settingsControlOutcome(
 }
 const isCodexMode = (mode: unknown) => mode === "codex-managed" || mode === "codex-follower";
 /**
- * Besides Codex, the execution modes whose controls stay within the device's workspaces, checked
- * against the `workspaceId` their live state and stream patches name: Claude Code, and the
- * Antigravity and Devin sessions AgentKib runs. DeepSeek Harness's live state is checked too.
+ * Besides Codex, these execution modes scope controls to the workspace the provider reports.
  */
 const WORKSPACE_SCOPED_MODES: readonly string[] = [
   "claude-managed",
   "claude-follower",
   "acp-managed",
   "devin-print",
+  "dsh-follower",
 ];
 /** 小于这个大小的回复不压缩，省下的字节抵不过压缩本身。 */
 const COMPRESSED_REPLY_MIN_BYTES = 16 * 1024;
@@ -725,6 +746,9 @@ export class WebAccessService {
       managedRequest?: (params: unknown) => Promise<unknown>;
       claudeManagedRequest?: (params: unknown) => Promise<unknown>;
       sessionProviderRequest?: (params: unknown) => Promise<unknown>;
+      validateSessionControl?: (
+        call: HostControlValidationCall,
+      ) => Promise<HostControlValidationResult>;
       receiptRequest?: (params: { requestId: string; deviceId: string }) => Promise<unknown>;
       createRelayCsr?: (params: {
         privateKeyDer: string;
@@ -1020,11 +1044,15 @@ export class WebAccessService {
     if (!this.isFullAccess(device)) throw new HttpError(403, "permission_denied");
     return device;
   }
-  private async workspaceAllowed(workspaceId: string, device?: WebDevice, reserved = false) {
+  private workspaceAllowed(
+    workspaceId: string,
+    device?: WebDevice,
+    reserved = false,
+  ): boolean | Promise<boolean> {
     if (!this.isFullAccess(device))
       return this.config.allowedWorkspaceIds?.includes(workspaceId) === true;
-    return (await this.registeredWorkspaces(reserved)).some(
-      (workspace) => workspace.id === workspaceId,
+    return this.registeredWorkspaces(reserved).then((workspaces) =>
+      workspaces.some((workspace) => workspace.id === workspaceId),
     );
   }
   private controlsEnabled(sessionId?: string, device?: WebDevice) {
@@ -1040,29 +1068,38 @@ export class WebAccessService {
           this.options.verifiedDshFollower === true)
     );
   }
+  private controlWorkspaceAllowed(
+    sessionId: string | undefined,
+    snapshot: unknown,
+    device?: WebDevice,
+    reserved = false,
+    streamWorkspaceId?: string | null,
+  ): boolean | Promise<boolean> {
+    const executionMode = snapshotField(snapshot, "executionMode");
+    // A session belongs to the workspace its live state names; a device controls it only when
+    // allowed that workspace, also when it knows the ID of a session elsewhere.
+    const codex = isCodexMode(executionMode);
+    if (!codex && !WORKSPACE_SCOPED_MODES.includes(String(executionMode))) return true;
+    const workspaceId = snapshotField(snapshot, "workspaceId");
+    if (typeof workspaceId !== "string") return false;
+    if (this.options.mode === "lan" && codex && sessionId)
+      return this.lanCodexScopeAllowed(sessionId, workspaceId, reserved);
+    // Full-access streams validated their registered workspace on admission.
+    // Registration changes cancel them through ConversationHub.scopesChanged.
+    if (streamWorkspaceId !== undefined && this.isFullAccess(device))
+      return workspaceId === streamWorkspaceId;
+    return this.workspaceAllowed(workspaceId, device, reserved);
+  }
   private async controlsEnabledForSnapshot(
     sessionId: string | undefined,
     snapshot: unknown,
     device?: WebDevice,
     reserved = false,
   ) {
-    const executionMode = snapshotField(snapshot, "executionMode");
-    // A session belongs to the workspace its live state names; a device controls it only when
-    // allowed that workspace, also when it knows the ID of a session elsewhere.
-    if (
-      isCodexMode(executionMode) ||
-      [...WORKSPACE_SCOPED_MODES, "dsh-follower"].includes(String(executionMode))
-    ) {
-      const workspaceId = snapshotField(snapshot, "workspaceId");
-      if (
-        typeof workspaceId !== "string" ||
-        !(this.options.mode === "lan" && isCodexMode(executionMode) && sessionId
-          ? await this.lanCodexScopeAllowed(sessionId, workspaceId, reserved)
-          : await this.workspaceAllowed(workspaceId, device, reserved))
-      )
-        return false;
-    }
-    return this.controlsEnabledForProvider(sessionId, snapshot, device);
+    return (
+      (await this.controlWorkspaceAllowed(sessionId, snapshot, device, reserved)) &&
+      this.controlsEnabledForProvider(sessionId, snapshot, device)
+    );
   }
   private controlsEnabledForProvider(
     sessionId: string | undefined,
@@ -3686,7 +3723,7 @@ export class WebAccessService {
           const allowed =
             permission &&
             device[permission] === true &&
-            (!serialQueueMode(data.executionMode) ||
+            (!isSerialQueueMode(data.executionMode) ||
               !serialQueueRequiresSend(operation) ||
               device.send === true) &&
             ((!["usage", "settings-state", "goal", "context", "resources"].includes(operation) &&
@@ -3746,12 +3783,12 @@ export class WebAccessService {
       },
     };
   }
-  private async codexAction(
+  private async admitSessionAction(
     res: ConversationResponse,
     hash: string,
     operation: string,
     body: Record<string, unknown>,
-    control: { request: boolean; dispatched: boolean; priorUncertain: boolean },
+    control: ActionOutcome,
     generic = false,
   ) {
     const actions = [
@@ -3802,39 +3839,140 @@ export class WebAccessService {
       await this.codexScope(sessionId, hash, false, !generic);
     if (!this.controlsEnabled(sessionId, device))
       throw new HttpError(403, "session_control_not_allowed");
-    if (operation === "inspect") {
-      const pendingRequest = this.unconfirmedRequests.get(sessionId);
-      const result = (await this.runtime({
-        operation,
-        sessionId,
-        deviceId: device.id,
-        experimentalEnabled: true,
-      })) as { reconciled?: boolean; context?: unknown };
-      this.grant(hash, permission);
-      if (
-        result.reconciled === true &&
-        !this.active.has(sessionId) &&
-        this.unconfirmedRequests.get(sessionId) === pendingRequest
-      ) {
-        this.clearUnconfirmed(sessionId);
-        this.unconfirmedRequests.delete(sessionId);
-      }
-      const catalog = (await this.scopeCatalog()) as {
-        sessions: { id: string; workspace_id: string }[];
-      };
-      this.grant(hash, permission);
-      const workspaceId = catalog.sessions.find((item) => item.id === sessionId)?.workspace_id;
-      return this.json(res, 200, {
-        ...result,
-        ...(!workspaceId || !(await this.workspaceAllowed(workspaceId, device))
-          ? { context: { available: false, reason: "workspace_not_authorized" } }
-          : {}),
-      });
-    }
+
+    if (operation === "inspect") return this.inspectSessionAction(res, hash, sessionId, device);
+
     const requestId = this.field(body.requestId, 128);
     if (!/^[a-f0-9-]{36}$/i.test(requestId)) throw new HttpError(400, "invalid_request_id");
     if (body.historyReferences !== undefined && !["steer", "queue-add"].includes(operation))
       throw new HttpError(400, "history_references_not_supported");
+    const replay = await this.readSessionActionReceipt({
+      hash,
+      operation,
+      body,
+      control,
+      permission,
+      sessionId,
+      requestId,
+      opensPicker,
+      generic,
+    });
+    if ("ack" in replay) return this.json(res, 200, replay.ack);
+    if (body.bootId !== this.bootId) throw new HttpError(409, "stale_boot");
+    if (
+      operation !== "resume" &&
+      (!Number.isSafeInteger(body.expectedRevision) || Number(body.expectedRevision) < 0)
+    )
+      throw new HttpError(400, "invalid_revision");
+    if (this.requests.has(requestId) || this.unconfirmed.has(sessionId)) {
+      control.priorUncertain = true;
+      throw new HttpError(409, "outcome_unknown");
+    }
+    if (this.admission || this.active.has(sessionId)) throw new HttpError(409, "operation_busy");
+    const workspaceId = await this.codexScope(sessionId, hash, false, !generic);
+    if (this.requests.has(requestId) || this.unconfirmed.has(sessionId)) {
+      control.priorUncertain = true;
+      throw new HttpError(409, "outcome_unknown");
+    }
+    if (this.admission || this.active.has(sessionId)) throw new HttpError(409, "operation_busy");
+    const admission: ActionAdmission = {
+      hash,
+      operation,
+      body,
+      control,
+      permission,
+      device,
+      sessionId,
+      requestId,
+      workspaceId,
+      legacyCodex: !generic,
+      opensPicker,
+      settingsControl,
+      ...replay,
+    };
+    if (!settingsControl) this.admission = true;
+    this.active.add(sessionId);
+    const dispatch: ActionDispatch = { dispatched: false };
+    try {
+      const prepared = await this.prepareSessionAction(admission, dispatch);
+      return await this.dispatchSessionAction(
+        res,
+        admission,
+        dispatch,
+        prepared.params,
+        prepared.requiresSend,
+      );
+    } finally {
+      if (!dispatch.dispatched) {
+        this.active.delete(sessionId);
+        if (!settingsControl) this.admission = false;
+        if (dispatch.newlyPinnedDevice)
+          await this.attachmentStore.settle(dispatch.newlyPinnedDevice, sessionId, requestId);
+      }
+    }
+  }
+
+  private async inspectSessionAction(
+    res: ConversationResponse,
+    hash: string,
+    sessionId: string,
+    device: WebDevice,
+  ) {
+    const operation = "inspect";
+    const permission = this.codexPermission(operation);
+    const pendingRequest = this.unconfirmedRequests.get(sessionId);
+    const result = (await this.runtime({
+      operation,
+      sessionId,
+      deviceId: device.id,
+      experimentalEnabled: true,
+    })) as { reconciled?: boolean; context?: unknown };
+    this.grant(hash, permission);
+    if (
+      result.reconciled === true &&
+      !this.active.has(sessionId) &&
+      this.unconfirmedRequests.get(sessionId) === pendingRequest
+    ) {
+      this.clearUnconfirmed(sessionId);
+      this.unconfirmedRequests.delete(sessionId);
+    }
+    const catalog = (await this.scopeCatalog()) as {
+      sessions: { id: string; workspace_id: string }[];
+    };
+    this.grant(hash, permission);
+    const workspaceId = catalog.sessions.find((item) => item.id === sessionId)?.workspace_id;
+    return this.json(res, 200, {
+      ...result,
+      ...(!workspaceId || !(await this.workspaceAllowed(workspaceId, device))
+        ? { context: { available: false, reason: "workspace_not_authorized" } }
+        : {}),
+    });
+  }
+
+  private async readSessionActionReceipt(
+    input: Pick<
+      ActionAdmission,
+      | "hash"
+      | "operation"
+      | "body"
+      | "control"
+      | "permission"
+      | "sessionId"
+      | "requestId"
+      | "opensPicker"
+    > & { generic: boolean },
+  ): Promise<{ ack: unknown } | Pick<ActionAdmission, "prior" | "publicInputHash">> {
+    const {
+      hash,
+      operation,
+      body,
+      control,
+      permission,
+      sessionId,
+      requestId,
+      opensPicker,
+      generic,
+    } = input;
     const prior = await this.controlReceipt(requestId, this.grant(hash, permission).id, control);
     this.grant(hash, permission);
     const publicInputHash = generic ? managedActionInputHash(operation, body) : undefined;
@@ -3842,7 +3980,7 @@ export class WebAccessService {
       await this.codexScope(sessionId, hash, false, false);
       if (body.attachmentIds !== undefined) this.grant(hash, "attachments");
       this.grant(hash, permission);
-      const serialQueue = serialQueueMode(prior.executionMode) && operation.startsWith("queue-");
+      const serialQueue = isSerialQueueMode(prior.executionMode) && operation.startsWith("queue-");
       if (serialQueue && serialQueueRequiresSend(operation)) this.grant(hash, "send");
       if (
         prior.sessionId !== sessionId ||
@@ -3866,7 +4004,7 @@ export class WebAccessService {
           this.unconfirmedRequests.delete(sessionId);
           this.clearUnconfirmed(sessionId);
         }
-        return this.json(res, 200, prior.ack);
+        return { ack: prior.ack };
       }
       control.priorUncertain = prior.status !== "not-dispatched";
       throw new HttpError(
@@ -3877,520 +4015,361 @@ export class WebAccessService {
     if (body.historyReferences !== undefined || prior?.historyInputHash)
       await this.codexScope(sessionId, hash, false, !generic);
     const replay = this.historyReplay(prior, body, operation, control);
-    if (replay !== undefined) return this.json(res, 200, replay);
-    if (body.bootId !== this.bootId) throw new HttpError(409, "stale_boot");
+    if (replay !== undefined) return { ack: replay };
+    return { prior, publicInputHash };
+  }
+
+  private async validateSessionAction(
+    admission: ActionAdmission,
+    executionMode?: string,
+    settings?: NonNullable<HostControlValidationCall["request"]["settings"]>,
+  ): Promise<ProviderValidation> {
+    const { hash, permission, sessionId, operation, legacyCodex } = admission;
+    const call: HostControlValidationCall = {
+      sessionId,
+      executionMode,
+      request: { operation, legacyCodex, ...(settings ? { settings } : {}) },
+      verified: {
+        "claude-code": this.options.verifiedClaudeManaged === true,
+        devin: this.options.verifiedDevinManaged === true,
+        antigravity: this.options.verifiedAntigravityManaged === true,
+      },
+      fullAccess: this.isFullAccess(settings ? this.grant(hash, permission) : admission.device),
+    };
+    const validate = this.options.validateSessionControl;
+    const result = validate
+      ? ((await this.runtime({}, validate(call), true)) as HostControlValidationResult)
+      : validateEmbeddedControl(call);
+    if ("error" in result) throw new HttpError(result.status, result.error);
+    // A device can lose full access while the Provider is checking its settings.
+    if (result.result.requiresFullAccess) this.fullAccess(hash);
+    return result.result;
+  }
+
+  private async prepareSessionAction(admission: ActionAdmission, dispatch: ActionDispatch) {
+    const {
+      hash,
+      operation,
+      body,
+      permission,
+      device,
+      sessionId,
+      requestId,
+      legacyCodex,
+      prior,
+      publicInputHash,
+    } = admission;
+    const capabilities = (await this.runtime(
+      { operation: "capabilities", sessionId, experimentalEnabled: true },
+      undefined,
+      true,
+    )) as {
+      features?: Record<string, { available: boolean; reason?: string }>;
+      executionMode?: string;
+    };
+    const policy = await this.validateSessionAction(admission, capabilities.executionMode);
+    if (policy.requiresSend) this.grant(hash, "send");
     if (
-      operation !== "resume" &&
-      (!Number.isSafeInteger(body.expectedRevision) || Number(body.expectedRevision) < 0)
+      policy.textOnlyQueue &&
+      (body.attachmentIds !== undefined || body.historyReferences !== undefined)
     )
-      throw new HttpError(400, "invalid_revision");
-    if (this.requests.has(requestId) || this.unconfirmed.has(sessionId)) {
-      control.priorUncertain = true;
-      throw new HttpError(409, "outcome_unknown");
+      throw new HttpError(409, "capability_unavailable");
+    if (!policy.available || capabilities.features?.[operation]?.available !== true)
+      throw new HttpError(
+        409,
+        capabilities.features?.[operation]?.reason === "session-compacting"
+          ? "session-compacting"
+          : continuationPreflightReason(
+              capabilities.features?.[operation]?.reason,
+              "capability_unavailable",
+            ),
+      );
+    const snapshot = (await this.runtime(
+      { operation: "live", sessionId, experimentalEnabled: true },
+      undefined,
+      true,
+    )) as { revision: number; runtimeBootId: string; status?: string; executionMode?: string };
+    if (
+      (operation !== "resume" && snapshot.revision !== body.expectedRevision) ||
+      !snapshot.runtimeBootId
+    )
+      throw new HttpError(409, "stale_state");
+    if (
+      policy.idleExecutionMode &&
+      (snapshot.status !== "idle" || snapshot.executionMode !== policy.idleExecutionMode)
+    )
+      throw new HttpError(409, "stale_state");
+    if (operation === "queue-add" && legacyCodex && snapshot.status !== "running")
+      throw new HttpError(409, "queue_requires_running_turn");
+    const params: Record<string, unknown> & { runtimeBootId: string } = {
+      operation,
+      sessionId,
+      requestId,
+      deviceId: device.id,
+      expectedRevision: body.expectedRevision,
+      runtimeBootId: snapshot.runtimeBootId,
+      experimentalEnabled: true,
+      ...(policy.publicReceipt ? { publicInputHash } : {}),
+    };
+    // Every operation has an explicit public-field projection. Paths and raw RPC input never pass through.
+    if (["steer", "queue-add", "queue-update"].includes(operation)) {
+      const rawText = body.text === undefined ? "" : body.text;
+      if (body.attachmentIds !== undefined && !Array.isArray(body.attachmentIds))
+        throw new HttpError(400, "invalid_attachments");
+      const hasAttachments = Array.isArray(body.attachmentIds) && body.attachmentIds.length > 0;
+      if (operation === "queue-update" && hasAttachments)
+        throw new HttpError(409, "queue_attachments_edit_unsupported");
+      if (
+        typeof rawText !== "string" ||
+        rawText.length > 16000 ||
+        Buffer.byteLength(rawText) > 16384 ||
+        (!rawText.trim() && !hasAttachments && body.historyReferences === undefined)
+      )
+        throw new HttpError(400, "invalid_text");
+      let text: string = rawText;
+      if (body.historyReferences !== undefined) {
+        const history = await this.resolveHistoryInput(body, hash, operation, true);
+        text = history.text;
+        dispatch.historyScopeKey = history.scopeKey;
+        params.historyReferences = history.references;
+        params.historyInputHash = history.inputHash;
+        if (!text.trim() && !hasAttachments) throw new HttpError(400, "invalid_text");
+      }
+      params.text = text;
+      // A queued edit stays a message; DSH runs only a newly sent line as a command.
+      if (policy.useCommandAccess)
+        params.commandAccess = this.dshCommandAccess(this.grant(hash, permission));
+      if (hasAttachments) {
+        this.grant(hash, "attachments");
+        const format = policy.inputFormat;
+        if (capabilities.features?.attachments?.available !== true || !format)
+          throw new HttpError(409, "attachments_unavailable");
+        params.input =
+          format === "claude"
+            ? await this.attachmentStore.inputForAgent(
+                device.id,
+                sessionId,
+                body.attachmentIds,
+                text,
+                format,
+                requestId,
+              )
+            : await this.attachmentStore.input(
+                device.id,
+                sessionId,
+                body.attachmentIds,
+                text,
+                format,
+              );
+        if (format === "claude" && prior?.found !== true) dispatch.newlyPinnedDevice = device.id;
+        delete params.text;
+      }
     }
-    if (this.admission || this.active.has(sessionId)) throw new HttpError(409, "operation_busy");
-    const workspaceId = await this.codexScope(sessionId, hash, false, !generic);
-    if (this.requests.has(requestId) || this.unconfirmed.has(sessionId)) {
-      control.priorUncertain = true;
-      throw new HttpError(409, "outcome_unknown");
-    }
-    if (this.admission || this.active.has(sessionId)) throw new HttpError(409, "operation_busy");
-    if (!settingsControl) this.admission = true;
-    this.active.add(sessionId);
-    let dispatched = false;
-    let newlyPinnedDevice: string | undefined;
-    let historyScopeKey: string | undefined;
-    try {
-      const capabilities = (await this.runtime(
-        { operation: "capabilities", sessionId, experimentalEnabled: true },
+    if (policy.queueItem) {
+      const queued = (await this.runtime(
+        { operation: "queue-list", sessionId, limit: 100 },
         undefined,
         true,
       )) as {
-        features?: Record<string, { available: boolean; reason?: string }>;
-        executionMode?: string;
+        data?: { id: string; status?: string; input?: { type: string; text?: string }[] }[];
       };
-      // Terminal mutations are limited to its inbox and opening its native model selector.
-      const terminal =
-        generic &&
-        capabilities.executionMode === "claude-follower" &&
-        ["steer", "queue-add", "queue-delete", "open-model-picker"].includes(operation);
-      const claude = generic && capabilities.executionMode === "claude-managed";
-      const codexFollower =
-        capabilities.executionMode === "codex-follower" &&
-        (operation === "fork" || operation === "settings");
-      // A connected DeepSeek Harness takes steering and queued messages through its own inbox;
-      // renames, archives, forks, switches models and presets, changes goals and compacts through
-      // its own session services and commands.
-      const dsh =
-        generic &&
-        capabilities.executionMode === "dsh-follower" &&
-        [
-          "steer",
-          "queue-add",
-          "queue-update",
-          "queue-delete",
-          "queue-steer",
-          "rename",
-          "archive",
-          "unarchive",
-          "fork",
-          "settings",
-          "goal-set",
-          "goal-pause",
-          "goal-resume",
-          "goal-clear",
-          "compact",
-        ].includes(operation);
-      const serialQueue =
-        generic &&
-        ((capabilities.executionMode === "devin-print" && this.options.verifiedDevinManaged) ||
-          (capabilities.executionMode === "acp-managed" &&
-            this.options.verifiedAntigravityManaged)) &&
-        ["queue-add", "queue-update", "queue-delete", "queue-pause", "queue-resume"].includes(
-          operation,
-        );
-      if (serialQueue && serialQueueRequiresSend(operation)) this.grant(hash, "send");
-      if (serialQueue && (body.attachmentIds !== undefined || body.historyReferences !== undefined))
+      if (
+        (queued as { reason?: string }).reason === "queue-too-large" ||
+        (queued.data?.length ?? 0) > 100
+      )
+        throw new HttpError(409, "queue_too_large");
+      const target = queued.data?.find((item) => item.id === body.queuedSubmissionId);
+      // A terminal message of unknown outcome is never resent; deleting it is how it ends.
+      const removable =
+        policy.queueItem === "pending-or-unknown" ? ["pending", "unknown"] : ["pending"];
+      if (!target || (target.status !== undefined && !removable.includes(target.status)))
+        throw new HttpError(409, "queue_item_unavailable");
+      if (
+        operation === "queue-update" &&
+        target.input?.some(
+          (input) => input.type !== "text" || input.text?.startsWith("User attached file "),
+        )
+      )
+        throw new HttpError(409, "queue_attachments_edit_unsupported");
+    }
+    if (operation === "steer") params.turnId = this.field(body.turnId);
+    if (["queue-update", "queue-delete", "queue-steer"].includes(operation))
+      params.queuedSubmissionId = this.field(body.queuedSubmissionId);
+    if (operation === "queue-reorder") {
+      if (
+        !Array.isArray(body.queuedSubmissionIds) ||
+        body.queuedSubmissionIds.length > 100 ||
+        body.queuedSubmissionIds.some((id) => typeof id !== "string") ||
+        new Set(body.queuedSubmissionIds).size !== body.queuedSubmissionIds.length
+      )
+        throw new HttpError(400, "invalid_queue_order");
+      params.queuedSubmissionIds = body.queuedSubmissionIds.map((id) => this.field(id));
+    }
+    if (operation === "rename") params.name = this.field(body.name, 200);
+    if (operation === "settings") {
+      const usesFullAccessFields =
+        body.serviceTierId !== undefined ||
+        body.policyId !== undefined ||
+        body.mode === null ||
+        body.restoreDefaults !== undefined ||
+        body.resourceIds !== undefined;
+      if (usesFullAccessFields) this.fullAccess(hash);
+      const state = await this.runtime({ operation: "settings-state", sessionId }, undefined, true);
+      // Only the setting fields reach the Provider's parameter validator.
+      const settingFields = [
+        "expectedRevision",
+        "expectedSettingsScope",
+        "model",
+        "effort",
+        "mode",
+        "serviceTierId",
+        "policyId",
+        "permissionMode",
+        "restoreDefaults",
+      ];
+      const settings = await this.validateSessionAction(admission, capabilities.executionMode, {
+        state,
+        body: Object.fromEntries(settingFields.map((key) => [key, body[key]])),
+      });
+      if (!settings.available || !settings.settings)
         throw new HttpError(409, "capability_unavailable");
-      // Devin changes the model and permission mode its next turns run with, and continues after
-      // a usage limit as Codex does.
-      const devin =
-        generic &&
-        capabilities.executionMode === "devin-print" &&
-        ["settings", "usage-limit-cancel", "usage-limit-continue"].includes(operation);
-      if (
-        (opensPicker && (!terminal || this.options.verifiedClaudeManaged !== true)) ||
-        (capabilities.executionMode !== "codex-managed" &&
-          !claude &&
-          !terminal &&
-          !codexFollower &&
-          !dsh &&
-          !devin &&
-          !serialQueue) ||
-        capabilities.features?.[operation]?.available !== true
-      )
-        throw new HttpError(
-          409,
-          capabilities.features?.[operation]?.reason === "session-compacting"
-            ? "session-compacting"
-            : continuationPreflightReason(
-                capabilities.features?.[operation]?.reason,
-                "capability_unavailable",
-              ),
-        );
-      const snapshot = (await this.runtime(
-        { operation: "live", sessionId, experimentalEnabled: true },
-        undefined,
-        true,
-      )) as { revision: number; runtimeBootId: string; status?: string; executionMode?: string };
-      if (
-        (operation !== "resume" && snapshot.revision !== body.expectedRevision) ||
-        !snapshot.runtimeBootId
-      )
-        throw new HttpError(409, "stale_state");
-      if (
-        opensPicker &&
-        (snapshot.status !== "idle" || snapshot.executionMode !== "claude-follower")
-      )
-        throw new HttpError(409, "stale_state");
-      if (operation === "queue-add" && !generic && snapshot.status !== "running")
-        throw new HttpError(409, "queue_requires_running_turn");
-      const params: Record<string, unknown> = {
-        operation,
-        sessionId,
-        requestId,
-        deviceId: device.id,
-        expectedRevision: body.expectedRevision,
-        runtimeBootId: snapshot.runtimeBootId,
-        experimentalEnabled: true,
-        ...(claude || terminal || dsh || serialQueue ? { publicInputHash } : {}),
-      };
-      // Every operation has an explicit public-field projection. Paths and raw RPC input never pass through.
-      if (["steer", "queue-add", "queue-update"].includes(operation)) {
-        const rawText = body.text === undefined ? "" : body.text;
-        if (body.attachmentIds !== undefined && !Array.isArray(body.attachmentIds))
-          throw new HttpError(400, "invalid_attachments");
-        const hasAttachments = Array.isArray(body.attachmentIds) && body.attachmentIds.length > 0;
-        if (operation === "queue-update" && hasAttachments)
-          throw new HttpError(409, "queue_attachments_edit_unsupported");
+      Object.assign(params, settings.settings);
+    }
+    if (operation === "goal-set") {
+      const objective = this.field(body.objective, 16_000);
+      if (Buffer.byteLength(objective, "utf8") > 16_384)
+        throw new HttpError(400, "invalid_objective");
+      if (body.intent !== undefined && body.intent !== "start" && body.intent !== "update")
+        throw new HttpError(400, "invalid_goal_intent");
+      const goal: Record<string, unknown> = { objective, intent: body.intent ?? "start" };
+      if (body.tokenBudget !== undefined) {
         if (
-          typeof rawText !== "string" ||
-          rawText.length > 16000 ||
-          Buffer.byteLength(rawText) > 16384 ||
-          (!rawText.trim() && !hasAttachments && body.historyReferences === undefined)
+          body.tokenBudget !== null &&
+          (!Number.isSafeInteger(body.tokenBudget) || Number(body.tokenBudget) <= 0)
         )
-          throw new HttpError(400, "invalid_text");
-        let text: string = rawText;
-        if (body.historyReferences !== undefined) {
-          const history = await this.resolveHistoryInput(body, hash, operation, true);
-          text = history.text;
-          historyScopeKey = history.scopeKey;
-          params.historyReferences = history.references;
-          params.historyInputHash = history.inputHash;
-          if (!text.trim() && !hasAttachments) throw new HttpError(400, "invalid_text");
-        }
-        params.text = text;
-        // A queued edit stays a message; DSH runs only a newly sent line as a command.
-        if (dsh && operation !== "queue-update")
-          params.commandAccess = this.dshCommandAccess(this.grant(hash, permission));
-        if (hasAttachments) {
-          this.grant(hash, "attachments");
-          const format = ATTACHMENT_FORMATS[capabilities.executionMode ?? ""];
-          if (capabilities.features?.attachments?.available !== true || !format)
-            throw new HttpError(409, "attachments_unavailable");
-          params.input =
-            format === "claude"
-              ? await this.attachmentStore.inputForAgent(
-                  device.id,
-                  sessionId,
-                  body.attachmentIds,
-                  text,
-                  format,
-                  requestId,
-                )
-              : await this.attachmentStore.input(
-                  device.id,
-                  sessionId,
-                  body.attachmentIds,
-                  text,
-                  format,
-                );
-          if (capabilities.executionMode === "claude-managed" && prior?.found !== true)
-            newlyPinnedDevice = device.id;
-          delete params.text;
-        }
+          throw new HttpError(400, "invalid_token_budget");
+        goal.tokenBudget = body.tokenBudget;
       }
+      params.goal = goal;
+    }
+    if (body.resourceIds !== undefined) {
+      if (!["steer", "queue-add", "queue-update"].includes(operation))
+        throw new HttpError(400, "resources_not_supported");
       if (
-        operation === "queue-update" ||
-        (operation === "queue-delete" && (claude || terminal || dsh || serialQueue)) ||
-        operation === "queue-steer"
-      ) {
-        const queued = (await this.runtime(
-          { operation: "queue-list", sessionId, limit: 100 },
-          undefined,
+        capabilities.features?.context?.available !== true &&
+        (capabilities.features?.context !== undefined ||
+          capabilities.features?.resources?.available !== true)
+      )
+        throw new HttpError(409, "context_unavailable");
+      const resourceRefs =
+        (await this.resolveContextResources(
+          sessionId,
+          hash,
+          body.resourceIds,
+          body.expectedRevision,
           true,
-        )) as {
-          data?: { id: string; status?: string; input?: { type: string; text?: string }[] }[];
-        };
+        )) ?? [];
+      const inputRows = Array.isArray(params.input) ? params.input.length : 1;
+      if (inputRows > 11 || resourceRefs.length > 32)
+        throw new HttpError(400, "too_many_input_items");
+      params.resourceRefs = resourceRefs;
+    }
+    return { params, requiresSend: policy.requiresSend === true };
+  }
+
+  private async dispatchSessionAction(
+    res: ConversationResponse,
+    admission: ActionAdmission,
+    dispatch: ActionDispatch,
+    params: Record<string, unknown> & { runtimeBootId: string },
+    requiresSend: boolean,
+  ) {
+    const {
+      hash,
+      operation,
+      body,
+      control,
+      permission,
+      sessionId,
+      requestId,
+      workspaceId,
+      opensPicker,
+      settingsControl,
+    } = admission;
+    this.grant(hash, permission);
+    if (!(await this.workspaceAllowed(workspaceId, this.grant(hash), true)))
+      throw new HttpError(403, "workspace_not_authorized");
+    this.grant(hash, permission);
+    if (body.bootId !== this.bootId) throw new HttpError(409, "stale_boot");
+    if (dispatch.historyScopeKey)
+      await this.assertHistoryScope(hash, dispatch.historyScopeKey, true);
+    this.grant(hash, permission);
+    if (requiresSend) this.grant(hash, "send");
+    if (this.requests.has(requestId)) {
+      control.priorUncertain = true;
+      throw new HttpError(409, "outcome_unknown");
+    }
+    this.rate(`control:${hash}`, 30);
+    rememberRequest(this.requests, requestId);
+    this.unconfirmed.add(sessionId);
+    this.unconfirmedRequests.set(sessionId, requestId);
+    dispatch.dispatched = true;
+    control.dispatched = true;
+    let settingsConfirmed = false;
+    const pending = Promise.resolve()
+      .then(() => this.options.runtimeRequest(params))
+      .then((result) => {
+        if (!settingsControl) return result;
+        settingsConfirmed =
+          settingsControlOutcome(result, requestId, sessionId, params.runtimeBootId) !== undefined;
+        // The HTTP request may time out while the backend still owns the control. A matching
+        // settings result can settle its fence even if that response has already ended.
         if (
-          (queued as { reason?: string }).reason === "queue-too-large" ||
-          (queued.data?.length ?? 0) > 100
-        )
-          throw new HttpError(409, "queue_too_large");
-        const target = queued.data?.find((item) => item.id === body.queuedSubmissionId);
-        // A terminal message of unknown outcome is never resent; deleting it is how it ends.
-        const removable =
-          terminal || (serialQueue && operation === "queue-delete")
-            ? ["pending", "unknown"]
-            : ["pending"];
-        if (!target || (target.status !== undefined && !removable.includes(target.status)))
-          throw new HttpError(409, "queue_item_unavailable");
-        if (
-          operation === "queue-update" &&
-          target.input?.some(
-            (input) => input.type !== "text" || input.text?.startsWith("User attached file "),
-          )
-        )
-          throw new HttpError(409, "queue_attachments_edit_unsupported");
-      }
-      if (operation === "steer") params.turnId = this.field(body.turnId);
-      if (["queue-update", "queue-delete", "queue-steer"].includes(operation))
-        params.queuedSubmissionId = this.field(body.queuedSubmissionId);
-      if (operation === "queue-reorder") {
-        if (
-          !Array.isArray(body.queuedSubmissionIds) ||
-          body.queuedSubmissionIds.length > 100 ||
-          body.queuedSubmissionIds.some((id) => typeof id !== "string") ||
-          new Set(body.queuedSubmissionIds).size !== body.queuedSubmissionIds.length
-        )
-          throw new HttpError(400, "invalid_queue_order");
-        params.queuedSubmissionIds = body.queuedSubmissionIds.map((id) => this.field(id));
-      }
-      if (operation === "rename") params.name = this.field(body.name, 200);
-      if (operation === "settings") {
-        const devin = capabilities.executionMode === "devin-print";
-        const usesFullAccessFields =
-          body.serviceTierId !== undefined ||
-          body.policyId !== undefined ||
-          body.mode === null ||
-          body.restoreDefaults !== undefined ||
-          body.resourceIds !== undefined;
-        if (usesFullAccessFields) this.fullAccess(hash);
-        const state = (await this.runtime(
-          { operation: "settings-state", sessionId },
-          undefined,
-          true,
-        )) as {
-          settings?: {
-            current?: { model?: string };
-            selected?: { model?: string };
-            writable?: Record<string, unknown>;
-            defaults?: Record<string, unknown>;
-          };
-          current?: { model?: string };
-          selected?: { model?: string };
-          writable?: Record<string, unknown>;
-          models?: {
-            id?: string;
-            resolvedModel?: string;
-            efforts?: string[];
-            serviceTiers?: ({ id?: string } | string)[];
-            serviceTierIds?: string[];
-          }[];
-          collaborationModes?: { id?: string }[];
-          policies?: { id?: string }[];
-          revision?: number;
-          writeScope?: string;
-        };
-        if (state.revision !== body.expectedRevision) throw new HttpError(409, "stale_state");
-        if (capabilities.executionMode === "codex-follower") {
-          const scope = this.optionalString(body.expectedSettingsScope, 128);
-          if (!scope || scope !== state.writeScope) throw new HttpError(409, "stale_state");
-          params.expectedSettingsScope = scope;
-        }
-        const currentModel =
-          state.selected?.model ??
-          state.settings?.selected?.model ??
-          state.current?.model ??
-          state.settings?.current?.model;
-        const writable = state.writable ?? state.settings?.writable;
-        const ensureWritable = (key: string) => {
-          if (!this.availability(writable?.[key]).available)
-            throw new HttpError(409, "setting_unavailable");
-        };
-        const typedModel = body.model === undefined ? undefined : this.field(body.model, 128);
-        // `/model` sends a Claude model as typed: an alias in any case or a full model ID. The
-        // listed alias it means is what gets checked and kept, as the backend does.
-        const model =
-          typedModel && capabilities.executionMode === "claude-managed"
-            ? (claudeModelOption(
-                (state.models ?? []).flatMap((item) =>
-                  item.id ? [{ ...item, value: item.id }] : [],
-                ),
-                typedModel,
-              )?.value ?? typedModel)
-            : typedModel;
-        const effort =
-          body.effort === null &&
-          (capabilities.executionMode === "claude-managed" ||
-            capabilities.executionMode === "codex-managed" ||
-            devin)
-            ? null
-            : body.effort === undefined
-              ? undefined
-              : this.field(body.effort, 128);
-        const mode =
-          body.mode === null && capabilities.executionMode === "codex-managed"
-            ? null
-            : body.mode === undefined
-              ? undefined
-              : this.field(body.mode, 128);
-        const serviceTier =
-          body.serviceTierId === null && (capabilities.executionMode === "codex-managed" || devin)
-            ? null
-            : body.serviceTierId === undefined
-              ? undefined
-              : this.field(body.serviceTierId, 128);
-        const policyId = body.policyId === undefined ? undefined : this.field(body.policyId, 128);
-        if (body.restoreDefaults !== undefined && body.restoreDefaults !== true)
-          throw new HttpError(400, "invalid_restore_defaults");
-        if (model) {
-          ensureWritable("model");
-          if (!state.models?.some((item) => item.id === model))
-            throw new HttpError(400, "unsupported_model");
-          params.model = model;
-        }
-        const effectiveModel = model ?? currentModel;
-        const selectedModel =
-          state.models?.find((item) => item.id === effectiveModel) ??
-          (capabilities.executionMode === "claude-managed" && effectiveModel
-            ? state.models?.find((item) => item.resolvedModel === effectiveModel)
-            : undefined);
-        if (effort !== undefined) {
-          ensureWritable("effort");
-          if (effort !== null && !selectedModel?.efforts?.includes(effort))
-            throw new HttpError(400, "unsupported_effort");
-          params.effort = effort;
-        }
-        if (body.permissionMode !== undefined) {
-          if (capabilities.executionMode !== "claude-managed" && !devin)
-            throw new HttpError(400, "unsupported_permission_mode");
-          ensureWritable("permissionMode");
-          const mode = String(body.permissionMode);
-          if (!(devin ? DEVIN_PERMISSION_MODES : ["default", "plan", "acceptEdits"]).includes(mode))
-            throw new HttpError(400, "unsupported_permission_mode");
-          // Devin cannot ask mid-turn: approving more without asking takes full access, as when
-          // a session starts with these modes.
-          if (devin && (mode === "smart" || mode === "dangerous")) this.fullAccess(hash);
-          params.permissionMode = body.permissionMode;
-        }
-        if (mode !== undefined) {
-          ensureWritable("mode");
-          if (
-            mode !== null &&
-            (!["default", "plan"].includes(mode) ||
-              !state.collaborationModes?.some((item) => item.id === mode))
-          )
-            throw new HttpError(400, "unsupported_mode");
-          params.mode = mode;
-        }
-        if (serviceTier !== undefined) {
-          ensureWritable("serviceTier");
-          if (
-            serviceTier !== null &&
-            ![
-              ...(selectedModel?.serviceTiers ?? []).flatMap((entry) =>
-                typeof entry === "string" ? [entry] : entry.id ? [entry.id] : [],
-              ),
-              ...(selectedModel?.serviceTierIds ?? []),
-            ].includes(serviceTier)
-          )
-            throw new HttpError(400, "unsupported_service_tier");
-          params.serviceTier = serviceTier;
-        }
-        if (policyId) {
-          ensureWritable("policy");
-          if (!state.policies?.some((item) => item.id === policyId))
-            throw new HttpError(400, "unsupported_policy");
-          params.policyId = policyId;
-        }
-        if (body.restoreDefaults === true) {
-          if (!this.projectSettings(state).writable.restoreDefaults.available)
-            throw new HttpError(409, "defaults_unavailable");
-          params.resetDefaults = true;
-        }
-        if (
-          !model &&
-          effort === undefined &&
-          mode === undefined &&
-          serviceTier === undefined &&
-          !policyId &&
-          body.permissionMode === undefined &&
-          body.restoreDefaults !== true
-        )
-          throw new HttpError(400, "empty_settings");
-      }
-      if (operation === "goal-set") {
-        const objective = this.field(body.objective, 16_000);
-        if (Buffer.byteLength(objective, "utf8") > 16_384)
-          throw new HttpError(400, "invalid_objective");
-        if (body.intent !== undefined && body.intent !== "start" && body.intent !== "update")
-          throw new HttpError(400, "invalid_goal_intent");
-        const goal: Record<string, unknown> = { objective, intent: body.intent ?? "start" };
-        if (body.tokenBudget !== undefined) {
-          if (
-            body.tokenBudget !== null &&
-            (!Number.isSafeInteger(body.tokenBudget) || Number(body.tokenBudget) <= 0)
-          )
-            throw new HttpError(400, "invalid_token_budget");
-          goal.tokenBudget = body.tokenBudget;
-        }
-        params.goal = goal;
-      }
-      if (body.resourceIds !== undefined) {
-        if (!["steer", "queue-add", "queue-update"].includes(operation))
-          throw new HttpError(400, "resources_not_supported");
-        if (
-          capabilities.features?.context?.available !== true &&
-          (capabilities.features?.context !== undefined ||
-            capabilities.features?.resources?.available !== true)
-        )
-          throw new HttpError(409, "context_unavailable");
-        const resourceRefs =
-          (await this.resolveContextResources(
-            sessionId,
-            hash,
-            body.resourceIds,
-            body.expectedRevision,
-            true,
-          )) ?? [];
-        const inputRows = Array.isArray(params.input) ? params.input.length : 1;
-        if (inputRows > 11 || resourceRefs.length > 32)
-          throw new HttpError(400, "too_many_input_items");
-        params.resourceRefs = resourceRefs;
-      }
-      this.grant(hash, permission);
-      if (!(await this.workspaceAllowed(workspaceId, this.grant(hash), true)))
-        throw new HttpError(403, "workspace_not_authorized");
-      this.grant(hash, permission);
-      if (body.bootId !== this.bootId) throw new HttpError(409, "stale_boot");
-      if (historyScopeKey) await this.assertHistoryScope(hash, historyScopeKey, true);
-      this.grant(hash, permission);
-      if (serialQueue && serialQueueRequiresSend(operation)) this.grant(hash, "send");
-      if (this.requests.has(requestId)) {
-        control.priorUncertain = true;
-        throw new HttpError(409, "outcome_unknown");
-      }
-      this.rate(`control:${hash}`, 30);
-      rememberRequest(this.requests, requestId);
-      this.unconfirmed.add(sessionId);
-      this.unconfirmedRequests.set(sessionId, requestId);
-      dispatched = true;
-      control.dispatched = true;
-      let settingsConfirmed = false;
-      const pending = Promise.resolve()
-        .then(() => this.options.runtimeRequest(params))
-        .then((result) => {
-          if (!settingsControl) return result;
-          settingsConfirmed =
-            settingsControlOutcome(result, requestId, sessionId, snapshot.runtimeBootId) !==
-            undefined;
-          // The HTTP request may time out while the backend still owns the control. A matching
-          // settings result can settle its fence even if that response has already ended.
-          if (
-            settingsConfirmed &&
-            this.bootId === body.bootId &&
-            this.unconfirmedRequests.get(sessionId) === requestId
-          ) {
-            this.unconfirmedRequests.delete(sessionId);
-            this.clearUnconfirmed(sessionId);
-          }
-          return result;
-        })
-        .finally(() => {
-          this.active.delete(sessionId);
-          if (!settingsControl) this.admission = false;
-          this.notifyControlChanged(sessionId);
-        });
-      const result = (await this.runtime(params, pending)) as {
-        accepted?: boolean;
-        requestId?: string;
-        controlOutcome?: string;
-        reason?: string;
-        error?: string;
-      };
-      this.grant(hash, permission);
-      if (serialQueue && serialQueueRequiresSend(operation)) this.grant(hash, "send");
-      if (body.bootId !== this.bootId) throw new HttpError(409, "stale_boot");
-      if (result.accepted !== true) {
-        if (
-          result.requestId === requestId &&
-          result.controlOutcome === "not-dispatched" &&
-          (!settingsControl || settingsConfirmed)
+          settingsConfirmed &&
+          this.bootId === body.bootId &&
+          this.unconfirmedRequests.get(sessionId) === requestId
         ) {
-          if (!settingsControl) this.clearUnconfirmed(sessionId);
-          control.dispatched = false;
-          if (newlyPinnedDevice)
-            await this.attachmentStore.settle(newlyPinnedDevice, sessionId, requestId);
-          throw new HttpError(409, continuationPreflightReason(result.reason ?? result.error));
+          this.unconfirmedRequests.delete(sessionId);
+          this.clearUnconfirmed(sessionId);
         }
-        throw new HttpError(502, "outcome_unknown");
-      }
-      if (operation === "delete") await this.forgetDeletedSession(sessionId);
-      if (opensPicker && !settingsConfirmed) throw new HttpError(502, "outcome_unknown");
-      if (!settingsControl)
-        res.once("finish", () => {
-          if (!res.destroyed && res.statusCode === 200) this.clearUnconfirmed(sessionId);
-        });
-      return this.json(res, 200, result);
-    } finally {
-      if (!dispatched) {
+        return result;
+      })
+      .finally(() => {
         this.active.delete(sessionId);
         if (!settingsControl) this.admission = false;
-        if (newlyPinnedDevice)
-          await this.attachmentStore.settle(newlyPinnedDevice, sessionId, requestId);
+        this.notifyControlChanged(sessionId);
+      });
+    const result = (await this.runtime(params, pending)) as {
+      accepted?: boolean;
+      requestId?: string;
+      controlOutcome?: string;
+      reason?: string;
+      error?: string;
+    };
+    this.grant(hash, permission);
+    if (requiresSend) this.grant(hash, "send");
+    if (body.bootId !== this.bootId) throw new HttpError(409, "stale_boot");
+    if (result.accepted !== true) {
+      if (
+        result.requestId === requestId &&
+        result.controlOutcome === "not-dispatched" &&
+        (!settingsControl || settingsConfirmed)
+      ) {
+        if (!settingsControl) this.clearUnconfirmed(sessionId);
+        control.dispatched = false;
+        if (dispatch.newlyPinnedDevice)
+          await this.attachmentStore.settle(dispatch.newlyPinnedDevice, sessionId, requestId);
+        throw new HttpError(409, continuationPreflightReason(result.reason ?? result.error));
       }
+      throw new HttpError(502, "outcome_unknown");
     }
+    if (operation === "delete") await this.forgetDeletedSession(sessionId);
+    if (opensPicker && !settingsConfirmed) throw new HttpError(502, "outcome_unknown");
+    if (!settingsControl)
+      res.once("finish", () => {
+        if (!res.destroyed && res.statusCode === 200) this.clearUnconfirmed(sessionId);
+      });
+    return this.json(res, 200, result);
   }
   /** A deleted conversation takes its uploads with it, sent or not. */
   private async forgetDeletedSession(sessionId: string) {
@@ -5883,7 +5862,7 @@ export class WebAccessService {
         return this.json(res, 200, await this.options.historyRequest(method, body));
       }
       if (path.startsWith("/codex/"))
-        return this.codexAction(res, hash, path.slice(7), body, control);
+        return this.admitSessionAction(res, hash, path.slice(7), body, control);
       if (path === "/attachments/delete") {
         if (lan) throw new HttpError(403, "attachments_require_same_origin");
         const device = this.grant(hash, "attachments");
@@ -6026,7 +6005,14 @@ export class WebAccessService {
         return this.json(res, 200, await this.options.runtimeRequest(params));
       }
       if (path === "/managed/action")
-        return this.codexAction(res, hash, this.field(body.operation, 64), body, control, true);
+        return this.admitSessionAction(
+          res,
+          hash,
+          this.field(body.operation, 64),
+          body,
+          control,
+          true,
+        );
       if (path.startsWith("/managed/"))
         return this.manage(req, res, hash, path.slice(9), body, control);
       if (path === "/artifact-tickets") {
@@ -7096,21 +7082,18 @@ export class WebAccessService {
         const patch = this.projectPermissionField(this.projectUsageFields(event.payload, device));
         if ("executionMode" in patch) controlContext.executionMode = patch.executionMode;
         if ("workspaceId" in patch) controlContext.workspaceId = patch.workspaceId;
-        let enabled =
+        const permitted =
           this.controlsEnabledForProvider(sessionId, controlContext, device) &&
-          ((!isCodexMode(controlContext.executionMode) &&
-            !WORKSPACE_SCOPED_MODES.includes(String(controlContext.executionMode))) ||
-            (typeof controlContext.workspaceId === "string" &&
-              (this.options.mode === "lan" && isCodexMode(controlContext.executionMode) && sessionId
-                ? await this.lanCodexScopeAllowed(sessionId, controlContext.workspaceId, true)
-                : this.isFullAccess(device)
-                  ? controlContext.workspaceId === streamWorkspaceId
-                  : this.config.allowedWorkspaceIds?.includes(controlContext.workspaceId) ===
-                    true)));
+          this.controlWorkspaceAllowed(
+            sessionId,
+            controlContext,
+            device,
+            true,
+            streamWorkspaceId ?? null,
+          );
+        let enabled = typeof permitted === "boolean" ? permitted : await permitted;
         device = authorized();
         enabled = enabled && this.controlsEnabledForProvider(sessionId, controlContext, device);
-        // Full-access streams validated their registered workspace on admission;
-        // registration changes cancel them through ConversationHub.scopesChanged.
         if (Array.isArray(patch.approvals))
           patch.approvals = patch.approvals.map((value) => {
             const approval = value as Record<string, unknown>;

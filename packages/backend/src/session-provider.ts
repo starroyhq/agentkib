@@ -16,6 +16,7 @@ import {
 } from "@agentkib/runtime-protocol";
 import { z } from "zod";
 import { projectSessionExecution } from "./sessions/execution";
+import type { ProviderControlValidator } from "./sessions/validate/types";
 
 export { projectSessionExecution };
 
@@ -32,6 +33,7 @@ interface SessionExecutor {
   control(request: Record<string, unknown>): Promise<unknown>;
   contextUsage(sessionId: string): Promise<unknown>;
   queue?(request: Extract<SessionProviderRequest, { operation: "queue-list" }>): Promise<unknown>;
+  readonly validateControl?: ProviderControlValidator;
   readonly typed?: TypedSessionProvider;
 }
 
@@ -284,24 +286,12 @@ export type SessionProviderResponse<
   [Key in Operation]: { operation: Key; result: SessionProviderResults[Key] };
 }[Operation];
 
-export type SessionProviderValidationContext = {
-  agent: LiveSessionAgent;
-  sessionId: string;
-  workspaceId?: string;
-  deviceId?: string;
-  runtimeBootId: string;
-  revision: number;
-};
-
 export interface TypedSessionProvider {
   readonly agent: LiveSessionAgent;
   request<Request extends SessionProviderRequest>(
     request: Request,
   ): Promise<SessionProviderResponse<Request["operation"]>>;
-  validateControl?(
-    request: SessionProviderControlRequest,
-    context: SessionProviderValidationContext,
-  ): void | Promise<void>;
+  readonly validateControl?: ProviderControlValidator;
 }
 
 function parseResult<T>(schema: z.ZodType<T>, value: unknown): T {
@@ -461,12 +451,14 @@ type ExecuteSessionRequest = (request: SessionProviderRequest) => Promise<unknow
 
 class SessionProviderAdapter implements TypedSessionProvider {
   readonly #provider: SessionProviders[LiveSessionAgent];
+  readonly validateControl?: ProviderControlValidator;
 
   constructor(
     provider: SessionProviders[LiveSessionAgent],
     private readonly execute?: ExecuteSessionRequest,
   ) {
     this.#provider = provider;
+    this.validateControl = provider.validateControl;
   }
 
   get agent(): LiveSessionAgent {

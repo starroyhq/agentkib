@@ -88,6 +88,10 @@ import { projectContextUsage, type ContextUsage } from "./context-usage";
 import { SerialSessionQueue } from "./serial-session-queue";
 import type { SessionProviderRegistry, SessionProviders } from "./session-provider";
 import { createSessionProviders, withProviderCapabilities } from "./sessions/providers";
+import { validateAntigravityControl } from "./sessions/validate/antigravity";
+import { validateClaudeControl } from "./sessions/validate/claude-code";
+import { validateCodexControl } from "./sessions/validate/codex";
+import { validateDevinControl } from "./sessions/validate/devin";
 import { sessionQuerySchema as managedQuerySchema } from "./sessions/routing";
 import { DshSessionProvider } from "./agents/dsh/session-provider";
 import { activityBlocks, assertActivityAllows } from "./session-activity";
@@ -559,6 +563,7 @@ export class WebReadRequests {
   codexSessionProvider(): SessionProviders["codex"] {
     return {
       agent: "codex",
+      validateControl: validateCodexControl,
       createOperation: "create",
       options: () => this.#managedOptions(),
       live: (sessionId, enabled) => this.#codexLiveWithLimits(sessionId, enabled),
@@ -584,6 +589,7 @@ export class WebReadRequests {
   claudeSessionProvider(): SessionProviders["claude-code"] {
     return {
       agent: "claude-code",
+      validateControl: validateClaudeControl,
       live: (sessionId, experimentalEnabled) =>
         this.#claudeProvider({ operation: "live", sessionId, experimentalEnabled }),
       query: (request) => this.#claudeProvider({ ...request }),
@@ -604,6 +610,7 @@ export class WebReadRequests {
   devinSessionProvider(): SessionProviders["devin"] {
     return {
       agent: "devin",
+      validateControl: validateDevinControl,
       live: (sessionId) => this.#devinLive(sessionId),
       query: (request) => this.#devinQuery(request),
       createOperation: "devin-create",
@@ -627,6 +634,7 @@ export class WebReadRequests {
   antigravitySessionProvider(): SessionProviders["antigravity"] {
     return {
       agent: "antigravity",
+      validateControl: validateAntigravityControl,
       live: (sessionId) => this.#antigravityLive(sessionId),
       query: (request) => this.#antigravityQuery(request),
       control: (request) =>

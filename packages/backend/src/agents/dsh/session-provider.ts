@@ -8,6 +8,7 @@ import {
 } from "../../session-provider";
 import { withProviderCapabilities } from "../../sessions/providers";
 import { isSessionOperation, sessionQuerySchema } from "../../sessions/routing";
+import { validateDeepSeekHarnessControl } from "../../sessions/validate/deepseek-harness";
 import type { DshBridge } from "./dsh-bridge";
 
 type NativeRequest = (value: Record<string, unknown>) => Promise<unknown>;
@@ -19,6 +20,7 @@ type Route = {
 
 export class DshSessionProvider implements SessionProvider, TypedSessionProvider {
   readonly agent = "deepseek-harness" as const;
+  readonly validateControl = validateDeepSeekHarnessControl;
   readonly createOperation = "dsh-create";
   readonly typed = this;
   readonly #routes = new Map<string, Route>();

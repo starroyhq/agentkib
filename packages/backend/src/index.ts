@@ -126,11 +126,7 @@ import {
 import { SessionStreamHub } from "./session-stream";
 import { mergeCodexFollowerSnapshot } from "./agents/codex/codex-follower-stream";
 import { SessionSnapshotHistory } from "./session-snapshot-history";
-import {
-  readManagedRecord,
-  readManagedUsageLimit,
-  retainManagedLedgerReaders,
-} from "./managed-ledger";
+import { readManagedUsageLimit, retainManagedLedgerReaders } from "./managed-ledger";
 import { MessageLeadReports } from "./message-lead-reports";
 import { parseUsageLimit, usageLimitAutoContinue, usageLimitView } from "./usage-limit";
 import { BackendStore } from "./store";
@@ -2403,8 +2399,13 @@ export class TypeScriptBackend {
     const live = async (sessionId: string): Promise<Record<string, unknown>> => {
       const bridge = dsh(sessionId);
       if (bridge) return bridge.live(sessionId, true);
+      const agent = session(sessionId)?.agent;
+      if (agent === "codex")
+        return this.#withWebRead((owner) =>
+          (owner.codexSessionProvider() as CodexSessionProvider).workerLive(sessionId, true),
+        );
       const request = { operation: "live", sessionId, experimentalEnabled: true };
-      return (await (session(sessionId)?.agent === "claude-code"
+      return (await (agent === "claude-code"
         ? this.#claudeSessionProvider!.native(request)
         : this.#withWebRead((owner) => owner.request(request)))) as Record<string, unknown>;
     };
@@ -2418,26 +2419,10 @@ export class TypeScriptBackend {
         if (bridge) return bridge.live(sessionId, false);
         const indexed = store.sessions.get(sessionId);
         const agent = indexed?.agent ?? session(sessionId)?.agent;
-        if (agent === "codex") {
-          return this.#withWebRead(async (owner) => {
-            if (owner.usageLimited(sessionId))
-              return (await owner.request({ operation: "live", sessionId })) as Record<
-                string,
-                unknown
-              >;
-            // The resident runner already checkpoints progress. An indexed lookup avoids the
-            // full live path's catalog read and never starts following the Codex app.
-            const record = readManagedRecord(dataDir, sessionId);
-            const snapshot = record?.snapshot;
-            if (
-              owner.runnerHasLeadTools(sessionId) !== null &&
-              snapshot &&
-              typeof snapshot === "object"
-            )
-              return { ...snapshot, workspaceId: record.workspace_id };
-            return { status: indexed || record ? "idle" : "unavailable" };
-          });
-        }
+        if (agent === "codex")
+          return this.#withWebRead((owner) =>
+            (owner.codexSessionProvider() as CodexSessionProvider).workerLive(sessionId, false),
+          );
         if (agent === "devin") {
           if (indexed?.availability !== "readable")
             return { status: "unavailable", reason: "session-unavailable" };

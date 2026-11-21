@@ -162,6 +162,33 @@ function workerIsRunning(status: unknown): boolean {
   );
 }
 
+function codexExternalTurn(live: Record<string, unknown> | null) {
+  const turn = live?.externalTurn;
+  return (live?.executionMode === "codex-follower" ||
+    live?.ownershipReason === "codex-owner-busy") &&
+    isObject(turn) &&
+    turn.status === "running"
+    ? turn
+    : null;
+}
+
+function workerStatus(live: Record<string, unknown> | null): string {
+  const status = typeof live?.status === "string" ? live.status : "unavailable";
+  if (status !== "idle") return status;
+  if (codexExternalTurn(live)) return "running";
+  return live?.ownershipReason === "codex-owner-busy" || live?.reason === "codex-owner-busy"
+    ? "busy"
+    : status;
+}
+
+function workerReason(live: Record<string, unknown> | null): string | undefined {
+  return typeof live?.reason === "string"
+    ? live.reason
+    : live?.ownershipReason === "codex-owner-busy"
+      ? live.ownershipReason
+      : undefined;
+}
+
 /**
  * A report's envelope: what happened to which worker, then the worker's own words, if any. It is
  * a message the person sees in the lead's conversation too, rendered as Markdown: the blank lines
@@ -347,27 +374,44 @@ function workerLimit(live: Record<string, unknown> | null): WorkerLimit | null {
 function progressSample(
   live: Record<string, unknown> | null,
 ): Pick<Progress, "turnId" | "signal"> | null {
-  const turnId = live?.turnId;
+  const external = codexExternalTurn(live);
+  const turnId =
+    live?.turnId ??
+    external?.turnId ??
+    (typeof external?.startedAt === "string" && Number.isFinite(Date.parse(external.startedAt))
+      ? `external:${external.startedAt}`
+      : null);
   if (
-    live?.status !== "running" ||
+    !live ||
+    workerStatus(live) !== "running" ||
     live.activity === "compacting" ||
     live.reason === "claude-terminal-permission-unconfirmed" ||
     typeof turnId !== "string" ||
     !turnId ||
-    typeof live.streamText !== "string" ||
     live.streamTextTruncated === true ||
-    (live.executionMode === "codex-managed" && Buffer.byteLength(live.streamText) >= 120 * 1024) ||
     (Array.isArray(live.approvals) && live.approvals.length > 0) ||
     (Array.isArray(live.questions) && live.questions.length > 0)
   )
     return null;
+  const output = typeof live.streamText === "string" ? live.streamText : null;
+  const observedItems = typeof live.workerProgress === "string" ? live.workerProgress : null;
+  if (output === null && observedItems === null) return null;
+  if (
+    live.executionMode === "codex-managed" &&
+    output !== null &&
+    Buffer.byteLength(output) >= 120 * 1024
+  )
+    return null;
+  // Claude, DSH, Antigravity and managed Codex use the current turn's streamed output.
+  // External Codex also uses verified follower messages or native assistant output.
+  // Generic revisions include tool-wait heartbeats and never reset this clock.
   return {
     turnId,
     signal: JSON.stringify([
       live.connectionGeneration,
-      live.executionMode === "codex-managed" ? live.revision : null,
-      live.streamText.length,
-      live.streamText.slice(-128),
+      observedItems,
+      output?.length,
+      output?.slice(-128),
     ]),
   };
 }
@@ -1819,14 +1863,15 @@ export class OrchestrationService {
     const lanes = await Promise.all(
       lead.lanes.map(async (lane) => {
         const live = await this.#state(lane.sessionId);
+        const reason = workerReason(live);
         return {
           id: lane.id,
           view: {
             worker: lane.name,
             agent: lane.agent ?? "codex",
             session: lane.sessionId,
-            status: typeof live?.status === "string" ? live.status : "unavailable",
-            ...(typeof live?.reason === "string" ? { reason: live.reason } : {}),
+            status: workerStatus(live),
+            ...(reason ? { reason } : {}),
             ...this.#healthView(lane, live),
             title: lane.title,
             lastReport: lane.lastReport,
@@ -1889,14 +1934,26 @@ export class OrchestrationService {
         continueAt: limit.continueAt,
       });
     }
-    const running = workerIsRunning(live.status);
-    const capability = WORKER_CAPABILITIES[lane.agent ?? "codex"];
+    const running = workerIsRunning(workerStatus(live));
+    const agent = lane.agent ?? "codex";
+    const capability = WORKER_CAPABILITIES[agent];
     if (running && mode === "steer" && !capability.steer) return refuse("steer-unsupported");
+    if (
+      agent === "codex" &&
+      (codexExternalTurn(live) || (running && live.executionMode === "codex-follower")) &&
+      (!running || (mode === "queue" ? live.queueEnabled !== true : live.steerEnabled !== true))
+    ) {
+      this.#currentAssignment(lead, lane, true);
+      if (!this.#inAssignedWorkspace(lane, live)) return refuse("workspace-not-allowed");
+      return refuse(
+        workerReason(live) ??
+          (live.activity === "compacting" ? "session-compacting" : "follower-operation-unverified"),
+      );
+    }
     if (lane.agent === "claude-code" && parseClaudeSlashCommand(body))
       return refuse("worker-command-unsupported");
     const operation = running ? (mode === "steer" ? "steer" : "queue-add") : "send";
-    if (!running && live.sendEnabled !== true)
-      return refuse(typeof live.reason === "string" ? live.reason : "worker-busy");
+    if (!running && live.sendEnabled !== true) return refuse(workerReason(live) ?? "worker-busy");
     this.#currentAssignment(lead, lane, true);
     const requestId = randomUUID();
     let outcome: Record<string, unknown>;
@@ -1961,10 +2018,11 @@ export class OrchestrationService {
     }
     const current = this.#currentAssignment(lead, lane, false);
     const waiting = live ? waitingItems(live, current.scope) : [];
+    const reason = workerReason(live);
     return text({
       worker: lane.name,
-      status: typeof live?.status === "string" ? live.status : "unavailable",
-      ...(typeof live?.reason === "string" ? { reason: live.reason } : {}),
+      status: workerStatus(live),
+      ...(reason ? { reason } : {}),
       ...this.#healthView(lane, live),
       title: lane.title,
       waitingForUser: waiting,

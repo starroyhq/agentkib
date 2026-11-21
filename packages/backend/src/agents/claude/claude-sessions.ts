@@ -16,7 +16,7 @@ import { claudeConfigFiles, resolveClaudeConfig } from "./claude-config";
 import { isFile, readText, within } from "../../files";
 import { isProbeWorkspace } from "../../paths";
 import { jsonLines } from "../../jsonl";
-import { sessionTitle, type NativeSessionSource } from "../../codex-sessions";
+import { sessionTitle, type NativeSessionSource } from "../codex/codex-sessions";
 import { isClaudeEcho } from "../../session-document-providers";
 import { timestamp } from "../../timestamps";
 import { compareTimes, compareUtf8 } from "../../workspaces";

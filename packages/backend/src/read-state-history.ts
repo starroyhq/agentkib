@@ -3,7 +3,10 @@ import type { ConversationReadResult } from "@agentkib/runtime-protocol";
 import { ReadStateLedger, type ReadCheckpoint } from "./read-state-ledger";
 import { jsonTimestamp } from "./session-history";
 import { hasText, messageText, trimWhitespace } from "./session-events";
-import { claudeCommandInvocation, claudeCommandOutput } from "./claude-command-records";
+import {
+  claudeCommandInvocation,
+  claudeCommandOutput,
+} from "./agents/claude/claude-command-records";
 import { isReparseOrSymlink } from "./native-files";
 
 const SLICE_BYTES = 4 * 1024 * 1024;

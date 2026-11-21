@@ -16,7 +16,7 @@ import {
 } from "@agentkib/runtime-protocol";
 import { CodexSessions } from "./agents/codex/codex-sessions";
 import { codexRollouts } from "./agents/codex/codex-rollout-files";
-import { ClaudeSessions } from "./claude-sessions";
+import { ClaudeSessions } from "./agents/claude/claude-sessions";
 import { GrokSessions } from "./grok-sessions";
 import { OpenClawSessions } from "./openclaw-sessions";
 import { HermesSessions } from "./hermes-sessions";

@@ -23,7 +23,7 @@ import {
   publicMcpConfig,
   type ParsedMcpImport,
 } from "./mcp-import";
-import { recordClaudeGlobalWrite } from "./claude-global-writes";
+import { recordClaudeGlobalWrite } from "./agents/claude/claude-global-writes";
 import { readNativeMcpImports, scanNativeMcp } from "./mcp-native-scan";
 import type { BackendStore } from "./store";
 import type { McpManager } from "./mcp";

@@ -11,11 +11,15 @@ import {
   claudeManagedDir,
   resolveClaudeConfig,
   type ClaudeGlobalConfigGate,
-} from "./claude-config";
-import { hasClaudeProjects, readClaudeProjectEntry } from "./claude-project-config";
-import { resolveRepoRoot } from "./claude-memory";
-import { readClaudeAssets } from "./claude-assets";
-import { readClaudeSettings, type ClaudeSettings, type McpPolicyEntry } from "./claude-settings";
+} from "./agents/claude/claude-config";
+import { hasClaudeProjects, readClaudeProjectEntry } from "./agents/claude/claude-project-config";
+import { resolveRepoRoot } from "./agents/claude/claude-memory";
+import { readClaudeAssets } from "./agents/claude/claude-assets";
+import {
+  readClaudeSettings,
+  type ClaudeSettings,
+  type McpPolicyEntry,
+} from "./agents/claude/claude-settings";
 import { isSensitiveExternalPath } from "./context-claude";
 import { defaultIo } from "./context-claude-sources";
 import type { Agent } from "./doctor-files";

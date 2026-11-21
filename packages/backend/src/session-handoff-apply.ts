@@ -8,7 +8,7 @@ import {
   assertClaudeConfigWritable,
   claudeConfigFiles,
   resolveClaudeConfig,
-} from "./claude-config";
+} from "./agents/claude/claude-config";
 import { userHome } from "./mcp-config-read";
 import { archiveManifest } from "./session-model";
 import type { BackendStore } from "./store";

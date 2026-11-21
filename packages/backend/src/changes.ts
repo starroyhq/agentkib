@@ -16,7 +16,7 @@ import {
   claudeGlobalConfigFile,
   claudeGlobalConfigGate,
   resolveClaudeConfig,
-} from "./claude-config";
+} from "./agents/claude/claude-config";
 import { canonicalProject, withinLexical } from "./files";
 import { lexicalPathIdentity, pathIdentity } from "./paths";
 import { loadManifest, manifestPath } from "./manifest";

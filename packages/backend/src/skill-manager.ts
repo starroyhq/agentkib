@@ -6,7 +6,11 @@ import path from "node:path";
 import JSON5 from "json5";
 import { parse as parseToml } from "smol-toml";
 import { parse as parseYaml } from "yaml";
-import { claudeConfigFiles, isClaudeConfigDirSet, resolveClaudeConfig } from "./claude-config";
+import {
+  claudeConfigFiles,
+  isClaudeConfigDirSet,
+  resolveClaudeConfig,
+} from "./agents/claude/claude-config";
 import { isReparseOrSymlink } from "./native-files";
 import { copySkillPackage, skillPackage, skillPreviewFile } from "./skill-package";
 import { commitTask, currentTask } from "./task-executor";

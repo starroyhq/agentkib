@@ -5,12 +5,12 @@ import {
   claudeManagedDir,
   resolveClaudeConfig,
   type ClaudeConfig,
-} from "./claude-config";
-import { MEMORY_BYTES, MEMORY_LINES, autoMemoryLocation } from "./claude-memory";
-import { describeAssets, readClaudeAssets } from "./claude-assets";
-import { readClaudeSettings, type ClaudeSettings } from "./claude-settings";
+} from "./agents/claude/claude-config";
+import { MEMORY_BYTES, MEMORY_LINES, autoMemoryLocation } from "./agents/claude/claude-memory";
+import { describeAssets, readClaudeAssets } from "./agents/claude/claude-assets";
+import { readClaudeSettings, type ClaudeSettings } from "./agents/claude/claude-settings";
 import { GlobMatchBudget, GlobMatchBudgetExceeded, globMatches } from "./context-glob";
-import { supportsClaudeVersion } from "./claude-version";
+import { supportsClaudeVersion } from "./agents/claude/claude-version";
 import {
   ANCESTOR_LAYERS,
   ANCESTOR_RULES,

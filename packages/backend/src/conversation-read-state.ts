@@ -7,7 +7,7 @@ import {
 } from "@agentkib/runtime-protocol";
 import type { BackendStore } from "./store";
 import type { SessionReaders } from "./session-readers";
-import { resolveClaudeConfig } from "./claude-config";
+import { resolveClaudeConfig } from "./agents/claude/claude-config";
 import { codexRollouts } from "./agents/codex/codex-rollout-files";
 import {
   CodexReadStateObserver,

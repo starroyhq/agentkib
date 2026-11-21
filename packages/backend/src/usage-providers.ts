@@ -3,7 +3,7 @@ import { readFile, readdir, stat } from "node:fs/promises";
 import { availableParallelism, homedir } from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { claudeConfigFiles, resolveClaudeConfig } from "./claude-config";
+import { claudeConfigFiles, resolveClaudeConfig } from "./agents/claude/claude-config";
 import type { Commands } from "./commands";
 import { devinSessionDatabase } from "./agents/devin/devin-sessions";
 

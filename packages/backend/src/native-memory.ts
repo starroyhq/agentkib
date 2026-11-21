@@ -9,10 +9,10 @@ import type {
   NativeMemorySnapshot,
   NativeMemorySource,
 } from "@agentkib/runtime-protocol";
-import { resolveClaudeConfig } from "./claude-config";
-import { autoMemoryLocation } from "./claude-memory";
-import { parseFrontMatter } from "./claude-assets";
-import { readClaudeSettings, redactText } from "./claude-settings";
+import { resolveClaudeConfig } from "./agents/claude/claude-config";
+import { autoMemoryLocation } from "./agents/claude/claude-memory";
+import { parseFrontMatter } from "./agents/claude/claude-assets";
+import { readClaudeSettings, redactText } from "./agents/claude/claude-settings";
 import { isSensitiveExternalPath } from "./context-claude";
 import {
   defaultIo,

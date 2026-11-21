@@ -9,7 +9,7 @@
     "./session-store": "./src/session-store.ts",
     "./sql": "./src/sql.ts",
     "./codex-sessions": "./src/agents/codex/codex-sessions.ts",
-    "./claude-sessions": "./src/claude-sessions.ts",
+    "./claude-sessions": "./src/agents/claude/claude-sessions.ts",
     "./grok-sessions": "./src/grok-sessions.ts",
     "./openclaw-sessions": "./src/openclaw-sessions.ts",
     "./hermes-sessions": "./src/hermes-sessions.ts",

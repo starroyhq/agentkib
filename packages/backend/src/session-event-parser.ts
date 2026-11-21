@@ -20,7 +20,7 @@ import {
   claudeCommandOutput,
   claudeLocalCommandText,
   claudeTaskNotification,
-} from "./claude-command-records";
+} from "./agents/claude/claude-command-records";
 import {
   compatibleEvents,
   hasText,

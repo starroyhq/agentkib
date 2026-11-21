@@ -1,8 +1,7 @@
-import { createHash } from "node:crypto";
 import { z } from "zod";
 import { DEVIN_PERMISSION_MODES } from "../agents/devin/devin-managed-runner";
 import { historyReferenceSchema, validHistoryControl } from "../history-control-schema";
-import { replayManagedCommand } from "../managed-ledger";
+import { admitControlReceipt } from "./control-receipts";
 
 export const managedControlSchema = z
   .object({
@@ -120,8 +119,11 @@ export async function admitManagedControl(
   const runner = context.runnerForSession(id);
   if (runner && admission.observed) runner.observed = true;
   try {
-    const fingerprint = createHash("sha256").update(stableJson(value)).digest("hex");
-    const previous = replayManagedCommand(context.dataDir, request.requestId, fingerprint);
+    const { previous, fingerprint } = admitControlReceipt(
+      context.dataDir,
+      request.requestId,
+      stableJson(value),
+    );
     return previous ?? (await execute(request, fingerprint));
   } finally {
     const current = context.runnerForSession(id);

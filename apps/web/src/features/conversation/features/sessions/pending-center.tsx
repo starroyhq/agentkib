@@ -5,6 +5,7 @@ import { Button } from "../../components/ui/button";
 import { Dialog } from "../../components/dialog";
 import { useSession } from "./session-context";
 import {
+  approvalSummary,
   pendingScope,
   readPending,
   subscribePending,
@@ -13,7 +14,6 @@ import {
   interactionCopy,
 } from "@agentkib/session-ui";
 import { codexCopyForSurface } from "./codex-copy";
-import { approvalSummary } from "./approval-summary";
 import { homeSessionCopy, interactionCardCopy } from "@agentkib/session-ui";
 
 /**

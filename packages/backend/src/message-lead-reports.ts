@@ -10,6 +10,9 @@ export type LeadMessageControls = {
   queue(sessionId: string): Promise<{ data?: Array<Record<string, unknown>> } | null>;
 };
 
+/** A native usage hold was observed before sending any controls. */
+export class LeadReportUsageLimit extends Error {}
+
 /**
  * The reports for Codex and DeepSeek Harness Project Agents (docs/agents/project-agent.md). A
  * report is a message AgentKib sends the lead in the name of the device that set it up: at once
@@ -26,6 +29,9 @@ export class MessageLeadReports {
   /** Sends or queues the report; true when it joined one still waiting. Throws when refused. */
   async send(sessionId: string, deviceId: string, text: string): Promise<boolean> {
     const live = await this.controls.live(sessionId);
+    // A Codex automatic continue in flight still has its live limit; a queue-add would clear it.
+    if (live.executionMode === "codex-managed" && live.usageLimit != null)
+      throw new LeadReportUsageLimit("usage-limit");
     const running = ["running", "awaiting-approval", "waiting-input"].includes(String(live.status));
     const control = (value: Record<string, unknown>) =>
       this.controls.control({

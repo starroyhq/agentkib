@@ -107,6 +107,239 @@ function service(
 
 const parse = (result: { text: string }) => JSON.parse(result.text);
 
+describe("Project Agent supervision", () => {
+  const now = Date.parse("2026-01-01T12:00:00Z");
+
+  async function supervised(
+    options: { agent?: string; scope?: Record<string, unknown> } & Partial<LaneHost> = {},
+  ) {
+    const { agent = "codex", scope, ...overrides } = options;
+    const { lanes, lives, calls } = host(overrides);
+    const session = lanes.session;
+    lanes.session = (id) =>
+      id === WORKER ? { agent, workspaceId: "w1", title: null } : session(id);
+    const delivered: string[] = [];
+    const orchestration = service(lanes, directory(), "boot", (_session, _device, message) => {
+      delivered.push(message);
+      return false;
+    });
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(now);
+    cleanups.push(() => vi.useRealTimers());
+    orchestration.designate({ ...OWNER, scope });
+    await assignWorker(orchestration);
+    const tick = (milliseconds: number) => {
+      vi.setSystemTime(now + milliseconds);
+      return orchestration.catchUp();
+    };
+    const list = async () => parse(await orchestration.call(LEAD, "worker_list", {})).workers[0];
+    const read = async () =>
+      parse(await orchestration.call(LEAD, "worker_read", { worker: "worker-1" }));
+    return { orchestration, delivered, lives, calls, tick, list, read };
+  }
+
+  it("debounces a terminal disconnect and reports recovery only after a confirmed outage", async () => {
+    const { orchestration, delivered, lives, tick, list, read } = await supervised({
+      agent: "claude-code",
+    });
+    const offline = {
+      executionMode: "claude-follower",
+      status: "unsupported",
+      reason: "claude-bridge-disconnected",
+      executionLocation: null,
+    };
+    const online = {
+      status: "idle",
+      executionMode: "claude-follower",
+      executionLocation: "terminal",
+    };
+    lives.set(WORKER, offline);
+    await tick(0);
+    await tick(60_000);
+    lives.set(WORKER, online);
+    await tick(60_001);
+    expect(delivered).toEqual([]);
+
+    lives.set(WORKER, offline);
+    await tick(80_000);
+    await tick(151_000);
+    await tick(171_000);
+    expect(delivered).toHaveLength(1);
+    expect(delivered[0]).toContain("(claude-bridge-disconnected). Requires user action");
+    expect(await list()).toMatchObject({
+      offline: { durationMs: 91_000, reason: "claude-bridge-disconnected" },
+    });
+    expect(await read()).toHaveProperty("offline.reason", "claude-bridge-disconnected");
+    expect(orchestration.roles().get(WORKER)).toHaveProperty("requiresUser", true);
+    lives.set(WORKER, online);
+    await tick(191_000);
+    await tick(211_000);
+    expect(delivered).toHaveLength(2);
+    expect(delivered[1]).toContain("connection recovered");
+    expect(await list()).not.toHaveProperty("offline");
+    expect(orchestration.roles().get(WORKER)).not.toHaveProperty("requiresUser");
+  });
+
+  it("reports unavailable live reads and leaves an event gap on a connected terminal alone", async () => {
+    let disconnected = true;
+    const { delivered, tick } = await supervised({
+      observe: async () => {
+        if (disconnected) throw new Error("private provider details");
+        return {
+          status: "unsupported",
+          executionMode: "claude-follower",
+          executionLocation: "terminal",
+          reason: "claude-bridge-event-gap",
+        };
+      },
+    });
+    await tick(0);
+    await tick(80_000);
+    expect(delivered).toHaveLength(1);
+    expect(delivered[0]).toContain("live-unavailable");
+    expect(delivered[0]).not.toContain("private provider");
+    disconnected = false;
+    await tick(100_000);
+    await tick(180_000);
+    expect(delivered).toHaveLength(2);
+    expect(delivered[1]).toContain("connection recovered");
+  });
+
+  it("projects an automatic limit once, refuses delegation until reset and leaves retries in place", async () => {
+    const { orchestration, delivered, lives, calls, tick, list, read } = await supervised();
+    const usageLimit = {
+      kind: "weekly",
+      resetsAt: now + 60_000,
+      continueAt: now + 90_000,
+      manual: null,
+    };
+    lives.set(WORKER, {
+      status: "idle",
+      sendEnabled: true,
+      usageLimit: { ...usageLimit, message: "native message", deviceId: "device" },
+    });
+    await tick(0);
+    await tick(20_000);
+    expect(delivered).toHaveLength(1);
+    expect(delivered[0]).toContain("usage limit (weekly)");
+    expect(delivered[0]).toContain(new Date(usageLimit.resetsAt).toISOString());
+    expect(delivered[0]).toContain(new Date(usageLimit.continueAt).toISOString());
+    expect((await read()).usageLimit).toEqual(usageLimit);
+    expect((await list()).usageLimit).toEqual(usageLimit);
+    const send = () =>
+      orchestration.call(LEAD, "worker_send", { worker: "worker-1", text: "next" });
+    expect(parse(await send())).toEqual({
+      accepted: false,
+      reason: "worker-usage-limited",
+      resetsAt: usageLimit.resetsAt,
+      continueAt: usageLimit.continueAt,
+    });
+    expect(calls).toEqual([]);
+    await tick(60_000);
+    expect(parse(await send())).toMatchObject({ accepted: true, operation: "send" });
+    expect(calls).toHaveLength(1);
+  });
+
+  it("rearms a stalled turn only after progress and skips waiting, truncated and missing signals", async () => {
+    const { delivered, lives, tick, read } = await supervised({ scope: { stallMinutes: 3 } });
+    const running = { status: "running", turnId: "turn", streamText: "started", revision: 1 };
+    lives.set(WORKER, running);
+    await tick(0);
+    lives.set(WORKER, { ...running, revision: 2 });
+    await tick(180_000);
+    expect(delivered).toEqual([]);
+    await tick(180_001);
+    await tick(200_000);
+    expect(delivered).toHaveLength(1);
+    expect(delivered[0]).toContain("may be stalled");
+    expect((await read()).noProgressForMs).toBe(200_000);
+    lives.set(WORKER, { ...running, streamText: "progress" });
+    await tick(220_000);
+    await tick(410_000);
+    expect(delivered).toHaveLength(2);
+
+    const states = [
+      { ...running, status: "awaiting-approval" },
+      { ...running, questions: [{ id: "question" }] },
+      { ...running, streamTextTruncated: true },
+      { ...running, streamText: undefined },
+    ];
+    for (const [index, state] of states.entries()) {
+      lives.set(WORKER, state);
+      await tick(500_000 + 300_000 * index);
+      expect(await read()).not.toHaveProperty("noProgressForMs");
+    }
+    expect(delivered).toHaveLength(2);
+  });
+
+  it("gives Devin time to read a reset and never treats its runner revision as progress", async () => {
+    const { delivered, lives, tick, read } = await supervised({ agent: "devin" });
+    lives.set(WORKER, {
+      status: "idle",
+      usageLimitPending: true,
+      usageLimit: { kind: "credits", resetsAt: null, continueAt: null, manual: "reset-unknown" },
+    });
+    await tick(20_000);
+    expect(delivered).toEqual([]);
+    lives.set(WORKER, {
+      status: "idle",
+      usageLimit: {
+        kind: "credits",
+        resetsAt: now + 60_000,
+        continueAt: now + 90_000,
+        manual: null,
+      },
+    });
+    await tick(40_000);
+    expect(delivered).toHaveLength(1);
+    expect(delivered[0]).toContain("AgentKib will continue");
+    lives.set(WORKER, { status: "running", turnId: "devin-turn", revision: 3 });
+    await tick(100_000);
+    await tick(800_000);
+    expect(await read()).not.toHaveProperty("noProgressForMs");
+    expect(delivered).toHaveLength(1);
+  });
+
+  it("batches missed turns and health events into a single turn and preserves the budget and pause", async () => {
+    const { delivered, lives, orchestration, tick } = await supervised({
+      scope: { maxAutoTurns: 1 },
+      endedTurns: async () => [
+        {
+          turnId: "missed",
+          outcome: "completed",
+          startedAt: new Date(now).toISOString(),
+          endedAt: new Date(now + 1_000).toISOString(),
+          replyText: "result",
+        },
+      ],
+    });
+    lives.set(WORKER, { status: "disconnected", reason: "codex-disconnected" });
+    await tick(0);
+    lives.set(WORKER, {
+      status: "disconnected",
+      reason: "codex-disconnected",
+      usageLimit: { kind: "credits", resetsAt: null, continueAt: null, manual: "reset-unknown" },
+    });
+    await tick(80_000);
+    expect(delivered).toHaveLength(1);
+    expect(delivered[0]).toContain("turn ended");
+    expect(delivered[0]).toContain("offline for");
+    expect(delivered[0]).toContain("Requires user action (reset-unknown)");
+    expect(orchestration.status(LEAD)?.autoTurns).toBe(1);
+    lives.set(WORKER, { status: "idle" });
+    await tick(100_000);
+    expect(delivered).toHaveLength(1);
+    expect(orchestration.status(LEAD)).toMatchObject({
+      paused: true,
+      reason: "auto-turn-limit",
+      pendingReports: [expect.stringContaining("connection recovered")],
+    });
+    await tick(120_000);
+    orchestration.resume(LEAD, DEVICE);
+    expect(delivered).toHaveLength(2);
+  });
+});
+
 describe("lead registry", () => {
   it("keeps a lead across processes and pauses it after a restart", () => {
     const root = directory();

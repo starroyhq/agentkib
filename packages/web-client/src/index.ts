@@ -170,6 +170,8 @@ export interface ProjectAgentScope {
   policies: string[];
   maxLanes: number;
   maxAutoTurns: number;
+  /** Stall threshold in minutes. Hosts with supervision default it to 10. */
+  stallMinutes?: number;
   /** "file-change" and "command": approvals it may decide; absent on older hosts. */
   approvals?: string[];
   answers?: boolean;

@@ -4475,7 +4475,7 @@ export class WebAccessService {
         throw new HttpError(400, "invalid_input");
       scope = Object.fromEntries(
         Object.entries(body.scope).filter(([key]) =>
-          ["approvals", "answers", "maxAutoTurns"].includes(key),
+          ["approvals", "answers", "maxAutoTurns", "stallMinutes"].includes(key),
         ),
       );
     }

@@ -83,7 +83,11 @@ describe("trusted Claude owner boundary", () => {
       deviceId: "phone",
     });
     await localClaudeRequest(deps, { operation: "lead-designate", sessionId: "session", scope });
-    await localClaudeRequest(deps, { operation: "lead-update", sessionId: "session", scope });
+    await localClaudeRequest(deps, {
+      operation: "lead-update",
+      sessionId: "session",
+      scope: { ...scope, stallMinutes: 18, unknownSetting: true },
+    });
     await localClaudeRequest(deps, {
       operation: "lead-pause",
       sessionId: "session",
@@ -100,7 +104,12 @@ describe("trusted Claude owner boundary", () => {
         scope,
         deviceId: "agentkib-local-owner",
       },
-      { operation: "lead-update", sessionId: "session", scope, deviceId: "agentkib-local-owner" },
+      {
+        operation: "lead-update",
+        sessionId: "session",
+        scope: { ...scope, stallMinutes: 18 },
+        deviceId: "agentkib-local-owner",
+      },
       // Only setting up and changing carry a scope, and only acting on one worker names it.
       { operation: "lead-pause", sessionId: "session", deviceId: "agentkib-local-owner" },
       {

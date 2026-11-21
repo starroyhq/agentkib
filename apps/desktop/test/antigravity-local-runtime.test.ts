@@ -6,8 +6,8 @@ import * as http from "node:http";
 import {
   AntigravityLocalRuntime,
   antigravityNativePage,
-} from "../../../packages/backend/src/antigravity-local-runtime";
-import type { AntigravityLocalRecord } from "../../../packages/backend/src/antigravity-local-store";
+} from "../../../packages/backend/src/agents/antigravity/antigravity-local-runtime";
+import type { AntigravityLocalRecord } from "../../../packages/backend/src/agents/antigravity/antigravity-local-store";
 
 const id = "11111111-2222-3333-4444-555555555555";
 const dispose: (() => void | Promise<void>)[] = [];

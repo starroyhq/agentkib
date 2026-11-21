@@ -12,11 +12,11 @@ import { request } from "node:http";
 import { homedir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { canonicalize, pathIdentity } from "./paths";
-import type { ConversationEvent, ConversationEventPage } from "./session-events";
-import { MAX_PAGE_BYTES, truncateUtf8 } from "./session-events";
+import { canonicalize, pathIdentity } from "../../paths";
+import type { ConversationEvent, ConversationEventPage } from "../../session-events";
+import { MAX_PAGE_BYTES, truncateUtf8 } from "../../session-events";
 import type { AntigravityLocalRecord } from "./antigravity-local-store";
-import { timestamp } from "./timestamps";
+import { timestamp } from "../../timestamps";
 
 const MAX_RESPONSE = 32 * 1024 * 1024;
 const ROOTS = { app: "antigravity", ide: "antigravity-ide" } as const;

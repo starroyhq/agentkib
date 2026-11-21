@@ -2,10 +2,10 @@ import { spawn, type ChildProcess } from "node:child_process";
 import type { Readable, Writable } from "node:stream";
 import path from "node:path";
 import { performance } from "node:perf_hooks";
-import { acpObject, parseAcpJson, stringifyAcpJson } from "./acp-json";
-import { windowsProcessTree, type NativeProcessTree } from "./native-process";
-import { hasText } from "./session-events";
-import { versionAtLeast } from "./native-version";
+import { acpObject, parseAcpJson, stringifyAcpJson } from "../../acp-json";
+import { windowsProcessTree, type NativeProcessTree } from "../../native-process";
+import { hasText } from "../../session-events";
+import { versionAtLeast } from "../../native-version";
 
 export const MAX_ACP_FRAME_BYTES = 1024 * 1024;
 export type AcpId = bigint | string;

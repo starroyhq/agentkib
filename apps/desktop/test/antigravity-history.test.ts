@@ -1,11 +1,11 @@
 // @vitest-environment node
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { AntigravityLocalRecord } from "../../../packages/backend/src/antigravity-local-store";
+import type { AntigravityLocalRecord } from "../../../packages/backend/src/agents/antigravity/antigravity-local-store";
 import type { ConversationEventPage } from "../../../packages/backend/src/session-events";
 import {
   AntigravityHistory,
   antigravityLocalRef,
-} from "../../../packages/backend/src/antigravity-history";
+} from "../../../packages/backend/src/agents/antigravity/antigravity-history";
 
 const sources = vi.hoisted(() => ({
   acp: {
@@ -19,7 +19,7 @@ const sources = vi.hoisted(() => ({
   local: { list: vi.fn(), events: vi.fn() },
   runtime: { list: vi.fn(), available: vi.fn(), events: vi.fn() },
 }));
-vi.mock("../../../packages/backend/src/antigravity-sessions", () => ({
+vi.mock("../../../packages/backend/src/agents/antigravity/antigravity-sessions", () => ({
   AntigravitySessions: class {
     list = sources.acp.list;
     close = sources.acp.close;
@@ -29,13 +29,13 @@ vi.mock("../../../packages/backend/src/antigravity-sessions", () => ({
     readEvents = sources.acp.readEvents;
   },
 }));
-vi.mock("../../../packages/backend/src/antigravity-local-store", () => ({
+vi.mock("../../../packages/backend/src/agents/antigravity/antigravity-local-store", () => ({
   AntigravityLocalStore: class {
     list = sources.local.list;
     events = sources.local.events;
   },
 }));
-vi.mock("../../../packages/backend/src/antigravity-local-runtime", () => ({
+vi.mock("../../../packages/backend/src/agents/antigravity/antigravity-local-runtime", () => ({
   AntigravityLocalRuntime: class {
     list = sources.runtime.list;
     available = sources.runtime.available;

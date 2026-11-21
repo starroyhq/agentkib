@@ -35,7 +35,7 @@ import { GrokSessions } from "../../../packages/backend/src/grok-sessions";
 import { HermesSessions } from "../../../packages/backend/src/hermes-sessions";
 import { OpenClawSessions } from "../../../packages/backend/src/openclaw-sessions";
 import { OpenCodeSessions } from "../../../packages/backend/src/opencode-sessions";
-import { AntigravitySessions } from "../../../packages/backend/src/antigravity-sessions";
+import { AntigravitySessions } from "../../../packages/backend/src/agents/antigravity/antigravity-sessions";
 import { prepareCursorIdePayload } from "../../../packages/backend/src/cursor-ide-sessions";
 import { stableNativeRef } from "../../../packages/backend/src/session-history";
 import { canonicalize } from "../../../packages/backend/src/paths";

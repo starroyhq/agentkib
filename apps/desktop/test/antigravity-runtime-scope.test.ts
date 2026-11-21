@@ -5,8 +5,8 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { createServer } from "node:http";
 import { afterEach, describe, expect, it } from "vitest";
-import { AntigravityLocalRuntime } from "../../../packages/backend/src/antigravity-local-runtime";
-import type { AntigravityLocalRecord } from "../../../packages/backend/src/antigravity-local-store";
+import { AntigravityLocalRuntime } from "../../../packages/backend/src/agents/antigravity/antigravity-local-runtime";
+import type { AntigravityLocalRecord } from "../../../packages/backend/src/agents/antigravity/antigravity-local-store";
 
 const id = "11111111-2222-3333-4444-555555555555";
 const cleanup: (() => void | Promise<void>)[] = [];

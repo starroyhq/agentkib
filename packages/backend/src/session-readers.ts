@@ -21,7 +21,7 @@ import { GrokSessions } from "./grok-sessions";
 import { OpenClawSessions } from "./openclaw-sessions";
 import { HermesSessions } from "./hermes-sessions";
 import { OpenCodeSessions } from "./opencode-sessions";
-import { AntigravityHistory } from "./antigravity-history";
+import { AntigravityHistory } from "./agents/antigravity/antigravity-history";
 import { CursorSessions } from "./cursor-sessions";
 import { CursorIdeSessions } from "./cursor-ide-sessions";
 import { DevinSessions } from "./devin-sessions";

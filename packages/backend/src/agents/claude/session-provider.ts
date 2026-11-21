@@ -8,6 +8,7 @@ import {
 } from "../../session-provider";
 import { withProviderCapabilities } from "../../sessions/providers";
 import { legacySessionFields, sessionQuerySchema } from "../../sessions/routing";
+import { validateClaudeControl } from "../../sessions/validate/claude-code";
 import type { ClaudeBridge } from "./claude-bridge";
 import {
   ClaudeHostControlPreflightError,
@@ -37,6 +38,7 @@ const personOperations = new Set([
 
 export class ClaudeSessionProvider implements SessionProvider, TypedSessionProvider {
   readonly agent = "claude-code" as const;
+  readonly validateControl = validateClaudeControl;
   readonly createOperation = "create";
   readonly typed = this;
   readonly #routes = new Map<string, Route>();

@@ -2606,6 +2606,20 @@ describe.skipIf(process.platform === "win32")(
       expect(l.spoke).toEqual([f.target.sessionId]);
     });
 
+    it("keeps a later report separate from a report already offered to the terminal", async () => {
+      const l = terminalLead();
+      const f = await fixture(1000, l.lead);
+      l.setLeading(true);
+      f.bridge.queueReport(f.target.sessionId, "report A");
+      const first = (await leadPoll(f)).body.lead.reports;
+      expect(first).toEqual([{ id: expect.any(String), text: "report A" }]);
+
+      f.bridge.queueReport(f.target.sessionId, "report B");
+      const next = (await leadPoll(f, { takenReports: [first[0].id] })).body.lead.reports;
+      expect(next).toEqual([{ id: expect.any(String), text: "report B" }]);
+      expect(next[0].id).not.toBe(first[0].id);
+    });
+
     it("counts the turns its CLI begins by itself, and stops one past the limit", async () => {
       const l = terminalLead();
       const f = await fixture(1000, l.lead);

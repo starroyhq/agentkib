@@ -271,6 +271,8 @@ export function initialState() {
     snapshotRecovery: null,
     sendDisabled: false,
     pendingSend: null,
+    // The last ambiguous report may still open its native turn after submit returns.
+    unconfirmedReport: null,
     modelPicker: null,
     modelPickerSupported: undefined,
     outbox: [],
@@ -405,8 +407,20 @@ async function applyLead($, state, lead) {
       state.takenReports.add(report.id);
       continue;
     }
-    if (!writable(state) || state.outbox.length >= MAX_OUTBOX) break;
-    state.outbox.push(outboxItem({ commandId: report.id, text: report.text }, "queue", null));
+    if (!writable(state)) break;
+    if (state.outbox.length >= MAX_OUTBOX) {
+      // Keep an old uncertain report visible until its space is needed by a new report.
+      const old = state.outbox.find(
+        (item) =>
+          item.leadReport && item.status === "unknown" && item !== state.unconfirmedReport?.report,
+      );
+      if (!old) break;
+      state.outbox = state.outbox.filter((item) => item !== old);
+    }
+    state.outbox.push({
+      ...outboxItem({ commandId: report.id, text: report.text }, "queue", null),
+      leadReport: true,
+    });
     state.takenReports.add(report.id);
     state.dirty = true;
   }
@@ -762,6 +776,7 @@ function invalidate(state, reason) {
   // A revoked or ended connection sends nothing more. A prompt already waiting
   // in the native submit is dropped at dispatch, because the state is closed.
   state.outbox = [];
+  state.unconfirmedReport = null;
   state.activityVerified = false;
   state.nativeWorking = null;
   state.compacting = false;
@@ -1045,7 +1060,7 @@ async function snapshot($, state) {
         state.activityVerified &&
         !state.currentTurnId &&
         !state.pendingSend &&
-        state.outbox.length === 0,
+        !hasQueuedInput(state),
       steer: writable(state) && Boolean(state.currentTurnId) && state.outbox.length < MAX_OUTBOX,
       queue: writable(state) && state.outbox.length < MAX_OUTBOX,
       stop:
@@ -1183,6 +1198,13 @@ function writable(state) {
     !state.bufferPaused &&
     !state.modelPicker &&
     !state.compacting
+  );
+}
+
+function hasQueuedInput(state) {
+  return (
+    state.unconfirmedReport !== null ||
+    state.outbox.some((item) => !item.leadReport || item.status !== "unknown")
   );
 }
 
@@ -1411,9 +1433,21 @@ function withdraw(state, command, result) {
     result.reason = "outbox-item-unavailable";
   else {
     state.outbox = state.outbox.filter((entry) => entry !== item);
+    if (state.unconfirmedReport?.report === item) state.unconfirmedReport = null;
     state.dirty = true;
     result.status = "accepted";
     delete result.reason;
+  }
+}
+
+function markOutboxUnknown(state, item, pending) {
+  item.status = "unknown";
+  if (!pending.report) {
+    state.sendDisabled = true;
+  } else if (!pending.competing && state.revision === pending.expectedRevision) {
+    // Wait for this prompt's native start, another main turn, or a verified reconnect.
+    // The row stays unknown unless there is positive evidence, so it is never selected again.
+    state.unconfirmedReport = pending;
   }
 }
 
@@ -1422,6 +1456,7 @@ async function dispatchOutbox($, state) {
   if (
     state.dispatching ||
     state.pendingSend ||
+    state.unconfirmedReport ||
     !writable(state) ||
     !state.connection ||
     state.connection.leaseId === "reconnecting" ||
@@ -1434,7 +1469,9 @@ async function dispatchOutbox($, state) {
   const item =
     state.outbox.find((entry) => entry.kind === "steer" && entry.turnId === null && ready(entry)) ??
     state.outbox.find((entry) => entry.kind === "queue" && ready(entry));
-  if (!item) return;
+  // Let the Runtime remove the report ID before submitting it, so a reloaded
+  // plugin cannot be offered the same report after it executed here.
+  if (!item || (item.leadReport && state.takenReports.has(item.id))) return;
   const connection = state.connection;
   try {
     await identity($, state);
@@ -1445,6 +1482,7 @@ async function dispatchOutbox($, state) {
     state.connection !== connection ||
     state.dispatching ||
     state.pendingSend ||
+    state.unconfirmedReport ||
     !writable(state) ||
     state.currentTurnId ||
     !state.activityVerified ||
@@ -1459,6 +1497,8 @@ async function dispatchOutbox($, state) {
     observed: false,
     competing: false,
     turnId: null,
+    report: item.leadReport ? item : null,
+    reportAppended: false,
   };
   state.pendingSend = pending;
   state.dispatching = item;
@@ -1466,7 +1506,8 @@ async function dispatchOutbox($, state) {
   state.dirty = true;
   try {
     const submitted = await $.prompt.submit({ text: item.text, asUser: true });
-    if (submitted?.drop) {
+    if (!state.outbox.includes(item)) return;
+    if (submitted?.drop && !pending.reportAppended && (!pending.report || !pending.turnId)) {
       // A terminal prompt entered first or a hook refused it. Try again once the
       // session has changed since this attempt, never in a loop against the same
       // state. A terminal turn that ran first has already changed it.
@@ -1481,12 +1522,10 @@ async function dispatchOutbox($, state) {
     ) {
       state.outbox = state.outbox.filter((entry) => entry !== item);
     } else {
-      item.status = "unknown";
-      state.sendDisabled = true;
+      markOutboxUnknown(state, item, pending);
     }
   } catch {
-    item.status = "unknown";
-    state.sendDisabled = true;
+    if (state.outbox.includes(item)) markOutboxUnknown(state, item, pending);
   } finally {
     if (state.pendingSend === pending) state.pendingSend = null;
     if (state.dispatching === item) state.dispatching = null;
@@ -1549,7 +1588,7 @@ async function execute($, state, command) {
       !state.activityVerified ||
       state.currentTurnId ||
       state.pendingSend ||
-      state.outbox.length > 0
+      hasQueuedInput(state)
     )
       result.reason = "session-not-idle";
     else {
@@ -1648,11 +1687,12 @@ async function pump($, state, nativeEvent = false) {
     for (const result of state.unacknowledgedResults.values()) await reportResult($, state, result);
     const connection = state.connection;
     const lead = leadFeature(state);
-    const taken = [...state.takenReports];
+    const taken = leadOffered(state) ? [...state.takenReports] : [];
     const response = await request($, state, "/v1/commands", {
       ...lease(state),
       afterCommandId: state.afterCommandId,
-      waitMs: 20_000,
+      // Report ACKs unblock the outbox and do not need a long poll.
+      waitMs: taken.length ? 0 : 20_000,
       ...(leadOffered(state)
         ? { leadTools: lead, ...(taken.length ? { takenReports: taken } : {}) }
         : {}),
@@ -1768,6 +1808,7 @@ async function adopt($, state, observed, response) {
   state.credentialPath = response.credentialPath;
   state.closed = false;
   state.sendDisabled = false;
+  state.unconfirmedReport = null;
   state.needsReconnect = false;
   state.seq = 0;
   state.events = [];
@@ -1958,6 +1999,9 @@ async function reconnectOnce($, state) {
     state.credentialPath = path;
     state.closed = false;
     state.needsReconnect = false;
+    // A new lease can release an unresolved attempt, but not lose a prompt
+    // the native session has already appended and may still open a turn for.
+    if (!state.unconfirmedReport?.reportAppended) state.unconfirmedReport = null;
     state.seq = 0;
     state.events = [];
     state.snapshotRecovery = null;
@@ -2321,6 +2365,7 @@ export function register(on) {
       pending.observed = true;
     } else {
       if (pending) pending.competing = true;
+      if (state.unconfirmedReport) state.unconfirmedReport.competing = true;
       if (UNATTENDED_ORIGINS.has(e.origin?.kind)) {
         state.unattended.push(e.text);
         if (state.unattended.length > 8) state.unattended.shift();
@@ -2371,9 +2416,17 @@ export function register(on) {
     state.waits.clear();
     state.activityVerified = true;
     state.revision += 1;
-    const pending = state.pendingSend;
+    const pending = state.pendingSend ?? state.unconfirmedReport;
     const fromAgentKib = pending?.observed && !pending.competing && pending.text === e.text;
-    if (fromAgentKib) pending.turnId = e.turnId;
+    if (fromAgentKib) {
+      pending.turnId = e.turnId;
+      if (pending.report && pending.reportAppended) {
+        // The engine attributed the prompt row to this plugin and opened its
+        // turn. A missing or late submit response cannot undo that delivery.
+        state.outbox = state.outbox.filter((item) => item !== pending.report);
+        if (state.unconfirmedReport === pending) state.unconfirmedReport = null;
+      }
+    }
     const unattendedAt = e.text ? state.unattended.lastIndexOf(e.text) : -1;
     if (unattendedAt >= 0) state.unattended.splice(unattendedAt, 1);
     // Steers waiting for the next turn join whichever turn starts, the terminal's too.
@@ -2441,6 +2494,7 @@ export function register(on) {
   on("turn.complete", async ($, e, next) => {
     if (e.agentId !== undefined) return next(e);
     const startedAt = e.turnId === state.currentTurnId ? state.currentTurnStartedAt : null;
+    if (e.turnId === state.currentTurnId) state.unconfirmedReport = null;
     if (e.turnId === state.currentTurnId || state.currentTurnId === null) {
       state.currentTurnId = null;
       state.currentTurnStartedAt = null;
@@ -2605,7 +2659,7 @@ export function register(on) {
     return next(e);
   });
   on("session.append", async ($, e, next) => {
-    const pending = state.pendingSend;
+    const pending = state.pendingSend ?? state.unconfirmedReport;
     if (e.agentId === undefined && pending && (e.door === "prompt" || e.door === "queue")) {
       const text = Array.isArray(e.message?.content)
         ? e.message.content
@@ -2622,6 +2676,7 @@ export function register(on) {
         // Self-raised prompt.submit hooks are skipped by Claude's re-entry
         // guard. This engine-stamped row proves which prompt actually entered.
         pending.observed = true;
+        if (pending.report && e.message?.type === "user") pending.reportAppended = true;
       } else {
         pending.competing = true;
       }

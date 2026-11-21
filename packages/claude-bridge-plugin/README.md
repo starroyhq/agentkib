@@ -66,8 +66,12 @@ command and does not call a model.
 
 - When the Runtime names the `lead-tools` feature and AgentKib makes the session a
   Project Agent, register its worker tools (`mcp__agentkib-bridge__worker_*`) with
-  `$.tool.register` and run their calls through AgentKib; queue each report AgentKib
-  sends as a message submitted once the terminal is idle. While the session leads,
+  `$.tool.register` and run their calls through AgentKib. Submit each report once the
+  terminal is idle and the Runtime acknowledges that the plugin took it. A native
+  prompt from the bridge and its matching turn confirm delivery. An unconfirmed
+  report is never submitted again. A subsequent native turn lets the next report
+  proceed. Reconnect also does so if Claude Code had not yet recorded the prompt
+  in the conversation. While the session leads,
   the tools run without asking: the plugin answers the engine's default ask for them
   with allow, and leaves any rule, hook, setting, other plugin's or organization's ask
   or deny as it is. Turns no one typed (a background task's notice, a schedule) carry
@@ -84,7 +88,7 @@ command and does not call a model.
   fabricated current permission mode, capacity or writable choice. Compaction
   temporarily withholds previous context counts. The workspace browser uses the
   host's existing file grants and cannot attach references to terminal messages.
-- Take text messages sent from AgentKib, in three modes. Each needs a verified,
+- Take user messages sent from AgentKib, in three modes. Each needs a verified,
   writable lease. After any outcome the plugin cannot confirm, that message is
   marked unknown and never sent again, and the plugin takes no more messages
   until it is paired again or the session is reopened in the terminal.

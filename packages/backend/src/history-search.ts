@@ -9,8 +9,8 @@ import {
 } from "@agentkib/runtime-protocol";
 import type { BackendStore } from "./store";
 import type { CursorBridge } from "./cursor-bridge";
-import type { DshBridge } from "./dsh-bridge";
-import { dshSearchRecords } from "./dsh-document";
+import type { DshBridge } from "./agents/dsh/dsh-bridge";
+import { dshSearchRecords } from "./agents/dsh/dsh-document";
 import { resolveWorkspaceIdentity } from "./workspace-identity";
 import { readPreferences, writePreference } from "./preferences";
 import { HistorySearchWorker } from "./history-search-worker";

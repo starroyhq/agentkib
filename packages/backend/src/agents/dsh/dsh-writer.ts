@@ -1,7 +1,7 @@
 import { lstatSync } from "node:fs";
 import path from "node:path";
 import { dshHome } from "./dsh-managed-runtime";
-import { existingFileLeaseBusy } from "./managed-session-lock";
+import { existingFileLeaseBusy } from "../../managed-session-lock";
 
 export type DshWriterStatus = "held" | "free" | "unknown";
 

@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { DshLeadWatch } from "../../../packages/backend/src/dsh-lanes";
+import { DshLeadWatch } from "../../../packages/backend/src/agents/dsh/dsh-lanes";
 import {
   CodexLeadTurns,
   dshTurnOrigin,

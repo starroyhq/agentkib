@@ -12,10 +12,10 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
-import { DshBridge } from "../../../packages/backend/src/dsh-bridge";
-import { DshLaneWatch, DshLeadWatch } from "../../../packages/backend/src/dsh-lanes";
+import { DshBridge } from "../../../packages/backend/src/agents/dsh/dsh-bridge";
+import { DshLaneWatch, DshLeadWatch } from "../../../packages/backend/src/agents/dsh/dsh-lanes";
 import { haltOwnTurns } from "../../../packages/backend/src/lead-turn-origin";
-import { DshManagedRuntime } from "../../../packages/backend/src/dsh-managed-runtime";
+import { DshManagedRuntime } from "../../../packages/backend/src/agents/dsh/dsh-managed-runtime";
 import { MessageLeadReports } from "../../../packages/backend/src/message-lead-reports";
 import {
   OrchestrationService,

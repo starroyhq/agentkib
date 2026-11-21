@@ -498,6 +498,9 @@ importers:
       '@modelcontextprotocol/sdk':
         specifier: 1.32.1
         version: 1.32.1(supports-color@10.2.2)(zod@4.6.7)
+      agentkib-dsh-bridge:
+        specifier: workspace:*
+        version: link:../dsh-bridge-plugin
       bonjour-service:
         specifier: 1.4.4
         version: 1.4.4
@@ -540,7 +543,13 @@ importers:
 
   packages/conversation-state: {}
 
-  packages/runtime-protocol: {}
+  packages/dsh-bridge-plugin: {}
+
+  packages/runtime-protocol:
+    dependencies:
+      agentkib-dsh-bridge:
+        specifier: workspace:*
+        version: link:../dsh-bridge-plugin
 
   packages/session-catalog: {}
 

@@ -23,6 +23,8 @@ import { CodexAppServerSession } from "../../../../packages/backend/src/codex-ap
 import { CodexDesktopApp } from "../../../../packages/backend/src/codex-desktop-app";
 import { CodexFollowerBridge } from "../../../../packages/backend/src/codex-follower-bridge";
 import { CodexRuntimePreflight } from "../../../../packages/backend/src/codex-runtime-preflight";
+import type { SessionProviderResponse } from "../../../../packages/backend/src/session-provider";
+import { WebReadRequests } from "../../../../packages/backend/src/web-read";
 import { startBackend, startHost } from "./harness";
 
 const threadId = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
@@ -348,6 +350,65 @@ describe("Codex session baseline through HTTP and backend RPC", () => {
       stopEnabled: false,
       turnId: null,
     });
+  });
+
+  it("accepts typed read scope and keeps the device command catalogs private", async () => {
+    const sessionId = await create();
+    const rpc = backend!.rpc;
+    const scope = { sessionId, deviceId: host.deviceId, experimentalEnabled: true };
+    const state = (await rpc(RUNTIME_METHODS.sessionRequest, {
+      operation: "live",
+      ...scope,
+    })) as SessionProviderResponse<"live">;
+    expect(state).toMatchObject({
+      operation: "live",
+      result: {
+        sessionId,
+        status: "idle",
+        revision: expect.any(Number),
+        execution: { owner: "agentkib" },
+      },
+    });
+
+    const queueReadsStart = nativeCalls.length;
+    expect(
+      await rpc(RUNTIME_METHODS.sessionRequest, { operation: "queue-list", ...scope }),
+    ).toEqual({
+      operation: "queue-list",
+      result: { data: [], nextCursor: null, complete: true },
+    });
+    expect(nativeCalls.slice(queueReadsStart)).toContainEqual({
+      method: "thread/queue/list",
+      params: { threadId, cursor: null, limit: 100 },
+    });
+
+    // Codex normally supplies only the menu projection. Include a legacy catalog to test both.
+    const managedQuery = WebReadRequests.prototype.managedQuery;
+    const commands = [{ name: "fixture-command" }];
+    vi.spyOn(WebReadRequests.prototype, "managedQuery").mockImplementation(
+      async function (this: WebReadRequests, value) {
+        const result = await managedQuery.call(this, value);
+        return result && typeof result === "object" ? { ...result, commands } : result;
+      },
+    );
+    const query = { operation: "capabilities", sessionId, experimentalEnabled: true };
+    expect(await rpc(RUNTIME_METHODS.sessionRequest, query)).toMatchObject({
+      operation: "capabilities",
+      result: { sessionId, commands, commandMenu: { state: "ready" } },
+    });
+    const capabilities = await rpc(RUNTIME_METHODS.sessionRequest, { ...query, ...scope });
+    expect(capabilities).toMatchObject({ operation: "capabilities", result: { sessionId } });
+    expect(capabilities).not.toHaveProperty("result.commands");
+    expect(capabilities).not.toHaveProperty("result.commandMenu");
+
+    await expect(
+      rpc(RUNTIME_METHODS.sessionRequest, {
+        operation: "settings-prepare",
+        ...scope,
+        runtimeBootId: state.result.runtimeBootId,
+        expectedRevision: state.result.revision,
+      }),
+    ).rejects.toThrow("unsupported-session-provider-operation");
   });
 
   it("publishes parent-scoped Codex subagent activity in stream snapshots and preserves child history", async () => {

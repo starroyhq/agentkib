@@ -9,7 +9,12 @@ import {
   sessionProviderCapabilities,
   type ConversationReadResult,
 } from "@agentkib/runtime-protocol";
-import { historyReferenceSchema, validHistoryControl } from "./history-control-schema";
+import {
+  admitManagedControl,
+  managedControlSchema,
+  stableJson,
+  type ApplyManagedControl,
+} from "./sessions/control-admission";
 import type { BackendStore } from "./store";
 import type { SessionReaders } from "./session-readers";
 import type { ReadStateTarget } from "./conversation-read-state";
@@ -81,7 +86,10 @@ import { ManagedCodexState, elicitationResponse } from "./managed-codex-state";
 import { ManagedCodexEventBridge } from "./managed-codex-state";
 import { projectContextUsage, type ContextUsage } from "./context-usage";
 import { SerialSessionQueue } from "./serial-session-queue";
-import { SessionProviderRegistry, type SessionProvider } from "./session-provider";
+import type { SessionProviderRegistry, SessionProviders } from "./session-provider";
+import { createSessionProviders, withProviderCapabilities } from "./sessions/providers";
+import { sessionQuerySchema as managedQuerySchema } from "./sessions/routing";
+import { DshSessionProvider } from "./agents/dsh/session-provider";
 import { activityBlocks, assertActivityAllows } from "./session-activity";
 import { acquireManagedSessionLease, existingFileLeaseBusy } from "./managed-session-lock";
 import { acquireCodexFollowerOperationLock } from "./codex-follower-operation-lock";
@@ -266,20 +274,6 @@ const sessionProviderOptionsScopeSchema = z
   .object({ workspaceId: z.string().min(1).max(256).optional() })
   .strict();
 
-const managedQuerySchema = z
-  .object({
-    operation: z.enum(["capabilities", "inspect"]),
-    sessionId: z.string().min(1).max(256),
-    deviceId: z
-      .string()
-      .min(1)
-      .max(256)
-      .regex(/^[A-Za-z0-9_:-]+$/)
-      .optional(),
-    experimentalEnabled: z.boolean().optional(),
-  })
-  .strict();
-
 /** A Devin session starts with its first message: Devin stores a session only once a turn runs. */
 const devinCreateSchema = z
   .object({
@@ -341,99 +335,8 @@ const managedLifecycleSchema = z.discriminatedUnion("operation", [
     .strict(),
 ]);
 
-const managedControlSchema = z
-  .object({
-    operation: z.enum([
-      "send",
-      "stop",
-      "approve",
-      "answer",
-      "steer",
-      "queue-add",
-      "queue-update",
-      "queue-delete",
-      "queue-reorder",
-      "rename",
-      "archive",
-      "settings",
-      "goal-set",
-      "goal-pause",
-      "goal-resume",
-      "goal-clear",
-      "fork",
-      "compact",
-      "terminals-clean",
-      "usage-limit-cancel",
-      "usage-limit-continue",
-    ]),
-    sessionId: z.string().min(1).max(256),
-    requestId: z.string().uuid(),
-    deviceId: z
-      .string()
-      .min(1)
-      .max(256)
-      .regex(/^[A-Za-z0-9_:-]+$/)
-      .optional(),
-    runtimeBootId: z.string().min(1).max(256),
-    expectedRevision: z.number().int().nonnegative(),
-    experimentalEnabled: z.boolean(),
-    turnId: z.string().min(1).max(256).optional(),
-    text: z
-      .string()
-      .max(128 * 1024)
-      .optional(),
-    input: z.array(z.unknown()).max(11).optional(),
-    historyReferences: z.array(historyReferenceSchema).max(5).optional(),
-    historyInputHash: z
-      .string()
-      .regex(/^[a-f0-9]{64}$/)
-      .optional(),
-    resourceRefs: z
-      .array(
-        z
-          .object({
-            kind: z.string(),
-            id: z.string().optional(),
-            relativePath: z.string().optional(),
-          })
-          .strict(),
-      )
-      .max(32)
-      .optional(),
-    approvalId: z.union([z.string().min(1).max(256), z.number().safe().nonnegative()]).optional(),
-    questionId: z.union([z.string().min(1).max(256), z.number().safe().nonnegative()]).optional(),
-    decision: z.string().max(256).optional(),
-    nativeDecision: z.unknown().optional(),
-    answers: z.record(z.string(), z.array(z.string().max(8192))).optional(),
-    name: z.string().max(256).optional(),
-    queuedSubmissionId: z.string().min(1).max(256).optional(),
-    queuedSubmissionIds: z.array(z.string().min(1).max(256)).max(100).optional(),
-    model: z.string().min(1).max(256).optional(),
-    /** Devin: the permission mode its next turns run with. */
-    permissionMode: z.enum(DEVIN_PERMISSION_MODES).optional(),
-    effort: z.string().min(1).max(64).nullable().optional(),
-    serviceTier: z.string().min(1).max(128).nullable().optional(),
-    mode: z.string().min(1).max(128).nullable().optional(),
-    policyId: z
-      .enum(["workspace-write-on-request", "full-access-on-request", "workspace-write-auto-review"])
-      .optional(),
-    resetDefaults: z.boolean().optional(),
-    expectedSettingsScope: z.string().uuid().optional(),
-    goal: z.unknown().optional(),
-  })
-  .strict()
-  .refine(validHistoryControl)
-  .refine(
-    (request) => request.operation === "settings" || request.expectedSettingsScope === undefined,
-  )
-  .refine(
-    (request) =>
-      request.operation === "settings" || (request.effort !== null && request.serviceTier !== null),
-  );
-
 type SettingsRead = z.infer<typeof managedSettingsStateSchema>;
 type SettingsControl = z.infer<typeof managedControlSchema>;
-type ApplyManagedSettings = (request: SettingsControl, fingerprint: string) => Promise<unknown>;
 
 function normalizeContextUsage(snapshot: { usage?: unknown; reason?: unknown }): ContextUsage {
   return (
@@ -651,8 +554,10 @@ export type LaneObserver = {
 export class WebReadRequests {
   #codex: CodexAppServerReader;
   #preflight: CodexRuntimePreflight;
-  readonly #sessionProviders = new SessionProviderRegistry({
-    codex: {
+  readonly sessionProviders: SessionProviderRegistry;
+
+  codexSessionProvider(): SessionProviders["codex"] {
+    return {
       agent: "codex",
       createOperation: "create",
       options: () => this.#managedOptions(),
@@ -672,8 +577,12 @@ export class WebReadRequests {
         ),
       contextUsage: async (sessionId) =>
         normalizeContextUsage(await this.#managedLive(sessionId, false)),
-    },
-    "claude-code": {
+      queue: (request) => this.managedQueueList(request),
+    };
+  }
+
+  claudeSessionProvider(): SessionProviders["claude-code"] {
+    return {
       agent: "claude-code",
       live: (sessionId, experimentalEnabled) =>
         this.#claudeProvider({ operation: "live", sessionId, experimentalEnabled }),
@@ -688,25 +597,12 @@ export class WebReadRequests {
       control: (request) => this.#claudeProvider(request),
       updateSettings: (request) => this.#claudeProvider(request),
       contextUsage: (sessionId) => this.#claudeProvider({ operation: "usage", sessionId }),
-    },
-    "deepseek-harness": {
-      agent: "deepseek-harness",
-      live: (sessionId, experimentalEnabled) =>
-        this.#dshProvider({ operation: "live", sessionId, experimentalEnabled }),
-      query: (request) => this.#dshProvider({ ...request }),
-      createOperation: "dsh-create",
-      options: ({ workspaceId, includeModels }) =>
-        this.#dshProvider({
-          operation: "dsh-options",
-          includeModels: workspaceId !== undefined || includeModels === true,
-        }),
-      create: (request) => this.#dshProvider(request),
-      settingsState: (request) => this.#dshProvider(request),
-      control: (request) => this.#dshProvider(request),
-      updateSettings: (request) => this.#dshProvider(request),
-      contextUsage: (sessionId) => this.#dshProvider({ operation: "usage", sessionId }),
-    },
-    devin: {
+      queue: (request) => this.#claudeProvider({ ...request }),
+    };
+  }
+
+  devinSessionProvider(): SessionProviders["devin"] {
+    return {
       agent: "devin",
       live: (sessionId) => this.#devinLive(sessionId),
       query: (request) => this.#devinQuery(request),
@@ -724,8 +620,12 @@ export class WebReadRequests {
           this.#devinControl(validated, fingerprint),
         ),
       contextUsage: (sessionId) => this.#devinContextUsage(sessionId),
-    },
-    antigravity: {
+      queue: (request) => this.managedQueueList(request),
+    };
+  }
+
+  antigravitySessionProvider(): SessionProviders["antigravity"] {
+    return {
       agent: "antigravity",
       live: (sessionId) => this.#antigravityLive(sessionId),
       query: (request) => this.#antigravityQuery(request),
@@ -735,8 +635,10 @@ export class WebReadRequests {
         ),
       contextUsage: async (sessionId) =>
         normalizeContextUsage(await this.#antigravityLive(sessionId)),
-    },
-  });
+      queue: (request) => this.managedQueueList(request),
+    };
+  }
+
   // New-session options and settings without a runner each start an app-server.
   #optionsCatalog = new CodexCatalogCache<Record<string, unknown>>();
   #settingsCatalog = new CodexCatalogCache<{
@@ -866,8 +768,9 @@ export class WebReadRequests {
     readonly sessionIndex?: SessionIndex,
     readonly catalogChanged?: () => void,
     readonly requestClaudeProvider?: (request: Record<string, unknown>) => Promise<unknown>,
-    readonly requestDshProvider?: (request: Record<string, unknown>) => Promise<unknown>,
+    dshProvider = new DshSessionProvider(),
   ) {
+    this.sessionProviders = createSessionProviders(this, dshProvider);
     this.#codex = new CodexAppServerReader(environment);
     this.#preflight = new CodexRuntimePreflight(environment);
     this.#desktopApp = new CodexDesktopApp(environment);
@@ -896,11 +799,6 @@ export class WebReadRequests {
   async #claudeProvider(request: Record<string, unknown>) {
     if (!this.requestClaudeProvider) throw new Error("claude-managed-unavailable");
     return this.requestClaudeProvider(request);
-  }
-
-  async #dshProvider(request: Record<string, unknown>) {
-    if (!this.requestDshProvider) throw new Error("session-unavailable");
-    return this.requestDshProvider(request);
   }
 
   close(): void {
@@ -1145,15 +1043,15 @@ export class WebReadRequests {
 
   sessionProviderOptions(agent: unknown, scope: unknown = {}): Promise<Record<string, unknown>> {
     return this.#runOperation(async () => {
-      const provider = this.#sessionProviders.require(agent);
+      const provider = this.sessionProviders.require(agent);
       const options = await provider.options(sessionProviderOptionsScopeSchema.parse(scope));
-      return this.#withProviderCapabilities(provider, options, true);
+      return withProviderCapabilities(provider, options, true);
     });
   }
 
   sessionProviderWorkspaceResources(agent: unknown, scope: unknown) {
     return this.#runOperation(async () => {
-      const provider = this.#sessionProviders.require(agent);
+      const provider = this.sessionProviders.require(agent);
       const { workspaceId } = sessionProviderOptionsScopeSchema.required().parse(scope);
       if (!sessionProviderCapabilities(provider.agent)?.create.workspaceResources)
         throw new Error("unsupported-session-provider-operation");
@@ -1162,69 +1060,28 @@ export class WebReadRequests {
   }
 
   async sessionProviderCreate(agent: unknown, fields: Record<string, unknown>) {
-    const provider = this.#sessionProviders.require(agent);
+    const provider = this.sessionProviders.require(agent);
     return provider.create({ ...fields, operation: provider.createOperation });
   }
 
   #sessionProviderForSession(sessionId: string) {
     // Newly created Codex sessions may only be present in the managed ledger until indexed.
-    return this.#sessionProviders.get(this.store.sessions.get(sessionId)?.agent ?? "codex");
-  }
-
-  #withProviderCapabilities(
-    provider: SessionProvider,
-    value: unknown,
-    creating = false,
-  ): Record<string, unknown> {
-    if (!isObject(value)) throw new Error("invalid-provider-response");
-    const declared = sessionProviderCapabilities(provider.agent)!;
-    if (!creating) return { ...value, provider: declared };
-    const { nativePlan, nativeGoals, ...options } = value;
-    const { planMode, goal, goalBudget, workspaceResources, ...create } = declared.create;
-    const available = value.available === true;
-    const claudePlan =
-      provider.agent === "claude-code" &&
-      Array.isArray(value.permissionModes) &&
-      value.permissionModes.some((item) => isObject(item) && item.id === "plan");
-    return {
-      ...options,
-      provider: {
-        ...declared,
-        create: {
-          ...create,
-          ...(available && planMode && (nativePlan === true || claudePlan) ? { planMode } : {}),
-          ...(available && workspaceResources ? { workspaceResources } : {}),
-          ...(available && goal && (nativeGoals === true || claudePlan)
-            ? { goal, ...(goalBudget ? { goalBudget } : {}) }
-            : {}),
-        },
-      },
-    };
+    return this.sessionProviders.get(this.store.sessions.get(sessionId)?.agent ?? "codex");
   }
 
   /** The backend transport resolves the bridge owner before sending its native request here. */
-  async bridgedSessionProviderRequest(
-    agent: "claude-code" | "deepseek-harness",
-    value: Record<string, unknown>,
-  ): Promise<unknown> {
-    const provider = this.#sessionProviders.require(agent);
+  async claudeSessionProviderRequest(value: Record<string, unknown>): Promise<unknown> {
+    const provider = this.sessionProviders.require("claude-code");
     switch (value.operation) {
       case "options":
-        return this.#withProviderCapabilities(provider, await provider.options(value), true);
-      case "dsh-options":
-        return this.#withProviderCapabilities(
-          provider,
-          await provider.options({ includeModels: value.includeModels === true }),
-          true,
-        );
+        return withProviderCapabilities(provider, await provider.options(value), true);
       case "create":
-      case "dsh-create":
         return provider.create(value);
       case "settings-state":
-        return this.#withProviderCapabilities(provider, await provider.settingsState(value));
+        return withProviderCapabilities(provider, await provider.settingsState(value));
       case "settings-prepare":
         if (!provider.prepareSettings) throw new Error("unsupported-session-provider-operation");
-        return this.#withProviderCapabilities(provider, await provider.prepareSettings(value));
+        return withProviderCapabilities(provider, await provider.prepareSettings(value));
       case "settings":
         return provider.updateSettings(value);
       case "live": {
@@ -1243,7 +1100,7 @@ export class WebReadRequests {
         return provider.control(value);
       case "usage":
         if (typeof value.sessionId === "string") return provider.contextUsage(value.sessionId);
-        return agent === "claude-code" ? this.#claudeProvider(value) : this.#dshProvider(value);
+        return this.#claudeProvider(value);
       default:
         throw new Error("unsupported-session-provider-operation");
     }
@@ -2421,9 +2278,9 @@ export class WebReadRequests {
 
   managedSettingsState(value: unknown) {
     return this.#runOperation(async () => {
-      const provider = this.#sessionProviders.require("codex");
+      const provider = this.sessionProviders.require("codex");
       if (!isObject(value)) throw new Error("invalid-request");
-      return this.#withProviderCapabilities(provider, await provider.settingsState(value));
+      return withProviderCapabilities(provider, await provider.settingsState(value));
     });
   }
 
@@ -2431,12 +2288,10 @@ export class WebReadRequests {
     return this.#runOperation(async () => {
       const provider =
         typeof value.sessionId === "string"
-          ? this.#sessionProviders.creatable(
-              this.#sessionProviderForSession(value.sessionId)?.agent,
-            )
+          ? this.sessionProviders.creatable(this.#sessionProviderForSession(value.sessionId)?.agent)
           : undefined;
       if (!provider) throw new Error("unsupported-session-provider-operation");
-      return this.#withProviderCapabilities(provider, await provider.settingsState(value));
+      return withProviderCapabilities(provider, await provider.settingsState(value));
     });
   }
 
@@ -3552,25 +3407,17 @@ export class WebReadRequests {
     });
   }
 
-  async #managedControlAdmission(value: unknown, execute: ApplyManagedSettings) {
-    const request = managedControlSchema.parse(value);
-    const id = request.sessionId;
-    const admission = this.#controlSessions.get(id) ?? { count: 0, observed: false };
-    admission.count += 1;
-    admission.observed ||= this.isSessionObserved?.(id) === true;
-    this.#controlSessions.set(id, admission);
-    const runner = this.#managedRunners.get(id);
-    if (runner && admission.observed) runner.observed = true;
-    try {
-      const fingerprint = createHash("sha256").update(stableJson(value)).digest("hex");
-      const previous = replayManagedCommand(this.dataDir, request.requestId, fingerprint);
-      return previous ?? (await execute(request, fingerprint));
-    } finally {
-      const current = this.#managedRunners.get(id);
-      if (current && admission.observed) current.observed = true;
-      admission.count -= 1;
-      if (admission.count === 0) this.#controlSessions.delete(id);
-    }
+  #managedControlAdmission(value: unknown, execute: ApplyManagedControl) {
+    return admitManagedControl(
+      {
+        dataDir: this.dataDir,
+        controlSessions: this.#controlSessions,
+        isSessionObserved: (id) => this.isSessionObserved?.(id),
+        runnerForSession: (id) => this.#managedRunners.get(id),
+      },
+      value,
+      execute,
+    );
   }
 
   /** A short-lived subscription must be recorded even between retirement timer ticks. */
@@ -7905,7 +7752,7 @@ export class WebReadRequests {
    * new session opens already running. Its model and permission mode apply to later turns too.
    */
   devinCreate(value: Record<string, unknown>) {
-    return this.#sessionProviders.require("devin").create(value);
+    return this.sessionProviders.require("devin").create(value);
   }
 
   async #devinCreate(value: Record<string, unknown>): Promise<Record<string, unknown>> {
@@ -9426,17 +9273,6 @@ function managedSettingsEvidenceMatches(
     (settings.mode === (record.mode ?? null) ||
       (settings.mode === undefined && record.mode == null));
   return same;
-}
-
-function stableJson(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
-  if (isObject(value))
-    return `{${Object.keys(value)
-      .sort()
-      .filter((key) => value[key] !== undefined)
-      .map((key) => `${JSON.stringify(key)}:${stableJson(value[key])}`)
-      .join(",")}}`;
-  return JSON.stringify(value) ?? "null";
 }
 
 function boundedText(value: unknown, maxBytes: number): string | null {

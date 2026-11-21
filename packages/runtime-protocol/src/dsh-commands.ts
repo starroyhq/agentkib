@@ -12,7 +12,7 @@ import {
   DSH_COMMAND_LINE,
   DSH_SESSION_COMMANDS,
   DSH_WINDOW_ONLY_COMMANDS,
-} from "../../dsh-bridge-plugin/commands.js";
+} from "agentkib-dsh-bridge/commands.js";
 
 /** Why AgentKib did not run a command; clients explain each one. */
 export const DSH_COMMAND_REFUSALS = [

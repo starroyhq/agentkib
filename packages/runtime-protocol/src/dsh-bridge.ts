@@ -1,11 +1,13 @@
 /** Private local transport between a DeepSeek Harness plugin and the Runtime. Never crosses Web RPC. */
-import { DSH_BRIDGE_COMPATIBILITY } from "../../dsh-bridge-plugin/compatibility.js";
+import { DSH_BRIDGE_COMPATIBILITY } from "agentkib-dsh-bridge/compatibility.js";
+import type { DshBridgeHistoryRecord, DshBridgeImage } from "agentkib-dsh-bridge/projection.js";
+export type { DshBridgeHistoryRecord, DshBridgeImage };
 export {
   DSH_BRIDGE_COMPATIBILITY,
   dshBridgeCompatibility,
   dshBridgeLaunchable,
   dshBridgePluginCompatibility,
-} from "../../dsh-bridge-plugin/compatibility.js";
+} from "agentkib-dsh-bridge/compatibility.js";
 
 export const DSH_BRIDGE_PROTOCOL = 1 as const;
 export const DSH_BRIDGE_PLUGIN_VERSION: string = DSH_BRIDGE_COMPATIBILITY.pluginVersion;
@@ -175,13 +177,6 @@ export interface DshBridgeQueueItem {
   rpcId: string | null;
 }
 
-/** One image DSH stored for a message. `attachmentId` is `sha256:` and the digest of its bytes. */
-export interface DshBridgeImage {
-  attachmentId: string;
-  mediaType: "image/png" | "image/jpeg" | "image/webp" | "image/gif";
-  name: string | null;
-}
-
 /**
  * Prompt content. An image is an AgentKib attachment file the plugin reads and checks against
  * `sha256` before handing DSH its bytes, so large images never cross the bridge socket.
@@ -240,34 +235,6 @@ export type DshBridgeInteraction = {
       arguments: string | null;
     }
   | { kind: "question"; questions: DshBridgeQuestion[] }
-);
-
-/** Displayable history records; everything else in the DSH log stays in DSH. */
-export type DshBridgeHistoryRecord = { seq: number; time: number | null } & (
-  | { kind: "turn-start"; turn: number }
-  | { kind: "turn-end"; turn: number; reason: string | null }
-  | {
-      kind: "user";
-      id: string | null;
-      text: string;
-      truncated: boolean;
-      images: DshBridgeImage[];
-      files: number;
-      rpcId: string | null;
-    }
-  | { kind: "assistant"; turn: number; text: string; truncated: boolean; interrupted: boolean }
-  | { kind: "tool-call"; turn: number; callId: string; name: string }
-  | {
-      kind: "tool-result";
-      turn: number;
-      callId: string;
-      isError: boolean;
-      preview: string;
-      truncated: boolean;
-    }
-  /** A slash command DSH ran itself, and its answer; `args` is what followed the name. */
-  | { kind: "command"; commandId: string; name: string; args: string | null }
-  | { kind: "command-result"; commandId: string; ok: boolean; text: string | null }
 );
 
 export interface DshBridgeHistoryPage {

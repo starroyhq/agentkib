@@ -224,6 +224,7 @@ async function startFakePlugin(agentkibHome: string, workspace: string) {
     if (!abort.signal.aborted) pollError = error;
   });
   return {
+    commandCount: () => commands.length,
     drainCommands: () => commands.splice(0).map(({ commandId: _commandId, ...command }) => command),
     holdNextPrompt() {
       const { promise, resolve } = Promise.withResolvers<void>();
@@ -791,7 +792,10 @@ describe.skipIf(process.platform !== "darwin")("DeepSeek Harness HTTP behavior b
     const request = await receiptSend();
     const release = plugin.holdNextPrompt();
     const first = submit(request);
+    // The RPC is awaited in finally, including when plugin delivery fails.
+    void first.catch(() => undefined);
     try {
+      await vi.waitFor(() => expect(plugin.commandCount()).toBe(1));
       const pending = {
         found: true,
         requestId: request.requestId,
@@ -833,7 +837,12 @@ describe.skipIf(process.platform !== "darwin")("DeepSeek Harness HTTP behavior b
       await first;
     }
     await expect(submit(request)).resolves.toEqual(await first);
-    expect(plugin.drainCommands()).toEqual([]);
+    // These plugin reads drain the same connection before we check for extra prompts.
+    await expect(host.http(managedPath("settings"))).resolves.toMatchObject({ status: 200 });
+    expect(plugin.drainCommands()).toEqual([
+      { type: "models", sessionId: nativeId },
+      { type: "permissions", sessionId: nativeId },
+    ]);
   });
 
   it("retains send and create receipts across a backend restart", async () => {

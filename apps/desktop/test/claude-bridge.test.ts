@@ -41,6 +41,7 @@ async function fixture(
   lead?: BridgeLead,
   observation?: (target: ClaudeBridgeTarget) => ClaudeTranscriptObservation,
   permission?: (target: ClaudeBridgeTarget) => ClaudeObservedPermissionMode | null,
+  pluginVersion = "0.4.0",
 ) {
   const root = realpathSync(mkdtempSync(path.join(tmpdir(), "ak-bridge-test-")));
   const workspace = path.join(root, "workspace");
@@ -89,7 +90,7 @@ async function fixture(
     cwd: workspace,
     cliVersion: "2.1.301",
     instanceId,
-    pluginVersion: "0.4.0",
+    pluginVersion,
     nativeCapabilities: {
       version: 1 as const,
       available: [
@@ -150,7 +151,7 @@ async function fixture(
   const snapshot: ClaudeBridgeSnapshot = {
     ...hello,
     cliVersion: "2.1.301",
-    pluginVersion: "0.4.0",
+    pluginVersion,
     nativeCapabilities: {
       version: 1 as const,
       available: [
@@ -2566,6 +2567,7 @@ describe.skipIf(process.platform === "win32")(
         "lead-tools",
         "open-model-picker",
         "terminal-subagents",
+        "lead-rate-limit-pause",
       ]);
       expect(f.bridge.leadCapable(f.target.sessionId)).toBe(false);
       expect((await leadPoll(f)).body).toEqual({ commands: [], lead: null });
@@ -2619,6 +2621,35 @@ describe.skipIf(process.platform === "win32")(
       const next = (await leadPoll(f, { takenReports: [first[0].id] })).body.lead.reports;
       expect(next).toEqual([{ id: expect.any(String), text: "report B" }]);
       expect(next[0].id).not.toBe(first[0].id);
+    });
+
+    it("holds and merges reports across a Runtime restart, then offers each ID until acknowledged", async () => {
+      const l = terminalLead();
+      const changed = vi.fn();
+      const f = await fixture(1000, { ...l.lead, reportPauseChanged: changed }, undefined, undefined, "0.5.4");
+      const id = f.target.sessionId;
+      l.setLeading(true);
+      expect(f.connection.protocol).toBe(1);
+      expect(f.connection.features).toContain("lead-rate-limit-pause");
+      expect((await leadPoll(f, { leadReportsPaused: true })).body.lead.reports).toEqual([]);
+      expect(f.bridge.leadReportsPaused(id)).toBe(true);
+      expect(changed.mock.calls).toEqual([[id, true]]);
+      expect(f.bridge.queueReport(id, "first report")).toBe(false);
+      expect((await leadPoll(f)).body.lead.reports).toEqual([]);
+      expect(f.bridge.queueReport(id, "second report")).toBe(true);
+
+      await f.restart();
+      expect(f.bridge.queuedReports(id)).toBe(1);
+      expect((await leadPoll(f, { leadReportsPaused: true })).body.lead.reports).toEqual([]);
+      const released = (await leadPoll(f, { leadReportsPaused: false })).body.lead.reports;
+      expect(released).toEqual([
+        { id: expect.any(String), text: "first report\n\nsecond report" },
+      ]);
+      expect(changed.mock.calls).toEqual([[id, true], [id, true], [id, false]]);
+      expect(f.bridge.leadReportsPaused(id)).toBe(false);
+      expect((await leadPoll(f, { takenReports: [released[0].id] })).body.lead.reports).toEqual([]);
+      await f.restart();
+      expect((await leadPoll(f, { leadReportsPaused: false })).body.lead.reports).toEqual([]);
     });
 
     it("counts the turns its CLI begins by itself, and stops one past the limit", async () => {

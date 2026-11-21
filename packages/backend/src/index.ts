@@ -799,6 +799,7 @@ export class TypeScriptBackend {
             leadOwner.queuedReports(sessionId) +
             (this.#claudeBridge?.queuedReports(sessionId) ?? 0),
           (sessionId) => {
+            if (this.#claudeBridge?.leadReportsPaused(sessionId)) return true;
             if (dshBridge.handles(sessionId))
               return dshBridge.live(sessionId, false).usageLimit != null ? "manual-resume" : false;
             return this.#webRead?.usageLimited(sessionId) === true;
@@ -880,6 +881,14 @@ export class TypeScriptBackend {
             paused: (sessionId) => {
               const lead = this.#orchestration?.status(sessionId);
               return lead?.paused ? (lead.reason ?? "paused") : null;
+            },
+            reportPauseChanged: (sessionId, paused) => {
+              const orchestration = this.#orchestration;
+              const lead = orchestration?.status(sessionId);
+              if (!orchestration || !lead) return;
+              if (paused && !lead.paused) orchestration.pause(sessionId, "usage-limit");
+              else if (!paused && lead.reason === "usage-limit")
+                orchestration.limitEnded(sessionId);
             },
           },
           target: (id, nativeId, activeWorkspace) =>

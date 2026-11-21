@@ -32,6 +32,7 @@ AgentKib 运行的 Claude Code、Codex、DeepSeek Harness（DSH）和 Devin 会�
 ## 项目 Agent
 
 - 由 AgentKib 运行的 Claude Code 项目 Agent：Worker 汇报在会话自己的队列里等，重置后按原有规则派发。
+- 连接终端的 Claude Code 项目 Agent：桥接插件 0.5.4 起在本轮以 `rate_limit` 结束时暂停领取和提交汇报。Claude Code 发出额度自动继续通知、随后一轮正常结束，或用户在终端自己发送消息时恢复。能读到已用满的额度窗口时，在最晚的重置时间后延迟 30–90 秒尝试恢复；否则在五分钟后尝试一次。待领取的汇报留在 AgentKib，新版 AgentKib 会显示限流暂停。组织策略有时会跳过插件的限流钩子，这时终端继续依赖 Claude Code 自身的处理。
 - Codex 项目 Agent：等待期间委派暂停（`usage-limit`）。自动继续成功、查活确认限额解除，或用户在这个会话里发消息后，委派继续，暂存的汇报合成一条送出。
 - DSH 项目 Agent：DSH 没有重置时间，暂存的汇报等用户在项目 Agent 会话里发消息，或在面板里恢复委派后再送出。
 - Worker：项目 Agent 收到限额类型和已知的重置、续跑时间。限额仍生效时，`worker_send` 返回 `worker-usage-limited`。缺少重置时间时，等会话解除限额。需要手动继续时，复用手机的“需要你处理”提醒。
@@ -39,5 +40,5 @@ AgentKib 运行的 Claude Code、Codex、DeepSeek Harness（DSH）和 Devin 会�
 ## 没有做的
 
 - 接近上限的预警（Claude Code 的 `allowed_warning`、Codex 的用量百分比）不在会话里提示，额度页面照旧显示。
-- 连接终端的 Claude Code 会话由终端里的 Claude Code 自己处理上限，插件和桥接目前没有传递限额状态。
+- 连接终端的 Claude Code 由原终端处理上限和自动继续。桥接插件只控制项目 Agent 汇报的领取和提交。
 - Windows 上读不出 Devin 的重置时间（没有 `script(1)`），Devin 会话只有提示。

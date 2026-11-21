@@ -95,7 +95,7 @@ Codex 的写锁被其他进程持有时，Worker 工具会把有 `externalTurn` 
 
 先用 `worker_read` 查看 Worker，再决定是否调用 `worker_restart`。委派暂停时会拒绝。已确认在终端或外部客户端运行的会话返回 `worker-restart-user-only`，由用户恢复。没有安全恢复机制的会话返回 `worker-restart-unsupported`。
 
-托管项目 Agent 和动态注册工具的 DSH 项目 Agent 可以调用。终端 Claude 项目 Agent 受现有插件的固定工具名单限制，当前看不到这个工具。
+托管项目 Agent 和动态注册工具的 DSH 项目 Agent 可以调用。终端 Claude 项目 Agent 使用桥接插件 0.5.4 或更高版本时，只在 AgentKib 提供这个工具时才会看到。
 
 | Worker | AgentKib 可执行的动作 |
 | --- | --- |
@@ -110,7 +110,7 @@ Codex 的写锁被其他进程持有时，Worker 工具会把有 `externalTurn` 
 ## 列表、会话页和通知
 
 - 会话列表里，项目 Agent 和它的 Worker 各有一个小标识，在标题旁边，和行尾的状态（未读、运行中、等待你）分开显示；悬停标识、打开这一行的详情卡片或读屏时，Worker 的标识写明“Worker api · 委派自 〈项目 Agent〉”。会话页顶部有同样的一行说明。其他电脑的会话列表和手机 App 也一样。
-- **达到使用上限**：托管 Claude Code 项目 Agent 的汇报留在它自己的队列里。Codex 和 DSH 项目 Agent 的汇报在等待时由编排层暂存。恢复条件见[达到使用上限](usage-limits.md)。
+- **达到使用上限**：托管 Claude Code 项目 Agent 的汇报留在它自己的队列里。终端 Claude Code 的 0.5.4 及以上桥接插件在收到限流结束钩子时暂停领取和提交汇报，给 Claude Code 的自动继续留出时间。支持这一状态的 AgentKib 在面板显示限流暂停，未领取的汇报留在宿主并合并，重启后仍可读取。Codex 和 DSH 项目 Agent 的汇报在等待时由编排层暂存。恢复条件见[达到使用上限](usage-limits.md)。
 - 委派因自动轮次上限、汇报送达不明或重启而暂停时，项目 Agent 出现在“需要你处理”里（“委派已暂停”，手机在收件箱里单列一组），手机照常收到通知；用户自己暂停或设备授权变更引起的暂停不算。较早版本的手机 App 不认识这种通知，显示通用的“需要你处理”。
 - 手机 App 在会话的“更多”菜单里提供“项目 Agent…”页面：查看 Worker、暂停和恢复、取消，或按设备权限设定。
 - 手机通知：Worker 一轮结束不单独通知，由项目 Agent 汇总；项目 Agent 一轮结束时，名下还有 Worker 在运行或等你处理、有汇报正在送去、或它自己有后台任务在跑，就先不通知，全部停下来时通知一次。Worker 和项目 Agent 的“等待你”照常通知。

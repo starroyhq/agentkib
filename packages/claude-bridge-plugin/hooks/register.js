@@ -48,6 +48,13 @@ const AUTO_RETRY_REASONS = [
 // it makes one gets its worker tools here, under this plugin's name, and its reports as queued
 // messages. A Runtime that does not name it hears nothing of it.
 const LEAD_FEATURE = "lead-tools";
+const LEAD_RATE_LIMIT_FEATURE = "lead-rate-limit-pause";
+const RATE_LIMIT_RETRY_MS = 5 * 60_000;
+const QUOTA_RESUME_NOTIFICATIONS = new Set([
+  "quota_auto_resume_fired",
+  "quota_auto_resume_stale",
+  "quota_auto_resume_disabled",
+]);
 const TERMINAL_SUBAGENTS_FEATURE = "terminal-subagents";
 const MAX_TERMINAL_SUBAGENTS = 16;
 const SUBAGENT_STATES = new Map([
@@ -89,6 +96,7 @@ const LEAD_TOOLS = [
   "worker_answer",
   // 0.5.1: AgentKib lists it last, after the ones 0.5.0 knows.
   "worker_close",
+  "worker_restart",
 ];
 // $.tool.register is verified on 2.1.301 (the oldest CLI that connects) and 2.1.323.
 function utf8Prefix(value, budget) {
@@ -301,6 +309,12 @@ export function initialState() {
     // Whether the session leads now, and why its delegation is paused (undefined: not heard yet).
     leadActive: false,
     leadPaused: undefined,
+    leadBindingId: null,
+    leadRateLimit: null,
+    leadRateLimitFallbackUsed: false,
+    leadRateLimitReported: null,
+    leadFailedTurnId: null,
+    lastCompletedMainTurnId: null,
     // Reports put in the outbox, said to the Runtime on the next poll that succeeds.
     takenReports: new Set(),
     // The texts of the last prompts no one typed, until their turn starts.
@@ -341,6 +355,93 @@ function leadFeature(state) {
   return leadOffered(state) && !state.leadUnavailable;
 }
 
+function currentLead(state) {
+  return (
+    state.leadActive &&
+    leadFeature(state) &&
+    !state.closed &&
+    !state.needsReconnect &&
+    state.connection?.leaseId !== "reconnecting" &&
+    state.connection?.bindingId === state.leadBindingId
+  );
+}
+
+function resumeLeadReports(state) {
+  if (state.leadRateLimit) {
+    state.leadRateLimit = null;
+    state.dirty = true;
+  }
+  state.leadRateLimitFallbackUsed = false;
+}
+
+function resetLeadRateLimit(state) {
+  resumeLeadReports(state);
+  state.leadRateLimitReported = null;
+  state.leadFailedTurnId = null;
+}
+
+function leadReportsPaused(state) {
+  const limit = state.leadRateLimit;
+  if (!limit) return false;
+  if (limit.until === null || Date.now() < limit.until) return true;
+  state.leadRateLimit = null;
+  if (!limit.resetKnown) state.leadRateLimitFallbackUsed = true;
+  state.dirty = true;
+  return false;
+}
+
+async function readLeadRateLimitReset($, state, limit) {
+  try {
+    const usage = await $.session.usage();
+    if (state.leadRateLimit !== limit || !Array.isArray(usage?.rateLimits)) return;
+    const now = Date.now();
+    let latestReset = now;
+    for (const window of usage.rateLimits) {
+      if (
+        !Number.isFinite(window?.percentUsed) ||
+        window.percentUsed < 100 ||
+        typeof window.resetsAt !== "string" ||
+        !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.test(
+          window.resetsAt,
+        )
+      )
+        continue;
+      const reset = Date.parse(window.resetsAt);
+      if (reset > latestReset) latestReset = reset;
+    }
+    if (latestReset > now) {
+      limit.resetKnown = true;
+      // Leave Claude Code time to run its own quota-resume prompt first.
+      limit.until = latestReset + 30_000 + Math.floor(Math.random() * 60_001);
+    }
+  } catch {
+    // A missing rate-limit window still permits one bounded retry.
+  }
+}
+
+function pauseLeadReports($, state, turnId) {
+  leadReportsPaused(state);
+  if (state.leadRateLimit?.turnId === turnId) return;
+  const limit = {
+    turnId,
+    until: state.leadRateLimitFallbackUsed ? null : Date.now() + RATE_LIMIT_RETRY_MS,
+    resetKnown: false,
+  };
+  state.leadRateLimit = limit;
+  state.dirty = true;
+  if (limit.until !== null) void readLeadRateLimitReset($, state, limit);
+}
+
+function mainClassicEvent(state, event) {
+  return (
+    !state.closed &&
+    event.agent_id === undefined &&
+    event.agentId === undefined &&
+    typeof event.session_id === "string" &&
+    event.session_id === state.identity?.nativeId
+  );
+}
+
 function validLeadTool(tool) {
   return (
     tool &&
@@ -360,10 +461,12 @@ function validLeadTool(tool) {
  * when they change (the engine cannot withdraw one, so a session that stops leading keeps the
  * names and AgentKib refuses their calls), and reports, each queued as a message of its own.
  */
-async function applyLead($, state, lead) {
+async function applyLead($, state, lead, connection) {
   if (!lead || typeof lead !== "object") {
     state.leadActive = false;
     state.leadPaused = undefined;
+    state.leadBindingId = null;
+    resumeLeadReports(state);
     return;
   }
   const tools = (Array.isArray(lead.tools) ? lead.tools : [])
@@ -379,8 +482,10 @@ async function applyLead($, state, lead) {
           inputSchema: tool.inputSchema,
           isDeferred: false,
         });
+      if (state.connection !== connection) return;
       state.leadToolsKey = key;
     } catch (error) {
+      if (state.connection !== connection) return;
       // The next poll tells the Runtime, which then takes no Project Agent here.
       state.leadUnavailable = String(error?.message ?? error).slice(0, 200);
       await note(
@@ -391,11 +496,15 @@ async function applyLead($, state, lead) {
     }
   }
   state.leadActive = tools.length > 0;
+  state.leadBindingId = state.leadActive ? connection.bindingId : null;
+  if (!state.leadActive) resumeLeadReports(state);
   // The person in the terminal hears when delegation pauses and how it goes on, once a change.
   const paused = typeof lead.paused === "string" ? lead.paused.slice(0, 64) : null;
   if (paused !== (state.leadPaused ?? null) && (paused || state.leadPaused !== undefined))
     await note($, leadPauseNote(paused));
+  if (state.connection !== connection) return;
   state.leadPaused = paused;
+  if (leadReportsPaused(state)) return;
   for (const report of Array.isArray(lead.reports) ? lead.reports : []) {
     if (
       typeof report?.id !== "string" ||
@@ -435,6 +544,8 @@ const LEAD_PAUSES = {
     "AgentKib paused this Project Agent's delegation: it could not confirm a report reached this session. Resume it in AgentKib.",
   "authorization-changed":
     "AgentKib paused this Project Agent's delegation: the device that set it up no longer has the access it needs. Resume it in AgentKib.",
+  "usage-limit":
+    "AgentKib is holding Project Agent reports while Claude Code waits after a rate limit.",
 };
 
 function leadPauseNote(reason) {
@@ -827,6 +938,9 @@ function invalidate(state, reason) {
   }
   state.closed = true;
   state.connection = null;
+  state.leadBindingId = null;
+  state.lastCompletedMainTurnId = null;
+  resetLeadRateLimit(state);
   state.connectionFailure = null;
   state.connectionStatusReason = null;
   state.needsReconnect = false;
@@ -1202,9 +1316,10 @@ function writable(state) {
 }
 
 function hasQueuedInput(state) {
+  const reportsPaused = leadReportsPaused(state);
   return (
     state.unconfirmedReport !== null ||
-    state.outbox.some((item) => !item.leadReport || item.status !== "unknown")
+    state.outbox.some((item) => !item.leadReport || (!reportsPaused && item.status !== "unknown"))
   );
 }
 
@@ -1451,6 +1566,12 @@ function markOutboxUnknown(state, item, pending) {
   }
 }
 
+function reportDispatchPaused(state, pending) {
+  if (!pending?.report || !leadReportsPaused(state)) return false;
+  pending.reportHeld = true;
+  return true;
+}
+
 /** Submits the next waiting message once the terminal is verified idle: steers, then the queue. */
 async function dispatchOutbox($, state) {
   if (
@@ -1465,7 +1586,11 @@ async function dispatchOutbox($, state) {
     state.nativeWorking !== false
   )
     return;
-  const ready = (item) => item.status === "pending" && item.retryRevision !== state.revision;
+  const reportsPaused = leadReportsPaused(state);
+  const ready = (item) =>
+    item.status === "pending" &&
+    item.retryRevision !== state.revision &&
+    (!item.leadReport || !reportsPaused);
   const item =
     state.outbox.find((entry) => entry.kind === "steer" && entry.turnId === null && ready(entry)) ??
     state.outbox.find((entry) => entry.kind === "queue" && ready(entry));
@@ -1488,7 +1613,8 @@ async function dispatchOutbox($, state) {
     !state.activityVerified ||
     state.nativeWorking !== false ||
     !state.outbox.includes(item) ||
-    !ready(item)
+    !ready(item) ||
+    (item.leadReport && leadReportsPaused(state))
   )
     return;
   const pending = {
@@ -1512,7 +1638,7 @@ async function dispatchOutbox($, state) {
       // session has changed since this attempt, never in a loop against the same
       // state. A terminal turn that ran first has already changed it.
       item.status = "pending";
-      item.retryRevision = pending.expectedRevision;
+      item.retryRevision = pending.reportHeld ? null : pending.expectedRevision;
     } else if (
       state.pendingSend === pending &&
       pending.observed &&
@@ -1685,28 +1811,35 @@ async function pump($, state, nativeEvent = false) {
     if (state.generation !== generation || !state.connection || state.closed) return;
     await identity($, state);
     for (const result of state.unacknowledgedResults.values()) await reportResult($, state, result);
+    if (state.generation !== generation || !state.connection || state.closed) return;
     const connection = state.connection;
     const lead = leadFeature(state);
-    const taken = leadOffered(state) ? [...state.takenReports] : [];
+    const reportsPaused = leadReportsPaused(state);
+    const rateLimitOffered = lead && connection.features.includes(LEAD_RATE_LIMIT_FEATURE);
+    const rateLimitChanged = rateLimitOffered && reportsPaused !== state.leadRateLimitReported;
+    const taken = leadOffered(state) && !reportsPaused ? [...state.takenReports] : [];
     const response = await request($, state, "/v1/commands", {
       ...lease(state),
       afterCommandId: state.afterCommandId,
-      // Report ACKs unblock the outbox and do not need a long poll.
-      waitMs: taken.length ? 0 : 20_000,
+      // Report ACKs and pause transitions do not need a long poll.
+      waitMs: taken.length || rateLimitChanged ? 0 : 20_000,
       ...(leadOffered(state)
         ? { leadTools: lead, ...(taken.length ? { takenReports: taken } : {}) }
         : {}),
+      ...(rateLimitOffered ? { leadReportsPaused: reportsPaused } : {}),
     });
     if (state.closed || state.connection !== connection) return;
     if (!Array.isArray(response?.commands) || response.commands.length > 1) {
       invalidate(state, "invalid-command-batch");
       return;
     }
+    if (rateLimitOffered) state.leadRateLimitReported = reportsPaused;
     // The Runtime has dropped them; a report still listed again is taken only once.
     for (const id of taken)
       if (!response.lead?.reports?.some?.((r) => r?.id === id)) state.takenReports.delete(id);
     for (const command of response.commands) await execute($, state, command);
-    if (lead) await applyLead($, state, response.lead);
+    if (lead && state.connection === connection)
+      await applyLead($, state, response.lead, connection);
   } catch {
     state.dirty = true;
   } finally {
@@ -1798,6 +1931,8 @@ async function connectOnce($, state, ticket, generation) {
 
 async function adopt($, state, observed, response) {
   state.connection = connectionFrom(response);
+  state.leadBindingId = null;
+  resetLeadRateLimit(state);
   state.terminalSubagents = null;
   state.connectionStatusReason = null;
   state.modelPickerSupported = undefined;
@@ -1994,6 +2129,8 @@ async function reconnectOnce($, state) {
     if (state.generation !== generation || state.closed || state.connection !== connecting)
       throw new Error("stale-reconnect");
     state.connection = connectionFrom(response);
+    if (state.connection.bindingId !== state.leadBindingId) resetLeadRateLimit(state);
+    state.leadRateLimitReported = null;
     state.modelPickerSupported = undefined;
     state.connectionFailure = null;
     state.credentialPath = path;
@@ -2351,6 +2488,8 @@ export function register(on) {
   on("prompt.submit", async ($, e, next) => {
     const pending = state.pendingSend;
     if (e.origin?.kind === "plugin" && e.origin.name === "agentkib-bridge") {
+      if (reportDispatchPaused(state, pending))
+        return { drop: "AgentKib is holding Project Agent reports until Claude Code resumes." };
       if (
         !pending ||
         state.closed ||
@@ -2364,6 +2503,7 @@ export function register(on) {
       }
       pending.observed = true;
     } else {
+      if (e.origin?.kind === "composer") resumeLeadReports(state);
       if (pending) pending.competing = true;
       if (state.unconfirmedReport) state.unconfirmedReport.competing = true;
       if (UNATTENDED_ORIGINS.has(e.origin?.kind)) {
@@ -2385,6 +2525,8 @@ export function register(on) {
       e.origin.name === "agentkib-bridge"
     ) {
       const pending = state.pendingSend;
+      if (reportDispatchPaused(state, pending))
+        return { drop: "AgentKib is holding Project Agent reports until Claude Code resumes." };
       if (
         state.closed ||
         state.sendDisabled ||
@@ -2494,8 +2636,16 @@ export function register(on) {
   on("turn.complete", async ($, e, next) => {
     if (e.agentId !== undefined) return next(e);
     const startedAt = e.turnId === state.currentTurnId ? state.currentTurnStartedAt : null;
+    if (
+      e.turnId === state.currentTurnId &&
+      e.turnId !== state.leadFailedTurnId &&
+      e.isAborted !== true &&
+      e.reason === "answer"
+    )
+      resumeLeadReports(state);
     if (e.turnId === state.currentTurnId) state.unconfirmedReport = null;
     if (e.turnId === state.currentTurnId || state.currentTurnId === null) {
+      state.lastCompletedMainTurnId = e.turnId;
       state.currentTurnId = null;
       state.currentTurnStartedAt = null;
       state.nativeWorking = false;
@@ -2591,6 +2741,9 @@ export function register(on) {
   on("tool.call", { tool: "mcp__agentkib-bridge__worker_close" }, ($, e) =>
     leadCall($, state, "worker_close", e),
   );
+  on("tool.call", { tool: "mcp__agentkib-bridge__worker_restart" }, ($, e) =>
+    leadCall($, state, "worker_restart", e),
+  );
   // Managed settings or a Team or Enterprise login load sec-default, which skips classic hooks of
   // user-installed plugins, so the PermissionRequest hook below never runs there. tool.check still
   // does, after tool.call: an `ask` verdict that a person answers (not a host) means the mode's
@@ -2638,6 +2791,19 @@ export function register(on) {
     }
   }).catch(async ($, e, next) => {
     if (next.called) throw new Error(next.error.message);
+    return next(e);
+  });
+  on("classic.StopFailure", ($, e, next) => {
+    if (currentLead(state) && mainClassicEvent(state, e)) {
+      const turnId = state.currentTurnId ?? state.lastCompletedMainTurnId;
+      state.leadFailedTurnId = turnId;
+      if (e.error === "rate_limit") pauseLeadReports($, state, turnId);
+    }
+    return next(e);
+  });
+  on("classic.Notification", (_$, e, next) => {
+    if (mainClassicEvent(state, e) && QUOTA_RESUME_NOTIFICATIONS.has(e.notification_type))
+      resumeLeadReports(state);
     return next(e);
   });
   on("session.compact", async ($, e, next) => {

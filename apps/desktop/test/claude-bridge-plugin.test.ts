@@ -436,7 +436,9 @@ describe("Claude Code terminal subagents", () => {
 
 describe("Claude Code native session plugin as a Project Agent", () => {
   /** A Runtime that names `lead-tools`, with this lead info in its command replies. */
-  async function leading(options: { feature?: boolean; register?: boolean } = {}) {
+  async function leading(
+    options: { feature?: boolean; register?: boolean; rateLimitFeature?: boolean } = {},
+  ) {
     const registered: Value[] = [];
     const logs: string[] = [];
     let lead: Value | null = null;
@@ -457,8 +459,11 @@ describe("Claude Code native session plugin as a Project Agent", () => {
           const response = await fetch(url, init);
           if (init.method === "GET" || !response.ok) return response;
           const value = JSON.parse(response.text);
-          if ((url.endsWith("/pair") || url.endsWith("/reconnect")) && options.feature !== false)
-            return { ...response, text: JSON.stringify({ ...value, features: ["lead-tools"] }) };
+          if ((url.endsWith("/pair") || url.endsWith("/reconnect")) && options.feature !== false) {
+            const features = ["lead-tools"];
+            if (options.rateLimitFeature) features.push("lead-rate-limit-pause");
+            return { ...response, text: JSON.stringify({ ...value, features }) };
+          }
           if (url.endsWith("/commands") && lead) {
             const taken: string[] = JSON.parse(init.body).takenReports ?? [];
             if (taken.length && !ignoreTakenReports)
@@ -522,7 +527,39 @@ describe("Claude Code native session plugin as a Project Agent", () => {
   ) {
     await appendNativeReport(f, text);
     await f.run("turn.start", { text, turnId });
-    await f.run("turn.complete", { answer: "Observed the report.", isAborted: false, turnId });
+    await f.run("turn.complete", {
+      answer: "Observed the report.",
+      isAborted: false,
+      reason: "answer",
+      turnId,
+    });
+  }
+
+  function watchReportSubmissions(f: Awaited<ReturnType<typeof fixture>>) {
+    const submitted: string[] = [];
+    f.setSubmit(async ({ text }) => {
+      submitted.push(text);
+      await nativeReportTurn(f, text, randomUUID());
+      return { text };
+    });
+    return submitted;
+  }
+
+  async function limitTurn(f: Awaited<ReturnType<typeof fixture>>, extra: Value = {}) {
+    const turnId = randomUUID();
+    await f.run("turn.start", { turnId, ...extra });
+    await f.run("classic.StopFailure", {
+      session_id: f.nativeId,
+      error: "rate_limit",
+      ...(extra.agentId ? { agent_id: extra.agentId } : {}),
+    });
+    await f.run("turn.complete", {
+      turnId,
+      answer: "",
+      reason: "error",
+      isAborted: false,
+      ...extra,
+    });
   }
 
   it("registers the worker tools AgentKib gives it and runs their calls through AgentKib", async () => {
@@ -544,7 +581,7 @@ describe("Claude Code native session plugin as a Project Agent", () => {
     expect(await l.call()).toEqual({ deny: '{"accepted":false,"reason":"delegation-paused"}' });
   });
 
-  it("takes every worker tool AgentKib lists, worker_close last, and runs its calls", async () => {
+  it("registers and runs worker_restart only when AgentKib offers it", async () => {
     const l = await leading();
     await l.f.tick();
     const names = [
@@ -566,6 +603,19 @@ describe("Claude Code native session plugin as a Project Agent", () => {
     expect(
       l.f.calls.filter((entry) => entry.url.endsWith("/lead-call")).at(-1)!.body,
     ).toMatchObject({ name: "worker_close", input: { worker: "api" } });
+
+    l.setLead({
+      tools: [...names, "worker_restart"].map((name) => ({ ...tool, name })),
+      reports: [],
+    });
+    await l.f.tick();
+    expect(l.registered.slice(-9).map((spec) => spec.name)).toEqual([...names, "worker_restart"]);
+    expect(await l.call({ tool: "mcp__agentkib-bridge__worker_restart", worker: "api" })).toEqual({
+      result: '{"workers":[]}',
+    });
+    expect(
+      l.f.calls.filter((entry) => entry.url.endsWith("/lead-call")).at(-1)!.body,
+    ).toMatchObject({ name: "worker_restart", input: { worker: "api" } });
   });
 
   it("submits a queued report only after the Runtime accepts its acknowledgment", async () => {
@@ -705,6 +755,260 @@ describe("Claude Code native session plugin as a Project Agent", () => {
     await l.f.tick();
     await l.f.tick();
     expect(submitted).toEqual([report.text, queuedText]);
+  });
+
+  it.each([false, true])(
+    "holds both unacknowledged and newly offered reports at the rate limit (negotiated: %s)",
+    async (rateLimitFeature) => {
+      const l = await leading({ rateLimitFeature });
+      const queued = { id: randomUUID(), text: "[AgentKib report] Already in the outbox" };
+      const later = { id: randomUUID(), text: "[AgentKib report] Arrived during the limit" };
+      const submitted = watchReportSubmissions(l.f);
+      l.setLead({ tools: [tool], reports: [queued] });
+      await l.f.tick();
+      await limitTurn(l.f);
+
+      l.setLead({ tools: [tool], reports: [queued, later] });
+      await l.f.tick();
+      await l.f.tick();
+      await l.f.flush();
+      const held = l.polls().at(-1);
+      if (rateLimitFeature) expect(held).toMatchObject({ leadReportsPaused: true });
+      else expect(held).not.toHaveProperty("leadReportsPaused");
+      expect(held).not.toHaveProperty("takenReports");
+      expect(
+        l.f
+          .snapshots()
+          .at(-1)
+          .outbox.map(({ id }: Value) => id),
+      ).toEqual([queued.id]);
+      expect(submitted).toEqual([]);
+
+      // Neither a background notification nor a prompt from this plugin is terminal input.
+      for (const origin of [
+        { kind: "task-notification" },
+        { kind: "plugin", name: "agentkib-bridge", asUser: true },
+      ])
+        await l.f.run("prompt.submit", { text: queued.text, origin });
+      await l.f.tick();
+      expect(submitted).toEqual([]);
+
+      await l.f.run("prompt.submit", { text: "Try again", origin: { kind: "composer" } });
+      await l.f.tick();
+      await l.f.tick();
+      await l.f.tick();
+      if (rateLimitFeature) expect(l.polls().at(-1)).toMatchObject({ leadReportsPaused: false });
+      else expect(l.polls().every((poll) => !("leadReportsPaused" in poll))).toBe(true);
+      expect(submitted).toEqual([queued.text, later.text]);
+    },
+  );
+
+  it("holds an acknowledged report when a limit lands during its poll", async () => {
+    const l = await leading({ rateLimitFeature: true });
+    const report = { id: randomUUID(), text: "[AgentKib report] Worker finished" };
+    const submitted = watchReportSubmissions(l.f);
+    l.setLead({ tools: [tool], reports: [report] });
+    await l.f.tick();
+    const ackStarted = deferred<void>();
+    const releaseAck = deferred<void>();
+    l.f.setHttpInterceptor(async (url) => {
+      if (url.endsWith("/commands") && l.polls().at(-1)?.takenReports?.includes(report.id)) {
+        ackStarted.resolve();
+        await releaseAck.promise;
+      }
+    });
+    const poll = l.f.tick();
+    await ackStarted.promise;
+    try {
+      await limitTurn(l.f);
+    } finally {
+      releaseAck.resolve();
+      await poll;
+      l.f.setHttpInterceptor(undefined);
+    }
+    await l.f.tick();
+    expect(l.polls().at(-1)).toMatchObject({ leadReportsPaused: true });
+    expect(submitted).toEqual([]);
+
+    await l.f.run("prompt.submit", { text: "Continue", origin: { kind: "composer" } });
+    await l.f.tick();
+    await l.f.tick();
+    expect(submitted).toEqual([report.text]);
+  });
+
+  it("uses a later successful main turn to resume reports", async () => {
+    const l = await leading({ rateLimitFeature: true });
+    const report = { id: randomUUID(), text: "[AgentKib report] Worker finished" };
+    const submitted = watchReportSubmissions(l.f);
+    l.setLead({ tools: [tool], reports: [] });
+    await l.f.tick();
+    const ordinaryFailure = randomUUID();
+    await l.f.run("turn.start", { turnId: ordinaryFailure });
+    await limitTurn(l.f, { agentId: "child-agent" });
+    await l.f.tick();
+    expect(l.polls().at(-1)).toMatchObject({ leadReportsPaused: false });
+    await l.f.run("classic.StopFailure", { session_id: l.f.nativeId, error: "server_error" });
+    await l.f.run("turn.complete", {
+      turnId: ordinaryFailure,
+      answer: "Request failed",
+      reason: "error",
+    });
+    await l.f.tick();
+    expect(l.polls().at(-1)).toMatchObject({ leadReportsPaused: false });
+
+    await limitTurn(l.f);
+    l.setLead({ tools: [tool], reports: [report] });
+    const childTurn = randomUUID();
+    await l.f.run("turn.start", { turnId: childTurn, agentId: "child-agent" });
+    await l.f.run("turn.complete", {
+      turnId: childTurn,
+      agentId: "child-agent",
+      reason: "answer",
+      answer: "Child finished",
+    });
+    const interruptedTurn = randomUUID();
+    await l.f.run("turn.start", { turnId: interruptedTurn });
+    await l.f.run("turn.complete", {
+      turnId: interruptedTurn,
+      reason: "interrupted",
+      isAborted: true,
+      answer: "Partial answer",
+    });
+    await l.f.tick();
+    expect(l.polls().at(-1)).toMatchObject({ leadReportsPaused: true });
+    expect(submitted).toEqual([]);
+
+    const completedTurn = randomUUID();
+    await l.f.run("turn.start", { turnId: completedTurn });
+    await l.f.run("turn.complete", {
+      turnId: completedTurn,
+      reason: "answer",
+      answer: "Main turn finished",
+    });
+    await l.f.tick();
+    await l.f.tick();
+    expect(l.polls().at(-1)).toMatchObject({ leadReportsPaused: false });
+    expect(submitted).toEqual([report.text]);
+  });
+
+  it.each(["quota_auto_resume_fired", "quota_auto_resume_stale", "quota_auto_resume_disabled"])(
+    "restores report delivery on the native %s notification",
+    async (notification_type) => {
+      const l = await leading({ rateLimitFeature: true });
+      const report = { id: randomUUID(), text: "[AgentKib report] Worker finished" };
+      const submitted = watchReportSubmissions(l.f);
+      l.setLead({ tools: [tool], reports: [] });
+      await l.f.tick();
+      await limitTurn(l.f);
+      l.setLead({ tools: [tool], reports: [report] });
+      await l.f.run("classic.Notification", {
+        session_id: l.f.nativeId,
+        notification_type: "permission_prompt",
+        message: notification_type,
+      });
+      await l.f.run("classic.Notification", {
+        session_id: l.f.nativeId,
+        agent_id: "child-agent",
+        notification_type,
+        message: "Child notification.",
+      });
+      await l.f.run("classic.Notification", {
+        session_id: randomUUID(),
+        notification_type,
+        message: "Notification for another terminal.",
+      });
+      await l.f.tick();
+      expect(l.polls().at(-1)).toMatchObject({ leadReportsPaused: true });
+      expect(submitted).toEqual([]);
+
+      await l.f.run("classic.Notification", {
+        session_id: l.f.nativeId,
+        notification_type,
+        message: "Terminal notification.",
+      });
+      await l.f.tick();
+      await l.f.tick();
+      expect(l.polls().at(-1)).toMatchObject({ leadReportsPaused: false });
+      expect(submitted).toEqual([report.text]);
+    },
+  );
+
+  it("waits past the latest full usage window before taking reports again", async () => {
+    let now = Date.parse("2027-01-15T12:00:00.000Z");
+    const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
+    try {
+      const l = await leading({ rateLimitFeature: true });
+      const report = { id: randomUUID(), text: "[AgentKib report] Worker finished" };
+      const submitted = watchReportSubmissions(l.f);
+      const rateLimits = [
+        { kind: "five_hour", percentUsed: 100, resetsAt: "2027-01-15T12:01:00.000Z" },
+        { kind: "seven_day", percentUsed: 100, resetsAt: "2027-01-15T12:02:00.000Z" },
+        { kind: "seven_day_sonnet", percentUsed: 90, resetsAt: "2027-01-15T12:10:00.000Z" },
+      ];
+      l.f.api.session.usage = async () => ({ rateLimits });
+      l.setLead({ tools: [tool], reports: [] });
+      await l.f.tick();
+      await limitTurn(l.f);
+      l.setLead({ tools: [tool], reports: [report] });
+
+      now += 120_000 + 29_999;
+      await l.f.tick();
+      expect(l.polls().at(-1)).toMatchObject({ leadReportsPaused: true });
+      expect(submitted).toEqual([]);
+
+      now += 60_002;
+      await l.f.tick();
+      await l.f.tick();
+      expect(l.polls().at(-1)).toMatchObject({ leadReportsPaused: false });
+      expect(submitted).toEqual([report.text]);
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
+  it("probes an unknown reset after five minutes only once until a native recovery", async () => {
+    let now = Date.parse("2027-01-15T12:00:00.000Z");
+    const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
+    try {
+      const l = await leading({ rateLimitFeature: true });
+      const probe = { id: randomUUID(), text: "[AgentKib report] First Worker finished" };
+      const later = { id: randomUUID(), text: "[AgentKib report] Another Worker finished" };
+      const submitted: string[] = [];
+      l.f.setSubmit(async ({ text }) => {
+        submitted.push(text);
+        if (text === probe.text) {
+          await appendNativeReport(l.f, text);
+          await limitTurn(l.f, { text });
+        } else await nativeReportTurn(l.f, text, randomUUID());
+        return { text };
+      });
+      l.setLead({ tools: [tool], reports: [] });
+      await l.f.tick();
+      await limitTurn(l.f);
+      l.setLead({ tools: [tool], reports: [probe] });
+      now += 299_999;
+      await l.f.tick();
+      expect(l.polls().at(-1)).toMatchObject({ leadReportsPaused: true });
+      expect(submitted).toEqual([]);
+
+      now++;
+      await l.f.tick();
+      await l.f.tick();
+      expect(submitted).toEqual([probe.text]);
+      l.setLead({ tools: [tool], reports: [later] });
+      now += 600_000;
+      await l.f.tick();
+      await l.f.tick();
+      expect(l.polls().at(-1)).toMatchObject({ leadReportsPaused: true });
+      expect(submitted).toEqual([probe.text]);
+
+      await l.f.run("prompt.submit", { text: "Continue", origin: { kind: "composer" } });
+      await l.f.tick();
+      await l.f.tick();
+      expect(submitted).toEqual([probe.text, later.text]);
+    } finally {
+      clock.mockRestore();
+    }
   });
 
   it.each([false, true])(
@@ -850,9 +1154,13 @@ describe("Claude Code native session plugin as a Project Agent", () => {
     l.setLead({ tools: [tool], reports: [] });
     await l.f.tick();
     await l.f.tick();
-    expect(l.polls().every((poll) => !("leadTools" in poll) && !("takenReports" in poll))).toBe(
-      true,
-    );
+    expect(
+      l
+        .polls()
+        .every(
+          (poll) => !["leadTools", "takenReports", "leadReportsPaused"].some((key) => key in poll),
+        ),
+    ).toBe(true);
     expect(l.registered).toEqual([]);
     expect(await l.call()).toMatchObject({ deny: expect.stringContaining("not connected") });
     expect(l.f.calls.some((entry) => entry.url.endsWith("/lead-call"))).toBe(false);
@@ -1015,7 +1323,7 @@ describe("Claude Code native session plugin", () => {
       const f = await fixture({ version });
       expect(f.calls.find((call) => call.url.endsWith("/pair"))?.body).toMatchObject({
         cliVersion: version,
-        pluginVersion: "0.5.3",
+        pluginVersion: "0.5.4",
         nativeCapabilities: {
           version: 1,
           available: [
@@ -1233,7 +1541,7 @@ describe("Claude Code native session plugin", () => {
         bindingId: f.connection.bindingId,
         nativeId: f.nativeId,
         cwd: "/isolated/workspace",
-        pluginVersion: "0.5.3",
+        pluginVersion: "0.5.4",
       });
       expect(report.body).not.toHaveProperty("nativeCapabilities");
       expect(report.body).not.toHaveProperty("token");
@@ -1492,7 +1800,7 @@ describe("Claude Code native session plugin", () => {
     const result = await f.run("command.run", { command: "agentkib-connect", args: f.ticket });
     expect(result.text).toContain("AgentKib connected");
     const pair = f.calls.find((call) => call.url.endsWith("/pair"))?.body;
-    expect(pair).toMatchObject({ pluginVersion: "0.5.3", cliVersion: "2.1.307" });
+    expect(pair).toMatchObject({ pluginVersion: "0.5.4", cliVersion: "2.1.307" });
     expect(pair).not.toHaveProperty("connectionError");
   });
   it.each(["2.1.301-beta", "02.1.301", "not-a-version"])(
@@ -1715,7 +2023,7 @@ describe("Claude Code native session plugin", () => {
       ).toHaveLength(1);
       expect(set).toHaveBeenCalledWith(
         "compatibility:credential-store:1",
-        "agentkib-bridge:0.5.3:capabilities:1",
+        "agentkib-bridge:0.5.4:capabilities:1",
       );
       expect((await f.run("command.run", { command: "agentkib-status", args: "" })).text).toContain(
         "is connected",
@@ -2565,7 +2873,7 @@ describe("Claude Code native session plugin", () => {
     });
     expect(pair.init.headers.Authorization).toBeUndefined();
     expect([...f.stored]).toEqual([
-      ["compatibility:credential-store:1", "agentkib-bridge:0.5.3:capabilities:1"],
+      ["compatibility:credential-store:1", "agentkib-bridge:0.5.4:capabilities:1"],
       [`credentialPath:${f.nativeId}`, f.connection.credentialPath],
     ]);
     expect(JSON.stringify([...f.stored])).not.toContain(f.connection.token);

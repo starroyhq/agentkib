@@ -167,6 +167,11 @@ type SharedSessionPlatform = {
   };
   notifications: {
     connectionPlacement: "window-toolbar" | "inline";
+    pendingCenter: {
+      compactClassName: string;
+      showTriggerTitle?: boolean;
+      TriggerSlot?: ComponentType<{ children: (inWindow: boolean) => ReactNode }>;
+    };
     Toolbar?: ComponentType<{
       filesOpen: boolean;
       onFilesOpenChange(open: boolean): void;

@@ -2,7 +2,8 @@ import { agentName } from "@agentkib/agent-identity";
 import { isSessionVisible } from "@agentkib/session-catalog";
 import { createWarmSessionStreamPool, type SessionPlatform } from "@agentkib/session-ui";
 import type { WebClient } from "@agentkib/web-client";
-import { useMemo, useState, type ComponentProps } from "react";
+import { useEffect, useMemo, useState, type ComponentProps, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 import { cn } from "cn";
 import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
@@ -180,6 +181,19 @@ export const desktopSessionReadScope: SessionPlatform["readScope"] = {
   refreshContext: () => "desktop-local",
 };
 
+function PendingCenterTriggerSlot({ children }: { children: (inWindow: boolean) => ReactNode }) {
+  const [target, setTarget] = useState<HTMLElement | null>(null);
+  useEffect(() => {
+    const findSlot = () =>
+      setTarget(document.querySelector<HTMLElement>("[data-session-window-pending-slot]"));
+    findSlot();
+    const observer = new MutationObserver(findSlot);
+    observer.observe(document.body, { childList: true, subtree: true });
+    return () => observer.disconnect();
+  }, []);
+  return target ? createPortal(children(true), target) : children(false);
+}
+
 export function useDesktopSessionPlatform(client: WebClient): SessionPlatform {
   const openSettings = useOptionalAppNavigationContext()?.app.openSettings;
   const hasDesktopBridge = !!globalThis.window?.agentkibDesktop;
@@ -211,6 +225,11 @@ export function useDesktopSessionPlatform(client: WebClient): SessionPlatform {
       retention: { useSessionRetention: useDesktopSessionRetention },
       notifications: {
         connectionPlacement: "window-toolbar",
+        pendingCenter: {
+          compactClassName: "relative !size-9 !min-w-0 !p-0",
+          showTriggerTitle: true,
+          TriggerSlot: PendingCenterTriggerSlot,
+        },
         Toolbar: ConversationWindowTools,
         // The application root hosts the desktop Toaster.
         success: toast.success,

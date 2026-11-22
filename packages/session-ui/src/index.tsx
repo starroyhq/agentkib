@@ -27,6 +27,12 @@ export {
 } from "./conversation/history/history-reference-model";
 export { interactionCopy } from "./conversation/interactions/interaction-copy";
 export { approvalSummary } from "./conversation/sessions/approval-summary";
+export { PendingCenter, type PendingCenterCopy } from "./conversation/sessions/pending-center";
+export { SessionDetailsDialog } from "./conversation/catalog/session-details-dialog";
+export {
+  SessionManagementRowMenu,
+  type SessionManagementRowMenuProps,
+} from "./conversation/catalog/session-row-menu";
 export {
   SessionReader,
   type ReaderContextUsageProps,

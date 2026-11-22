@@ -1,35 +1,64 @@
-import { Bell } from "lucide-react";
+import { Bell, ListTodo } from "lucide-react";
 import { useEffect, useState } from "react";
-import { useSessionNavigate } from "./session-navigation";
-import { Button } from "../../components/ui/button";
-import { Dialog } from "../../components/dialog";
-import { useSession } from "./session-context";
+import type {
+  Access,
+  Approval,
+  ConversationSessionSummary,
+  Live,
+  UserQuestionRequest,
+} from "@agentkib/web-client";
+import { catalogCopy } from "../../catalog-copy";
+import { homeSessionCopy, type HomeListNeed } from "../../home-sessions";
+import { interactionCardCopy, type InteractionLocale } from "../../interaction-model";
+import { useSessionPlatform } from "../../session-platform";
+import { interactionCopy } from "../interactions/interaction-copy";
+import { approvalSummary } from "./approval-summary";
 import {
-  approvalSummary,
   pendingScope,
   readPending,
   subscribePending,
   type PendingControl,
-  catalogCopy,
-  interactionCopy,
-} from "@agentkib/session-ui";
-import { codexCopyForSurface } from "./codex-copy";
-import { homeSessionCopy, interactionCardCopy } from "@agentkib/session-ui";
+} from "./pending-controls";
 
-/**
- * The bell and its list of what waits. With `needsYou` (the home's group) it counts and lists
- * exactly that group; otherwise the sessions with controls not yet settled here.
- */
+export type PendingCenterCopy = Record<
+  "pending" | "close" | "pendingInfo" | "error" | "pendingEmpty" | "unknown" | "refresh",
+  string
+>;
+
+type PendingCenterSession = {
+  access: Access | null | undefined;
+  origin: string;
+  sessions: readonly ConversationSessionSummary[];
+  excludedSessionIds?: ReadonlySet<string>;
+  selected: string;
+  live: Live | undefined;
+  pendingSessions: Readonly<Record<string, boolean>>;
+  locale: InteractionLocale;
+  t: { untitled: string; approval: string; unknownTool: string };
+  setModal(request: Approval | UserQuestionRequest): void;
+  refresh(manual: boolean): Promise<unknown>;
+};
+
+/** When supplied, the home's group controls which sessions the center counts and lists. */
 export function PendingCenter({
+  session,
+  copy,
+  onNavigate,
   compact = false,
   needsYou,
 }: {
+  session: PendingCenterSession;
+  copy: PendingCenterCopy;
+  onNavigate(sessionId: string): void;
   compact?: boolean;
-  needsYou?: {
-    session: { id: string };
-    need: "approval" | "question" | "verify" | "delegation";
-  }[];
+  needsYou?: readonly { session: { id: string }; need: HomeListNeed }[];
 }) {
+  const {
+    components: { Button, SessionDialog },
+    notifications: {
+      pendingCenter: { compactClassName, showTriggerTitle, TriggerSlot },
+    },
+  } = useSessionPlatform();
   const {
     access,
     origin,
@@ -42,12 +71,10 @@ export function PendingCenter({
     t,
     setModal,
     refresh,
-  } = useSession();
-  const copy = codexCopyForSurface(locale, "web");
+  } = session;
   const [open, setOpen] = useState(false);
   const [saved, setSaved] = useState<PendingControl[]>([]);
   const [failed, setFailed] = useState(false);
-  const navigate = useSessionNavigate();
   useEffect(() => {
     if (access?.status !== "approved" || !access.device?.id) {
       setSaved([]);
@@ -65,7 +92,7 @@ export function PendingCenter({
     read();
     return subscribePending(read);
   }, [origin, access?.status, access?.device?.id, open, live?.revision]);
-  if (access?.status !== "approved") return null;
+  const approved = access?.status === "approved";
   const pendingIds = new Set(
     needsYou
       ? needsYou.map(({ session }) => session.id)
@@ -80,6 +107,9 @@ export function PendingCenter({
     ? [...(live?.approvals ?? []), ...(live?.questions ?? [])]
     : [];
   if (!needsYou && interactions.length && selected) pendingIds.add(selected);
+  const unlinkedSaved = saved.filter((item) => !item.sessionId);
+  const showTrigger =
+    approved && (open || failed || pendingIds.size > 0 || unlinkedSaved.length > 0);
   const card = interactionCardCopy(locale);
   const needLabel = (id: string) => {
     const need = needsYou?.find(({ session }) => session.id === id)?.need;
@@ -93,16 +123,17 @@ export function PendingCenter({
             ? homeSessionCopy(locale).delegationPaused
             : undefined;
   };
-  return (
-    <>
+  const trigger = (inWindow: boolean) =>
+    showTrigger && (
       <Button
         data-conversation-pending-trigger
         variant="ghost"
-        className={compact ? "relative size-11 p-0" : "min-h-11"}
+        className={compact ? compactClassName : "min-h-11"}
         aria-label={`${copy.pending}${pendingIds.size ? ` (${pendingIds.size})` : ""}`}
+        title={showTriggerTitle ? copy.pending : undefined}
         onClick={() => setOpen(true)}
       >
-        {compact ? <Bell size={18} /> : copy.pending}
+        {compact ? inWindow ? <ListTodo size={18} /> : <Bell size={18} /> : copy.pending}
         {pendingIds.size > 0 && (
           <span
             aria-hidden="true"
@@ -116,11 +147,20 @@ export function PendingCenter({
           </span>
         )}
       </Button>
-      {open && (
-        <Dialog panel title={copy.pending} closeLabel={copy.close} onClose={() => setOpen(false)}>
+    );
+  return (
+    <>
+      {compact && TriggerSlot ? <TriggerSlot>{trigger}</TriggerSlot> : trigger(false)}
+      {approved && open && (
+        <SessionDialog
+          panel
+          title={copy.pending}
+          closeLabel={copy.close}
+          onClose={() => setOpen(false)}
+        >
           <p className="text-xs text-muted-foreground">{copy.pendingInfo}</p>
           {failed && <p role="alert">{copy.error}</p>}
-          {!pendingIds.size && !saved.length && <p>{copy.pendingEmpty}</p>}
+          {!pendingIds.size && !unlinkedSaved.length && <p>{copy.pendingEmpty}</p>}
           {Array.from(pendingIds).map((id) => (
             <section key={id} className="space-y-2 rounded border p-3">
               {excludedSessionIds?.has(id) ? (
@@ -132,7 +172,7 @@ export function PendingCenter({
                   variant="ghost"
                   onClick={() => {
                     setOpen(false);
-                    void navigate({ to: "/sessions/$sessionId", params: { sessionId: id } });
+                    onNavigate(id);
                   }}
                 >
                   {sessions.find((item) => item.id === id)?.title || t.untitled}
@@ -163,17 +203,15 @@ export function PendingCenter({
                 ))}
             </section>
           ))}
-          {saved
-            .filter((item) => !item.sessionId)
-            .map((item) => (
-              <p key={item.requestId} className="text-xs text-muted-foreground">
-                {copy.unknown} · {item.kind}
-              </p>
-            ))}
+          {unlinkedSaved.map((item) => (
+            <p key={item.requestId} className="text-xs text-muted-foreground">
+              {copy.unknown} · {item.kind}
+            </p>
+          ))}
           <Button variant="outline" onClick={() => void refresh(true)}>
             {copy.refresh}
           </Button>
-        </Dialog>
+        </SessionDialog>
       )}
     </>
   );

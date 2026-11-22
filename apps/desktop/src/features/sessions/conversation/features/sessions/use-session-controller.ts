@@ -85,11 +85,11 @@ import {
   type ConversationEvent,
   type ConversationEventPage,
   type ConversationSessionSummary,
+  type ConversationWorkspaceSummary,
   type Live,
   type UserQuestionRequest,
 } from "@agentkib/web-client";
 import { displaySessionTitle, isSessionListed } from "@agentkib/session-catalog";
-import type { CatalogWorkspace } from "../catalog/session-catalog";
 import { conversationWords } from "@/core/i18n";
 import type { SupportedLocale as Locale } from "@/core/types";
 import { useDesktopConversationWindow } from "../../../DesktopConversationWindow";
@@ -210,7 +210,7 @@ export function useSessionController({
     [sessions, setSessions] = useState<ConversationSessionSummary[]>([]),
     [excludedSessionIds, setExcludedSessionIds] = useState<ReadonlySet<string>>(new Set()),
     [catalogNotice, setCatalogNotice] = useState(false),
-    [workspaces, setWorkspaces] = useState<CatalogWorkspace[]>(),
+    [workspaces, setWorkspaces] = useState<ConversationWorkspaceSummary[]>(),
     [selected, setSelected] = useState(""),
     [{ page, historyDetailTurnId }, publishPage] = useState<{
       page?: ConversationEventPage;

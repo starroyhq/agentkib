@@ -1,6 +1,6 @@
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { ConversationSessionSummary } from "@agentkib/web-client";
+import { ApiError, type ConversationSessionSummary } from "@agentkib/web-client";
 import { SessionRowMenu } from "@/features/conversation/features/catalog/session-row-menu";
 import { SessionCatalog } from "@/features/conversation/features/catalog/session-catalog";
 import { useSession } from "@/features/conversation/features/sessions/session-context";
@@ -67,6 +67,45 @@ describe("a session row's menu in the browser", () => {
       expect.objectContaining({ sessionId: "session", bootId: "boot", expectedRevision: 3 }),
       "codex",
     );
+  });
+
+  it.each([
+    {
+      action: "rename",
+      title: copy.rename,
+      confirmLabel: copy.rename,
+      menuLabel: copy.rename,
+      code: "follower-operation-unverified",
+      message: codexReason("en-US", "follower-operation-unverified", "web").text,
+    },
+    {
+      action: "delete",
+      title: copy.deleteTitle,
+      confirmLabel: copy.deleteConfirm,
+      menuLabel: copy.delete,
+      code: "codex-owner-busy",
+      message: copy.deleteOwnerBusy,
+    },
+  ])("keeps the $action dialog open on failure and retries there", async (scenario) => {
+    features({ [scenario.action]: { available: true } });
+    client.sessionAction.mockRejectedValueOnce(new ApiError(409, scenario.code, "not-dispatched"));
+    render(<SessionRowMenu session={summary("codex")} />);
+    openMenu();
+    fireEvent.click(await screen.findByRole("menuitem", { name: scenario.menuLabel }));
+    const dialog = await screen.findByRole("dialog", { name: scenario.title });
+    const submit = within(dialog).getByRole("button", { name: scenario.confirmLabel });
+    fireEvent.click(submit);
+    expect(await within(dialog).findByRole("alert")).toHaveTextContent(scenario.message);
+    expect(context.refresh).not.toHaveBeenCalled();
+    expect(context.dropDeletedSession).not.toHaveBeenCalled();
+
+    fireEvent.click(submit);
+    expect(submit).toBeDisabled();
+    expect(within(dialog).queryByRole("alert")).not.toBeInTheDocument();
+    fireEvent.click(submit);
+    await waitFor(() => expect(context.refresh).toHaveBeenCalledExactlyOnceWith(true));
+    expect(client.sessionAction).toHaveBeenCalledTimes(2);
+    expect(screen.queryByRole("dialog", { name: scenario.title })).not.toBeInTheDocument();
   });
 
   it("keeps a Claude session without an archive item", async () => {

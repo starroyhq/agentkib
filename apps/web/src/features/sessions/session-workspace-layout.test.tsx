@@ -42,7 +42,8 @@ vi.mock("@/features/conversation/features/sessions/session-context", () => ({
     leaveSession: vi.fn(),
   }),
 }));
-vi.mock("@/features/conversation/features/sessions/pending-center", () => ({
+vi.mock("@agentkib/session-ui", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@agentkib/session-ui")>()),
   PendingCenter: () => {
     useEffect(() => {
       fixture.mounts++;

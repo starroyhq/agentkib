@@ -12,11 +12,9 @@ const desktop = join(repo, "apps/desktop/src/features/sessions/conversation/feat
 // At e77efe196, 36 pairs are byte-identical and the other 53 differ by 5,821 lines.
 // Only the paths below may differ. Migrated paths leave the comparison when no pair remains.
 const divergenceBudget = {
-  "catalog/session-catalog.tsx": 237,
-  "catalog/session-details-dialog.tsx": 2,
   "sessions/claude-session-banner.test.ts": 20,
   "sessions/claude-session-banner.ts": 8,
-  "sessions/codex-session-controls.tsx": 909,
+  "sessions/codex-session-controls.tsx": 846,
   "sessions/codex-tools.tsx": 148,
   "sessions/composer-layout-copy.ts": 6,
   "sessions/context-usage.tsx": 35,
@@ -25,18 +23,17 @@ const divergenceBudget = {
   "sessions/managed-copy.ts": 2,
   "sessions/managed-error-copy.ts": 2,
   "sessions/managed-turn-notice.tsx": 4,
-  "sessions/pending-center.tsx": 118,
   "sessions/permission-mode-notice.tsx": 22,
   "sessions/session-agent-copy.ts": 7,
   "sessions/session-composer-commands.test.tsx": 753,
   "sessions/session-composer-offline.test.tsx": 41,
   "sessions/session-composer.test.tsx": 210,
-  "sessions/session-composer.tsx": 261,
+  "sessions/session-composer.tsx": 260,
   "sessions/session-context.tsx": 18,
   "sessions/session-display-state.ts": 2,
   "sessions/session-panels.tsx": 1,
   "sessions/session-receipt-recovery.tsx": 173,
-  "sessions/use-session-controller.ts": 689,
+  "sessions/use-session-controller.ts": 688,
   "sessions/use-session-live.ts": 98,
 };
 

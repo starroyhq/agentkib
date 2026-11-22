@@ -9,7 +9,12 @@ export type HistoryContinuationRequest = {
   workspace: WorkspaceSummary;
   session: ConversationSessionSummary;
 };
-export type TerminalEntryRegistration = { sessionId: string; open: () => void };
+export type TerminalEntryRegistration = {
+  sessionId: string;
+  title: string;
+  disabledReason?: string;
+  open: () => void;
+};
 
 export type SessionRecordFilter = "current" | "archived" | "metadata" | "all";
 

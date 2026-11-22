@@ -1,13 +1,25 @@
-import { sessionDetailCapabilities } from "@agentkib/web-client";
-import type { ComponentProps, ComponentType, ReactNode } from "react";
+import {
+  useEffect,
+  useState,
+  type ComponentProps,
+  type ComponentType,
+  type ReactNode,
+} from "react";
+import {
+  connectionManagementUnavailableReason,
+  sessionConnectionPanels,
+  type SessionTerminalPanelProps,
+} from "../../agents/session-connection-panels";
 import { requestReadStateRefresh } from "../../read-state";
 import { SessionDetailOperations } from "../../session-detail-operations";
 import { useSessionPlatform } from "../../session-platform";
+import { resolveSessionProvider } from "../../session-provider";
 import { ProjectAgentPanel, type ProjectAgentPanelClient } from "./project-agent-panel";
 import {
   SessionReceiptRecovery,
   type SessionReceiptRecoveryProps,
 } from "./session-receipt-recovery";
+import { useSessionPanels } from "./session-panels";
 import { webLayoutCopy } from "./web-layout-copy";
 
 export function SessionOperations({
@@ -15,19 +27,18 @@ export function SessionOperations({
   onOpenChange,
   session,
   projectAgentClient,
-  hostPanels,
   ExecutionControls,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   session: SessionReceiptRecoveryProps["session"] &
+    SessionTerminalPanelProps["session"] &
     Pick<ComponentProps<typeof ProjectAgentPanel>, "choose" | "formatCatalogTime"> & {
       t: ComponentProps<typeof SessionDetailOperations>["labels"];
       embedded?: boolean;
       setModal: ComponentProps<typeof SessionDetailOperations>["onShowModal"];
     };
   projectAgentClient: ProjectAgentPanelClient;
-  hostPanels?: ReactNode;
   ExecutionControls: ComponentType<{
     open: boolean;
     onOpenChange: (open: boolean) => void;
@@ -36,60 +47,99 @@ export function SessionOperations({
     ownership: ReactNode;
   }>;
 }) {
-  const { kind, components, readScope } = useSessionPlatform();
-  const { t, locale, current, selected, client, access, setModal, refresh, busy, embedded } =
-    session;
-  const hasExecutionControls = sessionDetailCapabilities(current?.agent).operations.execution;
+  const platform = useSessionPlatform();
+  const { kind, components, readScope } = platform;
+  const {
+    t,
+    locale,
+    current,
+    selected,
+    client,
+    access,
+    capabilities,
+    setModal,
+    refresh,
+    busy,
+    embedded,
+  } = session;
+  const provider = resolveSessionProvider(
+    current?.id === selected ? current : undefined,
+    capabilities,
+  );
+  const hasExecutionControls = provider?.operations.execution === true;
+  const connection = sessionConnectionPanels(provider?.connection?.kind, platform);
+  const Settings = connection?.Settings;
+  const Terminal = connection?.terminal?.Panel;
+  const managementUnavailable = connectionManagementUnavailableReason(access, locale);
+  const panels = useSessionPanels();
+  const [localTerminalOpen, setLocalTerminalOpen] = useState(false);
+  const terminalOpen = panels?.terminalOpen ?? localTerminalOpen;
+  const setTerminalOpen = panels?.setTerminalOpen ?? setLocalTerminalOpen;
+  const canOpenTerminal = !!Terminal && !managementUnavailable;
+  useEffect(() => {
+    setTerminalOpen(false);
+  }, [selected, canOpenTerminal, setTerminalOpen]);
+
   return (
-    <SessionDetailOperations
-      open={open}
-      title={webLayoutCopy[locale].actions}
-      labels={t}
-      busy={busy}
-      embedded={embedded}
-      onOpenChange={onOpenChange}
-      onShowModal={setModal}
-      onRefresh={() => {
-        requestReadStateRefresh(readScope.refreshContext(client), selected);
-        void refresh(true);
-      }}
-      extra={
-        hasExecutionControls &&
-        (kind === "web" || access?.device?.manage) && (
+    <>
+      <SessionDetailOperations
+        open={open}
+        title={webLayoutCopy[locale].actions}
+        labels={t}
+        busy={busy}
+        embedded={embedded}
+        onOpenChange={onOpenChange}
+        onShowModal={setModal}
+        onRefresh={() => {
+          requestReadStateRefresh(readScope.refreshContext(client), selected);
+          void refresh(true);
+        }}
+        extra={
           <>
-            {hostPanels}
-            <ProjectAgentPanel
-              locale={locale}
-              selected={selected}
-              choose={session.choose}
-              formatCatalogTime={session.formatCatalogTime}
-              client={projectAgentClient}
-              device={access?.device}
-            />
-          </>
-        )
-      }
-      controls={
-        hasExecutionControls
-          ? (shortcuts) => (
-              <SessionReceiptRecovery
-                session={session}
-                renderContent={(ownership) => (
-                  <ExecutionControls
-                    open={open}
-                    onOpenChange={onOpenChange}
-                    showTrigger={false}
-                    shortcuts={shortcuts}
-                    ownership={ownership}
-                  />
-                )}
+            {Settings && (
+              <Settings
+                key={managementUnavailable ? "read-only" : "owner"}
+                locale={locale}
+                unavailableReason={managementUnavailable}
               />
-            )
-          : undefined
-      }
-      buttonClassName={components.touchTargetClassName}
-      Button={components.Button}
-      Dialog={components.SessionDialog}
-    />
+            )}
+            {hasExecutionControls && (kind === "web" || access?.device?.manage) && (
+              <ProjectAgentPanel
+                locale={locale}
+                selected={selected}
+                choose={session.choose}
+                formatCatalogTime={session.formatCatalogTime}
+                client={projectAgentClient}
+                device={access?.device}
+              />
+            )}
+          </>
+        }
+        controls={
+          hasExecutionControls
+            ? (shortcuts) => (
+                <SessionReceiptRecovery
+                  session={session}
+                  renderContent={(ownership) => (
+                    <ExecutionControls
+                      open={open}
+                      onOpenChange={onOpenChange}
+                      showTrigger={false}
+                      shortcuts={shortcuts}
+                      ownership={ownership}
+                    />
+                  )}
+                />
+              )
+            : undefined
+        }
+        buttonClassName={components.touchTargetClassName}
+        Button={components.Button}
+        Dialog={components.SessionDialog}
+      />
+      {Terminal && canOpenTerminal && terminalOpen && (
+        <Terminal session={session} active onClose={() => setTerminalOpen(false)} />
+      )}
+    </>
   );
 }

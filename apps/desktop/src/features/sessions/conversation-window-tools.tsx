@@ -3,10 +3,16 @@ import { Popover } from "@base-ui/react/popover";
 import { managedAgentOf } from "@agentkib/web-client";
 import { createPortal } from "react-dom";
 import { FolderOpen } from "lucide-react";
-import { requestReadStateRefresh } from "@agentkib/session-ui";
+import {
+  connectionManagementUnavailableReason,
+  requestReadStateRefresh,
+  resolveSessionProvider,
+  sessionConnectionPanels,
+  useSessionPlatform,
+} from "@agentkib/session-ui";
 import { Button } from "@/components/ui/button";
 import { useSession } from "./conversation/desktop-session-context";
-import { claudeSessionBanner } from "@agentkib/session-ui";
+import { sessionConnectionBanner } from "@agentkib/session-ui";
 import { sessionDisplayState } from "./conversation/desktop-session-display";
 import { webLayoutCopy } from "@agentkib/session-ui";
 import { useSessionViewStore } from "./session-view-store";
@@ -28,25 +34,29 @@ export function ConversationWindowTools({
   const { selected, current, access, locale } = session;
   const setTerminalOpen = useSessionPanels()?.setTerminalOpen;
   const [slots, setSlots] = useState<ToolbarSlots>({ files: null, status: null });
-  const canConnectTerminal =
-    !!selected &&
-    current?.id === selected &&
-    current.agent === "claude-code" &&
-    document.documentElement.dataset.platform === "macos" &&
-    access?.status === "approved" &&
-    !!access.device?.manage &&
-    !!setTerminalOpen;
+  const platform = useSessionPlatform();
+  const provider = resolveSessionProvider(
+    current?.id === selected ? current : undefined,
+    session.capabilities,
+  );
+  const terminal = sessionConnectionPanels(provider?.connection?.kind, platform)?.terminal;
+  const terminalTitle = terminal?.title(locale);
+  const terminalUnavailable = connectionManagementUnavailableReason(access, locale);
   useLayoutEffect(() => {
-    if (!selected || !canConnectTerminal || !setTerminalOpen) return;
-    // The toolbar has catalog summaries only. Publish the actual view's grant,
-    // and keep older view cleanup from removing a newer session's registration.
-    // Opening this view's guide preserves explicit revocation during an unknown
-    // outcome. The panel still applies its separate generation/revocation gates.
-    const entry = { sessionId: selected, open: () => setTerminalOpen(true) };
+    if (!selected || !terminalTitle || !setTerminalOpen) return;
+    // The toolbar has catalog summaries only. Publish the session view's actual grant.
+    const entry = {
+      sessionId: selected,
+      title: terminalTitle,
+      disabledReason: terminalUnavailable,
+      open: () => {
+        if (!terminalUnavailable) setTerminalOpen(true);
+      },
+    };
     const view = useSessionViewStore.getState();
     view.registerTerminalEntry(entry);
     return () => view.unregisterTerminalEntry(entry);
-  }, [selected, canConnectTerminal, setTerminalOpen]);
+  }, [selected, terminalTitle, terminalUnavailable, setTerminalOpen]);
   useLayoutEffect(() => {
     const sync = () => {
       const toolbar = document.querySelector<HTMLElement>("[data-session-window-session]");
@@ -68,7 +78,7 @@ export function ConversationWindowTools({
     return () => observer.disconnect();
   }, [selected]);
   const status = sessionDisplayState(session);
-  const banner = current?.agent === "claude-code" ? claudeSessionBanner(session) : null;
+  const banner = sessionConnectionBanner(session);
   const connectionBanner = banner?.connection ? banner : null;
   const label = (session.online && connectionBanner?.title) || status.label;
   const requestFailed = !session.online && !session.incompatible && session.error;

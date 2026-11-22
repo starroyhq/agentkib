@@ -1,6 +1,6 @@
 import { surfaceCopy, surfaceText, type SessionSurface } from "../../session-surface-copy";
 import { sessionContinuationCopy } from "../../session-continuation";
-import { claudeConnectionReason } from "./claude-connection-copy";
+import { claudeConnectionReason } from "../../agents/claude-code/connection-copy";
 import type { InteractionLocale as Locale } from "../../interaction-model";
 const zh = {
   composerHint: "空闲时发送；运行中可停止，获授权后可追加或加入待发队列。队列消息将自动执行。",

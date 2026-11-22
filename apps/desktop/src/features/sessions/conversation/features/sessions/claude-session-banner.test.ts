@@ -2,9 +2,12 @@ import {
   sessionContinuationCopy,
   claudeConnectionCopy,
   claudeConnectionReason,
+  claudeSessionBanner,
+  sessionBannerAtComposer,
+  sessionConnectionBanner,
 } from "@agentkib/session-ui";
+import { sessionProviderCapabilities, sessionProviderDeclaration } from "@agentkib/web-client";
 import { describe, expect, it } from "vitest";
-import { claudeComposerNotice, claudeSessionBanner } from "@agentkib/session-ui";
 import { sessionDisplayState } from "../../desktop-session-display";
 import type { SessionController } from "../../desktop-session-controller";
 
@@ -34,6 +37,62 @@ function fixture(
   } as unknown as SessionController;
 }
 describe("Claude execution and terminal connection presentation", () => {
+  it("selects the registered connection notice from the current session declaration", () => {
+    const legacy = fixture("en-US", "claude-follower", "idle", "claude-bridge-event-gap");
+    const expected = claudeSessionBanner(legacy, "web");
+    expect(expected).not.toBeNull();
+    expect(sessionConnectionBanner(legacy, "web")).toEqual(expected);
+    expect(
+      sessionConnectionBanner(
+        {
+          ...legacy,
+          capabilities: {
+            sessionId: legacy.selected,
+            provider: sessionProviderCapabilities("claude-code"),
+          },
+        },
+        "web",
+      ),
+    ).toEqual(expected);
+
+    const typed = {
+      ...legacy,
+      current: { id: legacy.selected, agent: "codex" as const },
+      capabilities: {
+        sessionId: legacy.selected,
+        provider: sessionProviderDeclaration("claude-code"),
+      },
+    };
+    expect(sessionConnectionBanner(typed, "web")).toEqual(expected);
+    expect(
+      sessionConnectionBanner(
+        { ...typed, current: { id: legacy.selected, agent: "opencode" } },
+        "web",
+      ),
+    ).toBeNull();
+    expect(
+      sessionConnectionBanner(
+        {
+          ...typed,
+          capabilities: { ...typed.capabilities, sessionId: "previous-session" },
+        },
+        "web",
+      ),
+    ).toBeNull();
+    expect(
+      sessionConnectionBanner(
+        {
+          ...legacy,
+          capabilities: {
+            sessionId: legacy.selected,
+            provider: sessionProviderDeclaration("devin"),
+          },
+        },
+        "web",
+      ),
+    ).toBeNull();
+  });
+
   it.each(["zh-CN", "zh-Hant", "en-US", "ja-JP"] as const)(
     "explains authenticated reconnect compatibility failures without overriding safety in %s",
     (locale) => {
@@ -150,7 +209,7 @@ describe("Claude execution and terminal connection presentation", () => {
         body: continuation.backgroundEnded,
         notice: "background-ended",
       });
-      expect(claudeComposerNotice(claudeSessionBanner(ended))).toBe(true);
+      expect(sessionBannerAtComposer(claudeSessionBanner(ended))).toBe(true);
       // Stopped after too many turns the CLI started by itself: also a line above the composer.
       const limited = {
         ...idle,
@@ -161,7 +220,7 @@ describe("Claude execution and terminal connection presentation", () => {
         body: continuation.backgroundLimit,
         notice: "background-limit",
       });
-      expect(claudeComposerNotice(claudeSessionBanner(limited))).toBe(true);
+      expect(sessionBannerAtComposer(claudeSessionBanner(limited))).toBe(true);
       // A Project Agent past its automatic turns: the turn its CLI started was stopped.
       const leadLimited = {
         ...idle,
@@ -172,7 +231,7 @@ describe("Claude execution and terminal connection presentation", () => {
         body: continuation.leadTurnLimit,
         notice: "lead-turn-limit",
       });
-      expect(claudeComposerNotice(claudeSessionBanner(leadLimited))).toBe(true);
+      expect(sessionBannerAtComposer(claudeSessionBanner(leadLimited))).toBe(true);
       const conflict = {
         ...idle,
         live: {

@@ -30,7 +30,7 @@ import type { ConversationSessionSummary } from "@/core/types";
 import { useI18n } from "@/core/useI18n";
 import { displaySessionTitle } from "@/features/workspace/session-title";
 import { Dialog as SessionDialog } from "./conversation/components/dialog";
-import { codexCopy, codexReason } from "./conversation/codex-copy";
+import { sessionCopy, sessionReason } from "./conversation/session-copy";
 import { SessionWorkerAssignmentDialog } from "./SessionWorkerAssignmentDialog";
 import { workerAssignmentCopy } from "./worker-assignment-copy";
 
@@ -91,7 +91,7 @@ export function SessionRowMenu({
   onDeleted?: () => void;
 }) {
   const { locale, tr } = useI18n();
-  const copy = codexCopy[locale];
+  const copy = sessionCopy[locale];
   const dialogs = useAppDialogs();
   const [client] = useState(createDesktopConversationClient);
   const [assigningWorkers, setAssigningWorkers] = useState(false);
@@ -125,7 +125,7 @@ export function SessionRowMenu({
         RenameDialog={RenameDialog}
         RenameFooter={DialogFooter}
         DeleteDialog={DeleteDialog}
-        errorMessage={(_, code) => codexReason(locale, code).text}
+        errorMessage={(_, code) => sessionReason(locale, code).text}
         onArchiveError={(description) => dialogs.notify({ description })}
         onChanged={onChanged}
         onDeleted={onDeleted}

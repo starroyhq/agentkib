@@ -150,7 +150,7 @@ describe("stable capability observation", () => {
       const reads = vi.mocked(host.client.sessionCapabilities).mock.calls.length;
       vi.mocked(host.client.sessionCapabilities).mockResolvedValue(capabilities(false));
       const fields = action === "settings" ? { mode: "plan" as const } : { name: "new name" };
-      await act(async () => result.current.codexAction(action, fields));
+      await act(async () => result.current.runSessionAction(action, fields));
       expect(host.request).not.toHaveBeenCalled();
       expect(host.client.sessionCapabilities).toHaveBeenCalledTimes(reads + 1);
       if (action === "settings") {
@@ -342,7 +342,7 @@ describe("stable capability observation", () => {
     }));
     const { result } = await open(host);
     expect(result.current.settingsChangedHere).toBe(false);
-    await act(async () => result.current.codexAction("settings", { effort: "low" }));
+    await act(async () => result.current.runSessionAction("settings", { effort: "low" }));
     expect(result.current.settingsChangedHere).toBe(true);
     await act(async () => result.current.choose("other"));
     expect(result.current.settingsChangedHere).toBe(false);
@@ -641,7 +641,9 @@ describe("Codex next-turn settings recovery", () => {
       }));
       const { result } = await open(host);
       host.request.mockRejectedValueOnce(new ApiError(status, code, "not-dispatched"));
-      await act(async () => result.current.codexAction("settings", { model: "no-such-model" }));
+      await act(async () =>
+        result.current.runSessionAction("settings", { model: "no-such-model" }),
+      );
       expect(host.request).toHaveBeenCalledWith(
         "managed/action",
         expect.objectContaining({ operation: "settings", model: "no-such-model" }),

@@ -65,7 +65,7 @@ import { useI18n } from "@/core/useI18n";
 import { AgentIcon } from "@/features/agents/AgentIcon";
 import { recentContinuationWorkspaces } from "@/features/home/home-continuations";
 import { cn } from "cn";
-import { codexCopy, codexReason } from "../conversation/codex-copy";
+import { sessionCopy, sessionReason } from "../conversation/session-copy";
 import { composerLayoutCopy } from "@agentkib/session-ui";
 import { Dialog } from "../conversation/components/dialog";
 import { MAX_MESSAGE_LENGTH } from "@agentkib/conversation-state";
@@ -174,7 +174,7 @@ export function NewSessionComposer(props: NewSessionComposerProps) {
     resourcesDisabledReason: optionsStatus,
     locked,
     resourceError: (error) => failureOf(error, locale).reason,
-    resourceReason: (code) => codexReason(locale, code).text,
+    resourceReason: (code) => sessionReason(locale, code).text,
   });
   const { resources, goal } = add;
   useEffect(() => {
@@ -263,7 +263,7 @@ export function NewSessionComposer(props: NewSessionComposerProps) {
     session.options.isError && !options
       ? failureOf(session.options.error, locale).reason
       : options && !options.available
-        ? codexReason(locale, options.reason).text
+        ? sessionReason(locale, options.reason).text
         : undefined;
   const hasMessage = !!text.trim() || (acceptsAttachments && files.length > 0);
   const resourceNeedsMessage = resources.length > 0 && !hasMessage;
@@ -276,7 +276,7 @@ export function NewSessionComposer(props: NewSessionComposerProps) {
       : goalNeedsMessage
         ? goalCopy.planNeedsMessage
         : undefined;
-  const sendLabel = goal && !hasMessage ? codexCopy[locale].goalCreate : copy.send;
+  const sendLabel = goal && !hasMessage ? sessionCopy[locale].goalCreate : copy.send;
   const canSend =
     session.ready &&
     !!options?.available &&
@@ -395,7 +395,7 @@ export function NewSessionComposer(props: NewSessionComposerProps) {
       {addError}
     </Notice>
   ) : fileLimit ? (
-    <Notice tone="muted">{codexCopy[locale].limit}</Notice>
+    <Notice tone="muted">{sessionCopy[locale].limit}</Notice>
   ) : null;
 
   if (!workspaces.length)
@@ -515,7 +515,7 @@ export function NewSessionComposer(props: NewSessionComposerProps) {
           "aria-label": copy.message,
           value: text,
           maxLength: MAX_MESSAGE_LENGTH,
-          placeholder: planning ? codexCopy[locale].planPlaceholder : copy.placeholder,
+          placeholder: planning ? sessionCopy[locale].planPlaceholder : copy.placeholder,
           disabled: locked,
           onChange: (event) => setText(event.target.value),
           ...slash.inputProps,
@@ -572,7 +572,7 @@ export function NewSessionComposer(props: NewSessionComposerProps) {
             />
             {resourceNeedsReselection && (
               <p className="px-2 text-xs text-muted-foreground">
-                {codexCopy[locale].resourceRemoved}
+                {sessionCopy[locale].resourceRemoved}
               </p>
             )}
           </>
@@ -582,7 +582,7 @@ export function NewSessionComposer(props: NewSessionComposerProps) {
             locale={locale}
             add={{
               scope: JSON.stringify([agent, workspace?.id, session.resourceAuthority]),
-              label: codexCopy[locale].addContext,
+              label: sessionCopy[locale].addContext,
               disabled: locked,
               disabledReason: session.optionsLoading ? copy.loadingOptions : undefined,
               side: side,
@@ -591,7 +591,7 @@ export function NewSessionComposer(props: NewSessionComposerProps) {
               attachment: acceptsAttachments
                 ? {
                     disabled: files.length >= MAX_FILES,
-                    reason: files.length >= MAX_FILES ? codexCopy[locale].limit : undefined,
+                    reason: files.length >= MAX_FILES ? sessionCopy[locale].limit : undefined,
                     onPick: () => fileInput.current?.click(),
                   }
                 : undefined,

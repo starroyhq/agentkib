@@ -1,7 +1,7 @@
 import {
-  CodexTools as SharedCodexTools,
+  SessionTools as SharedSessionTools,
   SessionOperations,
-  type CodexToolsProps,
+  type SessionToolsProps,
 } from "@agentkib/session-ui";
 import { useSession } from "../../desktop-session-context";
 import { useSessionNavigate } from "../../desktop-session-navigation";
@@ -21,16 +21,16 @@ export function DesktopSessionOperations({
       onOpenChange={onOpenChange}
       session={session}
       projectAgentClient={desktopProjectAgentClient}
-      ExecutionControls={CodexTools}
+      ExecutionControls={SessionTools}
     />
   );
 }
 
-export function CodexTools(props: CodexToolsProps) {
+export function SessionTools(props: SessionToolsProps) {
   const session = useSession();
   const navigate = useSessionNavigate();
   return (
-    <SharedCodexTools
+    <SharedSessionTools
       {...props}
       session={session}
       onNavigate={(sessionId) => {

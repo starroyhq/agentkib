@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { dictionaries, type Locale } from "@/features/conversation/i18n";
-import { codexCopy, codexReason } from "@/features/conversation/codex-copy";
+import { sessionCopy, sessionReason } from "@/features/conversation/session-copy";
 import { sessionContinuationCopy, sessionContinuationListState } from "@agentkib/session-ui";
 import { CLAUDE_COMMAND_REFUSALS } from "@agentkib/web-client";
 import { managedControlCopy } from "@agentkib/session-ui";
@@ -9,9 +9,9 @@ describe("Codex capability reasons", () => {
   const locales: Locale[] = ["zh-CN", "zh-Hant", "en-US", "ja-JP"];
   it.each(locales)("explains unconfirmed fork settings with recovery guidance in %s", (locale) => {
     for (const reason of ["native-model-unconfirmed", "native-effort-unconfirmed"]) {
-      const explanation = codexReason(locale, reason);
+      const explanation = sessionReason(locale, reason);
       expect(explanation.technical).toBeUndefined();
-      expect(explanation.text).not.toBe(codexReason(locale).text);
+      expect(explanation.text).not.toBe(sessionReason(locale).text);
       expect(explanation.text).toContain("Codex");
     }
   });
@@ -26,8 +26,8 @@ describe("Codex capability reasons", () => {
       "codex-workspace-mismatch",
       "codex-sandbox-mismatch",
     ]) {
-      expect(codexReason(locale, reason).technical).toBeUndefined();
-      expect(codexReason(locale, reason).text).not.toBe(codexReason(locale).text);
+      expect(sessionReason(locale, reason).technical).toBeUndefined();
+      expect(sessionReason(locale, reason).text).not.toBe(sessionReason(locale).text);
       expect(
         sessionContinuationListState(
           { agent: "codex", continuation: { status: "unsupported", reason } },
@@ -38,16 +38,16 @@ describe("Codex capability reasons", () => {
   });
   it.each(locales)("explains ownership, version and installation failures in %s", (locale) => {
     const continuation = sessionContinuationCopy(locale);
-    expect(codexReason(locale, "codex-owner-busy")).toEqual({
+    expect(sessionReason(locale, "codex-owner-busy")).toEqual({
       text: continuation.busy("Codex"),
     });
-    expect(codexReason(locale, "codex-cli-version-too-old")).toEqual({
+    expect(sessionReason(locale, "codex-cli-version-too-old")).toEqual({
       text: continuation.codexVersionTooOld,
     });
-    const missing = codexReason(locale, "codex-cli-unavailable");
+    const missing = sessionReason(locale, "codex-cli-unavailable");
     expect(missing.technical).toBeUndefined();
     expect(missing.text).toContain("Codex CLI");
-    expect(missing.text).not.toBe(codexReason(locale).text);
+    expect(missing.text).not.toBe(sessionReason(locale).text);
   });
 
   it.each([
@@ -74,11 +74,11 @@ describe("Codex capability reasons", () => {
   ] as const)(
     "keeps failed version and owner checks view only with specific recovery advice in %s",
     (locale, version, ownership) => {
-      expect(codexReason(locale, "codex-cli-version-unavailable")).toEqual({ text: version });
-      expect(codexReason(locale, "codex-owner-check-unavailable")).toEqual({ text: ownership });
-      expect(version).not.toBe(codexReason(locale, "codex-cli-version-too-old").text);
-      expect(ownership).not.toBe(codexReason(locale, "codex-owner-busy").text);
-      expect(version).not.toBe(codexReason(locale, "control-outcome-unconfirmed").text);
+      expect(sessionReason(locale, "codex-cli-version-unavailable")).toEqual({ text: version });
+      expect(sessionReason(locale, "codex-owner-check-unavailable")).toEqual({ text: ownership });
+      expect(version).not.toBe(sessionReason(locale, "codex-cli-version-too-old").text);
+      expect(ownership).not.toBe(sessionReason(locale, "codex-owner-busy").text);
+      expect(version).not.toBe(sessionReason(locale, "control-outcome-unconfirmed").text);
     },
   );
 
@@ -88,7 +88,7 @@ describe("Codex capability reasons", () => {
     ["en-US", "Queued messages", "Inspect session state"],
     ["ja-JP", "送信待ちキュー", "会話の状態を確認"],
   ] as const)("describes the managed queue and inspection in %s", (locale, queue, inspect) => {
-    const copy = codexCopy[locale];
+    const copy = sessionCopy[locale];
     expect(copy.queue).toBe(queue);
     expect(copy.inspect).toBe(inspect);
     expect(copy.composerHint + copy.queueTooLarge).not.toMatch(
@@ -97,7 +97,7 @@ describe("Codex capability reasons", () => {
   });
 
   it("retains approval scope and original-client context labels", () => {
-    expect(codexCopy["en-US"]).toMatchObject({
+    expect(sessionCopy["en-US"]).toMatchObject({
       native: "Original-client approval options",
       accepted: "Request accepted; check the original client for its current state",
       context: "Original-client context",
@@ -117,7 +117,7 @@ describe("Codex capability reasons", () => {
       "session-state-unavailable",
       "control-outcome-unconfirmed",
     ]) {
-      expect(codexReason(locale, reason).text).not.toMatch(removedWorkflow);
+      expect(sessionReason(locale, reason).text).not.toMatch(removedWorkflow);
     }
     for (const key of ["access", "protocol"] as const) {
       expect(managedControlCopy[locale][key]).not.toMatch(/交接|handing over|引き渡/i);
@@ -134,7 +134,7 @@ describe("Codex capability reasons", () => {
   ] as const)(
     "requires checking an unknown outcome without resending in %s",
     (locale, request, noAutomaticResend, noResubmit) => {
-      const reason = codexReason(locale, "control-outcome-unconfirmed").text;
+      const reason = sessionReason(locale, "control-outcome-unconfirmed").text;
       expect(reason).toContain(request);
       expect(reason).toContain(noAutomaticResend);
       expect(reason).toContain(noResubmit);
@@ -145,7 +145,7 @@ describe("Codex capability reasons", () => {
   it.each(locales)(
     "explains state restrictions without reporting a read failure in %s",
     (locale) => {
-      const stateUnavailable = codexReason(locale, "session-state-unavailable");
+      const stateUnavailable = sessionReason(locale, "session-state-unavailable");
       for (const reason of [
         "session-busy",
         "session-requires-running-turn",
@@ -162,28 +162,28 @@ describe("Codex capability reasons", () => {
         "codex-owner-changed",
         "session-compacting",
       ]) {
-        const explanation = codexReason(locale, reason);
+        const explanation = sessionReason(locale, reason);
         expect(explanation.technical).toBeUndefined();
         expect(explanation.text).not.toBe(stateUnavailable.text);
-        expect(explanation.text).not.toBe(codexReason(locale).text);
+        expect(explanation.text).not.toBe(sessionReason(locale).text);
       }
     },
   );
 
   it.each(locales)("reuses specific installation and original-client advice in %s", (locale) => {
-    expect(codexReason(locale, "handoff-required")).toEqual({
+    expect(sessionReason(locale, "handoff-required")).toEqual({
       text: dictionaries[locale].unavailable,
     });
-    expect(codexReason(locale, "unverified-installation")).toEqual({
+    expect(sessionReason(locale, "unverified-installation")).toEqual({
       text: dictionaries[locale].unverifiedInstallation,
     });
-    expect(codexReason(locale, "open-in-original-client")).toEqual({
+    expect(sessionReason(locale, "open-in-original-client")).toEqual({
       text: dictionaries[locale].openOriginalClient,
     });
   });
 
   it("preserves technical details for unknown reasons", () => {
-    expect(codexReason("zh-CN", "future-reason").technical).toBe("future-reason");
+    expect(sessionReason("zh-CN", "future-reason").technical).toBe("future-reason");
   });
 });
 
@@ -203,28 +203,28 @@ describe("reasons a Claude session was stopped for", () => {
   it.each(locales.flatMap((locale) => codes.map((code) => [locale, code] as const)))(
     "explains %s %s and points to the Claude Code terminal, not an action AgentKib lacks",
     (locale, code) => {
-      const { text, technical } = codexReason(locale, code);
+      const { text, technical } = sessionReason(locale, code);
       expect(technical).toBeUndefined();
-      expect(text).not.toBe(codexReason(locale).text);
+      expect(text).not.toBe(sessionReason(locale).text);
       expect(text).toContain(terminal[locale]);
       expect(text).not.toMatch(unavailableActions);
     },
   );
 
   it.each(locales)("keeps the three explanations apart in %s", (locale) => {
-    expect(new Set(codes.map((code) => codexReason(locale, code).text)).size).toBe(3);
+    expect(new Set(codes.map((code) => sessionReason(locale, code).text)).size).toBe(3);
   });
 
   it.each(locales)(
     "splits `<code>: <detail>` into the explanation and the technical text in %s",
     (locale) => {
       expect(
-        codexReason(locale, "claude-unrequested-turn: Claude result outside an active turn"),
+        sessionReason(locale, "claude-unrequested-turn: Claude result outside an active turn"),
       ).toEqual({
-        text: codexReason(locale, "claude-unrequested-turn").text,
+        text: sessionReason(locale, "claude-unrequested-turn").text,
         technical: "Claude result outside an active turn",
       });
-      expect(codexReason(locale, "claude-background-task: ").technical).toBeUndefined();
+      expect(sessionReason(locale, "claude-background-task: ").technical).toBeUndefined();
     },
   );
 
@@ -235,18 +235,18 @@ describe("reasons a Claude session was stopped for", () => {
       "x claude-background-task: y",
       ": claude-background-task",
     ]) {
-      const explained = codexReason("en-US", reason);
-      expect(explained.text).toBe(codexReason("en-US").text);
+      const explained = sessionReason("en-US", reason);
+      expect(explained.text).toBe(sessionReason("en-US").text);
       expect(explained.technical).toBe(reason);
     }
   });
 
   it("keeps general unknown outcomes separate from stopped Claude sessions", () => {
-    expect(codexReason("en-US", "control-outcome-unconfirmed")).toEqual({
+    expect(sessionReason("en-US", "control-outcome-unconfirmed")).toEqual({
       text: "The previous outcome is unconfirmed. Refresh to check the saved request; do not resubmit. It will not be sent again automatically.",
     });
-    expect(codexReason("en-US", "codex-connection-failed").technical).toBeUndefined();
-    expect(codexReason("en-US", "Claude process exited (1)").technical).toBe(
+    expect(sessionReason("en-US", "codex-connection-failed").technical).toBeUndefined();
+    expect(sessionReason("en-US", "Claude process exited (1)").technical).toBe(
       "Claude process exited (1)",
     );
   });
@@ -265,9 +265,9 @@ describe("a managed Claude turn that failed authentication", () => {
   };
 
   it.each(locales)("explains the fixes and that sending again works in %s", (locale) => {
-    const { text, technical } = codexReason(locale, "claude-auth-failed");
+    const { text, technical } = sessionReason(locale, "claude-auth-failed");
     expect(technical).toBeUndefined();
-    expect(text).not.toBe(codexReason(locale).text);
+    expect(text).not.toBe(sessionReason(locale).text);
     for (const part of ["/login", "~/.claude/settings.json", "env", "apiKeyHelper", "export"])
       expect(text).toContain(part);
     expect(text).toContain(sendAgain[locale]);
@@ -277,17 +277,17 @@ describe("a managed Claude turn that failed authentication", () => {
   it("keeps the CLI's detail as is, underscores included", () => {
     const reason =
       "claude-auth-failed: Invalid API key · Fix external API key (HTTP 401); key source: ANTHROPIC_API_KEY";
-    expect(codexReason("en-US", reason)).toEqual({
-      text: codexReason("en-US", "claude-auth-failed").text,
+    expect(sessionReason("en-US", reason)).toEqual({
+      text: sessionReason("en-US", "claude-auth-failed").text,
       technical: "Invalid API key · Fix external API key (HTTP 401); key source: ANTHROPIC_API_KEY",
     });
   });
 
   it("refers to the computer running AgentKib on the Web", () => {
-    expect(codexReason("zh-CN", "claude-auth-failed", "web").text).toContain(
+    expect(sessionReason("zh-CN", "claude-auth-failed", "web").text).toContain(
       "运行 AgentKib 的电脑的终端",
     );
-    expect(codexReason("en-US", "claude-auth-failed", "web").text).toContain(
+    expect(sessionReason("en-US", "claude-auth-failed", "web").text).toContain(
       "in a terminal on the computer running AgentKib",
     );
   });
@@ -297,16 +297,16 @@ describe("a Claude Code command AgentKib did not send", () => {
   const locales: Locale[] = ["zh-CN", "zh-Hant", "en-US", "ja-JP"];
   it.each(locales)("explains each refusal in its own words in %s", (locale) => {
     const texts = CLAUDE_COMMAND_REFUSALS.map((code) => {
-      const { text, technical } = codexReason(locale, code);
+      const { text, technical } = sessionReason(locale, code);
       expect(technical).toBeUndefined();
-      expect(text).not.toBe(codexReason(locale).text);
+      expect(text).not.toBe(sessionReason(locale).text);
       return text;
     });
     expect(new Set(texts).size).toBe(CLAUDE_COMMAND_REFUSALS.length);
   });
 
   it("points /clear to a new session and to compacting", () => {
-    const text = codexReason("en-US", "claude-command-clear").text;
+    const text = sessionReason("en-US", "claude-command-clear").text;
     expect(text).toContain("start a new session");
     expect(text).toContain("/compact");
   });

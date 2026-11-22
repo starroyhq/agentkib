@@ -4,8 +4,8 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createRef, type ComponentProps } from "react";
-import type { CodexSessionSettings } from "@agentkib/web-client";
-import { codexCopy } from "../../codex-copy";
+import type { SessionSettings } from "@agentkib/web-client";
+import { sessionCopy } from "../../session-copy";
 import { ComposerModelPicker, type ComposerModelPickerHandle } from "@agentkib/session-ui";
 import { composerModelCopy } from "@agentkib/session-ui";
 import { composerTerm } from "@agentkib/session-ui";
@@ -13,7 +13,7 @@ import { composerTerm } from "@agentkib/session-ui";
 type Props = ComponentProps<typeof ComposerModelPicker>;
 const copy = composerModelCopy["en-US"];
 
-function settings(): CodexSessionSettings {
+function settings(): SessionSettings {
   return {
     sessionId: "session",
     available: true,
@@ -374,7 +374,7 @@ describe("composer model picker", () => {
     props.settings!.options.models[0].serviceTierIds.push("flex");
     const view = render(<ComposerModelPicker {...props} />);
     const popup = await openPicker();
-    const tier = within(popup).getByRole("combobox", { name: codexCopy["en-US"].serviceTier });
+    const tier = within(popup).getByRole("combobox", { name: sessionCopy["en-US"].serviceTier });
     expect(within(tier).queryByRole("option", { name: "Unsupported on this model" })).toBeNull();
     expect(within(popup).getByRole("button", { name: copy.fast })).toBeEnabled();
     fireEvent.change(tier, { target: { value: "flex" } });

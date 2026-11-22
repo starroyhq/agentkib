@@ -14,7 +14,7 @@ let session: SessionController;
 vi.mock("../../desktop-session-context", () => ({ useSession: () => session }));
 vi.mock("@agentkib/session-ui", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@agentkib/session-ui")>()),
-  CodexTools: ({ open, shortcuts }: { open: boolean; shortcuts: ReactNode }) =>
+  SessionTools: ({ open, shortcuts }: { open: boolean; shortcuts: ReactNode }) =>
     open ? <section>{shortcuts}</section> : null,
 }));
 const requestBridge = vi.fn();
@@ -141,7 +141,7 @@ describe("registered host settings", () => {
     session.locale = "en-US";
     session.current = { ...session.current!, agent: "deepseek-harness" };
     const view = render(<View />);
-    // The full actions come from CodexTools (mocked here as its header).
+    // The full actions come from SessionTools (mocked here as its header).
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     expect(screen.getByText("DeepSeek Harness connection")).toBeInTheDocument();
     await waitFor(() =>

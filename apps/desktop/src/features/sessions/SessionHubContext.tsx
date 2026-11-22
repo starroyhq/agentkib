@@ -1,5 +1,5 @@
 import { requestReadStateRefresh, isBusyRead } from "@agentkib/session-ui";
-import { codexReason } from "./conversation/codex-copy";
+import { sessionReason } from "./conversation/session-copy";
 import { useI18n } from "@/core/useI18n";
 import { SESSION_COLLECTIONS, sessionCollection } from "@agentkib/runtime-protocol";
 import type { ConversationSessionSummary, WorkspaceSummary } from "@/core/types";
@@ -68,7 +68,7 @@ function useHub(active: boolean) {
   const catalogError =
     controlled && active && localEnabled && controlledCatalog.error !== undefined
       ? isBusyRead(controlledCatalog.error)
-        ? codexReason(locale, "session-state-unavailable").text
+        ? sessionReason(locale, "session-state-unavailable").text
         : localizeMessage(controlledCatalog.error)
       : "";
   const localSessions = useMemo(() => {

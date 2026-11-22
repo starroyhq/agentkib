@@ -48,7 +48,7 @@ import {
 import { Sheet, SheetClose, SheetContent, SheetTitle } from "./components/ui/sheet";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "./components/ui/tabs";
 import { Textarea } from "./components/ui/textarea";
-import { codexCopyForSurface } from "./codex-copy";
+import { sessionCopyForSurface } from "./session-copy";
 import { LivePreview } from "./web-live-preview";
 import { cn } from "./lib/utils";
 import { dictionaries, type Locale } from "./i18n";
@@ -76,7 +76,7 @@ function WebSessionToaster({ locale }: { locale: Locale }) {
           "--normal-border": "var(--border)",
         } as CSSProperties
       }
-      toastOptions={{ closeButtonAriaLabel: codexCopyForSurface(locale, "web").close }}
+      toastOptions={{ closeButtonAriaLabel: sessionCopyForSurface(locale, "web").close }}
     />
   );
 }

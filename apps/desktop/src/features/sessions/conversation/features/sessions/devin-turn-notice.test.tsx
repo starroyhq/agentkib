@@ -4,7 +4,7 @@ import { DevinTurnNotice, SessionPlatformProvider } from "@agentkib/session-ui";
 import { WebClient } from "@agentkib/web-client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { useDesktopSessionPlatform } from "../../session-platform";
-import { codexReason } from "../../codex-copy";
+import { sessionReason } from "../../session-copy";
 
 const client = new WebClient();
 afterEach(() => {
@@ -34,7 +34,7 @@ function Notice({
     >
       <DevinTurnNotice
         reason={reason}
-        reasonCopy={codexReason}
+        reasonCopy={sessionReason}
         locale="en-US"
         sessionId={sessionId}
         workspaceId={workspaceId}
@@ -49,7 +49,7 @@ describe("DevinTurnNotice", () => {
       .spyOn(client, "devinTerminal")
       .mockResolvedValue({ terminal: "Terminal.app" });
     render(<Notice reason="devin-login-required" sessionId="session-1" />);
-    expect(screen.getByText(codexReason("en-US", "devin-login-required").text)).toBeTruthy();
+    expect(screen.getByText(sessionReason("en-US", "devin-login-required").text)).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Log in to Devin CLI in a terminal" }));
     expect(await screen.findByText(/Opened in Terminal\.app/)).toBeTruthy();
     expect(devinTerminal).toHaveBeenCalledWith({ action: "login", sessionId: "session-1" });
@@ -59,7 +59,7 @@ describe("DevinTurnNotice", () => {
     const view = render(
       <Notice reason="devin-workspace-untrusted" workspaceId="w" terminal={false} />,
     );
-    expect(screen.getByText(codexReason("en-US", "devin-workspace-untrusted").text)).toBeTruthy();
+    expect(screen.getByText(sessionReason("en-US", "devin-workspace-untrusted").text)).toBeTruthy();
     expect(screen.queryByRole("button")).toBeNull();
     view.rerender(<Notice reason="devin-workspace-untrusted" workspaceId="w" />);
     expect(screen.getByRole("button", { name: "Trust this workspace in a terminal" })).toBeTruthy();

@@ -14,8 +14,8 @@ import {
 } from "@agentkib/session-ui";
 import { SessionComposer } from "@/features/sessions/conversation/desktop-session-composer";
 import { composerLayoutCopy } from "@agentkib/session-ui";
-import { codexCopy } from "../../codex-copy";
-import type { CodexResource } from "@agentkib/session-ui";
+import { sessionCopy } from "../../session-copy";
+import type { SessionResource } from "@agentkib/web-client";
 import type { SessionPanels } from "@agentkib/session-ui";
 import type { SessionController } from "../../desktop-session-controller";
 
@@ -23,7 +23,7 @@ const doubles = vi.hoisted(() => ({
   session: {} as Partial<SessionController>,
   panels: null as SessionPanels | null,
   control: vi.fn(),
-  codexAction: vi.fn(),
+  runSessionAction: vi.fn(),
   navigate: vi.fn(),
   upload: vi.fn(),
   resumeCommand: vi.fn(),
@@ -39,14 +39,14 @@ vi.mock("@agentkib/session-ui", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@agentkib/session-ui")>()),
   useSessionPanels: () => doubles.panels,
   SessionContextUsageGauge: () => null,
-  CodexComposerControls: ({
+  SessionComposerControls: ({
     action,
     advancedActions,
     setResources,
   }: {
     action: ReactNode;
     advancedActions: ReactNode;
-    setResources: (resources: CodexResource[]) => void;
+    setResources: (resources: SessionResource[]) => void;
   }) => (
     <>
       <button
@@ -99,7 +99,7 @@ describe("composer sending shortcuts", () => {
       shell: "posix",
       runOn: "host",
     });
-    doubles.codexAction.mockResolvedValue({ accepted: true });
+    doubles.runSessionAction.mockResolvedValue({ accepted: true });
     doubles.session = {
       selected: "session",
       current: { id: "session", agent: "codex" } as SessionController["current"],
@@ -132,7 +132,7 @@ describe("composer sending shortcuts", () => {
         },
       } as SessionController["capabilities"],
       control: doubles.control,
-      codexAction: doubles.codexAction,
+      runSessionAction: doubles.runSessionAction,
       client: {
         uploadAttachment: doubles.upload,
         codexResumeCommand: doubles.resumeCommand,
@@ -149,7 +149,7 @@ describe("composer sending shortcuts", () => {
   it("submits Enter through the same form path as the send button", async () => {
     const { input, form } = renderComposer();
     expect(screen.getByRole("button", { name: "Send" })).toHaveClass("pointer-coarse:size-11");
-    expect(screen.getByRole("button", { name: codexCopy["en-US"].addContext })).toHaveClass(
+    expect(screen.getByRole("button", { name: sessionCopy["en-US"].addContext })).toHaveClass(
       "size-11",
     );
     const requestSubmit = vi.spyOn(form, "requestSubmit");
@@ -164,7 +164,7 @@ describe("composer sending shortcuts", () => {
       undefined,
       { attachmentIds: [] },
     );
-    expect(doubles.codexAction).not.toHaveBeenCalled();
+    expect(doubles.runSessionAction).not.toHaveBeenCalled();
 
     fireEvent.change(input, { target: { value: "Second message" } });
     fireEvent.click(screen.getByRole("button", { name: "Send" }));
@@ -291,7 +291,7 @@ describe("composer sending shortcuts", () => {
     const { input } = renderComposer();
     fireEvent.keyDown(input, { key: "Enter" });
     expect(doubles.control).not.toHaveBeenCalled();
-    expect(doubles.codexAction).not.toHaveBeenCalled();
+    expect(doubles.runSessionAction).not.toHaveBeenCalled();
     expect(screen.queryByText(composerLayoutCopy["en-US"].sendShortcut)).not.toBeInTheDocument();
   });
 
@@ -302,7 +302,7 @@ describe("composer sending shortcuts", () => {
   });
 
   it("opens the native attachment picker from the shared menu only with scoped access", async () => {
-    const copy = codexCopy["en-US"];
+    const copy = sessionCopy["en-US"];
     doubles.session.capabilities!.sessionId = "another-session";
     const { rerender } = renderComposer();
     const addContext = screen.getByRole("button", { name: copy.addContext });
@@ -335,7 +335,7 @@ describe("composer sending shortcuts", () => {
     const upload = deferred<UploadedAttachment>();
     doubles.upload.mockReturnValue(upload.promise);
     const { input } = renderComposer("");
-    fireEvent.change(screen.getByLabelText(codexCopy["en-US"].attachment), {
+    fireEvent.change(screen.getByLabelText(sessionCopy["en-US"].attachment), {
       target: { files: [new File(["abc"], "note.txt", { type: "text/plain" })] },
     });
     fireEvent.keyDown(input, { key: "Enter" });
@@ -357,7 +357,7 @@ describe("composer sending shortcuts", () => {
   it("keeps failed attachments from dispatching a text message", async () => {
     doubles.upload.mockRejectedValue(new Error("upload failed"));
     const { input } = renderComposer();
-    fireEvent.change(screen.getByLabelText(codexCopy["en-US"].attachment), {
+    fireEvent.change(screen.getByLabelText(sessionCopy["en-US"].attachment), {
       target: { files: [new File(["abc"], "note.txt")] },
     });
     await screen.findByRole("alert");
@@ -420,29 +420,29 @@ describe("composer sending shortcuts", () => {
       const stop = screen.getByRole("button", { name: "Stop" });
       expect(stop).toHaveClass("size-8", "pointer-coarse:size-11", "rounded-full", "text-white");
       expect(stop.querySelector("svg")).toHaveAttribute("fill", "currentColor");
-      expect(screen.getByRole("button", { name: codexCopy["en-US"].advanced })).toHaveClass(
+      expect(screen.getByRole("button", { name: sessionCopy["en-US"].advanced })).toHaveClass(
         "size-11",
       );
       // Enter while the turn runs takes this device's running choice, which queues by default.
       fireEvent.keyDown(input, { key: "Enter" });
       await waitFor(() =>
-        expect(doubles.codexAction).toHaveBeenCalledExactlyOnceWith("queue-add", {
+        expect(doubles.runSessionAction).toHaveBeenCalledExactlyOnceWith("queue-add", {
           text: "Draft message",
         }),
       );
       await waitFor(() => expect(input).toBeEnabled());
       expect(input).toHaveValue("");
       expect(doubles.control).not.toHaveBeenCalled();
-      doubles.codexAction.mockClear();
+      doubles.runSessionAction.mockClear();
       fireEvent.change(input, { target: { value: "Draft message" } });
-      fireEvent.click(screen.getByRole("button", { name: codexCopy["en-US"].advanced }));
+      fireEvent.click(screen.getByRole("button", { name: sessionCopy["en-US"].advanced }));
       fireEvent.click(
         await screen.findByRole("menuitem", {
-          name: action === "steer" ? codexCopy["en-US"].steer : codexCopy["en-US"].queueAdd,
+          name: action === "steer" ? sessionCopy["en-US"].steer : sessionCopy["en-US"].queueAdd,
         }),
       );
       await waitFor(() =>
-        expect(doubles.codexAction).toHaveBeenCalledWith(action, {
+        expect(doubles.runSessionAction).toHaveBeenCalledWith(action, {
           text: "Draft message",
           ...(action === "steer" ? { turnId: "turn" } : {}),
         }),
@@ -468,12 +468,12 @@ describe("composer sending shortcuts", () => {
     } as SessionController["live"];
     const { input } = renderComposer();
     fireEvent.keyDown(input, { key: "Enter" });
-    fireEvent.click(screen.getByRole("button", { name: codexCopy["en-US"].advanced }));
-    const steer = await screen.findByRole("menuitem", { name: codexCopy["en-US"].steer });
+    fireEvent.click(screen.getByRole("button", { name: sessionCopy["en-US"].advanced }));
+    const steer = await screen.findByRole("menuitem", { name: sessionCopy["en-US"].steer });
     expect(steer).toHaveAttribute("aria-disabled", "true");
-    fireEvent.click(screen.getByRole("menuitem", { name: codexCopy["en-US"].queueAdd }));
+    fireEvent.click(screen.getByRole("menuitem", { name: sessionCopy["en-US"].queueAdd }));
     await waitFor(() =>
-      expect(doubles.codexAction).toHaveBeenCalledExactlyOnceWith("queue-add", {
+      expect(doubles.runSessionAction).toHaveBeenCalledExactlyOnceWith("queue-add", {
         text: "Draft message",
       }),
     );
@@ -582,7 +582,7 @@ describe("composer sending shortcuts", () => {
       expect(screen.getByText(busyHint)).toBeVisible();
       expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
       expect(doubles.control).not.toHaveBeenCalled();
-      expect(doubles.codexAction).not.toHaveBeenCalled();
+      expect(doubles.runSessionAction).not.toHaveBeenCalled();
     },
   );
 
@@ -607,7 +607,7 @@ describe("composer sending shortcuts", () => {
     ).not.toBeInTheDocument();
     expect(input).toBeEnabled();
     expect(
-      screen.queryByRole("button", { name: codexCopy["en-US"].advanced }),
+      screen.queryByRole("button", { name: sessionCopy["en-US"].advanced }),
     ).not.toBeInTheDocument();
     expect(screen.queryByText(/in use in Codex/i)).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Send" })).toBeEnabled();
@@ -634,7 +634,7 @@ describe("composer sending shortcuts", () => {
     renderComposer();
     expect(screen.getByRole("button", { name: "Stop" })).toBeVisible();
     expect(
-      screen.queryByRole("button", { name: codexCopy["en-US"].advanced }),
+      screen.queryByRole("button", { name: sessionCopy["en-US"].advanced }),
     ).not.toBeInTheDocument();
     expect(screen.queryByText(/in use in Codex/i)).not.toBeInTheDocument();
   });
@@ -663,9 +663,12 @@ describe("composer sending shortcuts", () => {
     doubles.upload.mockResolvedValue(attachment);
     doubles.control.mockResolvedValue(false);
     const { input, form, rerender } = renderComposer("Claude draft");
-    fireEvent.change(screen.getByLabelText(codexCopy["en-US"].attachment, { selector: "input" }), {
-      target: { files: [new File(["abc"], "note.txt", { type: "text/plain" })] },
-    });
+    fireEvent.change(
+      screen.getByLabelText(sessionCopy["en-US"].attachment, { selector: "input" }),
+      {
+        target: { files: [new File(["abc"], "note.txt", { type: "text/plain" })] },
+      },
+    );
     await screen.findByText("100%");
     fireEvent.submit(form);
     await act(async () => {});
@@ -773,7 +776,7 @@ describe("composer sending shortcuts", () => {
       expect.any(AbortSignal),
     );
     expect(doubles.control).not.toHaveBeenCalled();
-    expect(doubles.codexAction).not.toHaveBeenCalled();
+    expect(doubles.runSessionAction).not.toHaveBeenCalled();
   });
   it("offers a verified host command for an unsupported Codex version without dispatching", async () => {
     continuationFixture();
@@ -802,7 +805,7 @@ describe("composer sending shortcuts", () => {
     expect(screen.getByText(/^Open a terminal \(use PowerShell on Windows\)/)).toBeVisible();
     expect(screen.queryByText(/On the computer running AgentKib/)).not.toBeInTheDocument();
     expect(doubles.control).not.toHaveBeenCalled();
-    expect(doubles.codexAction).not.toHaveBeenCalled();
+    expect(doubles.runSessionAction).not.toHaveBeenCalled();
     expect(doubles.navigate).not.toHaveBeenCalled();
   });
   it("keeps ownership passive across selection changes without opening or copying another resume", () => {
@@ -827,7 +830,7 @@ describe("composer sending shortcuts", () => {
     expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
     expect(doubles.resumeCommand).not.toHaveBeenCalled();
     expect(doubles.control).not.toHaveBeenCalled();
-    expect(doubles.codexAction).not.toHaveBeenCalled();
+    expect(doubles.runSessionAction).not.toHaveBeenCalled();
   });
 
   it("keeps a watch-only connected terminal on the ordinary composer without dispatching", () => {
@@ -851,7 +854,7 @@ describe("composer sending shortcuts", () => {
     fireEvent.keyDown(input, { key: "Enter" });
     fireEvent.submit(form);
     expect(doubles.control).not.toHaveBeenCalled();
-    expect(doubles.codexAction).not.toHaveBeenCalled();
+    expect(doubles.runSessionAction).not.toHaveBeenCalled();
     expect(doubles.resumeCommand).not.toHaveBeenCalled();
   });
 
@@ -941,9 +944,12 @@ describe("composer sending shortcuts", () => {
     doubles.session.current = { ...doubles.session.current!, agent: "claude-code" };
     doubles.upload.mockResolvedValue(attachment);
     const { input, form, rerender } = renderComposer();
-    fireEvent.change(screen.getByLabelText(codexCopy["en-US"].attachment, { selector: "input" }), {
-      target: { files: [new File(["abc"], "note.txt", { type: "text/plain" })] },
-    });
+    fireEvent.change(
+      screen.getByLabelText(sessionCopy["en-US"].attachment, { selector: "input" }),
+      {
+        target: { files: [new File(["abc"], "note.txt", { type: "text/plain" })] },
+      },
+    );
     await screen.findByText("100%");
     fireEvent.click(screen.getByRole("button", { name: "Reference file" }));
     Object.assign(doubles.session.live!, {
@@ -987,9 +993,12 @@ describe("composer sending shortcuts", () => {
     doubles.upload.mockResolvedValue(attachment);
     const file = new File(["abc"], "branch.txt", { type: "text/plain" });
     const { input, form, rerender } = renderComposer("Draft with context");
-    fireEvent.change(screen.getByLabelText(codexCopy["en-US"].attachment, { selector: "input" }), {
-      target: { files: [file] },
-    });
+    fireEvent.change(
+      screen.getByLabelText(sessionCopy["en-US"].attachment, { selector: "input" }),
+      {
+        target: { files: [file] },
+      },
+    );
     await screen.findByText("100%");
     fireEvent.click(screen.getByRole("button", { name: "Reference file" }));
     externalOwner();
@@ -1061,7 +1070,7 @@ describe("composer sending shortcuts", () => {
     fireEvent.keyDown(input, { key: "Enter" });
     expect(doubles.control).not.toHaveBeenCalled();
     expect(
-      screen.getByRole("button", { name: `${codexCopy["en-US"].remove}: branch.txt` }),
+      screen.getByRole("button", { name: `${sessionCopy["en-US"].remove}: branch.txt` }),
     ).toBeEnabled();
   });
   it.each(["codex", "claude-code"] as const)(
@@ -1092,7 +1101,7 @@ describe("composer sending shortcuts", () => {
       expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
       expect(doubles.session.forkContinuation).not.toHaveBeenCalled();
       expect(doubles.control).not.toHaveBeenCalled();
-      expect(doubles.codexAction).not.toHaveBeenCalled();
+      expect(doubles.runSessionAction).not.toHaveBeenCalled();
     },
   );
   it("retains transferred resource descriptors for reselection and never dispatches source context IDs", () => {
@@ -1111,7 +1120,7 @@ describe("composer sending shortcuts", () => {
     });
     doubles.session.takeContinuationDraft = take;
     const { input, rerender } = renderComposer("Keep resource draft");
-    expect(screen.getByText(codexCopy["en-US"].resourceRemoved)).toBeVisible();
+    expect(screen.getByText(sessionCopy["en-US"].resourceRemoved)).toBeVisible();
     fireEvent.keyDown(input, { key: "Enter" });
     expect(doubles.control).not.toHaveBeenCalled();
     rerender(<SessionComposer />);

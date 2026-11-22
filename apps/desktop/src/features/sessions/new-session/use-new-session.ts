@@ -30,7 +30,7 @@ import {
 } from "@agentkib/session-ui";
 import { createDesktopConversationClient } from "@/core/conversation-bridge";
 import type { SupportedLocale } from "@/core/types";
-import { codexReason } from "../conversation/codex-copy";
+import { sessionReason } from "../conversation/session-copy";
 import { managedErrorCopy } from "@agentkib/session-ui";
 
 export const newSessionOptionsKey = (agent: ManagedAgent, workspaceId?: string) =>
@@ -53,7 +53,7 @@ export function failureOf(error: unknown, locale: SupportedLocale): NewSessionFa
     return { reason: copy.startModelUnavailable, detail: code };
   if (code === "claude-startup-models-unavailable")
     return { reason: copy.claudeStartupModelsUnavailable, detail: code };
-  const reason = codexReason(locale, code);
+  const reason = sessionReason(locale, code);
   return {
     reason: reason.technical ? managedErrorCopy[locale].failed : reason.text,
     detail: error.code,

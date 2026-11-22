@@ -3,7 +3,7 @@ import {
   agentKibCommand,
   agentKibPanel,
   claudeSlashOptions,
-  codexCommandPrompt,
+  commandPrompt,
   matchSlashCommands,
   slashCommandCopy,
   slashCommandQuery,
@@ -165,9 +165,9 @@ describe("menu descriptions", () => {
 describe("messages AgentKib writes for Codex's /review and /init", () => {
   const locales = ["zh-CN", "zh-Hant", "en-US", "ja-JP"];
   it.each(locales)("reviews without changes and keeps an existing AGENTS.md, in %s", (locale) => {
-    const uncommitted = codexCommandPrompt(locale, { kind: "review", base: null });
-    const branch = codexCommandPrompt(locale, { kind: "review", base: "origin/main" });
-    const init = codexCommandPrompt(locale, { kind: "init" });
+    const uncommitted = commandPrompt(locale, { kind: "review", base: null });
+    const branch = commandPrompt(locale, { kind: "review", base: "origin/main" });
+    const init = commandPrompt(locale, { kind: "init" });
     // git diff leaves out untracked files, so the uncommitted review names git status too.
     expect(uncommitted).toContain("`git status`");
     expect(uncommitted).toContain("`git diff --staged`");
@@ -181,12 +181,12 @@ describe("messages AgentKib writes for Codex's /review and /init", () => {
     expect(new Set([uncommitted, branch, init]).size).toBe(3);
   });
   it("writes in the reader's language, English for the others", () => {
-    const init = (locale: string) => codexCommandPrompt(locale, { kind: "init" });
+    const init = (locale: string) => commandPrompt(locale, { kind: "init" });
     expect(new Set(locales.map(init)).size).toBe(4);
     expect(init("fr-FR")).toBe(init("en-US"));
     expect(init("zh-HK")).toBe(init("zh-CN"));
     expect(init("ja")).toBe(init("ja-JP"));
-    expect(codexCommandPrompt("zh-CN", { kind: "review", base: "HEAD~3" })).toContain(
+    expect(commandPrompt("zh-CN", { kind: "review", base: "HEAD~3" })).toContain(
       "`git merge-base HEAD HEAD~3`",
     );
   });

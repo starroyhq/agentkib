@@ -1,5 +1,5 @@
 import { useRef } from "react";
-import type { CodexSessionSettings, Live } from "@agentkib/web-client";
+import type { SessionSettings, Live } from "@agentkib/web-client";
 import type { ComposerModelPickerHandle } from "./composer-model-picker";
 
 export function useComposerModelPanel() {
@@ -21,7 +21,7 @@ export function useComposerModelPanel() {
     refresh,
     terminal,
   }: {
-    settings?: CodexSessionSettings;
+    settings?: SessionSettings;
     stale: boolean;
     settingsError: string;
     prepare: () => void;

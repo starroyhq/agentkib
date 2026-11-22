@@ -26,7 +26,7 @@ import {
   type PendingControl,
 } from "@agentkib/session-ui";
 import { useSession } from "@/features/conversation/web-session-context";
-import { codexReason } from "@/features/conversation/codex-copy";
+import { sessionReason } from "@/features/conversation/session-copy";
 import { managedErrorCopyForSurface } from "@agentkib/session-ui";
 import { subscribeSessionInvalidation } from "@agentkib/conversation-state";
 import type { Locale } from "@/features/conversation/i18n";
@@ -37,7 +37,7 @@ export type NewSessionFailure = { reason: string; detail?: string };
 export function failureOf(error: unknown, locale: Locale): NewSessionFailure {
   const copy = managedErrorCopyForSurface(locale, "web");
   if (!(error instanceof ApiError)) return { reason: copy.connection };
-  const reason = codexReason(locale, error.code.replaceAll("_", "-"), "web");
+  const reason = sessionReason(locale, error.code.replaceAll("_", "-"), "web");
   return { reason: reason.technical ? copy.failed : reason.text, detail: error.code };
 }
 

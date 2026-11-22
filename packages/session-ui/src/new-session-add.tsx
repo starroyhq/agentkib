@@ -1,7 +1,7 @@
 import { FileText, Folder, X } from "lucide-react";
 import { useLayoutEffect, useMemo, useRef, useState } from "react";
 import type {
-  CodexContextResource,
+  SessionResource,
   ManagedAgent,
   ManagedOptions,
   SessionProviderCapabilities,
@@ -15,7 +15,7 @@ type GoalEditor = { objective: string; budget: string };
 type ResourceClient = Pick<WebClient, "newSessionResources">;
 type ResourcePage = Awaited<ReturnType<ResourceClient["newSessionResources"]>>;
 
-const noResources: CodexContextResource[] = [];
+const noResources: SessionResource[] = [];
 
 /** Keep supported startup entries stable while the host verifies their current availability. */
 export function newSessionAddCapabilities(
@@ -90,7 +90,7 @@ export function useNewSessionAdd({
   }>();
   const [selection, setSelection] = useState<{
     scope: typeof scope;
-    items: { resource: CodexContextResource; authority: string }[];
+    items: { resource: SessionResource; authority: string }[];
   }>();
   const [savedGoal, setSavedGoal] = useState<{ scope: typeof scope; goal: NewSessionGoalDraft }>();
   const [editor, setEditor] = useState<{ scope: typeof scope; fields: GoalEditor }>();
@@ -115,7 +115,7 @@ export function useNewSessionAdd({
     };
   }, [listingScope]);
 
-  function setResources(items: CodexContextResource[]) {
+  function setResources(items: SessionResource[]) {
     setSelection((previous) => {
       const existing = new Map(
         previous?.scope === scope ? previous.items.map((item) => [item.resource.id, item]) : [],
@@ -237,7 +237,7 @@ export function NewSessionAddDraftChips({
   onRemoveResource,
 }: {
   locale: InteractionLocale;
-  resources: readonly CodexContextResource[];
+  resources: readonly SessionResource[];
   disabled: boolean;
   onRemoveResource: (id: string) => void;
 }) {

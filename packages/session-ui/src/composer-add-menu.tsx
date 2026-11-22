@@ -1,7 +1,7 @@
 import { Popover } from "@base-ui/react/popover";
 import {
   SESSION_RESOURCE_LIMIT,
-  type CodexContextOptions,
+  type SessionResources,
   type SessionResource,
 } from "@agentkib/web-client";
 import {
@@ -289,7 +289,7 @@ type ComposerLocale = keyof typeof addCopy;
 type ActionAvailability = { disabled?: boolean; reason?: string };
 
 export type ComposerResourceBrowser = ActionAvailability & {
-  page?: Pick<CodexContextOptions, "directoryId" | "parentId" | "resources">;
+  page?: Pick<SessionResources, "directoryId" | "parentId" | "resources">;
   path: readonly string[];
   selected: readonly SessionResource[];
   loading?: boolean;

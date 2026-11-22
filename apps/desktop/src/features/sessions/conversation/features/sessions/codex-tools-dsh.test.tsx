@@ -3,14 +3,14 @@ import "@testing-library/jest-dom/vitest";
 import { cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { render } from "@/features/sessions/conversation/desktop-reader-test-utils";
-import { CodexTools } from "./desktop-session-operations";
-import { codexCopy } from "../../codex-copy";
+import { SessionTools } from "./desktop-session-operations";
+import { sessionCopy } from "../../session-copy";
 import { useSession } from "../../desktop-session-context";
 
 const { navigate } = vi.hoisted(() => ({ navigate: vi.fn() }));
 vi.mock("../../desktop-session-context", () => ({ useSession: vi.fn() }));
 vi.mock("../../desktop-session-navigation", () => ({ useSessionNavigate: () => navigate }));
-const copy = codexCopy["en-US"];
+const copy = sessionCopy["en-US"];
 let state: ReturnType<typeof useSession>;
 function prepare(accessMode = "full") {
   state = {
@@ -51,7 +51,7 @@ function prepare(accessMode = "full") {
       sessionQueue: vi.fn().mockResolvedValue({ data: [] }),
       request: vi.fn().mockResolvedValue({ available: true, models: [] }),
     },
-    codexAction: vi.fn().mockResolvedValue({ accepted: true, sessionId: "s-fork" }),
+    runSessionAction: vi.fn().mockResolvedValue({ accepted: true, sessionId: "s-fork" }),
     refresh: vi.fn(),
   } as unknown as ReturnType<typeof useSession>;
   vi.mocked(useSession).mockImplementation(() => state);
@@ -62,13 +62,13 @@ afterEach(cleanup);
 describe("DeepSeek Harness session actions on the desktop", () => {
   it("renames, archives and forks through the session's own actions", async () => {
     prepare();
-    render(<CodexTools open />);
+    render(<SessionTools open />);
     fireEvent.change(screen.getByDisplayValue("DSH session"), {
       target: { value: "Renamed" },
     });
     fireEvent.click(screen.getByRole("button", { name: copy.rename }));
     await waitFor(() =>
-      expect(state.codexAction).toHaveBeenCalledExactlyOnceWith("rename", { name: "Renamed" }),
+      expect(state.runSessionAction).toHaveBeenCalledExactlyOnceWith("rename", { name: "Renamed" }),
     );
     expect(screen.getByRole("button", { name: copy.archive })).toBeEnabled();
     fireEvent.click(screen.getByRole("button", { name: copy.fork }));
@@ -84,7 +84,7 @@ describe("DeepSeek Harness session actions on the desktop", () => {
   it("repeats neither the Codex queue nor Codex's model options", async () => {
     // A restricted device would otherwise get the Codex settings section here.
     prepare("custom");
-    render(<CodexTools open />);
+    render(<SessionTools open />);
     expect(screen.getByRole("button", { name: copy.fork })).toBeInTheDocument();
     expect(screen.queryByText(copy.queue)).not.toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: copy.settings })).not.toBeInTheDocument();

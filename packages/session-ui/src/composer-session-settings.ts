@@ -1,7 +1,7 @@
 import type {
   ClaudePermissionMode,
-  CodexSessionSettings,
-  CodexSettingValues,
+  SessionSettings,
+  SessionSettingValues,
   DevinPermissionMode,
   Live,
   ManagedAgent,
@@ -29,7 +29,7 @@ export type PendingComposerSettings = Pick<
 > & { followerAuthority?: object; nextTurn?: boolean };
 
 export function composerSettingsSelection(
-  settings: CodexSessionSettings,
+  settings: SessionSettings,
   prepared: boolean,
   options: { live?: Live; staged?: PendingComposerSettings } = {},
 ) {
@@ -68,7 +68,7 @@ export function composerSettingsSelection(
 }
 
 export function confirmsComposerSettings(
-  settings: CodexSessionSettings | undefined,
+  settings: SessionSettings | undefined,
   pending: PendingComposerSettings | undefined,
   { prepared, variants, follower }: { prepared: boolean; variants: boolean; follower: boolean },
 ) {
@@ -143,7 +143,7 @@ export function composerSettingsWriteLocked({
   capabilities,
   feature,
 }: {
-  settings?: CodexSessionSettings;
+  settings?: SessionSettings;
   online: boolean;
   busy: boolean;
   stale: boolean;
@@ -178,8 +178,8 @@ export function projectComposerSettingsControls({
   write,
 }: {
   agent: ManagedAgent | null;
-  settings?: CodexSessionSettings;
-  selection?: CodexSettingValues;
+  settings?: SessionSettings;
+  selection?: SessionSettingValues;
   live?: Live;
   sessionId: string;
   locale: InteractionLocale;

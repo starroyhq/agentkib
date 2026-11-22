@@ -19,7 +19,7 @@ import {
   type SessionSettings,
 } from "@agentkib/web-client";
 import { WebApplication } from "@/router";
-import { codexCopyForSurface } from "@/features/conversation/codex-copy";
+import { sessionCopyForSurface } from "@/features/conversation/session-copy";
 import { composerLayoutCopy } from "@agentkib/session-ui";
 import { webLayoutCopy } from "@agentkib/session-ui";
 import { useSessionController } from "@/features/conversation/web-session-controller";
@@ -71,7 +71,7 @@ class ClaudeEventSource {
 
 const available = { available: true };
 const unavailable = { available: false };
-const copy = codexCopyForSurface("zh-CN", "web");
+const copy = sessionCopyForSurface("zh-CN", "web");
 function createHost({
   staleSettingsAfterMutation = false,
   unmanaged = false,

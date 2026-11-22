@@ -94,7 +94,7 @@ beforeEach(() => {
     scroll: { current: null },
     client: { request, codexQueue: vi.fn(async () => ({ sessionId: "session", data: [] })) },
     refresh: vi.fn(async () => {}),
-    codexAction: vi.fn(async () => ({ accepted: true })),
+    runSessionAction: vi.fn(async () => ({ accepted: true })),
     setModal: vi.fn(),
   } as unknown as SessionController;
 });
@@ -118,7 +118,7 @@ describe("reader handoff entries", () => {
     expect(
       within(dialog).queryByRole("button", { name: "Resume execution" }),
     ).not.toBeInTheDocument();
-    expect(session.codexAction).not.toHaveBeenCalled();
+    expect(session.runSessionAction).not.toHaveBeenCalled();
     expect(request.mock.calls.some(([path]) => path === "managed/adopt")).toBe(false);
   });
   it("does not expose the old Codex handoff even when legacy capabilities advertise adoption", async () => {
@@ -134,7 +134,7 @@ describe("reader handoff entries", () => {
     ).not.toBeInTheDocument();
     expect(within(dialog).queryByRole("checkbox")).not.toBeInTheDocument();
     expect(request.mock.calls.some(([path]) => path === "managed/adopt")).toBe(false);
-    expect(session.codexAction).not.toHaveBeenCalled();
+    expect(session.runSessionAction).not.toHaveBeenCalled();
   });
   it.each(["codex", "claude-code"] as const)(
     "marks a %s branch with its source title without exposing a missing source id",
@@ -192,7 +192,7 @@ describe("reader handoff entries", () => {
     render(<View />);
     expect(screen.queryByRole("button", { name: "Resume execution" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Hand over to AgentKib" })).not.toBeInTheDocument();
-    expect(session.codexAction).not.toHaveBeenCalled();
+    expect(session.runSessionAction).not.toHaveBeenCalled();
     expect(request).not.toHaveBeenCalled();
   });
   it("leaves Claude's existing strictly gated composer entry in place without adding a duplicate reader shortcut", () => {

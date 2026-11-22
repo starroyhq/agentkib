@@ -6,7 +6,7 @@ import type { ContextUsage } from "@agentkib/web-client";
 import { ContextUsageGauge } from "@/features/conversation/context-usage";
 import { useSession } from "@/features/conversation/web-session-context";
 import { contextUsageCopy, contextUsageCopyForSurface } from "@agentkib/session-ui";
-import { codexCopy } from "@/features/conversation/codex-copy";
+import { sessionCopy } from "@/features/conversation/session-copy";
 import type { Locale } from "@/features/conversation/i18n";
 
 vi.mock("@/features/conversation/web-session-context", () => ({
@@ -38,7 +38,7 @@ beforeEach(() => {
 });
 afterEach(cleanup);
 const gauge = () =>
-  screen.getByRole("img", { name: codexCopy[state.locale].contextUsage, hidden: true });
+  screen.getByRole("img", { name: sessionCopy[state.locale].contextUsage, hidden: true });
 const preview = async () => {
   await userEvent.setup().hover(gauge());
   await screen.findByRole("tooltip");
@@ -744,7 +744,7 @@ it.each(["touch", "shortcut"] as const)(
   async (method) => {
     const usageRef = createRef<{ open(): void }>();
     state.control = vi.fn();
-    state.codexAction = vi.fn();
+    state.runSessionAction = vi.fn();
     render(<ContextUsageGauge usageRef={usageRef} />);
     if (method === "shortcut") {
       act(() => usageRef.current!.open());
@@ -756,7 +756,7 @@ it.each(["touch", "shortcut"] as const)(
     expect(await screen.findByRole("tooltip")).toHaveTextContent("20 / 100");
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     expect(state.control).not.toHaveBeenCalled();
-    expect(state.codexAction).not.toHaveBeenCalled();
+    expect(state.runSessionAction).not.toHaveBeenCalled();
   },
 );
 
@@ -771,7 +771,7 @@ it.each(["claude-managed", "claude-follower", "codex-managed", "codex-follower"]
     state.access = { ...state.access!, device: { ...state.access!.device!, send: true } };
     state.canSend = true;
     state.control = vi.fn();
-    state.codexAction = vi.fn();
+    state.runSessionAction = vi.fn();
     render(<ContextUsageGauge />);
     expect(gauge()).toHaveTextContent(/^$/);
     await preview();
@@ -782,6 +782,6 @@ it.each(["claude-managed", "claude-follower", "codex-managed", "codex-follower"]
       screen.queryByRole("button", { name: contextUsageCopy["zh-CN"].compactAction }),
     ).not.toBeInTheDocument();
     expect(state.control).not.toHaveBeenCalled();
-    expect(state.codexAction).not.toHaveBeenCalled();
+    expect(state.runSessionAction).not.toHaveBeenCalled();
   },
 );

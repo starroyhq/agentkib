@@ -1,7 +1,7 @@
 import {
   sessionProviderCapabilities,
   type Access,
-  type CodexSessionSettings,
+  type SessionSettings,
   type Live,
   type SessionActionBody,
   type SessionCapabilities,
@@ -83,9 +83,9 @@ export function useComposerFollowerSettings(
   useLayoutEffect(() => {
     currentAuthority.current = authority;
   }, [authority]);
-  const last = useRef<{ authority: typeof authority; settings: CodexSessionSettings }>(undefined);
+  const last = useRef<{ authority: typeof authority; settings: SessionSettings }>(undefined);
   const rememberRead = useCallback(
-    (settings: CodexSessionSettings) => {
+    (settings: SessionSettings) => {
       if (authority !== currentAuthority.current || settings.sessionId !== authority.sessionId)
         return;
       last.current = { authority, settings };

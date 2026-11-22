@@ -49,11 +49,11 @@ afterEach(() => {
 });
 describe("Antigravity composer shortcuts", () => {
   it("adds the current draft to the queue while the native turn can still be stopped", async () => {
-    const codexAction = vi.fn().mockResolvedValue({ queuedSubmission: { id: "queued" } });
+    const runSessionAction = vi.fn().mockResolvedValue({ queuedSubmission: { id: "queued" } });
     const sessionQueue = vi.fn().mockResolvedValue({ sessionId: "s", data: [] });
     state.session = {
       ...state.session,
-      codexAction,
+      runSessionAction,
       client: { sessionQueue },
       canSend: false,
       canStop: true,
@@ -71,7 +71,7 @@ describe("Antigravity composer shortcuts", () => {
     await act(async () => {
       fireEvent.click(queue);
     });
-    expect(codexAction).toHaveBeenCalledExactlyOnceWith("queue-add", { text: "first line" });
+    expect(runSessionAction).toHaveBeenCalledExactlyOnceWith("queue-add", { text: "first line" });
     expect(state.control).not.toHaveBeenCalled();
     expect(screen.getByRole("textbox", { name: "Message" })).toHaveValue("");
     expect(sessionQueue).toHaveBeenCalledWith("s", "antigravity", expect.any(AbortSignal));

@@ -11,7 +11,7 @@ import {
   claudeConnectionReason,
 } from "../../agents/claude-code/connection-copy";
 import { claudeReconnectFailureReason } from "../../agents/claude-code/connection-notice";
-import { codexReason } from "./codex-copy";
+import { sessionReason } from "./session-copy";
 import { managedControlCopyForSurface } from "./managed-control-copy";
 import type { SessionController } from "./use-session-controller";
 import { webLayoutCopy } from "./web-layout-copy";
@@ -59,7 +59,7 @@ type DisplayState = {
 export function sessionDisplayState(
   state: State,
   surface: SessionSurface,
-  unavailableReason: Parameters<typeof codexReason>[3],
+  unavailableReason: Parameters<typeof sessionReason>[3],
   markOffline = surface === "desktop",
 ): DisplayState {
   const { live, online, canSend, access, capabilities, locale } = state;
@@ -100,7 +100,7 @@ export function sessionDisplayState(
   )
     return {
       label: c.uncertain,
-      reason: codexReason(locale, "control-outcome-unconfirmed", surface, unavailableReason).text,
+      reason: sessionReason(locale, "control-outcome-unconfirmed", surface, unavailableReason).text,
       tone: "warning",
     };
   if (
@@ -138,7 +138,7 @@ export function sessionDisplayState(
     if (!access.experimentalEnabled)
       return {
         label: c.controlDisabled,
-        reason: codexReason(locale, "control-disabled", surface, unavailableReason).text,
+        reason: sessionReason(locale, "control-disabled", surface, unavailableReason).text,
         tone: "muted",
       };
     if (!access.device?.send)
@@ -192,7 +192,7 @@ export function sessionDisplayState(
       return { label: "", reason: "", tone: "muted", continuation: "idle" };
     return {
       label: copy.viewOnly,
-      reason: codexReason(locale, codexStateReason, surface, unavailableReason).text,
+      reason: sessionReason(locale, codexStateReason, surface, unavailableReason).text,
       tone: "muted",
       continuation: "view-only",
     };
@@ -214,7 +214,7 @@ export function sessionDisplayState(
     if (!access.experimentalEnabled)
       return {
         label: c.controlDisabled,
-        reason: codexReason(locale, "control-disabled", surface, unavailableReason).text,
+        reason: sessionReason(locale, "control-disabled", surface, unavailableReason).text,
         tone: "muted",
       };
     if (!access.device?.send)
@@ -263,7 +263,7 @@ export function sessionDisplayState(
           ? copy.claudeWindowsUnsupported
           : (claudeReconnectFailureReason(live, locale, surface) ??
             claudeConnectionReason(locale, reason, surface) ??
-            codexReason(locale, reason, surface, unavailableReason).text),
+            sessionReason(locale, reason, surface, unavailableReason).text),
       tone: "muted",
       continuation: "view-only",
     };
@@ -289,7 +289,7 @@ export function sessionDisplayState(
     if (!access.experimentalEnabled)
       return {
         label: c.controlDisabled,
-        reason: codexReason(locale, "control-disabled", surface, unavailableReason).text,
+        reason: sessionReason(locale, "control-disabled", surface, unavailableReason).text,
         tone: "muted",
       };
     if (!access.device?.send)
@@ -339,7 +339,7 @@ export function sessionDisplayState(
     }
     return {
       label: copy.viewOnly,
-      reason: codexReason(locale, reason, surface, unavailableReason).text,
+      reason: sessionReason(locale, reason, surface, unavailableReason).text,
       tone: "muted",
       continuation: "view-only",
     };
@@ -350,7 +350,7 @@ export function sessionDisplayState(
   )
     return {
       label: live.reason === "claude-terminal-question" ? c.question : c.approval,
-      reason: codexReason(locale, live.reason, surface, unavailableReason).text,
+      reason: sessionReason(locale, live.reason, surface, unavailableReason).text,
       tone: "warning",
     };
   if (live?.questions?.length) return { label: c.question, reason: c.question, tone: "warning" };
@@ -374,7 +374,7 @@ export function sessionDisplayState(
   )
     return {
       label: c.running,
-      reason: codexReason(locale, live.reason, surface, unavailableReason).text,
+      reason: sessionReason(locale, live.reason, surface, unavailableReason).text,
       tone: "warning",
     };
   if (live?.executionMode === "claude-follower" && live.reason === "claude-bridge-event-gap")
@@ -409,7 +409,7 @@ export function sessionDisplayState(
   if (!access.experimentalEnabled)
     return {
       label: c.controlDisabled,
-      reason: codexReason(locale, "control-disabled", surface, unavailableReason).text,
+      reason: sessionReason(locale, "control-disabled", surface, unavailableReason).text,
       tone: "muted",
     };
   if (!access.device?.send)
@@ -442,7 +442,7 @@ export function sessionDisplayState(
   if (reason)
     return {
       label: reason === "unverified-installation" ? c.unverified : c.readonly,
-      reason: codexReason(locale, reason, surface, unavailableReason).text,
+      reason: sessionReason(locale, reason, surface, unavailableReason).text,
       tone: "muted",
     };
   if (!connectionReady || !live)

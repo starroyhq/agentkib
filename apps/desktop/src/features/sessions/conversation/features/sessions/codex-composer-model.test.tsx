@@ -3,15 +3,15 @@ import "@testing-library/jest-dom/vitest";
 import { act, cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { render } from "@/features/sessions/conversation/desktop-reader-test-utils";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { CodexSessionSettings } from "@agentkib/web-client";
+import type { SessionSettings } from "@agentkib/web-client";
 import { createRef } from "react";
 import { confirmsComposerSettings, planModeCopy } from "@agentkib/session-ui";
-import { CodexComposerControls, type ComposerControlsHandle } from "@agentkib/session-ui";
+import { SessionComposerControls, type ComposerControlsHandle } from "@agentkib/session-ui";
 import type { useSession } from "../../desktop-session-context";
-import { codexCopy } from "../../codex-copy";
+import { sessionCopy } from "../../session-copy";
 
 let state: ReturnType<typeof useSession>;
-let settings: CodexSessionSettings;
+let settings: SessionSettings;
 const props = { resources: [], setResources: vi.fn(), openPhoneFiles: vi.fn(), disabled: false };
 beforeEach(() => {
   // BaseUI measures its thumb before exposing the input; jsdom has no layout.
@@ -71,7 +71,7 @@ beforeEach(() => {
       codexGoals: vi.fn(),
       codexContextOptions: vi.fn(),
     },
-    codexAction: vi.fn(),
+    runSessionAction: vi.fn(),
     control: vi.fn(),
   } as unknown as ReturnType<typeof useSession>;
 });
@@ -89,7 +89,7 @@ describe("Codex composer quick model settings", () => {
   it("confirms a next-turn receipt using the native owner's settings readback", () => {
     const pending = { model: "terra", expectedRevision: 1, nextTurn: true };
     const flags = { prepared: false, variants: false, follower: true };
-    const readback: CodexSessionSettings = {
+    const readback: SessionSettings = {
       ...settings,
       revision: 2,
       executionMode: "codex-follower",
@@ -111,7 +111,7 @@ describe("Codex composer quick model settings", () => {
     };
     settings.current.policyId = "workspace-write-on-request";
     settings.writable.policy = { available: false };
-    render(<CodexComposerControls session={state} {...props} />);
+    render(<SessionComposerControls session={state} {...props} />);
     await waitFor(() =>
       expect(screen.getByRole("button", { name: /^Execution policy: / })).toBeDisabled(),
     );
@@ -123,7 +123,7 @@ describe("Codex composer quick model settings", () => {
     expect(within(popup).getByText("Sol")).toBeVisible();
     expect(within(popup).queryByRole("status")).not.toBeInTheDocument();
     expect(within(popup).getByRole("slider")).toBeDisabled();
-    expect(state.codexAction).not.toHaveBeenCalled();
+    expect(state.runSessionAction).not.toHaveBeenCalled();
   });
 
   it("binds a follower model change to the current owner's settings read", async () => {
@@ -136,7 +136,7 @@ describe("Codex composer quick model settings", () => {
       efforts: ["low", "high"],
       serviceTierIds: [],
     });
-    const view = render(<CodexComposerControls session={state} {...props} />);
+    const view = render(<SessionComposerControls session={state} {...props} />);
     const trigger = await screen.findByRole("button", { name: /Select reasoning effort: Sol/ });
     fireEvent.click(trigger);
     const picker = await screen.findByRole("dialog");
@@ -144,24 +144,24 @@ describe("Codex composer quick model settings", () => {
     const models = await screen.findByRole("dialog", { name: "Model" });
     expect(within(models).getByRole("button", { name: "Terra" })).toBeEnabled();
 
-    let resolveRead!: (value: CodexSessionSettings) => void;
+    let resolveRead!: (value: SessionSettings) => void;
     vi.mocked(state.client.sessionSettings).mockReturnValue(
       new Promise((resolve) => (resolveRead = resolve)),
     );
     state.live = { ...state.live!, connectionGeneration: "two" };
-    view.rerender(<CodexComposerControls session={state} {...props} />);
+    view.rerender(<SessionComposerControls session={state} {...props} />);
     expect(within(models).getByRole("button", { name: "Terra" })).toBeDisabled();
-    expect(state.codexAction).not.toHaveBeenCalled();
+    expect(state.runSessionAction).not.toHaveBeenCalled();
 
     await act(async () => resolveRead({ ...settings, writeScope: "owner-two" }));
     const terra = within(models).getByRole("button", { name: "Terra" });
     await waitFor(() => expect(terra).toBeEnabled());
     let finishWrite!: () => void;
-    vi.mocked(state.codexAction).mockImplementationOnce(
+    vi.mocked(state.runSessionAction).mockImplementationOnce(
       () => new Promise((resolve) => (finishWrite = () => resolve({ accepted: true }))),
     );
     fireEvent.click(terra);
-    expect(state.codexAction).toHaveBeenCalledExactlyOnceWith("settings", {
+    expect(state.runSessionAction).toHaveBeenCalledExactlyOnceWith("settings", {
       model: "terra",
       expectedSettingsScope: "owner-two",
     });
@@ -169,26 +169,26 @@ describe("Codex composer quick model settings", () => {
 
     vi.mocked(state.client.sessionSettings).mockImplementation(() => new Promise(() => {}));
     state.live = { ...state.live!, connectionGeneration: "three" };
-    view.rerender(<CodexComposerControls session={state} {...props} />);
+    view.rerender(<SessionComposerControls session={state} {...props} />);
     expect(trigger).toHaveTextContent("Sol");
     await act(async () => finishWrite());
     expect(trigger).toHaveTextContent("Sol");
   });
 
   it("places the model after the context ring and keeps advanced settings separate", async () => {
-    render(<CodexComposerControls session={state} {...props} action={<button>Send</button>} />);
+    render(<SessionComposerControls session={state} {...props} action={<button>Send</button>} />);
     const picker = await screen.findByRole("button", { name: /Select reasoning effort: Sol/ });
-    const ring = screen.getByRole("img", { name: codexCopy["en-US"].contextUsage });
+    const ring = screen.getByRole("img", { name: sessionCopy["en-US"].contextUsage });
     expect(
       picker.compareDocumentPosition(screen.getByRole("button", { name: "Send" })) &
         Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy();
     expect(ring.compareDocumentPosition(picker) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    const policy = codexCopy["en-US"].executionPolicy;
+    const policy = sessionCopy["en-US"].executionPolicy;
     fireEvent.click(screen.getByRole("button", { name: policy }));
     expect(await screen.findByRole("menu", { name: policy })).toBeVisible();
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
-    expect(state.codexAction).not.toHaveBeenCalled();
+    expect(state.runSessionAction).not.toHaveBeenCalled();
   });
 
   it("shows only policies in the permissions menu and applies only the selected policy", async () => {
@@ -201,8 +201,8 @@ describe("Codex composer quick model settings", () => {
       { id: "old-policy", name: "Current policy" },
       { id: "new-policy", name: "Verified policy" },
     ];
-    render(<CodexComposerControls session={state} {...props} />);
-    const copy = codexCopy["en-US"];
+    render(<SessionComposerControls session={state} {...props} />);
+    const copy = sessionCopy["en-US"];
     fireEvent.click(
       await screen.findByRole("button", { name: `${copy.executionPolicy}: Current policy` }),
     );
@@ -214,14 +214,14 @@ describe("Codex composer quick model settings", () => {
     expect(within(menu).getAllByRole("menuitem")).toHaveLength(2);
     fireEvent.click(within(menu).getByRole("menuitem", { name: "Verified policy" }));
     await waitFor(() =>
-      expect(state.codexAction).toHaveBeenCalledExactlyOnceWith("settings", {
+      expect(state.runSessionAction).toHaveBeenCalledExactlyOnceWith("settings", {
         policyId: "new-policy",
       }),
     );
   });
 
   it("keeps the staged Fast selection editable before a Codex connection is active", async () => {
-    vi.mocked(state.codexAction).mockImplementation(async () => {
+    vi.mocked(state.runSessionAction).mockImplementation(async () => {
       settings = {
         ...settings,
         revision: 2,
@@ -230,13 +230,13 @@ describe("Codex composer quick model settings", () => {
         selected: { modelId: "sol", effort: "high", serviceTierId: "fast" },
       };
       state.live = { ...state.live!, revision: 2 };
-      return { accepted: true } as unknown as Awaited<ReturnType<typeof state.codexAction>>;
+      return { accepted: true } as unknown as Awaited<ReturnType<typeof state.runSessionAction>>;
     });
-    render(<CodexComposerControls session={state} {...props} />);
+    render(<SessionComposerControls session={state} {...props} />);
     const dialog = await openPicker();
     fireEvent.click(within(dialog).getByRole("button", { name: "Fast mode" }));
     await waitFor(() =>
-      expect(state.codexAction).toHaveBeenCalledExactlyOnceWith("settings", {
+      expect(state.runSessionAction).toHaveBeenCalledExactlyOnceWith("settings", {
         serviceTierId: "fast",
       }),
     );
@@ -265,12 +265,12 @@ describe("Codex composer quick model settings", () => {
         },
       },
     };
-    render(<CodexComposerControls session={state} {...props} />);
+    render(<SessionComposerControls session={state} {...props} />);
     const dialog = await openPicker();
     expect(within(dialog).getByRole("button", { name: "Fast mode" })).toBeDisabled();
     expect(await within(dialog).findByRole("slider")).toBeDisabled();
     expect(within(dialog).queryByRole("status")).not.toBeInTheDocument();
-    expect(state.codexAction).not.toHaveBeenCalled();
+    expect(state.runSessionAction).not.toHaveBeenCalled();
   });
 
   it("can stage writable settings during a turn and keeps other fields disabled", async () => {
@@ -293,8 +293,8 @@ describe("Codex composer quick model settings", () => {
       { id: "first-policy", name: "First policy" },
       { id: "second-policy", name: "Second policy" },
     ];
-    vi.mocked(state.codexAction).mockResolvedValue({ accepted: true });
-    render(<CodexComposerControls session={state} {...props} />);
+    vi.mocked(state.runSessionAction).mockResolvedValue({ accepted: true });
+    render(<SessionComposerControls session={state} {...props} />);
 
     const model = await screen.findByRole("button", { name: /Select reasoning effort: Sol/ });
     fireEvent.click(model);
@@ -306,7 +306,7 @@ describe("Codex composer quick model settings", () => {
     expect(effort).toBeEnabled();
     fireEvent.keyDown(effort, { key: "Home" });
     await waitFor(() =>
-      expect(state.codexAction).toHaveBeenNthCalledWith(1, "settings", { effort: "low" }),
+      expect(state.runSessionAction).toHaveBeenNthCalledWith(1, "settings", { effort: "low" }),
     );
 
     fireEvent.click(panel.getByRole("button", { name: "Select model: Sol" }));
@@ -314,7 +314,7 @@ describe("Codex composer quick model settings", () => {
     await waitFor(() => expect(terra).toBeEnabled());
     fireEvent.click(terra);
     await waitFor(() =>
-      expect(state.codexAction).toHaveBeenNthCalledWith(2, "settings", { model: "terra" }),
+      expect(state.runSessionAction).toHaveBeenNthCalledWith(2, "settings", { model: "terra" }),
     );
     fireEvent.click(model);
     await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
@@ -324,25 +324,25 @@ describe("Codex composer quick model settings", () => {
     await waitFor(() => expect(policy).not.toHaveAttribute("aria-disabled", "true"));
     fireEvent.click(policy);
     await waitFor(() =>
-      expect(state.codexAction).toHaveBeenNthCalledWith(3, "settings", {
+      expect(state.runSessionAction).toHaveBeenNthCalledWith(3, "settings", {
         policyId: "second-policy",
       }),
     );
   });
 
   it("does not apply an old settings receipt after switching conversations", async () => {
-    let resolve!: (value: Awaited<ReturnType<typeof state.codexAction>>) => void;
-    vi.mocked(state.codexAction).mockReturnValue(
+    let resolve!: (value: Awaited<ReturnType<typeof state.runSessionAction>>) => void;
+    vi.mocked(state.runSessionAction).mockReturnValue(
       new Promise((done) => {
         resolve = done;
       }),
     );
-    const view = render(<CodexComposerControls session={state} {...props} />);
+    const view = render(<SessionComposerControls session={state} {...props} />);
     const dialog = await openPicker();
     fireEvent.click(within(dialog).getByRole("button", { name: "Fast mode" }));
-    await waitFor(() => expect(state.codexAction).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(state.runSessionAction).toHaveBeenCalledTimes(1));
     state = { ...state, live: { ...state.live!, revision: 2 } };
-    view.rerender(<CodexComposerControls session={state} {...props} />);
+    view.rerender(<SessionComposerControls session={state} {...props} />);
     expect(within(dialog).getByRole("button", { name: "Fast mode" })).toBeDisabled();
     expect(within(dialog).queryByRole("status")).not.toBeInTheDocument();
     settings = { ...settings, sessionId: "other", current: { modelId: "other-model" } };
@@ -353,11 +353,11 @@ describe("Codex composer quick model settings", () => {
       live: { ...state.live!, sessionId: "other" },
       capabilities: { ...state.capabilities!, sessionId: "other" },
     };
-    view.rerender(<CodexComposerControls session={state} {...props} />);
+    view.rerender(<SessionComposerControls session={state} {...props} />);
     await screen.findByRole("button", { name: /Select reasoning effort: other-model/ });
     const reads = vi.mocked(state.client.sessionSettings).mock.calls.length;
     await act(async () =>
-      resolve({ accepted: true } as unknown as Awaited<ReturnType<typeof state.codexAction>>),
+      resolve({ accepted: true } as unknown as Awaited<ReturnType<typeof state.runSessionAction>>),
     );
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     expect(
@@ -367,28 +367,28 @@ describe("Codex composer quick model settings", () => {
   });
 
   it("releases the mutation busy state after a reconnect invalidates its read generation", async () => {
-    let resolve!: (value: Awaited<ReturnType<typeof state.codexAction>>) => void;
-    vi.mocked(state.codexAction).mockReturnValue(
+    let resolve!: (value: Awaited<ReturnType<typeof state.runSessionAction>>) => void;
+    vi.mocked(state.runSessionAction).mockReturnValue(
       new Promise((done) => {
         resolve = done;
       }),
     );
-    const view = render(<CodexComposerControls session={state} {...props} />);
+    const view = render(<SessionComposerControls session={state} {...props} />);
     const dialog = await openPicker();
     fireEvent.click(within(dialog).getByRole("button", { name: "Fast mode" }));
-    await waitFor(() => expect(state.codexAction).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(state.runSessionAction).toHaveBeenCalledTimes(1));
     state = { ...state, online: false };
-    view.rerender(<CodexComposerControls session={state} {...props} disabled />);
+    view.rerender(<SessionComposerControls session={state} {...props} disabled />);
     await act(async () =>
-      resolve({ accepted: true } as unknown as Awaited<ReturnType<typeof state.codexAction>>),
+      resolve({ accepted: true } as unknown as Awaited<ReturnType<typeof state.runSessionAction>>),
     );
     state = { ...state, online: true, usageEpoch: "new-observation" };
-    view.rerender(<CodexComposerControls session={state} {...props} />);
+    view.rerender(<SessionComposerControls session={state} {...props} />);
     await screen.findByRole("button", { name: /Select reasoning effort: Sol/ });
     // Observations keep the open picker mounted while releasing the previous write's busy state.
     const reconnected = await screen.findByRole("dialog", { name: /Select reasoning effort:/ });
     expect(within(reconnected).getByRole("button", { name: "Fast mode" })).toBeEnabled();
-    expect(state.codexAction).toHaveBeenCalledTimes(1);
+    expect(state.runSessionAction).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -403,13 +403,13 @@ describe("plan mode in the composer, as in Codex's own", () => {
       current: { ...settings.current, mode: "plan" },
       options: { ...settings.options, collaborationModes: modes },
     };
-    vi.mocked(state.codexAction).mockResolvedValue({ accepted: true } as unknown as Awaited<
-      ReturnType<typeof state.codexAction>
+    vi.mocked(state.runSessionAction).mockResolvedValue({ accepted: true } as unknown as Awaited<
+      ReturnType<typeof state.runSessionAction>
     >);
     const onPlan = vi.fn();
-    render(<CodexComposerControls session={state} {...props} onPlan={onPlan} />);
+    render(<SessionComposerControls session={state} {...props} onPlan={onPlan} />);
     await waitFor(() => expect(onPlan).toHaveBeenLastCalledWith({ on: true, available: true }));
-    const addLabel = codexCopy["en-US"].addContext;
+    const addLabel = sessionCopy["en-US"].addContext;
     fireEvent.click(screen.getByRole("button", { name: addLabel }));
     const add = await screen.findByRole("dialog", { name: addLabel });
     expect(add).not.toHaveAttribute("aria-modal", "true");
@@ -417,7 +417,9 @@ describe("plan mode in the composer, as in Codex's own", () => {
       within(add).getByRole("button", { name: planModeCopy("en-US").title, pressed: true }),
     );
     await waitFor(() =>
-      expect(state.codexAction).toHaveBeenCalledExactlyOnceWith("settings", { mode: "default" }),
+      expect(state.runSessionAction).toHaveBeenCalledExactlyOnceWith("settings", {
+        mode: "default",
+      }),
     );
   });
 
@@ -425,7 +427,9 @@ describe("plan mode in the composer, as in Codex's own", () => {
     settings = { ...settings, options: { ...settings.options, collaborationModes: modes } };
     const onPlan = vi.fn();
     const ref = createRef<ComposerControlsHandle>();
-    render(<CodexComposerControls session={state} {...props} controlsRef={ref} onPlan={onPlan} />);
+    render(
+      <SessionComposerControls session={state} {...props} controlsRef={ref} onPlan={onPlan} />,
+    );
     await waitFor(() => expect(onPlan).toHaveBeenLastCalledWith({ on: false, available: true }));
     expect(
       screen.queryByRole("button", { name: planModeCopy("en-US").title }),
@@ -434,7 +438,7 @@ describe("plan mode in the composer, as in Codex's own", () => {
       expect(ref.current!.plan()).toBe(true);
     });
     await waitFor(() =>
-      expect(state.codexAction).toHaveBeenCalledExactlyOnceWith("settings", { mode: "plan" }),
+      expect(state.runSessionAction).toHaveBeenCalledExactlyOnceWith("settings", { mode: "plan" }),
     );
   });
 
@@ -452,22 +456,22 @@ describe("plan mode in the composer, as in Codex's own", () => {
       applicationStatus: "confirmed",
     };
     state.live = { ...state.live!, executionMode: "codex-managed" };
-    vi.mocked(state.codexAction).mockImplementation(async () => {
+    vi.mocked(state.runSessionAction).mockImplementation(async () => {
       settings = { ...settings, revision: 2, selected: unchanged };
       state.live = { ...state.live!, revision: 2 };
-      return { accepted: true } as Awaited<ReturnType<typeof state.codexAction>>;
+      return { accepted: true } as Awaited<ReturnType<typeof state.runSessionAction>>;
     });
     const onPlan = vi.fn();
-    render(<CodexComposerControls session={state} {...props} onPlan={onPlan} />);
+    render(<SessionComposerControls session={state} {...props} onPlan={onPlan} />);
     await waitFor(() => expect(onPlan).toHaveBeenLastCalledWith({ on: true, available: false }));
-    const label = codexCopy["en-US"].addContext;
+    const label = sessionCopy["en-US"].addContext;
     fireEvent.click(screen.getByRole("button", { name: label }));
     const add = within(await screen.findByRole("dialog", { name: label }));
     expect(add.getByRole("button", { name: planModeCopy("en-US").title })).toBeDisabled();
     fireEvent.click(add.getByRole("button", { name: planModeCopy("en-US").clear }));
 
     await waitFor(() => {
-      expect(state.codexAction).toHaveBeenCalledExactlyOnceWith("settings", { mode: null });
+      expect(state.runSessionAction).toHaveBeenCalledExactlyOnceWith("settings", { mode: null });
       expect(onPlan).toHaveBeenLastCalledWith({ on: false, available: false });
       expect(screen.queryByRole("dialog", { name: label })).not.toBeInTheDocument();
     });

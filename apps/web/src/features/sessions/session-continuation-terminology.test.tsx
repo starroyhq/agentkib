@@ -8,7 +8,7 @@ import { SessionReader } from "@/features/conversation/features/sessions/web-ses
 import { SessionPanelsContext } from "@agentkib/session-ui";
 import type { SessionController } from "@/features/conversation/web-session-controller";
 import { dictionaries } from "@/features/conversation/i18n";
-import { codexReason } from "@/features/conversation/codex-copy";
+import { sessionReason } from "@/features/conversation/session-copy";
 import { claudeConnectionCopy } from "@agentkib/session-ui";
 
 type Locale = "zh-CN" | "zh-Hant" | "en-US" | "ja-JP";
@@ -227,7 +227,7 @@ beforeEach(() => {
     refresh: vi.fn(async () => {}),
     earlier: vi.fn(),
     control: vi.fn(),
-    codexAction: vi.fn(),
+    runSessionAction: vi.fn(),
     forkContinuation: vi.fn(),
     checkContinuation: vi.fn(),
     client: {
@@ -428,7 +428,7 @@ describe("visible session continuation terminology", () => {
       });
       render(<View snapshot={session} />);
       expect(
-        screen.getAllByText(codexReason(expected.locale, "codex-session-directory-unsafe").text),
+        screen.getAllByText(sessionReason(expected.locale, "codex-session-directory-unsafe").text),
       ).toHaveLength(1);
       expect(screen.queryByRole("textbox", { name: session.t.message })).not.toBeInTheDocument();
     },
@@ -448,7 +448,7 @@ describe("visible session continuation terminology", () => {
       expect(within(actions).getByRole("heading", { name: expected.queue })).toBeVisible();
       expect(within(actions).getByRole("button", { name: expected.actionFork })).toBeEnabled();
       expectNoExecutionHandoff(expected.locale, actions);
-      expect(session.codexAction).not.toHaveBeenCalled();
+      expect(session.runSessionAction).not.toHaveBeenCalled();
       expect(session.client.request).not.toHaveBeenCalled();
 
       session.current = { ...session.current!, agent: "codex" };
@@ -458,7 +458,7 @@ describe("visible session continuation terminology", () => {
       expect(within(codexActions).getByRole("heading", { name: expected.queue })).toBeVisible();
       expect(within(codexActions).getByRole("button", { name: expected.actionFork })).toBeEnabled();
       expectNoExecutionHandoff(expected.locale, codexActions);
-      expect(session.codexAction).not.toHaveBeenCalled();
+      expect(session.runSessionAction).not.toHaveBeenCalled();
     },
   );
 
@@ -482,7 +482,7 @@ describe("visible session continuation terminology", () => {
       expect(await within(actions).findByText(expected.queueRecovery)).toBeVisible();
       expect(within(actions).getByRole("button", { name: expected.resumeQueue })).toBeDisabled();
       expectNoExecutionHandoff(expected.locale, actions);
-      expect(session.codexAction).not.toHaveBeenCalled();
+      expect(session.runSessionAction).not.toHaveBeenCalled();
     },
   );
 

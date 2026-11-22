@@ -1,5 +1,5 @@
 import { useCallback, useMemo, useRef, useState } from "react";
-import type { CodexContextResource } from "@agentkib/web-client";
+import type { SessionResource } from "@agentkib/web-client";
 
 export type NewSessionGoalDraft = { objective: string; tokenBudget?: number };
 
@@ -18,7 +18,7 @@ export function parseGoalDraft(objective: string, budget: string): NewSessionGoa
 export interface NewSessionDraft {
   text: string;
   files: File[];
-  resources?: CodexContextResource[];
+  resources?: SessionResource[];
   goal?: NewSessionGoalDraft;
 }
 

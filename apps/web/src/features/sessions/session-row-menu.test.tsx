@@ -4,12 +4,12 @@ import { ApiError, type ConversationSessionSummary } from "@agentkib/web-client"
 import { SessionRowMenu } from "@/features/conversation/features/catalog/session-row-menu";
 import { SessionCatalog } from "@/features/conversation/features/catalog/session-catalog";
 import { useSession } from "@/features/conversation/web-session-context";
-import { codexCopyForSurface, codexReason } from "@/features/conversation/codex-copy";
+import { sessionCopyForSurface, sessionReason } from "@/features/conversation/session-copy";
 
 vi.mock("@/features/conversation/web-session-context", () => ({
   useSession: vi.fn(),
 }));
-const copy = codexCopyForSurface("en-US", "web");
+const copy = sessionCopyForSurface("en-US", "web");
 const client = {
   sessionCapabilities: vi.fn(),
   access: vi.fn(),
@@ -73,7 +73,7 @@ describe("a session row's menu in the browser", () => {
       confirmLabel: copy.rename,
       menuLabel: copy.rename,
       code: "follower-operation-unverified",
-      message: codexReason("en-US", "follower-operation-unverified", "web").text,
+      message: sessionReason("en-US", "follower-operation-unverified", "web").text,
     },
     {
       action: "delete",
@@ -144,7 +144,9 @@ describe("a session row's menu in the browser", () => {
         expect(item).toHaveAttribute("aria-disabled", "true");
         fireEvent.click(item);
       }
-      expect(screen.queryByText(codexReason("en-US", reason, "web").text)).not.toBeInTheDocument();
+      expect(
+        screen.queryByText(sessionReason("en-US", reason, "web").text),
+      ).not.toBeInTheDocument();
       expect(screen.queryByText(deleteCopy)).not.toBeInTheDocument();
       expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
       expect(client.sessionAction).not.toHaveBeenCalled();

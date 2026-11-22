@@ -1,5 +1,5 @@
 import { isBusyRead } from "@agentkib/session-ui";
-import { codexReason } from "./conversation/codex-copy";
+import { sessionReason } from "./conversation/session-copy";
 import { useI18n } from "@/core/useI18n";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQueries } from "@tanstack/react-query";
@@ -281,7 +281,7 @@ export function useSessionCatalog(
       (sameIdentity ? (statuses[index]?.error ?? lists[index]?.error) : undefined);
     if (error)
       errors[id] = isBusyRead(error)
-        ? codexReason(locale, "session-state-unavailable").text
+        ? sessionReason(locale, "session-state-unavailable").text
         : localizeMessage(error);
   }
   const refresh = useCallback((): Promise<void> => {

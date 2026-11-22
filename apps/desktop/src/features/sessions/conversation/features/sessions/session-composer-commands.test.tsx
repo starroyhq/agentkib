@@ -6,9 +6,9 @@ import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/re
 import { render } from "@/features/sessions/conversation/desktop-reader-test-utils";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ClaudeCommandEntry } from "@agentkib/web-client";
-import { codexCommandPrompt, slashCommandCopy } from "@agentkib/session-ui";
+import { commandPrompt, slashCommandCopy } from "@agentkib/session-ui";
 import { SessionComposer } from "@/features/sessions/conversation/desktop-session-composer";
-import { codexCopy, codexReason } from "../../codex-copy";
+import { sessionCopy, sessionReason } from "../../session-copy";
 import { composerModelCopy } from "@agentkib/session-ui";
 import type { SessionPanels } from "@agentkib/session-ui";
 import type { SessionController } from "../../desktop-session-controller";
@@ -16,7 +16,7 @@ import type { SessionController } from "../../desktop-session-controller";
 const doubles = vi.hoisted(() => ({
   session: {} as Partial<SessionController>,
   control: vi.fn(),
-  codexAction: vi.fn(),
+  runSessionAction: vi.fn(),
   panels: null as SessionPanels | null,
 }));
 vi.mock("../../desktop-session-navigation", () => ({ useSessionNavigate: () => vi.fn() }));
@@ -95,7 +95,7 @@ describe("slash commands in the desktop composer", () => {
     vi.resetAllMocks();
     doubles.panels = null;
     doubles.control.mockResolvedValue(true);
-    doubles.codexAction.mockResolvedValue({ accepted: true });
+    doubles.runSessionAction.mockResolvedValue({ accepted: true });
     doubles.session = {
       selected: "session",
       current: { id: "session", agent: "claude-code" } as SessionController["current"],
@@ -128,7 +128,7 @@ describe("slash commands in the desktop composer", () => {
         features: {},
       } as SessionController["capabilities"],
       control: doubles.control,
-      codexAction: doubles.codexAction,
+      runSessionAction: doubles.runSessionAction,
       client: { request: vi.fn() } as unknown as SessionController["client"],
     };
   });
@@ -157,7 +157,7 @@ describe("slash commands in the desktop composer", () => {
       fireEvent.submit(form);
       await waitFor(() => expect(input).toHaveValue(""));
       expect(doubles.control).not.toHaveBeenCalled();
-      expect(doubles.codexAction).not.toHaveBeenCalled();
+      expect(doubles.runSessionAction).not.toHaveBeenCalled();
     },
   );
 
@@ -165,7 +165,7 @@ describe("slash commands in the desktop composer", () => {
     const { form } = renderComposer("/config autoScroll=false");
     fireEvent.submit(form);
     await waitFor(() => expect(doubles.control).toHaveBeenCalledOnce());
-    expect(doubles.codexAction).not.toHaveBeenCalled();
+    expect(doubles.runSessionAction).not.toHaveBeenCalled();
   });
 
   it("does not run AgentKib's action for a message with attachments, which would drop them", async () => {
@@ -188,14 +188,17 @@ describe("slash commands in the desktop composer", () => {
       }),
     } as unknown as SessionController["client"];
     const { input, form } = renderComposer("/rename Probe title");
-    fireEvent.change(screen.getByLabelText(codexCopy["en-US"].attachment, { selector: "input" }), {
-      target: { files: [new File(["abc"], "note.txt", { type: "text/plain" })] },
-    });
+    fireEvent.change(
+      screen.getByLabelText(sessionCopy["en-US"].attachment, { selector: "input" }),
+      {
+        target: { files: [new File(["abc"], "note.txt", { type: "text/plain" })] },
+      },
+    );
     await screen.findByText("100%");
     fireEvent.submit(form);
-    expect(screen.getByText(codexReason("en-US", "claude-command-rename").text)).toBeVisible();
+    expect(screen.getByText(sessionReason("en-US", "claude-command-rename").text)).toBeVisible();
     expect(input).toHaveValue("/rename Probe title");
-    expect(doubles.codexAction).not.toHaveBeenCalled();
+    expect(doubles.runSessionAction).not.toHaveBeenCalled();
     expect(doubles.control).not.toHaveBeenCalled();
   });
 
@@ -224,16 +227,16 @@ describe("slash commands in the desktop composer", () => {
       const { form, input, unmount } = renderComposer(text);
       fireEvent.submit(form);
       expect(
-        screen.getByText(codexReason("en-US", "claude-effort-unsupported").text),
+        screen.getByText(sessionReason("en-US", "claude-effort-unsupported").text),
       ).toBeVisible();
       expect(input).toHaveValue(text);
       unmount();
     }
-    expect(doubles.codexAction).not.toHaveBeenCalled();
+    expect(doubles.runSessionAction).not.toHaveBeenCalled();
     const { form, input } = renderComposer("/effort Max");
     fireEvent.submit(form);
     await waitFor(() => expect(input).toHaveValue(""));
-    expect(doubles.codexAction).toHaveBeenCalledExactlyOnceWith("settings", { effort: "max" });
+    expect(doubles.runSessionAction).toHaveBeenCalledExactlyOnceWith("settings", { effort: "max" });
     expect(doubles.control).not.toHaveBeenCalled();
   });
 
@@ -250,7 +253,7 @@ describe("slash commands in the desktop composer", () => {
     ).toBeVisible();
     expect(input).toHaveValue("");
     expect(doubles.control).not.toHaveBeenCalled();
-    expect(doubles.codexAction).not.toHaveBeenCalled();
+    expect(doubles.runSessionAction).not.toHaveBeenCalled();
   });
 
   it("still explains /clear and /loop", () => {
@@ -260,7 +263,7 @@ describe("slash commands in the desktop composer", () => {
     ]) {
       const { form, input, unmount } = renderComposer(text);
       fireEvent.submit(form);
-      expect(screen.getByText(codexReason("en-US", code).text)).toBeVisible();
+      expect(screen.getByText(sessionReason("en-US", code).text)).toBeVisible();
       expect(input).toHaveValue(text);
       unmount();
     }
@@ -273,7 +276,7 @@ describe("Codex slash commands in the desktop composer", () => {
     vi.resetAllMocks();
     doubles.panels = null;
     doubles.control.mockResolvedValue(true);
-    doubles.codexAction.mockResolvedValue({ accepted: true });
+    doubles.runSessionAction.mockResolvedValue({ accepted: true });
     doubles.session = {
       selected: "session",
       current: { id: "session", agent: "codex" } as SessionController["current"],
@@ -305,7 +308,7 @@ describe("Codex slash commands in the desktop composer", () => {
         features: { compact: { available: true } },
       } as SessionController["capabilities"],
       control: doubles.control,
-      codexAction: doubles.codexAction,
+      runSessionAction: doubles.runSessionAction,
       client: { request: vi.fn() } as unknown as SessionController["client"],
     };
   });
@@ -320,7 +323,9 @@ describe("Codex slash commands in the desktop composer", () => {
     );
     fireEvent.keyDown(input, { key: "Enter" });
     await waitFor(() =>
-      expect(doubles.codexAction).toHaveBeenCalledExactlyOnceWith("settings", { mode: "plan" }),
+      expect(doubles.runSessionAction).toHaveBeenCalledExactlyOnceWith("settings", {
+        mode: "plan",
+      }),
     );
     expect(input).toHaveValue("Fix it");
     expect(doubles.control).not.toHaveBeenCalled();
@@ -345,7 +350,7 @@ describe("Codex slash commands in the desktop composer", () => {
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     expect(permissions.input).toHaveValue("");
     expect(doubles.control).not.toHaveBeenCalled();
-    expect(doubles.codexAction).not.toHaveBeenCalled();
+    expect(doubles.runSessionAction).not.toHaveBeenCalled();
   });
 
   it("opens the context gauge for /status", async () => {
@@ -356,7 +361,7 @@ describe("Codex slash commands in the desktop composer", () => {
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     expect(status.input).toHaveValue("");
     expect(doubles.control).not.toHaveBeenCalled();
-    expect(doubles.codexAction).not.toHaveBeenCalled();
+    expect(doubles.runSessionAction).not.toHaveBeenCalled();
   });
 
   it("offers AgentKib's Codex commands and runs /compact", async () => {
@@ -369,7 +374,7 @@ describe("Codex slash commands in the desktop composer", () => {
     fireEvent.change(input, { target: { value: "/compact" } });
     fireEvent.submit(form);
     await waitFor(() =>
-      expect(doubles.codexAction).toHaveBeenCalledExactlyOnceWith("compact", undefined),
+      expect(doubles.runSessionAction).toHaveBeenCalledExactlyOnceWith("compact", undefined),
     );
     expect(doubles.control).not.toHaveBeenCalled();
   });
@@ -392,11 +397,11 @@ describe("Codex slash commands in the desktop composer", () => {
         undefined,
         undefined,
         undefined,
-        { prompt: codexCommandPrompt("en-US", prompt) },
+        { prompt: commandPrompt("en-US", prompt) },
       ),
     );
     await waitFor(() => expect(input).toHaveValue(""));
-    expect(doubles.codexAction).not.toHaveBeenCalled();
+    expect(doubles.runSessionAction).not.toHaveBeenCalled();
   });
   it.each([
     ["/review two words", "codex-command-review"],
@@ -408,14 +413,14 @@ describe("Codex slash commands in the desktop composer", () => {
     };
     const { input, form } = renderComposer(text);
     fireEvent.submit(form);
-    expect(screen.getByText(codexReason("en-US", code).text)).toBeVisible();
+    expect(screen.getByText(sessionReason("en-US", code).text)).toBeVisible();
     expect(input).toHaveValue(text);
     expect(doubles.control).not.toHaveBeenCalled();
   });
   it("explains a terminal-only command and keeps the draft", () => {
     const { input, form } = renderComposer("/quit");
     fireEvent.submit(form);
-    expect(screen.getByText(codexReason("en-US", "codex-command-terminal").text)).toBeVisible();
+    expect(screen.getByText(sessionReason("en-US", "codex-command-terminal").text)).toBeVisible();
     expect(input).toHaveValue("/quit");
     expect(doubles.control).not.toHaveBeenCalled();
   });
@@ -443,17 +448,17 @@ describe("Codex slash commands in the desktop composer", () => {
         },
       };
       const { input } = renderComposer("/stop");
-      fireEvent.click(screen.getByRole("button", { name: codexCopy["en-US"].advanced }));
+      fireEvent.click(screen.getByRole("button", { name: sessionCopy["en-US"].advanced }));
       fireEvent.click(
         await screen.findByRole("menuitem", {
-          name: action === "steer" ? codexCopy["en-US"].steer : codexCopy["en-US"].queueAdd,
+          name: action === "steer" ? sessionCopy["en-US"].steer : sessionCopy["en-US"].queueAdd,
         }),
       );
       expect(
-        await screen.findByText(codexReason("en-US", "codex-command-agentkib").text),
+        await screen.findByText(sessionReason("en-US", "codex-command-agentkib").text),
       ).toBeVisible();
       expect(input).toHaveValue("/stop");
-      expect(doubles.codexAction).not.toHaveBeenCalled();
+      expect(doubles.runSessionAction).not.toHaveBeenCalled();
       expect(doubles.control).not.toHaveBeenCalled();
     },
   );

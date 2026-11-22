@@ -1,6 +1,6 @@
 import { act, cleanup, renderHook } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { WebClient, type Access, type CodexCapabilities, type Live } from "@agentkib/web-client";
+import { WebClient, type Access, type SessionCapabilities, type Live } from "@agentkib/web-client";
 import { useSessionCapabilities } from "@agentkib/session-ui";
 
 function deferred<T>() {
@@ -10,7 +10,7 @@ function deferred<T>() {
   });
   return { promise, resolve };
 }
-const capabilities: CodexCapabilities = {
+const capabilities: SessionCapabilities = {
   sessionId: "source",
   status: "idle",
   executionMode: "codex-managed",
@@ -18,8 +18,8 @@ const capabilities: CodexCapabilities = {
 };
 function fixture() {
   const client = new WebClient();
-  const first = deferred<CodexCapabilities>();
-  const second = deferred<CodexCapabilities>();
+  const first = deferred<SessionCapabilities>();
+  const second = deferred<SessionCapabilities>();
   const read = vi
     .spyOn(client, "sessionCapabilities")
     .mockResolvedValue(capabilities)

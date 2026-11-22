@@ -14,7 +14,7 @@ import {
 } from "@agentkib/web-client";
 import { SessionProvider, useSession } from "@/features/conversation/web-session-context";
 import { SessionComposer } from "@/features/conversation/web-session-composer";
-import { codexCopy } from "@/features/conversation/codex-copy";
+import { sessionCopy } from "@/features/conversation/session-copy";
 import { composerLayoutCopy } from "@agentkib/session-ui";
 import { managedControlCopy } from "@agentkib/session-ui";
 
@@ -198,7 +198,7 @@ describe("Web access attachment and permission copy", () => {
     "uses general file copy and the real attachment picker in %s",
     async (locale, chooseLabel, resourceHint) => {
       const f = await start(locale);
-      const c = codexCopy[locale];
+      const c = sessionCopy[locale];
       const input = screen.getByLabelText(c.attachment, { selector: "input" });
       await waitFor(() => expect(input).toBeEnabled());
       const picker = vi.spyOn(input, "click");
@@ -235,7 +235,7 @@ describe("Web access attachment and permission copy", () => {
   );
   it.each(labels)("keeps unsupported attachments disabled in %s", async (locale, chooseLabel) => {
     const f = await start(locale, fixture(false));
-    const c = codexCopy[locale];
+    const c = sessionCopy[locale];
     const input = screen.getByLabelText(c.attachment, { selector: "input" });
     expect(input).toBeDisabled();
     fireEvent.click(screen.getByRole("button", { name: c.addContext }));
@@ -279,7 +279,7 @@ describe("Web access attachment and permission copy", () => {
         "en-US": "This access does not include permission to upload attachments.",
         "ja-JP": "現在のアクセスでは添付ファイルをアップロードできません。",
       }[locale];
-      const button = screen.getByRole("button", { name: codexCopy[locale].addContext });
+      const button = screen.getByRole("button", { name: sessionCopy[locale].addContext });
       expect(button).toBeDisabled();
       expect(button).toHaveAttribute("title", expected);
       fireEvent.click(button);

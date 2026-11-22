@@ -9,7 +9,7 @@ import { fillCopy, interactionCardCopy, type InteractionLocale } from "@agentkib
 import { conversationWords } from "@/core/i18n";
 import { SessionReader } from "./desktop-session-reader";
 import { useSession } from "../../desktop-session-context";
-import { codexReason } from "../../codex-copy";
+import { sessionReason } from "../../session-copy";
 
 vi.mock("../../desktop-session-context", () => ({ useSession: vi.fn() }));
 vi.mock("./desktop-session-operations", () => ({ DesktopSessionOperations: () => null }));
@@ -292,7 +292,7 @@ describe("a Claude settings change Claude Code refuses", () => {
   it.each(["claude-model-unsupported", "claude-effort-unsupported"] as const)(
     "leaves %s to the composer's controls on a full-access device and explains it otherwise",
     (reason) => {
-      const text = codexReason("en-US", reason).text;
+      const text = sessionReason("en-US", reason).text;
       state = {
         ...state,
         current: { ...state.current!, agent: "claude-code" },

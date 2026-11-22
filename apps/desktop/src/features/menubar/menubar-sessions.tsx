@@ -19,7 +19,7 @@ import { Button } from "@/components/ui/button";
 import type { ConversationSessionSummary } from "@/core/types";
 import { useI18n } from "@/core/useI18n";
 import type { HomeReplies } from "@/features/home/home-replies";
-import { codexReason } from "@/features/sessions/conversation/codex-copy";
+import { sessionReason } from "@/features/sessions/conversation/session-copy";
 
 type Session = ConversationSessionSummary;
 type Tone = "waiting" | "running" | "success" | "failed" | "neutral";
@@ -300,7 +300,7 @@ function RunningRow({
       const result = await replies.stop(session);
       if (result.status === "accepted" || result.status === "unknown") return;
       if (result.status === "not-dispatched") {
-        const reason = codexReason(locale, result.reason.replaceAll("_", "-"));
+        const reason = sessionReason(locale, result.reason.replaceAll("_", "-"));
         setFailure(reason.technical ? tr("menubar.stopFailed") : reason.text);
       } else
         setFailure(
@@ -459,7 +459,7 @@ function MenuBarApproval({
       }
       const reason =
         result.status === "not-dispatched"
-          ? codexReason(locale, result.reason.replaceAll("_", "-"))
+          ? sessionReason(locale, result.reason.replaceAll("_", "-"))
           : undefined;
       setFailure(reason && !reason.technical ? reason.text : card.sendFailed);
       return false;

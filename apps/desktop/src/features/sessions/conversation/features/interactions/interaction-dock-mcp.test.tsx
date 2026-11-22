@@ -6,7 +6,7 @@ import type { Approval } from "@agentkib/web-client";
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import type { ComponentProps } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { codexReason } from "../../codex-copy";
+import { sessionReason } from "../../session-copy";
 
 type Session = ComponentProps<typeof SessionInteractionDock>["session"];
 let state: Session;
@@ -46,7 +46,7 @@ function show(request: Approval) {
     <SessionInteractionDock
       session={state}
       agent={agentName("codex")}
-      explainReason={(reason) => codexReason(state.locale, reason).text}
+      explainReason={(reason) => sessionReason(state.locale, reason).text}
     />,
   );
   return screen.getByRole("region", { name: "Approval required" });

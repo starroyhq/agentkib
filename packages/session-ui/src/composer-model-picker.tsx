@@ -17,8 +17,8 @@ import { ComposerFastIcon } from "./composer-fast-icon";
 import { modelEffortsForTier, modelSupportsTier } from "./model-capabilities";
 import { composerButtonClasses } from "./composer-control-style";
 import type {
-  CodexSessionSettings,
-  CodexSettingValues,
+  SessionSettings,
+  SessionSettingValues,
   SessionModelEffortOptions,
   SessionProviderCapabilities,
 } from "@agentkib/web-client";
@@ -37,7 +37,7 @@ type ComposerModelPage = "effort" | "models";
 type ModelPreview = {
   scope: string;
   authority?: object;
-  selection: Pick<CodexSettingValues, "modelId" | "effort" | "serviceTierId">;
+  selection: Pick<SessionSettingValues, "modelId" | "effort" | "serviceTierId">;
 };
 
 export type ComposerModelPickerHandle = {
@@ -206,10 +206,10 @@ export function ComposerModelPicker({
   onChange,
 }: {
   locale: ComposerModelLocale;
-  settings?: CodexSessionSettings;
-  selection?: CodexSettingValues;
-  reportedSettings?: Pick<CodexSettingValues, "modelId" | "effort" | "serviceTierId">;
-  displayFallback?: Pick<CodexSettingValues, "modelId" | "effort" | "serviceTierId"> & {
+  settings?: SessionSettings;
+  selection?: SessionSettingValues;
+  reportedSettings?: Pick<SessionSettingValues, "modelId" | "effort" | "serviceTierId">;
+  displayFallback?: Pick<SessionSettingValues, "modelId" | "effort" | "serviceTierId"> & {
     name?: string;
   };
   /** Display-only model ID from the authorized native history of this session. */

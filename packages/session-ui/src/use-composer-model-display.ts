@@ -5,7 +5,7 @@ import {
   rememberSessionModelDisplay,
   sessionModelDisplayFallback,
   type Access,
-  type CodexSessionSettings,
+  type SessionSettings,
   type SessionModelDisplay,
   type SessionProviderCapabilities,
   type WebClient,
@@ -36,7 +36,7 @@ export function useComposerModelDisplay({
   settingsReadable: boolean;
   reservesSlot: boolean;
   provider?: SessionProviderCapabilities;
-  catalog?: CodexSessionSettings;
+  catalog?: SessionSettings;
   observed?: Partial<SessionModelDisplay>;
   historical?: Partial<SessionModelDisplay>;
   defaults?: Partial<SessionModelDisplay>;

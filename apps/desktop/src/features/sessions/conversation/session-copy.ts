@@ -1,13 +1,13 @@
 import {
-  codexReason as sharedCodexReason,
+  sessionReason as sharedCodexReason,
   type InteractionLocale,
   type SessionSurface,
 } from "@agentkib/session-ui";
 import { localizedUnavailableReasonText } from "./live-status";
 
-export { codexCopy, codexCopyForSurface } from "@agentkib/session-ui";
+export { sessionCopy, sessionCopyForSurface } from "@agentkib/session-ui";
 
-export function codexReason(
+export function sessionReason(
   locale: InteractionLocale,
   reason?: string,
   surface: SessionSurface = "desktop",

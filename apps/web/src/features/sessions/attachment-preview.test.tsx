@@ -11,7 +11,7 @@ vi.mock("@/features/conversation/web-session-context", () => ({
 }));
 vi.mock("@agentkib/session-ui", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@agentkib/session-ui")>()),
-  CodexComposerControls: () => null,
+  SessionComposerControls: () => null,
 }));
 
 let state: ReturnType<typeof useSession>;
@@ -44,7 +44,7 @@ beforeEach(() => {
     message: "",
     setMessage: vi.fn(),
     control: vi.fn().mockResolvedValue(true),
-    codexAction: vi.fn(),
+    runSessionAction: vi.fn(),
     capabilities: { sessionId: "first", features: { attachments: { available: true } } },
     canSend: true,
     canStop: false,

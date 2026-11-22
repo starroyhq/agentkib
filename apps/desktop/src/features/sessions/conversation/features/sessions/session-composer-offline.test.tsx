@@ -7,13 +7,13 @@ import { render } from "@/features/sessions/conversation/desktop-reader-test-uti
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { UploadedAttachment } from "@agentkib/web-client";
 import { SessionComposer } from "@/features/sessions/conversation/desktop-session-composer";
-import { codexCopy } from "../../codex-copy";
+import { sessionCopy } from "../../session-copy";
 import type { SessionController } from "../../desktop-session-controller";
 
 const doubles = vi.hoisted(() => ({
   session: {} as Partial<SessionController>,
   control: vi.fn(),
-  codexAction: vi.fn(),
+  runSessionAction: vi.fn(),
   upload: vi.fn(),
 }));
 vi.mock("../../desktop-session-context", () => ({
@@ -26,7 +26,7 @@ vi.mock("@agentkib/session-ui", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@agentkib/session-ui")>()),
   useSessionPanels: () => null,
   SessionContextUsageGauge: () => null,
-  CodexComposerControls: () => null,
+  SessionComposerControls: () => null,
 }));
 
 function deferred<T>() {
@@ -63,7 +63,7 @@ function attemptSend(input: HTMLElement, form: HTMLFormElement) {
 
 function expectNoDispatch() {
   expect(doubles.control).not.toHaveBeenCalled();
-  expect(doubles.codexAction).not.toHaveBeenCalled();
+  expect(doubles.runSessionAction).not.toHaveBeenCalled();
 }
 
 const attachment: UploadedAttachment = {
@@ -78,7 +78,7 @@ describe("composer drafts across connection changes", () => {
   beforeEach(() => {
     vi.resetAllMocks();
     doubles.control.mockResolvedValue(true);
-    doubles.codexAction.mockResolvedValue({ accepted: true });
+    doubles.runSessionAction.mockResolvedValue({ accepted: true });
     doubles.session = {
       selected: "session",
       current: { id: "session", agent: "codex" } as SessionController["current"],
@@ -111,7 +111,7 @@ describe("composer drafts across connection changes", () => {
         },
       } as SessionController["capabilities"],
       control: doubles.control,
-      codexAction: doubles.codexAction,
+      runSessionAction: doubles.runSessionAction,
       client: {
         uploadAttachment: doubles.upload,
         request: vi.fn(),
@@ -283,9 +283,9 @@ describe("composer drafts across connection changes", () => {
       expect(input).toBeEnabled();
       fireEvent.change(input, { target: { value: "Next turn draft" } });
       attemptSend(input, form);
-      fireEvent.click(screen.getByRole("button", { name: codexCopy["en-US"].advanced }));
-      const steer = await screen.findByRole("menuitem", { name: codexCopy["en-US"].steer });
-      const queue = screen.getByRole("menuitem", { name: codexCopy["en-US"].queueAdd });
+      fireEvent.click(screen.getByRole("button", { name: sessionCopy["en-US"].advanced }));
+      const steer = await screen.findByRole("menuitem", { name: sessionCopy["en-US"].steer });
+      const queue = screen.getByRole("menuitem", { name: sessionCopy["en-US"].queueAdd });
       expect(steer).toHaveAttribute("aria-disabled", "true");
       expect(queue).toHaveAttribute("aria-disabled", "true");
       fireEvent.click(steer);
@@ -295,13 +295,13 @@ describe("composer drafts across connection changes", () => {
       reconnected(false);
       rerender(<SessionComposer />);
       expect(input).toHaveValue("Next turn draft");
-      fireEvent.click(screen.getByRole("button", { name: codexCopy["en-US"].advanced }));
+      fireEvent.click(screen.getByRole("button", { name: sessionCopy["en-US"].advanced }));
       const recoveredQueue = await screen.findByRole("menuitem", {
-        name: codexCopy["en-US"].queueAdd,
+        name: sessionCopy["en-US"].queueAdd,
       });
       expect(recoveredQueue).not.toHaveAttribute("aria-disabled", "true");
       if (activity === "compacting")
-        expect(screen.getByRole("menuitem", { name: codexCopy["en-US"].steer })).toHaveAttribute(
+        expect(screen.getByRole("menuitem", { name: sessionCopy["en-US"].steer })).toHaveAttribute(
           "aria-disabled",
           "true",
         );
@@ -309,7 +309,7 @@ describe("composer drafts across connection changes", () => {
       // Send while the agent runs takes this device's running choice, which queues by default.
       attemptSend(input, form);
       await waitFor(() =>
-        expect(doubles.codexAction).toHaveBeenCalledExactlyOnceWith("queue-add", {
+        expect(doubles.runSessionAction).toHaveBeenCalledExactlyOnceWith("queue-add", {
           text: "Next turn draft",
         }),
       );
@@ -321,7 +321,7 @@ describe("composer drafts across connection changes", () => {
     const upload = deferred<UploadedAttachment>();
     doubles.upload.mockReturnValue(upload.promise);
     const { input, form, rerender } = renderComposer();
-    fireEvent.change(screen.getByLabelText(codexCopy["en-US"].attachment), {
+    fireEvent.change(screen.getByLabelText(sessionCopy["en-US"].attachment), {
       target: { files: [new File(["abc"], "note.txt", { type: "text/plain" })] },
     });
     disconnected();

@@ -3,15 +3,15 @@ import "@testing-library/jest-dom/vitest";
 import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { render } from "@/features/sessions/conversation/desktop-reader-test-utils";
-import { CodexTools } from "./desktop-session-operations";
-import { codexCopy, codexReason } from "../../codex-copy";
+import { SessionTools } from "./desktop-session-operations";
+import { sessionCopy, sessionReason } from "../../session-copy";
 import { useSession } from "../../desktop-session-context";
 import { webLayoutCopy } from "@agentkib/session-ui";
 
 const { navigate } = vi.hoisted(() => ({ navigate: vi.fn() }));
 vi.mock("../../desktop-session-context", () => ({ useSession: vi.fn() }));
 vi.mock("../../desktop-session-navigation", () => ({ useSessionNavigate: () => navigate }));
-const copy = codexCopy["en-US"];
+const copy = sessionCopy["en-US"];
 let state: ReturnType<typeof useSession>;
 function prepare(
   features: Record<string, { available: boolean; reason?: string }>,
@@ -46,7 +46,7 @@ function prepare(
       sessionQueue: vi.fn().mockResolvedValue({ data: [] }),
       request: vi.fn().mockResolvedValue({ available: true, models: [] }),
     },
-    codexAction: vi.fn().mockResolvedValue({ accepted: true, deleted: true }),
+    runSessionAction: vi.fn().mockResolvedValue({ accepted: true, deleted: true }),
     refresh: vi.fn(),
   } as unknown as ReturnType<typeof useSession>;
   vi.mocked(useSession).mockImplementation(() => state);
@@ -58,7 +58,7 @@ it.each([true, false])(
   "keeps model settings out of desktop actions (full access: %s)",
   async (full) => {
     prepare({ settings: { available: true } }, "codex", full);
-    render(<CodexTools open />);
+    render(<SessionTools open />);
     await screen.findByText(copy.queueEmpty);
     expect(screen.queryByRole("heading", { name: copy.settings })).not.toBeInTheDocument();
     expect(state.client.request).not.toHaveBeenCalled();
@@ -68,24 +68,26 @@ it.each([true, false])(
 describe("deleting a session from its actions on the desktop", () => {
   it("asks first, deletes once confirmed, and leaves the deleted session", async () => {
     prepare({ delete: { available: true } });
-    render(<CodexTools open />);
+    render(<SessionTools open />);
     fireEvent.click(screen.getByRole("button", { name: copy.delete }));
-    expect(state.codexAction).not.toHaveBeenCalled();
+    expect(state.runSessionAction).not.toHaveBeenCalled();
     expect(screen.getByRole("group", { name: copy.deleteTitle })).toHaveAccessibleDescription(
       copy.deleteCodexDetail,
     );
     fireEvent.click(screen.getByRole("button", { name: copy.cancel }));
     expect(screen.queryByRole("group", { name: copy.deleteTitle })).not.toBeInTheDocument();
-    expect(state.codexAction).not.toHaveBeenCalled();
+    expect(state.runSessionAction).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole("button", { name: copy.delete }));
     fireEvent.click(screen.getByRole("button", { name: copy.deleteConfirm }));
-    await waitFor(() => expect(state.codexAction).toHaveBeenCalledExactlyOnceWith("delete", {}));
+    await waitFor(() =>
+      expect(state.runSessionAction).toHaveBeenCalledExactlyOnceWith("delete", {}),
+    );
     await waitFor(() => expect(navigate).toHaveBeenCalledWith({ to: "/sessions" }));
   });
 
   it("names Claude Code when the session is Claude's", () => {
     prepare({ delete: { available: true } }, "claude-code");
-    render(<CodexTools open />);
+    render(<SessionTools open />);
     fireEvent.click(screen.getByRole("button", { name: copy.delete }));
     expect(screen.getByRole("group", { name: copy.deleteTitle })).toHaveAccessibleDescription(
       copy.deleteClaudeDetail,
@@ -94,15 +96,15 @@ describe("deleting a session from its actions on the desktop", () => {
 
   it("stays on the session when nothing was deleted", async () => {
     prepare({ delete: { available: true } });
-    vi.mocked(state.codexAction).mockResolvedValue(undefined);
-    render(<CodexTools open />);
+    vi.mocked(state.runSessionAction).mockResolvedValue(undefined);
+    render(<SessionTools open />);
     fireEvent.click(screen.getByRole("button", { name: copy.delete }));
     fireEvent.click(screen.getByRole("button", { name: copy.deleteConfirm }));
-    await waitFor(() => expect(state.codexAction).toHaveBeenCalledOnce());
+    await waitFor(() => expect(state.runSessionAction).toHaveBeenCalledOnce());
     expect(navigate).not.toHaveBeenCalled();
   });
 
-  const forkReason = codexReason("en-US", "session-busy").text;
+  const forkReason = sessionReason("en-US", "session-busy").text;
   it.each([
     ["session-busy", forkReason],
     ["codex-owner-busy", copy.deleteOwnerBusy],
@@ -111,7 +113,7 @@ describe("deleting a session from its actions on the desktop", () => {
       fork: { available: false, reason: "session-busy" },
       delete: { available: false, reason },
     });
-    render(<CodexTools open />);
+    render(<SessionTools open />);
     const management = within(
       screen.getByRole("region", { name: webLayoutCopy["en-US"].management }),
     );
@@ -127,10 +129,10 @@ describe("deleting a session from its actions on the desktop", () => {
 
   it.each([
     ["claude-owner-busy", copy.deleteClaudeOwnerBusy],
-    ["claude-desktop-session", codexReason("en-US", "claude-desktop-session").text],
+    ["claude-desktop-session", sessionReason("en-US", "claude-desktop-session").text],
   ])("explains a Claude session it cannot delete (%s)", (reason, text) => {
     prepare({ delete: { available: false, reason } }, "claude-code");
-    render(<CodexTools open />);
+    render(<SessionTools open />);
     const management = within(
       screen.getByRole("region", { name: webLayoutCopy["en-US"].management }),
     );

@@ -23,7 +23,7 @@ import type { InteractionLocale } from "../../interaction-model";
 import { resolveSessionProvider } from "../../session-provider";
 import { retryBusyRead } from "../../session-read-retry";
 import { useSessionPlatform } from "../../session-platform";
-import { codexCopy, codexCopyForSurface, codexReason } from "./codex-copy";
+import { sessionCopy, sessionCopyForSurface, sessionReason } from "./session-copy";
 import { sessionAgentCopy } from "./session-agent-copy";
 
 type QueueControl = "update" | "delete" | "steer" | "pause" | "resume";
@@ -33,7 +33,7 @@ type SendQueueSession = {
   selected: string;
   client: WebClient;
   capabilities?: SessionCapabilities;
-  codexAction: (
+  runSessionAction: (
     action: QueueAction | "queue-add",
     fields?: { queuedSubmissionId?: string; text?: string },
   ) => Promise<unknown>;
@@ -67,14 +67,14 @@ export function SessionSendQueue({
     selected,
     client,
     capabilities,
-    codexAction,
+    runSessionAction,
     busy,
     online,
     controlReady,
     locale,
     access,
   } = session;
-  const copy = codexCopyForSurface(locale, kind);
+  const copy = sessionCopyForSurface(locale, kind);
   const agentCopy = sessionAgentCopy[locale];
   const panel = sessionQueuePanel(
     agent,
@@ -140,7 +140,7 @@ export function SessionSendQueue({
       capabilities?.features[`queue-${action}`]?.available
     );
   const reason = (action: QueueControl, itemReason?: string) =>
-    codexReason(
+    sessionReason(
       locale,
       itemReason || capabilities?.features[`queue-${action}`]?.reason || capabilities?.reason,
       kind,
@@ -150,7 +150,7 @@ export function SessionSendQueue({
     if (!enabled(action)) return;
     setOperation(true);
     try {
-      if (await codexAction(`queue-${action}`, fields)) {
+      if (await runSessionAction(`queue-${action}`, fields)) {
         setEditing("");
         setText("");
         if (serial) setReload((n) => n + 1);
@@ -336,7 +336,7 @@ export function useBasicSendQueue(
     access,
     busy,
     capabilities,
-    codexAction: dispatch,
+    runSessionAction: dispatch,
     controlReady,
     current,
     historyReferences = [],
@@ -368,7 +368,7 @@ export function useBasicSendQueue(
     capabilities.features["queue-add"]?.available === true &&
     !!text &&
     !historyReferences.length;
-  const label = codexCopy[locale].queueAdd;
+  const label = sessionCopy[locale].queueAdd;
   return {
     list: (
       <SessionSendQueue

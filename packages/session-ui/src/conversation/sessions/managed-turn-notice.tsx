@@ -4,7 +4,7 @@ import type { InteractionLocale as Locale } from "../../interaction-model";
 import type { SessionPlatform } from "../../session-platform";
 import type { SessionSurface } from "../../session-surface-copy";
 import { usageLimitNotice } from "../../usage-limit-copy";
-import { codexReason } from "./codex-copy";
+import { sessionReason } from "./session-copy";
 
 type Retry = NonNullable<Live["apiRetry"]>;
 type Agent = "Claude Code" | "Codex";
@@ -103,7 +103,7 @@ export function ManagedTurnNotice({
     live.status === "idle" &&
     live.reason?.startsWith("claude-auth-failed")
   ) {
-    const explained = codexReason(locale, live.reason, surface, unavailableReason);
+    const explained = sessionReason(locale, live.reason, surface, unavailableReason);
     text = explained.text;
     technical = explained.technical;
   }

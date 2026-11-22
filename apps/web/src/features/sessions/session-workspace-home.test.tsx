@@ -10,7 +10,7 @@ import {
   SessionPlatformProvider,
 } from "@agentkib/session-ui";
 import { dictionaries } from "@/features/conversation/i18n";
-import { codexCopyForSurface } from "@/features/conversation/codex-copy";
+import { sessionCopyForSurface } from "@/features/conversation/session-copy";
 import { SessionWorkspace } from "./session-workspace";
 import { webSessionPlatform } from "@/features/conversation/session-platform";
 
@@ -117,7 +117,7 @@ describe("Web home in the workspace", () => {
     setup();
     const entry = screen.getByRole("button", { name: `${home.home} · ${home.needsYou} 2` });
     expect(entry).toHaveAttribute("aria-current", "page");
-    const copy = codexCopyForSurface("en-US", "web");
+    const copy = sessionCopyForSurface("en-US", "web");
     const trigger = screen.getByRole("button", { name: `${copy.pending} (2)` });
     expect(trigger).toHaveClass("size-11");
     fireEvent.click(trigger);
@@ -144,7 +144,7 @@ describe("Web home in the workspace", () => {
       sessions: [session("idle")],
       pendingSessions: { "outside-home": true },
     });
-    const title = codexCopyForSurface("en-US", "web").pending;
+    const title = sessionCopyForSurface("en-US", "web").pending;
     expect(screen.queryByRole("button", { name: new RegExp(title) })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: home.home, pressed: true })).toBeInTheDocument();
   });

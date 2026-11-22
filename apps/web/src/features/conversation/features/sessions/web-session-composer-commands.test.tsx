@@ -77,9 +77,13 @@ const options = () =>
     .map((option) => option.textContent);
 const reason = (code: string) => codexReason("en-US", code, "web").text;
 // With full access the composer renders its settings and goal controls.
-const fullDevice = { send: true, accessMode: "full" } as NonNullable<
-  SessionController["access"]
->["device"];
+const fullDevice = {
+  id: "device",
+  name: "Test device",
+  send: true,
+  approve: false,
+  accessMode: "full",
+} satisfies NonNullable<SessionController["access"]>["device"];
 
 describe("slash commands in the Web composer", () => {
   beforeEach(() => {

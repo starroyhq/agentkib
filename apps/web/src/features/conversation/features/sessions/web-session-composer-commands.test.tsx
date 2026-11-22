@@ -5,7 +5,7 @@ import { useEffect, useImperativeHandle, useState, type ReactNode, type Ref } fr
 import { act, cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { render } from "@/features/conversation/web-reader-test-utils";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { ClaudeCommandEntry } from "@agentkib/web-client";
+import { sessionProviderDeclaration, type ClaudeCommandEntry } from "@agentkib/web-client";
 import { commandPrompt, slashCommandCopy } from "@agentkib/session-ui";
 import { SessionComposer } from "@/features/conversation/web-session-composer";
 import { sessionCopy, sessionReason } from "../../session-copy";
@@ -161,6 +161,147 @@ describe("slash commands in the Web composer", () => {
       "aria-activedescendant",
       within(listbox).getAllByRole("option").at(-1)!.id,
     );
+  });
+
+  it("uses the current session's typed directory in preference to legacy commands", () => {
+    const approvedAccess = { ...doubles.session.access!, status: "approved" as const };
+    doubles.session.access = approvedAccess;
+    doubles.session.capabilities = {
+      ...doubles.session.capabilities!,
+      commands: [{ name: "compact", description: "Legacy command description" }],
+      commandMenu: {
+        state: "ready",
+        entries: [
+          {
+            name: "compact",
+            description: "Current command description",
+            run: { kind: "native" },
+          },
+        ],
+      },
+    };
+    const currentCapabilities = doubles.session.capabilities;
+    const currentLive = doubles.session.live!;
+    const { input, form, rerender } = renderComposer("/");
+    expect(screen.getByRole("option", { name: /Current command description/ })).toBeVisible();
+    expect(screen.queryByText("Legacy command description")).not.toBeInTheDocument();
+
+    doubles.session.canSend = false;
+    doubles.session.live = {
+      ...currentLive,
+      status: "running",
+      sendEnabled: false,
+      executionLocation: "agentkib",
+    };
+    doubles.session.capabilities = {
+      ...currentCapabilities,
+      features: { send: { available: false, reason: "session-busy" } },
+    };
+    rerender(<SessionComposer />);
+    const disabledOption = screen.getByRole("option", { name: /Current command description/ });
+    expect(disabledOption).toHaveAttribute("aria-disabled", "true");
+    expect(disabledOption).toHaveAttribute("title", reason("session-busy"));
+    fireEvent.click(disabledOption);
+    expect(input).toHaveValue("/");
+    fireEvent.change(input, { target: { value: "/compact" } });
+    fireEvent.submit(form);
+    expect(input).toHaveValue("/compact");
+    expect(doubles.control).not.toHaveBeenCalled();
+    expect(doubles.runSessionAction).not.toHaveBeenCalled();
+
+    doubles.session.access = {
+      ...approvedAccess,
+      device: { ...approvedAccess.device!, send: false },
+    };
+    rerender(<SessionComposer />);
+    fireEvent.change(input, { target: { value: "/" } });
+    expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
+
+    doubles.session.canSend = true;
+    doubles.session.live = currentLive;
+    doubles.session.access = approvedAccess;
+    doubles.session.capabilities = { ...currentCapabilities, sessionId: "previous" };
+    rerender(<SessionComposer />);
+    expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
+    expect(screen.queryByText(slashCommandCopy("en-US").empty)).not.toBeInTheDocument();
+
+    doubles.session.capabilities = {
+      ...doubles.session.capabilities,
+      sessionId: "session",
+      commandMenu: { state: "ready", entries: [] },
+    };
+    rerender(<SessionComposer />);
+    expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
+    expect(screen.queryByText(slashCommandCopy("en-US").empty)).not.toBeInTheDocument();
+
+    doubles.session.capabilities = {
+      ...doubles.session.capabilities,
+      commandMenu: { state: "unverified" },
+    };
+    rerender(<SessionComposer />);
+    expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
+    expect(screen.getByText(slashCommandCopy("en-US").empty)).toBeVisible();
+  });
+
+  it("does not offer a reported directory when the selected provider declares no commands", () => {
+    doubles.session.current = { ...doubles.session.current!, agent: "devin" };
+    doubles.session.live = { ...doubles.session.live!, executionMode: "devin-print" };
+    doubles.session.capabilities = {
+      ...doubles.session.capabilities!,
+      executionMode: "devin-print",
+      provider: sessionProviderDeclaration("claude-code"),
+      commands: [{ name: "compact" }],
+      commandMenu: {
+        state: "ready",
+        entries: [{ name: "compact", run: { kind: "client", command: "compact" } }],
+      },
+    };
+
+    renderComposer("/");
+    expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
+    expect(doubles.control).not.toHaveBeenCalled();
+    expect(doubles.runSessionAction).not.toHaveBeenCalled();
+  });
+
+  it("keeps a reported owner-only command and its alias from a full-access paired browser", () => {
+    doubles.session.access = { ...doubles.session.access!, device: fullDevice };
+    doubles.session.capabilities = {
+      ...doubles.session.capabilities!,
+      commands: [
+        { name: "compact" },
+        { name: "future-admin", aliases: ["future-alias"], builtin: true },
+      ],
+      commandMenu: {
+        state: "ready",
+        entries: [
+          { name: "compact", run: { kind: "native" } },
+          { name: "future-admin", aliases: ["future-alias"], run: { kind: "native" } },
+          { name: "future-alias", run: { kind: "native" } },
+        ],
+      },
+    };
+
+    const { input, form, rerender } = renderComposer("/");
+    expect(screen.getByRole("option", { name: /\/compact/ })).toBeVisible();
+    expect(screen.queryAllByRole("option", { name: /\/future-(admin|alias)/ })).toHaveLength(0);
+    fireEvent.change(input, { target: { value: "/future-alias on" } });
+    fireEvent.submit(form);
+    expect(screen.getByText(reason("claude-command-owner-only"))).toBeVisible();
+    expect(input).toHaveValue("/future-alias on");
+    expect(doubles.control).not.toHaveBeenCalled();
+    expect(doubles.runSessionAction).not.toHaveBeenCalled();
+
+    doubles.session.capabilities = {
+      ...doubles.session.capabilities,
+      commandMenu: { state: "unverified" },
+    };
+    rerender(<SessionComposer />);
+    fireEvent.change(input, { target: { value: "/future-alias off" } });
+    fireEvent.submit(form);
+    expect(screen.getByText(reason("claude-command-owner-only"))).toBeVisible();
+    expect(input).toHaveValue("/future-alias off");
+    expect(doubles.control).not.toHaveBeenCalled();
+    expect(doubles.runSessionAction).not.toHaveBeenCalled();
   });
 
   it("matches names, then aliases, then names that contain what was typed", () => {
@@ -459,6 +600,30 @@ describe("Codex slash commands in the composer", () => {
     within(screen.getByRole("listbox", { name: slashCommandCopy("en-US").codexLabel }))
       .getAllByRole("option")
       .map((option) => option.textContent);
+
+  it("keeps an unavailable command visible and prevents it from dispatching", () => {
+    doubles.session.capabilities = {
+      ...doubles.session.capabilities!,
+      features: { compact: { available: false, reason: "session-busy" } },
+      commandMenu: {
+        state: "ready",
+        entries: [{ name: "compact", run: { kind: "client", command: "compact" } }],
+      },
+    };
+
+    const { input, form } = renderComposer("/");
+    const option = screen.getByRole("option", { name: /\/compact/ });
+    expect(option).toHaveAttribute("aria-disabled", "true");
+    expect(option).toHaveAttribute("title", reason("session-busy"));
+    fireEvent.click(option);
+    expect(input).toHaveValue("/");
+    fireEvent.change(input, { target: { value: "/compact" } });
+    expect(fireEvent.keyDown(input, { key: "Enter" })).toBe(false);
+    fireEvent.submit(form);
+    expect(input).toHaveValue("/compact");
+    expect(doubles.runSessionAction).not.toHaveBeenCalled();
+    expect(doubles.control).not.toHaveBeenCalled();
+  });
 
   it("lists what AgentKib runs or opens for Codex", () => {
     renderComposer("/");

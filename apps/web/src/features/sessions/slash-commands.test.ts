@@ -1,4 +1,8 @@
-import { describe, expect, it } from "vitest";
+// @vitest-environment jsdom
+import "@testing-library/jest-dom/vitest";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { createElement, Fragment, type KeyboardEvent } from "react";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   agentKibCommand,
   agentKibPanel,
@@ -8,6 +12,7 @@ import {
   slashCommandCopy,
   slashCommandQuery,
   unsupportedEffortReason,
+  useSlashCommandMenu,
   type SlashCommandOption,
 } from "@agentkib/session-ui";
 
@@ -47,6 +52,138 @@ describe("the slash menu's matching", () => {
     expect(matchSlashCommands(options, "ca").map((entry) => entry.name)).toEqual(["recap"]);
     expect(matchSlashCommands(options, "")).toEqual(options);
     expect(matchSlashCommands(options, "zzz")).toEqual([]);
+  });
+});
+
+function Menu({ value, ...options }: Omit<Parameters<typeof useSlashCommandMenu>[0], "enabled">) {
+  const slash = useSlashCommandMenu({
+    value,
+    enabled: true,
+    copy: { label: "Registered commands" },
+    ...options,
+  });
+  return createElement(
+    Fragment,
+    null,
+    createElement("textarea", {
+      ...slash.inputProps,
+      value,
+      readOnly: true,
+      onKeyDown: (event: KeyboardEvent<HTMLTextAreaElement>) => slash.onKeyDown(event, false),
+    }),
+    slash.menu,
+  );
+}
+
+describe("registered commands that are currently unavailable", () => {
+  afterEach(cleanup);
+
+  const disabled = {
+    ...option("compact", ["compress"]),
+    disabledReason: "The session is running.",
+  };
+
+  it("still lists disabled commands with their reason and skips them during selection", () => {
+    const onChoose = vi.fn();
+    render(
+      createElement(Menu, {
+        value: "/",
+        options: [option("help"), disabled, option("usage")],
+        onChoose,
+      }),
+    );
+    const input = screen.getByRole("textbox");
+    const compact = screen.getByRole("option", { name: "/compact" });
+    expect(screen.getByRole("listbox", { name: "Registered commands" })).toBeVisible();
+    expect(compact).toHaveAttribute("aria-disabled", "true");
+    expect(compact).toHaveAttribute("title", disabled.disabledReason);
+    expect(input).toHaveAttribute(
+      "aria-activedescendant",
+      screen.getByRole("option", { name: "/help" }).id,
+    );
+
+    fireEvent.mouseMove(compact);
+    fireEvent.click(compact);
+    expect(compact).toHaveAttribute("aria-selected", "false");
+    expect(onChoose).not.toHaveBeenCalled();
+
+    fireEvent.keyDown(input, { key: "ArrowDown" });
+    const usage = screen.getByRole("option", { name: "/usage" });
+    expect(input).toHaveAttribute("aria-activedescendant", usage.id);
+    fireEvent.keyDown(input, { key: "ArrowUp" });
+    expect(screen.getByRole("option", { name: "/help" })).toHaveAttribute("aria-selected", "true");
+    fireEvent.keyDown(input, { key: "ArrowDown" });
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(onChoose).toHaveBeenCalledExactlyOnceWith("/usage ");
+  });
+
+  it.each(["/compact", "/Compress"])(
+    "consumes Enter for %s without falling through to form submission",
+    (value) => {
+      const onChoose = vi.fn();
+      render(createElement(Menu, { value, options: [disabled], onChoose }));
+      const input = screen.getByRole("textbox");
+      expect(input).not.toHaveAttribute("aria-activedescendant");
+      expect(fireEvent.keyDown(input, { key: "Tab" })).toBe(true);
+      expect(fireEvent.keyDown(input, { key: "Enter" })).toBe(false);
+      fireEvent.keyDown(input, { key: "Escape" });
+      expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
+      expect(fireEvent.keyDown(input, { key: "Enter" })).toBe(false);
+      expect(onChoose).not.toHaveBeenCalled();
+    },
+  );
+
+  it("fences Plan mode when its registered option is unavailable", () => {
+    const enter = vi.fn(() => true);
+    const onChoose = vi.fn();
+    render(
+      createElement(Menu, {
+        value: "Review changes /pl",
+        options: [],
+        plan: { option: { ...option("plan"), disabledReason: "Plan is unavailable." }, enter },
+        onChoose,
+      }),
+    );
+    const plan = screen.getByRole("option", { name: "/plan" });
+    expect(plan).toHaveAttribute("aria-disabled", "true");
+    fireEvent.click(plan);
+    expect(fireEvent.keyDown(screen.getByRole("textbox"), { key: "Enter" })).toBe(false);
+    expect(enter).not.toHaveBeenCalled();
+    expect(onChoose).not.toHaveBeenCalled();
+  });
+});
+
+describe("empty slash menus", () => {
+  afterEach(cleanup);
+
+  it("renders the explicit explanation and closes when the caller removes it", () => {
+    const props = { value: "/", options: [], onChoose: vi.fn() };
+    const view = render(
+      createElement(Menu, {
+        ...props,
+        copy: { label: "Available commands", empty: "Waiting for command discovery." },
+      }),
+    );
+    expect(screen.getByRole("status")).toHaveTextContent("Waiting for command discovery.");
+    expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
+
+    view.rerender(createElement(Menu, { ...props, copy: { label: "Available commands" } }));
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+  });
+
+  it("keeps legacy localized empty copy until the catalog is known", () => {
+    const props = {
+      value: "/",
+      options: [],
+      onChoose: vi.fn(),
+      copy: undefined,
+      locale: "zh-Hant",
+    };
+    const view = render(createElement(Menu, { ...props, catalogKnown: false }));
+    expect(screen.getByRole("status")).toHaveTextContent(slashCommandCopy("zh-Hant").empty);
+
+    view.rerender(createElement(Menu, { ...props, catalogKnown: true }));
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
   });
 });
 

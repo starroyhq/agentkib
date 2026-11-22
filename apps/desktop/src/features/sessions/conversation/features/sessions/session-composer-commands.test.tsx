@@ -5,7 +5,7 @@ import { useState } from "react";
 import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { render } from "@/features/sessions/conversation/desktop-reader-test-utils";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { ClaudeCommandEntry } from "@agentkib/web-client";
+import { sessionProviderDeclaration, type ClaudeCommandEntry } from "@agentkib/web-client";
 import { commandPrompt, slashCommandCopy } from "@agentkib/session-ui";
 import { SessionComposer } from "@/features/sessions/conversation/desktop-session-composer";
 import { sessionCopy, sessionReason } from "../../session-copy";
@@ -141,6 +141,93 @@ describe("slash commands in the desktop composer", () => {
         .getAllByRole("option")
         .map((option) => option.textContent),
     ).toEqual(["/configkey=value", "/heapdumpDump the JS heap", "/output-style[style]"]);
+  });
+
+  it("uses the current session's typed directory in preference to legacy commands", () => {
+    doubles.session.capabilities = {
+      ...doubles.session.capabilities!,
+      commands: [{ name: "compact", description: "Legacy command description" }],
+      commandMenu: {
+        state: "ready",
+        entries: [
+          {
+            name: "compact",
+            description: "Current command description",
+            run: { kind: "native" },
+          },
+        ],
+      },
+    };
+    const { rerender } = renderComposer("/");
+    expect(screen.getByRole("option", { name: /Current command description/ })).toBeVisible();
+    expect(screen.queryByText("Legacy command description")).not.toBeInTheDocument();
+
+    doubles.session.capabilities = { ...doubles.session.capabilities, sessionId: "previous" };
+    rerender(<SessionComposer />);
+    expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
+    expect(screen.queryByText(slashCommandCopy("en-US").empty)).not.toBeInTheDocument();
+
+    doubles.session.capabilities = {
+      ...doubles.session.capabilities,
+      sessionId: "session",
+      commandMenu: { state: "ready", entries: [] },
+    };
+    rerender(<SessionComposer />);
+    expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
+    expect(screen.queryByText(slashCommandCopy("en-US").empty)).not.toBeInTheDocument();
+
+    doubles.session.capabilities = {
+      ...doubles.session.capabilities,
+      commandMenu: { state: "unverified" },
+    };
+    rerender(<SessionComposer />);
+    expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
+    expect(screen.getByText(slashCommandCopy("en-US").empty)).toBeVisible();
+  });
+
+  it("does not offer a reported directory when the selected provider declares no commands", () => {
+    doubles.session.current = { ...doubles.session.current!, agent: "devin" };
+    doubles.session.live = { ...doubles.session.live!, executionMode: "devin-print" };
+    doubles.session.capabilities = {
+      ...doubles.session.capabilities!,
+      executionMode: "devin-print",
+      provider: sessionProviderDeclaration("claude-code"),
+      commands: [{ name: "compact" }],
+      commandMenu: {
+        state: "ready",
+        entries: [{ name: "compact", run: { kind: "client", command: "compact" } }],
+      },
+    };
+
+    renderComposer("/");
+    expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
+    expect(doubles.control).not.toHaveBeenCalled();
+    expect(doubles.runSessionAction).not.toHaveBeenCalled();
+  });
+
+  it("still lets the local owner send a reported native command by its alias", async () => {
+    doubles.session.capabilities = {
+      ...doubles.session.capabilities!,
+      commands: [
+        { name: "compact" },
+        { name: "future-admin", aliases: ["future-alias"], builtin: true },
+      ],
+      commandMenu: {
+        state: "ready",
+        entries: [
+          { name: "compact", run: { kind: "native" } },
+          { name: "future-admin", aliases: ["future-alias"], run: { kind: "native" } },
+        ],
+      },
+    };
+
+    const { input, form } = renderComposer("/");
+    expect(screen.getByRole("option", { name: /\/future-admin/ })).toBeVisible();
+    fireEvent.change(input, { target: { value: "/future-alias on" } });
+    fireEvent.submit(form);
+    await waitFor(() => expect(doubles.control).toHaveBeenCalledOnce());
+    expect(doubles.control.mock.lastCall?.[0]).toBe("send");
+    expect(doubles.runSessionAction).not.toHaveBeenCalled();
   });
 
   it.each(["deepseek-harness", "devin"] as const)(
@@ -314,6 +401,30 @@ describe("Codex slash commands in the desktop composer", () => {
   });
   afterEach(cleanup);
 
+  it("keeps an unavailable command visible and prevents it from dispatching", () => {
+    doubles.session.capabilities = {
+      ...doubles.session.capabilities!,
+      features: { compact: { available: false, reason: "session-busy" } },
+      commandMenu: {
+        state: "ready",
+        entries: [{ name: "compact", run: { kind: "client", command: "compact" } }],
+      },
+    };
+
+    const { input, form } = renderComposer("/");
+    const option = screen.getByRole("option", { name: /\/compact/ });
+    expect(option).toHaveAttribute("aria-disabled", "true");
+    expect(option).toHaveAttribute("title", sessionReason("en-US", "session-busy").text);
+    fireEvent.click(option);
+    expect(input).toHaveValue("/");
+    fireEvent.change(input, { target: { value: "/compact" } });
+    expect(fireEvent.keyDown(input, { key: "Enter" })).toBe(false);
+    fireEvent.submit(form);
+    expect(input).toHaveValue("/compact");
+    expect(doubles.runSessionAction).not.toHaveBeenCalled();
+    expect(doubles.control).not.toHaveBeenCalled();
+  });
+
   it("turns plan mode on for /plan typed after a space, as Codex's own composer does", async () => {
     enableComposerSettings();
     const { input } = renderComposer("Fix it /pl");
@@ -429,6 +540,7 @@ describe("Codex slash commands in the desktop composer", () => {
     async (action) => {
       doubles.session.access = {
         ...doubles.session.access,
+        status: "approved",
         device: { send: true, advancedControl: true },
       } as SessionController["access"];
       doubles.session.canSend = false;
@@ -437,6 +549,7 @@ describe("Codex slash commands in the desktop composer", () => {
         ...doubles.session.live,
         sendEnabled: false,
         status: "running",
+        executionLocation: "agentkib",
         turnId: "turn",
       } as SessionController["live"];
       doubles.session.capabilities = {
@@ -449,11 +562,11 @@ describe("Codex slash commands in the desktop composer", () => {
       };
       const { input } = renderComposer("/stop");
       fireEvent.click(screen.getByRole("button", { name: sessionCopy["en-US"].advanced }));
-      fireEvent.click(
-        await screen.findByRole("menuitem", {
-          name: action === "steer" ? sessionCopy["en-US"].steer : sessionCopy["en-US"].queueAdd,
-        }),
-      );
+      const runningAction = await screen.findByRole("menuitem", {
+        name: action === "steer" ? sessionCopy["en-US"].steer : sessionCopy["en-US"].queueAdd,
+      });
+      expect(runningAction).not.toHaveAttribute("aria-disabled", "true");
+      fireEvent.click(runningAction);
       expect(
         await screen.findByText(sessionReason("en-US", "codex-command-agentkib").text),
       ).toBeVisible();

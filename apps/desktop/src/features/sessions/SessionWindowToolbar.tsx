@@ -26,10 +26,9 @@ import { useHistoryContinuation } from "./useHistoryContinuation";
 import { useSessionHub } from "./SessionHubContext";
 import { hasDesktopConversation } from "@/core/conversation-bridge";
 import { useSessionViewStore } from "./session-view-store";
-import { claudeConnectionCopy } from "@agentkib/session-ui";
 
 export function SessionWindowToolbar() {
-  const { tr, locale } = useI18n();
+  const { tr } = useI18n();
   const hub = useSessionHub();
   const selected = hub.selected;
   const workspace = hub.selectedWorkspace;
@@ -77,11 +76,8 @@ export function SessionWindowToolbar() {
     !selected.remote &&
     selected.availability === "readable" &&
     isLiveSessionAgent(selected.agent);
-  const canConnectTerminal =
-    interactive &&
-    selected.agent === "claude-code" &&
-    document.documentElement.dataset.platform === "macos" &&
-    terminalEntry?.sessionId === selected.id;
+  const terminal =
+    interactive && terminalEntry?.sessionId === selected.id ? terminalEntry : undefined;
   return (
     <div
       data-session-window-session={interactive ? selected.id : undefined}
@@ -163,16 +159,23 @@ export function SessionWindowToolbar() {
               <>
                 <DropdownMenuSeparator />
                 <DropdownMenuGroup>
-                  {canConnectTerminal && (
+                  {terminal && (
                     <DropdownMenuItem
+                      className="data-disabled:pointer-events-auto"
+                      disabled={!!terminal.disabledReason}
+                      title={terminal.disabledReason}
                       onClick={() => {
                         const entry = useSessionViewStore.getState().terminalEntry;
-                        if (entry === terminalEntry && entry?.sessionId === selected.id)
+                        if (
+                          entry === terminal &&
+                          entry.sessionId === selected.id &&
+                          !entry.disabledReason
+                        )
                           entry.open();
                       }}
                     >
                       <Terminal size={15} />
-                      {claudeConnectionCopy[locale].title}…
+                      {terminal.title}…
                     </DropdownMenuItem>
                   )}
                   <DropdownMenuItem

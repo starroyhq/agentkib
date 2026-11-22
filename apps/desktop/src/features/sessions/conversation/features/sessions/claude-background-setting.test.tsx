@@ -55,23 +55,33 @@ describe("Claude Code background tasks setting", () => {
     const toggle = screen.getByRole("switch", { name: label });
     expect(toggle).not.toBeChecked();
     expect(toggle).toHaveAttribute("aria-disabled", "true");
-    expect(
-      screen.getByText("Requires Claude Code 2.1.299 or later (this computer has 2.1.263)."),
-    ).toBeInTheDocument();
+    expect(toggle).toHaveAttribute(
+      "title",
+      "Requires Claude Code 2.1.299 or later (this computer has 2.1.263).",
+    );
+    expect(screen.queryByText(/Requires Claude Code/)).not.toBeInTheDocument();
   });
 
-  it("shows nothing when the host does not answer", async () => {
-    request.mockRejectedValueOnce(new Error("claude-managed-unavailable"));
-    const { container } = render(<ClaudeBackgroundSetting locale="en-US" />);
-    await act(async () => undefined);
-    expect(container).toBeEmptyDOMElement();
-    cleanup();
-    // A bridge without the call fails at once rather than with a rejection.
-    request.mockImplementationOnce(() => {
-      throw new Error("Electron preload bridge is unavailable");
-    });
-    const again = render(<ClaudeBackgroundSetting locale="en-US" />);
-    await act(async () => undefined);
-    expect(again.container).toBeEmptyDOMElement();
-  });
+  it.each([false, true])(
+    "keeps the switch disabled after a bridge failure (synchronous: %s)",
+    async (synchronous) => {
+      const error = new Error("Electron preload bridge is unavailable");
+      if (synchronous)
+        request.mockImplementationOnce(() => {
+          throw error;
+        });
+      else request.mockRejectedValueOnce(error);
+      render(<ClaudeBackgroundSetting locale="en-US" />);
+      const toggle = screen.getByRole("switch", { name: label });
+      expect(toggle).toHaveAttribute("title", "Reading settings.");
+      await act(async () => undefined);
+      expect(toggle).toHaveAttribute("aria-disabled", "true");
+      expect(toggle).toHaveAttribute(
+        "title",
+        "The current runtime does not provide a background task setting.",
+      );
+      fireEvent.click(toggle);
+      expect(request).toHaveBeenCalledExactlyOnceWith({ operation: "background-tasks" });
+    },
+  );
 });

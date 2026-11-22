@@ -371,7 +371,7 @@ describe("desktop window conversation tools", () => {
     await user.keyboard("{Enter}");
     expect(await screen.findByRole("dialog", { name: "Connect terminal" })).toBeVisible();
   });
-  it.each(["linux", "win32", "no-platform", "no-manage", "not-approved", "codex"])(
+  it.each(["linux", "win32", "no-platform", "not-approved", "codex"])(
     "does not expose terminal setup for %s",
     async (boundary) => {
       document.documentElement.dataset.platform =
@@ -380,11 +380,7 @@ describe("desktop window conversation tools", () => {
           : boundary === "linux" || boundary === "win32"
             ? boundary
             : "macos";
-      const f = fixture(
-        boundary === "codex" ? "codex" : "claude-code",
-        true,
-        boundary === "no-manage",
-      );
+      const f = fixture(boundary === "codex" ? "codex" : "claude-code");
       if (boundary === "not-approved") f.access.status = "pending";
       await mount(f);
       if (boundary !== "not-approved") await screen.findByText("Loaded session body");
@@ -397,6 +393,22 @@ describe("desktop window conversation tools", () => {
       expect(doubles.terminalRequest).not.toHaveBeenCalled();
     },
   );
+  it("keeps the registered terminal entry disabled without the device management grant", async () => {
+    document.documentElement.dataset.platform = "macos";
+    const f = fixture("claude-code", true, true);
+    await mount(f);
+    await screen.findByText("Loaded session body");
+    await userEvent.setup().click(screen.getByRole("button", { name: tr("common.moreActions") }));
+    const item = await screen.findByRole("menuitem", { name: "Connect terminal…" });
+    expect(item).toHaveAttribute("aria-disabled", "true");
+    expect(item).toHaveAttribute(
+      "title",
+      "This device does not have session management permission.",
+    );
+    fireEvent.click(item);
+    expect(screen.queryByRole("dialog", { name: "Connect terminal" })).not.toBeInTheDocument();
+    expect(doubles.terminalRequest).not.toHaveBeenCalled();
+  });
   it.each(["outcome-unknown", "experimental-disabled"] as const)(
     "opens the current view's terminal guide for explicit revocation while %s without generating a code",
     async (boundary) => {

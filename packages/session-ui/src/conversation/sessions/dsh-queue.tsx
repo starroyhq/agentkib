@@ -20,12 +20,14 @@ import {
 import { subscribeSessionInvalidation } from "@agentkib/conversation-state";
 import { sessionQueuePanel, type SessionQueuePanelAgent } from "../../agents/session-queue";
 import type { InteractionLocale } from "../../interaction-model";
+import { resolveSessionProvider } from "../../session-provider";
 import { retryBusyRead } from "../../session-read-retry";
 import { useSessionPlatform } from "../../session-platform";
 import { codexCopy, codexCopyForSurface, codexReason } from "./codex-copy";
 import { sessionAgentCopy } from "./session-agent-copy";
 
-type QueueAction = "queue-update" | "queue-delete" | "queue-steer" | "queue-pause" | "queue-resume";
+type QueueControl = "update" | "delete" | "steer" | "pause" | "resume";
+type QueueAction = `queue-${QueueControl}`;
 
 type SendQueueSession = {
   selected: string;
@@ -74,7 +76,12 @@ export function SessionSendQueue({
   } = session;
   const copy = codexCopyForSurface(locale, kind);
   const agentCopy = sessionAgentCopy[locale];
-  const serial = sessionQueuePanel(agent)?.serial === true;
+  const panel = sessionQueuePanel(
+    agent,
+    resolveSessionProvider({ id: selected, agent }, capabilities),
+  );
+  const serial = panel?.serial === true;
+  const offered = (action: QueueControl) => panel?.actions.includes(action) === true;
   const [queue, setQueue] = useState<SessionQueue>();
   const [error, setError] = useState("");
   const [editing, setEditing] = useState("");
@@ -82,6 +89,7 @@ export function SessionSendQueue({
   const [operation, setOperation] = useState(false);
   const [reload, setReload] = useState(0);
   const readable =
+    !!panel &&
     capabilities?.sessionId === selected &&
     capabilities.features["queue-list"]?.available === true &&
     (!serial || (access?.status === "approved" && access.device?.advancedControl === true));
@@ -120,28 +128,29 @@ export function SessionSendQueue({
   }, [client, selected, agent, readable, reload, copy.queueTooLarge, copy.unavailableQueue]);
   if (!readable || (serial ? !queue && !error : !queue?.data.length)) return null;
   const paused = queue?.paused === true || queue?.requiresResume === true;
-  const pauseAction = paused ? "queue-resume" : "queue-pause";
-  const enabled = (action: QueueAction) =>
+  const pauseAction = paused ? "resume" : "pause";
+  const enabled = (action: QueueControl) =>
     !!(
       access?.experimentalEnabled &&
       !busy &&
       !operation &&
       online &&
       controlReady &&
-      capabilities?.features[action]?.available
+      offered(action) &&
+      capabilities?.features[`queue-${action}`]?.available
     );
-  const reason = (action: QueueAction) =>
+  const reason = (action: QueueControl, itemReason?: string) =>
     codexReason(
       locale,
-      capabilities?.features[action]?.reason || capabilities?.reason,
+      itemReason || capabilities?.features[`queue-${action}`]?.reason || capabilities?.reason,
       kind,
       unavailableReason,
     ).text;
-  async function run(action: QueueAction, fields?: { queuedSubmissionId: string; text?: string }) {
+  async function run(action: QueueControl, fields?: { queuedSubmissionId: string; text?: string }) {
     if (!enabled(action)) return;
     setOperation(true);
     try {
-      if (await codexAction(action, fields)) {
+      if (await codexAction(`queue-${action}`, fields)) {
         setEditing("");
         setText("");
         if (serial) setReload((n) => n + 1);
@@ -170,6 +179,7 @@ export function SessionSendQueue({
             size="sm"
             variant="ghost"
             disabled={!enabled(pauseAction)}
+            title={enabled(pauseAction) ? undefined : reason(pauseAction)}
             onClick={() => void run(pauseAction)}
           >
             {paused ? agentCopy.resumeQueue : agentCopy.pauseQueue}
@@ -180,6 +190,17 @@ export function SessionSendQueue({
         {queue?.data.map((item) => {
           const editable = !serial || item.status === undefined || item.status === "pending";
           const removable = editable || item.status === "unknown";
+          const canEdit =
+            editable && !item.hasAttachments && item.actions?.update?.available !== false;
+          const editTitle =
+            canEdit && enabled("update")
+              ? undefined
+              : item.hasAttachments
+                ? copy.queueAttachments
+                : reason("update", item.actions?.update?.reason);
+          const canRemove =
+            removable && enabled("delete") && item.actions?.delete?.available !== false;
+          const canSteer = enabled("steer") && item.actions?.steer?.available !== false;
           return (
             <li key={item.id} className="flex min-h-10 min-w-0 items-center gap-1">
               <ListEnd
@@ -187,13 +208,13 @@ export function SessionSendQueue({
                 aria-hidden="true"
                 className="mr-1 shrink-0 text-muted-foreground"
               />
-              {editing === item.id && editable ? (
+              {editing === item.id && canEdit ? (
                 <form
                   className="flex min-w-0 flex-1 items-center gap-2"
                   onSubmit={(event) => {
                     event.preventDefault();
-                    if (text.trim())
-                      void run("queue-update", { queuedSubmissionId: item.id, text });
+                    if (canEdit && text.trim())
+                      void run("update", { queuedSubmissionId: item.id, text });
                   }}
                 >
                   <Input
@@ -210,7 +231,8 @@ export function SessionSendQueue({
                     type="submit"
                     size="sm"
                     variant="outline"
-                    disabled={!enabled("queue-update") || !text.trim()}
+                    disabled={!enabled("update") || !text.trim()}
+                    title={editTitle}
                   >
                     {copy.queueSave}
                   </Button>
@@ -229,56 +251,65 @@ export function SessionSendQueue({
                   <span className="min-w-0 flex-1 truncate" title={item.text}>
                     {item.text || (item.hasAttachments ? "" : item.id)}
                   </span>
-                  {!serial && (
+                  {offered("steer") && (
                     <Button
                       type="button"
                       variant="ghost"
                       size="sm"
                       className="shrink-0 text-muted-foreground"
-                      disabled={!enabled("queue-steer")}
-                      title={enabled("queue-steer") ? copy.steer : reason("queue-steer")}
-                      onClick={() => void run("queue-steer", { queuedSubmissionId: item.id })}
+                      disabled={!canSteer}
+                      title={canSteer ? copy.steer : reason("steer", item.actions?.steer?.reason)}
+                      onClick={() => canSteer && void run("steer", { queuedSubmissionId: item.id })}
                     >
                       <CornerDownRight size={16} aria-hidden="true" />
                       {copy.queueSteerItem}
                     </Button>
                   )}
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="icon"
-                    className="size-8 shrink-0 text-muted-foreground"
-                    aria-label={copy.queueDelete}
-                    title={enabled("queue-delete") ? copy.queueDelete : reason("queue-delete")}
-                    disabled={!removable || !enabled("queue-delete")}
-                    onClick={() => void run("queue-delete", { queuedSubmissionId: item.id })}
-                  >
-                    <Trash2 size={16} aria-hidden="true" />
-                  </Button>
-                  <DropdownMenu>
-                    <DropdownMenuTrigger
+                  {offered("delete") && (
+                    <Button
                       type="button"
-                      className="inline-flex size-8 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground"
-                      aria-label={copy.advanced}
-                      title={copy.advanced}
+                      variant="ghost"
+                      size="icon"
+                      className="size-8 shrink-0 text-muted-foreground"
+                      aria-label={copy.queueDelete}
+                      title={
+                        canRemove
+                          ? copy.queueDelete
+                          : reason("delete", item.actions?.delete?.reason)
+                      }
+                      disabled={!canRemove}
+                      onClick={() =>
+                        canRemove && void run("delete", { queuedSubmissionId: item.id })
+                      }
                     >
-                      <MoreHorizontal size={16} aria-hidden="true" />
-                    </DropdownMenuTrigger>
-                    <DropdownMenuContent side="top" align="end">
-                      <DropdownMenuItem
-                        disabled={
-                          !editable || !enabled("queue-update") || item.hasAttachments === true
-                        }
-                        onClick={() => {
-                          setEditing(item.id);
-                          setText(item.text ?? "");
-                        }}
+                      <Trash2 size={16} aria-hidden="true" />
+                    </Button>
+                  )}
+                  {offered("update") && (
+                    <DropdownMenu>
+                      <DropdownMenuTrigger
+                        type="button"
+                        className="inline-flex size-8 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground"
+                        aria-label={copy.advanced}
+                        title={copy.advanced}
                       >
-                        <Pencil size={16} aria-hidden="true" />
-                        {copy.queueEditItem}
-                      </DropdownMenuItem>
-                    </DropdownMenuContent>
-                  </DropdownMenu>
+                        <MoreHorizontal size={16} aria-hidden="true" />
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent side="top" align="end">
+                        <DropdownMenuItem
+                          disabled={!canEdit || !enabled("update")}
+                          title={editTitle}
+                          onClick={() => {
+                            setEditing(item.id);
+                            setText(item.text ?? "");
+                          }}
+                        >
+                          <Pencil size={16} aria-hidden="true" />
+                          {copy.queueEditItem}
+                        </DropdownMenuItem>
+                      </DropdownMenuContent>
+                    </DropdownMenu>
+                  )}
                 </>
               )}
             </li>
@@ -315,7 +346,10 @@ export function useBasicSendQueue(
     selected,
     setMessage,
   } = session;
-  const panel = sessionQueuePanel(current?.agent);
+  const panel =
+    current?.id === selected
+      ? sessionQueuePanel(current.agent, resolveSessionProvider(current, capabilities))
+      : undefined;
   if (
     panel?.surface !== "basic" ||
     access?.device?.advancedControl !== true ||

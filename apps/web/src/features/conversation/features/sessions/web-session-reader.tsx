@@ -6,7 +6,7 @@ import {
   useBasicSendQueue,
 } from "@agentkib/session-ui";
 import { codexCopyForSurface, codexReason } from "../../codex-copy";
-import { claudeComposerNotice, claudeSessionBanner } from "@agentkib/session-ui";
+import { sessionBannerAtComposer, sessionConnectionBanner } from "@agentkib/session-ui";
 import { WebSessionOperations } from "./web-session-operations";
 import { SessionComposer } from "../../web-session-composer";
 import { useSessionPanels } from "@agentkib/session-ui";
@@ -27,7 +27,7 @@ export function SessionReader() {
     indexEnabled,
     requestVersion: imageRequestVersion,
   });
-  const banner = current?.agent === "claude-code" ? claudeSessionBanner(session, "web") : null;
+  const banner = sessionConnectionBanner(session, "web");
   return (
     <SharedSessionReader
       session={session}
@@ -36,7 +36,7 @@ export function SessionReader() {
       addContextLabel={codexCopyForSurface(locale, "web").addContext}
       explainReason={(reason) => codexReason(locale, reason, "web").text}
       banner={banner}
-      composerBanner={claudeComposerNotice(banner)}
+      composerBanner={sessionBannerAtComposer(banner)}
       imageLoader={imageLoader}
       queue={queue}
       Transcript={SessionTranscript}

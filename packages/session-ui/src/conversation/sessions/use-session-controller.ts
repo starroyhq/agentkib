@@ -20,7 +20,7 @@ import {
 } from "../../session-control-receipts";
 import { dshNativeStatusDisplay } from "../../session-continuation";
 import { type ContinuationComposerDraft, type ContinuationDraft } from "./continuation-draft";
-import { claudeConnectionReason } from "./claude-connection-copy";
+import { claudeConnectionReason } from "../../agents/claude-code/connection-copy";
 import {
   historyMessageText,
   historyReferenceKey,
@@ -35,7 +35,7 @@ import {
 } from "./pending-controls";
 import { blockedWhileCompacting } from "./session-activity";
 import { contextUsageCopyForSurface } from "../../context-usage-copy";
-import { retryBusyRead } from "../../session-read-retry";
+import { checkLiveSession, retryBusyRead } from "../../session-read-retry";
 import { capabilityAccessBinding, useSessionCapabilities } from "../../use-session-capabilities";
 import { interactionCopy } from "../interactions/interaction-copy";
 import { catalogCopy } from "../../catalog-copy";
@@ -889,6 +889,13 @@ export function useSessionController<Words extends ControllerWords>(
       const scope = durableScope.current;
       if (!scope) return;
       const epoch = readinessEpoch.current;
+      const visit = generation.current;
+      const currentReadiness = () =>
+        scope === durableScope.current &&
+        epoch === readinessEpoch.current &&
+        visit === generation.current;
+      const refreshOwnsReadiness = () =>
+        refreshFlight.current?.generation === visit && refreshFlight.current.readiness === epoch;
       // Read again so other components sharing this tab's scope see the same fence.
       durablePending.current = readPending(scope);
       const pending = durablePending.current.filter(
@@ -956,9 +963,9 @@ export function useSessionController<Words extends ControllerWords>(
               : undefined;
           if (settings) {
             const id = entry.sessionId;
+            resolvedSettings = id;
+            resolvedSettingsRequest = entry.requestId;
             if (desktop) {
-              resolvedSettings = id;
-              resolvedSettingsRequest = entry.requestId;
               const ack = "ack" in result ? result.ack : undefined;
               settingsRefusal =
                 result.status === "not-dispatched"
@@ -992,11 +999,27 @@ export function useSessionController<Words extends ControllerWords>(
             };
         }
       }
-      if (desktop && resolvedSettings === selection.current && resolvedSettings) {
+      let readSettings = false;
+      if (resolvedSettings && resolvedSettings === selection.current && currentReadiness()) {
         publishSessionInvalidation(client, resolvedSettings, ["settings"]);
-        if (!settingsInFlight.current) await readSettingsControls.current?.(resolvedSettings);
+        const write = settingsInFlight.current;
+        if (
+          !refreshOwnsReadiness() &&
+          readSettingsControls.current &&
+          (!write ||
+            (write.requestId === resolvedSettingsRequest &&
+              !awaitsReceiptResponse(write.requestId)))
+        ) {
+          refreshRequired.current = uncertainOutcomes.current.has(resolvedSettings);
+          readSettings = true;
+          await readSettingsControls.current(resolvedSettings);
+        }
       }
-      if (desktop && (scope !== durableScope.current || epoch !== readinessEpoch.current)) return;
+      if (
+        (desktop && (scope !== durableScope.current || epoch !== readinessEpoch.current)) ||
+        (readSettings && !currentReadiness())
+      )
+        return;
       const id = selection.current;
       const selectedPending = durablePending.current.filter(
         (entry) => entry.sessionId === id && !awaitsReceiptResponse(entry.requestId),
@@ -1033,6 +1056,8 @@ export function useSessionController<Words extends ControllerWords>(
       if (pendingOther) setNotice("uncertain");
       else if (!desktop && pendingSettings) setControlReady(false);
       else if (
+        !readSettings &&
+        (!resolvedSettings || !refreshOwnsReadiness()) &&
         resolvedSelected === id &&
         epoch === readinessEpoch.current &&
         accessRef.current?.protocolVersion === 2
@@ -1254,7 +1279,10 @@ export function useSessionController<Words extends ControllerWords>(
               !hasAppliedNewerHistory(nativeCoverage.current, historyRead.attempt))
           )
             return;
-          if (delivered === liveDelivery.current) setLive(state);
+          if (delivered === liveDelivery.current) {
+            checkLiveSession(state, id);
+            setLive(state);
+          }
           if (manual && next.protocolVersion === 2) renewStream();
         }
         setOnline(true);
@@ -1665,7 +1693,9 @@ export function useSessionController<Words extends ControllerWords>(
     [client, reconcilePending, fail],
   );
   useSessionLive({
-    ...(surface === "desktop" ? { surface, settingsInFlight } : { surface, isSettingsWriteActive }),
+    surface,
+    settingsInFlight,
+    isSettingsWriteActive,
     warmStreams,
     warmScope,
     warmNavigation,
@@ -1818,7 +1848,10 @@ export function useSessionController<Words extends ControllerWords>(
             epoch !== readinessEpoch.current
           )
             return;
-          if (delivered === liveDelivery.current) setLive(state);
+          if (delivered === liveDelivery.current) {
+            checkLiveSession(state, id);
+            setLive(state);
+          }
           setOnline(true);
           setControlReady(
             streamReady.current &&
@@ -2195,7 +2228,6 @@ export function useSessionController<Words extends ControllerWords>(
           id,
           (state) =>
             stillCurrent() &&
-            (desktop || state.sessionId === id) &&
             (runtimeBootId === undefined || state.runtimeBootId === runtimeBootId) &&
             (state.status === "outcome-unknown" ||
               (typeof state.revision === "number" &&
@@ -2207,6 +2239,11 @@ export function useSessionController<Words extends ControllerWords>(
       const finishPending = () => {
         forgetPending(scope, requestId);
         if (durableScope.current === scope) durablePending.current = readPending(scope);
+      };
+      const reconcileAfterEarlyChange = async () => {
+        if (!settingsInFlight.current?.controlChanged || !stillCurrent()) return;
+        activeReceipts.current.delete(requestId);
+        await reconcilePending(id).catch((error) => fail(error, g));
       };
       settingsInFlight.current = { ...entry, generation: g, expectedRevision, runtimeBootId };
       activeReceipts.current.set(requestId, { scope, generation: g, bootId: access.bootId });
@@ -2233,6 +2270,7 @@ export function useSessionController<Words extends ControllerWords>(
           if (stillCurrent()) {
             setControlReady(false);
             reportSettings("uncertain");
+            await reconcileAfterEarlyChange();
           }
           return;
         }
@@ -2270,8 +2308,7 @@ export function useSessionController<Words extends ControllerWords>(
           refreshRequired.current = true;
         }
         await readBack();
-        if (!refusal && settingsInFlight.current?.controlChanged && stillCurrent())
-          await reconcilePending(id).catch((error) => fail(error, g));
+        if (!refusal) await reconcileAfterEarlyChange();
         return;
       } finally {
         activeReceipts.current.delete(requestId);

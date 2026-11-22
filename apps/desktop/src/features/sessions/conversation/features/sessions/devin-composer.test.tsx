@@ -108,6 +108,31 @@ describe("Devin composer notices", () => {
     expect(state.session.codexAction).toHaveBeenCalledWith("usage-limit-continue");
   });
 
+  it("uses feedback for the current turn without carrying recovery across sessions or providers", () => {
+    state.session.live = live({
+      feedback: [{ code: "devin-login-required" }],
+      reason: "devin-run-stopped",
+    });
+    const { rerender } = render(<SessionReader />);
+    const login = "Log in to Devin CLI in a terminal";
+    expect(screen.getByRole("button", { name: login })).toBeInTheDocument();
+
+    state.session.live = live({
+      sessionId: "other",
+      feedback: [{ code: "devin-login-required" }],
+    });
+    rerender(<SessionReader />);
+    expect(screen.queryByRole("button", { name: login })).not.toBeInTheDocument();
+
+    state.session.current = { ...state.session.current!, agent: "claude-code" };
+    state.session.live = live({
+      executionMode: "claude-managed",
+      feedback: [{ code: "devin-login-required" }],
+    });
+    rerender(<SessionReader />);
+    expect(screen.queryByRole("button", { name: login })).not.toBeInTheDocument();
+  });
+
   it("explains a turn whose Devin CLI process was ended", () => {
     state.session.live = live({ reason: "devin-run-stopped" });
     render(<SessionReader />);

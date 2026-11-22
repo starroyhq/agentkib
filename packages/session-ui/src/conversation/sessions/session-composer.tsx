@@ -17,6 +17,7 @@ import {
   type ReactNode,
 } from "react";
 import { sessionQueuePanel } from "../../agents/session-queue";
+import { sessionTurnNotice } from "../../agents/session-turn-notice";
 import { claudeTerminalInteraction } from "../../claude-terminal-permission";
 import { codexCommandPrompt } from "../../codex-prompts";
 import { contextUsageCopyForSurface } from "../../context-usage-copy";
@@ -30,7 +31,7 @@ import { SessionComposerToolbar } from "../../session-composer-toolbar";
 import { SessionContextUsageGauge } from "../../session-context-usage-gauge";
 import { sessionContinuationCopy } from "../../session-continuation";
 import type { createSessionControl } from "../../session-control";
-import { DevinTurnNotice } from "./devin-turn-notice";
+import { resolveSessionProvider } from "../../session-provider";
 import { useSessionPlatform } from "../../session-platform";
 import {
   agentKibCommand,
@@ -47,7 +48,7 @@ import { useComposerAttachments } from "../../use-composer-attachments";
 import { HistoryReferenceChips } from "../history/history-search-controls";
 import { validHistoryMessage } from "../history/history-reference-model";
 import { runningSendAction, useSendWhileRunning } from "../preferences/send-while-running";
-import { claudeConnectionCopyForSurface } from "./claude-connection-copy";
+import { claudeConnectionCopyForSurface } from "../../agents/claude-code/connection-copy";
 import type {
   CodexComposerControlsProps,
   CodexResource,
@@ -515,7 +516,16 @@ export function SessionComposer({
   const resourceIds = resources.filter((item) => item.available).map((item) => item.id);
   const draft = composerValue;
   const valid = ready && validHistoryMessage(draft, historyReferences, attachmentIds.length > 0);
-  const queuePanel = sessionQueuePanel(current?.agent);
+  const provider = resolveSessionProvider(current, capabilities);
+  const queuePanel =
+    current?.id === selected ? sessionQueuePanel(current.agent, provider) : undefined;
+  const turnNotice = sessionTurnNotice({
+    current,
+    selected,
+    live,
+    refused: notice === "notDispatched" ? session.noticeReason : undefined,
+  });
+  const RegisteredTurnNotice = turnNotice?.Component;
   const serialQueue = queuePanel?.surface === "managed" && queuePanel.serial;
   const queueDraftAllowed =
     !serialQueue ||
@@ -818,7 +828,7 @@ export function SessionComposer({
             !composerCapabilities.settingsAccessDenied)) && (
           <PermissionModeNotice permission={live.permission} locale={locale} compact />
         )}
-      {(isClaude || isCodex || isDsh || current?.agent === "devin") && (
+      {provider && !("controls" in provider) && (
         <TurnNotice
           live={live}
           locale={locale}
@@ -827,29 +837,21 @@ export function SessionComposer({
           onUsageLimitArm={() => void codexAction("usage-limit-continue")}
         />
       )}
-      {current?.agent === "devin" && (
-        <DevinTurnNotice
-          // A refused send names its reason; a turn that ended without running leaves it on live.
-          reason={
-            notice === "notDispatched" && session.noticeReason
-              ? session.noticeReason
-              : live?.status === "idle"
-                ? live.reason
-                : undefined
-          }
+      {turnNotice && RegisteredTurnNotice && (
+        <RegisteredTurnNotice
+          key={selected}
+          reason={turnNotice.reason}
           reasonCopy={(locale, code, surface) =>
             codexReason(locale, code, surface, platformCopy.unavailableReason)
           }
           locale={locale}
-          sessionId={surface === "desktop" ? current.id : undefined}
+          sessionId={surface === "desktop" ? selected : undefined}
         />
       )}
       {queuePanel?.surface === "managed" && (
         <SessionSendQueue
           session={session}
-          key={
-            serialQueue ? JSON.stringify([selected, access?.bootId, access?.device?.id]) : selected
-          }
+          key={JSON.stringify([selected, access?.bootId, access?.device?.id])}
           agent={queuePanel.agent}
         />
       )}

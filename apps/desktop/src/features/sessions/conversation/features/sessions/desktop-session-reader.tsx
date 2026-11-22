@@ -7,7 +7,7 @@ import {
   type ReaderContextUsageProps,
 } from "@agentkib/session-ui";
 import { codexCopy, codexReason } from "../../codex-copy";
-import { claudeComposerNotice, claudeSessionBanner } from "@agentkib/session-ui";
+import { sessionBannerAtComposer, sessionConnectionBanner } from "@agentkib/session-ui";
 import { DesktopSessionOperations } from "./desktop-session-operations";
 import { SessionComposer } from "../../desktop-session-composer";
 import { useSessionPanels } from "@agentkib/session-ui";
@@ -41,7 +41,7 @@ export function SessionReader() {
     scopeKey: desktopRead.key,
     getScope: currentDesktopReadScope,
   });
-  const banner = current?.agent === "claude-code" ? claudeSessionBanner(session) : null;
+  const banner = sessionConnectionBanner(session);
   return (
     <SharedSessionReader
       session={session}
@@ -50,7 +50,7 @@ export function SessionReader() {
       addContextLabel={codexCopy[locale].addContext}
       explainReason={(reason) => codexReason(locale, reason).text}
       banner={banner}
-      composerBanner={claudeComposerNotice(banner)}
+      composerBanner={sessionBannerAtComposer(banner)}
       connectionNoticeInToolbar={!!(banner?.connection && panels?.statusOutsideComposer)}
       displayLive={displayLive}
       localAuthority={{

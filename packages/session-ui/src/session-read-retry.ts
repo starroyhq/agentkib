@@ -1,4 +1,8 @@
-import { ApiError } from "@agentkib/web-client";
+import { ApiError, type Live } from "@agentkib/web-client";
+
+export function checkLiveSession(live: Live, sessionId: string): void {
+  if (live.sessionId !== sessionId) throw new ApiError(409, "session-state-unavailable");
+}
 
 export function isBusyRead(error: unknown): boolean {
   return error instanceof ApiError

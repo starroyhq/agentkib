@@ -27,10 +27,16 @@ export {
 } from "./conversation/history/history-reference-model";
 export { interactionCopy } from "./conversation/interactions/interaction-copy";
 export { approvalSummary } from "./conversation/sessions/approval-summary";
+export { claudeSessionBanner } from "./agents/claude-code/connection-notice";
 export {
-  claudeComposerNotice,
-  claudeSessionBanner,
-} from "./conversation/sessions/claude-session-banner";
+  sessionBannerAtComposer,
+  sessionConnectionBanner,
+} from "./agents/session-connection-notices";
+export { resolveSessionProvider } from "./session-provider";
+export {
+  connectionManagementUnavailableReason,
+  sessionConnectionPanels,
+} from "./agents/session-connection-panels";
 export {
   managedControlCopy,
   managedControlCopyForSurface,
@@ -99,10 +105,10 @@ export {
   SessionReader,
   type ReaderContextUsageProps,
 } from "./conversation/sessions/session-reader";
-export { ClaudeBackgroundSetting } from "./conversation/sessions/claude-background-setting";
-export { ClaudeBridgePanel } from "./conversation/sessions/claude-bridge-panel";
-export { DevinTurnNotice } from "./conversation/sessions/devin-turn-notice";
-export { DshBridgePanel } from "./conversation/sessions/dsh-bridge-panel";
+export { ClaudeBackgroundSetting } from "./agents/claude-code/claude-background-setting";
+export { ClaudeBridgePanel } from "./agents/claude-code/claude-bridge-panel";
+export { DevinTurnNotice } from "./agents/devin/turn-notice";
+export { DshBridgePanel } from "./agents/deepseek-harness/dsh-bridge-panel";
 export {
   OperationDisclosure,
   OperationGroup,
@@ -153,7 +159,7 @@ export {
   claudeConnectionCopy,
   claudeConnectionReason,
   claudeConnectionCopyForSurface,
-} from "./conversation/sessions/claude-connection-copy";
+} from "./agents/claude-code/connection-copy";
 export {
   continuationResources,
   type ContinuationComposerDraft,

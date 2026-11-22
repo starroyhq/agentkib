@@ -52,7 +52,13 @@ import {
   useDesktopConversationWindow,
 } from "../DesktopConversationWindow";
 import { desktopReadScope } from "../read-state-scope";
-import { webLayoutCopy } from "@agentkib/session-ui";
+import {
+  connectionManagementUnavailableReason,
+  resolveSessionProvider,
+  sessionConnectionPanels,
+  useSessionPlatform,
+  webLayoutCopy,
+} from "@agentkib/session-ui";
 import { codexCopy } from "./codex-copy";
 import { useDesktopSessionPlatform } from "./session-platform";
 
@@ -109,6 +115,13 @@ function EmbeddedShell() {
   const props = useEmbedded();
   const session = useSession();
   const { refresh: refreshSession, setHistorySearchOpen } = session;
+  const platform = useSessionPlatform();
+  const provider = resolveSessionProvider(
+    session.current?.id === session.selected ? session.current : undefined,
+    session.capabilities,
+  );
+  const terminal = sessionConnectionPanels(provider?.connection?.kind, platform)?.terminal;
+  const terminalUnavailable = connectionManagementUnavailableReason(session.access, session.locale);
   const { sessionId } = props;
   const navigate = useSessionNavigate();
   const [terminalOpen, setTerminalOpen] = useState(false);
@@ -141,17 +154,13 @@ function EmbeddedShell() {
         if (!session.selected) return;
         if (panel === "files" && session.access?.device?.files) setFilesOpen(true);
         if (panel === "actions") setActionsOpen(true);
-        if (
-          panel === "terminal" &&
-          session.current?.agent === "claude-code" &&
-          document.documentElement.dataset.platform === "macos"
-        )
-          setTerminalOpen(true);
+        if (panel === "terminal" && terminal && !terminalUnavailable) setTerminalOpen(true);
       },
     }),
     [
       session.selected,
-      session.current?.agent,
+      terminal,
+      terminalUnavailable,
       session.access?.device?.files,
       setActionsOpen,
       setFilesOpen,
@@ -174,10 +183,7 @@ function EmbeddedShell() {
     )
       return;
     if (panelRequest.panel === "terminal") {
-      if (
-        session.current.agent !== "claude-code" ||
-        document.documentElement.dataset.platform !== "macos"
-      ) {
+      if (!terminal) {
         consumedPanel.current = panelRequest;
         props.onInitialPanelConsumed?.();
         return;
@@ -207,7 +213,7 @@ function EmbeddedShell() {
     props.onInitialPanelConsumed,
     session.selected,
     session.current?.id,
-    session.current?.agent,
+    terminal,
     session.access?.status,
     session.access?.protocolVersion,
     session.access?.experimentalEnabled,

@@ -14,10 +14,12 @@ import {
   type WebClient,
 } from "@agentkib/web-client";
 import { useEffect, useState, type ReactNode } from "react";
+import { sessionQueuePanel } from "../../agents/session-queue";
 import { ComposerModelPicker } from "../../composer-model-picker";
 import { contextUsageCopyForSurface } from "../../context-usage-copy";
 import type { InteractionLocale } from "../../interaction-model";
 import { useSessionPlatform } from "../../session-platform";
+import { resolveSessionProvider } from "../../session-provider";
 import { codexCopyForSurface, codexReason } from "./codex-copy";
 import { composerSettingsStatus } from "./composer-layout-copy";
 import { OperationDisclosure, OperationGroup, OperationRow } from "./operation-layout";
@@ -102,12 +104,14 @@ export function CodexTools({
   const copy = codexCopyForSurface(locale, kind);
   const explainReason = (reason?: string) => codexReason(locale, reason, kind, unavailableReason);
   const agentCopy = sessionAgentCopy[locale];
+  const provider = resolveSessionProvider(current, capabilities);
+  const composerQueue = sessionQueuePanel(current?.agent, provider);
   const isClaude = current?.agent === "claude-code";
   // DeepSeek Harness takes management actions here; its model is set from the composer and its
   // waiting messages sit in the strip above it, so neither is repeated in this panel.
   const isDsh = current?.agent === "deepseek-harness";
   const queueReadable =
-    !isDsh &&
+    !composerQueue &&
     (!isClaude ||
       ["queue-list", "queue-add", "queue-resume", "queue-pause"].some(
         (key) => capabilities?.features[key as SessionAction | "queue-list"]?.available,
@@ -220,7 +224,7 @@ export function CodexTools({
     limitedSettings,
     queueReadable,
   ]);
-  if (current?.agent !== "codex" && !isClaude && !isDsh) return null;
+  if (!current || !provider?.operations.execution) return null;
   function enabled(action: SessionAction) {
     return !!(
       access?.experimentalEnabled &&
@@ -470,7 +474,7 @@ export function CodexTools({
               </OperationRow>
             )}
           </OperationGroup>
-          {isClaude && ownership}
+          {provider.connection?.kind === "terminal-bridge" && ownership}
           {limitedSettings && (
             <OperationGroup title={copy.settings}>
               <OperationRow className="flex-wrap">

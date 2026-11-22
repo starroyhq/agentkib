@@ -8,11 +8,10 @@ import {
   LoaderCircle,
   TriangleAlert,
 } from "lucide-react";
-import type { Access, ConversationSessionSummary, Live, WebClient } from "@agentkib/web-client";
 import type { InteractionLocale } from "../../interaction-model";
-import type { ControlNotice } from "../../session-control";
 import { useSessionPlatform, type SessionPlatform } from "../../session-platform";
-import { claudeConnectionCopy, claudeConnectionReason } from "./claude-connection-copy";
+import type { SessionTerminalPanelProps } from "../session-connection-panels";
+import { claudeConnectionCopy, claudeConnectionReason } from "./connection-copy";
 
 type ClaudeBridgeStatus = {
   connectionCliVersion?: string;
@@ -31,27 +30,7 @@ type ClaudeBridgeStatus = {
 
 type ClaudeBridgeChallenge = { challenge: string; expiresAt: string; instructions: string };
 
-type ClaudeBridgePanelProps = {
-  active: boolean;
-  bridgeVersion: string;
-  onClose?: () => void;
-  session: {
-    selected: string;
-    current?: Pick<ConversationSessionSummary, "id" | "agent" | "title">;
-    currentTitle?: string;
-    live?: Live;
-    access?: Access;
-    online: boolean;
-    controlReady: boolean;
-    busy: boolean;
-    loadingEarlier: boolean;
-    locale: InteractionLocale;
-    notice?: ControlNotice;
-    t?: { close: string };
-    client: Pick<WebClient, "claudeResumeCommand">;
-    refresh(manual: boolean): Promise<void>;
-  };
-};
+type ClaudeBridgePanelProps = SessionTerminalPanelProps & { bridgeVersion: string };
 
 const incompatibleReasons = new Set([
   "bridge-cli-too-old",

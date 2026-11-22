@@ -61,6 +61,7 @@ import { SessionSendQueue } from "./dsh-queue";
 import { takeNewSessionDraft } from "./new-session-draft";
 import { PermissionModeNotice } from "./permission-mode-notice";
 import { SessionReadOnly } from "./session-read-only";
+import type { SessionPanels } from "./session-panels";
 
 type ComposerSession = CodexComposerControlsProps["session"] & {
   historyReferences?: ResolvedHistoryReference[];
@@ -95,11 +96,10 @@ type ComposerDisplay = {
     | "view-only";
 };
 
-type ComposerPanels = {
-  statusInToolbar?: boolean;
-  setFilesOpen(open: boolean): void;
-  setActionsOpen(open: boolean): void;
-};
+type ComposerPanels = Pick<
+  SessionPanels,
+  "statusOutsideComposer" | "setFilesOpen" | "setActionsOpen"
+>;
 
 export type SessionComposerProps = {
   session: ComposerSession;
@@ -183,8 +183,8 @@ export function SessionComposer({
   const continuation = sessionContinuationCopy(locale);
   const copy = codexCopyForSurface(locale, surface);
   const layout = composerLayoutCopy[locale];
-  const connectionReasonInToolbar =
-    connectionNoticeInToolbar || (display.offline && panels?.statusInToolbar);
+  const connectionReasonShown =
+    connectionNoticeInToolbar || (display.offline && panels?.statusOutsideComposer);
   const terminalInteraction =
     isClaude &&
     online &&
@@ -788,7 +788,7 @@ export function SessionComposer({
     return (
       <SessionReadOnly
         session={session}
-        reason={connectionReasonInToolbar ? undefined : display.reason}
+        reason={connectionReasonShown ? undefined : display.reason}
         local={surface === "desktop"}
         notify={notifications.success}
       />
@@ -1069,7 +1069,7 @@ export function SessionComposer({
           </p>
         )}
         {(!canSend || display.continuation === "status-unknown") &&
-          !connectionReasonInToolbar &&
+          !connectionReasonShown &&
           !(connectionStatusInBanner && isClaude) &&
           (!running || (live?.executionMode === "claude-follower" && display.tone === "warning")) &&
           !compacting &&

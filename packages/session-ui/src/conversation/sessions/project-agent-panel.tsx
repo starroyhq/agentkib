@@ -20,6 +20,45 @@ function projectAgentOf(value: unknown): ProjectAgent | null | undefined {
   return lead as ProjectAgent;
 }
 
+const DEFAULT_STALL_MINUTES = 10;
+const MIN_STALL_MINUTES = 3;
+const MAX_STALL_MINUTES = 120;
+
+function clampStallMinutes(value: string | number): number {
+  const minutes = Math.trunc(Number(value)) || MIN_STALL_MINUTES;
+  return Math.min(MAX_STALL_MINUTES, Math.max(MIN_STALL_MINUTES, minutes));
+}
+
+function StallThreshold({
+  label,
+  value,
+  onChange,
+}: {
+  label: string;
+  value: string | number;
+  onChange?: (value: string) => void;
+}) {
+  const { Input } = useSessionPlatform().components;
+  return (
+    <OperationRow>
+      <label className="grid gap-1.5">
+        <span className="text-xs text-muted-foreground">{label}</span>
+        <Input
+          type="number"
+          min={MIN_STALL_MINUTES}
+          max={MAX_STALL_MINUTES}
+          step={1}
+          value={value}
+          disabled={!onChange}
+          // A first digit below the minimum may start a valid value such as 10.
+          onChange={(event) => onChange?.(event.target.value)}
+          onBlur={() => onChange?.(String(clampStallMinutes(value)))}
+        />
+      </label>
+    </OperationRow>
+  );
+}
+
 /** Shows a Project Agent and its workers, with the controls offered on this platform. */
 export function ProjectAgentPanel({
   locale,
@@ -56,6 +95,7 @@ export function ProjectAgentPanel({
     approveCommands: boolean;
     answers: boolean;
     maxAutoTurns: number;
+    stallMinutes: string;
   }>(null);
   const [busy, setBusy] = useState(false);
   const [releasing, setReleasing] = useState(false);
@@ -118,6 +158,8 @@ export function ProjectAgentPanel({
   const mayLead = full && !!device?.send && !!device.manage && !!device.advancedControl;
   if (agent === undefined || !selected || (desktop && agent === null)) return null;
   const mayApprove = desktop || !!device?.approve;
+  // Changing settings or resuming delegation takes the same permissions as setting it up.
+  const mayTakeOver = desktop || (mayLead && (!agent?.scope.approvals?.length || mayApprove));
   const errorText = error ? (text.errors[error] ?? text.failed) : null;
   const formOf = (mode: "designate" | "update", scope?: ProjectAgent["scope"]) => ({
     mode,
@@ -125,9 +167,11 @@ export function ProjectAgentPanel({
     approveCommands: scope?.approvals?.includes("command") ?? false,
     answers: scope?.answers ?? false,
     maxAutoTurns: desktop && scope ? scope.maxAutoTurns : (scope?.maxAutoTurns ?? 25),
+    stallMinutes: String(scope?.stallMinutes ?? DEFAULT_STALL_MINUTES),
   });
 
   if (form) {
+    const mayEdit = form.mode === "designate" ? mayLead : mayTakeOver;
     return (
       <OperationGroup title={text.title}>
         <OperationRow className="block">
@@ -173,6 +217,11 @@ export function ProjectAgentPanel({
             />
           </label>
         </OperationRow>
+        <StallThreshold
+          label={text.stallMinutes}
+          value={form.stallMinutes}
+          onChange={mayEdit ? (stallMinutes) => setForm({ ...form, stallMinutes }) : undefined}
+        />
         <OperationRow className="flex-wrap justify-end gap-2">
           {errorText && (
             <p className="mr-auto min-w-0 text-xs text-destructive-text">{errorText}</p>
@@ -182,12 +231,13 @@ export function ProjectAgentPanel({
           </Button>
           <Button
             className={touchTarget}
-            disabled={busy}
+            disabled={busy || !mayEdit}
             onClick={() =>
               void run({
                 operation: form.mode,
                 scope: {
                   maxAutoTurns: form.maxAutoTurns,
+                  stallMinutes: clampStallMinutes(form.stallMinutes),
                   approvals: [
                     ...(form.approveFiles ? ["file-change"] : []),
                     ...(form.approveCommands ? ["command"] : []),
@@ -226,9 +276,6 @@ export function ProjectAgentPanel({
     ...(agent.scope.approvals?.includes("command") ? [text.approveCommands] : []),
     ...(agent.scope.answers ? [text.answers] : []),
   ];
-  // What this device may do with it; a device that may only look gets no row of buttons. Taking
-  // it over (resuming it, changing what it may do) takes what setting it up takes.
-  const mayTakeOver = desktop || (mayLead && (!agent.scope.approvals?.length || mayApprove));
   const mayToggle = agent.paused ? mayTakeOver : desktop || (full && !!device?.send);
   const mayRelease = desktop || (full && !!device?.manage);
   const mayStop = desktop || (full && !!device?.send);
@@ -245,6 +292,12 @@ export function ProjectAgentPanel({
           {!agent.workers.length && <p>{text.none}</p>}
         </OperationCopy>
       </OperationRow>
+      {!mayTakeOver && (
+        <StallThreshold
+          label={text.stallMinutes}
+          value={agent.scope.stallMinutes ?? DEFAULT_STALL_MINUTES}
+        />
+      )}
       {agent.workers.map((worker) =>
         removing === worker.sessionId ? (
           <OperationRow key={worker.sessionId} className="flex-wrap gap-2">

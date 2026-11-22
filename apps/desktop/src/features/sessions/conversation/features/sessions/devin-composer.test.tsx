@@ -6,18 +6,18 @@ import { render } from "@/features/sessions/conversation/desktop-reader-test-uti
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { codexReason } from "../../codex-copy";
 import { SessionReader } from "./desktop-session-reader";
-import type { SessionController } from "./use-session-controller";
+import type { SessionController } from "../../desktop-session-controller";
 const state = vi.hoisted(() => ({ session: {} as SessionController }));
-vi.mock("./session-context", () => ({
+vi.mock("../../desktop-session-context", () => ({
   useSession: () => {
     const [message, setMessage] = useState("");
     return { ...state.session, message, setMessage };
   },
 }));
 vi.mock("./desktop-session-operations", () => ({ DesktopSessionOperations: () => null }));
-vi.mock("./session-panels", () => ({ useSessionPanels: () => null }));
 vi.mock("@agentkib/session-ui", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@agentkib/session-ui")>()),
+  useSessionPanels: () => null,
   SessionTranscript: () => null,
 }));
 vi.mock("../../context-usage", () => ({ ContextUsageGauge: () => null }));

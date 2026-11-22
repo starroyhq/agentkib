@@ -1,7 +1,7 @@
 import { createContext, use, useMemo, type ReactNode } from "react";
 import { homeSessionGroups, type HomeSessionGroups } from "@agentkib/session-catalog";
 import type { ConversationSessionSummary } from "@agentkib/web-client";
-import { useSession } from "@/features/conversation/features/sessions/session-context";
+import { useSession } from "@/features/conversation/web-session-context";
 import { useHomeReplies, type HomeReplies } from "./home-replies";
 
 export interface HomeAttention {

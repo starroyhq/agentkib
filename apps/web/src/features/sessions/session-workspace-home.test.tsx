@@ -27,7 +27,7 @@ vi.mock("@tanstack/react-router", () => ({
   useNavigate: () => fixture.navigate,
   Outlet: () => <div data-testid="outlet" />,
 }));
-vi.mock("@/features/conversation/features/sessions/session-context", () => ({
+vi.mock("@/features/conversation/web-session-context", () => ({
   useSession: () => fixture.session,
 }));
 vi.mock("@/features/conversation/features/catalog/session-catalog", () => ({

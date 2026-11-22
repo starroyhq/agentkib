@@ -5,7 +5,7 @@ import { render } from "../../desktop-reader-test-utils";
 import { act, cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
 import { Profiler } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { SessionController } from "./use-session-controller";
+import type { SessionController } from "../../desktop-session-controller";
 import { ClaudeBridgePanel as SharedClaudeBridgePanel } from "@agentkib/session-ui";
 
 const state = vi.hoisted(() => ({

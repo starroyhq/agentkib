@@ -5,18 +5,18 @@ import { cleanup, fireEvent, screen, within } from "@testing-library/react";
 import { render } from "@/features/sessions/conversation/desktop-reader-test-utils";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SessionReader } from "@/features/sessions/conversation/features/sessions/desktop-session-reader";
-import { SessionPanelsContext } from "@/features/sessions/conversation/features/sessions/session-panels";
-import type { SessionController } from "@/features/sessions/conversation/features/sessions/use-session-controller";
+import { SessionPanelsContext } from "@agentkib/session-ui";
+import type { SessionController } from "@/features/sessions/conversation/desktop-session-controller";
 import { conversationWords } from "@/core/i18n";
 import { claudeConnectionCopy } from "@agentkib/session-ui";
 
 type Locale = "zh-CN" | "zh-Hant" | "en-US" | "ja-JP";
 let session: SessionController;
 const FixtureContext = createContext<SessionController | null>(null);
-vi.mock("@/features/sessions/conversation/features/sessions/session-context", () => ({
+vi.mock("@/features/sessions/conversation/desktop-session-context", () => ({
   useSession: () => useContext(FixtureContext)!,
 }));
-vi.mock("@/features/sessions/conversation/features/sessions/session-navigation", () => ({
+vi.mock("@/features/sessions/conversation/desktop-session-navigation", () => ({
   useSessionNavigate: () => vi.fn(),
 }));
 vi.mock("@/features/sessions/conversation/context-usage", () => ({

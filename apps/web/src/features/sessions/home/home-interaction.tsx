@@ -8,7 +8,7 @@ import {
   InteractionDock,
   sessionInteractionItems,
 } from "@agentkib/session-ui";
-import { useSession } from "@/features/conversation/features/sessions/session-context";
+import { useSession } from "@/features/conversation/web-session-context";
 import { codexReason } from "@/features/conversation/codex-copy";
 import type { HomeReplies } from "./home-replies";
 

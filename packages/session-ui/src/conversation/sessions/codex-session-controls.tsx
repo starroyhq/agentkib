@@ -56,7 +56,7 @@ import { useSessionPlatform } from "../../session-platform";
 import { useComposerModelPanel } from "../../use-composer-model-panel";
 import { useComposerModelDisplay } from "../../use-composer-model-display";
 import { codexCopyForSurface, codexReason } from "./codex-copy";
-import { composerLayoutCopy, composerTerm } from "./composer-layout-copy";
+import { composerLayoutCopy, composerSettingsStatus, composerTerm } from "./composer-layout-copy";
 import { sessionAgentCopy } from "./session-agent-copy";
 
 export type CodexResource = CodexContextResource;
@@ -72,7 +72,6 @@ export type ComposerPlanState = { on: boolean; available: boolean };
 
 type SettingsGroup = "permissions" | "model" | "settings";
 type SettingsNotice = {
-  group?: SettingsGroup;
   target?: SettingsGroup;
   status: "writing" | "uncertain" | "notDispatched";
   reason?: string;
@@ -318,7 +317,7 @@ export function CodexComposerControls({
   const [mutationFailure, setMutationFailure] = useState<{
     scope: string;
     client: typeof client;
-    group: SettingsGroup | "goal";
+    kind: "settings" | "goal";
     reason: string;
   }>();
   const mutationError =
@@ -847,7 +846,7 @@ export function CodexComposerControls({
         setMutationFailure({
           scope: historyScope,
           client,
-          group: changesSettings ? settingsNoticeGroup(fields) : "goal",
+          kind: changesSettings ? "settings" : "goal",
           reason: unavailable(error),
         }),
       onSettle: () => {
@@ -1230,35 +1229,21 @@ export function CodexComposerControls({
   useEffect(() => {
     onPlan?.({ on: planOn, available: planAvailable });
   }, [onPlan, planOn, planAvailable]);
-  // The grouped desktop feedback remains until the settings/recovery migration.
-  const localSettingsNotice: SettingsNotice | undefined = desktop
-    ? (settingsNotice ??
-      (settingsUnknown
-        ? { group: settingsNoticeGroup(pendingSettings ?? {}), status: "uncertain" }
-        : mutationError && mutationError.group !== "goal"
-          ? { group: mutationError.group, status: "notDispatched", reason: mutationError.reason }
-          : undefined))
-    : undefined;
-  const writeStatus = !desktop
-    ? settingsUnknown
-      ? layout.settingsUnknown
-      : settingsNotice?.status === "notDispatched"
-        ? settingsNotice.reason
-          ? reason(settingsNotice.reason)
-          : t?.notDispatched
-        : undefined
-    : undefined;
-  const settingsMessage = localSettingsNotice
-    ? localSettingsNotice.status === "uncertain"
-      ? layout.settingsUnknown
-      : (reasonTitle(localSettingsNotice.reason) ?? copy.settingUnavailable)
-    : undefined;
-  const modelMessage =
-    showModelPicker &&
-    (localSettingsNotice?.group === "model" ||
-      (localSettingsNotice?.group === "settings" && !showPermissions));
-  const permissionMessage =
-    !modelMessage && (showPermissions || localSettingsNotice?.group === "permissions");
+  const localSettingsError =
+    !settingsUnknown && !settingsNotice && mutationError?.kind === "settings"
+      ? mutationError.reason
+      : undefined;
+  const writeStatus = composerSettingsStatus(
+    locale,
+    settingsUnknown
+      ? { status: "uncertain" }
+      : (settingsNotice ??
+          (localSettingsError
+            ? { status: "notDispatched", reason: localSettingsError }
+            : undefined)),
+    reason,
+    t?.notDispatched ?? copy.settingUnavailable,
+  );
   useEffect(() => {
     // A submitted draft has at most one automatic dispatch. The existing action
     // controller owns its receipt, including after a reconnect.
@@ -1317,15 +1302,6 @@ export function CodexComposerControls({
   }));
   if (!full) return null;
   const ResourceButton = desktop ? Button : "button";
-  const settingsFeedback = settingsMessage && (
-    <p
-      role={localSettingsNotice?.status === "uncertain" ? "status" : "alert"}
-      className={`max-w-64 px-1 text-xs leading-4 ${localSettingsNotice?.status === "uncertain" ? "text-muted-foreground" : "text-destructive-text"}`}
-    >
-      {settingsMessage}
-    </p>
-  );
-
   const changeGoalField = (field: "objective" | "budget", value: string) => {
     if (!desktop && goalDraftEditor) {
       setGoalDialog({ ...goalDraftEditor, [field]: value });
@@ -1371,7 +1347,7 @@ export function CodexComposerControls({
 
   return (
     <>
-      {!desktop && mutationError && !goalDialog && (
+      {!desktop && mutationError?.kind === "goal" && !goalDialog && (
         <p role="alert" className="px-1 text-xs text-destructive-text">
           {reason(mutationError.reason)}
         </p>
@@ -1570,12 +1546,12 @@ export function CodexComposerControls({
             : undefined
         }
         action={action}
-        permissionFeedback={permissionMessage && settingsFeedback}
-        modelFeedback={modelMessage && settingsFeedback}
       />
-      {!permissionMessage && !modelMessage && settingsFeedback}
       {writeStatus && (
-        <p role="status" className="px-3 text-xs text-muted-foreground">
+        <p
+          role={localSettingsError ? "alert" : "status"}
+          className={`px-3 text-xs ${localSettingsError ? "text-destructive-text" : "text-muted-foreground"}`}
+        >
           {writeStatus}
         </p>
       )}
@@ -1684,13 +1660,11 @@ export function CodexComposerControls({
                   )}
                 </div>
               )}
-              {goalSnapshot?.available &&
-                mutationError &&
-                (!desktop || mutationError.group === "goal") && (
-                  <p role="alert" className="text-xs text-destructive-text">
-                    {reason(mutationError.reason)}
-                  </p>
-                )}
+              {goalSnapshot?.available && mutationError?.kind === "goal" && (
+                <p role="alert" className="text-xs text-destructive-text">
+                  {reason(mutationError.reason)}
+                </p>
+              )}
               {activeGoal && (
                 <dl className="grid grid-cols-2 gap-2 rounded-lg border p-3 text-xs">
                   <dt>{copy.goalStatus}</dt>

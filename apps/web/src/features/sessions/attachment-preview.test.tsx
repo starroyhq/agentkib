@@ -4,9 +4,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { UploadedAttachment } from "@agentkib/web-client";
 import { dictionaries } from "@/features/conversation/i18n";
 import { SessionComposer } from "@/features/conversation/web-session-composer";
-import { useSession } from "@/features/conversation/features/sessions/session-context";
+import { useSession } from "@/features/conversation/web-session-context";
 
-vi.mock("@/features/conversation/features/sessions/session-context", () => ({
+vi.mock("@/features/conversation/web-session-context", () => ({
   useSession: vi.fn(),
 }));
 vi.mock("@agentkib/session-ui", async (importOriginal) => ({

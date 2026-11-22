@@ -11,13 +11,13 @@ import {
 import { CodexTools } from "@/features/conversation/features/sessions/web-session-operations";
 import { render } from "@/features/conversation/web-reader-test-utils";
 import { SessionComposer } from "@/features/conversation/web-session-composer";
-import { useSession } from "@/features/conversation/features/sessions/session-context";
+import { useSession } from "@/features/conversation/web-session-context";
 import { dictionaries } from "@/features/conversation/i18n";
 import { codexCopyForSurface, codexReason } from "@/features/conversation/codex-copy";
 import { webLayoutCopy } from "@agentkib/session-ui";
 import { publishSessionInvalidation } from "@agentkib/conversation-state";
 vi.mock("@tanstack/react-router", () => ({ useNavigate: () => vi.fn() }));
-vi.mock("@/features/conversation/features/sessions/session-context", () => ({
+vi.mock("@/features/conversation/web-session-context", () => ({
   useSession: vi.fn(),
 }));
 const sessionMock = vi.mocked(useSession);

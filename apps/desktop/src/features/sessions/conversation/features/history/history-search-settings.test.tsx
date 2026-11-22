@@ -28,7 +28,7 @@ import { initializeI18n } from "@/core/i18n";
 import { useAppStore } from "@/stores/app-store";
 import { useWorkspaceStore } from "@/features/workspace/workspace-store";
 import { DesktopHistorySearch } from "@/features/sessions/DesktopHistorySearch";
-import { EmbeddedConversation } from "../../conversation";
+import { EmbeddedConversation } from "../../desktop-embedded-conversation";
 import { HistorySearchPanel, historyAccessScope, historyCopy } from "@agentkib/session-ui";
 import { render } from "../../desktop-reader-test-utils";
 

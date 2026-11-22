@@ -24,7 +24,7 @@ import {
   messageImageScope,
   useSessionImageLoader,
 } from "@agentkib/session-ui";
-import { useSessionController } from "./use-session-controller";
+import { useSessionController } from "../../web-session-controller";
 import {
   createSessionImageLoader,
   invalidateSessionImages,

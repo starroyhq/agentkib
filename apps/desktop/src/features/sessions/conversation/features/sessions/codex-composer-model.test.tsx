@@ -7,7 +7,7 @@ import type { CodexSessionSettings } from "@agentkib/web-client";
 import { createRef } from "react";
 import { confirmsComposerSettings, planModeCopy } from "@agentkib/session-ui";
 import { CodexComposerControls, type ComposerControlsHandle } from "@agentkib/session-ui";
-import type { useSession } from "./session-context";
+import type { useSession } from "../../desktop-session-context";
 import { codexCopy } from "../../codex-copy";
 
 let state: ReturnType<typeof useSession>;

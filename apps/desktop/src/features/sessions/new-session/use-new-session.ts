@@ -31,7 +31,7 @@ import {
 import { createDesktopConversationClient } from "@/core/conversation-bridge";
 import type { SupportedLocale } from "@/core/types";
 import { codexReason } from "../conversation/codex-copy";
-import { managedErrorCopy } from "../conversation/features/sessions/managed-error-copy";
+import { managedErrorCopy } from "@agentkib/session-ui";
 
 export const newSessionOptionsKey = (agent: ManagedAgent, workspaceId?: string) =>
   workspaceId ? ["new-session-options", agent, workspaceId] : ["new-session-options", agent];

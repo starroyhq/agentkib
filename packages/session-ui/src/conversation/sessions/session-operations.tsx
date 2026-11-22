@@ -1,15 +1,13 @@
-import {
-  sessionDetailCapabilities,
-  type Access,
-  type ConversationSessionSummary,
-  type WebClient,
-} from "@agentkib/web-client";
+import { sessionDetailCapabilities } from "@agentkib/web-client";
 import type { ComponentProps, ComponentType, ReactNode } from "react";
-import type { InteractionLocale } from "../../interaction-model";
 import { requestReadStateRefresh } from "../../read-state";
 import { SessionDetailOperations } from "../../session-detail-operations";
 import { useSessionPlatform } from "../../session-platform";
 import { ProjectAgentPanel, type ProjectAgentPanelClient } from "./project-agent-panel";
+import {
+  SessionReceiptRecovery,
+  type SessionReceiptRecoveryProps,
+} from "./session-receipt-recovery";
 import { webLayoutCopy } from "./web-layout-copy";
 
 export function SessionOperations({
@@ -19,24 +17,15 @@ export function SessionOperations({
   projectAgentClient,
   hostPanels,
   ExecutionControls,
-  ReceiptRecovery,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  session: Pick<
-    ComponentProps<typeof ProjectAgentPanel>,
-    "selected" | "choose" | "formatCatalogTime"
-  > & {
-    locale: InteractionLocale;
-    t: ComponentProps<typeof SessionDetailOperations>["labels"];
-    current?: Pick<ConversationSessionSummary, "agent">;
-    access?: Access;
-    client: WebClient;
-    busy: boolean;
-    embedded?: boolean;
-    setModal: ComponentProps<typeof SessionDetailOperations>["onShowModal"];
-    refresh(manual: boolean): Promise<void>;
-  };
+  session: SessionReceiptRecoveryProps["session"] &
+    Pick<ComponentProps<typeof ProjectAgentPanel>, "choose" | "formatCatalogTime"> & {
+      t: ComponentProps<typeof SessionDetailOperations>["labels"];
+      embedded?: boolean;
+      setModal: ComponentProps<typeof SessionDetailOperations>["onShowModal"];
+    };
   projectAgentClient: ProjectAgentPanelClient;
   hostPanels?: ReactNode;
   ExecutionControls: ComponentType<{
@@ -46,7 +35,6 @@ export function SessionOperations({
     shortcuts: ReactNode;
     ownership: ReactNode;
   }>;
-  ReceiptRecovery: ComponentType<{ renderContent: (content: ReactNode) => ReactNode }>;
 }) {
   const { kind, components, readScope } = useSessionPlatform();
   const { t, locale, current, selected, client, access, setModal, refresh, busy, embedded } =
@@ -84,7 +72,8 @@ export function SessionOperations({
       controls={
         hasExecutionControls
           ? (shortcuts) => (
-              <ReceiptRecovery
+              <SessionReceiptRecovery
+                session={session}
                 renderContent={(ownership) => (
                   <ExecutionControls
                     open={open}

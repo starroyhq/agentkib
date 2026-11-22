@@ -4,10 +4,10 @@ import { afterEach, expect, it, vi } from "vitest";
 import { catalogCopy } from "@agentkib/session-ui";
 import { dictionaries } from "@/features/conversation/i18n";
 import { render } from "@/features/conversation/web-reader-test-utils";
-import { SessionDialogs } from "@/features/conversation/features/sessions/session-dialogs";
+import { SessionDialogs } from "@/features/conversation/web-session-dialogs";
 
 const MetadataContext = createContext<Record<string, unknown> | null>(null);
-vi.mock("@/features/conversation/features/sessions/session-context", () => ({
+vi.mock("@/features/conversation/web-session-context", () => ({
   useSession: () => useContext(MetadataContext),
 }));
 

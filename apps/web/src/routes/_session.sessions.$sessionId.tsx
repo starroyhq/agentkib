@@ -3,7 +3,7 @@ import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { SessionReader } from "@/features/conversation/features/sessions/web-session-reader";
 import { buttonVariants } from "@/features/conversation/components/ui/button";
 import { cn } from "@/features/conversation/lib/utils";
-import { useSession } from "@/features/conversation/features/sessions/session-context";
+import { useSession } from "@/features/conversation/web-session-context";
 export const Route = createFileRoute("/_session/sessions/$sessionId")({ component: Session });
 function Session() {
   const { sessionId } = Route.useParams();

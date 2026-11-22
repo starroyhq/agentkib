@@ -1,5 +1,5 @@
 import { createRoot } from "react-dom/client";
-import { EmbeddedConversation } from "@/features/sessions/conversation/conversation";
+import { EmbeddedConversation } from "@/features/sessions/conversation/desktop-embedded-conversation";
 import { WebClient } from "@agentkib/web-client";
 import { createDesktopConversationAdapter } from "../core/conversation-bridge";
 import "../styles.css";

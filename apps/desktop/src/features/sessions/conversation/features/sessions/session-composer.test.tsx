@@ -16,8 +16,8 @@ import { SessionComposer } from "@/features/sessions/conversation/desktop-sessio
 import { composerLayoutCopy } from "@agentkib/session-ui";
 import { codexCopy } from "../../codex-copy";
 import type { CodexResource } from "@agentkib/session-ui";
-import type { SessionPanels } from "./session-panels";
-import type { SessionController } from "./use-session-controller";
+import type { SessionPanels } from "@agentkib/session-ui";
+import type { SessionController } from "../../desktop-session-controller";
 
 const doubles = vi.hoisted(() => ({
   session: {} as Partial<SessionController>,
@@ -28,16 +28,16 @@ const doubles = vi.hoisted(() => ({
   upload: vi.fn(),
   resumeCommand: vi.fn(),
 }));
-vi.mock("./session-navigation", () => ({ useSessionNavigate: () => doubles.navigate }));
-vi.mock("./session-context", () => ({
+vi.mock("../../desktop-session-navigation", () => ({ useSessionNavigate: () => doubles.navigate }));
+vi.mock("../../desktop-session-context", () => ({
   useSession: () => {
     const [message, setMessage] = useState("");
     return { ...doubles.session, message, setMessage } as SessionController;
   },
 }));
-vi.mock("./session-panels", () => ({ useSessionPanels: () => doubles.panels }));
 vi.mock("@agentkib/session-ui", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@agentkib/session-ui")>()),
+  useSessionPanels: () => doubles.panels,
   SessionContextUsageGauge: () => null,
   CodexComposerControls: ({
     action,

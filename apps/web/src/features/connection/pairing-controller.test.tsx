@@ -2,7 +2,7 @@ import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { FormEvent } from "react";
 import { WebClient, type Access } from "@agentkib/web-client";
-import { useSessionController } from "@/features/conversation/features/sessions/use-session-controller";
+import { useSessionController } from "@/features/conversation/web-session-controller";
 import { pairingErrorCopy, pairingErrorText } from "./pairing-error-copy";
 
 afterEach(() => {

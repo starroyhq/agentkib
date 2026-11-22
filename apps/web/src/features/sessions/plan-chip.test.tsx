@@ -6,8 +6,8 @@ import { render } from "@/features/conversation/web-reader-test-utils";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CodexSessionSettings } from "@agentkib/web-client";
 import { CodexComposerControls, type ComposerControlsHandle } from "@agentkib/session-ui";
-import type { useSession } from "../conversation/features/sessions/session-context";
-import { codexCopy } from "../conversation/codex-copy";
+import type { useSession } from "../conversation/web-session-context";
+import { codexCopy, codexReason } from "../conversation/codex-copy";
 import { sessionAgentCopy } from "@agentkib/session-ui";
 import { planModeCopy } from "@agentkib/session-ui";
 
@@ -129,7 +129,9 @@ describe("plan mode in the Web composer", () => {
     render(<CodexComposerControls session={state} {...props} />);
     const cancel = await screen.findByRole("button", { name: "Exit Plan mode" });
     fireEvent.click(cancel);
-    expect(await screen.findByRole("alert")).toBeVisible();
+    const alert = await screen.findByRole("alert");
+    expect(alert).toBeVisible();
+    expect(alert).toHaveTextContent(codexReason("en-US", "request_failed", "web").text);
     expect(cancel).toBeVisible();
     expect(await openPlan()).toHaveAttribute("aria-pressed", "true");
   });

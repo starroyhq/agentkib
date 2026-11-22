@@ -243,7 +243,7 @@ function setIndexEnabled(enabled: boolean) {
 
 beforeAll(async () => {
   // Load the real conversation module before testing navigation between mounted views.
-  await import("./conversation/conversation");
+  await import("./conversation/desktop-embedded-conversation");
 });
 
 beforeEach(async () => {

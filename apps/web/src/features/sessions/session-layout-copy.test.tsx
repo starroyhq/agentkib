@@ -2,7 +2,7 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ReactNode } from "react";
 import { dictionaries } from "@/features/conversation/i18n";
-import { useSession } from "@/features/conversation/features/sessions/session-context";
+import { useSession } from "@/features/conversation/web-session-context";
 import { SessionLayout } from "./session-layout";
 
 vi.mock("@tanstack/react-router", () => ({
@@ -13,11 +13,11 @@ vi.mock("@tanstack/react-router", () => ({
   Link: ({ children }: { children: ReactNode }) => <a>{children}</a>,
 }));
 vi.mock("@/providers/environment", () => ({ useEnvironment: () => ({ hosted: false }) }));
-vi.mock("@/features/conversation/features/sessions/session-context", () => ({
+vi.mock("@/features/conversation/web-session-context", () => ({
   SessionProvider: ({ children }: { children: ReactNode }) => children,
   useSession: vi.fn(),
 }));
-vi.mock("@/features/conversation/features/sessions/session-dialogs", () => ({
+vi.mock("@/features/conversation/web-session-dialogs", () => ({
   SessionDialogs: () => null,
 }));
 vi.mock("@/features/connection/pairing-page", () => ({ PairingPage: () => null }));

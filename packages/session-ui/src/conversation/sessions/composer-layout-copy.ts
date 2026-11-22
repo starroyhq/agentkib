@@ -10,6 +10,7 @@ const copy = {
     reloadDraft: "重新载入",
     settingsPending: "已保存设置，发送后确认生效状态。",
     settingsUnknown: "设置是否生效尚未确认",
+    settingsWriting: "正在保存设置…",
     done: "完成",
     selected: "已选",
     help: "发送说明",
@@ -30,6 +31,7 @@ const copy = {
     reloadDraft: "重新載入",
     settingsPending: "已儲存設定，傳送後確認是否生效。",
     settingsUnknown: "設定是否生效尚未確認",
+    settingsWriting: "正在儲存設定…",
     done: "完成",
     selected: "已選",
     help: "傳送說明",
@@ -50,6 +52,7 @@ const copy = {
     reloadDraft: "Reload",
     settingsPending: "Settings saved. They’ll be confirmed after you send.",
     settingsUnknown: "Setting status unconfirmed",
+    settingsWriting: "Saving settings…",
     done: "Done",
     selected: "Selected",
     help: "Sending help",
@@ -72,6 +75,7 @@ const copy = {
     reloadDraft: "再読み込み",
     settingsPending: "設定を保存しました。送信後に反映を確認します。",
     settingsUnknown: "設定の反映を確認中",
+    settingsWriting: "設定を保存中…",
     done: "完了",
     selected: "選択済み",
     help: "送信について",
@@ -85,6 +89,27 @@ const copy = {
   },
 } satisfies Record<Locale, Record<string, string>>;
 export const composerLayoutCopy = copy;
+
+type SettingsFeedback = { status: "writing" | "uncertain" | "notDispatched"; reason?: string };
+
+export function composerSettingsStatus(
+  locale: Locale,
+  notice: SettingsFeedback | undefined,
+  explain: (reason: string) => string,
+  notDispatched: string,
+) {
+  if (!notice) return undefined;
+  const copy = composerLayoutCopy[locale];
+  switch (notice.status) {
+    case "writing":
+      return copy.settingsWriting;
+    case "uncertain":
+      return copy.settingsUnknown;
+    case "notDispatched":
+      return notice.reason ? explain(notice.reason) : notDispatched;
+  }
+}
+
 const terms: Record<Locale, Record<string, string>> = {
   "zh-CN": {
     none: "无",

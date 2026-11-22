@@ -9,7 +9,7 @@ import {
   type Live,
   type SessionStreamHandlers,
 } from "@agentkib/web-client";
-import { useSessionController } from "@/features/conversation/features/sessions/use-session-controller";
+import { useSessionController } from "@/features/conversation/web-session-controller";
 
 beforeEach(() => sessionStorage.clear());
 afterEach(() => {

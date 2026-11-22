@@ -3,7 +3,7 @@ import { act, cleanup, fireEvent, screen, waitFor, within } from "@testing-libra
 import { render } from "@/features/conversation/web-reader-test-utils";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SessionComposer } from "@/features/conversation/web-session-composer";
-import { useSession } from "@/features/conversation/features/sessions/session-context";
+import { useSession } from "@/features/conversation/web-session-context";
 import { dictionaries, type Locale } from "@/features/conversation/i18n";
 import { composerLayoutCopy } from "@agentkib/session-ui";
 import { codexCopyForSurface } from "@/features/conversation/codex-copy";
@@ -12,7 +12,7 @@ import type { CodexGoalState, CodexSessionSettings } from "@agentkib/web-client"
 import { composerAddCopy, composerModelCopy, planModeCopy } from "@agentkib/session-ui";
 
 const modelReset = () => screen.getByRole("button", { name: "恢复默认模型" });
-vi.mock("@/features/conversation/features/sessions/session-context", () => ({
+vi.mock("@/features/conversation/web-session-context", () => ({
   useSession: vi.fn(),
 }));
 let state: ReturnType<typeof useSession>;

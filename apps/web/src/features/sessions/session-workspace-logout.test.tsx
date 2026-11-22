@@ -2,10 +2,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { useEffect } from "react";
 import { WebClient, type ConversationClientBridge } from "@agentkib/web-client";
-import {
-  SessionProvider,
-  useSession,
-} from "@/features/conversation/features/sessions/session-context";
+import { SessionProvider, useSession } from "@/features/conversation/web-session-context";
 import type { Locale } from "@/features/conversation/i18n";
 import { dictionaries } from "@/features/conversation/i18n";
 import { SessionWorkspace } from "./session-workspace";
@@ -35,9 +32,6 @@ vi.mock("@tanstack/react-router", () => ({
 }));
 vi.mock("@/features/conversation/features/catalog/session-catalog", () => ({
   SessionCatalog: () => null,
-}));
-vi.mock("@/features/conversation/features/sessions/session-receipt-recovery", () => ({
-  SessionReceiptRecovery: () => null,
 }));
 vi.mock("@agentkib/session-ui", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@agentkib/session-ui")>()),

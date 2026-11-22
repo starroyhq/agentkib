@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef } from "react";
 import { useNavigate } from "@tanstack/react-router";
-import { useSession } from "@/features/conversation/features/sessions/session-context";
+import { useSession } from "@/features/conversation/web-session-context";
 
 /**
  * Opens a session just created once the session directory lists it; the session page shows a

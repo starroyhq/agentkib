@@ -5,19 +5,12 @@ import { cleanup, fireEvent, screen } from "@testing-library/react";
 import { render } from "../../desktop-reader-test-utils";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DesktopSessionOperations } from "./desktop-session-operations";
-import { SessionPanelsContext } from "./session-panels";
+import { SessionPanelsContext } from "@agentkib/session-ui";
 import { claudeConnectionCopy } from "@agentkib/session-ui";
 import { conversationWords } from "@/core/i18n";
-import type { SessionController } from "./use-session-controller";
+import type { SessionController } from "../../desktop-session-controller";
 let session: SessionController;
-vi.mock("./session-context", () => ({ useSession: () => session }));
-vi.mock("./session-receipt-recovery", () => ({
-  SessionReceiptRecovery: ({
-    renderContent,
-  }: {
-    renderContent: (content: ReactNode) => ReactNode;
-  }) => renderContent(null),
-}));
+vi.mock("../../desktop-session-context", () => ({ useSession: () => session }));
 vi.mock("@agentkib/session-ui", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@agentkib/session-ui")>()),
   CodexTools: ({ open, shortcuts }: { open: boolean; shortcuts: ReactNode }) =>

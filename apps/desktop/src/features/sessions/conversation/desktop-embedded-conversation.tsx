@@ -1,3 +1,11 @@
+import {
+  EmbeddedSessionLoading,
+  EmbeddedSessionShell,
+  useEmbeddedEmptySelection,
+  useEmbeddedSessionSelection,
+  useEmbeddedSessionShell,
+  useExternalSessionNavigation,
+} from "@agentkib/session-ui";
 import { MAX_MESSAGE_LENGTH } from "@agentkib/conversation-state";
 import {
   ComposerPrimaryAction,
@@ -12,9 +20,9 @@ import {
 import {
   createContext,
   useContext,
+  useCallback,
   useEffect,
   useImperativeHandle,
-  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -30,15 +38,13 @@ import {
   RouterProvider,
   useParams,
 } from "@tanstack/react-router";
-import { LoaderCircle } from "lucide-react";
 import type { ConversationCatalog, WebClient } from "@agentkib/web-client";
 import type { SupportedLocale as Locale } from "@/core/types";
-import { SessionProvider, useSession } from "./features/sessions/session-context";
+import { SessionProvider, useSession } from "./desktop-session-context";
 import { SessionReader } from "./features/sessions/desktop-session-reader";
-import { SessionDialogs } from "./features/sessions/session-dialogs";
-import { SessionPanelsContext } from "./features/sessions/session-panels";
+import { SessionDialogs } from "./desktop-session-dialogs";
 import { Button } from "@/components/ui/button";
-import { useSessionNavigate } from "./features/sessions/session-navigation";
+import { useSessionNavigate } from "./desktop-session-navigation";
 import { ConversationWindowTools } from "../conversation-window-tools";
 import {
   useConversationDisplayLive,
@@ -102,17 +108,34 @@ function EmbeddedRoot() {
 function EmbeddedShell() {
   const props = useEmbedded();
   const session = useSession();
+  const { refresh: refreshSession, setHistorySearchOpen } = session;
+  const { sessionId } = props;
   const navigate = useSessionNavigate();
-  const [filesOpen, setFilesOpen] = useState(false);
-  const [actionsOpen, setActionsOpen] = useState(false);
   const [terminalOpen, setTerminalOpen] = useState(false);
   const [statusInToolbar, setStatusInToolbar] = useState(false);
+  const refresh = useCallback(() => {
+    requestReadStateRefresh("desktop-local", sessionId);
+    void refreshSession(true, true);
+  }, [sessionId, refreshSession]);
+  const panels = useEmbeddedSessionShell({
+    sessionId: props.sessionId,
+    refreshRevision: props.refreshRevision,
+    locale: props.locale,
+    onCatalogChange: props.onCatalogChange,
+    selected: session.selected,
+    sessions: session.sessions,
+    setLocale: session.setLocale,
+    refresh,
+    modal: session.modal,
+    setTerminalOpen,
+  });
+  const { filesOpen, setFilesOpen, setActionsOpen } = panels;
   useImperativeHandle(
     props.controlsRef,
     () => ({
       openPanel(panel) {
         if (panel === "search") {
-          session.setHistorySearchOpen(true);
+          setHistorySearchOpen(true);
           return;
         }
         if (!session.selected) return;
@@ -126,7 +149,14 @@ function EmbeddedShell() {
           setTerminalOpen(true);
       },
     }),
-    [session.selected, session.current?.agent, session.access?.device?.files],
+    [
+      session.selected,
+      session.current?.agent,
+      session.access?.device?.files,
+      setActionsOpen,
+      setFilesOpen,
+      setHistorySearchOpen,
+    ],
   );
   const panelRequest = useMemo(
     () => ({ panel: props.initialPanel, sessionId: props.sessionId }),
@@ -191,96 +221,47 @@ function EmbeddedShell() {
     session.busy,
     session.modal,
     session.notice,
+    setActionsOpen,
+    setFilesOpen,
     session.setHistorySearchOpen,
   ]);
-  const previousCatalog = useRef(session.sessions);
-  const hostRefresh = useRef<{
-    revision?: number;
-    pending?: { sessionId?: string };
-  }>({ revision: props.refreshRevision });
-  useEffect(() => {
-    const request = hostRefresh.current;
-    if (request.revision !== props.refreshRevision) {
-      request.revision = props.refreshRevision;
-      request.pending = { sessionId: props.sessionId };
-    }
-    // A selection can change before the embedded router finishes navigation.
-    // Never refresh the old record for a newly selected host record.
-    if (request.pending?.sessionId !== props.sessionId) request.pending = undefined;
-    if (!request.pending || (session.selected || undefined) !== props.sessionId) return;
-    request.pending = undefined;
-    requestReadStateRefresh("desktop-local", props.sessionId);
-    void session.refresh(true, true);
-  }, [props.refreshRevision, props.sessionId, session.selected, session.refresh]);
-  useEffect(() => {
-    session.setLocale(props.locale);
-  }, [props.locale, session.setLocale]);
-  useEffect(() => {
-    if (previousCatalog.current === session.sessions) return;
-    previousCatalog.current = session.sessions;
-    props.onCatalogChange?.();
-  }, [session.sessions, props.onCatalogChange]);
-  useLayoutEffect(() => {
-    setFilesOpen(false);
-    setActionsOpen(false);
-    setTerminalOpen(false);
-  }, [session.selected]);
-  useEffect(() => {
-    if (session.modal) {
-      setFilesOpen(false);
-      setActionsOpen(false);
-      setTerminalOpen(false);
-    }
-  }, [session.modal]);
   return (
-    <SessionPanelsContext
-      value={{
-        filesOpen,
-        setFilesOpen,
-        actionsOpen,
-        setActionsOpen,
-        terminalOpen,
-        setTerminalOpen,
-        statusInToolbar,
-      }}
-    >
-      <div className="agentkib-conversation flex min-h-0 flex-1 flex-col bg-background text-foreground">
-        <ConversationWindowTools
-          filesOpen={filesOpen}
-          onFilesOpenChange={setFilesOpen}
-          onStatusInToolbarChange={setStatusInToolbar}
-        />
-        <PendingCenter
-          compact
-          session={session}
-          copy={codexCopy[session.locale]}
-          onNavigate={(sessionId) => {
-            void navigate({ to: "/sessions/$sessionId", params: { sessionId } });
-          }}
-        />
-        {session.error && (!statusInToolbar || session.online || session.incompatible) && (
-          <p role="alert" className="px-4 py-2 text-sm text-destructive-text">
-            {session.incompatible ? session.t.lanIncompatible : session.t.error}{" "}
-            <Button
-              variant="outline"
-              onClick={() => {
-                requestReadStateRefresh("desktop-local", session.selected);
-                void session.refresh(true);
-              }}
-            >
-              {session.t.retry}
-            </Button>
-          </p>
-        )}
-        {session.catalogNotice && (
-          <p role="status" className="px-4 py-2 text-sm text-muted-foreground">
-            {session.c.excludedSession}
-          </p>
-        )}
-        <Outlet />
-        <SessionDialogs />
-      </div>
-    </SessionPanelsContext>
+    <EmbeddedSessionShell panels={{ ...panels, terminalOpen, setTerminalOpen, statusInToolbar }}>
+      <ConversationWindowTools
+        filesOpen={filesOpen}
+        onFilesOpenChange={setFilesOpen}
+        onStatusInToolbarChange={setStatusInToolbar}
+      />
+      <PendingCenter
+        compact
+        session={session}
+        copy={codexCopy[session.locale]}
+        onNavigate={(sessionId) => {
+          void navigate({ to: "/sessions/$sessionId", params: { sessionId } });
+        }}
+      />
+      {session.error && (!statusInToolbar || session.online || session.incompatible) && (
+        <p role="alert" className="px-4 py-2 text-sm text-destructive-text">
+          {session.incompatible ? session.t.lanIncompatible : session.t.error}{" "}
+          <Button
+            variant="outline"
+            onClick={() => {
+              requestReadStateRefresh("desktop-local", session.selected);
+              void session.refresh(true);
+            }}
+          >
+            {session.t.retry}
+          </Button>
+        </p>
+      )}
+      {session.catalogNotice && (
+        <p role="status" className="px-4 py-2 text-sm text-muted-foreground">
+          {session.c.excludedSession}
+        </p>
+      )}
+      <Outlet />
+      <SessionDialogs />
+    </EmbeddedSessionShell>
   );
 }
 const noParkedSubscription = () => () => {};
@@ -337,15 +318,12 @@ function EmbeddedReader() {
   const props = useEmbedded();
   const params = useParams({ strict: false }) as { sessionId?: string };
   const session = useSession();
-  const { choose, selected, sessions, t, excludedSessionIds } = session;
+  const { selected, t } = session;
   const windowConversation = useDesktopConversationWindow();
   const navigate = useSessionNavigate();
   const id = params.sessionId;
   const displayLive = useConversationDisplayLive(id === props.sessionId ? id : undefined);
-  const excluded = !!id && excludedSessionIds.has(id);
-  const readable = sessions.some(
-    (session) => session.id === id && session.availability === "readable",
-  );
+  const { excluded, readable } = useEmbeddedSessionSelection(props, id, session, navigate);
   // The parked subscription and the window's verified catalog only authorize
   // display of the retained history. The active reader still checks fresh access.
   const preview = useSyncExternalStore(
@@ -367,32 +345,6 @@ function EmbeddedReader() {
       return windowConversation.pageCache.peek(id);
     },
   );
-  useEffect(() => {
-    // A parent selection changes before the memory router finishes navigation.
-    // Do not report the previously rendered route back as a new user selection.
-    if (props.externalNavigation.current) {
-      if (props.sessionId !== id) return;
-      props.externalNavigation.current = false;
-    }
-    if (id && excluded) {
-      void choose(id);
-      props.onSessionChange(undefined);
-      void navigate({ to: "/sessions", replace: true });
-      return;
-    }
-    if (!id || !readable) return;
-    void choose(id);
-    if (props.sessionId !== id) props.onSessionChange(id);
-  }, [
-    id,
-    readable,
-    choose,
-    excluded,
-    navigate,
-    props.sessionId,
-    props.onSessionChange,
-    props.externalNavigation,
-  ]);
   if (excluded) return null;
   if (id && readable && selected === id) return <SessionReader />;
   if (id && preview) {
@@ -416,30 +368,13 @@ function EmbeddedReader() {
       />
     );
   }
-  return (
-    <div
-      role="status"
-      className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 p-6 text-center"
-    >
-      <LoaderCircle
-        aria-hidden="true"
-        className="size-6 animate-spin text-muted-foreground motion-reduce:animate-none"
-      />
-      <p className="text-sm text-muted-foreground">{t.loading}</p>
-    </div>
-  );
+  return <EmbeddedSessionLoading label={t.loading} />;
 }
+
 function EmbeddedEmpty() {
   const props = useEmbedded();
   const { leaveSession, t } = useSession();
-  useEffect(() => {
-    if (props.externalNavigation.current) {
-      if (props.sessionId !== undefined) return;
-      props.externalNavigation.current = false;
-    }
-    leaveSession();
-    if (props.sessionId !== undefined) props.onSessionChange(undefined);
-  }, [leaveSession, props.sessionId, props.onSessionChange, props.externalNavigation]);
+  useEmbeddedEmptySelection(props, leaveSession);
   return <p className="p-6 text-sm text-muted-foreground">{t.sessions}</p>;
 }
 const root = createRootRoute({ component: EmbeddedRoot });
@@ -457,12 +392,7 @@ const routeTree = root.addChildren([reader, empty]);
 
 /** Full conversation controls, without Web pairing, appearance or catalog chrome. */
 export function EmbeddedConversation(props: EmbeddedConversationProps) {
-  const lastExternalSession = useRef(props.sessionId);
-  const externalNavigation = useRef(false);
-  if (lastExternalSession.current !== props.sessionId) {
-    lastExternalSession.current = props.sessionId;
-    externalNavigation.current = true;
-  }
+  const externalNavigation = useExternalSessionNavigation(props.sessionId);
   const [router] = useState(() =>
     createRouter({
       routeTree,

@@ -8,7 +8,7 @@ import { sessionProviderCapabilities, type CodexSessionSettings } from "@agentki
 import { CodexComposerControls } from "@agentkib/session-ui";
 import { codexCopy } from "../../codex-copy";
 import { composerModelCopy } from "@agentkib/session-ui";
-import type { useSession } from "./session-context";
+import type { useSession } from "../../desktop-session-context";
 
 afterEach(cleanup);
 

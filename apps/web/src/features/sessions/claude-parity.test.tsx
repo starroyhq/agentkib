@@ -22,7 +22,7 @@ import { WebApplication } from "@/router";
 import { codexCopyForSurface } from "@/features/conversation/codex-copy";
 import { composerLayoutCopy } from "@agentkib/session-ui";
 import { webLayoutCopy } from "@agentkib/session-ui";
-import { useSessionController } from "@/features/conversation/features/sessions/use-session-controller";
+import { useSessionController } from "@/features/conversation/web-session-controller";
 
 // Exercise the real provider, controller and WebClient against the public API,
 // including revision fencing and the follow-up reads after an accepted mutation.

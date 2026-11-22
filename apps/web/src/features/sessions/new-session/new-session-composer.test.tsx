@@ -25,7 +25,7 @@ const fixture = vi.hoisted(() => ({ session: undefined as unknown as Record<stri
 const planLabel = planModeCopy("en-US").title;
 const addCopy = composerAddCopy("en-US");
 const goalCopy = composerGoalCopy("en-US");
-vi.mock("@/features/conversation/features/sessions/session-context", () => ({
+vi.mock("@/features/conversation/web-session-context", () => ({
   useSession: () => fixture.session,
 }));
 

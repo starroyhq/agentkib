@@ -22,11 +22,8 @@ import {
   createHistoryPagination,
   recordLatestHistoryPage,
 } from "@agentkib/conversation-state";
-import {
-  warmSessionAuthority,
-  type WarmSessionStreamPool,
-  retryBusyRead,
-} from "@agentkib/session-ui";
+import { retryBusyRead } from "../../session-read-retry";
+import { warmSessionAuthority, type WarmSessionStreamPool } from "../../warm-session-stream";
 type Setter<T> = Dispatch<SetStateAction<T>>;
 // These fields cannot grant control or remove an execution/authorization fence.
 // Unknown fields conservatively count as control boundaries.
@@ -52,7 +49,11 @@ export type WarmSessionNavigation = {
   park?: () => void;
   resume?: { generation: number; onCold: () => void };
 };
-interface LiveSyncOptions {
+type SettingsWrite = { sessionId: string; generation: number; controlChanged?: boolean };
+type ReadSettingsControls = RefObject<
+  ((sessionId: string, accept?: (live: Live) => boolean) => Promise<void>) | undefined
+>;
+interface LiveSyncCommon {
   warmStreams: WarmSessionStreamPool;
   warmScope?: string;
   warmNavigation: RefObject<WarmSessionNavigation>;
@@ -84,14 +85,25 @@ interface LiveSyncOptions {
   setPage: Setter<ConversationEventPage | undefined>;
   setLiveContentVersion?: Setter<number>;
   setUsageEpoch?: Setter<string>;
-  settingsInFlight: RefObject<
-    { sessionId: string; generation: number; controlChanged?: boolean } | undefined
-  >;
-  readSettingsControls: RefObject<
-    ((sessionId: string, accept?: (live: Live) => boolean) => Promise<void>) | undefined
-  >;
 }
+type LiveSyncOptions = LiveSyncCommon &
+  (
+    | {
+        surface: "desktop";
+        settingsInFlight: RefObject<SettingsWrite | undefined>;
+        readSettingsControls: ReadSettingsControls;
+        isSettingsWriteActive?: never;
+      }
+    | {
+        surface: "web";
+        settingsInFlight?: never;
+        readSettingsControls?: ReadSettingsControls;
+        isSettingsWriteActive?: (sessionId: string) => boolean;
+      }
+  );
+
 export function useSessionLive({
+  surface,
   warmStreams,
   warmScope,
   warmNavigation,
@@ -125,7 +137,9 @@ export function useSessionLive({
   setUsageEpoch,
   settingsInFlight,
   readSettingsControls,
+  isSettingsWriteActive,
 }: LiveSyncOptions) {
+  const desktop = surface === "desktop";
   useEffect(() => {
     if (!selected || access?.status !== "approved" || access.protocolVersion !== 2) return;
     streamReady.current = false;
@@ -148,6 +162,7 @@ export function useSessionLive({
     let historyRetry: number | undefined;
     let historyRecoveryPending = false;
     let historyWaitingForSettings = false;
+    let webSettingsHistory: "waiting" | "retry" | undefined;
     let settingsHistoryWake = 0;
     let controlRequest = 0;
     let controlGeneration = 0;
@@ -158,10 +173,11 @@ export function useSessionLive({
     let sourceItems: ConversationEvent[] = nativeCoverage.current.items;
     const current = () => !closed && g === generation.current && selection.current === id;
     const selectedSettingsWrite = () => {
-      const write = settingsInFlight.current;
+      const write = settingsInFlight?.current;
       return write?.sessionId === id && write.generation === g ? write : undefined;
     };
-    let historyRetriedForWrite: ReturnType<typeof selectedSettingsWrite>;
+    let historyRetriedForWrite: SettingsWrite | undefined;
+    const waitingForSettings = () => historyWaitingForSettings || webSettingsHistory === "waiting";
     const scheduleHistory = () => {
       if (historyWaitingForSettings) return;
       window.clearTimeout(historyRetry);
@@ -174,8 +190,9 @@ export function useSessionLive({
     };
     const wakeSettingsHistory = () => {
       settingsHistoryWake++;
-      if (!historyWaitingForSettings) return;
-      historyWaitingForSettings = false;
+      if (!waitingForSettings()) return;
+      if (desktop) historyWaitingForSettings = false;
+      else webSettingsHistory = "retry";
       if (!historyLoading && historyDirty) scheduleHistory();
     };
     const loadHistory = () => {
@@ -187,6 +204,9 @@ export function useSessionLive({
       const wake = refreshWake.current;
       const settingsWakeAtRead = settingsHistoryWake;
       const writeAtRead = selectedSettingsWrite();
+      const retryAfterSettings = webSettingsHistory === "retry";
+      webSettingsHistory = undefined;
+      const duringSettings = isSettingsWriteActive?.(id);
       void client
         .events(id)
         .then((page) => {
@@ -240,17 +260,23 @@ export function useSessionLive({
         .catch((error) => {
           if (current() && request === historyRequest) {
             if (error instanceof ApiError && error.code === "operation_busy") {
-              const activeWrite = selectedSettingsWrite();
-              const write = activeWrite ?? writeAtRead;
-              if (write && historyRetriedForWrite !== write) {
-                // A native settings command can append history before the host frees admission.
-                // Keep that invalidation and retry only history once the write settles.
-                historyRetriedForWrite = write;
+              if (desktop) {
+                const activeWrite = selectedSettingsWrite();
+                const write = activeWrite ?? writeAtRead;
+                if (write && historyRetriedForWrite !== write) {
+                  // Keep the invalidation when the native write still holds admission.
+                  historyRetriedForWrite = write;
+                  historyDirty = true;
+                  historyWaitingForSettings =
+                    !!activeWrite &&
+                    !activeWrite.controlChanged &&
+                    settingsWakeAtRead === settingsHistoryWake;
+                  return;
+                }
+              } else if (!retryAfterSettings && (duringSettings || isSettingsWriteActive?.(id))) {
                 historyDirty = true;
-                historyWaitingForSettings =
-                  !!activeWrite &&
-                  !activeWrite.controlChanged &&
-                  settingsWakeAtRead === settingsHistoryWake;
+                webSettingsHistory =
+                  settingsWakeAtRead === settingsHistoryWake ? "waiting" : "retry";
                 return;
               }
               readBusy(wake, g);
@@ -267,13 +293,13 @@ export function useSessionLive({
         })
         .finally(() => {
           historyLoading = false;
-          if (current() && historyDirty) scheduleHistory();
+          if (current() && historyDirty && webSettingsHistory !== "waiting") scheduleHistory();
         });
     };
     const readHistory = () => {
       historyRequest++;
       historyDirty = true;
-      if (historyLoading || historyWaitingForSettings) return;
+      if (historyLoading || waitingForSettings()) return;
       if (historyRetry !== undefined) scheduleHistory();
       else loadHistory();
     };
@@ -344,17 +370,18 @@ export function useSessionLive({
         quiet = false,
         accept?: (live: Live) => boolean,
       ): Promise<void> => {
-        if (!quiet) {
+        const settingsRead = desktop ? quiet : !!accept || isSettingsWriteActive?.(id);
+        if (!settingsRead) {
           controlReconciliationPending.current = true;
           setControlReady(false);
         }
-        if (!quiet) publishSessionInvalidation(client, id, ["receipts"]);
+        if (!desktop || !quiet) publishSessionInvalidation(client, id, ["receipts"]);
         const request = ++controlRequest;
         const wake = refreshWake.current;
         const boundary = controlGeneration;
         const progress: ProgressPatch = new Map();
         progressPatch = progress;
-        return (quiet ? retryBusyRead(() => client.live(id)) : client.live(id))
+        return (settingsRead ? retryBusyRead(() => client.live(id)) : client.live(id))
           .then((live) => {
             if (!active() || request !== controlRequest) return;
             if (boundary !== controlGeneration) {
@@ -364,7 +391,10 @@ export function useSessionLive({
             }
             progressPatch = undefined;
             controlReconciliationPending.current = false;
-            if (live.sessionId !== id) throw new ApiError(409, "session-state-unavailable");
+            // Desktop validates every reconciliation response. The Web settings
+            // callback supplies its own response validation below.
+            if (desktop && live.sessionId !== id)
+              throw new ApiError(409, "session-state-unavailable");
             if (accept && !accept(live)) {
               setControlReady(false);
               return;
@@ -394,6 +424,14 @@ export function useSessionLive({
           })
           .catch((error) => {
             if (!active() || request !== controlRequest) return;
+            if (!desktop && settingsRead) {
+              progressPatch = undefined;
+              controlReconciliationPending.current = false;
+              setControlReady(false);
+              // The write has settled. A failed read cannot make its receipt unknown.
+              if (error instanceof ApiError && [401, 403].includes(error.status)) fail(error, g);
+              return;
+            }
             if (error instanceof ApiError && error.code === "operation_busy") {
               progressPatch = undefined;
               controlReconciliationPending.current = false;
@@ -402,11 +440,19 @@ export function useSessionLive({
             } else fail(error, g);
           });
       };
-      readSettingsControls.current = async (sessionId, accept) => {
-        if (sessionId !== id || !active()) return;
-        await reconcileControls(true, accept);
-        if (active()) wakeSettingsHistory();
-      };
+      if (readSettingsControls) {
+        readSettingsControls.current = desktop
+          ? async (sessionId, accept) => {
+              if (sessionId !== id || !active()) return;
+              await reconcileControls(true, accept);
+              if (active()) wakeSettingsHistory();
+            }
+          : (_sessionId, accept) => {
+              if (!active()) return Promise.resolve();
+              wakeSettingsHistory();
+              return reconcileControls(false, accept);
+            };
+      }
       const disconnected = () => {
         needsDomainRecovery = true;
         snapshotSeen = false;
@@ -471,7 +517,7 @@ export function useSessionLive({
                     "capabilities",
                   ]);
                 needsDomainRecovery = false;
-                if (!selectedSettingsWrite()) wakeSettingsHistory();
+                if (!desktop || !selectedSettingsWrite()) wakeSettingsHistory();
                 setOnline(true);
                 if (!nativeCoverage.current.historyRecoveryFailed) setError(false);
                 streamReady.current = true;
@@ -498,10 +544,11 @@ export function useSessionLive({
             try {
               const changed = JSON.parse(data) as { sessionId?: string };
               if (changed.sessionId !== id) return false;
+              if (!desktop) wakeSettingsHistory();
               const write = selectedSettingsWrite();
               if (write) write.controlChanged = true;
               else void reconcileControls();
-              wakeSettingsHistory();
+              if (desktop) wakeSettingsHistory();
             } catch {
               return false;
             }
@@ -660,7 +707,7 @@ export function useSessionLive({
     return () => {
       closed = true;
       warmNavigation.current.park = undefined;
-      readSettingsControls.current = undefined;
+      if (readSettingsControls) readSettingsControls.current = undefined;
       window.clearTimeout(historyRetry);
       streamReady.current = false;
       setControlReady(false);
@@ -698,7 +745,9 @@ export function useSessionLive({
     streamReady,
     controlReconciliationPending,
     nativeCoverage,
+    desktop,
     settingsInFlight,
     readSettingsControls,
+    isSettingsWriteActive,
   ]);
 }

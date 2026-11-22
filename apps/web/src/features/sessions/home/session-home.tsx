@@ -4,7 +4,7 @@ import { AgentMark, agentName } from "@agentkib/agent-identity";
 import { displaySessionTitle, sessionGroupLabels } from "@agentkib/session-catalog";
 import { formatSessionTime, HomeSessionList } from "@agentkib/session-ui";
 import type { Access, ConversationSessionSummary } from "@agentkib/web-client";
-import { useSession } from "@/features/conversation/features/sessions/session-context";
+import { useSession } from "@/features/conversation/web-session-context";
 import { NewSessionComposer } from "../new-session/new-session-composer";
 import { useOpenWhenListed } from "../new-session/use-open-when-listed";
 import { useHomeAttention } from "./home-attention";

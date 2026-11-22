@@ -4,12 +4,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ConversationEvent } from "@agentkib/web-client";
 import { dictionaries } from "@/features/conversation/i18n";
 import { SessionReader } from "@/features/conversation/features/sessions/web-session-reader";
-import { useSession } from "@/features/conversation/features/sessions/session-context";
+import { useSession } from "@/features/conversation/web-session-context";
 import { webLayoutCopy } from "@agentkib/session-ui";
 import { claudeConnectionReason } from "@agentkib/session-ui";
 import { codexReason } from "@/features/conversation/codex-copy";
 
-vi.mock("@/features/conversation/features/sessions/session-context", () => ({
+vi.mock("@/features/conversation/web-session-context", () => ({
   useSession: vi.fn(),
 }));
 vi.mock("@/features/conversation/features/sessions/session-operations", () => ({

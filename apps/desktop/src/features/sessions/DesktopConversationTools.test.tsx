@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
 // Warm the real lazy module so this suite measures interaction, not the first transform deadline.
-import "./conversation/conversation";
+import "./conversation/desktop-embedded-conversation";
 import {
   act,
   cleanup,
@@ -37,7 +37,7 @@ import { SessionWindowToolbar } from "./SessionWindowToolbar";
 import { useSessionViewStore } from "./session-view-store";
 import { codexCopy } from "./conversation/codex-copy";
 import { claudeConnectionCopy } from "@agentkib/session-ui";
-import { useSessionController } from "./conversation/features/sessions/use-session-controller";
+import { useSessionController } from "./conversation/desktop-session-controller";
 
 const doubles = vi.hoisted(() => ({
   client: undefined as WebClient | undefined,

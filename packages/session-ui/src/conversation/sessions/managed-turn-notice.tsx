@@ -1,9 +1,10 @@
 import { AlertTriangle } from "lucide-react";
 import type { Live } from "@agentkib/web-client";
-import { usageLimitNotice, type SessionSurface } from "@agentkib/session-ui";
-import { Button } from "../../components/ui/button";
-import type { Locale } from "../../i18n";
-import { codexReason } from "../../codex-copy";
+import type { InteractionLocale as Locale } from "../../interaction-model";
+import type { SessionPlatform } from "../../session-platform";
+import type { SessionSurface } from "../../session-surface-copy";
+import { usageLimitNotice } from "../../usage-limit-copy";
+import { codexReason } from "./codex-copy";
 
 type Retry = NonNullable<Live["apiRetry"]>;
 type Agent = "Claude Code" | "Codex";
@@ -35,6 +36,8 @@ export function retryText(locale: Locale, retry: Retry, agent: Agent = "Claude C
  * blocks sending or stopping. A failed Codex turn shows its error in the conversation instead.
  */
 export function ManagedTurnNotice({
+  Button,
+  unavailableReason,
   live,
   locale,
   surface = "desktop",
@@ -42,6 +45,8 @@ export function ManagedTurnNotice({
   onUsageLimitCancel,
   onUsageLimitArm,
 }: {
+  Button: SessionPlatform["components"]["Button"];
+  unavailableReason: SessionPlatform["copy"]["unavailableReason"];
   live?: Live | null;
   locale: Locale;
   surface?: SessionSurface;
@@ -98,7 +103,7 @@ export function ManagedTurnNotice({
     live.status === "idle" &&
     live.reason?.startsWith("claude-auth-failed")
   ) {
-    const explained = codexReason(locale, live.reason, surface);
+    const explained = codexReason(locale, live.reason, surface, unavailableReason);
     text = explained.text;
     technical = explained.technical;
   }

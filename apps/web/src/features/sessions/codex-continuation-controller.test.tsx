@@ -9,16 +9,15 @@ import {
   type Live,
   type ResolvedHistoryReference,
 } from "@agentkib/web-client";
-import { useSessionController } from "@/features/conversation/features/sessions/use-session-controller";
+import { useSessionController } from "@/features/conversation/web-session-controller";
 import { publishSessionInvalidation } from "@agentkib/conversation-state";
-import { sessionDisplayState } from "@/features/conversation/features/sessions/session-display-state";
+import { sessionDisplayState } from "@/features/conversation/web-session-display";
 import { pendingScope, readPending, rememberPending } from "@agentkib/session-ui";
 
-vi.mock("@agentkib/session-ui", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("@agentkib/session-ui")>()),
+vi.mock("../../../../../packages/session-ui/src/conversation/preferences/use-appearance", () => ({
   useAppearance: () => {},
 }));
-vi.mock("@/features/conversation/features/sessions/use-session-live", () => ({
+vi.mock("../../../../../packages/session-ui/src/conversation/sessions/use-session-live", () => ({
   useSessionLive: ({
     selected,
     streamReady,

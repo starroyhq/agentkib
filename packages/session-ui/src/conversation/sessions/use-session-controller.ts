@@ -1,42 +1,46 @@
 import {
   createSessionControl,
-  createWarmSessionStreamPool,
-  warmSessionAuthority,
+  codexSettingsRecoveryReason,
+  type ControlKind,
+  type ControlNotice,
+  type NotDispatchedReason,
+} from "../../session-control";
+import { warmSessionAuthority } from "../../warm-session-stream";
+import {
   createEarlierSessionHistory,
   useSessionHistoryRead,
   type EarlierHistoryFlight,
+} from "../../session-controller-history";
+import {
   completedForkReceipt,
   dispatchSessionAction,
   readPendingControlReceipt,
   verifySettingsWrite,
   settingsNoticeGroup,
-  codexSettingsRecoveryReason,
-  dshNativeStatusDisplay,
-  type ControlKind,
-  type ControlNotice,
-  type NotDispatchedReason,
-  type ContinuationComposerDraft,
-  type ContinuationDraft,
-  claudeConnectionReason,
+} from "../../session-control-receipts";
+import { dshNativeStatusDisplay } from "../../session-continuation";
+import { type ContinuationComposerDraft, type ContinuationDraft } from "./continuation-draft";
+import { claudeConnectionReason } from "./claude-connection-copy";
+import {
   historyMessageText,
   historyReferenceKey,
   referencesWithinBudget,
+} from "../history/history-reference-model";
+import {
   forgetPending,
   pendingScope,
   readPending,
   rememberPending,
   type PendingControl,
-  blockedWhileCompacting,
-  contextUsageCopyForSurface,
-  retryBusyRead,
-  capabilityAccessBinding,
-  useSessionCapabilities,
-  interactionCopy,
-  catalogCopy,
-  unavailableReasonText,
-  useAppearance,
-} from "@agentkib/session-ui";
-import { sessionImages } from "../../session-platform";
+} from "./pending-controls";
+import { blockedWhileCompacting } from "./session-activity";
+import { contextUsageCopyForSurface } from "../../context-usage-copy";
+import { retryBusyRead } from "../../session-read-retry";
+import { capabilityAccessBinding, useSessionCapabilities } from "../../use-session-capabilities";
+import { interactionCopy } from "../interactions/interaction-copy";
+import { catalogCopy } from "../../catalog-copy";
+import { unavailableReasonText } from "../live-status";
+import { useAppearance } from "../preferences/use-appearance";
 import type { ResolvedHistoryReference } from "@agentkib/web-client";
 import {
   createConversationStore,
@@ -62,6 +66,7 @@ import {
   useCallback,
   useEffect,
   useLayoutEffect,
+  useMemo,
   useRef,
   useState,
   type FormEvent,
@@ -89,9 +94,10 @@ import {
   type Live,
   type UserQuestionRequest,
 } from "@agentkib/web-client";
-import { displaySessionTitle, isSessionListed } from "@agentkib/session-catalog";
-import type { CatalogStatus } from "../catalog/session-catalog";
-import { dictionaries, type Locale } from "../../i18n";
+import type { InteractionLocale as Locale } from "../../interaction-model";
+import type { SessionPlatform } from "../../session-platform";
+import type { createSessionImageScope } from "./session-image-scope";
+
 type ForkNavigation = {
   sourceId: string;
   generation: number;
@@ -102,34 +108,71 @@ type ForkNavigation = {
   resolve: (id: string | undefined) => void;
   completion?: Promise<string | undefined>;
 };
-type SettingsTarget = "model" | "permissions" | "settings";
-type SettingsNotice = {
-  sessionId: string;
-  scope: string;
-  target: SettingsTarget;
+type SettingsTarget = ReturnType<typeof settingsNoticeGroup>;
+export type SettingsNotice = {
+  group?: SettingsTarget;
+  target?: SettingsTarget;
+  sessionId?: string;
+  scope?: string;
   status: "writing" | "uncertain" | "notDispatched";
   reason?: string;
 };
-export function useSessionController({
-  origin: legacyOrigin = "",
-  connection,
-  disconnect,
-  initialLocale = "zh-CN",
-  initialTheme = "system",
-  client: providedClient,
-  embedded = false,
-  showExecution: controlledShowExecution,
-}: {
+type SettingsFeedback = {
+  scope: string;
+  sessionId: string;
+  requestId?: string;
+  target: SettingsTarget;
+  status: SettingsNotice["status"];
+  reason?: string;
+};
+
+type CatalogStatus = "loading" | "ready" | "error";
+type ControllerWords = Readonly<Record<string, string>> &
+  Parameters<typeof unavailableReasonText>[1];
+
+type ControllerBindings<Words extends ControllerWords> = {
+  usePlatform(client: WebClient): SessionPlatform;
+  words(locale: Locale): Words;
+  sessionImages: ReturnType<typeof createSessionImageScope>;
+  displaySessionTitle(title: string | null | undefined, untitled: string): string;
+  isSessionListed(session: ConversationSessionSummary, visibility: { execution: boolean }): boolean;
+};
+
+export type SessionOptions = {
   origin?: string;
   connection?: WebConnection;
   disconnect?: () => void;
   initialLocale?: Locale;
   initialTheme?: string;
+  initialSessionId?: string;
+  readInitialCatalog?: (sessionId: string) => ConversationCatalog | undefined;
   client?: WebClient;
   embedded?: boolean;
   /** Also list and open program-started sessions (the directory option). */
   showExecution?: boolean;
-}) {
+};
+
+export function useSessionController<Words extends ControllerWords>(
+  {
+    origin: legacyOrigin = "",
+    connection,
+    disconnect,
+    initialLocale = "zh-CN",
+    initialTheme = "system",
+    initialSessionId,
+    readInitialCatalog,
+    client: providedClient,
+    embedded = false,
+    showExecution: controlledShowExecution,
+  }: SessionOptions,
+  {
+    usePlatform,
+    words,
+    sessionImages,
+    displaySessionTitle,
+    isSessionListed,
+  }: ControllerBindings<Words>,
+) {
   const [historySearchOpen, setHistorySearchOpen] = useState(false);
   const [historyReferences, publishHistoryReferences] = useState<ResolvedHistoryReference[]>([]);
   const historyReferencesValue = useRef<ResolvedHistoryReference[]>([]);
@@ -141,11 +184,27 @@ export function useSessionController({
   const [client] = useState(
     () => providedClient ?? new WebClient(undefined, connection ?? legacyOrigin),
   );
-  // Leave room for ordinary HTTP requests alongside catalog and detail SSE streams.
-  const [warmStreams] = useState(() => createWarmSessionStreamPool(client, 2));
+  const { kind: surface, retention: platformRetention } = usePlatform(client);
+  const desktop = surface === "desktop";
+  const { warmStreams, window: retention } = platformRetention.useSessionRetention(client);
+  const verifiedWindowRevision = useRef<number | undefined>(undefined);
+  const selectedWindowRevision = useRef<number | undefined>(undefined);
+  const canRetainPage = useCallback(
+    () => !retention || selectedWindowRevision.current === retention.revision,
+    [retention],
+  );
   const warmNavigation = useRef<WarmSessionNavigation>({});
   const [selectionVisit, setSelectionVisit] = useState(0);
-  const [streamEpoch, setStreamEpoch] = useState(0);
+  const initialCatalog = useRef(() =>
+    initialSessionId ? readInitialCatalog?.(initialSessionId) : undefined,
+  );
+  const [streamEpoch, setStreamEpoch] = useState(() => retention?.streamEpoch ?? 0);
+  const renewStream = useCallback(() => {
+    if (retention) {
+      warmStreams.discardParked();
+      setStreamEpoch(++retention.streamEpoch);
+    } else setStreamEpoch((value) => value + 1);
+  }, [retention, warmStreams]);
   const [usageEpoch, setUsageEpoch] = useState("");
   const [liveContentVersion, setLiveContentVersion] = useState(0);
   const [catalogObservationFailed, setCatalogObservationFailed] = useState(false);
@@ -154,13 +213,21 @@ export function useSessionController({
   const liveDelivery = useRef(0);
   const streamReady = useRef(false);
   const activeReceipts = useRef(
-    new Map<
-      string,
-      { scope: string; generation: number; bootId?: string; settingsSessionId?: string }
-    >(),
+    new Map<string, { scope: string; generation: number; bootId?: string }>(),
   );
+  const settingsInFlight = useRef<
+    | {
+        sessionId: string;
+        generation: number;
+        requestId: string;
+        runtimeBootId: string | undefined;
+        expectedRevision: number;
+        controlChanged?: boolean;
+      }
+    | undefined
+  >(undefined);
   const readSettingsControls = useRef<
-    ((accept: (live: Live) => boolean) => Promise<void>) | undefined
+    ((sessionId: string, accept?: (live: Live) => boolean) => Promise<void>) | undefined
   >(undefined);
   const controlReconciliationPending = useRef(false);
   const nativeCoverage = useRef<NativeCoverage>({
@@ -173,7 +240,7 @@ export function useSessionController({
   const [locale, setLocale] = useState<Locale>(initialLocale),
     [theme, setTheme] = useState(initialTheme),
     [accent, setAccent] = useState("blue");
-  const t = dictionaries[locale];
+  const t = words(locale);
   const c = catalogCopy[locale];
   const [access, setAccess] = useState<Access>(),
     [sessions, setSessions] = useState<ConversationSessionSummary[]>([]),
@@ -191,6 +258,7 @@ export function useSessionController({
     [controlReady, publishControlReady] = useState(false),
     [indexEnabled, setIndexEnabled] = useState(true),
     [busy, setBusy] = useState(false),
+    [savingSettingsFor, setSavingSettingsFor] = useState<string>(),
     [error, setError] = useState(false),
     [pairingError, setPairingError] = useState<string>(),
     [incompatible, setIncompatible] = useState(false),
@@ -202,17 +270,28 @@ export function useSessionController({
     }>({ online: false }),
     [code, setCode] = useState(""),
     [name, setName] = useState(""),
-    [message, setMessage] = useState(""),
+    [message, publishMessage] = useState(""),
     [modal, setModal] = useState<
       "preferences" | "metadata" | ConversationEvent | Approval | UserQuestionRequest
     >();
   const controlReadyRef = useRef(false);
+  const setMessage = useCallback(
+    (text: string) => {
+      const id = selection.current;
+      if (id && canRetainPage()) retention?.setDraft(id, text);
+      publishMessage(text);
+    },
+    [canRetainPage, retention],
+  );
   const setControlReady = useCallback((next: SetStateAction<boolean>) => {
     controlReadyRef.current = typeof next === "function" ? next(controlReadyRef.current) : next;
     publishControlReady(controlReadyRef.current);
   }, []);
   const warmScope = warmSessionAuthority(access, streamEpoch);
-  useEffect(() => () => warmStreams.clear(), [warmStreams, warmScope]);
+  useEffect(
+    () => (retention ? undefined : () => warmStreams.clear()),
+    [retention, warmStreams, warmScope],
+  );
   const selectedAgent = sessions.find((item) => item.id === selected)?.agent;
   const { capabilities, capabilityScope, verifyCapabilities, clearCapabilities } =
     useSessionCapabilities({
@@ -224,16 +303,16 @@ export function useSessionController({
       epoch: capabilitiesEpoch,
     });
   const [settingsIntentBinding, setSettingsIntentBinding] = useState("");
-  const [settingsNotice, setSettingsNotice] = useState<SettingsNotice>();
   const settingsBinding = capabilityScope;
   const settingsChangedHere = !!settingsBinding && settingsIntentBinding === settingsBinding;
+  const [settingsFeedback, setSettingsFeedback] = useState<SettingsFeedback>();
   const [actionUnavailable, setActionUnavailable] = useState<{ binding: string; reason: string }>();
   const actionUnavailableReason =
     actionUnavailable?.binding === settingsBinding ? actionUnavailable.reason : undefined;
   const entryNotice = useRef<{ sessionId: string; ignoredId?: string } | undefined>(undefined);
   const liveValue = useRef<Live | undefined>(undefined);
   const setLive = useCallback(
-    (value: SetStateAction<Live | undefined>) => {
+    (value: SetStateAction<Live | undefined>, display?: Live) => {
       let next = typeof value === "function" ? value(liveValue.current) : value;
       sessionImages.noteSessionImageBoot(client, next?.runtimeBootId);
       if (!next) entryNotice.current = undefined;
@@ -255,8 +334,9 @@ export function useSessionController({
       }
       liveValue.current = next;
       publishLive(next);
+      retention?.publishLive(canRetainPage() ? (display ?? next) : undefined);
     },
-    [client],
+    [client, canRetainPage, retention, sessionImages],
   );
   const { online, notice, reason: noticeReason, source: noticeSource } = connectionNotice;
   const setNotice = useCallback(
@@ -270,12 +350,16 @@ export function useSessionController({
     },
     [],
   );
-  const setOnline = useCallback((next: SetStateAction<boolean>) => {
-    setConnectionNotice((value) => {
-      const online = typeof next === "function" ? next(value.online) : next;
-      return { ...value, online, reason: online ? value.reason : undefined };
-    });
-  }, []);
+  const setOnline = useCallback(
+    (next: SetStateAction<boolean>) => {
+      if (next === false) retention?.publishLive(undefined);
+      setConnectionNotice((value) => {
+        const online = typeof next === "function" ? next(value.online) : next;
+        return { ...value, online, reason: online ? value.reason : undefined };
+      });
+    },
+    [retention],
+  );
   const generation = useRef(0);
   const earlierFlight = useRef<EarlierHistoryFlight>(undefined);
   const pageValue = useRef<ConversationEventPage | undefined>(undefined);
@@ -307,18 +391,29 @@ export function useSessionController({
   }, []);
   // Reopening a recent session shows cached history while its fresh read runs. Retention is
   // bounded by bytes as well as count; the current reader still owns its complete history.
-  const pageCache = useRef(createTranscriptPageCache<ConversationEventPage>());
+  const [pageCache] = useState(
+    () => retention?.pageCache ?? createTranscriptPageCache<ConversationEventPage>(),
+  );
   useEffect(() => {
-    if (!selected || !page) return;
-    pageCache.current.set(selected, page);
-  }, [selected, page]);
+    if (!selected || !page || !canRetainPage()) return;
+    pageCache.set(selected, page);
+  }, [selected, page, pageCache, canRetainPage]);
   const parkSelectedSession = useCallback(() => {
     const id = selection.current;
     const page = pageValue.current;
-    if (!id || !page || !controlReadyRef.current || earlierFlight.current) return;
-    pageCache.current.set(id, page);
+    if (!id || !page || !controlReadyRef.current || earlierFlight.current || !canRetainPage())
+      return;
+    pageCache.set(id, page);
     warmNavigation.current.park?.();
-  }, []);
+  }, [pageCache, canRetainPage]);
+  // Route teardown must park the stream before its passive subscription cleanup.
+  useLayoutEffect(() => {
+    if (!retention) return;
+    return () => {
+      parkSelectedSession();
+      retention.publishLive(undefined);
+    };
+  }, [retention, parkSelectedSession]);
   const catalogSessions = useRef<ConversationSessionSummary[]>([]);
   // The last accepted catalog, so the program-started sessions option can re-filter it.
   const catalogRecords = useRef<ConversationSessionSummary[] | undefined>(undefined);
@@ -423,37 +518,50 @@ export function useSessionController({
   useEffect(() => cancelForkNavigation, [cancelForkNavigation]);
   const durableScope = useRef<string | undefined>(undefined);
   const durablePending = useRef<PendingControl[]>([]);
-  const selectedSettingsNotice =
-    selected &&
-    settingsNotice?.sessionId === selected &&
-    settingsNotice.scope === durableScope.current &&
-    access?.status === "approved"
-      ? settingsNotice
+  const selectedSettingsFeedback =
+    settingsFeedback?.scope === durableScope.current &&
+    settingsFeedback?.sessionId === selected &&
+    (desktop || (!!selected && access?.status === "approved"))
+      ? settingsFeedback
       : undefined;
-  const hasDurablePending = useCallback(
-    (id: string) => durablePending.current.some((pending) => pending.sessionId === id),
-    [],
-  );
-  const isSettingsWriteActive = useCallback((id: string, requestId?: string) => {
-    for (const [activeRequestId, active] of activeReceipts.current)
-      if (
-        (requestId === undefined || requestId === activeRequestId) &&
-        active.settingsSessionId === id &&
-        active.generation === generation.current &&
-        active.scope === durableScope.current &&
-        active.bootId === accessRef.current?.bootId
-      )
-        return true;
-    return false;
+  const selectedSettingsNotice = useMemo<SettingsNotice | undefined>(() => {
+    if (!selectedSettingsFeedback) return undefined;
+    const { target, status, reason, sessionId, scope } = selectedSettingsFeedback;
+    return desktop
+      ? { group: target, status, reason }
+      : { target, status, reason, sessionId, scope };
+  }, [desktop, selectedSettingsFeedback]);
+  const awaitsReceiptResponse = useCallback((requestId: string) => {
+    const active = activeReceipts.current.get(requestId);
+    return (
+      !!active &&
+      active.scope === durableScope.current &&
+      active.generation === generation.current &&
+      active.bootId === accessRef.current?.bootId
+    );
   }, []);
+  const isSettingsWriteActive = useCallback(
+    (id: string) => {
+      const active = settingsInFlight.current;
+      return !!active && active.sessionId === id && awaitsReceiptResponse(active.requestId);
+    },
+    [awaitsReceiptResponse],
+  );
   const pendingForLive = useCallback(
     (id: string) =>
       durablePending.current.some(
         (pending) =>
           pending.sessionId === id &&
-          (!isSessionSettingsAction(pending.kind) || !isSettingsWriteActive(id, pending.requestId)),
+          (!isSessionSettingsAction(pending.kind) || !awaitsReceiptResponse(pending.requestId)),
       ),
-    [isSettingsWriteActive],
+    [awaitsReceiptResponse],
+  );
+  const hasDurablePending = useCallback(
+    (id: string) =>
+      desktop
+        ? pendingForLive(id)
+        : durablePending.current.some((pending) => pending.sessionId === id),
+    [desktop, pendingForLive],
   );
   const refreshRequired = useRef(false);
   const manualRefreshRequired = useRef(false);
@@ -493,6 +601,7 @@ export function useSessionController({
   useAppearance(locale, theme, accent, !embedded);
   const clear = useCallback(() => {
     warmStreams.clear();
+    retention?.clearPresentation();
     warmNavigation.current.resume = undefined;
     cancelForkNavigation();
     generation.current++;
@@ -505,7 +614,7 @@ export function useSessionController({
     excludedIds.current = new Set();
     setExcludedSessionIds(excludedIds.current);
     setCatalogNotice(false);
-    setCatalogStatus("loading");
+    if (!desktop) setCatalogStatus("loading");
     setWorkspaces(undefined);
     setPage(undefined);
     setLive(undefined);
@@ -517,7 +626,7 @@ export function useSessionController({
     setHistoryReferences([]);
     setHistorySearchOpen(false);
     setNotice(undefined);
-    setSettingsNotice(undefined);
+    setSettingsFeedback(undefined);
     receipt.current = undefined;
     setPendingSessions({});
     setCode("");
@@ -525,7 +634,7 @@ export function useSessionController({
     setOnline(false);
     setControlReady(false);
     setCatalogObservationFailed(false);
-    pageCache.current.clear();
+    pageCache.clear();
     streamReady.current = false;
     nativeCoverage.current = { items: [], authoritativeTurnIds: [], removedTurnIds: [] };
     refreshRequired.current = false;
@@ -538,36 +647,41 @@ export function useSessionController({
     setLive,
     setPage,
     setHistoryReferences,
+    setMessage,
     setNotice,
     setOnline,
     clearCapabilities,
     cancelForkNavigation,
     warmStreams,
+    pageCache,
+    retention,
+    desktop,
+    setControlReady,
   ]);
   const clearEndedImageAccess = useCallback(() => {
     sessionImages.invalidateSessionImages(client);
     clear();
-  }, [client, clear]);
+  }, [client, clear, sessionImages]);
   const disconnectImages = useCallback(() => {
     sessionImages.invalidateSessionImages(client);
     disconnect?.();
-  }, [client, disconnect]);
+  }, [client, disconnect, sessionImages]);
   const leaveSession = useCallback(() => {
     parkSelectedSession();
     warmNavigation.current.resume = undefined;
     cancelForkNavigation();
-    // Mounting the directory with no selected conversation must not invalidate
-    // its initial catalog read, which may still be waiting on the host.
-    if (selection.current) {
+    // On Web, an empty directory can mount before its initial catalog resolves.
+    if (desktop || selection.current) {
       generation.current++;
       readinessEpoch.current++;
     }
+    if (desktop) continuationDraft.current = undefined;
     selection.current = "";
     deferredRefresh.current = undefined;
     streamReady.current = false;
     setSelected("");
     setNotice(undefined);
-    setSettingsNotice(undefined);
+    if (!desktop) setSettingsFeedback(undefined);
     setHistoryReferences([]);
     setHistorySearchOpen(false);
     setPage(undefined);
@@ -585,6 +699,8 @@ export function useSessionController({
     clearCapabilities,
     cancelForkNavigation,
     parkSelectedSession,
+    desktop,
+    setControlReady,
   ]);
   const acceptCatalog = useCallback(
     (
@@ -601,9 +717,9 @@ export function useSessionController({
         snapshot?.incompleteSources,
         snapshot?.complete === false && !snapshot.incompleteSources?.length,
       );
-      // A partial first response cannot establish an empty directory. A known
-      // cache, including an earlier complete empty result, remains usable.
-      const usable = snapshot?.complete !== false || previous !== undefined || records.length > 0;
+      // Web distinguishes an incomplete first snapshot from a usable directory.
+      const usable =
+        desktop || snapshot?.complete !== false || previous !== undefined || records.length > 0;
       const readable = new Set(
         records.filter((record) => record.availability === "readable").map((record) => record.id),
       );
@@ -625,13 +741,21 @@ export function useSessionController({
       observeForkNavigation();
       setExcludedSessionIds(excluded);
       setSessions(visible);
-      setCatalogStatus(usable ? "ready" : "loading");
+      if (!desktop) setCatalogStatus(usable ? "ready" : "loading");
       if (excluded.has(selection.current)) {
         leaveSession();
         setCatalogNotice(true);
       }
     },
-    [client, leaveSession, observeForkNavigation, warmStreams],
+    [
+      client,
+      leaveSession,
+      observeForkNavigation,
+      warmStreams,
+      desktop,
+      isSessionListed,
+      sessionImages,
+    ],
   );
   useEffect(() => {
     if (showExecutionValue.current === showExecution) return;
@@ -670,7 +794,7 @@ export function useSessionController({
         setOnline(false);
       }
     },
-    [clear, client, isLan, setOnline],
+    [clear, client, isLan, setOnline, setControlReady, sessionImages],
   );
   const readHistory = useSessionHistoryRead({
     client,
@@ -688,6 +812,7 @@ export function useSessionController({
       let imageRevision = sessionImages.sessionImageRevision(client);
       const flight = (async () => {
         for (let imageAttempt = 0; ; imageAttempt++) {
+          const revision = retention?.revision;
           let next: Access;
           try {
             next = await sessionImages.readSessionImageAccess(client);
@@ -704,7 +829,7 @@ export function useSessionController({
           if (epoch !== accessEpoch.current) return accessFlight.current;
           if (stillCurrent && !stillCurrent()) return;
           const imageScopeChanged = imageRevision !== sessionImages.sessionImageRevision(client);
-          if (imageScopeChanged) {
+          if (imageScopeChanged || revision !== retention?.revision) {
             if (imageAttempt >= 2) throw new DOMException("Access scope changed", "AbortError");
             imageRevision = sessionImages.sessionImageRevision(client);
             continue;
@@ -734,6 +859,9 @@ export function useSessionController({
               durablePending.current = pending;
             }
           }
+          retention?.acceptAccess(next);
+          verifiedWindowRevision.current =
+            next.status === "approved" ? retention?.revision : undefined;
           sessionImages.acceptSessionImageAccess(client, next);
           accessRef.current = next;
           observeForkNavigation();
@@ -745,7 +873,16 @@ export function useSessionController({
       accessFlight.current = flight;
       return flight;
     },
-    [clear, client, origin, isLan, setHistoryReferences, observeForkNavigation],
+    [
+      clear,
+      client,
+      origin,
+      isLan,
+      setHistoryReferences,
+      observeForkNavigation,
+      retention,
+      sessionImages,
+    ],
   );
   const reconcilePending = useCallback(
     async (sessionId?: string) => {
@@ -760,26 +897,34 @@ export function useSessionController({
           (!sessionId || entry.sessionId === sessionId),
       );
       let resolvedSelected: string | undefined;
-      const inFlight = (requestId: string) => {
-        const active = activeReceipts.current.get(requestId);
-        return (
-          active?.scope === scope &&
-          active.generation === generation.current &&
-          active.bootId === accessRef.current?.bootId
-        );
-      };
+      let resolvedSettings: string | undefined;
+      let settingsRefusal: string | undefined;
+      let resolvedSettingsRequest: string | undefined;
       for (const entry of pending) {
-        // An awaited send or settings write is still in progress. Reconcile it after its response is lost,
+        // An awaited write is still in progress. Reconcile it after its response is lost,
         // or after its visit/runtime changes, rather than blocking on its own receipt.
-        if (inFlight(entry.requestId)) continue;
+        if (awaitsReceiptResponse(entry.requestId)) continue;
         const result = await readPendingControlReceipt(client, entry);
         if (scope !== durableScope.current) return;
         if (!result) continue;
         if (result.status !== "accepted" && result.status !== "not-dispatched") continue;
+        const settingsWrite = settingsInFlight.current;
+        const settings = isSessionSettingsAction(entry.kind);
         if (
-          isSessionSettingsAction(entry.kind) &&
+          settings &&
+          settingsWrite?.requestId === entry.requestId &&
+          !isLegacyPreparedReceipt(result, entry.requestId) &&
+          ((result.runtimeBootId &&
+            settingsWrite.runtimeBootId &&
+            result.runtimeBootId !== settingsWrite.runtimeBootId) ||
+            (result.expectedRevision != null &&
+              result.expectedRevision !== settingsWrite.expectedRevision))
+        )
+          continue;
+        if (
+          settings &&
           result.status === "accepted" &&
-          !matchesSettingsAck(result.ack, entry.requestId, result.sessionId)
+          (!entry.sessionId || !matchesSettingsAck(result.ack, entry.requestId, entry.sessionId))
         )
           continue;
         const intent = forkNavigation.current;
@@ -798,8 +943,7 @@ export function useSessionController({
           intent.resolve(undefined);
         forgetPending(scope, entry.requestId);
         durablePending.current = readPending(scope);
-        if (!isSessionSettingsAction(entry.kind))
-          uncertainOutcomes.current.delete(entry.sessionId ?? "");
+        if (!settings) uncertainOutcomes.current.delete(entry.sessionId ?? "");
         if (entry.sessionId === selection.current) {
           resolvedSelected = entry.sessionId;
           const reason =
@@ -810,22 +954,36 @@ export function useSessionController({
                   result.ack?.error,
                 )
               : undefined;
-          if (isSessionSettingsAction(entry.kind)) {
-            const sessionId = entry.sessionId;
-            setSettingsNotice((previous) =>
-              result.status === "accepted"
-                ? undefined
-                : {
-                    sessionId,
-                    scope,
-                    target: previous?.sessionId === sessionId ? previous.target : "settings",
-                    status: "notDispatched",
-                    reason,
-                  },
-            );
-          } else setNotice(result.status === "accepted" ? "accepted" : "notDispatched", reason);
+          if (settings) {
+            const id = entry.sessionId;
+            if (desktop) {
+              resolvedSettings = id;
+              resolvedSettingsRequest = entry.requestId;
+              const ack = "ack" in result ? result.ack : undefined;
+              settingsRefusal =
+                result.status === "not-dispatched"
+                  ? (reason ?? ack?.reason ?? ack?.error ?? "request_failed")
+                  : undefined;
+            } else {
+              setSettingsFeedback((previous) => {
+                if (previous?.requestId && previous.requestId !== entry.requestId) return previous;
+                return result.status === "accepted"
+                  ? undefined
+                  : {
+                      sessionId: id,
+                      scope,
+                      requestId: entry.requestId,
+                      target: previous?.sessionId === id ? previous.target : "settings",
+                      status: "notDispatched",
+                      reason,
+                    };
+              });
+            }
+            continue;
+          }
+          setNotice(result.status === "accepted" ? "accepted" : "notDispatched", reason);
           // A receipt confirms admission, never resolves or removes native approvals.
-          if (result.status === "accepted" && !isSessionSettingsAction(entry.kind))
+          if (result.status === "accepted")
             receipt.current = {
               sessionId: result.sessionId,
               requestId: entry.requestId,
@@ -834,42 +992,77 @@ export function useSessionController({
             };
         }
       }
+      if (desktop && resolvedSettings === selection.current && resolvedSettings) {
+        publishSessionInvalidation(client, resolvedSettings, ["settings"]);
+        if (!settingsInFlight.current) await readSettingsControls.current?.(resolvedSettings);
+      }
+      if (desktop && (scope !== durableScope.current || epoch !== readinessEpoch.current)) return;
+      const id = selection.current;
       const selectedPending = durablePending.current.filter(
-        (entry) => entry.sessionId === selection.current && !inFlight(entry.requestId),
+        (entry) => entry.sessionId === id && !awaitsReceiptResponse(entry.requestId),
       );
-      if (selectedPending.some((entry) => !isSessionSettingsAction(entry.kind)))
-        setNotice("uncertain");
-      else if (selectedPending.length) {
-        const sessionId = selection.current;
-        setSettingsNotice((previous) =>
-          previous?.sessionId === sessionId &&
-          previous.scope === scope &&
-          previous.status === "uncertain"
-            ? previous
-            : { sessionId, scope, target: "settings", status: "uncertain" },
-        );
-        setControlReady(false);
-      } else if (
-        resolvedSelected === selection.current &&
+      const pendingSettings = selectedPending.find((entry) => isSessionSettingsAction(entry.kind));
+      const pendingOther = selectedPending.some((entry) => !isSessionSettingsAction(entry.kind));
+      if ((pendingSettings && (desktop || !pendingOther)) || (desktop && resolvedSettings === id)) {
+        setSettingsFeedback((previous) => {
+          const scoped = previous?.scope === scope && previous.sessionId === id;
+          if (pendingSettings) {
+            if (scoped && previous.status === "uncertain") return previous;
+            return {
+              scope,
+              sessionId: id,
+              requestId: pendingSettings.requestId,
+              target: desktop && scoped ? previous.target : "settings",
+              status: "uncertain",
+            };
+          }
+          if (scoped && previous.requestId && previous.requestId !== resolvedSettingsRequest)
+            return previous;
+          return settingsRefusal
+            ? {
+                scope,
+                sessionId: id,
+                requestId: resolvedSettingsRequest,
+                target: scoped ? previous.target : "settings",
+                status: "notDispatched",
+                reason: settingsRefusal,
+              }
+            : undefined;
+        });
+      }
+      if (pendingOther) setNotice("uncertain");
+      else if (!desktop && pendingSettings) setControlReady(false);
+      else if (
+        resolvedSelected === id &&
         epoch === readinessEpoch.current &&
         accessRef.current?.protocolVersion === 2
       ) {
-        refreshRequired.current = uncertainOutcomes.current.has(selection.current);
+        refreshRequired.current = uncertainOutcomes.current.has(id);
         setControlReady(
           streamReady.current &&
             !controlReconciliationPending.current &&
             !refreshRequired.current &&
-            liveValue.current?.status !== "outcome-unknown",
+            (desktop ? !hasDurablePending(id) : liveValue.current?.status !== "outcome-unknown"),
         );
       }
     },
-    [client, hasDurablePending, setNotice, observeForkNavigation],
+    [
+      client,
+      desktop,
+      hasDurablePending,
+      setNotice,
+      observeForkNavigation,
+      awaitsReceiptResponse,
+      setControlReady,
+    ],
   );
   const refresh = useCallback(
-    async function refreshCurrent(manual = false, preserveHistory = false): Promise<void> {
-      // A retained successful catalog stays usable while refreshing. Before
-      // the first accepted snapshot, pending and failure are not empty data.
-      setCatalogStatus((previous) => (previous === "ready" ? previous : "loading"));
+    async function refreshCurrent(
+      manual = false,
+      preserveHistory = false,
+      initial = false,
+    ): Promise<void> {
+      if (!desktop) setCatalogStatus((previous) => (previous === "ready" ? previous : "loading"));
       if (manual) {
         setPairingError(undefined);
         retryCatalogObservation.current?.();
@@ -906,10 +1099,15 @@ export function useSessionController({
         if (next?.status !== "approved") return;
         g = generation.current;
         flight.generation = g;
-        await reconcilePending(selection.current || undefined);
+        const cached =
+          desktop && initial && next.protocolVersion === 2 ? initialCatalog.current() : undefined;
+        // The selected session reconciles its own receipts. The catalog observer
+        // reconciles the rest after refreshing the shared directory.
+        if (!cached) await reconcilePending(selection.current || undefined);
         if (g !== generation.current) return;
         catalogOrder = ++catalogReadOrder.current;
-        const catalog = await retryStaleCatalogRead(() => retryBusyRead(() => client.catalog()));
+        const catalog =
+          cached ?? (await retryStaleCatalogRead(() => retryBusyRead(() => client.catalog())));
         if (g !== generation.current) return;
         if (contention !== readContention.current.version)
           throw new ApiError(409, "operation_busy");
@@ -1057,7 +1255,7 @@ export function useSessionController({
           )
             return;
           if (delivered === liveDelivery.current) setLive(state);
-          if (manual && next.protocolVersion === 2) setStreamEpoch((value) => value + 1);
+          if (manual && next.protocolVersion === 2) renewStream();
         }
         setOnline(true);
         if (epoch === readinessEpoch.current) {
@@ -1095,6 +1293,7 @@ export function useSessionController({
               resumeDeferredRefresh();
           } else {
             if (
+              !desktop &&
               !historyScope &&
               g === generation.current &&
               (catalogOrder === undefined || catalogOrder === catalogReadOrder.current) &&
@@ -1128,6 +1327,10 @@ export function useSessionController({
       setPage,
       setOnline,
       acceptCatalog,
+      renewStream,
+      desktop,
+      sessionImages,
+      setControlReady,
     ],
   );
   const readBusy = useCallback(
@@ -1147,17 +1350,17 @@ export function useSessionController({
       // read. Recover with a fresh read; repeated contention waits for an event.
       void refresh(false, true);
     },
-    [refresh, resumeDeferredRefresh],
+    [refresh, resumeDeferredRefresh, setControlReady],
   );
   useEffect(
     () =>
       sessionImages.mountSessionImages(client, () => {
         void syncAccess().catch((error) => fail(error));
       }),
-    [client, syncAccess, fail],
+    [client, syncAccess, fail, sessionImages],
   );
   useEffect(() => {
-    void refresh();
+    void refresh(false, false, true);
     return () => {
       generation.current++;
       deferredRefresh.current = undefined;
@@ -1206,7 +1409,7 @@ export function useSessionController({
         if (++resets > 3) {
           exhausted = true;
           setCatalogObservationFailed(true);
-          setCatalogStatus((previous) => (previous === "ready" ? previous : "error"));
+          if (!desktop) setCatalogStatus((previous) => (previous === "ready" ? previous : "error"));
           return;
         }
         store.reset();
@@ -1269,7 +1472,8 @@ export function useSessionController({
             // the generation belonging to this newly accepted access instead.
             g = generation.current;
             catalogOrder = ++catalogReadOrder.current;
-            setCatalogStatus((previous) => (previous === "ready" ? previous : "loading"));
+            if (!desktop)
+              setCatalogStatus((previous) => (previous === "ready" ? previous : "loading"));
             const catalog = await retryStaleCatalogRead(() =>
               retryBusyRead(() => client.catalog()),
             );
@@ -1309,6 +1513,7 @@ export function useSessionController({
                 retryAfterControl = true;
               else {
                 if (
+                  !desktop &&
                   g === generation.current &&
                   (catalogOrder === undefined || catalogOrder === catalogReadOrder.current) &&
                   !(error instanceof DOMException && error.name === "AbortError")
@@ -1442,6 +1647,8 @@ export function useSessionController({
     wakeDeferredRefresh,
     acceptCatalog,
     warmStreams,
+    desktop,
+    sessionImages,
   ]);
   useEffect(
     () =>
@@ -1458,6 +1665,7 @@ export function useSessionController({
     [client, reconcilePending, fail],
   );
   useSessionLive({
+    ...(surface === "desktop" ? { surface, settingsInFlight } : { surface, isSettingsWriteActive }),
     warmStreams,
     warmScope,
     warmNavigation,
@@ -1490,7 +1698,6 @@ export function useSessionController({
     setAccess,
     setPage,
     readSettingsControls,
-    isSettingsWriteActive,
   });
   const choose = useCallback(
     async (id: string, initialDraft?: string) => {
@@ -1515,8 +1722,11 @@ export function useSessionController({
       selection.current = id;
       setSelectionVisit(generation.current);
       setSelected(id);
+      // Stamp the selection's authority. A later access check cannot give old
+      // history permission to repopulate the cache after a boundary change.
+      selectedWindowRevision.current = verifiedWindowRevision.current;
       nativeCoverage.current = { items: [], authoritativeTurnIds: [], removedTurnIds: [] };
-      const cachedPage = pageCache.current.get(id);
+      const cachedPage = canRetainPage() ? pageCache.get(id) : undefined;
       const scope = warmSessionAuthority(accessRef.current, streamEpoch);
       const pendingScope = durableScope.current;
       if (pendingScope) durablePending.current = readPending(pendingScope);
@@ -1525,14 +1735,14 @@ export function useSessionController({
           ? warmStreams.peek(scope, id)
           : undefined;
       setPage(cachedPage);
-      setLive(warm?.state.live);
+      setLive(warm?.state.live, warm ? warmStreams.peekParkedLive(id) : undefined);
       setModal(undefined);
-      setMessage(initialDraft ?? "");
+      setMessage(initialDraft ?? (canRetainPage() ? retention?.getDraft(id) : undefined) ?? "");
       setPendingSend(undefined);
       setHistoryReferences([]);
       setHistorySearchOpen(false);
       setNotice(undefined);
-      setSettingsNotice(undefined);
+      setSettingsFeedback(undefined);
       setCatalogNotice(false);
       setOnline(!!warm);
       setControlReady(false);
@@ -1646,13 +1856,18 @@ export function useSessionController({
       setLive,
       setPage,
       setHistoryReferences,
+      setMessage,
       setNotice,
       setOnline,
       leaveSession,
       cancelForkNavigation,
       parkSelectedSession,
+      pageCache,
+      canRetainPage,
+      retention,
       streamEpoch,
       warmStreams,
+      setControlReady,
     ],
   );
   async function post(path: string, body: unknown) {
@@ -1842,6 +2057,7 @@ export function useSessionController({
       "requestId" | "bootId" | "sessionId" | "expectedRevision"
     > = {},
   ) {
+    const settingsAction = isSessionSettingsAction(action);
     if (
       mutating.current ||
       excludedIds.current.has(selected) ||
@@ -1865,20 +2081,38 @@ export function useSessionController({
     const scope = durableScope.current;
     if (!scope) return;
     mutating.current = true;
-    if (!isSessionSettingsAction(action)) setBusy(true);
     const requestId = crypto.randomUUID();
     const id = selected;
     const g = generation.current;
     const accessBinding = capabilityAccessBinding(access);
-    const settingsWrite = isSessionSettingsAction(action)
+    const settingsContext = settingsAction
       ? {
           sessionId: id,
           scope,
+          requestId,
           target: action === "open-model-picker" ? ("model" as const) : settingsNoticeGroup(fields),
         }
       : undefined;
-    if (settingsWrite) setSettingsNotice({ ...settingsWrite, status: "writing" });
-    else {
+    const reportSettings = (status: SettingsNotice["status"], reason?: string) => {
+      if (settingsContext) setSettingsFeedback({ ...settingsContext, status, reason });
+    };
+    const closeSettingsWrite = () => {
+      if (desktop) setSavingSettingsFor(undefined);
+      setSettingsFeedback((previous) =>
+        previous?.scope === scope &&
+        previous.sessionId === id &&
+        previous.requestId === requestId &&
+        previous.status === "writing"
+          ? undefined
+          : previous,
+      );
+    };
+    if (settingsContext) {
+      // A desktop window can revisit this session before its settings readback settles.
+      if (desktop) setSavingSettingsFor(id);
+      reportSettings("writing");
+    } else {
+      setBusy(true);
       setNotice(undefined);
       setActionUnavailable(undefined);
     }
@@ -1924,24 +2158,20 @@ export function useSessionController({
         // the conversation. Do not replace that outcome with this local refusal.
         const reason =
           checked?.features[action]?.reason ?? checked?.reason ?? "session-state-unavailable";
-        if (settingsWrite) setSettingsNotice({ ...settingsWrite, status: "notDispatched", reason });
-        else
+        if (settingsContext && (!desktop || !outcomeUnknown))
+          reportSettings("notDispatched", reason);
+        else if (!settingsContext)
           setActionUnavailable(outcomeUnknown ? undefined : { binding: settingsBinding, reason });
         if (outcomeUnknown) {
           refreshRequired.current = true;
           setControlReady(false);
         }
-        if (!settingsWrite || outcomeUnknown)
+        if (!settingsContext || outcomeUnknown)
           setNotice(outcomeUnknown ? "uncertain" : "notDispatched");
-      } else if (settingsWrite) {
-        setSettingsNotice((previous) =>
-          previous?.scope === scope && previous.sessionId === id && previous.status === "writing"
-            ? undefined
-            : previous,
-        );
       }
       mutating.current = false;
-      if (!settingsWrite) setBusy(false);
+      if (settingsContext) closeSettingsWrite();
+      else setBusy(false);
       return;
     }
     if (action === "settings" && Object.keys(fields).length)
@@ -1949,80 +2179,104 @@ export function useSessionController({
     const sessionAgent = sessions.find((session) => session.id === id)?.agent;
     const perform = (body: SessionActionBody) =>
       dispatchSessionAction(client, sessionAgent, action, body);
-    if (settingsWrite) {
+    if (settingsContext) {
       const expectedRevision = live.revision ?? 0;
       const runtimeBootId = live.runtimeBootId;
       const entry = { requestId, sessionId: id, kind: action };
       const stillCurrent = () =>
-        g === generation.current &&
+        generation.current === g &&
         selection.current === id &&
-        !excludedIds.current.has(id) &&
+        (desktop || !excludedIds.current.has(id)) &&
         durableScope.current === scope &&
         capabilityAccessBinding(accessRef.current) === accessBinding &&
         (runtimeBootId === undefined || liveValue.current?.runtimeBootId === runtimeBootId);
-      activeReceipts.current.set(requestId, {
-        scope,
-        generation: g,
-        bootId: access.bootId,
-        settingsSessionId: id,
-      });
+      const readBack = () =>
+        readSettingsControls.current?.(
+          id,
+          (state) =>
+            stillCurrent() &&
+            (desktop || state.sessionId === id) &&
+            (runtimeBootId === undefined || state.runtimeBootId === runtimeBootId) &&
+            (state.status === "outcome-unknown" ||
+              (typeof state.revision === "number" &&
+                state.revision >=
+                  (desktop
+                    ? (liveValue.current?.revision ?? 0)
+                    : Math.max(expectedRevision, liveValue.current?.revision ?? 0)))),
+        );
+      const finishPending = () => {
+        forgetPending(scope, requestId);
+        if (durableScope.current === scope) durablePending.current = readPending(scope);
+      };
+      settingsInFlight.current = { ...entry, generation: g, expectedRevision, runtimeBootId };
+      activeReceipts.current.set(requestId, { scope, generation: g, bootId: access.bootId });
       try {
         try {
           rememberPending(scope, entry);
           durablePending.current = readPending(scope);
         } catch {
-          if (stillCurrent()) setSettingsNotice({ ...settingsWrite, status: "notDispatched" });
+          if (desktop) throw new ApiError(409, "pending_storage_unavailable", "not-dispatched");
+          if (stillCurrent()) reportSettings("notDispatched");
           return;
         }
         const outcome = await verifySettingsWrite({
           client,
           action,
-          body: {
-            ...fields,
-            sessionId: id,
-            bootId: access.bootId,
-            expectedRevision,
-            requestId,
-          },
+          body: { ...fields, sessionId: id, bootId: access.bootId, expectedRevision, requestId },
           runtimeBootId,
           perform,
           stillCurrent,
+          allowReceiptWithoutRuntime: desktop,
         });
+        if (desktop && outcome.status !== "accepted") throw outcome.error;
         if (outcome.status === "unknown") {
           if (stillCurrent()) {
             setControlReady(false);
-            setSettingsNotice({ ...settingsWrite, status: "uncertain" });
+            reportSettings("uncertain");
           }
           return;
         }
-        forgetPending(scope, requestId);
-        if (durableScope.current === scope) durablePending.current = readPending(scope);
+        finishPending();
         if (!stillCurrent()) return;
         if (outcome.status === "not-dispatched")
-          setSettingsNotice({
-            ...settingsWrite,
-            status: "notDispatched",
-            reason: codexSettingsRecoveryReason(sessionAgent, ...outcome.reasons),
-          });
-        await readSettingsControls.current?.(
-          (readback) =>
-            stillCurrent() &&
-            readback.sessionId === id &&
-            (runtimeBootId === undefined || readback.runtimeBootId === runtimeBootId) &&
-            (readback.status === "outcome-unknown" ||
-              (typeof readback.revision === "number" &&
-                readback.revision >= Math.max(expectedRevision, liveValue.current?.revision ?? 0))),
-        );
+          reportSettings(
+            "notDispatched",
+            codexSettingsRecoveryReason(sessionAgent, ...outcome.reasons),
+          );
+        await readBack();
         if (!stillCurrent()) return;
-        setCapabilitiesEpoch((value) => value + 1);
+        if (!desktop) setCapabilitiesEpoch((value) => value + 1);
         return outcome.status === "accepted" ? outcome.result : undefined;
+      } catch (error) {
+        if (!desktop) throw error;
+        // The local host may report a settings change before the HTTP response is lost.
+        // Keep the request identity until the extra receipt read has finished.
+        activeReceipts.current.delete(requestId);
+        const refusal =
+          error instanceof ApiError && error.controlOutcome === "not-dispatched"
+            ? error
+            : undefined;
+        if (refusal) finishPending();
+        if (!stillCurrent()) return;
+        const reason =
+          refusal &&
+          codexSettingsRecoveryReason(
+            catalogSessions.current.find((session) => session.id === id)?.agent,
+            refusal.code,
+          );
+        reportSettings(refusal ? "notDispatched" : "uncertain", reason ?? refusal?.code);
+        if (!refusal) {
+          setControlReady(false);
+          refreshRequired.current = true;
+        }
+        await readBack();
+        if (!refusal && settingsInFlight.current?.controlChanged && stillCurrent())
+          await reconcilePending(id).catch((error) => fail(error, g));
+        return;
       } finally {
         activeReceipts.current.delete(requestId);
-        setSettingsNotice((previous) =>
-          previous?.scope === scope && previous.sessionId === id && previous.status === "writing"
-            ? undefined
-            : previous,
-        );
+        settingsInFlight.current = undefined;
+        closeSettingsWrite();
         mutating.current = false;
       }
     }
@@ -2069,26 +2323,23 @@ export function useSessionController({
       else await refresh(true);
       return result;
     } catch (error) {
-      if (error instanceof ApiError && error.controlOutcome === "not-dispatched") {
+      const refusal =
+        error instanceof ApiError && error.controlOutcome === "not-dispatched" ? error : undefined;
+      if (refusal) {
         forgetPending(scope, requestId);
         if (durableScope.current === scope) durablePending.current = readPending(scope);
       }
       if (generation.current === g) {
-        setNotice(
-          error instanceof ApiError && error.controlOutcome === "not-dispatched"
-            ? "notDispatched"
-            : "uncertain",
-          error instanceof ApiError && error.controlOutcome === "not-dispatched"
-            ? codexSettingsRecoveryReason(
-                catalogSessions.current.find((session) => session.id === id)?.agent,
-                error.code,
-              )
-            : undefined,
-        );
+        const reason =
+          refusal &&
+          codexSettingsRecoveryReason(
+            catalogSessions.current.find((session) => session.id === id)?.agent,
+            refusal.code,
+          );
+        setNotice(refusal ? "notDispatched" : "uncertain", reason);
         setControlReady(false);
         refreshRequired.current = true;
-        if (!(error instanceof ApiError) || error.controlOutcome !== "not-dispatched")
-          uncertainOutcomes.current.add(id);
+        if (!refusal) uncertainOutcomes.current.add(id);
         if (action === "fork") void refresh(true);
         else await refresh(true);
       }
@@ -2279,11 +2530,14 @@ export function useSessionController({
     current?.agent === "deepseek-harness" && live?.sessionId === selected
       ? dshNativeStatusDisplay(live, locale)
       : undefined;
+  const settingsWriteActive = desktop
+    ? savingSettingsFor === selected
+    : selectedSettingsNotice?.status === "writing";
   const canSend =
     controlReady &&
     online &&
     !busy &&
-    selectedSettingsNotice?.status !== "writing" &&
+    !settingsWriteActive &&
     access?.protocolVersion === 2 &&
     !!access?.experimentalEnabled &&
     !!access.device?.send &&
@@ -2296,7 +2550,7 @@ export function useSessionController({
     controlReady &&
     online &&
     !busy &&
-    selectedSettingsNotice?.status !== "writing" &&
+    !settingsWriteActive &&
     access?.protocolVersion === 2 &&
     !!access?.experimentalEnabled &&
     !!access.device?.send &&
@@ -2306,7 +2560,7 @@ export function useSessionController({
     !!live.turnId;
   const terminalReasonText =
     live?.executionMode === "claude-follower"
-      ? claudeConnectionReason(locale, live.reason, "web")
+      ? claudeConnectionReason(locale, live.reason, surface)
       : undefined;
   const liveText = dshStatus
     ? dshStatus.label
@@ -2314,8 +2568,8 @@ export function useSessionController({
       ? t.controlUnconfirmed
       : (terminalReasonText ??
         (live?.activity === "compacting"
-          ? contextUsageCopyForSurface(locale, "web").compacting
-          : live?.status === "idle" && live.reason !== "handoff-required"
+          ? contextUsageCopyForSurface(locale, surface).compacting
+          : live?.status === "idle" && (desktop || live.reason !== "handoff-required")
             ? t.idle
             : live?.questions?.length
               ? interactionCopy[locale].title
@@ -2374,8 +2628,7 @@ export function useSessionController({
     settingsChangedHere,
     settingsNotice: selectedSettingsNotice,
     settingsOnlyBlocked: !!(
-      (selectedSettingsNotice?.status === "writing" ||
-        selectedSettingsNotice?.status === "uncertain") &&
+      (settingsWriteActive || selectedSettingsNotice?.status === "uncertain") &&
       online &&
       streamReady.current &&
       !refreshRequired.current &&
@@ -2455,5 +2708,6 @@ export function useSessionController({
     leaveSession,
   };
 }
-export type SessionController = ReturnType<typeof useSessionController>;
-export type SessionOptions = Parameters<typeof useSessionController>[0];
+export type SessionController<Words extends ControllerWords = ControllerWords> = ReturnType<
+  typeof useSessionController<Words>
+>;

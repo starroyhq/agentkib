@@ -1,5 +1,5 @@
 import { SessionContextUsageGauge, type SessionContextUsageGaugeProps } from "@agentkib/session-ui";
-import { useSession } from "./features/sessions/session-context";
+import { useSession } from "./web-session-context";
 
 export {
   contextUsagePercent,

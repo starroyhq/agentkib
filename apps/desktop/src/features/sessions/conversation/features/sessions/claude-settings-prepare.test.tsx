@@ -14,7 +14,7 @@ import {
   type CodexSessionSettings,
 } from "@agentkib/web-client";
 import { CodexComposerControls, type ComposerControlsHandle } from "@agentkib/session-ui";
-import { useSession } from "./session-context";
+import { useSession } from "../../desktop-session-context";
 import { sessionAgentCopy } from "@agentkib/session-ui";
 import { codexCopy } from "../../codex-copy";
 import {
@@ -27,7 +27,7 @@ import {
 } from "@agentkib/session-ui";
 import { SessionComposer } from "@/features/sessions/conversation/desktop-session-composer";
 
-vi.mock("./session-context", () => ({ useSession: vi.fn() }));
+vi.mock("../../desktop-session-context", () => ({ useSession: vi.fn() }));
 let state: ReturnType<typeof useSession>;
 let props: Omit<Parameters<typeof CodexComposerControls>[0], "session">;
 function settings(id = "session"): CodexSessionSettings {

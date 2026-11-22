@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { readFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { codexCopyForSurface, codexReason } from "../../codex-copy";
-import { managedControlCopyForSurface } from "./managed-control-copy";
+import { managedControlCopyForSurface } from "@agentkib/session-ui";
 import { claudeConnectionCopyForSurface, surfaceText, artifactCopy } from "@agentkib/session-ui";
-import { managedText } from "./managed-copy";
+import { managedText } from "@agentkib/session-ui";
 
 const locales = ["zh-CN", "zh-Hant", "en-US", "ja-JP"] as const;
 
@@ -126,7 +126,7 @@ describe("session copy identifies the computer and application", () => {
     );
   });
 
-  it("keeps the shared presentation implementations mirrored", () => {
+  it("uses a single shared presentation implementation for both platforms", () => {
     for (const filename of [
       "managed-control-copy.ts",
       "session-display-state.ts",
@@ -139,27 +139,13 @@ describe("session copy identifies the computer and application", () => {
         `../../../../../../../web/src/features/conversation/features/sessions/${filename}`,
         import.meta.url,
       );
-      const normalize = (source: string) => {
-        const presentation = source
-          .replace('import type { SupportedLocale as Locale } from "@/core/types";', "")
-          .replace('import type { Locale } from "../../i18n";', "");
-        // Desktop also tells its embedded host when the toolbar owns the connection status.
-        if (filename === "session-display-state.ts")
-          return presentation
-            .replace("  offline?: boolean;\n", "")
-            .replace("      offline: true,\n", "");
-        if (filename === "claude-session-banner.ts")
-          return presentation
-            .replace(
-              "return {\n      title: copy.hostDisconnected,\n      body: copy.hostDisconnectedInfo,\n      connection: true as const,\n    };",
-              "return { title: copy.hostDisconnected, body: copy.hostDisconnectedInfo };",
-            )
-            .replace(", connection: true as const };", " };");
-        return presentation;
-      };
-      expect(normalize(readFileSync(desktop, "utf8")), filename).toBe(
-        normalize(readFileSync(web, "utf8")),
+      const shared = new URL(
+        `../../../../../../../../packages/session-ui/src/conversation/sessions/${filename}`,
+        import.meta.url,
       );
+      expect(existsSync(shared), filename).toBe(true);
+      expect(existsSync(desktop), filename).toBe(false);
+      expect(existsSync(web), filename).toBe(false);
     }
   });
 });

@@ -5,7 +5,7 @@ import { render } from "@/features/conversation/web-reader-test-utils";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { type CodexContextOptions, type CodexContextResource } from "@agentkib/web-client";
 import { CodexComposerControls } from "@agentkib/session-ui";
-import type { useSession } from "@/features/conversation/features/sessions/session-context";
+import type { useSession } from "@/features/conversation/web-session-context";
 let state: ReturnType<typeof useSession>;
 const folder: CodexContextResource = {
   id: "folder-ref",

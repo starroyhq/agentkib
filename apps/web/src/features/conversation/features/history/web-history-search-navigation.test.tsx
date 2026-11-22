@@ -9,7 +9,7 @@ import {
   type HistoryLocatedRecord,
   type HistorySearchStatus,
 } from "@agentkib/web-client";
-import { EmbeddedConversation } from "../../conversation";
+import { EmbeddedConversation } from "../../web-embedded-conversation";
 import { historyCopy } from "@agentkib/session-ui";
 
 afterEach(() => {

@@ -5,12 +5,12 @@ import { createPortal } from "react-dom";
 import { FolderOpen } from "lucide-react";
 import { requestReadStateRefresh } from "@agentkib/session-ui";
 import { Button } from "@/components/ui/button";
-import { useSession } from "./conversation/features/sessions/session-context";
-import { claudeSessionBanner } from "./conversation/features/sessions/claude-session-banner";
-import { sessionDisplayState } from "./conversation/features/sessions/session-display-state";
+import { useSession } from "./conversation/desktop-session-context";
+import { claudeSessionBanner } from "@agentkib/session-ui";
+import { sessionDisplayState } from "./conversation/desktop-session-display";
 import { webLayoutCopy } from "@agentkib/session-ui";
 import { useSessionViewStore } from "./session-view-store";
-import { useSessionPanels } from "./conversation/features/sessions/session-panels";
+import { useSessionPanels } from "@agentkib/session-ui";
 
 type ToolbarSlots = { files: HTMLElement | null; status: HTMLElement | null };
 

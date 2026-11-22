@@ -1,6 +1,6 @@
 import { isBusyRead } from "@agentkib/session-ui";
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
-import type { EmbeddedConversationHandle } from "./conversation/conversation";
+import type { EmbeddedConversationHandle } from "./conversation/desktop-embedded-conversation";
 import { RefreshCw } from "lucide-react";
 import { createDesktopConversationClient } from "@/core/conversation-bridge";
 import type { ConversationSessionSummary } from "@/core/types";
@@ -13,7 +13,7 @@ import { subscribeConversationPanel } from "./conversation-panel-commands";
 import { useDesktopConversationWindow } from "./DesktopConversationWindow";
 
 const EmbeddedConversation = lazy(() =>
-  import("./conversation/conversation").then((module) => ({
+  import("./conversation/desktop-embedded-conversation").then((module) => ({
     default: module.EmbeddedConversation,
   })),
 );

@@ -14,12 +14,12 @@ import {
 } from "@agentkib/web-client";
 import { composerGoalCopy, composerModelCopy, newSessionCopy } from "@agentkib/session-ui";
 import { CodexComposerControls, type ComposerControlsHandle } from "@agentkib/session-ui";
-import { useSession } from "../conversation/features/sessions/session-context";
+import { useSession } from "../conversation/web-session-context";
 import { SessionComposer } from "@/features/conversation/web-session-composer";
 import { sessionAgentCopy } from "@agentkib/session-ui";
 import { codexCopy } from "../conversation/codex-copy";
 
-vi.mock("../conversation/features/sessions/session-context", () => ({ useSession: vi.fn() }));
+vi.mock("../conversation/web-session-context", () => ({ useSession: vi.fn() }));
 let state: ReturnType<typeof useSession>;
 let props: Omit<Parameters<typeof CodexComposerControls>[0], "session">;
 function settings(id = "session"): CodexSessionSettings {

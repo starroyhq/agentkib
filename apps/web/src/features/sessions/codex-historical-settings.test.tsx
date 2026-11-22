@@ -5,7 +5,7 @@ import { render } from "@/features/conversation/web-reader-test-utils";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { forgetSessionModelDisplay, type CodexSessionSettings } from "@agentkib/web-client";
 import { CodexComposerControls } from "@agentkib/session-ui";
-import type { useSession } from "@/features/conversation/features/sessions/session-context";
+import type { useSession } from "@/features/conversation/web-session-context";
 
 const historicalSettings: CodexSessionSettings = {
   sessionId: "s",

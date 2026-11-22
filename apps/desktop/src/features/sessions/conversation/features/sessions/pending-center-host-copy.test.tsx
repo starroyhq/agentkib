@@ -7,7 +7,7 @@ import {
   createDesktopConversationAdapter,
   type DesktopConversationBridge,
 } from "@/core/conversation-bridge";
-import { EmbeddedConversation } from "../../conversation";
+import { EmbeddedConversation } from "../../desktop-embedded-conversation";
 import { pendingScope, readPending, rememberPending } from "@agentkib/session-ui";
 
 const labels = [

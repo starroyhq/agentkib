@@ -3,7 +3,7 @@ import { dictionaries, type Locale } from "@/features/conversation/i18n";
 import { codexCopy, codexReason } from "@/features/conversation/codex-copy";
 import { sessionContinuationCopy, sessionContinuationListState } from "@agentkib/session-ui";
 import { CLAUDE_COMMAND_REFUSALS } from "@agentkib/web-client";
-import { managedControlCopy } from "@/features/conversation/features/sessions/managed-control-copy";
+import { managedControlCopy } from "@agentkib/session-ui";
 
 describe("Codex capability reasons", () => {
   const locales: Locale[] = ["zh-CN", "zh-Hant", "en-US", "ja-JP"];

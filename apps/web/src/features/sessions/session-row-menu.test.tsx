@@ -3,10 +3,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError, type ConversationSessionSummary } from "@agentkib/web-client";
 import { SessionRowMenu } from "@/features/conversation/features/catalog/session-row-menu";
 import { SessionCatalog } from "@/features/conversation/features/catalog/session-catalog";
-import { useSession } from "@/features/conversation/features/sessions/session-context";
+import { useSession } from "@/features/conversation/web-session-context";
 import { codexCopyForSurface, codexReason } from "@/features/conversation/codex-copy";
 
-vi.mock("@/features/conversation/features/sessions/session-context", () => ({
+vi.mock("@/features/conversation/web-session-context", () => ({
   useSession: vi.fn(),
 }));
 const copy = codexCopyForSurface("en-US", "web");

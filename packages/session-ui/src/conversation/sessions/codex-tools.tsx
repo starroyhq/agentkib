@@ -19,7 +19,7 @@ import { contextUsageCopyForSurface } from "../../context-usage-copy";
 import type { InteractionLocale } from "../../interaction-model";
 import { useSessionPlatform } from "../../session-platform";
 import { codexCopyForSurface, codexReason } from "./codex-copy";
-import { composerLayoutCopy } from "./composer-layout-copy";
+import { composerSettingsStatus } from "./composer-layout-copy";
 import { OperationDisclosure, OperationGroup, OperationRow } from "./operation-layout";
 import { blockedWhileCompacting } from "./session-activity";
 import { sessionAgentCopy } from "./session-agent-copy";
@@ -356,15 +356,15 @@ export function CodexTools({
           },
         }
       : undefined;
-  const settingsStatus = limitedSettings
-    ? settingsNotice?.status === "uncertain"
-      ? composerLayoutCopy[locale].settingsUnknown
-      : settingsNotice?.status === "notDispatched"
-        ? settingsNotice.reason
-          ? explainReason(settingsNotice.reason).text
-          : t.notDispatched
-        : undefined
-    : undefined;
+  const settingsStatus =
+    limitedSettings && settingsNotice
+      ? composerSettingsStatus(
+          locale,
+          settingsNotice,
+          (reason) => explainReason(reason).text,
+          t.notDispatched,
+        )
+      : undefined;
   return (
     <>
       {showTrigger && (

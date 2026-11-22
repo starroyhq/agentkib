@@ -5,12 +5,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { render } from "@/features/sessions/conversation/desktop-reader-test-utils";
 import { CodexTools } from "./desktop-session-operations";
 import { codexCopy, codexReason } from "../../codex-copy";
-import { useSession } from "./session-context";
+import { useSession } from "../../desktop-session-context";
 import { webLayoutCopy } from "@agentkib/session-ui";
 
 const { navigate } = vi.hoisted(() => ({ navigate: vi.fn() }));
-vi.mock("./session-context", () => ({ useSession: vi.fn() }));
-vi.mock("./session-navigation", () => ({ useSessionNavigate: () => navigate }));
+vi.mock("../../desktop-session-context", () => ({ useSession: vi.fn() }));
+vi.mock("../../desktop-session-navigation", () => ({ useSessionNavigate: () => navigate }));
 const copy = codexCopy["en-US"];
 let state: ReturnType<typeof useSession>;
 function prepare(

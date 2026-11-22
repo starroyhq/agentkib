@@ -8,7 +8,11 @@ import {
   mergeNativeCoverage,
   type NativeCoverage,
 } from "@agentkib/conversation-state";
-import { createWarmSessionStreamPool, warmSessionAuthority } from "@agentkib/session-ui";
+import {
+  createWarmSessionStreamPool,
+  useSessionLive,
+  warmSessionAuthority,
+} from "@agentkib/session-ui";
 import type {
   Access,
   ConversationEvent,
@@ -18,12 +22,11 @@ import type {
   WebClient,
 } from "@agentkib/web-client";
 import { dictionaries } from "@/features/conversation/i18n";
-import { useSessionLive } from "@/features/conversation/features/sessions/use-session-live";
 import { SessionReader } from "@/features/conversation/features/sessions/web-session-reader";
-import { useSession } from "@/features/conversation/features/sessions/session-context";
+import { useSession } from "@/features/conversation/web-session-context";
 import { webLayoutCopy } from "@agentkib/session-ui";
 
-vi.mock("@/features/conversation/features/sessions/session-context", () => ({
+vi.mock("@/features/conversation/web-session-context", () => ({
   useSession: vi.fn(),
 }));
 vi.mock("@/features/conversation/features/sessions/session-operations", () => ({
@@ -145,6 +148,7 @@ function setup(initial: ConversationEvent[]) {
     const [, setOnline] = useState(false);
     const [liveContentVersion, setLiveContentVersion] = useState(0);
     useSessionLive({
+      surface: "web",
       ...fixed,
       setLive,
       setPage,

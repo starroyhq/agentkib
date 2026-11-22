@@ -1,7 +1,11 @@
 import { useEffect, useState } from "react";
 import type { InteractionLocale as Locale } from "../../interaction-model";
 import { useSessionPlatform, type SessionPlatform } from "../../session-platform";
-import { OperationCopy, OperationGroup, OperationRow } from "./operation-layout";
+import {
+  OperationCopy,
+  OperationGroup,
+  OperationRow,
+} from "../../conversation/sessions/operation-layout";
 
 type BackgroundTasksStatus = {
   enabled: boolean;
@@ -19,6 +23,8 @@ const copy: Record<
     tooOld: (minimum: string, version: string | null) => string;
     missing: string;
     platform: string;
+    loading: string;
+    unavailable: string;
   }
 > = {
   "zh-CN": {
@@ -28,6 +34,8 @@ const copy: Record<
       `需要 Claude Code ${minimum} 或更新版本${version ? `（当前 ${version}）` : ""}。`,
     missing: "没有找到 Claude Code。",
     platform: "目前只支持 macOS。",
+    loading: "正在读取设置。",
+    unavailable: "当前运行环境未提供后台任务设置。",
   },
   "zh-Hant": {
     toggle: "允許 Claude Code 在背景執行工作",
@@ -36,6 +44,8 @@ const copy: Record<
       `需要 Claude Code ${minimum} 或更新版本${version ? `（目前 ${version}）` : ""}。`,
     missing: "找不到 Claude Code。",
     platform: "目前只支援 macOS。",
+    loading: "正在讀取設定。",
+    unavailable: "目前的執行環境未提供背景工作設定。",
   },
   "ja-JP": {
     toggle: "Claude Code にバックグラウンドでの実行を許可",
@@ -44,6 +54,8 @@ const copy: Record<
       `Claude Code ${minimum} 以降が必要です${version ? `（現在 ${version}）` : ""}。`,
     missing: "Claude Code が見つかりません。",
     platform: "現在は macOS のみ対応しています。",
+    loading: "設定を読み込み中です。",
+    unavailable: "現在のランタイムではバックグラウンドの設定を取得できません。",
   },
   "en-US": {
     toggle: "Let Claude Code run tasks in the background",
@@ -52,6 +64,8 @@ const copy: Record<
       `Requires Claude Code ${minimum} or later${version ? ` (this computer has ${version})` : ""}.`,
     missing: "Claude Code was not found.",
     platform: "Only macOS is supported for now.",
+    loading: "Reading settings.",
+    unavailable: "The current runtime does not provide a background task setting.",
   },
 };
 
@@ -80,40 +94,68 @@ function statusOf(value: unknown): BackgroundTasksStatus | undefined {
  * Whether Claude Code sessions AgentKib runs on this computer keep background tasks. On by
  * default; a change applies to the next Claude Code process AgentKib starts.
  */
-export function ClaudeBackgroundSetting({ locale }: { locale: Locale }) {
+export function ClaudeBackgroundSetting({
+  locale,
+  unavailableReason,
+}: {
+  locale: Locale;
+  unavailableReason?: string;
+}) {
   const { desktop } = useSessionPlatform();
-  return desktop ? <ClaudeBackgroundTasks locale={locale} desktop={desktop} /> : null;
+  return desktop ? (
+    <ClaudeBackgroundTasks
+      locale={locale}
+      desktop={desktop}
+      unavailableReason={unavailableReason}
+    />
+  ) : null;
 }
 
 function ClaudeBackgroundTasks({
   desktop,
   locale,
+  unavailableReason,
 }: {
   desktop: NonNullable<SessionPlatform["desktop"]>;
   locale: Locale;
+  unavailableReason?: string;
 }) {
   const {
     components: { Switch },
     requestBridge,
   } = desktop;
   const text = copy[locale] ?? copy["en-US"];
-  const [status, setStatus] = useState<BackgroundTasksStatus>();
+  const [status, setStatus] = useState<BackgroundTasksStatus | null>();
   const [switching, setSwitching] = useState(false);
   useEffect(() => {
+    if (unavailableReason) return;
     let current = true;
     // Legacy runtimes can omit this optional host setting or fail synchronously.
     void Promise.resolve()
       .then(() => requestBridge({ operation: "background-tasks" }))
       .then(
-        (value) => current && setStatus(statusOf(value)),
-        () => undefined,
+        (value) => current && setStatus(statusOf(value) ?? null),
+        () => current && setStatus(null),
       );
     return () => {
       current = false;
     };
-  }, [requestBridge]);
-  if (!status) return null;
+  }, [requestBridge, unavailableReason]);
+  const blocked =
+    unavailableReason ??
+    (switching || status === undefined
+      ? text.loading
+      : status?.available
+        ? undefined
+        : status?.reason === "claude-cli-too-old"
+          ? text.tooOld(status.minimumVersion, status.cliVersion)
+          : status?.reason === "claude-cli-unavailable"
+            ? text.missing
+            : status?.reason === "platform-unsupported"
+              ? text.platform
+              : text.unavailable);
   const toggle = (enabled: boolean) => {
+    if (blocked) return;
     setSwitching(true);
     void Promise.resolve()
       .then(() => requestBridge({ operation: "background-tasks", enabled }))
@@ -123,23 +165,16 @@ function ClaudeBackgroundTasks({
       )
       .finally(() => setSwitching(false));
   };
-  const unavailable =
-    status.reason === "claude-cli-too-old"
-      ? text.tooOld(status.minimumVersion, status.cliVersion)
-      : status.reason === "claude-cli-unavailable"
-        ? text.missing
-        : status.reason === "platform-unsupported"
-          ? text.platform
-          : null;
   return (
     <OperationGroup title="Claude Code">
       <OperationRow>
         <OperationCopy title={text.toggle}>
-          {status.available ? text.hint : (unavailable ?? text.hint)}
+          {!unavailableReason && status?.available && text.hint}
         </OperationCopy>
         <Switch
-          checked={status.available && status.enabled}
-          disabled={switching || !status.available}
+          checked={!unavailableReason && status?.available === true && status.enabled}
+          disabled={!!blocked}
+          title={blocked}
           aria-label={text.toggle}
           onCheckedChange={toggle}
         />

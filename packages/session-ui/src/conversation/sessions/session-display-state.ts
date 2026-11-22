@@ -6,8 +6,11 @@ import {
   sessionContinuationCopy,
 } from "../../session-continuation";
 import type { SessionSurface } from "../../session-surface-copy";
-import { claudeConnectionCopyForSurface, claudeConnectionReason } from "./claude-connection-copy";
-import { claudeReconnectFailureReason } from "./claude-session-banner";
+import {
+  claudeConnectionCopyForSurface,
+  claudeConnectionReason,
+} from "../../agents/claude-code/connection-copy";
+import { claudeReconnectFailureReason } from "../../agents/claude-code/connection-notice";
 import { codexReason } from "./codex-copy";
 import { managedControlCopyForSurface } from "./managed-control-copy";
 import type { SessionController } from "./use-session-controller";

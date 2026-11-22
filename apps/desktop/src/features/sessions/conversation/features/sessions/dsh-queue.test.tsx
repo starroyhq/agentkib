@@ -3,8 +3,19 @@ import "@testing-library/jest-dom/vitest";
 import { cleanup, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ApiError, WebClient, type SessionQueue } from "@agentkib/web-client";
-import { dispatchSessionAction, SessionSendQueue } from "@agentkib/session-ui";
+import {
+  ApiError,
+  sessionProviderCapabilities,
+  sessionProviderDeclaration,
+  WebClient,
+  type SessionQueue,
+} from "@agentkib/web-client";
+import {
+  dispatchSessionAction,
+  resolveSessionProvider,
+  sessionQueuePanel,
+  SessionSendQueue,
+} from "@agentkib/session-ui";
 import { render } from "../../desktop-reader-test-utils";
 import { publishSessionInvalidation } from "@agentkib/conversation-state";
 
@@ -136,6 +147,49 @@ describe("DSH queued messages above the composer", () => {
     expect(state.codexAction).toHaveBeenLastCalledWith("queue-delete", {
       queuedSubmissionId: "item-1",
     });
+  });
+
+  it("keeps declared item actions visible when the host fences them", async () => {
+    const user = userEvent.setup();
+    state = session(
+      {
+        "queue-list": available,
+        "queue-update": available,
+        "queue-delete": { available: false, reason: "session-busy" },
+        "queue-steer": available,
+      },
+      [
+        {
+          id: "item-1",
+          text: "run the tests next",
+          actions: { steer: { available: false, reason: "dsh-runtime-offline" } },
+        },
+      ],
+    );
+    render(<SessionSendQueue session={state} agent="deepseek-harness" />);
+    await screen.findByText("run the tests next");
+    const steer = screen.getByRole("button", { name: /Steer/ });
+    const remove = screen.getByRole("button", { name: "Remove" });
+    expect(steer).toBeDisabled();
+    expect(steer).toHaveAttribute("title", expect.stringContaining("DeepSeek Harness"));
+    expect(remove).toBeDisabled();
+    expect(remove).toHaveAttribute("title", expect.stringContaining("requires an idle session"));
+    await user.click(steer);
+    await user.click(remove);
+    expect(state.codexAction).not.toHaveBeenCalled();
+  });
+
+  it("uses the declared queue actions and falls back when a legacy host omits them", () => {
+    const declared = sessionProviderDeclaration("deepseek-harness")!;
+    const selected = { id: "session", agent: "deepseek-harness" } as const;
+    const legacy = sessionProviderCapabilities("deepseek-harness");
+    const resolved = resolveSessionProvider(selected, { sessionId: selected.id, provider: legacy });
+    expect(sessionQueuePanel(selected.agent, resolved)?.actions).toContain("steer");
+    expect(sessionQueuePanel(selected.agent, { ...declared, queue: undefined })).toBeUndefined();
+    expect(
+      sessionQueuePanel("deepseek-harness", { ...declared, queue: { actions: ["list"] } }),
+    ).toBeUndefined();
+    expect(sessionQueuePanel("claude-code")).toBeUndefined();
   });
 
   it("edits a message from its menu", async () => {

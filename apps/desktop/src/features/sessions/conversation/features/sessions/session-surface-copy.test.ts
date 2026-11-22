@@ -127,20 +127,21 @@ describe("session copy identifies the computer and application", () => {
   });
 
   it("uses a single shared presentation implementation for both platforms", () => {
-    for (const filename of [
-      "managed-control-copy.ts",
-      "session-display-state.ts",
-      "claude-session-banner.ts",
-      "managed-copy.ts",
-      "managed-error-copy.ts",
-    ]) {
+    const implementations = {
+      "managed-control-copy.ts": "conversation/sessions/managed-control-copy.ts",
+      "session-display-state.ts": "conversation/sessions/session-display-state.ts",
+      "claude-session-banner.ts": "agents/claude-code/connection-notice.ts",
+      "managed-copy.ts": "conversation/sessions/managed-copy.ts",
+      "managed-error-copy.ts": "conversation/sessions/managed-error-copy.ts",
+    };
+    for (const [filename, path] of Object.entries(implementations)) {
       const desktop = new URL(filename, import.meta.url);
       const web = new URL(
         `../../../../../../../web/src/features/conversation/features/sessions/${filename}`,
         import.meta.url,
       );
       const shared = new URL(
-        `../../../../../../../../packages/session-ui/src/conversation/sessions/${filename}`,
+        `../../../../../../../../packages/session-ui/src/${path}`,
         import.meta.url,
       );
       expect(existsSync(shared), filename).toBe(true);

@@ -8,7 +8,7 @@ import {
   OperationDisclosure,
   OperationGroup,
   OperationRow,
-} from "./operation-layout";
+} from "../../conversation/sessions/operation-layout";
 
 type DshBridgeStatus = {
   supported?: boolean;
@@ -232,26 +232,38 @@ function InstallCopyField({
  * Status and settings of the per-computer DeepSeek Harness connection: whether AgentKib starts DSH
  * in the background, and how to install the plugin into a DSH the user runs. Never installs.
  */
-export function DshBridgePanel({ locale }: { locale: Locale }) {
+export function DshBridgePanel({
+  locale,
+  unavailableReason,
+}: {
+  locale: Locale;
+  unavailableReason?: string;
+}) {
   const { desktop } = useSessionPlatform();
-  return desktop ? <DshBridgeSettings desktop={desktop} locale={locale} /> : null;
+  return desktop ? (
+    <DshBridgeSettings desktop={desktop} locale={locale} unavailableReason={unavailableReason} />
+  ) : null;
 }
 
 function DshBridgeSettings({
   desktop,
   locale,
+  unavailableReason,
 }: {
   desktop: NonNullable<SessionPlatform["desktop"]>;
   locale: Locale;
+  unavailableReason?: string;
 }) {
   const {
     components: { Switch },
     requestBridge,
   } = desktop;
   const text = copy[locale] ?? copy["en-US"];
-  const [status, setStatus] = useState<DshBridgeStatus>();
+  const [observed, setStatus] = useState<DshBridgeStatus>();
+  const status = unavailableReason ? undefined : observed;
   const [switching, setSwitching] = useState(false);
   useEffect(() => {
+    if (unavailableReason) return;
     let current = true;
     const read = () =>
       void requestBridge({ operation: "dsh-bridge-status" }).then(
@@ -271,20 +283,22 @@ function DshBridgeSettings({
       current = false;
       clearInterval(timer);
     };
-  }, [requestBridge]);
+  }, [requestBridge, unavailableReason]);
   const runtimes = status?.runtimes ?? [];
   const directory = status?.pluginDirectory ?? "";
   const command =
     status?.installInstructions?.split("\n").find((line) => line.trim() && !line.startsWith("#")) ??
     "";
   const autoStart = status?.autoStart;
-  const bridgeReason = !status
-    ? text.loading
-    : status.supported === false
-      ? text.unsupported
-      : status.reason === "dsh-bridge-unavailable"
-        ? text.unavailable
-        : undefined;
+  const bridgeReason =
+    unavailableReason ??
+    (!status
+      ? text.loading
+      : status.supported === false
+        ? text.unsupported
+        : status.reason === "dsh-bridge-unavailable"
+          ? text.unavailable
+          : undefined);
   const switchReason =
     bridgeReason ?? (!autoStart ? text.autoStartUnavailable : switching ? text.loading : undefined);
   const directoryReason = bridgeReason ?? (!directory ? text.installUnavailable : undefined);

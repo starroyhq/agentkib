@@ -67,3 +67,11 @@ export function DevinTurnNotice({
     </div>
   );
 }
+
+export const devinTurnNotice = {
+  // Older hosts do not declare a notice kind. Keep this registration scoped to Devin
+  // where a generic refusal code, such as attachments-unsupported, is also recognized.
+  reasons: DEVIN_TURN_REASONS,
+  supports: (agent: string) => agent === "devin",
+  Component: DevinTurnNotice,
+};

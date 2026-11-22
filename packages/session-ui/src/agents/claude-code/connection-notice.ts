@@ -2,7 +2,7 @@ import type { Access, Live } from "@agentkib/web-client";
 import type { InteractionLocale } from "../../interaction-model";
 import type { SessionSurface } from "../../session-surface-copy";
 import { sessionContinuationCopy } from "../../session-continuation";
-import { claudeConnectionCopyForSurface, claudeConnectionReason } from "./claude-connection-copy";
+import { claudeConnectionCopyForSurface, claudeConnectionReason } from "./connection-copy";
 
 type BannerState = {
   locale: InteractionLocale;
@@ -120,13 +120,4 @@ export function claudeSessionBanner(
     }
   }
   return null;
-}
-
-/** Notices about the background process read as a line above the composer, not as a banner. */
-export function claudeComposerNotice(banner: ReturnType<typeof claudeSessionBanner>): boolean {
-  return (
-    banner?.notice === "background-ended" ||
-    banner?.notice === "background-limit" ||
-    banner?.notice === "lead-turn-limit"
-  );
 }

@@ -1,12 +1,13 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
 import { useState, type ReactNode } from "react";
-import { cleanup, fireEvent, screen } from "@testing-library/react";
+import { cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
 import { render } from "../../desktop-reader-test-utils";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DesktopSessionOperations } from "./desktop-session-operations";
 import { SessionPanelsContext } from "@agentkib/session-ui";
 import { claudeConnectionCopy } from "@agentkib/session-ui";
+import { sessionProviderDeclaration } from "@agentkib/web-client";
 import { conversationWords } from "@/core/i18n";
 import type { SessionController } from "../../desktop-session-controller";
 let session: SessionController;
@@ -15,22 +16,14 @@ vi.mock("@agentkib/session-ui", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@agentkib/session-ui")>()),
   CodexTools: ({ open, shortcuts }: { open: boolean; shortcuts: ReactNode }) =>
     open ? <section>{shortcuts}</section> : null,
-  DshBridgePanel: () => <p>DSH plugin panel</p>,
-  ClaudeBackgroundSetting: () => <p>Claude background setting</p>,
-  ClaudeBridgePanel: ({ onClose }: { onClose?: () => void }) => (
-    <section role="dialog" aria-label={claudeConnectionCopy[session.locale].title}>
-      <p>Terminal wizard</p>
-      <button onClick={onClose}>Close terminal</button>
-    </section>
-  ),
 }));
-vi.mock("../../components/dialog", () => ({
-  Dialog: ({ title, children }: { title: string; children: ReactNode }) => (
-    <section role="dialog" aria-label={title}>
-      {children}
-    </section>
-  ),
-}));
+const requestBridge = vi.fn();
+const permissionReason = "This device does not have session management permission.";
+const backgroundLabel = "Let Claude Code run tasks in the background";
+const dshLabel = "Start DeepSeek Harness when needed";
+function terminalWizard() {
+  return screen.queryByRole("dialog", { name: claudeConnectionCopy[session.locale].title });
+}
 function View({ revision = 0 }: { revision?: number }) {
   const [open, setOpen] = useState(true);
   const [terminalOpen, setTerminalOpen] = useState(false);
@@ -63,19 +56,32 @@ function setManage(manage: boolean) {
 }
 beforeEach(() => {
   document.documentElement.dataset.platform = "macos";
+  vi.stubGlobal("agentkibDesktop", { claude: { request: requestBridge } });
+  requestBridge.mockReset();
+  requestBridge.mockImplementation(async ({ operation }: { operation: string }) => {
+    if (operation === "background-tasks")
+      return { backgroundTasks: { available: true, enabled: true, minimumVersion: "2.1.299" } };
+    if (operation === "dsh-bridge-status")
+      return { supported: true, autoStart: { available: true, enabled: true }, runtimes: [] };
+    return {};
+  });
   session = {
     selected: "session",
     current: { id: "session", agent: "claude-code" },
     locale: "zh-CN",
     t: conversationWords("zh-CN"),
-    access: { device: { manage: true } },
+    online: false,
+    access: { status: "approved", device: { manage: true, id: "test-device" } },
     choose: vi.fn(),
     formatCatalogTime: vi.fn(),
     setModal: vi.fn(),
     refresh: vi.fn(),
   } as unknown as SessionController;
 });
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  vi.unstubAllGlobals();
+});
 describe("Claude terminal setup entry", () => {
   it.each(["zh-CN", "zh-Hant", "ja-JP", "en-US"] as const)(
     "keeps the terminal dialog independent of session actions in %s",
@@ -83,17 +89,15 @@ describe("Claude terminal setup entry", () => {
       session.locale = locale;
       session.t = conversationWords(locale);
       render(<View />);
-      expect(screen.queryByText("Terminal wizard")).not.toBeInTheDocument();
+      expect(terminalWizard()).not.toBeInTheDocument();
       expect(
         screen.queryByRole("button", { name: `${claudeConnectionCopy[locale].title}…` }),
       ).not.toBeInTheDocument();
       fireEvent.click(screen.getByRole("button", { name: "Open terminal directly" }));
       expect(screen.getAllByRole("dialog")).toHaveLength(1);
-      expect(
-        screen.getByRole("dialog", { name: claudeConnectionCopy[locale].title }),
-      ).toHaveTextContent("Terminal wizard");
-      fireEvent.click(screen.getByRole("button", { name: "Close terminal" }));
-      expect(screen.queryByText("Terminal wizard")).not.toBeInTheDocument();
+      expect(terminalWizard()).toBeVisible();
+      fireEvent.click(screen.getByRole("button", { name: session.t.close }));
+      expect(terminalWizard()).not.toBeInTheDocument();
     },
   );
   it.each(["linux", "win32", undefined] as const)(
@@ -104,17 +108,17 @@ describe("Claude terminal setup entry", () => {
       render(<View />);
       expect(screen.queryByRole("button", { name: "连接终端…" })).not.toBeInTheDocument();
       fireEvent.click(screen.getByRole("button", { name: "Open terminal directly" }));
-      expect(screen.queryByText("Terminal wizard")).not.toBeInTheDocument();
+      expect(terminalWizard()).not.toBeInTheDocument();
     },
   );
   it("opens directly from the occupied choice signal and closes on session changes", () => {
     const view = render(<View />);
     fireEvent.click(screen.getByRole("button", { name: "Open terminal directly" }));
-    expect(screen.getByText("Terminal wizard")).toBeVisible();
+    expect(terminalWizard()).toBeVisible();
     session.selected = "another";
     session.current = { ...session.current!, id: "another" };
     view.rerender(<View revision={1} />);
-    expect(screen.queryByText("Terminal wizard")).not.toBeInTheDocument();
+    expect(terminalWizard()).not.toBeInTheDocument();
   });
   it("does not expose local terminal setup for Codex or devices without management access", () => {
     const view = render(<View />);
@@ -122,39 +126,87 @@ describe("Claude terminal setup entry", () => {
     view.rerender(<View revision={1} />);
     expect(screen.queryByRole("button", { name: "连接终端…" })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Open terminal directly" }));
-    expect(screen.queryByText("Terminal wizard")).not.toBeInTheDocument();
+    expect(terminalWizard()).not.toBeInTheDocument();
     setManage(true);
     session.current = { ...session.current!, agent: "codex" };
     view.rerender(<View revision={2} />);
     expect(screen.queryByRole("button", { name: "连接终端…" })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Open terminal directly" }));
-    expect(screen.queryByText("Terminal wizard")).not.toBeInTheDocument();
+    expect(terminalWizard()).not.toBeInTheDocument();
   });
 });
 
-describe("DeepSeek Harness session actions entry", () => {
-  it("opens the full actions with the plugin panel for a device that manages", () => {
+describe("registered host settings", () => {
+  it("keeps the DSH plugin switch and copy controls disabled without a management grant", async () => {
+    session.locale = "en-US";
     session.current = { ...session.current!, agent: "deepseek-harness" };
     const view = render(<View />);
     // The full actions come from CodexTools (mocked here as its header).
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
-    expect(screen.getByText("DSH plugin panel")).toBeInTheDocument();
+    expect(screen.getByText("DeepSeek Harness connection")).toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.getByRole("switch", { name: dshLabel })).not.toHaveAttribute(
+        "aria-disabled",
+        "true",
+      ),
+    );
+    requestBridge.mockClear();
     setManage(false);
     view.rerender(<View revision={1} />);
-    expect(screen.queryByText("DSH plugin panel")).not.toBeInTheDocument();
+    const toggle = screen.getByRole("switch", { name: dshLabel });
+    expect(toggle).toHaveAttribute("aria-disabled", "true");
+    expect(toggle).toHaveAttribute("title", permissionReason);
+    fireEvent.click(toggle);
+    fireEvent.click(screen.getByText("Install the AgentKib plugin"));
+    for (const name of ["Copy directory", "Copy command"]) {
+      const copy = screen.getByRole("button", { name });
+      expect(copy).toBeDisabled();
+      expect(copy).toHaveAttribute("title", permissionReason);
+    }
+    expect(requestBridge).not.toHaveBeenCalled();
   });
-});
 
-describe("Claude Code session actions entry", () => {
-  it("shows this computer's background task setting to a device that manages", () => {
+  it("keeps the Claude background setting disabled without a management grant", async () => {
+    session.locale = "en-US";
     const view = render(<View />);
-    expect(screen.getByText("Claude background setting")).toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.getByRole("switch", { name: backgroundLabel })).not.toHaveAttribute(
+        "aria-disabled",
+        "true",
+      ),
+    );
+    requestBridge.mockClear();
     setManage(false);
     view.rerender(<View revision={1} />);
-    expect(screen.queryByText("Claude background setting")).not.toBeInTheDocument();
+    const toggle = screen.getByRole("switch", { name: backgroundLabel });
+    expect(toggle).toHaveAttribute("aria-disabled", "true");
+    expect(toggle).toHaveAttribute("title", permissionReason);
+    fireEvent.click(toggle);
+    expect(requestBridge).not.toHaveBeenCalled();
+
     setManage(true);
     session.current = { ...session.current!, agent: "codex" };
     view.rerender(<View revision={2} />);
-    expect(screen.queryByText("Claude background setting")).not.toBeInTheDocument();
+    expect(screen.queryByRole("switch", { name: backgroundLabel })).not.toBeInTheDocument();
+  });
+
+  it("uses the selected session's declared connection and ignores another session's declaration", () => {
+    session.locale = "en-US";
+    session.capabilities = {
+      sessionId: session.selected,
+      features: {},
+      provider: {
+        ...sessionProviderDeclaration("claude-code")!,
+        connection: { kind: "plugin-bridge" },
+      },
+    } as SessionController["capabilities"];
+    const view = render(<View />);
+    expect(screen.getByRole("switch", { name: dshLabel })).toBeInTheDocument();
+    expect(screen.queryByRole("switch", { name: backgroundLabel })).not.toBeInTheDocument();
+
+    session.capabilities = { ...session.capabilities!, sessionId: "other" };
+    view.rerender(<View revision={1} />);
+    expect(screen.getByRole("switch", { name: backgroundLabel })).toBeInTheDocument();
+    expect(screen.queryByRole("switch", { name: dshLabel })).not.toBeInTheDocument();
   });
 });

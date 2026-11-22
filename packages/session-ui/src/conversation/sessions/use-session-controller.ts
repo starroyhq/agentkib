@@ -20,7 +20,7 @@ import {
 } from "../../session-control-receipts";
 import { dshNativeStatusDisplay } from "../../session-continuation";
 import { type ContinuationComposerDraft, type ContinuationDraft } from "./continuation-draft";
-import { claudeConnectionReason } from "./claude-connection-copy";
+import { claudeConnectionReason } from "../../agents/claude-code/connection-copy";
 import {
   historyMessageText,
   historyReferenceKey,

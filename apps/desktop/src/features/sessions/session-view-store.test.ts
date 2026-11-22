@@ -208,8 +208,8 @@ describe("session view source visibility", () => {
     );
   });
   it("keeps terminal menu eligibility in memory and ignores an older owner's cleanup", () => {
-    const first = { sessionId: "same-session", open: vi.fn() };
-    const second = { sessionId: "same-session", open: vi.fn() };
+    const first = { sessionId: "same-session", title: "Connect terminal", open: vi.fn() };
+    const second = { sessionId: "same-session", title: "Connect terminal", open: vi.fn() };
     const view = useSessionViewStore.getState();
     view.registerTerminalEntry(first);
     view.registerTerminalEntry(second);

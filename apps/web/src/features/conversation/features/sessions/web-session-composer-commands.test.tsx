@@ -610,6 +610,7 @@ describe("Codex slash commands in the composer", () => {
     async (action) => {
       doubles.session.access = {
         ...doubles.session.access,
+        status: "approved",
         device: { send: true, advancedControl: true },
       } as SessionController["access"];
       doubles.session.canSend = false;
@@ -618,6 +619,7 @@ describe("Codex slash commands in the composer", () => {
         ...doubles.session.live,
         sendEnabled: false,
         status: "running",
+        executionLocation: "agentkib",
         turnId: "turn",
       } as SessionController["live"];
       doubles.session.capabilities = {

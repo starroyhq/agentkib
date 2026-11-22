@@ -415,6 +415,7 @@ describe("visible session continuation terminology", () => {
     "keeps both Agents' queue and actions free of execution handoff entries in $locale",
     async (expected) => {
       setLocale(expected.locale);
+      session.access!.device!.advancedControl = true;
       document.documentElement.dataset.platform = "macos";
       const view = render(<View snapshot={session} />);
       fireEvent.click(screen.getByRole("button", { name: "Inspect session actions" }));
@@ -432,7 +433,9 @@ describe("visible session continuation terminology", () => {
       Object.assign(session.live!, { executionMode: "codex-managed" });
       redraw(view);
       const codexActions = await screen.findByRole("dialog");
-      expect(within(codexActions).getByRole("heading", { name: expected.queue })).toBeVisible();
+      expect(
+        await within(codexActions).findByRole("heading", { name: expected.queue }),
+      ).toBeVisible();
       expect(within(codexActions).getByRole("button", { name: expected.actionFork })).toBeEnabled();
       expectNoExecutionHandoff(expected.locale, codexActions);
       expect(session.runSessionAction).not.toHaveBeenCalled();
@@ -443,6 +446,7 @@ describe("visible session continuation terminology", () => {
     "preserves receipt checking before explicit queue recovery in $locale",
     async (expected) => {
       setLocale(expected.locale);
+      session.access!.device!.advancedControl = true;
       vi.mocked(session.client.sessionQueue).mockResolvedValue({
         sessionId: "session",
         data: [],

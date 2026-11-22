@@ -19,7 +19,7 @@ const roots = [
 
 // Baseline: origin/main at e77efe196. One hit per source line, including usages in each copy.
 // This is a syntactic budget outside the Agent registry, independent of the 137 review items.
-const maximum = { files: 71, lines: 616 };
+const maximum = { files: 69, lines: 599 };
 const agentIds = new Set(["claude-code", "codex", "deepseek-harness", "devin", "antigravity"]);
 const agentNames = new Set(["Claude Code", "Codex", "DeepSeek Harness", "Devin", "Antigravity"]);
 const agentMembers = new Set(["claude", "codex", "dsh", "deepseek", "devin", "antigravity"]);

@@ -285,8 +285,17 @@ describe("visible session continuation terminology", () => {
       expect(session.control).not.toHaveBeenCalled();
 
       Object.assign(session.live!, {
+        executionMode: undefined,
+        execution: { owner: "terminal", observed: true, confidence: "live" },
+      });
+      redraw(view);
+      expect(screen.queryByRole("button", { name: session.t.stop })).not.toBeInTheDocument();
+      expect(session.control).not.toHaveBeenCalled();
+
+      Object.assign(session.live!, {
         executionMode: "claude-managed",
         executionLocation: "agentkib",
+        execution: { owner: "agentkib", observed: true, confidence: "live" },
       });
       redraw(view);
       fireEvent.click(screen.getByRole("button", { name: session.t.stop }));

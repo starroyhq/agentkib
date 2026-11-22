@@ -12,6 +12,7 @@ import {
   PendingCenter,
   requestReadStateRefresh,
   sessionContinuationCopy,
+  sessionContinuationRegistration,
   SessionComposerInput,
   SessionComposerToolbar,
   SessionDetail,
@@ -299,10 +300,9 @@ function ReturningConversationComposer({
             if (windowConversation?.warmStreams.hasParked(id))
               windowConversation.setDraft(id, event.currentTarget.value);
           },
-          placeholder:
-            agent === "codex" || agent === "claude-code"
-              ? sessionContinuationCopy(locale).placeholder
-              : t.message,
+          placeholder: sessionContinuationRegistration(agent)
+            ? sessionContinuationCopy(locale).placeholder
+            : t.message,
         }}
         toolbar={
           <SessionComposerToolbar

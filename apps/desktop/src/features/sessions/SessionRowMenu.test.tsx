@@ -118,20 +118,33 @@ describe("a session row's menu on the desktop", () => {
     expect(screen.queryByRole("menuitem", { name: copy.archive })).not.toBeInTheDocument();
   });
 
-  it("renames with the typed name", async () => {
+  it("keeps the typed name in the rename dialog after failure and retries there", async () => {
     features({ rename: { available: true } });
-    open(summary("codex"));
-    fireEvent.click(await screen.findByRole("menuitem", { name: copy.rename }));
-    const input = await screen.findByRole("textbox", { name: copy.name });
-    fireEvent.change(input, { target: { value: "  Renamed  " } });
-    fireEvent.click(screen.getByRole("button", { name: copy.rename }));
-    await waitFor(() =>
-      expect(client.sessionAction).toHaveBeenCalledWith(
-        "rename",
-        expect.objectContaining({ name: "Renamed" }),
-        "codex",
-      ),
+    client.sessionAction.mockRejectedValueOnce(
+      new ApiError(409, "follower-operation-unverified", "not-dispatched"),
     );
+    const onChanged = vi.fn();
+    open(summary("codex"), { onChanged });
+    fireEvent.click(await screen.findByRole("menuitem", { name: copy.rename }));
+    const dialog = await screen.findByRole("dialog", { name: copy.rename });
+    const input = within(dialog).getByRole("textbox", { name: copy.name });
+    const save = within(dialog).getByRole("button", { name: copy.rename });
+    fireEvent.change(input, { target: { value: "  Renamed  " } });
+    fireEvent.click(save);
+    expect(await within(dialog).findByRole("alert")).toHaveTextContent(
+      codexReason("en-US", "follower-operation-unverified").text,
+    );
+    expect(input).toHaveValue("  Renamed  ");
+    expect(onChanged).not.toHaveBeenCalled();
+    expect(client.sessionAction).toHaveBeenCalledExactlyOnceWith(
+      "rename",
+      expect.objectContaining({ name: "Renamed" }),
+      "codex",
+    );
+    fireEvent.click(save);
+    expect(within(dialog).queryByRole("alert")).not.toBeInTheDocument();
+    await waitFor(() => expect(onChanged).toHaveBeenCalledOnce());
+    expect(screen.queryByRole("dialog", { name: copy.rename })).not.toBeInTheDocument();
   });
 
   it.each(["codex", "claude-code", "deepseek-harness"])(
@@ -162,17 +175,25 @@ describe("a session row's menu on the desktop", () => {
     },
   );
 
-  it("explains a delete refused after confirmation", async () => {
+  it("keeps the destructive confirmation open on failure and retries there", async () => {
     features({ delete: { available: true } });
-    client.sessionAction.mockRejectedValue(
+    client.sessionAction.mockRejectedValueOnce(
       new ApiError(409, "claude-desktop-session", "not-dispatched"),
     );
-    open(summary("claude-code"));
+    const onDeleted = vi.fn();
+    open(summary("claude-code"), { onDeleted });
     fireEvent.click(await screen.findByRole("menuitem", { name: copy.delete }));
-    fireEvent.click(await screen.findByRole("button", { name: copy.deleteConfirm }));
-    expect(
-      await screen.findByText(codexReason("en-US", "claude-desktop-session").text),
-    ).toBeVisible();
+    const dialog = await screen.findByRole("alertdialog");
+    const confirm = within(dialog).getByRole("button", { name: copy.deleteConfirm });
+    fireEvent.click(confirm);
+    expect(await within(dialog).findByRole("alert")).toHaveTextContent(
+      codexReason("en-US", "claude-desktop-session").text,
+    );
+    expect(onDeleted).not.toHaveBeenCalled();
+    fireEvent.click(confirm);
+    expect(within(dialog).queryByRole("alert")).not.toBeInTheDocument();
+    await waitFor(() => expect(onDeleted).toHaveBeenCalledOnce());
+    expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
   });
 
   it("is not offered for agents AgentKib does not manage", () => {

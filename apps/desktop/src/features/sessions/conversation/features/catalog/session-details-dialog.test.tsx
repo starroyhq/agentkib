@@ -1,16 +1,18 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
-import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
+import { createContext, useContext, useState } from "react";
+import { act, cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { catalogCopy } from "@agentkib/session-ui";
 import { conversationWords } from "@/core/i18n";
+import { render } from "../../desktop-reader-test-utils";
+import { SessionDialogs } from "../sessions/session-dialogs";
 
+const MetadataContext = createContext<Record<string, unknown> | null>(null);
 const session = vi.hoisted(() => ({ value: {} as Record<string, unknown> }));
 vi.mock("@/features/sessions/conversation/features/sessions/session-context", () => ({
-  useSession: () => session.value,
+  useSession: () => useContext(MetadataContext) ?? { modal: "metadata", ...session.value },
 }));
-
-import { SessionDetailsDialog } from "@/features/sessions/conversation/features/catalog/session-details-dialog";
 
 afterEach(cleanup);
 
@@ -36,7 +38,7 @@ describe("Codex native session details", () => {
       client: { request },
       access: { status: "approved", protocolVersion: 2, device: { id: "browser" } },
     };
-    render(<SessionDetailsDialog />);
+    render(<SessionDialogs />);
     expect(await screen.findByText("/repo/worktree")).toBeInTheDocument();
     expect(screen.getByText("创建时分支")).toBeInTheDocument();
     expect(screen.getByText("feature/start")).toBeInTheDocument();
@@ -66,13 +68,21 @@ describe("Codex native session details", () => {
       client: { request },
       access: { status: "approved", protocolVersion: 2, device: { id: "browser" } },
     };
-    render(<SessionDetailsDialog />);
+    render(<SessionDialogs />);
     expect(await screen.findAllByText("Codex 信息不可用")).toHaveLength(3);
     expect(screen.queryByText("stale-branch")).not.toBeInTheDocument();
   });
-  it.each(["zh-CN", "zh-Hant", "en-US", "ja-JP"] as const)(
+  it.each([
+    ["zh-CN", "项目信息不可用，请更新这台电脑上的 AgentKib。"],
+    ["zh-Hant", "專案資訊不可用，請更新這台電腦上的 AgentKib。"],
+    ["en-US", "Project information unavailable. Update AgentKib on this computer."],
+    [
+      "ja-JP",
+      "プロジェクト情報を取得できません。このコンピューター上の AgentKib を更新してください。",
+    ],
+  ] as const)(
     "shows the matching client's version and model only in session details in %s",
-    async (locale) => {
+    async (locale, missingProject) => {
       const copy = catalogCopy[locale];
       session.value = {
         t: conversationWords(locale),
@@ -84,7 +94,6 @@ describe("Codex native session details", () => {
           cliVersion: "2.1.302 (Claude Code)",
           model: "claude-model",
         },
-        currentWorkspace: { name: "Repo", path: "/repo" },
         formatCatalogTime: () => copy.unknown,
         sourceTitle: () => "",
         online: true,
@@ -96,7 +105,10 @@ describe("Codex native session details", () => {
         },
         access: { status: "approved", device: { id: "browser" } },
       };
-      render(<SessionDetailsDialog />);
+      render(<SessionDialogs />);
+      expect(
+        screen.getByText(copy.project, { selector: "dt" }).nextElementSibling,
+      ).toHaveTextContent(missingProject);
       expect(await screen.findByText("/private/claude-current.jsonl")).toBeVisible();
       expect(
         screen.getByText(copy.sourceFile, { selector: "dt" }).nextElementSibling,
@@ -132,7 +144,7 @@ describe("Codex native session details", () => {
         client: { request: vi.fn().mockResolvedValue({ available: false }) },
         access: { status: "approved", device: { id: "browser" } },
       };
-      const view = render(<SessionDetailsDialog />);
+      const view = render(<SessionDialogs />);
       expect(screen.queryByText("private-previous-version")).toBeNull();
       expect(screen.queryByText("private-previous-model")).toBeNull();
       expect(
@@ -149,11 +161,11 @@ describe("Codex native session details", () => {
           model: "current-model",
         },
       };
-      view.rerender(<SessionDetailsDialog />);
+      view.rerender(<SessionDialogs />);
       expect(screen.getByText("current-version")).toBeVisible();
       expect(screen.getByText("current-model")).toBeVisible();
       session.value = { ...session.value, current: { id: "next-session", agent: "claude-code" } };
-      view.rerender(<SessionDetailsDialog />);
+      view.rerender(<SessionDialogs />);
       expect(screen.queryByText("current-version")).toBeNull();
       expect(screen.queryByText("current-model")).toBeNull();
     },
@@ -175,7 +187,7 @@ describe("Codex native session details", () => {
         client: { request },
         access: { status: "approved", device: { id: "browser" } },
       };
-      render(<SessionDetailsDialog />);
+      render(<SessionDialogs />);
       await waitFor(() =>
         expect(request).toHaveBeenCalledWith(
           "managed/context?sessionId=claude-current",
@@ -214,10 +226,10 @@ describe("Codex native session details", () => {
       client: { request },
       access: { status: "approved", device: { id: "browser" } },
     };
-    const view = render(<SessionDetailsDialog />);
+    const view = render(<SessionDialogs />);
     await waitFor(() => expect(request).toHaveBeenCalledTimes(1));
     session.value = { ...session.value, current: { id: "current-session", agent: "claude-code" } };
-    view.rerender(<SessionDetailsDialog />);
+    view.rerender(<SessionDialogs />);
     await act(async () => {
       resolveCurrent({ available: true, sourceFile: "/private/current.jsonl" });
     });
@@ -230,7 +242,7 @@ describe("Codex native session details", () => {
       screen.getByText(copy.sourceFile, { selector: "dt" }).nextElementSibling,
     ).toHaveTextContent("/private/current.jsonl");
     session.value = { ...session.value, access: { status: "ended", device: { id: "browser" } } };
-    view.rerender(<SessionDetailsDialog />);
+    view.rerender(<SessionDialogs />);
     expect(screen.queryByText("/private/current.jsonl")).toBeNull();
     expect(
       screen.getByText(copy.sourceFile, { selector: "dt" }).nextElementSibling,
@@ -258,7 +270,7 @@ describe("Codex native session details", () => {
         client: { request: vi.fn().mockResolvedValue({ available: false }) },
         access: { status: "approved", device: { id: "browser" } },
       };
-      const view = render(<SessionDetailsDialog />);
+      const view = render(<SessionDialogs />);
       expect(
         screen.getByText(copy.source, { selector: "dt" }).nextElementSibling,
       ).toHaveTextContent(interactive);
@@ -266,10 +278,47 @@ describe("Codex native session details", () => {
         ...session.value,
         current: { id: "session", agent: "claude-code", origin: "auxiliary" },
       };
-      view.rerender(<SessionDetailsDialog />);
+      view.rerender(<SessionDialogs />);
       expect(
         screen.getByText(copy.source, { selector: "dt" }).nextElementSibling,
       ).toHaveTextContent(auxiliary);
     },
   );
+});
+
+it("keeps the desktop metadata layout and restores focus after closing", async () => {
+  const labels = conversationWords("en-US");
+  const copy = catalogCopy["en-US"];
+  function Harness() {
+    const [modal, setModal] = useState<"metadata">();
+    const fixture = {
+      modal,
+      setModal,
+      t: labels,
+      c: copy,
+      formatCatalogTime: () => copy.unknown,
+      online: false,
+    };
+    return (
+      <MetadataContext value={fixture}>
+        <button type="button" onClick={() => setModal("metadata")}>
+          Open metadata
+        </button>
+        <SessionDialogs />
+      </MetadataContext>
+    );
+  }
+  render(<Harness />);
+  const launch = screen.getByRole("button", { name: "Open metadata" });
+  launch.focus();
+  fireEvent.click(launch);
+
+  const dialog = await screen.findByRole("dialog", { name: labels.metadata });
+  expect(dialog).toHaveClass("max-h-[min(85dvh,760px)]");
+  expect(dialog.querySelector(".dialog-body")).toHaveClass("overflow-y-auto");
+  await waitFor(() => expect(dialog.contains(document.activeElement)).toBe(true));
+
+  fireEvent.click(within(dialog).getByRole("button", { name: labels.close }));
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  await waitFor(() => expect(launch).toHaveFocus());
 });

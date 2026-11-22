@@ -31,15 +31,12 @@ import {
   groupSessions,
   isSessionListed,
 } from "@agentkib/session-catalog";
-import type { ConversationSessionSummary, WorkspaceCheckout } from "@agentkib/web-client";
+import type {
+  ConversationSessionSummary,
+  ConversationWorkspaceSummary,
+} from "@agentkib/web-client";
 import { dictionaries, type Locale } from "../../i18n";
 
-export interface CatalogWorkspace {
-  id: string;
-  name: string;
-  path: string;
-  checkout?: WorkspaceCheckout | null;
-}
 export type CatalogStatus = "loading" | "ready" | "error";
 export function SessionCatalog({
   sessions,
@@ -60,7 +57,7 @@ export function SessionCatalog({
   /** The unread results above the directory; off where the page beside it already lists them. */
   reviewLane?: boolean;
   sessions: ConversationSessionSummary[];
-  workspaces?: CatalogWorkspace[];
+  workspaces?: ConversationWorkspaceSummary[];
   selected: string;
   onSelect: (id: string) => void;
   locale?: Locale;

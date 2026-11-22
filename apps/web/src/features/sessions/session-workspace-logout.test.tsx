@@ -39,7 +39,8 @@ vi.mock("@/features/conversation/features/catalog/session-catalog", () => ({
 vi.mock("@/features/conversation/features/sessions/session-receipt-recovery", () => ({
   SessionReceiptRecovery: () => null,
 }));
-vi.mock("@/features/conversation/features/sessions/pending-center", () => ({
+vi.mock("@agentkib/session-ui", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@agentkib/session-ui")>()),
   PendingCenter: () => null,
 }));
 vi.mock("@/features/conversation/features/history/web-history-search", () => ({

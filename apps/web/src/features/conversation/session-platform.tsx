@@ -185,6 +185,7 @@ export const webSessionPlatform: SessionPlatform = {
   retention: { useSessionRetention: useWebSessionRetention },
   notifications: {
     connectionPlacement: "inline",
+    pendingCenter: { compactClassName: "relative size-11 p-0" },
     Toaster: WebSessionToaster,
     success: toast.success,
     error: toast.error,

@@ -1,6 +1,7 @@
 import { MAX_MESSAGE_LENGTH } from "@agentkib/conversation-state";
 import {
   ComposerPrimaryAction,
+  PendingCenter,
   requestReadStateRefresh,
   sessionContinuationCopy,
   SessionComposerInput,
@@ -36,7 +37,6 @@ import { SessionProvider, useSession } from "./features/sessions/session-context
 import { SessionReader } from "./features/sessions/desktop-session-reader";
 import { SessionDialogs } from "./features/sessions/session-dialogs";
 import { SessionPanelsContext } from "./features/sessions/session-panels";
-import { PendingCenter } from "./features/sessions/pending-center";
 import { Button } from "@/components/ui/button";
 import { useSessionNavigate } from "./features/sessions/session-navigation";
 import { ConversationWindowTools } from "../conversation-window-tools";
@@ -102,6 +102,7 @@ function EmbeddedRoot() {
 function EmbeddedShell() {
   const props = useEmbedded();
   const session = useSession();
+  const navigate = useSessionNavigate();
   const [filesOpen, setFilesOpen] = useState(false);
   const [actionsOpen, setActionsOpen] = useState(false);
   const [terminalOpen, setTerminalOpen] = useState(false);
@@ -249,7 +250,14 @@ function EmbeddedShell() {
           onFilesOpenChange={setFilesOpen}
           onStatusInToolbarChange={setStatusInToolbar}
         />
-        <PendingCenter compact />
+        <PendingCenter
+          compact
+          session={session}
+          copy={codexCopy[session.locale]}
+          onNavigate={(sessionId) => {
+            void navigate({ to: "/sessions/$sessionId", params: { sessionId } });
+          }}
+        />
         {session.error && (!statusInToolbar || session.online || session.incompatible) && (
           <p role="alert" className="px-4 py-2 text-sm text-destructive-text">
             {session.incompatible ? session.t.lanIncompatible : session.t.error}{" "}

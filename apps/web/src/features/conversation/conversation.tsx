@@ -25,7 +25,7 @@ import type { Locale } from "./i18n";
 import { SessionProvider, useSession } from "./features/sessions/session-context";
 import { SessionReader } from "./features/sessions/web-session-reader";
 import { SessionDialogs } from "./features/sessions/session-dialogs";
-import { codexCopyForSurface } from "./features/sessions/codex-copy";
+import { codexCopyForSurface } from "./codex-copy";
 import { SessionPanelsContext } from "./features/sessions/session-panels";
 import { Button } from "./components/ui/button";
 import { webLayoutCopy } from "@agentkib/session-ui";

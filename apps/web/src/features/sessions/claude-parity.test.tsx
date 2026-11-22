@@ -19,8 +19,8 @@ import {
   type SessionSettings,
 } from "@agentkib/web-client";
 import { WebApplication } from "@/router";
-import { codexCopyForSurface } from "@/features/conversation/features/sessions/codex-copy";
-import { composerLayoutCopy } from "@/features/conversation/features/sessions/composer-layout-copy";
+import { codexCopyForSurface } from "@/features/conversation/codex-copy";
+import { composerLayoutCopy } from "@agentkib/session-ui";
 import { webLayoutCopy } from "@agentkib/session-ui";
 import { useSessionController } from "@/features/conversation/features/sessions/use-session-controller";
 

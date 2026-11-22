@@ -35,7 +35,7 @@ import { useSessionHub } from "./SessionHubContext";
 import { SessionHubPage } from "./SessionHubPage";
 import { SessionWindowToolbar } from "./SessionWindowToolbar";
 import { useSessionViewStore } from "./session-view-store";
-import { codexCopy } from "./conversation/features/sessions/codex-copy";
+import { codexCopy } from "./conversation/codex-copy";
 import { claudeConnectionCopy } from "@agentkib/session-ui";
 import { useSessionController } from "./conversation/features/sessions/use-session-controller";
 

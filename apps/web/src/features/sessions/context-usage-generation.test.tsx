@@ -5,7 +5,7 @@ import type { Live } from "@agentkib/web-client";
 import type { SessionStreamEvent } from "../../../../../packages/runtime-protocol/src";
 import { ManagedCodexState } from "../../../../../packages/backend/src/agents/codex/managed-codex-state";
 import { SessionStreamHub } from "../../../../../packages/backend/src/session-stream";
-import { useObservedContextUsage } from "@/features/conversation/features/sessions/context-usage";
+import { useObservedContextUsage } from "@/features/conversation/context-usage";
 
 const nativeId = "01234567-89ab-cdef-0123-456789abcdef";
 const raw = (used: number) => ({

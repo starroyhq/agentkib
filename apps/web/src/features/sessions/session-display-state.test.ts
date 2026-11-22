@@ -1,7 +1,7 @@
 import { sessionContinuationCopy } from "@agentkib/session-ui";
 import { describe, expect, it } from "vitest";
 import { dictionaries } from "@/features/conversation/i18n";
-import { codexReason } from "@/features/conversation/features/sessions/codex-copy";
+import { codexReason } from "@/features/conversation/codex-copy";
 import { sessionDisplayState } from "@/features/conversation/features/sessions/session-display-state";
 import type { SessionController } from "@/features/conversation/features/sessions/use-session-controller";
 const state = {

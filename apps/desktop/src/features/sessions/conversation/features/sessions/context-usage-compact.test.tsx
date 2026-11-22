@@ -4,10 +4,10 @@ import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ContextUsage } from "@agentkib/web-client";
-import { ContextUsageGauge } from "./context-usage";
+import { ContextUsageGauge } from "../../context-usage";
 import { useSession } from "./session-context";
 import { contextUsageCopy } from "@agentkib/session-ui";
-import { codexCopy } from "./codex-copy";
+import { codexCopy } from "../../codex-copy";
 
 vi.mock("./session-context", () => ({ useSession: vi.fn() }));
 let state: ReturnType<typeof useSession>;

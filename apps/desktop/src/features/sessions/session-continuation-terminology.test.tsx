@@ -19,7 +19,7 @@ vi.mock("@/features/sessions/conversation/features/sessions/session-context", ()
 vi.mock("@/features/sessions/conversation/features/sessions/session-navigation", () => ({
   useSessionNavigate: () => vi.fn(),
 }));
-vi.mock("@/features/sessions/conversation/features/sessions/context-usage", () => ({
+vi.mock("@/features/sessions/conversation/context-usage", () => ({
   ContextUsageGauge: () => null,
 }));
 vi.mock("@agentkib/session-ui", async (importOriginal) => ({

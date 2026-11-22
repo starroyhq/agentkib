@@ -1,15 +1,15 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
-import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { render } from "@/features/sessions/conversation/desktop-reader-test-utils";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CodexSessionSettings } from "@agentkib/web-client";
 import { createRef } from "react";
 import { confirmsComposerSettings, planModeCopy } from "@agentkib/session-ui";
-import { CodexComposerControls, type ComposerControlsHandle } from "./codex-session-controls";
-import { useSession } from "./session-context";
-import { codexCopy } from "./codex-copy";
+import { CodexComposerControls, type ComposerControlsHandle } from "@agentkib/session-ui";
+import type { useSession } from "./session-context";
+import { codexCopy } from "../../codex-copy";
 
-vi.mock("./session-context", () => ({ useSession: vi.fn() }));
 let state: ReturnType<typeof useSession>;
 let settings: CodexSessionSettings;
 const props = { resources: [], setResources: vi.fn(), openPhoneFiles: vi.fn(), disabled: false };
@@ -74,7 +74,6 @@ beforeEach(() => {
     codexAction: vi.fn(),
     control: vi.fn(),
   } as unknown as ReturnType<typeof useSession>;
-  vi.mocked(useSession).mockImplementation(() => state);
 });
 afterEach(() => {
   cleanup();
@@ -112,7 +111,7 @@ describe("Codex composer quick model settings", () => {
     };
     settings.current.policyId = "workspace-write-on-request";
     settings.writable.policy = { available: false };
-    render(<CodexComposerControls {...props} />);
+    render(<CodexComposerControls session={state} {...props} />);
     await waitFor(() =>
       expect(screen.getByRole("button", { name: /^Execution policy: / })).toBeDisabled(),
     );
@@ -137,7 +136,7 @@ describe("Codex composer quick model settings", () => {
       efforts: ["low", "high"],
       serviceTierIds: [],
     });
-    const view = render(<CodexComposerControls {...props} />);
+    const view = render(<CodexComposerControls session={state} {...props} />);
     const trigger = await screen.findByRole("button", { name: /Select reasoning effort: Sol/ });
     fireEvent.click(trigger);
     const picker = await screen.findByRole("dialog");
@@ -150,7 +149,7 @@ describe("Codex composer quick model settings", () => {
       new Promise((resolve) => (resolveRead = resolve)),
     );
     state.live = { ...state.live!, connectionGeneration: "two" };
-    view.rerender(<CodexComposerControls {...props} />);
+    view.rerender(<CodexComposerControls session={state} {...props} />);
     expect(within(models).getByRole("button", { name: "Terra" })).toBeDisabled();
     expect(state.codexAction).not.toHaveBeenCalled();
 
@@ -170,14 +169,14 @@ describe("Codex composer quick model settings", () => {
 
     vi.mocked(state.client.sessionSettings).mockImplementation(() => new Promise(() => {}));
     state.live = { ...state.live!, connectionGeneration: "three" };
-    view.rerender(<CodexComposerControls {...props} />);
+    view.rerender(<CodexComposerControls session={state} {...props} />);
     expect(trigger).toHaveTextContent("Sol");
     await act(async () => finishWrite());
     expect(trigger).toHaveTextContent("Sol");
   });
 
   it("places the model after the context ring and keeps advanced settings separate", async () => {
-    render(<CodexComposerControls {...props} action={<button>Send</button>} />);
+    render(<CodexComposerControls session={state} {...props} action={<button>Send</button>} />);
     const picker = await screen.findByRole("button", { name: /Select reasoning effort: Sol/ });
     const ring = screen.getByRole("img", { name: codexCopy["en-US"].contextUsage });
     expect(
@@ -202,7 +201,7 @@ describe("Codex composer quick model settings", () => {
       { id: "old-policy", name: "Current policy" },
       { id: "new-policy", name: "Verified policy" },
     ];
-    render(<CodexComposerControls {...props} />);
+    render(<CodexComposerControls session={state} {...props} />);
     const copy = codexCopy["en-US"];
     fireEvent.click(
       await screen.findByRole("button", { name: `${copy.executionPolicy}: Current policy` }),
@@ -230,10 +229,10 @@ describe("Codex composer quick model settings", () => {
         applicationStatus: "pending",
         selected: { modelId: "sol", effort: "high", serviceTierId: "fast" },
       };
-      state = { ...state, live: { ...state.live!, revision: 2 } };
+      state.live = { ...state.live!, revision: 2 };
       return { accepted: true } as unknown as Awaited<ReturnType<typeof state.codexAction>>;
     });
-    render(<CodexComposerControls {...props} />);
+    render(<CodexComposerControls session={state} {...props} />);
     const dialog = await openPicker();
     fireEvent.click(within(dialog).getByRole("button", { name: "Fast mode" }));
     await waitFor(() =>
@@ -266,7 +265,7 @@ describe("Codex composer quick model settings", () => {
         },
       },
     };
-    render(<CodexComposerControls {...props} />);
+    render(<CodexComposerControls session={state} {...props} />);
     const dialog = await openPicker();
     expect(within(dialog).getByRole("button", { name: "Fast mode" })).toBeDisabled();
     expect(await within(dialog).findByRole("slider")).toBeDisabled();
@@ -295,7 +294,7 @@ describe("Codex composer quick model settings", () => {
       { id: "second-policy", name: "Second policy" },
     ];
     vi.mocked(state.codexAction).mockResolvedValue({ accepted: true });
-    render(<CodexComposerControls {...props} />);
+    render(<CodexComposerControls session={state} {...props} />);
 
     const model = await screen.findByRole("button", { name: /Select reasoning effort: Sol/ });
     fireEvent.click(model);
@@ -338,12 +337,12 @@ describe("Codex composer quick model settings", () => {
         resolve = done;
       }),
     );
-    const view = render(<CodexComposerControls {...props} />);
+    const view = render(<CodexComposerControls session={state} {...props} />);
     const dialog = await openPicker();
     fireEvent.click(within(dialog).getByRole("button", { name: "Fast mode" }));
     await waitFor(() => expect(state.codexAction).toHaveBeenCalledTimes(1));
     state = { ...state, live: { ...state.live!, revision: 2 } };
-    view.rerender(<CodexComposerControls {...props} />);
+    view.rerender(<CodexComposerControls session={state} {...props} />);
     expect(within(dialog).getByRole("button", { name: "Fast mode" })).toBeDisabled();
     expect(within(dialog).queryByRole("status")).not.toBeInTheDocument();
     settings = { ...settings, sessionId: "other", current: { modelId: "other-model" } };
@@ -354,7 +353,7 @@ describe("Codex composer quick model settings", () => {
       live: { ...state.live!, sessionId: "other" },
       capabilities: { ...state.capabilities!, sessionId: "other" },
     };
-    view.rerender(<CodexComposerControls {...props} />);
+    view.rerender(<CodexComposerControls session={state} {...props} />);
     await screen.findByRole("button", { name: /Select reasoning effort: other-model/ });
     const reads = vi.mocked(state.client.sessionSettings).mock.calls.length;
     await act(async () =>
@@ -374,17 +373,17 @@ describe("Codex composer quick model settings", () => {
         resolve = done;
       }),
     );
-    const view = render(<CodexComposerControls {...props} />);
+    const view = render(<CodexComposerControls session={state} {...props} />);
     const dialog = await openPicker();
     fireEvent.click(within(dialog).getByRole("button", { name: "Fast mode" }));
     await waitFor(() => expect(state.codexAction).toHaveBeenCalledTimes(1));
     state = { ...state, online: false };
-    view.rerender(<CodexComposerControls {...props} disabled />);
+    view.rerender(<CodexComposerControls session={state} {...props} disabled />);
     await act(async () =>
       resolve({ accepted: true } as unknown as Awaited<ReturnType<typeof state.codexAction>>),
     );
     state = { ...state, online: true, usageEpoch: "new-observation" };
-    view.rerender(<CodexComposerControls {...props} />);
+    view.rerender(<CodexComposerControls session={state} {...props} />);
     await screen.findByRole("button", { name: /Select reasoning effort: Sol/ });
     // Observations keep the open picker mounted while releasing the previous write's busy state.
     const reconnected = await screen.findByRole("dialog", { name: /Select reasoning effort:/ });
@@ -408,7 +407,7 @@ describe("plan mode in the composer, as in Codex's own", () => {
       ReturnType<typeof state.codexAction>
     >);
     const onPlan = vi.fn();
-    render(<CodexComposerControls {...props} onPlan={onPlan} />);
+    render(<CodexComposerControls session={state} {...props} onPlan={onPlan} />);
     await waitFor(() => expect(onPlan).toHaveBeenLastCalledWith({ on: true, available: true }));
     const addLabel = codexCopy["en-US"].addContext;
     fireEvent.click(screen.getByRole("button", { name: addLabel }));
@@ -426,7 +425,7 @@ describe("plan mode in the composer, as in Codex's own", () => {
     settings = { ...settings, options: { ...settings.options, collaborationModes: modes } };
     const onPlan = vi.fn();
     const ref = createRef<ComposerControlsHandle>();
-    render(<CodexComposerControls {...props} controlsRef={ref} onPlan={onPlan} />);
+    render(<CodexComposerControls session={state} {...props} controlsRef={ref} onPlan={onPlan} />);
     await waitFor(() => expect(onPlan).toHaveBeenLastCalledWith({ on: false, available: true }));
     expect(
       screen.queryByRole("button", { name: planModeCopy("en-US").title }),
@@ -459,7 +458,7 @@ describe("plan mode in the composer, as in Codex's own", () => {
       return { accepted: true } as Awaited<ReturnType<typeof state.codexAction>>;
     });
     const onPlan = vi.fn();
-    render(<CodexComposerControls {...props} onPlan={onPlan} />);
+    render(<CodexComposerControls session={state} {...props} onPlan={onPlan} />);
     await waitFor(() => expect(onPlan).toHaveBeenLastCalledWith({ on: true, available: false }));
     const label = codexCopy["en-US"].addContext;
     fireEvent.click(screen.getByRole("button", { name: label }));

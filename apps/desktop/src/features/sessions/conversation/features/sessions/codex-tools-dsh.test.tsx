@@ -1,10 +1,10 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
 import { cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
-import { render } from "../../desktop-reader-test-utils";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { CodexTools } from "./codex-tools";
-import { codexCopy } from "./codex-copy";
+import { render } from "@/features/sessions/conversation/desktop-reader-test-utils";
+import { CodexTools } from "./desktop-session-operations";
+import { codexCopy } from "../../codex-copy";
 import { useSession } from "./session-context";
 
 const { navigate } = vi.hoisted(() => ({ navigate: vi.fn() }));

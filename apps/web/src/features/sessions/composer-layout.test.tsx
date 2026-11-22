@@ -1,11 +1,12 @@
 import userEvent from "@testing-library/user-event";
-import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { render } from "@/features/conversation/web-reader-test-utils";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { SessionComposer } from "@/features/conversation/features/sessions/session-composer";
+import { SessionComposer } from "@/features/conversation/web-session-composer";
 import { useSession } from "@/features/conversation/features/sessions/session-context";
 import { dictionaries, type Locale } from "@/features/conversation/i18n";
-import { composerLayoutCopy } from "@/features/conversation/features/sessions/composer-layout-copy";
-import { codexCopyForSurface } from "@/features/conversation/features/sessions/codex-copy";
+import { composerLayoutCopy } from "@agentkib/session-ui";
+import { codexCopyForSurface } from "@/features/conversation/codex-copy";
 import { publishSessionInvalidation } from "@agentkib/conversation-state";
 import type { CodexGoalState, CodexSessionSettings } from "@agentkib/web-client";
 import { composerAddCopy, composerModelCopy, planModeCopy } from "@agentkib/session-ui";

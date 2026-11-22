@@ -1,22 +1,19 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
 import { createRef } from "react";
-import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { render } from "@/features/conversation/web-reader-test-utils";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CodexSessionSettings } from "@agentkib/web-client";
-import {
-  CodexComposerControls,
-  type ComposerControlsHandle,
-} from "../conversation/features/sessions/codex-session-controls";
-import { useSession } from "../conversation/features/sessions/session-context";
-import { codexCopy } from "../conversation/features/sessions/codex-copy";
-import { sessionAgentCopy } from "../conversation/features/sessions/session-agent-copy";
+import { CodexComposerControls, type ComposerControlsHandle } from "@agentkib/session-ui";
+import type { useSession } from "../conversation/features/sessions/session-context";
+import { codexCopy } from "../conversation/codex-copy";
+import { sessionAgentCopy } from "@agentkib/session-ui";
 import { planModeCopy } from "@agentkib/session-ui";
 
-vi.mock("../conversation/features/sessions/session-context", () => ({ useSession: vi.fn() }));
 const copy = codexCopy["en-US"];
 let state: ReturnType<typeof useSession>;
-let props: Parameters<typeof CodexComposerControls>[0];
+let props: Omit<Parameters<typeof CodexComposerControls>[0], "session">;
 
 /**
  * Next-turn settings that offer plan mode: DeepSeek Harness's collaboration mode, or Claude
@@ -88,7 +85,6 @@ function session(claude: boolean, selected: "default" | "plan") {
     codexAction: vi.fn(async () => ({ accepted: true })),
     control: vi.fn(),
   } as unknown as ReturnType<typeof useSession>;
-  vi.mocked(useSession).mockImplementation(() => state);
 }
 
 beforeEach(() => {
@@ -113,7 +109,7 @@ describe("plan mode in the Web composer", () => {
       session(false, "plan");
       state.live = { ...state.live!, status };
       const onPlan = vi.fn();
-      render(<CodexComposerControls {...props} onPlan={onPlan} />);
+      render(<CodexComposerControls session={state} {...props} onPlan={onPlan} />);
       const plan = await openPlan();
       await waitFor(() => expect(onPlan).toHaveBeenLastCalledWith({ on: true, available: true }));
       expect(plan).toHaveAttribute("aria-pressed", "true");
@@ -130,7 +126,7 @@ describe("plan mode in the Web composer", () => {
   it("says so when it could not turn off", async () => {
     session(false, "plan");
     vi.mocked(state.codexAction).mockRejectedValue(new Error("offline"));
-    render(<CodexComposerControls {...props} />);
+    render(<CodexComposerControls session={state} {...props} />);
     const cancel = await screen.findByRole("button", { name: "Exit Plan mode" });
     fireEvent.click(cancel);
     expect(await screen.findByRole("alert")).toBeVisible();
@@ -140,7 +136,7 @@ describe("plan mode in the Web composer", () => {
 
   it("keeps Claude Plan out of permissions while writing its native permission mode", async () => {
     session(true, "plan");
-    render(<CodexComposerControls {...props} />);
+    render(<CodexComposerControls session={state} {...props} />);
     const permissions = sessionAgentCopy["en-US"].permission;
     fireEvent.click(await screen.findByRole("button", { name: permissions }));
     const permissionMenu = within(await screen.findByRole("menu", { name: permissions }));
@@ -164,7 +160,9 @@ describe("plan mode in the Web composer", () => {
     session(false, "default");
     const onPlan = vi.fn();
     const controls = createRef<ComposerControlsHandle>();
-    render(<CodexComposerControls {...props} controlsRef={controls} onPlan={onPlan} />);
+    render(
+      <CodexComposerControls session={state} {...props} controlsRef={controls} onPlan={onPlan} />,
+    );
     await waitFor(() => expect(onPlan).toHaveBeenLastCalledWith({ on: false, available: true }));
     expect(await openPlan()).toHaveAttribute("aria-pressed", "false");
     let entered = false;
@@ -181,7 +179,15 @@ describe("plan mode in the Web composer", () => {
     session(false, "default");
     const onPlan = vi.fn();
     const controls = createRef<ComposerControlsHandle>();
-    render(<CodexComposerControls {...props} disabled controlsRef={controls} onPlan={onPlan} />);
+    render(
+      <CodexComposerControls
+        session={state}
+        {...props}
+        disabled
+        controlsRef={controls}
+        onPlan={onPlan}
+      />,
+    );
     await waitFor(() => expect(state.client.sessionSettings).toHaveBeenCalled());
     await waitFor(() => expect(onPlan).toHaveBeenLastCalledWith({ on: false, available: false }));
     expect(controls.current!.plan()).toBe(false);
@@ -194,7 +200,7 @@ describe("plan mode in the Web composer", () => {
     projected.options.collaborationModes = [{ id: "plan", name: "Plan" }];
     vi.mocked(state.client.sessionSettings).mockResolvedValue(projected);
     const controls = createRef<ComposerControlsHandle>();
-    render(<CodexComposerControls {...props} controlsRef={controls} />);
+    render(<CodexComposerControls session={state} {...props} controlsRef={controls} />);
     expect(await openPlan()).toBeDisabled();
     expect(controls.current!.plan()).toBe(true);
     expect(state.codexAction).not.toHaveBeenCalled();
@@ -233,7 +239,7 @@ describe("plan mode in the Web composer", () => {
       return { accepted: true } as Awaited<ReturnType<typeof state.codexAction>>;
     });
     const onPlan = vi.fn();
-    render(<CodexComposerControls {...props} onPlan={onPlan} />);
+    render(<CodexComposerControls session={state} {...props} onPlan={onPlan} />);
     await waitFor(() => expect(onPlan).toHaveBeenLastCalledWith({ on: true, available: false }));
     const add = await openAdd();
     expect(add.getByRole("button", { name: planModeCopy("en-US").title })).toBeDisabled();

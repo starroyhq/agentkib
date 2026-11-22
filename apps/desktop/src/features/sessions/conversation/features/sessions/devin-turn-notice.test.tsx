@@ -4,7 +4,7 @@ import { DevinTurnNotice, SessionPlatformProvider } from "@agentkib/session-ui";
 import { WebClient } from "@agentkib/web-client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { useDesktopSessionPlatform } from "../../session-platform";
-import { codexReason } from "./codex-copy";
+import { codexReason } from "../../codex-copy";
 
 const client = new WebClient();
 afterEach(() => {

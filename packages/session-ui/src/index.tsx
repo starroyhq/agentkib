@@ -27,6 +27,23 @@ export {
 } from "./conversation/history/history-reference-model";
 export { interactionCopy } from "./conversation/interactions/interaction-copy";
 export { approvalSummary } from "./conversation/sessions/approval-summary";
+export { codexCopy, codexCopyForSurface, codexReason } from "./conversation/sessions/codex-copy";
+export { composerLayoutCopy, composerTerm } from "./conversation/sessions/composer-layout-copy";
+export { sessionAgentCopy } from "./conversation/sessions/session-agent-copy";
+export { PermissionModeNotice } from "./conversation/sessions/permission-mode-notice";
+export { SessionSendQueue, useBasicSendQueue } from "./conversation/sessions/dsh-queue";
+export { CodexTools, type CodexToolsProps } from "./conversation/sessions/codex-tools";
+export {
+  SessionComposer,
+  type SessionComposerProps,
+} from "./conversation/sessions/session-composer";
+export {
+  CodexComposerControls,
+  type CodexComposerControlsProps,
+  type ComposerControlsHandle,
+  type ComposerPlanState,
+  type CodexResource,
+} from "./conversation/sessions/codex-session-controls";
 export { PendingCenter, type PendingCenterCopy } from "./conversation/sessions/pending-center";
 export { SessionDetailsDialog } from "./conversation/catalog/session-details-dialog";
 export {

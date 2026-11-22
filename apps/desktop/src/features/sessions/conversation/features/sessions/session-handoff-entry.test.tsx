@@ -15,7 +15,7 @@ vi.mock("@/features/sessions/conversation/features/sessions/session-context", ()
   useSession: () => session,
 }));
 vi.mock("@tanstack/react-router", () => ({ useNavigate: () => vi.fn() }));
-vi.mock("@/features/sessions/conversation/features/sessions/session-composer", () => ({
+vi.mock("@/features/sessions/conversation/desktop-session-composer", () => ({
   SessionComposer: () => <p>Existing composer</p>,
 }));
 vi.mock("@/features/sessions/conversation/components/dialog", () => ({

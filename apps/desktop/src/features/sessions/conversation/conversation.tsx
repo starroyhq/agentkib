@@ -47,7 +47,7 @@ import {
 } from "../DesktopConversationWindow";
 import { desktopReadScope } from "../read-state-scope";
 import { webLayoutCopy } from "@agentkib/session-ui";
-import { codexCopy } from "./features/sessions/codex-copy";
+import { codexCopy } from "./codex-copy";
 import { useDesktopSessionPlatform } from "./session-platform";
 
 export type { ConversationClientBridge, WebClient } from "@agentkib/web-client";

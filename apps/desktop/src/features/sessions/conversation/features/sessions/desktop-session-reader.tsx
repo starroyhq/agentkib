@@ -3,16 +3,16 @@ import {
   SessionReader as SharedSessionReader,
   SessionTranscript,
   useSessionImageLoader,
+  useBasicSendQueue,
   type ReaderContextUsageProps,
 } from "@agentkib/session-ui";
-import { codexCopy, codexReason } from "./codex-copy";
+import { codexCopy, codexReason } from "../../codex-copy";
 import { claudeComposerNotice, claudeSessionBanner } from "./claude-session-banner";
 import { DesktopSessionOperations } from "./desktop-session-operations";
-import { SessionComposer } from "./session-composer";
+import { SessionComposer } from "../../desktop-session-composer";
 import { useSessionPanels } from "./session-panels";
 import { useSession } from "./session-context";
-import { ContextUsageGauge } from "./context-usage";
-import { basicSendQueue } from "./dsh-queue";
+import { ContextUsageGauge } from "../../context-usage";
 import { desktopSessionImages } from "../../desktop-session-images";
 import {
   desktopReadScope as currentDesktopReadScope,
@@ -27,6 +27,7 @@ function ReaderContextUsage({ source, capacity }: ReaderContextUsageProps) {
 export function SessionReader() {
   const session = useSession();
   const panels = useSessionPanels();
+  const queue = useBasicSendQueue(session);
   const { client, access, selected, locale, current, indexEnabled, imageRequestVersion } = session;
   const desktopRead = useDesktopReadScope();
   const displayLive = useConversationDisplayLive(selected);
@@ -58,7 +59,7 @@ export function SessionReader() {
         isCurrent: () => currentDesktopReadScope().key === desktopRead.key,
       }}
       imageLoader={imageLoader}
-      queue={basicSendQueue(session)}
+      queue={queue}
       Transcript={SessionTranscript}
       Operations={DesktopSessionOperations}
       Composer={SessionComposer}

@@ -9,7 +9,7 @@ import {
   planModeCopy,
   SessionComposerAddMenu,
 } from "@agentkib/session-ui";
-import { codexReason } from "./codex-copy";
+import { codexReason } from "../../codex-copy";
 
 afterEach(cleanup);
 

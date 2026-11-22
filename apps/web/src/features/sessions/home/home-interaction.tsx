@@ -9,7 +9,7 @@ import {
   sessionInteractionItems,
 } from "@agentkib/session-ui";
 import { useSession } from "@/features/conversation/features/sessions/session-context";
-import { codexReason } from "@/features/conversation/features/sessions/codex-copy";
+import { codexReason } from "@/features/conversation/codex-copy";
 import type { HomeReplies } from "./home-replies";
 
 /**

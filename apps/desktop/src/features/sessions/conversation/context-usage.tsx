@@ -1,7 +1,7 @@
 import type { Ref } from "react";
 import type { ContextUsage, SessionProviderCapabilities } from "@agentkib/web-client";
 import { SessionContextUsageGauge, type ContextUsageHandle } from "@agentkib/session-ui";
-import { useSession } from "./session-context";
+import { useSession } from "./features/sessions/session-context";
 
 export { contextUsagePercent, useObservedContextUsage } from "@agentkib/session-ui";
 export type ContextUsageGaugeHandle = ContextUsageHandle;

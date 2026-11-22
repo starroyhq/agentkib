@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { dictionaries, type Locale } from "@/features/conversation/i18n";
-import { codexCopy, codexReason } from "@/features/conversation/features/sessions/codex-copy";
+import { codexCopy, codexReason } from "@/features/conversation/codex-copy";
 import { sessionContinuationCopy, sessionContinuationListState } from "@agentkib/session-ui";
 import { CLAUDE_COMMAND_REFUSALS } from "@agentkib/web-client";
 import { managedControlCopy } from "@/features/conversation/features/sessions/managed-control-copy";

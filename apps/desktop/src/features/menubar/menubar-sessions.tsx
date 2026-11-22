@@ -19,7 +19,7 @@ import { Button } from "@/components/ui/button";
 import type { ConversationSessionSummary } from "@/core/types";
 import { useI18n } from "@/core/useI18n";
 import type { HomeReplies } from "@/features/home/home-replies";
-import { codexReason } from "@/features/sessions/conversation/features/sessions/codex-copy";
+import { codexReason } from "@/features/sessions/conversation/codex-copy";
 
 type Session = ConversationSessionSummary;
 type Tone = "waiting" | "running" | "success" | "failed" | "neutral";

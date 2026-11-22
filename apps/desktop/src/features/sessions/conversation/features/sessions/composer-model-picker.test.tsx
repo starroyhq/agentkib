@@ -5,10 +5,10 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createRef, type ComponentProps } from "react";
 import type { CodexSessionSettings } from "@agentkib/web-client";
-import { codexCopy } from "./codex-copy";
+import { codexCopy } from "../../codex-copy";
 import { ComposerModelPicker, type ComposerModelPickerHandle } from "@agentkib/session-ui";
 import { composerModelCopy } from "@agentkib/session-ui";
-import { composerTerm } from "./composer-layout-copy";
+import { composerTerm } from "@agentkib/session-ui";
 
 type Props = ComponentProps<typeof ComposerModelPicker>;
 const copy = composerModelCopy["en-US"];

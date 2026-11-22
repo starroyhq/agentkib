@@ -1,81 +1,158 @@
-import {
-  continuationResources,
-  takeNewSessionDraft,
-  agentKibCommand,
-  agentKibPanel,
-  existingSessionComposerCapabilities,
-  composerDraftUnavailableReason,
-  sessionQueuePanel,
-  sessionSlashOptions,
-  composerPanelShortcut,
-  codexCommandPrompt,
-  ComposerPrimaryAction,
-  SessionComposerToolbar,
-  SessionComposerInput,
-  useComposerAttachments,
-  useNewSessionGoalDraft,
-  slashCommandCopy,
-  sessionContinuationCopy,
-  claudeTerminalInteraction,
-  unsupportedEffortReason,
-  planSlashOption,
-  parseGoalDraft,
-  useSlashCommandMenu,
-  type AgentKibPanel,
-  runningSendAction,
-  useSendWhileRunning,
-  validHistoryMessage,
-  HistoryReferenceChips,
-  claudeConnectionCopy,
-  DevinTurnNotice,
-} from "@agentkib/session-ui";
-import { SessionReadOnly } from "@agentkib/session-ui";
-import { useEffect, useId, useMemo, useRef, useState } from "react";
-import { toast } from "sonner";
-import { AlertTriangle, CornerDownRight, ListPlus, MoreHorizontal, X } from "lucide-react";
-import { claudeCommandDecision, codexCommandDecision } from "@agentkib/web-client";
-import { Button } from "@/components/ui/button";
-import { Disclosure, DisclosureSummary } from "@/components/ui/disclosure";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuGroup,
-  DropdownMenuItem,
-  DropdownMenuLabel,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
-import { Dialog } from "../../components/dialog";
-import { useSession } from "./session-context";
-import { ContextUsageGauge } from "./context-usage";
-import { sessionDisplayState } from "./session-display-state";
-import { composerLayoutCopy } from "./composer-layout-copy";
-import { codexCopy, codexReason } from "./codex-copy";
 import { MAX_MESSAGE_LENGTH } from "@agentkib/conversation-state";
 import {
-  CodexComposerControls,
-  type CodexResource,
-  type ComposerControlsHandle,
-  type ComposerPlanState,
+  claudeCommandDecision,
+  codexCommandDecision,
+  type Live,
+  type ResolvedHistoryReference,
+} from "@agentkib/web-client";
+import { AlertTriangle, CornerDownRight, ListPlus, MoreHorizontal, X } from "lucide-react";
+import {
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+  type ComponentProps,
+  type ComponentType,
+  type ReactNode,
+} from "react";
+import { sessionQueuePanel } from "../../agents/session-queue";
+import { claudeTerminalInteraction } from "../../claude-terminal-permission";
+import { codexCommandPrompt } from "../../codex-prompts";
+import { contextUsageCopyForSurface } from "../../context-usage-copy";
+import type { ContextUsageHandle } from "../../context-usage-indicator";
+import type { InteractionLocale } from "../../interaction-model";
+import { parseGoalDraft, useNewSessionGoalDraft } from "../../new-session-draft";
+import { composerDraftUnavailableReason } from "../../session-composer-access";
+import { existingSessionComposerCapabilities } from "../../session-composer-capabilities";
+import { ComposerPrimaryAction, SessionComposerInput } from "../../session-composer-input";
+import { SessionComposerToolbar } from "../../session-composer-toolbar";
+import { SessionContextUsageGauge } from "../../session-context-usage-gauge";
+import { sessionContinuationCopy } from "../../session-continuation";
+import type { createSessionControl } from "../../session-control";
+import { DevinTurnNotice } from "./devin-turn-notice";
+import { useSessionPlatform } from "../../session-platform";
+import {
+  agentKibCommand,
+  agentKibPanel,
+  composerPanelShortcut,
+  planSlashOption,
+  sessionSlashOptions,
+  slashCommandCopy,
+  unsupportedEffortReason,
+  useSlashCommandMenu,
+  type AgentKibPanel,
+} from "../../slash-commands";
+import { useComposerAttachments } from "../../use-composer-attachments";
+import { HistoryReferenceChips } from "../history/history-search-controls";
+import { validHistoryMessage } from "../history/history-reference-model";
+import { runningSendAction, useSendWhileRunning } from "../preferences/send-while-running";
+import { claudeConnectionCopyForSurface } from "./claude-connection-copy";
+import type {
+  CodexComposerControlsProps,
+  CodexResource,
+  ComposerControlsHandle,
+  ComposerPlanState,
 } from "./codex-session-controls";
-import { useSessionPanels } from "./session-panels";
-import { PermissionModeNotice } from "./permission-mode-notice";
-import { ManagedTurnNotice } from "./managed-turn-notice";
+import { codexCopyForSurface, codexReason } from "./codex-copy";
+import { composerLayoutCopy } from "./composer-layout-copy";
+import { continuationResources, type ContinuationComposerDraft } from "./continuation-draft";
 import { SessionSendQueue } from "./dsh-queue";
+import { takeNewSessionDraft } from "./new-session-draft";
+import { PermissionModeNotice } from "./permission-mode-notice";
+import { SessionReadOnly } from "./session-read-only";
 
-// The desktop app acts for the person at this computer, as the terminal does.
-const COMMAND_OWNER = true;
+type ComposerSession = CodexComposerControlsProps["session"] & {
+  historyReferences?: ResolvedHistoryReference[];
+  setHistoryReferences?: (references: ResolvedHistoryReference[]) => void;
+  t: Readonly<Record<string, string>>;
+  message: string;
+  setMessage: (message: string) => void;
+  control: ReturnType<typeof createSessionControl>;
+  canSend: boolean;
+  canStop: boolean;
+  checkContinuation?: () => unknown;
+  takeContinuationDraft?: (id: string) => ContinuationComposerDraft | undefined;
+};
+
+type ComposerDisplay = {
+  label: string;
+  reason: string;
+  tone: "warning" | "active" | "muted";
+  loading?: boolean;
+  offline?: boolean;
+  continuation?:
+    | "idle"
+    | "starting"
+    | "running"
+    | "terminal"
+    | "terminal-watch"
+    | "busy"
+    | "codex"
+    | "dsh"
+    | "dsh-observed"
+    | "status-unknown"
+    | "view-only";
+};
+
+type ComposerPanels = {
+  statusInToolbar?: boolean;
+  setFilesOpen(open: boolean): void;
+  setActionsOpen(open: boolean): void;
+};
+
+export type SessionComposerProps = {
+  session: ComposerSession;
+  panels?: ComposerPanels | null;
+  display: ComposerDisplay;
+  connectionStatusInBanner?: boolean;
+  connectionNoticeInToolbar?: boolean;
+  Controls: ComponentType<CodexComposerControlsProps>;
+  TurnNotice: ComponentType<{
+    live?: Live;
+    locale: InteractionLocale;
+    surface?: "desktop" | "web";
+    onUsageLimitCancel: () => void;
+    onUsageLimitArm: () => void;
+  }>;
+  ContextUsage?: ComponentType<ComponentProps<typeof SessionContextUsageGauge>>;
+};
+
 /** A notice floating above the composer. Opaque: the conversation scrolls behind it. */
 const floatingNotice =
   "pointer-events-auto rounded-lg border px-3 py-2 text-xs leading-5 shadow-sm";
 export function SessionComposer({
+  session,
+  panels,
+  display,
   connectionStatusInBanner = false,
   connectionNoticeInToolbar = false,
-}: {
-  connectionStatusInBanner?: boolean;
-  connectionNoticeInToolbar?: boolean;
-}) {
-  const session = useSession();
+  Controls,
+  TurnNotice,
+  ContextUsage = SessionContextUsageGauge,
+}: SessionComposerProps) {
+  const {
+    kind: surface,
+    components,
+    controls: platformControls,
+    copy: platformCopy,
+    notifications,
+  } = useSessionPlatform();
+  const {
+    Button,
+    Disclosure,
+    DisclosureSummary,
+    DropdownMenu,
+    DropdownMenuContent,
+    DropdownMenuGroup,
+    DropdownMenuItem,
+    DropdownMenuLabel,
+    DropdownMenuSeparator,
+    DropdownMenuTrigger,
+    SessionDialog,
+  } = components;
+  const commandOwner = platformControls.commandSurface === "local-owner";
+  const restrictedPlan = platformControls.restrictedComposer === "attachments-and-plan";
   const {
     historyReferences = [],
     setHistoryReferences,
@@ -97,14 +174,17 @@ export function SessionComposer({
     busy,
     online,
     notice,
-    noticeReason,
+    settingsOnlyBlocked,
   } = session;
+  const reason = (code?: string | null) =>
+    codexReason(locale, code ?? undefined, surface, platformCopy.unavailableReason).text;
   const isClaude = current?.agent === "claude-code";
   const isCodex = current?.agent === "codex";
   const continuation = sessionContinuationCopy(locale);
-  const copy = codexCopy[locale];
+  const copy = codexCopyForSurface(locale, surface);
   const layout = composerLayoutCopy[locale];
-  const display = sessionDisplayState(session);
+  const connectionReasonInToolbar =
+    connectionNoticeInToolbar || (display.offline && panels?.statusInToolbar);
   const terminalInteraction =
     isClaude &&
     online &&
@@ -113,7 +193,6 @@ export function SessionComposer({
       : undefined;
   const composerValue = message;
   const setComposerText = setMessage;
-  const [restrictedAddOpen, setRestrictedAddOpen] = useState(false);
   const [submitted, setSubmitted] = useState(false);
   const submitPending = useRef(false);
   // While the agent runs, Send queues the message or adds it to the running turn, as this
@@ -130,11 +209,12 @@ export function SessionComposer({
     value: startupGoal,
     load: loadStartupGoal,
     confirmFirstMessage,
-    handled: startupGoalHandled,
-    discard: startupGoalDiscarded,
     stage: stageGoal,
+    handled: startupGoalHandled,
+    discard: discardStartupGoal,
   } = useNewSessionGoalDraft(selected, draftAuthority);
   const fileInput = useRef<HTMLInputElement>(null);
+  const [addMenuScope, setAddMenuScope] = useState<string>();
   const firstMessage = useRef<{ sessionId: string; text: string; shown?: boolean }>(undefined);
   const generation = useRef(0);
   const uploadPermission = !!(
@@ -142,11 +222,83 @@ export function SessionComposer({
     capabilities?.sessionId === selected &&
     capabilities.features.attachments?.available
   );
-  const fullAccess = access?.device?.accessMode === "full";
-  const attachmentDisabled = !uploadPermission || busy || submitted;
-  // DeepSeek Harness runs a message naming one of its commands itself. The person at this
-  // computer has full access, so every command it reports is offered.
+  // DeepSeek Harness runs a message naming one of its commands itself; the host refuses the
+  // ones that need full access to a device without it, so the menu leaves them out.
   const isDsh = current?.agent === "deepseek-harness";
+  const fullAccess = access?.device?.accessMode === "full";
+  const addActionsScope = JSON.stringify([
+    selected,
+    access?.bootId,
+    access?.device?.id,
+    live?.connectionGeneration,
+  ]);
+  const compacting = live?.activity === "compacting";
+  const limitedSettings =
+    restrictedPlan &&
+    isCodex &&
+    !fullAccess &&
+    current.id === selected &&
+    capabilities?.sessionId === selected
+      ? capabilities.features.settings
+      : undefined;
+  // Restricted devices can receive the native mode in a live snapshot without its own session ID.
+  const observedSettings =
+    live?.sessionId === selected &&
+    (!live.settings?.sessionId || live.settings.sessionId === selected)
+      ? live.settings
+      : undefined;
+  // Older restricted hosts do not expose a mode directory. The settings action verifies this on write.
+  const offeredModes =
+    observedSettings?.options?.collaborationModes?.map((item) => item.id) ??
+    (["default", "plan"] as const);
+  const showLimitedPlan = !!limitedSettings && offeredModes.includes("plan");
+  const limitedPlanOn =
+    (observedSettings?.selected?.mode ?? observedSettings?.current?.mode) === "plan";
+  const nextMode = limitedPlanOn ? "default" : "plan";
+  const canChangeLimitedPlan = !!(
+    showLimitedPlan &&
+    limitedSettings?.available &&
+    access?.status === "approved" &&
+    access.experimentalEnabled &&
+    access.device &&
+    access.device.settings !== false &&
+    live?.sessionId === selected &&
+    offeredModes.includes(nextMode) &&
+    online &&
+    controlReady &&
+    !busy &&
+    !submitted &&
+    !compacting &&
+    notice !== "uncertain" &&
+    live.status !== "outcome-unknown" &&
+    session.settingsNotice?.status !== "uncertain"
+  );
+  const limitedPlanReason = compacting
+    ? contextUsageCopyForSurface(locale, surface).compactingDetail
+    : reason(limitedSettings?.reason ?? capabilities?.reason);
+  const changeLimitedPlan = () => {
+    if (canChangeLimitedPlan) void codexAction("settings", { mode: nextMode });
+  };
+  const settingsNotice =
+    restrictedPlan && !fullAccess && isCodex && session.settingsNotice?.target === "permissions"
+      ? session.settingsNotice
+      : undefined;
+  const planWriteStatus =
+    settingsNotice?.status === "uncertain"
+      ? layout.settingsUnknown
+      : settingsNotice?.status === "notDispatched"
+        ? settingsNotice.reason
+          ? reason(settingsNotice.reason)
+          : t.notDispatched
+        : undefined;
+  const attachmentsReason =
+    isClaude && live?.executionMode === "claude-follower"
+      ? claudeConnectionCopyForSurface(locale, surface).attachments
+      : capabilities?.sessionId === selected && capabilities?.features.attachments?.reason
+        ? reason(capabilities.features.attachments.reason)
+        : copy.permission;
+  const canChooseAttachments = uploadPermission && !busy && !submitted;
+  const canOpenAddMenu = canChooseAttachments || canChangeLimitedPlan;
   const commandCatalog =
     (isClaude || isDsh) && capabilities?.sessionId === selected ? capabilities.commands : undefined;
   const slotsGranted = fullAccess && access?.device?.advancedControl === true;
@@ -195,20 +347,35 @@ export function SessionComposer({
     () =>
       sessionSlashOptions(current?.agent, commandCatalog, {
         canSend,
-        claudeOwner: COMMAND_OWNER,
-        dshOwner: COMMAND_OWNER,
+        claudeOwner: commandOwner,
+        dshOwner: commandOwner || fullAccess,
         model: localSettings,
         goal: localGoal,
         locale,
       }),
-    [current?.agent, commandCatalog, canSend, localSettings, localGoal, locale],
+    [
+      current?.agent,
+      commandCatalog,
+      canSend,
+      localSettings,
+      localGoal,
+      locale,
+      commandOwner,
+      fullAccess,
+    ],
   );
   // A refused command keeps its draft; the explanation goes once the draft changes.
   const [commandNotice, setCommandNotice] = useState<{ draft: string; reason: string }>();
   // A command typed without an argument opens AgentKib's control for it, as a button would.
   const controls = useRef<ComposerControlsHandle>(null);
-  // `/plan`, at the start or after a space, turns plan mode on as in Codex's composer.
-  const [planState, setPlanState] = useState<ComposerPlanState>({ on: false, available: false });
+  const limitedUsage = useRef<ContextUsageHandle>(null);
+  // `/plan`, at the start or after a space, turns plan mode on as in Codex's composer. Only the
+  // controls report it, and they show only with full access.
+  const [reportedPlan, setPlanState] = useState<ComposerPlanState>({
+    on: false,
+    available: false,
+  });
+  const planState = fullAccess ? reportedPlan : { on: false, available: false };
   const planOption = useMemo(() => planSlashOption(locale), [locale]);
   const slash = useSlashCommandMenu({
     value: composerValue,
@@ -229,11 +396,23 @@ export function SessionComposer({
       : undefined,
     onChoose: setMessage,
   });
-  const panels = useSessionPanels();
-  const connectionReasonInToolbar =
-    connectionNoticeInToolbar || (display.offline && panels?.statusInToolbar);
-  const openPanel = (panel: AgentKibPanel) => {
-    if (panel === "settings" || panel === "goal") return controls.current?.open(panel) ?? false;
+  const openPanel = (panel: AgentKibPanel, command?: string) => {
+    if (panel === "settings") {
+      const target =
+        command === "permissions"
+          ? "permissions"
+          : command === "status"
+            ? "usage"
+            : command === "effort"
+              ? "effort"
+              : "models";
+      if (target === "usage" && limitedUsage.current) {
+        limitedUsage.current.open();
+        return true;
+      }
+      return controls.current?.open(target) ?? false;
+    }
+    if (panel === "goal") return controls.current?.open(panel) ?? false;
     if (!panels) return false;
     if (panel === "files") panels.setFilesOpen(true);
     else panels.setActionsOpen(true);
@@ -241,7 +420,7 @@ export function SessionComposer({
   };
   useEffect(() => {
     setResources([]);
-    setRestrictedAddOpen(false);
+    if (!restrictedPlan) setAddMenuScope(undefined);
     setSubmitted(false);
     firstMessage.current = undefined;
     submitPending.current = false;
@@ -250,15 +429,15 @@ export function SessionComposer({
     return () => {
       generation.current++;
     };
-  }, [selected, setComposerText, draftAuthority]);
+  }, [selected, setComposerText, draftAuthority, restrictedPlan]);
   useEffect(() => {
-    if (attachmentDisabled || fullAccess) setRestrictedAddOpen(false);
-  }, [attachmentDisabled, fullAccess]);
+    if (!restrictedPlan && (!canChooseAttachments || fullAccess)) setAddMenuScope(undefined);
+  }, [restrictedPlan, canChooseAttachments, fullAccess]);
   useEffect(() => {
     if (!access?.device || slotsGranted) return;
     setResources((items) => (items.length ? [] : items));
-    startupGoalDiscarded();
-  }, [access?.device?.id, slotsGranted, startupGoalDiscarded]);
+    discardStartupGoal();
+  }, [access?.device?.id, slotsGranted, discardStartupGoal]);
   useEffect(() => {
     if (!submitted) return;
     if (notice === "accepted") {
@@ -279,7 +458,7 @@ export function SessionComposer({
     if (uploadPermission) void add(draft.files);
     else {
       keepUnavailable(draft.files);
-      setError(codexReason(locale, capabilities.features.attachments?.reason).text);
+      setError(reason(capabilities.features.attachments?.reason));
     }
   }, [
     selected,
@@ -310,7 +489,14 @@ export function SessionComposer({
     else {
       firstMessage.current = undefined;
       keepUnavailable(draft.files);
-      setError(codexReason(locale, capabilities.features.attachments?.reason).text);
+      setError(
+        codexReason(
+          locale,
+          capabilities.features.attachments?.reason,
+          "desktop",
+          platformCopy.unavailableReason,
+        ).text,
+      );
     }
   }, [
     loadStartupGoal,
@@ -345,7 +531,7 @@ export function SessionComposer({
     resourceIds.length > 0 && !draft.trim() && !attachmentIds.length && !historyReferences.length;
   const panelShortcut = composerPanelShortcut(draft, localSettings, localGoal);
   const localCommand = isClaude
-    ? claudeCommandDecision(draft, { owner: COMMAND_OWNER, commands: commandCatalog })
+    ? claudeCommandDecision(draft, { owner: commandOwner, commands: commandCatalog })
     : null;
   const localCommandReady =
     draftReady &&
@@ -353,7 +539,8 @@ export function SessionComposer({
     !resourceIds.length &&
     !historyReferences.length &&
     (!!panelShortcut ||
-      (!!localCommand &&
+      (!settingsOnlyBlocked &&
+        !!localCommand &&
         ((localSettings &&
           composerCapabilities.settingsWritable &&
           ["model", "effort"].includes(localCommand.command) &&
@@ -369,6 +556,7 @@ export function SessionComposer({
       (action === "queue-add" && !queueDraftAllowed) ||
       (startupGoal && action !== "send") ||
       !online ||
+      (settingsOnlyBlocked && !(action === "send" && panelShortcut && localCommandReady)) ||
       draftUnknown ||
       busy ||
       submitted ||
@@ -396,14 +584,7 @@ export function SessionComposer({
           ? agentKibPanel(decision)
           : (codexCommand?.panel ?? null)
       : null;
-    const command = panelShortcut ?? decision?.command ?? codexCommand?.command;
-    const opened =
-      panel === "settings" && (command === "model" || command === "effort")
-        ? controls.current?.openModel(command === "model" ? "models" : "effort")
-        : panel === "settings" && command === "status"
-          ? controls.current?.openStatus()
-          : panel && openPanel(panel);
-    if (opened) {
+    if (panel && openPanel(panel, panelShortcut ?? decision?.command ?? codexCommand?.command)) {
       setCommandNotice(undefined);
       setMessage("");
       return;
@@ -484,22 +665,18 @@ export function SessionComposer({
       if (requestGeneration === generation.current) submitPending.current = false;
     }
   }
-  const compacting = live?.activity === "compacting";
   const running = live?.status === "running" && display.continuation !== "dsh-observed";
   const connectionToastId = useId();
   const connectionFailure =
-    !canSend &&
-    !running &&
-    !compacting &&
-    display.reason === codexReason(locale, "codex-connection-failed").text;
+    !canSend && !running && !compacting && display.reason === reason("codex-connection-failed");
   useEffect(() => {
     if (!connectionFailure) return;
-    toast.error(display.reason, { id: connectionToastId });
+    notifications.error(display.reason, { id: connectionToastId });
     return () => {
-      toast.dismiss(connectionToastId);
+      notifications.dismiss(connectionToastId);
     };
-  }, [connectionFailure, connectionToastId, display.reason, selected]);
-  const canSubmit = online && controlReady && canSend;
+  }, [connectionFailure, connectionToastId, display.reason, notifications, selected]);
+  const canSubmit = online && controlReady && canSend && !settingsOnlyBlocked;
   useEffect(() => {
     const first = firstMessage.current;
     if (!first) return;
@@ -514,7 +691,13 @@ export function SessionComposer({
     firstMessage.current = undefined;
     void send("send");
   });
-  const canAdvanced = !!(access?.device?.advancedControl && controlReady && online && !busy);
+  const canAdvanced = !!(
+    access?.device?.advancedControl &&
+    controlReady &&
+    online &&
+    !busy &&
+    !settingsOnlyBlocked
+  );
   // Send, and Enter, take the device's running choice when a direct send cannot go now.
   const runningReady =
     (running || compacting) &&
@@ -531,17 +714,11 @@ export function SessionComposer({
     canStop &&
     (live?.executionMode !== "claude-follower" ||
       composerCapabilities.feature("stop")?.available === true) ? (
-      <ComposerPrimaryAction label={t.stop} kind="stop" onStop={() => void control("stop")} />
+      <ComposerPrimaryAction kind="stop" label={t.stop} onStop={() => void control("stop")} />
     ) : (
       <ComposerPrimaryAction
         label={runningReady ? runningLabel : t.send}
-        title={
-          draftReason
-            ? codexReason(locale, draftReason).text
-            : runningReady
-              ? runningLabel
-              : undefined
-        }
+        title={draftReason ? reason(draftReason) : runningReady ? runningLabel : undefined}
         disabled={
           ((!canSubmit || compacting) && !runningReady && !localCommandReady) || !valid || submitted
         }
@@ -615,8 +792,14 @@ export function SessionComposer({
     !resources.length &&
     !startupGoal
   ) {
-    const info = { reason: connectionReasonInToolbar ? undefined : display.reason, local: true };
-    return <SessionReadOnly session={session} {...info} notify={toast.success} />;
+    return (
+      <SessionReadOnly
+        session={session}
+        reason={connectionReasonInToolbar ? undefined : display.reason}
+        local={surface === "desktop"}
+        notify={notifications.success}
+      />
+    );
   }
   return (
     <div className="relative w-full max-w-3xl shrink-0 self-center space-y-2">
@@ -632,7 +815,7 @@ export function SessionComposer({
       )}
       {terminalInteraction && (
         <p role="status" className="px-3 text-xs leading-5 text-muted-foreground">
-          {claudeConnectionCopy[locale][terminalInteraction]}
+          {claudeConnectionCopyForSurface(locale, surface)[terminalInteraction]}
         </p>
       )}
       {isClaude &&
@@ -643,9 +826,10 @@ export function SessionComposer({
           <PermissionModeNotice permission={live.permission} locale={locale} compact />
         )}
       {(isClaude || isCodex || isDsh || current?.agent === "devin") && (
-        <ManagedTurnNotice
+        <TurnNotice
           live={live}
           locale={locale}
+          surface={surface}
           onUsageLimitCancel={() => void codexAction("usage-limit-cancel")}
           onUsageLimitArm={() => void codexAction("usage-limit-continue")}
         />
@@ -654,19 +838,22 @@ export function SessionComposer({
         <DevinTurnNotice
           // A refused send names its reason; a turn that ended without running leaves it on live.
           reason={
-            notice === "notDispatched" && noticeReason
-              ? noticeReason
+            notice === "notDispatched" && session.noticeReason
+              ? session.noticeReason
               : live?.status === "idle"
                 ? live.reason
                 : undefined
           }
-          reasonCopy={codexReason}
+          reasonCopy={(locale, code, surface) =>
+            codexReason(locale, code, surface, platformCopy.unavailableReason)
+          }
           locale={locale}
-          sessionId={current.id}
+          sessionId={surface === "desktop" ? current.id : undefined}
         />
       )}
       {queuePanel?.surface === "managed" && (
         <SessionSendQueue
+          session={session}
           key={
             serialQueue ? JSON.stringify([selected, access?.bootId, access?.device?.id]) : selected
           }
@@ -675,12 +862,16 @@ export function SessionComposer({
       )}
       <SessionComposerInput
         editorContextKey={selected}
+        onSubmit={() => {
+          if (localCommandReady || (canSubmit && !compacting)) void send("send");
+          else if (runningReady) void send(runningAction);
+        }}
         editor={{
           id: "message",
           "aria-label": t.message,
           value: composerValue,
           maxLength: MAX_MESSAGE_LENGTH,
-          onChange: (event) => setMessage(event.target.value),
+          onChange: (event) => setMessage(event.currentTarget.value),
           placeholder: planState.on
             ? copy.planPlaceholder
             : isCodex || isClaude
@@ -689,12 +880,8 @@ export function SessionComposer({
           onFocus: () => {
             if (isCodex || isClaude) void session.checkContinuation?.();
           },
-          disabled: busy || submitted,
+          disabled: (busy && !settingsOnlyBlocked) || submitted,
           ...slash.inputProps,
-        }}
-        onSubmit={() => {
-          if (localCommandReady || (canSubmit && !compacting)) void send("send");
-          else if (runningReady) void send(runningAction);
         }}
         onEditorKeyDown={slash.onKeyDown}
         canSubmitFromKeyboard={() =>
@@ -705,7 +892,7 @@ export function SessionComposer({
         attachments={{
           inputRef: fileInput,
           label: copy.attachment,
-          disabled: attachmentDisabled,
+          disabled: !uploadPermission || busy || submitted,
           onFiles: (files) => void add(files),
         }}
         afterEditor={
@@ -718,7 +905,7 @@ export function SessionComposer({
               message={message}
               disabled={busy || notice === "uncertain"}
               onRemove={(item) =>
-                setHistoryReferences(historyReferences.filter((entry) => entry !== item))
+                setHistoryReferences?.(historyReferences.filter((entry) => entry !== item))
               }
             />
             {uploads.length > 0 && (
@@ -765,7 +952,7 @@ export function SessionComposer({
               </ul>
             )}
             {preview?.previewUrl && (
-              <Dialog
+              <SessionDialog
                 title={`${copy.previewAttachment}: ${preview.name}`}
                 closeLabel={copy.close}
                 onClose={() => setPreviewKey(undefined)}
@@ -776,59 +963,86 @@ export function SessionComposer({
                   className="mx-auto max-h-[65dvh] max-w-full object-contain"
                   onError={() => unavailablePreview(preview.key)}
                 />
-              </Dialog>
+              </SessionDialog>
             )}
           </>
         }
         toolbar={
-          <div className="space-y-2">
-            {fullAccess && (
-              <CodexComposerControls
+          <ComposerToolbarContents spaced={surface === "desktop"}>
+            {access?.device?.accessMode === "full" && (
+              <Controls
+                session={session}
                 composerCapabilities={composerCapabilities}
                 controlsRef={controls}
+                onPlan={setPlanState}
                 resources={resources}
                 setResources={setResources}
                 openPhoneFiles={() => fileInput.current?.click()}
                 disabled={busy || submitted || !online}
                 action={primaryAction}
                 advancedActions={advancedActions}
-                onPlan={setPlanState}
                 startupGoal={startupGoal}
-                onStartupGoalHandled={startupGoalHandled}
-                onStartupGoalDiscarded={startupGoalDiscarded}
                 onStageGoal={stageGoal}
+                onStartupGoalHandled={startupGoalHandled}
+                onStartupGoalDiscarded={discardStartupGoal}
               />
             )}
-            {!fullAccess && (
+            {access?.device?.accessMode !== "full" && (
               <SessionComposerToolbar
                 locale={locale}
                 add={{
                   label: copy.addContext,
-                  disabled: attachmentDisabled,
-                  disabledReason: uploadPermission
+                  disabled: !canOpenAddMenu,
+                  disabledReason: canOpenAddMenu
                     ? undefined
-                    : isClaude && live?.executionMode === "claude-follower"
-                      ? claudeConnectionCopy[locale].attachments
-                      : capabilities?.sessionId === selected &&
-                          capabilities.features.attachments?.reason
-                        ? codexReason(locale, capabilities.features.attachments.reason).text
-                        : copy.permission,
-                  open: restrictedAddOpen && !attachmentDisabled,
-                  onOpenChange: setRestrictedAddOpen,
+                    : showLimitedPlan
+                      ? limitedPlanReason
+                      : uploadPermission
+                        ? undefined
+                        : attachmentsReason,
+                  open: canOpenAddMenu && addMenuScope === addActionsScope,
+                  onOpenChange: (open) => setAddMenuScope(open ? addActionsScope : undefined),
                   attachment: uploadPermission
                     ? {
-                        disabled: attachmentDisabled,
+                        disabled: !canChooseAttachments,
                         reason: copy.attachmentNote,
                         onPick: () => fileInput.current?.click(),
                       }
                     : undefined,
+                  plan: showLimitedPlan
+                    ? {
+                        active: limitedPlanOn,
+                        disabled: !canChangeLimitedPlan,
+                        reason: canChangeLimitedPlan ? undefined : limitedPlanReason,
+                        onToggle: changeLimitedPlan,
+                      }
+                    : undefined,
                 }}
+                plan={
+                  showLimitedPlan && limitedPlanOn
+                    ? {
+                        disabled: !canChangeLimitedPlan,
+                        onRemove: changeLimitedPlan,
+                      }
+                    : undefined
+                }
                 actions={advancedActions}
-                usage={<ContextUsageGauge />}
+                usage={
+                  <ContextUsage
+                    session={session}
+                    surface={surface}
+                    usageRef={restrictedPlan ? limitedUsage : undefined}
+                  />
+                }
                 action={primaryAction}
               />
             )}
-          </div>
+            {planWriteStatus && (
+              <p role="status" className="px-3 text-xs text-muted-foreground">
+                {planWriteStatus}
+              </p>
+            )}
+          </ComposerToolbarContents>
         }
       />
       {!isClaude && access?.device?.accessMode !== "full" && (
@@ -858,16 +1072,16 @@ export function SessionComposer({
         )}
         {commandNotice?.draft === draft && (
           <p role="status" className={`${floatingNotice} bg-background text-muted-foreground`}>
-            {codexReason(locale, commandNotice.reason).text}
+            {reason(commandNotice.reason)}
           </p>
         )}
         {(!canSend || display.continuation === "status-unknown") &&
-          display.reason &&
           !connectionReasonInToolbar &&
           !(connectionStatusInBanner && isClaude) &&
           (!running || (live?.executionMode === "claude-follower" && display.tone === "warning")) &&
           !compacting &&
           !connectionFailure &&
+          display.reason &&
           !display.loading && (
             <div
               role="status"
@@ -889,4 +1103,8 @@ export function SessionComposer({
       </div>
     </div>
   );
+}
+
+function ComposerToolbarContents({ spaced, children }: { spaced: boolean; children: ReactNode }) {
+  return spaced ? <div className="space-y-2">{children}</div> : children;
 }

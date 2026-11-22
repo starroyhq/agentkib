@@ -1,10 +1,10 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
 import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
-import { render } from "../../desktop-reader-test-utils";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { CodexTools } from "./codex-tools";
-import { codexCopy, codexReason } from "./codex-copy";
+import { render } from "@/features/sessions/conversation/desktop-reader-test-utils";
+import { CodexTools } from "./desktop-session-operations";
+import { codexCopy, codexReason } from "../../codex-copy";
 import { useSession } from "./session-context";
 import { webLayoutCopy } from "@agentkib/session-ui";
 
@@ -74,6 +74,10 @@ describe("deleting a session from its actions on the desktop", () => {
     expect(screen.getByRole("group", { name: copy.deleteTitle })).toHaveAccessibleDescription(
       copy.deleteCodexDetail,
     );
+    fireEvent.click(screen.getByRole("button", { name: copy.cancel }));
+    expect(screen.queryByRole("group", { name: copy.deleteTitle })).not.toBeInTheDocument();
+    expect(state.codexAction).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: copy.delete }));
     fireEvent.click(screen.getByRole("button", { name: copy.deleteConfirm }));
     await waitFor(() => expect(state.codexAction).toHaveBeenCalledExactlyOnceWith("delete", {}));
     await waitFor(() => expect(navigate).toHaveBeenCalledWith({ to: "/sessions" }));

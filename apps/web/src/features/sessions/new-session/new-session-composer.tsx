@@ -59,11 +59,8 @@ import {
 import { Input } from "@/features/conversation/components/ui/input";
 import { cn } from "@/features/conversation/lib/utils";
 import { useSession } from "@/features/conversation/features/sessions/session-context";
-import {
-  codexCopyForSurface,
-  codexReason,
-} from "@/features/conversation/features/sessions/codex-copy";
-import { composerLayoutCopy } from "@/features/conversation/features/sessions/composer-layout-copy";
+import { codexCopyForSurface, codexReason } from "@/features/conversation/codex-copy";
+import { composerLayoutCopy } from "@agentkib/session-ui";
 import { MAX_MESSAGE_LENGTH } from "@agentkib/conversation-state";
 import type { Locale } from "@/features/conversation/i18n";
 import { failureOf, useNewSession } from "./use-new-session";

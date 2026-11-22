@@ -132,6 +132,7 @@ type SharedSessionPlatform = {
   components: SessionPlatformComponents;
   copy: {
     words(locale: InteractionLocale): Readonly<Record<string, string>>;
+    unavailableReason(reason: string, locale: InteractionLocale): string;
     formatDateTime(value: string | Date, locale: InteractionLocale): string;
   };
   navigation: {

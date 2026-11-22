@@ -1,5 +1,5 @@
 import { requestReadStateRefresh, isBusyRead } from "@agentkib/session-ui";
-import { codexReason } from "./conversation/features/sessions/codex-copy";
+import { codexReason } from "./conversation/codex-copy";
 import { useI18n } from "@/core/useI18n";
 import { SESSION_COLLECTIONS, sessionCollection } from "@agentkib/runtime-protocol";
 import type { ConversationSessionSummary, WorkspaceSummary } from "@/core/types";

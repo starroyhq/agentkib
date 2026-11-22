@@ -25,7 +25,7 @@ import {
 import type { WorkspaceSummary } from "@/core/types";
 import { useI18n } from "@/core/useI18n";
 import { recentContinuationWorkspaces } from "@/features/home/home-continuations";
-import { codexReason } from "@/features/sessions/conversation/features/sessions/codex-copy";
+import { codexReason } from "@/features/sessions/conversation/codex-copy";
 import { failureOf, useNewSession } from "@/features/sessions/new-session/use-new-session";
 
 /** Workspaces the target menu lists, most recently active first. */

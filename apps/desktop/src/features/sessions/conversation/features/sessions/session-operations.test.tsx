@@ -18,12 +18,10 @@ vi.mock("./session-receipt-recovery", () => ({
     renderContent: (content: ReactNode) => ReactNode;
   }) => renderContent(null),
 }));
-vi.mock("./codex-tools", () => ({
-  CodexTools: ({ open, shortcuts }: { open: boolean; shortcuts: ReactNode }) =>
-    open ? <section>{shortcuts}</section> : null,
-}));
 vi.mock("@agentkib/session-ui", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@agentkib/session-ui")>()),
+  CodexTools: ({ open, shortcuts }: { open: boolean; shortcuts: ReactNode }) =>
+    open ? <section>{shortcuts}</section> : null,
   DshBridgePanel: () => <p>DSH plugin panel</p>,
   ClaudeBackgroundSetting: () => <p>Claude background setting</p>,
   ClaudeBridgePanel: ({ onClose }: { onClose?: () => void }) => (

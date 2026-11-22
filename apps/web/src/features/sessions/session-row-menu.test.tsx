@@ -4,10 +4,7 @@ import { ApiError, type ConversationSessionSummary } from "@agentkib/web-client"
 import { SessionRowMenu } from "@/features/conversation/features/catalog/session-row-menu";
 import { SessionCatalog } from "@/features/conversation/features/catalog/session-catalog";
 import { useSession } from "@/features/conversation/features/sessions/session-context";
-import {
-  codexCopyForSurface,
-  codexReason,
-} from "@/features/conversation/features/sessions/codex-copy";
+import { codexCopyForSurface, codexReason } from "@/features/conversation/codex-copy";
 
 vi.mock("@/features/conversation/features/sessions/session-context", () => ({
   useSession: vi.fn(),

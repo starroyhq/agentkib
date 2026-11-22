@@ -912,6 +912,35 @@ describe("NewSessionComposer", () => {
     expect(takeNewSessionDraft("created")?.text).toBe("Profile the parser");
   });
 
+  it("shows registered presets, keeps the host order and explains a disabled preset in its title", async () => {
+    doubles.client.managedOptions.mockResolvedValue({
+      available: true,
+      workspaces: [],
+      agentPresets: [
+        { id: "standard", name: null, description: null, isDefault: true, broken: null },
+        {
+          id: "broken",
+          name: "Broken preset",
+          description: null,
+          isDefault: false,
+          broken: "preset-load-failed",
+        },
+      ],
+    });
+    renderComposer({ initial: { agent: "deepseek-harness" } });
+    const user = userEvent.setup();
+    const preset = await screen.findByRole("button", { name: /Standard mode/ });
+    await user.click(preset);
+    const items = await screen.findAllByRole("menuitem");
+    expect(items).toHaveLength(2);
+    expect(items[0]).toHaveAccessibleName(/Standard mode/);
+    expect(items[1]).toHaveAccessibleName("Broken preset");
+    expect(items[1]).toHaveAttribute("aria-disabled", "true");
+    expect(items[1]).toHaveAttribute("title", "Failed to load");
+    await user.click(items[1]!);
+    expect(preset).toHaveTextContent("Standard mode");
+  });
+
   it("disables DSH's startup preset UI when the host declares it unavailable", async () => {
     const provider = sessionProviderCapabilities("deepseek-harness")!;
     doubles.client.managedOptions.mockResolvedValue({

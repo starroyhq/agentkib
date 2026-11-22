@@ -1,5 +1,5 @@
 import { useNavigate } from "@tanstack/react-router";
-import { managedAgentOf } from "@agentkib/web-client";
+import { newSessionAgentOf } from "@agentkib/session-ui";
 import { useHomeInstallations, useHomeWorkspaces } from "@/features/home/home-query";
 import { useSessionHub } from "../SessionHubContext";
 import { useSessionViewStore } from "../session-view-store";
@@ -19,7 +19,7 @@ export function NewSessionPane() {
   const notInstalled = new Set(
     (installations.data ?? []).filter((item) => !item.installed).map((item) => item.agent),
   );
-  const agent = from ? managedAgentOf(from.agent) : null;
+  const agent = newSessionAgentOf(from?.agent);
   // Selecting it keeps this page in creation until the outer route agrees on it.
   const openWhenListed = useOpenWhenListed(hub.sessions, (session) => {
     useSessionViewStore.getState().revealSession(session);

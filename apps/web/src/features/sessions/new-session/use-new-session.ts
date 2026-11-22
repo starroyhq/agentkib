@@ -16,6 +16,7 @@ import {
   type ManagedOptions,
 } from "@agentkib/web-client";
 import {
+  DEFAULT_NEW_SESSION_AGENT,
   type NewSessionCreateFields,
   forgetPending,
   pendingCreateMatches,
@@ -228,7 +229,7 @@ export function useNewSession({
         !scope ||
         currentVisit.current !== visit ||
         fields.workspaceId !== workspaceId ||
-        (fields.agent ?? "codex") !== agent
+        (fields.agent ?? DEFAULT_NEW_SESSION_AGENT) !== agent
       )
         return;
       flight.current = true;

@@ -977,7 +977,9 @@ describe("Web NewSessionComposer", () => {
       expect.any(AbortSignal),
       "north",
     );
-    expect(screen.getByRole("button", { name: "Preset: Loading options…" })).toBeDisabled();
+    const loadingPreset = screen.getByRole("button", { name: "Preset: Loading options…" });
+    expect(loadingPreset).toBeDisabled();
+    expect(loadingPreset).toHaveAttribute("title", "Loading options…");
     expect(screen.getByRole("button", { name: "Model: Loading options…" })).toBeDisabled();
     expect(screen.queryByRole("button", { name: /^Permissions:/ })).not.toBeInTheDocument();
     await act(async () =>

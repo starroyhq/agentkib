@@ -1,13 +1,11 @@
 import { continuationResources, composerAddCopy } from "@agentkib/session-ui";
 import { useState } from "react";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
+import { render } from "@/features/conversation/web-reader-test-utils";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { type CodexContextOptions, type CodexContextResource } from "@agentkib/web-client";
-import { CodexComposerControls } from "@/features/conversation/features/sessions/codex-session-controls";
-import { useSession } from "@/features/conversation/features/sessions/session-context";
-vi.mock("@/features/conversation/features/sessions/session-context", () => ({
-  useSession: vi.fn(),
-}));
+import { CodexComposerControls } from "@agentkib/session-ui";
+import type { useSession } from "@/features/conversation/features/sessions/session-context";
 let state: ReturnType<typeof useSession>;
 const folder: CodexContextResource = {
   id: "folder-ref",
@@ -46,6 +44,7 @@ function Harness({ initialResources = [] }: { initialResources?: CodexContextRes
   return (
     <>
       <CodexComposerControls
+        session={state}
         resources={resources}
         setResources={setResources}
         disabled={false}
@@ -76,7 +75,6 @@ beforeEach(() => {
       ),
     },
   } as unknown as ReturnType<typeof useSession>;
-  vi.mocked(useSession).mockImplementation(() => state);
 });
 afterEach(() => {
   cleanup();

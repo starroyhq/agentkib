@@ -1,4 +1,4 @@
-import type { SupportedLocale as Locale } from "@/core/types";
+import type { InteractionLocale as Locale } from "../../interaction-model";
 
 const copy = {
   "zh-CN": {
@@ -8,6 +8,7 @@ const copy = {
     tryResume: "尝试恢复",
     nativeChanged: "会话状态已变化，草稿已保留。重新载入后再提交。",
     reloadDraft: "重新载入",
+    settingsPending: "已保存设置，发送后确认生效状态。",
     settingsUnknown: "设置是否生效尚未确认",
     done: "完成",
     selected: "已选",
@@ -27,6 +28,7 @@ const copy = {
     tryResume: "嘗試恢復",
     nativeChanged: "對話狀態已變更，草稿已保留。重新載入後再提交。",
     reloadDraft: "重新載入",
+    settingsPending: "已儲存設定，傳送後確認是否生效。",
     settingsUnknown: "設定是否生效尚未確認",
     done: "完成",
     selected: "已選",
@@ -46,6 +48,7 @@ const copy = {
     tryResume: "Try resuming",
     nativeChanged: "The session changed. Your draft is preserved. Reload before submitting.",
     reloadDraft: "Reload",
+    settingsPending: "Settings saved. They’ll be confirmed after you send.",
     settingsUnknown: "Setting status unconfirmed",
     done: "Done",
     selected: "Selected",
@@ -67,6 +70,7 @@ const copy = {
     nativeChanged:
       "セッションの状態が変わりました。下書きは保持されています。再読み込み後に送信してください。",
     reloadDraft: "再読み込み",
+    settingsPending: "設定を保存しました。送信後に反映を確認します。",
     settingsUnknown: "設定の反映を確認中",
     done: "完了",
     selected: "選択済み",

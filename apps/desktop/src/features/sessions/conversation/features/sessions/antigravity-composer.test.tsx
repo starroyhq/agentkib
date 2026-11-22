@@ -19,7 +19,7 @@ vi.mock("@agentkib/session-ui", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@agentkib/session-ui")>()),
   SessionTranscript: () => null,
 }));
-vi.mock("./context-usage", () => ({ ContextUsageGauge: () => null }));
+vi.mock("../../context-usage", () => ({ ContextUsageGauge: () => null }));
 beforeEach(() => {
   state.control.mockReset().mockResolvedValue(true);
   state.session = {

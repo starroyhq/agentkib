@@ -2,8 +2,12 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-libra
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Access, Live, LivePermission } from "@agentkib/web-client";
 import { WebApplication } from "@/router";
-import { PermissionModeNotice } from "../conversation/features/sessions/permission-mode-notice";
-import { permissionModeCopy, permissionModeSummaryCopy } from "@agentkib/session-ui";
+import { render as renderWithPlatform } from "../conversation/web-reader-test-utils";
+import {
+  PermissionModeNotice,
+  permissionModeCopy,
+  permissionModeSummaryCopy,
+} from "@agentkib/session-ui";
 import type { Locale } from "../conversation/i18n";
 
 const locales: Locale[] = ["zh-CN", "zh-Hant", "en-US", "ja-JP"];
@@ -45,7 +49,7 @@ describe("permission mode notice", () => {
     "keeps compact risk labels and expandable complete explanations in %s",
     (locale) => {
       for (const mode of ["auto", "dontAsk", "bypassPermissions", null] as const) {
-        const view = render(
+        const view = renderWithPlatform(
           <PermissionModeNotice
             locale={locale}
             permission={{ mode, possiblyAuto: true, ...(mode !== null ? { previous: true } : {}) }}
@@ -77,7 +81,7 @@ describe("permission mode notice", () => {
     "keeps the previous-mode explanation fully readable without compact disclosure in %s",
     (locale) => {
       for (const mode of ["auto", "dontAsk", "bypassPermissions"] as const) {
-        const view = render(
+        const view = renderWithPlatform(
           <PermissionModeNotice permission={{ mode, previous: true }} locale={locale} />,
         );
         const notice = screen.getByRole("status");
@@ -114,7 +118,9 @@ describe("permission mode notice", () => {
         ["dontAsk", own.dontAsk],
         ["bypassPermissions", own.bypassPermissions],
       ] as const) {
-        const view = render(<PermissionModeNotice permission={{ mode }} locale={locale} />);
+        const view = renderWithPlatform(
+          <PermissionModeNotice permission={{ mode }} locale={locale} />,
+        );
         const notice = screen.getByRole("status");
         expect(notice).toHaveTextContent(text);
         expect(notice.querySelector("svg")).toHaveAttribute("aria-hidden", "true");
@@ -125,40 +131,44 @@ describe("permission mode notice", () => {
 
   it.each(locales)("renders the unknown-mode hint and the previous suffix in %s", (locale) => {
     const own = permissionModeCopy[locale];
-    const hint = render(
+    const hint = renderWithPlatform(
       <PermissionModeNotice permission={{ mode: null, possiblyAuto: true }} locale={locale} />,
     );
     expect(screen.getByRole("status")).toHaveTextContent(own.possiblyAuto);
     hint.unmount();
-    render(<PermissionModeNotice permission={{ mode: "auto", previous: true }} locale={locale} />);
+    renderWithPlatform(
+      <PermissionModeNotice permission={{ mode: "auto", previous: true }} locale={locale} />,
+    );
     expect(screen.getByRole("status")).toHaveTextContent(own.auto);
     expect(screen.getByRole("status")).toHaveTextContent(own.previous);
   });
 
   it.each(cases.filter((item) => !item.text))("renders nothing for $name", ({ permission }) => {
-    const { container } = render(<PermissionModeNotice permission={permission} locale="zh-CN" />);
+    const { container } = renderWithPlatform(
+      <PermissionModeNotice permission={permission} locale="zh-CN" />,
+    );
     expect(container).toBeEmptyDOMElement();
   });
 
   it("does not turn a missing mode into a possibly-auto guess without the backend hint", () => {
-    const { container } = render(
+    const { container } = renderWithPlatform(
       <PermissionModeNotice permission={{ mode: null }} locale="en-US" />,
     );
     expect(container).toBeEmptyDOMElement();
     // The hint only applies to an unknown mode; a known mode wins.
-    const known = render(
+    const known = renderWithPlatform(
       <PermissionModeNotice permission={{ mode: "default", possiblyAuto: true }} locale="en-US" />,
     );
     expect(known.container).toBeEmptyDOMElement();
   });
 
   it("marks the bypass mode more strongly than the other restrictive modes", () => {
-    const strong = render(
+    const strong = renderWithPlatform(
       <PermissionModeNotice permission={{ mode: "bypassPermissions" }} locale="en-US" />,
     );
     const bypassClass = screen.getByRole("status").className;
     strong.unmount();
-    render(<PermissionModeNotice permission={{ mode: "auto" }} locale="en-US" />);
+    renderWithPlatform(<PermissionModeNotice permission={{ mode: "auto" }} locale="en-US" />);
     expect(screen.getByRole("status").className).not.toBe(bypassClass);
   });
 });

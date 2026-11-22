@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
 import { useEffect } from "react";
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { render } from "@/features/conversation/web-reader-test-utils";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { composerAddCopy } from "@agentkib/session-ui";
 import {
@@ -15,9 +16,9 @@ import {
   SessionProvider,
   useSession,
 } from "@/features/conversation/features/sessions/session-context";
-import { SessionComposer } from "@/features/conversation/features/sessions/session-composer";
-import { codexCopy } from "@/features/conversation/features/sessions/codex-copy";
-import { composerLayoutCopy } from "@/features/conversation/features/sessions/composer-layout-copy";
+import { SessionComposer } from "@/features/conversation/web-session-composer";
+import { codexCopy } from "@/features/conversation/codex-copy";
+import { composerLayoutCopy } from "@agentkib/session-ui";
 import { managedControlCopy } from "@/features/conversation/features/sessions/managed-control-copy";
 
 vi.mock("@tanstack/react-router", () => ({ useNavigate: () => vi.fn() }));

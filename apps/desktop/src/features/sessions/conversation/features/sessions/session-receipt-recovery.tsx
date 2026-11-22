@@ -3,7 +3,7 @@ import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "re
 import { subscribeSessionInvalidation } from "@agentkib/conversation-state";
 import { ApiError, isLegacyPreparedReceipt } from "@agentkib/web-client";
 import { Button } from "@/components/ui/button";
-import { codexReason } from "./codex-copy";
+import { codexReason } from "../../codex-copy";
 import { useSession } from "./session-context";
 import {
   forgetPending,

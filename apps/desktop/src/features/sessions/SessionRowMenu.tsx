@@ -30,7 +30,7 @@ import type { ConversationSessionSummary } from "@/core/types";
 import { useI18n } from "@/core/useI18n";
 import { displaySessionTitle } from "@/features/workspace/session-title";
 import { Dialog as SessionDialog } from "./conversation/components/dialog";
-import { codexCopy, codexReason } from "./conversation/features/sessions/codex-copy";
+import { codexCopy, codexReason } from "./conversation/codex-copy";
 import { SessionWorkerAssignmentDialog } from "./SessionWorkerAssignmentDialog";
 import { workerAssignmentCopy } from "./worker-assignment-copy";
 

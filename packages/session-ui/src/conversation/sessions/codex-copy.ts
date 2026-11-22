@@ -1,12 +1,7 @@
-import {
-  surfaceCopy,
-  surfaceText,
-  type SessionSurface,
-  sessionContinuationCopy,
-  claudeConnectionReason,
-} from "@agentkib/session-ui";
-import { localizedUnavailableReasonText } from "../../live-status";
-type Locale = "zh-CN" | "zh-Hant" | "en-US" | "ja-JP";
+import { surfaceCopy, surfaceText, type SessionSurface } from "../../session-surface-copy";
+import { sessionContinuationCopy } from "../../session-continuation";
+import { claudeConnectionReason } from "./claude-connection-copy";
+import type { InteractionLocale as Locale } from "../../interaction-model";
 const zh = {
   composerHint: "空闲时发送；运行中可停止，获授权后可追加或加入待发队列。队列消息将自动执行。",
   queueTooLarge: "待发队列超过 100 条，此处暂不允许编辑或排序。",
@@ -1091,8 +1086,9 @@ const claudeStopCodes = [
 ];
 export function codexReason(
   locale: Locale,
-  reason?: string,
-  surface: SessionSurface = "desktop",
+  reason: string | undefined,
+  surface: SessionSurface,
+  unavailableReason: (reason: string, locale: Locale) => string,
 ): { text: string; technical?: string } {
   const continuation = sessionContinuationCopy(locale);
   if (reason === "codex-owner-busy") return { text: continuation.busy("Codex") };
@@ -1106,7 +1102,7 @@ export function codexReason(
     reason === "open-in-original-client" ||
     reason === "handoff-required"
   ) {
-    return { text: surfaceText(localizedUnavailableReasonText(reason, locale), surface, locale) };
+    return { text: surfaceText(unavailableReason(reason, locale), surface, locale) };
   }
   // A coded Claude reason is `<code>: <detail>`; the code is explained, the detail is shown as
   // the technical text.

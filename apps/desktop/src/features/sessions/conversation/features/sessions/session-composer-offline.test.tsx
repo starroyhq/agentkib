@@ -2,11 +2,12 @@
 
 import "@testing-library/jest-dom/vitest";
 import { useState } from "react";
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
+import { render } from "@/features/sessions/conversation/desktop-reader-test-utils";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { UploadedAttachment } from "@agentkib/web-client";
-import { SessionComposer } from "./session-composer";
-import { codexCopy } from "./codex-copy";
+import { SessionComposer } from "@/features/sessions/conversation/desktop-session-composer";
+import { codexCopy } from "../../codex-copy";
 import type { SessionController } from "./use-session-controller";
 
 const doubles = vi.hoisted(() => ({
@@ -22,8 +23,11 @@ vi.mock("./session-context", () => ({
   },
 }));
 vi.mock("./session-panels", () => ({ useSessionPanels: () => null }));
-vi.mock("./context-usage", () => ({ ContextUsageGauge: () => null }));
-vi.mock("./codex-session-controls", () => ({ CodexComposerControls: () => null }));
+vi.mock("@agentkib/session-ui", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@agentkib/session-ui")>()),
+  SessionContextUsageGauge: () => null,
+  CodexComposerControls: () => null,
+}));
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -177,6 +181,21 @@ describe("composer drafts across connection changes", () => {
     doubles.session.busy = true;
     const { input, form } = renderComposer();
     expect(input).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
+    attemptSend(input, form);
+    expectNoDispatch();
+  });
+
+  it("keeps drafts editable but unsendable while only a settings write is outstanding", () => {
+    doubles.session.settingsOnlyBlocked = true;
+    doubles.session.busy = true;
+    doubles.session.controlReady = false;
+    doubles.session.canSend = false;
+    const { input, form } = renderComposer();
+    expect(input).toBeEnabled();
+    expect(input).toHaveValue("Original draft");
+    fireEvent.change(input, { target: { value: "Edited during settings write" } });
+    expect(input).toHaveValue("Edited during settings write");
     expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
     attemptSend(input, form);
     expectNoDispatch();

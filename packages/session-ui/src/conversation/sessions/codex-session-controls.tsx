@@ -10,49 +10,58 @@ import {
 import { X } from "lucide-react";
 import {
   ApiError,
-  canDisplayCodexModelFallback,
   forgetSessionModelDisplay,
   managedAgentOf,
+  canDisplayCodexModelFallback,
   sessionProviderCapabilities,
+  type Access,
+  type ConversationSessionSummary,
+  type Live,
   type SessionAction,
+  type SessionActionBody,
+  type SessionCapabilities,
+  type WebClient,
   type CodexContextOptions,
   type CodexContextResource,
   type CodexGoalState,
+  type CodexSettingValues,
   type CodexSessionSettings,
 } from "@agentkib/web-client";
+import { subscribeSessionInvalidation } from "@agentkib/conversation-state";
+import { ComposerGoalFields, composerGoalCopy } from "../../composer-add-menu";
+import { mergePreparedCatalog, prepareComposerSettings } from "../../composer-settings-preparation";
 import {
-  ComposerGoalFields,
-  ComposerModelPicker,
-  SessionComposerToolbar,
-  composerGoalCopy,
-  parseGoalDraft,
-  existingSessionComposerCapabilities,
   runComposerSettingsMutation,
   type ComposerMutationFields,
+} from "../../composer-settings-mutation";
+import {
   composerSettingsSelection,
   projectComposerSettingsControls,
-  mergePreparedCatalog,
-  prepareComposerSettings,
   composerSettingsWriteLocked,
-  useComposerModelPanel,
-  useComposerModelDisplay,
   confirmsComposerSettings,
   type PendingComposerSettings,
+} from "../../composer-session-settings";
+import { contextUsagePercent } from "../../context-usage";
+import type { ContextUsageHandle } from "../../context-usage-indicator";
+import type { InteractionLocale } from "../../interaction-model";
+import { parseGoalDraft, type NewSessionGoalDraft } from "../../new-session-draft";
+import {
+  existingSessionComposerCapabilities,
   useComposerFollowerSettings,
-  type NewSessionGoalDraft,
-} from "@agentkib/session-ui";
-import { Button } from "../../components/ui/button";
-import { Dialog } from "../../components/dialog";
-import { useSession } from "./session-context";
-import { composerLayoutCopy, composerTerm } from "./composer-layout-copy";
+} from "../../session-composer-capabilities";
+import { SessionComposerToolbar } from "../../session-composer-toolbar";
+import { SessionContextUsageGauge } from "../../session-context-usage-gauge";
+import { settingsNoticeGroup } from "../../session-control-receipts";
+import { useSessionPlatform } from "../../session-platform";
+import { useComposerModelPanel } from "../../use-composer-model-panel";
+import { useComposerModelDisplay } from "../../use-composer-model-display";
 import { codexCopyForSurface, codexReason } from "./codex-copy";
-import { subscribeSessionInvalidation } from "@agentkib/conversation-state";
-import { ContextUsageGauge, type ContextUsageHandle } from "./context-usage";
+import { composerLayoutCopy, composerTerm } from "./composer-layout-copy";
 import { sessionAgentCopy } from "./session-agent-copy";
 
 export type CodexResource = CodexContextResource;
 
-/** Opens the relevant composer control when available in the current session. */
+/** Opens composer controls; false when this device or session cannot show them now. */
 export type ComposerControlsHandle = {
   open(panel: "permissions" | "usage" | "models" | "effort" | "goal"): boolean;
   /** Turns plan mode on, as `/plan` does in Codex's composer; false when this session cannot. */
@@ -61,7 +70,37 @@ export type ComposerControlsHandle = {
 /** Whether plan mode is on, and whether the composer can turn it on. */
 export type ComposerPlanState = { on: boolean; available: boolean };
 
-type CodexComposerControlsProps = {
+type SettingsGroup = "permissions" | "model" | "settings";
+type SettingsNotice = {
+  group?: SettingsGroup;
+  target?: SettingsGroup;
+  status: "writing" | "uncertain" | "notDispatched";
+  reason?: string;
+};
+
+type ComposerControlsSession = {
+  current?: ConversationSessionSummary;
+  selected: string;
+  client: WebClient;
+  access?: Access;
+  locale: InteractionLocale;
+  live?: Live;
+  busy: boolean;
+  online: boolean;
+  controlReady: boolean;
+  codexAction: (action: SessionAction, fields?: Partial<SessionActionBody>) => Promise<unknown>;
+  capabilities?: SessionCapabilities;
+  usageEpoch: string;
+  notice?: string;
+  noticeReason?: string;
+  settingsChangedHere?: boolean;
+  settingsNotice?: SettingsNotice;
+  settingsOnlyBlocked?: boolean;
+  t?: { notDispatched: string };
+};
+
+export type CodexComposerControlsProps = {
+  session: ComposerControlsSession;
   composerCapabilities?: ReturnType<typeof existingSessionComposerCapabilities>;
   resources: CodexResource[];
   setResources: (resources: CodexResource[]) => void;
@@ -69,14 +108,14 @@ type CodexComposerControlsProps = {
   disabled: boolean;
   action?: ReactNode;
   advancedActions?: ReactNode;
-  /** Lets the composer route bare commands to their controls. */
+  /** Lets commands and session actions open the same controls as the toolbar. */
   controlsRef?: Ref<ComposerControlsHandle>;
   /** Told when plan mode or the composer's ability to switch it changes. */
   onPlan?: (state: ComposerPlanState) => void;
   startupGoal?: { value: NewSessionGoalDraft; apply: boolean; afterRevision?: number };
-  onStageGoal?: (goal: NewSessionGoalDraft) => void;
   onStartupGoalHandled?: (applied: boolean) => void;
   onStartupGoalDiscarded?: () => void;
+  onStageGoal?: (goal: NewSessionGoalDraft) => void;
 };
 
 function unavailable(error: unknown) {
@@ -88,6 +127,7 @@ function modelReadDenied(error: unknown) {
 }
 
 export function CodexComposerControls({
+  session,
   composerCapabilities,
   resources,
   setResources,
@@ -98,9 +138,9 @@ export function CodexComposerControls({
   controlsRef,
   onPlan,
   startupGoal,
-  onStageGoal,
   onStartupGoalHandled,
   onStartupGoalDiscarded,
+  onStageGoal,
 }: CodexComposerControlsProps) {
   const {
     current,
@@ -121,17 +161,21 @@ export function CodexComposerControls({
     settingsNotice,
     settingsOnlyBlocked,
     t,
-  } = useSession();
-  const copy = codexCopyForSurface(locale, "web");
-  const goalCopy = composerGoalCopy(locale);
-  const currentAgent =
-    current?.id === selected && current.availability === "readable" ? current.agent : undefined;
-  const modelDisplayScope = useRef({ access, agent: currentAgent });
-  modelDisplayScope.current = { access, agent: currentAgent };
+  } = session;
+  const {
+    kind,
+    components: { Button, SessionDialog },
+    copy: platformCopy,
+  } = useSessionPlatform();
+  const desktop = kind === "desktop";
+  const copy = codexCopyForSurface(locale, kind);
   const isClaude = current?.agent === "claude-code";
+  const isCodex = current?.agent === "codex";
   const settingsAgent = managedAgentOf(current?.agent);
   const managedAgent = settingsAgent === "codex" ? null : settingsAgent;
   const isDevin = managedAgent === "devin";
+  const modelPanel = useComposerModelPanel();
+  const usageGauge = useRef<ContextUsageHandle>(null);
   const agentCopy = sessionAgentCopy[locale];
   const goalProvider =
     current?.id === selected ? sessionProviderCapabilities(current.agent) : undefined;
@@ -162,11 +206,10 @@ export function CodexComposerControls({
     legacyReads: !managedAgent && typeof client.sessionCapabilities !== "function",
   });
   const goalReadable = goalRegistered && canReadGoal;
-  const offersGoalDraft =
-    goalRegistered && goalDraftOffered && feature("goal-set")?.available !== true && !!onStageGoal;
   const layout = composerLayoutCopy[locale];
   const term = (value: string) => composerTerm(locale, value);
-  const reason = (code?: string) => codexReason(locale, code, "web").text;
+  const reason = (code?: string) =>
+    codexReason(locale, code, kind, platformCopy.unavailableReason).text;
   const reasonTitle = (code?: string) => (code ? reason(code) : undefined);
   const loadGeneration = useRef(0);
   const loadFlight = useRef<
@@ -192,18 +235,40 @@ export function CodexComposerControls({
   const contextLocation = useRef<{ id?: string; names: string[] }>({ names: [] });
   const [contextNames, setContextNames] = useState<string[]>([]);
   const [contextLoading, setContextLoading] = useState(false);
-  const modelPanel = useComposerModelPanel();
-  const usage = useRef<ContextUsageHandle>(null);
-  const [addOpen, setAddOpen] = useState(false);
-  const [permissionsOpen, setPermissionsOpen] = useState(false);
   const goalDraftRevision = useRef<number | undefined>(undefined);
   const attemptedStartupGoal = useRef<NewSessionGoalDraft | undefined>(undefined);
   const [goalDirty, setGoalDirty] = useState(false);
   const full = access?.device?.accessMode === "full";
+  const applyingStartupGoal = startupGoal?.apply === true;
+  const displayAgent =
+    current?.id === selected && (desktop || current.availability === "readable")
+      ? current.agent
+      : undefined;
+  const modelDisplayScope = useRef({ access, agent: displayAgent });
+  modelDisplayScope.current = { access, agent: displayAgent };
   const [goalDialog, setGoalDialog] = useState<
-    { kind: "draft"; objective: string; budget: string } | { kind: "native" }
+    { kind: "goal" } | { kind: "goal-draft"; objective?: string; budget?: string }
   >();
-  const [settings, setSettings] = useState<CodexSessionSettings>();
+  const offersGoalDraft =
+    goalRegistered && goalDraftOffered && feature("goal-set")?.available !== true && !!onStageGoal;
+  const goalDraftEditor = goalDialog?.kind === "goal-draft" ? goalDialog : undefined;
+  const editingGoalDraft = goalDraftEditor !== undefined;
+  const goalCopy = composerGoalCopy(locale);
+  const [addOpen, setAddOpen] = useState(false);
+  const [permissionOpen, setPermissionOpen] = useState(false);
+  const historyScope = JSON.stringify([
+    selected,
+    access?.bootId,
+    access?.device?.id,
+    full,
+    access?.device?.advancedControl,
+  ]);
+  const [settingsSource, setSettingsSource] = useState<{
+    scope: string;
+    client: typeof client;
+    execution: string;
+    value: CodexSessionSettings;
+  }>();
   const settingsExecutionScope = JSON.stringify([live?.executionMode, live?.connectionGeneration]);
   const { follower, writeScope, rememberRead, followerAuthority } = useComposerFollowerSettings(
     client,
@@ -212,23 +277,54 @@ export function CodexComposerControls({
     live,
   );
   const settingsExecution = useRef<string | undefined>(undefined);
+  const settings = desktop
+    ? settingsSource?.scope === historyScope && settingsSource.client === client
+      ? settingsSource.value
+      : undefined
+    : settingsSource?.value;
   const settingsScopeMatches =
     settings?.sessionId === selected &&
     resourceScope.current.client === client &&
     resourceScope.current.bootId === access?.bootId &&
     resourceScope.current.deviceId === access?.device?.id &&
     resourceScope.current.advancedControl === access?.device?.advancedControl;
+  const scopedSettings = desktop || settingsScopeMatches ? settings : undefined;
+  const settingsReceiptUncertain = settingsNotice?.status === "uncertain";
+  const settingsUnknown =
+    settingsReceiptUncertain ||
+    (settingsChangedHere && scopedSettings?.applicationStatus === "unknown");
   const fallbackProvider = sessionProviderCapabilities(current?.agent);
-  const provider = (settingsScopeMatches ? settings?.provider : undefined) ?? fallbackProvider;
+  const provider =
+    (scopedSettings?.sessionId === selected ? scopedSettings?.provider : undefined) ??
+    fallbackProvider;
   const usesVariants = provider?.models.selection === "variants";
-  const canClearEffort = provider?.models.clearEffort ?? isClaude;
   const preparesSettings = provider?.models.prepare === true;
+  const canPrepareSettings =
+    preparesSettings &&
+    (live?.executionMode === "claude-managed" || (!desktop && !live?.executionMode));
+  const [settingsRead, setSettingsRead] = useState<{
+    scope: string;
+    client: typeof client;
+    revision: number;
+    values?: CodexSessionSettings["historicalSettings"];
+    usage?: CodexSessionSettings["usage"];
+    defaults?: CodexSessionSettings["defaults"];
+  }>();
   const [goal, setGoal] = useState<CodexGoalState>();
   const [context, setContext] = useState<CodexContextOptions>();
   const [settingsError, setSettingsError] = useState("");
   const [goalError, setGoalError] = useState("");
   const [contextError, setContextError] = useState("");
-  const [mutationError, setMutationError] = useState("");
+  const [mutationFailure, setMutationFailure] = useState<{
+    scope: string;
+    client: typeof client;
+    group: SettingsGroup | "goal";
+    reason: string;
+  }>();
+  const mutationError =
+    !desktop || (mutationFailure?.scope === historyScope && mutationFailure.client === client)
+      ? mutationFailure
+      : undefined;
   const [resourceWarning, setResourceWarning] = useState("");
   const [saving, setSaving] = useState(false);
   const mutationFlight = useRef<symbol | undefined>(undefined);
@@ -249,7 +345,7 @@ export function CodexComposerControls({
       online &&
       settingsReadable &&
       feature("settings")?.available === true &&
-      settingsNotice?.status !== "uncertain" &&
+      !settingsReceiptUncertain &&
       !(settingsChangedHere && settings?.applicationStatus === "unknown") &&
       notice !== "uncertain" &&
       live?.status !== "outcome-unknown" &&
@@ -264,10 +360,42 @@ export function CodexComposerControls({
     !pending?.followerAuthority || pending.followerAuthority === followerAuthority
       ? pending
       : undefined;
+  const pendingModelSettings =
+    !!pendingSettings && settingsNoticeGroup(pendingSettings) !== "permissions";
   const [objective, setObjective] = useState("");
   const [tokenBudget, setTokenBudget] = useState("");
   const compacting = live?.activity === "compacting";
   const running = live?.status !== "idle" || compacting;
+  const history =
+    full &&
+    access.device?.advancedControl === true &&
+    settingsRead?.scope === historyScope &&
+    settingsRead.client === client
+      ? settingsRead
+      : undefined;
+  const canShowModelFallback =
+    (isCodex
+      ? canDisplayCodexModelFallback(settings)
+      : settings?.applicationStatus !== "pending") &&
+    !pendingModelSettings &&
+    (!live || live.sessionId === selected);
+  const observedModelFallback = canShowModelFallback ? history?.values : undefined;
+  const settingsUsage =
+    provider?.contextUsage !== "last-request" &&
+    settings?.sessionId === selected &&
+    !settings.usage?.historical
+      ? settings.usage
+      : undefined;
+  // A last-request report belongs to the settings revision read with it.
+  const historicalUsage =
+    provider?.contextUsage === "last-request" &&
+    (pendingModelSettings || (live?.revision !== undefined && history?.revision !== live.revision))
+      ? undefined
+      : history?.usage;
+  const usageFallback =
+    contextUsagePercent(settingsUsage) !== undefined
+      ? settingsUsage
+      : (historicalUsage ?? settingsUsage);
   const currentUsageSettings =
     settingsScopeMatches &&
     (provider?.contextUsage !== "last-request" ||
@@ -282,27 +410,41 @@ export function CodexComposerControls({
     currentUsageSettings?.applicationStatus !== "unknown"
       ? currentUsageSettings?.current.maxContextTokens
       : undefined;
+
   const applySettings = useCallback(
     (value: CodexSessionSettings, fromLive = false) => {
       if (value.sessionId !== selected) return;
       if (!fromLive) rememberRead(value);
       settingsExecution.current = settingsExecutionScope;
-      setSettings((previous) => {
-        if (!fromLive || previous?.sessionId !== value.sessionId) return value;
-        const registered = value.provider ?? previous.provider;
-        const source = registered?.contextUsage ?? fallbackProvider?.contextUsage;
+      setSettingsSource((previous) => {
+        const source = { scope: historyScope, client, execution: settingsExecutionScope };
+        if (desktop || !fromLive || previous?.value.sessionId !== value.sessionId)
+          return { ...source, value };
+        const registered = value.provider ?? previous.value.provider;
+        const usageSource = registered?.contextUsage ?? fallbackProvider?.contextUsage;
         const keepHistory =
-          previous.usage?.historical &&
-          (source !== "last-request" || previous.revision === value.revision);
+          previous.value.usage?.historical &&
+          (usageSource !== "last-request" || previous.value.revision === value.revision);
         return {
-          ...value,
-          provider: registered,
-          historicalSettings: value.historicalSettings ?? previous.historicalSettings,
-          usage: keepHistory ? previous.usage : value.usage,
+          ...source,
+          value: {
+            ...value,
+            provider: registered,
+            historicalSettings: value.historicalSettings ?? previous.value.historicalSettings,
+            usage: keepHistory ? previous.value.usage : value.usage,
+          },
         };
       });
     },
-    [fallbackProvider, rememberRead, selected, settingsExecutionScope],
+    [
+      client,
+      desktop,
+      fallbackProvider,
+      historyScope,
+      rememberRead,
+      selected,
+      settingsExecutionScope,
+    ],
   );
 
   const loadContext = useCallback(
@@ -392,7 +534,7 @@ export function CodexComposerControls({
           const quiet = flight.background;
           const readSettings = flight.sections.has("settings");
           const readVersion = settingsReadVersion.current;
-          const readGoal = flight.sections.has("goal");
+          const readGoal = flight.sections.has("goal") && (!desktop || goalReadable);
           flight.sections.clear();
           flight.background = true;
           await Promise.all([
@@ -408,8 +550,25 @@ export function CodexComposerControls({
                   readVersion !== settingsReadVersion.current
                 )
                   return;
+                // Desktop ties history to the last authorized HTTP read, independently of live.
+                if (desktop)
+                  setSettingsRead(
+                    value?.sessionId === selected &&
+                      (value.historicalSettings ||
+                        value.usage?.historical ||
+                        (!managedAgent && value.defaults.modelId))
+                      ? {
+                          scope: historyScope,
+                          client,
+                          revision: value.revision,
+                          values: value.historicalSettings,
+                          usage: value.usage?.historical ? value.usage : undefined,
+                          defaults: value.defaults,
+                        }
+                      : undefined,
+                  );
                 if (value) applySettings(value);
-                else if (settingsReadable) setSettings(undefined);
+                else if (settingsReadable) setSettingsSource(undefined);
                 setSettingsError("");
               } catch (error) {
                 if (generation !== loadGeneration.current) return;
@@ -417,15 +576,16 @@ export function CodexComposerControls({
                 if (denied) {
                   forgetSessionModelDisplay(
                     client,
-                    displayScope.access,
+                    desktop ? modelDisplayScope.current.access : displayScope.access,
                     selected,
-                    displayScope.agent,
+                    desktop ? displayAgent : displayScope.agent,
                   );
                   settingsPreparation.current = undefined;
                   setPreparingSettings(false);
                 }
                 if ((readVersion === settingsReadVersion.current && !quiet) || denied) {
-                  setSettings(undefined);
+                  setSettingsSource(undefined);
+                  if (desktop) setSettingsRead(undefined);
                   setSettingsError(unavailable(error));
                 }
               }
@@ -463,7 +623,10 @@ export function CodexComposerControls({
     [
       applySettings,
       client,
+      desktop,
+      displayAgent,
       full,
+      historyScope,
       selected,
       managedAgent,
       settingsAgent,
@@ -472,6 +635,7 @@ export function CodexComposerControls({
     ],
   );
 
+  const resetScope = desktop ? historyScope : access?.device?.advancedControl;
   useEffect(() => {
     loadGeneration.current++;
     goalDraftRevision.current = undefined;
@@ -479,7 +643,8 @@ export function CodexComposerControls({
     setGoalDirty(false);
     setObjective("");
     setTokenBudget("");
-    setSettings(undefined);
+    setSettingsSource(undefined);
+    setSettingsRead(undefined);
     setGoal(undefined);
     setContext(undefined);
     contextGeneration.current++;
@@ -506,17 +671,18 @@ export function CodexComposerControls({
       advancedControl: access?.device?.advancedControl,
     };
     setGoalDialog(undefined);
+    setPermissionOpen(false);
     setAddOpen(false);
-    setSaving(false);
 
-    setPermissionsOpen(false);
+    setSaving(false);
+    if (desktop) mutationFlight.current = undefined;
     settingsPreparation.current = undefined;
     setPreparingSettings(false);
     setPendingSettings(undefined);
     setSettingsError("");
     setGoalError("");
     setContextError("");
-    setMutationError("");
+    setMutationFailure(undefined);
     setResourceWarning("");
     return () => {
       loadGeneration.current++;
@@ -526,15 +692,9 @@ export function CodexComposerControls({
       contextGeneration.current++;
       contextAbort.current?.abort();
     };
-  }, [
-    selected,
-    setResources,
-    client,
-    access?.bootId,
-    access?.device?.id,
-    access?.device?.advancedControl,
-  ]);
+  }, [selected, setResources, client, access?.bootId, access?.device?.id, desktop, resetScope]);
 
+  const webAdvancedControl = desktop ? undefined : access?.device?.advancedControl;
   useEffect(() => {
     if (!full || !selected || !online || usageEpoch === "") {
       contextGeneration.current++;
@@ -554,7 +714,7 @@ export function CodexComposerControls({
     selected,
     access?.bootId,
     access?.device?.id,
-    access?.device?.advancedControl,
+    webAdvancedControl,
     usageEpoch,
     settingsReadable,
     goalReadable,
@@ -566,14 +726,18 @@ export function CodexComposerControls({
     if (!full || !selected || !online) return;
     return subscribeSessionInvalidation(client, (id, domains) => {
       if (id && id !== selected) return;
-      if (domains.some((domain) => ["settings", "goal", "usage", "ownership"].includes(domain)))
-        void load(
-          true,
-          changingSettings.current && !domains.includes("goal") ? "settings" : undefined,
-        );
+      if (!domains.some((domain) => ["settings", "goal", "usage", "ownership"].includes(domain)))
+        return;
+      const includeGoal = desktop
+        ? domains.includes("goal") ||
+          (domains.includes("ownership") && !domains.includes("settings"))
+        : !changingSettings.current || domains.includes("goal");
+      void load(true, includeGoal ? undefined : "settings");
     });
-  }, [client, full, load, online, selected]);
+  }, [client, desktop, full, load, online, selected]);
 
+  const desktopGoalDialog = desktop ? goalDialog?.kind : undefined;
+  const desktopApplyingStartupGoal = desktop && applyingStartupGoal;
   useEffect(() => {
     // Settings and goals use the conversation's CAS revision. An unrelated
     // idle update can advance it without invalidating either domain. Running
@@ -586,22 +750,55 @@ export function CodexComposerControls({
       live.revision !== undefined &&
       live.revision !== null
     )
-      void load(true, changingSettings.current ? "settings" : undefined);
-  }, [full, load, online, selected, live?.sessionId, live?.status, live?.revision]);
+      void load(
+        true,
+        (
+          desktop
+            ? desktopGoalDialog === "goal" || desktopApplyingStartupGoal
+            : !changingSettings.current
+        )
+          ? undefined
+          : "settings",
+      );
+  }, [
+    desktop,
+    full,
+    load,
+    online,
+    selected,
+    live?.sessionId,
+    live?.status,
+    live?.revision,
+    desktopGoalDialog,
+    desktopApplyingStartupGoal,
+  ]);
 
   useEffect(() => {
     if (live?.settings?.sessionId === selected) {
-      applySettings({ ...live.settings, usage: live.usage ?? live.settings.usage }, true);
+      applySettings(
+        {
+          ...live.settings,
+          usage: live.usage ?? live.settings.usage,
+        },
+        true,
+      );
     } else if (live?.usage && settings?.sessionId === selected) {
-      // The observer takes live usage directly. Keep the HTTP history report available
-      // while an idle live snapshot only has a placeholder.
-      setSettings((value) =>
-        value && !value.usage?.historical ? { ...value, usage: live.usage } : value,
+      setSettingsSource((source) =>
+        source &&
+        (desktop
+          ? source.scope === historyScope && source.client === client
+          : !source.value.usage?.historical)
+          ? { ...source, value: { ...source.value, usage: live.usage } }
+          : source,
       );
     }
-    if (live?.goal && goal?.sessionId === selected)
-      setGoal((value) => (value ? { ...value, goal: live.goal } : value));
-  }, [applySettings, goal?.sessionId, live, selected, settings?.sessionId]);
+  }, [applySettings, client, desktop, historyScope, live, selected, settings?.sessionId]);
+
+  useEffect(() => {
+    if (live?.sessionId !== selected || !live.goal) return;
+    const currentGoal = live.goal;
+    setGoal((value) => (value?.sessionId === selected ? { ...value, goal: currentGoal } : value));
+  }, [live, selected]);
 
   useEffect(() => {
     if (
@@ -615,7 +812,6 @@ export function CodexComposerControls({
     setPendingSettings(undefined);
   }, [follower, isClaude, pendingSettings, settings, usesVariants]);
 
-  /** Changes the settings or the goal; true once the host accepted the change. */
   function mutate(name: SessionAction, fields: ComposerMutationFields = {}) {
     const changesSettings = name === "settings";
     return runComposerSettingsMutation({
@@ -624,8 +820,7 @@ export function CodexComposerControls({
       permitted: full && !compacting,
       settingsAllowed:
         !!settings?.available &&
-        settingsScopeMatches &&
-        settingsNotice?.status !== "uncertain" &&
+        (desktop ? !settingsUnknown : settingsScopeMatches && !settingsReceiptUncertain) &&
         !settingsReadStale &&
         (capabilities?.sessionId !== selected || feature("settings")?.available === true),
       readRevision: changesSettings ? settings?.revision : goal?.revision,
@@ -635,9 +830,9 @@ export function CodexComposerControls({
       loadGeneration,
       send: codexAction,
       onStart: () => {
-        changingSettings.current = changesSettings;
+        if (!desktop) changingSettings.current = changesSettings;
         setSaving(true);
-        setMutationError("");
+        setMutationFailure(undefined);
       },
       onAccepted: () => {
         if (name === "goal-set" && startupGoal) onStartupGoalHandled?.(true);
@@ -648,7 +843,13 @@ export function CodexComposerControls({
         setGoalDirty(false);
       },
       refresh: () => load(false, changesSettings ? "settings" : undefined),
-      onError: (error) => setMutationError(unavailable(error)),
+      onError: (error) =>
+        setMutationFailure({
+          scope: historyScope,
+          client,
+          group: changesSettings ? settingsNoticeGroup(fields) : "goal",
+          reason: unavailable(error),
+        }),
       onSettle: () => {
         changingSettings.current = false;
         setSaving(false);
@@ -659,7 +860,7 @@ export function CodexComposerControls({
   const settingsReadStale =
     !settingsReadable ||
     (follower && feature("settings")?.available === true && !writeScope) ||
-    settingsExecution.current !== settingsExecutionScope ||
+    (desktop ? settingsSource?.execution : settingsExecution.current) !== settingsExecutionScope ||
     (live?.revision !== undefined && settings?.revision !== live.revision);
   const goalReadStale = live?.revision !== undefined && goal?.revision !== live.revision;
   const goalSnapshot = goalReadable && goal?.sessionId === selected ? goal : undefined;
@@ -695,29 +896,11 @@ export function CodexComposerControls({
     ) ??
     goalLockReason ??
     (!goalSnapshot?.available ? copy.goalUnavailable : undefined);
-  const closeAdd = () => {
-    setAddOpen(false);
-  };
-  const openGoal = () => {
-    if (!goalRegistered) return;
-    closeAdd();
-    if (offersGoalDraft || (!goalReadable && startupGoal)) {
-      setGoalDialog({
-        kind: "draft",
-        objective: startupGoal?.value.objective ?? "",
-        budget: startupGoal?.value.tokenBudget?.toString() ?? "",
-      });
-    } else {
-      setGoalDialog({ kind: "native" });
-      if (goalReadable && goalReadStale) void load();
-    }
-  };
   const prepareSettings = () => {
     if (!settingsReadable || !online) return;
     if (
-      preparesSettings &&
+      canPrepareSettings &&
       !running &&
-      (!live?.executionMode || live.executionMode === "claude-managed") &&
       prepareComposerSettings({
         currentAuthority: currentPreparation,
         flight: settingsPreparation,
@@ -732,86 +915,54 @@ export function CodexComposerControls({
           settingsExecution.current = settingsExecutionScope;
           if (currentRead) applySettings(value);
           else
-            setSettings((previous) =>
-              previous?.sessionId === selected ? mergePreparedCatalog(previous, value) : value,
-            );
+            setSettingsSource((previous) => ({
+              scope: historyScope,
+              client,
+              execution: settingsExecutionScope,
+              value:
+                previous &&
+                (desktop
+                  ? previous.scope === historyScope && previous.client === client
+                  : previous.value.sessionId === selected)
+                  ? mergePreparedCatalog(previous.value, value)
+                  : value,
+            }));
         },
         onError: (error) => setSettingsError(unavailable(error)),
         onSettle: () => setPreparingSettings(false),
       })
     )
       return;
-    if (settingsReadStale || !settings?.available || settingsError) void load(false, "settings");
+    const ready = !!settings?.available && !settingsReadStale && !settingsError;
+    if (desktop || !ready) void load(ready, "settings");
   };
-  const stagedGoal = goalDirty ? undefined : startupGoal?.value;
-  const persistedGoal = activeGoal;
-  const resetGoalEditor = () => {
-    goalDraftRevision.current = undefined;
-    setGoalDirty(false);
-    setObjective(persistedGoal?.objective ?? "");
-    setTokenBudget(persistedGoal?.tokenBudget?.toString() ?? "");
-  };
-  const closeGoal = () => {
-    setGoalDialog(undefined);
-  };
-  const discardStartupGoal = () => {
-    if (!onStartupGoalDiscarded || mutationFlight.current) return;
-    resetGoalEditor();
-    onStartupGoalDiscarded();
-  };
-  const disarmStartupGoal = () => {
-    if (!startupGoal?.apply || attemptedStartupGoal.current === startupGoal.value) return;
-    attemptedStartupGoal.current = startupGoal.value;
-    onStartupGoalHandled?.(false);
-  };
-  const goalObjective = stagedGoal?.objective ?? objective;
-  const goalBudget = stagedGoal ? (stagedGoal.tokenBudget?.toString() ?? "") : tokenBudget;
-  const goalChanged = goalDirty && goalDraftRevision.current !== goal?.revision;
-  const editGoal = () => {
-    goalDraftRevision.current ??= goal?.revision;
-    if (stagedGoal) {
-      setObjective(goalObjective);
-      setTokenBudget(goalBudget);
-      disarmStartupGoal();
-    }
-    setGoalDirty(true);
-  };
-  const parsedBudget = goalBudget ? Number(goalBudget) : undefined;
-  const budgetValid =
-    parsedBudget === undefined || (Number.isSafeInteger(parsedBudget) && parsedBudget > 0);
-  const goalDraftEditor = goalDialog?.kind === "draft" ? goalDialog : undefined;
-  const editingGoalDraft = goalDraftEditor !== undefined;
-  const goalDraftDisabled =
-    !offersGoalDraft ||
-    disabled ||
-    saving ||
-    notice === "uncertain" ||
-    live?.status === "outcome-unknown" ||
-    live?.reason === "control-outcome-unconfirmed" ||
-    capabilities?.reason === "control-outcome-unconfirmed";
-  const goalDraft = goalDraftEditor
-    ? parseGoalDraft(goalDraftEditor.objective, goalDraftEditor.budget)
+  const displayedSettings = scopedSettings
+    ? desktop && settingsUnknown
+      ? scopedSettings.current
+      : composerSettingsSelection(scopedSettings, isClaude, { live, staged: pendingSettings })
     : undefined;
-  const goalDraftTitle = !offersGoalDraft
-    ? (reasonTitle(feature("goal-draft")?.reason) ?? copy.goalUnavailable)
-    : undefined;
-  const saveGoalDraft = () => {
-    if (goalDraftDisabled || !goalDraft) return;
-    onStageGoal?.(goalDraft);
-    closeGoal();
-  };
-  const isCodex = current?.agent === "codex";
+  const contextLimit =
+    settings?.sessionId === selected &&
+    (provider?.contextUsage !== "last-request" ||
+      (!pendingModelSettings &&
+        !settingsReadStale &&
+        settings.applicationStatus !== "pending" &&
+        settings.applicationStatus !== "unknown"))
+      ? displayedSettings?.maxContextTokens
+      : undefined;
   const liveSettings =
-    live?.sessionId === selected && live.settings?.sessionId === selected
+    live?.sessionId === selected &&
+    live.settings?.sessionId === selected &&
+    (!desktop ||
+      (provider !== undefined &&
+        !preparesSettings &&
+        live.settings.revision >= (settings?.revision ?? 0)))
       ? live.settings
       : undefined;
-  const liveSelection = liveSettings && composerSettingsSelection(liveSettings, isClaude);
+  const liveSelection =
+    liveSettings && composerSettingsSelection(liveSettings, !desktop && isClaude);
   const liveReport =
     liveSelection?.modelId || liveSelection?.effort ? liveSelection : liveSettings?.current;
-  const scopedSettings = settingsScopeMatches ? settings : undefined;
-  const selection =
-    scopedSettings &&
-    composerSettingsSelection(scopedSettings, isClaude, { live, staged: pendingSettings });
   const pendingModelChange =
     pendingSettings?.model !== undefined ||
     pendingSettings?.effort !== undefined ||
@@ -822,31 +973,27 @@ export function CodexComposerControls({
     (pendingSettings?.mode !== undefined ||
       pendingSettings?.policyId !== undefined ||
       pendingSettings?.permissionMode !== undefined ||
-      (settingsOnlyBlocked && settingsNotice?.target === "permissions"));
+      (settingsOnlyBlocked === true && settingsNotice?.target === "permissions"));
   const modelApplicationPending =
     scopedSettings?.applicationStatus === "pending" &&
     !permissionsOnlyPending &&
     (!isCodex || !canDisplayCodexModelFallback(scopedSettings));
-  const reportedSettings =
+  const webReportedSettings =
     (isCodex || !scopedSettings) &&
     !modelApplicationPending &&
     (liveReport?.modelId || liveReport?.effort)
       ? liveReport
-      : selection?.modelId || selection?.effort || !isCodex
-        ? selection
+      : displayedSettings?.modelId || displayedSettings?.effort || !isCodex
+        ? displayedSettings
         : scopedSettings?.current;
-  const canShowCodexFallback =
-    isCodex &&
-    access?.device?.advancedControl === true &&
-    !modelApplicationPending &&
-    !pendingModelChange &&
-    (!live || live.sessionId === selected);
-  const fallbackSettings = canShowCodexFallback ? scopedSettings : undefined;
-  const historicalSettings = fallbackSettings?.historicalSettings;
+  const reportedSettings = desktop
+    ? !settingsUnknown && settings?.applicationStatus !== "pending" && !pendingModelSettings
+      ? liveReport
+      : undefined
+    : webReportedSettings;
   const claudeReadFallbackAllowed =
     isClaude &&
-    settingsNotice?.status !== "uncertain" &&
-    !(settingsChangedHere && scopedSettings?.applicationStatus === "unknown") &&
+    !settingsUnknown &&
     notice !== "uncertain" &&
     live?.status !== "outcome-unknown" &&
     live?.reason !== "control-outcome-unconfirmed" &&
@@ -854,46 +1001,183 @@ export function CodexComposerControls({
   const claudeHistoricalModel = claudeReadFallbackAllowed
     ? scopedSettings?.historicalSettings
     : undefined;
-  // Older Codex sessions can show a known model without prefilling the settings form.
-  const visibleSettings =
-    reportedSettings?.modelId || (!isClaude && reportedSettings?.effort)
+  const webFallbackSettings =
+    isCodex &&
+    access?.device?.advancedControl === true &&
+    !modelApplicationPending &&
+    !pendingModelChange &&
+    (!live || live.sessionId === selected)
+      ? scopedSettings
+      : undefined;
+  const fallbackDefaults = claudeReadFallbackAllowed
+    ? scopedSettings?.defaults
+    : desktop
+      ? isCodex && canShowModelFallback
+        ? history?.defaults
+        : undefined
+      : webFallbackSettings?.defaults;
+  const webHistorical = webFallbackSettings?.historicalSettings;
+  // An observed older model is display-only and cannot prefill current settings.
+  const observedModel: CodexSettingValues | undefined = desktop
+    ? [
+        reportedSettings,
+        displayedSettings,
+        settings?.current,
+        claudeHistoricalModel,
+        observedModelFallback,
+      ].find((value) => value?.modelId)
+    : reportedSettings?.modelId || (!isClaude && reportedSettings?.effort)
       ? reportedSettings
       : claudeHistoricalModel?.modelId
         ? claudeHistoricalModel
-        : historicalSettings?.modelId
-          ? historicalSettings
+        : webHistorical?.modelId
+          ? webHistorical
           : undefined;
-  const { showModelPicker, displayFallback, retainedEffortOptions } = useComposerModelDisplay({
+  const historicalModel = desktop
+    ? claudeHistoricalModel?.modelId
+      ? claudeHistoricalModel
+      : observedModelFallback
+    : reportedSettings?.modelId
+      ? undefined
+      : observedModel;
+  const {
+    showModelPicker,
+    displayFallback: displayModelFallback,
+    retainedEffortOptions,
+  } = useComposerModelDisplay({
     client,
     access,
     sessionId: selected,
-    agent: currentAgent,
+    agent: displayAgent,
     denied: settingsAccessDenied,
     settingsReadable,
     reservesSlot: reservesModelSlot,
     provider,
     catalog: scopedSettings ?? liveSettings,
-    observed: visibleSettings,
-    historical: reportedSettings?.modelId ? undefined : visibleSettings,
-    defaults: claudeReadFallbackAllowed ? scopedSettings?.defaults : fallbackSettings?.defaults,
-    // A policy acknowledgement can echo older model history.
-    holdCache:
-      isCodex &&
-      !reportedSettings?.modelId &&
-      (permissionsOnlyPending || (settingsOnlyBlocked && settingsNotice?.status === "uncertain")),
+    observed: observedModel,
+    historical: historicalModel,
+    defaults: fallbackDefaults,
+    holdCache: desktop
+      ? settingsUnknown ||
+        (isCodex && !!pendingSettings && !pendingModelSettings && !displayedSettings?.modelId)
+      : isCodex &&
+        !reportedSettings?.modelId &&
+        (permissionsOnlyPending || (settingsOnlyBlocked === true && settingsReceiptUncertain)),
+    uncertain: desktop && settingsUnknown,
   });
-  const settingsControlScope = JSON.stringify([
-    selected,
-    access?.bootId,
-    access?.device?.id,
-    access?.device?.advancedControl,
-  ]);
-  const permissionsUseMode = isClaude || isDevin;
-  const permissionTitle = permissionsUseMode ? agentCopy.permission : copy.executionPolicy;
-  const settingsUnknown =
-    settingsNotice?.status === "uncertain" ||
-    (settingsChangedHere && scopedSettings?.applicationStatus === "unknown");
-  const settingsLocked = composerSettingsWriteLocked({
+  const changePermissionOpen = (open: boolean) => {
+    setPermissionOpen(open);
+    if (!open) return;
+    const hasPermissionOptions = desktop
+      ? isClaude || isDevin
+        ? settings?.options.permissionModes?.length
+        : settings?.options.policies.length
+      : permissionItems.length > 0;
+    if (scopedSettings?.available && !settingsReadStale && !settingsError && hasPermissionOptions) {
+      if (preparesSettings) void load(true, "settings");
+    } else prepareSettings();
+  };
+  const closeAdd = () => {
+    setAddOpen(false);
+  };
+  const openGoal = () => {
+    if (!goalRegistered) return;
+    closeAdd();
+    if (offersGoalDraft || (!desktop && !goalReadable && startupGoal)) {
+      const objective = startupGoal?.value.objective ?? "";
+      const budget = startupGoal?.value.tokenBudget?.toString() ?? "";
+      if (desktop) {
+        // Keep background native reads from replacing the local draft.
+        goalDraftRevision.current = goalSnapshot?.revision ?? 0;
+        setGoalDirty(false);
+        setObjective(objective);
+        setTokenBudget(budget);
+        setGoalDialog({ kind: "goal-draft" });
+      } else {
+        setGoalDialog({ kind: "goal-draft", objective, budget });
+      }
+      return;
+    }
+    setGoalDialog({ kind: "goal" });
+    if (goalReadable && goalReadStale) void load();
+  };
+  const openModel = (page: "models" | "effort", refresh = false) =>
+    modelPanel.open(page, full && !disabled && settingsReadable, refresh);
+  const stagedGoal = goalDirty ? undefined : startupGoal?.value;
+  const disarmStartupGoal = () => {
+    if (!startupGoal?.apply || attemptedStartupGoal.current === startupGoal.value) return;
+    attemptedStartupGoal.current = startupGoal.value;
+    onStartupGoalHandled?.(false);
+  };
+  const goalObjective = stagedGoal?.objective ?? objective;
+  const goalBudget = stagedGoal ? (stagedGoal.tokenBudget?.toString() ?? "") : tokenBudget;
+  // The live fallback is display-only until the host returns the selected goal snapshot.
+  const savedGoal =
+    goalReadable && !goalSnapshot && live?.sessionId === selected ? live.goal : activeGoal;
+  const selectedGoalDetail = savedGoal
+    ? `${term(savedGoal.status)} · ${savedGoal.objective}`
+    : startupGoal && goalObjective;
+  const goalDraftLocked =
+    disabled ||
+    saving ||
+    notice === "uncertain" ||
+    live?.status === "outcome-unknown" ||
+    live?.reason === "control-outcome-unconfirmed" ||
+    capabilities?.reason === "control-outcome-unconfirmed";
+  const resetGoalDraftEditor = () => {
+    goalDraftRevision.current = undefined;
+    setGoalDirty(false);
+    const goal = desktop ? savedGoal : activeGoal;
+    setObjective(goal?.objective ?? "");
+    setTokenBudget(goal?.tokenBudget?.toString() ?? "");
+  };
+  const closeGoal = () => {
+    if (desktop && editingGoalDraft) resetGoalDraftEditor();
+    setGoalDialog(undefined);
+  };
+  const goalChipLocked = desktop ? goalDraftLocked : saving || disabled;
+  const discardStartupGoal = () => {
+    if (
+      savedGoal ||
+      !startupGoal ||
+      !onStartupGoalDiscarded ||
+      goalChipLocked ||
+      mutationFlight.current
+    )
+      return;
+    if (!desktop) resetGoalDraftEditor();
+    onStartupGoalDiscarded();
+    if (desktop) resetGoalDraftEditor();
+  };
+  const goalChanged = goalDirty && goalDraftRevision.current !== goal?.revision;
+  const editGoal = () => {
+    goalDraftRevision.current ??= goal?.revision;
+    if (stagedGoal) {
+      setObjective(goalObjective);
+      setTokenBudget(goalBudget);
+      if (!editingGoalDraft) disarmStartupGoal();
+    }
+    setGoalDirty(true);
+  };
+  const parsedBudget = goalBudget ? Number(goalBudget) : undefined;
+  const budgetValid =
+    parsedBudget === undefined || (Number.isSafeInteger(parsedBudget) && parsedBudget > 0);
+  const goalDraft = editingGoalDraft
+    ? parseGoalDraft(
+        goalDraftEditor.objective ?? goalObjective,
+        goalDraftEditor.budget ?? goalBudget,
+      )
+    : undefined;
+  const goalDraftDisabled = !offersGoalDraft || goalDraftLocked;
+  const goalDraftTitle = !offersGoalDraft
+    ? (reasonTitle(feature("goal-draft")?.reason) ?? copy.goalUnavailable)
+    : undefined;
+  const saveGoalDraft = () => {
+    if (goalDraftDisabled || !goalDraft) return;
+    onStageGoal?.(goalDraft);
+    closeGoal();
+  };
+  const settingsWriteLocked = composerSettingsWriteLocked({
     settings: scopedSettings,
     online,
     busy: disabled || busy || saving || preparingSettings,
@@ -903,6 +1187,7 @@ export function CodexComposerControls({
     capabilities,
     feature: feature("settings"),
   });
+  const menuTitle = isClaude || isDevin ? agentCopy.permission : copy.executionPolicy;
   const {
     permissionItems,
     permissionReadOnlyWithoutMenu,
@@ -925,51 +1210,55 @@ export function CodexComposerControls({
   } = projectComposerSettingsControls({
     agent: settingsAgent,
     settings: scopedSettings,
-    selection,
+    selection: displayedSettings,
     live,
     sessionId: selected,
     locale,
-    locked: settingsLocked,
+    locked: settingsWriteLocked,
     full,
     write: (fields) => mutate("settings", fields),
   });
-  useEffect(() => {
-    onPlan?.({ on: planOn, available: planAvailable });
-  }, [onPlan, planOn, planAvailable]);
   const showPermissions =
     !settingsAccessDenied &&
     (reservesPermissionSlot ||
-      (settingsReadable && (isCodex || permissionsUseMode || !!permissionItems.length)));
+      (settingsReadable &&
+        (isCodex ||
+          isClaude ||
+          isDevin ||
+          (desktop ? !!settings?.options.policies?.length : permissionItems.length > 0))));
   const permissionTriggerLocked = disabled || permissionReadOnlyWithoutMenu;
-  const writeStatus = settingsUnknown
-    ? layout.settingsUnknown
-    : settingsNotice?.status === "notDispatched"
-      ? settingsNotice.reason
-        ? reason(settingsNotice.reason)
-        : t.notDispatched
-      : undefined;
-  const changePermissionsOpen = (open: boolean) => {
-    setPermissionsOpen(open);
-    if (!open) return;
-    if (
-      scopedSettings?.available &&
-      !settingsReadStale &&
-      !settingsError &&
-      permissionItems.length > 0
-    ) {
-      if (preparesSettings) void load(true, "settings");
-    } else prepareSettings();
-  };
-  const changeAddOpen = (open: boolean) => {
-    if (!open) {
-      closeAdd();
-      return;
-    }
-    setAddOpen(true);
-    void load();
-  };
-  const openModel = (page: "models" | "effort", refresh = false) =>
-    modelPanel.open(page, full && !disabled && settingsReadable, refresh);
+  useEffect(() => {
+    onPlan?.({ on: planOn, available: planAvailable });
+  }, [onPlan, planOn, planAvailable]);
+  // The grouped desktop feedback remains until the settings/recovery migration.
+  const localSettingsNotice: SettingsNotice | undefined = desktop
+    ? (settingsNotice ??
+      (settingsUnknown
+        ? { group: settingsNoticeGroup(pendingSettings ?? {}), status: "uncertain" }
+        : mutationError && mutationError.group !== "goal"
+          ? { group: mutationError.group, status: "notDispatched", reason: mutationError.reason }
+          : undefined))
+    : undefined;
+  const writeStatus = !desktop
+    ? settingsUnknown
+      ? layout.settingsUnknown
+      : settingsNotice?.status === "notDispatched"
+        ? settingsNotice.reason
+          ? reason(settingsNotice.reason)
+          : t?.notDispatched
+        : undefined
+    : undefined;
+  const settingsMessage = localSettingsNotice
+    ? localSettingsNotice.status === "uncertain"
+      ? layout.settingsUnknown
+      : (reasonTitle(localSettingsNotice.reason) ?? copy.settingUnavailable)
+    : undefined;
+  const modelMessage =
+    showModelPicker &&
+    (localSettingsNotice?.group === "model" ||
+      (localSettingsNotice?.group === "settings" && !showPermissions));
+  const permissionMessage =
+    !modelMessage && (showPermissions || localSettingsNotice?.group === "permissions");
   useEffect(() => {
     // A submitted draft has at most one automatic dispatch. The existing action
     // controller owns its receipt, including after a reconnect.
@@ -985,8 +1274,8 @@ export function CodexComposerControls({
       busy ||
       saving ||
       compacting ||
-      goalDirty ||
       editingGoalDraft ||
+      goalDirty ||
       notice === "uncertain" ||
       live?.sessionId !== selected ||
       live.status !== "idle" ||
@@ -1014,8 +1303,8 @@ export function CodexComposerControls({
       if (!full || disabled) return false;
       if (panel === "models" || panel === "effort") return openModel(panel);
       if (panel === "permissions" && showPermissions && !permissionTriggerLocked)
-        changePermissionsOpen(true);
-      else if (panel === "usage" && usage.current) usage.current.open();
+        changePermissionOpen(true);
+      else if (panel === "usage" && usageGauge.current) usageGauge.current.open();
       else if (panel === "goal" && (goalReadable || offersGoalDraft)) openGoal();
       else return false;
       return true;
@@ -1027,8 +1316,18 @@ export function CodexComposerControls({
     },
   }));
   if (!full) return null;
+  const ResourceButton = desktop ? Button : "button";
+  const settingsFeedback = settingsMessage && (
+    <p
+      role={localSettingsNotice?.status === "uncertain" ? "status" : "alert"}
+      className={`max-w-64 px-1 text-xs leading-4 ${localSettingsNotice?.status === "uncertain" ? "text-muted-foreground" : "text-destructive-text"}`}
+    >
+      {settingsMessage}
+    </p>
+  );
+
   const changeGoalField = (field: "objective" | "budget", value: string) => {
-    if (goalDraftEditor) {
+    if (!desktop && goalDraftEditor) {
       setGoalDialog({ ...goalDraftEditor, [field]: value });
       return;
     }
@@ -1038,10 +1337,12 @@ export function CodexComposerControls({
   };
   const goalFieldObjective =
     goalDraftEditor?.objective ??
-    (goalSnapshot?.available ? goalObjective : (stagedGoal?.objective ?? ""));
+    (editingGoalDraft || goalSnapshot?.available ? goalObjective : (stagedGoal?.objective ?? ""));
   const goalFieldBudget =
     goalDraftEditor?.budget ??
-    (goalSnapshot?.available ? goalBudget : (stagedGoal?.tokenBudget?.toString() ?? ""));
+    (editingGoalDraft || goalSnapshot?.available
+      ? goalBudget
+      : (stagedGoal?.tokenBudget?.toString() ?? ""));
   const goalFieldsDisabled = editingGoalDraft ? goalDraftDisabled : goalActionDisabled("set");
   const goalBudgetType =
     (editingGoalDraft ? undefined : goalSnapshot?.budget) ?? goalProvider?.create.goalBudget;
@@ -1070,9 +1371,9 @@ export function CodexComposerControls({
 
   return (
     <>
-      {mutationError && !goalDialog && (
+      {!desktop && mutationError && !goalDialog && (
         <p role="alert" className="px-1 text-xs text-destructive-text">
-          {reason(mutationError)}
+          {reason(mutationError.reason)}
         </p>
       )}
       {notice === "notDispatched" &&
@@ -1086,9 +1387,9 @@ export function CodexComposerControls({
               type="button"
               variant="link"
               className="h-auto min-h-11 whitespace-normal px-0 text-xs"
-              disabled={disabled || !full}
+              disabled={disabled || (desktop ? !settingsReadable : !full)}
               onClick={() => {
-                void load(false, "settings");
+                if (!desktop) void load(false, "settings");
                 openModel(noticeReason?.includes("effort") ? "effort" : "models", true);
               }}
             >
@@ -1102,7 +1403,10 @@ export function CodexComposerControls({
           label: copy.addContext,
           disabled: disabled,
           open: addOpen,
-          onOpenChange: changeAddOpen,
+          onOpenChange: (open) => {
+            setAddOpen(open);
+            if (open) void load(false, desktop ? "settings" : undefined);
+          },
           attachment: attachmentOffered
             ? {
                 disabled: disabled || !attachmentAllowed,
@@ -1133,12 +1437,12 @@ export function CodexComposerControls({
             : undefined,
           goal: goalRegistered
             ? {
-                selected: !!(startupGoal || persistedGoal) || undefined,
+                selected: !!(startupGoal || savedGoal) || (desktop ? false : undefined),
                 onOpen: openGoal,
               }
             : undefined,
           plan:
-            planOffered || (collaboration && settingsReadable)
+            planOffered || (collaboration && (desktop || settingsReadable))
               ? {
                   active: planOn,
                   disabled: !canTogglePlan,
@@ -1156,16 +1460,16 @@ export function CodexComposerControls({
         permission={
           showPermissions
             ? {
-                title: permissionTitle,
-                label: permissionLabel ?? permissionTitle,
+                title: menuTitle,
+                label: permissionLabel ?? menuTitle,
                 description: permissionDescription,
                 hint: permissionHint,
                 risky: permissionRisky,
                 disabled: permissionTriggerLocked,
                 side: "top",
+                open: permissionOpen,
+                onOpenChange: changePermissionOpen,
                 items: permissionItems,
-                open: permissionsOpen,
-                onOpenChange: changePermissionsOpen,
                 onSelect: changePermission,
               }
             : undefined
@@ -1179,46 +1483,52 @@ export function CodexComposerControls({
             : undefined
         }
         goal={
-          goalRegistered && (persistedGoal || startupGoal)
+          goalRegistered && (savedGoal || startupGoal)
             ? {
-                detail: persistedGoal?.objective ?? goalObjective,
-                disabled: !persistedGoal && (saving || disabled),
+                detail: selectedGoalDetail,
+                disabled: !savedGoal && goalChipLocked,
                 onOpen: openGoal,
-                onRemove: !persistedGoal && onStartupGoalDiscarded ? discardStartupGoal : undefined,
+                onRemove: !savedGoal && onStartupGoalDiscarded ? discardStartupGoal : undefined,
               }
             : undefined
         }
         actions={advancedActions}
         usage={
-          <ContextUsageGauge
-            fallback={currentUsageSettings?.usage}
-            capacity={usageCapacity}
+          <SessionContextUsageGauge
+            session={session}
+            surface={kind}
+            usageRef={usageGauge}
+            fallback={desktop ? usageFallback : currentUsageSettings?.usage}
+            capacity={desktop ? contextLimit : usageCapacity}
             source={provider?.contextUsage}
-            usageRef={usage}
           />
         }
         model={
           showModelPicker
             ? {
-                scope: settingsControlScope,
+                scope: desktop
+                  ? `${selected}\0${access?.bootId ?? ""}\0${access?.device?.id ?? ""}\0${access?.device?.advancedControl ?? ""}`
+                  : JSON.stringify([
+                      selected,
+                      access?.bootId,
+                      access?.device?.id,
+                      access?.device?.advancedControl,
+                    ]),
                 settings: scopedSettings,
-                selection: selection,
-                reportedSettings: reportedSettings,
-                displayFallback: displayFallback,
+                provider,
+                selection: displayedSettings,
+                reportedSettings,
+                displayFallback: displayModelFallback,
                 verifiedHistoricalModel:
                   settingsReadable && reservesModelSlot
                     ? claudeHistoricalModel?.modelId
                     : undefined,
                 retainedEffortOptions,
-                provider: provider,
-                clearEffort: canClearEffort,
-                disabled: settingsLocked,
+                disabled: settingsWriteLocked,
                 triggerDisabled: false,
                 readOnly: settingsReadOnly,
                 settingsAuthority: followerAuthority,
                 terminalModel: terminalModel,
-                modelDefault:
-                  reservesModelSlot && !settingsReadable ? false : provider?.models.modelDefault,
                 saving: saving,
                 loading:
                   preparingSettings || (online && settingsReadable && !settings && !settingsError),
@@ -1240,26 +1550,48 @@ export function CodexComposerControls({
                     open: async () => !!(await codexAction("open-model-picker")),
                   },
                 }),
-                onChange: (change) =>
-                  settingsLocked ? Promise.resolve(false) : mutate("settings", change),
+                effortDefault: desktop
+                  ? (provider?.models.effortDefault ?? managedAgent !== null)
+                  : undefined,
+                modelDefault: desktop
+                  ? !preparesSettings && provider?.models.modelDefault
+                  : reservesModelSlot && !settingsReadable
+                    ? false
+                    : provider?.models.modelDefault,
+                clearEffort: desktop
+                  ? provider?.models.clearEffort === true &&
+                    (!preparesSettings || canPrepareSettings)
+                  : (provider?.models.clearEffort ?? isClaude),
+                onChange: (fields) =>
+                  !desktop && settingsWriteLocked
+                    ? Promise.resolve(false)
+                    : mutate("settings", fields),
               }
             : undefined
         }
         action={action}
+        permissionFeedback={permissionMessage && settingsFeedback}
+        modelFeedback={modelMessage && settingsFeedback}
       />
+      {!permissionMessage && !modelMessage && settingsFeedback}
       {writeStatus && (
         <p role="status" className="px-3 text-xs text-muted-foreground">
           {writeStatus}
         </p>
       )}
       {goalRegistered && goalDialog && (
-        <Dialog
+        <SessionDialog
           panel
+          description={
+            desktop && !editingGoalDraft ? `${layout.selected}: ${resources.length}` : undefined
+          }
           footer={
             editingGoalDraft ? (
               <Button
                 type="button"
-                className="min-h-11 disabled:pointer-events-auto"
+                className={
+                  desktop ? "disabled:pointer-events-auto" : "min-h-11 disabled:pointer-events-auto"
+                }
                 disabled={goalDraftDisabled || !goalDraft}
                 title={goalDraftTitle}
                 onClick={saveGoalDraft}
@@ -1352,11 +1684,13 @@ export function CodexComposerControls({
                   )}
                 </div>
               )}
-              {goalSnapshot?.available && mutationError && (
-                <p role="alert" className="text-xs text-destructive-text">
-                  {reason(mutationError)}
-                </p>
-              )}
+              {goalSnapshot?.available &&
+                mutationError &&
+                (!desktop || mutationError.group === "goal") && (
+                  <p role="alert" className="text-xs text-destructive-text">
+                    {reason(mutationError.reason)}
+                  </p>
+                )}
               {activeGoal && (
                 <dl className="grid grid-cols-2 gap-2 rounded-lg border p-3 text-xs">
                   <dt>{copy.goalStatus}</dt>
@@ -1393,7 +1727,7 @@ export function CodexComposerControls({
               {goalFields}
             </section>
           )}
-        </Dialog>
+        </SessionDialog>
       )}
 
       {resources.map((item) => (
@@ -1404,7 +1738,8 @@ export function CodexComposerControls({
           title={!item.available ? copy.resourceRemoved : undefined}
         >
           <span className="truncate">{item.name}</span>
-          <button
+          <ResourceButton
+            {...(desktop ? { variant: "bare", size: "content" } : {})}
             type="button"
             className="grid size-11 shrink-0 place-items-center rounded hover:bg-accent"
             aria-label={`${copy.remove}: ${item.name}`}
@@ -1412,7 +1747,7 @@ export function CodexComposerControls({
             onClick={() => setResources(resources.filter((selected) => selected.id !== item.id))}
           >
             <X size={12} />
-          </button>
+          </ResourceButton>
         </span>
       ))}
       {resourceWarning && (

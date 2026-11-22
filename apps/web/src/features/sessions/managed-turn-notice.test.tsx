@@ -5,7 +5,7 @@ import {
   ManagedTurnNotice,
   retryText,
 } from "../conversation/features/sessions/managed-turn-notice";
-import { codexReason } from "../conversation/features/sessions/codex-copy";
+import { codexReason } from "../conversation/codex-copy";
 import type { Locale } from "../conversation/i18n";
 import { usageLimitNotice } from "@agentkib/session-ui";
 

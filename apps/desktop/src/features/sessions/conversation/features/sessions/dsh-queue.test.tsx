@@ -1,17 +1,14 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError, WebClient, type SessionQueue } from "@agentkib/web-client";
-import { dispatchSessionAction } from "@agentkib/session-ui";
-import { SessionSendQueue } from "./dsh-queue";
-import { useSession } from "./session-context";
+import { dispatchSessionAction, SessionSendQueue } from "@agentkib/session-ui";
+import { render } from "../../desktop-reader-test-utils";
 import { publishSessionInvalidation } from "@agentkib/conversation-state";
 
-vi.mock("./session-context", () => ({ useSession: vi.fn() }));
-
-type Session = ReturnType<typeof useSession>;
+type Session = React.ComponentProps<typeof SessionSendQueue>["session"];
 let state: Session;
 const available = { available: true };
 function session(
@@ -39,7 +36,6 @@ beforeEach(() => {
     "queue-delete": available,
     "queue-steer": available,
   });
-  vi.mocked(useSession).mockImplementation(() => state);
 });
 afterEach(cleanup);
 
@@ -98,7 +94,7 @@ it.each(["devin", "antigravity"] as const)(
       },
     } as unknown as Session;
     const read = vi.mocked(state.client.sessionQueue);
-    render(<SessionSendQueue agent={agent} />);
+    render(<SessionSendQueue session={state} agent={agent} />);
     await screen.findByText("run the tests next");
     expect(read).toHaveBeenCalledWith("session", agent, expect.any(AbortSignal));
     expect(screen.queryByRole("button", { name: /Steer/ })).not.toBeInTheDocument();
@@ -124,7 +120,7 @@ it.each(["devin", "antigravity"] as const)(
 describe("DSH queued messages above the composer", () => {
   it("lists what waits for the next turn, steers one in or withdraws it", async () => {
     const user = userEvent.setup();
-    render(<SessionSendQueue agent="deepseek-harness" />);
+    render(<SessionSendQueue session={state} agent="deepseek-harness" />);
     const list = await screen.findByRole("list", { name: "Queued messages" });
     expect(list).toHaveTextContent("run the tests next");
     expect(state.client.sessionQueue).toHaveBeenCalledWith(
@@ -144,7 +140,7 @@ describe("DSH queued messages above the composer", () => {
 
   it("edits a message from its menu", async () => {
     const user = userEvent.setup();
-    render(<SessionSendQueue agent="deepseek-harness" />);
+    render(<SessionSendQueue session={state} agent="deepseek-harness" />);
     await user.click(await screen.findByRole("button", { name: "More actions" }));
     await user.click(await screen.findByRole("menuitem", { name: "Edit message" }));
     const input = screen.getByRole("textbox", { name: "Message text" });
@@ -168,7 +164,7 @@ describe("DSH queued messages above the composer", () => {
       },
       [{ id: "item-1", status: "pending", text: "", hasAttachments: true }],
     );
-    render(<SessionSendQueue agent="deepseek-harness" />);
+    render(<SessionSendQueue session={state} agent="deepseek-harness" />);
     expect(await screen.findByRole("img", { name: /cannot be edited/ })).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "More actions" }));
     expect(await screen.findByRole("menuitem", { name: "Edit message" })).toHaveAttribute(
@@ -183,12 +179,12 @@ describe("DSH queued messages above the composer", () => {
   });
 
   it("reads the queue again when the host reports a queue change, not on every live update", async () => {
-    const { rerender } = render(<SessionSendQueue agent="deepseek-harness" />);
+    const { rerender } = render(<SessionSendQueue session={state} agent="deepseek-harness" />);
     await screen.findByRole("list", { name: "Queued messages" });
     expect(state.client.sessionQueue).toHaveBeenCalledTimes(1);
     // Streamed text changes the live revision many times a second.
     state = { ...state, live: { sessionId: "session", revision: 99 } } as unknown as Session;
-    rerender(<SessionSendQueue agent="deepseek-harness" />);
+    rerender(<SessionSendQueue session={state} agent="deepseek-harness" />);
     expect(state.client.sessionQueue).toHaveBeenCalledTimes(1);
     publishSessionInvalidation(state.client, "session", ["queue"]);
     await vi.waitFor(() => expect(state.client.sessionQueue).toHaveBeenCalledTimes(2));
@@ -196,7 +192,7 @@ describe("DSH queued messages above the composer", () => {
 
   it("shows a message queued while the host still turned reads away", async () => {
     state = session({ "queue-list": available }, []);
-    const { container } = render(<SessionSendQueue agent="deepseek-harness" />);
+    const { container } = render(<SessionSendQueue session={state} agent="deepseek-harness" />);
     await vi.waitFor(() => expect(state.client.sessionQueue).toHaveBeenCalledTimes(1));
     expect(container).toBeEmptyDOMElement();
     // DSH reports the new message while the control that queued it is still being admitted.
@@ -217,11 +213,13 @@ describe("DSH queued messages above the composer", () => {
 
   it("takes no room when nothing waits or the queue cannot be read here", async () => {
     state = session({ "queue-list": available }, []);
-    const { container, rerender } = render(<SessionSendQueue agent="deepseek-harness" />);
+    const { container, rerender } = render(
+      <SessionSendQueue session={state} agent="deepseek-harness" />,
+    );
     await vi.waitFor(() => expect(state.client.sessionQueue).toHaveBeenCalled());
     expect(container).toBeEmptyDOMElement();
     state = session({ "queue-list": { available: false, reason: "dsh-runtime-offline" } });
-    rerender(<SessionSendQueue agent="deepseek-harness" />);
+    rerender(<SessionSendQueue session={state} agent="deepseek-harness" />);
     expect(container).toBeEmptyDOMElement();
     expect(state.client.sessionQueue).not.toHaveBeenCalled();
   });

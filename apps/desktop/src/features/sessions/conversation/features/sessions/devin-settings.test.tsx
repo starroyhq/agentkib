@@ -1,15 +1,15 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
-import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { cleanup, screen, waitFor, within } from "@testing-library/react";
+import { render } from "@/features/sessions/conversation/desktop-reader-test-utils";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { sessionProviderCapabilities, type CodexSessionSettings } from "@agentkib/web-client";
-import { CodexComposerControls } from "./codex-session-controls";
-import { codexCopy } from "./codex-copy";
+import { CodexComposerControls } from "@agentkib/session-ui";
+import { codexCopy } from "../../codex-copy";
 import { composerModelCopy } from "@agentkib/session-ui";
-import { useSession } from "./session-context";
+import type { useSession } from "./session-context";
 
-vi.mock("./session-context", () => ({ useSession: vi.fn() }));
 afterEach(cleanup);
 
 function renderControls({
@@ -80,7 +80,7 @@ function renderControls({
     settings = { ...settings, revision: 4, current: { ...settings.current, ...fields } };
     return { accepted: true, completed: true };
   });
-  vi.mocked(useSession).mockReturnValue({
+  const state = {
     selected: settings.sessionId,
     current: { id: settings.sessionId, agent: "devin" },
     locale: "en-US",
@@ -104,9 +104,10 @@ function renderControls({
     },
     client: { sessionSettings },
     codexAction,
-  } as unknown as ReturnType<typeof useSession>);
+  } as unknown as ReturnType<typeof useSession>;
   render(
     <CodexComposerControls
+      session={state}
       resources={[]}
       setResources={vi.fn()}
       openPhoneFiles={vi.fn()}

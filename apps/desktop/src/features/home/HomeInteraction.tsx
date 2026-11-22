@@ -9,7 +9,7 @@ import {
   sessionInteractionItems,
 } from "@agentkib/session-ui";
 import { useI18n } from "@/core/useI18n";
-import { codexReason } from "@/features/sessions/conversation/features/sessions/codex-copy";
+import { codexReason } from "@/features/sessions/conversation/codex-copy";
 import type { HomeReplies } from "./home-replies";
 
 /**

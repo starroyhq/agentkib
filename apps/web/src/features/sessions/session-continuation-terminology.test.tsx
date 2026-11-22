@@ -8,7 +8,7 @@ import { SessionReader } from "@/features/conversation/features/sessions/web-ses
 import { SessionPanelsContext } from "@/features/conversation/features/sessions/session-panels";
 import type { SessionController } from "@/features/conversation/features/sessions/use-session-controller";
 import { dictionaries } from "@/features/conversation/i18n";
-import { codexReason } from "@/features/conversation/features/sessions/codex-copy";
+import { codexReason } from "@/features/conversation/codex-copy";
 import { claudeConnectionCopy } from "@agentkib/session-ui";
 
 type Locale = "zh-CN" | "zh-Hant" | "en-US" | "ja-JP";
@@ -20,7 +20,7 @@ vi.mock("@/features/conversation/features/sessions/session-context", () => ({
 vi.mock("@/features/conversation/features/sessions/session-navigation", () => ({
   useSessionNavigate: () => vi.fn(),
 }));
-vi.mock("@/features/conversation/features/sessions/context-usage", () => ({
+vi.mock("@/features/conversation/context-usage", () => ({
   ContextUsageGauge: () => null,
 }));
 vi.mock("@agentkib/session-ui", async (importOriginal) => ({

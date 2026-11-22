@@ -10,7 +10,7 @@ import {
   SessionPlatformProvider,
 } from "@agentkib/session-ui";
 import { dictionaries } from "@/features/conversation/i18n";
-import { codexCopyForSurface } from "@/features/conversation/features/sessions/codex-copy";
+import { codexCopyForSurface } from "@/features/conversation/codex-copy";
 import { SessionWorkspace } from "./session-workspace";
 import { webSessionPlatform } from "@/features/conversation/session-platform";
 

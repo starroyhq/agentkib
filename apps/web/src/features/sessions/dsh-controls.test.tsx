@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { render } from "@/features/conversation/web-reader-test-utils";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { composerGoalCopy } from "@agentkib/session-ui";
 import {
@@ -8,15 +9,14 @@ import {
   type CodexGoalState,
   type CodexSessionSettings,
 } from "@agentkib/web-client";
-import { CodexComposerControls } from "../conversation/features/sessions/codex-session-controls";
-import { useSession } from "../conversation/features/sessions/session-context";
-import { codexCopy, codexReason } from "../conversation/features/sessions/codex-copy";
+import { CodexComposerControls } from "@agentkib/session-ui";
+import type { useSession } from "../conversation/features/sessions/session-context";
+import { codexCopy, codexReason } from "../conversation/codex-copy";
 
-vi.mock("../conversation/features/sessions/session-context", () => ({ useSession: vi.fn() }));
 const copy = codexCopy["en-US"];
 const codexReasonText = (code: string) => codexReason("en-US", code, "web").text;
 let state: ReturnType<typeof useSession>;
-let props: Parameters<typeof CodexComposerControls>[0];
+let props: Omit<Parameters<typeof CodexComposerControls>[0], "session">;
 // The executor reports whether its settings are writable at the current revision.
 const settings = (running: boolean): CodexSessionSettings => ({
   sessionId: "session",
@@ -99,7 +99,6 @@ beforeEach(() => {
     codexAction: vi.fn(async () => ({ accepted: true })),
     control: vi.fn(),
   } as unknown as ReturnType<typeof useSession>;
-  vi.mocked(useSession).mockImplementation(() => state);
 });
 afterEach(cleanup);
 
@@ -116,7 +115,7 @@ describe("DeepSeek Harness controls", () => {
       usedTokens: 700,
       contextWindow: 1000,
     };
-    const view = render(<CodexComposerControls {...props} />);
+    const view = render(<CodexComposerControls session={state} {...props} />);
     const model = await screen.findByRole("button", { name: /DeepSeek Chat/ });
     fireEvent.click(model);
     expect(screen.getByRole("button", { name: "Reset default model" })).toBeDisabled();
@@ -148,7 +147,7 @@ describe("DeepSeek Harness controls", () => {
     });
     state.live = { ...state.live!, status: "idle", revision: 2 };
     state.capabilities!.features.settings = { available: true };
-    view.rerender(<CodexComposerControls {...props} />);
+    view.rerender(<CodexComposerControls session={state} {...props} />);
     await waitFor(() => expect(policy).not.toHaveAttribute("aria-disabled", "true"));
     fireEvent.click(policy);
     await waitFor(() =>
@@ -157,7 +156,7 @@ describe("DeepSeek Harness controls", () => {
   });
 
   it("shows a goal bounded by rounds, why it stopped, and asks for no token budget", async () => {
-    render(<CodexComposerControls {...props} />);
+    render(<CodexComposerControls session={state} {...props} />);
     fireEvent.click(await screen.findByRole("button", { name: copy.goals }));
     expect(await screen.findByText("3 / 256")).toBeVisible();
     expect(screen.getByText("Which branch should I release from?")).toBeVisible();
@@ -169,11 +168,42 @@ describe("DeepSeek Harness controls", () => {
     expect(screen.queryByText(codexReasonText("goal-action-unavailable"))).not.toBeInTheDocument();
   });
 
+  it("shows the status of a selected live goal while its native read is pending", async () => {
+    let resolveRead!: (value: CodexGoalState) => void;
+    const read = new Promise<CodexGoalState>((resolve) => {
+      resolveRead = resolve;
+    });
+    vi.mocked(state.client.sessionGoals).mockReturnValue(read);
+    state.live = { ...state.live!, goal: goal.goal };
+    render(<CodexComposerControls session={state} {...props} />);
+
+    const badge = screen.getByRole("button", { name: copy.goals });
+    expect(badge).toHaveAttribute("title", "Blocked · Ship it");
+    fireEvent.click(badge);
+    const dialog = within(await screen.findByRole("dialog", { name: copy.goals }));
+    expect(dialog.getByRole("button", { name: copy.goalClear })).toBeDisabled();
+    expect(dialog.getByRole("textbox", { name: copy.goalObjective })).toBeDisabled();
+    fireEvent.click(dialog.getByRole("button", { name: copy.close }));
+
+    await act(async () => {
+      resolveRead({ ...goal, goal: undefined });
+    });
+    expect(screen.queryByRole("button", { name: copy.goals })).not.toBeInTheDocument();
+    expect(state.codexAction).not.toHaveBeenCalled();
+  });
+
+  it("does not show a live goal from a different session", () => {
+    vi.mocked(state.client.sessionGoals).mockReturnValue(new Promise(() => {}));
+    state.live = { ...state.live!, sessionId: "different-session", goal: goal.goal };
+    render(<CodexComposerControls session={state} {...props} />);
+    expect(screen.queryByRole("button", { name: copy.goals })).not.toBeInTheDocument();
+  });
+
   it("omits the goal for a provider without a registered goal control", async () => {
     state.current = { ...state.current!, agent: "devin" };
     state.capabilities!.features.goal = { available: true };
     state.capabilities!.features.resources = { available: true };
-    render(<CodexComposerControls {...props} />);
+    render(<CodexComposerControls session={state} {...props} />);
     fireEvent.click(await screen.findByRole("button", { name: copy.addContext }));
     expect(await screen.findByRole("button", { name: "Files and folders" })).toBeVisible();
     expect(screen.queryByRole("button", { name: copy.goals })).not.toBeInTheDocument();
@@ -181,7 +211,7 @@ describe("DeepSeek Harness controls", () => {
   });
 
   it("keeps the goal controls visible without showing the last goal when read access is removed", async () => {
-    const view = render(<CodexComposerControls {...props} />);
+    const view = render(<CodexComposerControls session={state} {...props} />);
     fireEvent.click(await screen.findByRole("button", { name: copy.goals }));
     const dialog = within(await screen.findByRole("dialog", { name: copy.goals }));
     const objective = dialog.getByRole("textbox", { name: copy.goalObjective });
@@ -192,7 +222,7 @@ describe("DeepSeek Harness controls", () => {
       ...state.capabilities!,
       features: { goal: { available: false, reason: "permission_denied" } },
     };
-    view.rerender(<CodexComposerControls {...props} />);
+    view.rerender(<CodexComposerControls session={state} {...props} />);
     expect(objective).toBeDisabled();
     expect(objective).toHaveValue("");
     expect(dialog.queryByText("Which branch should I release from?")).not.toBeInTheDocument();
@@ -215,7 +245,7 @@ describe("DeepSeek Harness controls", () => {
         clear: unavailable,
       },
     }));
-    render(<CodexComposerControls {...props} />);
+    render(<CodexComposerControls session={state} {...props} />);
     fireEvent.click(await screen.findByRole("button", { name: copy.addContext }));
     fireEvent.click(await screen.findByRole("button", { name: copy.goals }));
     expect(await screen.findByLabelText(copy.goalObjective)).toBeVisible();
@@ -233,6 +263,7 @@ describe("DeepSeek Harness controls", () => {
     const onStartupGoalHandled = vi.fn();
     render(
       <CodexComposerControls
+        session={state}
         {...props}
         startupGoal={{ value: { objective: "Ship it" }, apply: true }}
         onStartupGoalHandled={onStartupGoalHandled}
@@ -256,6 +287,7 @@ describe("DeepSeek Harness controls", () => {
     const onStartupGoalDiscarded = vi.fn();
     const view = render(
       <CodexComposerControls
+        session={state}
         {...props}
         startupGoal={{ value: { objective: "Ship it" }, apply: false }}
         onStartupGoalDiscarded={onStartupGoalDiscarded}
@@ -269,7 +301,7 @@ describe("DeepSeek Harness controls", () => {
     fireEvent.click(screen.getByRole("button", { name: composerGoalCopy("en-US").clearDraft }));
     expect(onStartupGoalDiscarded).toHaveBeenCalledOnce();
 
-    view.rerender(<CodexComposerControls {...props} />);
+    view.rerender(<CodexComposerControls session={state} {...props} />);
     fireEvent.click(await screen.findByRole("button", { name: copy.addContext }));
     fireEvent.click(await screen.findByRole("button", { name: copy.goals }));
     expect(await screen.findByLabelText(copy.goalObjective)).toHaveValue("");

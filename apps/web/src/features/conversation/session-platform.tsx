@@ -48,10 +48,11 @@ import {
 import { Sheet, SheetClose, SheetContent, SheetTitle } from "./components/ui/sheet";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "./components/ui/tabs";
 import { Textarea } from "./components/ui/textarea";
-import { codexCopyForSurface } from "./features/sessions/codex-copy";
+import { codexCopyForSurface } from "./codex-copy";
 import { LivePreview } from "./web-live-preview";
 import { cn } from "./lib/utils";
 import { dictionaries, type Locale } from "./i18n";
+import { localizedUnavailableReasonText } from "./live-status";
 
 export { webSessionImages as sessionImages } from "./web-session-images";
 
@@ -165,6 +166,7 @@ export const webSessionPlatform: SessionPlatform = {
   },
   copy: {
     words: (locale) => dictionaries[locale],
+    unavailableReason: localizedUnavailableReasonText,
     formatDateTime: (value, locale) =>
       new Intl.DateTimeFormat(locale, { dateStyle: "medium", timeStyle: "short" }).format(
         new Date(value),

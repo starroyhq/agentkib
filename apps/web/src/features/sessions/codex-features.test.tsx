@@ -1,6 +1,5 @@
 import userEvent from "@testing-library/user-event";
 import { act, cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
-import { render } from "@/features/conversation/web-reader-test-utils";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { composerAddCopy } from "@agentkib/session-ui";
 import {
@@ -9,14 +8,12 @@ import {
   type SessionSettings,
   type UploadedAttachment,
 } from "@agentkib/web-client";
-import { CodexTools } from "@/features/conversation/features/sessions/codex-tools";
-import { SessionComposer } from "@/features/conversation/features/sessions/session-composer";
+import { CodexTools } from "@/features/conversation/features/sessions/web-session-operations";
+import { render } from "@/features/conversation/web-reader-test-utils";
+import { SessionComposer } from "@/features/conversation/web-session-composer";
 import { useSession } from "@/features/conversation/features/sessions/session-context";
 import { dictionaries } from "@/features/conversation/i18n";
-import {
-  codexCopyForSurface,
-  codexReason,
-} from "@/features/conversation/features/sessions/codex-copy";
+import { codexCopyForSurface, codexReason } from "@/features/conversation/codex-copy";
 import { webLayoutCopy } from "@agentkib/session-ui";
 import { publishSessionInvalidation } from "@agentkib/conversation-state";
 vi.mock("@tanstack/react-router", () => ({ useNavigate: () => vi.fn() }));
@@ -109,6 +106,36 @@ describe("Codex composer", () => {
     );
     fireEvent.click(modelPicker);
     expect(screen.queryByRole("button", { name: "计划模式" })).not.toBeInTheDocument();
+  });
+
+  it("shows the paired follower's reported model without offering changes", async () => {
+    state.current = { id: "s", agent: "codex" } as typeof state.current;
+    state.live = {
+      ...state.live!,
+      sessionId: "s",
+      revision: 1,
+      executionMode: "codex-follower",
+      model: "native-model",
+    };
+    state.access!.experimentalEnabled = true;
+    state.capabilities!.features.settings = { available: true };
+    vi.mocked(state.client.request).mockImplementation(async (path: string) =>
+      path === "managed/options"
+        ? {
+            available: true,
+            workspaces: [],
+            models: [{ id: "native-model", name: "Native model", efforts: ["low"] }],
+          }
+        : {},
+    );
+    render(<CodexTools open />);
+
+    const picker = await screen.findByRole("button", { name: /模型设置: Native model/ });
+    fireEvent.click(picker);
+    const overview = within(await screen.findByRole("dialog", { name: "Native model" }));
+    expect(overview.getByText("Native model")).toBeVisible();
+    expect(overview.queryByRole("button", { name: "选择模型" })).not.toBeInTheDocument();
+    expect(state.codexAction).not.toHaveBeenCalled();
   });
 
   it("offers restricted Codex Plan only in Add, without requiring attachments", async () => {
@@ -709,20 +736,6 @@ describe("Session delete", () => {
       refresh: vi.fn(),
     } as ReturnType<typeof useSession>;
   }
-  it("asks before deleting permanently, and deletes only once confirmed", async () => {
-    prepare({ delete: { available: true } });
-    render(<CodexTools open />);
-    fireEvent.click(screen.getByRole("button", { name: copy.delete }));
-    expect(state.codexAction).not.toHaveBeenCalled();
-    const confirm = screen.getByRole("group", { name: copy.deleteTitle });
-    expect(confirm).toHaveAccessibleDescription(copy.deleteCodexDetail);
-    fireEvent.click(screen.getByRole("button", { name: copy.cancel }));
-    expect(screen.queryByRole("group", { name: copy.deleteTitle })).not.toBeInTheDocument();
-    expect(state.codexAction).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByRole("button", { name: copy.delete }));
-    fireEvent.click(screen.getByRole("button", { name: copy.deleteConfirm }));
-    await waitFor(() => expect(state.codexAction).toHaveBeenCalledExactlyOnceWith("delete", {}));
-  });
   const forkReason = codexReason("zh-CN", "session-busy", "web").text;
   it.each([
     ["session-busy", forkReason],

@@ -57,6 +57,7 @@ import { useDesktopConversationWindow } from "../DesktopConversationWindow";
 import { desktopReadScope, subscribeDesktopReadScope } from "../read-state-scope";
 import { Dialog as SessionDialog } from "./components/dialog";
 import { LivePreview } from "./desktop-live-preview";
+import { localizedUnavailableReasonText } from "./live-status";
 
 export { desktopSessionImages as sessionImages } from "./desktop-session-images";
 
@@ -202,7 +203,11 @@ export function useDesktopSessionPlatform(client: WebClient): SessionPlatform {
     () => ({
       kind: "desktop",
       components,
-      copy: { words: conversationWords, formatDateTime },
+      copy: {
+        words: conversationWords,
+        formatDateTime,
+        unavailableReason: localizedUnavailableReasonText,
+      },
       navigation: {
         preferences: {
           placement: "global-settings",

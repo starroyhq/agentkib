@@ -20,7 +20,7 @@ import {
   takeNewSessionDraft,
 } from "@agentkib/session-ui";
 import { initializeI18n } from "@/core/i18n";
-import { composerLayoutCopy } from "../conversation/features/sessions/composer-layout-copy";
+import { composerLayoutCopy } from "@agentkib/session-ui";
 import { NewSessionComposer, type NewSessionComposerProps } from "./NewSessionComposer";
 
 const doubles = vi.hoisted(() => ({

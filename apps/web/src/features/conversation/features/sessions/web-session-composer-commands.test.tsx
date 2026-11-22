@@ -2,13 +2,14 @@
 
 import "@testing-library/jest-dom/vitest";
 import { useEffect, useImperativeHandle, useState, type ReactNode, type Ref } from "react";
-import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { render } from "@/features/conversation/web-reader-test-utils";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ClaudeCommandEntry } from "@agentkib/web-client";
 import { codexCommandPrompt, slashCommandCopy } from "@agentkib/session-ui";
-import { SessionComposer } from "./session-composer";
-import { codexCopy, codexReason } from "./codex-copy";
-import type { ComposerControlsHandle, ComposerPlanState } from "./codex-session-controls";
+import { SessionComposer } from "@/features/conversation/web-session-composer";
+import { codexCopy, codexReason } from "../../codex-copy";
+import type { ComposerControlsHandle, ComposerPlanState } from "@agentkib/session-ui";
 import type { SessionPanels } from "./session-panels";
 import type { SessionController } from "./use-session-controller";
 
@@ -30,7 +31,9 @@ vi.mock("./session-context", () => ({
   },
 }));
 vi.mock("./session-panels", () => ({ useSessionPanels: () => doubles.panels }));
-vi.mock("./codex-session-controls", () => ({
+vi.mock("@agentkib/session-ui", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@agentkib/session-ui")>()),
+  SessionContextUsageGauge: () => null,
   CodexComposerControls: ({
     action,
     controlsRef,
@@ -45,7 +48,6 @@ vi.mock("./codex-session-controls", () => ({
     return <>{action}</>;
   },
 }));
-vi.mock("./context-usage", () => ({ ContextUsageGauge: () => null }));
 
 // Entries as CLI 2.1.311 reported them (descriptions shortened); probe-skill is synthetic.
 const catalog: ClaudeCommandEntry[] = [
@@ -75,9 +77,13 @@ const options = () =>
     .map((option) => option.textContent);
 const reason = (code: string) => codexReason("en-US", code, "web").text;
 // With full access the composer renders its settings and goal controls.
-const fullDevice = { send: true, accessMode: "full" } as NonNullable<
-  SessionController["access"]
->["device"];
+const fullDevice = {
+  id: "device",
+  name: "Test device",
+  send: true,
+  approve: false,
+  accessMode: "full",
+} satisfies NonNullable<SessionController["access"]>["device"];
 
 describe("slash commands in the Web composer", () => {
   beforeEach(() => {
@@ -537,6 +543,29 @@ describe("Codex slash commands in the composer", () => {
     expect(setFilesOpen).toHaveBeenCalledExactlyOnceWith(true);
     expect(doubles.open.mock.calls).toEqual([["permissions"], ["usage"], ["models"]]);
     expect(setActionsOpen).toHaveBeenCalledExactlyOnceWith(true);
+    expect(doubles.control).not.toHaveBeenCalled();
+    expect(doubles.codexAction).not.toHaveBeenCalled();
+  });
+
+  it("opens an authorized bare model shortcut while a settings write still blocks dispatch", () => {
+    doubles.session.access = {
+      ...doubles.session.access!,
+      status: "approved",
+      device: { ...fullDevice, advancedControl: true },
+    };
+    doubles.session.canSend = false;
+    doubles.session.settingsOnlyBlocked = true;
+    doubles.open.mockReturnValue(true);
+    const { input, form } = renderComposer("/model");
+
+    fireEvent.submit(form);
+    expect(doubles.open).toHaveBeenCalledExactlyOnceWith("models");
+    expect(input).toHaveValue("");
+
+    fireEvent.change(input, { target: { value: "Edited during settings write" } });
+    expect(input).toHaveValue("Edited during settings write");
+    expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
+    fireEvent.submit(form);
     expect(doubles.control).not.toHaveBeenCalled();
     expect(doubles.codexAction).not.toHaveBeenCalled();
   });

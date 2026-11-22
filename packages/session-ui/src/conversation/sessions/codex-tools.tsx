@@ -1,37 +1,88 @@
-import { useSessionNavigate } from "./session-navigation";
-import { useEffect, useState, type ReactNode } from "react";
+import { subscribeSessionInvalidation } from "@agentkib/conversation-state";
 import {
   ApiError,
+  type Access,
+  type CodexOptions,
+  type CodexQueue,
+  type CodexSessionSettings,
+  type ConversationSessionSummary,
+  type Live,
   type SessionAction,
   type SessionActionBody,
-  type CodexQueue,
+  type SessionActionResult,
+  type SessionCapabilities,
+  type WebClient,
 } from "@agentkib/web-client";
-import { Button } from "@/components/ui/button";
-import { Disclosure, DisclosureSummary } from "@/components/ui/disclosure";
-import { Input } from "@/components/ui/input";
-import { Dialog } from "../../components/dialog";
-import { OperationDisclosure, OperationGroup, OperationRow } from "@agentkib/session-ui";
-import { useSession } from "./session-context";
-import { webLayoutCopy } from "@agentkib/session-ui";
-import { codexCopy, codexReason } from "./codex-copy";
-import { blockedWhileCompacting, contextUsageCopy } from "@agentkib/session-ui";
-import { subscribeSessionInvalidation } from "@agentkib/conversation-state";
+import { useEffect, useState, type ReactNode } from "react";
+import { ComposerModelPicker } from "../../composer-model-picker";
+import { contextUsageCopyForSurface } from "../../context-usage-copy";
+import type { InteractionLocale } from "../../interaction-model";
+import { useSessionPlatform } from "../../session-platform";
+import { codexCopyForSurface, codexReason } from "./codex-copy";
+import { composerLayoutCopy } from "./composer-layout-copy";
+import { OperationDisclosure, OperationGroup, OperationRow } from "./operation-layout";
+import { blockedWhileCompacting } from "./session-activity";
 import { sessionAgentCopy } from "./session-agent-copy";
+import { webLayoutCopy } from "./web-layout-copy";
 
-export function CodexTools({
-  open: controlledOpen,
-  onOpenChange,
-  showTrigger = true,
-  ownership,
-  shortcuts,
-}: {
+type ActionFields = Omit<
+  Partial<SessionActionBody>,
+  "requestId" | "bootId" | "sessionId" | "expectedRevision"
+>;
+
+export type CodexToolsProps = {
   open?: boolean;
   onOpenChange?: (value: boolean) => void;
   showTrigger?: boolean;
   ownership?: ReactNode;
   shortcuts?: ReactNode;
-} = {}) {
-  const session = useSession();
+};
+
+type CodexToolsSession = {
+  current?: ConversationSessionSummary;
+  selected: string;
+  client: WebClient;
+  capabilities?: SessionCapabilities;
+  codexAction(
+    action: SessionAction,
+    fields?: ActionFields,
+  ): Promise<SessionActionResult | undefined>;
+  busy: boolean;
+  online: boolean;
+  controlReady: boolean;
+  locale: InteractionLocale;
+  access?: Access | null;
+  live?: Live;
+  refresh(manual: boolean): Promise<unknown>;
+  settingsNotice?: {
+    status: "writing" | "uncertain" | "notDispatched";
+    reason?: string;
+  };
+  t: { notDispatched: string };
+};
+
+export function CodexTools({
+  session,
+  onNavigate,
+  open: controlledOpen,
+  onOpenChange,
+  showTrigger = true,
+  ownership,
+  shortcuts,
+}: CodexToolsProps & { session: CodexToolsSession; onNavigate(sessionId?: string): void }) {
+  const {
+    kind,
+    copy: { unavailableReason },
+    components: {
+      Button,
+      Input,
+      SessionDialog,
+      Disclosure,
+      DisclosureSummary,
+      touchTargetClassName,
+    },
+    controls: { restrictedModelControls },
+  } = useSessionPlatform();
   const {
     current,
     selected,
@@ -45,8 +96,11 @@ export function CodexTools({
     access,
     live,
     refresh,
+    settingsNotice,
+    t,
   } = session;
-  const copy = codexCopy[locale];
+  const copy = codexCopyForSurface(locale, kind);
+  const explainReason = (reason?: string) => codexReason(locale, reason, kind, unavailableReason);
   const agentCopy = sessionAgentCopy[locale];
   const isClaude = current?.agent === "claude-code";
   // DeepSeek Harness takes management actions here; its model is set from the composer and its
@@ -58,7 +112,9 @@ export function CodexTools({
       ["queue-list", "queue-add", "queue-resume", "queue-pause"].some(
         (key) => capabilities?.features[key as SessionAction | "queue-list"]?.available,
       ));
-  const navigate = useSessionNavigate();
+  const modelsInOperations = restrictedModelControls === "operation-panel";
+  const modelAccessMode = modelsInOperations ? access?.device?.accessMode : undefined;
+  const limitedSettings = modelsInOperations && !isClaude && !isDsh && modelAccessMode !== "full";
   const [context, setContext] = useState<unknown>();
   const [localOpen, setLocalOpen] = useState(false);
   const open = controlledOpen ?? localOpen;
@@ -68,6 +124,7 @@ export function CodexTools({
   }
   const layout = webLayoutCopy[locale];
   const [queue, setQueue] = useState<CodexQueue>();
+  const [options, setOptions] = useState<CodexOptions>();
   const [name, setName] = useState("");
   const [editing, setEditing] = useState("");
   const [text, setText] = useState("");
@@ -78,6 +135,7 @@ export function CodexTools({
   useEffect(() => {
     setContext(undefined);
     setQueue(undefined);
+    setOptions(undefined);
     setEditing("");
     setText("");
     setConfirmDelete(false);
@@ -128,6 +186,15 @@ export function CodexTools({
       }
     };
     void load();
+    if (limitedSettings)
+      void client
+        .request<CodexOptions>("managed/options", undefined, abort.signal)
+        .then((value) => {
+          if (!abort.signal.aborted) setOptions(value);
+        })
+        .catch(() => {
+          if (!abort.signal.aborted) setOptions(undefined);
+        });
     const unsubscribe = subscribeSessionInvalidation(client, (id, domains) => {
       if (
         (!id || id === selected) &&
@@ -145,10 +212,12 @@ export function CodexTools({
     client,
     access?.status,
     access?.device?.id,
+    modelAccessMode,
     revision,
     copy.queueTooLarge,
     copy.unavailableQueue,
     isClaude,
+    limitedSettings,
     queueReadable,
   ]);
   if (current?.agent !== "codex" && !isClaude && !isDsh) return null;
@@ -178,11 +247,12 @@ export function CodexTools({
     unarchive: copy.unarchive,
     delete: copy.delete,
     fork: copy.fork,
+    ...(modelsInOperations && { settings: copy.settings }),
     attachments: copy.attachment,
   };
   const reason = (action: SessionAction) =>
     live?.activity === "compacting" && blockedWhileCompacting(action)
-      ? contextUsageCopy[locale].compactingDetail
+      ? contextUsageCopyForSurface(locale, kind).compactingDetail
       : // Only quitting the other process frees the session for deletion.
         action === "delete" && capabilities?.features.delete?.reason === "codex-owner-busy"
         ? copy.deleteOwnerBusy
@@ -191,16 +261,9 @@ export function CodexTools({
               capabilities?.features.delete?.reason ?? "",
             )
           ? copy.deleteClaudeOwnerBusy
-          : codexReason(locale, capabilities?.features[action]?.reason || capabilities?.reason)
-              .text;
-  async function run(
-    action: SessionAction,
-    fields: Omit<
-      Partial<SessionActionBody>,
-      "requestId" | "bootId" | "sessionId" | "expectedRevision"
-    > = {},
-  ) {
-    if (!enabled(action)) return;
+          : explainReason(capabilities?.features[action]?.reason || capabilities?.reason).text;
+  async function run(action: SessionAction, fields: ActionFields = {}): Promise<boolean> {
+    if (!enabled(action)) return false;
     setOperation(true);
     try {
       const result = await codexAction(action, fields);
@@ -208,17 +271,18 @@ export function CodexTools({
         if (action === "inspect") setContext(result.context);
         if (action === "fork" && result.sessionId && result.sessionId !== selected) {
           setOpen(false);
-          void navigate({ to: "/sessions/$sessionId", params: { sessionId: result.sessionId } });
+          onNavigate(result.sessionId);
         }
         if (action === "archive" || action === "delete") {
           setConfirmDelete(false);
           setOpen(false);
-          void navigate({ to: "/sessions" });
+          onNavigate();
         }
         setEditing("");
         setText("");
         setRevision((n) => n + 1);
       }
+      return !!result;
     } finally {
       setOperation(false);
     }
@@ -235,6 +299,7 @@ export function CodexTools({
         type="button"
         variant="outline"
         size={size}
+        className={touchTargetClassName}
         disabled={!itemAvailable || !enabled(action)}
         title={enabled(action) ? undefined : reason(action)}
         onClick={() => void run(action, fields)}
@@ -253,6 +318,53 @@ export function CodexTools({
     queue?.data?.filter(
       (item) => item.status === "pending" || (!isClaude && item.status === undefined),
     ) ?? [];
+  // A follower write requires a fresh privileged settings read from the current owner.
+  const followerModelReadOnly =
+    live?.sessionId === selected && live.executionMode === "codex-follower";
+  const limitedModelWritable = enabled("settings") && !followerModelReadOnly;
+  const observedSettings =
+    live?.sessionId === selected && live.settings?.sessionId === selected
+      ? live.settings
+      : undefined;
+  const limitedModel: CodexSessionSettings | undefined =
+    limitedSettings && options?.available
+      ? {
+          sessionId: selected,
+          revision: live?.revision ?? 0,
+          available: true,
+          current: observedSettings?.current ?? {
+            modelId: live?.sessionId === selected ? live.model : undefined,
+          },
+          selected: observedSettings?.selected,
+          defaults: {},
+          writable: {
+            model: { available: limitedModelWritable },
+            effort: { available: limitedModelWritable },
+            mode: { available: false },
+            serviceTier: { available: false },
+            policy: { available: false },
+            restoreDefaults: { available: false },
+          },
+          options: {
+            models: (options.models ?? []).map((model) => ({
+              ...model,
+              efforts: model.efforts ?? [],
+              serviceTierIds: [],
+            })),
+            serviceTiers: [],
+            policies: [],
+          },
+        }
+      : undefined;
+  const settingsStatus = limitedSettings
+    ? settingsNotice?.status === "uncertain"
+      ? composerLayoutCopy[locale].settingsUnknown
+      : settingsNotice?.status === "notDispatched"
+        ? settingsNotice.reason
+          ? explainReason(settingsNotice.reason).text
+          : t.notDispatched
+        : undefined
+    : undefined;
   return (
     <>
       {showTrigger && (
@@ -261,7 +373,7 @@ export function CodexTools({
         </Button>
       )}
       {open && (
-        <Dialog
+        <SessionDialog
           panel
           title={layout.actions}
           closeLabel={copy.close}
@@ -271,14 +383,20 @@ export function CodexTools({
           {shortcuts}
 
           <OperationGroup title={layout.management}>
-            <OperationRow>
-              <label className="flex min-w-0 flex-1 items-center gap-3">
+            <OperationRow className={kind === "web" ? "flex-wrap" : undefined}>
+              <label
+                className={
+                  kind === "web"
+                    ? "flex min-w-0 flex-1 basis-56 items-center gap-3"
+                    : "flex min-w-0 flex-1 items-center gap-3"
+                }
+              >
                 <span className="shrink-0 text-muted-foreground">{copy.name}</span>
                 <Input value={name} maxLength={200} onChange={(e) => setName(e.target.value)} />
               </label>
               <Button
                 variant="outline"
-                className="h-8"
+                className={kind === "web" ? touchTargetClassName : "h-8"}
                 disabled={!enabled("rename") || !name.trim()}
                 title={enabled("rename") ? undefined : reason("rename")}
                 onClick={() => void run("rename", { name: name.trim() })}
@@ -303,6 +421,7 @@ export function CodexTools({
                     <Button
                       type="button"
                       variant="outline"
+                      className={touchTargetClassName}
                       disabled={!enabled("delete") || confirmDelete}
                       title={enabled("delete") ? undefined : reason("delete")}
                       onClick={() => setConfirmDelete(true)}
@@ -331,6 +450,7 @@ export function CodexTools({
                     <Button
                       type="button"
                       variant="destructive"
+                      className={touchTargetClassName}
                       disabled={!enabled("delete")}
                       onClick={() => void run("delete")}
                     >
@@ -339,6 +459,7 @@ export function CodexTools({
                     <Button
                       type="button"
                       variant="outline"
+                      className={touchTargetClassName}
                       disabled={operation}
                       onClick={() => setConfirmDelete(false)}
                     >
@@ -350,6 +471,30 @@ export function CodexTools({
             )}
           </OperationGroup>
           {isClaude && ownership}
+          {limitedSettings && (
+            <OperationGroup title={copy.settings}>
+              <OperationRow className="flex-wrap">
+                <ComposerModelPicker
+                  locale={locale}
+                  settings={limitedModel}
+                  selection={limitedModel?.selected ?? limitedModel?.current}
+                  disabled={!limitedModelWritable}
+                  readOnly={followerModelReadOnly}
+                  saving={operation}
+                  side="bottom"
+                  onOpen={() => {}}
+                  onChange={(change) =>
+                    limitedModelWritable ? run("settings", change) : Promise.resolve(false)
+                  }
+                />
+              </OperationRow>
+              {settingsStatus && (
+                <p role="status" className="text-xs text-muted-foreground">
+                  {settingsStatus}
+                </p>
+              )}
+            </OperationGroup>
+          )}
           {queueReadable && (queue || queueError) && (
             <OperationGroup title={isClaude ? agentCopy.queue : copy.queue}>
               {isClaude &&
@@ -396,6 +541,7 @@ export function CodexTools({
                       <Button
                         size="sm"
                         variant="outline"
+                        className={touchTargetClassName}
                         disabled={
                           !enabled("queue-update") ||
                           !editable ||
@@ -443,7 +589,7 @@ export function CodexTools({
               <h3>{copy.capabilities}</h3>
               <p className="break-words text-xs text-muted-foreground">
                 {capabilities
-                  ? `${capabilities.status}${capabilities.reason ? ` · ${codexReason(locale, capabilities.reason).text}` : ""}`
+                  ? `${capabilities.status}${capabilities.reason ? ` · ${explainReason(capabilities.reason).text}` : ""}`
                   : copy.unavailable}
               </p>
             </div>
@@ -454,22 +600,26 @@ export function CodexTools({
                     !feature?.available &&
                     (isClaude || !["resume", "queue-start"].includes(action)),
                 )
-                .map(([action, feature]) => (
-                  <li key={action}>
-                    {actionLabels[action] ?? action}: {codexReason(locale, feature?.reason).text}
-                    {codexReason(locale, feature?.reason).technical && (
-                      <Disclosure>
-                        <DisclosureSummary>{copy.context}</DisclosureSummary>
-                        <code className="break-all">{feature?.reason}</code>
-                      </Disclosure>
-                    )}
-                  </li>
-                ))}
+                .map(([action, feature]) => {
+                  const explanation = explainReason(feature?.reason);
+                  return (
+                    <li key={action}>
+                      {actionLabels[action] ?? action}: {explanation.text}
+                      {explanation.technical && (
+                        <Disclosure>
+                          <DisclosureSummary>{copy.context}</DisclosureSummary>
+                          <code className="break-all">{feature?.reason}</code>
+                        </Disclosure>
+                      )}
+                    </li>
+                  );
+                })}
             </ul>
             <div className="flex flex-wrap items-start gap-2">
               <Button
                 variant="outline"
                 size="sm"
+                className={touchTargetClassName}
                 disabled={busy}
                 onClick={() => {
                   setRevision((n) => n + 1);
@@ -486,7 +636,7 @@ export function CodexTools({
               </pre>
             )}
           </OperationDisclosure>
-        </Dialog>
+        </SessionDialog>
       )}
     </>
   );

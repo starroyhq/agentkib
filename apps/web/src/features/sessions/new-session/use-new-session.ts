@@ -26,7 +26,7 @@ import {
   type PendingControl,
 } from "@agentkib/session-ui";
 import { useSession } from "@/features/conversation/features/sessions/session-context";
-import { codexReason } from "@/features/conversation/features/sessions/codex-copy";
+import { codexReason } from "@/features/conversation/codex-copy";
 import { managedErrorCopyForSurface } from "@/features/conversation/features/sessions/managed-error-copy";
 import { subscribeSessionInvalidation } from "@agentkib/conversation-state";
 import type { Locale } from "@/features/conversation/i18n";

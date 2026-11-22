@@ -3,20 +3,21 @@ import {
   SessionReader as SharedSessionReader,
   SessionTranscript,
   useSessionImageLoader,
+  useBasicSendQueue,
 } from "@agentkib/session-ui";
-import { codexCopyForSurface, codexReason } from "./codex-copy";
+import { codexCopyForSurface, codexReason } from "../../codex-copy";
 import { claudeComposerNotice, claudeSessionBanner } from "./claude-session-banner";
 import { WebSessionOperations } from "./web-session-operations";
-import { SessionComposer } from "./session-composer";
+import { SessionComposer } from "../../web-session-composer";
 import { useSessionPanels } from "./session-panels";
 import { useSession } from "./session-context";
-import { ContextUsageGauge } from "./context-usage";
-import { basicSendQueue } from "./dsh-queue";
+import { ContextUsageGauge } from "../../context-usage";
 import { webSessionImages } from "../../web-session-images";
 
 export function SessionReader() {
   const session = useSession();
   const panels = useSessionPanels();
+  const queue = useBasicSendQueue(session);
   const { client, access, selected, locale, current, indexEnabled, imageRequestVersion } = session;
   const imageLoader = useSessionImageLoader({
     images: webSessionImages,
@@ -37,7 +38,7 @@ export function SessionReader() {
       banner={banner}
       composerBanner={claudeComposerNotice(banner)}
       imageLoader={imageLoader}
-      queue={basicSendQueue(session)}
+      queue={queue}
       Transcript={SessionTranscript}
       Operations={WebSessionOperations}
       Composer={SessionComposer}

@@ -1,3 +1,5 @@
+import { CodexTools as SharedCodexTools, type CodexToolsProps } from "@agentkib/session-ui";
+import { useSessionNavigate } from "./session-navigation";
 import { CLAUDE_BRIDGE_CLI_VERSION } from "@agentkib/runtime-protocol";
 import {
   ClaudeBackgroundSetting,
@@ -6,7 +8,7 @@ import {
   SessionOperations,
 } from "@agentkib/session-ui";
 import { useEffect, useState } from "react";
-import { CodexTools } from "./codex-tools";
+
 import { desktopProjectAgentClient } from "./project-agent-adapter";
 import { useSession } from "./session-context";
 import { useSessionPanels } from "./session-panels";
@@ -60,5 +62,21 @@ export function DesktopSessionOperations({
         />
       )}
     </>
+  );
+}
+
+export function CodexTools(props: CodexToolsProps) {
+  const session = useSession();
+  const navigate = useSessionNavigate();
+  return (
+    <SharedCodexTools
+      {...props}
+      session={session}
+      onNavigate={(sessionId) => {
+        void (sessionId
+          ? navigate({ to: "/sessions/$sessionId", params: { sessionId } })
+          : navigate({ to: "/sessions" }));
+      }}
+    />
   );
 }

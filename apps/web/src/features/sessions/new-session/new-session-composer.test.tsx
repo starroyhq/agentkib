@@ -17,7 +17,7 @@ import {
   planModeCopy,
   takeNewSessionDraft,
 } from "@agentkib/session-ui";
-import { composerLayoutCopy } from "@/features/conversation/features/sessions/composer-layout-copy";
+import { composerLayoutCopy } from "@agentkib/session-ui";
 import { publishSessionInvalidation } from "@agentkib/conversation-state";
 import { NewSessionComposer } from "./new-session-composer";
 

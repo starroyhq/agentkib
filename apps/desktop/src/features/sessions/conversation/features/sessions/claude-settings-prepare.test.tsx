@@ -2,7 +2,8 @@
 import "@testing-library/jest-dom/vitest";
 import { permissionModeCopy } from "@agentkib/session-ui";
 import { createRef, type RefObject } from "react";
-import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { render } from "@/features/sessions/conversation/desktop-reader-test-utils";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   ApiError,
@@ -12,10 +13,10 @@ import {
   type CodexGoalState,
   type CodexSessionSettings,
 } from "@agentkib/web-client";
-import { CodexComposerControls, type ComposerControlsHandle } from "./codex-session-controls";
+import { CodexComposerControls, type ComposerControlsHandle } from "@agentkib/session-ui";
 import { useSession } from "./session-context";
-import { sessionAgentCopy } from "./session-agent-copy";
-import { codexCopy } from "./codex-copy";
+import { sessionAgentCopy } from "@agentkib/session-ui";
+import { codexCopy } from "../../codex-copy";
 import {
   composerGoalCopy,
   composerModelCopy,
@@ -24,11 +25,11 @@ import {
   newSessionCopy,
   planModeCopy,
 } from "@agentkib/session-ui";
-import { SessionComposer } from "./session-composer";
+import { SessionComposer } from "@/features/sessions/conversation/desktop-session-composer";
 
 vi.mock("./session-context", () => ({ useSession: vi.fn() }));
 let state: ReturnType<typeof useSession>;
-let props: Parameters<typeof CodexComposerControls>[0];
+let props: Omit<Parameters<typeof CodexComposerControls>[0], "session">;
 function settings(id = "session"): CodexSessionSettings {
   return {
     sessionId: id,
@@ -163,7 +164,7 @@ describe("Claude's model in the composer", () => {
         ],
       },
     }));
-    render(<CodexComposerControls {...props} />);
+    render(<CodexComposerControls session={state} {...props} />);
     // The settings button names no model; the composer's model control does.
     const trigger = await screen.findByRole("button", {
       name: `${picker.chooseEffort}: Claude session`,
@@ -193,7 +194,7 @@ describe("Claude's plan mode in the composer", () => {
     vi.mocked(state.codexAction).mockResolvedValue({ accepted: true } as unknown as Awaited<
       ReturnType<typeof state.codexAction>
     >);
-    render(<CodexComposerControls {...props} />);
+    render(<CodexComposerControls session={state} {...props} />);
     const addLabel = codexCopy["en-US"].addContext;
     fireEvent.click(await screen.findByRole("button", { name: addLabel }));
     const add = within(await screen.findByRole("dialog", { name: addLabel }));
@@ -213,7 +214,7 @@ it("keeps a local goal draft separate from a native read that later loses its gr
   const read = deferred<CodexGoalState>();
   state.client.sessionGoals = vi.fn(() => read.promise);
   const onStageGoal = vi.fn();
-  const controls = <CodexComposerControls {...props} onStageGoal={onStageGoal} />;
+  const controls = <CodexComposerControls session={state} {...props} onStageGoal={onStageGoal} />;
   const { rerender } = render(controls);
 
   fireEvent.click(screen.getByRole("button", { name: codexCopy["en-US"].addContext }));
@@ -225,7 +226,7 @@ it("keeps a local goal draft separate from a native read that later loses its gr
     ...state.capabilities,
     features: { ...draftGrant, goal: { available: true } },
   };
-  rerender(<CodexComposerControls {...props} onStageGoal={onStageGoal} />);
+  rerender(<CodexComposerControls session={state} {...props} onStageGoal={onStageGoal} />);
   await waitFor(() => expect(state.client.sessionGoals).toHaveBeenCalled());
   await act(async () =>
     read.resolve({
@@ -242,13 +243,14 @@ it("keeps a local goal draft separate from a native read that later loses its gr
     }),
   );
   state.capabilities = { ...state.capabilities, features: draftGrant };
-  rerender(<CodexComposerControls {...props} onStageGoal={onStageGoal} />);
+  rerender(<CodexComposerControls session={state} {...props} onStageGoal={onStageGoal} />);
   expect(field).toHaveValue("");
   expect(dialog.getByRole("button", { name: saveDraft })).toBeDisabled();
   expect(onStageGoal).not.toHaveBeenCalled();
 });
 
 it("stages a goal without a native operation until an imported Claude conversation sends and becomes idle", async () => {
+  vi.mocked(useSession).mockImplementation(() => ({ ...state }));
   const copy = codexCopy["en-US"];
   const goalCopy = composerGoalCopy("en-US");
   state.access = {
@@ -350,7 +352,7 @@ describe("Claude settings preparation", () => {
       options: { ...cold.options, models: [] },
     });
 
-    const view = render(<CodexComposerControls {...props} />);
+    const view = render(<CodexComposerControls session={state} {...props} />);
     const trigger = await screen.findByRole("button", {
       name: /下輪設定 Opus · 最高.*上次使用 claude-opus-5-5/,
     });
@@ -363,7 +365,7 @@ describe("Claude settings preparation", () => {
       ...state.access,
       device: { ...state.access.device!, advancedControl: false },
     };
-    view.rerender(<CodexComposerControls {...props} />);
+    view.rerender(<CodexComposerControls session={state} {...props} />);
     expect(screen.queryByText("上次使用 claude-opus-5-5")).not.toBeInTheDocument();
     expect(screen.queryByText("下輪設定 Opus · 最高")).not.toBeInTheDocument();
   });
@@ -391,7 +393,7 @@ describe("Claude settings preparation", () => {
     const pendingGoals = new Promise<Goals>(() => {});
     state.client.sessionGoals = vi.fn(() => pendingGoals);
 
-    render(<CodexComposerControls {...props} />);
+    render(<CodexComposerControls session={state} {...props} />);
     await waitFor(() => expect(state.client.sessionGoals).toHaveBeenCalled());
     expect(
       await screen.findByRole("button", { name: "Select reasoning effort: opus · Maximum" }),
@@ -412,7 +414,7 @@ describe("Claude settings preparation", () => {
       capabilities: undefined,
     };
     const picker = composerModelCopy["en-US"];
-    const { rerender } = render(<CodexComposerControls {...props} />);
+    const { rerender } = render(<CodexComposerControls session={state} {...props} />);
     const model = screen.getByRole("button", { name: picker.modelSettings });
     const permissions = screen.getByRole("button", { name: sessionAgentCopy["en-US"].permission });
     expect(model).toBeEnabled();
@@ -425,7 +427,7 @@ describe("Claude settings preparation", () => {
     expect(state.codexAction).not.toHaveBeenCalled();
 
     state = { ...state, capabilities };
-    rerender(<CodexComposerControls {...props} />);
+    rerender(<CodexComposerControls session={state} {...props} />);
     expect(
       await screen.findByRole("button", { name: /^Select reasoning effort: Claude session/ }),
     ).toBeEnabled();
@@ -443,7 +445,7 @@ describe("Claude settings preparation", () => {
     });
     const catalog = deferred();
     vi.mocked(state.client.prepareSessionSettings).mockReturnValueOnce(catalog.promise);
-    render(<CodexComposerControls {...props} />);
+    render(<CodexComposerControls session={state} {...props} />);
     await waitFor(() => expect(state.client.sessionSettings).toHaveBeenCalled());
     fireEvent.click(await screen.findByRole("button", { name: /^Select reasoning effort: model/ }));
     const overview = await screen.findByRole("dialog");
@@ -468,7 +470,7 @@ describe("Claude settings preparation", () => {
       ...settings(),
       provider: sessionProviderCapabilities("claude-code"),
     });
-    render(<CodexComposerControls {...props} />);
+    render(<CodexComposerControls session={state} {...props} />);
     fireEvent.click(
       await screen.findByRole("button", { name: `${picker.chooseEffort}: Claude session · Low` }),
     );
@@ -488,7 +490,7 @@ describe("Claude settings preparation", () => {
       vi.mocked(state.client.prepareSessionSettings).mockResolvedValue(value);
       const copy = codexCopy[locale];
       const picker = composerModelCopy[locale];
-      render(<CodexComposerControls {...props} />);
+      render(<CodexComposerControls session={state} {...props} />);
       expect(screen.getByRole("button", { name: picker.modelSettings })).toBeInTheDocument();
       fireEvent.click(await permissionTrigger(locale));
       const panel = await screen.findByRole("menu");
@@ -520,7 +522,7 @@ describe("Claude settings preparation", () => {
         name: id,
       }));
       vi.mocked(state.client.sessionSettings).mockResolvedValue(value);
-      render(<CodexComposerControls {...props} />);
+      render(<CodexComposerControls session={state} {...props} />);
       fireEvent.click(
         await screen.findByRole("button", {
           name: sessionAgentCopy[locale].permission,
@@ -549,12 +551,12 @@ describe("Claude settings preparation", () => {
       });
       const pending = deferred();
       vi.mocked(state.client.prepareSessionSettings).mockReturnValueOnce(pending.promise);
-      const view = render(<CodexComposerControls {...props} />);
+      const view = render(<CodexComposerControls session={state} {...props} />);
       await openColdPermissions();
       const permission = await screen.findByRole("menuitem", { name: /^Manual approval/ });
       expect(permission).toHaveAttribute("aria-disabled", "true");
       state = { ...state, usageEpoch: "observation-b" };
-      view.rerender(<CodexComposerControls {...props} />);
+      view.rerender(<CodexComposerControls session={state} {...props} />);
       await waitFor(() => expect(state.client.sessionSettings).toHaveBeenCalledTimes(2));
       await act(async () => {
         if (outcome === "resolve")
@@ -583,7 +585,7 @@ describe("Claude settings preparation", () => {
       vi.mocked(state.client.prepareSessionSettings)
         .mockReturnValueOnce(old.promise)
         .mockReturnValueOnce(next.promise);
-      const view = render(<CodexComposerControls {...props} />);
+      const view = render(<CodexComposerControls session={state} {...props} />);
       await openColdPermissions();
       if (scope === "session") {
         state = {
@@ -599,7 +601,7 @@ describe("Claude settings preparation", () => {
           access: { ...state.access!, device: { ...state.access!.device!, id: "next-device" } },
         };
       }
-      view.rerender(<CodexComposerControls {...props} />);
+      view.rerender(<CodexComposerControls session={state} {...props} />);
       await openColdPermissions();
       expect(state.client.prepareSessionSettings).toHaveBeenCalledTimes(2);
       await act(async () => old.resolve(settings()));
@@ -616,7 +618,7 @@ describe("Claude settings preparation", () => {
 });
 
 describe("opening the composer's dialogs for a bare command", () => {
-  const open = (ref: RefObject<ComposerControlsHandle | null>, dialog: "settings" | "goal") => {
+  const open = (ref: RefObject<ComposerControlsHandle | null>, dialog: "permissions" | "goal") => {
     let opened: boolean | undefined;
     act(() => {
       opened = ref.current!.open(dialog);
@@ -626,10 +628,10 @@ describe("opening the composer's dialogs for a bare command", () => {
 
   it("opens the settings, and declines the goal this device cannot read", async () => {
     const ref = createRef<ComposerControlsHandle>();
-    render(<CodexComposerControls {...props} controlsRef={ref} />);
+    render(<CodexComposerControls session={state} {...props} controlsRef={ref} />);
     expect(open(ref, "goal")).toBe(false);
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
-    expect(open(ref, "settings")).toBe(true);
+    expect(open(ref, "permissions")).toBe(true);
     expect(await screen.findByRole("menu")).toBeVisible();
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     expect(state.client.prepareSessionSettings).toHaveBeenCalledTimes(1);
@@ -637,13 +639,15 @@ describe("opening the composer's dialogs for a bare command", () => {
 
   it("declines while the composer is disabled or the device lacks full access", () => {
     const ref = createRef<ComposerControlsHandle>();
-    const view = render(<CodexComposerControls {...props} disabled controlsRef={ref} />);
-    expect(open(ref, "settings")).toBe(false);
+    const view = render(
+      <CodexComposerControls session={state} {...props} disabled controlsRef={ref} />,
+    );
+    expect(open(ref, "permissions")).toBe(false);
     view.unmount();
     state.access = { bootId: "boot", device: { id: "device" } } as typeof state.access;
     const partial = createRef<ComposerControlsHandle>();
-    render(<CodexComposerControls {...props} controlsRef={partial} />);
-    expect(open(partial, "settings")).toBe(false);
+    render(<CodexComposerControls session={state} {...props} controlsRef={partial} />);
+    expect(open(partial, "permissions")).toBe(false);
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     expect(state.client.prepareSessionSettings).not.toHaveBeenCalled();
   });
@@ -658,7 +662,7 @@ describe("Claude settings rejection", () => {
     async (reason, text) => {
       state.notice = "notDispatched";
       state.noticeReason = reason;
-      render(<CodexComposerControls {...props} />);
+      render(<CodexComposerControls session={state} {...props} />);
       expect(await screen.findByText(text)).toBeVisible();
       fireEvent.click(screen.getByRole("button", { name: "Change model" }));
       const picker = composerModelCopy["en-US"];
@@ -681,13 +685,14 @@ describe("Claude settings rejection", () => {
     (reason) => {
       state.notice = "notDispatched";
       state.noticeReason = reason;
-      render(<CodexComposerControls {...props} />);
+      render(<CodexComposerControls session={state} {...props} />);
       expect(screen.queryByRole("button", { name: "Change model" })).not.toBeInTheDocument();
     },
   );
 });
 
 it("prepares an external owner's draft without enabling native sends or reusing its capabilities", async () => {
+  vi.mocked(useSession).mockImplementation(() => ({ ...state }));
   const copy = codexCopy["en-US"];
   const goalCopy = composerGoalCopy("en-US");
   state.access = {
@@ -876,7 +881,7 @@ it("tracks the original terminal's model picker across reopening and unlocks whe
   vi.mocked(state.client.sessionSettings).mockResolvedValue(reported);
   const dispatch = deferred<Awaited<ReturnType<typeof state.codexAction>>>();
   vi.mocked(state.codexAction).mockReturnValue(dispatch.promise);
-  const view = render(<CodexComposerControls {...props} />);
+  const view = render(<CodexComposerControls session={state} {...props} />);
   const model = await screen.findByRole("button", { name: /^Model: Claude session/ });
   const { openTerminalModel, chooseInTerminal } = composerModelCopy["en-US"];
   fireEvent.click(model);
@@ -899,7 +904,7 @@ it("tracks the original terminal's model picker across reopening and unlocks whe
     ...capabilities,
     features: { ...capabilities.features, "open-model-picker": { available: false } },
   };
-  view.rerender(<CodexComposerControls {...props} />);
+  view.rerender(<CodexComposerControls session={state} {...props} />);
   expect(open).toBeDisabled();
   expect(dialog.getByText(chooseInTerminal)).toBeVisible();
   fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape" });
@@ -911,7 +916,7 @@ it("tracks the original terminal's model picker across reopening and unlocks whe
 
   state.live = idle;
   state.capabilities = capabilities;
-  view.rerender(<CodexComposerControls {...props} />);
+  view.rerender(<CodexComposerControls session={state} {...props} />);
   expect(reopened.queryByText(chooseInTerminal)).not.toBeInTheDocument();
   expect(reopened.getByRole("button", { name: openTerminalModel })).toBeEnabled();
   expect(state.codexAction).toHaveBeenCalledOnce();
@@ -944,7 +949,7 @@ it("keeps cached controls visible across an executor change and browses without 
     ],
   };
   state.client.sessionResources = vi.fn(async () => context);
-  const { rerender } = render(<CodexComposerControls {...props} />);
+  const { rerender } = render(<CodexComposerControls session={state} {...props} />);
   const modelName = /^Select reasoning effort: Claude session/;
   await screen.findByRole("button", { name: modelName });
   state = {
@@ -952,7 +957,7 @@ it("keeps cached controls visible across an executor change and browses without 
     live: { ...state.live!, executionMode: "claude-follower", connectionGeneration: "second" },
     capabilities: undefined,
   };
-  rerender(<CodexComposerControls {...props} />);
+  rerender(<CodexComposerControls session={state} {...props} />);
   expect(screen.getByRole("button", { name: modelName })).toBeEnabled();
   fireEvent.click(await permissionTrigger());
   const menu = await screen.findByRole("menu");
@@ -973,7 +978,7 @@ it("keeps cached controls visible across an executor change and browses without 
       },
     } as typeof state.capabilities,
   };
-  rerender(<CodexComposerControls {...props} />);
+  rerender(<CodexComposerControls session={state} {...props} />);
   await waitFor(() => expect(read).toHaveBeenCalledTimes(2));
   expect(screen.getByRole("button", { name: /^Model: Claude session/ })).toBeVisible();
   const value = settings();
@@ -1073,7 +1078,7 @@ it.each([
       options: { ...settings().options, permissionModes: [] },
       writable: { ...settings().writable, permissionMode: { available: false } },
     });
-    const view = render(<CodexComposerControls {...props} />);
+    const view = render(<CodexComposerControls session={state} {...props} />);
     const trigger = await screen.findByRole("button", { name: title + ": " + label });
     expect(screen.queryByText(permissionModeCopy[locale].auto)).not.toBeInTheDocument();
     fireEvent.click(trigger);
@@ -1082,14 +1087,14 @@ it.each([
     expect(screen.queryByRole("menuitem", { name: label })).not.toBeInTheDocument();
     fireEvent.keyDown(screen.getByRole("menu"), { key: "Escape" });
     state.live = { ...state.live!, permission: { mode: "default" } };
-    view.rerender(<CodexComposerControls {...props} />);
+    view.rerender(<CodexComposerControls session={state} {...props} />);
     const manual = newSessionCopy(locale).permissions["claude-code"].choices.default;
     expect(await screen.findByRole("button", { name: title + ": " + manual.name })).toBeVisible();
     state.capabilities = {
       sessionId: "session",
       features: { "settings-state": { available: false, reason: "permission_denied" } },
     } as typeof state.capabilities;
-    view.rerender(<CodexComposerControls {...props} />);
+    view.rerender(<CodexComposerControls session={state} {...props} />);
     expect(
       screen.queryByRole("button", { name: title + ": " + manual.name }),
     ).not.toBeInTheDocument();
@@ -1131,7 +1136,7 @@ it.each(["observation", "late-read", "access-denied", "uncertain-receipt"] as co
     if (race === "late-read" || race === "access-denied")
       vi.mocked(state.client.sessionSettings).mockReturnValueOnce(passive.promise);
     vi.mocked(state.client.prepareSessionSettings).mockReturnValueOnce(probe.promise);
-    const view = render(<CodexComposerControls {...props} />);
+    const view = render(<CodexComposerControls session={state} {...props} />);
     await waitFor(() => expect(state.client.sessionSettings).toHaveBeenCalled());
     fireEvent.click(screen.getByRole("button", { name: composerModelCopy["en-US"].modelSettings }));
     const overview = await screen.findByRole("dialog");
@@ -1145,7 +1150,7 @@ it.each(["observation", "late-read", "access-denied", "uncertain-receipt"] as co
     );
     if (race === "observation") {
       state = { ...state, usageEpoch: "new-observation" };
-      view.rerender(<CodexComposerControls {...props} />);
+      view.rerender(<CodexComposerControls session={state} {...props} />);
       await waitFor(() => expect(state.client.sessionSettings).toHaveBeenCalledTimes(2));
       expect(screen.getByRole("dialog", { name: composerModelCopy["en-US"].model })).toBeVisible();
     }
@@ -1153,7 +1158,7 @@ it.each(["observation", "late-read", "access-denied", "uncertain-receipt"] as co
       await act(async () => passive.reject(new ApiError(403, "advanced-control-required")));
     if (race === "uncertain-receipt") {
       state = { ...state, notice: "uncertain" };
-      view.rerender(<CodexComposerControls {...props} />);
+      view.rerender(<CodexComposerControls session={state} {...props} />);
     }
     await act(async () => probe.resolve(prepared));
     if (race === "late-read") await act(async () => passive.resolve(cold));
@@ -1177,7 +1182,7 @@ it("reuses writable settings in both menus while rechecking them in the backgrou
   vi.mocked(state.client.sessionSettings)
     .mockResolvedValueOnce(settings())
     .mockReturnValue(pendingRead.promise);
-  render(<CodexComposerControls {...props} />);
+  render(<CodexComposerControls session={state} {...props} />);
   fireEvent.click(
     await screen.findByRole("button", { name: "Select reasoning effort: Claude session · Low" }),
   );
@@ -1230,7 +1235,7 @@ it("retains the effort scale during an unresolved request and drops it on access
     writable: { ...loaded.writable, model: { available: false }, effort: { available: false } },
   };
   vi.mocked(state.client.sessionSettings).mockResolvedValue(loaded);
-  const view = render(<CodexComposerControls {...props} />);
+  const view = render(<CodexComposerControls session={state} {...props} />);
   fireEvent.click(
     await screen.findByRole("button", { name: "Select reasoning effort: Claude session · Low" }),
   );
@@ -1244,7 +1249,7 @@ it("retains the effort scale during an unresolved request and drops it on access
     usageEpoch: "observation-b",
     live: { ...state.live!, revision: 2 },
   };
-  view.rerender(<CodexComposerControls {...props} />);
+  view.rerender(<CodexComposerControls session={state} {...props} />);
   await waitFor(() => {
     const slider = within(popup).getByRole("slider");
     expect(slider).toBeDisabled();
@@ -1264,11 +1269,11 @@ it("retains the effort scale during an unresolved request and drops it on access
       },
     },
   };
-  view.rerender(<CodexComposerControls {...props} />);
+  view.rerender(<CodexComposerControls session={state} {...props} />);
   expect(screen.queryByRole("slider")).not.toBeInTheDocument();
 
   state = { ...state, capabilities: granted, notice: undefined };
-  view.rerender(<CodexComposerControls {...props} />);
+  view.rerender(<CodexComposerControls session={state} {...props} />);
   fireEvent.click(
     await screen.findByRole("button", { name: /^Select reasoning effort: (Claude session|model)/ }),
   );
@@ -1324,7 +1329,7 @@ it.each(["history", "cache", "defaults", "explicit", "uncertain"] as const)(
       });
     if (source === "uncertain") state.notice = "uncertain";
     vi.mocked(state.client.sessionSettings).mockResolvedValue(value);
-    render(<CodexComposerControls {...props} />);
+    render(<CodexComposerControls session={state} {...props} />);
     const name =
       source === "explicit"
         ? "Claude session"

@@ -3,7 +3,7 @@ import type { Live } from "@agentkib/web-client";
 import { usageLimitNotice, type SessionSurface } from "@agentkib/session-ui";
 import { Button } from "@/components/ui/button";
 import type { SupportedLocale as Locale } from "@/core/types";
-import { codexReason } from "./codex-copy";
+import { codexReason } from "../../codex-copy";
 
 type Retry = NonNullable<Live["apiRetry"]>;
 type Agent = "Claude Code" | "Codex";

@@ -8,7 +8,7 @@ import { ApiError } from "@agentkib/web-client";
 import { initializeI18n } from "@/core/i18n";
 import { AppDialogProvider } from "@/components/AppDialogProvider";
 import type { ConversationSessionSummary } from "@/core/types";
-import { codexCopy, codexReason } from "./conversation/features/sessions/codex-copy";
+import { codexCopy, codexReason } from "./conversation/codex-copy";
 import { SessionRowMenu } from "./SessionRowMenu";
 import { SessionWorkerAssignmentDialog } from "./SessionWorkerAssignmentDialog";
 

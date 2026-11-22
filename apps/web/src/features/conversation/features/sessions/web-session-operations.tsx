@@ -1,5 +1,7 @@
+import { CodexTools as SharedCodexTools, type CodexToolsProps } from "@agentkib/session-ui";
+import { useSessionNavigate } from "./session-navigation";
 import { SessionOperations } from "@agentkib/session-ui";
-import { CodexTools } from "./codex-tools";
+
 import { useSession } from "./session-context";
 import { SessionReceiptRecovery } from "./session-receipt-recovery";
 
@@ -19,6 +21,22 @@ export function WebSessionOperations({
       projectAgentClient={session.client}
       ExecutionControls={CodexTools}
       ReceiptRecovery={SessionReceiptRecovery}
+    />
+  );
+}
+
+export function CodexTools(props: CodexToolsProps) {
+  const session = useSession();
+  const navigate = useSessionNavigate();
+  return (
+    <SharedCodexTools
+      {...props}
+      session={session}
+      onNavigate={(sessionId) => {
+        void (sessionId
+          ? navigate({ to: "/sessions/$sessionId", params: { sessionId } })
+          : navigate({ to: "/sessions" }));
+      }}
     />
   );
 }

@@ -2,7 +2,8 @@
 import "@testing-library/jest-dom/vitest";
 import { composerAddCopy } from "@agentkib/session-ui";
 import { useEffect } from "react";
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { render } from "@/features/sessions/conversation/desktop-reader-test-utils";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   WebClient,
@@ -12,9 +13,9 @@ import {
   type UploadedAttachment,
 } from "@agentkib/web-client";
 import { SessionProvider, useSession } from "./session-context";
-import { SessionComposer } from "./session-composer";
-import { codexCopy } from "./codex-copy";
-import { composerLayoutCopy } from "./composer-layout-copy";
+import { SessionComposer } from "@/features/sessions/conversation/desktop-session-composer";
+import { codexCopy } from "../../codex-copy";
+import { composerLayoutCopy } from "@agentkib/session-ui";
 import { managedControlCopy } from "./managed-control-copy";
 
 vi.mock("@tanstack/react-router", () => ({ useNavigate: () => vi.fn() }));

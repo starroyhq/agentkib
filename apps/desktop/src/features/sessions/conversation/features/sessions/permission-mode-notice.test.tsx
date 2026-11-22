@@ -1,9 +1,13 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
-import { PermissionModeNotice } from "./permission-mode-notice";
-import { permissionModeCopy, permissionModeSummaryCopy } from "@agentkib/session-ui";
+import { render } from "../../desktop-reader-test-utils";
+import {
+  PermissionModeNotice,
+  permissionModeCopy,
+  permissionModeSummaryCopy,
+} from "@agentkib/session-ui";
 
 describe("compact Claude permission notice", () => {
   afterEach(cleanup);

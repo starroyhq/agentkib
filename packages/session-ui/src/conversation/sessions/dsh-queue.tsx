@@ -8,28 +8,59 @@ import {
   Pencil,
   Trash2,
 } from "lucide-react";
-import { ApiError, type SessionQueue } from "@agentkib/web-client";
 import {
-  sessionQueuePanel,
-  type SessionQueuePanelAgent,
-  retryBusyRead,
-} from "@agentkib/session-ui";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
-import { useSession } from "./session-context";
+  ApiError,
+  type Access,
+  type ConversationSessionSummary,
+  type ResolvedHistoryReference,
+  type SessionCapabilities,
+  type SessionQueue,
+  type WebClient,
+} from "@agentkib/web-client";
 import { subscribeSessionInvalidation } from "@agentkib/conversation-state";
-import { codexCopy, codexReason } from "./codex-copy";
+import { sessionQueuePanel, type SessionQueuePanelAgent } from "../../agents/session-queue";
+import type { InteractionLocale } from "../../interaction-model";
+import { retryBusyRead } from "../../session-read-retry";
+import { useSessionPlatform } from "../../session-platform";
+import { codexCopy, codexCopyForSurface, codexReason } from "./codex-copy";
 import { sessionAgentCopy } from "./session-agent-copy";
 
 type QueueAction = "queue-update" | "queue-delete" | "queue-steer" | "queue-pause" | "queue-resume";
 
-export function SessionSendQueue({ agent }: { agent: SessionQueuePanelAgent }) {
+type SendQueueSession = {
+  selected: string;
+  client: WebClient;
+  capabilities?: SessionCapabilities;
+  codexAction: (
+    action: QueueAction | "queue-add",
+    fields?: { queuedSubmissionId?: string; text?: string },
+  ) => Promise<unknown>;
+  busy: boolean;
+  online: boolean;
+  controlReady: boolean;
+  locale: InteractionLocale;
+  access?: Access | null;
+};
+
+export function SessionSendQueue({
+  agent,
+  session,
+}: {
+  agent: SessionQueuePanelAgent;
+  session: SendQueueSession;
+}) {
+  const {
+    kind,
+    copy: { unavailableReason },
+    components: {
+      Button,
+      Input,
+      DropdownMenu,
+      DropdownMenuContent,
+      DropdownMenuItem,
+      DropdownMenuTrigger,
+    },
+  } = useSessionPlatform();
   const {
     selected,
     client,
@@ -40,8 +71,8 @@ export function SessionSendQueue({ agent }: { agent: SessionQueuePanelAgent }) {
     controlReady,
     locale,
     access,
-  } = useSession();
-  const copy = codexCopy[locale];
+  } = session;
+  const copy = codexCopyForSurface(locale, kind);
   const agentCopy = sessionAgentCopy[locale];
   const serial = sessionQueuePanel(agent)?.serial === true;
   const [queue, setQueue] = useState<SessionQueue>();
@@ -100,7 +131,12 @@ export function SessionSendQueue({ agent }: { agent: SessionQueuePanelAgent }) {
       capabilities?.features[action]?.available
     );
   const reason = (action: QueueAction) =>
-    codexReason(locale, capabilities?.features[action]?.reason || capabilities?.reason).text;
+    codexReason(
+      locale,
+      capabilities?.features[action]?.reason || capabilities?.reason,
+      kind,
+      unavailableReason,
+    ).text;
   async function run(action: QueueAction, fields?: { queuedSubmissionId: string; text?: string }) {
     if (!enabled(action)) return;
     setOperation(true);
@@ -254,7 +290,17 @@ export function SessionSendQueue({ agent }: { agent: SessionQueuePanelAgent }) {
 }
 
 /** Queue controls for a basic composer. The current session and device own the pending draft. */
-export function basicSendQueue(session: ReturnType<typeof useSession>) {
+export function useBasicSendQueue(
+  session: SendQueueSession & {
+    current?: ConversationSessionSummary;
+    historyReferences?: readonly ResolvedHistoryReference[];
+    message: string;
+    setMessage(value: string): void;
+  },
+) {
+  const {
+    components: { Button },
+  } = useSessionPlatform();
   const {
     access,
     busy,
@@ -294,6 +340,7 @@ export function basicSendQueue(session: ReturnType<typeof useSession>) {
       <SessionSendQueue
         key={JSON.stringify([selected, access.bootId, access.device.id])}
         agent={panel.agent}
+        session={session}
       />
     ),
     action: (

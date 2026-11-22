@@ -2445,6 +2445,17 @@ export function useSessionController({
     ),
     settingsChangedHere,
     settingsNotice: currentSettingsFeedback,
+    settingsOnlyBlocked: !!(
+      (savingSettingsFor === selected || currentSettingsFeedback?.status === "uncertain") &&
+      online &&
+      streamReady.current &&
+      !refreshRequired.current &&
+      !manualRefreshRequired.current &&
+      !uncertainOutcomes.current.has(selected) &&
+      !durablePending.current.some(
+        (entry) => entry.sessionId === selected && !isSessionSettingsAction(entry.kind),
+      )
+    ),
     actionUnavailableReason,
     codexAction,
     checkContinuation,

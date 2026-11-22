@@ -2374,8 +2374,8 @@ export function useSessionController({
     settingsChangedHere,
     settingsNotice: selectedSettingsNotice,
     settingsOnlyBlocked: !!(
-      selectedSettingsNotice &&
-      selectedSettingsNotice.status !== "notDispatched" &&
+      (selectedSettingsNotice?.status === "writing" ||
+        selectedSettingsNotice?.status === "uncertain") &&
       online &&
       streamReady.current &&
       !refreshRequired.current &&

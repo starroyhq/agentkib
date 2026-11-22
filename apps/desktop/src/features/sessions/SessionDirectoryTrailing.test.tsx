@@ -10,7 +10,7 @@ import { AppDialogProvider } from "@/components/AppDialogProvider";
 import { SessionDirectoryEntry } from "./SessionDirectoryEntry";
 import { SessionDirectoryTrailing } from "./SessionDirectoryTrailing";
 import { worktreeLabel } from "./session-labels";
-import { codexCopy } from "./conversation/features/sessions/codex-copy";
+import { codexCopy } from "./conversation/codex-copy";
 
 const { client, select, changed, deleted } = vi.hoisted(() => ({
   client: {

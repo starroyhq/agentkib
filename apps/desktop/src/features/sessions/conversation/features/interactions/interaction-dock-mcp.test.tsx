@@ -6,7 +6,7 @@ import type { Approval } from "@agentkib/web-client";
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import type { ComponentProps } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { codexReason } from "../sessions/codex-copy";
+import { codexReason } from "../../codex-copy";
 
 type Session = ComponentProps<typeof SessionInteractionDock>["session"];
 let state: Session;

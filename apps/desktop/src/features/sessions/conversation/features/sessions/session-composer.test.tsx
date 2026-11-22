@@ -2,7 +2,8 @@
 
 import "@testing-library/jest-dom/vitest";
 import { useState, type ReactNode } from "react";
-import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { render } from "@/features/sessions/conversation/desktop-reader-test-utils";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { UploadedAttachment } from "@agentkib/web-client";
 import {
@@ -11,10 +12,10 @@ import {
   offerNewSessionDraft,
   takeNewSessionDraft,
 } from "@agentkib/session-ui";
-import { SessionComposer } from "./session-composer";
-import { composerLayoutCopy } from "./composer-layout-copy";
-import { codexCopy } from "./codex-copy";
-import type { CodexResource } from "./codex-session-controls";
+import { SessionComposer } from "@/features/sessions/conversation/desktop-session-composer";
+import { composerLayoutCopy } from "@agentkib/session-ui";
+import { codexCopy } from "../../codex-copy";
+import type { CodexResource } from "@agentkib/session-ui";
 import type { SessionPanels } from "./session-panels";
 import type { SessionController } from "./use-session-controller";
 
@@ -35,8 +36,9 @@ vi.mock("./session-context", () => ({
   },
 }));
 vi.mock("./session-panels", () => ({ useSessionPanels: () => doubles.panels }));
-vi.mock("./context-usage", () => ({ ContextUsageGauge: () => null }));
-vi.mock("./codex-session-controls", () => ({
+vi.mock("@agentkib/session-ui", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@agentkib/session-ui")>()),
+  SessionContextUsageGauge: () => null,
   CodexComposerControls: ({
     action,
     advancedActions,

@@ -1,7 +1,7 @@
 import { HistorySearchControls } from "@agentkib/session-ui";
 import { createContext, useContext, type CSSProperties, type ReactNode } from "react";
 import { Toaster } from "sonner";
-import { codexCopyForSurface } from "./codex-copy";
+import { codexCopyForSurface } from "../../codex-copy";
 import {
   useSessionController,
   type SessionController,

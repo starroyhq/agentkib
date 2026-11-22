@@ -6,7 +6,7 @@ import { Dialog } from "../../components/dialog";
 import { dictionaries } from "../../i18n";
 import { webSessionPlatform } from "../../session-platform";
 import { useSession } from "../sessions/session-context";
-import { codexCopyForSurface, codexReason } from "../sessions/codex-copy";
+import { codexCopyForSurface, codexReason } from "../../codex-copy";
 
 function DeleteDialog({ children, footer, ...props }: ComponentProps<typeof Dialog>) {
   return (

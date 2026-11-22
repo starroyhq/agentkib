@@ -30,7 +30,7 @@ import {
 } from "@agentkib/session-ui";
 import { createDesktopConversationClient } from "@/core/conversation-bridge";
 import type { SupportedLocale } from "@/core/types";
-import { codexReason } from "../conversation/features/sessions/codex-copy";
+import { codexReason } from "../conversation/codex-copy";
 import { managedErrorCopy } from "../conversation/features/sessions/managed-error-copy";
 
 export const newSessionOptionsKey = (agent: ManagedAgent, workspaceId?: string) =>

@@ -7,7 +7,7 @@ import { SessionReader } from "@/features/conversation/features/sessions/web-ses
 import { useSession } from "@/features/conversation/features/sessions/session-context";
 import { webLayoutCopy } from "@agentkib/session-ui";
 import { claudeConnectionReason } from "@agentkib/session-ui";
-import { codexReason } from "@/features/conversation/features/sessions/codex-copy";
+import { codexReason } from "@/features/conversation/codex-copy";
 
 vi.mock("@/features/conversation/features/sessions/session-context", () => ({
   useSession: vi.fn(),

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
-import { codexCopyForSurface, codexReason } from "./codex-copy";
+import { codexCopyForSurface, codexReason } from "../../codex-copy";
 import { managedControlCopyForSurface } from "./managed-control-copy";
 import { claudeConnectionCopyForSurface, surfaceText, artifactCopy } from "@agentkib/session-ui";
 import { managedText } from "./managed-copy";
@@ -128,7 +128,6 @@ describe("session copy identifies the computer and application", () => {
 
   it("keeps the shared presentation implementations mirrored", () => {
     for (const filename of [
-      "codex-copy.ts",
       "managed-control-copy.ts",
       "session-display-state.ts",
       "claude-session-banner.ts",

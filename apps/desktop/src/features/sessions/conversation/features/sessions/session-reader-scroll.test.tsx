@@ -5,11 +5,11 @@ import { render } from "@/features/sessions/conversation/desktop-reader-test-uti
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { conversationWords } from "@/core/i18n";
 import { SessionReader } from "./desktop-session-reader";
-import { useSession } from "./session-context";
+import { useSession } from "../../desktop-session-context";
 import { webLayoutCopy } from "@agentkib/session-ui";
 import { contextUsageCopy } from "@agentkib/session-ui";
 
-vi.mock("./session-context", () => ({ useSession: vi.fn() }));
+vi.mock("../../desktop-session-context", () => ({ useSession: vi.fn() }));
 vi.mock("./desktop-session-operations", () => ({ DesktopSessionOperations: () => null }));
 
 type Session = ReturnType<typeof useSession>;

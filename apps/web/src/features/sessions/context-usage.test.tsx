@@ -4,12 +4,12 @@ import { act, cleanup, fireEvent, render, screen } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ContextUsage } from "@agentkib/web-client";
 import { ContextUsageGauge } from "@/features/conversation/context-usage";
-import { useSession } from "@/features/conversation/features/sessions/session-context";
+import { useSession } from "@/features/conversation/web-session-context";
 import { contextUsageCopy, contextUsageCopyForSurface } from "@agentkib/session-ui";
 import { codexCopy } from "@/features/conversation/codex-copy";
 import type { Locale } from "@/features/conversation/i18n";
 
-vi.mock("@/features/conversation/features/sessions/session-context", () => ({
+vi.mock("@/features/conversation/web-session-context", () => ({
   useSession: vi.fn(),
 }));
 let state: ReturnType<typeof useSession>;

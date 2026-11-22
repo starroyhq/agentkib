@@ -55,7 +55,7 @@ import type {
   ComposerPlanState,
 } from "./codex-session-controls";
 import { codexCopyForSurface, codexReason } from "./codex-copy";
-import { composerLayoutCopy } from "./composer-layout-copy";
+import { composerLayoutCopy, composerSettingsStatus } from "./composer-layout-copy";
 import { continuationResources, type ContinuationComposerDraft } from "./continuation-draft";
 import { SessionSendQueue } from "./dsh-queue";
 import { takeNewSessionDraft } from "./new-session-draft";
@@ -283,14 +283,7 @@ export function SessionComposer({
     restrictedPlan && !fullAccess && isCodex && session.settingsNotice?.target === "permissions"
       ? session.settingsNotice
       : undefined;
-  const planWriteStatus =
-    settingsNotice?.status === "uncertain"
-      ? layout.settingsUnknown
-      : settingsNotice?.status === "notDispatched"
-        ? settingsNotice.reason
-          ? reason(settingsNotice.reason)
-          : t.notDispatched
-        : undefined;
+  const planWriteStatus = composerSettingsStatus(locale, settingsNotice, reason, t.notDispatched);
   const attachmentsReason =
     isClaude && live?.executionMode === "claude-follower"
       ? claudeConnectionCopyForSurface(locale, surface).attachments

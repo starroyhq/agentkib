@@ -1,10 +1,7 @@
 import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, beforeEach, vi } from "vitest";
 import type { Live } from "@agentkib/web-client";
-import {
-  ManagedTurnNotice,
-  retryText,
-} from "../conversation/features/sessions/managed-turn-notice";
+import { ManagedTurnNotice, retryText } from "../conversation/web-session-display";
 import { codexReason } from "../conversation/codex-copy";
 import type { Locale } from "../conversation/i18n";
 import { usageLimitNotice } from "@agentkib/session-ui";

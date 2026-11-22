@@ -12,54 +12,18 @@ import {
   type SessionActionBody,
   type SessionActionResult,
 } from "@agentkib/web-client";
-import { useSessionController } from "@/features/sessions/conversation/features/sessions/use-session-controller";
+import { useSessionController } from "@/features/sessions/conversation/desktop-session-controller";
 import { pendingScope, readPending } from "@agentkib/session-ui";
 import { publishSessionInvalidation } from "@agentkib/conversation-state";
 
-vi.mock("@agentkib/session-ui", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("@agentkib/session-ui")>()),
-  useAppearance: () => {},
-}));
-vi.mock("@/features/sessions/conversation/features/sessions/use-session-live", () => ({
-  useSessionLive: ({
-    client,
-    selected,
-    streamReady,
-    refreshRequired,
-    hasDurablePending,
-    setControlReady,
-    readSettingsControls,
-    setLive,
-  }: {
-    client: WebClient;
-    selected: string;
-    streamReady: { current: boolean };
-    refreshRequired: { current: boolean };
-    hasDurablePending: (id: string) => boolean;
-    setControlReady: (ready: boolean) => void;
-    readSettingsControls: { current: ((sessionId: string) => Promise<void>) | undefined };
-    setLive: (live: Live) => void;
-  }) => {
-    useEffect(() => {
-      streamReady.current = !!selected;
-      setControlReady(!!selected && !refreshRequired.current && !hasDurablePending(selected));
-    }, [selected, streamReady, refreshRequired, hasDurablePending, setControlReady]);
-    useEffect(() => {
-      let mounted = true;
-      readSettingsControls.current = async (sessionId) => {
-        if (sessionId !== selected) return;
-        const live = await client.live(sessionId);
-        if (!mounted) return;
-        setLive(live);
-        setControlReady(
-          streamReady.current && !refreshRequired.current && !hasDurablePending(selected),
-        );
-      };
-      return () => {
-        mounted = false;
-        readSettingsControls.current = undefined;
-      };
-    }, [
+vi.mock(
+  "../../../../../../../../packages/session-ui/src/conversation/preferences/use-appearance",
+  () => ({ useAppearance: () => {} }),
+);
+vi.mock(
+  "../../../../../../../../packages/session-ui/src/conversation/sessions/use-session-live",
+  () => ({
+    useSessionLive: ({
       client,
       selected,
       streamReady,
@@ -68,9 +32,48 @@ vi.mock("@/features/sessions/conversation/features/sessions/use-session-live", (
       setControlReady,
       readSettingsControls,
       setLive,
-    ]);
-  },
-}));
+    }: {
+      client: WebClient;
+      selected: string;
+      streamReady: { current: boolean };
+      refreshRequired: { current: boolean };
+      hasDurablePending: (id: string) => boolean;
+      setControlReady: (ready: boolean) => void;
+      readSettingsControls: { current: ((sessionId: string) => Promise<void>) | undefined };
+      setLive: (live: Live) => void;
+    }) => {
+      useEffect(() => {
+        streamReady.current = !!selected;
+        setControlReady(!!selected && !refreshRequired.current && !hasDurablePending(selected));
+      }, [selected, streamReady, refreshRequired, hasDurablePending, setControlReady]);
+      useEffect(() => {
+        let mounted = true;
+        readSettingsControls.current = async (sessionId) => {
+          if (sessionId !== selected) return;
+          const live = await client.live(sessionId);
+          if (!mounted) return;
+          setLive(live);
+          setControlReady(
+            streamReady.current && !refreshRequired.current && !hasDurablePending(selected),
+          );
+        };
+        return () => {
+          mounted = false;
+          readSettingsControls.current = undefined;
+        };
+      }, [
+        client,
+        selected,
+        streamReady,
+        refreshRequired,
+        hasDurablePending,
+        setControlReady,
+        readSettingsControls,
+        setLive,
+      ]);
+    },
+  }),
+);
 
 const history: ConversationEventPage = { events: [], warnings: [] };
 const summary = (
@@ -416,6 +419,60 @@ describe("settings actions and their receipts", () => {
     expect(result.current.canSend).toBe(true);
     expect(host.request).toHaveBeenCalledOnce();
   });
+
+  it.each(["sending", "stopping"] as const)(
+    "keeps %s locked when returning to the session before settings readback settles",
+    async (operation) => {
+      const host = fixture("codex");
+      const { result } = await open(host);
+      host.live.mockClear();
+      const original = {
+        ...host.liveById.get("original")!,
+        revision: 2,
+        ...(operation === "stopping" && {
+          status: "running" as const,
+          sendEnabled: false,
+          stopEnabled: true,
+          turnId: "current-turn",
+        }),
+      };
+      host.liveById.set("original", original);
+      let finishReadback!: (value: Live) => void;
+      host.live.mockImplementationOnce(
+        () => new Promise<Live>((resolve) => (finishReadback = resolve)),
+      );
+      host.request.mockImplementationOnce(async (_path, body) =>
+        ack((body as SessionActionBody).requestId),
+      );
+
+      let save!: ReturnType<typeof result.current.codexAction>;
+      await act(async () => {
+        save = result.current.codexAction("settings", { effort: "high" });
+      });
+      expect(host.live).toHaveBeenCalledExactlyOnceWith("original");
+      expect(readPending(host.scope)).toEqual([]);
+
+      await act(async () => result.current.choose("other"));
+      expect(result.current.canSend).toBe(true);
+      await act(async () => result.current.choose("original"));
+      expect(result.current.controlReady).toBe(true);
+      expect(result.current.settingsNotice).toBeUndefined();
+      expect(result.current.canSend).toBe(false);
+      expect(result.current.canStop).toBe(false);
+      expect(result.current.settingsOnlyBlocked).toBe(true);
+
+      await act(async () => result.current.codexAction("settings", { effort: "low" }));
+      expect(host.request).toHaveBeenCalledOnce();
+
+      await act(async () => {
+        finishReadback(original);
+        await expect(save).resolves.toBeUndefined();
+      });
+      expect(result.current.canSend).toBe(operation === "sending");
+      expect(result.current.canStop).toBe(operation === "stopping");
+      expect(result.current.settingsOnlyBlocked).toBe(false);
+    },
+  );
 
   it.each(["matching", "other revision", "other acknowledgement"] as const)(
     "checks a %s receipt when the settings response is lost",

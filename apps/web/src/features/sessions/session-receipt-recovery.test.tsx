@@ -1,13 +1,13 @@
-import type { ReactNode } from "react";
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ApiError } from "@agentkib/web-client";
 import { pendingScope, rememberPending, readPending } from "@agentkib/session-ui";
-import { SessionReceiptRecovery } from "@/features/conversation/features/sessions/session-receipt-recovery";
+import { SessionReceiptRecovery, type SessionReceiptRecoveryProps } from "@agentkib/session-ui";
+import { render } from "../conversation/web-reader-test-utils";
 import { publishSessionInvalidation } from "@agentkib/conversation-state";
 import type { WebClient } from "@agentkib/web-client";
 
 const navigate = vi.fn();
+vi.mock("@tanstack/react-router", () => ({ useNavigate: () => navigate }));
 let session: {
   client: {
     request: ReturnType<typeof vi.fn>;
@@ -38,16 +38,6 @@ let session: {
   refresh: ReturnType<typeof vi.fn>;
   locale: string;
 };
-vi.mock("@/features/conversation/features/sessions/session-context", () => ({
-  useSession: () => session,
-}));
-vi.mock("@tanstack/react-router", () => ({ useNavigate: () => navigate }));
-vi.mock("@/features/conversation/components/ui/dialog", () => ({
-  Dialog: ({ open, children }: { open: boolean; children: ReactNode }) =>
-    open ? <div role="dialog">{children}</div> : null,
-  DialogContent: ({ children }: { children: ReactNode }) => <div>{children}</div>,
-  DialogTitle: ({ children }: { children: ReactNode }) => <h2>{children}</h2>,
-}));
 const options = { available: true, workspaces: [{ id: "workspace", name: "Project" }], models: [] };
 const mutations = () =>
   session.client.request.mock.calls.filter(([path]) => !path.startsWith("managed/options"));
@@ -98,7 +88,12 @@ describe("SessionReceiptRecovery", () => {
     (executionMode) => {
       session.live.executionMode = executionMode;
       if (executionMode.startsWith("claude")) session.current.agent = "claude-code";
-      render(<SessionReceiptRecovery renderContent={(content) => content} />);
+      render(
+        <SessionReceiptRecovery
+          session={session as unknown as SessionReceiptRecoveryProps["session"]}
+          renderContent={(content) => content}
+        />,
+      );
       expect(screen.queryByRole("button")).not.toBeInTheDocument();
       expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
       expect(session.client.request).not.toHaveBeenCalled();
@@ -114,6 +109,7 @@ describe("SessionReceiptRecovery", () => {
       session.client.receipt.mockResolvedValue({ found: true, requestId, status: "unknown" });
       const panel = (active: boolean) => (
         <SessionReceiptRecovery
+          session={session as unknown as SessionReceiptRecoveryProps["session"]}
           renderContent={(content) => (active ? <div role="group">{content}</div> : null)}
         />
       );
@@ -153,7 +149,12 @@ describe("SessionReceiptRecovery", () => {
       if (reason === "permission") session.access.device.manage = false;
       if (reason === "experimental") session.access.experimentalEnabled = false;
       if (reason === "agent") session.current.agent = "claude";
-      render(<SessionReceiptRecovery renderContent={(content) => content} />);
+      render(
+        <SessionReceiptRecovery
+          session={session as unknown as SessionReceiptRecoveryProps["session"]}
+          renderContent={(content) => content}
+        />,
+      );
       expect(screen.queryByRole("button")).not.toBeInTheDocument();
       expect(session.client.request).not.toHaveBeenCalled();
     },
@@ -176,7 +177,12 @@ describe("SessionReceiptRecovery", () => {
         recovery: "legacy-prepared",
         completionObserved: false,
       });
-      render(<SessionReceiptRecovery renderContent={() => null} />);
+      render(
+        <SessionReceiptRecovery
+          session={session as unknown as SessionReceiptRecoveryProps["session"]}
+          renderContent={() => null}
+        />,
+      );
       await waitFor(() => expect(readPending(scope)).toEqual([]));
       expect(mutations()).toHaveLength(0);
       expect(navigate).not.toHaveBeenCalled();

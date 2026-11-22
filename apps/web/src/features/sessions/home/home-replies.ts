@@ -5,7 +5,7 @@ import {
   type InteractionReply,
   type InteractionReplyResult,
 } from "@agentkib/web-client";
-import { useSession } from "@/features/conversation/features/sessions/session-context";
+import { useSession } from "@/features/conversation/web-session-context";
 import {
   forgetPending,
   pendingScope,

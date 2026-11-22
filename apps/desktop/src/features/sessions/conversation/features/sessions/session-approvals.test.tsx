@@ -8,10 +8,10 @@ import type { Approval } from "@agentkib/web-client";
 import { fillCopy, interactionCardCopy, type InteractionLocale } from "@agentkib/session-ui";
 import { conversationWords } from "@/core/i18n";
 import { SessionReader } from "./desktop-session-reader";
-import { useSession } from "./session-context";
+import { useSession } from "../../desktop-session-context";
 import { codexReason } from "../../codex-copy";
 
-vi.mock("./session-context", () => ({ useSession: vi.fn() }));
+vi.mock("../../desktop-session-context", () => ({ useSession: vi.fn() }));
 vi.mock("./desktop-session-operations", () => ({ DesktopSessionOperations: () => null }));
 
 type Session = ReturnType<typeof useSession>;

@@ -4,10 +4,10 @@ import {
   SessionContextUsageGauge,
   type SessionComposerProps,
 } from "@agentkib/session-ui";
-import { ManagedTurnNotice } from "./features/sessions/managed-turn-notice";
-import { useSession } from "./features/sessions/session-context";
-import { sessionDisplayState } from "./features/sessions/session-display-state";
-import { useSessionPanels } from "./features/sessions/session-panels";
+import { ManagedTurnNotice } from "./web-session-display";
+import { useSession } from "./web-session-context";
+import { sessionDisplayState } from "./web-session-display";
+import { useSessionPanels } from "@agentkib/session-ui";
 
 export function SessionComposer({
   connectionStatusInBanner,

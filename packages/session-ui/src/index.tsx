@@ -27,6 +27,51 @@ export {
 } from "./conversation/history/history-reference-model";
 export { interactionCopy } from "./conversation/interactions/interaction-copy";
 export { approvalSummary } from "./conversation/sessions/approval-summary";
+export {
+  claudeComposerNotice,
+  claudeSessionBanner,
+} from "./conversation/sessions/claude-session-banner";
+export {
+  managedControlCopy,
+  managedControlCopyForSurface,
+  type ManagedControlBlockReason,
+} from "./conversation/sessions/managed-control-copy";
+export { managedText } from "./conversation/sessions/managed-copy";
+export {
+  managedErrorCopy,
+  managedErrorCopyForSurface,
+} from "./conversation/sessions/managed-error-copy";
+export { ManagedTurnNotice, retryText } from "./conversation/sessions/managed-turn-notice";
+export {
+  bindSessionNavigation,
+  createSessionContext,
+  type SessionNavigate,
+} from "./conversation/sessions/session-context";
+export { SessionDialogs } from "./conversation/sessions/session-dialogs";
+export {
+  EmbeddedSessionLoading,
+  EmbeddedSessionShell,
+  useEmbeddedEmptySelection,
+  useEmbeddedSessionSelection,
+  useEmbeddedSessionShell,
+  useExternalSessionNavigation,
+} from "./conversation/sessions/embedded-conversation";
+export { sessionDisplayState } from "./conversation/sessions/session-display-state";
+export {
+  SessionPanelsContext,
+  useSessionPanels,
+  type SessionPanels,
+} from "./conversation/sessions/session-panels";
+export {
+  useSessionLive,
+  type WarmSessionNavigation,
+} from "./conversation/sessions/use-session-live";
+export {
+  useSessionController,
+  type SessionController,
+  type SessionOptions,
+  type SettingsNotice,
+} from "./conversation/sessions/use-session-controller";
 export { codexCopy, codexCopyForSurface, codexReason } from "./conversation/sessions/codex-copy";
 export { composerLayoutCopy, composerTerm } from "./conversation/sessions/composer-layout-copy";
 export { sessionAgentCopy } from "./conversation/sessions/session-agent-copy";
@@ -69,6 +114,10 @@ export {
   type ProjectAgentPanelClient,
 } from "./conversation/sessions/project-agent-panel";
 export { SessionOperations } from "./conversation/sessions/session-operations";
+export {
+  SessionReceiptRecovery,
+  type SessionReceiptRecoveryProps,
+} from "./conversation/sessions/session-receipt-recovery";
 export { SessionReadOnly } from "./conversation/sessions/session-read-only";
 export { webLayoutCopy } from "./conversation/sessions/web-layout-copy";
 export {

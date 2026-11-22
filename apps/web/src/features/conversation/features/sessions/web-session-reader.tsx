@@ -6,11 +6,11 @@ import {
   useBasicSendQueue,
 } from "@agentkib/session-ui";
 import { codexCopyForSurface, codexReason } from "../../codex-copy";
-import { claudeComposerNotice, claudeSessionBanner } from "./claude-session-banner";
+import { claudeComposerNotice, claudeSessionBanner } from "@agentkib/session-ui";
 import { WebSessionOperations } from "./web-session-operations";
 import { SessionComposer } from "../../web-session-composer";
-import { useSessionPanels } from "./session-panels";
-import { useSession } from "./session-context";
+import { useSessionPanels } from "@agentkib/session-ui";
+import { useSession } from "../../web-session-context";
 import { ContextUsageGauge } from "../../context-usage";
 import { webSessionImages } from "../../web-session-images";
 

@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   EmbeddedConversation as Conversation,
   type EmbeddedConversationProps,
-} from "./conversation/conversation";
+} from "./conversation/desktop-embedded-conversation";
 
 import { WebClient, type Access, type ConversationCatalog, type Live } from "@agentkib/web-client";
 import {

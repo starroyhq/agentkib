@@ -5,8 +5,8 @@ import { cleanup, fireEvent, screen, within } from "@testing-library/react";
 import { render } from "@/features/conversation/web-reader-test-utils";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SessionReader } from "@/features/conversation/features/sessions/web-session-reader";
-import { SessionPanelsContext } from "@/features/conversation/features/sessions/session-panels";
-import type { SessionController } from "@/features/conversation/features/sessions/use-session-controller";
+import { SessionPanelsContext } from "@agentkib/session-ui";
+import type { SessionController } from "@/features/conversation/web-session-controller";
 import { dictionaries } from "@/features/conversation/i18n";
 import { codexReason } from "@/features/conversation/codex-copy";
 import { claudeConnectionCopy } from "@agentkib/session-ui";
@@ -14,10 +14,10 @@ import { claudeConnectionCopy } from "@agentkib/session-ui";
 type Locale = "zh-CN" | "zh-Hant" | "en-US" | "ja-JP";
 let session: SessionController;
 const FixtureContext = createContext<SessionController | null>(null);
-vi.mock("@/features/conversation/features/sessions/session-context", () => ({
+vi.mock("@/features/conversation/web-session-context", () => ({
   useSession: () => useContext(FixtureContext)!,
 }));
-vi.mock("@/features/conversation/features/sessions/session-navigation", () => ({
+vi.mock("@/features/conversation/web-session-navigation", () => ({
   useSessionNavigate: () => vi.fn(),
 }));
 vi.mock("@/features/conversation/context-usage", () => ({

@@ -58,7 +58,7 @@ import {
 } from "@/features/conversation/components/ui/dropdown-menu";
 import { Input } from "@/features/conversation/components/ui/input";
 import { cn } from "@/features/conversation/lib/utils";
-import { useSession } from "@/features/conversation/features/sessions/session-context";
+import { useSession } from "@/features/conversation/web-session-context";
 import { codexCopyForSurface, codexReason } from "@/features/conversation/codex-copy";
 import { composerLayoutCopy } from "@agentkib/session-ui";
 import { MAX_MESSAGE_LENGTH } from "@agentkib/conversation-state";

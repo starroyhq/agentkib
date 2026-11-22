@@ -29,9 +29,9 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/features/conversation/components/ui/dialog";
-import { useSession } from "@/features/conversation/features/sessions/session-context";
-import { SessionPanelsContext } from "@/features/conversation/features/sessions/session-panels";
-import { sessionDisplayState } from "@/features/conversation/features/sessions/session-display-state";
+import { useSession } from "@/features/conversation/web-session-context";
+import { SessionPanelsContext } from "@agentkib/session-ui";
+import { sessionDisplayState } from "@/features/conversation/web-session-display";
 import { codexCopyForSurface } from "@/features/conversation/codex-copy";
 import { webLayoutCopy } from "@agentkib/session-ui";
 import { cn } from "@/features/conversation/lib/utils";

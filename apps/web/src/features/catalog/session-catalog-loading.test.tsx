@@ -19,7 +19,7 @@ import { RouterProvider } from "@tanstack/react-router";
 import { WebApplication, makeRouter } from "@/router";
 import { dictionaries, type Locale } from "@/features/conversation/i18n";
 import { catalogCopyForSurface } from "@agentkib/session-ui";
-import { useSessionController } from "@/features/conversation/features/sessions/use-session-controller";
+import { useSessionController } from "@/features/conversation/web-session-controller";
 
 class CatalogEventSource {
   static instances: CatalogEventSource[] = [];

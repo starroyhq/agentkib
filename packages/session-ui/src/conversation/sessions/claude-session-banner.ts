@@ -1,10 +1,24 @@
-import {
-  type SessionSurface,
-  claudeConnectionCopyForSurface,
-  claudeConnectionReason,
-  sessionContinuationCopy,
-} from "@agentkib/session-ui";
-import type { SessionController } from "./use-session-controller";
+import type { Access, Live } from "@agentkib/web-client";
+import type { InteractionLocale } from "../../interaction-model";
+import type { SessionSurface } from "../../session-surface-copy";
+import { sessionContinuationCopy } from "../../session-continuation";
+import { claudeConnectionCopyForSurface, claudeConnectionReason } from "./claude-connection-copy";
+
+type BannerState = {
+  locale: InteractionLocale;
+  live?: Live;
+  online: boolean;
+  notice?: string;
+  t: { controlUnconfirmed: string };
+  access?: Access | null;
+};
+
+type Banner = {
+  title: string;
+  body: string;
+  connection?: true;
+  notice?: "owner-opened-elsewhere" | "background-ended" | "background-limit" | "lead-turn-limit";
+};
 
 const reconnectCompatibilityReasons = new Set([
   "bridge-cli-too-old",
@@ -15,8 +29,8 @@ const reconnectCompatibilityReasons = new Set([
 
 /** Only the current authenticated offline failure can supply native version details. */
 export function claudeReconnectFailureReason(
-  live: SessionController["live"],
-  locale: SessionController["locale"],
+  live: BannerState["live"],
+  locale: InteractionLocale,
   surface: SessionSurface = "desktop",
 ) {
   if (
@@ -34,16 +48,10 @@ export function claudeReconnectFailureReason(
 
 /** Normal ownership is shown in the header; only transitions and safety notices need a banner. */
 export function claudeSessionBanner(
-  {
-    locale,
-    live,
-    online,
-    notice,
-    t,
-    access,
-  }: Pick<SessionController, "locale" | "live" | "online" | "notice" | "t" | "access">,
+  { locale, live, online, notice, t, access }: BannerState,
   surface: SessionSurface = "desktop",
-) {
+  markConnection = surface === "desktop",
+): Banner | null {
   const copy = claudeConnectionCopyForSurface(locale, surface);
   const continuation = sessionContinuationCopy(locale);
   if (
@@ -58,7 +66,7 @@ export function claudeSessionBanner(
     return {
       title: copy.hostDisconnected,
       body: copy.hostDisconnectedInfo,
-      connection: true as const,
+      ...(markConnection ? { connection: true as const } : {}),
     };
   if (live?.continuationNotice === "owner-opened-elsewhere")
     return {
@@ -84,7 +92,11 @@ export function claudeSessionBanner(
           !access.device?.send)
       )
         return null;
-      return { title: copy.lostTitle, body: failureReason ?? copy.lost, connection: true as const };
+      return {
+        title: copy.lostTitle,
+        body: failureReason ?? copy.lost,
+        ...(markConnection ? { connection: true as const } : {}),
+      };
     }
     if (
       ["claude-follower-turn-unconfirmed", "claude-terminal-permission-unconfirmed"].includes(

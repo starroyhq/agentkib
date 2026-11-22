@@ -6,7 +6,7 @@ import { render } from "@/features/sessions/conversation/desktop-reader-test-uti
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError, type CodexSessionSettings } from "@agentkib/web-client";
 import { CodexComposerControls } from "@agentkib/session-ui";
-import type { SessionController } from "./use-session-controller";
+import type { SessionController } from "../../desktop-session-controller";
 import { composerModelCopy } from "@agentkib/session-ui";
 import { codexReason } from "../../codex-copy";
 
@@ -310,7 +310,30 @@ describe("Codex settings recovery on desktop", () => {
     expect(screen.queryByRole("button", { name: /unlisted-model · Low/ })).not.toBeInTheDocument();
   });
 
-  it("shows a rejected settings action once next to the permission menu", async () => {
+  it("shows one writing status below the toolbar and clears it on completion", async () => {
+    state.notice = undefined;
+    const props = {
+      resources: [],
+      setResources: vi.fn(),
+      openPhoneFiles: vi.fn(),
+      disabled: false,
+    };
+    const view = render(
+      <CodexComposerControls
+        session={{ ...state, settingsNotice: { status: "writing", target: "settings" } }}
+        {...props}
+      />,
+    );
+    const model = await screen.findByRole("button", { name: /unlisted-model · Low/ });
+    const status = screen.getByRole("status");
+    expect(status).toHaveTextContent("Saving settings…");
+    expect(status.previousElementSibling).toContainElement(model);
+    expect(screen.getAllByText("Saving settings…")).toHaveLength(1);
+    view.rerender(<CodexComposerControls session={state} {...props} />);
+    expect(screen.queryByText("Saving settings…")).not.toBeInTheDocument();
+  });
+
+  it("shows a rejected settings action once below the toolbar", async () => {
     state.notice = undefined;
     state.settingsNotice = {
       group: "permissions",
@@ -333,10 +356,10 @@ describe("Codex settings recovery on desktop", () => {
     );
     await screen.findByRole("button", { name: /unlisted-model · Low/ });
     const permission = screen.getByRole("button", { name: "Execution policy" });
-    const alert = screen.getByRole("alert");
+    const feedback = screen.getByRole("status");
     const message = codexReason("en-US", state.settingsNotice.reason).text;
-    expect(alert).toHaveTextContent(message);
-    expect(alert.parentElement).toContainElement(permission);
+    expect(feedback).toHaveTextContent(message);
+    expect(feedback.previousElementSibling).toContainElement(permission);
     fireEvent.click(permission);
     expect(await screen.findByRole("menu")).toBeVisible();
     expect(screen.getAllByText(message)).toHaveLength(1);
@@ -369,7 +392,7 @@ describe("Codex settings recovery on desktop", () => {
     const trigger = screen.getByRole("button", { name: /Listed model · Low/ });
     const message = "Setting status unconfirmed";
     const feedback = screen.getByText(message);
-    expect(feedback.parentElement).toContainElement(trigger);
+    expect(feedback.previousElementSibling).toContainElement(trigger);
     expect(trigger).toBeEnabled();
     fireEvent.click(trigger);
     const overview = await screen.findByRole("dialog", { name: /^Select reasoning effort/ });

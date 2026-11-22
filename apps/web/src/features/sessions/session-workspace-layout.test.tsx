@@ -2,7 +2,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { useEffect } from "react";
 import { SessionWorkspace } from "./session-workspace";
-import { useSessionPanels } from "@/features/conversation/features/sessions/session-panels";
+import { useSessionPanels } from "@agentkib/session-ui";
 import { dictionaries } from "@/features/conversation/i18n";
 const fixture = vi.hoisted(() => ({
   pathname: "/sessions",
@@ -20,7 +20,7 @@ vi.mock("@tanstack/react-router", () => ({
     return <div data-testid="panels">{panels?.filesOpen ? "files-open" : "files-closed"}</div>;
   },
 }));
-vi.mock("@/features/conversation/features/sessions/session-context", () => ({
+vi.mock("@/features/conversation/web-session-context", () => ({
   useSession: () => ({
     t: dictionaries["zh-CN"],
     locale: "zh-CN",
@@ -50,9 +50,6 @@ vi.mock("@agentkib/session-ui", async (importOriginal) => ({
     }, []);
     return <button>pending-center</button>;
   },
-}));
-vi.mock("@/features/conversation/features/sessions/session-receipt-recovery", () => ({
-  SessionReceiptRecovery: () => null,
 }));
 vi.mock("@/features/conversation/features/catalog/session-catalog", () => ({
   SessionCatalog: () => null,

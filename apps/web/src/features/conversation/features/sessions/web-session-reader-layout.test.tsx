@@ -6,11 +6,11 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { dictionaries } from "../../i18n";
 const conversationWords = (locale: keyof typeof dictionaries) => dictionaries[locale];
 import { SessionReader } from "./web-session-reader";
-import { useSession } from "./session-context";
+import { useSession } from "../../web-session-context";
 import { webLayoutCopy } from "@agentkib/session-ui";
 import { contextUsageCopyForSurface } from "@agentkib/session-ui";
 
-vi.mock("./session-context", () => ({ useSession: vi.fn() }));
+vi.mock("../../web-session-context", () => ({ useSession: vi.fn() }));
 vi.mock("./web-session-operations", () => ({ WebSessionOperations: () => null }));
 
 type Session = ReturnType<typeof useSession>;

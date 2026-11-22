@@ -1,9 +1,8 @@
 import { CodexTools as SharedCodexTools, type CodexToolsProps } from "@agentkib/session-ui";
-import { useSessionNavigate } from "./session-navigation";
+import { useSessionNavigate } from "../../web-session-navigation";
 import { SessionOperations } from "@agentkib/session-ui";
 
-import { useSession } from "./session-context";
-import { SessionReceiptRecovery } from "./session-receipt-recovery";
+import { useSession } from "../../web-session-context";
 
 export function WebSessionOperations({
   open,
@@ -20,7 +19,6 @@ export function WebSessionOperations({
       session={session}
       projectAgentClient={session.client}
       ExecutionControls={CodexTools}
-      ReceiptRecovery={SessionReceiptRecovery}
     />
   );
 }

@@ -82,7 +82,7 @@ vi.mock("./SessionOverview", () => ({ SessionOverview: () => <p>Directory overvi
 vi.mock("./SessionHistoryContent", () => ({
   SessionHistoryContent: () => <p>Static history</p>,
 }));
-vi.mock("./conversation/conversation", () => ({
+vi.mock("./conversation/desktop-embedded-conversation", () => ({
   EmbeddedConversation: ({
     sessionId,
     onSessionChange,

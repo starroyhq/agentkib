@@ -1,5 +1,5 @@
-import type { SupportedLocale as Locale } from "@/core/types";
-import { surfaceText, type SessionSurface } from "@agentkib/session-ui";
+import type { InteractionLocale as Locale } from "../../interaction-model";
+import { surfaceText, type SessionSurface } from "../../session-surface-copy";
 const copy: Record<string, [string, string]> = {
   "无法读取已保存的请求标识。": [
     "無法讀取已儲存的請求識別碼。",

@@ -1,15 +1,23 @@
-import { publishSessionInvalidation } from "@agentkib/conversation-state";
-import type { WebClient } from "@agentkib/web-client";
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
-import type { ReactNode } from "react";
-import { ApiError } from "@agentkib/web-client";
-import type { ManagedOptions } from "@agentkib/web-client";
-import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
+import { publishSessionInvalidation } from "@agentkib/conversation-state";
+import {
+  pendingScope,
+  readPending,
+  rememberPending,
+  SessionReceiptRecovery,
+  type InteractionLocale,
+  type SessionReceiptRecoveryProps,
+} from "@agentkib/session-ui";
+import type {
+  ManagedActionBody,
+  ManagedActionResult,
+  ManagedOptions,
+  WebClient,
+} from "@agentkib/web-client";
+import { act, cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { SessionReceiptRecovery } from "@/features/conversation/features/sessions/session-receipt-recovery";
-import { managedControlCopy } from "@/features/conversation/features/sessions/managed-control-copy";
-import { pendingScope, rememberPending, readPending } from "@agentkib/session-ui";
+import { render } from "../conversation/web-reader-test-utils";
 
 const managementLocales = [
   {
@@ -76,7 +84,7 @@ function createSession() {
     capabilities: {
       sessionId: "session",
       reason: undefined as string | undefined,
-      features: { adopt: { available: true } },
+      features: { adopt: { available: true }, reconcile: { available: false } },
     },
     access: {
       status: "approved",
@@ -86,6 +94,8 @@ function createSession() {
       device: { id: "device", manage: true, send: true },
     },
     client: {
+      managedAction:
+        vi.fn<(action: string, body: ManagedActionBody) => Promise<ManagedActionResult>>(),
       request: vi.fn(async (path: string, _body?: unknown) =>
         path.startsWith("managed/options") ? options : { sessionId: "session" },
       ),
@@ -102,29 +112,22 @@ function createSession() {
     controlReady: true,
     busy: false,
     notice: undefined as string | undefined,
-    locale: "en-US" as keyof typeof managedControlCopy,
+    locale: "en-US" as InteractionLocale,
     refresh: vi.fn(async () => {}),
   };
 }
 let session: ReturnType<typeof createSession>;
-vi.mock("@/features/conversation/features/sessions/session-context", () => ({
-  useSession: () => session,
-}));
-vi.mock("@tanstack/react-router", () => ({ useNavigate: () => vi.fn() }));
-vi.mock("@/features/conversation/components/ui/dialog", () => ({
-  Dialog: ({ open, children }: { open: boolean; children: ReactNode }) =>
-    open ? <div role="dialog">{children}</div> : null,
-  DialogContent: ({ children }: { children: ReactNode }) => <div>{children}</div>,
-  DialogTitle: ({ children }: { children: ReactNode }) => <h2>{children}</h2>,
-}));
 const mutations = () =>
   session.client.request.mock.calls.filter(([path]) => !path.startsWith("managed/options"));
 const requestId = "11111111-1111-4111-8111-111111111111";
-const panel = (active: boolean) => (
+const recovery = (renderContent: SessionReceiptRecoveryProps["renderContent"]) => (
   <SessionReceiptRecovery
-    renderContent={(children) => (active ? <section>{children}</section> : null)}
+    session={session as unknown as SessionReceiptRecoveryProps["session"]}
+    renderContent={renderContent}
   />
 );
+const panel = (active: boolean) =>
+  recovery((children) => (active ? <section>{children}</section> : null));
 function save(kind: "adopt" | "release" | "reconcile" = "adopt") {
   const scope = pendingScope(session.origin, session.access.device.id);
   rememberPending(scope, { requestId, sessionId: session.selected, kind, agent: "claude-code" });
@@ -147,7 +150,7 @@ describe("automatic Claude continuation replaces execution handoff", () => {
     "never offers handoff, release or execution management in $locale",
     (copy) => {
       session.locale = copy.locale;
-      const view = render(<SessionReceiptRecovery renderContent={(content) => content} />);
+      const view = render(recovery((content) => content));
       for (const [mode, status] of [
         ["managed-resume", "idle"],
         ["claude-managed", "idle"],
@@ -157,7 +160,7 @@ describe("automatic Claude continuation replaces execution handoff", () => {
       ]) {
         session.live.executionMode = mode;
         session.live.status = status;
-        view.rerender(<SessionReceiptRecovery renderContent={(content) => content} />);
+        view.rerender(recovery((content) => content));
         expect(screen.queryByRole("button")).not.toBeInTheDocument();
         expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
         expect(screen.queryByText(copy.notHandedOver)).not.toBeInTheDocument();
@@ -189,7 +192,7 @@ describe("automatic Claude continuation replaces execution handoff", () => {
     if (boundary === "experimental") session.access.experimentalEnabled = false;
     if (boundary === "protocol") session.access.protocolVersion = 1;
     if (boundary === "compacting") session.live.activity = "compacting";
-    render(<SessionReceiptRecovery renderContent={(content) => content} />);
+    render(recovery((content) => content));
     expect(screen.queryByRole("button")).not.toBeInTheDocument();
     expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
     expect(session.client.managedInspect).not.toHaveBeenCalled();
@@ -220,7 +223,7 @@ describe("automatic Claude continuation replaces execution handoff", () => {
     "settles saved %s while hidden without replaying or reopening the old panel",
     async (kind) => {
       const scope = save(kind);
-      const view = render(<SessionReceiptRecovery renderContent={() => null} />);
+      const view = render(recovery(() => null));
       await waitFor(() => expect(session.client.receipt).toHaveBeenCalledWith(requestId));
       expect(readPending(scope)).toHaveLength(1);
       session.client.receipt.mockResolvedValue({
@@ -314,5 +317,76 @@ describe("automatic Claude continuation replaces execution handoff", () => {
     expect(session.client.receipt).not.toHaveBeenCalled();
     expect(session.client.managedInspect).not.toHaveBeenCalled();
     expect(mutations()).toEqual([]);
+  });
+});
+
+describe("reconciling a Claude managed execution on Web", () => {
+  beforeEach(() => {
+    sessionStorage.clear();
+    session = createSession();
+    session.live.executionMode = "claude-managed";
+    session.live.status = "outcome-unknown";
+    session.capabilities.features.reconcile.available = true;
+  });
+  afterEach(cleanup);
+
+  it.each(["read-only", "legacy host", "another session"] as const)(
+    "hides reconciliation for %s",
+    (restriction) => {
+      if (restriction === "read-only") session.access.device.send = false;
+      if (restriction === "legacy host") session.access.protocolVersion = 1;
+      if (restriction === "another session") session.live.sessionId = "other";
+      render(panel(true));
+      expect(screen.queryByRole("button", { name: "Reconcile outcome" })).not.toBeInTheDocument();
+      expect(session.client.managedAction).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["manage", "capability", "stale capability"] as const)(
+    "keeps the button disabled when a sending device lacks %s",
+    (restriction) => {
+      if (restriction === "manage") session.access.device.manage = false;
+      if (restriction === "capability") session.capabilities.features.reconcile.available = false;
+      if (restriction === "stale capability") session.capabilities.sessionId = "other";
+      render(panel(true));
+      const button = screen.getByRole("button", { name: "Reconcile outcome" });
+      expect(button).toBeDisabled();
+      expect(button.getAttribute("title")).toBeTruthy();
+      fireEvent.click(button);
+      expect(session.client.managedAction).not.toHaveBeenCalled();
+    },
+  );
+
+  it("writes one durable reconciliation identity before dispatch and refreshes after acceptance", async () => {
+    const scope = pendingScope(session.origin, session.access.device.id);
+    let finish!: (result: ManagedActionResult) => void;
+    session.client.managedAction.mockImplementation((_action, body) => {
+      expect(readPending(scope)).toMatchObject([{ requestId: body.requestId, kind: "reconcile" }]);
+      return new Promise((resolve) => {
+        finish = resolve;
+      });
+    });
+    render(panel(true));
+    const button = screen.getByRole("button", { name: "Reconcile outcome" });
+    fireEvent.click(button);
+    expect(button).toBeDisabled();
+    fireEvent.click(button);
+    expect(session.client.managedAction).toHaveBeenCalledExactlyOnceWith("reconcile", {
+      agent: "claude-code",
+      sessionId: session.selected,
+      bootId: session.access.bootId,
+      requestId: expect.any(String),
+    });
+    expect(session.client.receipt).not.toHaveBeenCalled();
+    await act(async () =>
+      finish({
+        accepted: true,
+        reconciled: true,
+        requestId: session.client.managedAction.mock.calls[0]?.[1].requestId,
+        sessionId: session.selected,
+      }),
+    );
+    expect(readPending(scope)).toEqual([]);
+    expect(session.refresh).toHaveBeenCalledExactlyOnceWith(true);
   });
 });

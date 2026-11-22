@@ -1,7 +1,7 @@
 import { sessionContinuationCopy } from "@agentkib/session-ui";
 import { describe, expect, it } from "vitest";
-import { sessionDisplayState } from "@/features/sessions/conversation/features/sessions/session-display-state";
-import type { SessionController } from "@/features/sessions/conversation/features/sessions/use-session-controller";
+import { sessionDisplayState } from "@/features/sessions/conversation/desktop-session-display";
+import type { SessionController } from "@/features/sessions/conversation/desktop-session-controller";
 
 function fixture(): SessionController {
   return {

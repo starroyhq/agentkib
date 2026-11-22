@@ -4,7 +4,7 @@ import { CLAUDE_BRIDGE_CLI_VERSION } from "@agentkib/runtime-protocol";
 import { render } from "../../desktop-reader-test-utils";
 import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { SessionController } from "./use-session-controller";
+import type { SessionController } from "../../desktop-session-controller";
 import {
   ClaudeBridgePanel as SharedClaudeBridgePanel,
   claudeConnectionCopy,

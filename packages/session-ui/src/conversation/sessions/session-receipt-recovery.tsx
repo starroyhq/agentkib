@@ -1,10 +1,18 @@
-import { managedText } from "./managed-copy";
-import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { subscribeSessionInvalidation } from "@agentkib/conversation-state";
-import { ApiError, isLegacyPreparedReceipt } from "@agentkib/web-client";
-import { Button } from "@/components/ui/button";
-import { codexReason } from "../../codex-copy";
-import { useSession } from "./session-context";
+import {
+  ApiError,
+  isLegacyPreparedReceipt,
+  type Access,
+  type ConversationSessionSummary,
+  type Live,
+  type SessionCapabilities,
+  type WebClient,
+} from "@agentkib/web-client";
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import type { InteractionLocale } from "../../interaction-model";
+import { useSessionPlatform } from "../../session-platform";
+import { codexCopyForSurface, codexReason } from "./codex-copy";
+import { managedText } from "./managed-copy";
 import {
   forgetPending,
   pendingScope,
@@ -12,21 +20,44 @@ import {
   rememberPending,
   subscribePending,
   type PendingControl,
-} from "@agentkib/session-ui";
+} from "./pending-controls";
+import { webLayoutCopy } from "./web-layout-copy";
+
+export type SessionReceiptRecoveryProps = {
+  session: {
+    client: WebClient;
+    origin: string;
+    access?: Access;
+    current?: Pick<ConversationSessionSummary, "id" | "agent">;
+    selected: string;
+    refresh(manual: boolean): Promise<void>;
+    locale: InteractionLocale;
+    live?: Live;
+    capabilities?: SessionCapabilities;
+    online: boolean;
+    busy: boolean;
+  };
+  renderContent: (content: ReactNode) => ReactNode;
+};
 
 /**
  * Resolve saved lifecycle receipts, including requests recorded by older versions. Receipt
  * retries never dispatch the original command again. New-session creation keeps its receipt
  * owner in the new-session composer.
  */
-export function SessionReceiptRecovery({
-  renderContent,
-}: {
-  renderContent: (content: ReactNode) => ReactNode;
-}) {
-  const session = useSession();
+export function SessionReceiptRecovery({ session, renderContent }: SessionReceiptRecoveryProps) {
+  const {
+    kind,
+    components: { Button },
+    copy: platformCopy,
+  } = useSessionPlatform();
   const { client, origin, access, current, selected, refresh, locale, live, capabilities } =
     session;
+  const copy = codexCopyForSurface(locale, kind);
+  const explain = (reason?: string) =>
+    codexReason(locale, reason, kind, platformCopy.unavailableReason);
+  const mayManage = access?.status === "approved" && !!access.device?.manage;
+  const maySend = access?.status === "approved" && access.device?.send === true;
   const [error, setError] = useState("");
   const [uncertain, setUncertain] = useState(false);
   const [pending, setPending] = useState<PendingControl>();
@@ -40,7 +71,15 @@ export function SessionReceiptRecovery({
     access?.status === "approved" && access.device?.id
       ? pendingScope(origin, access.device.id)
       : undefined;
-  const checkScope = JSON.stringify([scope, selected, access?.bootId]);
+  const checkScope = JSON.stringify([
+    scope,
+    selected,
+    access?.bootId,
+    mayManage,
+    kind === "web" && maySend,
+    access?.experimentalEnabled,
+    access?.protocolVersion,
+  ]);
   if (outcomeCheck && outcomeCheck.scope !== checkScope) setOutcomeCheck(undefined);
   const checkingOutcome = outcomeCheck?.status === "checking";
   useLayoutEffect(
@@ -68,23 +107,16 @@ export function SessionReceiptRecovery({
             locale,
             "Cannot read the saved request identity.",
             "无法读取已保存的请求标识。",
+            kind,
           ),
         );
       }
     };
     readSaved();
     return subscribePending(readSaved);
-  }, [scope, selected, locale]);
+  }, [scope, selected, locale, kind]);
   useEffect(() => {
-    if (
-      !scope ||
-      !pending ||
-      checkingOutcome ||
-      access?.status !== "approved" ||
-      !access.device?.manage ||
-      !access.experimentalEnabled
-    )
-      return;
+    if (!scope || !pending || checkingOutcome || !mayManage || !access?.experimentalEnabled) return;
     let cancelled = false;
     let checking = false;
     let dirty = false;
@@ -106,7 +138,7 @@ export function SessionReceiptRecovery({
         forgetPending(scope, pending.requestId);
         setError(
           result.status === "not-dispatched"
-            ? managedText(locale, "The request was not dispatched.", "该请求未发送到执行端。")
+            ? managedText(locale, "The request was not dispatched.", "该请求未发送到执行端。", kind)
             : "",
         );
         await refresh(true);
@@ -148,24 +180,51 @@ export function SessionReceiptRecovery({
     pending,
     checkingOutcome,
     selected,
-    access?.status,
     access?.bootId,
-    access?.device?.manage,
     access?.experimentalEnabled,
+    mayManage,
     client,
     refresh,
     locale,
+    kind,
   ]);
+  const reconcile =
+    capabilities?.sessionId === selected ? capabilities.features.reconcile : undefined;
+  const outcomeAgent = current?.agent === "claude-code" ? current.agent : undefined;
   const showOutcomeCheck =
-    current?.agent === "claude-code" &&
+    current?.id === selected &&
     live?.sessionId === selected &&
     live.executionMode === "claude-managed" &&
     live.status === "outcome-unknown" &&
-    capabilities?.sessionId === selected &&
-    capabilities.features.reconcile?.available === true;
+    access?.experimentalEnabled &&
+    access.protocolVersion === 2 &&
+    (kind === "web" ? maySend : !!outcomeAgent && mayManage && reconcile?.available === true);
+  // The host's /managed/reconcile grant is stricter than Web's send visibility policy.
+  const canCheckOutcome =
+    showOutcomeCheck &&
+    !!outcomeAgent &&
+    mayManage &&
+    reconcile?.available === true &&
+    !!scope &&
+    session.online &&
+    !session.busy &&
+    !pending &&
+    !checkingOutcome;
+  const checkTitle = canCheckOutcome
+    ? undefined
+    : !mayManage
+      ? explain("permission_denied").text
+      : !outcomeAgent || reconcile?.available !== true
+        ? reconcile?.reason
+          ? explain(reconcile.reason).text
+          : copy.unavailable
+        : !session.online
+          ? webLayoutCopy[locale].offline
+          : pending
+            ? copy.unknown
+            : explain("session-busy").text;
   async function checkOutcome() {
-    if (!scope || !access || pending || checkFlight.current || !session.online || session.busy)
-      return;
+    if (!canCheckOutcome || !outcomeAgent || !scope || !access || checkFlight.current) return;
     const requestId = crypto.randomUUID();
     const showCheckError = (message: string) =>
       setOutcomeCheck({ scope: checkScope, status: "error", message });
@@ -176,12 +235,12 @@ export function SessionReceiptRecovery({
         // Leave the request saved for the receipt reader if storage is unavailable.
       }
       if (checkFlight.current !== requestId) return;
-      const copy = codexReason(locale, reason);
+      const explanation = explain(reason);
       showCheckError(
-        copy.technical || !reason
-          ? managedText(locale, "The request was not dispatched.", "该请求未发送到执行端。") +
-              (copy.technical ? ` (${copy.technical})` : "")
-          : copy.text,
+        explanation.technical || !reason
+          ? managedText(locale, "The request was not dispatched.", "该请求未发送到执行端。", kind) +
+              (explanation.technical ? ` (${explanation.technical})` : "")
+          : explanation.text,
       );
     };
     try {
@@ -189,7 +248,7 @@ export function SessionReceiptRecovery({
         requestId,
         sessionId: selected,
         kind: "reconcile",
-        agent: "claude-code",
+        agent: outcomeAgent,
       });
     } catch {
       showCheckError(
@@ -197,6 +256,7 @@ export function SessionReceiptRecovery({
           locale,
           "Cannot read the saved request identity.",
           "无法读取已保存的请求标识。",
+          kind,
         ),
       );
       return;
@@ -205,7 +265,7 @@ export function SessionReceiptRecovery({
     setOutcomeCheck({ scope: checkScope, status: "checking" });
     try {
       const result = await client.managedAction("reconcile", {
-        agent: "claude-code",
+        agent: outcomeAgent,
         sessionId: selected,
         bootId: access.bootId,
         requestId,
@@ -228,6 +288,7 @@ export function SessionReceiptRecovery({
             locale,
             "The previous outcome is still unknown. No command was sent again.",
             "仍无法确认上次执行结果，没有重新发送命令。",
+            kind,
           ),
         );
       await refresh(true);
@@ -241,36 +302,44 @@ export function SessionReceiptRecovery({
       }
     }
   }
-  if (
-    !access?.device?.manage ||
-    !access.experimentalEnabled ||
-    (current?.agent !== "codex" && current?.agent !== "claude-code") ||
-    (!uncertain && !showOutcomeCheck)
-  )
-    return renderContent(null);
+  const showSavedReceipt =
+    mayManage &&
+    access?.experimentalEnabled &&
+    (current?.agent === "codex" || !!outcomeAgent) &&
+    uncertain;
+  if (!showSavedReceipt && !showOutcomeCheck) return renderContent(null);
   return renderContent(
-    <div className="space-y-3">
+    <div className={kind === "desktop" ? "space-y-3" : "space-y-4"}>
       {(outcomeCheck?.message || error) && (
         <div role="alert" className="break-words text-sm text-destructive-text">
           <p>{outcomeCheck?.message || error}</p>
         </div>
       )}
-      {showOutcomeCheck && access.protocolVersion === 2 && (
+      {showOutcomeCheck && (
         <Button
           variant="outline"
-          disabled={!scope || !session.online || session.busy || !!pending || checkingOutcome}
+          className="disabled:pointer-events-auto"
+          disabled={!canCheckOutcome}
+          title={checkTitle}
           onClick={() => void checkOutcome()}
         >
-          {managedText(locale, "Reconcile outcome", "核对执行结果")}
+          {managedText(locale, "Reconcile outcome", "核对执行结果", kind)}
         </Button>
       )}
-      {uncertain && (
-        <div className="space-y-2 rounded-xl border border-border/70 bg-card px-4 py-3 text-sm">
+      {showSavedReceipt && (
+        <div
+          className={
+            kind === "desktop"
+              ? "space-y-2 rounded-xl border border-border/70 bg-card px-4 py-3 text-sm"
+              : "space-y-2 rounded border p-3 text-sm"
+          }
+        >
           <p>
             {managedText(
               locale,
               "The previous outcome is unconfirmed. Wait for the saved request's status before another operation.",
               "上次操作结果尚未确认。请等待系统确认已保存的请求，再执行新的操作。",
+              kind,
             )}
           </p>
           <p>
@@ -278,6 +347,7 @@ export function SessionReceiptRecovery({
               locale,
               "The saved request status is checked automatically. Refreshing does not run the operation again.",
               "正在自动查询已保存请求的处理状态；刷新不会重新执行操作。",
+              kind,
             )}
           </p>
         </div>

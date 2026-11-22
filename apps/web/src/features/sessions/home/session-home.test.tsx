@@ -19,7 +19,7 @@ const fixture = vi.hoisted(() => ({
   session: undefined as unknown as Record<string, unknown>,
 }));
 vi.mock("@tanstack/react-router", () => ({ useNavigate: () => fixture.navigate }));
-vi.mock("@/features/conversation/features/sessions/session-context", () => ({
+vi.mock("@/features/conversation/web-session-context", () => ({
   useSession: () => fixture.session,
 }));
 vi.mock("../new-session/new-session-composer", () => ({

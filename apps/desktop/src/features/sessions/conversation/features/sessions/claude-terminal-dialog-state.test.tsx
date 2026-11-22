@@ -5,7 +5,7 @@ import { render } from "../../desktop-reader-test-utils";
 import { act, cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { initializeI18n } from "@/core/i18n";
-import type { SessionController } from "./use-session-controller";
+import type { SessionController } from "../../desktop-session-controller";
 import {
   ClaudeBridgePanel as SharedClaudeBridgePanel,
   claudeConnectionCopy,

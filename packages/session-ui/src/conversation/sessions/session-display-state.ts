@@ -1,18 +1,17 @@
 import { isLiveSessionAgent } from "@agentkib/web-client";
+import { contextUsageCopyForSurface } from "../../context-usage-copy";
 import {
-  type SessionSurface,
-  claudeConnectionCopyForSurface,
-  claudeConnectionReason,
-  contextUsageCopyForSurface,
   claudeTerminalDisplay,
   dshNativeStatusDisplay,
   sessionContinuationCopy,
-} from "@agentkib/session-ui";
-import type { SessionController } from "./use-session-controller";
-import { codexReason } from "../../codex-copy";
-import { webLayoutCopy } from "@agentkib/session-ui";
-import { managedControlCopyForSurface } from "./managed-control-copy";
+} from "../../session-continuation";
+import type { SessionSurface } from "../../session-surface-copy";
+import { claudeConnectionCopyForSurface, claudeConnectionReason } from "./claude-connection-copy";
 import { claudeReconnectFailureReason } from "./claude-session-banner";
+import { codexReason } from "./codex-copy";
+import { managedControlCopyForSurface } from "./managed-control-copy";
+import type { SessionController } from "./use-session-controller";
+import { webLayoutCopy } from "./web-layout-copy";
 
 type State = Pick<
   SessionController,
@@ -38,6 +37,7 @@ type DisplayState = {
   reason: string;
   tone: "warning" | "active" | "muted";
   loading?: boolean;
+  offline?: boolean;
   continuation?:
     | "idle"
     | "starting"
@@ -55,7 +55,9 @@ type DisplayState = {
 /** Presentation only: never grants capabilities or changes dispatch eligibility. */
 export function sessionDisplayState(
   state: State,
-  surface: SessionSurface = "desktop",
+  surface: SessionSurface,
+  unavailableReason: Parameters<typeof codexReason>[3],
+  markOffline = surface === "desktop",
 ): DisplayState {
   const { live, online, canSend, access, capabilities, locale } = state;
   const settingsOnlyBlocked = state.settingsOnlyBlocked === true;
@@ -95,7 +97,7 @@ export function sessionDisplayState(
   )
     return {
       label: c.uncertain,
-      reason: codexReason(locale, "control-outcome-unconfirmed", surface).text,
+      reason: codexReason(locale, "control-outcome-unconfirmed", surface, unavailableReason).text,
       tone: "warning",
     };
   if (
@@ -113,6 +115,7 @@ export function sessionDisplayState(
       reason: live ? c.offline : c.connecting,
       tone: "warning",
       loading: !live,
+      ...(markOffline ? { offline: true } : {}),
     };
   const idleUnderSettings = settingsOnlyBlocked && live?.status === "idle" && !reason;
   if (state.current?.agent === "codex") {
@@ -132,7 +135,7 @@ export function sessionDisplayState(
     if (!access.experimentalEnabled)
       return {
         label: c.controlDisabled,
-        reason: codexReason(locale, "control-disabled", surface).text,
+        reason: codexReason(locale, "control-disabled", surface, unavailableReason).text,
         tone: "muted",
       };
     if (!access.device?.send)
@@ -186,7 +189,7 @@ export function sessionDisplayState(
       return { label: "", reason: "", tone: "muted", continuation: "idle" };
     return {
       label: copy.viewOnly,
-      reason: codexReason(locale, codexStateReason, surface).text,
+      reason: codexReason(locale, codexStateReason, surface, unavailableReason).text,
       tone: "muted",
       continuation: "view-only",
     };
@@ -208,7 +211,7 @@ export function sessionDisplayState(
     if (!access.experimentalEnabled)
       return {
         label: c.controlDisabled,
-        reason: codexReason(locale, "control-disabled", surface).text,
+        reason: codexReason(locale, "control-disabled", surface, unavailableReason).text,
         tone: "muted",
       };
     if (!access.device?.send)
@@ -257,7 +260,7 @@ export function sessionDisplayState(
           ? copy.claudeWindowsUnsupported
           : (claudeReconnectFailureReason(live, locale, surface) ??
             claudeConnectionReason(locale, reason, surface) ??
-            codexReason(locale, reason, surface).text),
+            codexReason(locale, reason, surface, unavailableReason).text),
       tone: "muted",
       continuation: "view-only",
     };
@@ -283,7 +286,7 @@ export function sessionDisplayState(
     if (!access.experimentalEnabled)
       return {
         label: c.controlDisabled,
-        reason: codexReason(locale, "control-disabled", surface).text,
+        reason: codexReason(locale, "control-disabled", surface, unavailableReason).text,
         tone: "muted",
       };
     if (!access.device?.send)
@@ -333,7 +336,7 @@ export function sessionDisplayState(
     }
     return {
       label: copy.viewOnly,
-      reason: codexReason(locale, reason, surface).text,
+      reason: codexReason(locale, reason, surface, unavailableReason).text,
       tone: "muted",
       continuation: "view-only",
     };
@@ -344,7 +347,7 @@ export function sessionDisplayState(
   )
     return {
       label: live.reason === "claude-terminal-question" ? c.question : c.approval,
-      reason: codexReason(locale, live.reason, surface).text,
+      reason: codexReason(locale, live.reason, surface, unavailableReason).text,
       tone: "warning",
     };
   if (live?.questions?.length) return { label: c.question, reason: c.question, tone: "warning" };
@@ -368,7 +371,7 @@ export function sessionDisplayState(
   )
     return {
       label: c.running,
-      reason: codexReason(locale, live.reason, surface).text,
+      reason: codexReason(locale, live.reason, surface, unavailableReason).text,
       tone: "warning",
     };
   if (live?.executionMode === "claude-follower" && live.reason === "claude-bridge-event-gap")
@@ -403,7 +406,7 @@ export function sessionDisplayState(
   if (!access.experimentalEnabled)
     return {
       label: c.controlDisabled,
-      reason: codexReason(locale, "control-disabled", surface).text,
+      reason: codexReason(locale, "control-disabled", surface, unavailableReason).text,
       tone: "muted",
     };
   if (!access.device?.send)
@@ -436,7 +439,7 @@ export function sessionDisplayState(
   if (reason)
     return {
       label: reason === "unverified-installation" ? c.unverified : c.readonly,
-      reason: codexReason(locale, reason, surface).text,
+      reason: codexReason(locale, reason, surface, unavailableReason).text,
       tone: "muted",
     };
   if (!connectionReady || !live)

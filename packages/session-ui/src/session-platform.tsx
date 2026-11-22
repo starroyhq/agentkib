@@ -95,7 +95,7 @@ type SessionPlatformComponents = Omit<ArtifactComponents, "ArtifactPanel" | "But
 
 type RetainedSessionWindow = {
   pageCache: ReturnType<typeof createTranscriptPageCache<ConversationEventPage>>;
-  readonly streamEpoch: number;
+  streamEpoch: number;
   readonly revision: number;
   getDraft(sessionId: string): string;
   setDraft(sessionId: string, text: string): void;

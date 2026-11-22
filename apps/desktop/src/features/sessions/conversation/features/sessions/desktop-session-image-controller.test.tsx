@@ -9,7 +9,7 @@ import {
   type ConversationClientBridge,
 } from "@agentkib/web-client";
 import { clearMessageImageCache, messageImageCache, messageImageScope } from "@agentkib/session-ui";
-import { useSessionController } from "./use-session-controller";
+import { useSessionController } from "../../desktop-session-controller";
 import {
   createSessionImageLoader,
   forgetSessionImages,

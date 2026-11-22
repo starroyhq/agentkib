@@ -1,7 +1,12 @@
 import { act, cleanup, renderHook } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { useRef, useState } from "react";
-import { createWarmSessionStreamPool, warmSessionAuthority } from "@agentkib/session-ui";
+import {
+  createWarmSessionStreamPool,
+  useSessionLive,
+  warmSessionAuthority,
+  type WarmSessionNavigation,
+} from "@agentkib/session-ui";
 import type {
   Access,
   ConversationEventPage,
@@ -10,10 +15,6 @@ import type {
   WebClient,
 } from "@agentkib/web-client";
 import { ApiError } from "@agentkib/web-client";
-import {
-  useSessionLive,
-  type WarmSessionNavigation,
-} from "@/features/conversation/features/sessions/use-session-live";
 import {
   subscribeSessionInvalidation,
   createHistoryPagination,
@@ -50,7 +51,11 @@ const envelope = (seq: number, type: string, payload: unknown) => ({
   type,
   payload,
 });
-function setup(hasDurablePending = () => false, isSettingsWriteActive?: () => boolean) {
+function setup(
+  hasDurablePending = () => false,
+  isSettingsWriteActive?: () => boolean,
+  surface: "desktop" | "web" = "web",
+) {
   const handlers: SessionStreamHandlers[] = [];
   const close = vi.fn();
   const client = {
@@ -85,6 +90,12 @@ function setup(hasDurablePending = () => false, isSettingsWriteActive?: () => bo
       readinessEpoch = useRef(0),
       refreshWake = useRef(0),
       refreshRequired = useRef(false);
+    const settingsInFlight = useRef<
+      { sessionId: string; generation: number; controlChanged?: boolean } | undefined
+    >(undefined);
+    const readSettingsControls = useRef<
+      ((sessionId: string, accept?: (live: Live) => boolean) => Promise<void>) | undefined
+    >(undefined);
     const streamReady = useRef(false);
     const controlReconciliationPending = useRef(false);
     const nativeCoverage = useRef<NativeCoverage>({
@@ -118,7 +129,10 @@ function setup(hasDurablePending = () => false, isSettingsWriteActive?: () => bo
       setOnline,
       setError,
       hasDurablePending,
-      isSettingsWriteActive,
+      readSettingsControls,
+      ...(surface === "desktop"
+        ? { surface, settingsInFlight }
+        : { surface, isSettingsWriteActive }),
       readinessEpoch,
       refreshRequired,
       setControlReady,
@@ -133,6 +147,8 @@ function setup(hasDurablePending = () => false, isSettingsWriteActive?: () => bo
       online,
       ready,
       nativeCoverage,
+      settingsInFlight,
+      readSettingsControls,
       choose: (id: string) => {
         generation.current++;
         setSelected(id);
@@ -678,6 +694,75 @@ describe("native conversation event delivery", () => {
     });
     expect(view.result.current.ready).toBe(true);
   });
+  it.each(["desktop", "web"] as const)(
+    "preserves the %s response identity check during control reconciliation",
+    async (surface) => {
+      const view = setup(undefined, undefined, surface);
+      view.emit(0, "snapshot", { live: initial });
+      vi.mocked(view.client.live).mockResolvedValue({
+        ...initial,
+        sessionId: "other",
+        status: "idle",
+      });
+      await act(async () => {
+        view.handlers[0].event("control-changed", JSON.stringify({ sessionId: "s" }));
+      });
+
+      if (surface === "desktop") {
+        expect(view.fail).toHaveBeenCalledExactlyOnceWith(
+          expect.objectContaining({ status: 409, code: "session-state-unavailable" }),
+          0,
+        );
+        expect(view.result.current.live).toMatchObject({ sessionId: "s", status: "running" });
+      } else {
+        expect(view.fail).not.toHaveBeenCalled();
+        expect(view.result.current.live).toMatchObject({ sessionId: "other", status: "idle" });
+      }
+    },
+  );
+
+  it.each(["desktop", "web"] as const)(
+    "preserves the %s readback failure scope after a settings write",
+    async (surface) => {
+      const view = setup(undefined, undefined, surface);
+      view.emit(0, "snapshot", { live: initial });
+      act(() => view.handlers[0].event("session-ready", JSON.stringify({ cursor: "c0" })));
+      expect(view.result.current.ready).toBe(true);
+      const failure = new ApiError(503, "session-state-unavailable");
+      vi.mocked(view.client.live).mockRejectedValue(failure);
+
+      await act(async () => {
+        await view.result.current.readSettingsControls.current?.("s", () => true);
+      });
+
+      expect(view.client.live).toHaveBeenCalledExactlyOnceWith("s");
+      if (surface === "desktop") expect(view.fail).toHaveBeenCalledExactlyOnceWith(failure, 0);
+      else {
+        expect(view.fail).not.toHaveBeenCalled();
+        expect(view.result.current.ready).toBe(false);
+      }
+    },
+  );
+
+  it.each(["desktop", "web"] as const)(
+    "preserves how %s handles a control notification during a settings write",
+    async (surface) => {
+      const view = setup(undefined, () => true, surface);
+      view.emit(0, "snapshot", { live: initial });
+      const write = { sessionId: "s", generation: 0 };
+      view.result.current.settingsInFlight.current = write;
+
+      await act(async () => {
+        view.handlers[0].event("control-changed", JSON.stringify({ sessionId: "s" }));
+      });
+
+      if (surface === "desktop") {
+        expect(write).toMatchObject({ controlChanged: true });
+        expect(view.client.live).not.toHaveBeenCalled();
+      } else expect(view.client.live).toHaveBeenCalledExactlyOnceWith("s");
+    },
+  );
+
   it("reconciles a missed control-fence change exactly once after empty replay", async () => {
     const view = setup();
     view.emit(0, "snapshot", {

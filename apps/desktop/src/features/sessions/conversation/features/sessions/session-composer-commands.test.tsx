@@ -10,8 +10,8 @@ import { codexCommandPrompt, slashCommandCopy } from "@agentkib/session-ui";
 import { SessionComposer } from "@/features/sessions/conversation/desktop-session-composer";
 import { codexCopy, codexReason } from "../../codex-copy";
 import { composerModelCopy } from "@agentkib/session-ui";
-import type { SessionPanels } from "./session-panels";
-import type { SessionController } from "./use-session-controller";
+import type { SessionPanels } from "@agentkib/session-ui";
+import type { SessionController } from "../../desktop-session-controller";
 
 const doubles = vi.hoisted(() => ({
   session: {} as Partial<SessionController>,
@@ -19,14 +19,17 @@ const doubles = vi.hoisted(() => ({
   codexAction: vi.fn(),
   panels: null as SessionPanels | null,
 }));
-vi.mock("./session-navigation", () => ({ useSessionNavigate: () => vi.fn() }));
-vi.mock("./session-context", () => ({
+vi.mock("../../desktop-session-navigation", () => ({ useSessionNavigate: () => vi.fn() }));
+vi.mock("../../desktop-session-context", () => ({
   useSession: () => {
     const [message, setMessage] = useState("");
     return { ...doubles.session, message, setMessage } as SessionController;
   },
 }));
-vi.mock("./session-panels", () => ({ useSessionPanels: () => doubles.panels }));
+vi.mock("@agentkib/session-ui", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@agentkib/session-ui")>()),
+  useSessionPanels: () => doubles.panels,
+}));
 
 const catalog: ClaudeCommandEntry[] = [
   { name: "loop", builtin: true, aliases: ["proactive"] },

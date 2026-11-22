@@ -10,7 +10,7 @@ import {
   type CodexSessionSettings,
 } from "@agentkib/web-client";
 import { CodexComposerControls } from "@agentkib/session-ui";
-import type { useSession } from "../conversation/features/sessions/session-context";
+import type { useSession } from "../conversation/web-session-context";
 import { codexCopy, codexReason } from "../conversation/codex-copy";
 
 const copy = codexCopy["en-US"];

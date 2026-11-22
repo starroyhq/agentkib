@@ -7,11 +7,11 @@ import {
   type ReaderContextUsageProps,
 } from "@agentkib/session-ui";
 import { codexCopy, codexReason } from "../../codex-copy";
-import { claudeComposerNotice, claudeSessionBanner } from "./claude-session-banner";
+import { claudeComposerNotice, claudeSessionBanner } from "@agentkib/session-ui";
 import { DesktopSessionOperations } from "./desktop-session-operations";
 import { SessionComposer } from "../../desktop-session-composer";
-import { useSessionPanels } from "./session-panels";
-import { useSession } from "./session-context";
+import { useSessionPanels } from "@agentkib/session-ui";
+import { useSession } from "../../desktop-session-context";
 import { ContextUsageGauge } from "../../context-usage";
 import { desktopSessionImages } from "../../desktop-session-images";
 import {

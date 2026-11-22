@@ -10,7 +10,7 @@ import {
   type ConversationReadState,
   type Live,
 } from "@agentkib/web-client";
-import { EmbeddedConversation } from "./conversation/conversation";
+import { EmbeddedConversation } from "./conversation/desktop-embedded-conversation";
 const state: ConversationReadState = {
   source: "codex-native",
   status: "unread",

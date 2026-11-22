@@ -10,7 +10,10 @@ import {
   type HistoryLocatedRecord,
   type HistorySearchStatus,
 } from "@agentkib/web-client";
-import { EmbeddedConversation, type EmbeddedConversationHandle } from "../../conversation";
+import {
+  EmbeddedConversation,
+  type EmbeddedConversationHandle,
+} from "../../desktop-embedded-conversation";
 import { historyCopy } from "@agentkib/session-ui";
 import { codexCopy } from "../../codex-copy";
 

@@ -8,7 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SessionComposer } from "@/features/conversation/web-session-composer";
 import { codexCopy, codexReason } from "../../codex-copy";
 import type { CodexResource } from "@agentkib/session-ui";
-import type { SessionController } from "./use-session-controller";
+import type { SessionController } from "../../web-session-controller";
 
 const doubles = vi.hoisted(() => ({
   session: {} as Partial<SessionController>,
@@ -18,16 +18,16 @@ const doubles = vi.hoisted(() => ({
   upload: vi.fn(),
   resumeCommand: vi.fn(),
 }));
-vi.mock("./session-navigation", () => ({ useSessionNavigate: () => doubles.navigate }));
-vi.mock("./session-context", () => ({
+vi.mock("../../web-session-navigation", () => ({ useSessionNavigate: () => doubles.navigate }));
+vi.mock("../../web-session-context", () => ({
   useSession: () => {
     const [message, setMessage] = useState("");
     return { ...doubles.session, message, setMessage } as SessionController;
   },
 }));
-vi.mock("./session-panels", () => ({ useSessionPanels: () => null }));
 vi.mock("@agentkib/session-ui", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@agentkib/session-ui")>()),
+  useSessionPanels: () => null,
   SessionContextUsageGauge: () => null,
   CodexComposerControls: ({
     action,

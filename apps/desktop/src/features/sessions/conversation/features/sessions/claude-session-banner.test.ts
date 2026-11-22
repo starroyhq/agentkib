@@ -4,9 +4,9 @@ import {
   claudeConnectionReason,
 } from "@agentkib/session-ui";
 import { describe, expect, it } from "vitest";
-import { claudeComposerNotice, claudeSessionBanner } from "./claude-session-banner";
-import { sessionDisplayState } from "./session-display-state";
-import type { SessionController } from "./use-session-controller";
+import { claudeComposerNotice, claudeSessionBanner } from "@agentkib/session-ui";
+import { sessionDisplayState } from "../../desktop-session-display";
+import type { SessionController } from "../../desktop-session-controller";
 
 function fixture(
   locale: SessionController["locale"],
@@ -57,6 +57,10 @@ describe("Claude execution and terminal connection presentation", () => {
           body: expected,
           connection: true,
         });
+        expect(claudeSessionBanner(failed, "desktop", false)).toEqual({
+          title: copy.lostTitle,
+          body: expected,
+        });
         expect(sessionDisplayState(failed)).toMatchObject({
           reason: expected,
           continuation: "view-only",
@@ -65,6 +69,10 @@ describe("Claude execution and terminal connection presentation", () => {
           title: copy.hostDisconnected,
           body: copy.hostDisconnectedInfo,
           connection: true,
+        });
+        expect(claudeSessionBanner({ ...failed, online: false }, "desktop", false)).toEqual({
+          title: copy.hostDisconnected,
+          body: copy.hostDisconnectedInfo,
         });
         const uncertain = { ...failed, notice: "uncertain" as const };
         expect(claudeSessionBanner(uncertain)?.body).toBe(copy.connectionUnconfirmed);
@@ -90,6 +98,10 @@ describe("Claude execution and terminal connection presentation", () => {
           title: copy.lostTitle,
           body: copy.lost,
           connection: true,
+        });
+        expect(claudeSessionBanner(failed, "desktop", false)).toEqual({
+          title: copy.lostTitle,
+          body: copy.lost,
         });
         expect(sessionDisplayState(failed).reason).toBe(copy.lost);
       }
@@ -223,6 +235,10 @@ describe("Claude execution and terminal connection presentation", () => {
         body: copy.hostDisconnectedInfo,
         connection: true,
       });
+      expect(claudeSessionBanner(hostOffline, "desktop", false)).toEqual({
+        title: copy.hostDisconnected,
+        body: copy.hostDisconnectedInfo,
+      });
       for (const unconfirmed of [
         {
           ...fixture(locale, "claude-follower", "outcome-unknown", "control-outcome-unconfirmed"),
@@ -244,6 +260,10 @@ describe("Claude execution and terminal connection presentation", () => {
           title: copy.lostTitle,
           body: copy.lost,
           connection: true,
+        });
+        expect(claudeSessionBanner(lost, "desktop", false)).toEqual({
+          title: copy.lostTitle,
+          body: copy.lost,
         });
         expect(sessionDisplayState(lost).label).toBe(continuation.viewOnly);
       }

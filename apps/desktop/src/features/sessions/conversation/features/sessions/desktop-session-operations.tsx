@@ -1,5 +1,5 @@
 import { CodexTools as SharedCodexTools, type CodexToolsProps } from "@agentkib/session-ui";
-import { useSessionNavigate } from "./session-navigation";
+import { useSessionNavigate } from "../../desktop-session-navigation";
 import { CLAUDE_BRIDGE_CLI_VERSION } from "@agentkib/runtime-protocol";
 import {
   ClaudeBackgroundSetting,
@@ -10,9 +10,8 @@ import {
 import { useEffect, useState } from "react";
 
 import { desktopProjectAgentClient } from "./project-agent-adapter";
-import { useSession } from "./session-context";
-import { useSessionPanels } from "./session-panels";
-import { SessionReceiptRecovery } from "./session-receipt-recovery";
+import { useSession } from "../../desktop-session-context";
+import { useSessionPanels } from "@agentkib/session-ui";
 
 const hostPanels = new Map<
   string,
@@ -50,7 +49,6 @@ export function DesktopSessionOperations({
         session={session}
         projectAgentClient={desktopProjectAgentClient}
         ExecutionControls={CodexTools}
-        ReceiptRecovery={SessionReceiptRecovery}
         hostPanels={Background && <Background locale={locale} />}
       />
       {Terminal && canConnectTerminal && terminalOpen && (

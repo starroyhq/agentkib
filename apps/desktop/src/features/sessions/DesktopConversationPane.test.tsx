@@ -48,7 +48,7 @@ vi.mock("./session-view-store", () => ({
     },
   ),
 }));
-vi.mock("./conversation/conversation", () => ({
+vi.mock("./conversation/desktop-embedded-conversation", () => ({
   EmbeddedConversation: ({
     onSessionChange,
     refreshRevision,

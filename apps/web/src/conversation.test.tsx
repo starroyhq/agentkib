@@ -20,9 +20,9 @@ import {
   type HistorySearchStatus,
   type ResolvedHistoryReference,
 } from "@agentkib/web-client";
-import { EmbeddedConversation } from "@/features/conversation/conversation";
+import { EmbeddedConversation } from "@/features/conversation/web-embedded-conversation";
 import { agentName } from "@agentkib/agent-identity";
-import { useSessionController } from "@/features/conversation/features/sessions/use-session-controller";
+import { useSessionController } from "@/features/conversation/web-session-controller";
 import {
   HistoryCoverageStatus,
   pendingScope,

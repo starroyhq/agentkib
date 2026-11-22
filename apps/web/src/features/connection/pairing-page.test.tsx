@@ -15,7 +15,7 @@ let accessStatus: Access["status"] = "unpaired";
 const refresh = vi.fn();
 const pair = vi.fn();
 const post = vi.fn();
-vi.mock("@/features/conversation/features/sessions/session-context", () => ({
+vi.mock("@/features/conversation/web-session-context", () => ({
   useSession: () => ({
     t: dictionaries[locale],
     locale,

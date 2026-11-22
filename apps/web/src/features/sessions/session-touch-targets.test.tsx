@@ -31,7 +31,7 @@ vi.mock("@tanstack/react-router", () => ({
   useNavigate: () => fixture.navigate,
   Outlet: () => null,
 }));
-vi.mock("@/features/conversation/features/sessions/session-context", () => ({
+vi.mock("@/features/conversation/web-session-context", () => ({
   useSession: () => ({
     t: dictionaries[fixture.locale],
     locale: fixture.locale,
@@ -58,9 +58,6 @@ vi.mock("@/features/conversation/features/sessions/session-context", () => ({
 vi.mock("@agentkib/session-ui", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@agentkib/session-ui")>()),
   PendingCenter: () => null,
-}));
-vi.mock("@/features/conversation/features/sessions/session-receipt-recovery", () => ({
-  SessionReceiptRecovery: () => null,
 }));
 vi.mock("@/features/conversation/features/history/web-history-search", () => ({
   WebHistorySearchTrigger: () => null,

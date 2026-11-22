@@ -6,11 +6,11 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { catalogCopy } from "@agentkib/session-ui";
 import { conversationWords } from "@/core/i18n";
 import { render } from "../../desktop-reader-test-utils";
-import { SessionDialogs } from "../sessions/session-dialogs";
+import { SessionDialogs } from "../../desktop-session-dialogs";
 
 const MetadataContext = createContext<Record<string, unknown> | null>(null);
 const session = vi.hoisted(() => ({ value: {} as Record<string, unknown> }));
-vi.mock("@/features/sessions/conversation/features/sessions/session-context", () => ({
+vi.mock("@/features/sessions/conversation/desktop-session-context", () => ({
   useSession: () => useContext(MetadataContext) ?? { modal: "metadata", ...session.value },
 }));
 

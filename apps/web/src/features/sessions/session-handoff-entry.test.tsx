@@ -5,13 +5,13 @@ import { cleanup, fireEvent, screen, within } from "@testing-library/react";
 import { render } from "@/features/conversation/web-reader-test-utils";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SessionReader } from "@/features/conversation/features/sessions/web-session-reader";
-import { SessionPanelsContext } from "@/features/conversation/features/sessions/session-panels";
-import type { SessionController } from "@/features/conversation/features/sessions/use-session-controller";
+import { SessionPanelsContext } from "@agentkib/session-ui";
+import type { SessionController } from "@/features/conversation/web-session-controller";
 import { dictionaries } from "@/features/conversation/i18n";
 const words = dictionaries["en-US"];
 
 let session: SessionController;
-vi.mock("@/features/conversation/features/sessions/session-context", () => ({
+vi.mock("@/features/conversation/web-session-context", () => ({
   useSession: () => session,
 }));
 vi.mock("@tanstack/react-router", () => ({ useNavigate: () => vi.fn() }));

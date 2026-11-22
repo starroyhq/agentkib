@@ -12,14 +12,11 @@ import {
   type Live,
   type UploadedAttachment,
 } from "@agentkib/web-client";
-import {
-  SessionProvider,
-  useSession,
-} from "@/features/conversation/features/sessions/session-context";
+import { SessionProvider, useSession } from "@/features/conversation/web-session-context";
 import { SessionComposer } from "@/features/conversation/web-session-composer";
 import { codexCopy } from "@/features/conversation/codex-copy";
 import { composerLayoutCopy } from "@agentkib/session-ui";
-import { managedControlCopy } from "@/features/conversation/features/sessions/managed-control-copy";
+import { managedControlCopy } from "@agentkib/session-ui";
 
 vi.mock("@tanstack/react-router", () => ({ useNavigate: () => vi.fn() }));
 const labels = [

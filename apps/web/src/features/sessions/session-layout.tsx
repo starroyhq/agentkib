@@ -2,11 +2,8 @@ import { Navigate, Outlet, useLocation } from "@tanstack/react-router";
 import { Settings2 } from "lucide-react";
 import { SessionPlatformProvider } from "@agentkib/session-ui";
 import { useEnvironment } from "@/providers/environment";
-import {
-  SessionProvider,
-  useSession,
-} from "@/features/conversation/features/sessions/session-context";
-import { SessionDialogs } from "@/features/conversation/features/sessions/session-dialogs";
+import { SessionProvider, useSession } from "@/features/conversation/web-session-context";
+import { SessionDialogs } from "@/features/conversation/web-session-dialogs";
 import { PairingPage } from "@/features/connection/pairing-page";
 import { Button } from "@/features/conversation/components/ui/button";
 import { Badge } from "@/components/ui/badge";

@@ -5,7 +5,7 @@ import type { ConversationSessionSummary, SessionManagementAction } from "@agent
 import { Dialog } from "../../components/dialog";
 import { dictionaries } from "../../i18n";
 import { webSessionPlatform } from "../../session-platform";
-import { useSession } from "../sessions/session-context";
+import { useSession } from "../../web-session-context";
 import { codexCopyForSurface, codexReason } from "../../codex-copy";
 
 function DeleteDialog({ children, footer, ...props }: ComponentProps<typeof Dialog>) {

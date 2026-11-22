@@ -2,7 +2,7 @@ import { Input } from "@/features/conversation/components/ui/input";
 import { Button } from "@/features/conversation/components/ui/button";
 import { ChevronRight, MonitorSmartphone, ShieldCheck, Unlink } from "lucide-react";
 import { PairingLayout } from "@/features/connection/pairing-layout";
-import { useSession } from "@/features/conversation/features/sessions/session-context";
+import { useSession } from "@/features/conversation/web-session-context";
 import { codePairingCopy } from "./code-pairing-copy";
 import { pairingErrorCopy, pairingErrorText } from "./pairing-error-copy";
 import { useState } from "react";

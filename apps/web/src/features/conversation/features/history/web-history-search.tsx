@@ -1,5 +1,5 @@
 import { HistorySearchTrigger } from "@agentkib/session-ui";
-import { useSession } from "../sessions/session-context";
+import { useSession } from "../../web-session-context";
 
 export function WebHistorySearchTrigger() {
   const session = useSession();

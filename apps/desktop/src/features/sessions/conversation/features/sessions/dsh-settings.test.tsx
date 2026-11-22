@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import userEvent from "@testing-library/user-event";
 import { sessionProviderCapabilities, type CodexSessionSettings } from "@agentkib/web-client";
 import { CodexComposerControls } from "@agentkib/session-ui";
-import type { useSession } from "./session-context";
+import type { useSession } from "../../desktop-session-context";
 import { codexCopy, codexReason } from "../../codex-copy";
 import { composerModelCopy, planModeCopy, contextUsageCopy } from "@agentkib/session-ui";
 

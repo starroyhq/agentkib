@@ -22,7 +22,7 @@ const projectAgent = vi.fn();
 const manageProjectAgent = vi.fn();
 const client = { projectAgent, manageProjectAgent };
 const components = { Button, Input, NativeCheckbox, mergeClassNames: cn };
-let device: Partial<NonNullable<Access["device"]>>;
+type DeviceGrants = Partial<NonNullable<Access["device"]>>;
 
 function DesktopPanel() {
   return (
@@ -38,7 +38,7 @@ function DesktopPanel() {
   );
 }
 
-function WebPanel() {
+function WebPanel({ device }: { device: DeviceGrants }) {
   return (
     <SessionPlatformProvider platform={{ kind: "web", components } as SessionPlatform}>
       <ProjectAgentPanel
@@ -225,8 +225,33 @@ describe("Project Agent panel on desktop", () => {
     expect(automaticTurns).toHaveValue(25);
     fireEvent.change(automaticTurns, { target: { value: "101" } });
     expect(automaticTurns).toHaveValue(100);
+    const stallThreshold = screen.getByRole("spinbutton", {
+      name: "Stall threshold (minutes)",
+    });
+    expect(stallThreshold).toHaveValue(10);
+    expect(stallThreshold).toHaveAttribute("min", "3");
+    expect(stallThreshold).toHaveAttribute("max", "120");
+    fireEvent.change(stallThreshold, { target: { value: "1" } });
+    expect(stallThreshold).toHaveValue(1);
+    fireEvent.change(stallThreshold, { target: { value: "12" } });
+    fireEvent.blur(stallThreshold);
+    expect(stallThreshold).toHaveValue(12);
+    fireEvent.change(stallThreshold, { target: { value: "2" } });
+    fireEvent.blur(stallThreshold);
+    expect(stallThreshold).toHaveValue(3);
+    fireEvent.change(stallThreshold, { target: { value: "121" } });
+    fireEvent.blur(stallThreshold);
+    expect(stallThreshold).toHaveValue(120);
+    fireEvent.change(stallThreshold, { target: { value: "42.9" } });
+    fireEvent.blur(stallThreshold);
+    expect(stallThreshold).toHaveValue(42);
     fireEvent.click(screen.getByRole("checkbox", { name: "Workers' questions" }));
-    const update = { approvals: ["file-change"], answers: true, maxAutoTurns: 100 };
+    const update = {
+      approvals: ["file-change"],
+      answers: true,
+      maxAutoTurns: 100,
+      stallMinutes: 42,
+    };
     request.mockResolvedValueOnce(agent({ scope: { ...scope, ...update } }));
     await act(async () => {
       fireEvent.click(screen.getByRole("button", { name: "Save" }));
@@ -259,9 +284,8 @@ describe("Project Agent panel on desktop", () => {
 
 describe("Project Agent panel on Web", () => {
   it("sets one up from a device with full access, in the host's own operation names", async () => {
-    device = full;
     projectAgent.mockResolvedValueOnce({ lead: null });
-    render(<WebPanel />);
+    render(<WebPanel device={full} />);
     await act(async () => undefined);
     fireEvent.click(screen.getByRole("button", { name: "Make Project Agent…" }));
     expect(screen.queryByRole("group", { name: "Workspaces workers may use" })).toBeNull();
@@ -269,6 +293,7 @@ describe("Project Agent panel on Web", () => {
     expect(screen.getByRole("spinbutton", { name: "Most automatic turns in a row" })).toHaveValue(
       25,
     );
+    expect(screen.getByRole("spinbutton", { name: "Stall threshold (minutes)" })).toHaveValue(10);
     manageProjectAgent.mockResolvedValueOnce({ lead });
     await act(async () => {
       fireEvent.click(screen.getByRole("button", { name: "Make Project Agent" }));
@@ -276,25 +301,48 @@ describe("Project Agent panel on Web", () => {
     expect(manageProjectAgent).toHaveBeenLastCalledWith({
       operation: "designate",
       sessionId: "lead-1",
-      scope: { approvals: [], answers: false, maxAutoTurns: 25 },
+      scope: { approvals: [], answers: false, maxAutoTurns: 25, stallMinutes: 10 },
     });
     expect(screen.getByRole("button", { name: "Pause delegation" })).toBeInTheDocument();
   });
 
   it("shows a device without full access the state only", async () => {
-    device = { send: true, approve: true, manage: true };
+    const device = { send: true, approve: true, manage: true };
     projectAgent.mockResolvedValueOnce({ lead: null });
-    const { unmount } = render(<WebPanel />);
+    const { unmount } = render(<WebPanel device={device} />);
     await act(async () => undefined);
     expect(screen.queryByRole("button", { name: "Make Project Agent…" })).toBeNull();
     unmount();
     projectAgent.mockResolvedValueOnce({ lead });
-    render(<WebPanel />);
+    render(<WebPanel device={device} />);
     await act(async () => undefined);
     expect(screen.getByText("0 workers")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Pause delegation" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Stop being a Project Agent" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Change settings…" })).toBeNull();
+    const stallThreshold = screen.getByRole("spinbutton", {
+      name: "Stall threshold (minutes)",
+    });
+    expect(stallThreshold).toBeDisabled();
+    expect(stallThreshold).toHaveValue(10);
+    expect(manageProjectAgent).not.toHaveBeenCalled();
+  });
+
+  it("disables the threshold and saving if permission is revoked while editing", async () => {
+    projectAgent.mockResolvedValueOnce({ lead });
+    const { rerender } = render(<WebPanel device={full} />);
+    await act(async () => undefined);
+    fireEvent.click(screen.getByRole("button", { name: "Change settings…" }));
+    const stallThreshold = screen.getByRole("spinbutton", {
+      name: "Stall threshold (minutes)",
+    });
+    fireEvent.change(stallThreshold, { target: { value: "25" } });
+    rerender(<WebPanel device={{ ...full, manage: false }} />);
+    expect(screen.getByRole("spinbutton", { name: "Stall threshold (minutes)" })).toBeDisabled();
+    const save = screen.getByRole("button", { name: "Save" });
+    expect(save).toBeDisabled();
+    fireEvent.click(save);
+    expect(manageProjectAgent).not.toHaveBeenCalled();
   });
 
   it("stops a worker's turn, lets one go and changes the settings, as the device may", async () => {
@@ -307,17 +355,16 @@ describe("Project Agent panel on Web", () => {
       lastReportAt: null,
     };
     // May stop a turn, but neither let a worker go nor take the Project Agent over.
-    device = { accessMode: "full", send: true };
+    const scope = { ...lead.scope, stallMinutes: 42 };
     projectAgent.mockResolvedValueOnce({ lead: { ...lead, workers: [worker] } });
-    const { unmount } = render(<WebPanel />);
+    const { unmount } = render(<WebPanel device={{ accessMode: "full", send: true }} />);
     await act(async () => undefined);
     expect(screen.getByRole("button", { name: "Stop" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Remove" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Change settings…" })).toBeNull();
     unmount();
-    device = full;
-    projectAgent.mockResolvedValueOnce({ lead: { ...lead, workers: [worker] } });
-    render(<WebPanel />);
+    projectAgent.mockResolvedValueOnce({ lead: { ...lead, scope, workers: [worker] } });
+    render(<WebPanel device={full} />);
     await act(async () => undefined);
     manageProjectAgent.mockResolvedValueOnce({ lead: { ...lead, workers: [worker] } });
     await act(async () => {
@@ -329,7 +376,7 @@ describe("Project Agent panel on Web", () => {
       sessionId: "lead-1",
     });
     fireEvent.click(screen.getByRole("button", { name: "Remove" }));
-    manageProjectAgent.mockResolvedValueOnce({ lead });
+    manageProjectAgent.mockResolvedValueOnce({ lead: { ...lead, scope } });
     await act(async () => {
       fireEvent.click(screen.getByRole("button", { name: "Remove" }));
     });
@@ -347,14 +394,24 @@ describe("Project Agent panel on Web", () => {
     });
     expect(automaticTurns).toHaveValue(25);
     fireEvent.change(automaticTurns, { target: { value: "5" } });
-    manageProjectAgent.mockResolvedValueOnce({ lead });
+    const stallThreshold = screen.getByRole("spinbutton", {
+      name: "Stall threshold (minutes)",
+    });
+    expect(stallThreshold).toBeEnabled();
+    expect(stallThreshold).toHaveValue(42);
+    fireEvent.change(stallThreshold, { target: { value: "26.9" } });
+    manageProjectAgent.mockResolvedValueOnce({
+      lead: { ...lead, scope: { ...scope, maxAutoTurns: 5, stallMinutes: 26 } },
+    });
     await act(async () => {
       fireEvent.click(screen.getByRole("button", { name: "Save" }));
     });
     expect(manageProjectAgent).toHaveBeenLastCalledWith({
       operation: "update",
       sessionId: "lead-1",
-      scope: { approvals: [], answers: false, maxAutoTurns: 5 },
+      scope: { approvals: [], answers: false, maxAutoTurns: 5, stallMinutes: 26 },
     });
+    fireEvent.click(screen.getByRole("button", { name: "Change settings…" }));
+    expect(screen.getByRole("spinbutton", { name: "Stall threshold (minutes)" })).toHaveValue(26);
   });
 });

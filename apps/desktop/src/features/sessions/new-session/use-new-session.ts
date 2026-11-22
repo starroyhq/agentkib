@@ -18,6 +18,7 @@ import {
   type ManagedOptions,
 } from "@agentkib/web-client";
 import {
+  DEFAULT_NEW_SESSION_AGENT,
   newSessionCopy,
   type NewSessionCreateFields,
   forgetPending,
@@ -246,7 +247,7 @@ export function useNewSession({
         !scope ||
         currentVisit.current !== visit ||
         fields.workspaceId !== workspaceId ||
-        (fields.agent ?? "codex") !== agent
+        (fields.agent ?? DEFAULT_NEW_SESSION_AGENT) !== agent
       )
         return;
       flight.current = true;
@@ -311,7 +312,5 @@ export function useNewSession({
     /** A create whose outcome is not known yet. */
     unknown: !!pendingRequest,
     create,
-    /** Opens Devin CLI's own login or workspace trust in a terminal on this computer. */
-    devinTerminal: (body: Parameters<typeof client.devinTerminal>[0]) => client.devinTerminal(body),
   };
 }

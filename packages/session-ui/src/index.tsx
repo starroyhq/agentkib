@@ -343,17 +343,19 @@ export {
   composerLocalSlashOptions,
   sessionSlashOptions,
   composerPanelShortcut,
-  matchSlashCommands,
   codexSlashOptions,
   dshSlashOptions,
   planSlashOption,
   slashCommandCopy,
-  slashCommandQuery,
-  slashPlanQuery,
   unsupportedEffortReason,
-  useSlashCommandMenu,
   type AgentKibCommand,
   type AgentKibPanel,
+} from "./agents/session-commands";
+export {
+  matchSlashCommands,
+  slashCommandQuery,
+  slashPlanQuery,
+  useSlashCommandMenu,
   type SlashCommandOption,
 } from "./slash-commands";
 

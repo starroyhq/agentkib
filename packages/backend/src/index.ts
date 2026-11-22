@@ -2405,13 +2405,17 @@ export class TypeScriptBackend {
         : null;
       return codex ? { agent: "codex", workspaceId: codex, title: null } : null;
     };
-    const live = async (sessionId: string): Promise<Record<string, unknown>> => {
+    const live: LaneHost["live"] = async (sessionId, intent) => {
       const bridge = dsh(sessionId);
       if (bridge) return bridge.live(sessionId, true);
       const agent = session(sessionId)?.agent;
       if (agent === "codex")
         return this.#withWebRead((owner) =>
-          (owner.codexSessionProvider() as CodexSessionProvider).workerLive(sessionId, true),
+          (owner.codexSessionProvider() as CodexSessionProvider).workerLive(
+            sessionId,
+            true,
+            intent,
+          ),
         );
       const request = { operation: "live", sessionId, experimentalEnabled: true };
       return (await (agent === "claude-code"

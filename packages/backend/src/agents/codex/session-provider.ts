@@ -110,6 +110,8 @@ const LEGACY_ADOPT_RECHECK_MS = 5_000;
 const HANDOFF_TIMEOUT_MS = 8_000;
 const HANDOFF_POLL_MS = 250;
 
+type WorkerLiveRead = "read" | "send";
+
 /** Owner discovery answered, and nobody answers for the thread. */
 function codexOwnerMissing(error: unknown): boolean {
   return (
@@ -4959,13 +4961,13 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
   }
 
   /** Worker reads need output evidence and external ownership, even when no page is open. */
-  workerLive(sessionId: string, controls: boolean) {
+  workerLive(sessionId: string, controls: boolean, intent?: "send") {
     return this.host.runOperation(async () => {
       const resident = this.#managedRunners.get(sessionId);
       const live =
         !controls && resident?.session.connected && !resident.retiring
           ? resident.state.snapshot(this.host.runtimeBootId, false)
-          : await this.#managedLive(sessionId, controls, true);
+          : await this.#managedLive(sessionId, controls, intent ?? "read");
       return this.#liveWithLimit(sessionId, live);
     });
   }
@@ -5142,7 +5144,7 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
   async #inactiveLive(
     record: ManagedRecord,
     controls: boolean,
-    worker = false,
+    worker?: WorkerLiveRead,
   ): Promise<Record<string, unknown>> {
     const checked = await this.#preflight.check();
     let reason = checked.reason;
@@ -5151,7 +5153,7 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
     } catch (error) {
       reason = error instanceof Error ? error.message : "codex-session-directory-unverified";
     }
-    if (!reason && record.native_id) reason = this.#codexWriterOwnership(record);
+    if (!reason && record.native_id) reason = this.#codexWriterOwnership(record, worker === "send");
     const retiringRunner = this.#managedRunners.get(record.id);
     const retiring = retiringRunner?.retiring === true;
     const ownershipReason = !retiring && reason === "codex-owner-busy" ? reason : null;
@@ -5643,7 +5645,7 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
   async #managedLive(
     sessionId: string,
     experimentalEnabled = false,
-    worker = false,
+    worker?: WorkerLiveRead,
   ): Promise<Record<string, unknown>> {
     // The unattended Worker read only looks up its own row. Ordinary live reads keep their
     // catalog recovery path.
@@ -5661,7 +5663,11 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
           inactive = (await this.#recoverCodexReceipts(record)) ?? inactive;
         return (
           (await this.#desktopFollowerLive(record, inactive, experimentalEnabled, worker)) ??
-          (await this.#desktopHandoffLive(record, inactive, experimentalEnabled)) ??
+          (await this.#desktopHandoffLive(
+            record,
+            inactive,
+            experimentalEnabled && worker !== "send",
+          )) ??
           inactive
         );
       } catch (error) {
@@ -5739,7 +5745,11 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
       inactive = (await this.#recoverCodexReceipts(managed)) ?? inactive;
     return (
       (await this.#desktopFollowerLive(managed, inactive, experimentalEnabled, worker)) ??
-      (await this.#desktopHandoffLive(managed, inactive, experimentalEnabled)) ??
+      (await this.#desktopHandoffLive(
+        managed,
+        inactive,
+        experimentalEnabled && worker !== "send",
+      )) ??
       inactive
     );
   }
@@ -5929,7 +5939,7 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
     record: ManagedRecord,
     inactive: Record<string, unknown>,
     controls: boolean,
-    worker = false,
+    worker?: WorkerLiveRead,
   ): Promise<Record<string, unknown> | undefined> {
     if (
       inactive.ownershipReason !== "codex-owner-busy" ||
@@ -5941,9 +5951,14 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
           )))
     )
       return undefined;
-    if (!CodexFollowerConnection.supported()) return undefined;
+    const sending = worker === "send";
+    const refused = (reason: string) =>
+      sending && inactive.reason === "codex-owner-busy"
+        ? { ...inactive, sendEnabled: false, reason }
+        : undefined;
+    if (!CodexFollowerConnection.supported()) return refused("platform-unsupported");
     const miss = this.#followerMisses.get(record.id);
-    if (miss !== undefined && Date.now() - miss < FOLLOWER_RETRY_MS) return undefined;
+    if (!sending && miss !== undefined && Date.now() - miss < FOLLOWER_RETRY_MS) return undefined;
     // Passive checks may follow a proven running turn. For an idle lock, only inspect
     // an already attached owner's active turn and leave the normal idle expiry alone.
     const cached =
@@ -5962,6 +5977,7 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
       const state = cached?.bridge.selectedState ?? (await follower.bridge.observeLive());
       if (!cached) follower.lastUsed = Date.now();
       this.#ownerMissing.delete(record.id);
+      this.#followerMisses.delete(record.id);
       const live = this.#followerLive(record, state, controls);
       if (!worker) return live;
       const active = typeof live.turnId === "string" ? live.turnId : null;
@@ -5997,9 +6013,16 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
         follower.bridge.close();
       }
       this.#followerMisses.set(record.id, Date.now());
-      if (codexOwnerMissing(error)) this.#ownerMissing.add(record.id);
-      else this.#ownerMissing.delete(record.id);
-      return undefined;
+      if (codexOwnerMissing(error)) {
+        this.#ownerMissing.add(record.id);
+        return refused("codex-desktop-owner-missing");
+      }
+      this.#ownerMissing.delete(record.id);
+      return refused(
+        error instanceof Error && error.message === "codex-desktop-version-too-old"
+          ? error.message
+          : "codex-desktop-owner-unavailable",
+      );
     }
   }
 

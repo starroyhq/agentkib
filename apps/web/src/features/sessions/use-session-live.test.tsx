@@ -130,9 +130,9 @@ function setup(
       setError,
       hasDurablePending,
       readSettingsControls,
-      ...(surface === "desktop"
-        ? { surface, settingsInFlight }
-        : { surface, isSettingsWriteActive }),
+      surface,
+      settingsInFlight,
+      isSettingsWriteActive,
       readinessEpoch,
       refreshRequired,
       setControlReady,
@@ -149,6 +149,7 @@ function setup(
       nativeCoverage,
       settingsInFlight,
       readSettingsControls,
+      readinessEpoch,
       choose: (id: string) => {
         generation.current++;
         setSelected(id);
@@ -695,7 +696,7 @@ describe("native conversation event delivery", () => {
     expect(view.result.current.ready).toBe(true);
   });
   it.each(["desktop", "web"] as const)(
-    "preserves the %s response identity check during control reconciliation",
+    "rejects a mismatched live response during %s control reconciliation",
     async (surface) => {
       const view = setup(undefined, undefined, surface);
       view.emit(0, "snapshot", { live: initial });
@@ -708,21 +709,17 @@ describe("native conversation event delivery", () => {
         view.handlers[0].event("control-changed", JSON.stringify({ sessionId: "s" }));
       });
 
-      if (surface === "desktop") {
-        expect(view.fail).toHaveBeenCalledExactlyOnceWith(
-          expect.objectContaining({ status: 409, code: "session-state-unavailable" }),
-          0,
-        );
-        expect(view.result.current.live).toMatchObject({ sessionId: "s", status: "running" });
-      } else {
-        expect(view.fail).not.toHaveBeenCalled();
-        expect(view.result.current.live).toMatchObject({ sessionId: "other", status: "idle" });
-      }
+      expect(view.fail).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({ status: 409, code: "session-state-unavailable" }),
+        0,
+      );
+      expect(view.result.current.live).toMatchObject({ sessionId: "s", status: "running" });
+      expect(view.result.current.ready).toBe(false);
     },
   );
 
   it.each(["desktop", "web"] as const)(
-    "preserves the %s readback failure scope after a settings write",
+    "keeps %s online when a quiet settings readback fails",
     async (surface) => {
       const view = setup(undefined, undefined, surface);
       view.emit(0, "snapshot", { live: initial });
@@ -736,16 +733,54 @@ describe("native conversation event delivery", () => {
       });
 
       expect(view.client.live).toHaveBeenCalledExactlyOnceWith("s");
-      if (surface === "desktop") expect(view.fail).toHaveBeenCalledExactlyOnceWith(failure, 0);
-      else {
-        expect(view.fail).not.toHaveBeenCalled();
-        expect(view.result.current.ready).toBe(false);
-      }
+      expect(view.fail).not.toHaveBeenCalled();
+      expect(view.result.current.online).toBe(true);
+      expect(view.result.current.ready).toBe(false);
+      expect(view.result.current.live).toMatchObject(initial);
+    },
+  );
+
+  it("ignores a quiet settings projection superseded by a full refresh", async () => {
+    const view = setup();
+    view.emit(0, "snapshot", { live: initial });
+    let deliver!: (live: Live) => void;
+    vi.mocked(view.client.live).mockImplementationOnce(
+      () => new Promise((resolve) => (deliver = resolve)),
+    );
+    const read = view.result.current.readSettingsControls.current?.("s");
+    view.result.current.readinessEpoch.current++;
+    await act(async () => {
+      deliver({ ...initial, revision: 9, status: "idle" });
+      await read;
+    });
+
+    expect(view.result.current.live).toMatchObject(initial);
+    expect(view.fail).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["desktop", 401],
+    ["desktop", 403],
+    ["web", 401],
+    ["web", 403],
+  ] as const)(
+    "escalates a %s settings read that fails authorization (%s)",
+    async (surface, status) => {
+      const view = setup(undefined, undefined, surface);
+      view.emit(0, "snapshot", { live: initial });
+      act(() => view.handlers[0].event("session-ready", JSON.stringify({ cursor: "c0" })));
+      const failure = new ApiError(status, "forbidden");
+      vi.mocked(view.client.live).mockRejectedValue(failure);
+
+      await act(async () => view.result.current.readSettingsControls.current?.("s"));
+
+      expect(view.fail).toHaveBeenCalledExactlyOnceWith(failure, 0);
+      expect(view.result.current.ready).toBe(false);
     },
   );
 
   it.each(["desktop", "web"] as const)(
-    "preserves how %s handles a control notification during a settings write",
+    "defers %s control reconciliation while the settings response is still awaited",
     async (surface) => {
       const view = setup(undefined, () => true, surface);
       view.emit(0, "snapshot", { live: initial });
@@ -756,10 +791,8 @@ describe("native conversation event delivery", () => {
         view.handlers[0].event("control-changed", JSON.stringify({ sessionId: "s" }));
       });
 
-      if (surface === "desktop") {
-        expect(write).toMatchObject({ controlChanged: true });
-        expect(view.client.live).not.toHaveBeenCalled();
-      } else expect(view.client.live).toHaveBeenCalledExactlyOnceWith("s");
+      expect(write).toMatchObject({ controlChanged: true });
+      expect(view.client.live).not.toHaveBeenCalled();
     },
   );
 

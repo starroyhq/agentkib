@@ -22,7 +22,7 @@ import {
   createHistoryPagination,
   recordLatestHistoryPage,
 } from "@agentkib/conversation-state";
-import { retryBusyRead } from "../../session-read-retry";
+import { checkLiveSession, retryBusyRead } from "../../session-read-retry";
 import { warmSessionAuthority, type WarmSessionStreamPool } from "../../warm-session-stream";
 type Setter<T> = Dispatch<SetStateAction<T>>;
 // These fields cannot grant control or remove an execution/authorization fence.
@@ -53,7 +53,11 @@ type SettingsWrite = { sessionId: string; generation: number; controlChanged?: b
 type ReadSettingsControls = RefObject<
   ((sessionId: string, accept?: (live: Live) => boolean) => Promise<void>) | undefined
 >;
-interface LiveSyncCommon {
+interface LiveSyncOptions {
+  surface: "desktop" | "web";
+  settingsInFlight?: RefObject<SettingsWrite | undefined>;
+  readSettingsControls?: ReadSettingsControls;
+  isSettingsWriteActive?: (sessionId: string) => boolean;
   warmStreams: WarmSessionStreamPool;
   warmScope?: string;
   warmNavigation: RefObject<WarmSessionNavigation>;
@@ -86,22 +90,6 @@ interface LiveSyncCommon {
   setLiveContentVersion?: Setter<number>;
   setUsageEpoch?: Setter<string>;
 }
-type LiveSyncOptions = LiveSyncCommon &
-  (
-    | {
-        surface: "desktop";
-        settingsInFlight: RefObject<SettingsWrite | undefined>;
-        readSettingsControls: ReadSettingsControls;
-        isSettingsWriteActive?: never;
-      }
-    | {
-        surface: "web";
-        settingsInFlight?: never;
-        readSettingsControls?: ReadSettingsControls;
-        isSettingsWriteActive?: (sessionId: string) => boolean;
-      }
-  );
-
 export function useSessionLive({
   surface,
   warmStreams,
@@ -370,20 +358,29 @@ export function useSessionLive({
         quiet = false,
         accept?: (live: Live) => boolean,
       ): Promise<void> => {
-        const settingsRead = desktop ? quiet : !!accept || isSettingsWriteActive?.(id);
+        const settingsRead = quiet || (!desktop && isSettingsWriteActive?.(id));
         if (!settingsRead) {
           controlReconciliationPending.current = true;
           setControlReady(false);
         }
-        if (!desktop || !quiet) publishSessionInvalidation(client, id, ["receipts"]);
+        if (!quiet) publishSessionInvalidation(client, id, ["receipts"]);
         const request = ++controlRequest;
         const wake = refreshWake.current;
         const boundary = controlGeneration;
+        const readiness = readinessEpoch.current;
+        const currentResponse = () => {
+          if (!active() || request !== controlRequest) return false;
+          if (!quiet || readiness === readinessEpoch.current) return true;
+          // A newer refresh owns readiness. This quiet read may not replace its projection.
+          progressPatch = undefined;
+          controlReconciliationPending.current = false;
+          return false;
+        };
         const progress: ProgressPatch = new Map();
         progressPatch = progress;
         return (settingsRead ? retryBusyRead(() => client.live(id)) : client.live(id))
           .then((live) => {
-            if (!active() || request !== controlRequest) return;
+            if (!currentResponse()) return;
             if (boundary !== controlGeneration) {
               // A changed owner, native control state or host fence requires a
               // fresh complete projection. Text/revision progress alone does not.
@@ -391,10 +388,7 @@ export function useSessionLive({
             }
             progressPatch = undefined;
             controlReconciliationPending.current = false;
-            // Desktop validates every reconciliation response. The Web settings
-            // callback supplies its own response validation below.
-            if (desktop && live.sessionId !== id)
-              throw new ApiError(409, "session-state-unavailable");
+            checkLiveSession(live, id);
             if (accept && !accept(live)) {
               setControlReady(false);
               return;
@@ -423,8 +417,8 @@ export function useSessionLive({
             );
           })
           .catch((error) => {
-            if (!active() || request !== controlRequest) return;
-            if (!desktop && settingsRead) {
+            if (!currentResponse()) return;
+            if (settingsRead) {
               progressPatch = undefined;
               controlReconciliationPending.current = false;
               setControlReady(false);
@@ -435,23 +429,17 @@ export function useSessionLive({
             if (error instanceof ApiError && error.code === "operation_busy") {
               progressPatch = undefined;
               controlReconciliationPending.current = false;
-              if (quiet) fail(error, g);
-              else readBusy(wake, g);
+              readBusy(wake, g);
             } else fail(error, g);
           });
       };
       if (readSettingsControls) {
-        readSettingsControls.current = desktop
-          ? async (sessionId, accept) => {
-              if (sessionId !== id || !active()) return;
-              await reconcileControls(true, accept);
-              if (active()) wakeSettingsHistory();
-            }
-          : (_sessionId, accept) => {
-              if (!active()) return Promise.resolve();
-              wakeSettingsHistory();
-              return reconcileControls(false, accept);
-            };
+        readSettingsControls.current = async (sessionId, accept) => {
+          if (sessionId !== id || !active()) return;
+          if (!desktop) wakeSettingsHistory();
+          await reconcileControls(true, accept);
+          if (desktop && active()) wakeSettingsHistory();
+        };
       }
       const disconnected = () => {
         needsDomainRecovery = true;

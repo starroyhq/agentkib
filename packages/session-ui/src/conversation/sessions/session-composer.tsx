@@ -1,7 +1,5 @@
 import { MAX_MESSAGE_LENGTH } from "@agentkib/conversation-state";
 import {
-  claudeCommandDecision,
-  codexCommandDecision,
   sessionProviderDeclaration,
   type Live,
   type ResolvedHistoryReference,
@@ -18,6 +16,12 @@ import {
   type ComponentType,
   type ReactNode,
 } from "react";
+import {
+  composerPanelShortcut,
+  planSlashOption,
+  resolveSessionCommands,
+  type AgentKibPanel,
+} from "../../agents/session-commands";
 import { sessionContinuationRegistration } from "../../agents/session-continuation";
 import { sessionQueuePanel } from "../../agents/session-queue";
 import { sessionStopCapabilityAllows } from "../../agents/session-turn-controls";
@@ -37,17 +41,7 @@ import { sessionContinuationCopy } from "../../session-continuation";
 import type { createSessionControl } from "../../session-control";
 import { resolveSessionProvider } from "../../session-provider";
 import { useSessionPlatform } from "../../session-platform";
-import {
-  agentKibCommand,
-  agentKibPanel,
-  composerPanelShortcut,
-  planSlashOption,
-  sessionSlashOptions,
-  slashCommandCopy,
-  unsupportedEffortReason,
-  useSlashCommandMenu,
-  type AgentKibPanel,
-} from "../../slash-commands";
+import { slashPlanQuery, stripSlashPlan, useSlashCommandMenu } from "../../slash-commands";
 import { useComposerAttachments } from "../../use-composer-attachments";
 import { HistoryReferenceChips } from "../history/history-search-controls";
 import { validHistoryMessage } from "../history/history-reference-model";
@@ -231,7 +225,6 @@ export function SessionComposer({
   );
   // DeepSeek Harness runs a message naming one of its commands itself; the host refuses the
   // ones that need full access to a device without it, so the menu leaves them out.
-  const isDsh = current?.agent === "deepseek-harness";
   const fullAccess = access?.device?.accessMode === "full";
   const addActionsScope = JSON.stringify([
     selected,
@@ -299,8 +292,8 @@ export function SessionComposer({
         : copy.permission;
   const canChooseAttachments = uploadPermission && !busy && !submitted;
   const canOpenAddMenu = canChooseAttachments || canChangeLimitedPlan;
-  const commandCatalog =
-    (isClaude || isDsh) && capabilities?.sessionId === selected ? capabilities.commands : undefined;
+  const commandProvider =
+    current?.id === selected ? sessionProviderDeclaration(current.agent) : undefined;
   const slotsGranted = fullAccess && access?.device?.advancedControl === true;
   const composerCapabilities = existingSessionComposerCapabilities({
     access,
@@ -343,34 +336,35 @@ export function SessionComposer({
   const localSettings = composerCapabilities.reservesModelSlot;
   const localGoal =
     slotsGranted && (composerCapabilities.goalReadable || composerCapabilities.goalDraftOffered);
-  const commandOptions = useMemo(
-    () =>
-      sessionSlashOptions(current?.agent, commandCatalog, {
-        canSend,
-        claudeOwner: commandOwner,
-        dshOwner: commandOwner || fullAccess,
-        model: localSettings,
-        goal: localGoal,
-        locale,
-      }),
-    [
-      current?.agent,
-      commandCatalog,
-      canSend,
-      localSettings,
-      localGoal,
-      locale,
-      commandOwner,
-      fullAccess,
-    ],
-  );
+  const feature = composerCapabilities.feature;
+  const commands = resolveSessionCommands({
+    provider: commandProvider,
+    selected,
+    capabilities,
+    canSend: canSend && controlReady && !settingsOnlyBlocked,
+    canReadNativeCommands:
+      canSend || (access?.status === "approved" && access.device?.send === true),
+    localOwner: commandOwner,
+    fullAccess,
+    model: localSettings,
+    goal: localGoal,
+    locale,
+    fallbackLabel: current?.agent,
+    modelDisabledReason: reason(composerCapabilities.settingsReadReason),
+    goalDisabledReason: reason(feature("goal")?.reason ?? feature("goal-draft")?.reason),
+    nativeDisabledReason: reason(feature("send")?.reason ?? capabilities?.reason),
+    canRun: (action) =>
+      !settingsOnlyBlocked &&
+      ((action === "goal-set" && localGoal && composerCapabilities.goalDraftOffered) ||
+        (controlReady && (action !== "send" || canSend) && feature(action)?.available === true)),
+    actionDisabledReason: (action) => reason(feature(action)?.reason),
+  });
   // A refused command keeps its draft; the explanation goes once the draft changes.
   const [commandNotice, setCommandNotice] = useState<{ draft: string; reason: string }>();
   // A command typed without an argument opens AgentKib's control for it, as a button would.
   const controls = useRef<ComposerControlsHandle>(null);
   const limitedUsage = useRef<ContextUsageHandle>(null);
-  // `/plan`, at the start or after a space, turns plan mode on as in Codex's composer. Only the
-  // controls report it, and they show only with full access.
+  // Plan shortcuts use the same readiness as the visible plan control.
   const [reportedPlan, setPlanState] = useState<ComposerPlanState>({
     on: false,
     available: false,
@@ -379,21 +373,21 @@ export function SessionComposer({
   const planOption = useMemo(() => planSlashOption(locale), [locale]);
   const slash = useSlashCommandMenu({
     value: composerValue,
-    options: commandOptions,
-    enabled: (isClaude || isCodex || commandOptions.length > 0) && draftReady,
-    // Codex's menu is AgentKib's own list; Claude Code's comes from the CLI, DSH's from DSH.
-    catalogKnown: isCodex || commandOptions.length > 0 || !!commandCatalog?.length,
-    locale,
-    label: isCodex
-      ? slashCommandCopy(locale).codexLabel
-      : isDsh
-        ? slashCommandCopy(locale).dshLabel
-        : !isClaude && current?.agent
-          ? current.agent
-          : undefined,
-    plan: planState.available
-      ? { option: planOption, enter: () => controls.current?.plan() ?? false }
-      : undefined,
+    options: commands.options,
+    enabled: commands.enabled && draftReady,
+    copy: { label: commands.label, empty: commands.empty },
+    plan:
+      commandProvider?.composer &&
+      "plan" in commandProvider.composer &&
+      commandProvider.composer.plan &&
+      planState.available
+        ? {
+            option: planOption,
+            query: slashPlanQuery,
+            strip: stripSlashPlan,
+            enter: () => controls.current?.plan() ?? false,
+          }
+        : undefined,
     onChoose: setMessage,
   });
   const openPanel = (panel: AgentKibPanel, command?: string) => {
@@ -539,9 +533,7 @@ export function SessionComposer({
   const resourceNeedsMessage =
     resourceIds.length > 0 && !draft.trim() && !attachmentIds.length && !historyReferences.length;
   const panelShortcut = composerPanelShortcut(draft, localSettings, localGoal);
-  const localCommand = isClaude
-    ? claudeCommandDecision(draft, { owner: commandOwner, commands: commandCatalog })
-    : null;
+  const decision = commands.parse(draft);
   const localCommandReady =
     draftReady &&
     !attachmentIds.length &&
@@ -549,13 +541,13 @@ export function SessionComposer({
     !historyReferences.length &&
     (!!panelShortcut ||
       (!settingsOnlyBlocked &&
-        !!localCommand &&
+        !!decision &&
         ((localSettings &&
           composerCapabilities.settingsWritable &&
-          ["model", "effort"].includes(localCommand.command) &&
-          (!localCommand.args || controlReady)) ||
+          (decision.localControl === "model" || decision.localControl === "effort") &&
+          (!decision.args || controlReady)) ||
           (localGoal &&
-            localCommand.command === "goal" &&
+            decision.localControl === "goal" &&
             (controlReady ||
               (composerCapabilities.goalDraftOffered &&
                 composerCapabilities.feature("goal-set")?.available !== true))))));
@@ -573,12 +565,7 @@ export function SessionComposer({
       (live?.activity === "compacting" && action !== "queue-add")
     )
       return;
-    // The host refuses these too; deciding here keeps the draft and explains it without a
-    // round trip, and runs or opens AgentKib's own control for the commands it has one for.
-    const decision = localCommand;
-    // Codex's own commands work only in its terminal UI; nothing is sent for them. Steering or
-    // queueing one is refused like sending one with attachments: its action runs only on send.
-    const codexCommand = isCodex ? codexCommandDecision(draft) : null;
+    // Client command actions use a standalone send. Refusals keep the user's draft.
     const plain =
       action === "send" &&
       !attachmentIds.length &&
@@ -589,21 +576,15 @@ export function SessionComposer({
         ? panelShortcut === "goal"
           ? "goal"
           : "settings"
-        : decision
-          ? agentKibPanel(decision)
-          : (codexCommand?.panel ?? null)
+        : decision?.panel
       : null;
-    if (panel && openPanel(panel, panelShortcut ?? decision?.command ?? codexCommand?.command)) {
+    if (panel && openPanel(panel, panelShortcut ?? decision?.command)) {
       setCommandNotice(undefined);
       setMessage("");
       return;
     }
     if (plain && panelShortcut) return;
-    const mapped = plain
-      ? decision?.refusal
-        ? agentKibCommand(decision)
-        : (codexCommand?.action ?? null)
-      : null;
+    const mapped = plain ? decision?.action : undefined;
     if (
       mapped?.action === "goal-set" &&
       draftReady &&
@@ -613,7 +594,8 @@ export function SessionComposer({
     ) {
       const goalDraft = parseGoalDraft(mapped.fields.objective, "");
       if (!goalDraft) {
-        setCommandNotice({ draft, reason: "claude-command-goal" });
+        if (decision?.invalidGoalReason)
+          setCommandNotice({ draft, reason: decision.invalidGoalReason });
         return;
       }
       stageGoal(goalDraft);
@@ -623,11 +605,11 @@ export function SessionComposer({
     }
     if (!controlReady || (action === "send" && (!mapped || mapped.action === "send") && !canSend))
       return;
-    const refusal = decision?.refusal ?? codexCommand?.refusal;
-    if (refusal && !(mapped && capabilities?.features[mapped.action]?.available)) {
+    const refusal = decision?.refusal;
+    if (refusal && !(mapped && feature(mapped.action)?.available)) {
       setCommandNotice({
         draft,
-        reason: (decision && unsupportedEffortReason(decision)) ?? refusal,
+        reason: decision.refusalReason ?? refusal,
       });
       return;
     }

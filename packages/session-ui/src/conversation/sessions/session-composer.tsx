@@ -19,7 +19,7 @@ import {
 } from "react";
 import { sessionQueuePanel } from "../../agents/session-queue";
 import { sessionTurnNotice } from "../../agents/session-turn-notice";
-import { claudeTerminalInteraction } from "../../claude-terminal-permission";
+import { sessionApprovalRuntime } from "../../agents/session-approvals";
 import { commandPrompt } from "../../command-prompts";
 import { contextUsageCopyForSurface } from "../../context-usage-copy";
 import type { ContextUsageHandle } from "../../context-usage-indicator";
@@ -186,11 +186,18 @@ export function SessionComposer({
   const layout = composerLayoutCopy[locale];
   const connectionReasonShown =
     connectionNoticeInToolbar || (display.offline && panels?.statusOutsideComposer);
+  const provider = resolveSessionProvider(current, capabilities);
   const terminalInteraction =
-    isClaude &&
     online &&
+    current?.id === selected &&
+    live?.sessionId === selected &&
     (display.continuation === "terminal" || display.continuation === "terminal-watch")
-      ? claudeTerminalInteraction(live, selected)
+      ? sessionApprovalRuntime(live, provider?.connection?.kind)?.observedText?.(
+          live,
+          selected,
+          locale,
+          surface,
+        )
       : undefined;
   const composerValue = message;
   const setComposerText = setMessage;
@@ -516,7 +523,6 @@ export function SessionComposer({
   const resourceIds = resources.filter((item) => item.available).map((item) => item.id);
   const draft = composerValue;
   const valid = ready && validHistoryMessage(draft, historyReferences, attachmentIds.length > 0);
-  const provider = resolveSessionProvider(current, capabilities);
   const queuePanel =
     current?.id === selected ? sessionQueuePanel(current.agent, provider) : undefined;
   const turnNotice = sessionTurnNotice({
@@ -818,7 +824,7 @@ export function SessionComposer({
       )}
       {terminalInteraction && (
         <p role="status" className="px-3 text-xs leading-5 text-muted-foreground">
-          {claudeConnectionCopyForSurface(locale, surface)[terminalInteraction]}
+          {terminalInteraction}
         </p>
       )}
       {isClaude &&

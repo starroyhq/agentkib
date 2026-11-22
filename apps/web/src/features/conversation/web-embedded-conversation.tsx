@@ -31,7 +31,7 @@ import type { Locale } from "./i18n";
 import { SessionProvider, useSession } from "./web-session-context";
 import { SessionReader } from "./features/sessions/web-session-reader";
 import { SessionDialogs } from "./web-session-dialogs";
-import { codexCopyForSurface } from "./codex-copy";
+import { sessionCopyForSurface } from "./session-copy";
 import { Button } from "./components/ui/button";
 import { webLayoutCopy } from "@agentkib/session-ui";
 import { useSessionNavigate } from "./web-session-navigation";
@@ -127,7 +127,7 @@ function EmbeddedShell() {
         <PendingCenter
           compact
           session={session}
-          copy={codexCopyForSurface(session.locale, "web")}
+          copy={sessionCopyForSurface(session.locale, "web")}
           onNavigate={(sessionId) => {
             void navigate({ to: "/sessions/$sessionId", params: { sessionId } });
           }}

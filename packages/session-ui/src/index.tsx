@@ -78,23 +78,26 @@ export {
   type SessionOptions,
   type SettingsNotice,
 } from "./conversation/sessions/use-session-controller";
-export { codexCopy, codexCopyForSurface, codexReason } from "./conversation/sessions/codex-copy";
+export {
+  sessionCopy,
+  sessionCopyForSurface,
+  sessionReason,
+} from "./conversation/sessions/session-copy";
 export { composerLayoutCopy, composerTerm } from "./conversation/sessions/composer-layout-copy";
 export { sessionAgentCopy } from "./conversation/sessions/session-agent-copy";
 export { PermissionModeNotice } from "./conversation/sessions/permission-mode-notice";
 export { SessionSendQueue, useBasicSendQueue } from "./conversation/sessions/dsh-queue";
-export { CodexTools, type CodexToolsProps } from "./conversation/sessions/codex-tools";
+export { SessionTools, type SessionToolsProps } from "./conversation/sessions/session-tools";
 export {
   SessionComposer,
   type SessionComposerProps,
 } from "./conversation/sessions/session-composer";
 export {
-  CodexComposerControls,
-  type CodexComposerControlsProps,
+  SessionComposerControls,
+  type SessionComposerControlsProps,
   type ComposerControlsHandle,
   type ComposerPlanState,
-  type CodexResource,
-} from "./conversation/sessions/codex-session-controls";
+} from "./conversation/sessions/session-composer-controls";
 export { PendingCenter, type PendingCenterCopy } from "./conversation/sessions/pending-center";
 export { SessionDetailsDialog } from "./conversation/catalog/session-details-dialog";
 export {
@@ -321,7 +324,7 @@ export {
   type HomeSessionListProps,
 } from "./home-sessions";
 export { codexPolicyLabel, dshPolicyLabel, type PolicyLabel } from "./policy-labels";
-export { codexCommandPrompt, type CodexCommandPromptRequest } from "./codex-prompts";
+export { commandPrompt, type CommandPromptRequest } from "./command-prompts";
 export { dshAgentPresetCopy, dshAgentPresetText, type DshAgentPreset } from "./dsh-agent-presets";
 export {
   agentKibCommand,
@@ -371,7 +374,7 @@ export { SessionDetailHeader } from "./session-detail-header";
 export { SessionDetailDialogs } from "./session-detail-dialogs";
 export { SessionDetailOperations } from "./session-detail-operations";
 export {
-  codexSettingsRecoveryReason,
+  sessionControlRefusalReason,
   createSessionControl,
   type ControlKind,
   type ControlNotice,

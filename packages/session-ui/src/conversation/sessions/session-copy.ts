@@ -105,7 +105,7 @@ const zh = {
   defaultOption: "默认",
 };
 type Copy = { [K in keyof typeof zh]: string };
-export const codexCopy: Record<Locale, Copy> = {
+export const sessionCopy: Record<Locale, Copy> = {
   "zh-CN": zh,
   "zh-Hant": {
     previewAttachment: "預覽附件",
@@ -1084,7 +1084,7 @@ const claudeStopCodes = [
   "claude-protocol-violation",
   "claude-auth-failed",
 ];
-export function codexReason(
+export function sessionReason(
   locale: Locale,
   reason: string | undefined,
   surface: SessionSurface,
@@ -1117,11 +1117,11 @@ export function codexReason(
   return text
     ? { text: surfaceText(text, surface, locale) }
     : {
-        text: codexCopyForSurface(locale, surface).unavailable,
+        text: sessionCopyForSurface(locale, surface).unavailable,
         ...(reason ? { technical: reason } : {}),
       };
 }
 
-export function codexCopyForSurface(locale: Locale, surface: SessionSurface = "desktop") {
-  return surfaceCopy(codexCopy[locale], surface, locale);
+export function sessionCopyForSurface(locale: Locale, surface: SessionSurface = "desktop") {
+  return surfaceCopy(sessionCopy[locale], surface, locale);
 }

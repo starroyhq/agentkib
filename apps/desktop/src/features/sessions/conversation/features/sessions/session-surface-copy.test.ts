@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { existsSync } from "node:fs";
-import { codexCopyForSurface, codexReason } from "../../codex-copy";
+import { sessionCopyForSurface, sessionReason } from "../../session-copy";
 import { managedControlCopyForSurface } from "@agentkib/session-ui";
 import { claudeConnectionCopyForSurface, surfaceText, artifactCopy } from "@agentkib/session-ui";
 import { managedText } from "@agentkib/session-ui";
@@ -43,10 +43,10 @@ describe("session copy identifies the computer and application", () => {
       expect(claudeConnectionCopyForSurface(locale).localOnly).toContain(desktopApp);
       expect(claudeConnectionCopyForSurface(locale, "web").localOnly).toContain(webApp);
       expect(claudeConnectionCopyForSurface(locale, "web").disconnected).toContain(webApp);
-      expect(codexReason(locale, "permission_denied").text).toContain(desktopApp);
-      expect(codexReason(locale, "permission_denied", "web").text).toContain(webApp);
-      expect(codexReason(locale, "control-disabled").text).toContain(desktopApp);
-      expect(codexReason(locale, "control-disabled", "web").text).toContain(webApp);
+      expect(sessionReason(locale, "permission_denied").text).toContain(desktopApp);
+      expect(sessionReason(locale, "permission_denied", "web").text).toContain(webApp);
+      expect(sessionReason(locale, "control-disabled").text).toContain(desktopApp);
+      expect(sessionReason(locale, "control-disabled", "web").text).toContain(webApp);
       expect(artifactCopy(locale).authorize).toContain(desktopApp);
       expect(artifactCopy(locale, "web").authorize).toContain(webApp);
       expect(artifactCopy(locale, "web")).toBe(artifactCopy(locale, "web"));
@@ -76,7 +76,7 @@ describe("session copy identifies the computer and application", () => {
     },
   );
   it.each(locales)("keeps desktop and browser instructions distinct in %s", (locale) => {
-    const desktop = codexCopyForSurface(locale);
+    const desktop = sessionCopyForSurface(locale);
     const expected = {
       "zh-CN": ["这台电脑", "运行 AgentKib 的电脑", "电脑上的 AgentKib"],
       "zh-Hant": ["這台電腦", "執行 AgentKib 的電腦", "電腦上的 AgentKib"],
@@ -90,8 +90,8 @@ describe("session copy identifies the computer and application", () => {
     expect(managedControlCopyForSurface(locale).tool).toContain(expected[0]);
     expect(managedControlCopyForSurface(locale, "web").tool).toContain(expected[1]);
     expect(managedControlCopyForSurface(locale, "web").management).toContain(expected[2]);
-    expect(codexCopyForSurface(locale)).toBe(desktop);
-    expect(codexCopyForSurface(locale, "web")).toBe(codexCopyForSurface(locale, "web"));
+    expect(sessionCopyForSurface(locale)).toBe(desktop);
+    expect(sessionCopyForSurface(locale, "web")).toBe(sessionCopyForSurface(locale, "web"));
     expect(claudeConnectionCopyForSurface(locale, "web").generate).not.toMatch(
       /一次性|一回限り|one-time/,
     );
@@ -101,13 +101,13 @@ describe("session copy identifies the computer and application", () => {
     "preserves raw diagnostic details and unknown-result protection in %s",
     (locale) => {
       const detail = "unrecognized-source: this computer / 主机 / ホスト / AgentKib中文";
-      expect(codexReason(locale, detail, "web").technical).toBe(detail);
-      expect(codexReason(locale, `claude-protocol-violation: ${detail}`, "web").technical).toBe(
+      expect(sessionReason(locale, detail, "web").technical).toBe(detail);
+      expect(sessionReason(locale, `claude-protocol-violation: ${detail}`, "web").technical).toBe(
         detail,
       );
       expect(managedControlCopyForSurface(locale, "web").protocol).toContain("AgentKib");
-      expect(codexReason(locale, "control-outcome-unconfirmed", "web").text).toBe(
-        codexReason(locale, "control-outcome-unconfirmed").text,
+      expect(sessionReason(locale, "control-outcome-unconfirmed", "web").text).toBe(
+        sessionReason(locale, "control-outcome-unconfirmed").text,
       );
     },
   );

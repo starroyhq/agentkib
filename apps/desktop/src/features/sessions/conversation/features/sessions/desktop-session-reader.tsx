@@ -6,7 +6,7 @@ import {
   useBasicSendQueue,
   type ReaderContextUsageProps,
 } from "@agentkib/session-ui";
-import { codexCopy, codexReason } from "../../codex-copy";
+import { sessionCopy, sessionReason } from "../../session-copy";
 import { sessionBannerAtComposer, sessionConnectionBanner } from "@agentkib/session-ui";
 import { DesktopSessionOperations } from "./desktop-session-operations";
 import { SessionComposer } from "../../desktop-session-composer";
@@ -47,8 +47,8 @@ export function SessionReader() {
       session={session}
       panels={panels}
       agent={agentName(current?.agent)}
-      addContextLabel={codexCopy[locale].addContext}
-      explainReason={(reason) => codexReason(locale, reason).text}
+      addContextLabel={sessionCopy[locale].addContext}
+      explainReason={(reason) => sessionReason(locale, reason).text}
       banner={banner}
       composerBanner={sessionBannerAtComposer(banner)}
       connectionNoticeInToolbar={!!(banner?.connection && panels?.statusOutsideComposer)}

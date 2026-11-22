@@ -53,7 +53,7 @@ const pendingKinds = {
   "usage-limit-cancel": true,
   "usage-limit-continue": true,
 } satisfies Record<PendingControl["kind"], true>;
-const prefix = "agentkib:codex-pending:v1:";
+const sessionPendingStoragePrefix = "agentkib:codex-pending:v1:";
 const listeners = new Set<() => void>();
 export function subscribePending(listener: () => void) {
   listeners.add(listener);
@@ -65,7 +65,7 @@ function changed() {
   for (const listener of listeners) listener();
 }
 export function pendingScope(origin: string, deviceId: string): string {
-  return `${prefix}${JSON.stringify([origin || window.location.origin, deviceId])}`;
+  return `${sessionPendingStoragePrefix}${JSON.stringify([origin || window.location.origin, deviceId])}`;
 }
 export function readPending(scope: string): PendingControl[] {
   const raw = sessionStorage.getItem(scope);

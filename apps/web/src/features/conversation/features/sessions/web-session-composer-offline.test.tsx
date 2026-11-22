@@ -7,13 +7,13 @@ import { render } from "@/features/conversation/web-reader-test-utils";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { composerAddCopy } from "@agentkib/session-ui";
 import { SessionComposer } from "@/features/conversation/web-session-composer";
-import { codexCopy } from "../../codex-copy";
+import { sessionCopy } from "../../session-copy";
 import type { SessionController } from "../../web-session-controller";
 
 const doubles = vi.hoisted(() => ({
   session: {} as Partial<SessionController>,
   control: vi.fn(),
-  codexAction: vi.fn(),
+  runSessionAction: vi.fn(),
   upload: vi.fn(),
 }));
 vi.mock("../../web-session-context", () => ({
@@ -26,7 +26,7 @@ vi.mock("@agentkib/session-ui", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@agentkib/session-ui")>()),
   useSessionPanels: () => null,
   SessionContextUsageGauge: () => null,
-  CodexComposerControls: () => null,
+  SessionComposerControls: () => null,
 }));
 
 function renderComposer() {
@@ -40,7 +40,7 @@ describe("composer drafts across connection changes", () => {
   beforeEach(() => {
     vi.resetAllMocks();
     doubles.control.mockResolvedValue(true);
-    doubles.codexAction.mockResolvedValue({ accepted: true });
+    doubles.runSessionAction.mockResolvedValue({ accepted: true });
     doubles.session = {
       selected: "session",
       current: { id: "session", agent: "codex" } as SessionController["current"],
@@ -73,7 +73,7 @@ describe("composer drafts across connection changes", () => {
         },
       } as SessionController["capabilities"],
       control: doubles.control,
-      codexAction: doubles.codexAction,
+      runSessionAction: doubles.runSessionAction,
       client: {
         uploadAttachment: doubles.upload,
         request: vi.fn(),
@@ -84,7 +84,7 @@ describe("composer drafts across connection changes", () => {
 
   it("opens the restricted attachment picker from + only for the authorized session", async () => {
     const { rerender } = renderComposer();
-    const copy = codexCopy["en-US"];
+    const copy = sessionCopy["en-US"];
     const input = screen.getByLabelText(copy.attachment);
     const pick = vi.spyOn(input, "click").mockImplementation(() => undefined);
     const add = screen.getByRole("button", { name: copy.addContext });

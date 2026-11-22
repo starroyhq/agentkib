@@ -2,7 +2,7 @@ import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, beforeEach, vi } from "vitest";
 import type { Live } from "@agentkib/web-client";
 import { ManagedTurnNotice, retryText } from "../conversation/web-session-display";
-import { codexReason } from "../conversation/codex-copy";
+import { sessionReason } from "../conversation/session-copy";
 import type { Locale } from "../conversation/i18n";
 import { usageLimitNotice } from "@agentkib/session-ui";
 
@@ -104,7 +104,7 @@ describe("managed turn notice", () => {
       />,
     );
     const notice = screen.getByRole("status");
-    expect(notice).toHaveTextContent(codexReason("zh-CN", reason, "web").text);
+    expect(notice).toHaveTextContent(sessionReason("zh-CN", reason, "web").text);
     expect(notice).toHaveTextContent("Not logged in · Please run /login; key source: none");
   });
 

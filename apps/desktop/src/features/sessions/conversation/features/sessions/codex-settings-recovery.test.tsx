@@ -4,15 +4,15 @@ import "@testing-library/jest-dom/vitest";
 import { act, cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { render } from "@/features/sessions/conversation/desktop-reader-test-utils";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ApiError, type CodexSessionSettings } from "@agentkib/web-client";
-import { CodexComposerControls } from "@agentkib/session-ui";
+import { ApiError, type SessionSettings } from "@agentkib/web-client";
+import { SessionComposerControls } from "@agentkib/session-ui";
 import type { SessionController } from "../../desktop-session-controller";
 import { composerModelCopy } from "@agentkib/session-ui";
-import { codexReason } from "../../codex-copy";
+import { sessionReason } from "../../session-copy";
 
 let state: SessionController;
 let boot = 0;
-const settings: CodexSessionSettings = {
+const settings: SessionSettings = {
   sessionId: "session",
   revision: 1,
   available: true,
@@ -58,7 +58,7 @@ beforeEach(() => {
         actions: {},
       })),
     },
-    codexAction: vi.fn(),
+    runSessionAction: vi.fn(),
     control: vi.fn(),
   } as unknown as SessionController;
 });
@@ -71,7 +71,7 @@ describe("Codex settings recovery on desktop", () => {
   ] as const)("opens the model picker for %s without submitting", async (reason, text) => {
     state.noticeReason = reason;
     render(
-      <CodexComposerControls
+      <SessionComposerControls
         session={state}
         resources={[]}
         setResources={vi.fn()}
@@ -93,14 +93,14 @@ describe("Codex settings recovery on desktop", () => {
     await waitFor(() =>
       expect(state.client.sessionSettings).toHaveBeenCalledWith("session", "codex"),
     );
-    expect(state.codexAction).not.toHaveBeenCalled();
+    expect(state.runSessionAction).not.toHaveBeenCalled();
     expect(state.control).not.toHaveBeenCalled();
   });
 
   it("does not offer recovery for an uncertain receipt", () => {
     state.notice = "uncertain";
     render(
-      <CodexComposerControls
+      <SessionComposerControls
         session={state}
         resources={[]}
         setResources={vi.fn()}
@@ -131,7 +131,7 @@ describe("Codex settings recovery on desktop", () => {
       openPhoneFiles: vi.fn(),
       disabled: false,
     };
-    const view = render(<CodexComposerControls session={state} {...controlsProps} />);
+    const view = render(<SessionComposerControls session={state} {...controlsProps} />);
     expect(await screen.findByRole("button", { name: /older-model · High/ })).toBeVisible();
     expect(screen.queryByText(/Last used|Next turn/i)).not.toBeInTheDocument();
     const ring = screen.getByRole("img", { name: "Context usage" });
@@ -142,12 +142,12 @@ describe("Codex settings recovery on desktop", () => {
       settings: emptySettings,
       usage: { available: true, state: "stale" },
     };
-    view.rerender(<CodexComposerControls session={state} {...controlsProps} />);
+    view.rerender(<SessionComposerControls session={state} {...controlsProps} />);
     expect(screen.getByRole("button", { name: /older-model · High/ })).toBeVisible();
     expect(ring).toHaveAccessibleDescription(expect.stringContaining("29% used"));
 
     state.live = { ...state.live, executionLocation: "external" };
-    view.rerender(<CodexComposerControls session={state} {...controlsProps} />);
+    view.rerender(<SessionComposerControls session={state} {...controlsProps} />);
     expect(screen.getByRole("button", { name: /older-model · High/ })).toBeVisible();
     expect(ring).toHaveAccessibleDescription(expect.stringContaining("29% used"));
 
@@ -157,11 +157,11 @@ describe("Codex settings recovery on desktop", () => {
       settings,
       usage: { available: true, state: "ready", usedTokens: 16, contextWindow: 100 },
     };
-    view.rerender(<CodexComposerControls session={state} {...controlsProps} />);
+    view.rerender(<SessionComposerControls session={state} {...controlsProps} />);
     expect(await screen.findByRole("button", { name: /unlisted-model · Low/ })).toBeVisible();
     expect(ring).toHaveAccessibleDescription(expect.stringContaining("16% used"));
     expect(ring).not.toHaveAccessibleDescription(expect.stringContaining("Last recorded"));
-    expect(state.codexAction).not.toHaveBeenCalled();
+    expect(state.runSessionAction).not.toHaveBeenCalled();
   });
 
   it("prefers the external session's recorded model over the cache, and the cache over defaults", async () => {
@@ -173,7 +173,7 @@ describe("Codex settings recovery on desktop", () => {
       disabled: false,
     };
     const read = vi.mocked(state.client.sessionSettings);
-    const view = render(<CodexComposerControls session={state} key="initial" {...props} />);
+    const view = render(<SessionComposerControls session={state} key="initial" {...props} />);
     await screen.findByRole("button", { name: /unlisted-model/ });
 
     state.live = { ...state.live!, executionLocation: "external", status: "running" };
@@ -182,7 +182,7 @@ describe("Codex settings recovery on desktop", () => {
       current: {},
       historicalSettings: { modelId: "observed-externally", effort: "high" },
     });
-    view.rerender(<CodexComposerControls session={state} key="external" {...props} />);
+    view.rerender(<SessionComposerControls session={state} key="external" {...props} />);
     await screen.findByRole("button", { name: /observed-externally · High/ });
 
     read.mockResolvedValue({
@@ -190,10 +190,10 @@ describe("Codex settings recovery on desktop", () => {
       current: { policyId: "test" },
       options: { ...settings.options, policies: [{ id: "test", name: "Read completed" }] },
     });
-    view.rerender(<CodexComposerControls session={state} key="again" {...props} />);
+    view.rerender(<SessionComposerControls session={state} key="again" {...props} />);
     await screen.findByRole("button", { name: /Execution policy: Read completed/ });
     expect(screen.getByRole("button", { name: /observed-externally · High/ })).toBeVisible();
-    expect(state.codexAction).not.toHaveBeenCalled();
+    expect(state.runSessionAction).not.toHaveBeenCalled();
   });
 
   it("shows the host default when no model is known without selecting it", async () => {
@@ -204,7 +204,7 @@ describe("Codex settings recovery on desktop", () => {
       selected: {},
     });
     render(
-      <CodexComposerControls
+      <SessionComposerControls
         session={state}
         resources={[]}
         setResources={vi.fn()}
@@ -222,7 +222,7 @@ describe("Codex settings recovery on desktop", () => {
       "aria-pressed",
       "false",
     );
-    expect(state.codexAction).not.toHaveBeenCalled();
+    expect(state.runSessionAction).not.toHaveBeenCalled();
   });
 
   it("keeps the native history model when a cold session has only a staged policy", async () => {
@@ -235,7 +235,7 @@ describe("Codex settings recovery on desktop", () => {
       historicalSettings: { modelId: "gpt-6.1-sol", effort: "ultra" },
     });
     render(
-      <CodexComposerControls
+      <SessionComposerControls
         session={state}
         resources={[]}
         setResources={vi.fn()}
@@ -249,7 +249,7 @@ describe("Codex settings recovery on desktop", () => {
     expect(
       within(overview).getByRole("button", { name: "Select model: gpt-6.1-sol" }),
     ).toBeVisible();
-    expect(state.codexAction).not.toHaveBeenCalled();
+    expect(state.runSessionAction).not.toHaveBeenCalled();
   });
 
   it("shows a previously opened model immediately and replaces it with the host response", async () => {
@@ -259,7 +259,7 @@ describe("Codex settings recovery on desktop", () => {
       current: { modelId: "listed-model", effort: "low", serviceTierId: "fast" },
     };
     const view = (key: string) => (
-      <CodexComposerControls
+      <SessionComposerControls
         session={state}
         key={key}
         resources={[]}
@@ -272,8 +272,8 @@ describe("Codex settings recovery on desktop", () => {
     const mounted = render(view("first"));
     const name = /Listed model · Low · Fast mode/;
     await screen.findByRole("button", { name });
-    let finish!: (value: CodexSessionSettings) => void;
-    const pending = new Promise<CodexSessionSettings>((resolve) => {
+    let finish!: (value: SessionSettings) => void;
+    const pending = new Promise<SessionSettings>((resolve) => {
       finish = resolve;
     });
     read.mockReturnValue(pending);
@@ -283,7 +283,7 @@ describe("Codex settings recovery on desktop", () => {
     fireEvent.click(cached);
     const overview = await screen.findByRole("dialog", { name: /^Select reasoning effort/ });
     expect(within(overview).getByRole("button", { name: "Fast mode" })).toBeDisabled();
-    expect(state.codexAction).not.toHaveBeenCalled();
+    expect(state.runSessionAction).not.toHaveBeenCalled();
     await act(async () => finish(settings));
     expect(screen.getByRole("button", { name: /unlisted-model · Low/ })).toBeVisible();
   });
@@ -291,7 +291,7 @@ describe("Codex settings recovery on desktop", () => {
   it("drops a displayed model when the current settings read is forbidden", async () => {
     state.notice = undefined;
     const controls = (key: string) => (
-      <CodexComposerControls
+      <SessionComposerControls
         session={state}
         key={key}
         resources={[]}
@@ -319,7 +319,7 @@ describe("Codex settings recovery on desktop", () => {
       disabled: false,
     };
     const view = render(
-      <CodexComposerControls
+      <SessionComposerControls
         session={{ ...state, settingsNotice: { status: "writing", target: "settings" } }}
         {...props}
       />,
@@ -329,7 +329,7 @@ describe("Codex settings recovery on desktop", () => {
     expect(status).toHaveTextContent("Saving settings…");
     expect(status.previousElementSibling).toContainElement(model);
     expect(screen.getAllByText("Saving settings…")).toHaveLength(1);
-    view.rerender(<CodexComposerControls session={state} {...props} />);
+    view.rerender(<SessionComposerControls session={state} {...props} />);
     expect(screen.queryByText("Saving settings…")).not.toBeInTheDocument();
   });
 
@@ -346,7 +346,7 @@ describe("Codex settings recovery on desktop", () => {
       options: { ...settings.options, policies: [{ id: "verified", name: "Verified policy" }] },
     });
     render(
-      <CodexComposerControls
+      <SessionComposerControls
         session={state}
         resources={[]}
         setResources={vi.fn()}
@@ -357,7 +357,7 @@ describe("Codex settings recovery on desktop", () => {
     await screen.findByRole("button", { name: /unlisted-model · Low/ });
     const permission = screen.getByRole("button", { name: "Execution policy" });
     const feedback = screen.getByRole("status");
-    const message = codexReason("en-US", state.settingsNotice.reason).text;
+    const message = sessionReason("en-US", state.settingsNotice.reason).text;
     expect(feedback).toHaveTextContent(message);
     expect(feedback.previousElementSibling).toContainElement(permission);
     fireEvent.click(permission);
@@ -370,7 +370,7 @@ describe("Codex settings recovery on desktop", () => {
     const read = vi.mocked(state.client.sessionSettings);
     read.mockResolvedValue({ ...settings, current: { modelId: "listed-model", effort: "low" } });
     const controls = (key: string) => (
-      <CodexComposerControls
+      <SessionComposerControls
         session={state}
         key={key}
         resources={[]}
@@ -399,6 +399,6 @@ describe("Codex settings recovery on desktop", () => {
     expect(within(overview).getByRole("button", { name: "Reset default model" })).toBeDisabled();
     expect(screen.getAllByText(message)).toHaveLength(1);
     expect(screen.queryByText("unconfirmed-model")).not.toBeInTheDocument();
-    expect(state.codexAction).not.toHaveBeenCalled();
+    expect(state.runSessionAction).not.toHaveBeenCalled();
   });
 });

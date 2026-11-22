@@ -3,47 +3,47 @@ import { useState } from "react";
 import { cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
 import { render } from "@/features/conversation/web-reader-test-utils";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { type CodexContextOptions, type CodexContextResource } from "@agentkib/web-client";
-import { CodexComposerControls } from "@agentkib/session-ui";
+import { type SessionResources, type SessionResource } from "@agentkib/web-client";
+import { SessionComposerControls } from "@agentkib/session-ui";
 import type { useSession } from "@/features/conversation/web-session-context";
 let state: ReturnType<typeof useSession>;
-const folder: CodexContextResource = {
+const folder: SessionResource = {
   id: "folder-ref",
   kind: "directory",
   name: "src",
   navigationId: "opaque-src",
   available: true,
 };
-const rootFile: CodexContextResource = {
+const rootFile: SessionResource = {
   id: "root-file",
   kind: "file",
   name: "README.md",
   available: true,
 };
-const nestedFile: CodexContextResource = {
+const nestedFile: SessionResource = {
   id: "nested-file",
   kind: "file",
   name: "nested.ts",
   available: true,
 };
-const root: CodexContextOptions = {
+const root: SessionResources = {
   sessionId: "s",
   revision: 1,
   directoryId: "opaque-root",
   resources: [folder, rootFile],
 };
-const nested: CodexContextOptions = {
+const nested: SessionResources = {
   sessionId: "s",
   revision: 1,
   directoryId: "opaque-src",
   parentId: "opaque-root",
   resources: [nestedFile],
 };
-function Harness({ initialResources = [] }: { initialResources?: CodexContextResource[] }) {
-  const [resources, setResources] = useState<CodexContextResource[]>(initialResources);
+function Harness({ initialResources = [] }: { initialResources?: SessionResource[] }) {
+  const [resources, setResources] = useState<SessionResource[]>(initialResources);
   return (
     <>
-      <CodexComposerControls
+      <SessionComposerControls
         session={state}
         resources={resources}
         setResources={setResources}
@@ -142,7 +142,7 @@ it("shows navigation loading and errors, then retries the same authorized cursor
 it("aborts old directory requests and ignores their response after a session switch", async () => {
   const view = render(<Harness />);
   await open();
-  let resolve!: (value: CodexContextOptions) => void;
+  let resolve!: (value: SessionResources) => void;
   let signal: AbortSignal | undefined;
   vi.mocked(state.client.codexContextOptions).mockImplementationOnce(
     (_id, _directory, requestSignal) => {
@@ -205,7 +205,7 @@ it("allows browsing and removing references when the selection reaches the send 
 it("aborts directory browsing when its grant is revoked and ignores the pending result", async () => {
   const view = render(<Harness />);
   await open();
-  let resolve!: (value: CodexContextOptions) => void;
+  let resolve!: (value: SessionResources) => void;
   let signal: AbortSignal | undefined;
   vi.mocked(state.client.codexContextOptions).mockImplementationOnce(
     (_id, _directory, requestSignal) => {

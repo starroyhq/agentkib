@@ -11,7 +11,7 @@ import {
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import type { InteractionLocale } from "../../interaction-model";
 import { useSessionPlatform } from "../../session-platform";
-import { codexCopyForSurface, codexReason } from "./codex-copy";
+import { sessionCopyForSurface, sessionReason } from "./session-copy";
 import { managedText } from "./managed-copy";
 import {
   forgetPending,
@@ -53,9 +53,9 @@ export function SessionReceiptRecovery({ session, renderContent }: SessionReceip
   } = useSessionPlatform();
   const { client, origin, access, current, selected, refresh, locale, live, capabilities } =
     session;
-  const copy = codexCopyForSurface(locale, kind);
+  const copy = sessionCopyForSurface(locale, kind);
   const explain = (reason?: string) =>
-    codexReason(locale, reason, kind, platformCopy.unavailableReason);
+    sessionReason(locale, reason, kind, platformCopy.unavailableReason);
   const mayManage = access?.status === "approved" && !!access.device?.manage;
   const maySend = access?.status === "approved" && access.device?.send === true;
   const [error, setError] = useState("");

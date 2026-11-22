@@ -7,16 +7,16 @@ import type { ContextUsage } from "@agentkib/web-client";
 import { ContextUsageGauge } from "../../context-usage";
 import { useSession } from "../../desktop-session-context";
 import { contextUsageCopy } from "@agentkib/session-ui";
-import { codexCopy } from "../../codex-copy";
+import { sessionCopy } from "../../session-copy";
 
 vi.mock("../../desktop-session-context", () => ({ useSession: vi.fn() }));
 let state: ReturnType<typeof useSession>;
 let control: ReturnType<typeof vi.fn>;
-let codexAction: ReturnType<typeof vi.fn>;
+let runSessionAction: ReturnType<typeof vi.fn>;
 const copy = contextUsageCopy["en-US"];
 beforeEach(() => {
   control = vi.fn();
-  codexAction = vi.fn();
+  runSessionAction = vi.fn();
   state = {
     selected: "s",
     locale: "en-US",
@@ -42,13 +42,13 @@ beforeEach(() => {
       usage: { available: true, state: "ready", reportId: 1, usedTokens: 20, contextWindow: 100 },
     },
     control,
-    codexAction,
+    runSessionAction,
   } as unknown as ReturnType<typeof useSession>;
   vi.mocked(useSession).mockImplementation(() => ({ ...state }));
 });
 afterEach(cleanup);
-const ring = (locale = "en-US" as keyof typeof codexCopy) =>
-  screen.getByRole("img", { name: codexCopy[locale].contextUsage });
+const ring = (locale = "en-US" as keyof typeof sessionCopy) =>
+  screen.getByRole("img", { name: sessionCopy[locale].contextUsage });
 const historicalUsage: ContextUsage = {
   historical: true,
   available: true,
@@ -103,7 +103,7 @@ describe("context usage is an informational surface", () => {
       expect(screen.getByRole("tooltip")).toHaveTextContent("20% used");
       expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
       expect(control).not.toHaveBeenCalled();
-      expect(codexAction).not.toHaveBeenCalled();
+      expect(runSessionAction).not.toHaveBeenCalled();
     },
   );
 
@@ -114,7 +114,7 @@ describe("context usage is an informational surface", () => {
     await userEvent.setup().hover(ring());
     expect(await screen.findByRole("tooltip")).toHaveTextContent("20% used");
     expect(control).not.toHaveBeenCalled();
-    expect(codexAction).not.toHaveBeenCalled();
+    expect(runSessionAction).not.toHaveBeenCalled();
   });
 
   it("shows native post-compaction tokens in the tooltip without using the current model limit to invent a percentage", async () => {
@@ -436,7 +436,7 @@ describe("context hover report boundaries", () => {
     expect(ring()).not.toHaveAccessibleDescription(expect.stringContaining("20% used"));
     expect(ring().querySelector("circle[pathLength]")).toBeNull();
     expect(control).not.toHaveBeenCalled();
-    expect(codexAction).not.toHaveBeenCalled();
+    expect(runSessionAction).not.toHaveBeenCalled();
   });
 
   it("does not carry the previous session's report into a different session", () => {

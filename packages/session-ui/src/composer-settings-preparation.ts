@@ -1,5 +1,5 @@
 import type { RefObject } from "react";
-import type { Access, CodexSessionSettings, WebClient } from "@agentkib/web-client";
+import type { Access, SessionSettings, WebClient } from "@agentkib/web-client";
 
 type PreparationAuthority = {
   selected: string;
@@ -15,9 +15,9 @@ type PreparationAuthority = {
 
 /** A catalog read can refresh options without replacing settings from a newer observation. */
 export function mergePreparedCatalog(
-  current: CodexSessionSettings,
-  prepared: CodexSessionSettings,
-): CodexSessionSettings {
+  current: SessionSettings,
+  prepared: SessionSettings,
+): SessionSettings {
   return {
     ...current,
     provider: prepared.provider ?? current.provider,
@@ -48,7 +48,7 @@ export function prepareComposerSettings({
   readVersion: RefObject<number>;
   revision?: number;
   onStart: () => void;
-  onPrepared: (value: CodexSessionSettings, currentRead: boolean) => void;
+  onPrepared: (value: SessionSettings, currentRead: boolean) => void;
   onError: (error: unknown) => void;
   onSettle: () => void;
 }) {

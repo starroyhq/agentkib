@@ -36,7 +36,7 @@ function session(
     live: { sessionId: "session", revision: 4 },
     capabilities: { sessionId: "session", features },
     client: { sessionQueue: vi.fn().mockResolvedValue({ sessionId: "session", data }) },
-    codexAction: vi.fn().mockResolvedValue({ ok: true }),
+    runSessionAction: vi.fn().mockResolvedValue({ ok: true }),
   } as unknown as Session;
 }
 
@@ -116,15 +116,15 @@ it.each(["devin", "antigravity"] as const)(
     await user.clear(input);
     await user.type(input, "run tests first");
     await user.click(screen.getByRole("button", { name: "Save" }));
-    expect(state.codexAction).toHaveBeenLastCalledWith("queue-update", {
+    expect(state.runSessionAction).toHaveBeenLastCalledWith("queue-update", {
       queuedSubmissionId: "item-1",
       text: "run tests first",
     });
     read.mockResolvedValue({ sessionId: "session", paused: true, data: [] });
     await user.click(screen.getByRole("button", { name: "Pause queue" }));
-    expect(state.codexAction).toHaveBeenLastCalledWith("queue-pause", undefined);
+    expect(state.runSessionAction).toHaveBeenLastCalledWith("queue-pause", undefined);
     await user.click(await screen.findByRole("button", { name: "Resume queue" }));
-    expect(state.codexAction).toHaveBeenLastCalledWith("queue-resume", undefined);
+    expect(state.runSessionAction).toHaveBeenLastCalledWith("queue-resume", undefined);
   },
 );
 
@@ -140,11 +140,11 @@ describe("DSH queued messages above the composer", () => {
       expect.any(AbortSignal),
     );
     await user.click(screen.getByRole("button", { name: /Steer/ }));
-    expect(state.codexAction).toHaveBeenLastCalledWith("queue-steer", {
+    expect(state.runSessionAction).toHaveBeenLastCalledWith("queue-steer", {
       queuedSubmissionId: "item-1",
     });
     await user.click(screen.getByRole("button", { name: "Remove" }));
-    expect(state.codexAction).toHaveBeenLastCalledWith("queue-delete", {
+    expect(state.runSessionAction).toHaveBeenLastCalledWith("queue-delete", {
       queuedSubmissionId: "item-1",
     });
   });
@@ -176,7 +176,7 @@ describe("DSH queued messages above the composer", () => {
     expect(remove).toHaveAttribute("title", expect.stringContaining("requires an idle session"));
     await user.click(steer);
     await user.click(remove);
-    expect(state.codexAction).not.toHaveBeenCalled();
+    expect(state.runSessionAction).not.toHaveBeenCalled();
   });
 
   it("uses the declared queue actions and falls back when a legacy host omits them", () => {
@@ -201,7 +201,7 @@ describe("DSH queued messages above the composer", () => {
     await user.clear(input);
     await user.type(input, "run the tests first");
     await user.click(screen.getByRole("button", { name: "Save" }));
-    expect(state.codexAction).toHaveBeenCalledExactlyOnceWith("queue-update", {
+    expect(state.runSessionAction).toHaveBeenCalledExactlyOnceWith("queue-update", {
       queuedSubmissionId: "item-1",
       text: "run the tests first",
     });
@@ -227,7 +227,7 @@ describe("DSH queued messages above the composer", () => {
     );
     await user.keyboard("{Escape}");
     await user.click(screen.getByRole("button", { name: "Remove" }));
-    expect(state.codexAction).toHaveBeenLastCalledWith("queue-delete", {
+    expect(state.runSessionAction).toHaveBeenLastCalledWith("queue-delete", {
       queuedSubmissionId: "item-1",
     });
   });

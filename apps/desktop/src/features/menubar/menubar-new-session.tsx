@@ -25,7 +25,7 @@ import {
 import type { WorkspaceSummary } from "@/core/types";
 import { useI18n } from "@/core/useI18n";
 import { recentContinuationWorkspaces } from "@/features/home/home-continuations";
-import { codexReason } from "@/features/sessions/conversation/codex-copy";
+import { sessionReason } from "@/features/sessions/conversation/session-copy";
 import { failureOf, useNewSession } from "@/features/sessions/new-session/use-new-session";
 
 /** Workspaces the target menu lists, most recently active first. */
@@ -74,7 +74,9 @@ export function MenuBarNewSession({
     session.options.isError && !options
       ? failureOf(session.options.error, locale).reason
       : options && !options.available
-        ? fillCopy(copy.agentUnavailableHere, { reason: codexReason(locale, options.reason).text })
+        ? fillCopy(copy.agentUnavailableHere, {
+            reason: sessionReason(locale, options.reason).text,
+          })
         : undefined;
   const busy = session.busy || (engaged && !!text.trim() && session.options.isFetching && !options);
   const canSend =

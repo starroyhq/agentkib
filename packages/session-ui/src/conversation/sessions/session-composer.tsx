@@ -4,6 +4,7 @@ import {
   codexCommandDecision,
   type Live,
   type ResolvedHistoryReference,
+  type SessionResource,
 } from "@agentkib/web-client";
 import { AlertTriangle, CornerDownRight, ListPlus, MoreHorizontal, X } from "lucide-react";
 import {
@@ -19,7 +20,7 @@ import {
 import { sessionQueuePanel } from "../../agents/session-queue";
 import { sessionTurnNotice } from "../../agents/session-turn-notice";
 import { claudeTerminalInteraction } from "../../claude-terminal-permission";
-import { codexCommandPrompt } from "../../codex-prompts";
+import { commandPrompt } from "../../command-prompts";
 import { contextUsageCopyForSurface } from "../../context-usage-copy";
 import type { ContextUsageHandle } from "../../context-usage-indicator";
 import type { InteractionLocale } from "../../interaction-model";
@@ -50,12 +51,11 @@ import { validHistoryMessage } from "../history/history-reference-model";
 import { runningSendAction, useSendWhileRunning } from "../preferences/send-while-running";
 import { claudeConnectionCopyForSurface } from "../../agents/claude-code/connection-copy";
 import type {
-  CodexComposerControlsProps,
-  CodexResource,
+  SessionComposerControlsProps,
   ComposerControlsHandle,
   ComposerPlanState,
-} from "./codex-session-controls";
-import { codexCopyForSurface, codexReason } from "./codex-copy";
+} from "./session-composer-controls";
+import { sessionCopyForSurface, sessionReason } from "./session-copy";
 import { composerLayoutCopy, composerSettingsStatus } from "./composer-layout-copy";
 import { continuationResources, type ContinuationComposerDraft } from "./continuation-draft";
 import { SessionSendQueue } from "./dsh-queue";
@@ -64,7 +64,7 @@ import { PermissionModeNotice } from "./permission-mode-notice";
 import { SessionReadOnly } from "./session-read-only";
 import type { SessionPanels } from "./session-panels";
 
-type ComposerSession = CodexComposerControlsProps["session"] & {
+type ComposerSession = SessionComposerControlsProps["session"] & {
   historyReferences?: ResolvedHistoryReference[];
   setHistoryReferences?: (references: ResolvedHistoryReference[]) => void;
   t: Readonly<Record<string, string>>;
@@ -108,7 +108,7 @@ export type SessionComposerProps = {
   display: ComposerDisplay;
   connectionStatusInBanner?: boolean;
   connectionNoticeInToolbar?: boolean;
-  Controls: ComponentType<CodexComposerControlsProps>;
+  Controls: ComponentType<SessionComposerControlsProps>;
   TurnNotice: ComponentType<{
     live?: Live;
     locale: InteractionLocale;
@@ -167,7 +167,7 @@ export function SessionComposer({
     message,
     setMessage,
     control,
-    codexAction,
+    runSessionAction,
     controlReady,
     capabilities,
     canSend,
@@ -178,11 +178,11 @@ export function SessionComposer({
     settingsOnlyBlocked,
   } = session;
   const reason = (code?: string | null) =>
-    codexReason(locale, code ?? undefined, surface, platformCopy.unavailableReason).text;
+    sessionReason(locale, code ?? undefined, surface, platformCopy.unavailableReason).text;
   const isClaude = current?.agent === "claude-code";
   const isCodex = current?.agent === "codex";
   const continuation = sessionContinuationCopy(locale);
-  const copy = codexCopyForSurface(locale, surface);
+  const copy = sessionCopyForSurface(locale, surface);
   const layout = composerLayoutCopy[locale];
   const connectionReasonShown =
     connectionNoticeInToolbar || (display.offline && panels?.statusOutsideComposer);
@@ -200,7 +200,7 @@ export function SessionComposer({
   // device chose in preferences; the menu beside Send offers both either way.
   const runningAction = runningSendAction(useSendWhileRunning());
   const [error, setError] = useState("");
-  const [resources, setResources] = useState<CodexResource[]>([]);
+  const [resources, setResources] = useState<SessionResource[]>([]);
   const workspaceId = current?.workspace_id;
   const draftAuthority = useMemo(
     () => ({ client, bootId: access?.bootId, deviceId: access?.device?.id, workspaceId }),
@@ -278,7 +278,7 @@ export function SessionComposer({
     ? contextUsageCopyForSurface(locale, surface).compactingDetail
     : reason(limitedSettings?.reason ?? capabilities?.reason);
   const changeLimitedPlan = () => {
-    if (canChangeLimitedPlan) void codexAction("settings", { mode: nextMode });
+    if (canChangeLimitedPlan) void runSessionAction("settings", { mode: nextMode });
   };
   const settingsNotice =
     restrictedPlan && !fullAccess && isCodex && session.settingsNotice?.target === "permissions"
@@ -484,7 +484,7 @@ export function SessionComposer({
       firstMessage.current = undefined;
       keepUnavailable(draft.files);
       setError(
-        codexReason(
+        sessionReason(
           locale,
           capabilities.features.attachments?.reason,
           "desktop",
@@ -636,17 +636,17 @@ export function SessionComposer({
       const result =
         mapped?.action === "send"
           ? await control("send", undefined, undefined, undefined, undefined, {
-              prompt: codexCommandPrompt(locale, mapped.prompt),
+              prompt: commandPrompt(locale, mapped.prompt),
             })
           : mapped
-            ? await codexAction(mapped.action, "fields" in mapped ? mapped.fields : undefined)
+            ? await runSessionAction(mapped.action, "fields" in mapped ? mapped.fields : undefined)
             : action === "send"
               ? await control("send", undefined, undefined, undefined, undefined, {
                   attachmentIds,
                   ...(startupGoal ? { requiresGoal: true } : {}),
                   ...(resourceIds.length ? { resourceIds } : {}),
                 })
-              : await codexAction(action, {
+              : await runSessionAction(action, {
                   text: draft.trim(),
                   ...(historyReferences.length
                     ? { historyReferences: historyReferences.map((item) => item.reference) }
@@ -833,8 +833,8 @@ export function SessionComposer({
           live={live}
           locale={locale}
           surface={surface}
-          onUsageLimitCancel={() => void codexAction("usage-limit-cancel")}
-          onUsageLimitArm={() => void codexAction("usage-limit-continue")}
+          onUsageLimitCancel={() => void runSessionAction("usage-limit-cancel")}
+          onUsageLimitArm={() => void runSessionAction("usage-limit-continue")}
         />
       )}
       {turnNotice && RegisteredTurnNotice && (
@@ -842,7 +842,7 @@ export function SessionComposer({
           key={selected}
           reason={turnNotice.reason}
           reasonCopy={(locale, code, surface) =>
-            codexReason(locale, code, surface, platformCopy.unavailableReason)
+            sessionReason(locale, code, surface, platformCopy.unavailableReason)
           }
           locale={locale}
           sessionId={surface === "desktop" ? selected : undefined}

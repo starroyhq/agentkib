@@ -6,7 +6,7 @@ import type { Approval, Live, UserQuestionRequest } from "@agentkib/web-client";
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import type { ComponentProps } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { codexReason } from "../../codex-copy";
+import { sessionReason } from "../../session-copy";
 
 type Session = ComponentProps<typeof SessionInteractionDock>["session"];
 let state: Session;
@@ -78,7 +78,7 @@ afterEach(cleanup);
 describe.each(["desktop", "web"] as const)(
   "DSH requests answered in DeepSeek Harness on %s",
   (surface) => {
-    const explainReason = (reason: string) => codexReason("en-US", reason, surface).text;
+    const explainReason = (reason: string) => sessionReason("en-US", reason, surface).text;
     const handledThere = explainReason("interaction-answered-elsewhere");
     const dock = () => (
       <SessionInteractionDock

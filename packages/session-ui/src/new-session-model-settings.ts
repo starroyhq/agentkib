@@ -1,5 +1,5 @@
 import type {
-  CodexSessionSettings,
+  SessionSettings,
   ManagedOptions,
   SessionProviderCapabilities,
 } from "@agentkib/web-client";
@@ -14,7 +14,7 @@ const unavailable = { available: false };
 export function newSessionModelSettings(
   options: ManagedOptions | undefined,
   provider: SessionProviderCapabilities | undefined,
-): CodexSessionSettings | undefined {
+): SessionSettings | undefined {
   if (!options?.available || !options.models?.length) return undefined;
   const reported = options.defaults?.model;
   const defaultModel = reported

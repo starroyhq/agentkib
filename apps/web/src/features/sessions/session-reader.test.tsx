@@ -7,7 +7,7 @@ import { SessionReader } from "@/features/conversation/features/sessions/web-ses
 import { useSession } from "@/features/conversation/web-session-context";
 import { webLayoutCopy } from "@agentkib/session-ui";
 import { claudeConnectionReason } from "@agentkib/session-ui";
-import { codexReason } from "@/features/conversation/codex-copy";
+import { sessionReason } from "@/features/conversation/session-copy";
 
 vi.mock("@/features/conversation/web-session-context", () => ({
   useSession: vi.fn(),
@@ -260,7 +260,7 @@ describe("conversation reading position", () => {
     (reason) => {
       state = { ...state, notice: "notDispatched", noticeReason: reason };
       render(<SessionReader />);
-      expect(screen.getByText(codexReason("zh-CN", reason).text)).toBeVisible();
+      expect(screen.getByText(sessionReason("zh-CN", reason).text)).toBeVisible();
       expect(screen.queryByText(dictionaries["zh-CN"].notDispatched)).not.toBeInTheDocument();
     },
   );
@@ -275,7 +275,7 @@ describe("conversation reading position", () => {
   it.each(["claude-model-unsupported", "claude-effort-unsupported"] as const)(
     "leaves %s to the composer's controls on a full-access device and explains it otherwise",
     (reason) => {
-      const text = codexReason("zh-CN", reason, "web").text;
+      const text = sessionReason("zh-CN", reason, "web").text;
       state = {
         ...state,
         current: { ...state.current!, agent: "claude-code" },
@@ -306,7 +306,7 @@ describe("conversation reading position", () => {
         noticeReason: reason,
       };
       render(<SessionReader />);
-      expect(screen.getByText(codexReason("zh-CN", reason, "web").text)).toBeVisible();
+      expect(screen.getByText(sessionReason("zh-CN", reason, "web").text)).toBeVisible();
       expect(screen.queryByText(dictionaries["zh-CN"].notDispatched)).not.toBeInTheDocument();
     },
   );
@@ -321,7 +321,7 @@ describe("conversation reading position", () => {
         noticeReason: reason,
       };
       render(<SessionReader />);
-      expect(screen.getByText(codexReason("zh-CN", reason, "web").text)).toBeVisible();
+      expect(screen.getByText(sessionReason("zh-CN", reason, "web").text)).toBeVisible();
       expect(screen.queryByText(dictionaries["zh-CN"].notDispatched)).not.toBeInTheDocument();
     },
   );

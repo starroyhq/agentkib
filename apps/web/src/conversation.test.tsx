@@ -253,9 +253,9 @@ describe("active control receipt ownership", () => {
       catalog.mockClear();
       events.mockClear();
       subscribe.mockClear();
-      let control!: ReturnType<typeof view.result.current.codexAction>;
+      let control!: ReturnType<typeof view.result.current.runSessionAction>;
       act(() => {
-        control = view.result.current.codexAction(
+        control = view.result.current.runSessionAction(
           action,
           action === "settings" ? { model: "test-model" } : {},
         );
@@ -331,7 +331,7 @@ describe("active control receipt ownership", () => {
       );
       events.mockClear();
       await act(async () =>
-        view.result.current.codexAction(
+        view.result.current.runSessionAction(
           "settings",
           status === "not-dispatched" ? { policyId: "read-only" } : { model: "test-model" },
         ),
@@ -404,9 +404,9 @@ describe("active control receipt ownership", () => {
     const initial = view.result.current.live!;
     const live = vi.spyOn(client, "live").mockResolvedValue(initial);
     const events = vi.spyOn(client, "events");
-    let control!: ReturnType<typeof view.result.current.codexAction>;
+    let control!: ReturnType<typeof view.result.current.runSessionAction>;
     act(() => {
-      control = view.result.current.codexAction("settings", { model: "test-model" });
+      control = view.result.current.runSessionAction("settings", { model: "test-model" });
     });
     await waitFor(() => expect(write).toHaveBeenCalledOnce());
     const { requestId } = write.mock.calls[0][1];

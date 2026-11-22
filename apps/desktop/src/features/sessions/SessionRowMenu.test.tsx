@@ -8,7 +8,7 @@ import { ApiError } from "@agentkib/web-client";
 import { initializeI18n } from "@/core/i18n";
 import { AppDialogProvider } from "@/components/AppDialogProvider";
 import type { ConversationSessionSummary } from "@/core/types";
-import { codexCopy, codexReason } from "./conversation/codex-copy";
+import { sessionCopy, sessionReason } from "./conversation/session-copy";
 import { SessionRowMenu } from "./SessionRowMenu";
 import { SessionWorkerAssignmentDialog } from "./SessionWorkerAssignmentDialog";
 
@@ -27,7 +27,7 @@ vi.mock("@/core/conversation-bridge", () => ({
 vi.mock("@/core/desktop", () => ({
   desktopApi: () => ({ claude: { request: claudeRequest } }),
 }));
-const copy = codexCopy["en-US"];
+const copy = sessionCopy["en-US"];
 const summary = (agent: string, archived = false) =>
   ({
     id: "session",
@@ -132,7 +132,7 @@ describe("a session row's menu on the desktop", () => {
     fireEvent.change(input, { target: { value: "  Renamed  " } });
     fireEvent.click(save);
     expect(await within(dialog).findByRole("alert")).toHaveTextContent(
-      codexReason("en-US", "follower-operation-unverified").text,
+      sessionReason("en-US", "follower-operation-unverified").text,
     );
     expect(input).toHaveValue("  Renamed  ");
     expect(onChanged).not.toHaveBeenCalled();
@@ -187,7 +187,7 @@ describe("a session row's menu on the desktop", () => {
     const confirm = within(dialog).getByRole("button", { name: copy.deleteConfirm });
     fireEvent.click(confirm);
     expect(await within(dialog).findByRole("alert")).toHaveTextContent(
-      codexReason("en-US", "claude-desktop-session").text,
+      sessionReason("en-US", "claude-desktop-session").text,
     );
     expect(onDeleted).not.toHaveBeenCalled();
     fireEvent.click(confirm);

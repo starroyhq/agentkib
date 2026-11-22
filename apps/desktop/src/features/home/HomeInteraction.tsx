@@ -9,7 +9,7 @@ import {
   sessionInteractionItems,
 } from "@agentkib/session-ui";
 import { useI18n } from "@/core/useI18n";
-import { codexReason } from "@/features/sessions/conversation/codex-copy";
+import { sessionReason } from "@/features/sessions/conversation/session-copy";
 import type { HomeReplies } from "./home-replies";
 
 /**
@@ -110,7 +110,7 @@ export function HomeInteraction({
       }
       const reason =
         result.status === "not-dispatched"
-          ? codexReason(locale, result.reason.replaceAll("_", "-"))
+          ? sessionReason(locale, result.reason.replaceAll("_", "-"))
           : undefined;
       setFailure(reason && !reason.technical ? reason.text : t.sendFailed);
       return false;

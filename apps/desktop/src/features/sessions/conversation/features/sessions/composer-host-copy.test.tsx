@@ -14,7 +14,7 @@ import {
 } from "@agentkib/web-client";
 import { SessionProvider, useSession } from "../../desktop-session-context";
 import { SessionComposer } from "@/features/sessions/conversation/desktop-session-composer";
-import { codexCopy } from "../../codex-copy";
+import { sessionCopy } from "../../session-copy";
 import { composerLayoutCopy } from "@agentkib/session-ui";
 import { managedControlCopy } from "@agentkib/session-ui";
 
@@ -198,7 +198,7 @@ describe("desktop local attachment and permission copy", () => {
     "uses general file copy and the real attachment picker in %s",
     async (locale, chooseLabel, resourceHint) => {
       const f = await start(locale);
-      const c = codexCopy[locale];
+      const c = sessionCopy[locale];
       const input = screen.getByLabelText(c.attachment, { selector: "input" });
       // Text entry is ready before the separate attachment capability response.
       await waitFor(() => expect(input).toBeEnabled());
@@ -240,7 +240,7 @@ describe("desktop local attachment and permission copy", () => {
   );
   it.each(labels)("keeps unsupported attachments disabled in %s", async (locale, chooseLabel) => {
     const f = await start(locale, fixture(false));
-    const c = codexCopy[locale];
+    const c = sessionCopy[locale];
     const input = screen.getByLabelText(c.attachment, { selector: "input" });
     expect(input).toBeDisabled();
     fireEvent.click(screen.getByRole("button", { name: c.addContext }));

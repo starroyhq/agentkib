@@ -10,7 +10,7 @@ import { AppDialogProvider } from "@/components/AppDialogProvider";
 import { SessionDirectoryEntry } from "./SessionDirectoryEntry";
 import { SessionDirectoryTrailing } from "./SessionDirectoryTrailing";
 import { worktreeLabel } from "./session-labels";
-import { codexCopy } from "./conversation/codex-copy";
+import { sessionCopy } from "./conversation/session-copy";
 
 const { client, select, changed, deleted } = vi.hoisted(() => ({
   client: {
@@ -181,7 +181,7 @@ describe("the desktop directory's shared trailing status slot", () => {
     expect(slot).not.toHaveAttribute("data-has-menu");
     expect(slot).toHaveAttribute("data-has-indicator", "true");
     expect(visualIndicator(view.container).querySelector("[data-unread]")).not.toBeNull();
-    expect(screen.queryByRole("button", { name: codexCopy["en-US"].rowMenu })).toBeNull();
+    expect(screen.queryByRole("button", { name: sessionCopy["en-US"].rowMenu })).toBeNull();
   });
 
   it("falls back to runtime state when there is no unread result or worktree", () => {
@@ -205,12 +205,14 @@ describe("the desktop directory's shared trailing status slot", () => {
     await user.tab();
     expect(screen.getByRole("button", { name: /^Synthetic session/ })).toHaveFocus();
     await user.tab();
-    const menuButton = screen.getByRole("button", { name: codexCopy["en-US"].rowMenu });
+    const menuButton = screen.getByRole("button", { name: sessionCopy["en-US"].rowMenu });
     expect(menuButton).toHaveFocus();
     await user.keyboard("{ArrowDown}");
     expect(await screen.findByRole("menu")).toBeVisible();
     expect(menuButton).toHaveAttribute("data-popup-open");
-    expect(await screen.findByRole("menuitem", { name: codexCopy["en-US"].rename })).toBeEnabled();
+    expect(
+      await screen.findByRole("menuitem", { name: sessionCopy["en-US"].rename }),
+    ).toBeEnabled();
     expect(select).not.toHaveBeenCalled();
     await user.keyboard("{Escape}");
     await waitFor(() => expect(screen.queryByRole("menu")).not.toBeInTheDocument());

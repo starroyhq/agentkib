@@ -6,14 +6,14 @@ import { cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
 import { render } from "@/features/conversation/web-reader-test-utils";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SessionComposer } from "@/features/conversation/web-session-composer";
-import { codexCopy, codexReason } from "../../codex-copy";
-import type { CodexResource } from "@agentkib/session-ui";
+import { sessionCopy, sessionReason } from "../../session-copy";
+import type { SessionResource } from "@agentkib/web-client";
 import type { SessionController } from "../../web-session-controller";
 
 const doubles = vi.hoisted(() => ({
   session: {} as Partial<SessionController>,
   control: vi.fn(),
-  codexAction: vi.fn(),
+  runSessionAction: vi.fn(),
   navigate: vi.fn(),
   upload: vi.fn(),
   resumeCommand: vi.fn(),
@@ -29,14 +29,14 @@ vi.mock("@agentkib/session-ui", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@agentkib/session-ui")>()),
   useSessionPanels: () => null,
   SessionContextUsageGauge: () => null,
-  CodexComposerControls: ({
+  SessionComposerControls: ({
     action,
     advancedActions,
     setResources,
   }: {
     action: ReactNode;
     advancedActions: ReactNode;
-    setResources: (resources: CodexResource[]) => void;
+    setResources: (resources: SessionResource[]) => void;
   }) => (
     <>
       <button
@@ -70,7 +70,7 @@ describe("composer sending shortcuts", () => {
       shell: "posix",
       runOn: "host",
     });
-    doubles.codexAction.mockResolvedValue({ accepted: true });
+    doubles.runSessionAction.mockResolvedValue({ accepted: true });
     doubles.session = {
       selected: "session",
       current: { id: "session", agent: "codex" } as SessionController["current"],
@@ -103,7 +103,7 @@ describe("composer sending shortcuts", () => {
         },
       } as SessionController["capabilities"],
       control: doubles.control,
-      codexAction: doubles.codexAction,
+      runSessionAction: doubles.runSessionAction,
       client: {
         uploadAttachment: doubles.upload,
         codexResumeCommand: doubles.resumeCommand,
@@ -123,7 +123,7 @@ describe("composer sending shortcuts", () => {
       "size-8",
       "pointer-coarse:size-11",
     );
-    expect(screen.getByRole("button", { name: codexCopy["en-US"].addContext })).toHaveClass(
+    expect(screen.getByRole("button", { name: sessionCopy["en-US"].addContext })).toHaveClass(
       "size-11",
     );
     const requestSubmit = vi.spyOn(form, "requestSubmit");
@@ -138,7 +138,7 @@ describe("composer sending shortcuts", () => {
       undefined,
       { attachmentIds: [] },
     );
-    expect(doubles.codexAction).not.toHaveBeenCalled();
+    expect(doubles.runSessionAction).not.toHaveBeenCalled();
 
     fireEvent.change(input, { target: { value: "Second message" } });
     fireEvent.click(screen.getByRole("button", { name: "Send" }));
@@ -154,7 +154,7 @@ describe("composer sending shortcuts", () => {
       },
     };
     renderComposer();
-    const button = screen.getByRole("button", { name: codexCopy["en-US"].addContext });
+    const button = screen.getByRole("button", { name: sessionCopy["en-US"].addContext });
     expect(button).toBeDisabled();
     expect(button).toHaveAttribute(
       "title",
@@ -187,29 +187,29 @@ describe("composer sending shortcuts", () => {
         "rounded-full",
         "text-white",
       );
-      expect(screen.getByRole("button", { name: codexCopy["en-US"].advanced })).toHaveClass(
+      expect(screen.getByRole("button", { name: sessionCopy["en-US"].advanced })).toHaveClass(
         "size-11",
       );
       // Enter while the turn runs takes this device's running choice, which queues by default.
       fireEvent.keyDown(input, { key: "Enter" });
       await waitFor(() =>
-        expect(doubles.codexAction).toHaveBeenCalledExactlyOnceWith("queue-add", {
+        expect(doubles.runSessionAction).toHaveBeenCalledExactlyOnceWith("queue-add", {
           text: "Draft message",
         }),
       );
       await waitFor(() => expect(input).toBeEnabled());
       expect(input).toHaveValue("");
       expect(doubles.control).not.toHaveBeenCalled();
-      doubles.codexAction.mockClear();
+      doubles.runSessionAction.mockClear();
       fireEvent.change(input, { target: { value: "Draft message" } });
-      fireEvent.click(screen.getByRole("button", { name: codexCopy["en-US"].advanced }));
+      fireEvent.click(screen.getByRole("button", { name: sessionCopy["en-US"].advanced }));
       fireEvent.click(
         await screen.findByRole("menuitem", {
-          name: action === "steer" ? codexCopy["en-US"].steer : codexCopy["en-US"].queueAdd,
+          name: action === "steer" ? sessionCopy["en-US"].steer : sessionCopy["en-US"].queueAdd,
         }),
       );
       await waitFor(() =>
-        expect(doubles.codexAction).toHaveBeenCalledWith(action, {
+        expect(doubles.runSessionAction).toHaveBeenCalledWith(action, {
           text: "Draft message",
           ...(action === "steer" ? { turnId: "turn" } : {}),
         }),
@@ -251,7 +251,7 @@ describe("composer sending shortcuts", () => {
     expect(screen.queryByText(/Messages run in Codex/)).not.toBeInTheDocument();
     expect(input).toBeEnabled();
     expect(
-      screen.queryByRole("button", { name: codexCopy["en-US"].advanced }),
+      screen.queryByRole("button", { name: sessionCopy["en-US"].advanced }),
     ).not.toBeInTheDocument();
     expect(screen.queryByText(/in use in Codex/i)).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Send" })).toBeEnabled();
@@ -282,7 +282,7 @@ describe("composer sending shortcuts", () => {
     );
     expect(screen.getByText(/On the computer running AgentKib/)).toBeVisible();
     expect(doubles.control).not.toHaveBeenCalled();
-    expect(doubles.codexAction).not.toHaveBeenCalled();
+    expect(doubles.runSessionAction).not.toHaveBeenCalled();
     expect(doubles.navigate).not.toHaveBeenCalled();
   });
 
@@ -331,7 +331,7 @@ describe("composer sending shortcuts", () => {
     const view = render(<SessionComposer />);
     expect(screen.getByRole("status")).toHaveTextContent("continues automatically after the reset");
     fireEvent.click(screen.getByRole("button", { name: "Don't continue automatically" }));
-    expect(doubles.codexAction).toHaveBeenCalledWith("usage-limit-cancel");
+    expect(doubles.runSessionAction).toHaveBeenCalledWith("usage-limit-cancel");
     view.unmount();
     doubles.session.live = {
       ...doubles.session.live,
@@ -339,7 +339,7 @@ describe("composer sending shortcuts", () => {
     } as SessionController["live"];
     render(<SessionComposer />);
     fireEvent.click(screen.getByRole("button", { name: "Continue automatically after the reset" }));
-    expect(doubles.codexAction).toHaveBeenCalledWith("usage-limit-continue");
+    expect(doubles.runSessionAction).toHaveBeenCalledWith("usage-limit-continue");
   });
   it("explains a Devin turn whose CLI process was ended", () => {
     doubles.session.current = { id: "session", agent: "devin" } as SessionController["current"];
@@ -351,7 +351,7 @@ describe("composer sending shortcuts", () => {
     } as SessionController["live"];
     render(<SessionComposer />);
     expect(screen.getByRole("status")).toHaveTextContent(
-      codexReason("en-US", "devin-run-stopped", "web").text,
+      sessionReason("en-US", "devin-run-stopped", "web").text,
     );
   });
 });

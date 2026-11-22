@@ -1,6 +1,6 @@
 import {
   createSessionControl,
-  codexSettingsRecoveryReason,
+  sessionControlRefusalReason,
   type ControlKind,
   type ControlNotice,
   type NotDispatchedReason,
@@ -955,7 +955,7 @@ export function useSessionController<Words extends ControllerWords>(
           resolvedSelected = entry.sessionId;
           const reason =
             result.status === "not-dispatched" && !isLegacyPreparedReceipt(result, entry.requestId)
-              ? codexSettingsRecoveryReason(
+              ? sessionControlRefusalReason(
                   catalogSessions.current.find((session) => session.id === entry.sessionId)?.agent,
                   result.ack?.reason,
                   result.ack?.error,
@@ -2083,7 +2083,7 @@ export function useSessionController<Words extends ControllerWords>(
     setExcludedSessionIds(excludedIds.current);
     setSessions(catalogSessions.current);
   }
-  async function codexAction(
+  async function runSessionAction(
     action: SessionAction,
     fields: Omit<
       Partial<SessionActionBody>,
@@ -2279,7 +2279,7 @@ export function useSessionController<Words extends ControllerWords>(
         if (outcome.status === "not-dispatched")
           reportSettings(
             "notDispatched",
-            codexSettingsRecoveryReason(sessionAgent, ...outcome.reasons),
+            sessionControlRefusalReason(sessionAgent, ...outcome.reasons),
           );
         await readBack();
         if (!stillCurrent()) return;
@@ -2298,7 +2298,7 @@ export function useSessionController<Words extends ControllerWords>(
         if (!stillCurrent()) return;
         const reason =
           refusal &&
-          codexSettingsRecoveryReason(
+          sessionControlRefusalReason(
             catalogSessions.current.find((session) => session.id === id)?.agent,
             refusal.code,
           );
@@ -2369,7 +2369,7 @@ export function useSessionController<Words extends ControllerWords>(
       if (generation.current === g) {
         const reason =
           refusal &&
-          codexSettingsRecoveryReason(
+          sessionControlRefusalReason(
             catalogSessions.current.find((session) => session.id === id)?.agent,
             refusal.code,
           );
@@ -2512,7 +2512,7 @@ export function useSessionController<Words extends ControllerWords>(
     };
     forkNavigation.current = intent;
     intent.completion = (async () => {
-      const result = await codexAction("fork");
+      const result = await runSessionAction("fork");
       if (result?.sessionId && result.sessionId !== id) {
         intent.childId = result.sessionId;
         observeForkNavigation();
@@ -2676,7 +2676,7 @@ export function useSessionController<Words extends ControllerWords>(
       )
     ),
     actionUnavailableReason,
-    codexAction,
+    runSessionAction,
     dropDeletedSession,
     checkContinuation,
     forkContinuation,

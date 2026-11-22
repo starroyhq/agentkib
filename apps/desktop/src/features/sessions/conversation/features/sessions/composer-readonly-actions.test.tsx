@@ -9,7 +9,7 @@ import {
   planModeCopy,
   SessionComposerAddMenu,
 } from "@agentkib/session-ui";
-import { codexReason } from "../../codex-copy";
+import { sessionReason } from "../../session-copy";
 
 afterEach(cleanup);
 
@@ -19,7 +19,7 @@ it.each(["zh-CN", "zh-Hant", "en-US", "ja-JP"] as const)(
     const onPick = vi.fn();
     const onGoal = vi.fn();
     const onPlan = vi.fn();
-    const reason = codexReason(locale, "native-operation-not-integrated").text;
+    const reason = sessionReason(locale, "native-operation-not-integrated").text;
     render(
       <SessionComposerAddMenu
         locale={locale}
@@ -80,7 +80,7 @@ it("shows the reference limitation once inside the browser and preserves navigat
   const load = vi.fn();
   const onSelect = vi.fn();
   const code = "follower-resource-input-unsupported";
-  const reason = codexReason("en-US", code).text;
+  const reason = sessionReason("en-US", code).text;
   render(
     <SessionComposerAddMenu
       locale="en-US"
@@ -91,7 +91,7 @@ it("shows the reference limitation once inside the browser and preserves navigat
         selected: [],
         selectable: false,
         selectionReason: code,
-        reasonText: (value) => codexReason("en-US", value).text,
+        reasonText: (value) => sessionReason("en-US", value).text,
         page: {
           resources: [
             { id: "src", kind: "directory", name: "src", available: true, navigationId: "src" },

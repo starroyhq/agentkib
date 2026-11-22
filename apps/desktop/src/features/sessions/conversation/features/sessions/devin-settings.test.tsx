@@ -4,9 +4,9 @@ import { cleanup, screen, waitFor, within } from "@testing-library/react";
 import { render } from "@/features/sessions/conversation/desktop-reader-test-utils";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { sessionProviderCapabilities, type CodexSessionSettings } from "@agentkib/web-client";
-import { CodexComposerControls } from "@agentkib/session-ui";
-import { codexCopy } from "../../codex-copy";
+import { sessionProviderCapabilities, type SessionSettings } from "@agentkib/web-client";
+import { SessionComposerControls } from "@agentkib/session-ui";
+import { sessionCopy } from "../../session-copy";
 import { composerModelCopy } from "@agentkib/session-ui";
 import type { useSession } from "../../desktop-session-context";
 
@@ -27,11 +27,11 @@ function renderControls({
   readRevision?: number;
   hasModel?: boolean;
   fastTier?: string;
-  provider?: CodexSessionSettings["provider"];
-  usage?: CodexSessionSettings["usage"];
-  liveUsage?: CodexSessionSettings["usage"];
+  provider?: SessionSettings["provider"];
+  usage?: SessionSettings["usage"];
+  liveUsage?: SessionSettings["usage"];
 } = {}) {
-  let settings: CodexSessionSettings = {
+  let settings: SessionSettings = {
     sessionId: "devin-session",
     revision: readRevision,
     available: true,
@@ -76,7 +76,7 @@ function renderControls({
     },
   };
   const sessionSettings = vi.fn(async () => settings);
-  const codexAction = vi.fn(async (_action: string, fields: CodexSessionSettings["current"]) => {
+  const runSessionAction = vi.fn(async (_action: string, fields: SessionSettings["current"]) => {
     settings = { ...settings, revision: 4, current: { ...settings.current, ...fields } };
     return { accepted: true, completed: true };
   });
@@ -103,10 +103,10 @@ function renderControls({
       features: { "settings-state": { available: true }, settings: { available: !running } },
     },
     client: { sessionSettings },
-    codexAction,
+    runSessionAction,
   } as unknown as ReturnType<typeof useSession>;
   render(
-    <CodexComposerControls
+    <SessionComposerControls
       session={state}
       resources={[]}
       setResources={vi.fn()}
@@ -114,14 +114,14 @@ function renderControls({
       disabled={false}
     />,
   );
-  return { codexAction, sessionSettings };
+  return { runSessionAction, sessionSettings };
 }
 
 const permissionTrigger = () => screen.findByRole("button", { name: /permissions.*accept edits/i });
 
 describe("permissions in an existing Devin conversation", () => {
   it("applies a mode from the composer menu without opening the old settings window", async () => {
-    const { codexAction } = renderControls();
+    const { runSessionAction } = renderControls();
     const user = userEvent.setup();
     await user.click(await permissionTrigger());
 
@@ -131,7 +131,9 @@ describe("permissions in an existing Devin conversation", () => {
     await user.click(within(menu).getByRole("menuitem", { name: /^Read-only auto/ }));
 
     await waitFor(() =>
-      expect(codexAction).toHaveBeenCalledExactlyOnceWith("settings", { permissionMode: "auto" }),
+      expect(runSessionAction).toHaveBeenCalledExactlyOnceWith("settings", {
+        permissionMode: "auto",
+      }),
     );
     expect(
       await screen.findByRole("button", { name: /permissions.*read-only auto/i }),
@@ -142,7 +144,7 @@ describe("permissions in an existing Devin conversation", () => {
     ["while Devin is running", { running: true }],
     ["when the permission field is read-only", { writable: false }],
   ] as const)("cannot change modes %s", async (_description, options) => {
-    const { codexAction } = renderControls(options);
+    const { runSessionAction } = renderControls(options);
     const trigger = await permissionTrigger();
     expect(trigger).toBeEnabled();
     await userEvent.setup().click(trigger);
@@ -150,18 +152,18 @@ describe("permissions in an existing Devin conversation", () => {
     const item = within(menu).getByRole("menuitem", { name: /^Read-only auto/ });
     expect(item).toHaveAttribute("aria-disabled", "true");
     await userEvent.setup().click(item);
-    expect(codexAction).not.toHaveBeenCalled();
+    expect(runSessionAction).not.toHaveBeenCalled();
   });
 
   it("does not apply a choice from a stale settings revision", async () => {
-    const { codexAction, sessionSettings } = renderControls({ readRevision: 2 });
+    const { runSessionAction, sessionSettings } = renderControls({ readRevision: 2 });
     const user = userEvent.setup();
     const trigger = await permissionTrigger();
     await user.click(trigger);
     const item = await screen.findByRole("menuitem", { name: /^Read-only auto/ });
     expect(item).toHaveAttribute("aria-disabled", "true");
     expect(sessionSettings).toHaveBeenCalledWith("devin-session", "devin");
-    expect(codexAction).not.toHaveBeenCalled();
+    expect(runSessionAction).not.toHaveBeenCalled();
   });
 });
 
@@ -172,19 +174,19 @@ describe("the model in an existing Devin conversation", () => {
     });
     expect(await permissionTrigger()).toBeEnabled();
     expect(
-      screen.queryByRole("img", { name: codexCopy["en-US"].contextUsage }),
+      screen.queryByRole("img", { name: sessionCopy["en-US"].contextUsage }),
     ).not.toBeInTheDocument();
   });
   it("shows the context capacity and writes Fast using the selected native tier", async () => {
     const provider = sessionProviderCapabilities("devin")!;
-    const { codexAction } = renderControls({
+    const { runSessionAction } = renderControls({
       hasModel: true,
       fastTier: "turbo",
       provider: { ...provider, models: { ...provider.models, fastTierIds: ["turbo"] } },
     });
     const copy = composerModelCopy["en-US"];
     const user = userEvent.setup();
-    const ring = await screen.findByRole("img", { name: codexCopy["en-US"].contextUsage });
+    const ring = await screen.findByRole("img", { name: sessionCopy["en-US"].contextUsage });
     await waitFor(() =>
       expect(ring).toHaveAccessibleDescription(
         /The native interface does not currently provide.*Model context limit of 1,000,000 tokens/,
@@ -201,7 +203,7 @@ describe("the model in an existing Devin conversation", () => {
     );
     await user.click(await screen.findByRole("button", { name: copy.fast }));
     await waitFor(() =>
-      expect(codexAction).toHaveBeenCalledExactlyOnceWith("settings", {
+      expect(runSessionAction).toHaveBeenCalledExactlyOnceWith("settings", {
         serviceTierId: "turbo",
       }),
     );
@@ -224,7 +226,7 @@ describe("the model in an existing Devin conversation", () => {
         contextWindow: 1_000_000,
       },
     });
-    const ring = await screen.findByRole("img", { name: codexCopy["en-US"].contextUsage });
+    const ring = await screen.findByRole("img", { name: sessionCopy["en-US"].contextUsage });
     await waitFor(() =>
       expect(ring).toHaveAccessibleDescription(
         "4% used (96% remaining) 40,000 / 1,000,000 tokens used",

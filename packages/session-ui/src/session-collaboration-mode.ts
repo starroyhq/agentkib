@@ -1,6 +1,6 @@
 import type {
-  CodexSessionSettings,
-  CodexSettingValues,
+  SessionSettings,
+  SessionSettingValues,
   SessionActionBody,
 } from "@agentkib/web-client";
 
@@ -8,8 +8,8 @@ type CollaborationMode = "default" | "plan";
 
 /** Map native options and writes to the composer’s Plan mode action. */
 export function sessionCollaborationMode(
-  settings: CodexSessionSettings | undefined,
-  selection: CodexSettingValues | undefined,
+  settings: SessionSettings | undefined,
+  selection: SessionSettingValues | undefined,
 ) {
   if (!settings?.available) return undefined;
   const usePermissionMode =

@@ -6,7 +6,7 @@ import { Dialog } from "../../components/dialog";
 import { dictionaries } from "../../i18n";
 import { webSessionPlatform } from "../../session-platform";
 import { useSession } from "../../web-session-context";
-import { codexCopyForSurface, codexReason } from "../../codex-copy";
+import { sessionCopyForSurface, sessionReason } from "../../session-copy";
 
 function DeleteDialog({ children, footer, ...props }: ComponentProps<typeof Dialog>) {
   return (
@@ -19,7 +19,7 @@ function DeleteDialog({ children, footer, ...props }: ComponentProps<typeof Dial
 
 export function SessionRowMenu({ session }: { session: ConversationSessionSummary }) {
   const { client, locale, refresh, dropDeletedSession } = useSession();
-  const copy = codexCopyForSurface(locale, "web");
+  const copy = sessionCopyForSurface(locale, "web");
   const reason = (action: SessionManagementAction, code: string) => {
     if (action === "delete" && code === "codex-owner-busy") return copy.deleteOwnerBusy;
     if (
@@ -27,7 +27,7 @@ export function SessionRowMenu({ session }: { session: ConversationSessionSummar
       (code === "claude-owner-busy" || code === "claude-background-session-running")
     )
       return copy.deleteClaudeOwnerBusy;
-    return codexReason(locale, code, "web").text;
+    return sessionReason(locale, code, "web").text;
   };
   return (
     <SessionManagementRowMenu

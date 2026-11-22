@@ -4,7 +4,7 @@ import { useState } from "react";
 import { cleanup, fireEvent, screen } from "@testing-library/react";
 import { render } from "@/features/sessions/conversation/desktop-reader-test-utils";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { codexReason } from "../../codex-copy";
+import { sessionReason } from "../../session-copy";
 import { SessionReader } from "./desktop-session-reader";
 import type { SessionController } from "../../desktop-session-controller";
 const state = vi.hoisted(() => ({ session: {} as SessionController }));
@@ -45,7 +45,7 @@ beforeEach(() => {
     scroll: { current: null },
     t: { message: "Message", send: "Send", stop: "Stop" },
     control: vi.fn(),
-    codexAction: vi.fn(),
+    runSessionAction: vi.fn(),
     page: { events: [], warnings: [] },
     access: {
       status: "approved",
@@ -99,13 +99,13 @@ describe("Devin composer notices", () => {
     const view = render(<SessionReader />);
     expect(notices()).toContain("continues automatically after the reset");
     fireEvent.click(screen.getByRole("button", { name: "Don't continue automatically" }));
-    expect(state.session.codexAction).toHaveBeenCalledWith("usage-limit-cancel");
+    expect(state.session.runSessionAction).toHaveBeenCalledWith("usage-limit-cancel");
     view.unmount();
     // After a restart of AgentKib the person continues, or arms it again.
     state.session.live = live({ usageLimit: { ...limit, continueAt: null, manual: "restarted" } });
     render(<SessionReader />);
     fireEvent.click(screen.getByRole("button", { name: "Continue automatically after the reset" }));
-    expect(state.session.codexAction).toHaveBeenCalledWith("usage-limit-continue");
+    expect(state.session.runSessionAction).toHaveBeenCalledWith("usage-limit-continue");
   });
 
   it("uses feedback for the current turn without carrying recovery across sessions or providers", () => {
@@ -136,6 +136,6 @@ describe("Devin composer notices", () => {
   it("explains a turn whose Devin CLI process was ended", () => {
     state.session.live = live({ reason: "devin-run-stopped" });
     render(<SessionReader />);
-    expect(notices()).toContain(codexReason("en-US", "devin-run-stopped").text);
+    expect(notices()).toContain(sessionReason("en-US", "devin-run-stopped").text);
   });
 });

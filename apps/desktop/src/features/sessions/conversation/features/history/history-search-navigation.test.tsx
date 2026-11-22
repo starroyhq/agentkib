@@ -15,7 +15,7 @@ import {
   type EmbeddedConversationHandle,
 } from "../../desktop-embedded-conversation";
 import { historyCopy } from "@agentkib/session-ui";
-import { codexCopy } from "../../codex-copy";
+import { sessionCopy } from "../../session-copy";
 
 afterEach(() => {
   cleanup();
@@ -224,7 +224,7 @@ async function renderUploadedDraft() {
   const f = await renderConversation();
   const input = screen.getByRole("textbox", { name: "Send a message" });
   const file = new File(["Attachment text"], "draft-note.txt", { type: "text/plain" });
-  const uploadInput = screen.getByLabelText(codexCopy["en-US"].attachment);
+  const uploadInput = screen.getByLabelText(sessionCopy["en-US"].attachment);
   expect(uploadInput).toHaveAttribute("type", "file");
   await waitFor(() => expect(uploadInput).toBeEnabled());
   fireEvent.change(uploadInput, { target: { files: [file] } });

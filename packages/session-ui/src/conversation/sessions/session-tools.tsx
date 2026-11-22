@@ -2,15 +2,15 @@ import { subscribeSessionInvalidation } from "@agentkib/conversation-state";
 import {
   ApiError,
   type Access,
-  type CodexOptions,
-  type CodexQueue,
-  type CodexSessionSettings,
   type ConversationSessionSummary,
   type Live,
+  type ManagedOptions,
   type SessionAction,
   type SessionActionBody,
   type SessionActionResult,
   type SessionCapabilities,
+  type SessionQueue,
+  type SessionSettings,
   type WebClient,
 } from "@agentkib/web-client";
 import { useEffect, useState, type ReactNode } from "react";
@@ -20,11 +20,11 @@ import { contextUsageCopyForSurface } from "../../context-usage-copy";
 import type { InteractionLocale } from "../../interaction-model";
 import { useSessionPlatform } from "../../session-platform";
 import { resolveSessionProvider } from "../../session-provider";
-import { codexCopyForSurface, codexReason } from "./codex-copy";
 import { composerSettingsStatus } from "./composer-layout-copy";
 import { OperationDisclosure, OperationGroup, OperationRow } from "./operation-layout";
 import { blockedWhileCompacting } from "./session-activity";
 import { sessionAgentCopy } from "./session-agent-copy";
+import { sessionCopyForSurface, sessionReason } from "./session-copy";
 import { webLayoutCopy } from "./web-layout-copy";
 
 type ActionFields = Omit<
@@ -32,7 +32,7 @@ type ActionFields = Omit<
   "requestId" | "bootId" | "sessionId" | "expectedRevision"
 >;
 
-export type CodexToolsProps = {
+export type SessionToolsProps = {
   open?: boolean;
   onOpenChange?: (value: boolean) => void;
   showTrigger?: boolean;
@@ -40,12 +40,12 @@ export type CodexToolsProps = {
   shortcuts?: ReactNode;
 };
 
-type CodexToolsSession = {
+type SessionToolsSession = {
   current?: ConversationSessionSummary;
   selected: string;
   client: WebClient;
   capabilities?: SessionCapabilities;
-  codexAction(
+  runSessionAction(
     action: SessionAction,
     fields?: ActionFields,
   ): Promise<SessionActionResult | undefined>;
@@ -63,7 +63,7 @@ type CodexToolsSession = {
   t: { notDispatched: string };
 };
 
-export function CodexTools({
+export function SessionTools({
   session,
   onNavigate,
   open: controlledOpen,
@@ -71,7 +71,7 @@ export function CodexTools({
   showTrigger = true,
   ownership,
   shortcuts,
-}: CodexToolsProps & { session: CodexToolsSession; onNavigate(sessionId?: string): void }) {
+}: SessionToolsProps & { session: SessionToolsSession; onNavigate(sessionId?: string): void }) {
   const {
     kind,
     copy: { unavailableReason },
@@ -90,7 +90,7 @@ export function CodexTools({
     selected,
     client,
     capabilities,
-    codexAction,
+    runSessionAction,
     busy,
     online,
     controlReady,
@@ -101,8 +101,8 @@ export function CodexTools({
     settingsNotice,
     t,
   } = session;
-  const copy = codexCopyForSurface(locale, kind);
-  const explainReason = (reason?: string) => codexReason(locale, reason, kind, unavailableReason);
+  const copy = sessionCopyForSurface(locale, kind);
+  const explainReason = (reason?: string) => sessionReason(locale, reason, kind, unavailableReason);
   const agentCopy = sessionAgentCopy[locale];
   const provider = resolveSessionProvider(current, capabilities);
   const composerQueue = sessionQueuePanel(current?.agent, provider);
@@ -127,8 +127,8 @@ export function CodexTools({
     onOpenChange?.(value);
   }
   const layout = webLayoutCopy[locale];
-  const [queue, setQueue] = useState<CodexQueue>();
-  const [options, setOptions] = useState<CodexOptions>();
+  const [queue, setQueue] = useState<SessionQueue>();
+  const [options, setOptions] = useState<ManagedOptions>();
   const [name, setName] = useState("");
   const [editing, setEditing] = useState("");
   const [text, setText] = useState("");
@@ -192,7 +192,7 @@ export function CodexTools({
     void load();
     if (limitedSettings)
       void client
-        .request<CodexOptions>("managed/options", undefined, abort.signal)
+        .request<ManagedOptions>("managed/options", undefined, abort.signal)
         .then((value) => {
           if (!abort.signal.aborted) setOptions(value);
         })
@@ -270,7 +270,7 @@ export function CodexTools({
     if (!enabled(action)) return false;
     setOperation(true);
     try {
-      const result = await codexAction(action, fields);
+      const result = await runSessionAction(action, fields);
       if (result) {
         if (action === "inspect") setContext(result.context);
         if (action === "fork" && result.sessionId && result.sessionId !== selected) {
@@ -330,7 +330,7 @@ export function CodexTools({
     live?.sessionId === selected && live.settings?.sessionId === selected
       ? live.settings
       : undefined;
-  const limitedModel: CodexSessionSettings | undefined =
+  const limitedModel: SessionSettings | undefined =
     limitedSettings && options?.available
       ? {
           sessionId: selected,

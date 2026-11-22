@@ -570,9 +570,9 @@ describe("independent history display", () => {
           await settingsResponse.promise;
           return { accepted: true, requestId: body.requestId, sessionId: body.sessionId };
         });
-      let action!: ReturnType<typeof host.result.current.codexAction>;
+      let action!: ReturnType<typeof host.result.current.runSessionAction>;
       await act(async () => {
-        action = host.result.current.codexAction("settings", { mode: "plan" });
+        action = host.result.current.runSessionAction("settings", { mode: "plan" });
       });
       expect(settings).toHaveBeenCalledOnce();
 

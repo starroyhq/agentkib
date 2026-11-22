@@ -5,7 +5,7 @@ import {
   useSessionImageLoader,
   useBasicSendQueue,
 } from "@agentkib/session-ui";
-import { codexCopyForSurface, codexReason } from "../../codex-copy";
+import { sessionCopyForSurface, sessionReason } from "../../session-copy";
 import { sessionBannerAtComposer, sessionConnectionBanner } from "@agentkib/session-ui";
 import { WebSessionOperations } from "./web-session-operations";
 import { SessionComposer } from "../../web-session-composer";
@@ -33,8 +33,8 @@ export function SessionReader() {
       session={session}
       panels={panels}
       agent={agentName(current?.agent)}
-      addContextLabel={codexCopyForSurface(locale, "web").addContext}
-      explainReason={(reason) => codexReason(locale, reason, "web").text}
+      addContextLabel={sessionCopyForSurface(locale, "web").addContext}
+      explainReason={(reason) => sessionReason(locale, reason, "web").text}
       banner={banner}
       composerBanner={sessionBannerAtComposer(banner)}
       imageLoader={imageLoader}

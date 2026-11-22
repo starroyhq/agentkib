@@ -32,7 +32,7 @@ import {
 import { useSession } from "@/features/conversation/web-session-context";
 import { SessionPanelsContext } from "@agentkib/session-ui";
 import { sessionDisplayState } from "@/features/conversation/web-session-display";
-import { codexCopyForSurface } from "@/features/conversation/codex-copy";
+import { sessionCopyForSurface } from "@/features/conversation/session-copy";
 import { webLayoutCopy } from "@agentkib/session-ui";
 import { cn } from "@/features/conversation/lib/utils";
 import { sessionAccessCopy } from "./session-access-copy";
@@ -253,7 +253,7 @@ function WorkspaceShell() {
             <PendingCenter
               compact
               session={session}
-              copy={codexCopyForSurface(locale, "web")}
+              copy={sessionCopyForSurface(locale, "web")}
               needsYou={attention?.groups.needsYou}
               onNavigate={(sessionId) => {
                 void navigate({ to: "/sessions/$sessionId", params: { sessionId } });
@@ -458,7 +458,7 @@ function WorkspaceShell() {
         }}
       >
         <DialogContent
-          closeLabel={codexCopyForSurface(locale, "web").close}
+          closeLabel={sessionCopyForSurface(locale, "web").close}
           // At phone width the panel stays at the top, so the keyboard does not cover it.
           className="top-4 translate-y-0 sm:top-1/2 sm:-translate-y-1/2"
         >

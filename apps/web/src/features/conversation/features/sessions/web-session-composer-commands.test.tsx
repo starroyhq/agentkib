@@ -6,9 +6,9 @@ import { act, cleanup, fireEvent, screen, waitFor, within } from "@testing-libra
 import { render } from "@/features/conversation/web-reader-test-utils";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ClaudeCommandEntry } from "@agentkib/web-client";
-import { codexCommandPrompt, slashCommandCopy } from "@agentkib/session-ui";
+import { commandPrompt, slashCommandCopy } from "@agentkib/session-ui";
 import { SessionComposer } from "@/features/conversation/web-session-composer";
-import { codexCopy, codexReason } from "../../codex-copy";
+import { sessionCopy, sessionReason } from "../../session-copy";
 import type { ComposerControlsHandle, ComposerPlanState } from "@agentkib/session-ui";
 import type { SessionPanels } from "@agentkib/session-ui";
 import type { SessionController } from "../../web-session-controller";
@@ -16,7 +16,7 @@ import type { SessionController } from "../../web-session-controller";
 const doubles = vi.hoisted(() => ({
   session: {} as Partial<SessionController>,
   control: vi.fn(),
-  codexAction: vi.fn(),
+  runSessionAction: vi.fn(),
   panels: null as SessionPanels | null,
   open: vi.fn<ComposerControlsHandle["open"]>(),
   // Turns plan mode on; the controls report whether it is on and can be switched.
@@ -34,7 +34,7 @@ vi.mock("@agentkib/session-ui", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@agentkib/session-ui")>()),
   useSessionPanels: () => doubles.panels,
   SessionContextUsageGauge: () => null,
-  CodexComposerControls: ({
+  SessionComposerControls: ({
     action,
     controlsRef,
     onPlan,
@@ -75,7 +75,7 @@ const options = () =>
   within(screen.getByRole("listbox", { name: "Claude Code commands" }))
     .getAllByRole("option")
     .map((option) => option.textContent);
-const reason = (code: string) => codexReason("en-US", code, "web").text;
+const reason = (code: string) => sessionReason("en-US", code, "web").text;
 // With full access the composer renders its settings and goal controls.
 const fullDevice = {
   id: "device",
@@ -90,7 +90,7 @@ describe("slash commands in the Web composer", () => {
     vi.resetAllMocks();
     doubles.panels = null;
     doubles.control.mockResolvedValue(true);
-    doubles.codexAction.mockResolvedValue({ accepted: true });
+    doubles.runSessionAction.mockResolvedValue({ accepted: true });
     doubles.session = {
       selected: "session",
       current: { id: "session", agent: "claude-code" } as SessionController["current"],
@@ -127,7 +127,7 @@ describe("slash commands in the Web composer", () => {
         },
       } as SessionController["capabilities"],
       control: doubles.control,
-      codexAction: doubles.codexAction,
+      runSessionAction: doubles.runSessionAction,
       client: { request: vi.fn() } as unknown as SessionController["client"],
     };
   });
@@ -252,7 +252,7 @@ describe("slash commands in the Web composer", () => {
     expect(screen.getByText(reason(code))).toBeVisible();
     expect(input).toHaveValue(text);
     expect(doubles.control).not.toHaveBeenCalled();
-    expect(doubles.codexAction).not.toHaveBeenCalled();
+    expect(doubles.runSessionAction).not.toHaveBeenCalled();
     // The explanation goes with the draft it was about.
     fireEvent.change(input, { target: { value: `${text} ` } });
     expect(screen.queryByText(reason(code))).not.toBeInTheDocument();
@@ -268,7 +268,7 @@ describe("slash commands in the Web composer", () => {
     const { input, form } = renderComposer(text);
     fireEvent.submit(form);
     await waitFor(() => expect(input).toHaveValue(""));
-    expect(doubles.codexAction).toHaveBeenCalledExactlyOnceWith(action, fields);
+    expect(doubles.runSessionAction).toHaveBeenCalledExactlyOnceWith(action, fields);
     expect(doubles.control).not.toHaveBeenCalled();
   });
 
@@ -293,16 +293,19 @@ describe("slash commands in the Web composer", () => {
       uploadAttachment: upload,
     } as unknown as SessionController["client"];
     const { input, form } = renderComposer("/rename Probe title");
-    fireEvent.change(screen.getByLabelText(codexCopy["en-US"].attachment, { selector: "input" }), {
-      target: { files: [new File(["abc"], "note.txt", { type: "text/plain" })] },
-    });
+    fireEvent.change(
+      screen.getByLabelText(sessionCopy["en-US"].attachment, { selector: "input" }),
+      {
+        target: { files: [new File(["abc"], "note.txt", { type: "text/plain" })] },
+      },
+    );
     await screen.findByText("100%");
     fireEvent.submit(form);
     expect(screen.getByText(reason("claude-command-rename"))).toBeVisible();
     expect(input).toHaveValue("/rename Probe title");
     expect(screen.getByText("note.txt")).toBeVisible();
     await act(async () => {});
-    expect(doubles.codexAction).not.toHaveBeenCalled();
+    expect(doubles.runSessionAction).not.toHaveBeenCalled();
     expect(doubles.control).not.toHaveBeenCalled();
   });
 
@@ -316,7 +319,7 @@ describe("slash commands in the Web composer", () => {
     expect(screen.getByText(reason("claude-command-rename"))).toBeVisible();
     expect(input).toHaveValue("/rename Probe title");
     await act(async () => {});
-    expect(doubles.codexAction).not.toHaveBeenCalled();
+    expect(doubles.runSessionAction).not.toHaveBeenCalled();
   });
 
   it("explains /effort with a level it takes as a settings command when settings are unavailable", async () => {
@@ -329,7 +332,7 @@ describe("slash commands in the Web composer", () => {
     expect(screen.getByText(reason("claude-command-settings"))).toBeVisible();
     expect(input).toHaveValue("/effort high");
     await act(async () => {});
-    expect(doubles.codexAction).not.toHaveBeenCalled();
+    expect(doubles.runSessionAction).not.toHaveBeenCalled();
   });
 
   it.each(["/rename", "/NAME  "])("opens the session actions, where rename is, for %j", (text) => {
@@ -346,7 +349,7 @@ describe("slash commands in the Web composer", () => {
     expect(input).toHaveValue("");
     expect(screen.queryByText(reason("claude-command-rename"))).not.toBeInTheDocument();
     expect(doubles.control).not.toHaveBeenCalled();
-    expect(doubles.codexAction).not.toHaveBeenCalled();
+    expect(doubles.runSessionAction).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -361,7 +364,7 @@ describe("slash commands in the Web composer", () => {
     expect(doubles.open).toHaveBeenCalledExactlyOnceWith(dialog);
     expect(input).toHaveValue("");
     expect(doubles.control).not.toHaveBeenCalled();
-    expect(doubles.codexAction).not.toHaveBeenCalled();
+    expect(doubles.runSessionAction).not.toHaveBeenCalled();
   });
 
   it("falls back when AgentKib's control cannot open here", async () => {
@@ -383,7 +386,9 @@ describe("slash commands in the Web composer", () => {
     fireEvent.change(input, { target: { value: "/model opus" } });
     fireEvent.submit(form);
     await waitFor(() =>
-      expect(doubles.codexAction).toHaveBeenCalledExactlyOnceWith("settings", { model: "opus" }),
+      expect(doubles.runSessionAction).toHaveBeenCalledExactlyOnceWith("settings", {
+        model: "opus",
+      }),
     );
     expect(doubles.open).toHaveBeenCalledOnce();
   });
@@ -396,7 +401,7 @@ describe("slash commands in the Web composer", () => {
       await waitFor(() => expect(doubles.control).toHaveBeenCalledOnce());
       unmount();
     }
-    expect(doubles.codexAction).not.toHaveBeenCalled();
+    expect(doubles.runSessionAction).not.toHaveBeenCalled();
   });
 });
 
@@ -407,7 +412,7 @@ describe("Codex slash commands in the composer", () => {
     vi.resetAllMocks();
     doubles.panels = null;
     doubles.control.mockResolvedValue(true);
-    doubles.codexAction.mockResolvedValue({ accepted: true });
+    doubles.runSessionAction.mockResolvedValue({ accepted: true });
     doubles.session = {
       selected: "session",
       current: { id: "session", agent: "codex" } as SessionController["current"],
@@ -433,7 +438,7 @@ describe("Codex slash commands in the composer", () => {
         device: { send: true },
       } as SessionController["access"],
       control: doubles.control,
-      codexAction: doubles.codexAction,
+      runSessionAction: doubles.runSessionAction,
       client: { request: vi.fn() } as unknown as SessionController["client"],
     };
     doubles.session.capabilities = {
@@ -491,10 +496,10 @@ describe("Codex slash commands in the composer", () => {
       undefined,
       undefined,
       undefined,
-      { prompt: codexCommandPrompt(locale, prompt) },
+      { prompt: commandPrompt(locale, prompt) },
     );
     await waitFor(() => expect(input).toHaveValue(""));
-    expect(doubles.codexAction).not.toHaveBeenCalled();
+    expect(doubles.runSessionAction).not.toHaveBeenCalled();
   });
 
   it("keeps /review while the session cannot send", async () => {
@@ -522,8 +527,8 @@ describe("Codex slash commands in the composer", () => {
   ])("runs AgentKib's action for %s", async (text, action, fields, kept) => {
     const { input, form } = renderComposer(text);
     fireEvent.submit(form);
-    await waitFor(() => expect(doubles.codexAction).toHaveBeenCalledOnce());
-    expect(doubles.codexAction).toHaveBeenCalledExactlyOnceWith(action, fields);
+    await waitFor(() => expect(doubles.runSessionAction).toHaveBeenCalledOnce());
+    expect(doubles.runSessionAction).toHaveBeenCalledExactlyOnceWith(action, fields);
     await waitFor(() => expect(input).toHaveValue(kept));
     expect(doubles.control).not.toHaveBeenCalled();
   });
@@ -544,7 +549,7 @@ describe("Codex slash commands in the composer", () => {
     expect(doubles.open.mock.calls).toEqual([["permissions"], ["usage"], ["models"]]);
     expect(setActionsOpen).toHaveBeenCalledExactlyOnceWith(true);
     expect(doubles.control).not.toHaveBeenCalled();
-    expect(doubles.codexAction).not.toHaveBeenCalled();
+    expect(doubles.runSessionAction).not.toHaveBeenCalled();
   });
 
   it("opens an authorized bare model shortcut while a settings write still blocks dispatch", () => {
@@ -567,7 +572,7 @@ describe("Codex slash commands in the composer", () => {
     expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
     fireEvent.submit(form);
     expect(doubles.control).not.toHaveBeenCalled();
-    expect(doubles.codexAction).not.toHaveBeenCalled();
+    expect(doubles.runSessionAction).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -584,7 +589,7 @@ describe("Codex slash commands in the composer", () => {
     expect(input).toHaveValue(text);
     await act(async () => {});
     expect(doubles.control).not.toHaveBeenCalled();
-    expect(doubles.codexAction).not.toHaveBeenCalled();
+    expect(doubles.runSessionAction).not.toHaveBeenCalled();
   });
 
   it("explains a command whose AgentKib action is unavailable now", async () => {
@@ -597,7 +602,7 @@ describe("Codex slash commands in the composer", () => {
     expect(screen.getByText(reason("codex-command-agentkib"))).toBeVisible();
     expect(input).toHaveValue("/compact");
     await act(async () => {});
-    expect(doubles.codexAction).not.toHaveBeenCalled();
+    expect(doubles.runSessionAction).not.toHaveBeenCalled();
   });
 
   it.each(["steer", "queue-add"] as const)(
@@ -624,16 +629,16 @@ describe("Codex slash commands in the composer", () => {
         },
       };
       const { input } = renderComposer("/stop");
-      fireEvent.click(screen.getByRole("button", { name: codexCopy["en-US"].advanced }));
+      fireEvent.click(screen.getByRole("button", { name: sessionCopy["en-US"].advanced }));
       fireEvent.click(
         await screen.findByRole("menuitem", {
-          name: action === "steer" ? codexCopy["en-US"].steer : codexCopy["en-US"].queueAdd,
+          name: action === "steer" ? sessionCopy["en-US"].steer : sessionCopy["en-US"].queueAdd,
         }),
       );
       expect(await screen.findByText(reason("codex-command-agentkib"))).toBeVisible();
       expect(input).toHaveValue("/stop");
       await act(async () => {});
-      expect(doubles.codexAction).not.toHaveBeenCalled();
+      expect(doubles.runSessionAction).not.toHaveBeenCalled();
       expect(doubles.control).not.toHaveBeenCalled();
     },
   );
@@ -646,7 +651,7 @@ describe("Codex slash commands in the composer", () => {
       expect(doubles.control.mock.lastCall?.[0]).toBe("send");
       unmount();
     }
-    expect(doubles.codexAction).not.toHaveBeenCalled();
+    expect(doubles.runSessionAction).not.toHaveBeenCalled();
   });
 
   describe("plan mode, as on the desktop", () => {
@@ -679,7 +684,7 @@ describe("Codex slash commands in the composer", () => {
     it("asks for the task to plan while it is on", () => {
       doubles.planState = { on: true, available: true };
       const { input } = renderComposer("");
-      expect(input).toHaveAttribute("placeholder", codexCopy["en-US"].planPlaceholder);
+      expect(input).toHaveAttribute("placeholder", sessionCopy["en-US"].planPlaceholder);
     });
   });
 });
@@ -733,7 +738,7 @@ describe("DeepSeek Harness commands in the Web composer", () => {
         features: { send: { available: true } },
       } as SessionController["capabilities"],
       control: doubles.control,
-      codexAction: doubles.codexAction,
+      runSessionAction: doubles.runSessionAction,
       client: { request: vi.fn() } as unknown as SessionController["client"],
     };
   });
@@ -765,7 +770,7 @@ describe("DeepSeek Harness commands in the Web composer", () => {
     fireEvent.submit(form);
     await waitFor(() => expect(doubles.control).toHaveBeenCalledOnce());
     expect(doubles.control.mock.lastCall?.[0]).toBe("send");
-    expect(doubles.codexAction).not.toHaveBeenCalled();
+    expect(doubles.runSessionAction).not.toHaveBeenCalled();
     expect(input).toBeInTheDocument();
     expect(reason("dsh-command-window-only")).toBe(
       "This command only works in DeepSeek Harness's own window, so the message was not sent.",

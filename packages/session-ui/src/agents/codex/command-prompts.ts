@@ -1,10 +1,10 @@
+import type { CodexCommandPrompt } from "@agentkib/web-client";
+
 /**
  * The messages AgentKib sends for Codex's `/review` and `/init` (runtime-protocol's
  * `CodexCommandPrompt`), in the reader's language. They go out as ordinary turns, as in Codex
  * Desktop; the wording is AgentKib's own. The message shows in the conversation as written.
  */
-export type CodexCommandPromptRequest = { kind: "review"; base: string | null } | { kind: "init" };
-
 interface Prompts {
   reviewUncommitted: string;
   reviewBase: (base: string) => string;
@@ -48,7 +48,7 @@ const prompts: Record<"zh-CN" | "zh-Hant" | "en-US" | "ja-JP", Prompts> = {
 };
 
 /** The message for a command, in the reader's language (English for others). */
-export function codexCommandPrompt(locale: string, request: CodexCommandPromptRequest): string {
+export function renderCodexCommandPrompt(locale: string, request: CodexCommandPrompt): string {
   const copy =
     prompts[
       locale === "zh-Hant"

@@ -35,7 +35,7 @@ import { useSessionHub } from "./SessionHubContext";
 import { SessionHubPage } from "./SessionHubPage";
 import { SessionWindowToolbar } from "./SessionWindowToolbar";
 import { useSessionViewStore } from "./session-view-store";
-import { codexCopy } from "./conversation/codex-copy";
+import { sessionCopy } from "./conversation/session-copy";
 import { claudeConnectionCopy } from "@agentkib/session-ui";
 import { useSessionController } from "./conversation/desktop-session-controller";
 
@@ -562,7 +562,7 @@ describe("desktop window conversation tools", () => {
     await user.click(screen.getByRole("button", { name: tr("common.moreActions") }));
     await user.click(await screen.findByRole("menuitem", { name: "Session actions…" }));
     const dialog = await screen.findByRole("dialog", { name: "Session actions" });
-    fireEvent.change(within(dialog).getByLabelText(codexCopy["en-US"].name), {
+    fireEvent.change(within(dialog).getByLabelText(sessionCopy["en-US"].name), {
       target: { value: "Changed title" },
     });
     const rename = within(dialog).getByRole("button", { name: "Rename" });

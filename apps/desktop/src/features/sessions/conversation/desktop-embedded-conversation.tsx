@@ -59,7 +59,7 @@ import {
   useSessionPlatform,
   webLayoutCopy,
 } from "@agentkib/session-ui";
-import { codexCopy } from "./codex-copy";
+import { sessionCopy } from "./session-copy";
 import { useDesktopSessionPlatform } from "./session-platform";
 
 export type { ConversationClientBridge, WebClient } from "@agentkib/web-client";
@@ -243,7 +243,7 @@ function EmbeddedShell() {
       <PendingCenter
         compact
         session={session}
-        copy={codexCopy[session.locale]}
+        copy={sessionCopy[session.locale]}
         onNavigate={(sessionId) => {
           void navigate({ to: "/sessions/$sessionId", params: { sessionId } });
         }}
@@ -307,7 +307,7 @@ function ReturningConversationComposer({
         toolbar={
           <SessionComposerToolbar
             locale={locale}
-            add={{ label: codexCopy[locale].addContext, disabled: true }}
+            add={{ label: sessionCopy[locale].addContext, disabled: true }}
             action={
               <ComposerPrimaryAction
                 kind={showStop ? "stop" : "send"}

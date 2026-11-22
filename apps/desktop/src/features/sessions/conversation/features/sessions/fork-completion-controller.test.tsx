@@ -373,7 +373,7 @@ describe("settings actions and their receipts", () => {
     vi.mocked(host.client.catalog).mockClear();
     let finish!: (result: SessionActionResult) => void;
     host.request.mockImplementationOnce(async () => new Promise((resolve) => (finish = resolve)));
-    let save!: ReturnType<typeof result.current.codexAction>;
+    let save!: ReturnType<typeof result.current.runSessionAction>;
     const change =
       action === "open-model-picker"
         ? {}
@@ -381,7 +381,7 @@ describe("settings actions and their receipts", () => {
           ? { serviceTierId: "priority" }
           : { model: "sonnet" };
     await act(async () => {
-      save = result.current.codexAction(action, change);
+      save = result.current.runSessionAction(action, change);
     });
     expect(host.request).toHaveBeenCalledExactlyOnceWith(
       "managed/action",
@@ -445,9 +445,9 @@ describe("settings actions and their receipts", () => {
         ack((body as SessionActionBody).requestId),
       );
 
-      let save!: ReturnType<typeof result.current.codexAction>;
+      let save!: ReturnType<typeof result.current.runSessionAction>;
       await act(async () => {
-        save = result.current.codexAction("settings", { effort: "high" });
+        save = result.current.runSessionAction("settings", { effort: "high" });
       });
       expect(host.live).toHaveBeenCalledExactlyOnceWith("original");
       expect(readPending(host.scope)).toEqual([]);
@@ -461,7 +461,7 @@ describe("settings actions and their receipts", () => {
       expect(result.current.canStop).toBe(false);
       expect(result.current.settingsOnlyBlocked).toBe(true);
 
-      await act(async () => result.current.codexAction("settings", { effort: "low" }));
+      await act(async () => result.current.runSessionAction("settings", { effort: "low" }));
       expect(host.request).toHaveBeenCalledOnce();
 
       await act(async () => {
@@ -497,7 +497,7 @@ describe("settings actions and their receipts", () => {
       host.updated();
       let saved: SessionActionResult | undefined;
       await act(async () => {
-        saved = await result.current.codexAction("settings", { effort: "high" });
+        saved = await result.current.runSessionAction("settings", { effort: "high" });
       });
       const { requestId } = host.request.mock.calls[0]![1] as SessionActionBody;
       expect(host.request).toHaveBeenCalledOnce();
@@ -530,7 +530,7 @@ describe("settings actions and their receipts", () => {
     vi.mocked(host.client.catalog).mockClear();
     host.request.mockRejectedValueOnce(new ApiError(504, "outcome_unknown", "unknown"));
     await act(async () =>
-      result.current.codexAction("settings", { policyId: "full-access-on-request" }),
+      result.current.runSessionAction("settings", { policyId: "full-access-on-request" }),
     );
     const { requestId } = host.request.mock.calls[0]![1] as SessionActionBody;
     expect(result.current.notice).toBeUndefined();
@@ -813,7 +813,7 @@ describe.each(["codex", "claude-code"] as const)("a deleted %s session", (agent)
     const liveReads = host.live.mock.calls.length;
     const historyReads = host.events.mock.calls.length;
     await act(async () => {
-      await view.result.current.codexAction("delete");
+      await view.result.current.runSessionAction("delete");
     });
     expect(host.request).toHaveBeenCalledWith(
       path,
@@ -962,7 +962,7 @@ describe("a Claude settings change Claude Code refuses", () => {
     }));
     const { result } = await open(host);
     host.request.mockRejectedValueOnce(new ApiError(status, code, "not-dispatched"));
-    await act(async () => result.current.codexAction("settings", { model: "no-such-model" }));
+    await act(async () => result.current.runSessionAction("settings", { model: "no-such-model" }));
     expect(host.request).toHaveBeenCalledWith(
       "managed/action",
       expect.objectContaining({ operation: "settings", model: "no-such-model" }),

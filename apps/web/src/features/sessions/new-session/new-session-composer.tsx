@@ -59,7 +59,7 @@ import {
 import { Input } from "@/features/conversation/components/ui/input";
 import { cn } from "@/features/conversation/lib/utils";
 import { useSession } from "@/features/conversation/web-session-context";
-import { codexCopyForSurface, codexReason } from "@/features/conversation/codex-copy";
+import { sessionCopyForSurface, sessionReason } from "@/features/conversation/session-copy";
 import { composerLayoutCopy } from "@agentkib/session-ui";
 import { MAX_MESSAGE_LENGTH } from "@agentkib/conversation-state";
 import type { Locale } from "@/features/conversation/i18n";
@@ -109,7 +109,7 @@ export function NewSessionComposer({
     [catalogWorkspaces],
   );
   const copy = newSessionCopy(locale);
-  const conversationCopy = codexCopyForSurface(locale, "web");
+  const conversationCopy = sessionCopyForSurface(locale, "web");
   const [target] = useState(readNewSessionTarget);
   const [agent, setAgent] = useState<ManagedAgent>(target.agent ?? "codex");
   const [workspaceId, setWorkspaceId] = useState(target.workspaceId ?? "");
@@ -183,7 +183,7 @@ export function NewSessionComposer({
     locked: locked || disabled,
     offline: disabled,
     resourceError: (error) => failureOf(error, locale).reason,
-    resourceReason: (code) => codexReason(locale, code, "web").text,
+    resourceReason: (code) => sessionReason(locale, code, "web").text,
   });
   const { resources, goal } = add;
   useEffect(() => {
@@ -236,7 +236,7 @@ export function NewSessionComposer({
   const unavailableReason = session.optionsError
     ? failureOf(session.optionsError, locale).reason
     : options && !options.available
-      ? codexReason(locale, options.reason, "web").text
+      ? sessionReason(locale, options.reason, "web").text
       : undefined;
   const optionsLocked = locked || !options?.available;
   const hasMessage = !!text.trim() || (attachments && files.length > 0);

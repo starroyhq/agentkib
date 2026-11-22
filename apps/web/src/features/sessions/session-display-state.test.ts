@@ -1,7 +1,7 @@
 import { sessionContinuationCopy } from "@agentkib/session-ui";
 import { describe, expect, it } from "vitest";
 import { dictionaries } from "@/features/conversation/i18n";
-import { codexReason } from "@/features/conversation/codex-copy";
+import { sessionReason } from "@/features/conversation/session-copy";
 import { sessionDisplayState } from "@/features/conversation/web-session-display";
 import type { SessionController } from "@/features/conversation/web-session-controller";
 const state = {
@@ -121,7 +121,7 @@ describe("session display state", () => {
     expect(sessionDisplayState(state).reason).toBe("");
   });
   it.each([
-    ["handoff-required", codexReason("zh-CN", "handoff-required").text],
+    ["handoff-required", sessionReason("zh-CN", "handoff-required").text],
     ["unverified-installation", dictionaries["zh-CN"].unverifiedInstallation],
     ["open-in-original-client", dictionaries["zh-CN"].openOriginalClient],
   ])("explains %s from live state or send capability", (reason, expected) => {
@@ -444,7 +444,7 @@ it.each(["zh-CN", "zh-Hant", "en-US", "ja-JP"] as const)(
     ).toMatchObject({
       continuation: "view-only",
       label: copy.viewOnly,
-      reason: codexReason(locale, "dsh-runtime-offline").text,
+      reason: sessionReason(locale, "dsh-runtime-offline").text,
     });
     const external = { ...dsh, live: { ...dsh.live!, executionLocation: "external" as const } };
     expect(sessionDisplayState(external)).toMatchObject({

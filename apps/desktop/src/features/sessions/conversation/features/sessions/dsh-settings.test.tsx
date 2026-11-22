@@ -4,16 +4,16 @@ import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/re
 import { render } from "@/features/sessions/conversation/desktop-reader-test-utils";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import userEvent from "@testing-library/user-event";
-import { sessionProviderCapabilities, type CodexSessionSettings } from "@agentkib/web-client";
-import { CodexComposerControls } from "@agentkib/session-ui";
+import { sessionProviderCapabilities, type SessionSettings } from "@agentkib/web-client";
+import { SessionComposerControls } from "@agentkib/session-ui";
 import type { useSession } from "../../desktop-session-context";
-import { codexCopy, codexReason } from "../../codex-copy";
+import { sessionCopy, sessionReason } from "../../session-copy";
 import { composerModelCopy, planModeCopy, contextUsageCopy } from "@agentkib/session-ui";
 
 let state: ReturnType<typeof useSession>;
-let props: Omit<Parameters<typeof CodexComposerControls>[0], "session">;
-const copy = codexCopy["en-US"];
-const settings: CodexSessionSettings = {
+let props: Omit<Parameters<typeof SessionComposerControls>[0], "session">;
+const copy = sessionCopy["en-US"];
+const settings: SessionSettings = {
   sessionId: "session",
   provider: sessionProviderCapabilities("deepseek-harness"),
   revision: 1,
@@ -36,7 +36,7 @@ const settings: CodexSessionSettings = {
     policies: [],
     serviceTiers: [],
   },
-} as unknown as CodexSessionSettings;
+} as unknown as SessionSettings;
 beforeEach(() => {
   props = { resources: [], setResources: vi.fn(), openPhoneFiles: vi.fn(), disabled: false };
   state = {
@@ -59,7 +59,7 @@ beforeEach(() => {
       codexGoals: vi.fn(),
       codexContextOptions: vi.fn(),
     },
-    codexAction: vi.fn(),
+    runSessionAction: vi.fn(),
     control: vi.fn(),
   } as unknown as ReturnType<typeof useSession>;
 });
@@ -67,7 +67,7 @@ afterEach(cleanup);
 
 describe("DeepSeek Harness model settings in the composer", () => {
   it("reads DSH's own models without a permission picker when none is available", async () => {
-    render(<CodexComposerControls session={state} {...props} />);
+    render(<SessionComposerControls session={state} {...props} />);
     await waitFor(() =>
       expect(state.client.sessionSettings).toHaveBeenCalledWith("session", "deepseek-harness"),
     );
@@ -104,7 +104,7 @@ describe("DeepSeek Harness model settings in the composer", () => {
         policies: [{ id: "read-only", name: "Read Only" }],
       },
     });
-    render(<CodexComposerControls session={state} {...props} />);
+    render(<SessionComposerControls session={state} {...props} />);
     fireEvent.click(
       await screen.findByRole("button", { name: new RegExp(`^${copy.executionPolicy}:`) }),
     );
@@ -140,7 +140,7 @@ describe("DeepSeek Harness model settings in the composer", () => {
         })),
       },
     } as unknown as ReturnType<typeof useSession>;
-    render(<CodexComposerControls session={state} {...props} />);
+    render(<SessionComposerControls session={state} {...props} />);
     fireEvent.click(await screen.findByRole("button", { name: /DeepSeek Chat/ }));
     const overview = within(await screen.findByRole("dialog"));
     expect(overview.queryByRole("status")).not.toBeInTheDocument();
@@ -149,7 +149,7 @@ describe("DeepSeek Harness model settings in the composer", () => {
     const model = models.getByRole("button", { name: "DeepSeek Chat" });
     expect(model).toBeDisabled();
     fireEvent.click(model);
-    expect(state.codexAction).not.toHaveBeenCalled();
+    expect(state.runSessionAction).not.toHaveBeenCalled();
   });
 
   it("re-enables the permission preset only after an authorized idle read", async () => {
@@ -185,7 +185,7 @@ describe("DeepSeek Harness model settings in the composer", () => {
         })),
       },
     } as unknown as ReturnType<typeof useSession>;
-    const view = render(<CodexComposerControls session={state} {...props} />);
+    const view = render(<SessionComposerControls session={state} {...props} />);
     const permissions = await screen.findByRole("button", {
       name: new RegExp(`^${copy.executionPolicy}:`),
     });
@@ -198,7 +198,7 @@ describe("DeepSeek Harness model settings in the composer", () => {
     const readOnly = within(menu).getByRole("menuitem", { name: /^Read Only/ });
     expect(readOnly).toHaveAttribute("aria-disabled", "true");
     fireEvent.click(readOnly);
-    expect(state.codexAction).not.toHaveBeenCalled();
+    expect(state.runSessionAction).not.toHaveBeenCalled();
 
     vi.mocked(state.client.sessionSettings).mockResolvedValue({
       ...presetSettings,
@@ -207,11 +207,11 @@ describe("DeepSeek Harness model settings in the composer", () => {
     });
     state.live = { ...state.live!, status: "idle", revision: 2 };
     state.capabilities!.features.settings = { available: true };
-    view.rerender(<CodexComposerControls session={state} {...props} />);
+    view.rerender(<SessionComposerControls session={state} {...props} />);
     await waitFor(() => expect(readOnly).not.toHaveAttribute("aria-disabled", "true"));
     await userEvent.click(readOnly);
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
-    expect(state.codexAction).toHaveBeenCalledExactlyOnceWith("settings", {
+    expect(state.runSessionAction).toHaveBeenCalledExactlyOnceWith("settings", {
       policyId: "read-only",
     });
   });
@@ -244,7 +244,7 @@ describe("DeepSeek Harness model settings in the composer", () => {
         })),
       },
     } as unknown as ReturnType<typeof useSession>;
-    render(<CodexComposerControls session={state} {...props} />);
+    render(<SessionComposerControls session={state} {...props} />);
     fireEvent.click(await screen.findByRole("button", { name: copy.addContext }));
     fireEvent.click(await screen.findByRole("button", { name: copy.goals }));
     expect(await screen.findByLabelText(copy.goalObjective)).toBeVisible();
@@ -252,7 +252,7 @@ describe("DeepSeek Harness model settings in the composer", () => {
     expect(screen.getByRole("button", { name: copy.goalPause })).toBeDisabled();
     expect(screen.getByRole("button", { name: copy.goalClear })).toBeDisabled();
     expect(
-      screen.queryByText(codexReason("en-US", "goal-action-unavailable").text),
+      screen.queryByText(sessionReason("en-US", "goal-action-unavailable").text),
     ).not.toBeInTheDocument();
   });
 
@@ -260,7 +260,7 @@ describe("DeepSeek Harness model settings in the composer", () => {
     state.current = { ...state.current!, agent: "devin" };
     state.capabilities!.features.goal = { available: true };
     state.capabilities!.features.resources = { available: true };
-    render(<CodexComposerControls session={state} {...props} />);
+    render(<SessionComposerControls session={state} {...props} />);
     fireEvent.click(await screen.findByRole("button", { name: copy.addContext }));
     expect(await screen.findByRole("button", { name: "Files and folders" })).toBeVisible();
     expect(screen.queryByRole("button", { name: copy.goals })).not.toBeInTheDocument();
@@ -283,11 +283,11 @@ describe("DeepSeek Harness model settings in the composer", () => {
         clear: { available: false },
       },
     }));
-    vi.mocked(state.codexAction).mockResolvedValue({ accepted: true });
+    vi.mocked(state.runSessionAction).mockResolvedValue({ accepted: true });
     const onStartupGoalHandled = vi.fn();
     const startupGoal = { value: { objective: "Ship it" }, apply: true, afterRevision: 1 };
     const controls = () => (
-      <CodexComposerControls
+      <SessionComposerControls
         session={state}
         {...props}
         startupGoal={startupGoal}
@@ -296,17 +296,17 @@ describe("DeepSeek Harness model settings in the composer", () => {
     );
     const { rerender } = render(controls());
     await waitFor(() => expect(state.client.sessionGoals).toHaveBeenCalled());
-    expect(state.codexAction).not.toHaveBeenCalled();
+    expect(state.runSessionAction).not.toHaveBeenCalled();
     state.controlReady = false;
     state.live = { ...state.live!, revision: 2 };
     rerender(controls());
     await waitFor(() => expect(state.client.sessionGoals).toHaveBeenCalledTimes(2));
-    expect(state.codexAction).not.toHaveBeenCalled();
+    expect(state.runSessionAction).not.toHaveBeenCalled();
     state.controlReady = true;
     rerender(controls());
     await waitFor(() => expect(onStartupGoalHandled).toHaveBeenLastCalledWith(true));
     expect(onStartupGoalHandled.mock.calls).toEqual([[false], [true]]);
-    expect(state.codexAction).toHaveBeenCalledExactlyOnceWith("goal-set", {
+    expect(state.runSessionAction).toHaveBeenCalledExactlyOnceWith("goal-set", {
       objective: "Ship it",
       intent: "start",
       tokenBudget: null,
@@ -332,12 +332,12 @@ describe("DeepSeek Harness model settings in the composer", () => {
           },
         })),
       },
-      codexAction: vi.fn(async () => {
+      runSessionAction: vi.fn(async () => {
         mode = "default";
         return true;
       }),
     } as unknown as ReturnType<typeof useSession>;
-    render(<CodexComposerControls session={state} {...props} />);
+    render(<SessionComposerControls session={state} {...props} />);
     await waitFor(() =>
       expect(screen.getByRole("button", { name: copy.addContext })).toBeEnabled(),
     );
@@ -350,7 +350,9 @@ describe("DeepSeek Harness model settings in the composer", () => {
     await user.keyboard("{Escape}");
     await user.click(screen.getByRole("button", { name: "Exit Plan mode" }));
     await waitFor(() =>
-      expect(state.codexAction).toHaveBeenCalledExactlyOnceWith("settings", { mode: "default" }),
+      expect(state.runSessionAction).toHaveBeenCalledExactlyOnceWith("settings", {
+        mode: "default",
+      }),
     );
     await waitFor(() =>
       expect(screen.queryByRole("button", { name: "Exit Plan mode" })).not.toBeInTheDocument(),
@@ -384,7 +386,7 @@ describe("DeepSeek Harness model settings in the composer", () => {
         })),
       },
     } as unknown as ReturnType<typeof useSession>;
-    render(<CodexComposerControls session={state} {...props} />);
+    render(<SessionComposerControls session={state} {...props} />);
     // A model-only session has a single entry point.
     expect(
       await screen.findByRole("button", { name: `${picker.chooseEffort}: DeepSeek Chat` }),
@@ -406,7 +408,9 @@ describe("DeepSeek Harness model settings in the composer", () => {
     fireEvent.click(within(models).getByRole("button", { name: "Mock One" }));
     // A default effort stays the default of the model chosen.
     await waitFor(() =>
-      expect(state.codexAction).toHaveBeenCalledWith("settings", { model: "mock%2Flocal/m-1" }),
+      expect(state.runSessionAction).toHaveBeenCalledWith("settings", {
+        model: "mock%2Flocal/m-1",
+      }),
     );
   });
 });

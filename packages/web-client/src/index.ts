@@ -519,9 +519,9 @@ export interface Live {
   tokenUsage?: unknown;
   streamText?: string;
   streamTextTruncated?: boolean;
-  settings?: CodexSessionSettings;
+  settings?: SessionSettings;
   usage?: ContextUsage;
-  goal?: CodexGoal;
+  goal?: SessionGoal;
   /**
    * Claude only. A `state` patch merges shallowly, so omitting this field leaves the previous
    * value in place; clearing it takes an explicit `{ mode: null }`.
@@ -587,7 +587,7 @@ export class ApiError extends Error {
     super(code);
   }
 }
-export type CodexAction =
+type LegacyCodexAction =
   | "resume"
   | "inspect"
   | "steer"
@@ -614,7 +614,13 @@ export type CodexAction =
   | "usage-limit-cancel"
   /** Continues after this limit's reset after all: off by setting, turned off, or a day away. */
   | "usage-limit-continue";
-export type SessionAction = CodexAction | "queue-pause" | "queue-resume" | "open-model-picker";
+export type SessionAction =
+  | LegacyCodexAction
+  | "queue-pause"
+  | "queue-resume"
+  | "open-model-picker";
+/** @deprecated Use SessionAction for managed session operations. */
+export type CodexAction = LegacyCodexAction;
 
 /** Settings-related receipts refresh the composer without reloading the transcript. */
 export function isSessionSettingsAction(kind: string): kind is "settings" | "open-model-picker" {
@@ -674,6 +680,7 @@ export interface SessionCapabilities {
    */
   commands?: ClaudeCommandEntry[];
 }
+/** @deprecated Use SessionCapabilities. */
 export type CodexCapabilities = SessionCapabilities;
 export interface DevinModelVariantOption {
   id: string;
@@ -760,12 +767,15 @@ export interface ManagedInspection {
   executionLocation?: "agentkib" | "terminal" | "external" | null;
   ownershipReason?: string | null;
 }
+// Keep legacy interfaces as the declaration owners so existing module augmentations still apply.
+/** @deprecated Use SessionResumeCommand. */
 export interface CodexResumeCommand {
   available: true;
   command: string;
   shell: "posix" | "powershell";
   runOn: "host";
 }
+export type SessionResumeCommand = CodexResumeCommand;
 export interface ManagedActionBody {
   expectedRevision?: number;
   agent?: ManagedAgent;
@@ -810,6 +820,7 @@ export interface UploadedAttachment {
   size: number;
   version: string;
 }
+/** @deprecated Use SessionQueueItem. */
 export interface CodexQueueItem {
   id: string;
   /** Only present when the provider knows availability for this item. */
@@ -820,9 +831,11 @@ export interface CodexQueueItem {
   text?: string;
   attachmentIds?: string[];
 }
+export type SessionQueueItem = CodexQueueItem;
+/** @deprecated Use SessionQueue. */
 export interface CodexQueue {
   sessionId?: string;
-  data: CodexQueueItem[];
+  data: SessionQueueItem[];
   paused?: boolean;
   requiresResume?: boolean;
 }
@@ -833,10 +846,12 @@ export interface CodexOptions {
   models?: { id: string; name?: string; efforts?: string[] }[];
   workspaces: { id: string; name: string }[];
 }
+/** @deprecated Use SessionFeatureAvailability. */
 export interface CodexAvailability {
   available: boolean;
   reason?: string;
 }
+export type SessionFeatureAvailability = CodexAvailability;
 export interface ContextUsage {
   available: boolean;
   state?: "ready" | "pending" | "stale" | "unavailable";
@@ -854,7 +869,9 @@ export interface ContextUsage {
   percent?: number;
   updatedAt?: string;
 }
+/** @deprecated Use ContextUsage. */
 export type CodexTokenUsage = ContextUsage;
+/** @deprecated Use SessionSettingValues. */
 export interface CodexSettingValues {
   modelId?: string;
   effort?: string;
@@ -865,6 +882,8 @@ export interface CodexSettingValues {
   maxContextTokens?: number;
   permissionMode?: ClaudeObservedPermissionMode | DevinPermissionMode;
 }
+export type SessionSettingValues = CodexSettingValues;
+/** @deprecated Use SessionSettings. */
 export interface CodexSessionSettings {
   sessionId: string;
   available: boolean;
@@ -875,10 +894,10 @@ export interface CodexSessionSettings {
   writeScope?: string;
   provider?: SessionProviderCapabilities;
   status?: string;
-  current: CodexSettingValues;
-  selected?: CodexSettingValues;
+  current: SessionSettingValues;
+  selected?: SessionSettingValues;
   /** Last used in native history. These values are display-only. */
-  historicalSettings?: Pick<CodexSettingValues, "modelId" | "effort">;
+  historicalSettings?: Pick<SessionSettingValues, "modelId" | "effort">;
   applicationStatus?: "pending" | "confirmed" | "unknown";
   defaults: {
     modelId?: string;
@@ -887,13 +906,13 @@ export interface CodexSessionSettings {
     permissionMode?: ClaudePermissionMode | DevinPermissionMode;
   };
   writable: {
-    model: CodexAvailability;
-    effort: CodexAvailability;
-    mode: CodexAvailability;
-    policy: CodexAvailability;
-    serviceTier: CodexAvailability;
-    restoreDefaults: CodexAvailability;
-    permissionMode?: CodexAvailability;
+    model: SessionFeatureAvailability;
+    effort: SessionFeatureAvailability;
+    mode: SessionFeatureAvailability;
+    policy: SessionFeatureAvailability;
+    serviceTier: SessionFeatureAvailability;
+    restoreDefaults: SessionFeatureAvailability;
+    permissionMode?: SessionFeatureAvailability;
   };
   options: {
     collaborationModes?: { id: "plan" | "default"; name: string }[];
@@ -917,9 +936,10 @@ export interface CodexSessionSettings {
       description?: string;
     }[];
   };
-  usage?: CodexTokenUsage;
+  usage?: ContextUsage;
 }
 export type SessionSettings = CodexSessionSettings;
+/** @deprecated Use SessionGoal. */
 export interface CodexGoal {
   objective: string;
   status: string;
@@ -931,6 +951,8 @@ export interface CodexGoal {
   /** Why a blocked goal stopped, in the agent's own words. */
   detail?: string;
 }
+export type SessionGoal = CodexGoal;
+/** @deprecated Use SessionGoalState. */
 export interface CodexGoalState {
   sessionId: string;
   available: boolean;
@@ -938,19 +960,22 @@ export interface CodexGoalState {
   revision: number;
   /** What bounds a goal; tokens when absent. A round-bounded goal takes no token budget. */
   budget?: "rounds";
-  goal?: CodexGoal;
+  goal?: SessionGoal;
   actions: {
-    set: CodexAvailability;
-    pause: CodexAvailability;
-    resume: CodexAvailability;
-    clear: CodexAvailability;
+    set: SessionFeatureAvailability;
+    pause: SessionFeatureAvailability;
+    resume: SessionFeatureAvailability;
+    clear: SessionFeatureAvailability;
   };
 }
 export type SessionGoalState = CodexGoalState;
-export type CodexContextResourceKind = "file" | "directory" | "skill" | "plugin" | "app";
+export type SessionResourceKind = "file" | "directory" | "skill" | "plugin" | "app";
+/** @deprecated Use SessionResourceKind. */
+export type CodexContextResourceKind = SessionResourceKind;
+/** @deprecated Use SessionResource. */
 export interface CodexContextResource {
   id: string;
-  kind: CodexContextResourceKind;
+  kind: SessionResourceKind;
   name: string;
   description?: string;
   /** Opaque host directory cursor; only present on browsable directories. */
@@ -958,16 +983,18 @@ export interface CodexContextResource {
   available: boolean;
   reason?: string;
 }
+/** @deprecated Use SessionResources. */
 export interface CodexContextOptions {
   sessionId: string;
   revision: number;
   directoryId?: string;
   parentId?: string;
-  resources: CodexContextResource[];
+  resources: SessionResource[];
 }
 export type SessionResource = CodexContextResource;
 export type SessionResources = CodexContextOptions;
 export type NewSessionResources = Omit<SessionResources, "sessionId"> & { workspaceId: string };
+/** @deprecated Use SessionActionBody for managed session operations. */
 export interface CodexActionBody {
   historyReferences?: HistoryReference[];
   bootId: string;
@@ -1331,14 +1358,14 @@ export class WebClient {
     );
   }
   codexResumeCommand(sessionId: string, signal?: AbortSignal) {
-    return this.request<CodexResumeCommand>(
+    return this.request<SessionResumeCommand>(
       `managed/resume-command?${new URLSearchParams({ sessionId })}`,
       undefined,
       signal,
     );
   }
   claudeResumeCommand(sessionId: string, signal?: AbortSignal) {
-    return this.request<CodexResumeCommand>(
+    return this.request<SessionResumeCommand>(
       `managed/resume-command?${new URLSearchParams({ sessionId })}`,
       undefined,
       signal,
@@ -1461,28 +1488,28 @@ export class WebClient {
     return this.request<NewSessionResources>(`managed/resources?${query}`, undefined, signal);
   }
   codexCapabilities(sessionId: string, signal?: AbortSignal) {
-    return this.request<CodexCapabilities>(
+    return this.request<SessionCapabilities>(
       `codex/capabilities?${new URLSearchParams({ sessionId })}`,
       undefined,
       signal,
     );
   }
   codexQueue(sessionId: string, signal?: AbortSignal) {
-    return this.request<CodexQueue>(
+    return this.request<SessionQueue>(
       `codex/queue?${new URLSearchParams({ sessionId })}`,
       undefined,
       signal,
     );
   }
   codexSessionSettings(sessionId: string, signal?: AbortSignal) {
-    return this.request<CodexSessionSettings>(
+    return this.request<SessionSettings>(
       `codex/session-settings?${new URLSearchParams({ sessionId })}`,
       undefined,
       signal,
     );
   }
   codexGoals(sessionId: string, signal?: AbortSignal) {
-    return this.request<CodexGoalState>(
+    return this.request<SessionGoalState>(
       `codex/goals?${new URLSearchParams({ sessionId })}`,
       undefined,
       signal,
@@ -1491,7 +1518,7 @@ export class WebClient {
   codexContextOptions(sessionId: string, directoryId?: string, signal?: AbortSignal) {
     const query = new URLSearchParams({ sessionId });
     if (directoryId) query.set("directoryId", directoryId);
-    return this.request<CodexContextOptions>(`codex/context-options?${query}`, undefined, signal);
+    return this.request<SessionResources>(`codex/context-options?${query}`, undefined, signal);
   }
   codexAction(action: CodexAction, body: SessionActionBody) {
     if (body.effort === null)

@@ -20,12 +20,12 @@ import {
   type SessionAction,
   type SessionActionBody,
   type SessionCapabilities,
+  type SessionGoalState,
+  type SessionResource,
+  type SessionResources,
+  type SessionSettings,
+  type SessionSettingValues,
   type WebClient,
-  type CodexContextOptions,
-  type CodexContextResource,
-  type CodexGoalState,
-  type CodexSettingValues,
-  type CodexSessionSettings,
 } from "@agentkib/web-client";
 import { subscribeSessionInvalidation } from "@agentkib/conversation-state";
 import { ComposerGoalFields, composerGoalCopy } from "../../composer-add-menu";
@@ -55,11 +55,9 @@ import { settingsNoticeGroup } from "../../session-control-receipts";
 import { useSessionPlatform } from "../../session-platform";
 import { useComposerModelPanel } from "../../use-composer-model-panel";
 import { useComposerModelDisplay } from "../../use-composer-model-display";
-import { codexCopyForSurface, codexReason } from "./codex-copy";
 import { composerLayoutCopy, composerSettingsStatus, composerTerm } from "./composer-layout-copy";
 import { sessionAgentCopy } from "./session-agent-copy";
-
-export type CodexResource = CodexContextResource;
+import { sessionCopyForSurface, sessionReason } from "./session-copy";
 
 /** Opens composer controls; false when this device or session cannot show them now. */
 export type ComposerControlsHandle = {
@@ -87,7 +85,10 @@ type ComposerControlsSession = {
   busy: boolean;
   online: boolean;
   controlReady: boolean;
-  codexAction: (action: SessionAction, fields?: Partial<SessionActionBody>) => Promise<unknown>;
+  runSessionAction: (
+    action: SessionAction,
+    fields?: Partial<SessionActionBody>,
+  ) => Promise<unknown>;
   capabilities?: SessionCapabilities;
   usageEpoch: string;
   notice?: string;
@@ -98,11 +99,11 @@ type ComposerControlsSession = {
   t?: { notDispatched: string };
 };
 
-export type CodexComposerControlsProps = {
+export type SessionComposerControlsProps = {
   session: ComposerControlsSession;
   composerCapabilities?: ReturnType<typeof existingSessionComposerCapabilities>;
-  resources: CodexResource[];
-  setResources: (resources: CodexResource[]) => void;
+  resources: SessionResource[];
+  setResources: (resources: SessionResource[]) => void;
   openPhoneFiles: () => void;
   disabled: boolean;
   action?: ReactNode;
@@ -125,7 +126,7 @@ function modelReadDenied(error: unknown) {
   return error instanceof ApiError && [401, 403, 404, 410].includes(error.status);
 }
 
-export function CodexComposerControls({
+export function SessionComposerControls({
   session,
   composerCapabilities,
   resources,
@@ -140,7 +141,7 @@ export function CodexComposerControls({
   onStartupGoalHandled,
   onStartupGoalDiscarded,
   onStageGoal,
-}: CodexComposerControlsProps) {
+}: SessionComposerControlsProps) {
   const {
     current,
     selected,
@@ -151,7 +152,7 @@ export function CodexComposerControls({
     busy,
     online,
     controlReady,
-    codexAction,
+    runSessionAction,
     capabilities,
     usageEpoch,
     notice,
@@ -167,7 +168,7 @@ export function CodexComposerControls({
     copy: platformCopy,
   } = useSessionPlatform();
   const desktop = kind === "desktop";
-  const copy = codexCopyForSurface(locale, kind);
+  const copy = sessionCopyForSurface(locale, kind);
   const isClaude = current?.agent === "claude-code";
   const isCodex = current?.agent === "codex";
   const settingsAgent = managedAgentOf(current?.agent);
@@ -208,7 +209,7 @@ export function CodexComposerControls({
   const layout = composerLayoutCopy[locale];
   const term = (value: string) => composerTerm(locale, value);
   const reason = (code?: string) =>
-    codexReason(locale, code, kind, platformCopy.unavailableReason).text;
+    sessionReason(locale, code, kind, platformCopy.unavailableReason).text;
   const reasonTitle = (code?: string) => (code ? reason(code) : undefined);
   const loadGeneration = useRef(0);
   const loadFlight = useRef<
@@ -266,7 +267,7 @@ export function CodexComposerControls({
     scope: string;
     client: typeof client;
     execution: string;
-    value: CodexSessionSettings;
+    value: SessionSettings;
   }>();
   const settingsExecutionScope = JSON.stringify([live?.executionMode, live?.connectionGeneration]);
   const { follower, writeScope, rememberRead, followerAuthority } = useComposerFollowerSettings(
@@ -305,12 +306,12 @@ export function CodexComposerControls({
     scope: string;
     client: typeof client;
     revision: number;
-    values?: CodexSessionSettings["historicalSettings"];
-    usage?: CodexSessionSettings["usage"];
-    defaults?: CodexSessionSettings["defaults"];
+    values?: SessionSettings["historicalSettings"];
+    usage?: SessionSettings["usage"];
+    defaults?: SessionSettings["defaults"];
   }>();
-  const [goal, setGoal] = useState<CodexGoalState>();
-  const [context, setContext] = useState<CodexContextOptions>();
+  const [goal, setGoal] = useState<SessionGoalState>();
+  const [context, setContext] = useState<SessionResources>();
   const [settingsError, setSettingsError] = useState("");
   const [goalError, setGoalError] = useState("");
   const [contextError, setContextError] = useState("");
@@ -411,7 +412,7 @@ export function CodexComposerControls({
       : undefined;
 
   const applySettings = useCallback(
-    (value: CodexSessionSettings, fromLive = false) => {
+    (value: SessionSettings, fromLive = false) => {
       if (value.sessionId !== selected) return;
       if (!fromLive) rememberRead(value);
       settingsExecution.current = settingsExecutionScope;
@@ -827,7 +828,7 @@ export function CodexComposerControls({
       follower: follower ? { authority: followerAuthority, writeScope } : undefined,
       flight: mutationFlight,
       loadGeneration,
-      send: codexAction,
+      send: runSessionAction,
       onStart: () => {
         if (!desktop) changingSettings.current = changesSettings;
         setSaving(true);
@@ -879,11 +880,11 @@ export function CodexComposerControls({
       : disabled || busy || saving
         ? reason("session-busy")
         : undefined;
-  const goalActionDisabled = (action: keyof CodexGoalState["actions"]) =>
+  const goalActionDisabled = (action: keyof SessionGoalState["actions"]) =>
     goalActionsLocked ||
     !goalSnapshot?.actions?.[action]?.available ||
     feature(`goal-${action}`)?.available !== true;
-  const goalActionTitle = (action: keyof CodexGoalState["actions"]) =>
+  const goalActionTitle = (action: keyof SessionGoalState["actions"]) =>
     reasonTitle(
       goalSnapshot?.actions?.[action]?.reason ||
         feature(`goal-${action}`)?.reason ||
@@ -1017,7 +1018,7 @@ export function CodexComposerControls({
       : webFallbackSettings?.defaults;
   const webHistorical = webFallbackSettings?.historicalSettings;
   // An observed older model is display-only and cannot prefill current settings.
-  const observedModel: CodexSettingValues | undefined = desktop
+  const observedModel: SessionSettingValues | undefined = desktop
     ? [
         reportedSettings,
         displayedSettings,
@@ -1523,7 +1524,7 @@ export function CodexComposerControls({
                     ready: controlReady,
                     online,
                     blocked: disabled || busy || running,
-                    open: async () => !!(await codexAction("open-model-picker")),
+                    open: async () => !!(await runSessionAction("open-model-picker")),
                   },
                 }),
                 effortDefault: desktop

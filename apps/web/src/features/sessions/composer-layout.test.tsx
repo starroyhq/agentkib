@@ -6,9 +6,9 @@ import { SessionComposer } from "@/features/conversation/web-session-composer";
 import { useSession } from "@/features/conversation/web-session-context";
 import { dictionaries, type Locale } from "@/features/conversation/i18n";
 import { composerLayoutCopy } from "@agentkib/session-ui";
-import { codexCopyForSurface } from "@/features/conversation/codex-copy";
+import { sessionCopyForSurface } from "@/features/conversation/session-copy";
 import { publishSessionInvalidation } from "@agentkib/conversation-state";
-import type { CodexGoalState, CodexSessionSettings } from "@agentkib/web-client";
+import type { SessionGoalState, SessionSettings } from "@agentkib/web-client";
 import { composerAddCopy, composerModelCopy, planModeCopy } from "@agentkib/session-ui";
 
 const modelReset = () => screen.getByRole("button", { name: "恢复默认模型" });
@@ -16,7 +16,7 @@ vi.mock("@/features/conversation/web-session-context", () => ({
   useSession: vi.fn(),
 }));
 let state: ReturnType<typeof useSession>;
-function settings(id = "s"): CodexSessionSettings {
+function settings(id = "s"): SessionSettings {
   return {
     sessionId: id,
     revision: 1,
@@ -74,7 +74,7 @@ beforeEach(() => {
     message: "",
     setMessage: vi.fn(),
     control: vi.fn(),
-    codexAction: vi.fn(),
+    runSessionAction: vi.fn(),
     capabilities: {
       sessionId: "s",
       features: {
@@ -135,7 +135,7 @@ describe("responsive composer behavior", () => {
     const secondModel = await screen.findByRole("button", { name: "Second model" });
     expect(secondModel).toBeEnabled();
     fireEvent.click(secondModel);
-    expect(state.codexAction).toHaveBeenCalledExactlyOnceWith("settings", {
+    expect(state.runSessionAction).toHaveBeenCalledExactlyOnceWith("settings", {
       model: "second-model",
     });
   });
@@ -160,7 +160,7 @@ describe("responsive composer behavior", () => {
       expect(send).toBeDisabled();
       fireEvent.click(send);
       expect(state.control).not.toHaveBeenCalled();
-      expect(state.codexAction).not.toHaveBeenCalled();
+      expect(state.runSessionAction).not.toHaveBeenCalled();
       expect(state.setMessage).not.toHaveBeenCalled();
       expect(screen.getByRole("textbox")).toHaveValue("Keep this draft");
     },
@@ -193,7 +193,7 @@ describe("responsive composer behavior", () => {
       expect(send).toBeDisabled();
       fireEvent.click(send);
       expect(state.control).not.toHaveBeenCalled();
-      expect(state.codexAction).not.toHaveBeenCalled();
+      expect(state.runSessionAction).not.toHaveBeenCalled();
       expect(state.setMessage).not.toHaveBeenCalled();
       expect(screen.getByRole("textbox")).toHaveValue("Keep this draft");
     },
@@ -244,7 +244,7 @@ describe("responsive composer behavior", () => {
       ).toBeDisabled();
       fireEvent.click(model);
       expect(await screen.findByText(unknown)).toBeVisible();
-      expect(state.codexAction).not.toHaveBeenCalled();
+      expect(state.runSessionAction).not.toHaveBeenCalled();
     },
   );
   it.each([
@@ -291,12 +291,12 @@ describe("responsive composer behavior", () => {
       fireEvent.click(screen.getByRole("button", { name: action }));
       const dialog = await screen.findByRole("dialog", { name: composerModelCopy[locale].model });
       await waitFor(() => expect(state.client.sessionSettings).toHaveBeenCalledWith("s", "codex"));
-      expect(state.codexAction).not.toHaveBeenCalled();
+      expect(state.runSessionAction).not.toHaveBeenCalled();
       expect(state.control).not.toHaveBeenCalled();
       expect(state.setMessage).not.toHaveBeenCalled();
       fireEvent.click(within(dialog).getByRole("button", { name: "Test Model s" }));
       await waitFor(() =>
-        expect(state.codexAction).toHaveBeenCalledWith(
+        expect(state.runSessionAction).toHaveBeenCalledWith(
           "settings",
           expect.objectContaining({ model: "model" }),
         ),
@@ -329,7 +329,7 @@ describe("responsive composer behavior", () => {
   });
 
   it("shows native usage before settings load and preserves it after a late settings response", async () => {
-    let finish!: (value: CodexSessionSettings) => void;
+    let finish!: (value: SessionSettings) => void;
     vi.mocked(state.client.sessionSettings).mockImplementationOnce(
       () =>
         new Promise((resolve) => {
@@ -381,15 +381,15 @@ describe("responsive composer behavior", () => {
     fireEvent.click(picker);
     fireEvent.click(screen.getByRole("button", { name: "持续目标" }));
     expect(
-      screen.getByRole("button", { name: codexCopyForSurface("zh-CN", "web").goalUpdate }),
+      screen.getByRole("button", { name: sessionCopyForSurface("zh-CN", "web").goalUpdate }),
     ).toBeDisabled();
     expect(
-      screen.getByRole("button", { name: codexCopyForSurface("zh-CN", "web").goalPause }),
+      screen.getByRole("button", { name: sessionCopyForSurface("zh-CN", "web").goalPause }),
     ).toBeDisabled();
     expect(
-      screen.getByRole("button", { name: codexCopyForSurface("zh-CN", "web").goalClear }),
+      screen.getByRole("button", { name: sessionCopyForSurface("zh-CN", "web").goalClear }),
     ).toBeDisabled();
-    expect(state.codexAction).not.toHaveBeenCalled();
+    expect(state.runSessionAction).not.toHaveBeenCalled();
   });
   it("opens unknown context usage on keyboard focus without a dialog", async () => {
     render(<SessionComposer />);
@@ -400,7 +400,7 @@ describe("responsive composer behavior", () => {
     const details = await screen.findByRole("tooltip");
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     expect(details).not.toHaveAttribute("aria-modal", "true");
-    expect(details).toHaveTextContent(codexCopyForSurface("zh-CN", "web").contextUnknown);
+    expect(details).toHaveTextContent(sessionCopyForSurface("zh-CN", "web").contextUnknown);
     await userEvent.setup().keyboard("{Escape}");
     await waitFor(() => expect(screen.queryByRole("tooltip")).not.toBeInTheDocument());
     expect(usage).toHaveFocus();
@@ -436,7 +436,7 @@ describe("responsive composer behavior", () => {
     await waitFor(() => expect(add).toHaveFocus());
     expect(screen.getByRole("button", { name: "移除附件: readme.md" })).toBeVisible();
     expect(state.control).not.toHaveBeenCalled();
-    expect(state.codexAction).not.toHaveBeenCalled();
+    expect(state.runSessionAction).not.toHaveBeenCalled();
     expect(screen.getByRole("button", { name: "发送" })).toBeDisabled();
     expect(screen.getByLabelText("发送消息")).toBeEnabled();
   });
@@ -455,7 +455,7 @@ describe("responsive composer behavior", () => {
         { "zh-CN": "高", "zh-Hant": "高", "en-US": "High", "ja-JP": "高" }[locale],
       );
       fireEvent.click(model);
-      const copy = codexCopyForSurface(locale, "web");
+      const copy = sessionCopyForSurface(locale, "web");
       const add = screen.getByRole("button", { name: copy.addContext });
       fireEvent.click(add);
       const panel = within(await screen.findByRole("dialog", { name: copy.addContext }));
@@ -494,7 +494,7 @@ describe("responsive composer behavior", () => {
     expect(screen.getByRole("status")).toHaveTextContent(expected);
     expect(screen.getByRole("button", { name: "发送" })).toBeDisabled();
     expect(state.control).not.toHaveBeenCalled();
-    expect(state.codexAction).not.toHaveBeenCalled();
+    expect(state.runSessionAction).not.toHaveBeenCalled();
   });
   it("keeps the draft editable while the DSH owner cannot be verified", () => {
     state = {
@@ -547,12 +547,12 @@ describe("responsive composer behavior", () => {
     expect(screen.getByRole("button", { name: state.t.send })).toBeDisabled();
     expect(screen.queryByRole("button", { name: state.t.stop })).not.toBeInTheDocument();
     expect(
-      screen.queryByRole("button", { name: codexCopyForSurface(state.locale, "web").advanced }),
+      screen.queryByRole("button", { name: sessionCopyForSurface(state.locale, "web").advanced }),
     ).not.toBeInTheDocument();
     expect(state.control).not.toHaveBeenCalled();
   });
   it("ignores late settings responses for a previously selected conversation", async () => {
-    let finish!: (value: CodexSessionSettings) => void;
+    let finish!: (value: SessionSettings) => void;
     vi.mocked(state.client.sessionSettings).mockImplementationOnce(
       () =>
         new Promise((resolve) => {
@@ -618,7 +618,7 @@ describe("native Plan and Goal projection", () => {
     expect(plan).toBeEnabled();
     expect(screen.queryByText(composerLayoutCopy["zh-CN"].settingsPending)).not.toBeInTheDocument();
     expect(
-      screen.queryByText(codexCopyForSurface("zh-CN", "web").settingsSaved),
+      screen.queryByText(sessionCopyForSurface("zh-CN", "web").settingsSaved),
     ).not.toBeInTheDocument();
     state = {
       ...state,
@@ -633,7 +633,7 @@ describe("native Plan and Goal projection", () => {
         screen.queryByText(composerLayoutCopy["zh-CN"].settingsPending),
       ).not.toBeInTheDocument(),
     );
-    expect(state.codexAction).not.toHaveBeenCalled();
+    expect(state.runSessionAction).not.toHaveBeenCalled();
     expect(state.control).not.toHaveBeenCalled();
   });
   it("retains the Plan entry without manufacturing native modes when its directory is absent", async () => {
@@ -693,7 +693,7 @@ describe("native Plan and Goal projection", () => {
       fireEvent.change(screen.getByRole("spinbutton"), { target: { value: "" } });
       fireEvent.click(screen.getByRole("button", { name: "更新目标" }));
       await waitFor(() =>
-        expect(state.codexAction).toHaveBeenCalledWith("goal-set", {
+        expect(state.runSessionAction).toHaveBeenCalledWith("goal-set", {
           objective: "Safe native goal",
           intent: "update",
           tokenBudget: null,
@@ -761,7 +761,7 @@ it("reconciles selected native invalidations and freezes changes until the new r
   view.rerender(<SessionComposer />);
   expect(modelReset()).toBeDisabled();
   fireEvent.click(modelReset());
-  expect(state.codexAction).not.toHaveBeenCalled();
+  expect(state.runSessionAction).not.toHaveBeenCalled();
   await act(async () => {
     publishSessionInvalidation(state.client, "s", ["settings", "goal"]);
   });
@@ -771,14 +771,14 @@ it("reconciles selected native invalidations and freezes changes until the new r
   expect(screen.queryByRole("button", { name: "持续目标" })).not.toBeInTheDocument();
   expect(screen.getByRole("slider")).toHaveAttribute("aria-valuenow", "1");
   expect(modelReset()).toBeEnabled();
-  expect(state.codexAction).not.toHaveBeenCalled();
+  expect(state.runSessionAction).not.toHaveBeenCalled();
   vi.useRealTimers();
 });
 
 it("ignores late selected-session native reads after switching conversations", async () => {
   const view = render(<SessionComposer />);
   await screen.findByRole("button", { name: /Test Model s/ });
-  let resolveOld!: (value: CodexSessionSettings) => void;
+  let resolveOld!: (value: SessionSettings) => void;
   vi.mocked(state.client.sessionSettings).mockImplementation((id) =>
     id === "s"
       ? new Promise((resolve) => {
@@ -808,7 +808,7 @@ it("ignores late selected-session native reads after switching conversations", a
   );
   expect(screen.getByRole("button", { name: /Test Model new/ })).toBeVisible();
   expect(screen.queryByText("stale")).not.toBeInTheDocument();
-  expect(state.codexAction).not.toHaveBeenCalled();
+  expect(state.runSessionAction).not.toHaveBeenCalled();
   vi.useRealTimers();
 });
 
@@ -843,7 +843,7 @@ describe("idle conversation revision calibration", () => {
         // Follower goal reads can be unsupported and have no usable revision.
         vi.mocked(state.client.codexGoals).mockResolvedValue({
           available: false,
-        } as CodexGoalState);
+        } as SessionGoalState);
       }
       state.live = { ...state.live!, executionMode };
       vi.mocked(state.client.sessionSettings).mockResolvedValue(native);
@@ -865,14 +865,14 @@ describe("idle conversation revision calibration", () => {
       } else await waitFor(() => expect(modelReset()).toBeEnabled());
       expect(state.client.codexGoals).toHaveBeenCalledTimes(2);
       expect(state.client.codexContextOptions).toHaveBeenCalledOnce();
-      expect(state.codexAction).not.toHaveBeenCalled();
+      expect(state.runSessionAction).not.toHaveBeenCalled();
     },
   );
 
   it("calibrates exposed goal actions without discarding an edited goal", async () => {
     state.capabilities!.features["goal-set"] = { available: true };
     state.capabilities!.features["goal-resume"] = { available: true };
-    const goal: CodexGoalState = {
+    const goal: SessionGoalState = {
       sessionId: "s",
       revision: 1,
       available: true,
@@ -900,11 +900,11 @@ describe("idle conversation revision calibration", () => {
     expect(screen.getByRole("textbox", { name: "目标内容" })).toHaveValue("Keep my goal draft");
     expect(screen.getByText(composerLayoutCopy["zh-CN"].nativeChanged)).toBeVisible();
     expect(screen.getByRole("button", { name: "更新目标" })).toBeDisabled();
-    expect(state.codexAction).not.toHaveBeenCalled();
+    expect(state.runSessionAction).not.toHaveBeenCalled();
   });
 
   it("coalesces initial and idle reads, then drains changes received during the flight", async () => {
-    let finish!: (value: CodexSessionSettings) => void;
+    let finish!: (value: SessionSettings) => void;
     vi.mocked(state.client.sessionSettings)
       .mockImplementationOnce(
         () =>
@@ -971,14 +971,14 @@ describe("idle conversation revision calibration", () => {
   it("keeps an applied settings action busy until its shared read finishes", async () => {
     const view = render(<SessionComposer />);
     fireEvent.click(await screen.findByRole("button", { name: /Test Model/ }));
-    let finish!: (value: CodexSessionSettings) => void;
+    let finish!: (value: SessionSettings) => void;
     vi.mocked(state.client.sessionSettings).mockImplementationOnce(
       () =>
         new Promise((resolve) => {
           finish = resolve;
         }),
     );
-    vi.mocked(state.codexAction).mockResolvedValue({ accepted: true } as never);
+    vi.mocked(state.runSessionAction).mockResolvedValue({ accepted: true } as never);
     fireEvent.click(modelReset());
     await waitFor(() => expect(state.client.sessionSettings).toHaveBeenCalledTimes(2));
     expect(modelReset()).toBeDisabled();
@@ -991,7 +991,7 @@ describe("idle conversation revision calibration", () => {
     async (open) => {
       state.capabilities!.features["goal-set"] = { available: true };
       state.capabilities!.features["goal-pause"] = { available: true };
-      const goal: CodexGoalState = {
+      const goal: SessionGoalState = {
         sessionId: "s",
         revision: 1,
         available: true,
@@ -1016,7 +1016,7 @@ describe("idle conversation revision calibration", () => {
       view.rerender(<SessionComposer />);
       await act(async () => {});
       expect(state.client.codexGoals).toHaveBeenCalledOnce();
-      let finish!: (value: CodexGoalState) => void;
+      let finish!: (value: SessionGoalState) => void;
       vi.mocked(state.client.codexGoals).mockImplementationOnce(
         () => new Promise((resolve) => (finish = resolve)),
       );
@@ -1032,7 +1032,7 @@ describe("idle conversation revision calibration", () => {
       await act(async () => finish({ ...goal, revision: 2 }));
       expect(screen.getByRole("button", { name: "暂停" })).toBeDisabled();
       expect(state.client.codexGoals).toHaveBeenCalledTimes(2);
-      expect(state.codexAction).not.toHaveBeenCalled();
+      expect(state.runSessionAction).not.toHaveBeenCalled();
 
       vi.mocked(state.client.codexGoals).mockResolvedValue({ ...goal, revision: 3 });
       vi.mocked(state.client.sessionSettings).mockResolvedValue({
@@ -1050,9 +1050,9 @@ describe("idle conversation revision calibration", () => {
       }
       expect(state.client.codexGoals).toHaveBeenCalledTimes(3);
       expect(state.client.codexContextOptions).toHaveBeenCalledOnce();
-      expect(state.codexAction).not.toHaveBeenCalled();
+      expect(state.runSessionAction).not.toHaveBeenCalled();
       fireEvent.click(screen.getByRole("button", { name: "暂停" }));
-      expect(state.codexAction).toHaveBeenCalledExactlyOnceWith("goal-pause", {});
+      expect(state.runSessionAction).toHaveBeenCalledExactlyOnceWith("goal-pause", {});
     },
   );
 
@@ -1085,6 +1085,6 @@ describe("idle conversation revision calibration", () => {
       expect(within(models).getByRole("button", { name: "Test Model s" })).toBeEnabled(),
     );
     expect(state.client.codexContextOptions).toHaveBeenCalledOnce();
-    expect(state.codexAction).not.toHaveBeenCalled();
+    expect(state.runSessionAction).not.toHaveBeenCalled();
   });
 });

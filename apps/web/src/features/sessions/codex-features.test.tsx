@@ -4,16 +4,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { composerAddCopy } from "@agentkib/session-ui";
 import {
   sessionProviderCapabilities,
-  type CodexCapabilities,
+  type SessionCapabilities,
   type SessionSettings,
   type UploadedAttachment,
 } from "@agentkib/web-client";
-import { CodexTools } from "@/features/conversation/features/sessions/web-session-operations";
+import { SessionTools } from "@/features/conversation/features/sessions/web-session-operations";
 import { render } from "@/features/conversation/web-reader-test-utils";
 import { SessionComposer } from "@/features/conversation/web-session-composer";
 import { useSession } from "@/features/conversation/web-session-context";
 import { dictionaries } from "@/features/conversation/i18n";
-import { codexCopyForSurface, codexReason } from "@/features/conversation/codex-copy";
+import { sessionCopyForSurface, sessionReason } from "@/features/conversation/session-copy";
 import { webLayoutCopy } from "@agentkib/session-ui";
 import { publishSessionInvalidation } from "@agentkib/conversation-state";
 vi.mock("@tanstack/react-router", () => ({ useNavigate: () => vi.fn() }));
@@ -55,7 +55,7 @@ beforeEach(() => {
     message: "",
     setMessage: vi.fn(),
     control: vi.fn().mockResolvedValue(true),
-    codexAction: vi.fn().mockResolvedValue({ accepted: true }),
+    runSessionAction: vi.fn().mockResolvedValue({ accepted: true }),
     capabilities: {
       sessionId: "s",
       features: {
@@ -63,7 +63,7 @@ beforeEach(() => {
         steer: { available: true },
         "queue-add": { available: true },
       },
-    } as CodexCapabilities,
+    } as SessionCapabilities,
     canSend: true,
     canStop: false,
     busy: false,
@@ -91,7 +91,7 @@ describe("Codex composer", () => {
           }
         : {},
     );
-    render(<CodexTools open />);
+    render(<SessionTools open />);
     const modelPicker = await screen.findByRole("button", { name: "模型设置" });
     fireEvent.click(modelPicker);
     const overview = within(await screen.findByRole("dialog", { name: "模型设置" }));
@@ -99,7 +99,7 @@ describe("Codex composer", () => {
     fireEvent.click(overview.getByRole("button", { name: "选择模型" }));
     fireEvent.click(await screen.findByRole("button", { name: "Native model" }));
     await waitFor(() =>
-      expect(state.codexAction).toHaveBeenCalledWith("settings", {
+      expect(state.runSessionAction).toHaveBeenCalledWith("settings", {
         model: "native-model",
         effort: "low",
       }),
@@ -128,14 +128,14 @@ describe("Codex composer", () => {
           }
         : {},
     );
-    render(<CodexTools open />);
+    render(<SessionTools open />);
 
     const picker = await screen.findByRole("button", { name: /模型设置: Native model/ });
     fireEvent.click(picker);
     const overview = within(await screen.findByRole("dialog", { name: "Native model" }));
     expect(overview.getByText("Native model")).toBeVisible();
     expect(overview.queryByRole("button", { name: "选择模型" })).not.toBeInTheDocument();
-    expect(state.codexAction).not.toHaveBeenCalled();
+    expect(state.runSessionAction).not.toHaveBeenCalled();
   });
 
   it("offers restricted Codex Plan only in Add, without requiring attachments", async () => {
@@ -158,7 +158,7 @@ describe("Codex composer", () => {
     expect(plan).toHaveAttribute("aria-pressed", "false");
     fireEvent.click(plan);
     await waitFor(() =>
-      expect(state.codexAction).toHaveBeenCalledWith("settings", { mode: "plan" }),
+      expect(state.runSessionAction).toHaveBeenCalledWith("settings", { mode: "plan" }),
     );
     await waitFor(() =>
       expect(screen.queryByRole("dialog", { name: "添加上下文" })).not.toBeInTheDocument(),
@@ -173,13 +173,13 @@ describe("Codex composer", () => {
     expect(activePlan).toHaveAttribute("aria-pressed", "true");
     fireEvent.click(activePlan);
     await waitFor(() =>
-      expect(state.codexAction).toHaveBeenCalledWith("settings", { mode: "default" }),
+      expect(state.runSessionAction).toHaveBeenCalledWith("settings", { mode: "default" }),
     );
     state.capabilities!.features.settings = { available: false };
     view.rerender(<SessionComposer />);
     expect(add).toBeDisabled();
     fireEvent.click(add);
-    expect(state.codexAction).toHaveBeenCalledTimes(2);
+    expect(state.runSessionAction).toHaveBeenCalledTimes(2);
   });
 
   it("blocks send and steer during compaction while keeping explicit queueing and native stop available", async () => {
@@ -203,7 +203,7 @@ describe("Codex composer", () => {
     const queue = screen.getByRole("menuitem", { name: "加入队列（将自动执行）" });
     expect(queue).not.toHaveAttribute("aria-disabled", "true");
     fireEvent.click(queue);
-    expect(state.codexAction).toHaveBeenCalledWith("queue-add", { text: "next" });
+    expect(state.runSessionAction).toHaveBeenCalledWith("queue-add", { text: "next" });
   });
   it("refreshes settings and goals from native invalidation without scanning resources", async () => {
     state.current = { id: "s", agent: "codex" } as typeof state.current;
@@ -267,7 +267,7 @@ describe("Codex composer", () => {
     view.rerender(<SessionComposer />);
     fireEvent.click(screen.getByRole("button", { name: "更多操作" }));
     fireEvent.click(await screen.findByRole("menuitem", { name: label }));
-    expect(state.codexAction).toHaveBeenCalledWith(action, {
+    expect(state.runSessionAction).toHaveBeenCalledWith(action, {
       text: "next",
       ...(action === "steer" ? { turnId: "turn" } : {}),
     });
@@ -316,7 +316,7 @@ describe("Codex composer", () => {
           settings: { available: true },
           context: { available: true },
         },
-      } as CodexCapabilities,
+      } as SessionCapabilities,
     };
     vi.mocked(state.client.request).mockImplementation(async (path: string) => {
       if (path.startsWith("managed/settings?"))
@@ -379,14 +379,14 @@ describe("Codex composer", () => {
     );
     fireEvent.click(screen.getByRole("button", { name: "恢复默认模型" }));
     await waitFor(() =>
-      expect(state.codexAction).toHaveBeenCalledWith("settings", { restoreDefaults: true }),
+      expect(state.runSessionAction).toHaveBeenCalledWith("settings", { restoreDefaults: true }),
     );
   });
 
   it("edits an offered Devin tier against the current revision and shows only reported usage", async () => {
     const available = { available: true };
     const unavailable = { available: false };
-    const copy = codexCopyForSurface("zh-CN", "web");
+    const copy = sessionCopyForSurface("zh-CN", "web");
     const settings: SessionSettings = {
       sessionId: "s",
       revision: 4,
@@ -445,7 +445,7 @@ describe("Codex composer", () => {
     expect(picker.querySelector('svg[fill="currentColor"]')).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Fast 模式" }));
     await waitFor(() =>
-      expect(state.codexAction).toHaveBeenCalledExactlyOnceWith("settings", {
+      expect(state.runSessionAction).toHaveBeenCalledExactlyOnceWith("settings", {
         serviceTierId: "fast",
       }),
     );
@@ -498,7 +498,7 @@ describe("Codex composer", () => {
           ...state.capabilities!.features,
           context: { available: true },
         },
-      } as CodexCapabilities,
+      } as SessionCapabilities,
     };
     vi.mocked(state.client.request).mockImplementation(async (path: string) => {
       if (path.startsWith("managed/settings?")) throw new Error("unavailable");
@@ -569,7 +569,7 @@ describe("Codex composer", () => {
           "settings-state": { available: true },
           settings: { available: false, reason: "session-busy" },
         },
-      } as CodexCapabilities,
+      } as SessionCapabilities,
     };
     vi.mocked(state.client.request).mockImplementation(async (path: string) => {
       if (path.startsWith("managed/settings?"))
@@ -604,7 +604,7 @@ describe("Codex composer", () => {
     const reset = screen.getByRole("button", { name: "恢复默认模型" });
     expect(reset).toBeDisabled();
     fireEvent.click(reset);
-    expect(state.codexAction).not.toHaveBeenCalled();
+    expect(state.runSessionAction).not.toHaveBeenCalled();
     expect(within(screen.getByRole("dialog")).queryByRole("status")).not.toBeInTheDocument();
   });
 
@@ -622,7 +622,7 @@ describe("Codex composer", () => {
           "goal-pause": { available: true },
           "goal-clear": { available: true },
         },
-      } as CodexCapabilities,
+      } as SessionCapabilities,
     };
     vi.mocked(state.client.request).mockImplementation(async (path: string) => {
       if (path.startsWith("codex/goals?"))
@@ -646,7 +646,7 @@ describe("Codex composer", () => {
     fireEvent.click(await screen.findByRole("button", { name: "持续目标" }));
     expect(screen.getByDisplayValue("finish QA")).toBeVisible();
     fireEvent.click(screen.getByRole("button", { name: "暂停" }));
-    await waitFor(() => expect(state.codexAction).toHaveBeenCalledWith("goal-pause", {}));
+    await waitFor(() => expect(state.runSessionAction).toHaveBeenCalledWith("goal-pause", {}));
   });
 });
 it.each(["zh-CN", "zh-Hant", "en-US", "ja-JP"] as const)(
@@ -677,9 +677,9 @@ it.each(["zh-CN", "zh-Hant", "en-US", "ja-JP"] as const)(
       }),
       refresh: vi.fn(),
     };
-    const view = render(<CodexTools open ownership={<span>Legacy ownership controls</span>} />);
+    const view = render(<SessionTools open ownership={<span>Legacy ownership controls</span>} />);
     await screen.findByText("Pending turn");
-    const copy = codexCopyForSurface(locale, "web");
+    const copy = sessionCopyForSurface(locale, "web");
     const obsoleteResume = {
       "zh-CN": "恢复执行",
       "zh-Hant": "恢復執行",
@@ -706,7 +706,7 @@ it.each(["zh-CN", "zh-Hant", "en-US", "ja-JP"] as const)(
         features: { resume: { available: false }, "queue-start": { available: false } },
       },
     };
-    view.rerender(<CodexTools open />);
+    view.rerender(<SessionTools open />);
     expect(
       screen.queryByText(new RegExp(`${obsoleteResume}|${copy.queueStart}`)),
     ).not.toBeInTheDocument();
@@ -714,7 +714,7 @@ it.each(["zh-CN", "zh-Hant", "en-US", "ja-JP"] as const)(
 );
 
 describe("Session delete", () => {
-  const copy = codexCopyForSurface("zh-CN", "web");
+  const copy = sessionCopyForSurface("zh-CN", "web");
   function prepare(features: Record<string, { available: boolean; reason?: string }>) {
     state = {
       ...state,
@@ -736,7 +736,7 @@ describe("Session delete", () => {
       refresh: vi.fn(),
     } as ReturnType<typeof useSession>;
   }
-  const forkReason = codexReason("zh-CN", "session-busy", "web").text;
+  const forkReason = sessionReason("zh-CN", "session-busy", "web").text;
   it.each([
     ["session-busy", forkReason],
     ["codex-owner-busy", copy.deleteOwnerBusy],
@@ -745,7 +745,7 @@ describe("Session delete", () => {
       fork: { available: false, reason: "session-busy" },
       delete: { available: false, reason },
     });
-    render(<CodexTools open />);
+    render(<SessionTools open />);
     const management = within(
       screen.getByRole("region", { name: webLayoutCopy["zh-CN"].management }),
     );
@@ -760,12 +760,12 @@ describe("Session delete", () => {
   });
   it("offers no delete where the computer reports none", () => {
     prepare({ rename: { available: true } });
-    render(<CodexTools open />);
+    render(<SessionTools open />);
     expect(screen.queryByRole("button", { name: copy.delete })).not.toBeInTheDocument();
   });
   it("offers archive only where the agent archives natively, as Codex does", () => {
     prepare({ archive: { available: true }, delete: { available: true } });
-    const view = render(<CodexTools open />);
+    const view = render(<SessionTools open />);
     expect(screen.getByRole("button", { name: copy.archive })).toBeEnabled();
     // A Claude session reports no archive: AgentKib keeps none of its own.
     state = {
@@ -773,7 +773,7 @@ describe("Session delete", () => {
       current: { ...state.current!, agent: "claude-code" },
       capabilities: { ...state.capabilities!, features: { delete: { available: true } } },
     } as ReturnType<typeof useSession>;
-    view.rerender(<CodexTools open />);
+    view.rerender(<SessionTools open />);
     expect(screen.queryByRole("button", { name: copy.archive })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: copy.unarchive })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: copy.delete })).toBeEnabled();
@@ -793,7 +793,7 @@ it("retains Claude's existing ownership content", () => {
       availability: "readable",
     },
   };
-  render(<CodexTools open ownership={<span>Claude ownership controls</span>} />);
+  render(<SessionTools open ownership={<span>Claude ownership controls</span>} />);
   expect(screen.getByText("Claude ownership controls")).toBeVisible();
 });
 
@@ -824,13 +824,15 @@ it("keeps native inspection available while write outcome is unconfirmed", async
     }),
     refresh: vi.fn(),
   };
-  render(<CodexTools />);
+  render(<SessionTools />);
   fireEvent.click(screen.getByRole("button", { name: "会话操作" }));
   const inspect = screen.getByRole("button", { name: "检查会话状态" });
   expect(inspect).toBeEnabled();
   expect(screen.getByRole("button", { name: "重命名" })).toBeDisabled();
   fireEvent.click(inspect);
-  await waitFor(() => expect(state.codexAction).toHaveBeenCalledExactlyOnceWith("inspect", {}));
+  await waitFor(() =>
+    expect(state.runSessionAction).toHaveBeenCalledExactlyOnceWith("inspect", {}),
+  );
 });
 
 it("does not delete a staged attachment while its send outcome is unknown", async () => {
@@ -879,7 +881,7 @@ it("keeps queued attachment messages read-only while allowing deletion", async (
     }),
     refresh: vi.fn(),
   };
-  render(<CodexTools />);
+  render(<SessionTools />);
   fireEvent.click(screen.getByRole("button", { name: "会话操作" }));
   await screen.findByText("Image description");
   expect(screen.getByRole("button", { name: "修改" })).toBeDisabled();
@@ -913,7 +915,7 @@ it("drains a queue invalidation received while an older queue read is pending", 
     client: Object.assign(state.client, { codexQueue }),
     refresh: vi.fn(),
   };
-  render(<CodexTools open />);
+  render(<SessionTools open />);
   expect(codexQueue).toHaveBeenCalledOnce();
   await act(async () => {
     publishSessionInvalidation(state.client, "s", ["queue"]);
@@ -960,13 +962,13 @@ it.each(["queue-first", "title-first"])(
       client: Object.assign(state.client, { codexQueue }),
       refresh: vi.fn(),
     };
-    const view = render(<CodexTools open />);
+    const view = render(<SessionTools open />);
     await screen.findByText("Pending message");
     // The remote rename invalidates both reads, which can finish in either order.
     act(() => publishSessionInvalidation(state.client, "s", ["queue", "catalog"]));
     const rename = () => {
       state = { ...state, current: { ...state.current!, title: "Renamed conversation" } };
-      view.rerender(<CodexTools open />);
+      view.rerender(<SessionTools open />);
     };
     if (order === "title-first") rename();
     await act(async () =>
@@ -982,7 +984,7 @@ it.each(["queue-first", "title-first"])(
     expect(state.client.request).toHaveBeenCalledTimes(1);
     fireEvent.click(screen.getByRole("button", { name: "移除" }));
     await waitFor(() =>
-      expect(state.codexAction).toHaveBeenCalledExactlyOnceWith("queue-delete", {
+      expect(state.runSessionAction).toHaveBeenCalledExactlyOnceWith("queue-delete", {
         queuedSubmissionId: "queued",
       }),
     );
@@ -1023,7 +1025,7 @@ it("clears the previous queue on session change and ignores its pending response
     client: Object.assign(state.client, { codexQueue }),
     refresh: vi.fn(),
   };
-  const view = render(<CodexTools open />);
+  const view = render(<SessionTools open />);
   await screen.findByText("Previous session message");
   act(() => publishSessionInvalidation(state.client, "s", ["queue"]));
   state = {
@@ -1031,7 +1033,7 @@ it("clears the previous queue on session change and ignores its pending response
     selected: "next",
     current: { ...state.current!, id: "next" },
   };
-  view.rerender(<CodexTools open />);
+  view.rerender(<SessionTools open />);
   expect(screen.queryByText("Previous session message")).not.toBeInTheDocument();
   expect(codexQueue).toHaveBeenLastCalledWith("next", expect.any(AbortSignal));
 

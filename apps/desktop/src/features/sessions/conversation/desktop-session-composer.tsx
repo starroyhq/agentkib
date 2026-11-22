@@ -1,5 +1,5 @@
 import {
-  CodexComposerControls,
+  SessionComposerControls,
   SessionComposer as SharedSessionComposer,
   SessionContextUsageGauge,
   type SessionComposerProps,
@@ -22,7 +22,7 @@ export function SessionComposer({
       display={sessionDisplayState(session, "desktop")}
       connectionStatusInBanner={connectionStatusInBanner}
       connectionNoticeInToolbar={connectionNoticeInToolbar}
-      Controls={CodexComposerControls}
+      Controls={SessionComposerControls}
       ContextUsage={SessionContextUsageGauge}
       TurnNotice={ManagedTurnNotice}
     />

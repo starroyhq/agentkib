@@ -226,7 +226,7 @@ beforeEach(() => {
     refresh: vi.fn(async () => {}),
     earlier: vi.fn(),
     control: vi.fn(),
-    codexAction: vi.fn(),
+    runSessionAction: vi.fn(),
     forkContinuation: vi.fn(),
     checkContinuation: vi.fn(),
     client: {
@@ -425,7 +425,7 @@ describe("visible session continuation terminology", () => {
       expect(within(actions).getByRole("heading", { name: expected.queue })).toBeVisible();
       expect(within(actions).getByRole("button", { name: expected.actionFork })).toBeEnabled();
       expectNoExecutionHandoff(expected.locale, actions);
-      expect(session.codexAction).not.toHaveBeenCalled();
+      expect(session.runSessionAction).not.toHaveBeenCalled();
       expect(session.client.request).not.toHaveBeenCalled();
 
       session.current = { ...session.current!, agent: "codex" };
@@ -435,7 +435,7 @@ describe("visible session continuation terminology", () => {
       expect(within(codexActions).getByRole("heading", { name: expected.queue })).toBeVisible();
       expect(within(codexActions).getByRole("button", { name: expected.actionFork })).toBeEnabled();
       expectNoExecutionHandoff(expected.locale, codexActions);
-      expect(session.codexAction).not.toHaveBeenCalled();
+      expect(session.runSessionAction).not.toHaveBeenCalled();
     },
   );
 
@@ -459,7 +459,7 @@ describe("visible session continuation terminology", () => {
       expect(await within(actions).findByText(expected.queueRecovery)).toBeVisible();
       expect(within(actions).getByRole("button", { name: expected.resumeQueue })).toBeDisabled();
       expectNoExecutionHandoff(expected.locale, actions);
-      expect(session.codexAction).not.toHaveBeenCalled();
+      expect(session.runSessionAction).not.toHaveBeenCalled();
     },
   );
 

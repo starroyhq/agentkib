@@ -67,7 +67,7 @@ type DevinRefusal =
   | "devin-session-not-found"
   | "session-open-elsewhere"
   | "attachments-unsupported";
-export function codexSettingsRecoveryReason(
+export function sessionControlRefusalReason(
   agent: string | undefined,
   ...reasons: (string | undefined)[]
 ): NotDispatchedReason | undefined {
@@ -466,7 +466,7 @@ export function createSessionControl<Pending extends SessionControlPending>({
           if (e instanceof ApiError && e.controlOutcome === "not-dispatched") {
             setNotice(
               "notDispatched",
-              codexSettingsRecoveryReason(
+              sessionControlRefusalReason(
                 catalogSessions.current.find((session) => session.id === id)?.agent,
                 e.code,
               ),

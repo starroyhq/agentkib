@@ -41,13 +41,11 @@ import {
 import { acquirePortableFileLease } from "../../managed-session-lock";
 import {
   acknowledgeDispatchedManagedCommand,
-  claimManagedCommand,
-  dispatchManagedCommand,
   finishManagedCommand,
   observeManagedCommandCompletion,
   readUnknownManagedCommands,
-  replayManagedCommand,
 } from "../../managed-ledger";
+import { admitControlReceipt } from "../../sessions/control-receipts";
 import { validHistoryControl } from "../../history-control-schema";
 import { sanitizeSessionText } from "../../session-handoff";
 import { terminalSubagentActivities } from "../../session-activities";
@@ -203,6 +201,7 @@ type Pending = {
   command: ClaudeBridgeCommand;
   requestId: string;
   deviceId: string;
+  receipt: Pick<ReturnType<typeof admitControlReceipt>, "dispatch" | "finish">;
   delivered: boolean;
   resolve(value: Record<string, unknown>): void;
   timer: ReturnType<typeof setTimeout>;
@@ -1586,7 +1585,7 @@ export class ClaudeBridge {
       if (row.inflight?.commandId === pending.command.commandId) row.inflight = null;
       this.#save();
       const result = this.#result(row, pending.requestId, "not-dispatched");
-      finishManagedCommand(this.options.dataDir, pending.requestId, result);
+      pending.receipt.finish(result);
       pending.resolve(result);
       connection.wake?.();
       this.#publish(id);
@@ -1631,9 +1630,12 @@ export class ClaudeBridge {
       z.string()
         .regex(/^[a-f0-9]{64}$/)
         .parse(value.publicInputHash);
-    const fingerprint = digest(stable({ ...value, runtimeBootId: undefined })).toString("hex");
-    const replay = replayManagedCommand(this.options.dataDir, requestId, fingerprint);
-    if (replay) return replay;
+    const receipt = admitControlReceipt(
+      this.options.dataDir,
+      requestId,
+      stable({ ...value, runtimeBootId: undefined }),
+    );
+    if (receipt.previous) return receipt.previous;
     if (
       this.#closed ||
       !this.supported ||
@@ -1734,14 +1736,7 @@ export class ClaudeBridge {
       ...(value.historyInputHash ? { historyInputHash: value.historyInputHash } : {}),
       ...(value.publicInputHash ? { publicInputHash: value.publicInputHash } : {}),
     };
-    const prior = claimManagedCommand(
-      this.options.dataDir,
-      requestId,
-      row.target.sessionId,
-      fingerprint,
-      deviceId,
-      evidence,
-    );
+    const prior = receipt.claim(row.target.sessionId, deviceId, evidence);
     if (prior) return prior;
     // The person wrote to a terminal Project Agent from AgentKib: as when they type there.
     if (command.kind === "send" || command.kind === "steer" || command.kind === "queue")
@@ -1761,12 +1756,20 @@ export class ClaudeBridge {
           this.#save();
         }
         const result = this.#result(row, requestId, unknown ? "unknown" : "not-dispatched");
-        if (!unknown) finishManagedCommand(this.options.dataDir, requestId, result);
+        if (!unknown) pending.receipt.finish(result);
         resolve(result);
         this.#publish(row.target.sessionId);
       }, this.options.commandTimeoutMs ?? 12_000);
       timer.unref();
-      connection.pending = { command, requestId, deviceId, delivered: false, resolve, timer };
+      connection.pending = {
+        command,
+        requestId,
+        deviceId,
+        receipt,
+        delivered: false,
+        resolve,
+        timer,
+      };
       connection.wake?.();
     });
   }
@@ -2345,7 +2348,7 @@ export class ClaudeBridge {
           if (pending && !pending.delivered) {
             this.options.validate(row.target, true, row.bindingId);
             const offered = lead();
-            dispatchManagedCommand(this.options.dataDir, pending.requestId);
+            pending.receipt.dispatch();
             pending.delivered = true;
             reply(200, { commands: [pending.command], ...offered });
           } else reply(200, { commands: [], ...lead() });
@@ -2487,8 +2490,7 @@ export class ClaudeBridge {
               ? "not-dispatched"
               : "unknown";
         const result = this.#result(row, pending.requestId, outcome, completed);
-        if (outcome !== "unknown")
-          finishManagedCommand(this.options.dataDir, pending.requestId, result);
+        if (outcome !== "unknown") pending.receipt.finish(result);
         connection.pending = null;
         pending.resolve(result);
         this.#publish(row.target.sessionId);
@@ -2874,7 +2876,7 @@ export class ClaudeBridge {
         this.#save();
       }
       const result = this.#result(row, pending.requestId, outcome);
-      if (!pending.delivered) finishManagedCommand(this.options.dataDir, pending.requestId, result);
+      if (!pending.delivered) pending.receipt.finish(result);
       pending.resolve(result);
     }
     this.#publish(id);

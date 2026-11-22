@@ -1,9 +1,10 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
 import { useState, type ReactNode } from "react";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, screen } from "@testing-library/react";
+import { render } from "../../desktop-reader-test-utils";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { SessionOperations } from "./session-operations";
+import { DesktopSessionOperations } from "./desktop-session-operations";
 import { SessionPanelsContext } from "./session-panels";
 import { claudeConnectionCopy } from "@agentkib/session-ui";
 import { conversationWords } from "@/core/i18n";
@@ -21,12 +22,10 @@ vi.mock("./codex-tools", () => ({
   CodexTools: ({ open, shortcuts }: { open: boolean; shortcuts: ReactNode }) =>
     open ? <section>{shortcuts}</section> : null,
 }));
-vi.mock("./dsh-bridge-panel", () => ({ DshBridgePanel: () => <p>DSH plugin panel</p> }));
-vi.mock("./claude-background-setting", () => ({
+vi.mock("@agentkib/session-ui", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@agentkib/session-ui")>()),
+  DshBridgePanel: () => <p>DSH plugin panel</p>,
   ClaudeBackgroundSetting: () => <p>Claude background setting</p>,
-}));
-vi.mock("./project-agent-panel", () => ({ ProjectAgentPanel: () => <p>Project Agent panel</p> }));
-vi.mock("./claude-bridge-panel", () => ({
   ClaudeBridgePanel: ({ onClose }: { onClose?: () => void }) => (
     <section role="dialog" aria-label={claudeConnectionCopy[session.locale].title}>
       <p>Terminal wizard</p>
@@ -56,7 +55,7 @@ function View({ revision = 0 }: { revision?: number }) {
       }}
     >
       <button onClick={() => setTerminalOpen(true)}>Open terminal directly</button>
-      <SessionOperations
+      <DesktopSessionOperations
         open={open}
         onOpenChange={(value) => {
           if (revision >= 0) setOpen(value);
@@ -64,6 +63,12 @@ function View({ revision = 0 }: { revision?: number }) {
       />
     </SessionPanelsContext>
   );
+}
+function setManage(manage: boolean) {
+  session = {
+    ...session,
+    access: { ...session.access!, device: { ...session.access!.device!, manage } },
+  };
 }
 beforeEach(() => {
   document.documentElement.dataset.platform = "macos";
@@ -73,6 +78,8 @@ beforeEach(() => {
     locale: "zh-CN",
     t: conversationWords("zh-CN"),
     access: { device: { manage: true } },
+    choose: vi.fn(),
+    formatCatalogTime: vi.fn(),
     setModal: vi.fn(),
     refresh: vi.fn(),
   } as unknown as SessionController;
@@ -120,12 +127,12 @@ describe("Claude terminal setup entry", () => {
   });
   it("does not expose local terminal setup for Codex or devices without management access", () => {
     const view = render(<View />);
-    session.access!.device!.manage = false;
+    setManage(false);
     view.rerender(<View revision={1} />);
     expect(screen.queryByRole("button", { name: "连接终端…" })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Open terminal directly" }));
     expect(screen.queryByText("Terminal wizard")).not.toBeInTheDocument();
-    session.access!.device!.manage = true;
+    setManage(true);
     session.current = { ...session.current!, agent: "codex" };
     view.rerender(<View revision={2} />);
     expect(screen.queryByRole("button", { name: "连接终端…" })).not.toBeInTheDocument();
@@ -141,7 +148,7 @@ describe("DeepSeek Harness session actions entry", () => {
     // The full actions come from CodexTools (mocked here as its header).
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     expect(screen.getByText("DSH plugin panel")).toBeInTheDocument();
-    session.access!.device!.manage = false;
+    setManage(false);
     view.rerender(<View revision={1} />);
     expect(screen.queryByText("DSH plugin panel")).not.toBeInTheDocument();
   });
@@ -151,10 +158,10 @@ describe("Claude Code session actions entry", () => {
   it("shows this computer's background task setting to a device that manages", () => {
     const view = render(<View />);
     expect(screen.getByText("Claude background setting")).toBeInTheDocument();
-    session.access!.device!.manage = false;
+    setManage(false);
     view.rerender(<View revision={1} />);
     expect(screen.queryByText("Claude background setting")).not.toBeInTheDocument();
-    session.access!.device!.manage = true;
+    setManage(true);
     session.current = { ...session.current!, agent: "codex" };
     view.rerender(<View revision={2} />);
     expect(screen.queryByText("Claude background setting")).not.toBeInTheDocument();

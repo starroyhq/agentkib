@@ -1,32 +1,14 @@
-import { projectAgentCopy } from "@agentkib/session-ui";
+import type { Access, ProjectAgentState as ProjectAgent, WebClient } from "@agentkib/web-client";
 import { useCallback, useEffect, useState } from "react";
-import { desktopApi } from "@/core/desktop";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { NativeCheckbox } from "@/components/ui/native-checkbox";
-import { OperationCopy, OperationGroup, OperationRow } from "./operation-layout";
-import { useSession } from "./session-context";
+import { projectAgentCopy } from "../../project-agent-copy";
+import { useSessionPlatform } from "../../session-platform";
+import { OperationCopy, OperationGroup, OperationRow, TOUCH_TARGET } from "./operation-layout";
 
-type Worker = {
-  name: string;
-  sessionId: string;
-  status: string;
-  /** A turn runs that the person can stop; absent from older hosts. */
-  stopEnabled?: boolean;
-  title: string | null;
-  lastReportAt: string | null;
-};
-type ProjectAgent = {
-  sessionId: string;
-  paused: boolean;
-  reason: string | null;
-  scope: {
-    maxAutoTurns: number;
-    approvals?: string[];
-    answers?: boolean;
-  };
-  pendingReports: number;
-  workers: Worker[];
+type ProjectAgentCommand = Parameters<WebClient["manageProjectAgent"]>[0];
+
+export type ProjectAgentPanelClient = {
+  projectAgent(sessionId: string): Promise<unknown>;
+  manageProjectAgent(command: ProjectAgentCommand): Promise<unknown>;
 };
 
 function projectAgentOf(value: unknown): ProjectAgent | null | undefined {
@@ -38,18 +20,38 @@ function projectAgentOf(value: unknown): ProjectAgent | null | undefined {
   return lead as ProjectAgent;
 }
 
-/** Optional, like the other computer settings: a bridge that cannot answer hides it. */
-const request = (params: Record<string, unknown>) =>
-  Promise.resolve().then(() => desktopApi().claude.request(params));
-
-/**
- * Shows the Project Agent and its assigned Workers. Its delegation settings are edited locally.
- */
-export function ProjectAgentPanel() {
-  const { locale, selected, choose, formatCatalogTime } = useSession();
+/** Shows a Project Agent and its workers, with the controls offered on this platform. */
+export function ProjectAgentPanel({
+  locale,
+  selected,
+  choose,
+  formatCatalogTime,
+  client,
+  device,
+}: {
+  locale: string;
+  selected: string;
+  choose(sessionId: string): Promise<void> | void;
+  formatCatalogTime(value: string): string;
+  client: ProjectAgentPanelClient;
+  device?: Access["device"];
+}) {
+  const {
+    kind,
+    components: { Button, Input, NativeCheckbox },
+  } = useSessionPlatform();
+  const desktop = kind === "desktop";
+  const touchTarget = desktop ? undefined : TOUCH_TARGET;
+  const mutedButtonClass = desktop
+    ? "text-muted-foreground"
+    : `${TOUCH_TARGET} text-muted-foreground`;
   const text = projectAgentCopy(locale);
   const [agent, setAgent] = useState<ProjectAgent | null>();
+  // Whether the host lets this session lead; older hosts do not say, and it is offered.
+  const [capable, setCapable] = useState(true);
+  // Setting one up, or changing what it may do: the same form.
   const [form, setForm] = useState<null | {
+    mode: "designate" | "update";
     approveFiles: boolean;
     approveCommands: boolean;
     answers: boolean;
@@ -63,11 +65,12 @@ export function ProjectAgentPanel() {
 
   /** Resolves to whether the host did it; a refusal stays on screen with its reason. */
   const run = useCallback(
-    (params: Record<string, unknown>): Promise<boolean> => {
+    (params: Omit<ProjectAgentCommand, "sessionId">): Promise<boolean> => {
       if (!selected) return Promise.resolve(false);
       setBusy(true);
       setError(null);
-      return request({ ...params, sessionId: selected })
+      return client
+        .manageProjectAgent({ ...params, sessionId: selected })
         .then(
           (value) => {
             const next = projectAgentOf(value);
@@ -82,17 +85,22 @@ export function ProjectAgentPanel() {
         )
         .finally(() => setBusy(false));
     },
-    [selected, text.errors],
+    [selected, text.errors, client],
   );
 
   useEffect(() => {
     if (!selected) return;
     let live = true;
     const read = () =>
-      void request({ operation: "lead-status", sessionId: selected }).then(
+      void client.projectAgent(selected).then(
         (value) => {
           if (!live) return;
           setAgent(projectAgentOf(value));
+          setCapable(
+            !value ||
+              typeof value !== "object" ||
+              (value as { capable?: unknown }).capable !== false,
+          );
         },
         () => undefined,
       );
@@ -103,15 +111,20 @@ export function ProjectAgentPanel() {
       live = false;
       clearInterval(timer);
     };
-  }, [selected]);
+  }, [selected, client]);
 
-  if (!agent || !selected) return null;
+  // Desktop only mounts this panel for a user with local manage access.
+  const full = device?.accessMode === "full";
+  const mayLead = full && !!device?.send && !!device.manage && !!device.advancedControl;
+  if (agent === undefined || !selected || (desktop && agent === null)) return null;
+  const mayApprove = desktop || !!device?.approve;
   const errorText = error ? (text.errors[error] ?? text.failed) : null;
-  const formOf = (scope: ProjectAgent["scope"]) => ({
-    approveFiles: scope.approvals?.includes("file-change") ?? false,
-    approveCommands: scope.approvals?.includes("command") ?? false,
-    answers: scope.answers ?? false,
-    maxAutoTurns: scope.maxAutoTurns,
+  const formOf = (mode: "designate" | "update", scope?: ProjectAgent["scope"]) => ({
+    mode,
+    approveFiles: scope?.approvals?.includes("file-change") ?? false,
+    approveCommands: scope?.approvals?.includes("command") ?? false,
+    answers: scope?.answers ?? false,
+    maxAutoTurns: desktop && scope ? scope.maxAutoTurns : (scope?.maxAutoTurns ?? 25),
   });
 
   if (form) {
@@ -130,6 +143,8 @@ export function ProjectAgentPanel() {
               <label key={key} className="flex items-center gap-2">
                 <NativeCheckbox
                   checked={form[key]}
+                  // Deciding approvals for workers takes a device that may approve them.
+                  disabled={key !== "answers" && !mayApprove}
                   onChange={(event) => setForm({ ...form, [key]: event.target.checked })}
                 />
                 <span>{label}</span>
@@ -162,14 +177,15 @@ export function ProjectAgentPanel() {
           {errorText && (
             <p className="mr-auto min-w-0 text-xs text-destructive-text">{errorText}</p>
           )}
-          <Button variant="outline" onClick={() => setForm(null)}>
+          <Button variant="outline" className={touchTarget} onClick={() => setForm(null)}>
             {text.cancel}
           </Button>
           <Button
+            className={touchTarget}
             disabled={busy}
             onClick={() =>
               void run({
-                operation: "lead-update",
+                operation: form.mode,
                 scope: {
                   maxAutoTurns: form.maxAutoTurns,
                   approvals: [
@@ -181,18 +197,41 @@ export function ProjectAgentPanel() {
               }).then((done) => done && setForm(null))
             }
           >
-            {text.save}
+            {form.mode === "designate" ? text.confirm : text.save}
           </Button>
         </OperationRow>
       </OperationGroup>
     );
   }
 
+  if (agent === null)
+    // Only a device that may do what a Project Agent does in its name sets one up.
+    return capable && mayLead ? (
+      <OperationGroup title={text.title}>
+        <OperationRow className="flex-wrap">
+          <OperationCopy className="basis-64">{text.hint}</OperationCopy>
+          <Button
+            variant="outline"
+            className={touchTarget}
+            onClick={() => setForm(formOf("designate"))}
+          >
+            {text.designate}
+          </Button>
+        </OperationRow>
+      </OperationGroup>
+    ) : null;
+
   const decided = [
     ...(agent.scope.approvals?.includes("file-change") ? [text.approveFiles] : []),
     ...(agent.scope.approvals?.includes("command") ? [text.approveCommands] : []),
     ...(agent.scope.answers ? [text.answers] : []),
   ];
+  // What this device may do with it; a device that may only look gets no row of buttons. Taking
+  // it over (resuming it, changing what it may do) takes what setting it up takes.
+  const mayTakeOver = desktop || (mayLead && (!agent.scope.approvals?.length || mayApprove));
+  const mayToggle = agent.paused ? mayTakeOver : desktop || (full && !!device?.send);
+  const mayRelease = desktop || (full && !!device?.manage);
+  const mayStop = desktop || (full && !!device?.send);
   return (
     <OperationGroup title={text.title}>
       <OperationRow>
@@ -215,16 +254,22 @@ export function ProjectAgentPanel() {
             <Button
               variant="destructive"
               size="sm"
+              className={touchTarget}
               disabled={busy}
               onClick={() =>
-                void run({ operation: "lead-worker-remove", worker: worker.sessionId }).then(
+                void run({ operation: "remove-worker", worker: worker.sessionId }).then(
                   (done) => done && setRemoving(null),
                 )
               }
             >
               {text.removeWorker}
             </Button>
-            <Button variant="outline" size="sm" onClick={() => setRemoving(null)}>
+            <Button
+              variant="outline"
+              size="sm"
+              className={touchTarget}
+              onClick={() => setRemoving(null)}
+            >
               {text.cancel}
             </Button>
           </OperationRow>
@@ -247,79 +292,96 @@ export function ProjectAgentPanel() {
               )}
             </OperationCopy>
             <div className="flex shrink-0 items-center gap-1.5">
-              {worker.stopEnabled && (
+              {mayStop && worker.stopEnabled && (
                 <Button
                   variant="outline"
                   size="sm"
+                  className={touchTarget}
                   disabled={busy}
-                  onClick={() =>
-                    void run({ operation: "lead-worker-stop", worker: worker.sessionId })
-                  }
+                  onClick={() => void run({ operation: "stop-worker", worker: worker.sessionId })}
                 >
                   {text.stopWorker}
                 </Button>
               )}
-              <Button variant="outline" size="sm" onClick={() => void choose(worker.sessionId)}>
+              <Button
+                variant="outline"
+                size="sm"
+                className={touchTarget}
+                onClick={() => void choose(worker.sessionId)}
+              >
                 {text.open}
               </Button>
-              <Button
-                variant="ghost"
-                size="sm"
-                className="text-muted-foreground"
-                onClick={() => setRemoving(worker.sessionId)}
-              >
-                {text.removeWorker}
-              </Button>
+              {mayRelease && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className={mutedButtonClass}
+                  onClick={() => setRemoving(worker.sessionId)}
+                >
+                  {text.removeWorker}
+                </Button>
+              )}
             </div>
           </OperationRow>
         ),
       )}
-      <OperationRow className="flex-wrap gap-2">
-        {releasing ? (
-          <>
-            <p className="min-w-0 flex-1 basis-full text-xs leading-5">{text.releaseConfirm}</p>
-            <Button
-              variant="destructive"
-              disabled={busy}
-              onClick={() =>
-                void run({ operation: "lead-release" }).then((done) => done && setReleasing(false))
-              }
-            >
-              {text.release}
-            </Button>
-            <Button variant="outline" onClick={() => setReleasing(false)}>
-              {text.cancel}
-            </Button>
-          </>
-        ) : (
-          <>
-            <Button
-              variant="outline"
-              disabled={busy}
-              onClick={() => void run({ operation: agent.paused ? "lead-resume" : "lead-pause" })}
-            >
-              {agent.paused ? text.resume : text.pause}
-            </Button>
-            <Button
-              variant="outline"
-              onClick={() => {
-                setRemoving(null);
-                setForm(formOf(agent.scope));
-              }}
-            >
-              {text.edit}
-            </Button>
-            <Button
-              variant="ghost"
-              className="text-muted-foreground"
-              onClick={() => setReleasing(true)}
-            >
-              {text.release}
-            </Button>
-          </>
-        )}
-        {errorText && <p className="basis-full text-xs text-destructive-text">{errorText}</p>}
-      </OperationRow>
+      {(releasing || mayToggle || mayTakeOver || mayRelease || errorText) && (
+        <OperationRow className="flex-wrap gap-2">
+          {releasing ? (
+            <>
+              <p className="min-w-0 flex-1 basis-full text-xs leading-5">{text.releaseConfirm}</p>
+              <Button
+                variant="destructive"
+                className={touchTarget}
+                disabled={busy}
+                onClick={() =>
+                  void run({ operation: "release" }).then((done) => done && setReleasing(false))
+                }
+              >
+                {text.release}
+              </Button>
+              <Button variant="outline" className={touchTarget} onClick={() => setReleasing(false)}>
+                {text.cancel}
+              </Button>
+            </>
+          ) : (
+            <>
+              {mayToggle && (
+                <Button
+                  variant="outline"
+                  className={touchTarget}
+                  disabled={busy}
+                  onClick={() => void run({ operation: agent.paused ? "resume" : "pause" })}
+                >
+                  {agent.paused ? text.resume : text.pause}
+                </Button>
+              )}
+              {mayTakeOver && (
+                <Button
+                  variant="outline"
+                  className={touchTarget}
+                  onClick={() => {
+                    setRemoving(null);
+                    setForm(formOf("update", agent.scope));
+                  }}
+                >
+                  {text.edit}
+                </Button>
+              )}
+              {mayRelease && (
+                <Button
+                  variant="ghost"
+                  className={mutedButtonClass}
+                  onClick={() => setReleasing(true)}
+                >
+                  {text.release}
+                </Button>
+              )}
+            </>
+          )}
+          {errorText && <p className="basis-full text-xs text-destructive-text">{errorText}</p>}
+        </OperationRow>
+      )}
     </OperationGroup>
   );
 }

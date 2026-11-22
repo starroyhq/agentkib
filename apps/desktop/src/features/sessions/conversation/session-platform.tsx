@@ -49,7 +49,6 @@ import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { api } from "@/core/api";
-import { desktopApi } from "@/core/desktop";
 import { conversationWords, formatDateTime } from "@/core/i18n";
 import { useOptionalAppNavigationContext } from "@/features/app/AppNavigationContext";
 import { useAppStore } from "@/stores/app-store";
@@ -71,6 +70,8 @@ function DesktopDialogContent({
 const components: SessionPlatform["components"] = {
   Button,
   buttonClassName: ({ className, ...style }) => cn(buttonVariants(style), className),
+  mergeClassNames: cn,
+  collapsible: { Collapsible, CollapsibleContent, CollapsibleTrigger },
   Dialog,
   DialogClose,
   DialogContent: DesktopDialogContent,
@@ -114,9 +115,6 @@ const components: SessionPlatform["components"] = {
 
 const desktopComponents = {
   Badge,
-  Collapsible,
-  CollapsibleContent,
-  CollapsibleTrigger,
   DialogDescription,
   Switch,
 };
@@ -239,11 +237,11 @@ export function useDesktopSessionPlatform(client: WebClient): SessionPlatform {
         dismiss: toast.dismiss,
       },
       readScope: desktopSessionReadScope,
+      openTerminal: (request) => client.devinTerminal(request),
       desktop: hasDesktopBridge
         ? {
             isMacOS,
-            requestBridge: (request) => desktopApi().claude.request(request),
-            openTerminal: (request) => client.devinTerminal(request),
+            requestBridge: api.claudeRequest,
             openExternal: api.openExternal,
             components: desktopComponents,
           }

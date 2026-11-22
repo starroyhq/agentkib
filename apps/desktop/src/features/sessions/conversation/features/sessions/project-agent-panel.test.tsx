@@ -1,25 +1,57 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
+import {
+  ProjectAgentPanel,
+  SessionPlatformProvider,
+  type SessionPlatform,
+} from "@agentkib/session-ui";
+import type { Access } from "@agentkib/web-client";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cn } from "cn";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ProjectAgentPanel } from "./project-agent-panel";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { NativeCheckbox } from "@/components/ui/native-checkbox";
+import { desktopProjectAgentClient } from "./project-agent-adapter";
 
 const request = vi.fn();
 const choose = vi.fn();
 vi.mock("@/core/desktop", () => ({ desktopApi: () => ({ claude: { request } }) }));
-vi.mock("./session-context", () => ({
-  useSession: () => ({
-    locale: "en-US",
-    selected: "lead-1",
-    current: { workspace_id: "w1" },
-    workspaces: [
-      { id: "w1", name: "app", path: "/fixture/app" },
-      { id: "w2", name: "worktrees", path: "/fixture/worktrees" },
-    ],
-    choose,
-    formatCatalogTime: () => "3 min ago",
-  }),
-}));
+
+const projectAgent = vi.fn();
+const manageProjectAgent = vi.fn();
+const client = { projectAgent, manageProjectAgent };
+const components = { Button, Input, NativeCheckbox, mergeClassNames: cn };
+let device: Partial<NonNullable<Access["device"]>>;
+
+function DesktopPanel() {
+  return (
+    <SessionPlatformProvider platform={{ kind: "desktop", components } as SessionPlatform}>
+      <ProjectAgentPanel
+        locale="en-US"
+        selected="lead-1"
+        choose={choose}
+        formatCatalogTime={() => "3 min ago"}
+        client={desktopProjectAgentClient}
+      />
+    </SessionPlatformProvider>
+  );
+}
+
+function WebPanel() {
+  return (
+    <SessionPlatformProvider platform={{ kind: "web", components } as SessionPlatform}>
+      <ProjectAgentPanel
+        locale="en-US"
+        selected="lead-1"
+        choose={choose}
+        formatCatalogTime={() => "3 min ago"}
+        client={client}
+        device={{ id: "test", name: "Test", send: false, approve: false, ...device }}
+      />
+    </SessionPlatformProvider>
+  );
+}
 
 const agent = (overrides: Record<string, unknown> = {}) => ({
   lead: {
@@ -38,16 +70,35 @@ const agent = (overrides: Record<string, unknown> = {}) => ({
   },
 });
 
+const lead = {
+  sessionId: "lead-1",
+  paused: false,
+  reason: null,
+  scope: { workspaceIds: ["w1"], policies: [], maxLanes: 4, maxAutoTurns: 25 },
+  pendingReports: 0,
+  workers: [],
+};
+const full = {
+  accessMode: "full",
+  send: true,
+  approve: true,
+  manage: true,
+  advancedControl: true,
+} as const;
+
 beforeEach(() => {
   request.mockReset();
   choose.mockReset();
+  projectAgent.mockReset();
+  manageProjectAgent.mockReset();
+  projectAgent.mockResolvedValue({ lead: null });
 });
 afterEach(cleanup);
 
-describe("Project Agent panel", () => {
+describe("Project Agent panel on desktop", () => {
   it("leaves first-time assignment to the session row", async () => {
     request.mockResolvedValueOnce({ lead: null, capable: true });
-    const { container } = render(<ProjectAgentPanel />);
+    const { container } = render(<DesktopPanel />);
     await act(async () => undefined);
     expect(request).toHaveBeenLastCalledWith({ operation: "lead-status", sessionId: "lead-1" });
     expect(container).toBeEmptyDOMElement();
@@ -68,7 +119,7 @@ describe("Project Agent panel", () => {
         ],
       }),
     );
-    render(<ProjectAgentPanel />);
+    render(<DesktopPanel />);
     await act(async () => undefined);
     expect(screen.getByText("1 worker · 1 report waiting")).toBeInTheDocument();
     expect(screen.getByText("api · Waiting for your approval")).toBeInTheDocument();
@@ -119,7 +170,7 @@ describe("Project Agent panel", () => {
         ],
       }),
     );
-    render(<ProjectAgentPanel />);
+    render(<DesktopPanel />);
     await act(async () => undefined);
     // Only a worker whose turn runs offers to stop it.
     expect(screen.getAllByRole("button", { name: "Stop" })).toHaveLength(1);
@@ -190,7 +241,7 @@ describe("Project Agent panel", () => {
 
   it("explains a refusal and shows nothing when the host does not answer", async () => {
     request.mockResolvedValueOnce(agent());
-    render(<ProjectAgentPanel />);
+    render(<DesktopPanel />);
     await act(async () => undefined);
     request.mockRejectedValueOnce(new Error("AgentKib command failed: session-is-a-worker"));
     await act(async () => {
@@ -200,8 +251,110 @@ describe("Project Agent panel", () => {
     cleanup();
     request.mockReset();
     request.mockRejectedValueOnce(new Error("claude-managed-unavailable"));
-    const { container } = render(<ProjectAgentPanel />);
+    const { container } = render(<DesktopPanel />);
     await act(async () => undefined);
     expect(container).toBeEmptyDOMElement();
+  });
+});
+
+describe("Project Agent panel on Web", () => {
+  it("sets one up from a device with full access, in the host's own operation names", async () => {
+    device = full;
+    projectAgent.mockResolvedValueOnce({ lead: null });
+    render(<WebPanel />);
+    await act(async () => undefined);
+    fireEvent.click(screen.getByRole("button", { name: "Make Project Agent…" }));
+    expect(screen.queryByRole("group", { name: "Workspaces workers may use" })).toBeNull();
+    expect(screen.queryByRole("spinbutton", { name: "Most workers" })).toBeNull();
+    expect(screen.getByRole("spinbutton", { name: "Most automatic turns in a row" })).toHaveValue(
+      25,
+    );
+    manageProjectAgent.mockResolvedValueOnce({ lead });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Make Project Agent" }));
+    });
+    expect(manageProjectAgent).toHaveBeenLastCalledWith({
+      operation: "designate",
+      sessionId: "lead-1",
+      scope: { approvals: [], answers: false, maxAutoTurns: 25 },
+    });
+    expect(screen.getByRole("button", { name: "Pause delegation" })).toBeInTheDocument();
+  });
+
+  it("shows a device without full access the state only", async () => {
+    device = { send: true, approve: true, manage: true };
+    projectAgent.mockResolvedValueOnce({ lead: null });
+    const { unmount } = render(<WebPanel />);
+    await act(async () => undefined);
+    expect(screen.queryByRole("button", { name: "Make Project Agent…" })).toBeNull();
+    unmount();
+    projectAgent.mockResolvedValueOnce({ lead });
+    render(<WebPanel />);
+    await act(async () => undefined);
+    expect(screen.getByText("0 workers")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Pause delegation" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Stop being a Project Agent" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Change settings…" })).toBeNull();
+  });
+
+  it("stops a worker's turn, lets one go and changes the settings, as the device may", async () => {
+    const worker = {
+      name: "api",
+      sessionId: "codex-1",
+      status: "running",
+      stopEnabled: true,
+      title: null,
+      lastReportAt: null,
+    };
+    // May stop a turn, but neither let a worker go nor take the Project Agent over.
+    device = { accessMode: "full", send: true };
+    projectAgent.mockResolvedValueOnce({ lead: { ...lead, workers: [worker] } });
+    const { unmount } = render(<WebPanel />);
+    await act(async () => undefined);
+    expect(screen.getByRole("button", { name: "Stop" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Remove" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Change settings…" })).toBeNull();
+    unmount();
+    device = full;
+    projectAgent.mockResolvedValueOnce({ lead: { ...lead, workers: [worker] } });
+    render(<WebPanel />);
+    await act(async () => undefined);
+    manageProjectAgent.mockResolvedValueOnce({ lead: { ...lead, workers: [worker] } });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Stop" }));
+    });
+    expect(manageProjectAgent).toHaveBeenLastCalledWith({
+      operation: "stop-worker",
+      worker: "codex-1",
+      sessionId: "lead-1",
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Remove" }));
+    manageProjectAgent.mockResolvedValueOnce({ lead });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Remove" }));
+    });
+    expect(manageProjectAgent).toHaveBeenLastCalledWith({
+      operation: "remove-worker",
+      worker: "codex-1",
+      sessionId: "lead-1",
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Change settings…" }));
+    expect(
+      screen.queryByRole("checkbox", { name: "Let workers use Codex auto-review" }),
+    ).toBeNull();
+    const automaticTurns = screen.getByRole("spinbutton", {
+      name: "Most automatic turns in a row",
+    });
+    expect(automaticTurns).toHaveValue(25);
+    fireEvent.change(automaticTurns, { target: { value: "5" } });
+    manageProjectAgent.mockResolvedValueOnce({ lead });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    });
+    expect(manageProjectAgent).toHaveBeenLastCalledWith({
+      operation: "update",
+      sessionId: "lead-1",
+      scope: { approvals: [], answers: false, maxAutoTurns: 5 },
+    });
   });
 });

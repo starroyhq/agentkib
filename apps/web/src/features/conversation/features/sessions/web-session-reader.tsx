@@ -6,7 +6,7 @@ import {
 } from "@agentkib/session-ui";
 import { codexCopyForSurface, codexReason } from "./codex-copy";
 import { claudeComposerNotice, claudeSessionBanner } from "./claude-session-banner";
-import { SessionOperations } from "./session-operations";
+import { WebSessionOperations } from "./web-session-operations";
 import { SessionComposer } from "./session-composer";
 import { useSessionPanels } from "./session-panels";
 import { useSession } from "./session-context";
@@ -39,7 +39,7 @@ export function SessionReader() {
       imageLoader={imageLoader}
       queue={basicSendQueue(session)}
       Transcript={SessionTranscript}
-      Operations={SessionOperations}
+      Operations={WebSessionOperations}
       Composer={SessionComposer}
       ContextUsage={ContextUsageGauge}
     />

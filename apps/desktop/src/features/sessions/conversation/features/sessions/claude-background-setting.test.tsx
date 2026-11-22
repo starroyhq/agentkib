@@ -1,12 +1,11 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { render } from "../../desktop-reader-test-utils";
+import { act, cleanup, fireEvent, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ClaudeBackgroundSetting } from "./claude-background-setting";
+import { ClaudeBackgroundSetting } from "@agentkib/session-ui";
 
 const request = vi.fn();
-vi.mock("@/core/desktop", () => ({ desktopApi: () => ({ claude: { request } }) }));
-vi.mock("./session-context", () => ({ useSession: () => ({ locale: "en-US" }) }));
 
 const status = (backgroundTasks: Record<string, unknown>) => ({
   backgroundTasks: {
@@ -20,13 +19,19 @@ const status = (backgroundTasks: Record<string, unknown>) => ({
 });
 const label = "Let Claude Code run tasks in the background";
 
-beforeEach(() => request.mockReset());
-afterEach(cleanup);
+beforeEach(() => {
+  vi.stubGlobal("agentkibDesktop", { claude: { request } });
+  request.mockReset();
+});
+afterEach(() => {
+  cleanup();
+  vi.unstubAllGlobals();
+});
 
 describe("Claude Code background tasks setting", () => {
   it("reads the setting and writes a change", async () => {
     request.mockResolvedValueOnce(status({}));
-    render(<ClaudeBackgroundSetting />);
+    render(<ClaudeBackgroundSetting locale="en-US" />);
     await act(async () => undefined);
     expect(request).toHaveBeenLastCalledWith({ operation: "background-tasks" });
     const toggle = screen.getByRole("switch", { name: label });
@@ -45,7 +50,7 @@ describe("Claude Code background tasks setting", () => {
     request.mockResolvedValueOnce(
       status({ available: false, reason: "claude-cli-too-old", cliVersion: "2.1.263" }),
     );
-    render(<ClaudeBackgroundSetting />);
+    render(<ClaudeBackgroundSetting locale="en-US" />);
     await act(async () => undefined);
     const toggle = screen.getByRole("switch", { name: label });
     expect(toggle).not.toBeChecked();
@@ -57,7 +62,7 @@ describe("Claude Code background tasks setting", () => {
 
   it("shows nothing when the host does not answer", async () => {
     request.mockRejectedValueOnce(new Error("claude-managed-unavailable"));
-    const { container } = render(<ClaudeBackgroundSetting />);
+    const { container } = render(<ClaudeBackgroundSetting locale="en-US" />);
     await act(async () => undefined);
     expect(container).toBeEmptyDOMElement();
     cleanup();
@@ -65,7 +70,7 @@ describe("Claude Code background tasks setting", () => {
     request.mockImplementationOnce(() => {
       throw new Error("Electron preload bridge is unavailable");
     });
-    const again = render(<ClaudeBackgroundSetting />);
+    const again = render(<ClaudeBackgroundSetting locale="en-US" />);
     await act(async () => undefined);
     expect(again.container).toBeEmptyDOMElement();
   });

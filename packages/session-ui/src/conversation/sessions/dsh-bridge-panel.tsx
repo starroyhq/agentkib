@@ -1,8 +1,7 @@
 import { useEffect, useState } from "react";
 import { Copy } from "lucide-react";
-import { desktopApi } from "@/core/desktop";
-import { Button } from "@/components/ui/button";
-import { Switch } from "@/components/ui/switch";
+import type { InteractionLocale as Locale } from "../../interaction-model";
+import { useSessionPlatform, type SessionPlatform } from "../../session-platform";
 import {
   CopyField,
   OperationCopy,
@@ -10,8 +9,6 @@ import {
   OperationGroup,
   OperationRow,
 } from "./operation-layout";
-import { useSession } from "./session-context";
-import type { SupportedLocale as Locale } from "@/core/types";
 
 type DshBridgeStatus = {
   supported?: boolean;
@@ -204,6 +201,9 @@ function InstallCopyField({
   copiedLabel: string;
   disabledReason?: string;
 }) {
+  const {
+    components: { Button },
+  } = useSessionPlatform();
   if (!disabledReason) return <CopyField value={value} label={label} copiedLabel={copiedLabel} />;
   return (
     <div className="flex min-w-0 items-center gap-1 rounded-lg border border-border/70 bg-muted/40 py-1 pr-1 pl-3">
@@ -232,34 +232,46 @@ function InstallCopyField({
  * Status and settings of the per-computer DeepSeek Harness connection: whether AgentKib starts DSH
  * in the background, and how to install the plugin into a DSH the user runs. Never installs.
  */
-export function DshBridgePanel() {
-  const { locale } = useSession();
+export function DshBridgePanel({ locale }: { locale: Locale }) {
+  const { desktop } = useSessionPlatform();
+  return desktop ? <DshBridgeSettings desktop={desktop} locale={locale} /> : null;
+}
+
+function DshBridgeSettings({
+  desktop,
+  locale,
+}: {
+  desktop: NonNullable<SessionPlatform["desktop"]>;
+  locale: Locale;
+}) {
+  const {
+    components: { Switch },
+    requestBridge,
+  } = desktop;
   const text = copy[locale] ?? copy["en-US"];
   const [status, setStatus] = useState<DshBridgeStatus>();
   const [switching, setSwitching] = useState(false);
   useEffect(() => {
     let current = true;
     const read = () =>
-      void desktopApi()
-        .claude.request({ operation: "dsh-bridge-status" })
-        .then(
-          (value) => current && setStatus(value as DshBridgeStatus),
-          (error: unknown) => {
-            if (!current) return;
-            // The host turns reads away while a control runs; that says nothing about the bridge,
-            // so the last status stays until the next read.
-            if (String(error).includes("operation_busy"))
-              setStatus((previous) => previous ?? { reason: "dsh-bridge-unavailable" });
-            else setStatus({ reason: "dsh-bridge-unavailable" });
-          },
-        );
+      void requestBridge({ operation: "dsh-bridge-status" }).then(
+        (value) => current && setStatus(value as DshBridgeStatus),
+        (error: unknown) => {
+          if (!current) return;
+          // The host turns reads away while a control runs; that says nothing about the bridge,
+          // so the last status stays until the next read.
+          if (String(error).includes("operation_busy"))
+            setStatus((previous) => previous ?? { reason: "dsh-bridge-unavailable" });
+          else setStatus({ reason: "dsh-bridge-unavailable" });
+        },
+      );
     read();
     const timer = setInterval(read, 5000);
     return () => {
       current = false;
       clearInterval(timer);
     };
-  }, []);
+  }, [requestBridge]);
   const runtimes = status?.runtimes ?? [];
   const directory = status?.pluginDirectory ?? "";
   const command =
@@ -280,8 +292,7 @@ export function DshBridgePanel() {
   const toggle = (enabled: boolean) => {
     if (switchReason) return;
     setSwitching(true);
-    void desktopApi()
-      .claude.request({ operation: "dsh-auto-start", enabled })
+    void requestBridge({ operation: "dsh-auto-start", enabled })
       .then(
         (value) => setStatus(value as DshBridgeStatus),
         () => undefined,

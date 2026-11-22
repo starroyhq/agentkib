@@ -37,6 +37,21 @@ export {
   SessionReader,
   type ReaderContextUsageProps,
 } from "./conversation/sessions/session-reader";
+export { ClaudeBackgroundSetting } from "./conversation/sessions/claude-background-setting";
+export { ClaudeBridgePanel } from "./conversation/sessions/claude-bridge-panel";
+export { DevinTurnNotice } from "./conversation/sessions/devin-turn-notice";
+export { DshBridgePanel } from "./conversation/sessions/dsh-bridge-panel";
+export {
+  OperationDisclosure,
+  OperationGroup,
+  OperationRow,
+  TOUCH_TARGET,
+} from "./conversation/sessions/operation-layout";
+export {
+  ProjectAgentPanel,
+  type ProjectAgentPanelClient,
+} from "./conversation/sessions/project-agent-panel";
+export { SessionOperations } from "./conversation/sessions/session-operations";
 export { SessionReadOnly } from "./conversation/sessions/session-read-only";
 export { webLayoutCopy } from "./conversation/sessions/web-layout-copy";
 export {

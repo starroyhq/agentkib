@@ -12,7 +12,7 @@ import { useSession } from "./session-context";
 import { codexReason } from "./codex-copy";
 
 vi.mock("./session-context", () => ({ useSession: vi.fn() }));
-vi.mock("./session-operations", () => ({ SessionOperations: () => null }));
+vi.mock("./desktop-session-operations", () => ({ DesktopSessionOperations: () => null }));
 
 type Session = ReturnType<typeof useSession>;
 const TestSession = createContext<Session | null>(null);

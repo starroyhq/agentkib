@@ -1,8 +1,6 @@
 import { Check, ChevronRight, Copy } from "lucide-react";
 import { useEffect, useState, type ComponentProps, type ReactNode } from "react";
-import { cn } from "cn";
-import { Button } from "@/components/ui/button";
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
+import { useSessionPlatform } from "../../session-platform";
 
 /**
  * The session operations dialog's layout: a titled group whose rows share one bordered card, as
@@ -18,8 +16,9 @@ export function OperationGroup({
   children: ReactNode;
   className?: string;
 }) {
+  const { mergeClassNames } = useSessionPlatform().components;
   return (
-    <section className={cn("grid gap-2", className)} aria-label={title}>
+    <section className={mergeClassNames("grid gap-2", className)} aria-label={title}>
       <h3 className="px-0.5">{title}</h3>
       <div className="overflow-hidden rounded-xl border border-border/70 [&>*:last-child]:border-b-0">
         {children}
@@ -30,9 +29,10 @@ export function OperationGroup({
 
 /** One row of a group: what it is at the start, its control at the end. */
 export function OperationRow({ className, ...props }: ComponentProps<"div">) {
+  const { mergeClassNames } = useSessionPlatform().components;
   return (
     <div
-      className={cn(
+      className={mergeClassNames(
         "flex min-h-14 items-center gap-4 border-b border-border/60 px-4 py-3",
         className,
       )}
@@ -51,8 +51,9 @@ export function OperationCopy({
   children?: ReactNode;
   className?: string;
 }) {
+  const { mergeClassNames } = useSessionPlatform().components;
   return (
-    <div className={cn("grid min-w-0 flex-1 gap-0.5", className)}>
+    <div className={mergeClassNames("grid min-w-0 flex-1 gap-0.5", className)}>
       {title && <p className="truncate">{title}</p>}
       {children && <div className="text-xs leading-5 text-muted-foreground">{children}</div>}
     </div>
@@ -71,6 +72,23 @@ export function OperationDisclosure({
   children: ReactNode;
   className?: string;
 }) {
+  const { collapsible, Disclosure, DisclosureSummary, mergeClassNames } =
+    useSessionPlatform().components;
+  if (!collapsible) {
+    return (
+      <Disclosure className={mergeClassNames("group", className)}>
+        <DisclosureSummary className="flex min-h-11 cursor-pointer list-none items-center gap-2 px-4 py-2.5 outline-none hover:bg-muted/50 focus-visible:bg-muted/50 [&::-webkit-details-marker]:hidden">
+          <ChevronRight
+            aria-hidden="true"
+            className="size-4 shrink-0 text-muted-foreground transition-transform group-open:rotate-90"
+          />
+          {title}
+        </DisclosureSummary>
+        <div className="grid gap-4 border-t border-border/60 px-4 py-3">{children}</div>
+      </Disclosure>
+    );
+  }
+  const { Collapsible, CollapsibleTrigger, CollapsibleContent } = collapsible;
   return (
     <Collapsible defaultOpen={defaultOpen} className={className}>
       <CollapsibleTrigger className="group flex min-h-11 w-full cursor-pointer items-center gap-2 px-4 py-2.5 text-left outline-none hover:bg-muted/50 focus-visible:bg-muted/50">
@@ -100,6 +118,7 @@ export function CopyField({
   label: string;
   copiedLabel: string;
 }) {
+  const { Button } = useSessionPlatform().components;
   const [copied, setCopied] = useState(false);
   useEffect(() => {
     if (!copied) return;
@@ -128,3 +147,6 @@ export function CopyField({
     </div>
   );
 }
+
+/** A finger needs the taller target; a mouse keeps the app's compact buttons. */
+export const TOUCH_TARGET = "pointer-coarse:min-h-11";

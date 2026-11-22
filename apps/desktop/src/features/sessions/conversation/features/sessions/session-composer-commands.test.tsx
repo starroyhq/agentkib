@@ -2,7 +2,8 @@
 
 import "@testing-library/jest-dom/vitest";
 import { useState } from "react";
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { render } from "../../desktop-reader-test-utils";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ClaudeCommandEntry } from "@agentkib/web-client";
 import { codexCommandPrompt, slashCommandCopy } from "@agentkib/session-ui";
@@ -43,7 +44,6 @@ function renderComposer(message: string) {
   fireEvent.change(input, { target: { value: message } });
   return { ...view, input, form: input.closest("form")! };
 }
-
 function enableComposerSettings() {
   doubles.session.access = {
     ...doubles.session.access!,

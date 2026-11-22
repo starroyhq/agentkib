@@ -10,7 +10,7 @@ import { Button } from "@/components/ui/button";
 import { Disclosure, DisclosureSummary } from "@/components/ui/disclosure";
 import { Input } from "@/components/ui/input";
 import { Dialog } from "../../components/dialog";
-import { OperationDisclosure, OperationGroup, OperationRow } from "./operation-layout";
+import { OperationDisclosure, OperationGroup, OperationRow } from "@agentkib/session-ui";
 import { useSession } from "./session-context";
 import { webLayoutCopy } from "@agentkib/session-ui";
 import { codexCopy, codexReason } from "./codex-copy";

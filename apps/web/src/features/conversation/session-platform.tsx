@@ -3,6 +3,7 @@ import { isSessionVisible } from "@agentkib/session-catalog";
 import {
   capabilityAccessBinding,
   createWarmSessionStreamPool,
+  TOUCH_TARGET,
   type SessionPlatform,
 } from "@agentkib/session-ui";
 import type { WebClient } from "@agentkib/web-client";
@@ -49,7 +50,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "./components/ui/tabs";
 import { Textarea } from "./components/ui/textarea";
 import { codexCopyForSurface } from "./features/sessions/codex-copy";
 import { LivePreview } from "./web-live-preview";
-import { TOUCH_TARGET } from "./features/sessions/operation-layout";
+import { cn } from "./lib/utils";
 import { dictionaries, type Locale } from "./i18n";
 
 export { webSessionImages as sessionImages } from "./web-session-images";
@@ -121,6 +122,7 @@ export const webSessionPlatform: SessionPlatform = {
     Button,
     buttonClassName: ({ variant, size, className }) => buttonVariants({ variant, size, className }),
     touchTargetClassName: TOUCH_TARGET,
+    mergeClassNames: cn,
     Input,
     Textarea,
     NativeCheckbox,

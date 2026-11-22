@@ -198,6 +198,7 @@ describe("historical Codex display settings", () => {
     expect(f.reader.historicalSettings(nativeId, f.workspace)).toEqual({
       modelId: "indexed-model",
       effort: "medium",
+      nativePolicy: { policyId: null, reason: "native-policy-unconfirmed" },
     });
     writeFileSync(f.plain, `${data}${usageReport(0, 100)}\n`);
     expect(f.reader.historicalSettings(nativeId, f.workspace)?.usage).toMatchObject({
@@ -206,13 +207,14 @@ describe("historical Codex display settings", () => {
     });
   });
 
-  it("uses only the indexed settings when a compressed history exceeds the decode budget", () => {
+  it("keeps the indexed model and marks the policy unconfirmed past the compressed decode budget", () => {
     const f = codexHome({ turns: 16, padding: 512 * 1024 });
     setIndexedModel(f.codex, "indexed-model", "medium");
     writeFileSync(`${f.plain}.zst`, zstdCompressSync(`${f.body}${usageReport(75_584, 258_400)}\n`));
     expect(f.reader.historicalSettings(nativeId, f.workspace)).toEqual({
       modelId: "indexed-model",
       effort: "medium",
+      nativePolicy: { policyId: null, reason: "native-policy-unconfirmed" },
     });
   });
 
@@ -225,6 +227,178 @@ describe("historical Codex display settings", () => {
     writeFileSync(f.plain, `${f.body.replace(nativeId, parentId)}${usageReport(35, 100)}\n`);
     expect(f.reader.historicalSettings(nativeId, f.workspace)).toBeUndefined();
   });
+});
+
+describe("Codex native rollout policy", () => {
+  const turnContext = (payload: Record<string, unknown>) =>
+    JSON.stringify({ type: "turn_context", payload }) + "\n";
+  const fullAccess = { approval_policy: "never", sandbox_policy: { type: "danger-full-access" } };
+  const workspaceWrite = {
+    type: "workspace-write",
+    writable_roots: [],
+    network_access: false,
+    exclude_tmpdir_env_var: true,
+    exclude_slash_tmp: true,
+  };
+
+  it.each(["plain", "compressed"] as const)(
+    "reads the latest policy from a verified %s rollout without requiring a model",
+    (stored) => {
+      const f = codexHome({ stored: [stored] });
+      const data =
+        f.body + turnContext({ approval_policy: "on-request" }) + turnContext(fullAccess);
+      if (stored === "compressed") writeFileSync(`${f.plain}.zst`, zstdCompressSync(data));
+      else writeFileSync(f.plain, data);
+      expect(f.reader.historicalSettings(nativeId, f.workspace)).toEqual({
+        nativePolicy: { policyId: "full-access-on-request" },
+      });
+      expect(f.reader.historicalSettings(nativeId, f.codex)).toBeUndefined();
+    },
+  );
+
+  it.each([
+    ["user", "workspace-write-on-request"],
+    ["auto_review", "workspace-write-auto-review"],
+    ["agent", "workspace-write-auto-review"],
+  ])("maps a workspace-only sandbox with reviewer %s", (approvals_reviewer, policyId) => {
+    const f = codexHome({ stored: ["plain"] });
+    writeFileSync(
+      f.plain,
+      f.body +
+        turnContext({
+          approval_policy: "on-request",
+          approvals_reviewer,
+          sandbox_policy: { ...workspaceWrite, writable_roots: [f.workspace] },
+        }),
+    );
+    expect(f.reader.historicalSettings(nativeId, f.workspace)?.nativePolicy).toEqual({
+      policyId,
+    });
+  });
+
+  it.each([
+    ["approval", { approval_policy: "on-failure" }, {}, "approval-policy"],
+    ["reviewer", { approvals_reviewer: "other-reviewer" }, {}, "approvals-reviewer"],
+    ["missing reviewer", { approvals_reviewer: undefined }, {}, "approvals-reviewer"],
+    ["type", {}, { type: "read-only" }, "sandbox-type"],
+    ["network", {}, { network_access: true }, "sandbox-network"],
+    ["TMPDIR", {}, { exclude_tmpdir_env_var: false }, "sandbox-tmpdir"],
+    ["/tmp", {}, { exclude_slash_tmp: false }, "sandbox-slash-tmp"],
+    ["restricted reads", {}, { read_only_access: { type: "restricted" } }, "sandbox-read-access"],
+  ])(
+    "reports the mismatched native %s without exposing raw values",
+    (_, approval, sandbox, reason) => {
+      const f = codexHome({ stored: ["plain"] });
+      writeFileSync(
+        f.plain,
+        f.body +
+          turnContext({
+            approval_policy: "on-request",
+            approvals_reviewer: "user",
+            ...approval,
+            sandbox_policy: { ...workspaceWrite, ...sandbox },
+          }),
+      );
+      expect(f.reader.historicalSettings(nativeId, f.workspace)?.nativePolicy).toEqual({
+        policyId: null,
+        reason: `native-policy-${reason}-mismatch`,
+      });
+    },
+  );
+
+  it("rejects an actual extra writable directory without projecting its path", () => {
+    const f = codexHome({ stored: ["plain"] });
+    writeFileSync(
+      f.plain,
+      f.body +
+        turnContext({
+          approval_policy: "on-request",
+          approvals_reviewer: "user",
+          sandbox_policy: { ...workspaceWrite, writable_roots: [f.workspace, f.codex] },
+        }),
+    );
+    expect(f.reader.historicalSettings(nativeId, f.workspace)?.nativePolicy).toEqual({
+      policyId: null,
+      reason: "native-policy-sandbox-writable-roots-mismatch",
+    });
+  });
+
+  it("requires the native turn cwd to match the verified session directory", () => {
+    const f = codexHome({ stored: ["plain"] });
+    writeFileSync(f.plain, f.body + turnContext({ ...fullAccess, cwd: f.codex }));
+    expect(f.reader.historicalSettings(nativeId, f.workspace)?.nativePolicy).toEqual({
+      policyId: null,
+      reason: "native-policy-cwd-mismatch",
+    });
+  });
+
+  it("uses the verified narrower rollout directory for policy without projecting model history", () => {
+    const f = codexHome({ stored: ["compressed"] });
+    const cwd = path.join(f.workspace, "original-project");
+    mkdirSync(cwd);
+    setIndexedModel(f.codex, "indexed-model", "low");
+    const [header, ...history] = f.body.trimEnd().split("\n");
+    const first = JSON.parse(header!);
+    first.payload.cwd = cwd;
+    writeFileSync(
+      `${f.plain}.zst`,
+      zstdCompressSync(
+        [JSON.stringify(first), ...history, usageReport(30, 100), ""].join("\n") +
+          turnContext({ ...fullAccess, cwd, model: "rollout-model", effort: "high" }),
+      ),
+    );
+    expect(f.reader.verifiedIndexedIdentities([nativeId]).has(nativeId)).toBe(false);
+    expect(f.reader.verifiedControlDirectories([nativeId]).get(nativeId)).toEqual({
+      id: nativeId,
+      cwd,
+    });
+    const expected = { nativePolicy: { policyId: "full-access-on-request" } };
+    expect(f.reader.historicalSettings(nativeId, f.workspace)).toEqual(expected);
+    expect(f.reader.historicalSettings(nativeId, f.workspace)).toEqual(expected);
+    expect(f.reader.historicalSettings(nativeId, f.codex)).toBeUndefined();
+  });
+
+  it("distinguishes a complete legacy rollout from unverified policy evidence", () => {
+    const f = codexHome({ stored: ["plain"] });
+    expect(f.reader.historicalSettings(nativeId, f.workspace)).toEqual({});
+
+    const largeEntry = JSON.stringify({
+      type: "response_item",
+      payload: { value: "x".repeat(1024 * 1024) },
+    });
+    const data = f.body + turnContext(fullAccess) + largeEntry + "\n";
+    writeFileSync(f.plain, data);
+    expect(f.reader.historicalSettings(nativeId, f.workspace)?.nativePolicy).toEqual({
+      policyId: null,
+      reason: "native-policy-unconfirmed",
+    });
+    writeFileSync(f.plain, data + turnContext(fullAccess));
+    expect(f.reader.historicalSettings(nativeId, f.workspace)?.nativePolicy).toEqual({
+      policyId: "full-access-on-request",
+    });
+  });
+
+  it.each([
+    turnContext({ model: "recent-model" }),
+    turnContext({ sandbox_policy: null }),
+    '{"type":"turn_context","payload":]\n',
+    '{"type":"turn_context","payload":',
+  ])(
+    "prefers an unconfirmed policy over an older mapped policy after an incomplete context",
+    (tail) => {
+      const f = codexHome({ stored: ["plain"] });
+      const data = f.body + turnContext(fullAccess);
+      writeFileSync(f.plain, data);
+      expect(f.reader.historicalSettings(nativeId, f.workspace)?.nativePolicy).toEqual({
+        policyId: "full-access-on-request",
+      });
+      writeFileSync(f.plain, data + tail);
+      expect(f.reader.historicalSettings(nativeId, f.workspace)?.nativePolicy).toEqual({
+        policyId: null,
+        reason: "native-policy-unconfirmed",
+      });
+    },
+  );
 });
 
 describe("compressed Codex rollouts", () => {

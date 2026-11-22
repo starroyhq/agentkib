@@ -85,6 +85,75 @@ beforeEach(() => {
 
 afterEach(cleanup);
 
+it("shows the current mapped native policy with other next-turn settings selected", async () => {
+  vi.mocked(state.client.sessionSettings).mockResolvedValue({
+    ...fastSettings,
+    current: { ...fastSettings.current, policyId: "full-access-on-request" },
+    selected: { modelId: "fast-model" },
+    options: {
+      ...fastSettings.options,
+      policies: [
+        { id: "full-access-on-request", name: "Full access" },
+        { id: "workspace-write-on-request", name: "Workspace write" },
+      ],
+    },
+  });
+  vi.mocked(state.runSessionAction).mockResolvedValue({ accepted: false });
+  render(<SessionComposerControls session={state} {...props} />);
+
+  const trigger = await screen.findByRole("button", { name: "Execution policy: Full access" });
+  expect(trigger).toBeEnabled();
+  fireEvent.click(trigger);
+  expect(await screen.findByRole("menuitem", { name: /^Full access/ })).toHaveAttribute(
+    "aria-current",
+    "true",
+  );
+  fireEvent.click(await screen.findByRole("menuitem", { name: /^Ask for approval/ }));
+  expect(state.runSessionAction).toHaveBeenCalledExactlyOnceWith("settings", {
+    policyId: "workspace-write-on-request",
+  });
+});
+
+it.each([
+  {
+    available: true,
+    reason: "native-policy-sandbox-network-mismatch",
+    detail: "The sandbox network access differs from the supported policies.",
+  },
+  {
+    available: false,
+    reason: "native-policy-unconfirmed",
+    detail: "This session’s native execution policy is unconfirmed.",
+  },
+])(
+  "keeps an unmapped native policy visible when settings availability is $available",
+  async ({ available, reason, detail }) => {
+    vi.mocked(state.client.sessionSettings).mockResolvedValue({
+      ...fastSettings,
+      available,
+      current: { modelId: "fast-model" },
+      selected: {},
+      writable: {
+        ...fastSettings.writable,
+        policy: { available: false, reason },
+      },
+      options: { ...fastSettings.options, policies: [] },
+    });
+    render(<SessionComposerControls session={state} {...props} />);
+
+    const trigger = await screen.findByRole("button", {
+      name: "Execution policy: Native settings",
+    });
+    expect(trigger).toBeVisible();
+    expect(trigger).toBeDisabled();
+    expect(trigger).toHaveAttribute(
+      "title",
+      `The native execution policy is read-only here. ${detail}`,
+    );
+    expect(state.runSessionAction).not.toHaveBeenCalled();
+  },
+);
+
 it("retains a scoped model and Fast badge when an unconfirmed settings write obscures live", async () => {
   state.access!.device!.id = "uncertain-settings-device";
   vi.mocked(state.client.sessionSettings).mockResolvedValue(fastSettings);

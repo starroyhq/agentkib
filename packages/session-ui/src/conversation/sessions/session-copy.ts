@@ -79,6 +79,8 @@ const zh = {
   restoreDefaults: "恢复这台电脑默认",
   serviceTier: "服务档位",
   executionPolicy: "执行策略",
+  nativePolicy: "原生配置",
+  nativePolicyReadOnly: "原生执行策略在这里仅可查看。",
   contextUsage: "上下文用量",
   contextUnknown: "这台电脑尚未提供上下文窗口用量",
   settingUnavailable: "此会话暂不支持修改该设置",
@@ -184,6 +186,8 @@ export const sessionCopy: Record<Locale, Copy> = {
     restoreDefaults: "恢復這台電腦預設",
     serviceTier: "服務等級",
     executionPolicy: "執行策略",
+    nativePolicy: "原生設定",
+    nativePolicyReadOnly: "原生執行策略在這裡僅可檢視。",
     contextUsage: "上下文用量",
     contextUnknown: "這台電腦尚未提供上下文視窗用量",
     settingUnavailable: "此對話暫不支援修改此設定",
@@ -292,6 +296,8 @@ export const sessionCopy: Record<Locale, Copy> = {
     restoreDefaults: "Restore computer defaults",
     serviceTier: "Service tier",
     executionPolicy: "Execution policy",
+    nativePolicy: "Native settings",
+    nativePolicyReadOnly: "The native execution policy is read-only here.",
     contextUsage: "Context usage",
     contextUnknown: "The computer has not reported context-window usage",
     settingUnavailable: "This session cannot change this setting",
@@ -401,6 +407,8 @@ export const sessionCopy: Record<Locale, Copy> = {
     restoreDefaults: "このコンピューターの既定値に戻す",
     serviceTier: "サービス階層",
     executionPolicy: "実行ポリシー",
+    nativePolicy: "ネイティブ設定",
+    nativePolicyReadOnly: "ネイティブ実行ポリシーはここでは読み取り専用です。",
     contextUsage: "コンテキスト使用量",
     contextUnknown: "このコンピューターからコンテキストウィンドウの使用量が提供されていません",
     settingUnavailable: "この会話ではこの設定を変更できません",
@@ -454,6 +462,16 @@ const reasons: Record<Locale, Record<string, string>> = {
       "Codex 返回的工作目录与会话目录不一致，已停止本次操作。请检查会话状态后重试。",
     "codex-sandbox-mismatch":
       "Codex 返回的可写范围与会话目录不一致，已停止本次操作。请检查会话状态后重试。",
+    "native-policy-unconfirmed": "无法确认这条会话的原生执行策略。",
+    "native-policy-approval-policy-mismatch": "原生审批方式与支持的策略不符。",
+    "native-policy-approvals-reviewer-mismatch": "原生审批审核器与支持的策略不符。",
+    "native-policy-sandbox-type-mismatch": "原生沙盒类型与支持的策略不符。",
+    "native-policy-sandbox-network-mismatch": "原生沙盒的网络访问与支持的策略不符。",
+    "native-policy-sandbox-writable-roots-mismatch": "原生沙盒的可写目录与支持的策略不符。",
+    "native-policy-sandbox-tmpdir-mismatch": "原生沙盒的 TMPDIR 权限与支持的策略不符。",
+    "native-policy-sandbox-slash-tmp-mismatch": "原生沙盒的 /tmp 权限与支持的策略不符。",
+    "native-policy-sandbox-read-access-mismatch": "原生沙盒的读取权限与支持的策略不符。",
+    "native-policy-cwd-mismatch": "原生策略记录的工作目录与会话目录不符。",
     "codex-cli-version-unavailable":
       "无法确认 Codex 版本，目前仅可查看。请检查 Codex CLI 后刷新重试。",
     "codex-owner-check-unavailable":
@@ -603,6 +621,16 @@ const reasons: Record<Locale, Record<string, string>> = {
       "Codex 傳回的工作目錄與對話目錄不一致，已停止本次操作。請檢查對話狀態後重試。",
     "codex-sandbox-mismatch":
       "Codex 傳回的可寫範圍與對話目錄不一致，已停止本次操作。請檢查對話狀態後重試。",
+    "native-policy-unconfirmed": "無法確認這筆對話的原生執行策略。",
+    "native-policy-approval-policy-mismatch": "原生核准方式與支援的策略不符。",
+    "native-policy-approvals-reviewer-mismatch": "原生核准審查者與支援的策略不符。",
+    "native-policy-sandbox-type-mismatch": "原生沙箱類型與支援的策略不符。",
+    "native-policy-sandbox-network-mismatch": "原生沙箱的網路存取與支援的策略不符。",
+    "native-policy-sandbox-writable-roots-mismatch": "原生沙箱的可寫入目錄與支援的策略不符。",
+    "native-policy-sandbox-tmpdir-mismatch": "原生沙箱的 TMPDIR 權限與支援的策略不符。",
+    "native-policy-sandbox-slash-tmp-mismatch": "原生沙箱的 /tmp 權限與支援的策略不符。",
+    "native-policy-sandbox-read-access-mismatch": "原生沙箱的讀取權限與支援的策略不符。",
+    "native-policy-cwd-mismatch": "原生策略記錄的工作目錄與對話目錄不符。",
     "codex-cli-version-unavailable":
       "無法確認 Codex 版本，目前僅可查看。請檢查 Codex CLI 後重新整理再試。",
     "codex-owner-check-unavailable":
@@ -753,6 +781,24 @@ const reasons: Record<Locale, Record<string, string>> = {
       "Codex returned a working directory that differs from the session directory. The operation was stopped. Check the session state, then retry.",
     "codex-sandbox-mismatch":
       "Codex returned a writable scope that differs from the session directory. The operation was stopped. Check the session state, then retry.",
+    "native-policy-unconfirmed": "This session’s native execution policy is unconfirmed.",
+    "native-policy-approval-policy-mismatch":
+      "The approval mode differs from the supported policies.",
+    "native-policy-approvals-reviewer-mismatch":
+      "The approvals reviewer differs from the supported policies.",
+    "native-policy-sandbox-type-mismatch": "The sandbox type differs from the supported policies.",
+    "native-policy-sandbox-network-mismatch":
+      "The sandbox network access differs from the supported policies.",
+    "native-policy-sandbox-writable-roots-mismatch":
+      "The sandbox writable directories differ from the supported policies.",
+    "native-policy-sandbox-tmpdir-mismatch":
+      "The sandbox permissions for TMPDIR differ from the supported policies.",
+    "native-policy-sandbox-slash-tmp-mismatch":
+      "The sandbox permissions for /tmp differ from the supported policies.",
+    "native-policy-sandbox-read-access-mismatch":
+      "The sandbox read access differs from the supported policies.",
+    "native-policy-cwd-mismatch":
+      "The working directory in the native policy does not match the session directory.",
     "codex-cli-version-unavailable":
       "The Codex version could not be confirmed. This session is view only. Check Codex CLI, then refresh to retry.",
     "codex-owner-check-unavailable":
@@ -925,6 +971,25 @@ const reasons: Record<Locale, Record<string, string>> = {
       "Codex が返した作業ディレクトリが会話のディレクトリと一致しないため、操作を停止しました。会話の状態を確認してから再試行してください。",
     "codex-sandbox-mismatch":
       "Codex が返した書き込み可能範囲が会話のディレクトリと一致しないため、操作を停止しました。会話の状態を確認してから再試行してください。",
+    "native-policy-unconfirmed": "この会話のネイティブ実行ポリシーを確認できません。",
+    "native-policy-approval-policy-mismatch":
+      "ネイティブの承認方式がサポート対象のポリシーと異なります。",
+    "native-policy-approvals-reviewer-mismatch":
+      "ネイティブの承認レビュアーがサポート対象のポリシーと異なります。",
+    "native-policy-sandbox-type-mismatch":
+      "ネイティブのサンドボックスの種類がサポート対象のポリシーと異なります。",
+    "native-policy-sandbox-network-mismatch":
+      "ネイティブのサンドボックスのネットワークアクセスがサポート対象のポリシーと異なります。",
+    "native-policy-sandbox-writable-roots-mismatch":
+      "ネイティブのサンドボックスの書き込み可能ディレクトリがサポート対象のポリシーと異なります。",
+    "native-policy-sandbox-tmpdir-mismatch":
+      "ネイティブのサンドボックスの TMPDIR 権限がサポート対象のポリシーと異なります。",
+    "native-policy-sandbox-slash-tmp-mismatch":
+      "ネイティブのサンドボックスの /tmp 権限がサポート対象のポリシーと異なります。",
+    "native-policy-sandbox-read-access-mismatch":
+      "ネイティブのサンドボックスの読み取り権限がサポート対象のポリシーと異なります。",
+    "native-policy-cwd-mismatch":
+      "ネイティブポリシーの作業ディレクトリが会話のディレクトリと一致しません。",
     "codex-cli-version-unavailable":
       "Codex のバージョンを確認できないため、この会話は閲覧のみです。Codex CLI を確認してから再読み込みしてください。",
     "codex-owner-check-unavailable":

@@ -1,3 +1,4 @@
+import { hasManagedPreparedSettings } from "./agents/session-model-settings";
 import {
   Fragment,
   useEffect,
@@ -188,6 +189,8 @@ export function ComposerModelPicker({
   retainedEffortOptions,
   disabled,
   triggerDisabled = false,
+  disabledReason,
+  writeDisabledReason,
   saving,
   loading = false,
   readError,
@@ -200,6 +203,7 @@ export function ComposerModelPicker({
   readOnly,
   terminalModel,
   terminalPickerOpen = false,
+  terminalPickerDisabledReason,
   onOpenTerminalPicker,
   side = "top",
   onOpen,
@@ -218,6 +222,8 @@ export function ComposerModelPicker({
   retainedEffortOptions?: SessionModelEffortOptions;
   disabled: boolean;
   triggerDisabled?: boolean;
+  disabledReason?: string;
+  writeDisabledReason?: (field: keyof SessionSettings["writable"]) => string;
   saving: boolean;
   loading?: boolean;
   readError?: string;
@@ -237,6 +243,7 @@ export function ComposerModelPicker({
   readOnly?: boolean;
   terminalModel?: boolean;
   terminalPickerOpen?: boolean;
+  terminalPickerDisabledReason?: string;
   onOpenTerminalPicker?: () => Promise<boolean>;
   /** Where the picker opens: above a composer at the bottom, below one at the top of a page. */
   side?: "top" | "bottom";
@@ -362,7 +369,7 @@ export function ComposerModelPicker({
     !activePreview &&
     !terminalModel &&
     settings?.available &&
-    settings.executionMode === "claude-managed" &&
+    hasManagedPreparedSettings(settings) &&
     settings.applicationStatus === "pending" &&
     !settings.current.modelId &&
     settings.selected?.modelId &&
@@ -529,7 +536,8 @@ export function ComposerModelPicker({
                 <Button
                   type="button"
                   variant="ghost"
-                  className={`${nextTurnLabel ? "h-10" : "h-9"} min-w-0 max-w-64 gap-1.5 rounded-full px-2 text-sm font-normal`}
+                  title={triggerDisabled ? disabledReason : undefined}
+                  className={`${nextTurnLabel ? "h-10" : "h-9"} min-w-0 max-w-64 gap-1.5 rounded-full px-2 text-sm font-normal disabled:pointer-events-auto`}
                   aria-label={
                     nextTurnLabel
                       ? `${triggerLabel} · ${nextTurnLabel} · ${historicalLabel}`
@@ -616,9 +624,14 @@ export function ComposerModelPicker({
                     <Button
                       type="button"
                       variant="outline"
-                      className="h-8 rounded-lg px-2 text-sm"
+                      className="h-8 rounded-lg px-2 text-sm disabled:pointer-events-auto"
                       disabled={
                         !onOpenTerminalPicker || terminalPickerOpen || terminalPickerPending
+                      }
+                      title={
+                        !onOpenTerminalPicker || terminalPickerOpen
+                          ? terminalPickerDisabledReason
+                          : undefined
                       }
                       onClick={async () => {
                         if (
@@ -669,9 +682,14 @@ export function ComposerModelPicker({
                       <Button
                         type="button"
                         variant="ghost"
-                        className="mb-1 h-auto min-h-12 w-full justify-start rounded-lg px-2 py-2 text-left font-normal"
+                        className="mb-1 h-auto min-h-12 w-full justify-start rounded-lg px-2 py-2 text-left font-normal disabled:pointer-events-auto"
                         aria-pressed={modelDefault ? !modelId : undefined}
                         disabled={!writable || !restoresDefaults}
+                        title={
+                          !writable || !restoresDefaults
+                            ? writeDisabledReason?.("restoreDefaults")
+                            : undefined
+                        }
                         onClick={() => {
                           if (!nativeVariants) setPage("effort");
                           void change({ restoreDefaults: true });
@@ -696,9 +714,14 @@ export function ComposerModelPicker({
                           <Button
                             type="button"
                             variant="ghost"
-                            className="h-9 w-full justify-between gap-3 rounded-lg px-2 text-left font-normal"
+                            className="h-9 w-full justify-between gap-3 rounded-lg px-2 text-left font-normal disabled:pointer-events-auto"
                             aria-pressed={model?.id === item.id}
                             disabled={!writable || !settings.writable.model?.available}
+                            title={
+                              !writable || !settings.writable.model?.available
+                                ? writeDisabledReason?.("model")
+                                : undefined
+                            }
                             onClick={() => {
                               if (
                                 !nativeVariants ||
@@ -753,10 +776,17 @@ export function ComposerModelPicker({
                               <Button
                                 type="button"
                                 variant="ghost"
-                                className={`size-7 rounded-lg p-0 ${displayFast ? "composer-effort-color bg-muted" : "text-muted-foreground"}`}
+                                className={`size-7 rounded-lg p-0 disabled:pointer-events-auto ${displayFast ? "composer-effort-color bg-muted" : "text-muted-foreground"}`}
                                 aria-label={copy.fast}
                                 aria-pressed={displayFast}
                                 disabled={!fastWritable}
+                                title={
+                                  !fastWritable
+                                    ? fastSupported
+                                      ? writeDisabledReason?.("serviceTier")
+                                      : copy.fastUnavailable
+                                    : undefined
+                                }
                                 onClick={() =>
                                   void change({ serviceTierId: fast ? null : fastTier!.id })
                                 }
@@ -811,9 +841,15 @@ export function ComposerModelPicker({
                       <Button
                         type="button"
                         variant="ghost"
-                        className="size-7 rounded-full p-0 text-muted-foreground"
+                        className="size-7 rounded-full p-0 text-muted-foreground disabled:pointer-events-auto"
                         aria-label={resetLabel}
-                        title={resetLabel}
+                        title={
+                          (clearsEffort && !effortWritable
+                            ? writeDisabledReason?.("effort")
+                            : !clearsEffort && (!writable || !restoresDefaults)
+                              ? writeDisabledReason?.("restoreDefaults")
+                              : undefined) ?? resetLabel
+                        }
                         disabled={clearsEffort ? !effortWritable : !writable || !restoresDefaults}
                         onClick={() =>
                           void change(clearsEffort ? { effort: null } : { restoreDefaults: true })
@@ -831,6 +867,7 @@ export function ComposerModelPicker({
                         largeStep={1}
                         thumbAlignment="edge"
                         disabled={!effortWritable}
+                        title={!effortWritable ? writeDisabledReason?.("effort") : undefined}
                         onValueChange={(value) => {
                           unknownEffortPointer.current = undefined;
                           setDraftEffort(efforts[value]);

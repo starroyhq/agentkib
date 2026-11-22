@@ -8,6 +8,7 @@ interface ComposerPermissionItem {
   description?: string;
   risky?: boolean;
   disabled?: boolean;
+  disabledReason?: string;
   selected?: boolean;
 }
 
@@ -45,7 +46,7 @@ export function ComposerPermissionMenu({
   return (
     <Menu.Root open={open} onOpenChange={onOpenChange}>
       <Menu.Trigger
-        className={`${composerButtonClasses} h-11 min-w-0 gap-1.5 rounded-full px-2.5 text-sm font-normal disabled:opacity-50 disabled:grayscale ${risky ? "text-orange-600 hover:text-orange-700" : "text-muted-foreground"}`}
+        className={`${composerButtonClasses} h-11 min-w-0 gap-1.5 rounded-full px-2.5 text-sm font-normal disabled:pointer-events-auto disabled:opacity-50 disabled:grayscale ${risky ? "text-orange-600 hover:text-orange-700" : "text-muted-foreground"}`}
         disabled={disabled}
         title={disabledReason}
         aria-label={title === label ? title : `${title}: ${label}`}
@@ -75,6 +76,11 @@ export function ComposerPermissionMenu({
                     key={item.id}
                     className={`flex cursor-default items-start gap-1.5 rounded-md px-1.5 py-1 text-sm outline-none select-none data-highlighted:bg-accent data-highlighted:text-accent-foreground data-disabled:opacity-50 data-disabled:grayscale ${item.risky ? "text-orange-600" : ""}`}
                     disabled={disabled || item.disabled}
+                    title={
+                      disabled || item.disabled
+                        ? (item.disabledReason ?? disabledReason)
+                        : undefined
+                    }
                     aria-current={active || undefined}
                     onClick={() => onSelect(item.id)}
                   >

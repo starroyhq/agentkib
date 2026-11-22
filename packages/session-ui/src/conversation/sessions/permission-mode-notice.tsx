@@ -2,7 +2,7 @@ import { ChevronDown, ShieldAlert } from "lucide-react";
 import type { LivePermission } from "@agentkib/web-client";
 import type { InteractionLocale as Locale } from "../../interaction-model";
 import { useSessionPlatform } from "../../session-platform";
-import { permissionModeCopy, permissionModeSummaryCopy } from "../../permission-mode-copy";
+import { terminalPermissionObservation } from "../../agents/session-permission-observations";
 
 /**
  * Tells the user when a Claude session runs where actions are no longer approved one by one
@@ -20,39 +20,23 @@ export function PermissionModeNotice({
   compact?: boolean;
 }) {
   const { Disclosure, DisclosureSummary, collapsible } = useSessionPlatform().components;
-  if (!permission) return null;
-  const copy = permissionModeCopy[locale];
-  const { mode } = permission;
-  const noticeKey =
-    mode === "auto" || mode === "dontAsk" || mode === "bypassPermissions"
-      ? mode
-      : mode === null && permission.possiblyAuto === true
-        ? "possiblyAuto"
-        : undefined;
-  if (!noticeKey) return null;
-  const message = copy[noticeKey];
+  const notice = terminalPermissionObservation.notice(permission, locale);
+  if (!notice) return null;
   const content = (
     <span>
-      {message}
-      {mode !== null && permission.previous === true && (
-        <span className="mt-1 block">{copy.previous}</span>
-      )}
+      {notice.text}
+      {notice.previous && <span className="mt-1 block">{notice.previous}</span>}
     </span>
   );
-  const color =
-    mode === "bypassPermissions"
-      ? "border-destructive/40 bg-destructive/10 text-destructive-text"
-      : "border-amber-500/25 bg-amber-500/5 text-amber-700 dark:text-amber-300";
+  const color = notice.danger
+    ? "border-destructive/40 bg-destructive/10 text-destructive-text"
+    : "border-amber-500/25 bg-amber-500/5 text-amber-700 dark:text-amber-300";
   if (compact) {
-    const summary = permissionModeSummaryCopy[locale];
     const className = `group rounded-lg border text-xs leading-5 ${color}`;
     const label = (
       <>
         <ShieldAlert aria-hidden="true" className="size-4 shrink-0" />
-        <span>
-          {summary[noticeKey]}
-          {permission.previous && mode !== null ? ` · ${summary.previous}` : ""}
-        </span>
+        <span>{notice.label}</span>
       </>
     );
     const details = (

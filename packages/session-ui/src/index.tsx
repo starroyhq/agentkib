@@ -298,6 +298,7 @@ export {
   newSessionCopy,
   newSessionCreateFields,
   newSessionPermissions,
+  newSessionPermissionFallbackTitle,
   newSessionPresets,
   PROMPT_AT_CREATE_AGENTS,
   type ClaudeStartMode,
@@ -323,7 +324,9 @@ export {
   type HomeSessionCopy,
   type HomeSessionListProps,
 } from "./home-sessions";
-export { codexPolicyLabel, dshPolicyLabel, type PolicyLabel } from "./policy-labels";
+export { codexPolicyLabel } from "./agents/codex/permissions";
+export { dshPolicyLabel } from "./agents/deepseek-harness/permissions";
+export type { PermissionLabel as PolicyLabel } from "./agents/session-permissions";
 export { commandPrompt, type CommandPromptRequest } from "./command-prompts";
 export { dshAgentPresetCopy, dshAgentPresetText, type DshAgentPreset } from "./dsh-agent-presets";
 export {
@@ -436,7 +439,10 @@ export {
 } from "./composer-model-picker";
 export { composerModelCopy } from "./composer-model-copy";
 export { ComposerModeChip } from "./composer-mode-chip";
-export { permissionModeCopy, permissionModeSummaryCopy } from "./permission-mode-copy";
+export {
+  permissionModeCopy,
+  permissionModeSummaryCopy,
+} from "./agents/claude-code/permission-mode-copy";
 export { claudeTerminalInteraction, claudeTerminalPermission } from "./claude-terminal-permission";
 export { ComposerPermissionMenu } from "./composer-permission-menu";
 export {

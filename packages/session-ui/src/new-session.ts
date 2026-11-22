@@ -1,9 +1,13 @@
+import { sessionProviderDeclaration, type SessionProviderDeclaration } from "@agentkib/web-client";
+import {
+  newSessionPermissionCopy,
+  sessionPermissionDescriptor,
+} from "./agents/session-permissions";
 import type { InteractionLocale } from "./interaction-model";
 
 /**
- * What AgentKib knows about starting a session with each Agent: which Agents can start one, the
- * permission choices each offers in its own words, its presets, and the fields the host's create
- * takes. The desktop and Web composers only draw it, so a new Agent is added here.
+ * Shared new-session selection and request fields. The Provider declares available controls, and
+ * the host supplies the options that the current device can use.
  */
 
 export type NewSessionAgent = "codex" | "claude-code" | "deepseek-harness" | "devin";
@@ -23,7 +27,10 @@ export const NEW_SESSION_AGENTS: readonly NewSessionAgent[] = [
 export interface NewSessionOptions {
   available: boolean;
   reason?: string;
-  provider?: { create: NewSessionProviderCreate };
+  provider?: {
+    create: NewSessionProviderCreate;
+    permissionField?: SessionProviderDeclaration["permissionField"];
+  };
   models?: {
     id: string;
     name?: string;
@@ -46,51 +53,10 @@ export interface NewSessionOptions {
 
 type NewSessionProviderCreate = {
   serviceTiers: boolean;
+  permissionPicker?: boolean;
   agentPresets?: boolean;
   verifyStartupModel?: boolean;
   planMode?: "mode" | "permissionMode";
-};
-
-interface PermissionSpec {
-  /** The create field the choice is sent in. */
-  field: "policyId" | "permissionMode";
-  /** The choices, in the order the Agent's own client lists them. */
-  ids: readonly string[];
-  /** The options list the host reports them in; only reported choices are offered. */
-  offered: (options: NewSessionOptions) => readonly { id: string }[] | undefined;
-  /** Codex starts with the shown policy; Claude Code only takes a mode the person chose. */
-  sendShown: boolean;
-  /** Choices that widen what the Agent may do without asking. */
-  risky?: readonly string[];
-  /** Choices the host takes only from a device with full access, as it does in session settings. */
-  fullAccessOnly?: readonly string[];
-}
-
-const PERMISSIONS: Partial<Record<NewSessionAgent, PermissionSpec>> = {
-  codex: {
-    field: "policyId",
-    ids: ["workspace-write-on-request", "workspace-write-auto-review", "full-access-on-request"],
-    offered: (options) => options.policies,
-    sendShown: true,
-    risky: ["full-access-on-request"],
-    fullAccessOnly: ["workspace-write-auto-review", "full-access-on-request"],
-  },
-  "claude-code": {
-    field: "permissionMode",
-    ids: ["default", "acceptEdits", "plan"],
-    offered: (options) => options.permissionModes,
-    sendShown: false,
-  },
-  // Devin runs a turn without asking, so its mode is the whole turn's. AgentKib starts it with
-  // edits inside the workspace approved, as Codex starts here, and lists that first.
-  devin: {
-    field: "permissionMode",
-    ids: ["accept-edits", "auto", "smart", "dangerous"],
-    offered: (options) => options.permissionModes,
-    sendShown: true,
-    risky: ["dangerous"],
-    fullAccessOnly: ["smart", "dangerous"],
-  },
 };
 
 /** Agents whose session starts with its first message, sent along with the create. */
@@ -111,47 +77,66 @@ export interface NewSessionPermissions {
   initial?: string;
 }
 
-function offeredPermissions(
+function creationPermissions(
   agent: NewSessionAgent,
+  options?: NewSessionOptions,
+  create = options?.provider?.create,
+) {
+  const declared = sessionProviderDeclaration(agent);
+  const descriptor = sessionPermissionDescriptor(agent)?.creation;
+  if (!declared || !("create" in declared) || !descriptor) return undefined;
+  const field = options?.provider?.permissionField ?? declared.permissionField;
+  if (
+    (create?.permissionPicker ?? declared.create.permissionPicker) !== true ||
+    field !== descriptor.field
+  )
+    return undefined;
+  return descriptor;
+}
+
+function offeredPermissions(
+  spec: NonNullable<ReturnType<typeof creationPermissions>>,
   options: NewSessionOptions | undefined,
   fullAccess: boolean,
 ) {
-  const spec = PERMISSIONS[agent];
-  const offered = (spec && options && spec.offered(options)) || [];
-  return spec
-    ? spec.ids.filter(
-        (id) =>
-          offered.some((item) => item.id === id) &&
-          (fullAccess || !spec.fullAccessOnly?.includes(id)),
-      )
-    : [];
+  const offered = spec.field === "policyId" ? options?.policies : options?.permissionModes;
+  return spec.choices.filter(
+    ({ id, fullAccessOnly }) =>
+      offered?.some((item) => item.id === id) && (fullAccess || !fullAccessOnly),
+  );
 }
 
-/**
- * The permission choices an Agent offers for a new session; none when the host reports none.
- * Without full access a device keeps the choices the host would refuse from it out of the list.
- */
+/** The label used when a registered permission picker has no usable options. */
+export function newSessionPermissionFallbackTitle(
+  agent: NewSessionAgent,
+  locale: InteractionLocale,
+): string | undefined {
+  const spec = creationPermissions(agent);
+  return spec?.fallbackTitle ? spec.copy(locale).title : undefined;
+}
+
+/** The permission choices this device can start a session with, from the reported catalog. */
 export function newSessionPermissions(
   agent: NewSessionAgent,
   options: NewSessionOptions | undefined,
   locale: InteractionLocale,
   { fullAccess = true }: { fullAccess?: boolean } = {},
 ): NewSessionPermissions | undefined {
-  const ids = offeredPermissions(agent, options, fullAccess).filter(
-    (id) => agent !== "claude-code" || id !== "plan",
+  const spec = creationPermissions(agent, options);
+  if (!spec) return undefined;
+  const choices = offeredPermissions(spec, options, fullAccess).filter(
+    ({ separatePlan }) => !separatePlan,
   );
-  const spec = PERMISSIONS[agent];
-  const words = newSessionCopy(locale).permissions[agent as keyof NewSessionCopy["permissions"]];
-  if (!spec || !ids.length || !words) return undefined;
-  const names = words.choices as Record<string, { name: string; description: string }>;
+  if (!choices.length) return undefined;
+  const words = spec.copy(locale);
   return {
     title: words.title,
-    initial: spec.sendShown ? ids[0] : undefined,
-    choices: ids.map((id) => ({
+    initial: spec.sendShown ? choices[0].id : undefined,
+    choices: choices.map(({ id, risky }) => ({
       id,
-      name: names[id]?.name ?? id,
-      description: names[id]?.description ?? "",
-      risky: !!spec.risky?.includes(id),
+      name: words.choices[id]?.name ?? id,
+      description: words.choices[id]?.description ?? "",
+      risky: !!risky,
     })),
   };
 }
@@ -210,8 +195,10 @@ export function newSessionCreateFields(
   const canChooseTier =
     create?.serviceTiers ?? options?.serviceTiers?.some(({ id }) => id === selection.serviceTierId);
   const serviceTierId = canChooseTier ? selection.serviceTierId : undefined;
-  const spec = PERMISSIONS[agent];
-  const ids = offeredPermissions(agent, options, selection.fullAccess ?? true);
+  const spec = creationPermissions(agent, options, create);
+  const ids = spec
+    ? offeredPermissions(spec, options, selection.fullAccess ?? true).map(({ id }) => id)
+    : [];
   const planMode = create?.planMode;
   const requestedPermission =
     selection.planning && planMode === "permissionMode" ? "plan" : permission;
@@ -280,41 +267,7 @@ const copy = {
     claudeStartupModelsUnavailable: "暂时无法核对 Claude Code 的模型目录，请稍后再试。",
     agentUnavailable: "{reason}可以换一个 Agent，或去设置里查看。",
     agentUnavailableHere: "{reason}可以换一个 Agent。",
-    permissions: {
-      codex: {
-        title: "应如何批准 Codex 操作？",
-        choices: {
-          "workspace-write-on-request": {
-            name: "请求批准",
-            description: "编辑外部文件和使用互联网时始终询问",
-          },
-          "workspace-write-auto-review": {
-            name: "帮我批准",
-            description: "仅对检测到的风险操作请求批准",
-          },
-          "full-access-on-request": {
-            name: "完全访问权限",
-            description: "可不受限制地访问互联网和你电脑上的任何文件",
-          },
-        },
-      },
-      devin: {
-        title: "这一轮的权限（Devin 运行中不能询问你）",
-        choices: {
-          auto: { name: "只读自动", description: "只自动批准只读工具，其他操作会被拒绝" },
-          "accept-edits": { name: "自动接受编辑", description: "另外自动批准工作区内的文件修改" },
-          smart: { name: "智能批准", description: "另外自动执行快速模型判断为安全的操作" },
-          dangerous: { name: "全部批准", description: "自动批准所有工具，包括任何命令" },
-        },
-      },
-      "claude-code": {
-        title: "工具权限",
-        choices: {
-          default: { name: "手动审批", description: "修改文件和运行命令前先问你" },
-          acceptEdits: { name: "自动接受编辑", description: "直接修改文件，运行命令前仍会问你" },
-        },
-      },
-    },
+    permissions: newSessionPermissionCopy("zh-CN"),
   },
   "zh-Hant": {
     newSession: "新增對話",
@@ -349,41 +302,7 @@ const copy = {
     claudeStartupModelsUnavailable: "暫時無法核對 Claude Code 的模型清單，請稍後再試。",
     agentUnavailable: "{reason}可以換一個 Agent，或到設定裡查看。",
     agentUnavailableHere: "{reason}可以換一個 Agent。",
-    permissions: {
-      codex: {
-        title: "應如何核准 Codex 操作？",
-        choices: {
-          "workspace-write-on-request": {
-            name: "要求核准",
-            description: "一律先詢問是否要編輯外部檔案及使用網際網路",
-          },
-          "workspace-write-auto-review": {
-            name: "代我核准",
-            description: "僅對偵測為可能不安全的操作要求核准",
-          },
-          "full-access-on-request": {
-            name: "完整存取權",
-            description: "可無限制存取網際網路和您電腦上的任何檔案",
-          },
-        },
-      },
-      devin: {
-        title: "這一輪的權限（Devin 執行中無法詢問你）",
-        choices: {
-          auto: { name: "唯讀自動", description: "只自動核准唯讀工具，其他操作會被拒絕" },
-          "accept-edits": { name: "自動接受編輯", description: "另外自動核准工作區內的檔案修改" },
-          smart: { name: "智慧核准", description: "另外自動執行快速模型判斷為安全的操作" },
-          dangerous: { name: "全部核准", description: "自動核准所有工具，包括任何指令" },
-        },
-      },
-      "claude-code": {
-        title: "工具權限",
-        choices: {
-          default: { name: "手動核准", description: "修改檔案和執行指令前先問你" },
-          acceptEdits: { name: "自動接受編輯", description: "直接修改檔案，執行指令前仍會問你" },
-        },
-      },
-    },
+    permissions: newSessionPermissionCopy("zh-Hant"),
   },
   "en-US": {
     newSession: "New session",
@@ -422,56 +341,7 @@ const copy = {
       "Could not check the Claude Code model catalog. Try again shortly.",
     agentUnavailable: "{reason} Choose another Agent, or check Settings.",
     agentUnavailableHere: "{reason} Choose another Agent.",
-    permissions: {
-      codex: {
-        title: "How should Codex actions be approved?",
-        choices: {
-          "workspace-write-on-request": {
-            name: "Ask for approval",
-            description: "Always ask to edit external files and use the internet",
-          },
-          "workspace-write-auto-review": {
-            name: "Approve for me",
-            description: "Only ask for actions detected as potentially unsafe",
-          },
-          "full-access-on-request": {
-            name: "Full access",
-            description: "Unrestricted access to the internet and any file on your computer",
-          },
-        },
-      },
-      devin: {
-        title: "Permissions for this turn (Devin cannot ask while it runs)",
-        choices: {
-          auto: {
-            name: "Read-only auto",
-            description: "Approve only read-only tools; refuse the rest",
-          },
-          "accept-edits": {
-            name: "Accept edits",
-            description: "Also approve file changes inside the workspace",
-          },
-          smart: { name: "Smart", description: "Also run actions a fast model judges safe" },
-          dangerous: {
-            name: "Approve all",
-            description: "Approve every tool, including any command",
-          },
-        },
-      },
-      "claude-code": {
-        title: "Tool permissions",
-        choices: {
-          default: {
-            name: "Manual approval",
-            description: "Ask before editing files or running commands",
-          },
-          acceptEdits: {
-            name: "Accept edits",
-            description: "Edit files directly; still ask before running commands",
-          },
-        },
-      },
-    },
+    permissions: newSessionPermissionCopy("en-US"),
   },
   "ja-JP": {
     newSession: "新しい会話",
@@ -510,60 +380,7 @@ const copy = {
       "Claude Code のモデル一覧を確認できませんでした。しばらくしてからもう一度お試しください。",
     agentUnavailable: "{reason}別の Agent を選ぶか、設定を確認してください。",
     agentUnavailableHere: "{reason}別の Agent を選んでください。",
-    permissions: {
-      codex: {
-        title: "Codex の操作をどのように承認しますか？",
-        choices: {
-          "workspace-write-on-request": {
-            name: "承認を求める",
-            description: "外部ファイルの編集やインターネットの利用について、常に確認を求めます",
-          },
-          "workspace-write-auto-review": {
-            name: "代わりに承認",
-            description: "安全でない可能性があると検出された操作についてのみ確認を求めます",
-          },
-          "full-access-on-request": {
-            name: "フルアクセス",
-            description:
-              "インターネットとコンピューター上のすべてのファイルに無制限でアクセスします",
-          },
-        },
-      },
-      devin: {
-        title: "このターンの権限（Devin は実行中に確認できません）",
-        choices: {
-          auto: {
-            name: "読み取りのみ自動",
-            description: "読み取り専用のツールだけを自動承認し、それ以外は拒否します",
-          },
-          "accept-edits": {
-            name: "編集を自動承認",
-            description: "ワークスペース内のファイル変更も自動承認します",
-          },
-          smart: {
-            name: "スマート承認",
-            description: "高速モデルが安全と判断した操作も自動で実行します",
-          },
-          dangerous: {
-            name: "すべて承認",
-            description: "どのコマンドも含め、すべてのツールを自動承認します",
-          },
-        },
-      },
-      "claude-code": {
-        title: "ツール権限",
-        choices: {
-          default: {
-            name: "手動承認",
-            description: "ファイルの変更やコマンドの実行前に確認します",
-          },
-          acceptEdits: {
-            name: "編集を自動承認",
-            description: "ファイルは直接変更し、コマンドの実行前には確認します",
-          },
-        },
-      },
-    },
+    permissions: newSessionPermissionCopy("ja-JP"),
   },
 } satisfies Record<InteractionLocale, unknown>;
 

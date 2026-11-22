@@ -1,20 +1,17 @@
 import type {
-  ClaudePermissionMode,
+  SessionProviderCapabilities,
   SessionSettings,
   SessionSettingValues,
-  DevinPermissionMode,
   Live,
   ManagedAgent,
   SessionActionBody,
   SessionCapabilities,
 } from "@agentkib/web-client";
-import { claudeTerminalPermission } from "./claude-terminal-permission";
+import { hasManagedPreparedSettings } from "./agents/session-model-settings";
+import { sessionPermissionDescriptor } from "./agents/session-permissions";
+import { sessionPermissionObservation } from "./agents/session-permission-observations";
 import type { InteractionLocale } from "./interaction-model";
-import { newSessionPermissions } from "./new-session";
-import { changeClaudeTerminalPermissionCopy } from "./permission-mode-copy";
-import { codexPolicyLabel, dshPolicyLabel } from "./policy-labels";
 import { sessionCollaborationMode } from "./session-collaboration-mode";
-import { observedClaudePermissionLabel } from "./session-composer-capabilities";
 
 export type PendingComposerSettings = Pick<
   SessionActionBody,
@@ -38,8 +35,8 @@ export function composerSettingsSelection(
   const managedWorker =
     live?.sessionId === settings.sessionId &&
     live.revision === settings.revision &&
-    live.executionMode === "claude-managed" &&
-    live.executionLocation === "agentkib" &&
+    hasManagedPreparedSettings(live) &&
+    (live.execution ? live.execution.observed : live.executionLocation === "agentkib") &&
     ["idle", "running", "waiting-approval", "awaiting-approval", "waiting-input"].includes(
       live.status,
     );
@@ -125,14 +122,6 @@ export function confirmsComposerSettings(
   );
 }
 
-const CLAUDE_PERMISSION_IDS: readonly ClaudePermissionMode[] = ["default", "acceptEdits"];
-const DEVIN_PERMISSION_IDS: readonly DevinPermissionMode[] = [
-  "auto",
-  "accept-edits",
-  "smart",
-  "dangerous",
-];
-
 export function composerSettingsWriteLocked({
   settings,
   online,
@@ -168,6 +157,7 @@ export function composerSettingsWriteLocked({
 
 export function projectComposerSettingsControls({
   agent,
+  provider,
   settings,
   selection,
   live,
@@ -178,6 +168,7 @@ export function projectComposerSettingsControls({
   write,
 }: {
   agent: ManagedAgent | null;
+  provider?: SessionProviderCapabilities;
   settings?: SessionSettings;
   selection?: SessionSettingValues;
   live?: Live;
@@ -187,76 +178,73 @@ export function projectComposerSettingsControls({
   full: boolean;
   write: (fields: Partial<SessionActionBody>) => Promise<boolean>;
 }) {
-  const modeAgent = agent === "claude-code" || agent === "devin" ? agent : undefined;
-  const availableSettings = settings?.available ? settings : undefined;
-  const permissionField = modeAgent
-    ? availableSettings?.writable.permissionMode
-    : availableSettings?.writable.policy;
+  const permission = sessionPermissionDescriptor(agent ?? undefined)?.settings;
+  const available = settings?.available ? settings : undefined;
+  const field = provider?.permissionField;
+  const permissionField =
+    field === "permissionMode"
+      ? available?.writable.permissionMode
+      : field === "policyId"
+        ? available?.writable.policy
+        : undefined;
   const canChoosePermission = !locked && permissionField?.available === true;
-  const policyLabel = agent === "deepseek-harness" ? dshPolicyLabel : codexPolicyLabel;
-  const permissionItems = modeAgent
-    ? (
-        newSessionPermissions(
-          modeAgent,
-          { available: true, permissionModes: availableSettings?.options.permissionModes },
-          locale,
-        )?.choices ?? []
-      ).flatMap((choice) => {
-        const permissionMode = (
-          modeAgent === "claude-code" ? CLAUDE_PERMISSION_IDS : DEVIN_PERMISSION_IDS
-        ).find((id) => id === choice.id);
-        return permissionMode
-          ? [
-              {
-                ...choice,
-                selected: selection?.permissionMode === permissionMode,
-                disabled: !canChoosePermission,
-                fields: { permissionMode },
-              },
-            ]
-          : [];
-      })
-    : (availableSettings?.options.policies ?? []).map((item) => {
-        const label = policyLabel(item.id, locale);
-        return {
-          id: item.id,
-          name: label?.name ?? item.name,
-          description: label?.description ?? item.description,
-          risky: item.id === "full-access-on-request" || item.id === "danger-full-access",
-          selected: selection?.policyId === item.id,
-          disabled: !canChoosePermission,
-          fields: { policyId: item.id },
-        };
-      });
+  const permissionItems =
+    field === "permissionMode"
+      ? (permission?.modeIds ?? [])
+          .filter((id) => available?.options.permissionModes?.some((item) => item.id === id))
+          .map((permissionMode) => ({
+            id: permissionMode,
+            name: permission?.label(permissionMode, locale)?.name ?? permissionMode,
+            description: permission?.label(permissionMode, locale)?.description,
+            risky: permission?.risky(permissionMode),
+            selected: selection?.permissionMode === permissionMode,
+            disabled: !canChoosePermission,
+            fields: { permissionMode },
+          }))
+      : field === "policyId"
+        ? (available?.options.policies ?? []).map((item) => {
+            const label = permission?.label(item.id, locale);
+            return {
+              id: item.id,
+              name: label?.name ?? item.name,
+              description: label?.description ?? item.description,
+              risky: permission?.risky(item.id),
+              selected: selection?.policyId === item.id,
+              disabled: !canChoosePermission,
+              fields: { policyId: item.id },
+            };
+          })
+        : [];
   const currentPermission = permissionItems.find((item) => item.selected);
-  const observedPolicy = selection?.policyId ? policyLabel(selection.policyId, locale) : undefined;
-  const terminalPermission =
-    agent === "claude-code"
-      ? claudeTerminalPermission(live, sessionId, selection?.permissionMode, locale)
+  const observedPolicy =
+    field === "policyId" && selection?.policyId
+      ? permission?.label(selection.policyId, locale)
       : undefined;
+  const observation = sessionPermissionObservation(provider);
+  const terminalPermission = observation?.terminal(
+    live,
+    sessionId,
+    selection?.permissionMode,
+    locale,
+  );
   const permissionHint =
-    agent === "claude-code" &&
-    live?.sessionId === sessionId &&
-    live.executionMode === "claude-follower" &&
-    live.executionLocation === "terminal"
-      ? changeClaudeTerminalPermissionCopy[locale]
+    observation?.isTerminal(live, sessionId) &&
+    (live?.execution?.owner === "terminal" || live?.executionLocation === "terminal")
+      ? observation.terminalHint(locale)
       : undefined;
-  const observedPermission =
-    agent === "claude-code"
-      ? observedClaudePermissionLabel(
-          selection?.permissionMode ??
-            (live?.sessionId === sessionId ? live.permission?.mode : undefined) ??
-            undefined,
-          locale,
-        )
-      : undefined;
+  const observedPermission = observation?.label(
+    selection?.permissionMode ??
+      (live?.sessionId === sessionId ? live.permission?.mode : undefined) ??
+      undefined,
+    locale,
+  );
 
   const collaboration = sessionCollaborationMode(settings, selection);
   const clearSavedMode =
-    agent === "codex" &&
+    provider?.create.planMode === "mode" &&
     !collaboration &&
-    availableSettings?.writable.mode?.available === true &&
-    !!availableSettings.selected?.mode;
+    available?.writable.mode?.available === true &&
+    !!available.selected?.mode;
   const canClearSavedMode = clearSavedMode && !locked;
   const planOn =
     (collaboration?.field

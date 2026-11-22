@@ -17,6 +17,7 @@ import {
   type ComponentType,
   type ReactNode,
 } from "react";
+import { sessionPermissionObservation } from "../../agents/session-permission-observations";
 import { sessionQueuePanel } from "../../agents/session-queue";
 import { sessionTurnNotice } from "../../agents/session-turn-notice";
 import { claudeTerminalInteraction } from "../../claude-terminal-permission";
@@ -181,6 +182,9 @@ export function SessionComposer({
     sessionReason(locale, code ?? undefined, surface, platformCopy.unavailableReason).text;
   const isClaude = current?.agent === "claude-code";
   const isCodex = current?.agent === "codex";
+  const provider = resolveSessionProvider(current, capabilities);
+  const permissionObservation = sessionPermissionObservation(provider);
+  const separatePlan = provider && "create" in provider && provider.create.planMode === "mode";
   const continuation = sessionContinuationCopy(locale);
   const copy = sessionCopyForSurface(locale, surface);
   const layout = composerLayoutCopy[locale];
@@ -234,12 +238,10 @@ export function SessionComposer({
     live?.connectionGeneration,
   ]);
   const compacting = live?.activity === "compacting";
+  const showLimitedPlan =
+    restrictedPlan && separatePlan === true && !fullAccess && current?.id === selected;
   const limitedSettings =
-    restrictedPlan &&
-    isCodex &&
-    !fullAccess &&
-    current.id === selected &&
-    capabilities?.sessionId === selected
+    showLimitedPlan && capabilities?.sessionId === selected
       ? capabilities.features.settings
       : undefined;
   // Restricted devices can receive the native mode in a live snapshot without its own session ID.
@@ -252,13 +254,13 @@ export function SessionComposer({
   const offeredModes =
     observedSettings?.options?.collaborationModes?.map((item) => item.id) ??
     (["default", "plan"] as const);
-  const showLimitedPlan = !!limitedSettings && offeredModes.includes("plan");
   const limitedPlanOn =
     (observedSettings?.selected?.mode ?? observedSettings?.current?.mode) === "plan";
   const nextMode = limitedPlanOn ? "default" : "plan";
   const canChangeLimitedPlan = !!(
     showLimitedPlan &&
     limitedSettings?.available &&
+    offeredModes.includes("plan") &&
     access?.status === "approved" &&
     access.experimentalEnabled &&
     access.device &&
@@ -281,7 +283,7 @@ export function SessionComposer({
     if (canChangeLimitedPlan) void runSessionAction("settings", { mode: nextMode });
   };
   const settingsNotice =
-    restrictedPlan && !fullAccess && isCodex && session.settingsNotice?.target === "permissions"
+    showLimitedPlan && session.settingsNotice?.target === "permissions"
       ? session.settingsNotice
       : undefined;
   const planWriteStatus = composerSettingsStatus(locale, settingsNotice, reason, t.notDispatched);
@@ -516,7 +518,6 @@ export function SessionComposer({
   const resourceIds = resources.filter((item) => item.available).map((item) => item.id);
   const draft = composerValue;
   const valid = ready && validHistoryMessage(draft, historyReferences, attachmentIds.length > 0);
-  const provider = resolveSessionProvider(current, capabilities);
   const queuePanel =
     current?.id === selected ? sessionQueuePanel(current.agent, provider) : undefined;
   const turnNotice = sessionTurnNotice({
@@ -821,9 +822,9 @@ export function SessionComposer({
           {claudeConnectionCopyForSurface(locale, surface)[terminalInteraction]}
         </p>
       )}
-      {isClaude &&
+      {permissionObservation &&
         live?.sessionId === selected &&
-        (live.executionMode !== "claude-follower" ||
+        (!permissionObservation.isTerminal(live, selected) ||
           (!composerCapabilities.reservesPermissionSlot &&
             !composerCapabilities.settingsAccessDenied)) && (
           <PermissionModeNotice permission={live.permission} locale={locale} compact />
@@ -990,7 +991,7 @@ export function SessionComposer({
                   disabled: !canOpenAddMenu,
                   disabledReason: canOpenAddMenu
                     ? undefined
-                    : showLimitedPlan
+                    : limitedSettings
                       ? limitedPlanReason
                       : uploadPermission
                         ? undefined
@@ -1040,7 +1041,7 @@ export function SessionComposer({
           </ComposerToolbarContents>
         }
       />
-      {!isClaude && access?.device?.accessMode !== "full" && (
+      {!permissionObservation && access?.device?.accessMode !== "full" && (
         <Disclosure className="px-3 text-xs text-muted-foreground">
           <DisclosureSummary className="min-h-11 cursor-pointer content-center">
             {layout.help}

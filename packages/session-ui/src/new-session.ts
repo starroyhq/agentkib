@@ -1,23 +1,13 @@
+import { sessionProviderCapabilities, type ManagedAgent } from "@agentkib/web-client";
+import { DEFAULT_NEW_SESSION_AGENT, sessionCreationDescription } from "./agents/session-creation";
 import type { InteractionLocale } from "./interaction-model";
 
-/**
- * What AgentKib knows about starting a session with each Agent: which Agents can start one, the
- * permission choices each offers in its own words, its presets, and the fields the host's create
- * takes. The desktop and Web composers only draw it, so a new Agent is added here.
- */
-
-export type NewSessionAgent = "codex" | "claude-code" | "deepseek-harness" | "devin";
+/** Shared startup choices and create fields for Provider-backed sessions. */
+export type NewSessionAgent = ManagedAgent;
+export { NEW_SESSION_AGENTS, PROMPT_AT_CREATE_AGENTS } from "./agents/session-creation";
 export type ClaudeStartMode = "default" | "acceptEdits" | "plan";
 /** Devin CLI's own permission modes; each applies to a whole turn. */
 export type DevinStartMode = "auto" | "accept-edits" | "smart" | "dangerous";
-
-/** Agents a session can be started with, in the order the composer lists them. */
-export const NEW_SESSION_AGENTS: readonly NewSessionAgent[] = [
-  "codex",
-  "claude-code",
-  "deepseek-harness",
-  "devin",
-];
 
 /** The start options the host reports for an Agent (`ManagedOptions` in web-client). */
 export interface NewSessionOptions {
@@ -93,9 +83,6 @@ const PERMISSIONS: Partial<Record<NewSessionAgent, PermissionSpec>> = {
   },
 };
 
-/** Agents whose session starts with its first message, sent along with the create. */
-export const PROMPT_AT_CREATE_AGENTS: readonly NewSessionAgent[] = ["devin"];
-
 export interface NewSessionPermissionChoice {
   id: string;
   name: string;
@@ -160,11 +147,33 @@ export function newSessionPermissions(
 export function newSessionPresets(
   agent: NewSessionAgent,
   options: NewSessionOptions | undefined,
-  create = options?.provider?.create,
+  create = options?.provider?.create ?? sessionProviderCapabilities(agent)?.create,
 ) {
-  const supportsPresets = create ? create.agentPresets === true : agent === "deepseek-harness";
-  const presets = supportsPresets ? (options?.agentPresets ?? []) : [];
+  const presets = create?.agentPresets === true ? (options?.agentPresets ?? []) : [];
   return { presets, defaultId: presets.find((item) => item.isDefault)?.id };
+}
+
+export function newSessionPresetChoices(
+  agent: NewSessionAgent,
+  options: NewSessionOptions | undefined,
+  locale: InteractionLocale,
+  create?: NewSessionProviderCreate,
+) {
+  const { presets, defaultId } = newSessionPresets(agent, options, create);
+  const display = sessionCreationDescription(agent)?.preset;
+  return {
+    defaultId,
+    presets: presets.map((item) => ({
+      id: item.id,
+      ...(display?.text(item, locale) ?? {
+        name: item.name ?? item.id,
+        description: item.description,
+      }),
+      disabledReason: item.broken
+        ? (display?.copy(locale).broken ?? newSessionCopy(locale).optionsUnavailable)
+        : undefined,
+    })),
+  };
 }
 
 export interface NewSessionSelection {
@@ -224,7 +233,7 @@ export function newSessionCreateFields(
   const { presets, defaultId } = newSessionPresets(agent, options, create);
   return {
     // Hosts that predate other Agents read a create without one as Codex.
-    ...(agent !== "codex" ? { agent } : {}),
+    ...(agent !== DEFAULT_NEW_SESSION_AGENT ? { agent } : {}),
     workspaceId,
     // Effort and service tier apply to the model displayed by the composer.
     ...(model || effort || serviceTierId ? { model: model || shownModel } : {}),

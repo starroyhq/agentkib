@@ -1,5 +1,6 @@
 import type { NewSessionDraft } from "../../new-session-draft";
-import { managedAgentOf, type ManagedAgent } from "@agentkib/web-client";
+import { newSessionAgentOf } from "../../agents/session-creation";
+import type { NewSessionAgent } from "../../new-session";
 
 /**
  * The first message of a session started from the new-session composer. The composer creates the
@@ -28,7 +29,7 @@ export function takeNewSessionDraft(
 }
 
 /** The workspace and Agent the last new session used, the composer's next default. */
-export type NewSessionTarget = { workspaceId: string; agent: ManagedAgent };
+export type NewSessionTarget = { workspaceId: string; agent: NewSessionAgent };
 
 const TARGET_KEY = "agentkib.newSession.target";
 
@@ -37,10 +38,10 @@ export function readNewSessionTarget(): Partial<NewSessionTarget> {
     const value: unknown = JSON.parse(localStorage.getItem(TARGET_KEY) ?? "null");
     if (!value || typeof value !== "object") return {};
     const { workspaceId, agent } = value as Record<string, unknown>;
-    const managed = managedAgentOf(agent);
+    const supported = newSessionAgentOf(agent);
     return {
       ...(typeof workspaceId === "string" ? { workspaceId } : {}),
-      ...(managed ? { agent: managed } : {}),
+      ...(supported ? { agent: supported } : {}),
     };
   } catch {
     return {};

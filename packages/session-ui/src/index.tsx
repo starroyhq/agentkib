@@ -300,6 +300,7 @@ export {
   newSessionCreateFields,
   newSessionPermissions,
   newSessionPresets,
+  newSessionPresetChoices,
   PROMPT_AT_CREATE_AGENTS,
   type ClaudeStartMode,
   type DevinStartMode,
@@ -326,7 +327,16 @@ export {
 } from "./home-sessions";
 export { codexPolicyLabel, dshPolicyLabel, type PolicyLabel } from "./policy-labels";
 export { commandPrompt, type CommandPromptRequest } from "./command-prompts";
-export { dshAgentPresetCopy, dshAgentPresetText, type DshAgentPreset } from "./dsh-agent-presets";
+export {
+  dshAgentPresetCopy,
+  dshAgentPresetText,
+  type DshAgentPreset,
+} from "./agents/deepseek-harness/creation";
+export {
+  DEFAULT_NEW_SESSION_AGENT,
+  newSessionAgentOf,
+  sessionCreationDescription,
+} from "./agents/session-creation";
 export {
   agentKibCommand,
   agentKibPanel,

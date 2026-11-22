@@ -629,7 +629,7 @@ export function ComposerModelPicker({
                         !onOpenTerminalPicker || terminalPickerOpen || terminalPickerPending
                       }
                       title={
-                        !onOpenTerminalPicker || terminalPickerOpen
+                        !onOpenTerminalPicker || terminalPickerOpen || terminalPickerPending
                           ? terminalPickerDisabledReason
                           : undefined
                       }
@@ -969,9 +969,10 @@ export function ComposerModelPicker({
                       <Button
                         type="button"
                         variant="outline"
-                        className="mt-2 h-7 w-full rounded-lg px-2.5 text-sm"
+                        className="mt-2 h-7 w-full rounded-lg px-2.5 text-sm disabled:pointer-events-auto"
                         aria-label={`${copy.chooseEffort}: ${effortText(onlyEffort)}`}
                         disabled={!effortWritable}
+                        title={!effortWritable ? writeDisabledReason?.("effort") : undefined}
                         onClick={() => void change({ effort: onlyEffort })}
                       >
                         {effortText(onlyEffort)}
@@ -982,7 +983,12 @@ export function ComposerModelPicker({
                         {copy.serviceTier}
                         <select
                           className="max-w-36 rounded-md border border-border bg-background px-2 py-1 text-xs disabled:opacity-50"
-                          title={selectedTierOption?.description}
+                          title={
+                            tierWritable
+                              ? selectedTierOption?.description
+                              : (writeDisabledReason?.("serviceTier") ??
+                                selectedTierOption?.description)
+                          }
                           value={selectedTier}
                           disabled={!tierWritable}
                           onChange={(event) => {

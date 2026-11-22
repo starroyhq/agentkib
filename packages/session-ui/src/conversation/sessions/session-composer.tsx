@@ -182,20 +182,20 @@ export function SessionComposer({
     sessionReason(locale, code ?? undefined, surface, platformCopy.unavailableReason).text;
   const isClaude = current?.agent === "claude-code";
   const isCodex = current?.agent === "codex";
-  const provider = resolveSessionProvider(current, capabilities);
-  const permissionObservation = sessionPermissionObservation(provider);
-  const separatePlan = provider && "create" in provider && provider.create.planMode === "mode";
   const continuation = sessionContinuationCopy(locale);
   const copy = sessionCopyForSurface(locale, surface);
   const layout = composerLayoutCopy[locale];
   const connectionReasonShown =
     connectionNoticeInToolbar || (display.offline && panels?.statusOutsideComposer);
+  const provider = resolveSessionProvider(current, capabilities);
   const terminalInteraction =
     isClaude &&
     online &&
     (display.continuation === "terminal" || display.continuation === "terminal-watch")
       ? claudeTerminalInteraction(live, selected)
       : undefined;
+  const permissionObservation = sessionPermissionObservation(provider);
+  const separatePlan = provider && "create" in provider && provider.create.planMode === "mode";
   const composerValue = message;
   const setComposerText = setMessage;
   const [submitted, setSubmitted] = useState(false);

@@ -22,6 +22,7 @@ import {
 } from "@agentkib/web-client";
 import { EmbeddedConversation } from "@/features/conversation/web-embedded-conversation";
 import { agentName } from "@agentkib/agent-identity";
+import { dictionaries } from "@/features/conversation/i18n";
 import { useSessionController } from "@/features/conversation/web-session-controller";
 import {
   HistoryCoverageStatus,
@@ -29,6 +30,7 @@ import {
   readPending,
   rememberPending,
   catalogCopy,
+  webLayoutCopy,
 } from "@agentkib/session-ui";
 import {
   publishSessionInvalidation,
@@ -2599,6 +2601,46 @@ describe("shared embedded conversation", () => {
     await screen.findByText("second history");
     expect(onSessionChange).not.toHaveBeenCalled();
   });
+  it("shows one disconnect notice when a host refresh fails after the stream disconnects", async () => {
+    const { client, sessions, streams } = fixture();
+    sessions[0].agent = "codex";
+    const locale = "en-US";
+    const words = dictionaries[locale];
+    const { offline } = webLayoutCopy[locale];
+    const props = {
+      client,
+      sessionId: "first",
+      locale,
+      onSessionChange: vi.fn(),
+    } as const;
+    const view = render(<EmbeddedConversation {...props} refreshRevision={0} />);
+    await screen.findByText("first history");
+    const send = screen.getByRole("button", { name: "Send" });
+    const draft = screen.getByRole("textbox", { name: words.message });
+    fireEvent.change(draft, { target: { value: "Keep the draft after disconnect" } });
+    await waitFor(() => expect(send).toBeEnabled());
+    act(() => streams.get("first")!.error(new ApiError(503, "runtime_unavailable")));
+    expect(screen.getByText(offline)).toBeVisible();
+    expect(screen.queryByText(words.error)).not.toBeInTheDocument();
+    expect(send).toBeDisabled();
+
+    const access = vi
+      .spyOn(client, "access")
+      .mockRejectedValue(new ApiError(503, "runtime_unavailable"));
+    view.rerender(<EmbeddedConversation {...props} refreshRevision={1} />);
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent(words.error);
+    expect(within(alert).getByRole("button", { name: words.retry })).toBeVisible();
+    expect(screen.queryByText(offline)).not.toBeInTheDocument();
+
+    access.mockRestore();
+    fireEvent.click(within(alert).getByRole("button", { name: words.retry }));
+    await waitFor(() => expect(send).toBeEnabled());
+    expect(screen.queryByText(words.error)).not.toBeInTheDocument();
+    expect(screen.queryByText(offline)).not.toBeInTheDocument();
+    expect(draft).toHaveValue("Keep the draft after disconnect");
+  });
+
   it("keeps one action panel and the composer draft through a host refresh", async ({
     onTestFinished,
   }) => {

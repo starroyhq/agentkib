@@ -544,10 +544,7 @@ export function HistorySearchPanel({
             label: c.allWorkspaces,
             groupLabel: c.workspace,
             value: workspace,
-            selectedLabel: workspace
-              ? (catalog?.workspaces?.find((item) => item.id === workspace)?.name.trim() ??
-                workspace)
-              : c.allWorkspaces,
+            selectedLabel: workspace ? workspaceName(workspace) : c.allWorkspaces,
             onChange: setWorkspace,
             options: (catalog?.workspaces ?? []).map(({ id, name }) => ({
               value: id,

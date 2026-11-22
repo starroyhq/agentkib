@@ -60,7 +60,6 @@ export function sessionDisplayState(
   state: State,
   surface: SessionSurface,
   unavailableReason: Parameters<typeof codexReason>[3],
-  markOffline = surface === "desktop",
 ): DisplayState {
   const { live, online, canSend, access, capabilities, locale } = state;
   const settingsOnlyBlocked = state.settingsOnlyBlocked === true;
@@ -118,7 +117,7 @@ export function sessionDisplayState(
       reason: live ? c.offline : c.connecting,
       tone: "warning",
       loading: !live,
-      ...(markOffline ? { offline: true } : {}),
+      offline: true,
     };
   const idleUnderSettings = settingsOnlyBlocked && live?.status === "idle" && !reason;
   if (state.current?.agent === "codex") {

@@ -1081,6 +1081,16 @@ describe("desktop embedded conversation", () => {
       expect(screen.getAllByText(offline)).toHaveLength(1);
       expect(screen.getAllByRole("button", { name: words.retry })).toHaveLength(1);
       request.mockClear();
+      await act(async () => {
+        fireEvent.click(within(popup).getByRole("button", { name: words.retry }));
+      });
+      expect(request).toHaveBeenCalledWith("access", undefined);
+      const terminalNote = claudeConnectionCopy[locale].hostDisconnectedInfo;
+      expect(within(popup).getByText(terminalNote)).toBeVisible();
+      expect(screen.getAllByText(terminalNote)).toHaveLength(1);
+      expect(screen.queryByText(words.error)).not.toBeInTheDocument();
+      expect(screen.getAllByText(offline)).toHaveLength(1);
+      request.mockClear();
       unavailable = false;
       fireEvent.click(within(popup).getByRole("button", { name: words.retry }));
       await waitFor(() => expect(send).toBeEnabled());

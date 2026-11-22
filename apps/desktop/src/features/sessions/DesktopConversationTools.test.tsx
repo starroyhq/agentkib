@@ -45,9 +45,6 @@ const doubles = vi.hoisted(() => ({
   catalog: vi.fn(),
   terminalRequest: vi.fn(),
 }));
-vi.mock("@/core/desktop", () => ({
-  desktopApi: () => ({ claude: { request: doubles.terminalRequest } }),
-}));
 vi.mock("@/core/conversation-bridge", () => ({
   createDesktopConversationClient: () => doubles.client,
   hasDesktopConversation: () => doubles.desktop,
@@ -57,8 +54,9 @@ vi.mock("./conversation-catalog", () => ({
   refreshConversationCatalog: doubles.catalog,
   cachedConversationCatalog: () => undefined,
 }));
-vi.mock("@/core/api", () => ({
+vi.mock("@/core/api", async (importOriginal) => ({
   api: {
+    claudeRequest: (await importOriginal<typeof import("@/core/api")>()).api.claudeRequest,
     sessionSourceCapability: vi.fn(async () => ({ status: "unsupported" })),
     sessionEvents: vi.fn(async () => ({ events: [], warnings: [] })),
   },
@@ -293,6 +291,7 @@ beforeEach(() => {
 afterEach(async () => {
   cleanup();
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
   await changeLocale("en-US");
 });
 
@@ -301,6 +300,7 @@ describe("desktop window conversation tools", () => {
     "orders the Claude menu and opens terminal setup directly with draft and focus preserved in %s",
     async (locale) => {
       await changeLocale(locale);
+      vi.stubGlobal("agentkibDesktop", { claude: { request: doubles.terminalRequest } });
       document.documentElement.dataset.platform = "macos";
       vi.mocked(api.sessionSourceCapability).mockResolvedValue({ status: "supported" });
       const f = fixture("claude-code");

@@ -146,6 +146,7 @@ export {
   HistoryReferenceChips,
 } from "./conversation/history/history-search-controls";
 export { historyCopy, historySearchCopy } from "./conversation/history/history-copy";
+export { sessionHistoryEntry } from "./agents/session-history";
 export {
   createHistoryOpenLock,
   historySessionTarget,

@@ -116,7 +116,9 @@ function EmbeddedShell() {
   );
   const copy = webLayoutCopy[session.locale];
   return (
-    <EmbeddedSessionShell panels={panels}>
+    <EmbeddedSessionShell
+      panels={{ ...panels, statusOutsideComposer: session.error && !session.online }}
+    >
       <div
         data-conversation-toolbar
         className="flex shrink-0 items-center justify-end gap-2 border-b px-4 py-2"

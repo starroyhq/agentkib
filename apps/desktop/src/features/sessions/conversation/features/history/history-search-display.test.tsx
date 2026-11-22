@@ -236,6 +236,27 @@ describe("localized history result metadata", () => {
     expect(f.catalog.sessions[0].agent).toBe("claude-code");
   });
 
+  it("keeps a workspace with a blank name visible after selecting its ID", async () => {
+    const f = fixture();
+    vi.mocked(f.client.catalog).mockResolvedValue({
+      ...f.catalog,
+      workspaces: [{ id: "workspace", name: "   ", path: "/workspace" }],
+    });
+    render(<HistorySearchPanel {...f.props} locale="en-US" />);
+    await resultButton();
+    const user = userEvent.setup();
+    const filter = screen.getByRole("combobox", { name: historyCopy["en-US"].allWorkspaces });
+    await user.click(filter);
+    await user.click(await screen.findByRole("option", { name: "workspace" }));
+    expect(filter).toHaveTextContent("workspace");
+    await waitFor(() =>
+      expect(f.client.historySearch).toHaveBeenLastCalledWith(
+        expect.objectContaining({ workspaceIds: ["workspace"] }),
+        expect.any(AbortSignal),
+      ),
+    );
+  });
+
   it("displays the Agent name while submitting the original Agent filter ID", async () => {
     const f = fixture();
     render(<HistorySearchPanel {...f.props} locale="en-US" />);

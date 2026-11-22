@@ -13,7 +13,7 @@ export function sessionDisplayState(
   session: Parameters<typeof sharedSessionDisplayState>[0],
   surface: SessionSurface = "desktop",
 ) {
-  return sharedSessionDisplayState(session, surface, localizedUnavailableReasonText, true);
+  return sharedSessionDisplayState(session, surface, localizedUnavailableReasonText);
 }
 
 export function ManagedTurnNotice(

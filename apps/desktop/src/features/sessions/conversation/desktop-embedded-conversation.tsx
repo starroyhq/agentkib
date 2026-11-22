@@ -232,7 +232,9 @@ function EmbeddedShell() {
     session.setHistorySearchOpen,
   ]);
   return (
-    <EmbeddedSessionShell panels={{ ...panels, terminalOpen, setTerminalOpen, statusInToolbar }}>
+    <EmbeddedSessionShell
+      panels={{ ...panels, terminalOpen, setTerminalOpen, statusOutsideComposer: statusInToolbar }}
+    >
       <ConversationWindowTools
         filesOpen={filesOpen}
         onFilesOpenChange={setFilesOpen}

@@ -51,7 +51,7 @@ export function SessionReader() {
       explainReason={(reason) => sessionReason(locale, reason).text}
       banner={banner}
       composerBanner={sessionBannerAtComposer(banner)}
-      connectionNoticeInToolbar={!!(banner?.connection && panels?.statusInToolbar)}
+      connectionNoticeInToolbar={!!(banner?.connection && panels?.statusOutsideComposer)}
       displayLive={displayLive}
       localAuthority={{
         key: desktopRead.key,

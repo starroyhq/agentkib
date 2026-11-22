@@ -6,7 +6,8 @@ export type SessionPanels = {
   setTerminalOpen?: (open: boolean) => void;
   actionsOpen: boolean;
   setActionsOpen: (open: boolean) => void;
-  statusInToolbar?: boolean;
+  /** The surrounding shell already shows the connection status. */
+  statusOutsideComposer?: boolean;
 };
 export const SessionPanelsContext = createContext<SessionPanels | null>(null);
 export function useSessionPanels() {

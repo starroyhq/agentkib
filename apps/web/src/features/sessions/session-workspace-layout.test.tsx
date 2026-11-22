@@ -2,13 +2,16 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { useEffect } from "react";
 import { SessionWorkspace } from "./session-workspace";
-import { useSessionPanels } from "@agentkib/session-ui";
+import { useSessionPanels, webLayoutCopy } from "@agentkib/session-ui";
+import { SessionComposer } from "@/features/conversation/web-session-composer";
+import { render as renderWeb } from "@/features/conversation/web-reader-test-utils";
 import { dictionaries } from "@/features/conversation/i18n";
 const fixture = vi.hoisted(() => ({
   pathname: "/sessions",
   selected: "",
   mounts: 0,
   files: true,
+  offline: false,
   modal: null as string | null,
 }));
 vi.mock("@tanstack/react-router", () => ({
@@ -17,6 +20,7 @@ vi.mock("@tanstack/react-router", () => ({
   useNavigate: () => vi.fn(),
   Outlet: () => {
     const panels = useSessionPanels();
+    if (fixture.offline) return <SessionComposer />;
     return <div data-testid="panels">{panels?.filesOpen ? "files-open" : "files-closed"}</div>;
   },
 }));
@@ -28,10 +32,14 @@ vi.mock("@/features/conversation/web-session-context", () => ({
     modal: fixture.modal,
     currentTitle: "测试会话",
     currentWorkspace: { name: "测试工作区" },
-    online: true,
-    controlReady: true,
-    canSend: true,
-    live: { status: "idle", approvals: [] },
+    online: !fixture.offline,
+    controlReady: !fixture.offline,
+    canSend: !fixture.offline,
+    live: { sessionId: fixture.selected, status: "idle", approvals: [] },
+    current: fixture.offline ? { id: fixture.selected, agent: "codex" } : undefined,
+    client: { request: vi.fn() },
+    message: "",
+    setMessage: vi.fn(),
     access: { experimentalEnabled: true, device: { send: true, files: fixture.files } },
     sessions: [],
     workspaces: [],
@@ -60,6 +68,7 @@ afterEach(() => {
   fixture.selected = "";
   fixture.mounts = 0;
   fixture.files = true;
+  fixture.offline = false;
   fixture.modal = null;
 });
 describe("workspace navigation", () => {
@@ -75,6 +84,15 @@ describe("workspace navigation", () => {
     view.rerender(<SessionWorkspace />);
     expect(fixture.mounts).toBe(1);
   });
+  it("shows the disconnect once when the workspace header already has the status", () => {
+    fixture.pathname = "/sessions/s";
+    fixture.selected = "s";
+    fixture.offline = true;
+    renderWeb(<SessionWorkspace />);
+    expect(screen.getAllByText(webLayoutCopy["zh-CN"].offline)).toHaveLength(1);
+    expect(screen.getByRole("button", { name: dictionaries["zh-CN"].send })).toBeDisabled();
+  });
+
   it("clears the file panel on host-selected session changes", async () => {
     fixture.pathname = "/sessions/s";
     fixture.selected = "s";

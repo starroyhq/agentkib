@@ -161,6 +161,7 @@ function WorkspaceShell() {
         setFilesOpen,
         actionsOpen: actionsOpen && !session.modal,
         setActionsOpen,
+        statusOutsideComposer: reading && status.offline,
       }}
     >
       <div className="flex min-h-0 flex-1 flex-col">

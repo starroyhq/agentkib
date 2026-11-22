@@ -85,11 +85,12 @@ import {
   type ConversationEvent,
   type ConversationEventPage,
   type ConversationSessionSummary,
+  type ConversationWorkspaceSummary,
   type Live,
   type UserQuestionRequest,
 } from "@agentkib/web-client";
 import { displaySessionTitle, isSessionListed } from "@agentkib/session-catalog";
-import type { CatalogStatus, CatalogWorkspace } from "../catalog/session-catalog";
+import type { CatalogStatus } from "../catalog/session-catalog";
 import { dictionaries, type Locale } from "../../i18n";
 type ForkNavigation = {
   sourceId: string;
@@ -179,7 +180,7 @@ export function useSessionController({
     [excludedSessionIds, setExcludedSessionIds] = useState<ReadonlySet<string>>(new Set()),
     [catalogNotice, setCatalogNotice] = useState(false),
     [catalogStatus, setCatalogStatus] = useState<CatalogStatus>("loading"),
-    [workspaces, setWorkspaces] = useState<CatalogWorkspace[]>(),
+    [workspaces, setWorkspaces] = useState<ConversationWorkspaceSummary[]>(),
     [selected, setSelected] = useState(""),
     [{ page, historyDetailTurnId }, publishPage] = useState<{
       page?: ConversationEventPage;

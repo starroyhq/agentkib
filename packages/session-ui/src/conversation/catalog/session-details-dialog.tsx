@@ -1,7 +1,13 @@
-import { agentName } from "@agentkib/agent-identity";
-import { Dialog } from "../../components/dialog";
-import { useSession } from "../sessions/session-context";
+import type {
+  Access,
+  ConversationSessionSummary,
+  ConversationWorkspaceSummary,
+  Live,
+  WebClient,
+} from "@agentkib/web-client";
 import { useEffect, useState } from "react";
+import type { catalogCopy } from "../../catalog-copy";
+import { useSessionPlatform } from "../../session-platform";
 
 type NativeContext = {
   available: boolean;
@@ -10,11 +16,41 @@ type NativeContext = {
   branchAtCreation?: string | null;
   sourceFile?: string | null;
 };
-export function SessionDetailsDialog() {
+type SessionDetails = {
+  t: Readonly<
+    Record<
+      "close" | "metadata" | "agent" | "workspaceId" | "sessionId" | "status" | "unknown" | "scope",
+      string
+    >
+  >;
+  c: (typeof catalogCopy)[keyof typeof catalogCopy];
+  current?: ConversationSessionSummary;
+  currentWorkspace?: ConversationWorkspaceSummary;
+  formatCatalogTime(value?: string | null): string;
+  sourceTitle(id: string): string;
+  online: boolean;
+  liveText: string;
+  live?: Live;
+  client: WebClient;
+  access?: Access | null;
+};
+
+export function SessionDetailsDialog({
+  session,
+  onClose,
+  agentName,
+}: {
+  session: SessionDetails;
+  onClose(): void;
+  agentName(agent?: string): string;
+}) {
+  const {
+    components: { SessionDialog },
+    kind,
+  } = useSessionPlatform();
   const {
     t,
     c,
-    setModal,
     current,
     currentWorkspace,
     formatCatalogTime,
@@ -24,7 +60,7 @@ export function SessionDetailsDialog() {
     live,
     client,
     access,
-  } = useSession();
+  } = session;
   const currentLive = current?.id && live?.sessionId === current.id ? live : undefined;
   const [context, setContext] = useState<{ key: string; value?: NativeContext }>();
   const isCodex = current?.agent === "codex";
@@ -58,7 +94,12 @@ export function SessionDetailsDialog() {
         ? value || c.unknown
         : c.contextUnavailable;
   return (
-    <Dialog closeLabel={t.close} title={t.metadata} onClose={() => setModal(undefined)} panel>
+    <SessionDialog
+      closeLabel={t.close}
+      title={t.metadata}
+      onClose={onClose}
+      panel={kind === "desktop"}
+    >
       <dl>
         <dt>{t.agent}</dt>
         <dd>{agentName(current?.agent)}</dd>
@@ -122,6 +163,6 @@ export function SessionDetailsDialog() {
       </dl>
       {isCodex && <p>{c.codexContextNote}</p>}
       <p>{t.scope}</p>
-    </Dialog>
+    </SessionDialog>
   );
 }

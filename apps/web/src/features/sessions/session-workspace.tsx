@@ -2,6 +2,7 @@ import { managedAgentOf } from "@agentkib/web-client";
 import {
   homeSessionCopy,
   newSessionCopy,
+  PendingCenter,
   requestReadStateRefresh,
   SessionContinuationStatus,
 } from "@agentkib/session-ui";
@@ -29,7 +30,6 @@ import {
   DialogTitle,
 } from "@/features/conversation/components/ui/dialog";
 import { useSession } from "@/features/conversation/features/sessions/session-context";
-import { PendingCenter } from "@/features/conversation/features/sessions/pending-center";
 import { SessionPanelsContext } from "@/features/conversation/features/sessions/session-panels";
 import { sessionDisplayState } from "@/features/conversation/features/sessions/session-display-state";
 import { codexCopyForSurface } from "@/features/conversation/features/sessions/codex-copy";
@@ -249,7 +249,15 @@ function WorkspaceShell() {
               !reading && "md:ml-auto",
             )}
           >
-            <PendingCenter compact needsYou={attention?.groups.needsYou} />
+            <PendingCenter
+              compact
+              session={session}
+              copy={codexCopyForSurface(locale, "web")}
+              needsYou={attention?.groups.needsYou}
+              onNavigate={(sessionId) => {
+                void navigate({ to: "/sessions/$sessionId", params: { sessionId } });
+              }}
+            />
             {reading ? (
               <>
                 {access?.device?.files && (

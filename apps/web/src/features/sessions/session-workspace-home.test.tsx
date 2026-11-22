@@ -1,10 +1,18 @@
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ConversationSessionSummary } from "@agentkib/web-client";
-import { homeSessionCopy, newSessionCopy } from "@agentkib/session-ui";
+import {
+  homeSessionCopy,
+  interactionCardCopy,
+  newSessionCopy,
+  pendingScope,
+  rememberPending,
+  SessionPlatformProvider,
+} from "@agentkib/session-ui";
 import { dictionaries } from "@/features/conversation/i18n";
 import { codexCopyForSurface } from "@/features/conversation/features/sessions/codex-copy";
 import { SessionWorkspace } from "./session-workspace";
+import { webSessionPlatform } from "@/features/conversation/session-platform";
 
 const fixture = vi.hoisted(() => ({
   navigate: vi.fn(),
@@ -50,7 +58,13 @@ function session(
     continuation,
   };
 }
-function setup(device: { send: boolean; manage: boolean } = { send: true, manage: true }) {
+function setup(
+  device: { send: boolean; manage: boolean } = { send: true, manage: true },
+  overrides?: {
+    sessions: ConversationSessionSummary[];
+    pendingSessions?: Record<string, boolean>;
+  },
+) {
   const leaveSession = vi.fn();
   fixture.session = {
     t: dictionaries["en-US"],
@@ -66,7 +80,7 @@ function setup(device: { send: boolean; manage: boolean } = { send: true, manage
       experimentalEnabled: true,
       device: { id: "browser", name: "My iPad", approve: true, ...device },
     },
-    sessions: [
+    sessions: overrides?.sessions ?? [
       session("approval", { status: "awaiting-approval" }),
       session("question", { status: "waiting-input" }),
       session("running", { status: "running", executionLocation: "agentkib" }),
@@ -74,7 +88,7 @@ function setup(device: { send: boolean; manage: boolean } = { send: true, manage
     ],
     excludedSessionIds: new Set(),
     workspaces: [{ id: "north", name: "northstar-api", path: "/demo/northstar-api" }],
-    pendingSessions: {},
+    pendingSessions: overrides?.pendingSessions ?? {},
     indexEnabled: true,
     setModal: vi.fn(),
     refresh: vi.fn(),
@@ -82,7 +96,11 @@ function setup(device: { send: boolean; manage: boolean } = { send: true, manage
     choose: vi.fn(),
     leaveSession,
   };
-  render(<SessionWorkspace />);
+  render(
+    <SessionPlatformProvider platform={webSessionPlatform}>
+      <SessionWorkspace />
+    </SessionPlatformProvider>,
+  );
   return { leaveSession };
 }
 
@@ -99,9 +117,36 @@ describe("Web home in the workspace", () => {
     setup();
     const entry = screen.getByRole("button", { name: `${home.home} · ${home.needsYou} 2` });
     expect(entry).toHaveAttribute("aria-current", "page");
-    expect(
-      screen.getByRole("button", { name: `${codexCopyForSurface("en-US", "web").pending} (2)` }),
-    ).toBeInTheDocument();
+    const copy = codexCopyForSurface("en-US", "web");
+    const trigger = screen.getByRole("button", { name: `${copy.pending} (2)` });
+    expect(trigger).toHaveClass("size-11");
+    fireEvent.click(trigger);
+    const dialog = within(screen.getByRole("dialog", { name: copy.pending }));
+    const card = interactionCardCopy("en-US");
+    expect(dialog.getByText(card.waitingApproval)).toBeVisible();
+    expect(dialog.getByText(card.waitingAnswer)).toBeVisible();
+    expect(dialog.queryByRole("button", { name: "running" })).not.toBeInTheDocument();
+    expect(dialog.queryByRole("button", { name: "idle" })).not.toBeInTheDocument();
+    fireEvent.click(dialog.getByRole("button", { name: "question" }));
+    expect(fixture.navigate).toHaveBeenCalledWith({
+      to: "/sessions/$sessionId",
+      params: { sessionId: "question" },
+    });
+  });
+
+  it("hides the bell for an empty home group even when other sessions have pending controls", () => {
+    rememberPending(pendingScope("http://127.0.0.1:1423", "browser"), {
+      requestId: "11111111-1111-4111-8111-111111111111",
+      sessionId: "outside-home",
+      kind: "stop",
+    });
+    setup(undefined, {
+      sessions: [session("idle")],
+      pendingSessions: { "outside-home": true },
+    });
+    const title = codexCopyForSurface("en-US", "web").pending;
+    expect(screen.queryByRole("button", { name: new RegExp(title) })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: home.home, pressed: true })).toBeInTheDocument();
   });
 
   it("returns home from the AgentKib mark and from Home", () => {

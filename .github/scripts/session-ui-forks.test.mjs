@@ -12,8 +12,6 @@ const desktop = join(repo, "apps/desktop/src/features/sessions/conversation/feat
 // At e77efe196, 36 pairs are byte-identical and the other 53 differ by 5,821 lines.
 // Only the paths below may differ. Migrated paths leave the comparison when no pair remains.
 const divergenceBudget = {
-  "catalog/session-catalog.tsx": 237,
-  "catalog/session-details-dialog.tsx": 2,
   "sessions/claude-session-banner.test.ts": 20,
   "sessions/claude-session-banner.ts": 8,
   "sessions/codex-session-controls.tsx": 909,
@@ -27,7 +25,6 @@ const divergenceBudget = {
   "sessions/managed-error-copy.ts": 2,
   "sessions/managed-turn-notice.tsx": 4,
   "sessions/operation-layout.tsx": 73,
-  "sessions/pending-center.tsx": 118,
   "sessions/permission-mode-notice.tsx": 22,
   "sessions/project-agent-panel.test.tsx": 229,
   "sessions/project-agent-panel.tsx": 272,

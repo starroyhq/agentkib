@@ -6,6 +6,7 @@ import {
   renderHook,
   screen,
   waitFor,
+  within,
 } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { StrictMode, useState } from "react";
@@ -2691,15 +2692,20 @@ describe("shared embedded conversation", () => {
       sessions[1].pendingInteraction = true;
       const detailRead = vi.spyOn(client, "live");
       render(<EmbeddedConversation client={client} locale="en-US" onSessionChange={vi.fn()} />);
-      await screen.findByRole("button", { name: "Pending actions (1)" });
+      fireEvent.click(await screen.findByRole("button", { name: "Pending actions (1)" }));
+      const dialog = await screen.findByRole("dialog", { name: "Pending actions" });
+      expect(within(dialog).getByRole("button", { name: "Pending second task" })).toBeVisible();
 
       if (change === "removed") sessions.splice(1, 1);
       else sessions[1].availability = "metadata-only";
       act(() => streams.get("")!.event("catalog-invalidated", "{}"));
 
-      fireEvent.click(await screen.findByRole("button", { name: "Pending actions" }));
-      expect(await screen.findByText("No pending actions")).toBeVisible();
-      expect(screen.queryByRole("button", { name: "Pending second task" })).not.toBeInTheDocument();
+      expect(await within(dialog).findByText("No pending actions")).toBeVisible();
+      expect(
+        within(dialog).queryByRole("button", { name: "Pending second task" }),
+      ).not.toBeInTheDocument();
+      fireEvent.click(within(dialog).getByRole("button", { name: "Close" }));
+      expect(screen.queryByRole("button", { name: "Pending actions" })).not.toBeInTheDocument();
       expect(detailRead).not.toHaveBeenCalled();
     },
   );
@@ -2793,19 +2799,22 @@ describe("shared embedded conversation", () => {
       };
       vi.spyOn(client, "live").mockResolvedValue(pendingLive);
       emitSession(stream, 1, "state", pendingLive);
-      await screen.findByRole("button", { name: "Pending actions (1)" });
+      fireEvent.click(await screen.findByRole("button", { name: "Pending actions (1)" }));
+      const dialog = await screen.findByRole("dialog", { name: "Pending actions" });
       onCatalogChange.mockClear();
 
       if (change === "removed") sessions.splice(0, 1);
       else sessions[0].availability = "metadata-only";
       act(() => streams.get("")!.event("catalog-invalidated", "{}"));
       await waitFor(() => expect(onCatalogChange).toHaveBeenCalled());
-      await screen.findByRole("button", { name: "Pending actions" });
+      expect(await within(dialog).findByText("No pending actions")).toBeVisible();
 
       emitSession(stream, 2, "state", { revision: 3 });
-      fireEvent.click(screen.getByRole("button", { name: "Pending actions" }));
-      expect(await screen.findByText("No pending actions")).toBeVisible();
-      expect(screen.queryByRole("button", { name: /approval-first/ })).not.toBeInTheDocument();
+      expect(
+        within(dialog).queryByRole("button", { name: /approval-first/ }),
+      ).not.toBeInTheDocument();
+      fireEvent.click(within(dialog).getByRole("button", { name: "Close" }));
+      expect(screen.queryByRole("button", { name: "Pending actions" })).not.toBeInTheDocument();
     },
   );
 

@@ -1,14 +1,14 @@
-import { useEffect, useState } from "react";
-import { MoreHorizontal } from "lucide-react";
-import {
-  ApiError,
-  managedAgentOf,
-  runSessionManagement,
-  sessionManagementFeatures,
-  type SessionManagementAction,
-  type SessionManagementFeatures,
-} from "@agentkib/web-client";
+import { useState, type ComponentProps } from "react";
+import { SessionManagementRowMenu, type SessionManagementRowMenuProps } from "@agentkib/session-ui";
 import { useAppDialogs } from "@/components/AppDialogProvider";
+import {
+  AlertDialog,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -29,13 +29,56 @@ import { createDesktopConversationClient } from "@/core/conversation-bridge";
 import type { ConversationSessionSummary } from "@/core/types";
 import { useI18n } from "@/core/useI18n";
 import { displaySessionTitle } from "@/features/workspace/session-title";
+import { Dialog as SessionDialog } from "./conversation/components/dialog";
 import { codexCopy, codexReason } from "./conversation/features/sessions/codex-copy";
 import { SessionWorkerAssignmentDialog } from "./SessionWorkerAssignmentDialog";
 import { workerAssignmentCopy } from "./worker-assignment-copy";
 
-/**
- * Session-specific actions without opening the session. The host decides what each session offers.
- */
+const components: SessionManagementRowMenuProps["components"] = {
+  Button,
+  Input,
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+  SessionDialog,
+};
+
+function RenameDialog({ title, onClose, children }: ComponentProps<typeof SessionDialog>) {
+  return (
+    <Dialog open onOpenChange={(open) => !open && onClose()}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>{title}</DialogTitle>
+        </DialogHeader>
+        {children}
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function DeleteDialog({
+  title,
+  description,
+  onClose,
+  children,
+  footer,
+}: ComponentProps<typeof SessionDialog>) {
+  return (
+    <AlertDialog open onOpenChange={(open) => !open && onClose()}>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>{title}</AlertDialogTitle>
+          <AlertDialogDescription>{description}</AlertDialogDescription>
+        </AlertDialogHeader>
+        {children}
+        <AlertDialogFooter>{footer}</AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+  );
+}
+
 export function SessionRowMenu({
   session,
   sessions = [],
@@ -51,117 +94,42 @@ export function SessionRowMenu({
   const copy = codexCopy[locale];
   const dialogs = useAppDialogs();
   const [client] = useState(createDesktopConversationClient);
-  const [open, setOpen] = useState(false);
-  const [features, setFeatures] = useState<SessionManagementFeatures>();
-  const [renaming, setRenaming] = useState(false);
   const [assigningWorkers, setAssigningWorkers] = useState(false);
-  const [name, setName] = useState("");
-  const [busy, setBusy] = useState(false);
-  useEffect(() => {
-    if (!open) return;
-    const abort = new AbortController();
-    sessionManagementFeatures(client, { id: session.id, agent: session.agent }, abort.signal)
-      .then((value) => {
-        if (!abort.signal.aborted) setFeatures(value);
-      })
-      .catch(() => {
-        if (!abort.signal.aborted) setFeatures({});
-      });
-    return () => abort.abort();
-  }, [open, client, session.id, session.agent]);
-  if (!managedAgentOf(session.agent)) return null;
-  const isClaude = session.agent === "claude-code";
   const canAssignWorkers =
     ["claude-code", "codex", "deepseek-harness"].includes(session.agent) &&
     session.availability === "readable" &&
     !session.archived &&
     !session.sidechain &&
     session.orchestration?.role !== "worker";
-  const available = (action: SessionManagementAction) =>
-    !busy && features?.[action]?.available === true;
-  async function run(action: SessionManagementAction, fields: { name?: string } = {}) {
-    setBusy(true);
-    try {
-      await runSessionManagement(client, session, action, fields);
-      if (action === "delete") onDeleted?.();
-      else onChanged?.();
-      return true;
-    } catch (error) {
-      await dialogs.notify({
-        description: codexReason(
-          locale,
-          error instanceof ApiError ? error.code : "session-state-unavailable",
-        ).text,
-      });
-      return false;
-    } finally {
-      setBusy(false);
-    }
-  }
-  async function remove() {
-    const confirmed = await dialogs.confirm({
-      title: copy.deleteTitle,
-      description: isClaude ? copy.deleteClaudeDetail : copy.deleteCodexDetail,
-      tone: "destructive",
-      confirmLabel: copy.deleteConfirm,
-      cancelLabel: copy.cancel,
-    });
-    if (confirmed) await run("delete");
-  }
-  const archive = features?.archive ?? features?.unarchive;
-  const archiveAction: SessionManagementAction = session.archived ? "unarchive" : "archive";
-  const item = (action: SessionManagementAction, label: string, select: () => void) => (
-    <DropdownMenuItem disabled={!available(action)} onClick={select}>
-      {label}
-    </DropdownMenuItem>
-  );
   return (
     <>
-      <DropdownMenu
-        open={open}
-        onOpenChange={(value) => {
-          // Each opening reads the host again: what a session offers changes with its state.
-          if (value) setFeatures(undefined);
-          setOpen(value);
-        }}
-      >
-        <DropdownMenuTrigger
-          render={
-            <Button
-              variant="ghost"
-              size="sm"
-              className="session-row-menu size-8 shrink-0 rounded-lg p-0 text-muted-foreground opacity-0 transition-opacity group-hover/session:opacity-100 group-focus-within/session:opacity-100 hover:text-foreground data-[popup-open]:opacity-100 [@media(hover:none)]:opacity-100"
-            />
-          }
-          // Named for what it does; the title (its accessible description) names the session.
-          aria-label={copy.rowMenu}
-          // An untitled session is named as its row shows it.
-          title={displaySessionTitle(session.title ?? undefined, tr)}
-        >
-          <MoreHorizontal size={15} aria-hidden="true" />
-        </DropdownMenuTrigger>
-        <DropdownMenuContent align="end">
-          {item("rename", copy.rename, () => {
-            setName(session.title ?? "");
-            setRenaming(true);
-          })}
-          {canAssignWorkers && (
+      <SessionManagementRowMenu
+        session={session}
+        client={client}
+        copy={copy}
+        components={components}
+        sessionTitle={displaySessionTitle(session.title ?? undefined, tr)}
+        deleteDescription={
+          session.agent === "claude-code" ? copy.deleteClaudeDetail : copy.deleteCodexDetail
+        }
+        triggerClassName="session-row-menu size-8 shrink-0 rounded-lg p-0 text-muted-foreground opacity-0 transition-opacity group-hover/session:opacity-100 group-focus-within/session:opacity-100 hover:text-foreground data-[popup-open]:opacity-100 [@media(hover:none)]:opacity-100"
+        triggerSize="sm"
+        iconSize={15}
+        extraMenuItems={
+          canAssignWorkers && (
             <DropdownMenuItem onClick={() => setAssigningWorkers(true)}>
               {workerAssignmentCopy[locale].menu}
             </DropdownMenuItem>
-          )}
-          {archive &&
-            item(archiveAction, session.archived ? copy.unarchive : copy.archive, () => {
-              void run(archiveAction);
-            })}
-          {features?.delete && (
-            <>
-              <DropdownMenuSeparator />
-              {item("delete", copy.delete, () => void remove())}
-            </>
-          )}
-        </DropdownMenuContent>
-      </DropdownMenu>
+          )
+        }
+        RenameDialog={RenameDialog}
+        RenameFooter={DialogFooter}
+        DeleteDialog={DeleteDialog}
+        errorMessage={(_, code) => codexReason(locale, code).text}
+        onArchiveError={(description) => dialogs.notify({ description })}
+        onChanged={onChanged}
+        onDeleted={onDeleted}
+      />
       {assigningWorkers && (
         <SessionWorkerAssignmentDialog
           session={session}
@@ -170,42 +138,6 @@ export function SessionRowMenu({
           onChanged={onChanged}
         />
       )}
-      <Dialog open={renaming} onOpenChange={setRenaming}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>{copy.rename}</DialogTitle>
-          </DialogHeader>
-          <form
-            className="grid gap-3"
-            onSubmit={(event) => {
-              event.preventDefault();
-              const value = name.trim();
-              if (!value) return;
-              void run("rename", { name: value }).then((done) => {
-                if (done) setRenaming(false);
-              });
-            }}
-          >
-            <label className="grid gap-1.5 text-sm">
-              {copy.name}
-              <Input
-                value={name}
-                maxLength={200}
-                autoFocus
-                onChange={(event) => setName(event.target.value)}
-              />
-            </label>
-            <DialogFooter>
-              <Button type="button" variant="outline" onClick={() => setRenaming(false)}>
-                {copy.cancel}
-              </Button>
-              <Button type="submit" disabled={busy || !name.trim()}>
-                {copy.rename}
-              </Button>
-            </DialogFooter>
-          </form>
-        </DialogContent>
-      </Dialog>
     </>
   );
 }

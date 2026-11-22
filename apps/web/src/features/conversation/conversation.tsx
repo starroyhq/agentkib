@@ -19,14 +19,14 @@ import {
   useParams,
 } from "@tanstack/react-router";
 import { LoaderCircle } from "lucide-react";
-import { SessionPlatformProvider } from "@agentkib/session-ui";
+import { PendingCenter, SessionPlatformProvider } from "@agentkib/session-ui";
 import type { WebClient } from "@agentkib/web-client";
 import type { Locale } from "./i18n";
 import { SessionProvider, useSession } from "./features/sessions/session-context";
 import { SessionReader } from "./features/sessions/web-session-reader";
 import { SessionDialogs } from "./features/sessions/session-dialogs";
+import { codexCopyForSurface } from "./features/sessions/codex-copy";
 import { SessionPanelsContext } from "./features/sessions/session-panels";
-import { PendingCenter } from "./features/sessions/pending-center";
 import { Button } from "./components/ui/button";
 import { webLayoutCopy } from "@agentkib/session-ui";
 import { useSessionNavigate } from "./features/sessions/session-navigation";
@@ -71,6 +71,7 @@ function EmbeddedRoot() {
 function EmbeddedShell() {
   const props = useEmbedded();
   const session = useSession();
+  const navigate = useSessionNavigate();
   const [filesOpen, setFilesOpen] = useState(false);
   const [actionsOpen, setActionsOpen] = useState(false);
   useImperativeHandle(
@@ -133,7 +134,14 @@ function EmbeddedShell() {
           className="flex shrink-0 items-center justify-end gap-2 border-b px-4 py-2"
         >
           <WebHistorySearchTrigger />
-          <PendingCenter compact />
+          <PendingCenter
+            compact
+            session={session}
+            copy={codexCopyForSurface(session.locale, "web")}
+            onNavigate={(sessionId) => {
+              void navigate({ to: "/sessions/$sessionId", params: { sessionId } });
+            }}
+          />
           {session.selected && (
             <>
               {session.access?.device?.files && (

@@ -1,11 +1,15 @@
-import { PreferencesDialog, SessionDetailDialogs } from "@agentkib/session-ui";
-import { SessionDetailsDialog } from "../catalog/session-details-dialog";
+import { agentName } from "@agentkib/agent-identity";
+import {
+  PreferencesDialog,
+  SessionDetailDialogs,
+  SessionDetailsDialog,
+} from "@agentkib/session-ui";
 import { Dialog } from "../../components/dialog";
 import { useSession } from "./session-context";
 
 export function SessionDialogs() {
-  const { modal, setModal, t, locale, setLocale, theme, setTheme, accent, setAccent } =
-    useSession();
+  const session = useSession();
+  const { modal, setModal, t, locale, setLocale, theme, setTheme, accent, setAccent } = session;
   const close = () => setModal(undefined);
   return (
     <SessionDetailDialogs
@@ -25,7 +29,7 @@ export function SessionDialogs() {
           onClose={close}
         />
       }
-      metadata={<SessionDetailsDialog />}
+      metadata={<SessionDetailsDialog session={session} onClose={close} agentName={agentName} />}
       Dialog={Dialog}
     />
   );

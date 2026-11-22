@@ -28,6 +28,7 @@ import {
   validHistoryMessage,
   HistoryReferenceChips,
   contextUsageCopyForSurface,
+  DevinTurnNotice,
 } from "@agentkib/session-ui";
 import { SessionReadOnly } from "@agentkib/session-ui";
 import { SessionSendQueue } from "./dsh-queue";
@@ -62,7 +63,6 @@ import {
 import { useSessionPanels } from "./session-panels";
 import { PermissionModeNotice } from "./permission-mode-notice";
 import { ManagedTurnNotice } from "./managed-turn-notice";
-import { DevinTurnNotice } from "./devin-turn-notice";
 
 // A paired browser is a remote device, which may run only some Claude Code commands.
 const COMMAND_OWNER = false;
@@ -734,6 +734,7 @@ export function SessionComposer({
                 ? live.reason
                 : undefined
           }
+          reasonCopy={codexReason}
           locale={locale}
         />
       )}

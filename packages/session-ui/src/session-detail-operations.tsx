@@ -1,5 +1,6 @@
 import { Info, RefreshCw, SlidersHorizontal } from "lucide-react";
-import type { ComponentProps, ComponentType, ReactNode } from "react";
+import type { ReactNode } from "react";
+import type { SessionPlatform } from "./session-platform";
 
 export function SessionDetailOperations({
   open,
@@ -27,15 +28,8 @@ export function SessionDetailOperations({
   controls?: (shortcuts: ReactNode) => ReactNode;
   extra?: ReactNode;
   buttonClassName?: string;
-  Button: ComponentType<ComponentProps<"button"> & { variant: "outline" }>;
-  Dialog: ComponentType<{
-    panel: boolean;
-    title: string;
-    closeLabel: string;
-    onClose: () => void;
-    bodyClassName: string;
-    children: ReactNode;
-  }>;
+  Button: SessionPlatform["components"]["Button"];
+  Dialog: SessionPlatform["components"]["SessionDialog"];
 }) {
   const openModal = (modal: "metadata" | "preferences") => {
     onOpenChange(false);

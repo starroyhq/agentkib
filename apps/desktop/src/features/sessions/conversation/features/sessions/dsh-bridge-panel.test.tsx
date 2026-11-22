@@ -1,12 +1,11 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { render } from "../../desktop-reader-test-utils";
+import { act, cleanup, fireEvent, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { DshBridgePanel } from "./dsh-bridge-panel";
+import { DshBridgePanel } from "@agentkib/session-ui";
 
 const request = vi.fn();
-vi.mock("@/core/desktop", () => ({ desktopApi: () => ({ claude: { request } }) }));
-vi.mock("./session-context", () => ({ useSession: () => ({ locale: "en-US" }) }));
 
 const connected = {
   supported: true,
@@ -23,11 +22,13 @@ const connected = {
 };
 
 beforeEach(() => {
+  vi.stubGlobal("agentkibDesktop", { claude: { request } });
   vi.useFakeTimers();
   request.mockReset();
 });
 afterEach(() => {
   cleanup();
+  vi.unstubAllGlobals();
   vi.useRealTimers();
 });
 
@@ -37,7 +38,7 @@ describe("DeepSeek Harness connection panel", () => {
 
   it("keeps the last status while a control turns reads away, and reports a real failure", async () => {
     request.mockResolvedValueOnce(connected);
-    render(<DshBridgePanel />);
+    render(<DshBridgePanel locale="en-US" />);
     await act(async () => undefined);
     expect(
       screen.getByText("Connected to 1 running DeepSeek Harness instance"),
@@ -70,7 +71,7 @@ describe("DeepSeek Harness connection panel", () => {
 
   it("keeps registered controls visible before the first read and on an unsupported platform", async () => {
     request.mockResolvedValue({ supported: false, reason: "platform-unsupported" });
-    render(<DshBridgePanel />);
+    render(<DshBridgePanel locale="en-US" />);
     const toggle = screen.getByRole("switch", { name: switchName });
     expect(toggle).toHaveAttribute("aria-disabled", "true");
     expect(toggle).toHaveAttribute("title", "Reading connection settings.");
@@ -98,7 +99,7 @@ describe("DeepSeek Harness connection panel", () => {
         { ...connected.runtimes[0], dshVersion: "0.2.2-rc.1", compatibility: "unverified" },
       ],
     });
-    render(<DshBridgePanel />);
+    render(<DshBridgePanel locale="en-US" />);
     await act(async () => undefined);
     // A feature this DSH lacks says so where it is used, not here.
     expect(screen.getByText("Version 0.2.2-rc.1")).toBeInTheDocument();
@@ -115,7 +116,7 @@ describe("DeepSeek Harness connection panel", () => {
     const writeText = vi.fn(async () => undefined);
     Object.assign(navigator, { clipboard: { writeText } });
     request.mockResolvedValue({ ...connected, ...install });
-    render(<DshBridgePanel />);
+    render(<DshBridgePanel locale="en-US" />);
     await act(async () => undefined);
     expect(screen.queryByText(install.pluginDirectory)).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Install the AgentKib plugin" }));
@@ -144,7 +145,7 @@ describe("DeepSeek Harness connection panel", () => {
       autoStart: { enabled: true, available: false, phase: "stopped", failure: null },
       ...install,
     });
-    render(<DshBridgePanel />);
+    render(<DshBridgePanel locale="en-US" />);
     await act(async () => undefined);
     expect(screen.getByText(install.pluginDirectory)).toBeInTheDocument();
     expect(screen.getByRole("switch", { name: switchName })).not.toHaveAttribute("aria-disabled");
@@ -157,7 +158,7 @@ describe("DeepSeek Harness connection panel", () => {
       autoStart: { enabled: true, available: true, phase: "stopped", failure: null },
       ...install,
     });
-    render(<DshBridgePanel />);
+    render(<DshBridgePanel locale="en-US" />);
     await act(async () => undefined);
     expect(screen.queryByText(install.pluginDirectory)).toBeNull();
   });

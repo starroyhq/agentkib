@@ -10,7 +10,7 @@ import { webLayoutCopy } from "@agentkib/session-ui";
 import { contextUsageCopy } from "@agentkib/session-ui";
 
 vi.mock("./session-context", () => ({ useSession: vi.fn() }));
-vi.mock("./session-operations", () => ({ SessionOperations: () => null }));
+vi.mock("./desktop-session-operations", () => ({ DesktopSessionOperations: () => null }));
 
 type Session = ReturnType<typeof useSession>;
 let state: Session;

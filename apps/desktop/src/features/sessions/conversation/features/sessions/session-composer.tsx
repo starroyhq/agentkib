@@ -27,6 +27,7 @@ import {
   validHistoryMessage,
   HistoryReferenceChips,
   claudeConnectionCopy,
+  DevinTurnNotice,
 } from "@agentkib/session-ui";
 import { SessionReadOnly } from "@agentkib/session-ui";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
@@ -60,7 +61,6 @@ import {
 import { useSessionPanels } from "./session-panels";
 import { PermissionModeNotice } from "./permission-mode-notice";
 import { ManagedTurnNotice } from "./managed-turn-notice";
-import { DevinTurnNotice } from "./devin-turn-notice";
 import { SessionSendQueue } from "./dsh-queue";
 
 // The desktop app acts for the person at this computer, as the terminal does.
@@ -660,8 +660,8 @@ export function SessionComposer({
                 ? live.reason
                 : undefined
           }
+          reasonCopy={codexReason}
           locale={locale}
-          client={client}
           sessionId={current.id}
         />
       )}

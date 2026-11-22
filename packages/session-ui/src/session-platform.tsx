@@ -50,6 +50,12 @@ type SessionPlatformComponents = Omit<ArtifactComponents, "ArtifactPanel" | "But
     Button: ComponentType<ComponentProps<"button"> & ButtonStyle>;
     buttonClassName(style: ButtonStyle): string;
     touchTargetClassName?: string;
+    mergeClassNames(base: string, override?: string): string;
+    collapsible?: {
+      Collapsible: ComponentType<Collapsible.Root.Props>;
+      CollapsibleTrigger: ComponentType<Collapsible.Trigger.Props>;
+      CollapsibleContent: ComponentType<Collapsible.Panel.Props>;
+    };
     Textarea: ComponentType<ComponentProps<"textarea">>;
     NativeSelect: ComponentType<
       Omit<ComponentProps<"select">, "size"> & { size?: "sm" | "default" }
@@ -110,13 +116,9 @@ type LocalBridgeRequest =
 type DesktopSessionOperations = {
   isMacOS: boolean;
   requestBridge(request: LocalBridgeRequest): Promise<unknown>;
-  openTerminal: WebClient["devinTerminal"];
   openExternal(url: string): Promise<void>;
   components: {
     DialogDescription: ComponentType<Dialog.Description.Props>;
-    Collapsible: ComponentType<Collapsible.Root.Props>;
-    CollapsibleTrigger: ComponentType<Collapsible.Trigger.Props>;
-    CollapsibleContent: ComponentType<Collapsible.Panel.Props>;
     Switch: ComponentType<Switch.Root.Props & { size?: "sm" | "default" }>;
     Badge: ComponentType<
       ComponentProps<"span"> & { variant?: "default" | "outline" | "secondary" | "destructive" }
@@ -195,7 +197,14 @@ type SharedSessionPlatform = {
 };
 
 export type SessionPlatform = SharedSessionPlatform &
-  ({ kind: "desktop"; desktop?: DesktopSessionOperations } | { kind: "web"; desktop?: never });
+  (
+    | {
+        kind: "desktop";
+        desktop?: DesktopSessionOperations;
+        openTerminal?: WebClient["devinTerminal"];
+      }
+    | { kind: "web"; desktop?: never; openTerminal?: never }
+  );
 
 const SessionPlatformContext = createContext<SessionPlatform | null>(null);
 

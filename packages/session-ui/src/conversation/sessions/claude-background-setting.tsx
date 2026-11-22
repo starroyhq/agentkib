@@ -1,9 +1,7 @@
 import { useEffect, useState } from "react";
-import { desktopApi } from "@/core/desktop";
-import { Switch } from "@/components/ui/switch";
+import type { InteractionLocale as Locale } from "../../interaction-model";
+import { useSessionPlatform, type SessionPlatform } from "../../session-platform";
 import { OperationCopy, OperationGroup, OperationRow } from "./operation-layout";
-import { useSession } from "./session-context";
-import type { SupportedLocale as Locale } from "@/core/types";
 
 type BackgroundTasksStatus = {
   enabled: boolean;
@@ -78,33 +76,47 @@ function statusOf(value: unknown): BackgroundTasksStatus | undefined {
   };
 }
 
-/** An optional line of the dialog: a bridge that cannot answer, however it fails, hides it. */
-const request = (params: Record<string, unknown>) =>
-  Promise.resolve().then(() => desktopApi().claude.request(params));
-
 /**
  * Whether Claude Code sessions AgentKib runs on this computer keep background tasks. On by
  * default; a change applies to the next Claude Code process AgentKib starts.
  */
-export function ClaudeBackgroundSetting() {
-  const { locale } = useSession();
+export function ClaudeBackgroundSetting({ locale }: { locale: Locale }) {
+  const { desktop } = useSessionPlatform();
+  return desktop ? <ClaudeBackgroundTasks locale={locale} desktop={desktop} /> : null;
+}
+
+function ClaudeBackgroundTasks({
+  desktop,
+  locale,
+}: {
+  desktop: NonNullable<SessionPlatform["desktop"]>;
+  locale: Locale;
+}) {
+  const {
+    components: { Switch },
+    requestBridge,
+  } = desktop;
   const text = copy[locale] ?? copy["en-US"];
   const [status, setStatus] = useState<BackgroundTasksStatus>();
   const [switching, setSwitching] = useState(false);
   useEffect(() => {
     let current = true;
-    void request({ operation: "background-tasks" }).then(
-      (value) => current && setStatus(statusOf(value)),
-      () => undefined,
-    );
+    // Legacy runtimes can omit this optional host setting or fail synchronously.
+    void Promise.resolve()
+      .then(() => requestBridge({ operation: "background-tasks" }))
+      .then(
+        (value) => current && setStatus(statusOf(value)),
+        () => undefined,
+      );
     return () => {
       current = false;
     };
-  }, []);
+  }, [requestBridge]);
   if (!status) return null;
   const toggle = (enabled: boolean) => {
     setSwitching(true);
-    void request({ operation: "background-tasks", enabled })
+    void Promise.resolve()
+      .then(() => requestBridge({ operation: "background-tasks", enabled }))
       .then(
         (value) => setStatus((previous) => statusOf(value) ?? previous),
         () => undefined,

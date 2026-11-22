@@ -1,15 +1,27 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { CLAUDE_BRIDGE_CLI_VERSION } from "@agentkib/runtime-protocol";
+import { render } from "../../desktop-reader-test-utils";
+import { act, cleanup, fireEvent, screen } from "@testing-library/react";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { initializeI18n } from "@/core/i18n";
 import type { SessionController } from "./use-session-controller";
-import { ClaudeBridgePanel } from "./claude-bridge-panel";
-import { claudeConnectionCopy } from "@agentkib/session-ui";
+import {
+  ClaudeBridgePanel as SharedClaudeBridgePanel,
+  claudeConnectionCopy,
+} from "@agentkib/session-ui";
 
 const state = vi.hoisted(() => ({ session: {} as SessionController, request: vi.fn() }));
-vi.mock("./session-context", () => ({ useSession: () => state.session }));
-vi.mock("@/core/desktop", () => ({ desktopApi: () => ({ claude: { request: state.request } }) }));
+
+function ClaudeBridgePanel(props: { active: boolean; onClose?: () => void }) {
+  return (
+    <SharedClaudeBridgePanel
+      {...props}
+      bridgeVersion={CLAUDE_BRIDGE_CLI_VERSION}
+      session={state.session}
+    />
+  );
+}
 
 const copy = claudeConnectionCopy["zh-CN"];
 const runtimeBootId = "synthetic-runtime-boot";
@@ -71,6 +83,7 @@ function expectRevocationSettled() {
 
 beforeAll(() => initializeI18n("zh-CN"));
 beforeEach(() => {
+  vi.stubGlobal("agentkibDesktop", { claude: { request: state.request } });
   vi.useFakeTimers();
   state.request.mockReset();
   state.session = {
@@ -98,6 +111,7 @@ beforeEach(() => {
 });
 afterEach(() => {
   cleanup();
+  vi.unstubAllGlobals();
   vi.useRealTimers();
 });
 

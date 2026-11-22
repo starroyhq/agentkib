@@ -1,18 +1,28 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { CLAUDE_BRIDGE_CLI_VERSION } from "@agentkib/runtime-protocol";
+import { render } from "../../desktop-reader-test-utils";
+import { act, cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
 import { Profiler } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { SessionController } from "./use-session-controller";
-import { ClaudeBridgePanel } from "./claude-bridge-panel";
+import { ClaudeBridgePanel as SharedClaudeBridgePanel } from "@agentkib/session-ui";
 
 const state = vi.hoisted(() => ({
   session: {} as SessionController,
   request: vi.fn(),
   resumeCommand: vi.fn(),
 }));
-vi.mock("./session-context", () => ({ useSession: () => state.session }));
-vi.mock("@/core/desktop", () => ({ desktopApi: () => ({ claude: { request: state.request } }) }));
+
+function ClaudeBridgePanel(props: { active: boolean; onClose?: () => void }) {
+  return (
+    <SharedClaudeBridgePanel
+      {...props}
+      bridgeVersion={CLAUDE_BRIDGE_CLI_VERSION}
+      session={state.session}
+    />
+  );
+}
 
 const status = (sessionId = "s") => ({
   supported: true,
@@ -37,6 +47,7 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 beforeEach(() => {
+  vi.stubGlobal("agentkibDesktop", { claude: { request: state.request } });
   state.request.mockReset();
   state.resumeCommand.mockReset().mockResolvedValue({
     available: true,
@@ -71,6 +82,7 @@ beforeEach(() => {
 });
 afterEach(() => {
   cleanup();
+  vi.unstubAllGlobals();
   vi.useRealTimers();
 });
 

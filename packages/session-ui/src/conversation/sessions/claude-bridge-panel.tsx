@@ -8,16 +8,50 @@ import {
   LoaderCircle,
   TriangleAlert,
 } from "lucide-react";
-import { CLAUDE_BRIDGE_CLI_VERSION } from "@agentkib/runtime-protocol";
-import type { ClaudeBridgeChallenge, ClaudeBridgeStatus } from "../../../../../../electron/api";
-import { desktopApi } from "@/core/desktop";
-import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
-import { Switch } from "@/components/ui/switch";
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
-import { Dialog } from "../../components/dialog";
-import { useSession } from "./session-context";
-import { claudeConnectionCopy, claudeConnectionReason } from "@agentkib/session-ui";
+import type { Access, ConversationSessionSummary, Live, WebClient } from "@agentkib/web-client";
+import type { InteractionLocale } from "../../interaction-model";
+import type { ControlNotice } from "../../session-control";
+import { useSessionPlatform, type SessionPlatform } from "../../session-platform";
+import { claudeConnectionCopy, claudeConnectionReason } from "./claude-connection-copy";
+
+type ClaudeBridgeStatus = {
+  connectionCliVersion?: string;
+  connectionError?: string;
+  supported: boolean;
+  connected: boolean;
+  /** A verified, unrevoked original binding; independent of the current terminal lease. */
+  hasBinding?: boolean;
+  sessionId: string;
+  version: string;
+  reason?: string;
+  pluginDirectory: string;
+  installInstructions: string;
+  autoConnect?: { available: boolean; enabled: boolean; declined?: boolean };
+};
+
+type ClaudeBridgeChallenge = { challenge: string; expiresAt: string; instructions: string };
+
+type ClaudeBridgePanelProps = {
+  active: boolean;
+  bridgeVersion: string;
+  onClose?: () => void;
+  session: {
+    selected: string;
+    current?: Pick<ConversationSessionSummary, "id" | "agent" | "title">;
+    currentTitle?: string;
+    live?: Live;
+    access?: Access;
+    online: boolean;
+    controlReady: boolean;
+    busy: boolean;
+    loadingEarlier: boolean;
+    locale: InteractionLocale;
+    notice?: ControlNotice;
+    t?: { close: string };
+    client: Pick<WebClient, "claudeResumeCommand">;
+    refresh(manual: boolean): Promise<void>;
+  };
+};
 
 const incompatibleReasons = new Set([
   "bridge-cli-too-old",
@@ -40,6 +74,9 @@ function CommandBlock({
   onCopy: () => void;
   truncate?: boolean;
 }) {
+  const {
+    components: { Button },
+  } = useSessionPlatform();
   const [expanded, setExpanded] = useState(false);
   const text = <code className={truncate && !expanded ? "line-clamp-2" : "block"}>{value}</code>;
   return (
@@ -140,8 +177,35 @@ function challengeResponse(value: unknown): ClaudeBridgeChallenge {
 }
 
 /** Local owner IPC only; no connection credentials or paths are accepted from Web. */
-export function ClaudeBridgePanel({ active, onClose }: { active: boolean; onClose?: () => void }) {
-  const session = useSession();
+export function ClaudeBridgePanel(props: ClaudeBridgePanelProps) {
+  const { components, desktop } = useSessionPlatform();
+  const { collapsible } = components;
+  return desktop && collapsible ? (
+    <ClaudeTerminalBridge
+      {...props}
+      components={components}
+      collapsible={collapsible}
+      desktop={desktop}
+    />
+  ) : null;
+}
+
+function ClaudeTerminalBridge({
+  active,
+  bridgeVersion,
+  onClose,
+  session,
+  components: { Button, SessionDialog: Dialog },
+  collapsible: { Collapsible, CollapsibleContent, CollapsibleTrigger },
+  desktop: {
+    components: { Badge, Switch },
+    requestBridge,
+  },
+}: ClaudeBridgePanelProps & {
+  components: SessionPlatform["components"];
+  collapsible: NonNullable<SessionPlatform["components"]["collapsible"]>;
+  desktop: NonNullable<SessionPlatform["desktop"]>;
+}) {
   const {
     selected,
     current,
@@ -299,7 +363,7 @@ export function ClaudeBridgePanel({ active, onClose }: { active: boolean; onClos
       if (showLoading) setLoading(true);
       try {
         const result = statusResponse(
-          await desktopApi().claude.request({ operation: "bridge-status", sessionId: selected }),
+          await requestBridge({ operation: "bridge-status", sessionId: selected }),
           selected,
         );
         if (isCurrent()) {
@@ -343,7 +407,7 @@ export function ClaudeBridgePanel({ active, onClose }: { active: boolean; onClos
       window.clearInterval(timer);
       if (!pending.current) setLoading(false);
     };
-  }, [canManage, selected, live?.connectionGeneration, revision]);
+  }, [canManage, selected, live?.connectionGeneration, revision, requestBridge]);
   if (
     revokedBinding &&
     live?.sessionId === selected &&
@@ -485,7 +549,7 @@ export function ClaudeBridgePanel({ active, onClose }: { active: boolean; onClos
     setChallenge(undefined);
     setExpired(false);
     try {
-      const result = await desktopApi().claude.request({ operation, sessionId: selected });
+      const result = await requestBridge({ operation, sessionId: selected });
       if (!isCurrent()) return;
       if (operation === "bridge-challenge")
         setChallenge({
@@ -535,7 +599,7 @@ export function ClaudeBridgePanel({ active, onClose }: { active: boolean; onClos
     setAutoFailed(false);
     setAutoChange({ sessionId: target, enabled });
     try {
-      const result = await desktopApi().claude.request({
+      const result = await requestBridge({
         operation: "bridge-auto-connect",
         sessionId: target,
         enabled,
@@ -788,10 +852,7 @@ export function ClaudeBridgePanel({ active, onClose }: { active: boolean; onClos
         <p className="text-sm">{copy.flow}</p>
         {!platformUnsupported && (
           <p className="text-xs text-muted-foreground">
-            {copy.platformVersion.replace(
-              "{version}",
-              status?.version ?? CLAUDE_BRIDGE_CLI_VERSION,
-            )}
+            {copy.platformVersion.replace("{version}", status?.version ?? bridgeVersion)}
           </p>
         )}
       </div>

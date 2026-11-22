@@ -13,7 +13,7 @@ vi.mock("./session-context", () => ({
     return { ...state.session, message, setMessage };
   },
 }));
-vi.mock("./session-operations", () => ({ SessionOperations: () => null }));
+vi.mock("./desktop-session-operations", () => ({ DesktopSessionOperations: () => null }));
 vi.mock("./session-panels", () => ({ useSessionPanels: () => null }));
 vi.mock("@agentkib/session-ui", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@agentkib/session-ui")>()),

@@ -17,7 +17,7 @@ import {
   OperationGroup,
   OperationRow,
   TOUCH_TARGET,
-} from "./operation-layout";
+} from "@agentkib/session-ui";
 import { useSession } from "./session-context";
 import { webLayoutCopy } from "@agentkib/session-ui";
 import { composerLayoutCopy } from "./composer-layout-copy";

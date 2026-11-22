@@ -1,14 +1,26 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { CLAUDE_BRIDGE_CLI_VERSION } from "@agentkib/runtime-protocol";
+import { render } from "../../desktop-reader-test-utils";
+import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { SessionController } from "./use-session-controller";
-import { ClaudeBridgePanel } from "./claude-bridge-panel";
-import { claudeConnectionCopy } from "@agentkib/session-ui";
+import {
+  ClaudeBridgePanel as SharedClaudeBridgePanel,
+  claudeConnectionCopy,
+} from "@agentkib/session-ui";
 
 const state = vi.hoisted(() => ({ session: {} as SessionController, request: vi.fn() }));
-vi.mock("./session-context", () => ({ useSession: () => state.session }));
-vi.mock("@/core/desktop", () => ({ desktopApi: () => ({ claude: { request: state.request } }) }));
+
+function ClaudeBridgePanel(props: { active: boolean; onClose?: () => void }) {
+  return (
+    <SharedClaudeBridgePanel
+      {...props}
+      bridgeVersion={CLAUDE_BRIDGE_CLI_VERSION}
+      session={state.session}
+    />
+  );
+}
 
 type Locale = keyof typeof claudeConnectionCopy;
 const locales: Locale[] = ["zh-CN", "zh-Hant", "en-US", "ja-JP"];
@@ -45,6 +57,7 @@ async function openDialog(locale: Locale = "zh-CN") {
 }
 
 beforeEach(() => {
+  vi.stubGlobal("agentkibDesktop", { claude: { request: state.request } });
   state.request.mockReset();
   close.mockClear();
   clipboard.mockReset().mockResolvedValue(undefined);
@@ -77,7 +90,10 @@ beforeEach(() => {
         : { disconnected: true },
   );
 });
-afterEach(() => cleanup());
+afterEach(() => {
+  cleanup();
+  vi.unstubAllGlobals();
+});
 
 describe("Claude terminal connection dialog", () => {
   it.each(locales)(

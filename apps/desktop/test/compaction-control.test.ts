@@ -349,7 +349,7 @@ describe("Web managed control compaction barriers", () => {
       controlOutcome: "not-dispatched",
       error: "session-compacting",
     });
-    expect(f.app.sent).toEqual(["model/list", "skills/list"]);
+    expect(f.app.sent).toEqual(["skills/list"]);
     expect(readUnknownManagedCommands(f.root, created.sessionId)).toEqual([]);
     expect(f.command).not.toHaveBeenCalled();
   });
@@ -371,7 +371,7 @@ describe("Web managed control compaction barriers", () => {
       error: "session-compacting",
       requestId: request.requestId,
     });
-    expect(f.app.sent).toEqual(["model/list"]);
+    expect(f.app.sent).toEqual([]);
     expect(readUnknownManagedCommands(f.root, created.sessionId)).toEqual([]);
     // A retry reads the same receipt and must not send once compaction finishes.
     f.app.emit("notification", {
@@ -387,7 +387,7 @@ describe("Web managed control compaction barriers", () => {
       sendEnabled: true,
     });
     expect(await f.web.managedControl(request)).toEqual(result);
-    expect(f.app.sent).toEqual(["model/list"]);
+    expect(f.app.sent).toEqual([]);
     expect(f.command).not.toHaveBeenCalled();
   });
 
@@ -407,7 +407,7 @@ describe("Web managed control compaction barriers", () => {
       controlOutcome: "not-dispatched",
       error: "stale-or-disabled-control",
     });
-    expect(f.app.sent).toEqual(["model/list"]);
+    expect(f.app.sent).toEqual([]);
     expect(readUnknownManagedCommands(f.root, created.sessionId)).toEqual([]);
   });
 
@@ -444,9 +444,9 @@ describe("Web managed control compaction barriers", () => {
     const request = sendRequest(created);
     const result = await f.web.managedControl(request);
     expect(result).toMatchObject({ accepted: true, requestId: request.requestId });
-    expect(f.app.sent).toEqual(["model/list", "turn/start"]);
+    expect(f.app.sent).toEqual(["turn/start"]);
     expect(await f.web.managedControl(request)).toEqual(result);
-    expect(f.app.sent).toEqual(["model/list", "turn/start"]);
+    expect(f.app.sent).toEqual(["turn/start"]);
     expect(readUnknownManagedCommands(f.root, created.sessionId)).toEqual([]);
   });
 
@@ -463,7 +463,7 @@ describe("Web managed control compaction barriers", () => {
       controlOutcome: "unknown",
       reason: "control-outcome-unconfirmed",
     });
-    expect(f.app.sent).toEqual(["model/list", "turn/start"]);
+    expect(f.app.sent).toEqual(["turn/start"]);
     expect(readUnknownManagedCommands(f.root, created.sessionId)).toMatchObject([
       { requestId: request.requestId },
     ]);
@@ -471,7 +471,7 @@ describe("Web managed control compaction barriers", () => {
       controlOutcome: "unknown",
       reason: "control-outcome-unconfirmed",
     });
-    expect(f.app.sent).toEqual(["model/list", "turn/start"]);
+    expect(f.app.sent).toEqual(["turn/start"]);
   });
 
   it("keeps native stop available for a confirmed turn during compaction", async () => {
@@ -506,7 +506,7 @@ describe("Codex writer lock replaces Desktop ownership observations", () => {
     "thread/resume",
   ];
   // The fixture also covers a CLI without the optional preset and queue reads.
-  const firstSendRequests = [...resumeRequests, "thread/queue/list", "model/list", "turn/start"];
+  const firstSendRequests = [...resumeRequests, "thread/queue/list", "turn/start"];
 
   it.each(existingSessions)(
     "sends the first message to an %s without confirmation when the native writer is free",

@@ -77,6 +77,13 @@ export function createWarmSessionStreamPool(
       if (entry.parked && (id === undefined || entry.id === id)) close(entry);
     }
   };
+  const trimParked = (nextId?: string) => {
+    const parked = [...entries.values()].filter(
+      (entry) => entry.parked && !entry.owner && entry.id !== nextId,
+    );
+    for (const entry of parked.slice(0, Math.max(0, parked.length - maxParkedSessions)))
+      close(entry);
+  };
 
   const forward = (entry: Entry, handlers: SessionStreamHandlers, packet: Packet) => {
     const accepted = handlers.event(...packet);
@@ -169,6 +176,7 @@ export function createWarmSessionStreamPool(
     peek,
     clear,
     discardParked,
+    trimParked,
     // Rendering may consult a parked stream but cannot claim it or change its lease.
     hasParked(id: string) {
       const entry = entries.get(id);
@@ -192,6 +200,7 @@ export function createWarmSessionStreamPool(
       entries.set(id, entry);
       const owner = {};
       entry.owner = owner;
+      trimParked();
       if (checkpoint) notifyParked();
       return {
         checkpoint,
@@ -238,7 +247,7 @@ export function createWarmSessionStreamPool(
           else stop();
           return true;
         },
-        release(checkpoint?: WarmSessionCheckpoint) {
+        release(checkpoint?: WarmSessionCheckpoint, nextId?: string) {
           if (!current(entry) || entry.owner !== owner) return;
           entry.owner = undefined;
           entry.handlers = undefined;
@@ -269,9 +278,8 @@ export function createWarmSessionStreamPool(
             expires,
             timer: setTimeout(() => close(entry), WARM_SESSION_IDLE_MS),
           };
-          const parked = [...entries.values()].filter((item) => item.parked);
-          for (const item of parked.slice(0, Math.max(0, parked.length - maxParkedSessions)))
-            close(item);
+          // A parked destination already has a slot and will become active.
+          trimParked(nextId && peek(entry.scope, nextId) ? nextId : undefined);
           notifyParked();
         },
       };

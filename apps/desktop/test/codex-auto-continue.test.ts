@@ -246,6 +246,9 @@ function fixture(
   let intercept:
     | ((method: string, params: Record<string, unknown>, server: OfflineServer) => unknown)
     | undefined;
+  let beforeNativeDispatch:
+    | ((method: string, server: OfflineServer) => Promise<void> | undefined)
+    | undefined;
   const deletes: Array<{ server: number; othersOpen: number }> = [];
   const servers: OfflineServer[] = [];
   class OfflineServer extends EventEmitter {
@@ -254,6 +257,8 @@ function fixture(
     userAgent = serverUserAgent;
     closeFailure?: Error;
     async request(method: string, params: unknown, dispatch?: () => void): Promise<unknown> {
+      const incoming = dispatch ? beforeNativeDispatch?.(method, this) : undefined;
+      if (incoming) await incoming;
       dispatch?.();
       methods.push(method);
       requests.push({ method, params });
@@ -465,6 +470,11 @@ function fixture(
       value: (method: string, params: Record<string, unknown>, server: OfflineServer) => unknown,
     ) => {
       intercept = value;
+    },
+    beforeNativeDispatch: (
+      value: (method: string, server: OfflineServer) => Promise<void> | undefined,
+    ) => {
+      beforeNativeDispatch = value;
     },
     setCwd: (cwd: string) => {
       executionCwd = cwd;
@@ -705,14 +715,17 @@ describe("a Codex Project Agent's thread", () => {
         params: { threadId: nativeId, turnId, itemId: "running-command" },
       });
       expect(await f.live()).toMatchObject({ revision: before.revision, turnId });
-      f.intercept((method, params, current) => {
-        if (method === "model/list") {
-          workerUsage(current, turnId, 20);
-          current.emit("notification", {
-            method: "item/agentMessage/delta",
-            params: { threadId: nativeId, turnId, delta: "Worker output" },
-          });
-        }
+      f.beforeNativeDispatch((method, current) => {
+        if (method !== nativeMethod) return;
+        workerUsage(current, turnId, 20);
+        current.emit("notification", {
+          method: "item/agentMessage/delta",
+          params: { threadId: nativeId, turnId, delta: "Worker output" },
+        });
+        return f.live().then(() => undefined);
+      });
+      f.intercept((method, params) => {
+        if (method === "model/list") return new Error("model list unavailable");
         if (method === "turn/steer") return { turnId: params.expectedTurnId };
       });
       const priorCalls = f.methods.filter((method) => method === nativeMethod).length;
@@ -734,16 +747,17 @@ describe("a Codex Project Agent's thread", () => {
     });
 
     it.each(["turn", "settings", "goal", "identity"] as const)(
-      "rejects a change to the worker's %s during native preflight without dispatching",
+      "rejects a change to the worker's %s before native dispatch",
       async (change) => {
         const { f, lead, turnId } = await queuedWorker(workerUsage);
         const record = readManagedRecord(f.root, f.summary.id)!;
         let changed = false;
-        f.intercept((method, _params, server) => {
-          if (method !== "model/list") return;
+        f.beforeNativeDispatch((method, server) => {
+          if (method !== nativeMethod) return;
           changed = true;
           if (change === "identity") {
             saveManagedRecord(f.root, { ...record, native_id: forkId });
+            return;
           } else if (change === "turn") {
             server.complete({ id: turnId });
             server.emit("notification", {
@@ -766,6 +780,7 @@ describe("a Codex Project Agent's thread", () => {
               params: { threadId: nativeId },
             });
           }
+          return f.live().then(() => undefined);
         });
         const priorCalls = f.methods.filter((method) => method === nativeMethod).length;
         const result = await lead.call("project-agent", "worker_send", {
@@ -1786,23 +1801,41 @@ describe("Codex indexed native execution policy", () => {
     },
   );
 
-  it("allows a restricted device to adopt the native default workspace policy", async () => {
-    const f = fixture(true);
-    setNativePolicy(f, {
-      approval_policy: "on-request",
-      approvals_reviewer: "user",
-      sandbox_policy: {
-        type: "workspace-write",
-        writable_roots: [],
-        network_access: false,
-        exclude_tmpdir_env_var: true,
-        exclude_slash_tmp: true,
-      },
-    });
-    expect(
-      await f.sendWithState(await f.live(), { deviceId: "restricted-device" }, true),
-    ).toMatchObject({ accepted: true });
-  });
+  it.each(["explicitly empty", "omitted"] as const)(
+    "allows a restricted device to adopt the native workspace policy with %s writable roots",
+    async (roots) => {
+      const f = fixture(true);
+      setNativePolicy(f, {
+        approval_policy: "on-request",
+        approvals_reviewer: "user",
+        sandbox_policy: {
+          type: "workspace-write",
+          ...(roots === "explicitly empty" ? { writable_roots: [] } : {}),
+          network_access: false,
+          exclude_tmpdir_env_var: true,
+          exclude_slash_tmp: true,
+        },
+      });
+      expect(
+        await f.sendWithState(await f.live(), { deviceId: "restricted-device" }, true),
+      ).toMatchObject({ accepted: true });
+      expect(f.requests.filter(({ method }) => method === "turn/start")).toMatchObject([
+        {
+          params: {
+            cwd: f.workspace,
+            approvalPolicy: "on-request",
+            sandboxPolicy: {
+              type: "workspaceWrite",
+              writableRoots: [f.workspace],
+              networkAccess: false,
+              excludeTmpdirEnvVar: true,
+              excludeSlashTmp: true,
+            },
+          },
+        },
+      ]);
+    },
+  );
 
   it("keeps a differing native policy visible and refuses to run or replace it", async () => {
     const f = fixture(true);
@@ -2661,7 +2694,7 @@ describe("Codex fork model recovery", () => {
   });
 
   it.each([false, true])(
-    "keeps an unlisted source fork recoverable through explicit next-turn settings after release=%s",
+    "runs the inherited unlisted model and validates explicit edits after release=%s",
     async (release) => {
       const f = fixture();
       f.setModels(catalog);
@@ -2678,31 +2711,50 @@ describe("Codex fork model recovery", () => {
           requestId: randomUUID(),
           deviceId: "fixture",
         });
-      const requestId = randomUUID();
-      expect(await action(f, id, "send", { requestId })).toMatchObject({
+      const explicit = await action(f, id, "settings", { model: "unlisted-source-model" });
+      expect(explicit).toMatchObject({
         accepted: false,
         controlOutcome: "not-dispatched",
-        error: "unsupported-model",
       });
+      expect(explicit.reason ?? explicit.error).toBe("unsupported-model");
       expect(f.methods).not.toContain("turn/start");
       expect(readUnknownManagedCommands(f.root, id)).toEqual([]);
+      const requestId = randomUUID();
+      expect(await action(f, id, "send", { requestId })).toMatchObject({ accepted: true });
       expect(readControlReceipt(f.root, { requestId, deviceId: "fixture" })).toMatchObject({
         found: true,
-        status: "not-dispatched",
+        status: "accepted",
         operation: "send",
-        ack: { error: "unsupported-model" },
       });
-      expect(await action(f, id, "settings", { model: "model-a", effort: "low" })).toMatchObject({
-        accepted: true,
-      });
-      expect(await action(f, id, "send")).toMatchObject({ accepted: true });
       expect(f.requests.filter(({ method }) => method === "turn/start")).toEqual([
         expect.objectContaining({
-          params: expect.objectContaining({ model: "model-a", effort: "low" }),
+          params: expect.objectContaining({ model: "unlisted-source-model", effort: "low" }),
         }),
       ]);
     },
   );
+
+  it("resumes an inherited model when the app-server does not support the catalog", async () => {
+    const f = fixture();
+    f.setSourceSettings("unlisted-source-model", "low");
+    const id = await fork(f);
+    await f.web.managedLifecycle({
+      operation: "release",
+      sessionId: id,
+      requestId: randomUUID(),
+      deviceId: "fixture",
+    });
+    f.intercept((method) =>
+      method === "model/list"
+        ? new CodexAppServerError({ code: -32601, message: "Method not found" })
+        : undefined,
+    );
+    expect(await action(f, id, "send")).toMatchObject({ accepted: true });
+    expect(f.requests.find(({ method }) => method === "turn/start")?.params).toMatchObject({
+      model: "unlisted-source-model",
+      effort: "low",
+    });
+  });
 
   it.each([
     [{ model: "invented-model" }, "unsupported-model"],
@@ -2844,6 +2896,65 @@ describe("Codex fork model recovery", () => {
     expect(f.methods).not.toContain("thread/start");
     expect(f.methods).not.toContain("turn/start");
   });
+
+  it.each([false, true])(
+    "reports native model rejection and recovers with an explicit selection after release=%s",
+    async (release) => {
+      const f = fixture();
+      f.setModels(catalog);
+      f.setSourceSettings("unlisted-source-model", "low");
+      const id = await fork(f);
+      if (release)
+        await f.web.managedLifecycle({
+          operation: "release",
+          sessionId: id,
+          requestId: randomUUID(),
+          deviceId: "fixture",
+        });
+      const message = "The selected model is unavailable on this provider.";
+      const secret = "sk-fixture-not-a-real-key-12345";
+      f.setTurnFailure(
+        new CodexAppServerError({ code: -32600, message: `${message} api_key=${secret}` }),
+      );
+      const requestId = randomUUID();
+      const rejected = await action(f, id, "send", { requestId });
+      expect(rejected).toMatchObject({
+        accepted: false,
+        controlOutcome: "not-dispatched",
+        reason: "codex-turn-start-rejected",
+        nativeError: expect.stringContaining(message),
+      });
+      const live = () =>
+        f.web.request({ operation: "live", sessionId: id, experimentalEnabled: true });
+      const state = await live();
+      expect(state).toMatchObject({
+        status: "idle",
+        turnStartError: {
+          reason: "codex-turn-start-rejected",
+          message: expect.stringContaining(message),
+        },
+      });
+      expect(readUnknownManagedCommands(f.root, id)).toEqual([]);
+      const receipt = readControlReceipt(f.root, { requestId, deviceId: "fixture" });
+      expect(receipt).toMatchObject({
+        found: true,
+        status: "not-dispatched",
+        operation: "send",
+        ack: { reason: "codex-turn-start-rejected", nativeError: expect.stringContaining(message) },
+      });
+      expect(JSON.stringify({ rejected, state, receipt })).not.toContain(secret);
+      expect(await action(f, id, "settings", { model: "model-a", effort: "low" })).toMatchObject({
+        accepted: true,
+      });
+      f.setTurnFailure(undefined);
+      expect(await action(f, id, "send")).toMatchObject({ accepted: true });
+      expect(f.requests.filter(({ method }) => method === "turn/start")).toMatchObject([
+        { params: { model: "unlisted-source-model", effort: "low" } },
+        { params: { model: "model-a", effort: "low" } },
+      ]);
+      expect((await live()).turnStartError).toBeFalsy();
+    },
+  );
 
   it("keeps a dispatched turn uncertain and blocks model changes without resending", async () => {
     const f = fixture();
@@ -3246,22 +3357,14 @@ describe("Codex automatic CLI continuation", () => {
   function notifyDuringSend(
     f: ReturnType<typeof fixture>,
     notification: (server: EventEmitter, sessionId: string) => void,
+    sessionId = f.summary.id,
   ) {
-    const start = f.start.getMockImplementation()!;
-    f.start.mockImplementation(async (...args) => {
-      const server = await start(...args);
-      const request = server.request.bind(server);
-      let attached = false;
-      vi.spyOn(server, "request").mockImplementation(async (method, params, dispatch) => {
-        if (method === "model/list" && attached) {
-          attached = false;
-          notification(server, f.summary.id);
-        }
-        const result = await request(method, params, dispatch);
-        if (["thread/start", "thread/resume"].includes(method)) attached = true;
-        return result;
-      });
-      return server;
+    f.beforeNativeDispatch((method, server) => {
+      if (method !== "turn/start") return;
+      notification(server, sessionId);
+      return f.web
+        .request({ operation: "live", sessionId, experimentalEnabled: true })
+        .then(() => undefined);
     });
   }
 
@@ -3406,12 +3509,6 @@ describe("Codex automatic CLI continuation", () => {
 
   it("sends a newly created session once when its thread-started notification arrives late", async () => {
     const f = fixture();
-    notifyDuringSend(f, (server) => {
-      server.emit("notification", {
-        method: "thread/started",
-        params: { thread: { id: nativeId } },
-      });
-    });
     const created = await f.web.managedLifecycle({
       operation: "create",
       workspaceId: "workspace",
@@ -3421,6 +3518,16 @@ describe("Codex automatic CLI continuation", () => {
       model: "model-a",
       effort: "low",
     });
+    notifyDuringSend(
+      f,
+      (server) => {
+        server.emit("notification", {
+          method: "thread/started",
+          params: { thread: { id: nativeId } },
+        });
+      },
+      created.sessionId!,
+    );
     const state = await f.web.request({ operation: "live", sessionId: created.sessionId! });
     expect(
       await f.web.managedControl({
@@ -3762,6 +3869,94 @@ describe("Codex automatic CLI continuation", () => {
         params: expect.objectContaining({ includeTurns: true }),
       }),
     );
+  });
+
+  it("reports a resumed Worker's reply before it is visible in native history", async () => {
+    const f = fixture(true);
+    f.setServerUserAgent("agentkib/0.167.0 (Mac OS 26.0.0; arm64) fixture");
+    f.setPolicyReply({
+      thread: { id: nativeId, cwd: f.workspace, status: { type: "idle" }, turns: [] },
+      initialTurnsPage: {
+        data: [{ id: "finished-turn", status: "completed", items: [] }],
+        nextCursor: "older-turns",
+      },
+    });
+    const worker = f.summary.id;
+    const delivered: string[] = [];
+    const lead = new OrchestrationService(
+      f.root,
+      "fixture-boot",
+      {
+        control: (request) => f.web.managedControl(request),
+        live: f.live,
+        events: async (sessionId, limit) =>
+          (await f.web.request({ operation: "events", sessionId, limit, retainCursor: false }))
+            .events,
+        session: (sessionId) =>
+          sessionId === worker ? { agent: "codex", workspaceId: "workspace", title: null } : null,
+        managed: async () => true,
+        workspaces: () => [{ id: "workspace", name: "Fixture" }],
+      },
+      (id) => id === "project-agent",
+      (_id, _deviceId, report) => {
+        delivered.push(report);
+        return false;
+      },
+    );
+    cleanups.push(() => lead.close());
+    f.web.observeLanes({
+      turnEnded: (...args) => void lead.laneTurnEnded(...args),
+      waiting: () => {},
+    });
+    await lead.assignWorkers({
+      sessionId: "project-agent",
+      deviceId: "fixture",
+      workspaceId: "workspace",
+      workers: [worker],
+    });
+    const result = await lead.call("project-agent", "worker_send", {
+      worker: "worker-1",
+      text: "Do the next task.",
+    });
+    expect(JSON.parse(result.text)).toMatchObject({ accepted: true, operation: "send" });
+    expect(f.requests.find(({ method }) => method === "thread/resume")?.params).toMatchObject({
+      initialTurnsPage: { limit: 1 },
+    });
+    const server = f.servers.at(-1)!;
+    const turnId = "new-turn";
+    const commentary = { id: "worker-commentary", type: "agentMessage", text: "Still working." };
+    const answer = {
+      id: "worker-answer",
+      type: "agentMessage",
+      phase: "final_answer",
+      text: "Worker task complete.",
+    };
+    const tool = {
+      id: "worker-tool",
+      type: "commandExecution",
+      command: "true",
+      status: "completed",
+    };
+    for (const item of [commentary, answer, commentary, tool])
+      server.emit("notification", {
+        method: "item/completed",
+        params: { threadId: nativeId, turnId, item },
+      });
+    server.complete();
+
+    await vi.waitFor(() => expect(delivered).toHaveLength(1));
+    expect(readManagedEvents(f.root, worker, null, 50).events.slice(-2)).toMatchObject([
+      { id: "worker-answer", turn_id: turnId, content: "Worker task complete." },
+      { id: "worker-tool", turn_id: turnId, kind: "tool-summary" },
+    ]);
+    expect(
+      (await f.web.request({ operation: "events", sessionId: worker, limit: 50 })).events,
+    ).toEqual([
+      expect.objectContaining({ content: "Earlier user input" }),
+      expect.objectContaining({ content: "Earlier answer" }),
+    ]);
+    expect(delivered[0]).toContain("Worker task complete.");
+    expect(delivered[0]).not.toMatch(/Still working|Earlier answer|no reply was recorded/);
   });
 
   it("keeps an active turn from the resume page and does not start another turn", async () => {
@@ -4689,15 +4884,11 @@ describe("Codex automatic CLI continuation", () => {
         await vi.advanceTimersByTimeAsync(61_000);
       }
       const live = await f.live();
-      const start = f.start.getMockImplementation()!;
-      f.start.mockImplementation(async (...args) => {
-        const server = await start(...args);
-        const request = server.request.bind(server);
-        vi.spyOn(server, "request").mockImplementation(async (method, ...params) => {
-          if (method === "model/list") throw new Error("fixture-startup-refused");
-          return request(method, ...params);
-        });
-        return server;
+      f.intercept((method, _params, server) => {
+        if (method !== "collaborationMode/list") return;
+        // Lose the new connection before any user input can be written.
+        server.connected = false;
+        return new Error("fixture-startup-refused");
       });
       const acquire = acquireManagedSessionLease;
       let transferredRecord: Record<string, unknown> | null = null;
@@ -6771,7 +6962,14 @@ describe("a managed Codex thread without a name", () => {
     });
     server.complete();
     await vi.waitFor(() =>
-      expect(lanes.turnEnded).toHaveBeenCalledWith(f.summary.id, "new-turn", "completed", null),
+      expect(lanes.turnEnded).toHaveBeenCalledWith(
+        f.summary.id,
+        "new-turn",
+        "completed",
+        null,
+        undefined,
+        "Done.",
+      ),
     );
     expect(lanes.turnEnded).toHaveBeenCalledTimes(1);
     expect(

@@ -102,18 +102,26 @@ const transcriptEvent = (id: string, content: string) => ({
 function createHost({
   state = live,
   catalogSession = session,
+  catalogSessions = [catalogSession],
+  streamLimit = Infinity,
 }: {
   state?: Live;
   catalogSession?: ConversationSessionSummary;
+  catalogSessions?: ConversationSessionSummary[];
+  streamLimit?: number;
 } = {}) {
   const listeners = new Set<(event: SessionStreamEvent<Live>) => void>();
   const unavailableListeners = new Set<() => void>();
-  let subscriptions = 0;
+  const activeSubscriptions = new Map<string, string>();
+  const latestSubscriptions = new Map<string, string>();
+  const limitRejections: string[] = [];
+  let nextSubscription = 0;
+  let pendingSubscriptions = 0;
   let blockedAccess: Promise<Access> | undefined;
-  const envelope = (seq: number) => ({
+  const envelope = (seq: number, sessionId = session.id) => ({
     protocolVersion: 2 as const,
-    sessionId: session.id,
-    subscriptionId: `session-${subscriptions}`,
+    sessionId,
+    subscriptionId: latestSubscriptions.get(sessionId)!,
     runtimeBootId: "runtime",
     epoch: "window-epoch",
     seq,
@@ -127,15 +135,17 @@ function createHost({
         case "catalog":
           return {
             status: 200,
-            body: { workspaces: [workspace], sessions: [catalogSession], indexEnabled: true },
+            body: { workspaces: [workspace], sessions: catalogSessions, indexEnabled: true },
           };
         case "events":
           return {
             status: 200,
             body: { events: [transcriptEvent("history", "Existing window history")], warnings: [] },
           };
-        case "live":
-          return { status: 200, body: state };
+        case "live": {
+          const sessionId = new URLSearchParams(path.split("?")[1]).get("sessionId") ?? session.id;
+          return { status: 200, body: { ...state, sessionId } };
+        }
         case "read-state":
           return { status: 200, body: { readState } };
         default:
@@ -144,12 +154,26 @@ function createHost({
     },
   );
   const subscribe = vi.fn(async (id: string): Promise<ConversationSubscription<Live>> => {
-    if (id !== session.id) return { subscriptionId: "catalog", events: [] };
-    subscriptions++;
-    const snapshot = { ...envelope(0), type: "snapshot" as const, payload: { live: state } };
-    return { subscriptionId: snapshot.subscriptionId, events: [snapshot], cursor: snapshot.cursor };
+    if (activeSubscriptions.size + pendingSubscriptions >= streamLimit) {
+      limitRejections.push(id);
+      throw new Error(
+        "Error invoking remote method 'agentkib:conversation:subscribe': Error: stream_limit",
+      );
+    }
+    const subscriptionId = `subscription-${++nextSubscription}`;
+    activeSubscriptions.set(subscriptionId, id);
+    latestSubscriptions.set(id, subscriptionId);
+    if (id === "") return { subscriptionId, events: [] };
+    const snapshot = {
+      ...envelope(0, id),
+      type: "snapshot" as const,
+      payload: { live: { ...state, sessionId: id } },
+    };
+    return { subscriptionId, events: [snapshot], cursor: snapshot.cursor };
   });
-  const unsubscribe = vi.fn(async (_id: string) => {});
+  const unsubscribe = vi.fn(async (id: string) => {
+    activeSubscriptions.delete(id);
+  });
   const bridge: DesktopConversationBridge = {
     request,
     upload: vi.fn(async () => ({ status: 400, body: {} })),
@@ -176,6 +200,12 @@ function createHost({
     subscribe,
     unsubscribe,
     envelope,
+    activeSubscriptions,
+    limitRejections,
+    holdSubscriptionSlot() {
+      pendingSubscriptions++;
+      return () => pendingSubscriptions--;
+    },
     holdAccess() {
       let release!: (result: Access) => void;
       blockedAccess = new Promise((resolve) => {
@@ -503,4 +533,83 @@ it("opens a fresh subscription when the index is re-enabled during a conversatio
   const operations = host.request.mock.calls.map(([path]) => path.split("?")[0]);
   expect(operations).toContain("events");
   expect(operations).toContain("live");
+});
+
+it("rotates beyond the desktop stream limit and releases all owners when the window unmounts", async () => {
+  const otherSessions = ["two", "three", "four", "five"].map((suffix) => ({
+    ...session,
+    id: `${session.id}-${suffix}`,
+    title: `Desktop conversation ${suffix}`,
+  }));
+  const { host } = await openDesktopConversation({
+    state: running,
+    catalogSessions: [session, ...otherSessions],
+    streamLimit: 4,
+  });
+  const stop = () => screen.getByRole("button", { name: conversationWords("en-US").stop });
+  await waitFor(() => expect(stop()).toBeEnabled());
+  expect([...host.activeSubscriptions.values()].filter((id) => id === "")).toHaveLength(2);
+
+  for (const target of otherSessions) {
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: new RegExp(`^${target.title}`) }));
+    });
+    await waitFor(() => expect(host.subscribe).toHaveBeenCalledWith(target.id, undefined));
+    expect(host.limitRejections).toEqual([]);
+    await waitFor(() => expect(stop()).toBeEnabled());
+    const reply = `Live reply from ${target.title}`;
+    act(() =>
+      host.emit({
+        ...host.envelope(1, target.id),
+        type: "item-upsert",
+        payload: { ...transcriptEvent("live-item", reply), turn_id: "turn" },
+      }),
+    );
+    expect(await screen.findByText(reply)).toBeVisible();
+  }
+
+  expect([...host.activeSubscriptions.values()].sort()).toEqual(
+    [
+      "",
+      "",
+      otherSessions[otherSessions.length - 2].id,
+      otherSessions[otherSessions.length - 1].id,
+    ].sort(),
+  );
+  cleanup();
+  await waitFor(() => expect(host.activeSubscriptions.size).toBe(0));
+});
+
+it("reports a full stream budget and restores live controls when a slot is released", async () => {
+  const target = { ...session, id: "overflow-target", title: "Another desktop conversation" };
+  const { host } = await openDesktopConversation({
+    state: running,
+    catalogSessions: [session, target],
+    streamLimit: 4,
+  });
+  const labels = conversationWords("en-US");
+  await waitFor(() => expect(screen.getByRole("button", { name: labels.stop })).toBeEnabled());
+  const releaseSlot = host.holdSubscriptionSlot();
+
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: /^Another desktop conversation/ }));
+  });
+  const reconnecting = "Live updates interrupted. Reconnecting…";
+  expect(await screen.findByText(reconnecting)).toBeVisible();
+  expect(host.limitRejections).toContain(target.id);
+  expect(screen.queryByRole("button", { name: labels.stop })).not.toBeInTheDocument();
+
+  releaseSlot();
+  await waitFor(() => expect(screen.getByRole("button", { name: labels.stop })).toBeEnabled(), {
+    timeout: 2500,
+  });
+  expect(screen.queryByText(reconnecting)).not.toBeInTheDocument();
+  act(() =>
+    host.emit({
+      ...host.envelope(1, target.id),
+      type: "item-upsert",
+      payload: { ...transcriptEvent("reconnected", "Live reply after reopening"), turn_id: "turn" },
+    }),
+  );
+  expect(await screen.findByText("Live reply after reopening")).toBeVisible();
 });

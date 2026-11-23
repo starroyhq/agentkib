@@ -516,6 +516,11 @@ export interface Live {
     error: string | null;
     detail?: string | null;
   } | null;
+  /** An explicit Codex refusal before a turn started. Null clears the previous notice. */
+  turnStartError?: {
+    reason: "codex-turn-start-rejected";
+    message: string;
+  } | null;
   tokenUsage?: unknown;
   streamText?: string;
   streamTextTruncated?: boolean;

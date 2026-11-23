@@ -155,6 +155,32 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+it.each([
+  ["en-US", "Codex could not start the turn."],
+  ["zh-CN", "Codex 无法开始本轮。"],
+  ["zh-Hant", "Codex 無法開始這一輪。"],
+  ["ja-JP", "Codex がターンを開始できませんでした。"],
+] as const)("shows Codex's start rejection in the %s reader", (locale, label) => {
+  const message = "The selected model is unavailable for this account.";
+  state = {
+    ...state,
+    locale,
+    t: conversationWords(locale),
+    notice: "notDispatched",
+    noticeReason: undefined,
+    noticeSource: "send",
+    live: {
+      ...state.live!,
+      turnStartError: { reason: "codex-turn-start-rejected", message },
+    },
+  };
+  const view = reader();
+  expect(screen.getByText(`${label} ${message}`)).toBeVisible();
+  state = { ...state, notice: undefined, live: { ...state.live!, turnStartError: null } };
+  view.update();
+  expect(screen.queryByText(message, { exact: false })).not.toBeInTheDocument();
+});
+
 it("updates activities for the displayed session without showing another session's activity", () => {
   const activity = {
     id: "review",

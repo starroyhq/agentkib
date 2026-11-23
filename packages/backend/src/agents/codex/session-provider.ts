@@ -24,8 +24,10 @@ import { canonicalize, pathIdentity } from "../../paths";
 import { within } from "../../files";
 import { conversationReadKey, ReadStateLedger } from "../../read-state-ledger";
 import { codexTurnMeta, isCodexTurnEndEvent } from "./codex-turn-end";
+import { CODEX_TURN_START_REJECTED } from "./codex-turn-error";
 import { codexExecutable } from "./codex-executable";
 import {
+  CodexAppServerError,
   CodexAppServerReader,
   CodexAppServerSession,
   codexThreadMissing,
@@ -95,6 +97,7 @@ import { CodexUsageLimits } from "./usage-limits";
 import type { LaneObserver } from "../../sessions/lane-observer";
 import type { WorkerRestartRequest, WorkerRestartResult } from "../../orchestration-service";
 import { readManagedRecords, type ManagedRecord } from "./managed-records";
+import { sanitizeSessionText } from "../../session-handoff";
 
 const FOLLOWER_RETRY_MS = 5_000;
 const FOLLOWER_IDLE_MS = 30_000;
@@ -1183,7 +1186,10 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
           dispatched = true;
         },
         undefined,
-        { onFailure: finalizeFailure },
+        {
+          onFailure: finalizeFailure,
+          validateModelChoice: model !== null || effort !== null || request.serviceTier != null,
+        },
       );
       release = undefined;
       this.#managedRunners.set(id, runner);
@@ -3129,24 +3135,6 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
     if (claimed) return claimed;
 
     try {
-      // Fork/resume can retain a native model outside the current picker so the
-      // user can inspect it or change next-turn settings without running it.
-      // Operations that can request inference still validate before dispatch.
-      if (
-        [
-          "send",
-          "steer",
-          "queue-add",
-          "queue-start",
-          "goal-set",
-          "goal-resume",
-          "compact",
-        ].includes(request.operation)
-      )
-        validateManagedModelSelection(
-          record,
-          projectManagedModels(await runner.session.request("model/list", { limit: 100 })),
-        );
       let method: string;
       let params: unknown;
       let responseId: unknown;
@@ -3534,7 +3522,49 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
         return result;
       } else {
         const turnsBefore = runner.state.turnsStarted;
-        response = await runner.session.request(method, params, beforeDispatch);
+        try {
+          response = await runner.session.request(method, params, beforeDispatch);
+        } catch (error) {
+          // An invalid request or parameters is an explicit refusal, unlike a lost
+          // response or an internal error after execution may already have begun.
+          if (
+            method !== "turn/start" ||
+            !(error instanceof CodexAppServerError) ||
+            (error.code !== -32600 && error.code !== -32602)
+          )
+            throw error;
+          await runner.bridge.flush();
+          const live = runner.state.snapshot(this.host.runtimeBootId, true);
+          if (
+            !runner.session.connected ||
+            runner.state.turnsStarted !== turnsBefore ||
+            live.status !== "idle" ||
+            live.turnId !== null ||
+            live.reason
+          )
+            throw error;
+          const reason = CODEX_TURN_START_REJECTED;
+          const nativeError = sanitizeSessionText(error.message, { value: 0 })
+            .trim()
+            .slice(0, 4096);
+          const result = {
+            accepted: false,
+            completed: false,
+            controlOutcome: "not-dispatched",
+            reason,
+            nativeError,
+            // The Project Agent's send tool reports the existing error string.
+            error: nativeError ? `${reason}: ${nativeError}` : reason,
+            sessionId: request.sessionId,
+            requestId: request.requestId,
+            runtimeBootId: this.host.runtimeBootId,
+          };
+          finishManagedCommand(this.host.dataDir, request.requestId, result);
+          runner.state.noteTurnStartRejection(nativeError);
+          const failed = runner.state.snapshot(this.host.runtimeBootId, true);
+          this.host.publishConversationEvent?.(request.sessionId, "state", failed, failed);
+          return result;
+        }
         // thread/compact/start answers before its turn starts (0.163.0). Hold this operation,
         // which the host does not overlap with others, until that turn shows; no send can
         // then start in between. A later start is still followed as usual.
@@ -4513,9 +4543,11 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
     {
       onFailure,
       restrictNativePolicy = false,
+      validateModelChoice = false,
     }: {
       onFailure?: (error: unknown, ownsLease: boolean) => void;
       restrictNativePolicy?: boolean;
+      validateModelChoice?: boolean;
     } = {},
   ): Promise<ManagedRunner> {
     if (pathIdentity(workspace) !== pathIdentity(canonicalize(record.workspace)))
@@ -4603,14 +4635,18 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
           ) {
             const turn = params.turn;
             const outcome = codexTurnMeta(turn)?.outcome;
-            this.host.observeLane((observer) =>
-              observer.turnEnded(
+            // Paginated resume reads public history from the rollout, which may not have
+            // this item yet. The bridge already persisted the completed reply before this callback.
+            this.host.observeLane((observer) => {
+              const ended = [
                 record.id,
                 String(turn.id),
                 outcome === "aborted" ? "cancelled" : (outcome ?? "ended"),
                 codexTurnMeta(turn)?.duration_ms ?? null,
-              ),
-            );
+              ] as const;
+              if (result.turnReply === undefined) observer.turnEnded(...ended);
+              else observer.turnEnded(...ended, undefined, result.turnReply);
+            });
           }
           if (live.status === "awaiting-approval" || live.status === "waiting-input")
             this.host.observeLane((observer) =>
@@ -4683,8 +4719,12 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
       const runner = startingRunner!;
       const bridge = runner.bridge;
       this.host.assertOpen();
-      const modelsResult = await session.request("model/list", { limit: 100 });
-      const models = projectManagedModels(modelsResult);
+      let models: ManagedModelOption[] | undefined;
+      try {
+        models = projectManagedModels(await session.request("model/list", { limit: 100 }));
+      } catch (error) {
+        if (validateModelChoice || !session.connected) throw error;
+      }
       // Plan uses the native presets. Their turn/start mapping and the confirming
       // thread/settings/updated were checked with CLI 0.163.0; a CLI without them keeps
       // the mode unavailable rather than failing the session.
@@ -4705,11 +4745,9 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
         requestedEffort === null &&
         ((isObject(record.native_settings) && typeof record.native_settings.effort === "string") ||
           (stagedModelSettings && record.effort === null));
-      // Creating a new thread is an explicit model choice. Attaching an existing
-      // thread or its fork must also work when its inherited model left the picker;
-      // send and explicit settings changes validate their own model selection.
-      if ((!nativeId && !fork) || stagedModelSettings)
-        validateManagedModelSelection(record, models);
+      // An explicit creation choice uses the catalog. A resumed, forked or recreated
+      // thread retains its settings, including a previously validated pending choice.
+      if (validateModelChoice) validateManagedModelSelection(record, models ?? []);
       const tier = record.service_tier ?? null;
 
       let goal: Record<string, unknown> | null = null;
@@ -4832,10 +4870,12 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
         collaborationMode: isObject(response.collaborationMode) ? response.collaborationMode : null,
       };
       mutableRecord.goal = goal;
-      const defaultModel = models.find((entry) => entry.isDefault === true);
-      mutableRecord.default_model = defaultModel?.id ?? null;
-      mutableRecord.default_effort = defaultModel?.defaultEffort ?? null;
-      mutableRecord.default_service_tier = defaultModel?.defaultServiceTier ?? null;
+      if (models) {
+        const defaultModel = models.find((entry) => entry.isDefault === true);
+        mutableRecord.default_model = defaultModel?.id ?? null;
+        mutableRecord.default_effort = defaultModel?.defaultEffort ?? null;
+        mutableRecord.default_service_tier = defaultModel?.defaultServiceTier ?? null;
+      }
       // Queued messages use thread/queue/*, which 0.148.0 adds after the writer-lock minimum:
       // 0.147.0 answers this read with -32600 "unknown variant" and stays connected. Only a
       // read is tried, since a write to a missing method would leave its outcome unknown.
@@ -6917,6 +6957,7 @@ function managedControlState(state: ManagedCodexState): string {
   delete live.usage;
   delete live.streamText;
   delete live.apiRetry;
+  delete live.turnStartError;
   const record = { ...state.record };
   delete record.snapshot;
   delete record.token_usage;

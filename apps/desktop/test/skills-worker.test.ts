@@ -2,9 +2,12 @@ import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { randomUUID } from "node:crypto";
+import { once } from "node:events";
 import { createServer } from "node:net";
 import { createInterface } from "node:readline";
 import { createRequire } from "node:module";
+import { BroadcastChannel } from "node:worker_threads";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { Skills } from "../../../packages/backend/src/skills";
 import {
@@ -159,11 +162,19 @@ describe("persistent Skills worker", () => {
   it.each(["task", "request"])(
     "rejects %s timeout update checks instead of reporting all skills current",
     async (kind) => {
+      const channelName = randomUUID();
       const { directory, worker } = await fixture(
         kind === "task"
-          ? stalledNetwork
+          ? `
+const { BroadcastChannel } = require("node:worker_threads");
+global.fetch = (_url, { signal }) => new Promise((_resolve, reject) => {
+  signal.throwIfAborted();
+  signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+  const channel = new BroadcastChannel(${JSON.stringify(channelName)});
+  channel.postMessage("fetch-entered");
+  channel.close();
+});`
           : `global.fetch = async () => { throw new DOMException("The operation was aborted due to timeout", "TimeoutError"); };`,
-        600,
       );
       await local(directory);
       const preview = await prepare(worker);
@@ -180,11 +191,29 @@ describe("persistent Skills worker", () => {
         tree_sha: "tree",
       };
       await fs.writeFile(lockFile, JSON.stringify(lock));
-      if (kind === "task")
-        await expect(worker.request("skills.checkUpdates", {})).rejects.toMatchObject({
-          reason: "deadline-exceeded",
-        });
-      else await expect(worker.request("skills.checkUpdates", {})).rejects.toThrow("timeout");
+      if (kind === "request") {
+        await expect(worker.request("skills.checkUpdates", {})).rejects.toThrow("timeout");
+        return;
+      }
+      const channel = new BroadcastChannel(channelName);
+      // Keep Date.now shared with the worker. Fire only the parent's deadline timer,
+      // after setup is complete and the update fetch is listening for cancellation.
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      try {
+        const entered = once(channel, "message");
+        const checking = worker.request("skills.checkUpdates", {});
+        await Promise.race([
+          entered,
+          checking.then(() => {
+            throw new Error("Update check completed before entering fetch");
+          }),
+        ]);
+        await vi.advanceTimersToNextTimerAsync();
+        await expect(checking).rejects.toMatchObject({ reason: "deadline-exceeded" });
+      } finally {
+        channel.close();
+        vi.useRealTimers();
+      }
     },
   );
 

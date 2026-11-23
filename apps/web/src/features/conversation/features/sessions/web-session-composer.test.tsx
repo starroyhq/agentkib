@@ -167,6 +167,7 @@ describe("composer sending shortcuts", () => {
     async (action) => {
       doubles.session.access = {
         ...doubles.session.access,
+        status: "approved",
         device: { ...doubles.session.access?.device, advancedControl: true },
       } as SessionController["access"];
       doubles.session.canSend = false;
@@ -176,6 +177,7 @@ describe("composer sending shortcuts", () => {
         revision: 1,
         sendEnabled: false,
         status: "running",
+        executionLocation: "agentkib",
         turnId: "turn",
         approvals: [],
         questions: [],

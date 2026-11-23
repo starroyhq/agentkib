@@ -404,14 +404,18 @@ export function useSessionController<Words extends ControllerWords>(
     if (!selected || !page || !canRetainPage()) return;
     pageCache.set(selected, page);
   }, [selected, page, pageCache, canRetainPage]);
-  const parkSelectedSession = useCallback(() => {
-    const id = selection.current;
-    const page = pageValue.current;
-    if (!id || !page || !controlReadyRef.current || earlierFlight.current || !canRetainPage())
-      return;
-    pageCache.set(id, page);
-    warmNavigation.current.park?.();
-  }, [pageCache, canRetainPage]);
+  const parkSelectedSession = useCallback(
+    (nextId?: string) => {
+      if (!nextId) warmStreams.trimParked();
+      const id = selection.current;
+      const page = pageValue.current;
+      if (!id || !page || !controlReadyRef.current || earlierFlight.current || !canRetainPage())
+        return;
+      pageCache.set(id, page);
+      warmNavigation.current.park?.(nextId);
+    },
+    [pageCache, canRetainPage, warmStreams],
+  );
   // Route teardown must park the stream before its passive subscription cleanup.
   useLayoutEffect(() => {
     if (!retention) return;
@@ -1747,7 +1751,7 @@ export function useSessionController<Words extends ControllerWords>(
       if (selection.current === id) return;
       if (catalogSessions.current.find((session) => session.id === id)?.availability !== "readable")
         return;
-      parkSelectedSession();
+      parkSelectedSession(id);
       warmNavigation.current.resume = undefined;
       cancelForkNavigation();
       generation.current++;

@@ -46,7 +46,7 @@ type ProgressPatch = Map<string, { value: unknown; revision: number }>;
 const nativeRevision = (value: unknown): value is number =>
   Number.isSafeInteger(value) && Number(value) >= 0;
 export type WarmSessionNavigation = {
-  park?: () => void;
+  park?: (nextId?: string) => void;
   resume?: { generation: number; onCold: () => void };
 };
 type SettingsWrite = { sessionId: string; generation: number; controlChanged?: boolean };
@@ -329,7 +329,7 @@ export function useSessionLive({
         setPage((page) => page);
       } else warmReturn?.onCold();
       closeStream = () => lease.release();
-      warmNavigation.current.park = () => {
+      warmNavigation.current.park = (nextId) => {
         const projection = liveValue.current;
         const coverage = nativeCoverage.current;
         if (
@@ -349,7 +349,8 @@ export function useSessionLive({
         )
           return;
         const accepted = store.replaceLive(projection);
-        if (accepted.live && accepted.cursor) lease.release({ state: accepted, coverage });
+        if (accepted.live && accepted.cursor)
+          lease.release({ state: accepted, coverage }, desktop ? nextId : undefined);
       };
       const connection = ++connectionEpoch;
       const active = () => current() && connection === connectionEpoch;

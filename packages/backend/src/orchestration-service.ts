@@ -70,9 +70,9 @@ export type WorkerRestartResult = {
  */
 export type LaneHost = {
   /** `send`, `steer`, `queue-add`, `stop`, `approve` and `answer` on a lane's session. */
-  control(value: Record<string, unknown>): Promise<unknown>;
+  control(value: Record<string, unknown>, intent?: "desktop-owner-handoff"): Promise<unknown>;
   restart?(request: WorkerRestartRequest, beforeDispatch: () => void): Promise<WorkerRestartResult>;
-  live(sessionId: string): Promise<Record<string, unknown>>;
+  live(sessionId: string, intent?: "send"): Promise<Record<string, unknown>>;
   /** A lightweight live sample for unattended checks when the full read has extra work. */
   observe?(sessionId: string): Promise<Record<string, unknown>>;
   /** A managed Claude lead's own queue holds its reports. Read its limit only for attention. */
@@ -1177,7 +1177,7 @@ export class OrchestrationService {
             this.#workerWatch.delete(lane.id);
             continue;
           }
-          const live = await this.#state(lane.sessionId, true);
+          const live = await this.#state(lane.sessionId, "supervision");
           if (this.#closed) return;
           if (!this.#inAssignedWorkspace(lane, live)) {
             this.#workerWatch.delete(lane.id);
@@ -1816,14 +1816,19 @@ export class OrchestrationService {
     return current;
   }
 
-  async #state(sessionId: string, supervision = false): Promise<Record<string, unknown> | null> {
+  async #state(
+    sessionId: string,
+    intent?: "supervision" | "send",
+  ): Promise<Record<string, unknown> | null> {
     try {
-      const live = await (supervision
+      const live = await (intent === "supervision"
         ? (this.lanes.observe?.(sessionId) ?? this.lanes.live(sessionId))
-        : this.lanes.live(sessionId));
+        : intent === "send"
+          ? this.lanes.live(sessionId, intent)
+          : this.lanes.live(sessionId));
       return isObject(live) ? live : null;
     } catch (error) {
-      if (supervision && error instanceof Error && ACCESS_REASONS.has(error.message))
+      if (intent === "supervision" && error instanceof Error && ACCESS_REASONS.has(error.message))
         return { status: "unavailable", reason: error.message };
       return null;
     }
@@ -1923,7 +1928,7 @@ export class OrchestrationService {
     const title = stringField(input, "title", MAX_TITLE);
     const mode = input.mode === undefined ? "queue" : input.mode;
     if (mode !== "queue" && mode !== "steer") return refuse("invalid-mode");
-    const live = await this.#state(lane.sessionId);
+    const live = await this.#state(lane.sessionId, "send");
     if (!live) return refuse("worker-unavailable");
     const limit = workerLimit(live);
     if (limit && (limit.resetsAt === null || limit.resetsAt > Date.now())) {
@@ -1958,7 +1963,7 @@ export class OrchestrationService {
     const requestId = randomUUID();
     let outcome: Record<string, unknown>;
     try {
-      outcome = (await this.lanes.control({
+      const request = {
         operation,
         sessionId: lane.sessionId,
         requestId,
@@ -1968,7 +1973,10 @@ export class OrchestrationService {
         experimentalEnabled: true,
         ...(operation === "steer" ? { turnId: live.turnId } : {}),
         text: body,
-      })) as Record<string, unknown>;
+      };
+      outcome = (await (agent === "codex" && operation === "send" && live.ownerHandoff === true
+        ? this.lanes.control(request, "desktop-owner-handoff")
+        : this.lanes.control(request))) as Record<string, unknown>;
     } catch (error) {
       outcome = { accepted: false, reason: error instanceof Error ? error.message : "send-failed" };
     }

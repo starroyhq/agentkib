@@ -2,6 +2,7 @@ import { SessionContinuationReadOnly, sessionContinuationCopy } from "../../sess
 import type { Access, ConversationSessionSummary, WebClient } from "@agentkib/web-client";
 import type { InteractionLocale } from "../../interaction-model";
 import { useCallback } from "react";
+import { sessionContinuationRegistration } from "../../agents/session-continuation";
 
 export function SessionReadOnly({
   session: { selected, current, client, access, locale },
@@ -21,7 +22,7 @@ export function SessionReadOnly({
   notify: (message: string) => void;
 }) {
   const currentId = current?.id;
-  const agent = current?.agent;
+  const resume = sessionContinuationRegistration(current?.agent)?.loadResumeCommand;
   const accessStatus = access?.status;
   const deviceId = access?.device?.id;
   const copy = sessionContinuationCopy(locale);
@@ -30,19 +31,19 @@ export function SessionReadOnly({
       if (
         !selected ||
         currentId !== selected ||
-        !["codex", "claude-code"].includes(agent ?? "") ||
+        !resume ||
         accessStatus !== "approved" ||
         !deviceId
       )
         throw new Error("session-unavailable");
-      const result = await (agent === "claude-code"
-        ? client.claudeResumeCommand(selected, signal)
-        : client.codexResumeCommand(selected, signal));
+      const result = await resume(client, selected, signal);
       if (!result.available || !result.command.trim()) throw new Error("command-unavailable");
       return result.command;
     },
-    [selected, currentId, agent, client, accessStatus, deviceId],
+    [selected, currentId, resume, client, accessStatus, deviceId],
   );
+  if (!resume) return null;
+
   return (
     <div className="w-full max-w-3xl self-center">
       <SessionContinuationReadOnly

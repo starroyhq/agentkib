@@ -463,6 +463,7 @@ const reasons: Record<Locale, Record<string, string>> = {
     "codex-sandbox-mismatch":
       "Codex 返回的可写范围与会话目录不一致，已停止本次操作。请检查会话状态后重试。",
     "native-policy-unconfirmed": "无法确认这条会话的原生执行策略。",
+    "native-policy-full-access-required": "续跑使用的原生执行策略要求此设备具有完全访问权限。",
     "native-policy-approval-policy-mismatch": "原生审批方式与支持的策略不符。",
     "native-policy-approvals-reviewer-mismatch": "原生审批审核器与支持的策略不符。",
     "native-policy-sandbox-type-mismatch": "原生沙盒类型与支持的策略不符。",
@@ -622,6 +623,7 @@ const reasons: Record<Locale, Record<string, string>> = {
     "codex-sandbox-mismatch":
       "Codex 傳回的可寫範圍與對話目錄不一致，已停止本次操作。請檢查對話狀態後重試。",
     "native-policy-unconfirmed": "無法確認這筆對話的原生執行策略。",
+    "native-policy-full-access-required": "續跑使用的原生執行策略要求此裝置具備完全存取權限。",
     "native-policy-approval-policy-mismatch": "原生核准方式與支援的策略不符。",
     "native-policy-approvals-reviewer-mismatch": "原生核准審查者與支援的策略不符。",
     "native-policy-sandbox-type-mismatch": "原生沙箱類型與支援的策略不符。",
@@ -782,6 +784,8 @@ const reasons: Record<Locale, Record<string, string>> = {
     "codex-sandbox-mismatch":
       "Codex returned a writable scope that differs from the session directory. The operation was stopped. Check the session state, then retry.",
     "native-policy-unconfirmed": "This session’s native execution policy is unconfirmed.",
+    "native-policy-full-access-required":
+      "This device needs full access to continue with the native execution policy.",
     "native-policy-approval-policy-mismatch":
       "The approval mode differs from the supported policies.",
     "native-policy-approvals-reviewer-mismatch":
@@ -972,6 +976,8 @@ const reasons: Record<Locale, Record<string, string>> = {
     "codex-sandbox-mismatch":
       "Codex が返した書き込み可能範囲が会話のディレクトリと一致しないため、操作を停止しました。会話の状態を確認してから再試行してください。",
     "native-policy-unconfirmed": "この会話のネイティブ実行ポリシーを確認できません。",
+    "native-policy-full-access-required":
+      "ネイティブ実行ポリシーで続行するには、このデバイスにフルアクセス権が必要です。",
     "native-policy-approval-policy-mismatch":
       "ネイティブの承認方式がサポート対象のポリシーと異なります。",
     "native-policy-approvals-reviewer-mismatch":

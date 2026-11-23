@@ -25,7 +25,10 @@ import {
   threadTitleModel,
   threadTitlePrompt,
 } from "../../../packages/backend/src/agents/codex/codex-thread-title";
-import { CodexFollowerConnection } from "../../../packages/backend/src/agents/codex/codex-follower-connection";
+import {
+  CodexDesktopConnectionError,
+  CodexFollowerConnection,
+} from "../../../packages/backend/src/agents/codex/codex-follower-connection";
 import { CodexFollowerState } from "../../../packages/backend/src/agents/codex/codex-follower-state";
 import { CodexDesktopApp } from "../../../packages/backend/src/agents/codex/codex-desktop-app";
 import { AUTO_CONTINUE_TEXT } from "../../../packages/backend/src/usage-limit";
@@ -420,18 +423,22 @@ function fixture(
   const sendWithState = (
     state: Awaited<ReturnType<typeof live>>,
     fields: Record<string, unknown> = {},
+    restrictNativePolicy?: boolean,
   ) =>
-    web.managedControl({
-      operation: "send",
-      sessionId: summary.id,
-      requestId: randomUUID(),
-      deviceId: "fixture",
-      runtimeBootId: state.runtimeBootId,
-      expectedRevision: state.revision,
-      experimentalEnabled: true,
-      text: "Continue",
-      ...fields,
-    });
+    web.managedControl(
+      {
+        operation: "send",
+        sessionId: summary.id,
+        requestId: randomUUID(),
+        deviceId: "fixture",
+        runtimeBootId: state.runtimeBootId,
+        expectedRevision: state.revision,
+        experimentalEnabled: true,
+        text: "Continue",
+        ...fields,
+      },
+      restrictNativePolicy,
+    );
   const send = async (fields: Record<string, unknown> = {}) => sendWithState(await live(), fields);
   return {
     root,
@@ -1559,6 +1566,85 @@ describe("Codex indexed native execution policy", () => {
       approvalPolicy: "never",
       sandboxPolicy: { type: "dangerFullAccess" },
     });
+  });
+
+  it.each(["never", "on-request"] as const)(
+    "denies a restricted device before adopting a privileged native policy (%s)",
+    async (approvalPolicy) => {
+      const f = fixture(true);
+      const fullAccess = approvalPolicy === "never";
+      setNativePolicy(
+        f,
+        fullAccess
+          ? full
+          : {
+              approval_policy: approvalPolicy,
+              approvals_reviewer: "agent",
+              sandbox_policy: {
+                type: "workspace-write",
+                writable_roots: [],
+                network_access: false,
+                exclude_tmpdir_env_var: true,
+                exclude_slash_tmp: true,
+              },
+            },
+      );
+      f.setPolicyReply(
+        fullAccess
+          ? { approvalPolicy, approvalsReviewer: "user", sandbox: { type: "dangerFullAccess" } }
+          : { approvalPolicy, approvalsReviewer: "auto_review" },
+      );
+      const live = await f.live();
+      const requestId = randomUUID();
+      expect(
+        await f.sendWithState(live, { requestId, deviceId: "restricted-device" }, true),
+      ).toMatchObject({
+        accepted: false,
+        controlOutcome: "not-dispatched",
+        reason: "native-policy-full-access-required",
+      });
+      expect(f.methods).not.toContain("thread/resume");
+      expect(f.methods).not.toContain("turn/start");
+      expect(
+        readControlReceipt(f.root, { requestId, deviceId: "restricted-device" }),
+      ).toMatchObject({
+        status: "not-dispatched",
+      });
+
+      expect(await f.send({ deviceId: "full-access-device" })).toMatchObject({ accepted: true });
+      expect(f.methods).toContain("thread/resume");
+      expect(f.methods).toContain("turn/start");
+
+      f.servers.at(-1)!.complete();
+      const resident = await f.live();
+      expect(resident.status).toBe("idle");
+      expect(
+        await f.sendWithState(resident, { deviceId: "restricted-device" }, true),
+      ).toMatchObject({
+        accepted: false,
+        controlOutcome: "not-dispatched",
+        error: "native-policy-full-access-required",
+      });
+      expect(f.methods.filter((method) => method === "turn/start")).toHaveLength(1);
+    },
+  );
+
+  it("allows a restricted device to adopt the native default workspace policy", async () => {
+    const f = fixture(true);
+    setNativePolicy(f, {
+      approval_policy: "on-request",
+      approvals_reviewer: "user",
+      sandbox_policy: {
+        type: "workspace-write",
+        writable_roots: [],
+        network_access: false,
+        exclude_tmpdir_env_var: true,
+        exclude_slash_tmp: true,
+      },
+    });
+    expect(
+      await f.sendWithState(await f.live(), { deviceId: "restricted-device" }, true),
+    ).toMatchObject({ accepted: true });
   });
 
   it("keeps a differing native policy visible and refuses to run or replace it", async () => {
@@ -3482,6 +3568,65 @@ describe("Codex automatic CLI continuation", () => {
     expect(f.follower).not.toHaveBeenCalled();
   });
 
+  it("resumes with one turn and pages older native history while the runner is connected", async () => {
+    const f = fixture(true);
+    f.setServerUserAgent("agentkib/0.167.0 (Mac OS 26.0.0; arm64) fixture");
+    f.setPolicyReply({
+      thread: { id: nativeId, cwd: f.workspace, status: { type: "idle" }, turns: [] },
+      initialTurnsPage: {
+        data: [{ id: "finished-turn", status: "completed", items: [] }],
+        nextCursor: "older-turns",
+      },
+    });
+
+    expect(await f.send()).toMatchObject({ accepted: true });
+    expect(f.requests.filter(({ method }) => method === "thread/resume")).toMatchObject([
+      {
+        params: {
+          threadId: nativeId,
+          excludeTurns: true,
+          initialTurnsPage: { limit: 1, sortDirection: "desc", itemsView: "full" },
+        },
+      },
+    ]);
+    expect(f.methods.filter((method) => method === "turn/start")).toHaveLength(1);
+    expect(f.servers[0]?.connected).toBe(true);
+
+    const request = { operation: "events", sessionId: f.summary.id, limit: 1 };
+    const page = await f.web.request(request);
+    expect(page.events).toEqual([expect.objectContaining({ content: "Earlier answer" })]);
+    expect(page.next_cursor).toMatch(/^codex-native-v1:/);
+    expect(await f.web.request({ ...request, cursor: page.next_cursor })).toMatchObject({
+      events: [expect.objectContaining({ content: "Earlier user input" })],
+    });
+    expect(f.requests).not.toContainEqual(
+      expect.objectContaining({
+        method: "thread/read",
+        params: expect.objectContaining({ includeTurns: true }),
+      }),
+    );
+  });
+
+  it("keeps an active turn from the resume page and does not start another turn", async () => {
+    const f = fixture(true);
+    f.setServerUserAgent("agentkib/0.167.0 (Mac OS 26.0.0; arm64) fixture");
+    f.setPolicyReply({
+      thread: { id: nativeId, cwd: f.workspace, status: { type: "active" }, turns: [] },
+      initialTurnsPage: {
+        data: [{ id: "existing-turn", status: "inProgress", items: [] }],
+        nextCursor: "older-turns",
+      },
+    });
+
+    expect(await f.send()).toMatchObject({
+      accepted: false,
+      error: "session-busy",
+      controlOutcome: "not-dispatched",
+    });
+    expect(await f.live()).toMatchObject({ status: "running", turnId: "existing-turn" });
+    expect(f.methods).not.toContain("turn/start");
+  });
+
   it("resets history cursors when switching between native read-only history and a managed runner", async () => {
     vi.useFakeTimers();
     const f = fixture(true);
@@ -5221,7 +5366,7 @@ describe("Codex Desktop follow", () => {
     const f = fixture();
     vi.spyOn(CodexFollowerConnection, "supported").mockReturnValue(true);
     holdWriterLock(f);
-    f.follower.mockRejectedValue(new Error("no Codex session owner found"));
+    f.follower.mockRejectedValue(new CodexDesktopConnectionError("codex-desktop-owner-missing"));
     let now = Date.now();
     vi.spyOn(Date, "now").mockImplementation(() => now);
     expect(await f.live()).toMatchObject({
@@ -5263,7 +5408,7 @@ describe("Codex Desktop follow", () => {
     vi.spyOn(CodexFollowerConnection, "supported").mockReturnValue(true);
     holdWriterLock(f);
     f.setFailure(activeWriter());
-    f.follower.mockRejectedValue(new Error("no Codex session owner found"));
+    f.follower.mockRejectedValue(new CodexDesktopConnectionError("codex-desktop-owner-missing"));
     const running = vi.spyOn(CodexDesktopApp.prototype, "running").mockResolvedValue(true);
     const open = vi.spyOn(CodexDesktopApp.prototype, "openThread").mockResolvedValue(true);
     expect(await f.live()).toMatchObject({
@@ -5306,7 +5451,7 @@ describe("Codex Desktop follow", () => {
     f.setFailure(activeWriter());
     let shown = false;
     f.follower.mockImplementation(async () => {
-      if (!shown) throw new Error("no Codex session owner found");
+      if (!shown) throw new CodexDesktopConnectionError("codex-desktop-owner-missing");
       return bridge as unknown as CodexFollowerBridge;
     });
     vi.spyOn(CodexDesktopApp.prototype, "running").mockResolvedValue(true);
@@ -5352,12 +5497,64 @@ describe("Codex Desktop follow", () => {
     });
   });
 
+  it("offers a Worker send an owner handoff before opening a window or starting a writer", async () => {
+    const { f, bridge } = followerFixture({ revision: 4 });
+    let shown = false;
+    f.follower.mockImplementation(async () => {
+      if (!shown) throw new CodexDesktopConnectionError("codex-desktop-owner-missing");
+      return bridge as unknown as CodexFollowerBridge;
+    });
+    vi.spyOn(CodexDesktopApp.prototype, "running").mockResolvedValue(true);
+    const open = vi.spyOn(CodexDesktopApp.prototype, "openThread").mockImplementation(async () => {
+      shown = true;
+      return true;
+    });
+    const provider = f.web.codexSessionProvider() as CodexSessionProvider;
+    const state = await provider.workerLive(f.summary.id, true, "send");
+    expect(state).toMatchObject({
+      ownershipReason: "codex-owner-busy",
+      sendEnabled: true,
+      ownerHandoff: true,
+    });
+    expect(open).not.toHaveBeenCalled();
+    const requestId = randomUUID();
+    expect(
+      await provider.workerDesktopSend({
+        operation: "send",
+        sessionId: f.summary.id,
+        requestId,
+        deviceId: "fixture-worker-lead",
+        runtimeBootId: state.runtimeBootId,
+        expectedRevision: state.revision,
+        experimentalEnabled: true,
+        text: "Continue",
+      }),
+    ).toMatchObject({ accepted: true });
+    expect(open).toHaveBeenCalledExactlyOnceWith(nativeId);
+    expect(bridge.mutate).toHaveBeenCalledExactlyOnceWith(
+      "thread-follower-start-turn",
+      {
+        conversationId: nativeId,
+        turnStart: {
+          request: {
+            threadId: nativeId,
+            clientUserMessageId: requestId,
+            input: [{ type: "text", text: "Continue", text_elements: [] }],
+          },
+        },
+      },
+      4,
+      expect.any(Function),
+    );
+    expect(f.start).not.toHaveBeenCalled();
+  });
+
   it("leaves the message unsent when the Codex app does not take the thread", async () => {
     const f = fixture(false, undefined, { AGENTKIB_CODEX_HANDOFF_TIMEOUT_MS: "600" });
     vi.spyOn(CodexFollowerConnection, "supported").mockReturnValue(true);
     holdWriterLock(f);
     f.setFailure(activeWriter());
-    f.follower.mockRejectedValue(new Error("no Codex session owner found"));
+    f.follower.mockRejectedValue(new CodexDesktopConnectionError("codex-desktop-owner-missing"));
     vi.spyOn(CodexDesktopApp.prototype, "running").mockResolvedValue(true);
     const open = vi.spyOn(CodexDesktopApp.prototype, "openThread").mockResolvedValue(true);
     const state = await f.live();

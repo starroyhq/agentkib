@@ -81,6 +81,7 @@ import {
   mergeCatalogSessions,
   isStaleCatalogRead,
   retryStaleCatalogRead,
+  sessionProviderDeclaration,
   type ConversationCatalog,
   type Access,
   type WebConnection,
@@ -94,6 +95,11 @@ import {
   type Live,
   type UserQuestionRequest,
 } from "@agentkib/web-client";
+import { sessionContinuationRegistration } from "../../agents/session-continuation";
+import {
+  sessionSendStatusAllows,
+  sessionStopCapabilityAllows,
+} from "../../agents/session-turn-controls";
 import type { InteractionLocale as Locale } from "../../interaction-model";
 import type { SessionPlatform } from "../../session-platform";
 import type { createSessionImageScope } from "./session-image-scope";
@@ -2443,9 +2449,9 @@ export function useSessionController<Words extends ControllerWords>(
       hasDurablePending(id) ||
       accessRef.current?.status !== "approved" ||
       accessRef.current.protocolVersion !== 2 ||
-      !["codex", "claude-code"].includes(
-        catalogSessions.current.find((item) => item.id === id)?.agent ?? "",
-      ) ||
+      !sessionContinuationRegistration(
+        catalogSessions.current.find((item) => item.id === id)?.agent,
+      )?.refreshOccupancy ||
       (prior.sessionId === id &&
         prior.generation === generation.current &&
         Date.now() - prior.at < 4000)
@@ -2494,9 +2500,9 @@ export function useSessionController<Words extends ControllerWords>(
     const files = [...(composerDraft?.files ?? [])];
     const resources = (composerDraft?.resources ?? []).map((item) => ({ ...item }));
     if (
-      !["codex", "claude-code"].includes(
-        catalogSessions.current.find((item) => item.id === id)?.agent ?? "",
-      )
+      !sessionContinuationRegistration(
+        catalogSessions.current.find((item) => item.id === id)?.agent,
+      )?.forkEntry
     )
       return;
     let resolve!: ForkNavigation["resolve"];
@@ -2553,6 +2559,7 @@ export function useSessionController<Words extends ControllerWords>(
     }
   }
   const current = sessions.find((s) => s.id === selected);
+  const turnProvider = sessionProviderDeclaration(current?.agent);
   const currentWorkspace = workspaces?.find((w) => w.id === current?.workspace_id);
   const currentTitle = displaySessionTitle(current?.title, t.untitled);
   const formatCatalogTime = (value?: string | null) =>
@@ -2579,9 +2586,8 @@ export function useSessionController<Words extends ControllerWords>(
     !!access?.experimentalEnabled &&
     !!access.device?.send &&
     !!live?.sendEnabled &&
-    (live.status === "idle" ||
-      (current?.agent === "claude-code" && live.status === "released") ||
-      (dshStatus?.continuation === "status-unknown" && live.status === "unsupported")) &&
+    live.sessionId === selected &&
+    sessionSendStatusAllows(turnProvider, live) &&
     live.activity !== "compacting";
   const canStop =
     controlReady &&
@@ -2592,8 +2598,7 @@ export function useSessionController<Words extends ControllerWords>(
     !!access?.experimentalEnabled &&
     !!access.device?.send &&
     live?.stopEnabled === true &&
-    (live.executionMode !== "claude-follower" ||
-      (capabilities?.sessionId === selected && capabilities.features.stop?.available === true)) &&
+    sessionStopCapabilityAllows(live, capabilities, selected, turnProvider) &&
     !!live.turnId;
   const terminalReasonText =
     live?.executionMode === "claude-follower"

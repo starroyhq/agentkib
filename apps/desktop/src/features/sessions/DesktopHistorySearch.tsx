@@ -1,5 +1,9 @@
 import { useState } from "react";
-import { HistorySearchLauncher, SessionPlatformProvider } from "@agentkib/session-ui";
+import {
+  HistorySearchLauncher,
+  SessionPlatformProvider,
+  sessionHistoryEntry,
+} from "@agentkib/session-ui";
 import { useDesktopSessionPlatform } from "./conversation/session-platform";
 import {
   createDesktopConversationClient,
@@ -19,7 +23,7 @@ export function DesktopHistorySearch() {
     selected &&
     !selected.remote &&
     selected.availability === "readable" &&
-    ["codex", "claude-code", "antigravity"].includes(selected.agent);
+    sessionHistoryEntry(selected.agent)?.embeddedSearch;
   return (
     <SessionPlatformProvider platform={platform}>
       <HistorySearchLauncher

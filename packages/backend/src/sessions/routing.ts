@@ -29,6 +29,8 @@ const hostSessionEnvelope = z.strictObject({
   host: z.strictObject({
     target: z.enum(["codex", "claude-code"]).optional(),
     request: z.record(z.string(), z.unknown()),
+    // Host-derived device authorization stays outside the user's request and receipt fingerprint.
+    restrictCodexNativePolicy: z.literal(true).optional(),
   }),
 });
 

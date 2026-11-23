@@ -106,6 +106,7 @@ export interface HistorySearchPanelProps {
   scope: string;
   initialQuery?: string;
   onReference?: (reference: ResolvedHistoryReference) => void;
+  referenceDisabledReason?: string;
   onOpenSession?: (session: ConversationSessionSummary) => void | Promise<void>;
   currentSessionId?: string;
   navigationContext?: string;
@@ -137,6 +138,7 @@ export function HistorySearchPanel({
   scope,
   initialQuery = "",
   onReference,
+  referenceDisabledReason,
   onOpenSession,
   currentSessionId,
   navigationContext = "",
@@ -165,6 +167,9 @@ export function HistorySearchPanel({
   const [located, setLocated] = useState<HistoryLocatedRecord>();
   const [selection, setSelection] = useState<[number, number]>([0, 0]);
   const [busy, setBusy] = useState(false);
+  const quoteDisabledReason =
+    referenceDisabledReason ??
+    (busy ? c.loading : selection[0] === selection[1] ? c.selection : undefined);
   const [error, setError] = useState("");
   const [added, setAdded] = useState(false);
   const [openConfirmation, setOpenConfirmation] = useState<{
@@ -176,6 +181,10 @@ export function HistorySearchPanel({
   useLayoutEffect(() => {
     navigation.current = { navigationContext, currentSessionId, openDisabled, onOpenSession };
   }, [navigationContext, currentSessionId, openDisabled, onOpenSession]);
+  const referenceControl = useRef({ onReference, referenceDisabledReason });
+  useLayoutEffect(() => {
+    referenceControl.current = { onReference, referenceDisabledReason };
+  }, [onReference, referenceDisabledReason]);
   const request = useRef(0);
   const indexEnabled = useRef<boolean | undefined>(undefined);
   const indexGeneration = useRef<string | undefined>(undefined);
@@ -279,18 +288,18 @@ export function HistorySearchPanel({
   );
   const current = useCallback(
     async (generation: number, signal: AbortSignal) => {
-      if (!active.current || signal.aborted || generation !== request.current) return false;
+      if (!active.current || signal.aborted || generation !== request.current) return;
       const access = await client.access(signal);
-      if (!active.current || signal.aborted || generation !== request.current) return false;
+      if (!active.current || signal.aborted || generation !== request.current) return;
       if (historyAccessScope(access) !== scope) {
         scopeInvalid.current = true;
         request.current++;
         inFlight.current?.abort();
         clearPrivate();
         ended.current?.();
-        return false;
+        return;
       }
-      return true;
+      return access;
     },
     [client, scope, clearPrivate],
   );
@@ -464,7 +473,7 @@ export function HistorySearchPanel({
     }
   }
   async function quote() {
-    if (!located || !onReference || selection[0] === selection[1]) return;
+    if (!located || !onReference || quoteDisabledReason || scopeInvalid.current) return;
     const { abort, generation } = begin();
     try {
       const value = await client.historyReferences(
@@ -478,9 +487,17 @@ export function HistorySearchPanel({
         ],
         abort.signal,
       );
-      if (!(await current(generation, abort.signal))) return;
+      const access = await current(generation, abort.signal);
+      const reference = referenceControl.current;
+      if (
+        !access?.device?.send ||
+        !reference.onReference ||
+        reference.referenceDisabledReason ||
+        navigation.current.currentSessionId !== currentSessionId
+      )
+        return;
       if (!value.references[0]) throw new Error("history_reference_unavailable");
-      onReference(value.references[0]);
+      reference.onReference(value.references[0]);
       setAdded(true);
     } catch (e) {
       if (generation === request.current && !abort.signal.aborted) fail(e);
@@ -731,11 +748,18 @@ export function HistorySearchPanel({
                   className="mt-2 max-h-32 min-h-20 w-full rounded border bg-background p-2"
                 />
               </label>
-              <p className="text-xs text-muted-foreground">{c.quoteOnly}</p>
-              <Button disabled={busy || selection[0] === selection[1]} onClick={() => void quote()}>
+              {!referenceDisabledReason && (
+                <p className="text-xs text-muted-foreground">{c.quoteOnly}</p>
+              )}
+              <Button
+                className="disabled:pointer-events-auto"
+                disabled={!!quoteDisabledReason}
+                title={quoteDisabledReason}
+                onClick={() => void quote()}
+              >
                 {c.quote}
               </Button>
-              {added && (
+              {added && !referenceDisabledReason && (
                 <p role="status" className="text-xs">
                   {c.added}
                 </p>

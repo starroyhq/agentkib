@@ -54,7 +54,7 @@ AgentKib 不自动下载 ACP server，也不读取或复制 Google 登录凭据�
 - **受控 Agent**：Antigravity 加入 `MANAGED_AGENTS`。新建会话时在所选工作区 `session/new`，按选择设置模型、推理档位和模式后发出第一条消息；新建选项取自一个不发消息的临时会话（CLI 不保存没有消息的会话）。
 - **设置**：模型、推理档位（`thought_level`）和模式（`mode`：default、accept-edits、auto、plan）是会话自己的 ACP 选项，在两轮之间用 `session/set_config_option` 设置，下一轮生效。Antigravity 续接会话时推理档位回到默认值，所以 AgentKib 把用户的选择记在数据目录的 `antigravity-session-settings.json`，每次连接时重新设置。`auto` 会自动执行它认为安全的命令，只接受完全访问的设备。
 - **审批**：CLI 的工具参数与旧服务不同（命令为 `CommandLine`，编辑为 `Path`、`Target`、`Replacement` 加上差异），AgentKib 先映射到既有的核对规则：命令显示命令行，编辑以差异显示。只提供 CLI 给出的“允许一次”和“拒绝”。
-- **项目 Agent**：由 AgentKib 控制的 Antigravity 会话可以担任项目 Agent。连接会话时把 `agentkib_workers` 回环端点作为 `mcpServers` 交给 Antigravity，不写入 Antigravity 的配置；工具名为 `mcp_agentkib_workers_<工具>` 的审批由 AgentKib 自动允许一次。代批、代答范围变化后，在两轮之间重新连接以换上新工具。汇报经 AgentKib 的会话控制发出，忙时排队。
+- **项目 Agent**：由 AgentKib 控制的 Antigravity 会话可以担任项目 Agent。连接会话时把 `agentkib_workers` 回环端点作为 `mcpServers` 交给 Antigravity，不写入 Antigravity 的配置。AgentKib 按该端点实际登记的工具生成完整名称（如 `mcp_agentkib_workers_worker_list`），精确匹配时自动允许一次，其余审批照常请求确认。代批、代答范围变化后，在两轮之间重新连接以换上新工具。汇报经 AgentKib 的会话控制发出，忙时排队。
 - **失败原因**：一轮没能运行或完成时，会话保持可用，输入框上方说明原因：额度或速率限制（`antigravity-usage-limited`）、未登录（`antigravity-login-required`，在终端运行一次 `agy` 登录）或其他失败（`antigravity-run-failed`）。
 - **实测但未接入**：`agy acp` 接受图片提示；运行中再发一条提示也会被接受（前一个提示立即以 `end_turn` 返回，内容继续生成）。AgentKib 暂不提供附件和插话，仍按队列在一轮结束后发送。
 

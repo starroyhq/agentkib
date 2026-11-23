@@ -19,6 +19,7 @@ import { DshSessionProvider } from "./agents/dsh/session-provider";
 import { projectContextUsage, type ContextUsage } from "./context-usage";
 import type { ReadStateTarget } from "./conversation-read-state";
 import { catalogCheckouts } from "./git-checkouts";
+import type { LeadToolRegistration } from "./orchestration-endpoint";
 import { SerialSessionQueue } from "./sessions/serial-session-queue";
 import type { SessionIndex } from "./session-index";
 import type { SessionProviderRegistry, SessionProviders } from "./session-provider";
@@ -366,8 +367,10 @@ export class WebReadRequests {
     }
   }
 
-  leadEndpoints(source: ((sessionId: string) => Promise<string | null>) | undefined): void {
-    this.#codex.leadEndpoints(source);
+  leadEndpoints(source?: (sessionId: string) => Promise<LeadToolRegistration | null>): void {
+    this.#codex.leadEndpoints(
+      source && (async (sessionId) => (await source(sessionId))?.url ?? null),
+    );
     this.#devin.leadEndpoints(source);
     this.#antigravity.leadEndpoints(source);
   }

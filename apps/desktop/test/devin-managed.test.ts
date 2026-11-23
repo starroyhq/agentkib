@@ -771,6 +771,11 @@ describe.runIf(posix)("Devin model catalog", () => {
 });
 
 describe.runIf(posix)("Devin over ACP", () => {
+  const lead = {
+    serverName: "agentkib_workers",
+    url: "http://127.0.0.1:1/lead/x",
+    toolNames: ["worker_list"],
+  };
   const permission = (rule: string) => ({
     toolCall: {
       toolCallId: "exec:1",
@@ -837,37 +842,62 @@ describe.runIf(posix)("Devin over ACP", () => {
     expect(runner.snapshot()).toMatchObject({ status: "idle", approvals: [] });
   });
 
-  it("offers a Project Agent its worker tools and allows only those by itself", async () => {
-    const root = temp();
-    const devin = fakeDevinAcp(root);
-    devin.turn({ permission: permission("mcp__agentkib_workers__worker_list") });
-    const runner = new DevinManagedRunner(root, "known-session", {
-      ...host(devin.file, () => [], []),
-      leadTools: async () => [
-        { type: "http", name: "agentkib_workers", url: "http://127.0.0.1:1/lead/x", headers: [] },
-      ],
-    });
-    await runner.send("List the workers", 0, () => {});
-    await settled(runner);
-    const calls = readFileSync(devin.log, "utf8");
-    expect(calls).toContain("mcp agentkib_workers http://127.0.0.1:1/lead/x");
-    expect(calls).toContain("permission allow_once");
-    expect(runner.snapshot()).toMatchObject({ status: "idle", reason: null });
-    // Without the lead's tools, the same tool name is the person's to allow.
-    const other = temp();
-    const plain = fakeDevinAcp(other);
-    plain.turn({ permission: permission("mcp__agentkib_workers__worker_list") });
-    const asks = new DevinManagedRunner(
-      other,
-      "known-session",
-      host(plain.file, () => [], []),
-    );
-    await asks.send("List the workers", 0, () => {});
-    for (let attempt = 0; attempt < 100 && asks.snapshot().status !== "waiting-approval"; attempt++)
-      await new Promise((resolve) => setTimeout(resolve, 50));
-    expect(asks.snapshot().status).toBe("waiting-approval");
-    asks.close();
-  });
+  it.each([lead.serverName, "session_workers"])(
+    "offers a Project Agent its registered MCP server %s and allows its worker tool once",
+    async (serverName) => {
+      const root = temp();
+      const devin = fakeDevinAcp(root);
+      devin.turn({ permission: permission(`mcp__${serverName}__worker_list`) });
+      const runner = new DevinManagedRunner(root, "known-session", {
+        ...host(devin.file, () => [], []),
+        leadTools: async () => ({ ...lead, serverName }),
+      });
+      try {
+        await runner.send("List the workers", 0, () => {});
+        await expect.poll(() => runner.snapshot().status, { timeout: 3500 }).toBe("idle");
+        const calls = readFileSync(devin.log, "utf8");
+        expect(calls).toContain(`mcp ${serverName} ${lead.url}`);
+        expect(calls).toContain("permission allow_once");
+        expect(runner.snapshot()).toMatchObject({ reason: null, sendEnabled: true });
+      } finally {
+        runner.close();
+      }
+    },
+  );
+
+  it.each([
+    ["without a worker registration", "mcp__agentkib_workers__worker_list", null],
+    ["from a similarly named server", "mcp__agentkib_workers_x__worker_list", lead],
+    ["for an unregistered tool on the same server", "mcp__agentkib_workers__worker_other", lead],
+  ] as const)(
+    "asks the person to approve an MCP request %s",
+    async (_label, rule, registration) => {
+      const root = temp();
+      const devin = fakeDevinAcp(root);
+      devin.turn({ permission: permission(rule) });
+      const runner = new DevinManagedRunner(root, "known-session", {
+        ...host(devin.file, () => [], []),
+        ...(registration && { leadTools: async () => registration }),
+      });
+      try {
+        await runner.send("List the workers", 0, () => {});
+        await expect
+          .poll(() => runner.snapshot().status, { timeout: 3500 })
+          .toBe("waiting-approval");
+        expect(runner.snapshot().approvals).toEqual([
+          expect.objectContaining({
+            presentation: "mcp",
+            availableDecisions: ["allow_once", "reject_once"],
+          }),
+        ]);
+        const calls = readFileSync(devin.log, "utf8");
+        if (registration) expect(calls).toContain(`mcp ${lead.serverName} ${lead.url}`);
+        expect(calls).not.toContain("permission allow_once");
+      } finally {
+        runner.close();
+      }
+    },
+  );
 
   it("asks for a newer Devin CLI when ACP refuses its own login", async () => {
     const root = temp();

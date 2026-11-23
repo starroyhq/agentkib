@@ -6,6 +6,7 @@ import path from "node:path";
 import { z } from "zod";
 import type { ContextUsage } from "../../context-usage";
 import { within } from "../../files";
+import type { LeadToolRegistration } from "../../orchestration-endpoint";
 import {
   claimManagedCommand,
   dispatchManagedCommand,
@@ -143,10 +144,12 @@ export class AntigravitySessionProvider implements AntigravityExecutor, TypedSes
   #options: { at: number; choices: Promise<Record<string, unknown>> } | undefined;
   /** Sessions whose ACP control was confirmed (not App or IDE history read from disk). */
   #controllable = new Set<string>();
-  #leadEndpoint: ((sessionId: string) => Promise<string | null>) | undefined;
+  #leadEndpoint: ((sessionId: string) => Promise<LeadToolRegistration | null>) | undefined;
 
   /** Where a Project Agent's worker tools are served (`OrchestrationService.leadTools`). */
-  leadEndpoints(source: ((sessionId: string) => Promise<string | null>) | undefined): void {
+  leadEndpoints(
+    source: ((sessionId: string) => Promise<LeadToolRegistration | null>) | undefined,
+  ): void {
     this.#leadEndpoint = source;
   }
 
@@ -676,7 +679,8 @@ export class AntigravitySessionProvider implements AntigravityExecutor, TypedSes
     const cached = this.#runners.get(sessionId);
     // A Project Agent's tools are offered when its session connects; a change of them takes
     // effect by reconnecting between turns.
-    const leadUrl = (await this.#leadEndpoint?.(sessionId).catch(() => null)) ?? null;
+    const leadTools = (await this.#leadEndpoint?.(sessionId).catch(() => null)) ?? null;
+    const leadUrl = leadTools?.url ?? null;
     const idle = cached?.runner.snapshot().status === "idle";
     if (
       cached?.runner.connected &&
@@ -703,7 +707,7 @@ export class AntigravitySessionProvider implements AntigravityExecutor, TypedSes
       workspace,
       nativeId,
       initialRevision,
-      leadUrl,
+      leadTools,
     );
     this.#runnerFlights.set(sessionId, flight);
     try {
@@ -724,7 +728,7 @@ export class AntigravitySessionProvider implements AntigravityExecutor, TypedSes
     workspace: string,
     nativeId: string,
     initialRevision: number,
-    leadUrl: string | null = null,
+    leadTools: LeadToolRegistration | null,
   ): Promise<AntigravityRunnerRecord> {
     if (this.#runners.size >= 8) {
       const candidates = [...this.#runners.entries()]
@@ -767,9 +771,7 @@ export class AntigravitySessionProvider implements AntigravityExecutor, TypedSes
       initialRevision,
       this.host.observeTurn(sessionId),
       {
-        mcpServers: leadUrl
-          ? [{ type: "http", name: "agentkib_workers", url: leadUrl, headers: [] }]
-          : [],
+        leadTools: leadTools ?? undefined,
         config: this.#savedSettings(nativeId),
       },
     );
@@ -785,7 +787,14 @@ export class AntigravitySessionProvider implements AntigravityExecutor, TypedSes
         !within(canonicalize(latest.workspace), latestRoot)
       )
         throw new Error("session-unavailable");
-      const record = { runner, nativeId, workspaceId, workspace, lastUsed: Date.now(), leadUrl };
+      const record = {
+        runner,
+        nativeId,
+        workspaceId,
+        workspace,
+        lastUsed: Date.now(),
+        leadUrl: leadTools?.url ?? null,
+      };
       this.#runners.set(sessionId, record);
       return record;
     } catch (error) {

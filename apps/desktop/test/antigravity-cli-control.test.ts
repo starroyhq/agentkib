@@ -125,7 +125,7 @@ describe("Antigravity CLI control (agy acp 1.5.14)", () => {
     runner.close();
   });
 
-  it("allows a Project Agent's own tools by itself and shows the CLI's other requests in AgentKib's shape", async () => {
+  it("auto-approves only the Project Agent's registered tools and shows the other requests", async () => {
     const cli = fakeCli();
     const runner = await AntigravityManagedRunner.connect(
       "/bin/agy",
@@ -137,9 +137,11 @@ describe("Antigravity CLI control (agy acp 1.5.14)", () => {
       0,
       undefined,
       {
-        mcpServers: [
-          { type: "http", name: "agentkib_workers", url: "http://127.0.0.1:1/lead/x", headers: [] },
-        ],
+        leadTools: {
+          serverName: "agentkib_workers",
+          url: "http://127.0.0.1:1/lead/x",
+          toolNames: ["worker_list"],
+        },
       },
     );
     expect(
@@ -151,26 +153,33 @@ describe("Antigravity CLI control (agy acp 1.5.14)", () => {
       { optionId: "allow", name: "Allow", kind: "allow_once" },
       { optionId: "deny", name: "Deny", kind: "reject_once" },
     ];
-    cli.prompt((frame) => {
-      cli.send({
-        id: 900,
-        method: "session/request_permission",
-        params: {
-          sessionId: "known",
-          options,
-          toolCall: {
-            sessionUpdate: "tool_call",
-            toolCallId: "t1",
-            name: "mcp_agentkib_workers_worker_list",
-            kind: "other",
-            title: "Run mcp_agentkib_workers_worker_list",
-            args: {},
-            rawInput: {},
+    const requestedTools = [
+      "mcp_agentkib_workers_worker_list",
+      "mcp_agentkib_workers_x_worker_list",
+      "mcp_agentkib_workers_unregistered",
+    ];
+    cli.prompt(() => {
+      requestedTools.forEach((name, index) =>
+        cli.send({
+          id: 900 + index,
+          method: "session/request_permission",
+          params: {
+            sessionId: "known",
+            options,
+            toolCall: {
+              sessionUpdate: "tool_call",
+              toolCallId: `mcp-${index}`,
+              name,
+              kind: "other",
+              title: `Run ${name}`,
+              args: {},
+              rawInput: {},
+            },
           },
-        },
-      });
+        }),
+      );
       cli.send({
-        id: 901,
+        id: 903,
         method: "session/request_permission",
         params: {
           sessionId: "known",
@@ -187,15 +196,17 @@ describe("Antigravity CLI control (agy acp 1.5.14)", () => {
           },
         },
       });
-      void frame;
     });
     await runner.send("List the workers", Number(runner.snapshot().revision));
-    await settle(() => (runner.snapshot().approvals as unknown[]).length === 1);
+    await settle(() => (runner.snapshot().approvals as unknown[]).length === 3);
     expect(cli.frames.find((frame) => frame.id === 900)?.result).toEqual({
       outcome: { outcome: "selected", optionId: "allow" },
     });
-    const [approval] = runner.snapshot().approvals as Array<Record<string, any>>;
-    expect(approval).toMatchObject({
+    const approvals = runner.snapshot().approvals as Array<Record<string, unknown>>;
+    expect(approvals.map((approval) => approval.requestId)).toEqual(["901", "902", "903"]);
+    expect(runner.snapshot().status).toBe("waiting-approval");
+    expect(cli.frames.some((frame) => frame.id === 901 || frame.id === 902)).toBe(false);
+    expect(approvals[2]).toMatchObject({
       supported: true,
       availableDecisions: ["allow", "deny"],
       toolCall: { kind: "execute", rawInput: { command: "touch ran.txt" } },

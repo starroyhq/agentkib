@@ -12,6 +12,7 @@ import {
   replayManagedCommand,
   saveManagedUsageLimit,
 } from "../../managed-ledger";
+import type { LeadToolRegistration } from "../../orchestration-endpoint";
 import type { WorkerRestartRequest, WorkerRestartResult } from "../../orchestration-service";
 import { canonicalize, lexicalPathIdentity, pathIdentity } from "../../paths";
 import { conversationReadKey, ReadStateLedger } from "../../read-state-ledger";
@@ -282,9 +283,11 @@ export class DevinSessionProvider implements DevinExecutor, TypedSessionProvider
   readonly typed = this;
   #runners = new Map<string, DevinRunnerRecord>();
   /** Where a Project Agent's worker tools are served (`OrchestrationService.leadTools`). */
-  #leadEndpoint: ((sessionId: string) => Promise<string | null>) | undefined;
+  #leadEndpoint: ((sessionId: string) => Promise<LeadToolRegistration | null>) | undefined;
 
-  leadEndpoints(source: ((sessionId: string) => Promise<string | null>) | undefined): void {
+  leadEndpoints(
+    source: ((sessionId: string) => Promise<LeadToolRegistration | null>) | undefined,
+  ): void {
     this.#leadEndpoint = source;
   }
 
@@ -500,8 +503,7 @@ export class DevinSessionProvider implements DevinExecutor, TypedSessionProvider
       // A Project Agent's turns are offered its worker tools, read again for every turn.
       leadTools: async () => {
         const id = sessionId();
-        const url = id ? await this.#leadEndpoint?.(id) : null;
-        return url ? [{ type: "http" as const, name: "agentkib_workers", url, headers: [] }] : [];
+        return id ? ((await this.#leadEndpoint?.(id)) ?? null) : null;
       },
       publish: (type, payload, live) => {
         const id = sessionId();

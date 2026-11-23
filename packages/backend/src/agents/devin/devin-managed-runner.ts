@@ -3,6 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { acpObject } from "../../acp-json";
+import type { LeadToolRegistration } from "../../orchestration-endpoint";
 import { sanitizeHandoffExport } from "../../session-handoff";
 import { devinSessionDatabase } from "./devin-sessions";
 import {
@@ -39,8 +40,6 @@ const DEVIN_ACP_MODES: Record<DevinPermissionMode, string> = {
   smart: "smart",
   dangerous: "bypass",
 };
-/** Devin names a tool's permission rule; a Project Agent's own worker tools are this server's. */
-const LEAD_TOOL_RULE = /^mcp__agentkib_workers__[A-Za-z0-9_-]+$/;
 const MAX_APPROVAL_FIELD_BYTES = 16 * 1024;
 const OUTPUT_LIMIT = 64 * 1024;
 const NATIVE_ID = /^[A-Za-z0-9_-]{1,128}$/;
@@ -81,10 +80,10 @@ export interface DevinRunnerHost {
   /** A turn began waiting for the person to answer a permission request. */
   waiting?(turnId: string): void;
   /**
-   * The MCP servers this session's turns are offered: a Project Agent's worker tools. Read for
-   * every turn, so that a change of the lead's delegation reaches its next turn.
+   * This session's Project Agent worker tools. Read for every turn so it sees changes to the
+   * lead's delegation.
    */
-  leadTools?(): Promise<AcpMcpServer[]>;
+  leadTools?(): Promise<LeadToolRegistration | null>;
   /** A `state` event's payload is the live state itself; a `snapshot` carries it as `live`. */
   publish(
     type: "state" | "snapshot",
@@ -505,7 +504,13 @@ export class DevinManagedRunner {
       throw new Error("session-open-elsewhere");
     if (!(await devinLoggedIn(executable, this.host.environment)))
       throw new Error("devin-login-required");
-    const mcpServers = (await this.host.leadTools?.().catch(() => [])) ?? [];
+    const lead = await this.host.leadTools?.().catch(() => null);
+    const mcpServers: AcpMcpServer[] = [];
+    const leadToolRules = new Set<string>();
+    if (lead) {
+      mcpServers.push({ type: "http", name: lead.serverName, url: lead.url, headers: [] });
+      for (const name of lead.toolNames) leadToolRules.add(`mcp__${lead.serverName}__${name}`);
+    }
     let acp: AntigravityAcp;
     try {
       acp = AntigravityAcp.spawn(executable, ["acp"], this.workspace, this.host.environment, {
@@ -558,7 +563,7 @@ export class DevinManagedRunner {
     this.#revision++;
     this.#publishState();
     this.#timer = setInterval(() => void this.#publishItems().catch(() => undefined), POLL_MS);
-    void this.#consume(acp, promptId, startedAt, mcpServers.length > 0);
+    void this.#consume(acp, promptId, startedAt, leadToolRules);
   }
 
   async stop(turnId: string, expectedRevision: number, beforeDispatch: () => void) {
@@ -637,14 +642,19 @@ export class DevinManagedRunner {
     }
   }
 
-  async #consume(acp: AntigravityAcp, promptId: AcpId, startedAt: number, leadTools: boolean) {
+  async #consume(
+    acp: AntigravityAcp,
+    promptId: AcpId,
+    startedAt: number,
+    leadToolRules: ReadonlySet<string>,
+  ) {
     let outcome: DevinAcpOutcome = { error: "devin-run-failed" };
     try {
       for (;;) {
         const event = await acp.nextEvent(ACP_EVENT_MS);
         if (!event) continue;
         if (event.type === "permission") {
-          await this.#permission(acp, event.id, event.request, leadTools);
+          await this.#permission(acp, event.id, event.request, leadToolRules);
           continue;
         }
         if (event.type === "permission-cancelled") continue;
@@ -663,7 +673,12 @@ export class DevinManagedRunner {
     await this.#finish(outcome, startedAt);
   }
 
-  async #permission(acp: AntigravityAcp, id: AcpId, request: AcpPermission, leadTools: boolean) {
+  async #permission(
+    acp: AntigravityAcp,
+    id: AcpId,
+    request: AcpPermission,
+    leadToolRules: ReadonlySet<string>,
+  ) {
     const toolCall = request.toolCall as Record<string, unknown>;
     const meta =
       toolCall._meta && typeof toolCall._meta === "object"
@@ -675,8 +690,8 @@ export class DevinManagedRunner {
         : "";
     const once = request.options.find((option) => option.kind === "allow_once");
     const reject = request.options.find((option) => option.kind === "reject_once");
-    // Designating the session a Project Agent is the person's permission for its worker tools.
-    if (leadTools && once && LEAD_TOOL_RULE.test(rule)) {
+    // Designating the session a Project Agent grants the worker tools registered for this turn.
+    if (once && leadToolRules.has(rule)) {
       await acp.respondPermission(id, once.optionId);
       return;
     }

@@ -20,6 +20,7 @@ import {
   projectContextUsage,
   type ContextUsage,
 } from "../../context-usage";
+import type { LeadToolRegistration } from "../../orchestration-endpoint";
 
 const ATTACH_TIMEOUT_MS = 15_000;
 const POLL_MS = 100;
@@ -71,8 +72,8 @@ function isRecord(value: unknown): value is JsonRecord {
 
 /** Owns one verified native Antigravity ACP session and publishes bounded live projections. */
 export type AntigravityAttachOptions = {
-  /** MCP servers offered to the session, such as a Project Agent's worker tools. */
-  mcpServers?: AcpMcpServer[];
+  /** The Project Agent MCP tools registered for this session, if any. */
+  leadTools?: LeadToolRegistration;
   /** Start a new session with `session/new` instead of resuming one. */
   create?: boolean;
   /** ACP option values the session should run with, set before its next turn. */
@@ -96,8 +97,6 @@ export function antigravityTurnFailure(message: string): string {
   return "antigravity-run-failed";
 }
 
-const LEAD_TOOL = /^mcp_agentkib_workers_[A-Za-z0-9_-]+$/;
-
 export class AntigravityManagedRunner {
   /** The CLI's own `agy acp`, whose tool inputs are normalized before they are shown. */
   #cli = false;
@@ -108,8 +107,8 @@ export class AntigravityManagedRunner {
     string,
     { resolve(value: unknown): void; reject(error: Error): void }
   >();
-  /** This connection offered a Project Agent its worker tools. */
-  #leadTools = false;
+  /** Fully qualified MCP names this connection offered from the Project Agent endpoint. */
+  readonly #leadToolNames = new Set<string>();
   #status = "idle";
   #revision = 0;
   #turnId: string | null = null;
@@ -194,7 +193,10 @@ export class AntigravityManagedRunner {
         isRecord(initialized) && isRecord(initialized.agentInfo)
           ? initialized.agentInfo.name === "Antigravity ACP Server"
           : false;
-      const mcpServers = options.mcpServers ?? [];
+      const { leadTools } = options;
+      const mcpServers: AcpMcpServer[] = leadTools
+        ? [{ type: "http", name: leadTools.serverName, url: leadTools.url, headers: [] }]
+        : [];
       let attached: unknown;
       if (options.create) {
         attached = await runner.#waitForResponse(
@@ -218,7 +220,10 @@ export class AntigravityManagedRunner {
         attached = await runner.#waitForResponse(attach, method, deadline);
       }
       runner.#configOptions = configOptionsOf(attached) ?? [];
-      runner.#leadTools = mcpServers.length > 0;
+      if (leadTools) {
+        for (const toolName of leadTools.toolNames)
+          runner.#leadToolNames.add(`mcp_${leadTools.serverName}_${toolName}`);
+      }
       // The person's choices apply before the next message: Antigravity keeps a session's model
       // and mode, but a resumed session starts again at the default thought level.
       for (const [id, value] of Object.entries(options.config ?? {})) {
@@ -799,10 +804,9 @@ export class AntigravityManagedRunner {
     // Designating the session a Project Agent is the person's permission for its worker tools.
     const lead = request.options.find((option) => option.kind === "allow_once");
     if (
-      this.#leadTools &&
       lead &&
       typeof request.toolCall.name === "string" &&
-      LEAD_TOOL.test(request.toolCall.name)
+      this.#leadToolNames.has(request.toolCall.name)
     ) {
       void this.client.respondPermission(id, lead.optionId).catch((error) => this.#fail(error));
       return;

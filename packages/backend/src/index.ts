@@ -3043,15 +3043,9 @@ export class TypeScriptBackend {
       this.#webRead.observeResults((target, result, timing) =>
         this.#readStates?.recordTerminal(target, result, timing),
       );
-      // A Codex Project Agent's thread starts with its worker tools.
-      this.#webRead.leadEndpoints(async (sessionId) => {
-        const config = (await this.#orchestration?.leadTools(sessionId)) as
-          | { mcpServers?: Record<string, { url?: unknown }> }
-          | null
-          | undefined;
-        const url = config?.mcpServers?.agentkib_workers?.url;
-        return typeof url === "string" ? url : null;
-      });
+      this.#webRead.leadEndpoints(
+        (sessionId) => this.#orchestration?.leadEndpoint(sessionId) ?? Promise.resolve(null),
+      );
     }
     return await operation(this.#webRead);
   }

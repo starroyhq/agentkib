@@ -156,6 +156,11 @@ export function ProjectAgentPanel({
   // Desktop only mounts this panel for a user with local manage access.
   const full = device?.accessMode === "full";
   const mayLead = full && !!device?.send && !!device.manage && !!device.advancedControl;
+  const designateBlocked = !mayLead
+    ? text.designatePermission
+    : !capable
+      ? text.errors["lead-requires-managed-claude"]
+      : undefined;
   if (agent === undefined || !selected || (desktop && agent === null)) return null;
   const mayApprove = desktop || !!device?.approve;
   // Changing settings or resuming delegation takes the same permissions as setting it up.
@@ -171,7 +176,7 @@ export function ProjectAgentPanel({
   });
 
   if (form) {
-    const mayEdit = form.mode === "designate" ? mayLead : mayTakeOver;
+    const mayEdit = form.mode === "designate" ? !designateBlocked : mayTakeOver;
     return (
       <OperationGroup title={text.title}>
         <OperationRow className="block">
@@ -230,9 +235,11 @@ export function ProjectAgentPanel({
             {text.cancel}
           </Button>
           <Button
-            className={touchTarget}
+            className={`${touchTarget ?? ""} disabled:pointer-events-auto`}
             disabled={busy || !mayEdit}
-            onClick={() =>
+            title={form.mode === "designate" ? designateBlocked : undefined}
+            onClick={() => {
+              if (busy || !mayEdit) return;
               void run({
                 operation: form.mode,
                 scope: {
@@ -244,8 +251,8 @@ export function ProjectAgentPanel({
                   ],
                   answers: form.answers,
                 },
-              }).then((done) => done && setForm(null))
-            }
+              }).then((done) => done && setForm(null));
+            }}
           >
             {form.mode === "designate" ? text.confirm : text.save}
           </Button>
@@ -256,20 +263,22 @@ export function ProjectAgentPanel({
 
   if (agent === null)
     // Only a device that may do what a Project Agent does in its name sets one up.
-    return capable && mayLead ? (
+    return (
       <OperationGroup title={text.title}>
         <OperationRow className="flex-wrap">
-          <OperationCopy className="basis-64">{text.hint}</OperationCopy>
+          {!designateBlocked && <OperationCopy className="basis-64">{text.hint}</OperationCopy>}
           <Button
             variant="outline"
-            className={touchTarget}
-            onClick={() => setForm(formOf("designate"))}
+            className={`${touchTarget ?? ""} disabled:pointer-events-auto`}
+            disabled={!!designateBlocked}
+            title={designateBlocked}
+            onClick={() => !designateBlocked && setForm(formOf("designate"))}
           >
             {text.designate}
           </Button>
         </OperationRow>
       </OperationGroup>
-    ) : null;
+    );
 
   const decided = [
     ...(agent.scope.approvals?.includes("file-change") ? [text.approveFiles] : []),

@@ -13,14 +13,16 @@ export function resolveSessionProvider(
   if (!declared) return undefined;
   const reported = capabilities?.sessionId === session.id ? capabilities.provider : undefined;
   if (!reported) return declared;
+  const projectAgent = reported.projectAgent ?? declared.projectAgent;
   if (
     reported.commands ||
     reported.connection ||
     reported.queue ||
     reported.permissionField ||
-    reported.activities
+    reported.activities ||
+    reported.projectAgent
   )
-    return reported;
+    return reported.projectAgent === projectAgent ? reported : { ...reported, projectAgent };
 
   // Legacy declarations omit all integration fields, including the registered connection kind.
   return {
@@ -30,5 +32,6 @@ export function resolveSessionProvider(
     queue: declared.queue,
     permissionField: declared.permissionField,
     activities: declared.activities,
+    projectAgent,
   };
 }

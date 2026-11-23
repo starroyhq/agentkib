@@ -1,5 +1,6 @@
 import { useState, type ComponentProps } from "react";
 import { SessionManagementRowMenu, type SessionManagementRowMenuProps } from "@agentkib/session-ui";
+import { sessionProviderDeclaration } from "@agentkib/web-client";
 import { useAppDialogs } from "@/components/AppDialogProvider";
 import {
   AlertDialog,
@@ -95,12 +96,14 @@ export function SessionRowMenu({
   const dialogs = useAppDialogs();
   const [client] = useState(createDesktopConversationClient);
   const [assigningWorkers, setAssigningWorkers] = useState(false);
-  const canAssignWorkers =
-    ["claude-code", "codex", "deepseek-harness"].includes(session.agent) &&
-    session.availability === "readable" &&
-    !session.archived &&
-    !session.sidechain &&
-    session.orchestration?.role !== "worker";
+  const assignment = workerAssignmentCopy[locale];
+  const offersAssignment = sessionProviderDeclaration(session.agent)?.projectAgent?.lead === true;
+  const assignmentDisabledReason =
+    session.orchestration?.role === "worker"
+      ? assignment.reasons["session-is-a-worker"]
+      : session.availability !== "readable" || session.archived || session.sidechain
+        ? assignment.cannotLead
+        : undefined;
   return (
     <>
       <SessionManagementRowMenu
@@ -116,9 +119,14 @@ export function SessionRowMenu({
         triggerSize="sm"
         iconSize={15}
         extraMenuItems={
-          canAssignWorkers && (
-            <DropdownMenuItem onClick={() => setAssigningWorkers(true)}>
-              {workerAssignmentCopy[locale].menu}
+          offersAssignment && (
+            <DropdownMenuItem
+              className="data-disabled:pointer-events-auto"
+              disabled={!!assignmentDisabledReason}
+              title={assignmentDisabledReason}
+              onClick={() => !assignmentDisabledReason && setAssigningWorkers(true)}
+            >
+              {assignment.menu}
             </DropdownMenuItem>
           )
         }

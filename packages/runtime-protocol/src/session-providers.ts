@@ -77,9 +77,15 @@ export interface SessionActivityCapabilities {
   canOpenSubagentHistory: boolean;
 }
 
+export interface SessionProjectAgentCapabilities {
+  readonly lead: boolean;
+  readonly worker: boolean;
+}
+
 interface SessionProviderIntegrationCapabilities {
   commands?: { source: "built-in" | "reported" | "none" };
   queue?: { actions: readonly SessionQueueAction[] };
+  projectAgent?: SessionProjectAgentCapabilities;
   /** The provider's native integration, even when no session is connected to it. */
   connection?: { kind: "native-app" | "terminal-bridge" | "plugin-bridge" | "acp" };
   permissionField?: "policyId" | "permissionMode";
@@ -303,6 +309,7 @@ const PROVIDERS = {
   codex: {
     ...MANAGED_CAPABILITIES.codex,
     commands: { source: "built-in" },
+    projectAgent: { lead: true, worker: true },
     queue: { actions: ["list", "add", "update", "delete", "reorder", "start"] },
     connection: { kind: "native-app" },
     permissionField: "policyId",
@@ -315,6 +322,7 @@ const PROVIDERS = {
   "claude-code": {
     ...MANAGED_CAPABILITIES["claude-code"],
     commands: { source: "reported" },
+    projectAgent: { lead: true, worker: true },
     queue: { actions: ["list", "add", "update", "delete", "reorder", "pause", "resume"] },
     connection: { kind: "terminal-bridge" },
     permissionField: "permissionMode",
@@ -333,6 +341,7 @@ const PROVIDERS = {
   "deepseek-harness": {
     ...MANAGED_CAPABILITIES["deepseek-harness"],
     commands: { source: "reported" },
+    projectAgent: { lead: true, worker: true },
     queue: { actions: ["list", "add", "update", "delete", "steer"] },
     connection: { kind: "plugin-bridge" },
     permissionField: "policyId",
@@ -341,6 +350,7 @@ const PROVIDERS = {
   devin: {
     ...MANAGED_CAPABILITIES.devin,
     commands: { source: "none" },
+    projectAgent: { lead: true, worker: true },
     queue: { actions: ["list", "add", "update", "delete", "pause", "resume"] },
     permissionField: "permissionMode",
     activities: { kinds: ["subagent"], canStopIndividually: false, canOpenSubagentHistory: true },
@@ -348,6 +358,7 @@ const PROVIDERS = {
   antigravity: {
     ...MANAGED_CAPABILITIES.antigravity,
     commands: { source: "none" },
+    projectAgent: { lead: true, worker: true },
     queue: { actions: ["list", "add", "update", "delete", "pause", "resume"] },
     connection: { kind: "acp" },
     permissionField: "permissionMode",

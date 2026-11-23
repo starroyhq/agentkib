@@ -10,6 +10,7 @@ import type { SessionController } from "@/features/conversation/web-session-cont
 import { dictionaries } from "@/features/conversation/i18n";
 import { sessionReason } from "@/features/conversation/session-copy";
 import { claudeConnectionCopy } from "@agentkib/session-ui";
+import { sessionProviderCapabilities, sessionProviderDeclaration } from "@agentkib/web-client";
 
 type Locale = "zh-CN" | "zh-Hant" | "en-US" | "ja-JP";
 let session: SessionController;
@@ -255,6 +256,57 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe("visible session continuation terminology", () => {
+  it.each(["devin", "antigravity"] as const)(
+    "offers Project Agent setup for %s outside execution controls",
+    async (agent) => {
+      setLocale("en-US");
+      session.current = { ...session.current!, agent };
+      const { projectAgent, ...olderProvider } = sessionProviderDeclaration(agent)!;
+      expect(projectAgent).toEqual({ lead: true, worker: true });
+      expect(sessionProviderCapabilities(agent)?.projectAgent).toBeUndefined();
+      session.capabilities = {
+        ...session.capabilities!,
+        provider: olderProvider,
+      };
+      session.access = {
+        ...session.access!,
+        device: { ...session.access!.device!, accessMode: "full", advancedControl: true },
+      };
+      vi.mocked(session.client.projectAgent).mockResolvedValue({ lead: null, capable: true });
+      render(<View snapshot={session} />);
+      fireEvent.click(screen.getByRole("button", { name: "Inspect session actions" }));
+      expect(await screen.findByRole("button", { name: "Make Project Agent…" })).toBeEnabled();
+      expect(session.client.projectAgent).toHaveBeenCalledWith(session.selected);
+    },
+  );
+
+  it("keeps Project Agent setup disabled on host refusal and honors an explicit declaration", async () => {
+    setLocale("en-US");
+    session.current = { ...session.current!, agent: "antigravity" };
+    session.access = {
+      ...session.access!,
+      device: { ...session.access!.device!, accessMode: "full", advancedControl: true },
+    };
+    vi.mocked(session.client.projectAgent).mockResolvedValue({ lead: null, capable: false });
+    const view = render(<View snapshot={session} />);
+    fireEvent.click(screen.getByRole("button", { name: "Inspect session actions" }));
+    const designate = await screen.findByRole("button", { name: "Make Project Agent…" });
+    expect(designate).toBeDisabled();
+    expect(designate).toHaveAttribute("title", expect.stringContaining("needs control"));
+    fireEvent.click(designate);
+    expect(screen.queryByRole("button", { name: "Make Project Agent" })).toBeNull();
+
+    session.capabilities = {
+      ...session.capabilities!,
+      provider: {
+        ...sessionProviderDeclaration("antigravity")!,
+        projectAgent: { lead: false, worker: true },
+      },
+    };
+    redraw(view);
+    expect(screen.queryByRole("button", { name: "Make Project Agent…" })).toBeNull();
+  });
+
   it.each(wording)(
     "keeps terminal stopping in the terminal and preserves managed stop in $locale",
     (expected) => {

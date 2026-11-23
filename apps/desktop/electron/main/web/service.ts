@@ -4,6 +4,7 @@ import {
   SESSION_RESOURCE_LIMIT,
   managedAgentOf,
   sessionProviderCapabilities,
+  sessionProviderDeclaration,
   type HistoryReference,
   type ManagedAgent,
   type ResolvedHistoryReference,
@@ -647,13 +648,24 @@ function acceptsGzip(header: string | string[] | undefined): boolean {
   }
   return wildcard;
 }
-/** 远程目录从不列出子代理会话（auxiliary），回复里去掉它们，体积约为原来的五分之一。 */
-function withoutAuxiliarySessions(catalog: unknown): unknown {
+/** Remote clients share Provider declarations and never receive auxiliary sessions. */
+function projectRemoteCatalog(catalog: unknown): unknown {
   const sessions = snapshotField(catalog, "sessions");
   if (!Array.isArray(sessions)) return catalog;
   return {
     ...(catalog as Record<string, unknown>),
-    sessions: sessions.filter((session) => snapshotField(session, "origin") !== "auxiliary"),
+    sessions: sessions
+      .filter((session) => snapshotField(session, "origin") !== "auxiliary")
+      .map((session) => {
+        if (!session || typeof session !== "object" || Array.isArray(session)) return session;
+        const agent = snapshotField(session, "agent");
+        if (typeof agent !== "string") return session;
+        const registration = sessionProviderDeclaration(agent);
+        return {
+          ...session,
+          projectAgent: registration?.projectAgent ?? { lead: false, worker: false },
+        };
+      }),
   };
 }
 const isAccessLevel = (value: unknown): value is WebAccessLevel =>
@@ -4470,10 +4482,7 @@ export class WebAccessService {
     // These integrations supply their own worker tools. The backend still checks lead eligibility
     // for the specific session.
     const leadsWithoutClaude =
-      agent === "codex" ||
-      agent === "deepseek-harness" ||
-      agent === "devin" ||
-      agent === "antigravity";
+      agent !== "claude-code" && sessionProviderDeclaration(agent)?.projectAgent?.lead;
     if (!this.options.verifiedClaudeManaged && !leadsWithoutClaude)
       throw new HttpError(503, "capability_unavailable");
     const lead = (value: unknown) =>
@@ -7399,7 +7408,7 @@ export class WebAccessService {
     // 桌面内嵌会话页走可信本地桥，仍拿完整目录；远程（中继、局域网）客户端从不列出
     // 子代理会话，去掉它们并压缩，目录回复从约 800 KiB 降到几十 KiB。
     const remoteCatalog = path === "/catalog" && !trustedLocal;
-    if (remoteCatalog) result = withoutAuxiliarySessions(result);
+    if (remoteCatalog) result = projectRemoteCatalog(result);
     return this.json(
       res,
       200,

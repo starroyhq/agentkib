@@ -5,6 +5,7 @@ import {
   isDshCommandRefusal,
   managedAgentOf,
   needsDurableReceipt,
+  sessionProviderDeclaration,
   type Access,
   type Approval,
   type ConversationEventPage,
@@ -23,6 +24,7 @@ import { canSubmitGoalDraft } from "./session-composer-capabilities";
 import { capabilityAccessBinding } from "./use-session-capabilities";
 import { answerRequestBody } from "./interaction-model";
 import { DEVIN_TURN_REASONS } from "./devin-terminal";
+import { sessionStopCapabilityAllows } from "./agents/session-turn-controls";
 
 export type ControlNotice = "accepted" | "uncertain" | "notDispatched";
 /** The control call a notice came from; the interaction card shows its own outcomes. */
@@ -301,8 +303,14 @@ export function createSessionControl<Pending extends SessionControlPending>({
       (!access.experimentalEnabled ||
         !access.device?.send ||
         live.stopEnabled !== true ||
-        (live.executionMode === "claude-follower" &&
-          !(capabilities?.sessionId === selected && capabilities.features.stop?.available)) ||
+        !sessionStopCapabilityAllows(
+          live,
+          capabilities,
+          selected,
+          sessionProviderDeclaration(
+            catalogSessions.current.find((item) => item.id === selected)?.agent,
+          ),
+        ) ||
         !live.turnId)
     )
       return;

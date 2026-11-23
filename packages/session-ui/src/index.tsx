@@ -325,6 +325,7 @@ export {
   type HomeSessionListProps,
 } from "./home-sessions";
 export { codexPolicyLabel, dshPolicyLabel, type PolicyLabel } from "./policy-labels";
+export { sessionContinuationRegistration } from "./agents/session-continuation";
 export { commandPrompt, type CommandPromptRequest } from "./command-prompts";
 export {
   dshAgentPresetCopy,

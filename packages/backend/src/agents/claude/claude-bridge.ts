@@ -1323,6 +1323,13 @@ export class ClaudeBridge {
       ),
     };
   }
+  workerObservation(id: string): Record<string, unknown> {
+    const live = this.live(id, false);
+    const activity = this.#connections.get(id)?.snapshot?.terminalWorkerActivity;
+    if (live.status !== "running" || !live.turnId || !activity) return live;
+    return { ...live, commands: activity.commands, workerProgress: String(activity.revision) };
+  }
+
   capabilities(id: string, controls: boolean): Record<string, unknown> {
     const live = this.live(id, controls);
     const readable = this.#sourceReadable(this.#bindings.get(id)!);
@@ -2614,6 +2621,7 @@ export class ClaudeBridge {
         snapshot.status = "running";
         snapshot.waiting = null;
         snapshot.streamText = "";
+        delete snapshot.terminalWorkerActivity;
         // A Project Agent's count of turns without the person restarts when they type. A turn the
         // CLI begins by itself has no text, so no origin from a plugin that gives one; it counts,
         // and past the limit it stops, as for a session AgentKib runs.
@@ -2642,6 +2650,7 @@ export class ClaudeBridge {
           snapshot.waiting = null;
           snapshot.currentTurnId = null;
           snapshot.streamText = "";
+          delete snapshot.terminalWorkerActivity;
         }
       } else if (event.type === "tool-start" || event.type === "tool-complete") {
         if (
@@ -2650,6 +2659,9 @@ export class ClaudeBridge {
             (event.turnId === undefined &&
               (event.type === "tool-start" || connection.turnTools.has(event.tool.id))))
         ) {
+          // The next snapshot carries the complete hook observation; the legacy display
+          // delta does not carry its opaque IDs or timestamps.
+          delete snapshot.terminalWorkerActivity;
           connection.turnTools.set(event.tool.id, event.tool);
           if (connection.turnTools.size > 256)
             connection.turnTools.delete(connection.turnTools.keys().next().value!);

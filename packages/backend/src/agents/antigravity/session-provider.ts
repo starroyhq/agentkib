@@ -201,7 +201,15 @@ export class AntigravitySessionProvider implements AntigravityExecutor, TypedSes
     };
   }
 
-  async live(sessionId: string): Promise<Record<string, unknown>> {
+  live(sessionId: string): Promise<Record<string, unknown>> {
+    return this.#live(sessionId, false);
+  }
+
+  workerLive(sessionId: string): Promise<Record<string, unknown>> {
+    return this.#live(sessionId, true);
+  }
+
+  async #live(sessionId: string, supervision: boolean): Promise<Record<string, unknown>> {
     try {
       const target = await this.#target(sessionId);
       this.host.sessions.antigravityControlExecutable();
@@ -209,25 +217,27 @@ export class AntigravitySessionProvider implements AntigravityExecutor, TypedSes
       const unknown =
         cached?.runner.snapshot().status === "outcome-unknown" ||
         managedSessionHasUnknownCommands(this.host.dataDir, sessionId);
-      const snapshot =
+      const current =
         cached?.runner.connected &&
         cached.runner.snapshot().status !== "failed" &&
         cached?.nativeId === target.nativeId &&
         cached.workspaceId === target.workspaceId &&
         pathIdentity(cached.workspace) === pathIdentity(target.workspace)
-          ? cached.runner.snapshot()
-          : {
-              executionMode: "acp-managed",
-              status: "idle",
-              revision: this.#inactiveRevision(sessionId, cached),
-              turnId: null,
-              sendEnabled: true,
-              stopEnabled: false,
-              approvals: [],
-              reason: null,
-            };
+          ? cached.runner
+          : undefined;
+      const snapshot = current?.snapshot() ?? {
+        executionMode: "acp-managed",
+        status: "idle",
+        revision: this.#inactiveRevision(sessionId, cached),
+        turnId: null,
+        sendEnabled: true,
+        stopEnabled: false,
+        approvals: [],
+        reason: null,
+      };
       return {
         ...snapshot,
+        ...(supervision && !unknown ? current?.workerObservation() : undefined),
         ...(unknown
           ? {
               status: "outcome-unknown",

@@ -226,7 +226,7 @@ describe("Project Agent panel on desktop", () => {
     fireEvent.change(automaticTurns, { target: { value: "101" } });
     expect(automaticTurns).toHaveValue(100);
     const stallThreshold = screen.getByRole("spinbutton", {
-      name: "Stall threshold (minutes)",
+      name: "Model inactivity threshold (minutes)",
     });
     expect(stallThreshold).toHaveValue(10);
     expect(stallThreshold).toHaveAttribute("min", "3");
@@ -293,7 +293,9 @@ describe("Project Agent panel on Web", () => {
     expect(screen.getByRole("spinbutton", { name: "Most automatic turns in a row" })).toHaveValue(
       25,
     );
-    expect(screen.getByRole("spinbutton", { name: "Stall threshold (minutes)" })).toHaveValue(10);
+    expect(
+      screen.getByRole("spinbutton", { name: "Model inactivity threshold (minutes)" }),
+    ).toHaveValue(10);
     manageProjectAgent.mockResolvedValueOnce({ lead });
     await act(async () => {
       fireEvent.click(screen.getByRole("button", { name: "Make Project Agent" }));
@@ -321,7 +323,7 @@ describe("Project Agent panel on Web", () => {
     expect(screen.queryByRole("button", { name: "Stop being a Project Agent" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Change settings…" })).toBeNull();
     const stallThreshold = screen.getByRole("spinbutton", {
-      name: "Stall threshold (minutes)",
+      name: "Model inactivity threshold (minutes)",
     });
     expect(stallThreshold).toBeDisabled();
     expect(stallThreshold).toHaveValue(10);
@@ -334,11 +336,13 @@ describe("Project Agent panel on Web", () => {
     await act(async () => undefined);
     fireEvent.click(screen.getByRole("button", { name: "Change settings…" }));
     const stallThreshold = screen.getByRole("spinbutton", {
-      name: "Stall threshold (minutes)",
+      name: "Model inactivity threshold (minutes)",
     });
     fireEvent.change(stallThreshold, { target: { value: "25" } });
     rerender(<WebPanel device={{ ...full, manage: false }} />);
-    expect(screen.getByRole("spinbutton", { name: "Stall threshold (minutes)" })).toBeDisabled();
+    expect(
+      screen.getByRole("spinbutton", { name: "Model inactivity threshold (minutes)" }),
+    ).toBeDisabled();
     const save = screen.getByRole("button", { name: "Save" });
     expect(save).toBeDisabled();
     fireEvent.click(save);
@@ -395,7 +399,7 @@ describe("Project Agent panel on Web", () => {
     expect(automaticTurns).toHaveValue(25);
     fireEvent.change(automaticTurns, { target: { value: "5" } });
     const stallThreshold = screen.getByRole("spinbutton", {
-      name: "Stall threshold (minutes)",
+      name: "Model inactivity threshold (minutes)",
     });
     expect(stallThreshold).toBeEnabled();
     expect(stallThreshold).toHaveValue(42);
@@ -412,6 +416,8 @@ describe("Project Agent panel on Web", () => {
       scope: { approvals: [], answers: false, maxAutoTurns: 5, stallMinutes: 26 },
     });
     fireEvent.click(screen.getByRole("button", { name: "Change settings…" }));
-    expect(screen.getByRole("spinbutton", { name: "Stall threshold (minutes)" })).toHaveValue(26);
+    expect(
+      screen.getByRole("spinbutton", { name: "Model inactivity threshold (minutes)" }),
+    ).toHaveValue(26);
   });
 });

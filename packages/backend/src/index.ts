@@ -2509,6 +2509,12 @@ export class TypeScriptBackend {
             (owner.codexSessionProvider() as CodexSessionProvider).workerDesktopSend(value),
           );
         }
+        if (intent === "codex-worker-turn") {
+          if (session(value.sessionId)?.agent !== "codex") throw new Error("session-unavailable");
+          return this.#withWebRead((owner) =>
+            (owner.codexSessionProvider() as CodexSessionProvider).workerTurnSend(value),
+          );
+        }
         const bridge = dsh(value.sessionId);
         if (bridge) return bridge.request(value);
         if (session(value.sessionId)?.agent === "claude-code")

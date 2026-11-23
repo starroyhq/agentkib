@@ -30,6 +30,8 @@ export type LaneEndedTurn = {
   endedAt: string | null;
   historyTurnId?: string;
   replyText?: string | null;
+  /** Native history confirms a different turn started after this one ended. */
+  superseded?: boolean;
 };
 
 export interface WorkerObserver {
@@ -70,7 +72,10 @@ export type WorkerRestartResult = {
  */
 export type LaneHost = {
   /** `send`, `steer`, `queue-add`, `stop`, `approve` and `answer` on a lane's session. */
-  control(value: Record<string, unknown>, intent?: "desktop-owner-handoff"): Promise<unknown>;
+  control(
+    value: Record<string, unknown>,
+    intent?: "desktop-owner-handoff" | "codex-worker-turn",
+  ): Promise<unknown>;
   restart?(request: WorkerRestartRequest, beforeDispatch: () => void): Promise<WorkerRestartResult>;
   live(sessionId: string, intent?: "send"): Promise<Record<string, unknown>>;
   /** A lightweight live sample for unattended checks when the full read has extra work. */
@@ -111,6 +116,8 @@ const INTERVENTION_QUIET_MS = 60_000;
 const CATCH_UP_MS = 20_000;
 /** A turn this recent is left to the live observers, which report it with Codex's own measure. */
 const CATCH_UP_GRACE_MS = 15_000;
+/** A fresh end keeps its normal report through the first scheduled catch-up that can see it. */
+const FRESH_END_MS = CATCH_UP_GRACE_MS + CATCH_UP_MS;
 const OFFLINE_GRACE_MS = 60_000;
 /** One fixed window per Project Agent, starting with the first completion. */
 const COMPLETION_WINDOW_MS = 60_000;
@@ -191,6 +198,22 @@ function workerReason(live: Record<string, unknown> | null): string | undefined 
     : live?.ownershipReason === "codex-owner-busy"
       ? live.ownershipReason
       : undefined;
+}
+
+function hasLaterTurn(
+  turn: LaneEndedTurn,
+  ended: number,
+  turns: LaneEndedTurn[],
+  now: number,
+): boolean {
+  if (turn.superseded === true) return true;
+  const ids = new Set([turn.turnId, turn.historyTurnId]);
+  return turns.some((later) => {
+    if (ids.has(later.turnId) || (later.historyTurnId && ids.has(later.historyTurnId)))
+      return false;
+    const started = Date.parse(later.startedAt ?? "");
+    return started >= ended && started <= now;
+  });
 }
 
 /**
@@ -1136,7 +1159,7 @@ export class OrchestrationService {
       replyText,
       endedAt,
     );
-    this.#reportBatch(owner.lead.sessionId, [report]);
+    if (report) this.#reportBatch(owner.lead.sessionId, [report]);
   }
 
   async #turnReport(
@@ -1147,7 +1170,8 @@ export class OrchestrationService {
     historyTurnId: string | undefined,
     replyText: string | null | undefined,
     endedAt: number,
-  ): Promise<LaneReport> {
+    skipEmpty = false,
+  ): Promise<LaneReport | null> {
     const replyTurnId = historyTurnId ?? turnId;
     let reply =
       typeof replyText === "string" && replyText.trim() ? shown(replyText, MAX_REPLY) : null;
@@ -1168,8 +1192,11 @@ export class OrchestrationService {
           : undefined;
       if (last) reply = shown(last.content, MAX_REPLY);
     } catch {
-      /* The report still says the turn ended. */
+      // Retry a superseded turn on a later scan if its reply could not be verified.
+      if (skipEmpty) return null;
     }
+    // Record a verified empty backfill as seen without spending a Project Agent turn.
+    if (skipEmpty && reply === null) return { laneId: lane.id, key: turnId, text: null, reply };
     return {
       laneId: lane.id,
       key: turnId,
@@ -1244,17 +1271,21 @@ export class OrchestrationService {
               !(now - ended >= CATCH_UP_GRACE_MS)
             )
               continue;
-            reports.push(
-              await this.#turnReport(
-                lane,
-                turn.turnId,
-                turn.outcome,
-                ended >= started ? ended - started : null,
-                turn.historyTurnId,
-                turn.replyText,
-                ended,
-              ),
+            const skipEmpty =
+              (turn.outcome === "completed" || turn.outcome === "ended") &&
+              now - ended > FRESH_END_MS &&
+              hasLaterTurn(turn, ended, turns, now);
+            const report = await this.#turnReport(
+              lane,
+              turn.turnId,
+              turn.outcome,
+              ended >= started ? ended - started : null,
+              turn.historyTurnId,
+              turn.replyText,
+              ended,
+              skipEmpty,
             );
+            if (report) reports.push(report);
           }
         }
         if (this.#closed) return;
@@ -2123,6 +2154,7 @@ export class OrchestrationService {
     const operation = running ? (mode === "steer" ? "steer" : "queue-add") : "send";
     if (!running && live.sendEnabled !== true) return refuse(workerReason(live) ?? "worker-busy");
     this.#currentAssignment(lead, lane, true);
+    const codexWorkerTurn = running && agent === "codex" && live.executionMode === "codex-managed";
     const requestId = randomUUID();
     let outcome: Record<string, unknown>;
     try {
@@ -2134,11 +2166,16 @@ export class OrchestrationService {
         runtimeBootId: live.runtimeBootId,
         expectedRevision: live.revision,
         experimentalEnabled: true,
-        ...(operation === "steer" ? { turnId: live.turnId } : {}),
+        ...(operation === "steer" || codexWorkerTurn ? { turnId: live.turnId } : {}),
         text: body,
       };
-      outcome = (await (agent === "codex" && operation === "send" && live.ownerHandoff === true
-        ? this.lanes.control(request, "desktop-owner-handoff")
+      const intent = codexWorkerTurn
+        ? "codex-worker-turn"
+        : agent === "codex" && operation === "send" && live.ownerHandoff === true
+          ? "desktop-owner-handoff"
+          : undefined;
+      outcome = (await (intent
+        ? this.lanes.control(request, intent)
         : this.lanes.control(request))) as Record<string, unknown>;
     } catch (error) {
       outcome = { accepted: false, reason: error instanceof Error ? error.message : "send-failed" };

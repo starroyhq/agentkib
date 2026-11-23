@@ -37,7 +37,12 @@ function prepare(
       status: "approved",
       experimentalEnabled: true,
       bootId: "boot",
-      device: { id: "device", ...(full && { accessMode: "full" }), organize: true },
+      device: {
+        id: "device",
+        ...(full && { accessMode: "full" }),
+        organize: true,
+        advancedControl: true,
+      },
     },
     live: { sessionId: "s", status: "idle", revision: 1 },
     capabilities: { sessionId: "s", executionMode: "codex-managed", status: "idle", features },

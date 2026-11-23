@@ -269,12 +269,15 @@ describe("composer drafts across connection changes", () => {
   it.each(["running", "compacting"])(
     "keeps %s advanced actions and submission disabled offline",
     async (activity) => {
+      doubles.session.access = { ...doubles.session.access!, status: "approved" };
       disconnected();
       doubles.session.live = {
         sessionId: "session",
         revision: 1,
         sendEnabled: false,
         status: "running",
+        executionMode: "codex-managed",
+        executionLocation: "agentkib",
         ...(activity === "compacting" ? { activity: "compacting" } : {}),
         approvals: [],
         questions: [],

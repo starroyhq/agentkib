@@ -964,9 +964,12 @@ describe("Claude Remote parity", () => {
       fireEvent.click(deletes[0]!);
       expect(host.state.mutations).toHaveLength(0);
       expect(screen.queryByLabelText(copy.text)).not.toBeInTheDocument();
-      const reorder = screen.getByRole("button", { name: copy.queueUp });
+      const [active, first, reorder] = screen.getAllByRole("button", { name: copy.queueUp });
+      expect(active).toBeDisabled();
+      expect(first).toBeDisabled();
+      expect(first).toHaveAttribute("title");
       await waitFor(() => expect(reorder).toBeEnabled());
-      fireEvent.click(reorder);
+      fireEvent.click(reorder!);
       await waitFor(() =>
         expect(host.state.mutations[0]).toMatchObject({
           path: "managed/action",

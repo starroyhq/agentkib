@@ -403,6 +403,7 @@ describe("composer sending shortcuts", () => {
     async (action) => {
       doubles.session.access = {
         ...doubles.session.access,
+        status: "approved",
         device: { ...doubles.session.access?.device, advancedControl: true },
       } as SessionController["access"];
       doubles.session.canSend = false;
@@ -412,6 +413,7 @@ describe("composer sending shortcuts", () => {
         revision: 1,
         sendEnabled: false,
         status: "running",
+        executionLocation: "agentkib",
         turnId: "turn",
         approvals: [],
         questions: [],
@@ -454,6 +456,7 @@ describe("composer sending shortcuts", () => {
   it("keeps queueing available during compaction without sending or steering", async () => {
     doubles.session.access = {
       ...doubles.session.access,
+      status: "approved",
       device: { ...doubles.session.access?.device, advancedControl: true },
     } as SessionController["access"];
     doubles.session.canSend = false;
@@ -462,6 +465,7 @@ describe("composer sending shortcuts", () => {
       revision: 1,
       sendEnabled: false,
       status: "running",
+      executionLocation: "agentkib",
       activity: "compacting",
       approvals: [],
       questions: [],
@@ -612,7 +616,7 @@ describe("composer sending shortcuts", () => {
     expect(screen.queryByText(/in use in Codex/i)).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Send" })).toBeEnabled();
   });
-  it("shows the stop button during a followed turn", () => {
+  it("shows stop and keeps the unavailable queue action during a followed turn", async () => {
     continuationFixture();
     doubles.session.canStop = true;
     Object.assign(doubles.session.live!, {
@@ -633,9 +637,16 @@ describe("composer sending shortcuts", () => {
     };
     renderComposer();
     expect(screen.getByRole("button", { name: "Stop" })).toBeVisible();
-    expect(
-      screen.queryByRole("button", { name: sessionCopy["en-US"].advanced }),
-    ).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: sessionCopy["en-US"].advanced }));
+    const queue = await screen.findByRole("menuitem", { name: sessionCopy["en-US"].queueAdd });
+    const steer = screen.getByRole("menuitem", { name: sessionCopy["en-US"].steer });
+    expect(steer).toHaveAttribute("aria-disabled", "true");
+    expect(steer).toHaveAttribute("title");
+    expect(queue).toHaveAttribute("aria-disabled", "true");
+    expect(queue).toHaveAttribute("title");
+    fireEvent.click(steer);
+    fireEvent.click(queue);
+    expect(doubles.runSessionAction).not.toHaveBeenCalled();
     expect(screen.queryByText(/in use in Codex/i)).not.toBeInTheDocument();
   });
   it("checks Claude on focus and keeps the composer directly available after background retirement", () => {

@@ -7,8 +7,8 @@ import {
 } from "./devin-managed-runner";
 
 /**
- * What a Devin turn runs with when nothing was chosen. `devin -p` cannot ask mid-turn, so edits
- * inside the workspace are approved and anything else is refused, as Codex starts in AgentKib.
+ * What a Devin turn runs with when nothing was chosen: edits inside the workspace are approved
+ * and Devin asks the person about anything else, as Codex starts in AgentKib.
  */
 export const DEVIN_DEFAULT_PERMISSION_MODE: DevinPermissionMode = "accept-edits";
 

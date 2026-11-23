@@ -31,6 +31,19 @@ function fakeAcp() {
   const fromAgent = new PassThrough();
   const toAgent = new PassThrough();
   const frames: Frame[] = [];
+  const config: Record<string, string> = { model: "flash", thought_level: "high", mode: "default" };
+  const choices: Record<string, string[]> = {
+    model: ["flash", "sonnet"],
+    thought_level: ["low", "high"],
+    mode: ["default", "accept-edits", "auto", "plan"],
+  };
+  const configOptions = () =>
+    Object.entries(config).map(([id, currentValue]) => ({
+      id,
+      type: "select",
+      currentValue,
+      options: choices[id]!.map((value) => ({ value, name: value })),
+    }));
   const notify = (frame: Omit<Frame, "jsonrpc">) =>
     fromAgent.write(JSON.stringify({ jsonrpc: "2.0", ...frame }) + "\n");
 
@@ -47,7 +60,19 @@ function fakeAcp() {
           agentCapabilities: { loadSession: true },
         },
       });
-    if (frame.method === "session/load") notify({ id: frame.id, result: {} });
+    if (frame.method === "session/load")
+      notify({ id: frame.id, result: { configOptions: configOptions() } });
+    // A session the CLI opens for its options; without a message it is never stored.
+    if (frame.method === "session/new")
+      notify({
+        id: frame.id,
+        result: { sessionId: "options-probe", configOptions: configOptions() },
+      });
+    if (frame.method === "session/set_config_option") {
+      const { configId, value } = frame.params as { configId: string; value: string };
+      config[configId] = value;
+      notify({ id: frame.id, result: { configOptions: configOptions() } });
+    }
   });
 
   const spawn = vi
@@ -602,8 +627,8 @@ describe("Antigravity session baseline through HTTP, backend RPC and ACP frames"
       });
   });
 
-  it.each([{}, { prompt: "First message" }])(
-    "declines creation with %j at HTTP admission",
+  it.each([{}])(
+    "declines creation without a first message (%j) at HTTP admission",
     async (fields) => {
       const requestId = randomUUID();
       expect(
@@ -614,9 +639,9 @@ describe("Antigravity session baseline through HTTP, backend RPC and ACP frames"
           requestId,
           ...fields,
         }),
-      ).toEqual({
+      ).toMatchObject({
         status: 400,
-        body: { error: "invalid_agent", controlOutcome: "not-dispatched" },
+        body: { error: "missing_prompt" },
       });
       expect(await host.http(`/requests/${requestId}`)).toEqual({
         status: 200,
@@ -635,16 +660,6 @@ describe("Antigravity session baseline through HTTP, backend RPC and ACP frames"
     [
       "/managed/action",
       { agent: "antigravity", operation: "queue-steer", queuedSubmissionId: "not-native" },
-      "capability_unavailable",
-    ],
-    [
-      "/managed/action",
-      { agent: "antigravity", operation: "settings", model: "alternate" },
-      "capability_unavailable",
-    ],
-    [
-      "/managed/action",
-      { agent: "antigravity", operation: "settings", permissionMode: "plan" },
       "capability_unavailable",
     ],
     [
@@ -670,13 +685,28 @@ describe("Antigravity session baseline through HTTP, backend RPC and ACP frames"
     expect(acp.frames).toEqual([]);
   });
 
-  it("keeps Antigravity desktop history read only and reports unavailable creation options", async () => {
+  it("keeps Antigravity desktop history read only and offers the CLI's creation options", async () => {
     expect(
       await host.http("/managed/options?agent=antigravity&workspaceId=workspace"),
     ).toMatchObject({
-      status: 400,
-      body: { error: "invalid_agent" },
+      status: 200,
+      body: {
+        available: true,
+        models: [
+          { id: "flash", efforts: ["low", "high"] },
+          { id: "sonnet", efforts: ["low", "high"] },
+        ],
+        permissionModes: [
+          { id: "default" },
+          { id: "accept-edits" },
+          { id: "auto" },
+          { id: "plan" },
+        ],
+      },
     });
+    // The options came from a session without a message, which the CLI never stores.
+    expect(acp.frames.filter((frame) => frame.method === "session/prompt")).toEqual([]);
+    acp.frames.length = 0;
     const state = await live(localSessionId);
     expect(state).toMatchObject({
       status: 200,

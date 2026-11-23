@@ -54,6 +54,11 @@ export function parseAntigravitySession(value: unknown): AntigravitySession | nu
   };
 }
 /** Native history is listed and replayed only through a verified official ACP executable. */
+/** `agy` is the CLI and serves ACP as `agy acp`; the standalone server takes no arguments. */
+export function antigravityAcpArgs(executable: string): string[] {
+  return /^agy(?:\.exe)?$/i.test(path.basename(executable)) ? ["acp"] : [];
+}
+
 export class AntigravitySessions {
   #clients = new Set<AntigravityAcp>();
   #closed = false;
@@ -122,12 +127,12 @@ export class AntigravitySessions {
     if (cli !== null) return { executable: this.#verifiedExecutable(cli), args: ["acp"] };
     return null;
   }
+  /**
+   * The ACP server sessions are controlled through. The CLI's `agy acp` is started with `acp`
+   * (`antigravityAcpArgs`); control still requires the identity check when it connects.
+   */
   controlExecutable(): string {
-    const command = this.#command();
-    // The newer CLI identity is verified for browsing only. Do not let discovery
-    // silently widen the separately verified legacy control adapter's scope.
-    if (command.args.length) throw new Error("Antigravity CLI ACP is read-only in AgentKib");
-    return command.executable;
+    return this.#command().executable;
   }
   #verifiedExecutable(value: string): string {
     if (!path.isAbsolute(value))
@@ -139,9 +144,9 @@ export class AntigravitySessions {
   #command(): AntigravityReadCommand {
     const command = this.optionalReadCommand();
     if (command === null)
-      throw new Error(
-        "Antigravity ACP server is unavailable; set AGENTKIB_ANTIGRAVITY_ACP_BIN to the official absolute executable path",
-      );
+      // The CLI's `agy acp` serves it; the Antigravity App does not include the CLI. Clients guide
+      // the person to install it (AGENTKIB_ANTIGRAVITY_ACP_BIN still names a custom path).
+      throw new Error("antigravity-cli-unavailable");
     return command;
   }
   async list(

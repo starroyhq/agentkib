@@ -80,7 +80,7 @@ describe("composer draft capabilities", () => {
       resourcesReadable: false,
       attachmentAllowed: false,
     });
-    for (const agent of ["antigravity", "gemini-cli", "unknown-reader"]) {
+    for (const agent of ["gemini-cli", "unknown-reader"]) {
       expect(sessionProviderCapabilities(agent)).toBeUndefined();
     }
   });

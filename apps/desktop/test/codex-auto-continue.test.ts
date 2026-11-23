@@ -1024,12 +1024,11 @@ describe("a Codex Project Agent's thread", () => {
     const f = fixture();
     const lead = projectAgentFixture(f.summary.id, f.summary.workspace_id);
     cleanups.push(lead.close);
-    const endpoint = (await lead.service.leadTools(f.summary.id)) as {
-      mcpServers: { agentkib_workers: { url: string } };
-    };
-    const url = endpoint.mcpServers.agentkib_workers.url;
+    const endpoint = await lead.service.leadEndpoint(f.summary.id);
+    if (!endpoint) throw new Error("Missing Project Agent endpoint");
+    const { url } = endpoint;
     let enabled = true;
-    f.web.leadEndpoints(async (id) => (enabled && id === f.summary.id ? url : null));
+    f.web.leadEndpoints(async (id) => (enabled && id === f.summary.id ? endpoint : null));
     const attached = () =>
       f.requests.filter(({ method }) => ["thread/start", "thread/resume"].includes(method));
     const config = () =>

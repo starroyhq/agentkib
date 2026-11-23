@@ -410,7 +410,7 @@ function offlineState(
   if (
     live?.executionMode === "acp-managed" &&
     typeof live.reason === "string" &&
-    /^(Antigravity ACP server is unavailable|Antigravity ACP executable|Antigravity CLI ACP is read-only)/.test(
+    /^(antigravity-cli-unavailable$|Antigravity ACP executable|Unverified Antigravity ACP server)/.test(
       live.reason,
     )
   )
@@ -1863,9 +1863,14 @@ export class OrchestrationService {
 
   /**
    * The `--mcp-config` content that gives a lead session its tools, or null for any other
-   * session. The endpoint stays the same for the life of this process.
+   * session.
    */
   async leadTools(sessionId: string): Promise<Record<string, unknown> | null> {
+    return (await this.leadEndpoint(sessionId))?.mcpConfig ?? null;
+  }
+
+  /** Opens or reuses the endpoint with the tool registration for the current lead scope. */
+  async leadEndpoint(sessionId: string): Promise<LeadEndpoint | null> {
     if (this.#closed || !this.registry.get(sessionId)) return null;
     let endpoint = this.#endpoints.get(sessionId);
     if (!endpoint) {
@@ -1876,13 +1881,13 @@ export class OrchestrationService {
       endpoint = openLeadEndpoint({
         serverName: SERVER_NAME,
         instructions: leadInstructions(scope),
-        tools: () => this.tools(scope),
+        tools: this.tools(scope),
         call: (name, input) => this.call(sessionId, name, input),
       });
       this.#endpoints.set(sessionId, endpoint);
       endpoint.catch(() => this.#endpoints.delete(sessionId));
     }
-    return (await endpoint).mcpConfig;
+    return endpoint;
   }
 
   /** Takes a lead's retired endpoints off the books, for the caller to close. */

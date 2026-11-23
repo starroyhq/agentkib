@@ -3,7 +3,9 @@ import { EventEmitter } from "node:events";
 import spawn from "cross-spawn";
 import { windowsProcessTree, type NativeProcessTree } from "../../native-process";
 
-const FRAME_LIMIT = 4 * 1024 * 1024;
+const REQUEST_FRAME_LIMIT = 4 * 1024 * 1024;
+// History-bearing replies can exceed the request budget even when paginated resume is used.
+const RESPONSE_FRAME_LIMIT = 64 * 1024 * 1024;
 const REQUEST_TIMEOUT_MS = 12_000;
 const SHUTDOWN_TIMEOUT_MS = 3_000;
 const TERMINATION_TIMEOUT_MS = 1_000;
@@ -48,7 +50,8 @@ export class CodexAppServerSession extends EventEmitter {
   #child: ChildProcess;
   #tree?: NativeProcessTree;
   #pending = new Map<number, (value: Response) => void>();
-  #buffer = Buffer.alloc(0);
+  #responseBuffer?: Buffer;
+  #responseLength = 0;
   #nextId = 0;
   #closed?: Error;
   #closing?: Promise<void>;
@@ -137,7 +140,8 @@ export class CodexAppServerSession extends EventEmitter {
     const id = ++this.#nextId;
     if (!Number.isSafeInteger(id)) throw new Error("Codex app-server request limit reached");
     const frame = Buffer.from(JSON.stringify({ id, method, params }) + "\n");
-    if (frame.length > FRAME_LIMIT) throw new Error("Codex request exceeds the frame limit");
+    if (frame.length > REQUEST_FRAME_LIMIT)
+      throw new Error("Codex request exceeds the frame limit");
     let timer: ReturnType<typeof setTimeout> | undefined;
     const response = new Promise<Response>((resolve, reject) => {
       timer = setTimeout(() => {
@@ -204,28 +208,48 @@ export class CodexAppServerSession extends EventEmitter {
 
   #write(frame: Buffer): void {
     if (!this.connected) throw this.#closed ?? new Error("Codex app-server is unavailable");
-    if (frame.length > FRAME_LIMIT) throw new Error("Codex request exceeds the frame limit");
+    if (frame.length > REQUEST_FRAME_LIMIT)
+      throw new Error("Codex request exceeds the frame limit");
     const stdin = this.#child.stdin;
     if (!stdin?.writable) throw new Error("Codex app-server stdin is unavailable");
     stdin.write(frame);
   }
 
   #onData(chunk: Buffer): void {
-    if (this.#closed) return;
-    this.#buffer = Buffer.concat([this.#buffer, chunk]);
-    if (this.#buffer.length > FRAME_LIMIT && this.#buffer.indexOf(10) < 0) {
-      this.#fail(new Error("Codex response exceeds the frame limit"));
-      return;
-    }
-    for (;;) {
-      const newline = this.#buffer.indexOf(10);
-      if (newline < 0) return;
-      if (newline > FRAME_LIMIT) {
+    let offset = 0;
+    while (!this.#closed && offset < chunk.length) {
+      const newline = chunk.indexOf(10, offset);
+      const end = newline < 0 ? chunk.length : newline;
+      const length = this.#responseLength + end - offset;
+      if (length > RESPONSE_FRAME_LIMIT) {
         this.#fail(new Error("Codex response exceeds the frame limit"));
         return;
       }
-      const line = this.#buffer.subarray(0, newline);
-      this.#buffer = this.#buffer.subarray(newline + 1);
+      let line: Buffer;
+      if (newline >= 0 && !this.#responseBuffer) {
+        line = chunk.subarray(offset, end);
+      } else {
+        let buffer = this.#responseBuffer;
+        if (!buffer || buffer.length < length) {
+          // Geometric growth keeps copies linear even when stdout splits a large reply.
+          const capacity = Math.min(
+            RESPONSE_FRAME_LIMIT,
+            Math.max(length, buffer ? buffer.length * 2 : 4096),
+          );
+          const grown = Buffer.allocUnsafe(capacity);
+          buffer?.copy(grown, 0, 0, this.#responseLength);
+          this.#responseBuffer = buffer = grown;
+        }
+        chunk.copy(buffer, this.#responseLength, offset, end);
+        if (newline < 0) {
+          this.#responseLength = length;
+          return;
+        }
+        line = buffer.subarray(0, length);
+        this.#responseBuffer = undefined;
+        this.#responseLength = 0;
+      }
+      offset = newline + 1;
       let value: unknown;
       try {
         value = JSON.parse(line.toString("utf8"));
@@ -251,6 +275,8 @@ export class CodexAppServerSession extends EventEmitter {
   #fail(error: Error): void {
     if (this.#closed) return;
     this.#closed = error;
+    this.#responseBuffer = undefined;
+    this.#responseLength = 0;
     for (const resolve of this.#pending.values()) resolve({ error });
     this.#pending.clear();
   }

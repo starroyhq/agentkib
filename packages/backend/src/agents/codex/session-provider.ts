@@ -39,16 +39,18 @@ import {
 import { CodexCatalogCache } from "./codex-catalog-cache";
 import { CodexExternalTurns, type EndedTurn, type ExternalTurn } from "./codex-external-turns";
 import { codexResumeCommand } from "./codex-resume-command";
-import { CodexFollowerBridge } from "./codex-follower-bridge";
-import { CodexDesktopConnectionError, CodexFollowerConnection } from "./codex-follower-connection";
-import { CodexDesktopApp } from "./codex-desktop-app";
+import {
+  CodexDesktopFollower,
+  type CodexFollowerRecord,
+  type WorkerLiveRead,
+} from "./desktop-follower";
 import {
   parseFollowerModelSettings,
   sameFollowerModelSettings,
   type CodexFollowerState,
   type FollowerModelSettings,
 } from "./codex-follower-state";
-import { CodexFollowerStream } from "./codex-follower-stream";
+import type { CodexFollowerStream } from "./codex-follower-stream";
 import { ManagedCodexState, elicitationResponse } from "./managed-codex-state";
 import { ManagedCodexEventBridge } from "./managed-codex-state";
 import { projectContextUsage, type ContextUsage } from "../../context-usage";
@@ -96,20 +98,7 @@ import type { LaneObserver } from "../../sessions/lane-observer";
 import type { WorkerRestartRequest, WorkerRestartResult } from "../../orchestration-service";
 import { readManagedRecords, type ManagedRecord } from "./managed-records";
 
-const FOLLOWER_RETRY_MS = 5_000;
-const FOLLOWER_IDLE_MS = 30_000;
 const LEGACY_ADOPT_RECHECK_MS = 5_000;
-/** How long a send waits for the Codex app to take a thread it was asked to show. */
-const HANDOFF_TIMEOUT_MS = 8_000;
-const HANDOFF_POLL_MS = 250;
-
-type WorkerLiveRead = "read" | "send";
-
-function codexDesktopFailure(error: unknown): string {
-  return error instanceof CodexDesktopConnectionError
-    ? error.code
-    : "codex-desktop-owner-unavailable";
-}
 
 const managedReconcileSchema = z
   .object({
@@ -249,17 +238,6 @@ type ManagedRunner = {
   written?: boolean;
 };
 
-type CodexDesktopHandoff = { follower: CodexFollowerRecord; revision: number } | { reason: string };
-
-type CodexFollowerRecord = {
-  bridge: CodexFollowerBridge;
-  stream: CodexFollowerStream;
-  workspaceId: string;
-  workspace: string;
-  nativeId: string;
-  lastUsed: number;
-};
-
 type ManagedModelOption = {
   id: string;
   isDefault: boolean;
@@ -363,23 +341,28 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
   >();
   #startingRunners = new Map<string, ManagedRunner>();
   #transientSessions = new Set<CodexAppServerSession>();
-  #codexFollowers = new Map<string, CodexFollowerRecord>();
-  #codexFollowerFlights = new Map<string, Promise<CodexFollowerRecord>>();
   #subagentObservers = new WeakMap<object, { identity: string; id: string }>();
-  #followerMisses = new Map<string, number>();
-  /** Sessions whose last owner discovery answered that nobody holds the thread's window. */
-  #ownerMissing = new Set<string>();
-  /** When a send last asked the Codex app for a thread and the app did not take it. */
-  #handoffFailures = new Map<string, number>();
-  #desktopApp: CodexDesktopApp;
-  #handoffTimeoutMs: number;
-  #handoffFlights = new Map<string, Promise<CodexDesktopHandoff>>();
+  readonly #desktopFollower: CodexDesktopFollower;
 
   constructor(private readonly host: CodexSessionHost) {
     const { environment } = host;
     this.#codex = new CodexAppServerReader(environment);
     this.#preflight = new CodexRuntimePreflight(environment);
-    this.#desktopApp = new CodexDesktopApp(environment);
+    this.#desktopFollower = new CodexDesktopFollower({
+      dataDir: host.dataDir,
+      store: host.store,
+      environment,
+      runtimeBootId: host.runtimeBootId,
+      assertManagedHome: (record) => this.#assertManagedHome(record),
+      inactiveRecord: (sessionId) => this.#inactiveRecord(sessionId),
+      assertOpen: () => host.assertOpen(),
+      isShuttingDown: () => host.isShuttingDown(),
+      isSessionObserved: (sessionId) => host.isSessionObserved?.(sessionId),
+      publishConversationEvent: (sessionId, type, payload, live, item) =>
+        host.publishConversationEvent?.(sessionId, type, payload, live, item),
+      hasLaneObserver: () => host.hasLaneObserver(),
+      observeLane: (notify) => host.observeLane(notify),
+    });
     this.#usageLimits = new CodexUsageLimits({
       dataDir: host.dataDir,
       runtimeBootId: host.runtimeBootId,
@@ -396,13 +379,6 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
       },
       limitEnded: (sessionId) => host.observeLane((observer) => observer.limitEnded?.(sessionId)),
     });
-    const handoffTimeout = Number(environment.AGENTKIB_CODEX_HANDOFF_TIMEOUT_MS);
-    this.#handoffTimeoutMs =
-      environment.AGENTKIB_CODEX_HANDOFF_TIMEOUT_MS !== undefined &&
-      Number.isSafeInteger(handoffTimeout) &&
-      handoffTimeout > 0
-        ? handoffTimeout
-        : HANDOFF_TIMEOUT_MS;
     this.#retirementTimer = setInterval(() => void this.#retireIdleRunners(), 1000);
     this.#retirementTimer.unref();
   }
@@ -483,7 +459,7 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
 
   closeDiscovery(): void {
     this.#preflight.close();
-    this.#desktopApp.close();
+    this.#desktopFollower.closeDiscovery();
   }
 
   closeReader(): Promise<void> {
@@ -491,8 +467,7 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
   }
 
   closeFollowers(): void {
-    for (const follower of this.#codexFollowers.values()) follower.bridge.close();
-    this.#codexFollowers.clear();
+    this.#desktopFollower.closeFollowers();
   }
 
   closeRunners(): Promise<void>[] {
@@ -524,10 +499,7 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
 
   /** Resident native overlays also seed subscriptions that have not received any events yet. */
   readFollowerSnapshot(sessionId: string): ReturnType<CodexFollowerStream["snapshot"]> | undefined {
-    const follower = this.#codexFollowers.get(sessionId);
-    if (!follower?.bridge.connected || follower.bridge.selectedState?.revision == null)
-      return undefined;
-    return follower.stream.snapshot();
+    return this.#desktopFollower.readSnapshot(sessionId);
   }
 
   /** Whether AgentKib runs this Codex session (it was created or taken over, not released). */
@@ -698,20 +670,11 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
       )
         return state.turnId;
     }
-    for (const follower of this.#codexFollowers.values()) {
-      if (
-        follower.nativeId === target.nativeId &&
-        pathIdentity(follower.workspace) === workspace &&
-        follower.bridge.connected
-      ) {
-        const state = follower.bridge.selectedState;
-        if (state?.status === "running" || state?.status === "awaiting-approval") {
-          const turnId = state.activeTurn();
-          if (turnId) return turnId;
-        }
-      }
-    }
-    return this.#externalTurns.turnOf(target.nativeId)?.turnId ?? null;
+    return (
+      this.#desktopFollower.activeTurn(target.nativeId, workspace) ??
+      this.#externalTurns.turnOf(target.nativeId)?.turnId ??
+      null
+    );
   }
 
   /** A Codex CLI for reads: the one the last version check chose, else the first found. */
@@ -1844,11 +1807,11 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
       this.#codexWriterOwnership(record, true);
     const ownerSnapshot = await this.#managedLive(request.sessionId);
     if (ownerSnapshot.executionMode === "codex-follower") {
-      const follower = this.#attachedCodexFollower(record);
+      const follower = this.#desktopFollower.attached(record);
       if (!follower?.bridge.selectedState) throw new Error("session-state-unavailable");
       const access = await this.#codexFollowerSettingsAccess(record, follower);
       const state = follower.bridge.selectedState;
-      if (!state || this.#attachedCodexFollower(record) !== follower)
+      if (!state || this.#desktopFollower.attached(record) !== follower)
         throw new Error("session-state-unavailable");
       const projection = state.settingsState();
       const settings = isObject(projection.settings) ? projection.settings : {};
@@ -2109,7 +2072,7 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
         if (controls && live.reason === "control-outcome-unconfirmed")
           live = (await this.#recoverCodexReceipts(source)) ?? live;
         const checked = await this.#preflight.check();
-        const followed = await this.#desktopFollowerLive(source, live, controls);
+        const followed = await this.#desktopFollower.live(source, live, controls);
         if (followed) {
           const f = followed;
           const unknown = managedSessionHasUnknownCommands(this.host.dataDir, source.id);
@@ -2330,8 +2293,8 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
         for (const operation of ["settings", "rename", "archive", "attachments", "compact"])
           features[operation] = allowed ? { available: true } : features.send!;
         // The Codex app holds the thread with no window answering for it: a message (with its
-        // attachments, as a follower sends them) asks the app to take it (#desktopHandoff).
-        if (await this.#desktopHandoffLive(source, live, controls)) {
+        // attachments, as a follower sends them) asks the app to take it (desktop handoff).
+        if (await this.#desktopFollower.handoffLive(source, live, controls)) {
           features.send = { available: true };
           features.attachments = { available: true };
         }
@@ -2614,7 +2577,7 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
           if (ownsQueueSession) await queueSession?.close();
         }
       }
-      const followerState = this.#attachedCodexFollower(record)?.bridge.selectedState ?? null;
+      const followerState = this.#desktopFollower.attached(record)?.bridge.selectedState ?? null;
       for (const unknown of unknownCommands) {
         const evidence = unknown.evidence;
         const nativeRequestResolved =
@@ -2657,7 +2620,7 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
       // Older Desktop-follower receipts still need a conservative, read-only
       // reconciliation path after that transport leaves the main flow.
       const followerState =
-        this.#attachedCodexFollower({ id: request.sessionId, native_id: nativeId })?.bridge
+        this.#desktopFollower.attached({ id: request.sessionId, native_id: nativeId })?.bridge
           .selectedState ?? null;
       for (const unknown of readUnknownManagedCommands(this.host.dataDir, request.sessionId)) {
         const evidence = unknown.evidence;
@@ -2989,7 +2952,7 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
         managedSessionHasUnknownCommands(this.host.dataDir, request.sessionId)
       )
         return rejectInactive("control-outcome-unconfirmed");
-      const observedFollower = this.#attachedCodexFollower(inactive);
+      const observedFollower = this.#desktopFollower.attached(inactive);
       const owner = observedFollower ? this.#codexWriterOwnership(inactive, true) : null;
       const follower = owner === "codex-owner-busy" ? observedFollower : undefined;
       if (observedFollower && owner && !follower) return rejectInactive(owner);
@@ -3022,13 +2985,13 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
           return await this.#stageCodexSettings(inactive, request);
         if (desktopOwnerHandoff && request.operation === "send") {
           const owner = this.#codexWriterOwnership(inactive, true);
-          const offered = await this.#desktopHandoffLive(
+          const offered = await this.#desktopFollower.handoffLive(
             inactive,
             { ownershipReason: owner, reason: owner },
             true,
           );
           if (!offered) return rejectInactive("codex-desktop-owner-missing");
-          const handed = await this.#desktopHandoff(inactive);
+          const handed = await this.#desktopFollower.handoff(inactive);
           if ("reason" in handed) return rejectInactive(handed.reason);
           return this.#codexFollowerControl(
             { ...request, expectedRevision: handed.revision },
@@ -3050,7 +3013,7 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
             reason: "codex-owner-busy",
           });
         if (busy && request.operation === "send" && inactive.snapshot?.settingsStaged !== true) {
-          const handed = await this.#desktopHandoff(inactive).catch(() => undefined);
+          const handed = await this.#desktopFollower.handoff(inactive).catch(() => undefined);
           if (handed && "follower" in handed)
             return this.#codexFollowerControl(
               { ...request, expectedRevision: handed.revision },
@@ -3643,7 +3606,7 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
 
   async #codexFollowerSettingsFeature(record: ManagedRecord, controls: boolean) {
     if (!controls) return { available: false, reason: "control-disabled" };
-    const follower = this.#attachedCodexFollower(record);
+    const follower = this.#desktopFollower.attached(record);
     if (!follower) return { available: false, reason: "follower-operation-unverified" };
     const { reason } = await this.#codexFollowerSettingsAccess(record, follower);
     return reason ? { available: false, reason } : { available: true };
@@ -3669,7 +3632,7 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
       if (
         follower.bridge.selectedState !== state ||
         state.revision !== revision ||
-        this.#attachedCodexFollower(record) !== follower ||
+        this.#desktopFollower.attached(record) !== follower ||
         !models.length ||
         !sameFollowerModelSettings(observed, settings)
       )
@@ -3713,7 +3676,7 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
       record.archived ||
       !settings ||
       !executable ||
-      this.#attachedCodexFollower(record) !== follower ||
+      this.#desktopFollower.attached(record) !== follower ||
       follower.bridge.selectedState !== state ||
       state.conversationId !== record.native_id ||
       follower.workspaceId !== record.workspace_id ||
@@ -4093,7 +4056,7 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
         : managedSessionHasUnknownCommands(this.host.dataDir, source.id)
           ? "control-outcome-unconfirmed"
           : request.expectedRevision !==
-              (this.#attachedCodexFollower(source)?.bridge.selectedState?.revision ??
+              (this.#desktopFollower.attached(source)?.bridge.selectedState?.revision ??
                 source.snapshot?.revision ??
                 0)
             ? "stale-or-disabled-control"
@@ -4978,7 +4941,7 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
   /** A child run belongs to the resident native connection and owner, across parent turns. */
   subagentObservation(sessionId: string, nativeId: string) {
     const resident = this.#managedRunners.get(sessionId);
-    const follower = this.#codexFollowers.get(sessionId);
+    const follower = this.#desktopFollower.get(sessionId);
     const state = resident?.state.snapshot(this.host.runtimeBootId, false);
     const followed = follower?.bridge.selectedState;
     const residentStatus = String(state?.status);
@@ -5246,11 +5209,7 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
       reason = "codex-owner-check-unavailable";
     }
     this.#ownership.set(record.id, { checkedAt: Date.now(), reason });
-    const follower = this.#codexFollowers.get(record.id);
-    if (follower && reason === null) {
-      this.#codexFollowers.delete(record.id);
-      follower.bridge.close();
-    }
+    if (reason === null) this.#desktopFollower.disconnect(record.id);
     return reason;
   }
 
@@ -5306,15 +5265,7 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
           // The closing runner stays fenced until its real process-close event.
         }
       }
-      for (const [id, follower] of this.#codexFollowers) {
-        if (
-          !this.host.isSessionObserved?.(id) &&
-          Date.now() - follower.lastUsed >= FOLLOWER_IDLE_MS
-        ) {
-          this.#codexFollowers.delete(id);
-          follower.bridge.close();
-        }
-      }
+      this.#desktopFollower.retireIdle();
     } finally {
       this.#retiring = false;
     }
@@ -5449,7 +5400,7 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
       return;
     const expected = parseFollowerModelSettings(acknowledged);
     if (!expected) return;
-    const follower = await this.#desktopFollower(record);
+    const follower = await this.#desktopFollower.connect(record);
     const state = follower.bridge.selectedState;
     if (!state || state.ownerClientId !== acknowledged.ownerClientId) return;
     const { home, cwd } = this.#codexFollowerSettingsTarget(record, follower, state);
@@ -5674,8 +5625,8 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
         if (experimentalEnabled && inactive.reason === "control-outcome-unconfirmed")
           inactive = (await this.#recoverCodexReceipts(record)) ?? inactive;
         return (
-          (await this.#desktopFollowerLive(record, inactive, experimentalEnabled, worker)) ??
-          (await this.#desktopHandoffLive(
+          (await this.#desktopFollower.live(record, inactive, experimentalEnabled, worker)) ??
+          (await this.#desktopFollower.handoffLive(
             record,
             inactive,
             experimentalEnabled && worker !== "send",
@@ -5756,375 +5707,14 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
     if (experimentalEnabled && inactive.reason === "control-outcome-unconfirmed")
       inactive = (await this.#recoverCodexReceipts(managed)) ?? inactive;
     return (
-      (await this.#desktopFollowerLive(managed, inactive, experimentalEnabled, worker)) ??
-      (await this.#desktopHandoffLive(
+      (await this.#desktopFollower.live(managed, inactive, experimentalEnabled, worker)) ??
+      (await this.#desktopFollower.handoffLive(
         managed,
         inactive,
         experimentalEnabled && worker !== "send",
       )) ??
       inactive
     );
-  }
-
-  async #desktopFollower(record: ManagedRecord): Promise<CodexFollowerRecord> {
-    if (!CodexFollowerConnection.supported()) throw new Error("platform-unsupported");
-    if (!record.native_id) throw new Error("native-session-unconfirmed");
-    const workspace = canonicalize(this.host.store.workspacePath(record.workspace_id));
-    if (pathIdentity(workspace) !== pathIdentity(canonicalize(record.workspace)))
-      throw new Error("session-workspace-mismatch");
-    const home = this.#assertManagedHome(record);
-    const nativeId = record.native_id;
-    const sessionId = record.id;
-    const cached = this.#codexFollowers.get(sessionId);
-    if (
-      cached?.bridge.connected &&
-      cached.nativeId === nativeId &&
-      cached.workspaceId === record.workspace_id
-    ) {
-      cached.lastUsed = Date.now();
-      return cached;
-    }
-    if (cached) {
-      this.#codexFollowers.delete(sessionId);
-      cached.bridge.close();
-    }
-
-    const pending = this.#codexFollowerFlights.get(sessionId);
-    if (pending) return pending;
-    const flight = this.#connectCodexFollower(record, workspace, nativeId, home);
-    this.#codexFollowerFlights.set(sessionId, flight);
-    try {
-      return await flight;
-    } finally {
-      if (this.#codexFollowerFlights.get(sessionId) === flight)
-        this.#codexFollowerFlights.delete(sessionId);
-    }
-  }
-
-  async #connectCodexFollower(
-    record: ManagedRecord,
-    workspace: string,
-    nativeId: string,
-    home: string,
-  ): Promise<CodexFollowerRecord> {
-    const sessionId = record.id;
-    if (this.#codexFollowers.size >= 8) {
-      const candidates = [...this.#codexFollowers.entries()]
-        .filter(
-          ([id, value]) =>
-            id !== sessionId &&
-            !this.host.isSessionObserved?.(id) &&
-            value.bridge.selectedState?.status === "idle" &&
-            value.bridge.selectedState.approvals(false).length === 0,
-        )
-        .sort(([, left], [, right]) => left.lastUsed - right.lastUsed);
-      const [retireId, retire] = candidates[0] ?? [];
-      if (!retireId || !retire) throw new Error("live-session-busy");
-      this.#codexFollowers.delete(retireId);
-      retire.bridge.close();
-    }
-    let bridge: CodexFollowerBridge | undefined;
-    const stream = new CodexFollowerStream();
-    const watch = { running: new Set<string>(), waiting: "" };
-    const publish = (snapshot: ReturnType<CodexFollowerState["streamSnapshot"]>) => {
-      const state = bridge?.selectedState;
-      if (!state) return;
-      const live = this.#followerLive(record, state, true);
-      stream.publish(snapshot, live, (type, payload, live, item) =>
-        this.host.publishConversationEvent?.(sessionId, type, payload, live, item),
-      );
-      this.#observeFollowedLane(sessionId, state, live, watch);
-    };
-    bridge = await CodexFollowerBridge.connect(
-      path.join(home, "ipc", "ipc.sock"),
-      nativeId,
-      publish,
-    );
-    try {
-      const latest =
-        readManagedRecords(this.host.dataDir, this.host.store).find(
-          (item) => item.id === sessionId,
-        ) ?? (await this.#inactiveRecord(sessionId));
-      this.host.assertOpen();
-      if (latest.native_id !== nativeId || latest.workspace_id !== record.workspace_id)
-        throw new Error("session-unavailable");
-      const follower = {
-        bridge,
-        stream,
-        workspaceId: record.workspace_id,
-        workspace,
-        nativeId,
-        lastUsed: Date.now(),
-      };
-      this.#codexFollowers.set(sessionId, follower);
-      if (bridge.selectedState) publish(bridge.selectedState.streamSnapshot());
-      return follower;
-    } catch (error) {
-      bridge.close();
-      throw error;
-    }
-  }
-
-  /**
-   * A turn of a session the Codex app runs, seen through its follower: a lead hears that it
-   * ended, or waits for the person, as of the turns AgentKib runs. Only turns this follower saw
-   * running count as ended.
-   */
-  #observeFollowedLane(
-    sessionId: string,
-    state: CodexFollowerState,
-    live: Record<string, unknown>,
-    watch: { running: Set<string>; waiting: string },
-  ): void {
-    if (!this.host.hasLaneObserver()) return;
-    for (const turn of state.turnOutcomes()) {
-      if (turn.running) watch.running.add(turn.turnId);
-      else if (watch.running.delete(turn.turnId) && turn.meta) {
-        const { outcome, duration_ms } = turn.meta;
-        this.host.observeLane((observer) =>
-          observer.turnEnded(
-            sessionId,
-            turn.turnId,
-            outcome === "aborted" ? "cancelled" : (outcome ?? "ended"),
-            duration_ms ?? null,
-          ),
-        );
-      }
-    }
-    const waiting =
-      live.status === "awaiting-approval" || live.status === "waiting-input"
-        ? `${String(live.turnId ?? "")}:${String(live.status)}`
-        : "";
-    if (waiting && waiting !== watch.waiting)
-      this.host.observeLane((observer) =>
-        observer.waiting(
-          sessionId,
-          typeof live.turnId === "string" ? live.turnId : null,
-          String(live.status),
-        ),
-      );
-    watch.waiting = waiting;
-  }
-
-  /** A connected follower still tracking the record's native conversation with a valid snapshot. */
-  #attachedCodexFollower(record: {
-    id: string;
-    native_id?: string | null;
-  }): CodexFollowerRecord | undefined {
-    const follower = this.#codexFollowers.get(record.id);
-    return follower?.bridge.connected &&
-      follower.nativeId === record.native_id &&
-      (follower.bridge.selectedState?.revision ?? null) !== null
-      ? follower
-      : undefined;
-  }
-
-  #followerLive(
-    record: ManagedRecord,
-    state: CodexFollowerState,
-    controls: boolean,
-  ): Record<string, unknown> {
-    const unknown = managedSessionHasUnknownCommands(this.host.dataDir, record.id);
-    const live = state.live(controls && !unknown);
-    return {
-      ...live,
-      ...(record.snapshot?.settingsStaged === true ? { sendEnabled: false } : {}),
-      // The follower transport does not forward user-input answers.
-      questions: (Array.isArray(live.questions) ? live.questions : []).map((question) => ({
-        ...question,
-        supported: false,
-      })),
-      sessionId: record.id,
-      runtimeBootId: this.host.runtimeBootId,
-      workspaceId: record.workspace_id,
-      executionMode: "codex-follower",
-      executionLocation: "external",
-      connectionGeneration: state.settingsWriteScope,
-      ownershipReason: null,
-      ...(unknown
-        ? { reason: "control-outcome-unconfirmed", sendEnabled: false, stopEnabled: false }
-        : {}),
-    };
-  }
-
-  async #desktopFollowerLive(
-    record: ManagedRecord,
-    inactive: Record<string, unknown>,
-    controls: boolean,
-    worker?: WorkerLiveRead,
-  ): Promise<Record<string, unknown> | undefined> {
-    if (
-      inactive.ownershipReason !== "codex-owner-busy" ||
-      (inactive.reason !== "codex-owner-busy" &&
-        (inactive.reason !== "control-outcome-unconfirmed" ||
-          !readUnknownManagedCommands(this.host.dataDir, record.id).some(
-            ({ evidence }) =>
-              evidence?.operation === "settings" && evidence.executionMode === "codex-follower",
-          )))
-    )
-      return undefined;
-    const sending = worker === "send";
-    const refused = (reason: string) =>
-      sending && inactive.reason === "codex-owner-busy"
-        ? { ...inactive, sendEnabled: false, reason }
-        : undefined;
-    if (!CodexFollowerConnection.supported()) return refused("platform-unsupported");
-    const miss = this.#followerMisses.get(record.id);
-    if (!sending && miss !== undefined && Date.now() - miss < FOLLOWER_RETRY_MS) return undefined;
-    // Passive checks may follow a proven running turn. For an idle lock, only inspect
-    // an already attached owner's active turn and leave the normal idle expiry alone.
-    const cached =
-      worker && !controls && !isObject(inactive.externalTurn)
-        ? this.#attachedCodexFollower(record)
-        : null;
-    if (
-      worker &&
-      !controls &&
-      !isObject(inactive.externalTurn) &&
-      !cached?.bridge.selectedState?.activeTurn()
-    )
-      return undefined;
-    try {
-      const follower = cached ?? (await this.#desktopFollower(record));
-      const state = cached?.bridge.selectedState ?? (await follower.bridge.observeLive());
-      if (!cached) follower.lastUsed = Date.now();
-      this.#ownerMissing.delete(record.id);
-      this.#followerMisses.delete(record.id);
-      const live = this.#followerLive(record, state, controls);
-      if (!worker) return live;
-      const active = typeof live.turnId === "string" ? live.turnId : null;
-      const nativeTurn = isObject(inactive.externalTurn) ? inactive.externalTurn.turnId : null;
-      const nativeProgress =
-        nativeTurn && active && nativeTurn !== active ? null : inactive.workerProgress;
-      const commands = !active || nativeTurn === active ? inactive.commands : undefined;
-      const { items } = follower.stream.snapshot();
-      const output = active
-        ? items.filter((item) => item.turn_id === active && item.kind === "agent-message").at(-1)
-        : undefined;
-      const content = typeof output?.content === "string" ? output.content : "";
-      // The owner can briefly say idle while the lock and rollout still prove an open turn.
-      // A new owner item or text is progress, but a tool status refresh is not.
-      return {
-        ...live,
-        externalTurn: inactive.externalTurn,
-        ...(commands !== undefined ? { commands } : {}),
-        ...(active || typeof nativeProgress === "string"
-          ? {
-              workerProgress: JSON.stringify([
-                nativeProgress,
-                output?.id,
-                content.length,
-                content.slice(-128),
-              ]),
-            }
-          : {}),
-        ...(output?.truncated === true ? { streamTextTruncated: true } : {}),
-      };
-    } catch (error) {
-      const follower = this.#codexFollowers.get(record.id);
-      if (follower) {
-        this.#codexFollowers.delete(record.id);
-        follower.bridge.close();
-      }
-      this.#followerMisses.set(record.id, Date.now());
-      const reason = codexDesktopFailure(error);
-      if (reason === "codex-desktop-owner-missing") {
-        this.#ownerMissing.add(record.id);
-        const handoff = sending
-          ? await this.#desktopHandoffLive(record, inactive, controls)
-          : undefined;
-        return handoff ?? refused(reason);
-      }
-      this.#ownerMissing.delete(record.id);
-      return refused(reason);
-    }
-  }
-
-  /**
-   * The Codex app's server holds the thread and no window answers for it: sending stays open,
-   * and a send asks the app to show the thread (#desktopHandoff). The session still reads as in
-   * use in Codex; `ownerHandoff` tells a client it may send. Not offered again for a minute
-   * after the app did not take the thread.
-   */
-  async #desktopHandoffLive(
-    record: ManagedRecord,
-    inactive: Record<string, unknown>,
-    controls: boolean,
-  ): Promise<Record<string, unknown> | undefined> {
-    const failed = this.#handoffFailures.get(record.id);
-    if (
-      !controls ||
-      inactive.reason !== "codex-owner-busy" ||
-      inactive.ownershipReason !== "codex-owner-busy" ||
-      !record.native_id ||
-      record.snapshot?.settingsStaged === true ||
-      !this.#ownerMissing.has(record.id) ||
-      (failed !== undefined && Date.now() - failed < 60_000) ||
-      !CodexFollowerConnection.supported() ||
-      managedSessionHasUnknownCommands(this.host.dataDir, record.id)
-    )
-      return undefined;
-    if (!(await this.#desktopApp.running())) return undefined;
-    return { ...inactive, sendEnabled: true, ownerHandoff: true };
-  }
-
-  /**
-   * Asks the running Codex app to show a thread its server holds with no window answering for
-   * it, then follows the app. Only a send asks: opening the session in AgentKib must not move
-   * the app's page. Never launches the app, never takes the writer lock and sends nothing by
-   * itself; a refusal leaves the session in use in Codex.
-   */
-  async #desktopHandoff(record: ManagedRecord): Promise<CodexDesktopHandoff> {
-    if (!CodexFollowerConnection.supported()) return { reason: "platform-unsupported" };
-    if (!record.native_id) return { reason: "native-session-unconfirmed" };
-    const pending = this.#handoffFlights.get(record.id);
-    if (pending) return pending;
-    const flight = this.#runDesktopHandoff(record, record.native_id);
-    this.#handoffFlights.set(record.id, flight);
-    try {
-      const handed = await flight;
-      if ("follower" in handed) this.#handoffFailures.delete(record.id);
-      else this.#handoffFailures.set(record.id, Date.now());
-      return handed;
-    } finally {
-      if (this.#handoffFlights.get(record.id) === flight) this.#handoffFlights.delete(record.id);
-    }
-  }
-
-  async #runDesktopHandoff(record: ManagedRecord, nativeId: string): Promise<CodexDesktopHandoff> {
-    const attach = async (): Promise<CodexDesktopHandoff> => {
-      try {
-        const follower = await this.#desktopFollower(record);
-        const state = await follower.bridge.observeLive();
-        follower.lastUsed = Date.now();
-        this.#ownerMissing.delete(record.id);
-        this.#followerMisses.delete(record.id);
-        return state.revision === null
-          ? { reason: "codex-desktop-ipc-incompatible" }
-          : { follower, revision: state.revision };
-      } catch (error) {
-        const follower = this.#codexFollowers.get(record.id);
-        if (follower) {
-          this.#codexFollowers.delete(record.id);
-          follower.bridge.close();
-        }
-        return { reason: codexDesktopFailure(error) };
-      }
-    };
-    // A window may have opened the thread since the session was last looked at.
-    const first = await attach();
-    if (!("reason" in first) || first.reason !== "codex-desktop-owner-missing") return first;
-    if (!(await this.#desktopApp.running())) return first;
-    if (!(await this.#desktopApp.openThread(nativeId)))
-      return { reason: "codex-desktop-thread-open-failed" };
-    const deadline = Date.now() + this.#handoffTimeoutMs;
-    while (Date.now() < deadline && !this.host.isShuttingDown()) {
-      await new Promise((resolve) => setTimeout(resolve, HANDOFF_POLL_MS));
-      const attached = await attach();
-      if (!("reason" in attached) || attached.reason !== "codex-desktop-owner-missing")
-        return attached;
-    }
-    return first;
   }
 
   async resumeCommand(sessionId: string) {

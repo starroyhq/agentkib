@@ -28,6 +28,13 @@ import { HistoryReferenceChips } from "../history/history-search-controls";
 import { validHistoryMessage } from "../history/history-reference-model";
 import { webLayoutCopy } from "./web-layout-copy";
 
+const codexTurnStartRejected = {
+  "en-US": "Codex could not start the turn.",
+  "zh-CN": "Codex 无法开始本轮。",
+  "zh-Hant": "Codex 無法開始這一輪。",
+  "ja-JP": "Codex がターンを開始できませんでした。",
+};
+
 type ReadState = Parameters<typeof useSessionDetailReadState>[0];
 type InteractionState = ComponentProps<typeof SessionInteractionDock>["session"];
 type History = SessionDetailProps["history"];
@@ -50,6 +57,7 @@ type ReaderSession = ReadState["session"] &
     setMessage: (value: string) => void;
     control: (action: "send" | "stop") => unknown;
     liveContentVersion?: number;
+    streamReconnecting?: boolean;
     historySearchOpen: boolean;
     pendingSend?: NonNullable<History["pending"]> & { sessionId: string };
     actionUnavailableReason?: string | null;
@@ -168,6 +176,13 @@ export function SessionReader({
     : undefined;
   const pendingMessage =
     session.pendingSend?.sessionId === selected ? session.pendingSend : undefined;
+  const turnStartError =
+    !pendingMessage &&
+    (!notice ||
+      notice === "accepted" ||
+      (notice === "notDispatched" && session.noticeSource === "send" && !noticeReason))
+      ? selectedLive?.turnStartError
+      : null;
   if (!access || !selected) return null;
   const composerSurface = sessionComposerSurface(current, access);
   return (
@@ -224,6 +239,11 @@ export function SessionReader({
         }
         composer={
           <>
+            {session.streamReconnecting && (
+              <p role="status" className="px-4 py-2 text-sm text-muted-foreground">
+                {webLayoutCopy[locale].streamReconnecting}
+              </p>
+            )}
             <SessionDetailComposerNotices
               agent={current?.agent}
               accessMode={access.device?.accessMode}
@@ -245,15 +265,19 @@ export function SessionReader({
                 />
               }
               live={selectedLive}
-              notice={notice}
+              notice={turnStartError ? "notDispatched" : notice}
               noticeSource={session.noticeSource}
-              noticeReason={noticeReason}
+              noticeReason={turnStartError?.reason ?? noticeReason}
               noticeText={
-                notice === "notDispatched" && (session.actionUnavailableReason || noticeReason)
-                  ? explainReason((session.actionUnavailableReason || noticeReason)!)
-                  : notice
-                    ? t[notice]
-                    : undefined
+                turnStartError
+                  ? [codexTurnStartRejected[locale], turnStartError.message]
+                      .filter(Boolean)
+                      .join(" ")
+                  : notice === "notDispatched" && (session.actionUnavailableReason || noticeReason)
+                    ? explainReason((session.actionUnavailableReason || noticeReason)!)
+                    : notice
+                      ? t[notice]
+                      : undefined
               }
               hasSeparateBanner={!!banner}
             />

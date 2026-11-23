@@ -221,7 +221,8 @@ export class ManagedCodexState {
   showUsageLimit(view: UsageLimitView | null): boolean {
     if (JSON.stringify(view) === JSON.stringify(this.#usageLimit)) return false;
     this.#usageLimit = view ? { ...view } : null;
-    this.#changed(false, true);
+    // A limit gates delegated sends; a token-usage notification only informs them.
+    this.#changed();
     return true;
   }
 
@@ -362,10 +363,10 @@ export class ManagedCodexState {
         if (previous >= 0xd800 && previous <= 0xdbff && first >= 0xdc00 && first <= 0xdfff)
           deltaBytes -= 2;
         if (deltaBytes === 0 || this.#streamBytes + deltaBytes > MAX_STREAM_BYTES)
-          return hadRetry ? this.#changed() : { changed: false };
+          return hadRetry ? this.#changed(false, true) : { changed: false };
         this.#stream += params.delta;
         this.#streamBytes += deltaBytes;
-        break;
+        return this.#changed(false, true);
       }
       case "item/reasoning/summaryTextDelta":
       case "item/reasoning/textDelta":

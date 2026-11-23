@@ -70,7 +70,10 @@ export type WorkerRestartResult = {
  */
 export type LaneHost = {
   /** `send`, `steer`, `queue-add`, `stop`, `approve` and `answer` on a lane's session. */
-  control(value: Record<string, unknown>, intent?: "desktop-owner-handoff"): Promise<unknown>;
+  control(
+    value: Record<string, unknown>,
+    intent?: "desktop-owner-handoff" | "codex-worker-turn",
+  ): Promise<unknown>;
   restart?(request: WorkerRestartRequest, beforeDispatch: () => void): Promise<WorkerRestartResult>;
   live(sessionId: string, intent?: "send"): Promise<Record<string, unknown>>;
   /** A lightweight live sample for unattended checks when the full read has extra work. */
@@ -2123,6 +2126,7 @@ export class OrchestrationService {
     const operation = running ? (mode === "steer" ? "steer" : "queue-add") : "send";
     if (!running && live.sendEnabled !== true) return refuse(workerReason(live) ?? "worker-busy");
     this.#currentAssignment(lead, lane, true);
+    const codexWorkerTurn = running && agent === "codex" && live.executionMode === "codex-managed";
     const requestId = randomUUID();
     let outcome: Record<string, unknown>;
     try {
@@ -2134,11 +2138,16 @@ export class OrchestrationService {
         runtimeBootId: live.runtimeBootId,
         expectedRevision: live.revision,
         experimentalEnabled: true,
-        ...(operation === "steer" ? { turnId: live.turnId } : {}),
+        ...(operation === "steer" || codexWorkerTurn ? { turnId: live.turnId } : {}),
         text: body,
       };
-      outcome = (await (agent === "codex" && operation === "send" && live.ownerHandoff === true
-        ? this.lanes.control(request, "desktop-owner-handoff")
+      const intent = codexWorkerTurn
+        ? "codex-worker-turn"
+        : agent === "codex" && operation === "send" && live.ownerHandoff === true
+          ? "desktop-owner-handoff"
+          : undefined;
+      outcome = (await (intent
+        ? this.lanes.control(request, intent)
         : this.lanes.control(request))) as Record<string, unknown>;
     } catch (error) {
       outcome = { accepted: false, reason: error instanceof Error ? error.message : "send-failed" };

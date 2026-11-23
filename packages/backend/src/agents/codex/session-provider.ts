@@ -436,6 +436,17 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
     );
   }
 
+  /** Only a Project Agent's follow-up to a running managed Worker uses this admission. */
+  workerTurnSend(value: Record<string, unknown>) {
+    if (value.operation !== "steer" && value.operation !== "queue-add")
+      throw new Error("stale-or-disabled-control");
+    return this.host.runOperation(() =>
+      this.host.admitControl(value, (request, fingerprint) =>
+        this.#codexControl(request, fingerprint, { workerTurn: true }),
+      ),
+    );
+  }
+
   updateSettings(value: Record<string, unknown>) {
     return this.control(value);
   }
@@ -3084,10 +3095,12 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
     {
       restrictNativePolicy = false,
       desktopOwnerHandoff = false,
+      workerTurn = false,
       workerRestart,
     }: {
       restrictNativePolicy?: boolean;
       desktopOwnerHandoff?: boolean;
+      workerTurn?: boolean;
       workerRestart?: { workspaceId: string; beforeDispatch: () => void };
     } = {},
   ) {
@@ -3143,6 +3156,15 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
         throw new Error("worker-restart-unsupported");
     }
     let resumedControlState: string | undefined;
+    // Observation-only updates may advance revision, but every control change advances
+    // mutationRevision. Keep the original observation and the same native turn at both checks.
+    const matchesObservedControl = (state: ManagedCodexState, live: Record<string, unknown>) =>
+      workerTurn
+        ? Boolean(request.turnId) &&
+          request.turnId === live.turnId &&
+          request.expectedRevision >= state.mutationRevision &&
+          request.expectedRevision <= Number(live.revision)
+        : live.revision === request.expectedRevision;
     let prepared = false;
     const claim = (workspaceId: string) =>
       claimManagedCommand(
@@ -3173,6 +3195,7 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
     if (!runner?.session.connected || runner.retiring) {
       const inactive = record ?? (await this.#inactiveRecord(request.sessionId));
       const rejectInactive = (reason: string) => reject(reason, inactive.workspace_id);
+      if (workerTurn) return rejectInactive("stale-or-disabled-control");
       if (
         runner?.retiring ||
         managedSessionHasUnknownCommands(this.host.dataDir, request.sessionId)
@@ -3278,7 +3301,7 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
         managedControlState(runner.state) === resumedControlState
       )
         request.expectedRevision = Number(snapshot.revision);
-      if (snapshot.reason || snapshot.revision !== request.expectedRevision)
+      if (snapshot.reason || !matchesObservedControl(runner.state, snapshot))
         throw new Error("stale-or-disabled-control");
     } catch (error) {
       if (prepared)
@@ -3611,7 +3634,7 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
         if (
           this.#managedRunners.get(request.sessionId) !== dispatchRunner ||
           !dispatchRunner.session.connected ||
-          (workerRestart && dispatchRunner.retiring) ||
+          ((workerTurn || workerRestart) && dispatchRunner.retiring) ||
           !latest ||
           latest.native_id !== record.native_id ||
           latest.native_id !== dispatchRunner.state.nativeId ||
@@ -3657,7 +3680,7 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
           request.expectedRevision = Number(currentSnapshot.revision);
         if (
           currentSnapshot.reason ||
-          currentSnapshot.revision !== request.expectedRevision ||
+          !matchesObservedControl(dispatchRunner.state, currentSnapshot) ||
           (["send", "compact"].includes(request.operation) &&
             currentSnapshot.sendEnabled !== true) ||
           (request.operation === "stop" &&

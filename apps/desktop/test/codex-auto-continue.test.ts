@@ -637,6 +637,164 @@ describe("restarting an AgentKib Codex worker", () => {
 });
 
 describe("a Codex Project Agent's thread", () => {
+  async function queuedWorker(change: (server: EventEmitter, turnId: string) => void) {
+    const f = fixture();
+    expect(await f.send()).toMatchObject({ accepted: true });
+    expect(await f.sendWithState(await f.live(), { operation: "queue-add" })).toMatchObject({
+      accepted: true,
+    });
+    const worker = f.summary.id;
+    const server = f.servers.at(-1)!;
+    const turnId = "queued-turn";
+    server.complete();
+    server.emit("notification", {
+      method: "turn/started",
+      params: { threadId: nativeId, turn: { id: turnId, status: "inProgress" } },
+    });
+    const before = await f.live();
+    expect(before).toMatchObject({ status: "running", turnId });
+
+    const provider = f.web.codexSessionProvider() as CodexSessionProvider;
+    const lead = new OrchestrationService(
+      f.root,
+      "fixture-boot",
+      {
+        control: async (request, intent) => {
+          expect(intent).toBe("codex-worker-turn");
+          expect(request.expectedRevision).toBe(before.revision);
+          expect(request.turnId).toBe(turnId);
+          change(server, turnId);
+          await f.live();
+          return provider.workerTurnSend(request);
+        },
+        live: f.live,
+        events: async () => [],
+        session: (sessionId) =>
+          sessionId === worker ? { agent: "codex", workspaceId: "workspace", title: null } : null,
+        managed: async () => true,
+        workspaces: () => [{ id: "workspace", name: "Fixture" }],
+      },
+      (id) => id === "project-agent",
+      () => false,
+    );
+    cleanups.push(() => lead.close());
+    await lead.assignWorkers({
+      sessionId: "project-agent",
+      deviceId: "fixture",
+      workspaceId: "workspace",
+      workers: [worker],
+    });
+    return { f, lead, server, turnId, before };
+  }
+
+  function workerUsage(server: EventEmitter, turnId: string, totalTokens = 10) {
+    server.emit("notification", {
+      method: "thread/tokenUsage/updated",
+      params: { threadId: nativeId, turnId, tokenUsage: { total: { totalTokens } } },
+    });
+  }
+
+  describe.each([
+    ["steer", "steer", "turn/steer"],
+    ["queue", "queue-add", "thread/queue/add"],
+  ] as const)("Project Agent %s of a native queued turn", (mode, operation, nativeMethod) => {
+    it("accepts same-turn usage and streamed output updates across admission and dispatch", async () => {
+      const { f, lead, server, turnId, before } = await queuedWorker(workerUsage);
+      server.emit("notification", {
+        method: "item/commandExecution/terminalInteraction",
+        params: { threadId: nativeId, turnId, itemId: "running-command" },
+      });
+      expect(await f.live()).toMatchObject({ revision: before.revision, turnId });
+      f.intercept((method, params, current) => {
+        if (method === "model/list") {
+          workerUsage(current, turnId, 20);
+          current.emit("notification", {
+            method: "item/agentMessage/delta",
+            params: { threadId: nativeId, turnId, delta: "Worker output" },
+          });
+        }
+        if (method === "turn/steer") return { turnId: params.expectedTurnId };
+      });
+      const priorCalls = f.methods.filter((method) => method === nativeMethod).length;
+      const result = await lead.call("project-agent", "worker_send", {
+        worker: "worker-1",
+        mode,
+        text: "New instruction",
+      });
+      const live = await f.live();
+      expect(live).toMatchObject({ turnId, status: "running", streamText: "Worker output" });
+      expect(live.revision).toBeGreaterThan(before.revision);
+      expect(JSON.parse(result.text), result.text).toMatchObject({ accepted: true, operation });
+      expect(f.methods.filter((method) => method === nativeMethod)).toHaveLength(priorCalls + 1);
+      if (mode === "steer")
+        expect(f.requests.findLast(({ method }) => method === nativeMethod)?.params).toMatchObject({
+          threadId: nativeId,
+          expectedTurnId: turnId,
+        });
+    });
+
+    it.each(["turn", "settings", "goal", "identity"] as const)(
+      "rejects a change to the worker's %s during native preflight without dispatching",
+      async (change) => {
+        const { f, lead, turnId } = await queuedWorker(workerUsage);
+        const record = readManagedRecord(f.root, f.summary.id)!;
+        let changed = false;
+        f.intercept((method, _params, server) => {
+          if (method !== "model/list") return;
+          changed = true;
+          if (change === "identity") {
+            saveManagedRecord(f.root, { ...record, native_id: forkId });
+          } else if (change === "turn") {
+            server.complete({ id: turnId });
+            server.emit("notification", {
+              method: "turn/started",
+              params: { threadId: nativeId, turn: { id: "replacement", status: "inProgress" } },
+            });
+          } else if (change === "settings") {
+            for (const settings of [
+              { ...(record.native_settings as object), effort: "high" },
+              record.native_settings,
+            ])
+              server.emit("notification", {
+                method: "thread/settings/updated",
+                params: { threadId: nativeId, threadSettings: settings },
+              });
+          } else {
+            server.activateGoal();
+            server.emit("notification", {
+              method: "thread/goal/cleared",
+              params: { threadId: nativeId },
+            });
+          }
+        });
+        const priorCalls = f.methods.filter((method) => method === nativeMethod).length;
+        const result = await lead.call("project-agent", "worker_send", {
+          worker: "worker-1",
+          mode,
+          text: "Do not dispatch this instruction",
+        });
+        expect(changed).toBe(true);
+        expect(JSON.parse(result.text), result.text).toMatchObject({
+          accepted: false,
+          operation,
+          reason: change === "identity" ? "session-unavailable" : "stale-or-disabled-control",
+        });
+        expect(f.methods.filter((method) => method === nativeMethod)).toHaveLength(priorCalls);
+      },
+    );
+
+    it("keeps strict public revision checks for a direct control", async () => {
+      const { f, server, turnId, before } = await queuedWorker(() => {});
+      workerUsage(server, turnId);
+      expect((await f.live()).revision).toBeGreaterThan(before.revision);
+      const priorCalls = f.methods.filter((method) => method === nativeMethod).length;
+      await expect(f.sendWithState(before, { operation, turnId })).rejects.toThrow(
+        "stale-or-disabled-control",
+      );
+      expect(f.methods.filter((method) => method === nativeMethod)).toHaveLength(priorCalls);
+    });
+  });
+
   it.each(["idle retirement", "backend shutdown"] as const)(
     "starts the first assigned Worker task after %s closes its unwritten native thread",
     async (retirement) => {

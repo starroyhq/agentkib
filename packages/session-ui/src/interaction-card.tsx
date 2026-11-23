@@ -376,6 +376,8 @@ function ApprovalCard({
   const sending = pending !== undefined;
   const locked = !item.enabled || busy || sending;
   const choices = model.choices;
+  const showChoices = choices.length > 0 && item.notice?.tone !== "done";
+  const lockReason = item.notice?.text ?? (sending || busy ? t.sending : t.approvalUnavailable);
   const choose = (choice: ApprovalChoice | undefined) => {
     if (choice && !choice.disabled && !locked) onChoose(choice);
   };
@@ -439,60 +441,58 @@ function ApprovalCard({
           {model.location && <p className="break-all text-muted-foreground">{model.location}</p>}
         </div>
       )}
-      {item.notice ? (
-        <NoticeLine notice={item.notice} />
-      ) : (
-        choices.length > 0 && (
-          <div role="group" aria-label={t.waitingApproval} className="-mx-1 space-y-0.5">
-            {choices.map((choice, index) => {
-              const id = `${idPrefix}-choice-${index}`;
-              const isPending = pending === choice.key;
-              return (
-                <button
-                  key={choice.key}
-                  id={id}
-                  type="button"
-                  className={`${optionRow} ${index === active && !locked ? "bg-muted" : ""} ${sending && !isPending ? "opacity-40" : ""}`}
-                  aria-label={choice.label}
-                  aria-describedby={choice.detail ? `${id}-detail` : undefined}
-                  aria-busy={isPending || undefined}
-                  disabled={locked || choice.disabled}
-                  onFocus={() => setActive(index)}
-                  onMouseEnter={() => setActive(index)}
-                  onClick={() => choose(choice)}
+      {item.notice && !showChoices && <NoticeLine notice={item.notice} />}
+      {showChoices && (
+        <div role="group" aria-label={t.waitingApproval} className="-mx-1 space-y-0.5">
+          {choices.map((choice, index) => {
+            const id = `${idPrefix}-choice-${index}`;
+            const isPending = pending === choice.key;
+            return (
+              <button
+                key={choice.key}
+                id={id}
+                type="button"
+                className={`${optionRow} ${index === active && !locked ? "bg-muted" : ""} ${sending && !isPending ? "opacity-40" : ""}`}
+                aria-label={choice.label}
+                aria-describedby={choice.detail ? `${id}-detail` : undefined}
+                aria-busy={isPending || undefined}
+                disabled={locked || choice.disabled}
+                title={choice.disabledReason ?? (locked ? lockReason : undefined)}
+                onFocus={() => setActive(index)}
+                onMouseEnter={() => setActive(index)}
+                onClick={() => choose(choice)}
+              >
+                <span
+                  aria-hidden="true"
+                  className="grid size-5 shrink-0 place-items-center rounded-md border bg-background text-[11px] tabular-nums text-muted-foreground"
                 >
-                  <span
-                    aria-hidden="true"
-                    className="grid size-5 shrink-0 place-items-center rounded-md border bg-background text-[11px] tabular-nums text-muted-foreground"
-                  >
-                    {index + 1}
-                  </span>
-                  <span className="min-w-0 flex-1">
-                    <span className="block text-sm">{choice.label}</span>
-                    {choice.detail && (
-                      <span
-                        id={`${id}-detail`}
-                        className="block break-words text-xs text-muted-foreground"
-                      >
-                        {choice.detail}
-                      </span>
-                    )}
-                  </span>
-                  {isPending ? (
+                  {index + 1}
+                </span>
+                <span className="min-w-0 flex-1">
+                  <span className="block text-sm">{choice.label}</span>
+                  {choice.detail && (
                     <span
-                      role="status"
-                      aria-label={t.sending}
-                      className={`${spinner} text-primary-text`}
-                    />
-                  ) : (
-                    index === active &&
-                    !locked && <Icon name="arrow" className="size-4 text-muted-foreground" />
+                      id={`${id}-detail`}
+                      className="block break-words text-xs text-muted-foreground"
+                    >
+                      {choice.detail}
+                    </span>
                   )}
-                </button>
-              );
-            })}
-          </div>
-        )
+                </span>
+                {isPending ? (
+                  <span
+                    role="status"
+                    aria-label={t.sending}
+                    className={`${spinner} text-primary-text`}
+                  />
+                ) : (
+                  index === active &&
+                  !locked && <Icon name="arrow" className="size-4 text-muted-foreground" />
+                )}
+              </button>
+            );
+          })}
+        </div>
       )}
       {!item.notice && model.declineOnly && (
         <NoticeLine notice={{ tone: "neutral", text: model.declineOnly }} />

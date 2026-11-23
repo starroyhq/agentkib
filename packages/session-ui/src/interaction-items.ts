@@ -1,3 +1,5 @@
+import type { Live, SessionProviderDeclaration } from "@agentkib/web-client";
+import { sessionApprovalRuntime } from "./agents/session-approvals";
 import type { InteractionDockItem, InteractionNotice } from "./interaction-card";
 import {
   approvalCardModel,
@@ -7,7 +9,6 @@ import {
   type InteractionLocale,
   type InteractionQuestionRequest,
 } from "./interaction-model";
-import { sessionContinuationCopy } from "./session-continuation";
 
 /** The access fields that decide what this device may do with a request. */
 export interface InteractionItemsAccess {
@@ -25,6 +26,7 @@ export interface InteractionItemsLive<
   approvals: A[];
   questions?: Q[];
   executionMode?: string | null;
+  execution?: Live["execution"];
 }
 
 export interface InteractionItemsContext {
@@ -33,6 +35,7 @@ export interface InteractionItemsContext {
   /** Display name of the session's Agent, such as "Codex". */
   agent: string;
   workspacePath?: string;
+  connection?: NonNullable<SessionProviderDeclaration["connection"]>["kind"];
   /** Whether the composer offers Stop for this turn; outside the session view it does not. */
   canStop: boolean;
   /** Connected and ready for controls; otherwise the cards only show the requests. */
@@ -61,16 +64,10 @@ export function sessionInteractionItems<
 ): { items: InteractionDockItem[]; approvals: Map<string, A>; questions: Map<string, Q> } {
   const { locale, agent, ready, uncertain } = context;
   const t = interactionCardCopy(locale);
-  const continuation = sessionContinuationCopy(locale);
-  // Requests the session follows from another client are answered there.
+  const native = sessionApprovalRuntime(live, context.connection);
+  const handleThere = native?.handleThere?.(locale);
   const elsewhere = (supported: boolean): InteractionNotice | undefined =>
-    supported
-      ? undefined
-      : live.executionMode === "codex-follower"
-        ? { tone: "terminal", text: continuation.codexHandleThere }
-        : live.executionMode === "dsh-follower"
-          ? { tone: "terminal", text: continuation.dshHandleThere }
-          : undefined;
+    !supported && handleThere ? { tone: "terminal", text: handleThere } : undefined;
   const approvals = new Map<string, A>();
   const questions = new Map<string, Q>();
   const items: InteractionDockItem[] = [

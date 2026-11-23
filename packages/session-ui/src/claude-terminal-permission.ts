@@ -5,13 +5,7 @@ import { newSessionCopy } from "./new-session";
 import { permissionModeCopy } from "./permission-mode-copy";
 import { observedClaudePermissionLabel } from "./session-composer-capabilities";
 
-export function claudeTerminalInteraction(live: Live | null | undefined, sessionId: string) {
-  if (live?.sessionId !== sessionId || live.executionMode !== "claude-follower") return;
-  if (live.reason === "claude-terminal-approval" && live.status === "awaiting-approval")
-    return "approval";
-  if (live.reason === "claude-terminal-question" && live.status === "waiting-input")
-    return "question";
-}
+export { claudeTerminalInteraction } from "./agents/claude-code/approvals";
 
 /** A terminal observation describes the running CLI and never grants a permission write. */
 export function claudeTerminalPermission(

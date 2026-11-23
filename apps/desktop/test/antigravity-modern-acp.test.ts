@@ -209,9 +209,20 @@ describe("Antigravity optional ACP history", () => {
     expect([...new Set(requests.flatMap((value) => (value.method ? [value.method] : [])))]).toEqual(
       ["initialize", "session/list", "session/load"],
     );
-    expect(() => f.sessions.controlExecutable()).toThrow("read-only");
+    // The CLI serves control too; its identity is checked when a control connection starts.
+    expect(f.sessions.controlExecutable()).toBe(f.executable);
     expect(() =>
       verifyAcpControlIdentity({ agentInfo: { name: "Antigravity ACP Server", version: "1.5.0" } }),
+    ).toThrow("Unverified");
+    expect(() =>
+      verifyAcpControlIdentity({
+        agentInfo: { name: "Antigravity ACP Server", version: "1.5.14" },
+      }),
+    ).not.toThrow();
+    expect(() =>
+      verifyAcpControlIdentity({
+        agentInfo: { name: "Antigravity ACP Server", version: "1.6.0-beta" },
+      }),
     ).toThrow("Unverified");
   });
 

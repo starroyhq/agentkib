@@ -65,6 +65,7 @@ type DevinRefusal =
   | "devin-login-required"
   | "devin-workspace-untrusted"
   | "devin-cli-unavailable"
+  | "devin-cli-update-required"
   | "devin-run-failed"
   | "devin-session-not-found"
   | "session-open-elsewhere"

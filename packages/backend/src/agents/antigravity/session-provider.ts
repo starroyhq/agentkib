@@ -1,10 +1,18 @@
+import { createHash } from "node:crypto";
+import { readFileSync, renameSync, writeFileSync } from "node:fs";
+import { mkdtemp, rm } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { z } from "zod";
 import type { ContextUsage } from "../../context-usage";
 import { within } from "../../files";
+import type { LeadToolRegistration } from "../../orchestration-endpoint";
 import {
   claimManagedCommand,
   dispatchManagedCommand,
   finishManagedCommand,
   managedSessionHasUnknownCommands,
+  replayManagedCommand,
 } from "../../managed-ledger";
 import { canonicalize, pathIdentity } from "../../paths";
 import { activityBlocks, assertActivityAllows } from "../../session-activity";
@@ -17,7 +25,7 @@ import {
   type TypedSessionProvider,
 } from "../../session-provider";
 import type { SessionReaders } from "../../session-readers";
-import type { ApplyManagedControl } from "../../sessions/control-admission";
+import { stableJson, type ApplyManagedControl } from "../../sessions/control-admission";
 import { legacySessionFields } from "../../sessions/routing";
 import { validateAntigravityControl } from "../../sessions/validate/antigravity";
 import type { BackendStore } from "../../store";
@@ -55,6 +63,62 @@ type AntigravitySessionHost = {
   ): Record<string, unknown>;
 };
 
+/** Antigravity's own session modes (`mode` ACP option of `agy acp` 1.5.14). */
+export const ANTIGRAVITY_MODES = ["default", "accept-edits", "auto", "plan"] as const;
+const OPTION_CACHE_MS = 10 * 60_000;
+
+const antigravityCreateSchema = z
+  .object({
+    operation: z.literal("antigravity-create"),
+    requestId: z.string().uuid(),
+    deviceId: z
+      .string()
+      .min(1)
+      .max(256)
+      .regex(/^[A-Za-z0-9_:-]+$/),
+    workspaceId: z.string().min(1).max(256),
+    prompt: z
+      .string()
+      .min(1)
+      .refine((value) => Buffer.byteLength(value, "utf8") <= 65_536),
+    model: z
+      .string()
+      .regex(/^[A-Za-z0-9._:@/+-]{1,128}$/)
+      .optional(),
+    effort: z.string().min(1).max(64).optional(),
+    permissionMode: z.enum(ANTIGRAVITY_MODES).optional(),
+  })
+  .strict();
+
+type ConfigOption = Record<string, unknown>;
+
+function optionValues(options: readonly ConfigOption[], id: string) {
+  const option = options.find((entry) => entry.id === id);
+  const values = Array.isArray(option?.options) ? option.options : [];
+  return values.flatMap((entry) =>
+    isObject(entry) && typeof entry.value === "string"
+      ? [{ id: entry.value, name: typeof entry.name === "string" ? entry.name : entry.value }]
+      : [],
+  );
+}
+
+/** The models, thought levels and modes a session's ACP options offer, as the composer reads them. */
+function antigravityChoices(options: readonly ConfigOption[]) {
+  const efforts = optionValues(options, "thought_level").map((entry) => entry.id);
+  return {
+    models: optionValues(options, "model").map((entry) => ({
+      id: entry.id,
+      displayName: entry.name,
+      efforts,
+      serviceTierIds: [],
+    })),
+    serviceTiers: [],
+    permissionModes: optionValues(options, "mode")
+      .filter((entry) => (ANTIGRAVITY_MODES as readonly string[]).includes(entry.id))
+      .map((entry) => ({ id: entry.id, name: entry.name })),
+  };
+}
+
 function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -65,15 +129,83 @@ type AntigravityRunnerRecord = {
   workspaceId: string;
   workspace: string;
   lastUsed: number;
+  /** The Project Agent worker tools this connection offered, if any. */
+  leadUrl: string | null;
 };
 
 export class AntigravitySessionProvider implements AntigravityExecutor, TypedSessionProvider {
   readonly agent = "antigravity" as const;
+  readonly createOperation = "antigravity-create";
   readonly validateControl = validateAntigravityControl;
   readonly typed = this;
   #runners = new Map<string, AntigravityRunnerRecord>();
   #retiredRevisions = new Map<string, number>();
   #runnerFlights = new Map<string, Promise<AntigravityRunnerRecord>>();
+  #options: { at: number; choices: Promise<Record<string, unknown>> } | undefined;
+  /** Sessions whose ACP control was confirmed (not App or IDE history read from disk). */
+  #controllable = new Set<string>();
+  #leadEndpoint: ((sessionId: string) => Promise<LeadToolRegistration | null>) | undefined;
+
+  /** Where a Project Agent's worker tools are served (`OrchestrationService.leadTools`). */
+  leadEndpoints(
+    source: ((sessionId: string) => Promise<LeadToolRegistration | null>) | undefined,
+  ): void {
+    this.#leadEndpoint = source;
+  }
+
+  /** Whether an Antigravity session could be a Project Agent: one AgentKib controls over ACP. */
+  leadCapable(sessionId: string): boolean {
+    return (
+      this.#controllable.has(sessionId) &&
+      this.host.store.sessions.get(sessionId)?.agent === "antigravity"
+    );
+  }
+
+  /** Confirms a session's ACP control before a Project Agent is set up on it. */
+  async prepareLead(sessionId: string): Promise<boolean> {
+    return this.#target(sessionId).then(
+      () => true,
+      () => false,
+    );
+  }
+
+  /** What a session runs with by the person's choice; Antigravity forgets the thought level. */
+  #savedSettings(nativeId: string): Record<string, string> {
+    try {
+      const all = JSON.parse(readFileSync(this.#settingsFile(), "utf8")) as Record<string, unknown>;
+      const saved = all[nativeId];
+      return isObject(saved)
+        ? Object.fromEntries(
+            Object.entries(saved).filter(
+              (entry): entry is [string, string] =>
+                ["model", "thought_level", "mode"].includes(entry[0]) &&
+                typeof entry[1] === "string",
+            ),
+          )
+        : {};
+    } catch {
+      return {};
+    }
+  }
+
+  #saveSettings(nativeId: string, values: Record<string, string>) {
+    if (!Object.keys(values).length) return;
+    let all: Record<string, unknown> = {};
+    try {
+      all = JSON.parse(readFileSync(this.#settingsFile(), "utf8")) as Record<string, unknown>;
+    } catch {
+      // A missing or unreadable file starts again.
+    }
+    all[nativeId] = { ...this.#savedSettings(nativeId), ...values };
+    const file = this.#settingsFile();
+    const temp = `${file}.${process.pid}.tmp`;
+    writeFileSync(temp, `${JSON.stringify(all)}\n`, { mode: 0o600 });
+    renameSync(temp, file);
+  }
+
+  #settingsFile() {
+    return path.join(this.host.dataDir, "antigravity-session-settings.json");
+  }
 
   constructor(private readonly host: AntigravitySessionHost) {}
 
@@ -97,6 +229,225 @@ export class AntigravitySessionProvider implements AntigravityExecutor, TypedSes
     );
   }
 
+  updateSettings(value: Record<string, unknown>) {
+    return this.control(value);
+  }
+
+  /**
+   * A session's model, thought level and mode, which are its own ACP options: they apply from the
+   * next turn and stay with the session in Antigravity too.
+   */
+  async settingsState(value: Record<string, unknown>): Promise<Record<string, unknown>> {
+    const sessionId = typeof value.sessionId === "string" ? value.sessionId : "";
+    let record: AntigravityRunnerRecord;
+    try {
+      record = await this.#runner(sessionId);
+    } catch (error) {
+      return {
+        available: false,
+        executionMode: "acp-managed",
+        revision: 0,
+        reason: error instanceof Error ? error.message : "session-unavailable",
+      };
+    }
+    const { runner } = record;
+    const live = runner.snapshot();
+    const choices = antigravityChoices(runner.configOptions);
+    const settings = {
+      model: runner.option("model") ?? null,
+      effort: runner.option("thought_level") ?? null,
+      permissionMode: runner.option("mode") ?? null,
+    };
+    const idle = live.status === "idle" && live.turnId === null;
+    return {
+      available: true,
+      executionMode: "acp-managed",
+      revision: live.revision,
+      current: settings,
+      selected: settings,
+      settings,
+      defaults: { model: null, effort: null, permissionMode: "default" },
+      applicationStatus: "confirmed",
+      ...choices,
+      writable: {
+        model: { available: idle && choices.models.length > 0 },
+        effort: { available: idle && choices.models.some((model) => model.efforts.length > 0) },
+        serviceTier: { available: false },
+        permissionMode: { available: idle && choices.permissionModes.length > 0 },
+        restoreDefaults: { available: false },
+      },
+    };
+  }
+
+  /**
+   * What a new Antigravity session can start with, read from a session the CLI opens and never
+   * stores (it has no message), in a private temporary directory.
+   */
+  async options(): Promise<Record<string, unknown>> {
+    let executable: string;
+    try {
+      executable = this.host.sessions.antigravityControlExecutable();
+    } catch (error) {
+      return {
+        available: false,
+        reason: error instanceof Error ? error.message : "antigravity-cli-unavailable",
+      };
+    }
+    if (!this.#options || Date.now() - this.#options.at > OPTION_CACHE_MS) {
+      const choices = (async () => {
+        const directory = await mkdtemp(path.join(os.tmpdir(), "agentkib-antigravity-"));
+        const runner = await AntigravityManagedRunner.connect(
+          executable,
+          directory,
+          "",
+          { ...process.env, ...this.host.environment },
+          undefined,
+          undefined,
+          0,
+          undefined,
+          { create: true },
+        );
+        try {
+          return {
+            ...antigravityChoices(runner.configOptions),
+            defaults: {
+              model: runner.option("model") ?? null,
+              effort: runner.option("thought_level") ?? null,
+              permissionMode: runner.option("mode") ?? "default",
+            },
+          };
+        } finally {
+          runner.close();
+          await rm(directory, { recursive: true, force: true });
+        }
+      })();
+      this.#options = { at: Date.now(), choices };
+      choices.catch(() => {
+        if (this.#options?.choices === choices) this.#options = undefined;
+      });
+    }
+    try {
+      return { available: true, ...(await this.#options.choices) };
+    } catch (error) {
+      return {
+        available: false,
+        reason: error instanceof Error ? error.message : "antigravity-options-unavailable",
+      };
+    }
+  }
+
+  /**
+   * Starts an Antigravity session with its first message through the CLI's `agy acp`, with the
+   * chosen model, thought level and mode, and answers once Antigravity stores it.
+   */
+  async create(value: Record<string, unknown>): Promise<Record<string, unknown>> {
+    const request = antigravityCreateSchema.parse(value);
+    const fingerprint = createHash("sha256").update(stableJson(value)).digest("hex");
+    const replay = replayManagedCommand(this.host.dataDir, request.requestId, fingerprint);
+    if (replay) return replay;
+    const result = (outcome: "accepted" | "not-dispatched" | "unknown", extra = {}) => ({
+      accepted: outcome === "accepted",
+      completed: outcome === "accepted",
+      requestId: request.requestId,
+      runtimeBootId: this.host.runtimeBootId,
+      executionMode: "acp-managed",
+      controlOutcome: outcome,
+      ...extra,
+    });
+    let workspace: string;
+    let executable: string;
+    try {
+      workspace = canonicalize(this.host.store.workspacePath(request.workspaceId));
+      executable = this.host.sessions.antigravityControlExecutable();
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : "workspace-unavailable";
+      return result("not-dispatched", {
+        reason: reason === "antigravity-cli-unavailable" ? reason : "workspace-unavailable",
+      });
+    }
+    const prior = claimManagedCommand(
+      this.host.dataDir,
+      request.requestId,
+      `antigravity-create:${request.requestId}`,
+      fingerprint,
+      request.deviceId,
+      {
+        operation: "create",
+        workspaceId: request.workspaceId,
+        runtimeBootId: this.host.runtimeBootId,
+        executionMode: "antigravity-acp-managed",
+        claimedAt: Date.now(),
+      },
+    );
+    if (prior) return prior;
+    let created: string | null = null;
+    let runner: AntigravityManagedRunner | undefined;
+    let dispatched = false;
+    const config = {
+      ...(request.model ? { model: request.model } : {}),
+      ...(request.effort ? { thought_level: request.effort } : {}),
+      ...(request.permissionMode ? { mode: request.permissionMode } : {}),
+    };
+    try {
+      runner = await AntigravityManagedRunner.connect(
+        executable,
+        workspace,
+        "",
+        { ...process.env, ...this.host.environment },
+        (type, payload, live) => {
+          if (!created) return;
+          const current = {
+            ...live,
+            sessionId: created,
+            runtimeBootId: this.host.runtimeBootId,
+            workspaceId: request.workspaceId,
+          };
+          const eventPayload = isObject(payload.live) ? { ...payload, live: current } : payload;
+          this.host.publishConversationEvent?.(created, type, eventPayload, current);
+        },
+        undefined,
+        0,
+        undefined,
+        { create: true, config },
+      );
+      const nativeId = runner.sessionId;
+      this.#saveSettings(nativeId, config);
+      await runner.send(request.prompt, Number(runner.snapshot().revision), () => {
+        dispatchManagedCommand(this.host.dataDir, request.requestId);
+        dispatched = true;
+      });
+      // Antigravity lists a session once it has a message; index it so that its ID resolves.
+      for (let attempt = 0; attempt < 60 && !created; attempt++) {
+        const listed = await this.host.sessions.list("antigravity", workspace);
+        if (listed.sessions.some((session) => session.native_ref === nativeId)) {
+          this.host.store.sessions.sync(request.workspaceId, "antigravity", listed.sessions, true);
+          created = this.host.store.sessions.id("antigravity", nativeId);
+        } else await new Promise((resolve) => setTimeout(resolve, 500));
+      }
+      if (!created) throw new Error("antigravity-session-unconfirmed");
+      this.#runners.set(created, {
+        runner,
+        nativeId,
+        workspaceId: request.workspaceId,
+        workspace,
+        lastUsed: Date.now(),
+        leadUrl: null,
+      });
+      const outcome = result("accepted", { sessionId: created });
+      finishManagedCommand(this.host.dataDir, request.requestId, outcome);
+      return outcome;
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : "control-preflight-rejected";
+      if (!dispatched) {
+        runner?.close();
+        const outcome = result("not-dispatched", { reason });
+        finishManagedCommand(this.host.dataDir, request.requestId, outcome);
+        return outcome;
+      }
+      return result("unknown", { reason: "control-outcome-unconfirmed" });
+    }
+  }
+
   request<Request extends SessionProviderRequest>(
     request: Request,
   ): Promise<SessionProviderResponse<Request["operation"]>>;
@@ -112,6 +463,7 @@ export class AntigravitySessionProvider implements AntigravityExecutor, TypedSes
   async #request(request: SessionProviderRequest): Promise<unknown> {
     switch (request.operation) {
       case "create":
+        return this.create({ ...request, operation: this.createOperation });
       case "settings-prepare":
         throw new Error("unsupported-session-provider-operation");
       case "live":
@@ -173,6 +525,11 @@ export class AntigravitySessionProvider implements AntigravityExecutor, TypedSes
           ? { available: true }
           : { available: false, reason: reason ?? "no-supported-approval" },
       answer: { available: false, reason: "unsupported-operation" },
+      "settings-state": { available: true },
+      settings:
+        experimental && live.status === "idle" && live.turnId === null
+          ? { available: true }
+          : { available: false, reason: reason ?? "session-busy" },
       inspect: { available: true },
       resume: { available: false, reason: "unsupported-operation" },
       usage:
@@ -288,6 +645,7 @@ export class AntigravitySessionProvider implements AntigravityExecutor, TypedSes
     const workspaceId = summary.workspace_id;
     const registeredWorkspace = canonicalize(this.host.store.workspacePath(workspaceId));
     if (!within(workspace, registeredWorkspace)) throw new Error("session-workspace-mismatch");
+    this.#controllable.add(sessionId);
     return { nativeId, workspaceId, workspace };
   }
 
@@ -319,12 +677,18 @@ export class AntigravitySessionProvider implements AntigravityExecutor, TypedSes
   async #runner(sessionId: string): Promise<AntigravityRunnerRecord> {
     const { nativeId, workspaceId, workspace } = await this.#target(sessionId);
     const cached = this.#runners.get(sessionId);
+    // A Project Agent's tools are offered when its session connects; a change of them takes
+    // effect by reconnecting between turns.
+    const leadTools = (await this.#leadEndpoint?.(sessionId).catch(() => null)) ?? null;
+    const leadUrl = leadTools?.url ?? null;
+    const idle = cached?.runner.snapshot().status === "idle";
     if (
       cached?.runner.connected &&
       !["failed"].includes(String(cached.runner.snapshot().status)) &&
       cached.nativeId === nativeId &&
       cached.workspaceId === workspaceId &&
-      pathIdentity(cached.workspace) === pathIdentity(workspace)
+      pathIdentity(cached.workspace) === pathIdentity(workspace) &&
+      (cached.leadUrl === leadUrl || !idle)
     ) {
       cached.lastUsed = Date.now();
       return cached;
@@ -343,6 +707,7 @@ export class AntigravitySessionProvider implements AntigravityExecutor, TypedSes
       workspace,
       nativeId,
       initialRevision,
+      leadTools,
     );
     this.#runnerFlights.set(sessionId, flight);
     try {
@@ -363,6 +728,7 @@ export class AntigravitySessionProvider implements AntigravityExecutor, TypedSes
     workspace: string,
     nativeId: string,
     initialRevision: number,
+    leadTools: LeadToolRegistration | null,
   ): Promise<AntigravityRunnerRecord> {
     if (this.#runners.size >= 8) {
       const candidates = [...this.#runners.entries()]
@@ -404,6 +770,10 @@ export class AntigravitySessionProvider implements AntigravityExecutor, TypedSes
       },
       initialRevision,
       this.host.observeTurn(sessionId),
+      {
+        leadTools: leadTools ?? undefined,
+        config: this.#savedSettings(nativeId),
+      },
     );
     try {
       const latest = await this.host.sessions.resolve(sessionId);
@@ -417,7 +787,14 @@ export class AntigravitySessionProvider implements AntigravityExecutor, TypedSes
         !within(canonicalize(latest.workspace), latestRoot)
       )
         throw new Error("session-unavailable");
-      const record = { runner, nativeId, workspaceId, workspace, lastUsed: Date.now() };
+      const record = {
+        runner,
+        nativeId,
+        workspaceId,
+        workspace,
+        lastUsed: Date.now(),
+        leadUrl: leadTools?.url ?? null,
+      };
       this.#runners.set(sessionId, record);
       return record;
     } catch (error) {
@@ -444,10 +821,12 @@ export class AntigravitySessionProvider implements AntigravityExecutor, TypedSes
       throw new Error(typeof before.reason === "string" ? before.reason : "session-unavailable");
     const cached = this.#runners.get(request.sessionId);
     if (!cached?.runner.connected || cached.runner.snapshot().status === "failed") {
-      if (request.operation !== "send") throw new Error("session-not-running");
+      if (request.operation !== "send" && request.operation !== "settings")
+        throw new Error("session-not-running");
       if (!before.sendEnabled)
         throw new Error(typeof before.reason === "string" ? before.reason : "session-unavailable");
-      if (typeof request.text !== "string") throw new Error("missing-text");
+      if (request.operation === "send" && typeof request.text !== "string")
+        throw new Error("missing-text");
     }
     const record = await this.#runner(request.sessionId);
     const live = record.runner.snapshot();
@@ -513,13 +892,23 @@ export class AntigravitySessionProvider implements AntigravityExecutor, TypedSes
           request.expectedRevision,
           beforeDispatch,
         );
+      } else if (request.operation === "settings") {
+        const changes = {
+          ...(typeof request.model === "string" ? { model: request.model } : {}),
+          ...(typeof request.effort === "string" ? { thought_level: request.effort } : {}),
+          ...(typeof request.permissionMode === "string" ? { mode: request.permissionMode } : {}),
+        };
+        await record.runner.setOptions(changes, request.expectedRevision, beforeDispatch);
+        this.#saveSettings(record.nativeId, changes);
       } else {
         throw new Error("control-unavailable");
       }
       record.lastUsed = Date.now();
       const result = {
         accepted: true,
-        completed: false,
+        // Antigravity confirms a setting when it is set; the next turn runs with it.
+        completed: request.operation === "settings",
+        ...(request.operation === "settings" ? { appliesTo: "next-turn" } : {}),
         sessionId: request.sessionId,
         requestId: request.requestId,
         runtimeBootId,

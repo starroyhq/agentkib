@@ -20,8 +20,9 @@ import { DevinSessions } from "../../../../packages/backend/src/agents/devin/dev
 import { BackendStore } from "../../../../packages/backend/src/store";
 import { startBackend, startHost } from "./harness";
 
-// Models and login use the native CLI commands. A print turn records its prompt and starts a
-// synthetic SQLite session on the first turn. It stays running until the test releases or stops it.
+// Models and login use the native CLI commands. An ACP turn records the session it starts or
+// loads, the options set on it and its prompt, and starts a synthetic SQLite session on the first
+// turn. It stays running until the test releases or cancels it.
 const syntheticDevin = String.raw`
 const { appendFileSync, existsSync, readFileSync } = require("node:fs");
 const { DatabaseSync } = require("node:sqlite");
@@ -34,27 +35,56 @@ if (args[0] === "auth") {
 } else if (args[0] === "models") {
   log({ args });
   console.log(readFileSync(process.env.FIXTURE_MODELS, "utf8"));
-} else if (args[0] === "-p") {
-  const promptIndex = args.indexOf("--prompt-file") + 1;
-  const promptFile = args[promptIndex];
-  const prompt = readFileSync(promptFile, "utf8");
-  args[promptIndex] = "<temp>/" + basename(promptFile);
-  if (!args.includes("-r")) {
-    const db = new DatabaseSync(process.env.FIXTURE_DB);
-    const now = Math.floor(Date.now() / 1000);
-    db.prepare("INSERT INTO sessions VALUES (?, ?, ?, ?, ?, ?, 0)").run(
-      "new-otter", process.cwd(), "New fixture session", "fixture-alternate", now, now,
-    );
-    db.close();
-  }
-  process.on("SIGINT", () => {
-    log({ signal: "SIGINT" });
-    process.exit(130);
+} else if (args[0] === "acp") {
+  const send = (value) => process.stdout.write(JSON.stringify(value) + "\n");
+  const options = () => [
+    { id: "mode", type: "select", currentValue: "accept-edits", options: [] },
+    { id: "model", type: "select", currentValue: "fixture-model", options: [] },
+  ];
+  const turn = { cwd: process.cwd(), config: {} };
+  let pending = null;
+  const finish = (stopReason) => {
+    if (pending === null) return;
+    send({ jsonrpc: "2.0", id: pending, result: { stopReason } });
+    pending = null;
+  };
+  require("node:readline").createInterface({ input: process.stdin }).on("line", (line) => {
+    const { id, method, params = {} } = JSON.parse(line);
+    if (method === "initialize")
+      return send({ jsonrpc: "2.0", id, result: { protocolVersion: 1, agentCapabilities: { loadSession: true } } });
+    if (method === "session/new") {
+      const db = new DatabaseSync(process.env.FIXTURE_DB);
+      const now = Math.floor(Date.now() / 1000);
+      db.prepare("INSERT INTO sessions VALUES (?, ?, ?, ?, ?, ?, 0)").run(
+        "new-otter", process.cwd(), "New fixture session", "fixture-alternate", now, now,
+      );
+      db.close();
+      turn.acp = ["session/new"];
+      return send({ jsonrpc: "2.0", id, result: { sessionId: "new-otter", configOptions: options() } });
+    }
+    if (method === "session/load") {
+      turn.acp = ["session/load", params.sessionId];
+      return send({ jsonrpc: "2.0", id, result: { configOptions: options() } });
+    }
+    if (method === "session/set_config_option") {
+      turn.config[params.configId] = params.value;
+      return send({ jsonrpc: "2.0", id, result: { configOptions: options() } });
+    }
+    if (method === "session/prompt") {
+      log({ ...turn, prompt: (params.prompt ?? []).map((block) => block.text ?? "").join("") });
+      pending = id;
+      const timer = setInterval(() => {
+        if (existsSync(process.env.FIXTURE_HOLD)) return;
+        clearInterval(timer);
+        finish("end_turn");
+      }, 20);
+      return;
+    }
+    if (method === "session/cancel") {
+      log({ cancel: true });
+      finish("cancelled");
+    }
   });
-  log({ args, prompt, cwd: process.cwd() });
-  setInterval(() => {
-    if (!existsSync(process.env.FIXTURE_HOLD)) process.exit(0);
-  }, 20);
 } else {
   log({ args });
   process.exitCode = 2;
@@ -292,7 +322,8 @@ describe.skipIf(process.platform === "win32")("Devin session HTTP baseline", () 
           resources: { available: true },
           files: { available: true },
           context: { available: false, reason: "unsupported-operation" },
-          approve: { available: false, reason: "unsupported-operation" },
+          // Devin asks over ACP while a turn waits; nothing waits now.
+          approve: { available: false, reason: "no-pending-approval" },
           answer: { available: false, reason: "unsupported-operation" },
           inspect: { available: true },
           resume: { available: false, reason: "permission_denied" },
@@ -381,15 +412,9 @@ describe.skipIf(process.platform === "win32")("Devin session HTTP baseline", () 
       auth,
       {
         cwd: "<workspace>",
-        args: [
-          "-p",
-          "--prompt-file",
-          "<temp>/prompt.md",
-          "--model",
-          alternateModel,
-          "--permission-mode",
-          "auto",
-        ],
+        acp: ["session/new"],
+        // Read only is Devin's ACP "ask" mode, which answers without changing code.
+        config: { model: alternateModel, mode: "ask" },
         prompt,
       },
     ]);
@@ -485,17 +510,8 @@ describe.skipIf(process.platform === "win32")("Devin session HTTP baseline", () 
       auth,
       {
         cwd: "<workspace>",
-        args: [
-          "-p",
-          "--prompt-file",
-          "<temp>/prompt.md",
-          "-r",
-          existing,
-          "--model",
-          alternateModel,
-          "--permission-mode",
-          "auto",
-        ],
+        acp: ["session/load", existing],
+        config: { model: alternateModel, mode: "ask" },
         prompt: text,
       },
     ];
@@ -532,7 +548,7 @@ describe.skipIf(process.platform === "win32")("Devin session HTTP baseline", () 
     expect(await f.receipt(requestIds.stop)).toEqual(
       acceptedReceipt(stopAck, "stop", requestIds.stop, sessionId, runtimeBootId, 2, turnId),
     );
-    expect(f.runtimeCalls()).toEqual([...runtimeCalls, { signal: "SIGINT" }]);
+    expect(f.runtimeCalls()).toEqual([...runtimeCalls, { cancel: true }]);
     const rpcControl = { sessionId, deviceId, runtimeBootId, experimentalEnabled: true };
     const controls = f.calls.filter(({ params }) =>
       ["settings", "send", "stop"].includes((params as { operation: string }).operation),
@@ -637,9 +653,9 @@ describe.skipIf(process.platform === "win32")("Devin session HTTP baseline", () 
     expect(interventions.mock.calls.filter(([id]) => id === sessionId)).toEqual([
       [sessionId, "queue-add"],
     ]);
-    expect(
-      f.runtimeCalls().filter((call) => Array.isArray(call.args) && call.args[0] === "-p"),
-    ).toMatchObject([{ prompt }]);
+    expect(f.runtimeCalls().filter((call) => typeof call.prompt === "string")).toMatchObject([
+      { prompt },
+    ]);
   });
 
   it("refuses native steering, approval and answers but shares the host queue for print turns", async () => {

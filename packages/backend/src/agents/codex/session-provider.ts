@@ -62,6 +62,11 @@ import {
 } from "../../session-provider";
 import { validateCodexControl } from "../../sessions/validate/codex";
 import { legacySessionFields, sessionSettingsStateSchema } from "../../sessions/routing";
+import {
+  managedWritableRootsMatch,
+  unconfirmedCodexNativePolicy,
+  type CodexNativePolicy,
+} from "./codex-native-policy";
 import { activityBlocks, assertActivityAllows } from "../../session-activity";
 import { acquireManagedSessionLease, existingFileLeaseBusy } from "../../managed-session-lock";
 import { acquireCodexFollowerOperationLock } from "./codex-follower-operation-lock";
@@ -331,6 +336,7 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
     models: ManagedModelOption[];
     collaborationModes: CollaborationModeOption[];
   }>();
+  #settingsCatalogNotifications = new Map<string, string>();
   #followerSettingsCatalog = new CodexCatalogCache<ManagedModelOption[]>();
   #ownership = new Map<string, { checkedAt: number; reason: string | null }>();
   /** Turns that the Codex app or CLI runs, for the catalog and live state to show. */
@@ -1807,6 +1813,10 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
       (item) => item.id === request.sessionId,
     );
     const record = stored ?? (await this.#inactiveRecord(request.sessionId));
+    const runner = this.#managedRunners.get(request.sessionId);
+    const nativePolicy = !runner?.session.connected ? this.#nativeCodexPolicy(record) : undefined;
+    if (nativePolicy && this.#ownership.get(record.id)?.reason === "codex-owner-busy")
+      this.#codexWriterOwnership(record, true);
     const ownerSnapshot = await this.#managedLive(request.sessionId);
     if (ownerSnapshot.executionMode === "codex-follower") {
       const follower = this.#attachedCodexFollower(record);
@@ -1825,8 +1835,12 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
         ...(!error ? { writeScope: state.settingsWriteScope } : {}),
         settings: {
           ...settings,
+          ...nativePolicySettings(record, settings, nativePolicy, true),
           writable: {
             ...writable,
+            ...(nativePolicy
+              ? { policy: nativePolicyWriteAccess(nativePolicy, "follower-operation-unverified") }
+              : {}),
             model: error ? { available: false, reason: error } : true,
             effort: error ? { available: false, reason: error } : access.effortWritable,
           },
@@ -1838,8 +1852,11 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
       this.host.runtimeBootId,
       false,
     ).settings;
-    const settingsObject = isObject(settings) ? settings : {};
-    const runner = this.#managedRunners.get(request.sessionId);
+    const projection = isObject(settings) ? settings : {};
+    const settingsObject = {
+      ...projection,
+      ...nativePolicySettings(record, projection, nativePolicy),
+    };
     if (!runner?.session.connected) {
       const history =
         request.includeHistorical &&
@@ -1868,7 +1885,12 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
         available: false,
         executionMode: "codex-managed",
         reason,
-        settings: settingsObject,
+        settings: {
+          ...settingsObject,
+          ...(nativePolicy
+            ? { writable: { policy: nativePolicyWriteAccess(nativePolicy, reason) } }
+            : {}),
+        },
         ...historical,
       });
       if (ownerSnapshot.reason) return unavailable(ownerSnapshot.reason);
@@ -1877,19 +1899,26 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
       const cwd = this.#managedCwd(record);
       const home = this.#assertManagedHome(record);
       const executable = checked.executable;
-      const catalog = await this.#readCodexSettingsCatalog(executable, home, cwd).catch(
-        (error: unknown) => {
-          if (!history) throw error;
-          return undefined;
-        },
-      );
-      if (!catalog) return unavailable("request_failed");
-      const { models, collaborationModes } = catalog;
+      const key = codexCatalogKey(executable, home, cwd);
+      const pending = nativePolicy !== undefined && !this.#settingsCatalog.has(key);
+      const catalog = pending
+        ? undefined
+        : await this.#readCodexSettingsCatalog(executable, home, cwd).catch((error: unknown) => {
+            if (!history && !nativePolicy) throw error;
+            return undefined;
+          });
+      if (pending) this.#refreshCodexSettingsCatalog(record.id, key, executable, home, cwd);
+      else if (!catalog) return unavailable("request_failed");
+      const models = catalog?.models ?? [];
+      const collaborationModes = catalog?.collaborationModes ?? [];
+      const modelAccess = catalog
+        ? true
+        : { available: false, reason: "codex-settings-catalog-loading" };
       return {
         available: true,
         executionMode: "codex-managed",
         models,
-        policies: managedPolicyCatalog(),
+        policies: nativePolicy?.policyId === null ? [] : managedPolicyCatalog(),
         collaborationModes,
         revision: record.snapshot?.revision ?? 0,
         runtimeBootId: this.host.runtimeBootId,
@@ -1897,14 +1926,14 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
         settings: {
           ...settingsObject,
           writable: {
-            model: true,
-            effort: true,
+            model: modelAccess,
+            effort: modelAccess,
             mode:
               collaborationModes.length || record.mode != null
                 ? { available: true }
                 : { available: false, reason: "native-collaboration-modes-unavailable" },
-            serviceTier: true,
-            policy: true,
+            serviceTier: modelAccess,
+            policy: nativePolicyWriteAccess(nativePolicy),
           },
         },
       };
@@ -1978,6 +2007,29 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
         collaborationModes: verifiedCollaborationModes(catalog[1]),
       };
     });
+  }
+
+  #refreshCodexSettingsCatalog(
+    sessionId: string,
+    key: string,
+    executable: string,
+    home: string,
+    cwd: string,
+  ): void {
+    if (this.host.isClosing() || this.#settingsCatalogNotifications.get(sessionId) === key) return;
+    this.#settingsCatalogNotifications.set(sessionId, key);
+    void this.#readCodexSettingsCatalog(executable, home, cwd)
+      .then(() => {
+        if (!this.host.isClosing() && this.#settingsCatalogNotifications.get(sessionId) === key)
+          this.host.publishConversationEvent?.(sessionId, "invalidate", { domains: ["settings"] });
+      })
+      .catch(() => {
+        // Policy remains usable independently of an unavailable model catalog.
+      })
+      .finally(() => {
+        if (this.#settingsCatalogNotifications.get(sessionId) === key)
+          this.#settingsCatalogNotifications.delete(sessionId);
+      });
   }
 
   async #readCodexFollowerCatalog(
@@ -2905,6 +2957,10 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
       const cwd = this.#managedCwd(record);
       const home = this.#assertManagedHome(record);
       const policyOnly = codexPolicyOnly(request);
+      if (request.policyId !== undefined) {
+        const nativePolicy = this.#nativeCodexPolicy(record);
+        if (nativePolicy?.policyId === null) throw new Error(nativePolicy.reason);
+      }
       const modeOnly = request.mode !== undefined && !changesCodexModel(request);
       let settings: Partial<ManagedRecord>;
       if (policyOnly) settings = { policy_id: policyOnly };
@@ -2938,7 +2994,10 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
         }
       }
       // A policy can accompany any selection without opening the native thread.
-      if (request.policyId !== undefined) settings.policy_id = request.policyId;
+      if (request.policyId !== undefined) {
+        settings.policy_id = request.policyId;
+        settings.policy_override = true;
+      }
       const snapshot: Record<string, unknown> = {
         ...record.snapshot,
         status: "idle",
@@ -3196,6 +3255,7 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
               | "effort"
               | "service_tier"
               | "policy_id"
+              | "policy_override"
               | "mode"
               | "title"
               | "goal"
@@ -3387,7 +3447,13 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
         }
       } else if (request.operation === "settings") {
         if (!codexCanSetNextTurn(snapshot.status)) throw new Error("session-busy");
-        if (request.mode === null && !changesCodexModel(request) && request.policyId === undefined)
+        const policy = codexPolicyOnly(request);
+        if (policy) localMutation = { policy_id: policy, policy_override: true };
+        else if (
+          request.mode === null &&
+          !changesCodexModel(request) &&
+          request.policyId === undefined
+        )
           localMutation = { mode: null };
         else {
           const models = projectManagedModels(
@@ -4526,6 +4592,13 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
     if (pathIdentity(workspace) !== pathIdentity(canonicalize(record.workspace)))
       throw new Error("session-workspace-mismatch");
     const cwd = this.#managedCwd(record);
+    const nativePolicy = this.#nativeCodexPolicy(record);
+    if (nativePolicy?.policyId === null) throw new Error(nativePolicy.reason);
+    if (nativePolicy && !codexPolicyOverride(record)) {
+      record = { ...record, policy_id: nativePolicy.policyId, policy_override: false };
+    }
+    // Resume the verified native policy. An explicit AgentKib selection applies at turn/start.
+    const resumePolicy = nativePolicy ? { ...record, policy_id: nativePolicy.policyId } : record;
     // Startup can outlive the last subscriber; retain the observation before any await.
     const observedAtStart =
       this.host.controlSessions.get(record.id)?.observed === true ||
@@ -4715,7 +4788,7 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
         if (goal?.status === "active") throw new Error("pause-original-goal-before-handoff");
       }
 
-      const params = managedResumeParams(record, cwd);
+      const params = managedResumeParams(resumePolicy, cwd);
       // A Project Agent's worker tools: an MCP server for this thread only, never the user's
       // Codex configuration.
       const leadUrl = this.#leadEndpoint
@@ -4742,6 +4815,13 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
         this.host.assertOpen();
         if (pathIdentity(this.#managedCwd(record)) !== pathIdentity(cwd))
           throw new Error("codex-workspace-mismatch");
+        if (nativePolicy) {
+          const current = this.#nativeCodexPolicy(record);
+          if (current?.policyId !== nativePolicy.policyId)
+            throw new Error(
+              current?.policyId === null ? current.reason : unconfirmedCodexNativePolicy.reason,
+            );
+        }
         dispatch?.();
       };
       const readRevision = state.revision;
@@ -4770,7 +4850,7 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
         pathIdentity(canonicalize(nativeThread.cwd)) !== pathIdentity(cwd)
       )
         throw new Error("codex-workspace-mismatch");
-      verifyManagedPolicy(record, response);
+      verifyManagedPolicy(resumePolicy, response);
       if (
         Array.isArray(nativeThread.environments) &&
         nativeThread.environments.some((environment: unknown) => {
@@ -5081,6 +5161,14 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
       archived: summary.archived,
       snapshot: { revision: 0 },
     };
+  }
+
+  #nativeCodexPolicy(record: ManagedRecord): CodexNativePolicy | undefined {
+    if (!record.adopted || !record.native_id || !this.#isCodexHome(record.home)) return;
+    const read = this.host.sessions.codexHistoricalSettings;
+    if (!read) return;
+    const history = read.call(this.host.sessions, record.native_id, record.workspace);
+    return history ? history.nativePolicy : unconfirmedCodexNativePolicy;
   }
 
   /**
@@ -6893,6 +6981,42 @@ function managedPolicyCatalog() {
   ];
 }
 
+function codexPolicyOverride(record: ManagedRecord): boolean {
+  // Older adopted records saved the fallback policy even without a choice. Older nondefault
+  // selections, including a staged permission-only save, were explicit.
+  return (
+    record.policy_override ??
+    (!!record.policy_id && record.policy_id !== "workspace-write-on-request")
+  );
+}
+
+function nativePolicySettings(
+  record: ManagedRecord,
+  settings: Record<string, unknown>,
+  policy: CodexNativePolicy | undefined,
+  following = false,
+) {
+  if (!policy) return {};
+  const selected = isObject(settings.selected) ? settings.selected : {};
+  const current = isObject(settings.current) ? settings.current : {};
+  return {
+    current: { ...current, policyId: policy.policyId },
+    selected: {
+      ...selected,
+      policyId:
+        policy.policyId && !following && codexPolicyOverride(record)
+          ? (record.policy_id ?? policy.policyId)
+          : policy.policyId,
+    },
+  };
+}
+
+function nativePolicyWriteAccess(policy: CodexNativePolicy | undefined, blocked?: unknown) {
+  if (policy?.policyId === null) return { available: false, reason: policy.reason };
+  if (typeof blocked === "string") return { available: false, reason: blocked };
+  return true;
+}
+
 function codexCommandEvidence(request: SettingsControl, workspaceId: string) {
   return {
     operation: request.operation,
@@ -6968,6 +7092,7 @@ function codexSettingsMutation(
     effort,
     service_tier: serviceTier,
     policy_id: request.policyId ?? record.policy_id,
+    ...(request.policyId !== undefined ? { policy_override: true } : {}),
     mode: request.mode === undefined ? (record.mode ?? null) : request.mode,
   };
   validateManagedModelSelection(selection, models);
@@ -7244,28 +7369,6 @@ function managedAnswerPayload(
     normalized[value.id] = { answers: choices };
   }
   return { answers: normalized };
-}
-
-function managedWritableRootsMatch(
-  cwd: unknown,
-  responseCwd: unknown,
-  extraRoots: unknown,
-): boolean {
-  if (typeof cwd !== "string" || !path.isAbsolute(cwd) || !Array.isArray(extraRoots)) return false;
-  try {
-    const expected = pathIdentity(canonicalize(cwd));
-    const effective = new Set<string>();
-    // Native WorkspaceWrite roots are additional to cwd. The caller already
-    // verified both response cwd fields against the authorized session directory.
-    for (const root of [responseCwd, ...extraRoots]) {
-      if (typeof root !== "string" || !path.isAbsolute(root) || !statSync(root).isDirectory())
-        return false;
-      effective.add(pathIdentity(canonicalize(root)));
-    }
-    return effective.size === 1 && effective.has(expected);
-  } catch {
-    return false;
-  }
 }
 
 function verifyManagedPolicy(record: ManagedRecord, response: Record<string, unknown>): void {

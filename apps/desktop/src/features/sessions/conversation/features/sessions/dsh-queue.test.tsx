@@ -76,10 +76,16 @@ it("loads and edits the Antigravity queue through the managed session routes onl
     queuedSubmissionId: "item",
     text: "New text",
   });
-  await expect(dispatchSessionAction(client, "antigravity", "steer", body)).rejects.toThrow(
+  // Antigravity is a managed Agent: the host decides whether it can steer (it cannot).
+  await dispatchSessionAction(client, "antigravity", "steer", body);
+  expect(request).toHaveBeenLastCalledWith(
+    "managed/action",
+    expect.objectContaining({ agent: "antigravity", operation: "steer" }),
+  );
+  await expect(dispatchSessionAction(client, "cursor", "steer", body)).rejects.toThrow(
     "operation_unavailable",
   );
-  expect(request).toHaveBeenCalledTimes(2);
+  expect(request).toHaveBeenCalledTimes(3);
 });
 
 it.each(["devin", "antigravity"] as const)(

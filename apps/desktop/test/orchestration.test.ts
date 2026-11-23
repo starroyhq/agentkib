@@ -1495,9 +1495,9 @@ describe("orchestration service", () => {
       );
       cleanups.push(() => client.close());
       expect(client.getInstructions()).toBe(leadInstructions({ approvals: ["command"] }));
-      expect((await client.listTools()).tools.map((tool: { name: string }) => tool.name)).toContain(
-        "worker_approve",
-      );
+      const names = (await client.listTools()).tools.map((tool: { name: string }) => tool.name);
+      expect(names).toContain("worker_approve");
+      expect((await orchestration.leadEndpoint(LEAD))?.toolNames).toEqual(names);
       expect(orchestration.status(LEAD)?.scope).toMatchObject({
         workspaceIds: ["w1", "w2"],
         policies: [],
@@ -1550,13 +1550,19 @@ describe("orchestration service", () => {
     expect(client.getInstructions()).toBe(LEAD_INSTRUCTIONS);
     expect(LEAD_INSTRUCTIONS.length).toBeLessThan(2000);
     const tools = await client.listTools();
-    expect(tools.tools.map((tool: { name: string }) => tool.name)).toEqual([
+    const names = tools.tools.map((tool: { name: string }) => tool.name);
+    expect(names).toEqual([
       "worker_list",
       "worker_send",
       "worker_read",
       "worker_stop",
       "worker_restart",
     ]);
+    expect(await orchestration.leadEndpoint(LEAD)).toMatchObject({
+      url,
+      serverName: "agentkib_workers",
+      toolNames: names,
+    });
     for (const [name, args] of [
       ["worker_open", { name: "api", workspace: "w1" }],
       ["worker_open", { name: "api", session: WORKER }],

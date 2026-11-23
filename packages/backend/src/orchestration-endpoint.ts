@@ -11,10 +11,16 @@ export type EndpointTool = {
 };
 export type EndpointResult = { text: string; isError?: boolean };
 
-export type LeadEndpoint = {
+/** The MCP server identity and exact tool names registered for this lead. */
+export type LeadToolRegistration = {
+  readonly url: string;
+  readonly serverName: string;
+  readonly toolNames: readonly string[];
+};
+
+export type LeadEndpoint = LeadToolRegistration & {
   /** `--mcp-config` content naming only this endpoint. */
   mcpConfig: Record<string, unknown>;
-  url: string;
   close(): Promise<void>;
 };
 
@@ -49,7 +55,7 @@ async function readBody(request: IncomingMessage): Promise<unknown> {
 export async function openLeadEndpoint(options: {
   serverName: string;
   instructions: string;
-  tools: () => EndpointTool[];
+  tools: readonly EndpointTool[];
   call: (name: string, input: Record<string, unknown>) => Promise<EndpointResult>;
 }): Promise<LeadEndpoint> {
   const [
@@ -137,7 +143,7 @@ export async function openLeadEndpoint(options: {
       const connection: Connection = { server, transport, lastUsed: ++requests };
       connections.add(connection);
       server.setRequestHandler(ListToolsRequestSchema, async () => ({
-        tools: options.tools().map((tool) => ({
+        tools: options.tools.map((tool) => ({
           name: tool.name,
           description: tool.description,
           inputSchema: tool.inputSchema,
@@ -203,6 +209,8 @@ export async function openLeadEndpoint(options: {
   let closing: Promise<void> | undefined;
   return {
     url,
+    serverName: options.serverName,
+    toolNames: Object.freeze(options.tools.map(({ name }) => name)),
     mcpConfig: { mcpServers: { [options.serverName]: { type: "http", url } } },
     close() {
       if (closing) return closing;

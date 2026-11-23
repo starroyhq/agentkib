@@ -36,7 +36,7 @@
 - `packages/runtime-protocol/src/agents.ts`：加进 `MANAGED_AGENTS`。
   - 两端会话页、首页、菜单栏、待核对记录、新建会话的默认目标，以及主进程 Web 服务的检查，都读这一份；`web-client` 原样转出 `ManagedAgent` 和 `managedAgentOf`。
   - 用 `Record<ManagedAgent, …>` 的地方，漏了会编译不过。
-- 只能在会话页继续、不能新建的 Agent（如 Antigravity），加进同一文件的 `LIVE_SESSION_AGENTS`。
+- 只能在会话页继续、不能新建的 Agent，加进同一文件的 `LIVE_SESSION_AGENTS`（目前所有实时会话 Agent 都是受控 Agent，Antigravity 经 `agy acp` 也已支持新建）。
 
 **会话 Provider**
 

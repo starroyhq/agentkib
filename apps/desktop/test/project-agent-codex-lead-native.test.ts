@@ -224,10 +224,7 @@ async function codexLead() {
     (id, device, text) => reports.send(id, device, text),
   );
   cleanups.push(() => orchestration.close());
-  web.leadEndpoints(async (sessionId) => {
-    const config = (await orchestration.leadTools(sessionId)) as Json | null;
-    return config?.mcpServers?.agentkib_workers?.url ?? null;
-  });
+  web.leadEndpoints((sessionId) => orchestration.leadEndpoint(sessionId));
   web.observeLanes({
     turnEnded: (sessionId, turnId, outcome, durationMs) =>
       void orchestration.laneTurnEnded(sessionId, turnId, outcome, durationMs),

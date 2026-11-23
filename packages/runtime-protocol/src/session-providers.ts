@@ -267,6 +267,36 @@ const MANAGED_CAPABILITIES = {
     },
     contextUsage: "last-request",
   },
+  // Antigravity CLI's `agy acp` (1.5.14): a session's model, thought level and mode are its own
+  // ACP options; a new session starts with its first message.
+  antigravity: {
+    history: { readState: false },
+    operations: { execution: false },
+    composer: {
+      modelPicker: true,
+      permissionPicker: true,
+      attachments: false,
+      workspaceResources: false,
+      plan: false,
+      goal: false,
+    },
+    create: {
+      mode: "with-first-message",
+      catalogScope: "workspace",
+      attachments: false,
+      serviceTiers: false,
+      modelPicker: true,
+      permissionPicker: true,
+    },
+    models: {
+      selection: "independent",
+      modelDefault: true,
+      effortDefault: true,
+      clearEffort: false,
+      fastTierIds: [],
+    },
+    contextUsage: "live",
+  },
 } satisfies Record<ManagedAgent, SessionProviderCapabilities>;
 
 const PROVIDERS = {
@@ -316,18 +346,14 @@ const PROVIDERS = {
     activities: { kinds: ["subagent"], canStopIndividually: false, canOpenSubagentHistory: true },
   },
   antigravity: {
-    history: { readState: false },
-    operations: { execution: false },
-    composer: { surface: "basic" },
-    contextUsage: "live",
-    controls: ["send", "stop", "approve"],
+    ...MANAGED_CAPABILITIES.antigravity,
     commands: { source: "none" },
     queue: { actions: ["list", "add", "update", "delete", "pause", "resume"] },
     connection: { kind: "acp" },
+    permissionField: "permissionMode",
     activities: { kinds: [], canStopIndividually: false, canOpenSubagentHistory: false },
   },
-} satisfies Record<ManagedAgent, SessionProviderCapabilities> &
-  Record<"antigravity", BasicSessionProviderCapabilities>;
+} satisfies Record<ManagedAgent, SessionProviderCapabilities>;
 
 export type SessionProviderAgent = keyof typeof MANAGED_CAPABILITIES;
 export type LiveSessionAgent = keyof typeof PROVIDERS;
@@ -370,10 +396,6 @@ export function sessionDetailCapabilities(agent: unknown): {
       history: provider.history,
       operations: provider.operations,
     };
-  if (agent === "antigravity") {
-    const { composer, history, operations } = PROVIDERS.antigravity;
-    return { composer, history, operations };
-  }
   return {
     history: { readState: false },
     operations: { execution: false },

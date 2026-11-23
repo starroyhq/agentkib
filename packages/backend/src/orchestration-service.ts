@@ -95,7 +95,10 @@ export type LaneHost = {
     owner: DeferredCodexSendOwner,
     desktopOwnerHandoff: boolean,
   ): Promise<unknown>;
-  cancelDeferredCodexSend?(owner: DeferredCodexSendOwner, requestId: string): Promise<boolean>;
+  cancelDeferredCodexSend?(
+    owner: DeferredCodexSendOwner,
+    requestId: string,
+  ): Promise<boolean | "dismissed">;
   live(sessionId: string, intent?: "send"): Promise<Record<string, unknown>>;
   /** A lightweight live sample for unattended checks when the full read has extra work. */
   observe?(sessionId: string): Promise<Record<string, unknown>>;
@@ -2656,6 +2659,13 @@ export class OrchestrationService {
         wait.requestId,
       );
       if (!cancelled) return { accepted: false, reason: "codex-owner-wait-not-cancelled" };
+      if (cancelled === "dismissed")
+        return {
+          accepted: true,
+          requestId: wait.requestId,
+          dismissed: true,
+          reason: "control-outcome-unconfirmed",
+        };
       this.registry.update(lead.sessionId, (current) =>
         addLeadRecord(current, "stop", lane.id, wait.requestId, "cancelled"),
       );

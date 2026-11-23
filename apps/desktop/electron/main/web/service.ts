@@ -425,12 +425,8 @@ function isOwnerWaitQueueEntry(item: QueueEntry, workspaceId: string) {
   );
 }
 
-function canDeleteOwnerWait(item: QueueEntry, deviceId: string, lan: boolean) {
-  return (
-    item.ownerWaitDeviceId === deviceId &&
-    item.actions?.delete?.available === true &&
-    (!lan || item.status === "pending")
-  );
+function canDeleteOwnerWait(item: QueueEntry, deviceId: string) {
+  return item.ownerWaitDeviceId === deviceId && item.actions?.delete?.available === true;
 }
 
 type ActionDispatch = {
@@ -3927,7 +3923,7 @@ export class WebAccessService {
           this.options.mode === "lan" &&
           lanOwnerWait !== undefined &&
           (operation === "queue-list" ||
-            (operation === "queue-delete" && canDeleteOwnerWait(lanOwnerWait, device.id, true)));
+            (operation === "queue-delete" && canDeleteOwnerWait(lanOwnerWait, device.id)));
         const permission = lanWaitFeature ? "send" : this.codexPermission(operation);
         const allowed =
           isCodexMode(data.executionMode) &&
@@ -4255,10 +4251,7 @@ export class WebAccessService {
           )
         : undefined;
     const ownerWaitOnly = operation === "queue-delete" && (onlyWaitCanBeDeleted || !!queuedWait);
-    if (
-      ownerWaitOnly &&
-      (!queuedWait || !canDeleteOwnerWait(queuedWait, device.id, this.options.mode === "lan"))
-    )
+    if (ownerWaitOnly && (!queuedWait || !canDeleteOwnerWait(queuedWait, device.id)))
       throw new HttpError(409, "queue_item_unavailable");
     const policy: ProviderValidation = ownerWaitOnly
       ? { available: true }
@@ -6883,7 +6876,7 @@ export class WebAccessService {
                 reason: item.reason,
                 actions: {
                   update: { available: false, reason: item.reason },
-                  delete: { available: canDeleteOwnerWait(item, current.id, lan) },
+                  delete: { available: canDeleteOwnerWait(item, current.id) },
                 },
               }
             : {}),

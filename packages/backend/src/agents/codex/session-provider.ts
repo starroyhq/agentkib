@@ -474,7 +474,7 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
     return this.host.runOperation(() => this.#ownerWait.schedule(ownerWaitSchedule.parse(value)));
   }
 
-  cancelDeferredCodexSend(owner: DeferredCodexSendOwner, requestId: string): boolean {
+  cancelDeferredCodexSend(owner: DeferredCodexSendOwner, requestId: string): boolean | "dismissed" {
     const entry = this.#ownerWait.read(owner.sessionId);
     if (
       entry?.request.requestId !== requestId ||
@@ -482,6 +482,7 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
       stableJson(entry.worker) !== stableJson(owner)
     )
       return false;
+    if (entry.delivering) return this.#ownerWait.dismissInterrupted(entry) ? "dismissed" : false;
     return this.#ownerWait.cancel(entry);
   }
 

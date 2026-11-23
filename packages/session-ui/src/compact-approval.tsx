@@ -46,9 +46,8 @@ export function CompactApprovalCard({
     model.choices.find((choice) => choice.quick === "stop");
   const lines = model.block?.lines ?? [];
   const shown = lines.slice(0, BLOCK_LINES);
-  const usable = (choice: ApprovalChoice | undefined): choice is ApprovalChoice =>
-    !!choice && !choice.disabled;
   const disabled = !item.enabled || busy;
+  const lockReason = notice?.text ?? (busy ? t.sending : t.approvalUnavailable);
   return (
     <div className="grid gap-2.5" aria-busy={busy || undefined}>
       <p className="text-sm font-semibold leading-5">{model.title}</p>
@@ -76,7 +75,7 @@ export function CompactApprovalCard({
           {model.message}
         </p>
       )}
-      {notice && (
+      {notice && !allow && !deny && (
         <p role="status" className="text-xs leading-5 text-muted-foreground">
           {notice.text}
         </p>
@@ -87,20 +86,22 @@ export function CompactApprovalCard({
         </p>
       )}
       <div className="flex items-center gap-2">
-        {usable(allow) && (
+        {allow && (
           <button
             type="button"
-            disabled={disabled}
+            disabled={disabled || allow.disabled}
+            title={allow.disabledReason ?? (disabled ? lockReason : undefined)}
             className={`inline-flex h-8 items-center rounded-full bg-primary px-3.5 font-medium text-primary-foreground transition-opacity hover:opacity-90 disabled:bg-muted disabled:text-muted-foreground ${focusRing}`}
             onClick={() => void onChoose(allow)}
           >
             <span className="text-[13px]">{allow.label}</span>
           </button>
         )}
-        {usable(deny) && (
+        {deny && (
           <button
             type="button"
-            disabled={disabled}
+            disabled={disabled || deny.disabled}
+            title={deny.disabledReason ?? (disabled ? lockReason : undefined)}
             className={`inline-flex h-8 items-center rounded-full border border-border bg-background px-3.5 font-medium transition-colors hover:bg-muted disabled:text-muted-foreground disabled:hover:bg-background ${focusRing}`}
             onClick={() => void onChoose(deny)}
           >

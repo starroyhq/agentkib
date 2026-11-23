@@ -667,7 +667,15 @@ export class ManagedCodexState {
     update: Partial<
       Pick<
         ManagedRecord,
-        "model" | "effort" | "service_tier" | "policy_id" | "mode" | "title" | "goal" | "archived"
+        | "model"
+        | "effort"
+        | "service_tier"
+        | "policy_id"
+        | "policy_override"
+        | "mode"
+        | "title"
+        | "goal"
+        | "archived"
       >
     >,
     status?: string,
@@ -683,7 +691,10 @@ export class ManagedCodexState {
 
   commitSettings(
     update: Partial<
-      Pick<ManagedRecord, "model" | "effort" | "service_tier" | "policy_id" | "mode">
+      Pick<
+        ManagedRecord,
+        "model" | "effort" | "service_tier" | "policy_id" | "policy_override" | "mode"
+      >
     >,
     persist: () => void,
   ): void {

@@ -1,4 +1,5 @@
 import type { Approval } from "@agentkib/web-client";
+import { resolveApprovalPresentation } from "../../agents/session-approvals";
 import type { InteractionLocale } from "../../interaction-model";
 
 const operations = {
@@ -29,14 +30,14 @@ export function approvalSummary(
     call.title.trim()
   )
     return call.title.trim();
-  // Codex approvals identify the operation by method rather than a tool name.
   const copy = operations[locale];
-  switch (approval.method) {
-    case "item/commandExecution/requestApproval":
+  switch (resolveApprovalPresentation(approval).kind) {
+    case "network":
+    case "command":
       return copy.command;
-    case "item/fileChange/requestApproval":
+    case "files":
       return copy.files;
-    case "item/permissions/requestApproval":
+    case "permissions":
       return copy.permissions;
     default:
       return unknownTool;

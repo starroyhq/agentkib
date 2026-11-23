@@ -20,6 +20,10 @@ export class CodexCatalogCache<T> {
     readonly now: () => number = Date.now,
   ) {}
 
+  has(key: string): boolean {
+    return this.#entries.has(key);
+  }
+
   read(key: string, load: () => Promise<T>): Promise<T> {
     const entry = this.#entries.get(key);
     if (!entry) return this.#load(key, load);

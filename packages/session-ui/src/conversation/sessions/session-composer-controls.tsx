@@ -1218,6 +1218,11 @@ export function SessionComposerControls({
     full,
     write: (fields) => mutate("settings", fields),
   });
+  const nativePolicy = scopedSettings?.writable.policy;
+  const nativePolicyReadOnlyReason =
+    nativePolicy?.available === false && nativePolicy.reason?.startsWith("native-policy-")
+      ? nativePolicy.reason
+      : undefined;
   const showPermissions =
     !settingsAccessDenied &&
     (reservesPermissionSlot ||
@@ -1226,7 +1231,8 @@ export function SessionComposerControls({
           isClaude ||
           isDevin ||
           (desktop ? !!settings?.options.policies?.length : permissionItems.length > 0))));
-  const permissionTriggerLocked = disabled || permissionReadOnlyWithoutMenu;
+  const permissionTriggerLocked =
+    disabled || permissionReadOnlyWithoutMenu || !!nativePolicyReadOnlyReason;
   useEffect(() => {
     onPlan?.({ on: planOn, available: planAvailable });
   }, [onPlan, planOn, planAvailable]);
@@ -1438,11 +1444,16 @@ export function SessionComposerControls({
           showPermissions
             ? {
                 title: menuTitle,
-                label: permissionLabel ?? menuTitle,
+                label: nativePolicyReadOnlyReason
+                  ? copy.nativePolicy
+                  : (permissionLabel ?? menuTitle),
                 description: permissionDescription,
                 hint: permissionHint,
                 risky: permissionRisky,
                 disabled: permissionTriggerLocked,
+                disabledReason: nativePolicyReadOnlyReason
+                  ? `${copy.nativePolicyReadOnly} ${reason(nativePolicyReadOnlyReason)}`
+                  : undefined,
                 side: "top",
                 open: permissionOpen,
                 onOpenChange: changePermissionOpen,

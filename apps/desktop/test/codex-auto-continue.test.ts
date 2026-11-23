@@ -1512,6 +1512,147 @@ describe("Codex attachments", () => {
   });
 });
 
+describe("Codex indexed native execution policy", () => {
+  const full = {
+    approval_policy: "never",
+    sandbox_policy: { type: "danger-full-access" },
+  };
+  const setNativePolicy = (f: ReturnType<typeof fixture>, policy: Record<string, unknown>) => {
+    writeFileSync(
+      f.compressedTranscript,
+      zstdCompressSync(
+        f.history +
+          JSON.stringify({ type: "turn_context", payload: { ...policy, cwd: f.workspace } }) +
+          "\n",
+      ),
+    );
+  };
+  const settings = (f: ReturnType<typeof fixture>) =>
+    f.web.managedSettingsState({
+      operation: "settings-state",
+      sessionId: f.summary.id,
+      includeHistorical: true,
+    });
+
+  it("presents and resumes the original full-access policy", async () => {
+    const f = fixture(true);
+    setNativePolicy(f, full);
+    f.setPolicyReply({
+      approvalPolicy: "never",
+      approvalsReviewer: "user",
+      sandbox: { type: "dangerFullAccess" },
+    });
+    expect(await settings(f)).toMatchObject({
+      available: true,
+      settings: {
+        current: { policyId: "full-access-on-request" },
+        selected: { policyId: "full-access-on-request" },
+        writable: { policy: true },
+      },
+    });
+    expect(await f.send()).toMatchObject({ accepted: true });
+    expect(f.requests.find(({ method }) => method === "thread/resume")?.params).toMatchObject({
+      approvalPolicy: "never",
+      sandbox: "danger-full-access",
+    });
+    expect(f.requests.find(({ method }) => method === "turn/start")?.params).toMatchObject({
+      approvalPolicy: "never",
+      sandboxPolicy: { type: "dangerFullAccess" },
+    });
+  });
+
+  it("keeps a differing native policy visible and refuses to run or replace it", async () => {
+    const f = fixture(true);
+    setNativePolicy(f, {
+      approval_policy: "on-request",
+      approvals_reviewer: "user",
+      sandbox_policy: {
+        type: "workspace-write",
+        network_access: true,
+        writable_roots: [],
+        exclude_tmpdir_env_var: true,
+        exclude_slash_tmp: true,
+      },
+    });
+    const reason = "native-policy-sandbox-network-mismatch";
+    expect(await settings(f)).toMatchObject({
+      available: true,
+      policies: [],
+      settings: {
+        current: { policyId: null },
+        selected: { policyId: null },
+        writable: { policy: { available: false, reason } },
+      },
+    });
+    expect(await f.send()).toMatchObject({ controlOutcome: "not-dispatched", reason });
+    const state = await f.live();
+    expect(
+      await f.web.managedControl({
+        operation: "settings",
+        sessionId: f.summary.id,
+        requestId: randomUUID(),
+        deviceId: "fixture",
+        runtimeBootId: state.runtimeBootId,
+        expectedRevision: state.revision,
+        experimentalEnabled: true,
+        policyId: "full-access-on-request",
+      }),
+    ).toMatchObject({ controlOutcome: "not-dispatched", reason });
+    expect(f.methods).not.toContain("thread/resume");
+    expect(f.methods).not.toContain("turn/start");
+  });
+
+  it("offers execution policy without waiting for the cold model catalog", async () => {
+    const invalidated = vi.fn();
+    const f = fixture(true, undefined, {}, invalidated);
+    setNativePolicy(f, full);
+    const models = { data: [{ model: "cold-model", isDefault: true }] };
+    f.intercept((method) =>
+      method === "model/list"
+        ? new Promise((resolve) => setTimeout(() => resolve(models), 500))
+        : undefined,
+    );
+    const started = performance.now();
+    const early = await settings(f);
+    const elapsed = performance.now() - started;
+    if (process.env.AGENTKIB_MEASURE_CODEX_SETTINGS === "1")
+      console.info("Cold Codex policy response (500 ms model fixture):", elapsed.toFixed(1), "ms");
+    expect(elapsed).toBeLessThan(400);
+    expect(early).toMatchObject({
+      available: true,
+      policies: expect.arrayContaining([expect.objectContaining({ id: "full-access-on-request" })]),
+    });
+    expect(early).toHaveProperty("settings.writable.policy", true);
+    await vi.waitFor(
+      () => {
+        expect(invalidated).toHaveBeenCalledWith(f.summary.id, "invalidate", {
+          domains: ["settings"],
+        });
+      },
+      { timeout: 2_000 },
+    );
+    expect(await settings(f)).toMatchObject({ models: [{ id: "cold-model" }] });
+    expect(f.methods).not.toContain("thread/resume");
+  });
+
+  it("rechecks writer ownership for the execution policy as soon as Desktop exits", async () => {
+    const f = fixture(true);
+    setNativePolicy(f, full);
+    const writerLocks = path.join(f.home, "thread-writer-locks");
+    mkdirSync(writerLocks, { recursive: true });
+    const release = acquirePortableFileLease(path.join(writerLocks, nativeId + ".lock"));
+    try {
+      expect(await settings(f)).toMatchObject({ available: false, reason: "codex-owner-busy" });
+    } finally {
+      release();
+    }
+    expect(await settings(f)).toMatchObject({
+      available: true,
+      settings: { current: { policyId: "full-access-on-request" }, writable: { policy: true } },
+    });
+  });
+});
+
 describe("Codex Plan mode", () => {
   async function control(
     f: ReturnType<typeof fixture>,
@@ -3442,7 +3583,7 @@ describe("Codex automatic CLI continuation", () => {
   it.each(["backend.initialize", "agentkib.shutdown"])(
     "closes an initializing automatic runner before acknowledging %s",
     async (method) => {
-      const f = fixture();
+      const f = fixture(true);
       await f.send();
       await f.web.closeAsync();
       writeFileSync(

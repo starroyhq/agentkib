@@ -12,6 +12,7 @@ import {
   type HistorySearchStatus,
 } from "@agentkib/web-client";
 import {
+  HistorySearchControls,
   HistorySearchPanel,
   historyAccessScope,
   createHistoryOpenLock,
@@ -107,7 +108,7 @@ function fixture(currentSessionId?: string) {
     limited: false,
   });
   vi.spyOn(client, "historyLocate").mockResolvedValue(record);
-  vi.spyOn(client, "historyReferences").mockResolvedValue({
+  const resolved = {
     references: [
       {
         ...record,
@@ -120,7 +121,8 @@ function fixture(currentSessionId?: string) {
       },
     ],
     text: record.content,
-  });
+  };
+  vi.spyOn(client, "historyReferences").mockResolvedValue(resolved);
   const props = {
     client,
     locale: "en-US" as const,
@@ -132,12 +134,15 @@ function fixture(currentSessionId?: string) {
     onReference: vi.fn(),
     onScopeEnded: vi.fn(),
   };
-  return { client, catalog, grant, props };
+  return { client, catalog, grant, props, resolved };
+}
+async function openSource() {
+  fireEvent.click(await screen.findByRole("button", { name: /Source history/ }));
+  await screen.findByRole("region", { name: c.source });
 }
 async function renderSource(f: ReturnType<typeof fixture>) {
   const view = render(<HistorySearchPanel {...f.props} />);
-  fireEvent.click(await screen.findByRole("button", { name: /Source history/ }));
-  await screen.findByRole("region", { name: c.source });
+  await openSource();
   return view;
 }
 async function requestOpen() {
@@ -160,6 +165,7 @@ describe("explicit history session opening", () => {
   it("keeps reference selection independent of navigation and the current draft", async () => {
     const f = fixture("current");
     await renderSource(f);
+    expect(screen.getByText(c.quoteOnly)).toBeVisible();
     fireEvent.click(screen.getByRole("button", { name: c.quote }));
     await screen.findByText(c.added);
     expect(f.props.onReference).toHaveBeenCalledOnce();
@@ -168,6 +174,105 @@ describe("explicit history session opening", () => {
     expect(f.props.onOpenSession).not.toHaveBeenCalled();
     expect(screen.queryByRole("group", { name: c.openConfirm })).toBeNull();
   });
+
+  it("keeps the reference action disabled until an excerpt is selected", async () => {
+    const f = fixture("current");
+    await renderSource(f);
+    const excerpt = screen.getByRole("textbox", { name: c.excerpt }) as HTMLTextAreaElement;
+    act(() => {
+      excerpt.focus();
+      excerpt.setSelectionRange(0, 0);
+      fireEvent.select(excerpt);
+    });
+    const quote = screen.getByRole("button", { name: c.quote });
+    expect(quote).toBeDisabled();
+    expect(quote).toHaveAttribute("title", c.selection);
+    fireEvent.click(quote);
+    expect(f.client.historyReferences).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["codex", false, undefined, false, c.referenceSendPermission],
+    ["claude-code", true, undefined, true, c.referenceBusy],
+    ["antigravity", false, "uncertain", true, c.referenceUncertain],
+    ["devin", false, undefined, true, undefined],
+    ["deepseek-harness", false, undefined, true, undefined],
+  ] as const)(
+    "uses the provider registration and current access for %s history references",
+    async (agent, busy, notice, send, title) => {
+      const f = fixture("current");
+      const addHistoryReference = vi.fn();
+      f.grant.device = { id: "device", name: "Test", send, approve: true };
+      render(
+        <HistorySearchControls
+          session={{
+            access: f.grant,
+            historySearchOpen: true,
+            modal: undefined,
+            selected: "current",
+            current: { id: "current", agent },
+            busy,
+            notice,
+            client: f.client,
+            locale: f.props.locale,
+            message: "",
+            historyReferences: [],
+            setHistorySearchOpen: vi.fn(),
+            setHistoryReferences: vi.fn(),
+            addHistoryReference,
+          }}
+          onOpenSession={f.props.onOpenSession}
+        />,
+      );
+      fireEvent.change(screen.getByRole("textbox", { name: c.query }), {
+        target: { value: "needle" },
+      });
+      await openSource();
+      if (title) {
+        const quote = screen.getByRole("button", { name: c.quote });
+        expect(quote).toBeDisabled();
+        expect(quote).toHaveAttribute("title", title);
+        expect(screen.queryByText(title)).not.toBeInTheDocument();
+        expect(screen.queryByText(c.quoteOnly)).not.toBeInTheDocument();
+        fireEvent.click(quote);
+      } else {
+        expect(screen.queryByRole("button", { name: c.quote })).not.toBeInTheDocument();
+      }
+      expect(f.client.historyReferences).not.toHaveBeenCalled();
+      expect(addHistoryReference).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["read scope", "send permission", "session availability", "selected target"] as const)(
+    "rejects a pending history reference if %s changes",
+    async (change) => {
+      const f = fixture("current");
+      const view = await renderSource(f);
+      const pending = deferred<typeof f.resolved>();
+      vi.mocked(f.client.historyReferences).mockReturnValueOnce(pending.promise);
+      fireEvent.click(screen.getByRole("button", { name: c.quote }));
+      expect(f.client.historyReferences).toHaveBeenCalledOnce();
+      if (change === "read scope") {
+        delete f.grant.historySearch;
+      } else if (change === "send permission") {
+        f.grant.device = { id: "device", name: "Test", send: false, approve: true };
+      } else {
+        view.rerender(
+          <HistorySearchPanel
+            {...f.props}
+            currentSessionId={change === "selected target" ? "different" : "current"}
+            referenceDisabledReason={
+              change === "session availability" ? c.referenceBusy : undefined
+            }
+          />,
+        );
+      }
+      await act(async () => pending.resolve(f.resolved));
+      expect(f.props.onReference).not.toHaveBeenCalled();
+      expect(screen.queryByText(c.added)).not.toBeInTheDocument();
+      if (change === "read scope") expect(f.props.onScopeEnded).toHaveBeenCalledOnce();
+    },
+  );
 
   it("allows cancelling a cross-session opening without touching the draft or references", async () => {
     const f = fixture("current");

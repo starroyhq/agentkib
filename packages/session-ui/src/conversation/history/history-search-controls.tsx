@@ -6,6 +6,7 @@ import type {
   WebClient,
 } from "@agentkib/web-client";
 import type { InteractionLocale as Locale } from "../../interaction-model";
+import { sessionHistoryEntry } from "../../agents/session-history";
 import { useSessionPlatform } from "../../session-platform";
 import { historyCopy } from "./history-copy";
 import {
@@ -45,7 +46,7 @@ type HistorySearchSession = {
   selected: string;
   busy: boolean;
   notice: unknown;
-  current?: { agent: string } | null;
+  current?: Pick<ConversationSessionSummary, "id" | "agent"> | null;
   client: WebClient;
   locale: Locale;
   message: string;
@@ -65,12 +66,18 @@ export function HistorySearchControls({
   const scope = historyAccessScope(session.access);
   if (!scope || !session.historySearchOpen || session.modal) return null;
   const targetId = session.selected;
-  const canQuote =
-    !session.busy &&
-    session.notice !== "uncertain" &&
+  const references =
     !!targetId &&
-    !!session.access?.device?.send &&
-    ["codex", "claude-code", "antigravity"].includes(session.current?.agent ?? "");
+    session.current?.id === targetId &&
+    sessionHistoryEntry(session.current.agent)?.references;
+  const c = historyCopy[session.locale];
+  const referenceDisabledReason = !session.access?.device?.send
+    ? c.referenceSendPermission
+    : session.notice === "uncertain"
+      ? c.referenceUncertain
+      : session.busy
+        ? c.referenceBusy
+        : undefined;
   return (
     <HistorySearchDialog
       key={`${scope}:${targetId}`}
@@ -90,8 +97,9 @@ export function HistorySearchControls({
         session.setHistoryReferences([]);
       }}
       onReference={
-        canQuote ? (reference) => session.addHistoryReference(reference, targetId) : undefined
+        references ? (reference) => session.addHistoryReference(reference, targetId) : undefined
       }
+      referenceDisabledReason={referenceDisabledReason}
     />
   );
 }

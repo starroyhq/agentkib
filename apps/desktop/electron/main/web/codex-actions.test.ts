@@ -574,31 +574,33 @@ it("keeps an uncorrelated writer-lock result uncertain", async () => {
   expect(result.status).toBe(502);
   expect(result.data).toEqual({ error: "outcome_unknown", controlOutcome: "unknown" });
 });
-it.each(["unsupported-model", "unsupported-effort"])(
-  "preserves the concrete model send rejection over HTTP: %s",
-  async (reason) => {
-    await pair();
-    status = "idle";
-    runtime.mockImplementation(async (input) => {
-      const p = input as { operation: string; requestId?: string };
-      return p.operation === "send"
-        ? {
-            accepted: false,
-            completed: false,
-            controlOutcome: "not-dispatched",
-            requestId: p.requestId,
-            runtimeBootId: "runtime",
-            error: reason,
-          }
-        : runtimeHandler(input);
-    });
-    for (let attempt = 0; attempt < 2; attempt++) {
-      const result = await http("/send", action());
-      expect(result.status).toBe(409);
-      expect(result.data).toEqual({ error: reason, controlOutcome: "not-dispatched" });
-    }
-  },
-);
+it.each([
+  "unsupported-model",
+  "unsupported-effort",
+  "native-policy-unconfirmed",
+  "native-policy-sandbox-network-mismatch",
+])("preserves the concrete Codex send rejection over HTTP: %s", async (reason) => {
+  await pair();
+  status = "idle";
+  runtime.mockImplementation(async (input) => {
+    const p = input as { operation: string; requestId?: string };
+    return p.operation === "send"
+      ? {
+          accepted: false,
+          completed: false,
+          controlOutcome: "not-dispatched",
+          requestId: p.requestId,
+          runtimeBootId: "runtime",
+          error: reason,
+        }
+      : runtimeHandler(input);
+  });
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const result = await http("/send", action());
+    expect(result.status).toBe(409);
+    expect(result.data).toEqual({ error: reason, controlOutcome: "not-dispatched" });
+  }
+});
 it.each(["native-model-unconfirmed", "native-effort-unconfirmed"])(
   "preserves a pre-fork settings rejection over HTTP: %s",
   async (reason) => {
@@ -645,7 +647,7 @@ it.each(["request", "runtime", "unknown"])(
     expect(result.data).toEqual({ error: "outcome_unknown", controlOutcome: "unknown" });
   },
 );
-it("does not expose arbitrary runtime model errors as public HTTP reasons", async () => {
+it("does not expose arbitrary Codex runtime errors as public HTTP reasons", async () => {
   await pair();
   status = "idle";
   runtime.mockImplementation(async (input) => {
@@ -657,7 +659,7 @@ it("does not expose arbitrary runtime model errors as public HTTP reasons", asyn
           controlOutcome: "not-dispatched",
           requestId: p.requestId,
           runtimeBootId: "runtime",
-          reason: "unsupported-model: private diagnostic",
+          reason: "native-policy-sandbox-network-mismatch: private diagnostic",
         }
       : runtimeHandler(input);
   });

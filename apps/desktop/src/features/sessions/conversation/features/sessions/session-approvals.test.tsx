@@ -87,8 +87,15 @@ describe("waiting approvals above the composer", () => {
     fireEvent.click(within(card()).getByRole("button", { name: t.next }));
     fireEvent.click(within(card()).getByRole("button", { name: t.next }));
     expect(within(card()).getByText("3/3")).toBeVisible();
-    // This access cannot approve, so the card says so instead of offering decisions.
-    expect(within(card()).getByText(t.noApprovePermission)).toBeVisible();
+    for (const name of [t.allow, t.deny]) {
+      const choice = within(card()).getByRole("button", { name });
+      expect(choice).toBeVisible();
+      expect(choice).toBeDisabled();
+      expect(choice).toHaveAttribute("title", t.noApprovePermission);
+      fireEvent.click(choice);
+    }
+    expect(within(card()).queryByText(t.noApprovePermission)).not.toBeInTheDocument();
+    fireEvent.keyDown(card(), { key: "1" });
     expect(state.control).not.toHaveBeenCalled();
     expect(state.setMessage).not.toHaveBeenCalled();
   });

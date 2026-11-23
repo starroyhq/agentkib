@@ -1,10 +1,14 @@
 import { useCallback } from "react";
 import type { Access, Approval, Decision, Live, UserQuestionRequest } from "@agentkib/web-client";
+import { sessionApprovalRuntime } from "./agents/session-approvals";
+import { resolveSessionProvider } from "./session-provider";
 import { InteractionDock, type InteractionNotice } from "./interaction-card";
 import { interactionKey, sessionInteractionItems } from "./interaction-items";
 import { interactionCardCopy, type InteractionLocale } from "./interaction-model";
 
 interface SessionInteractionState {
+  current?: Parameters<typeof resolveSessionProvider>[0];
+  capabilities?: Parameters<typeof resolveSessionProvider>[1];
   live?: Live | null;
   access?: Access | null;
   online: boolean;
@@ -77,10 +81,17 @@ export function SessionInteractionDock({
     (fromCard && notice === "uncertain") ||
     live.status === "outcome-unknown" ||
     live.reason === "control-outcome-unconfirmed";
-  // DeepSeek Harness withdraws a request as soon as either side answers it, so one that leaves a
-  // connected session without an answer from here was answered there.
+  const connection = resolveSessionProvider(session.current, session.capabilities)?.connection
+    ?.kind;
+  const native = sessionApprovalRuntime(live, connection);
+  const external =
+    live.executionLocation === "external" ||
+    (live.executionLocation === undefined &&
+      live.execution?.owner === "external" &&
+      live.execution.observed &&
+      live.execution.confidence === "live");
   const vanished: InteractionNotice | undefined =
-    !busy && live.executionMode === "dsh-follower" && live.executionLocation === "external"
+    !busy && native?.reportsWithdrawn && external
       ? { tone: "done", text: explainReason("interaction-answered-elsewhere") }
       : undefined;
   const { items, approvals, questions } = sessionInteractionItems(live, access, {
@@ -88,6 +99,7 @@ export function SessionInteractionDock({
     sessionId: selected,
     agent,
     workspacePath: currentWorkspace?.path,
+    connection,
     canStop,
     ready: online && controlReady,
     uncertain,

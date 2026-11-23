@@ -20,6 +20,7 @@ export const managedRecordSchema = z.object({
   effort: z.string().nullable().optional(),
   service_tier: z.string().nullable().optional(),
   policy_id: z.string().optional(),
+  policy_override: z.boolean().optional(),
   default_model: z.string().nullable().optional(),
   default_effort: z.string().nullable().optional(),
   default_service_tier: z.string().nullable().optional(),

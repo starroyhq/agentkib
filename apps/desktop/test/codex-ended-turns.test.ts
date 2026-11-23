@@ -12,8 +12,12 @@ afterEach(() => {
 });
 
 const THREAD = "0199a3b4-5c6d-7e8f-9a0b-1c2d3e4f5a6b";
-const row = (at: string, type: string, turnId: string) =>
-  JSON.stringify({ timestamp: at, type: "event_msg", payload: { type, turn_id: turnId } }) + "\n";
+const row = (at: string, type: string, turnId: string, fields?: Record<string, unknown>) =>
+  JSON.stringify({
+    timestamp: at,
+    type: "event_msg",
+    payload: { type, turn_id: turnId, ...fields },
+  }) + "\n";
 
 /** A Codex home whose thread database points at one rollout. */
 function codexHome() {
@@ -50,12 +54,14 @@ describe("a Codex thread's ended turns, from its rollout", () => {
         outcome: "completed",
         startedAt: "2026-11-13T10:00:00Z",
         endedAt: "2026-11-13T10:00:42Z",
+        superseded: true,
       },
       {
         turnId: "t2",
         outcome: "cancelled",
         startedAt: "2026-11-13T10:01:00Z",
         endedAt: "2026-11-13T10:01:05Z",
+        superseded: true,
       },
     ]);
     // A line still being written counts once it ends.
@@ -71,5 +77,71 @@ describe("a Codex thread's ended turns, from its rollout", () => {
     });
     expect(turns.endedTurns("not-a-thread")).toEqual([]);
     expect(turns.endedTurns("0199a3b4-5c6d-7e8f-9a0b-000000000000")).toEqual([]);
+  });
+
+  it("marks an older completion only when a distinct later start is recorded", () => {
+    const { home, rollout } = codexHome();
+    const turns = new CodexExternalTurns(() => home);
+    appendFileSync(
+      rollout,
+      row("2026-11-13T10:00:00Z", "task_started", "old") +
+        row("2026-11-13T10:00:42Z", "task_complete", "old", { last_agent_message: null }),
+    );
+    expect(turns.endedTurns(THREAD)[0]).not.toHaveProperty("superseded");
+
+    appendFileSync(
+      rollout,
+      row("2026-11-13T10:05:00Z", "task_started", "old") +
+        row("2026-11-13T09:59:00Z", "task_started", "replayed-earlier"),
+    );
+    expect(turns.endedTurns(THREAD)[0]).not.toHaveProperty("superseded");
+
+    const later = row("2026-11-13T10:05:10Z", "task_started", "new");
+    appendFileSync(rollout, later.slice(0, -1));
+    expect(turns.endedTurns(THREAD)[0]).not.toHaveProperty("superseded");
+    appendFileSync(rollout, "\n");
+    expect(turns.endedTurns(THREAD)).toEqual([
+      {
+        turnId: "old",
+        outcome: "completed",
+        startedAt: "2026-11-13T10:00:00Z",
+        endedAt: "2026-11-13T10:00:42Z",
+        superseded: true,
+      },
+    ]);
+  });
+
+  it("retains the final reply and failure information from native completion markers", () => {
+    const { home, rollout } = codexHome();
+    const turns = new CodexExternalTurns(() => home);
+    appendFileSync(
+      rollout,
+      row("2026-11-13T10:00:00Z", "task_started", "result") +
+        row("2026-11-13T10:01:00Z", "task_complete", "result", { last_agent_message: "Done." }) +
+        row("2026-11-13T10:02:00Z", "task_started", "failed") +
+        row("2026-11-13T10:03:00Z", "task_complete", "failed", {
+          error: {},
+          last_agent_message: " ",
+        }) +
+        row("2026-11-13T10:04:00Z", "task_started", "new") +
+        row("2026-11-13T10:01:00Z", "task_complete", "result"),
+    );
+    expect(turns.endedTurns(THREAD)).toEqual([
+      {
+        turnId: "result",
+        outcome: "completed",
+        startedAt: "2026-11-13T10:00:00Z",
+        endedAt: "2026-11-13T10:01:00Z",
+        superseded: true,
+        replyText: "Done.",
+      },
+      {
+        turnId: "failed",
+        outcome: "failed",
+        startedAt: "2026-11-13T10:02:00Z",
+        endedAt: "2026-11-13T10:03:00Z",
+        superseded: true,
+      },
+    ]);
   });
 });

@@ -191,6 +191,102 @@ describe("Codex app-server dispatch cleanup", () => {
   });
 });
 
+describe("Codex app-server frame limits", () => {
+  const mebibyte = 1024 * 1024;
+  const responseLimit = 64 * mebibyte;
+
+  it("decodes a large fragmented response and the small response that follows it", async () => {
+    const f = await fixture();
+    f.setRespond(false);
+    const textBytes = 5 * mebibyte;
+    const resumed = f.session.request("thread/resume", {}).then((result) => {
+      const text = (result as { text: string }).text;
+      return { length: text.length, lastCharacters: text.slice(-2) };
+    });
+    const next = f.session.request("thread/read", {});
+    const received = Promise.all([
+      expect(resumed).resolves.toEqual({ length: textBytes + 1, lastCharacters: "x续" }),
+      expect(next).resolves.toEqual({ small: true }),
+    ]);
+    const [resume, read] = f.frames;
+
+    f.child.stdout.write(Buffer.from(`{"id":${resume!.id},"result":{"text":"`));
+    const padding = Buffer.alloc(64 * 1024, "x");
+    for (let written = 0; written < textBytes; written += padding.length)
+      f.child.stdout.write(padding);
+    const utf8 = Buffer.from("续");
+    f.child.stdout.write(utf8.subarray(0, 2));
+    f.child.stdout.write(
+      Buffer.concat([
+        utf8.subarray(2),
+        Buffer.from(`"}}\n{"id":${read!.id},"result":{"small":true}}\n`),
+      ]),
+    );
+
+    await received;
+    expect(f.session.connected).toBe(true);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("rejects a terminated response above 64 MiB and clears all pending requests", async () => {
+    const f = await fixture();
+    f.setRespond(false);
+    const first = f.session.request("thread/resume", {});
+    const second = f.session.request("thread/read", {});
+    const rejected = Promise.all([
+      expect(first).rejects.toThrow(/^Codex response exceeds the frame limit$/),
+      expect(second).rejects.toThrow(/^Codex response exceeds the frame limit$/),
+    ]);
+    const prefix = Buffer.from(`{"id":${f.frames[0]!.id},"result":"`);
+    const padding = Buffer.alloc(mebibyte, "x");
+    f.child.stdout.write(prefix);
+    for (let written = prefix.length; written < responseLimit; written += padding.length)
+      f.child.stdout.write(padding.subarray(0, Math.min(padding.length, responseLimit - written)));
+    const connectedAtLimit = f.session.connected;
+    f.child.stdout.write(Buffer.from('"}\n'));
+
+    await rejected;
+    expect(connectedAtLimit).toBe(true);
+    expect(f.session.connected).toBe(false);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("rejects an oversized unterminated tail immediately after a valid response", async () => {
+    const f = await fixture();
+    f.setRespond(false);
+    const first = f.session.request("thread/read", {});
+    const second = f.session.request("thread/resume", {});
+    const received = Promise.all([
+      expect(first).resolves.toEqual({ small: true }),
+      expect(second).rejects.toThrow(/^Codex response exceeds the frame limit$/),
+    ]);
+    const valid = Buffer.from(`{"id":${f.frames[0]!.id},"result":{"small":true}}\n`);
+    const batch = Buffer.allocUnsafe(valid.length + responseLimit + 1);
+    valid.copy(batch);
+    batch.fill(0x78, valid.length);
+    f.child.stdout.write(batch);
+
+    const connectedAfterBatch = f.session.connected;
+    await Promise.all([received, vi.advanceTimersByTimeAsync(12_000)]);
+    expect(connectedAfterBatch).toBe(false);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("keeps the outgoing frame limit at 4 MiB", async () => {
+    const f = await fixture();
+    const text = "x".repeat(4 * mebibyte);
+    await expect(f.session.request("turn/start", { text })).rejects.toThrow(
+      /^Codex request exceeds the frame limit$/,
+    );
+    expect(() => f.session.respond(42, { text })).toThrow(
+      /^Codex request exceeds the frame limit$/,
+    );
+    expect(f.frames).toEqual([]);
+    expect(f.session.connected).toBe(true);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+});
+
 describe("Codex app-server shutdown completion", () => {
   it("shares concurrent close completion and clears the graceful timer after real close", async () => {
     const f = await fixture();

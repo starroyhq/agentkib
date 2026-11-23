@@ -36,14 +36,20 @@ async function schemaDirectory({ drop = {}, renameField } = {}) {
   for (const contract of [CODEX_PROTOCOL_CONTRACT.required, CODEX_PROTOCOL_CONTRACT.current])
     for (const [type, names] of Object.entries(contract.properties))
       types[type] = [...(types[type] ?? []), ...names];
-  for (const [type, names] of Object.entries(types)) {
+  const schemas = {};
+  for (const [schemaType, names] of Object.entries(types)) {
+    const [type, definition] = schemaType.split(".");
     if (type === drop.type) continue;
     const properties = Object.fromEntries(
       names.map((name) => [name === renameField ? `${name}Renamed` : name, {}]),
     );
-    const schema = { properties };
+    const schema = (schemas[type] ??= {});
+    if (definition) (schema.definitions ??= {})[definition] = { properties };
+    else schema.properties = properties;
     if (type === "CollaborationModeListResponse")
       schema.definitions = { ModeKind: { enum: drop.mode ? ["default"] : ["plan", "default"] } };
+  }
+  for (const [type, schema] of Object.entries(schemas)) {
     // Server-request types sit at the top; v2 API types in v2/.
     const folder = type.startsWith("McpServer") ? directory : path.join(directory, "v2");
     await writeFile(path.join(folder, `${type}.json`), JSON.stringify(schema));
@@ -101,6 +107,29 @@ test("the minimum version is held to what every supported CLI offers", async () 
     "turn/start",
   ])
     assert.ok(CODEX_PROTOCOL_CONTRACT.required.clientRequests.includes(method), method);
+});
+
+test("checks the resume bootstrap fields, including nested request and response definitions", async () => {
+  const cases = [
+    ["excludeTurns", ["ThreadResumeParams.excludeTurns"]],
+    [
+      "initialTurnsPage",
+      ["ThreadResumeParams.initialTurnsPage", "ThreadResumeResponse.initialTurnsPage"],
+    ],
+    ["sortDirection", ["ThreadResumeParams.ThreadResumeInitialTurnsPageParams.sortDirection"]],
+    ["data", ["ThreadResumeResponse.TurnsPage.data"]],
+  ];
+  for (const [renameField, gaps] of cases) {
+    const directory = await schemaDirectory({ renameField });
+    try {
+      assert.deepEqual(
+        await protocolGaps(directory, contractFor("minimum")),
+        gaps.map((field) => `missing-field:${field}`),
+      );
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  }
 });
 
 test("versions come from the backend's minimum or an exact release", async () => {

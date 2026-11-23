@@ -252,6 +252,8 @@ type ManagedRunner = {
   leadUrl?: string | null;
   /** Restart once idle, keeping the session AgentKib's: its worker tools changed. */
   restartWhenIdle?: boolean;
+  /** A paginated resume hydrated only the latest turn, so older rows come from native history. */
+  usesNativeHistory?: boolean;
   /**
    * Whether Codex has written the thread: resumed ones are, a new one once a turn starts. A thread
    * it has not written cannot be resumed, so it is not restarted before.
@@ -4907,7 +4909,12 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
         params.threadId = fork.nativeId;
         params.lastTurnId = fork.lastTurnId;
         params.deferGoalContinuation = true;
-      } else if (nativeId) params.threadId = nativeId;
+      } else if (nativeId) {
+        params.threadId = nativeId;
+        params.excludeTurns = true;
+        // Hydrate the active/latest turn, including its items for errors and compaction state.
+        params.initialTurnsPage = { limit: 1, sortDirection: "desc", itemsView: "full" };
+      }
       const beforeDispatch = () => {
         this.host.assertOpen();
         if (pathIdentity(this.#managedCwd(record)) !== pathIdentity(cwd))
@@ -5014,7 +5021,15 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
         delete mutableRecord.snapshot.settingsStaged;
         delete mutableRecord.snapshot.policyOnlyStaged;
       }
-      const hydrated = state.hydrate(nativeThread, true, readRevision);
+      const resumePage =
+        nativeId && isObject(response.initialTurnsPage) ? response.initialTurnsPage.data : null;
+      const paginatedResume = Array.isArray(resumePage);
+      const hydrated = state.hydrate(
+        paginatedResume ? { ...nativeThread, turns: resumePage } : nativeThread,
+        true,
+        readRevision,
+      );
+      runner.usesNativeHistory = paginatedResume;
       persist(state, hydrated.events);
       runner.idleSince = Date.now();
       runner.observed =
@@ -6765,8 +6780,9 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
     },
   ) {
     this.#assertManagedHome(managed);
+    const runner = this.#managedRunners.get(managed.id);
     const nativeHistory =
-      !!managed.native_id && !this.#managedRunners.get(managed.id)?.session.connected;
+      !!managed.native_id && (!runner?.session.connected || runner.usesNativeHistory);
     const nativePrefix = "codex-native-v1:";
     if (request.cursor && nativeHistory !== request.cursor.startsWith(nativePrefix))
       throw new Error("TRANSCRIPT_CURSOR_STALE");

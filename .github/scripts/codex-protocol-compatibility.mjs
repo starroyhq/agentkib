@@ -71,6 +71,15 @@ export const CODEX_PROTOCOL_CONTRACT = {
         "sandboxPolicy",
       ],
       TurnSteerParams: ["threadId", "expectedTurnId", "input"],
+      // The minimum CLI exposes these through the experimental protocol AgentKib enables.
+      ThreadResumeParams: ["excludeTurns", "initialTurnsPage"],
+      "ThreadResumeParams.ThreadResumeInitialTurnsPageParams": [
+        "limit",
+        "sortDirection",
+        "itemsView",
+      ],
+      ThreadResumeResponse: ["initialTurnsPage"],
+      "ThreadResumeResponse.TurnsPage": ["data"],
       ThreadCompactStartParams: ["threadId"],
       ThreadBackgroundTerminalsCleanParams: ["threadId"],
       ThreadDeleteParams: ["threadId"],
@@ -177,15 +186,16 @@ export async function protocolGaps(directory, contracts) {
       for (const method of contract[key])
         if (!listed.has(method)) gaps.push(`missing-method:${file}:${method}`);
     }
-    for (const [type, names] of Object.entries(contract.properties)) {
+    for (const [schemaType, names] of Object.entries(contract.properties)) {
+      const [type, definition] = schemaType.split(".");
       const schema = await readSchema(directory, type);
       if (!schema) {
         gaps.push(`missing-schema:${type}`);
         continue;
       }
-      const properties = schema.properties ?? {};
+      const properties = (definition ? schema.definitions?.[definition] : schema)?.properties ?? {};
       for (const name of names)
-        if (!Object.hasOwn(properties, name)) gaps.push(`missing-field:${type}.${name}`);
+        if (!Object.hasOwn(properties, name)) gaps.push(`missing-field:${schemaType}.${name}`);
     }
     for (const [type, definition, values] of contract.enums) {
       const schema = await readSchema(directory, type);

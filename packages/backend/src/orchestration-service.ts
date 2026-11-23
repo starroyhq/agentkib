@@ -70,7 +70,7 @@ export type WorkerRestartResult = {
  */
 export type LaneHost = {
   /** `send`, `steer`, `queue-add`, `stop`, `approve` and `answer` on a lane's session. */
-  control(value: Record<string, unknown>): Promise<unknown>;
+  control(value: Record<string, unknown>, intent?: "desktop-owner-handoff"): Promise<unknown>;
   restart?(request: WorkerRestartRequest, beforeDispatch: () => void): Promise<WorkerRestartResult>;
   live(sessionId: string, intent?: "send"): Promise<Record<string, unknown>>;
   /** A lightweight live sample for unattended checks when the full read has extra work. */
@@ -1963,7 +1963,7 @@ export class OrchestrationService {
     const requestId = randomUUID();
     let outcome: Record<string, unknown>;
     try {
-      outcome = (await this.lanes.control({
+      const request = {
         operation,
         sessionId: lane.sessionId,
         requestId,
@@ -1973,7 +1973,10 @@ export class OrchestrationService {
         experimentalEnabled: true,
         ...(operation === "steer" ? { turnId: live.turnId } : {}),
         text: body,
-      })) as Record<string, unknown>;
+      };
+      outcome = (await (agent === "codex" && operation === "send" && live.ownerHandoff === true
+        ? this.lanes.control(request, "desktop-owner-handoff")
+        : this.lanes.control(request))) as Record<string, unknown>;
     } catch (error) {
       outcome = { accepted: false, reason: error instanceof Error ? error.message : "send-failed" };
     }

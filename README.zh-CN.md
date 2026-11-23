@@ -46,7 +46,7 @@ _界面示例使用演示数据。_
 
 ## 支持哪些 Agent？
 
-- **Codex** 支持新建和继续会话。在 macOS 上，项目 Agent 也可以向在 Codex 应用中打开、符合条件的 Worker 派工。[Codex 指南](docs/agents/codex-managed.md)
+- **Codex** 支持新建和继续会话。在 macOS 上，AgentKib 可以接手符合条件且未在 Codex 应用中打开的会话。[Codex 指南](docs/agents/codex-managed.md)
 - **Claude Code** 可以由 AgentKib 运行，也可以在 macOS 上从支持的终端连接。在装有桥接插件的终端输入 `/agentkib-status`，可以查看连接失败的原因和下一步。[Claude Code 终端指南](docs/agents/claude-code-terminal.md)
 - **Devin 和 Antigravity** 可通过受支持 CLI 的 ACP 连接新建、继续和控制会话，也可以担任项目 Agent。只保存在 Antigravity 应用或 IDE 里的会话提供只读历史。[Devin 指南](docs/agents/devin.md) · [Antigravity 指南](docs/agents/antigravity.md)
 - **DeepSeek Harness** 在 macOS 上提供 Beta 支持，具体能力取决于安装的版本和桥接插件。

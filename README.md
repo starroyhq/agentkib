@@ -46,7 +46,7 @@ _Example screen with demo data._
 
 ## Which agents work with AgentKib?
 
-- **Codex** supports starting and continuing conversations. On macOS, a Project Agent can also send work to eligible Workers open in the Codex app. [Codex guide](docs/agents/codex-managed.md)
+- **Codex** supports starting and continuing conversations. On macOS, AgentKib can take over eligible conversations that aren’t open in the Codex app. [Codex guide](docs/agents/codex-managed.md)
 - **Claude Code** can run in AgentKib or connect from a supported terminal on macOS. With the bridge plugin installed, run `/agentkib-status` in the terminal to diagnose connection problems and see what to do next. [Claude Code terminal guide](docs/agents/claude-code-terminal.md)
 - **Devin and Antigravity** can start, continue, and control sessions through a supported CLI's ACP connection. Both can serve as Project Agents. Antigravity conversations stored only in the app or IDE are available as read-only history. [Devin guide](docs/agents/devin.md) · [Antigravity guide](docs/agents/antigravity.md)
 - **DeepSeek Harness** support is in beta on macOS and depends on the installed version and bridge plugin.

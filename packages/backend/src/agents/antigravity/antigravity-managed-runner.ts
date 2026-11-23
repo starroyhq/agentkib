@@ -1,6 +1,12 @@
 import { performance } from "node:perf_hooks";
 import path from "node:path";
-import type { AcpEvent, AcpId, AcpPermission, AntigravityAcp } from "./antigravity-acp";
+import type {
+  AcpEvent,
+  AcpId,
+  AcpMcpServer,
+  AcpPermission,
+  AntigravityAcp,
+} from "./antigravity-acp";
 import {
   AcpCompactionState,
   AcpUndispatchedError,
@@ -8,6 +14,7 @@ import {
   verifyAcpControlIdentity,
 } from "./antigravity-acp";
 import { sanitizeHandoffExport } from "../../session-handoff";
+import { antigravityAcpArgs } from "./antigravity-sessions";
 import {
   createContextUsageGeneration,
   projectContextUsage,
@@ -63,7 +70,46 @@ function isRecord(value: unknown): value is JsonRecord {
 }
 
 /** Owns one verified native Antigravity ACP session and publishes bounded live projections. */
+export type AntigravityAttachOptions = {
+  /** MCP servers offered to the session, such as a Project Agent's worker tools. */
+  mcpServers?: AcpMcpServer[];
+  /** Start a new session with `session/new` instead of resuming one. */
+  create?: boolean;
+  /** ACP option values the session should run with, set before its next turn. */
+  config?: Record<string, string>;
+};
+
+/** The ACP options (`configOptions`) a session response or update carries. */
+export function configOptionsOf(value: unknown): JsonRecord[] | undefined {
+  if (!isRecord(value) || !Array.isArray(value.configOptions)) return undefined;
+  return value.configOptions.filter(
+    (option): option is JsonRecord => isRecord(option) && typeof option.id === "string",
+  );
+}
+
+/** Why Antigravity could not run a turn, in the reason codes clients explain. */
+export function antigravityTurnFailure(message: string): string {
+  if (/quota|resource[ _-]?exhausted|rate[ _-]?limit|usage limit|out of credits/i.test(message))
+    return "antigravity-usage-limited";
+  if (/unauthenticated|not (signed|logged) in|sign[ -]?in|log[ -]?in|credential/i.test(message))
+    return "antigravity-login-required";
+  return "antigravity-run-failed";
+}
+
+const LEAD_TOOL = /^mcp_agentkib_workers_[A-Za-z0-9_-]+$/;
+
 export class AntigravityManagedRunner {
+  /** The CLI's own `agy acp`, whose tool inputs are normalized before they are shown. */
+  #cli = false;
+  /** The session's own ACP options (model, thought level, mode), as Antigravity last told. */
+  #configOptions: JsonRecord[] = [];
+  /** Requests whose answers a caller awaits while the event pump reads them. */
+  #pendingResponses = new Map<
+    string,
+    { resolve(value: unknown): void; reject(error: Error): void }
+  >();
+  /** This connection offered a Project Agent its worker tools. */
+  #leadTools = false;
   #status = "idle";
   #revision = 0;
   #turnId: string | null = null;
@@ -94,7 +140,8 @@ export class AntigravityManagedRunner {
 
   private constructor(
     readonly client: AntigravityAcp,
-    readonly sessionId: string,
+    /** Empty until a session AgentKib starts gets its ID from `session/new`. */
+    public sessionId: string,
     readonly workspace: string,
     private readonly publish?: (
       type: "state" | "text-delta" | "item-upsert" | "snapshot",
@@ -114,11 +161,16 @@ export class AntigravityManagedRunner {
     recoverHistory?: AntigravityManagedRunner["recoverHistory"],
     initialRevision = 0,
     observeTurn?: AntigravityTurnObserver,
+    options: AntigravityAttachOptions = {},
   ): Promise<AntigravityManagedRunner> {
-    if (!path.isAbsolute(executable) || !path.isAbsolute(workspace) || !sessionId)
+    if (
+      !path.isAbsolute(executable) ||
+      !path.isAbsolute(workspace) ||
+      (!sessionId && !options.create)
+    )
       throw new Error("invalid Antigravity session target");
     const deadline = performance.now() + ATTACH_TIMEOUT_MS;
-    const client = AcpClient.spawn(executable, [], workspace, env, {
+    const client = AcpClient.spawn(executable, antigravityAcpArgs(executable), workspace, env, {
       timeout: ATTACH_TIMEOUT_MS,
       version: "0.15.1",
     });
@@ -136,15 +188,46 @@ export class AntigravityManagedRunner {
       const initialize = await client.initialize();
       const initialized = await runner.#waitForResponse(initialize, "initialize", deadline);
       verifyAcpControlIdentity(initialized);
-      const compatibility = client.compatibility;
-      if (!compatibility?.loadSession && !compatibility?.resumeSession)
-        throw new Error("Antigravity ACP server cannot resume or load native sessions");
-      const method = compatibility.resumeSession ? "session/resume" : "session/load";
-      const attach =
-        method === "session/resume"
-          ? await client.resumeSession(sessionId, workspace)
-          : await client.loadSession(sessionId, workspace);
-      await runner.#waitForResponse(attach, method, deadline);
+      runner.#cli =
+        isRecord(initialized) && isRecord(initialized.agentInfo)
+          ? initialized.agentInfo.name === "Antigravity ACP Server"
+          : false;
+      const mcpServers = options.mcpServers ?? [];
+      let attached: unknown;
+      if (options.create) {
+        attached = await runner.#waitForResponse(
+          await client.newSession(workspace, mcpServers),
+          "session/new",
+          deadline,
+        );
+        const created = isRecord(attached) ? attached.sessionId : undefined;
+        if (typeof created !== "string" || !created)
+          throw new Error("Antigravity ACP session/new returned no session");
+        runner.sessionId = created;
+      } else {
+        const compatibility = client.compatibility;
+        if (!compatibility?.loadSession && !compatibility?.resumeSession)
+          throw new Error("Antigravity ACP server cannot resume or load native sessions");
+        const method = compatibility.resumeSession ? "session/resume" : "session/load";
+        const attach =
+          method === "session/resume"
+            ? await client.resumeSession(sessionId, workspace, mcpServers)
+            : await client.loadSession(sessionId, workspace, mcpServers);
+        attached = await runner.#waitForResponse(attach, method, deadline);
+      }
+      runner.#configOptions = configOptionsOf(attached) ?? [];
+      runner.#leadTools = mcpServers.length > 0;
+      // The person's choices apply before the next message: Antigravity keeps a session's model
+      // and mode, but a resumed session starts again at the default thought level.
+      for (const [id, value] of Object.entries(options.config ?? {})) {
+        if (runner.option(id) === value) continue;
+        const changed = await runner.#waitForResponse(
+          await client.setConfigOption(runner.sessionId, id, value),
+          "session/set_config_option",
+          deadline,
+        );
+        runner.#configOptions = configOptionsOf(changed) ?? runner.#configOptions;
+      }
       // Attachment replays native history. It establishes the baseline, not a live turn.
       runner.#items.clear();
       runner.#messageText.clear();
@@ -176,6 +259,42 @@ export class AntigravityManagedRunner {
       replies.splice(active < 0 ? replies.length : active, 0, last);
     }
     return replies.slice(-limit);
+  }
+
+  /** The session's ACP options as Antigravity last reported them. */
+  get configOptions(): readonly JsonRecord[] {
+    return this.#configOptions;
+  }
+
+  option(id: string): string | undefined {
+    const value = this.#configOptions.find((option) => option.id === id)?.currentValue;
+    return typeof value === "string" ? value : undefined;
+  }
+
+  /** Sets the session's own ACP options while no turn runs; the next turn uses them. */
+  async setOptions(
+    changes: Record<string, string>,
+    expectedRevision: number,
+    beforeDispatch?: () => void,
+  ): Promise<void> {
+    this.#checkRevision(expectedRevision);
+    if (this.#status !== "idle" || this.#turnId !== null || this.#recoveringHistory)
+      throw new Error("session-busy");
+    const pending = Object.entries(changes).filter(([id, value]) => this.option(id) !== value);
+    if (!pending.length) return;
+    beforeDispatch?.();
+    try {
+      for (const [id, value] of pending) {
+        const request = await this.client.setConfigOption(this.sessionId, id, value);
+        const result = await new Promise<unknown>((resolve, reject) =>
+          this.#pendingResponses.set(acpIdText(request), { resolve, reject }),
+        );
+        this.#configOptions = configOptionsOf(result) ?? this.#configOptions;
+      }
+    } finally {
+      this.#revision += 1;
+      this.#publishSnapshot();
+    }
   }
 
   snapshot(): JsonRecord {
@@ -325,6 +444,9 @@ export class AntigravityManagedRunner {
   close(): void {
     if (this.#closed) return;
     this.#closed = true;
+    for (const pending of this.#pendingResponses.values())
+      pending.reject(new Error("session-runner-unavailable"));
+    this.#pendingResponses.clear();
     this.#usage = {
       ...this.#usage,
       state: this.#usage.available ? "stale" : "unavailable",
@@ -373,6 +495,8 @@ export class AntigravityManagedRunner {
     let outcome: string | undefined;
     const previousStatus = this.#status;
     if (event.type === "session-update") {
+      // Antigravity announces a new session's commands before `session/new` names it.
+      if (!this.sessionId && replay) return;
       if (event.sessionId !== this.sessionId) throw new Error("ACP session identity changed");
       this.#applyUpdate(event.update, replay);
       changed = true;
@@ -388,14 +512,27 @@ export class AntigravityManagedRunner {
       changed = this.#approvals.delete(acpIdText(event.id));
       if (this.#approvals.size === 0 && this.#status === "waiting-approval")
         this.#status = "running";
+    } else if (event.type === "response" && this.#pendingResponses.has(acpIdText(event.id))) {
+      const pending = this.#pendingResponses.get(acpIdText(event.id))!;
+      this.#pendingResponses.delete(acpIdText(event.id));
+      if (event.error) pending.reject(new Error(event.error.message));
+      else pending.resolve(event.result);
     } else if (event.type === "response" && event.method === "session/prompt") {
       if (this.#turnId !== acpIdText(event.id))
         throw new Error("unexpected Antigravity prompt response");
-      if (event.error) throw new Error(`Antigravity prompt failed: ${event.error.message}`);
+      // A turn Antigravity could not run ends as failed; the session stays usable.
       const result = isRecord(event.result) ? event.result : {};
-      if (typeof result.stopReason !== "string" || !PROMPT_STOP_REASONS.has(result.stopReason))
+      if (
+        !event.error &&
+        (typeof result.stopReason !== "string" || !PROMPT_STOP_REASONS.has(result.stopReason))
+      )
         throw new Error("Antigravity prompt response has no valid stop reason");
-      outcome = result.stopReason === "end_turn" ? "completed" : result.stopReason;
+      outcome = event.error
+        ? "failed"
+        : result.stopReason === "end_turn"
+          ? "completed"
+          : String(result.stopReason);
+      if (event.error) this.#reason = antigravityTurnFailure(event.error.message);
       this.#completedTurn = this.#turnId;
       this.#turnId = null;
       this.#status = "idle";
@@ -450,6 +587,10 @@ export class AntigravityManagedRunner {
   #applyUpdate(update: JsonRecord, replay: boolean): void {
     if (!replay && ++this.#updateCount > MAX_UPDATES)
       throw new Error("too many Antigravity ACP updates");
+    if (update.sessionUpdate === "config_option_update") {
+      this.#configOptions = configOptionsOf(update) ?? this.#configOptions;
+      return;
+    }
     const wasCompacting = this.#liveCompactionIds.size > 0;
     if (this.#compactions.apply(update)) {
       if (replay) return;
@@ -619,6 +760,17 @@ export class AntigravityManagedRunner {
     )
       throw new Error("reused or excessive ACP permission request");
     this.#seenPermissions.add(key);
+    // Designating the session a Project Agent is the person's permission for its worker tools.
+    const lead = request.options.find((option) => option.kind === "allow_once");
+    if (
+      this.#leadTools &&
+      lead &&
+      typeof request.toolCall.name === "string" &&
+      LEAD_TOOL.test(request.toolCall.name)
+    ) {
+      void this.client.respondPermission(id, lead.optionId).catch((error) => this.#fail(error));
+      return;
+    }
     if (
       !request.options.length ||
       new Set(request.options.map((option) => option.optionId)).size !== request.options.length
@@ -639,7 +791,9 @@ export class AntigravityManagedRunner {
       name: sanitizeHandoffExport(name, "markdown").slice(0, 512),
       kind: sanitizeHandoffExport(kind, "markdown").slice(0, 256),
     }));
-    const projected = projectPermissionToolCall(request.toolCall);
+    const projected = projectPermissionToolCall(
+      this.#cli ? normalizeCliToolCall(request.toolCall) : request.toolCall,
+    );
     const toolCall = projected.value ?? { toolCallId: "[unavailable]" };
     const idSupported =
       typeof id === "bigint"
@@ -713,6 +867,9 @@ export class AntigravityManagedRunner {
   }
 
   #fail(error: unknown): void {
+    for (const pending of this.#pendingResponses.values())
+      pending.reject(error instanceof Error ? error : new Error(String(error)));
+    this.#pendingResponses.clear();
     this.#status = this.#turnId ? "outcome-unknown" : "failed";
     this.#approvals.clear();
     this.#cancellingAt = null;
@@ -847,6 +1004,38 @@ function permissionLocationsMatch(
             Number(location.line) <= 0xffff_ffff)),
     )
   );
+}
+
+/**
+ * The CLI's `agy acp` (1.5.14) names its tools' inputs its own way (`CommandLine`; `Path`,
+ * `Target` and `Replacement` beside a diff) and repeats them as `args`. They are mapped onto the
+ * shapes checked below; an edit is shown by its diff alone, whose paths the CLI also lists as
+ * locations under another spelling of the same directory.
+ */
+function normalizeCliToolCall(source: JsonRecord): JsonRecord {
+  const { sessionUpdate: _update, args: _args, ...call } = source;
+  const input = isRecord(source.rawInput)
+    ? source.rawInput
+    : isRecord(source.args)
+      ? source.args
+      : undefined;
+  if (source.kind === "execute" && input && typeof input.CommandLine === "string") {
+    const cwd = typeof input.Cwd === "string" ? input.Cwd : undefined;
+    return { ...call, rawInput: { command: input.CommandLine, ...(cwd ? { cwd } : {}) } };
+  }
+  if (source.kind === "edit" && Array.isArray(source.content) && source.content.length) {
+    const { rawInput: _input, locations: _locations, ...rest } = call;
+    return {
+      ...rest,
+      // A new file's diff has no old text.
+      content: source.content.map((part) =>
+        isRecord(part) && part.type === "diff" && part.oldText === undefined
+          ? { ...part, oldText: null }
+          : part,
+      ),
+    };
+  }
+  return call;
 }
 
 function projectPermissionToolCall(source: JsonRecord): {

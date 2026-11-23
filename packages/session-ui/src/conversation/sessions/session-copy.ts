@@ -499,6 +499,14 @@ const reasons: Record<Locale, Record<string, string>> = {
     "devin-cli-update-required":
       "Devin CLI 版本太旧，AgentKib 无法通过 ACP 运行它。更新 Devin CLI 或 Devin Desktop 后再发送。",
     "devin-cli-unavailable": "没有找到 Devin CLI。安装 Devin CLI 或 Devin Desktop 后可以继续。",
+    "antigravity-cli-unavailable":
+      "要在 AgentKib 里控制 Antigravity，需要先安装 Antigravity CLI（Antigravity App 不包含它）。在电脑上的“设置 › 工具与更新”里复制官方安装命令，装好后运行一次 agy 登录。",
+    "antigravity-login-required":
+      "Antigravity CLI 还没有登录。在终端运行一次 agy 并按提示登录，再发送。",
+    "antigravity-usage-limited":
+      "Antigravity 的额度已用完或请求过于频繁，这一轮没有完成。稍后再发送，或在 Antigravity 中查看额度。",
+    "antigravity-run-failed":
+      "Antigravity 没能完成这一轮。可以稍后重试，或在 Antigravity 中查看原因。",
     "devin-run-failed": "Devin 没能完成这一轮。可以稍后重试，或在终端运行 devin 查看原因。",
     "devin-run-stopped": "Devin CLI 的进程在这一轮完成前被结束了。可以再发送一次。",
     "devin-session-not-found": "Devin 结束了这一轮，但没有找到它保存的会话。",
@@ -661,6 +669,14 @@ const reasons: Record<Locale, Record<string, string>> = {
     "devin-cli-update-required":
       "Devin CLI 版本太舊，AgentKib 無法透過 ACP 執行它。更新 Devin CLI 或 Devin Desktop 後再傳送。",
     "devin-cli-unavailable": "找不到 Devin CLI。安裝 Devin CLI 或 Devin Desktop 後即可繼續。",
+    "antigravity-cli-unavailable":
+      "要在 AgentKib 中控制 Antigravity，需要先安裝 Antigravity CLI（Antigravity App 不包含它）。在電腦上的「設定 › 工具與更新」中複製官方安裝指令，安裝後執行一次 agy 登入。",
+    "antigravity-login-required":
+      "Antigravity CLI 尚未登入。在終端機執行一次 agy 並依提示登入，再傳送。",
+    "antigravity-usage-limited":
+      "Antigravity 的額度已用完或請求過於頻繁，這一輪沒有完成。稍後再傳送，或在 Antigravity 中查看額度。",
+    "antigravity-run-failed":
+      "Antigravity 沒能完成這一輪。可以稍後重試，或在 Antigravity 中查看原因。",
     "devin-run-failed": "Devin 沒能完成這一輪。可以稍後重試，或在終端機執行 devin 查看原因。",
     "devin-run-stopped": "Devin CLI 的程序在這一輪完成前被結束了。可以再傳送一次。",
     "devin-session-not-found": "Devin 結束了這一輪，但找不到它儲存的對話。",
@@ -838,6 +854,14 @@ const reasons: Record<Locale, Record<string, string>> = {
       "This Devin CLI is too old for AgentKib to run over ACP. Update Devin CLI or Devin Desktop, then send again.",
     "devin-cli-unavailable":
       "Devin CLI was not found. Install Devin CLI or Devin Desktop to continue.",
+    "antigravity-cli-unavailable":
+      "To control Antigravity from AgentKib, install the Antigravity CLI first; the Antigravity App does not include it. Copy the official install command from Settings › Tools & updates on your computer, then run agy once to sign in.",
+    "antigravity-login-required":
+      "Antigravity CLI is not signed in. Run agy once in a terminal and sign in, then send again.",
+    "antigravity-usage-limited":
+      "Antigravity hit its usage quota or rate limit, so this turn did not finish. Send again later, or check your quota in Antigravity.",
+    "antigravity-run-failed":
+      "Antigravity could not finish this turn. Try again later, or check Antigravity for the cause.",
     "devin-run-failed":
       "Devin could not finish this turn. Try again later, or run devin in a terminal to see why.",
     "devin-run-stopped":
@@ -1034,6 +1058,14 @@ const reasons: Record<Locale, Record<string, string>> = {
       "この Devin CLI は古いため、AgentKib は ACP で実行できません。Devin CLI または Devin Desktop を更新してから、もう一度送信してください。",
     "devin-cli-unavailable":
       "Devin CLI が見つかりません。Devin CLI または Devin Desktop をインストールすると続行できます。",
+    "antigravity-cli-unavailable":
+      "AgentKib から Antigravity を操作するには、先に Antigravity CLI をインストールしてください（Antigravity App には含まれていません）。コンピューターの「設定 › ツールと更新」で公式のインストールコマンドをコピーし、インストール後に agy を一度実行してサインインしてください。",
+    "antigravity-login-required":
+      "Antigravity CLI にサインインしていません。ターミナルで agy を一度実行してサインインしてから、もう一度送信してください。",
+    "antigravity-usage-limited":
+      "Antigravity の使用量の上限またはレート制限に達したため、このターンは完了しませんでした。しばらくしてから再送信するか、Antigravity で使用量を確認してください。",
+    "antigravity-run-failed":
+      "Antigravity はこのターンを完了できませんでした。しばらくしてから再試行するか、Antigravity で原因を確認してください。",
     "devin-run-failed":
       "Devin はこのターンを完了できませんでした。後でもう一度試すか、ターミナルで devin を実行して原因を確認してください。",
     "devin-run-stopped":

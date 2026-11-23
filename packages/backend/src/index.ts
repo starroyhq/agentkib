@@ -779,6 +779,9 @@ export class TypeScriptBackend {
         const dsh = (sessionId: string) => dshBridge.leadCapable(sessionId);
         // A Devin session AgentKib runs over ACP; each turn is offered the worker tools.
         const devin = (sessionId: string) => this.#webRead?.devinLeadCapable(sessionId) === true;
+        // An Antigravity session AgentKib controls over ACP; its connection offers the tools.
+        const antigravity = (sessionId: string) =>
+          this.#webRead?.antigravityLeadCapable(sessionId) === true;
         this.#orchestration = new OrchestrationService(
           dataDir,
           leadOwner.bootId,
@@ -788,11 +791,12 @@ export class TypeScriptBackend {
             terminal(sessionId) ||
             codex(sessionId) ||
             dsh(sessionId) ||
-            devin(sessionId),
+            devin(sessionId) ||
+            antigravity(sessionId),
           (sessionId, deviceId, text) =>
             terminal(sessionId)
               ? this.#claudeBridge!.queueReport(sessionId, text)
-              : codex(sessionId) || devin(sessionId)
+              : codex(sessionId) || devin(sessionId) || antigravity(sessionId)
                 ? // Sent or queued through AgentKib's own controls of the session.
                   this.#codexLeadReport(sessionId, deviceId, text)
                 : // A DSH lead hears through the bridge, whether or not its DSH runs right now.
@@ -2108,16 +2112,21 @@ export class TypeScriptBackend {
     // Whether a Codex session could lead is known once its web services are loaded; one AgentKib
     // just created may not be in the catalog yet.
     const agent = this.#store?.sessions.get(sessionId)?.agent;
-    if (agent === undefined || agent === "codex" || agent === "devin")
+    if (agent === undefined || agent === "codex" || agent === "devin" || agent === "antigravity")
       await this.#withWebRead(() => undefined);
+    // App and IDE history read from disk cannot lead; only a session controlled over ACP can.
+    if (agent === "antigravity") await this.#webRead?.prepareAntigravityLead(sessionId);
     const codex = this.#webRead?.codexLeadCapable(sessionId) === true;
     const dsh = this.#dshBridge?.leadCapable(sessionId) === true;
     const devin = this.#webRead?.devinLeadCapable(sessionId) === true;
+    const antigravity = this.#webRead?.antigravityLeadCapable(sessionId) === true;
     const leadWorkspace = () =>
       this.#claudeManaged?.managedWorkspace(sessionId) ??
       this.#claudeBridge?.workspaceOf(sessionId) ??
       (codex ? this.#webRead?.managedWorkspace(sessionId) : undefined) ??
-      (dsh || devin ? this.#store?.sessions.get(sessionId)?.workspace_id : undefined);
+      (dsh || devin || antigravity
+        ? this.#store?.sessions.get(sessionId)?.workspace_id
+        : undefined);
     const authorizedWorkspaces = (): string[] | undefined => {
       const ids = params.authorizedWorkspaceIds;
       if (ids === undefined) return;

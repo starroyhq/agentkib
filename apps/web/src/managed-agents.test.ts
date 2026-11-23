@@ -19,7 +19,7 @@ describe("managed Agent registry", () => {
 
   it("names the managed Agent of a value, and nothing else", () => {
     for (const agent of MANAGED_AGENTS) expect(managedAgentOf(agent)).toBe(agent);
-    expect(managedAgentOf("antigravity")).toBeNull();
+    expect(managedAgentOf("cursor")).toBeNull();
     expect(managedAgentOf(undefined)).toBeNull();
     expect(managedAgentOf(42)).toBeNull();
   });

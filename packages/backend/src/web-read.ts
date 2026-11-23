@@ -369,10 +369,20 @@ export class WebReadRequests {
   leadEndpoints(source: ((sessionId: string) => Promise<string | null>) | undefined): void {
     this.#codex.leadEndpoints(source);
     this.#devin.leadEndpoints(source);
+    this.#antigravity.leadEndpoints(source);
   }
 
   devinLeadCapable(sessionId: string): boolean {
     return this.#devin.leadCapable(sessionId);
+  }
+
+  antigravityLeadCapable(sessionId: string): boolean {
+    return this.#antigravity.leadCapable(sessionId);
+  }
+
+  /** Confirms an Antigravity session is controlled over ACP before it may lead. */
+  prepareAntigravityLead(sessionId: string): Promise<boolean> {
+    return this.#antigravity.prepareLead(sessionId);
   }
 
   codexLeadCapable(sessionId: string): boolean {

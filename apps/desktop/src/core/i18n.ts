@@ -65,6 +65,8 @@ const conversationKeys = [
   "unavailable",
   "openOriginalClient",
   "unverifiedInstallation",
+  "antigravityCliUnavailable",
+  "antigravityAppSession",
   "unsupportedControl",
   "process",
   "tools",

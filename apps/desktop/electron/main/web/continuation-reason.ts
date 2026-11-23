@@ -74,6 +74,11 @@ export function continuationPreflightReason(
       "devin-session-not-found",
       "session-open-elsewhere",
       "attachments-unsupported",
+      // Antigravity CLI's `agy acp` could not run or finish a turn; clients explain each one.
+      "antigravity-cli-unavailable",
+      "antigravity-login-required",
+      "antigravity-usage-limited",
+      "antigravity-run-failed",
     ]).has(reason)
     ? reason
     : fallback;

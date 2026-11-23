@@ -74,6 +74,16 @@ const PERMISSIONS: Partial<Record<NewSessionAgent, PermissionSpec>> = {
   // Devin's mode applies to the whole turn; what it does not approve by itself, it asks the
   // person over ACP. AgentKib starts it with edits inside the workspace approved, as Codex starts
   // here, and lists that first.
+  // Antigravity's own session modes (`agy acp`); a new session starts in its default mode, which
+  // asks before edits and commands.
+  antigravity: {
+    field: "permissionMode",
+    ids: ["default", "accept-edits", "auto", "plan"],
+    offered: (options) => options.permissionModes,
+    sendShown: true,
+    risky: ["auto"],
+    fullAccessOnly: ["auto"],
+  },
   devin: {
     field: "permissionMode",
     ids: ["accept-edits", "auto", "smart", "dangerous"],
@@ -308,6 +318,18 @@ const copy = {
           },
         },
       },
+      antigravity: {
+        title: "工具权限",
+        choices: {
+          default: { name: "默认", description: "修改文件和运行命令前先问你" },
+          "accept-edits": {
+            name: "自动接受编辑",
+            description: "直接修改工作区内的文件，其他操作先问你",
+          },
+          auto: { name: "自动", description: "自动修改文件和运行安全的命令，不可撤销的操作先问你" },
+          plan: { name: "计划", description: "先仔细规划，再执行任务" },
+        },
+      },
       devin: {
         title: "工具权限",
         choices: {
@@ -378,6 +400,21 @@ const copy = {
             name: "完整存取權",
             description: "可無限制存取網際網路和您電腦上的任何檔案",
           },
+        },
+      },
+      antigravity: {
+        title: "工具權限",
+        choices: {
+          default: { name: "預設", description: "修改檔案和執行指令前先詢問你" },
+          "accept-edits": {
+            name: "自動接受編輯",
+            description: "直接修改工作區內的檔案，其他操作先詢問你",
+          },
+          auto: {
+            name: "自動",
+            description: "自動修改檔案和執行安全的指令，無法復原的操作先詢問你",
+          },
+          plan: { name: "規劃", description: "先仔細規劃，再執行任務" },
         },
       },
       devin: {
@@ -454,6 +491,21 @@ const copy = {
             name: "Full access",
             description: "Unrestricted access to the internet and any file on your computer",
           },
+        },
+      },
+      antigravity: {
+        title: "Tool permissions",
+        choices: {
+          default: { name: "Default", description: "Ask before edits and commands" },
+          "accept-edits": {
+            name: "Accept edits",
+            description: "Edit files in the workspace without asking; ask about the rest",
+          },
+          auto: {
+            name: "Auto",
+            description: "Make edits and run safe commands; ask before irreversible actions",
+          },
+          plan: { name: "Plan", description: "Plan carefully before carrying out a task" },
         },
       },
       devin: {
@@ -543,6 +595,24 @@ const copy = {
             description:
               "インターネットとコンピューター上のすべてのファイルに無制限でアクセスします",
           },
+        },
+      },
+      antigravity: {
+        title: "ツールの権限",
+        choices: {
+          default: {
+            name: "デフォルト",
+            description: "ファイルの編集やコマンドの実行前に確認します",
+          },
+          "accept-edits": {
+            name: "編集を自動承認",
+            description: "ワークスペース内のファイルを確認なしで編集し、それ以外は確認します",
+          },
+          auto: {
+            name: "自動",
+            description: "編集と安全なコマンドを自動で行い、元に戻せない操作の前に確認します",
+          },
+          plan: { name: "計画", description: "タスクを実行する前に慎重に計画します" },
         },
       },
       devin: {

@@ -30,6 +30,19 @@ vi.mock("@/features/conversation/web-session-context", () => ({
 }));
 
 const options: Record<ManagedAgent, ManagedOptions> = {
+  antigravity: {
+    available: true,
+    models: [
+      { id: "gemini-3.8-flash", name: "Gemini 3.8 Flash", efforts: ["low", "medium", "high"] },
+    ],
+    permissionModes: [
+      { id: "default", name: "Default" },
+      { id: "accept-edits", name: "Accept edits" },
+      { id: "auto", name: "Auto" },
+      { id: "plan", name: "Plan" },
+    ],
+    workspaces: [],
+  },
   codex: {
     available: true,
     models: [

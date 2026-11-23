@@ -74,14 +74,27 @@ export function acpCompatibility(value: unknown): AcpCompatibility {
     resumeSession: object(sessions) && object((sessions as Record<string, unknown>).resume),
   };
 }
+/** The newest Antigravity CLI (`agy acp`) whose control AgentKib verified end to end. */
+export const ANTIGRAVITY_CLI_CONTROL_VERSION = "1.5.14";
+
+/**
+ * Control is offered only to verified servers: the standalone ACP server (`antigravity-acp`,
+ * `agy_acp_server_X.Y.Z` from 1.1.1), or the CLI's own `agy acp` (`Antigravity ACP Server`,
+ * `X.Y.Z` from 1.5.14, which shares its sessions with the Antigravity App).
+ */
 export function verifyAcpControlIdentity(value: unknown): void {
   const agent = acpObject(acpObject(value).agentInfo);
-  const version =
-    typeof agent.version === "string"
-      ? /^agy_acp_server_(\d+\.\d+\.\d+)$/.exec(agent.version)?.[1]
-      : undefined;
-  if (agent.name !== "antigravity-acp" || !version || !versionAtLeast(version, "1.1.1"))
-    throw new Error("Unverified Antigravity ACP server identity or version");
+  const raw = typeof agent.version === "string" ? agent.version : "";
+  const legacy = /^agy_acp_server_(\d+\.\d+\.\d+)$/.exec(raw)?.[1];
+  const cli = /^(\d+\.\d+\.\d+)$/.exec(raw)?.[1];
+  if (agent.name === "antigravity-acp" && legacy && versionAtLeast(legacy, "1.1.1")) return;
+  if (
+    agent.name === "Antigravity ACP Server" &&
+    cli &&
+    versionAtLeast(cli, ANTIGRAVITY_CLI_CONTROL_VERSION)
+  )
+    return;
+  throw new Error("Unverified Antigravity ACP server identity or version");
 }
 
 type CompactionRecord = {
@@ -293,8 +306,8 @@ export class AntigravityAcp {
   loadSession(value: string, cwd: string, mcpServers: AcpMcpServer[] = []): Promise<AcpId> {
     return this.#attach("session/load", value, cwd, mcpServers);
   }
-  resumeSession(value: string, cwd: string): Promise<AcpId> {
-    return this.#attach("session/resume", value, cwd);
+  resumeSession(value: string, cwd: string, mcpServers: AcpMcpServer[] = []): Promise<AcpId> {
+    return this.#attach("session/resume", value, cwd, mcpServers);
   }
   #attach(
     method: "session/load" | "session/resume",

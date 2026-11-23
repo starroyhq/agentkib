@@ -331,7 +331,7 @@ function offlineState(
   if (
     live?.executionMode === "acp-managed" &&
     typeof live.reason === "string" &&
-    /^(Antigravity ACP server is unavailable|Antigravity ACP executable|Antigravity CLI ACP is read-only)/.test(
+    /^(antigravity-cli-unavailable$|Antigravity ACP executable|Unverified Antigravity ACP server)/.test(
       live.reason,
     )
   )

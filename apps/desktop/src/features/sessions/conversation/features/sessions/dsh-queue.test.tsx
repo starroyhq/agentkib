@@ -32,7 +32,11 @@ function session(
     busy: false,
     online: true,
     controlReady: true,
-    access: { experimentalEnabled: true },
+    access: {
+      status: "approved",
+      experimentalEnabled: true,
+      device: { id: "device", advancedControl: true, send: true },
+    },
     live: { sessionId: "session", revision: 4 },
     capabilities: { sessionId: "session", features },
     client: { sessionQueue: vi.fn().mockResolvedValue({ sessionId: "session", data }) },
@@ -107,7 +111,7 @@ it.each(["devin", "antigravity"] as const)(
       access: {
         ...state.access!,
         status: "approved",
-        device: { advancedControl: true },
+        device: { advancedControl: true, send: true },
       },
     } as unknown as Session;
     const read = vi.mocked(state.client.sessionQueue);
@@ -282,5 +286,18 @@ describe("DSH queued messages above the composer", () => {
     rerender(<SessionSendQueue session={state} agent="deepseek-harness" />);
     expect(container).toBeEmptyDOMElement();
     expect(state.client.sessionQueue).not.toHaveBeenCalled();
+  });
+
+  it("hides an already loaded queue immediately when the device loses queue access", async () => {
+    const { rerender } = render(<SessionSendQueue session={state} agent="deepseek-harness" />);
+    expect(await screen.findByText("run the tests next")).toBeVisible();
+    const read = vi.mocked(state.client.sessionQueue);
+    state = {
+      ...state,
+      access: { ...state.access!, device: { ...state.access!.device!, advancedControl: false } },
+    };
+    rerender(<SessionSendQueue session={state} agent="deepseek-harness" />);
+    expect(screen.queryByText("run the tests next")).not.toBeInTheDocument();
+    expect(read).toHaveBeenCalledOnce();
   });
 });

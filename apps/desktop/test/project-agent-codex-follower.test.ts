@@ -368,8 +368,14 @@ async function fixture(
       return assignWorkers.call(this, input);
     },
   );
-  const request = (params: Record<string, unknown>, target?: "claude-code") =>
-    backend.rpc(RUNTIME_METHODS.sessionRequest, { host: { request: params, target } });
+  const request = (
+    params: Record<string, unknown>,
+    target?: "claude-code",
+    restrictCodexNativePolicy?: true,
+  ) =>
+    backend.rpc(RUNTIME_METHODS.sessionRequest, {
+      host: { request: params, target, restrictCodexNativePolicy },
+    });
   await request(
     { operation: "lead-assign-workers", sessionId: leadId, deviceId, workers: [workerId] },
     "claude-code",
@@ -409,18 +415,20 @@ it.each([
   },
 ])("sends to an idle indexed Worker using its current policy ($sandbox)", async (scenario) => {
   const f = await fixture("released", false);
-  if (scenario.choice) {
-    const live = (await f.request({
+  const live = () =>
+    f.request({
       operation: "live",
       sessionId: f.workerId,
       experimentalEnabled: true,
-    })) as { runtimeBootId: string; revision: number };
+    }) as Promise<{ runtimeBootId: string; revision: number }>;
+  if (scenario.choice) {
+    const state = await live();
     expect(
       await f.request({
         operation: "settings",
         sessionId: f.workerId,
-        runtimeBootId: live.runtimeBootId,
-        expectedRevision: live.revision,
+        runtimeBootId: state.runtimeBootId,
+        expectedRevision: state.revision,
         requestId: randomUUID(),
         deviceId,
         experimentalEnabled: true,
@@ -429,6 +437,27 @@ it.each([
     ).toMatchObject({ accepted: true, appliesTo: "next-turn" });
     expect(readManagedRecord(f.data, f.workerId)).toMatchObject({ policy_id: scenario.choice });
   }
+  const state = await live();
+  expect(
+    await f.request(
+      {
+        operation: "send",
+        sessionId: f.workerId,
+        runtimeBootId: state.runtimeBootId,
+        expectedRevision: state.revision,
+        requestId: randomUUID(),
+        deviceId: "restricted-device",
+        experimentalEnabled: true,
+        text: "Restricted host send",
+      },
+      undefined,
+      true,
+    ),
+  ).toMatchObject({
+    accepted: false,
+    controlOutcome: "not-dispatched",
+    reason: "native-policy-full-access-required",
+  });
   expect(f.writer).not.toHaveBeenCalled();
   const text = "Send a task from the lead";
   const outcome = await f.call("worker_send", { ...worker, text });

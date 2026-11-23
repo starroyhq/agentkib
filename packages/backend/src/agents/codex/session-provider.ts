@@ -307,7 +307,7 @@ type CodexSessionHost = {
   assertOpen(): void;
   runOperation<T>(run: () => Promise<T>): Promise<T>;
   admitControl(value: Record<string, unknown>, execute: ApplyManagedControl): Promise<unknown>;
-  controlSession(value: Record<string, unknown>): Promise<unknown>;
+  controlSession(value: Record<string, unknown>, restrictNativePolicy?: boolean): Promise<unknown>;
   querySession(value: SessionQuery): Promise<unknown>;
   requestSession?(value: Record<string, unknown>): Promise<unknown>;
   normalizeContextUsage(snapshot: { usage?: unknown; reason?: unknown }): ContextUsage;
@@ -363,7 +363,7 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
     { limit: UsageLimit; timer?: ReturnType<typeof setTimeout>; continuing?: string }
   >();
   /** The device whose message each managed Codex session last took. */
-  #codexSenders = new Map<string, string>();
+  #codexSenders = new Map<string, { deviceId: string; restrictNativePolicy: boolean }>();
   /** The temporary threads that name managed Codex threads (`codex-thread-title.ts`). */
   #titleThreads = new CodexTitleThreads();
   /**
@@ -422,9 +422,9 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
     return this.#managedSettingsState(sessionSettingsStateSchema.parse(value));
   }
 
-  control(value: Record<string, unknown>) {
+  control(value: Record<string, unknown>, restrictNativePolicy = false) {
     return this.host.admitControl(value, (request, fingerprint) =>
-      this.#codexControl(request, fingerprint),
+      this.#codexControl(request, fingerprint, { restrictNativePolicy }),
     );
   }
 
@@ -618,10 +618,12 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
           },
           (request, fingerprint) =>
             this.#codexControl(request, fingerprint, {
-              workspaceId,
-              beforeDispatch: () => {
-                beforeDispatch();
-                authorized = true;
+              workerRestart: {
+                workspaceId,
+                beforeDispatch: () => {
+                  beforeDispatch();
+                  authorized = true;
+                },
               },
             }),
         ),
@@ -785,11 +787,11 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
     }
   }
 
-  managedReconcile(value: unknown) {
-    return this.host.runOperation(() => this.#managedReconcile(value));
+  managedReconcile(value: unknown, restrictNativePolicy = false) {
+    return this.host.runOperation(() => this.#managedReconcile(value, restrictNativePolicy));
   }
 
-  async #managedReconcile(value: unknown) {
+  async #managedReconcile(value: unknown, restrictNativePolicy: boolean) {
     const request = managedReconcileSchema.parse(value);
     const records = readManagedRecords(this.host.dataDir, this.host.store);
     const record = records.find((item) => item.id === request.sessionId);
@@ -860,7 +862,17 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
     try {
       runner = this.#managedRunners.get(current.id);
       if (!runner) {
-        runner = await this.#attachManagedRunner(current, workspace, home, release);
+        runner = await this.#attachManagedRunner(
+          current,
+          workspace,
+          home,
+          release,
+          undefined,
+          undefined,
+          {
+            restrictNativePolicy,
+          },
+        );
         release = undefined;
         this.#managedRunners.set(current.id, runner);
       }
@@ -1149,7 +1161,7 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
           dispatched = true;
         },
         undefined,
-        finalizeFailure,
+        { onFailure: finalizeFailure },
       );
       release = undefined;
       this.#managedRunners.set(id, runner);
@@ -1194,11 +1206,11 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
     }
   }
 
-  managedResume(value: unknown) {
-    return this.host.runOperation(() => this.#managedResume(value));
+  managedResume(value: unknown, restrictNativePolicy = false) {
+    return this.host.runOperation(() => this.#managedResume(value, restrictNativePolicy));
   }
 
-  async #managedResume(value: unknown) {
+  async #managedResume(value: unknown, restrictNativePolicy: boolean) {
     const request = managedResumeSchema.parse(value);
     const fingerprint = createHash("sha256").update(stableJson(value)).digest("hex");
     const previous = replayManagedCommand(this.host.dataDir, request.requestId, fingerprint);
@@ -1289,7 +1301,7 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
           dispatched = true;
         },
         undefined,
-        finalizeFailure,
+        { onFailure: finalizeFailure, restrictNativePolicy },
       );
       release = undefined;
       this.#managedRunners.set(request.sessionId, runner);
@@ -2725,7 +2737,7 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
     this.#armCodexLimit(
       sessionId,
       holdUsageLimit("codex", codexUsageLimitHit(read, message), {
-        deviceId: this.#codexSenders.get(sessionId) ?? held?.limit.deviceId ?? "",
+        deviceId: this.#codexSenders.get(sessionId)?.deviceId ?? held?.limit.deviceId ?? "",
         bootId: this.host.runtimeBootId,
         // Only a turn AgentKib's continue started counts toward the three in a row.
         previous: held?.continuing ? held.limit : null,
@@ -2793,17 +2805,21 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
       return this.#armCodexLimit(sessionId, { ...held.limit, continueAt: Date.now() + 60_000 });
     }
     const goal = isObject(live.goal) && live.goal.status === "usageLimited";
+    const sender = this.#codexSenders.get(sessionId);
     const result = (await this.host
-      .controlSession({
-        operation: goal ? "goal-resume" : "send",
-        sessionId,
-        requestId,
-        ...(held.limit.deviceId ? { deviceId: held.limit.deviceId } : {}),
-        runtimeBootId: live.runtimeBootId,
-        expectedRevision: live.revision,
-        experimentalEnabled: true,
-        ...(goal ? {} : { text: AUTO_CONTINUE_TEXT.codex }),
-      })
+      .controlSession(
+        {
+          operation: goal ? "goal-resume" : "send",
+          sessionId,
+          requestId,
+          ...(held.limit.deviceId ? { deviceId: held.limit.deviceId } : {}),
+          runtimeBootId: live.runtimeBootId,
+          expectedRevision: live.revision,
+          experimentalEnabled: true,
+          ...(goal ? {} : { text: AUTO_CONTINUE_TEXT.codex }),
+        },
+        sender?.deviceId === held.limit.deviceId && sender.restrictNativePolicy,
+      )
       .catch(() => null)) as Record<string, unknown> | null;
     const current = this.#codexLimits.get(sessionId);
     if (result?.accepted !== true && current?.continuing === requestId)
@@ -2890,7 +2906,11 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
     return { ...record, native_id: record.native_id };
   }
 
-  async #connectCodexForControl(source: ManagedRecord, request: SettingsControl) {
+  async #connectCodexForControl(
+    source: ManagedRecord,
+    request: SettingsControl,
+    restrictNativePolicy: boolean,
+  ) {
     const unlock = acquireManagedSessionLease(this.host.dataDir, source.id);
     let ownsLease = true;
     const release = () => {
@@ -2936,7 +2956,7 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
         release,
         undefined,
         undefined,
-        restore,
+        { onFailure: restore, restrictNativePolicy },
       );
       this.#managedRunners.set(source.id, runner);
       return runner;
@@ -3044,7 +3064,13 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
   async #codexControl(
     request: SettingsControl,
     fingerprint: string,
-    workerRestart?: { workspaceId: string; beforeDispatch: () => void },
+    {
+      restrictNativePolicy = false,
+      workerRestart,
+    }: {
+      restrictNativePolicy?: boolean;
+      workerRestart?: { workspaceId: string; beforeDispatch: () => void };
+    } = {},
   ) {
     let record = readManagedRecords(this.host.dataDir, this.host.store).find(
       (item) => item.id === request.sessionId,
@@ -3081,7 +3107,11 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
       const held = this.#codexLimits.get(request.sessionId);
       if (held && held.continuing !== request.requestId)
         this.#armCodexLimit(request.sessionId, null, undefined, false);
-      if (request.deviceId) this.#codexSenders.set(request.sessionId, request.deviceId);
+      if (request.deviceId)
+        this.#codexSenders.set(request.sessionId, {
+          deviceId: request.deviceId,
+          restrictNativePolicy,
+        });
     }
     let runner = this.#managedRunners.get(request.sessionId);
     if (workerRestart) {
@@ -3160,7 +3190,7 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
       try {
         if (request.operation === "settings")
           return await this.#stageCodexSettings(inactive, request);
-        runner = await this.#connectCodexForControl(inactive, request);
+        runner = await this.#connectCodexForControl(inactive, request, restrictNativePolicy);
         record = { ...(runner.state.record as ManagedRecord) };
         request.expectedRevision = runner.state.revision;
         if (request.operation === "send") resumedControlState = managedControlState(runner.state);
@@ -3559,6 +3589,26 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
         if (managedSessionHasUnknownCommands(this.host.dataDir, request.sessionId))
           throw new Error("control-outcome-unconfirmed");
         const currentSnapshot = dispatchRunner.state.snapshot(this.host.runtimeBootId, true);
+        if (
+          restrictNativePolicy &&
+          latest.adopted &&
+          [
+            "send",
+            "steer",
+            "queue-add",
+            "queue-update",
+            "compact",
+            "goal-set",
+            "goal-resume",
+          ].includes(request.operation)
+        ) {
+          // send supplies its selected next-turn policy; other operations can use the
+          // running thread's native settings, even after a different policy was selected.
+          requireFullAccessForNativePolicy(latest.policy_id);
+          const settings = currentSnapshot.settings;
+          if (request.operation !== "send" && isObject(settings) && isObject(settings.current))
+            requireFullAccessForNativePolicy(settings.current.policyId);
+        }
         assertActivityAllows(currentSnapshot, request.operation);
         // The just-resumed send may observe late startup/usage notifications.
         // Only observation-only revision changes are safe: preserve exact CAS
@@ -4354,7 +4404,7 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
           dispatched = true;
         },
         { nativeId, lastTurnId: last.id },
-        finalizeFailure,
+        { onFailure: finalizeFailure },
       );
       release = undefined;
       this.#managedRunners.set(childId, runner);
@@ -4589,13 +4639,23 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
     release: (() => void) | undefined,
     dispatch?: () => void,
     fork?: { nativeId: string; lastTurnId: string },
-    onFailure?: (error: unknown, ownsLease: boolean) => void,
+    {
+      onFailure,
+      restrictNativePolicy = false,
+    }: {
+      onFailure?: (error: unknown, ownsLease: boolean) => void;
+      restrictNativePolicy?: boolean;
+    } = {},
   ): Promise<ManagedRunner> {
     if (pathIdentity(workspace) !== pathIdentity(canonicalize(record.workspace)))
       throw new Error("session-workspace-mismatch");
     const cwd = this.#managedCwd(record);
     const nativePolicy = this.#nativeCodexPolicy(record);
     if (nativePolicy?.policyId === null) throw new Error(nativePolicy.reason);
+    if (restrictNativePolicy)
+      requireFullAccessForNativePolicy(
+        nativePolicy?.policyId ?? (record.adopted ? record.policy_id : undefined),
+      );
     if (nativePolicy && !codexPolicyOverride(record)) {
       record = { ...record, policy_id: nativePolicy.policyId, policy_override: false };
     }
@@ -4817,9 +4877,10 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
         this.host.assertOpen();
         if (pathIdentity(this.#managedCwd(record)) !== pathIdentity(cwd))
           throw new Error("codex-workspace-mismatch");
-        if (nativePolicy) {
+        if (nativePolicy || restrictNativePolicy) {
           const current = this.#nativeCodexPolicy(record);
-          if (current?.policyId !== nativePolicy.policyId)
+          if (restrictNativePolicy) requireFullAccessForNativePolicy(current?.policyId);
+          if (current?.policyId !== nativePolicy?.policyId)
             throw new Error(
               current?.policyId === null ? current.reason : unconfirmedCodexNativePolicy.reason,
             );
@@ -7002,6 +7063,11 @@ function managedPolicyCatalog() {
       networkAccess: false,
     },
   ];
+}
+
+function requireFullAccessForNativePolicy(policyId: unknown): void {
+  if (policyId === "full-access-on-request" || policyId === "workspace-write-auto-review")
+    throw new Error("native-policy-full-access-required");
 }
 
 function codexPolicyOverride(record: ManagedRecord): boolean {

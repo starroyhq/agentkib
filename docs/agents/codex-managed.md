@@ -29,7 +29,7 @@ HTTP 另外携带 Electron `bootId`，由 Electron 验证，不直接传给 Runt
 
 对于从 Codex 桌面版或 CLI 接手的线程，AgentKib 从已核验的原生 rollout 读取最近的执行策略。审批方式、审核器、沙盒、网络和可写目录等限制都能与现有策略对应时，直接显示并沿用该策略。存在无法对应的原生限制或近期配置无法核实时，「执行策略」照常显示为只读，悬停可查看原因，AgentKib 不会按另一种策略启动轮次。
 
-用户在 AgentKib 明确改选的策略按会话保存，由下一轮使用，从输入框发送和项目 Agent 的 `worker_send` 都读取这份设置。AgentKib 继续用原生策略核对恢复回包，再在下一轮应用明确改选的策略。ChatGPT 再次打开线程时使用它自己的设置。
+用户在 AgentKib 明确改选的策略按会话保存，由下一轮使用，从输入框发送和项目 Agent 的 `worker_send` 都读取这份设置。AgentKib 继续用原生策略核对恢复回包，再在下一轮应用明确改选的策略。ChatGPT 再次打开线程时使用它自己的设置。 沿用原生的完全访问或自动审核策略来续跑时，发起续跑的设备需有完全访问权。
 
 模型、思考强度和服务档位来自 `model/list`；Plan／执行模式来自实验协议 `collaborationMode/list`：runner 启动时读取一次，同时列出 `plan` 与 `default` 两个预设（按 `mode` 字段识别）才开放 Plan；读取失败或结构不符时 Plan 保持不可用，会话照常使用。0.163.0 与 0.147.0 都已对本地桩核对，见 [Codex 接入补齐验收](../../qa/codex-gaps-2026-10-28.md)。在 AgentKib 保存设置只改变 `selected`，不启动轮次；`current` 保留原生确认值，`applicationStatus` 区分 `pending`、`confirmed` 和 `unknown`。下一次显式发送在 `turn/start.collaborationMode` 传入选择，内外模型和强度一致，`developer_instructions:null` 由 Codex 加载内置指令。没有自定义计划提示词、隐藏空轮次或自动执行计划。实时链路里计划是原生 `plan` 项；原生记录里计划写在 Agent 回复的 `<proposed_plan>` 标签内，读历史时去掉这对标签，只显示计划正文。
 

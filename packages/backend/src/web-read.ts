@@ -200,7 +200,8 @@ export class WebReadRequests {
       assertOpen: () => this.#assertOpen(),
       runOperation: (run) => this.#runOperation(run),
       admitControl: (request, execute) => this.#managedControlAdmission(request, execute),
-      controlSession: (request) => this.managedControl(request),
+      controlSession: (request, restrictNativePolicy) =>
+        this.managedControl(request, restrictNativePolicy),
       querySession: (request) => this.managedQuery(request),
       requestSession: requestCodexSession,
       normalizeContextUsage,
@@ -431,16 +432,16 @@ export class WebReadRequests {
     return this.sessionProviders.get(this.store.sessions.get(sessionId)?.agent ?? "codex");
   }
 
-  managedReconcile(value: unknown) {
-    return this.#codex.managedReconcile(value);
+  managedReconcile(value: unknown, restrictNativePolicy = false) {
+    return this.#codex.managedReconcile(value, restrictNativePolicy);
   }
 
   managedLifecycle(value: unknown, fingerprintOverride?: string) {
     return this.#codex.managedLifecycle(value, fingerprintOverride);
   }
 
-  managedResume(value: unknown) {
-    return this.#codex.managedResume(value);
+  managedResume(value: unknown, restrictNativePolicy = false) {
+    return this.#codex.managedResume(value, restrictNativePolicy);
   }
 
   #serialQueueTarget(sessionId: string) {
@@ -569,7 +570,7 @@ export class WebReadRequests {
     this.#devin.invalidateUsageLimitDevice(deviceId);
   }
 
-  managedControl(value: unknown) {
+  managedControl(value: unknown, restrictNativePolicy = false) {
     return this.#runOperation(() => {
       if (!isObject(value) || typeof value.sessionId !== "string")
         throw new Error("invalid-request");
@@ -584,7 +585,9 @@ export class WebReadRequests {
         return this.#serialQueue.control(value);
       if (value.operation === "settings" && "updateSettings" in provider)
         return provider.updateSettings(value);
-      return provider.control(value);
+      return provider === this.#codex
+        ? this.#codex.control(value, restrictNativePolicy)
+        : provider.control(value);
     });
   }
 

@@ -248,6 +248,8 @@ type DevinSessionHost = {
     historyTurnId: string | undefined,
     replyText: string | null,
   ): void;
+  /** A turn now waits for the person to answer one of Devin's permission requests. */
+  laneWaiting?(sessionId: string, turnId: string): void;
   isShuttingDown(): boolean;
   serialQueueTarget(sessionId: string): SerialQueueTarget | undefined;
   admitControl(value: Record<string, unknown>, execute: ApplyManagedControl): Promise<unknown>;
@@ -279,6 +281,20 @@ export class DevinSessionProvider implements DevinExecutor, TypedSessionProvider
   readonly createOperation = "devin-create";
   readonly typed = this;
   #runners = new Map<string, DevinRunnerRecord>();
+  /** Where a Project Agent's worker tools are served (`OrchestrationService.leadTools`). */
+  #leadEndpoint: ((sessionId: string) => Promise<string | null>) | undefined;
+
+  leadEndpoints(source: ((sessionId: string) => Promise<string | null>) | undefined): void {
+    this.#leadEndpoint = source;
+  }
+
+  /**
+   * Whether a Devin session could be a Project Agent: a Devin session Devin stored, which
+   * AgentKib runs over ACP. Its turns are then offered the worker tools.
+   */
+  leadCapable(sessionId: string): boolean {
+    return this.host.store.sessions.get(sessionId)?.agent === "devin";
+  }
   #savedSettings: DevinSessionSettings | undefined;
   /**
    * The usage limit each Devin session AgentKib runs last met, and the continue armed for it, as
@@ -476,6 +492,16 @@ export class DevinSessionProvider implements DevinExecutor, TypedSessionProvider
       turnEnded: (end) => {
         const id = sessionId();
         if (id) this.#turnEnded(id, workspace, end);
+      },
+      waiting: (turnId) => {
+        const id = sessionId();
+        if (id) this.host.laneWaiting?.(id, turnId);
+      },
+      // A Project Agent's turns are offered its worker tools, read again for every turn.
+      leadTools: async () => {
+        const id = sessionId();
+        const url = id ? await this.#leadEndpoint?.(id) : null;
+        return url ? [{ type: "http" as const, name: "agentkib_workers", url, headers: [] }] : [];
       },
       publish: (type, payload, live) => {
         const id = sessionId();
@@ -772,7 +798,7 @@ export class DevinSessionProvider implements DevinExecutor, TypedSessionProvider
 
   /**
    * A Devin row of the catalog while AgentKib holds the session's runner. Its turns run in a
-   * `devin -p` AgentKib started, which quitting ends, so the home, menu bar, push and the quit
+   * `devin acp` AgentKib started, which quitting ends, so the home, menu bar, push and the quit
    * confirmation count a running one as they do the other agents' turns.
    */
   continuation<T extends { id: string }>(session: T): T {
@@ -898,8 +924,11 @@ export class DevinSessionProvider implements DevinExecutor, TypedSessionProvider
         experimental && canStageSettings
           ? { available: true }
           : { available: false, reason: reason ?? "session-unavailable" },
-      // Devin runs a turn without asking: there is nothing to approve or answer mid-turn.
-      approve: unsupported,
+      // Devin asks for a permission over ACP while a turn waits; it asks no free-form questions.
+      approve:
+        experimental && live.status === "waiting-approval"
+          ? { available: true }
+          : { available: false, reason: reason ?? "no-pending-approval" },
       answer: unsupported,
       inspect: { available: live.status !== "unsupported" },
       resume: unsupported,
@@ -929,9 +958,14 @@ export class DevinSessionProvider implements DevinExecutor, TypedSessionProvider
     if (!request.experimentalEnabled || request.runtimeBootId !== runtimeBootId)
       throw new Error("stale-or-disabled-control");
     if (
-      !["send", "stop", "settings", "usage-limit-cancel", "usage-limit-continue"].includes(
-        request.operation,
-      )
+      ![
+        "send",
+        "stop",
+        "approve",
+        "settings",
+        "usage-limit-cancel",
+        "usage-limit-continue",
+      ].includes(request.operation)
     )
       throw new Error("unsupported-operation");
     if (
@@ -957,7 +991,7 @@ export class DevinSessionProvider implements DevinExecutor, TypedSessionProvider
       !/^[A-Za-z0-9._:@/+-]{1,128}$/.test(request.model)
     )
       throw new Error("unsupported-model");
-    // `devin -p` takes text only; attachments are refused rather than dropped.
+    // AgentKib sends Devin text only; attachments are refused rather than dropped.
     if (request.input?.length || request.historyReferences?.length || request.resourceRefs?.length)
       throw new Error("attachments-unsupported");
     if (managedSessionHasUnknownCommands(this.host.dataDir, request.sessionId))
@@ -1039,6 +1073,20 @@ export class DevinSessionProvider implements DevinExecutor, TypedSessionProvider
         );
         record.settings = this.#saved().get(nativeId);
         runner.bump();
+      } else if (request.operation === "approve") {
+        if (
+          request.approvalId === undefined ||
+          typeof request.turnId !== "string" ||
+          typeof request.decision !== "string"
+        )
+          throw new Error("missing-approval-decision");
+        await record.runner.approve(
+          String(request.approvalId),
+          request.turnId,
+          request.decision,
+          request.expectedRevision,
+          beforeDispatch,
+        );
       } else {
         if (typeof request.turnId !== "string") throw new Error("missing-turn");
         await record.runner.stop(request.turnId, request.expectedRevision, beforeDispatch);

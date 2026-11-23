@@ -68,6 +68,7 @@ export function continuationPreflightReason(
       "devin-login-required",
       "devin-workspace-untrusted",
       "devin-cli-unavailable",
+      "devin-cli-update-required",
       "devin-run-failed",
       "devin-run-stopped",
       "devin-session-not-found",

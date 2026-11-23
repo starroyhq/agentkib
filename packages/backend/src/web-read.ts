@@ -242,6 +242,8 @@ export class WebReadRequests {
       catalogChanged,
       recordResult: (target, result, options) => this.#resultObserver?.(target, result, options),
       turnEnded: (...args) => this.#observeLane((observer) => observer.turnEnded(...args)),
+      laneWaiting: (sessionId, turnId) =>
+        this.#observeLane((observer) => observer.waiting(sessionId, turnId, "waiting-approval")),
       isShuttingDown: () => this.#shuttingDown,
       serialQueueTarget: (sessionId) => this.#serialQueueTarget(sessionId),
       admitControl: (request, execute) => this.#managedControlAdmission(request, execute),
@@ -366,6 +368,11 @@ export class WebReadRequests {
 
   leadEndpoints(source: ((sessionId: string) => Promise<string | null>) | undefined): void {
     this.#codex.leadEndpoints(source);
+    this.#devin.leadEndpoints(source);
+  }
+
+  devinLeadCapable(sessionId: string): boolean {
+    return this.#devin.leadCapable(sessionId);
   }
 
   codexLeadCapable(sessionId: string): boolean {

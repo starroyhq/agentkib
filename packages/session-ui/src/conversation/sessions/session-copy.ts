@@ -496,6 +496,8 @@ const reasons: Record<Locale, Record<string, string>> = {
       "Devin CLI 还没有登录（Devin Desktop 的登录不能给 CLI 用）。在终端运行一次 devin auth login，再发送。",
     "devin-workspace-untrusted":
       "Devin 还没有信任这个工作区。在终端进入这个目录运行一次 devin 并选择信任，再发送。",
+    "devin-cli-update-required":
+      "Devin CLI 版本太旧，AgentKib 无法通过 ACP 运行它。更新 Devin CLI 或 Devin Desktop 后再发送。",
     "devin-cli-unavailable": "没有找到 Devin CLI。安装 Devin CLI 或 Devin Desktop 后可以继续。",
     "devin-run-failed": "Devin 没能完成这一轮。可以稍后重试，或在终端运行 devin 查看原因。",
     "devin-run-stopped": "Devin CLI 的进程在这一轮完成前被结束了。可以再发送一次。",
@@ -656,6 +658,8 @@ const reasons: Record<Locale, Record<string, string>> = {
       "Devin CLI 尚未登入（Devin Desktop 的登入無法給 CLI 使用）。在終端機執行一次 devin auth login，再傳送。",
     "devin-workspace-untrusted":
       "Devin 尚未信任這個工作區。在終端機進入這個目錄執行一次 devin 並選擇信任，再傳送。",
+    "devin-cli-update-required":
+      "Devin CLI 版本太舊，AgentKib 無法透過 ACP 執行它。更新 Devin CLI 或 Devin Desktop 後再傳送。",
     "devin-cli-unavailable": "找不到 Devin CLI。安裝 Devin CLI 或 Devin Desktop 後即可繼續。",
     "devin-run-failed": "Devin 沒能完成這一輪。可以稍後重試，或在終端機執行 devin 查看原因。",
     "devin-run-stopped": "Devin CLI 的程序在這一輪完成前被結束了。可以再傳送一次。",
@@ -830,6 +834,8 @@ const reasons: Record<Locale, Record<string, string>> = {
       "Devin CLI is not logged in (Devin Desktop's login is not shared with the CLI). Run devin auth login once in a terminal, then send again.",
     "devin-workspace-untrusted":
       "Devin does not trust this workspace yet. Run devin once in this folder in a terminal and choose to trust it, then send again.",
+    "devin-cli-update-required":
+      "This Devin CLI is too old for AgentKib to run over ACP. Update Devin CLI or Devin Desktop, then send again.",
     "devin-cli-unavailable":
       "Devin CLI was not found. Install Devin CLI or Devin Desktop to continue.",
     "devin-run-failed":
@@ -1024,6 +1030,8 @@ const reasons: Record<Locale, Record<string, string>> = {
       "Devin CLI にログインしていません（Devin Desktop のログインは CLI と共有されません）。ターミナルで devin auth login を一度実行してから、もう一度送信してください。",
     "devin-workspace-untrusted":
       "Devin はまだこのワークスペースを信頼していません。ターミナルでこのフォルダーに移動して devin を一度実行し、信頼を選んでから送信してください。",
+    "devin-cli-update-required":
+      "この Devin CLI は古いため、AgentKib は ACP で実行できません。Devin CLI または Devin Desktop を更新してから、もう一度送信してください。",
     "devin-cli-unavailable":
       "Devin CLI が見つかりません。Devin CLI または Devin Desktop をインストールすると続行できます。",
     "devin-run-failed":

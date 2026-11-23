@@ -9,6 +9,13 @@ import { versionAtLeast } from "../../native-version";
 
 export const MAX_ACP_FRAME_BYTES = 1024 * 1024;
 export type AcpId = bigint | string;
+/** An MCP server the client offers to one ACP session, for example a host's own tools. */
+export interface AcpMcpServer {
+  type: "http";
+  name: string;
+  url: string;
+  headers: { name: string; value: string }[];
+}
 export class AcpUndispatchedError extends Error {
   constructor(reason = "session-compacting") {
     super(reason);
@@ -277,26 +284,44 @@ export class AntigravityAcp {
       );
     });
   }
-  newSession(cwd: string): Promise<AcpId> {
+  newSession(cwd: string, mcpServers: AcpMcpServer[] = []): Promise<AcpId> {
     return this.#serialize(() => {
       this.#ready();
-      return this.#request("session/new", { cwd: absolute(cwd), mcpServers: [] }, null);
+      return this.#request("session/new", { cwd: absolute(cwd), mcpServers }, null);
     });
   }
-  loadSession(value: string, cwd: string): Promise<AcpId> {
-    return this.#attach("session/load", value, cwd);
+  loadSession(value: string, cwd: string, mcpServers: AcpMcpServer[] = []): Promise<AcpId> {
+    return this.#attach("session/load", value, cwd, mcpServers);
   }
   resumeSession(value: string, cwd: string): Promise<AcpId> {
     return this.#attach("session/resume", value, cwd);
   }
-  #attach(method: "session/load" | "session/resume", value: string, cwd: string): Promise<AcpId> {
+  #attach(
+    method: "session/load" | "session/resume",
+    value: string,
+    cwd: string,
+    mcpServers: AcpMcpServer[] = [],
+  ): Promise<AcpId> {
     return this.#serialize(() => {
       const compatibility = this.#ready();
       if (!(method === "session/load" ? compatibility.loadSession : compatibility.resumeSession))
         throw new Error(`ACP capability is not supported: ${method}`);
       sessionId(value);
       if (this.#active.has(value)) throw new Error("ACP session has an active turn");
-      return this.#request(method, { sessionId: value, cwd: absolute(cwd), mcpServers: [] }, value);
+      return this.#request(method, { sessionId: value, cwd: absolute(cwd), mcpServers }, value);
+    });
+  }
+  /** Sets one of the session's own options (`configOptions`), such as its mode or model. */
+  setConfigOption(value: string, configId: string, option: string): Promise<AcpId> {
+    return this.#serialize(() => {
+      this.#ready();
+      if (!this.#sessions.has(value)) throw new Error("ACP session is not attached");
+      if (this.#active.has(value)) throw new Error("ACP session has an active turn");
+      return this.#request(
+        "session/set_config_option",
+        { sessionId: value, configId, value: option },
+        value,
+      );
     });
   }
   prompt(value: string, text: string, beforeDispatch?: () => void): Promise<AcpId> {
@@ -400,8 +425,10 @@ export class AntigravityAcp {
           !this.#sessions.has(fields.sessionId) &&
           ![...this.#pending.values()].some(
             (pending) =>
-              ["session/load", "session/resume"].includes(pending.method) &&
-              pending.sessionId === fields.sessionId,
+              // Devin announces a new session's commands before it answers session/new.
+              pending.method === "session/new" ||
+              (["session/load", "session/resume"].includes(pending.method) &&
+                pending.sessionId === fields.sessionId),
           )
         )
           throw new Error("ACP protocol error: update for unattached session");

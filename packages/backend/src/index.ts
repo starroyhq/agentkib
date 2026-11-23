@@ -777,6 +777,8 @@ export class TypeScriptBackend {
         const codex = (sessionId: string) => this.#webRead?.codexLeadCapable(sessionId) === true;
         // A DSH session whose DSH gives a lead its tools (plugin 0.8.0), or one AgentKib can start.
         const dsh = (sessionId: string) => dshBridge.leadCapable(sessionId);
+        // A Devin session AgentKib runs over ACP; each turn is offered the worker tools.
+        const devin = (sessionId: string) => this.#webRead?.devinLeadCapable(sessionId) === true;
         this.#orchestration = new OrchestrationService(
           dataDir,
           leadOwner.bootId,
@@ -785,12 +787,14 @@ export class TypeScriptBackend {
             leadOwner.hasManagedSession(sessionId) ||
             terminal(sessionId) ||
             codex(sessionId) ||
-            dsh(sessionId),
+            dsh(sessionId) ||
+            devin(sessionId),
           (sessionId, deviceId, text) =>
             terminal(sessionId)
               ? this.#claudeBridge!.queueReport(sessionId, text)
-              : codex(sessionId)
-                ? this.#codexLeadReport(sessionId, deviceId, text)
+              : codex(sessionId) || devin(sessionId)
+                ? // Sent or queued through AgentKib's own controls of the session.
+                  this.#codexLeadReport(sessionId, deviceId, text)
                 : // A DSH lead hears through the bridge, whether or not its DSH runs right now.
                   dshBridge.handles(sessionId)
                   ? this.#dshLeadReports.send(sessionId, deviceId, text)
@@ -2104,14 +2108,16 @@ export class TypeScriptBackend {
     // Whether a Codex session could lead is known once its web services are loaded; one AgentKib
     // just created may not be in the catalog yet.
     const agent = this.#store?.sessions.get(sessionId)?.agent;
-    if (agent === undefined || agent === "codex") await this.#withWebRead(() => undefined);
+    if (agent === undefined || agent === "codex" || agent === "devin")
+      await this.#withWebRead(() => undefined);
     const codex = this.#webRead?.codexLeadCapable(sessionId) === true;
     const dsh = this.#dshBridge?.leadCapable(sessionId) === true;
+    const devin = this.#webRead?.devinLeadCapable(sessionId) === true;
     const leadWorkspace = () =>
       this.#claudeManaged?.managedWorkspace(sessionId) ??
       this.#claudeBridge?.workspaceOf(sessionId) ??
       (codex ? this.#webRead?.managedWorkspace(sessionId) : undefined) ??
-      (dsh ? this.#store?.sessions.get(sessionId)?.workspace_id : undefined);
+      (dsh || devin ? this.#store?.sessions.get(sessionId)?.workspace_id : undefined);
     const authorizedWorkspaces = (): string[] | undefined => {
       const ids = params.authorizedWorkspaceIds;
       if (ids === undefined) return;

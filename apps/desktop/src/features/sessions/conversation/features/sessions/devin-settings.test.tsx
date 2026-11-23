@@ -128,16 +128,14 @@ describe("permissions in an existing Devin conversation", () => {
     const menu = await screen.findByRole("menu");
     expect(within(menu).queryByText("Approve all")).not.toBeInTheDocument();
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
-    await user.click(within(menu).getByRole("menuitem", { name: /^Read-only auto/ }));
+    await user.click(within(menu).getByRole("menuitem", { name: /^Read only/ }));
 
     await waitFor(() =>
       expect(runSessionAction).toHaveBeenCalledExactlyOnceWith("settings", {
         permissionMode: "auto",
       }),
     );
-    expect(
-      await screen.findByRole("button", { name: /permissions.*read-only auto/i }),
-    ).toBeVisible();
+    expect(await screen.findByRole("button", { name: /permissions.*read only/i })).toBeVisible();
   });
 
   it.each([
@@ -149,7 +147,7 @@ describe("permissions in an existing Devin conversation", () => {
     expect(trigger).toBeEnabled();
     await userEvent.setup().click(trigger);
     const menu = await screen.findByRole("menu");
-    const item = within(menu).getByRole("menuitem", { name: /^Read-only auto/ });
+    const item = within(menu).getByRole("menuitem", { name: /^Read only/ });
     expect(item).toHaveAttribute("aria-disabled", "true");
     await userEvent.setup().click(item);
     expect(runSessionAction).not.toHaveBeenCalled();
@@ -160,7 +158,7 @@ describe("permissions in an existing Devin conversation", () => {
     const user = userEvent.setup();
     const trigger = await permissionTrigger();
     await user.click(trigger);
-    const item = await screen.findByRole("menuitem", { name: /^Read-only auto/ });
+    const item = await screen.findByRole("menuitem", { name: /^Read only/ });
     expect(item).toHaveAttribute("aria-disabled", "true");
     expect(sessionSettings).toHaveBeenCalledWith("devin-session", "devin");
     expect(runSessionAction).not.toHaveBeenCalled();

@@ -1,4 +1,4 @@
-# 项目 Agent：Claude Code、Codex 或 DeepSeek Harness 指挥已指派的 Worker
+# 项目 Agent：Claude Code、Codex、DeepSeek Harness 或 Devin 指挥已指派的 Worker
 
 项目 Agent 是一个由 AgentKib 运行的 Claude Code 或 Codex 会话，在终端里运行、经 AgentKib 插件（0.5.0 起）连接的 Claude Code 会话，或经 AgentKib 插件（0.8.0 起）连接的 DeepSeek Harness 会话。它可以给用户指派的 Worker 派任务、读取状态和回复、停止当前一轮。项目 Agent 无法自行新建或接管会话，也无法移出 Worker。Worker 全部由用户指派和移出。Worker 的一轮结束、开始等用户处理或被用户直接操作时，AgentKib 把汇报作为新的一轮送回项目 Agent。
 
@@ -18,7 +18,7 @@
 
 旧版本保存或发送的 Worker 工作区列表、Codex 自动审核开关和 Worker 数量上限会被忽略。
 
-能担任项目 Agent 的是由 AgentKib 运行的 Claude Code 或 Codex 会话，已经连接、插件能为它添加工具的终端会话，或所在 DSH 装有 0.8.0 及以上插件的 DSH 会话（没有 DSH 在运行而 AgentKib 能在后台启动时也算，启动的 DSH 用 AgentKib 自带的插件）。同一个会话可以担任一个项目 Agent，或归属一个项目 Agent 的 Worker。
+能担任项目 Agent 的是由 AgentKib 运行的 Claude Code、Codex 或 Devin 会话（Devin 经 ACP 运行，需要 Devin CLI 3000.14 及以上），已经连接、插件能为它添加工具的终端会话，或所在 DSH 装有 0.8.0 及以上插件的 DSH 会话（没有 DSH 在运行而 AgentKib 能在后台启动时也算，启动的 DSH 用 AgentKib 自带的插件）。同一个会话可以担任一个项目 Agent，或归属一个项目 Agent 的 Worker。
 
 桌面在本机设定。Web 和手机上设定需要完全访问的设备，并有发送、管理会话和高级控制的权限，允许代批时还要有审批权限；Worker 的工作区也必须是这台设备能访问的。修改设定和设定要求相同。暂停、停止某个 Worker 的这一轮需要发送权限，移出 Worker、取消需要管理会话的权限，操作的 Worker 也必须是这台设备能访问的会话；只能读取的设备只看到状态。设定记下是哪台设备做的；这台设备的授权被撤销或变更时，委派暂停，在电脑上改动远程连接的设置（连接服务随之重启）也一样。退出 AgentKib 不算授权变更：下次启动和其他项目 Agent 一样，按重启暂停。经局域网直连时不提供这个面板，电脑上的 AgentKib 较旧时手机提示先更新。
 
@@ -33,7 +33,7 @@
 | --- | --- | --- |
 | Claude Code 托管 | 可发消息、排队、加入本轮、读取和停止。可按授权回答提问，代批限能明确识别的普通单次审批。 | 完成和等待即时汇报。能核对结束标记的轮次会补报。 |
 | Claude Code 已连接终端 | 发送、排队、加入本轮和停止以已验证插件当时报告的能力为准。终端的审批和提问由用户处理。 | 插件上报结束和观察到的等待。只有原生明确记录终态且身份可核对时才补报。 |
-| Devin | 可发消息、读取、停止和在 AgentKib 中排队。单次 `devin -p` 没有插话、审批或提问接口。 | AgentKib 托管轮次结束时即时汇报。只补报已持久化且在指派后开始的轮次。Devin 原端的历史没有轮次终态。 |
+| Devin | 可发消息、读取、停止和在 AgentKib 中排队。ACP 只接受一个在途提示，没有插话或自由问答接口；审批可按授权代批（只有“允许一次”和“拒绝”）。 | AgentKib 托管轮次结束时即时汇报。只补报已持久化且在指派后开始的轮次。Devin 原端的历史没有轮次终态。 |
 | Antigravity | 可发消息、读取、停止和在 AgentKib 中排队。ACP 只接受一个在途提示，无插话或自由问答接口。代批限可明确识别且有单次允许和单次拒绝选项的命令或文件审批。 | ACP 已确认结束和等待会汇报。回放只有消息，缺少可核对的历史轮次终态。 |
 
 Devin 和 Antigravity 的用户消息与 `worker_send` 进入同一个会话队列。用户可在会话里编辑、删除等待的消息。待发消息跨重启保留，重新授权并恢复队列后才继续发送。旧版本忽略这些队列记录，仍可读会话。项目 Agent 存档沿用版本 1。旧版可以读新增 Worker 的项目及原有设置，但新增 Worker 的控制、汇报和显示以新版为准。新版读取未来版本的未知 Worker 时跳过该条，并保留存档里的原始数据。
@@ -59,6 +59,8 @@ Devin 和 Antigravity 的用户消息与 `worker_send` 进入同一个会话队�
 **由 AgentKib 运行的 Codex 项目 Agent**：AgentKib 启动这个会话的 Codex 线程时，把同一个回环端点作为这个线程的 `mcp_servers.agentkib_workers` 传给 Codex（`thread/start`、`thread/resume` 的 `config`），不写入用户的 Codex 配置。Codex 0.167.0 把它作为“延迟加载的工具命名空间”交给模型，说明就是端点的 MCP 说明；模型在 `exec` 代码里调用 `tools.mcp__agentkib_workers__worker_*`。在 AgentKib 设定的权限档下调用这些工具不弹审批（实测）。设为项目 Agent 或取消后，Codex 线程空闲时重新启动，带上或去掉这些工具；Codex 还没写入的新会话（一轮都没有）不能重新启动，所以它的第一轮还没有这些工具，这一轮结束后才有。会话在 Codex 应用里打开时用的是 Codex 应用的线程，没有这些工具。
 
 **DeepSeek Harness 项目 Agent**：AgentKib 在 DSH 插件的轮询回复里列出全部 DSH 项目 Agent 和各自的工具，插件把工具注册在那个会话自己的 Agent 上（`agent.ctx.tools`），同一个 DSH 里的其他会话看不到；DSH 再次加载这个会话、换了 Agent 时重新注册。调用经插件的本地连接（`/v1/lead-call`）交给 AgentKib 执行，AgentKib 每次核对这个会话仍是项目 Agent、而且在这个 DSH 里。工具名就是 `worker_list` 等，守则放在 `worker_list` 的描述开头（DSH 没有 MCP 说明可用）。DSH 对插件注册的工具默认放行，不弹审批；用户在 DSH 里设的规则照常生效。设为项目 Agent、取消、暂停或恢复时，正在运行的 DSH 立即收到；AgentKib 刚启动的 DSH 第一次轮询就拿到，所以由汇报唤起的那一轮也带着工具。
+
+**Devin 项目 Agent**：AgentKib 每一轮启动 `devin acp`，新建或加载会话时把同一个回环端点作为 `mcpServers`（`type: http`，服务名 `agentkib_workers`）交给 Devin，不写入 Devin 的配置。Devin 调用这些工具前发来的审批由 AgentKib 自动“允许一次”。汇报经 AgentKib 自己的 Devin 会话控制发出或排队。见 [Devin 接入](devin.md)。
 
 **终端里的项目 Agent**：AgentKib 的连接插件用 Claude Code 的 `$.tool.register` 注册这些工具，名称是 `mcp__agentkib-bridge__worker_*`，调用经插件的本地连接交给 AgentKib 执行（2.1.301、2.1.323 实测）。插件没有 MCP 说明可用，守则放在 `worker_list` 的描述开头。设为项目 Agent 本身就是授权：会话当项目 Agent 期间，插件把这些工具默认的“询问”改为允许，和由 AgentKib 运行时一样不逐次审批；用户自己的规则、钩子、设置或组织策略要求询问或拒绝的，照它们办，插件不改这些规则。委派暂停或恢复时，终端里显示一行说明。连接协议见[终端连接](claude-code-terminal.md)。
 
@@ -102,7 +104,7 @@ Codex 的写锁被其他进程持有时，Worker 工具会把有 `externalTurn` 
 | --- | --- |
 | Claude Code | 退役 AgentKib 自己的运行器。下次发送时按同一个原生会话续跑，保留宿主队列。原生输入仍在等待、后台任务运行、压缩或启动中时会拒绝 |
 | Codex | 中断同一原生线程的活动轮次，保留历史和原生队列。空闲或失联时无法安全确认可以关闭运行器 |
-| Devin | 停止 AgentKib 为本轮启动的 `devin -p`。进程退出后，下一次发送用 `-r` 打开原生会话，宿主队列照常保留 |
+| Devin | 停止 AgentKib 为本轮启动的 `devin acp`。进程退出后，下一次发送用 `session/load` 打开原生会话，宿主队列照常保留 |
 | DeepSeek Harness | 运行时可能服务多个会话，缺少独立重启该会话的入口 |
 | Antigravity | 关闭 ACP 可能丢失尚未写入的实时历史，现有的取消操作只结束一轮 |
 

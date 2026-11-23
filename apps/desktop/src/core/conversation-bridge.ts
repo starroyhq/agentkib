@@ -215,9 +215,16 @@ export function createDesktopConversationAdapter(
           handlers.open();
         } catch (error) {
           if (closed || generation !== attempt) return;
-          handlers.error(error);
+          disposeSubscription();
+          // Electron serializes IPC rejections as Error messages.
+          handlers.error(
+            error instanceof Error && /(?:^|: )stream_limit$/.test(error.message)
+              ? new ApiError(429, "stream_limit")
+              : error,
+          );
           // This only reconnects observation; commands are never replayed here.
-          reconnect = setTimeout(() => void connect(), Math.min(500 * 2 ** failures++, 10_000));
+          if (!closed)
+            reconnect = setTimeout(() => void connect(), Math.min(500 * 2 ** failures++, 10_000));
         } finally {
           if (generation === attempt) connecting = false;
         }
@@ -233,7 +240,7 @@ export function createDesktopConversationAdapter(
             cursor = undefined;
             handlers.error(new ApiError(409, "resync_required"));
             clearTimeout(reconnect);
-            reconnect = setTimeout(() => void connect(), 500);
+            if (!closed) reconnect = setTimeout(() => void connect(), 500);
             return;
           }
           buffered.push(event);
@@ -260,7 +267,7 @@ export function createDesktopConversationAdapter(
         disposeSubscription();
         buffered = [];
         handlers.error(new ApiError(503, "runtime_unavailable"));
-        reconnect = setTimeout(() => void connect(), 500);
+        if (!closed) reconnect = setTimeout(() => void connect(), 500);
       });
       const removeControls = bridge.onControlChanged((id) => {
         if (!closed && (!sessionId || !id || id === sessionId))

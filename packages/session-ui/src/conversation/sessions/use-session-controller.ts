@@ -1569,6 +1569,8 @@ export function useSessionController<Words extends ControllerWords>(
         },
         error: (error) => {
           if (!active()) return;
+          if (desktop && error instanceof ApiError && error.code === "stream_limit")
+            warmStreams.discardParked();
           if (error instanceof ApiError && error.code === "incompatible_protocol")
             setIncompatible(true);
           // Native EventSource does not expose HTTP 401/403. Recheck access on
@@ -1698,7 +1700,7 @@ export function useSessionController<Words extends ControllerWords>(
       }),
     [client, reconcilePending, fail],
   );
-  useSessionLive({
+  const streamReconnecting = useSessionLive({
     surface,
     settingsInFlight,
     isSettingsWriteActive,
@@ -2711,6 +2713,7 @@ export function useSessionController<Words extends ControllerWords>(
     page,
     live,
     online,
+    streamReconnecting,
     controlReady,
     indexEnabled,
     busy,

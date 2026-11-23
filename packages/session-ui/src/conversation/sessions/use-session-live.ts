@@ -1,4 +1,4 @@
-import { useEffect, type Dispatch, type SetStateAction, type RefObject } from "react";
+import { useEffect, useState, type Dispatch, type SetStateAction, type RefObject } from "react";
 import {
   ApiError,
   type Access,
@@ -128,6 +128,7 @@ export function useSessionLive({
   isSettingsWriteActive,
 }: LiveSyncOptions) {
   const desktop = surface === "desktop";
+  const [retryingSession, setRetryingSession] = useState<string>();
   useEffect(() => {
     if (!selected || access?.status !== "approved" || access.protocolVersion !== 2) return;
     streamReady.current = false;
@@ -461,6 +462,10 @@ export function useSessionLive({
         error: (error) => {
           if (!active()) return;
           disconnected();
+          if (desktop && error instanceof ApiError && error.code === "stream_limit") {
+            warmStreams.discardParked();
+            setRetryingSession(id);
+          }
           if (error instanceof ApiError && error.code === "incompatible_protocol") fail(error, g);
         },
         event: (type, data) => {
@@ -506,6 +511,7 @@ export function useSessionLive({
                   ]);
                 needsDomainRecovery = false;
                 if (!desktop || !selectedSettingsWrite()) wakeSettingsHistory();
+                setRetryingSession(undefined);
                 setOnline(true);
                 if (!nativeCoverage.current.historyRecoveryFailed) setError(false);
                 streamReady.current = true;
@@ -738,4 +744,5 @@ export function useSessionLive({
     readSettingsControls,
     isSettingsWriteActive,
   ]);
+  return retryingSession === selected;
 }

@@ -1,6 +1,6 @@
 import { createTranscriptPageCache } from "@agentkib/conversation-state";
 import { createWarmSessionStreamPool, warmSessionAuthority } from "@agentkib/session-ui";
-import type { Access, ConversationEventPage, Live } from "@agentkib/web-client";
+import type { Access, ConversationEventPage, Live, WebClient } from "@agentkib/web-client";
 import {
   createContext,
   useContext,
@@ -14,9 +14,15 @@ import { createDesktopConversationClient } from "@/core/conversation-bridge";
 import { useAppStore } from "@/stores/app-store";
 import { subscribeDesktopReadScope } from "./read-state-scope";
 
+export function createDesktopWarmSessionStreamPool(client: WebClient) {
+  // The IPC limit of four also covers the directory, the controller's catalog
+  // observation, and the selected conversation.
+  return createWarmSessionStreamPool(client, 1);
+}
+
 function createWindowConversation() {
   const client = createDesktopConversationClient();
-  const warmStreams = createWarmSessionStreamPool(client);
+  const warmStreams = createDesktopWarmSessionStreamPool(client);
   const pageCache = createTranscriptPageCache<ConversationEventPage>();
   const drafts = createTranscriptPageCache<{ text: string }>({ maxBytes: 512 * 1024 });
   const listeners = new Set<() => void>();

@@ -3568,6 +3568,65 @@ describe("Codex automatic CLI continuation", () => {
     expect(f.follower).not.toHaveBeenCalled();
   });
 
+  it("resumes with one turn and pages older native history while the runner is connected", async () => {
+    const f = fixture(true);
+    f.setServerUserAgent("agentkib/0.167.0 (Mac OS 26.0.0; arm64) fixture");
+    f.setPolicyReply({
+      thread: { id: nativeId, cwd: f.workspace, status: { type: "idle" }, turns: [] },
+      initialTurnsPage: {
+        data: [{ id: "finished-turn", status: "completed", items: [] }],
+        nextCursor: "older-turns",
+      },
+    });
+
+    expect(await f.send()).toMatchObject({ accepted: true });
+    expect(f.requests.filter(({ method }) => method === "thread/resume")).toMatchObject([
+      {
+        params: {
+          threadId: nativeId,
+          excludeTurns: true,
+          initialTurnsPage: { limit: 1, sortDirection: "desc", itemsView: "full" },
+        },
+      },
+    ]);
+    expect(f.methods.filter((method) => method === "turn/start")).toHaveLength(1);
+    expect(f.servers[0]?.connected).toBe(true);
+
+    const request = { operation: "events", sessionId: f.summary.id, limit: 1 };
+    const page = await f.web.request(request);
+    expect(page.events).toEqual([expect.objectContaining({ content: "Earlier answer" })]);
+    expect(page.next_cursor).toMatch(/^codex-native-v1:/);
+    expect(await f.web.request({ ...request, cursor: page.next_cursor })).toMatchObject({
+      events: [expect.objectContaining({ content: "Earlier user input" })],
+    });
+    expect(f.requests).not.toContainEqual(
+      expect.objectContaining({
+        method: "thread/read",
+        params: expect.objectContaining({ includeTurns: true }),
+      }),
+    );
+  });
+
+  it("keeps an active turn from the resume page and does not start another turn", async () => {
+    const f = fixture(true);
+    f.setServerUserAgent("agentkib/0.167.0 (Mac OS 26.0.0; arm64) fixture");
+    f.setPolicyReply({
+      thread: { id: nativeId, cwd: f.workspace, status: { type: "active" }, turns: [] },
+      initialTurnsPage: {
+        data: [{ id: "existing-turn", status: "inProgress", items: [] }],
+        nextCursor: "older-turns",
+      },
+    });
+
+    expect(await f.send()).toMatchObject({
+      accepted: false,
+      error: "session-busy",
+      controlOutcome: "not-dispatched",
+    });
+    expect(await f.live()).toMatchObject({ status: "running", turnId: "existing-turn" });
+    expect(f.methods).not.toContain("turn/start");
+  });
+
   it("resets history cursors when switching between native read-only history and a managed runner", async () => {
     vi.useFakeTimers();
     const f = fixture(true);

@@ -120,7 +120,7 @@ export function SessionTools({
   const queueAgent = operationsQueue?.agent;
   // LAN Codex capabilities only grant queue actions for this device's own waiting item.
   const lanWaitQueue =
-    client.connection?.type === "lan-http" && operationsQueue?.connection === "native-app";
+    client?.connection?.type === "lan-http" && operationsQueue?.connection === "native-app";
   const queueReadable = lanWaitQueue
     ? access?.status === "approved" &&
       access.device?.send === true &&

@@ -73,6 +73,16 @@ export const bridgeSnapshotSchema = bridgeIdentitySchema.extend({
     .max(16)
     .refine((rows) => new Set(rows.map((row) => row.id)).size === rows.length)
     .optional(),
+  terminalWorkerActivity: z
+    .object({
+      revision,
+      commands: z
+        .array(
+          z.object({ id, startedAt: z.number().int().nonnegative().max(8_640_000_000_000_000) }),
+        )
+        .max(64),
+    })
+    .optional(),
   usage: z
     .object({
       tokens: revision.nullable(),

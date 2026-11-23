@@ -105,6 +105,7 @@ import { z } from "zod";
 import os from "node:os";
 import { devinExecutable } from "./agents/devin/devin-executable";
 import type { DevinSessionProvider } from "./agents/devin/session-provider";
+import type { AntigravitySessionProvider } from "./agents/antigravity/session-provider";
 import { DEVIN_EXECUTION_MODE, devinChildEnvironment } from "./agents/devin/devin-managed-runner";
 import { BACKEND_INSPECT } from "./migration";
 import { RpcFault } from "./rpc";
@@ -2465,6 +2466,12 @@ export class TypeScriptBackend {
               !!limit && limit.manual === "reset-unknown" && Date.now() - kept!.savedAt < 20_000,
           };
         }
+        if (agent === "antigravity")
+          return this.#withWebRead((owner) =>
+            (owner.antigravitySessionProvider() as AntigravitySessionProvider).workerLive(
+              sessionId,
+            ),
+          );
         if (agent !== "claude-code")
           return (await this.#withWebRead((owner) =>
             owner.request({ operation: "live", sessionId }),
@@ -2475,12 +2482,15 @@ export class TypeScriptBackend {
           terminal?.handles(sessionId) &&
           (terminal.blocksManagedResume(sessionId) || !claude?.managedWorkspace(sessionId))
         )
-          return terminal.live(sessionId, false);
+          return terminal.workerObservation(sessionId);
         // An idle managed session needs no transcript or ownership probe. Use the existing
         // host queue ledger for its quota and the in-memory runner status for active turns.
         if (claude?.managedWorkspace(sessionId)) {
           const state = claude.catalogContinuation(sessionId);
-          if (state?.status === "running") return claude.live(sessionId, false);
+          if (state?.status === "running") {
+            const live = await claude.live(sessionId, false);
+            return { ...live, ...claude.workerObservation(sessionId, live.turnId) };
+          }
           return { status: "idle", ...state, usageLimit: claudeLimit(sessionId) };
         }
         return live(sessionId);

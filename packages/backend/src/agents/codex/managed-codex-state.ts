@@ -54,6 +54,9 @@ export class ManagedCodexState {
   #pendingTurns = new Map<string, string>();
   #resolved = new Set<string>();
   #items = new Map<string, JsonObject>();
+  /** A null entry records a finished command; undefined start time means it was already running. */
+  #workerCommands?: Map<string, number | null | undefined>;
+  #workerProgress = 0;
   #reason: string | null = null;
   #runtimeRevision = 0;
   #compactions = new Map<string, string>();
@@ -128,6 +131,20 @@ export class ManagedCodexState {
 
   get activity(): "compacting" | null {
     return this.#compactions.size > 0 ? "compacting" : null;
+  }
+
+  workerObservation() {
+    const commands = this.#workerCommands;
+    return this.#turn === null
+      ? {}
+      : {
+          workerProgress: String(this.#workerProgress),
+          ...(commands && {
+            commands: [...commands].flatMap(([id, startedAt]) =>
+              startedAt === null ? [] : [{ id, startedAt }],
+            ),
+          }),
+        };
   }
 
   hasResolvedRequest(turnId: string, requestId: unknown): boolean {
@@ -239,6 +256,10 @@ export class ManagedCodexState {
         const turn = isObject(params.turn) ? params.turn : {};
         if (typeof turn.id === "string" && this.#closedTurns.has(turn.id))
           return { changed: false };
+        if (turn.id !== this.#turn) {
+          this.#workerCommands = new Map();
+          this.#workerProgress = 0;
+        }
         this.#turn = requiredString(turn.id, "invalid-turn");
         this.#turnsStarted += 1;
         this.#lastTurn = this.#turn;
@@ -273,6 +294,7 @@ export class ManagedCodexState {
         this.#approvals.clear();
         this.#questions.clear();
         this.#items.clear();
+        this.#workerCommands = undefined;
         this.#retry = null;
         const reported = this.#turnError?.turnId === id ? this.#turnError.text : null;
         this.#turnError = null;
@@ -328,6 +350,7 @@ export class ManagedCodexState {
       case "item/plan/delta": {
         if (params.turnId !== this.#turn || typeof params.delta !== "string")
           return { changed: false };
+        if (params.delta) this.#workerProgress++;
         // Streamed output means the request a retry was waiting for got through.
         const hadRetry = this.#retry !== null;
         this.#retry = null;
@@ -343,6 +366,33 @@ export class ManagedCodexState {
         this.#stream += params.delta;
         this.#streamBytes += deltaBytes;
         break;
+      }
+      case "item/reasoning/summaryTextDelta":
+      case "item/reasoning/textDelta":
+        if (
+          this.#turn !== null &&
+          params.turnId === this.#turn &&
+          typeof params.delta === "string" &&
+          params.delta
+        )
+          this.#workerProgress++;
+        return { changed: false }; // Private progress only. Never persist reasoning or change revisions.
+      case "item/commandExecution/terminalInteraction":
+      case "item/commandExecution/outputDelta": {
+        const commands = this.#workerCommands;
+        if (
+          commands &&
+          params.turnId === this.#turn &&
+          typeof params.itemId === "string" &&
+          params.itemId &&
+          !commands.has(params.itemId)
+        ) {
+          // A wait or output can establish that a command is active without dating its start.
+          // A late delta for a completed item cannot make that command active again.
+          if (commands.size < MAX_ITEMS) commands.set(params.itemId, undefined);
+          else this.#workerCommands = undefined;
+        }
+        return { changed: false };
       }
       case "item/started":
       case "item/completed": {
@@ -394,6 +444,13 @@ export class ManagedCodexState {
         const id = requiredString(params.item.id, "invalid-item");
         if (this.#items.size >= MAX_ITEMS && !this.#items.has(id))
           throw new Error("too-many-items");
+        if (params.item.type === "commandExecution") {
+          if (method === "item/completed") this.#workerCommands?.set(id, null);
+          else if (this.#workerCommands?.get(id) === undefined)
+            this.#workerCommands?.set(id, Date.now());
+        } else if (params.item.type !== "userMessage" && !this.#items.has(id)) {
+          this.#workerProgress++;
+        }
         // Only the user's own message precedes the model's first reply.
         if (params.item.type !== "userMessage") this.#retry = null;
         this.#items.set(id, structuredClone(params.item));
@@ -547,12 +604,14 @@ export class ManagedCodexState {
     if (this.nativeId && this.nativeId !== thread.id) throw new Error("thread-identity-mismatch");
     const events: JsonObject[] = [];
     let active: string | null = null;
+    let activeItems: unknown[] | undefined;
     let latest: JsonObject | undefined;
     for (const turn of Array.isArray(thread.turns) ? thread.turns : []) {
       if (!isObject(turn)) continue;
       latest = turn;
       if (turn.status === "inProgress") {
         active = typeof turn.id === "string" ? turn.id : null;
+        activeItems = Array.isArray(turn.items) ? turn.items : undefined;
       }
       const first = events.length;
       for (const item of Array.isArray(turn.items) ? turn.items : []) {
@@ -581,6 +640,10 @@ export class ManagedCodexState {
         this.#remember(this.#closedTurns, turn.id);
     }
     this.#record.native_id = thread.id;
+    if (active !== this.#turn) {
+      this.#workerProgress = 0;
+      this.#workerCommands = undefined;
+    }
     this.#turn = active;
     this.#lastTurn = active ?? (typeof latest?.id === "string" ? latest.id : this.#lastTurn);
     this.#status = active === null ? "idle" : "running";
@@ -588,6 +651,29 @@ export class ManagedCodexState {
     this.#approvals.clear();
     this.#questions.clear();
     this.#items.clear();
+    if (active && !this.#workerCommands && activeItems && activeItems.length <= MAX_ITEMS) {
+      const commands = new Map<string, number | null | undefined>();
+      let incomplete = false;
+      for (const item of activeItems) {
+        if (!isObject(item) || item.type !== "commandExecution") continue;
+        if (typeof item.id !== "string" || !item.id) {
+          incomplete = true;
+          break;
+        }
+        if (item.status === "inProgress") commands.set(item.id, undefined);
+        else if (
+          ["completed", "failed", "declined", "interrupted", "cancelled"].includes(
+            String(item.status),
+          )
+        )
+          commands.set(item.id, null);
+        else {
+          incomplete = true;
+          break;
+        }
+      }
+      if (!incomplete) this.#workerCommands = commands;
+    }
     this.#retry = null;
     if (this.#turnError?.turnId !== active) this.#turnError = null;
     // An attached running turn can still end with a duration; keep its last row.
@@ -627,6 +713,7 @@ export class ManagedCodexState {
     this.#reason = reason;
     this.#record.native_settings = null;
     this.#compactions.clear();
+    this.#workerCommands = undefined;
     this.#retry = null;
     this.#usageState = "stale";
     this.#runtimeRevision = this.#mutationRevision = ++this.#revision;

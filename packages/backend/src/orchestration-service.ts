@@ -112,6 +112,10 @@ const CATCH_UP_MS = 20_000;
 /** A turn this recent is left to the live observers, which report it with Codex's own measure. */
 const CATCH_UP_GRACE_MS = 15_000;
 const OFFLINE_GRACE_MS = 60_000;
+/** One fixed window per Project Agent, starting with the first completion. */
+const COMPLETION_WINDOW_MS = 60_000;
+/** The default 10-minute silence threshold gives commands one hour before a note. */
+const LONG_COMMAND_FACTOR = 6;
 /** Pauses that end when the person sends the lead a message (`userSpoke`). */
 const RESUMED_BY_MESSAGE = new Set([
   "auto-turn-limit",
@@ -267,9 +271,19 @@ function joinReports(reports: string[]): string {
   let bytes = Buffer.byteLength(note);
   for (const report of reports) {
     const header = report.split("\n", 1)[0]!;
-    bytes += Buffer.byteLength(header) + 2;
-    if (bytes > MAX_REPORT_BYTES) break;
+    const size = Buffer.byteLength(header) + 2;
+    if (bytes + size > MAX_REPORT_BYTES) break;
+    bytes += size;
     lines.push(header);
+  }
+  // Keep the earlier reports' actionable details when possible. Urgent reports are first.
+  for (const [index, header] of lines.entries()) {
+    const report = reports[index]!;
+    const details = Buffer.byteLength(report) - Buffer.byteLength(header);
+    if (bytes + details <= MAX_REPORT_BYTES) {
+      lines[index] = report;
+      bytes += details;
+    }
   }
   return [...lines, note].join("\n\n");
 }
@@ -287,14 +301,22 @@ const isObject = (value: unknown): value is Record<string, unknown> =>
 
 type WorkerLimit = Pick<UsageLimitView, "kind" | "resetsAt" | "continueAt" | "manual">;
 type Offline = { since: number; reason: string; userOnly: boolean; reported: boolean };
-type Progress = { turnId: string; signal: string; since: number; reported: boolean };
+type Progress = { turnId: string; signal: string; since: number; notice?: LaneReport };
 type WorkerWatch = {
   terminal: boolean;
   offline?: Offline;
   limit?: { value: WorkerLimit; key: string };
   progress?: Progress;
+  commands?: { turnId: string; started: Map<string, number> };
+  longCommands?: Array<LaneReport & { key: string }>;
 };
-type LaneReport = { laneId: string; key: string | null; text: string | null; reply: string | null };
+type LaneReport = {
+  laneId: string;
+  key: string | null;
+  text: string | null;
+  reply: string | null;
+  coalesceUntil?: number;
+};
 
 const OFFLINE_REASONS = new Set([
   "claude-bridge-disconnected",
@@ -371,9 +393,7 @@ function workerLimit(live: Record<string, unknown> | null): WorkerLimit | null {
   };
 }
 
-function progressSample(
-  live: Record<string, unknown> | null,
-): Pick<Progress, "turnId" | "signal"> | null {
+function observedTurn(live: Record<string, unknown> | null): string | null {
   const external = codexExternalTurn(live);
   const turnId =
     live?.turnId ??
@@ -386,34 +406,32 @@ function progressSample(
     workerStatus(live) !== "running" ||
     live.activity === "compacting" ||
     live.reason === "claude-terminal-permission-unconfirmed" ||
-    typeof turnId !== "string" ||
-    !turnId ||
-    live.streamTextTruncated === true ||
     (Array.isArray(live.approvals) && live.approvals.length > 0) ||
     (Array.isArray(live.questions) && live.questions.length > 0)
   )
     return null;
-  const output = typeof live.streamText === "string" ? live.streamText : null;
+  return typeof turnId === "string" && turnId ? turnId : null;
+}
+
+function progressSignal(live: Record<string, unknown>): string | null {
   const observedItems = typeof live.workerProgress === "string" ? live.workerProgress : null;
-  if (output === null && observedItems === null) return null;
+  const output =
+    live.streamTextTruncated !== true && typeof live.streamText === "string"
+      ? live.streamText
+      : null;
   if (
-    live.executionMode === "codex-managed" &&
-    output !== null &&
-    Buffer.byteLength(output) >= 120 * 1024
+    observedItems === null &&
+    (output === null ||
+      (live.executionMode === "codex-managed" && Buffer.byteLength(output) >= 120 * 1024))
   )
     return null;
-  // Claude, DSH, Antigravity and managed Codex use the current turn's streamed output.
-  // External Codex also uses verified follower messages or native assistant output.
-  // Generic revisions include tool-wait heartbeats and never reset this clock.
-  return {
-    turnId,
-    signal: JSON.stringify([
-      live.connectionGeneration,
-      observedItems,
-      output?.length,
-      output?.slice(-128),
-    ]),
-  };
+  // Generic status revisions include wait heartbeats. Providers supply actual output/items.
+  return JSON.stringify([
+    live.connectionGeneration,
+    observedItems,
+    output?.length,
+    output?.slice(-128),
+  ]);
 }
 
 function limitReport(limit: WorkerLimit): string {
@@ -615,6 +633,8 @@ export class OrchestrationService {
   #retiredEndpoints = new Map<string, Array<Promise<LeadEndpoint>>>();
   #interventions = new Map<string, number>();
   #workerWatch = new Map<string, WorkerWatch>();
+  #workerSamples = new Map<string, { current: boolean }>();
+  #completions = new Map<string, { until: number; reports: LaneReport[] }>();
   #workerRestarts = new Set<string>();
   #closed = false;
   #catchUp: ReturnType<typeof setInterval> | undefined;
@@ -888,6 +908,7 @@ export class OrchestrationService {
   async release(sessionId: string): Promise<boolean> {
     const removed = this.registry.remove(sessionId);
     this.#leadUsageHolds.delete(sessionId);
+    this.#completions.delete(sessionId);
     const endpoint = this.#endpoints.get(sessionId);
     this.#endpoints.delete(sessionId);
     await Promise.all(
@@ -1104,6 +1125,8 @@ export class OrchestrationService {
   ): Promise<void> {
     const owner = this.registry.leadOfLane(sessionId);
     if (!owner || owner.lane.reportedTurns.includes(turnId)) return;
+    const endedAt = Date.now();
+    this.#clearStall(owner.lane.id, turnId, historyTurnId);
     const report = await this.#turnReport(
       owner.lane,
       turnId,
@@ -1111,6 +1134,7 @@ export class OrchestrationService {
       durationMs,
       historyTurnId,
       replyText,
+      endedAt,
     );
     this.#reportBatch(owner.lead.sessionId, [report]);
   }
@@ -1120,8 +1144,9 @@ export class OrchestrationService {
     turnId: string,
     outcome: string,
     durationMs: number | null,
-    historyTurnId?: string,
-    replyText?: string | null,
+    historyTurnId: string | undefined,
+    replyText: string | null | undefined,
+    endedAt: number,
   ): Promise<LaneReport> {
     const replyTurnId = historyTurnId ?? turnId;
     let reply =
@@ -1154,6 +1179,9 @@ export class OrchestrationService {
         reply,
       ),
       reply,
+      ...(outcome === "completed" || outcome === "ended"
+        ? { coalesceUntil: endedAt + COMPLETION_WINDOW_MS }
+        : {}),
     };
   }
 
@@ -1171,21 +1199,25 @@ export class OrchestrationService {
         if (!assigned.has(id)) this.#workerWatch.delete(id);
       for (const lead of leads) {
         const reports: LaneReport[] = [];
-        const watches = new Map<string, WorkerWatch>();
+        const observations: Array<{
+          lane: Lane;
+          live: Record<string, unknown> | null;
+          sample: { current: boolean };
+        }> = [];
         for (const lane of lead.lanes) {
           if (!this.#inAssignedWorkspace(lane)) {
             this.#workerWatch.delete(lane.id);
             continue;
           }
+          const sample = { current: true };
+          this.#workerSamples.set(lane.id, sample);
           const live = await this.#state(lane.sessionId, "supervision");
           if (this.#closed) return;
           if (!this.#inAssignedWorkspace(lane, live)) {
             this.#workerWatch.delete(lane.id);
             continue;
           }
-          const check = this.#supervise(lane, live, lead.scope.stallMinutes, now);
-          reports.push(...check.reports);
-          watches.set(lane.id, check.watch);
+          observations.push({ lane, live, sample });
           let turns: LaneEndedTurn[];
           try {
             turns = (await this.lanes.endedTurns?.(lane.sessionId)) ?? [];
@@ -1193,9 +1225,16 @@ export class OrchestrationService {
             continue;
           }
           const joined = Date.parse(lane.createdAt);
+          const activeTurn = observedTurn(live);
           for (const turn of turns) {
             const started = turn.startedAt === null ? Number.NaN : Date.parse(turn.startedAt);
             const ended = turn.endedAt === null ? Number.NaN : Date.parse(turn.endedAt);
+            if (
+              activeTurn &&
+              now >= ended &&
+              (turn.turnId === activeTurn || turn.historyTurnId === activeTurn)
+            )
+              sample.current = false;
             // A long DeepSeek Harness turn can begin before the history it is read from.
             const since = turn.startedAt === null ? ended : started;
             if (
@@ -1213,6 +1252,7 @@ export class OrchestrationService {
                 ended >= started ? ended - started : null,
                 turn.historyTurnId,
                 turn.replyText,
+                ended,
               ),
             );
           }
@@ -1221,14 +1261,21 @@ export class OrchestrationService {
         const allowed = new Set(
           lead.lanes.filter((lane) => this.#inAssignedWorkspace(lane)).map((lane) => lane.id),
         );
+        for (const { lane, live, sample } of observations) {
+          if (!allowed.has(lane.id)) continue;
+          const check = this.#supervise(lane, live, lead.scope.stallMinutes, now, sample.current);
+          this.#workerWatch.set(lane.id, check.watch);
+          reports.push(...check.reports);
+        }
         this.#reportBatch(
           lead.sessionId,
           reports.filter(({ laneId }) => allowed.has(laneId)),
+          now,
         );
-        for (const [id, watch] of watches) if (allowed.has(id)) this.#workerWatch.set(id, watch);
         await this.#checkLeadUsageLimit(lead.sessionId);
       }
     } finally {
+      this.#workerSamples.clear();
       this.#catchingUp = false;
     }
   }
@@ -1248,6 +1295,7 @@ export class OrchestrationService {
     live: Record<string, unknown> | null,
     stallMinutes: number = LEAD_DEFAULTS.stallMinutes,
     now: number,
+    current: boolean,
   ): { watch: WorkerWatch; reports: LaneReport[] } {
     const before = this.#workerWatch.get(lane.id);
     const watch: WorkerWatch = {
@@ -1314,24 +1362,73 @@ export class OrchestrationService {
       if (lastKey?.startsWith("limit:unknown:")) add(`${lastKey}:cleared`, null);
     }
 
-    const sample = offline ? null : progressSample(live);
-    if (sample) {
-      const previous = before?.progress;
-      const progress =
-        previous?.turnId === sample.turnId && previous.signal === sample.signal
-          ? { ...previous }
-          : { ...sample, since: now, reported: false };
-      const duration = now - progress.since;
-      if (!progress.reported && duration > stallMinutes * 60_000) {
-        const signature = createHash("sha256").update(progress.signal).digest("hex").slice(0, 16);
-        add(
-          `stall:${progress.turnId}:${signature}`,
-          `may be stalled (no observed progress for ${elapsed(duration)}). Use worker_read to check.`,
-        );
-        progress.reported = true;
+    if (before?.longCommands)
+      watch.longCommands = before.longCommands.filter(
+        (notice) => !lane.reportedTurns.includes(notice.key),
+      );
+    const turnId = observedTurn(live);
+    const commands = live?.commands;
+    if (
+      !current ||
+      offline ||
+      limit ||
+      !live ||
+      !turnId ||
+      !Array.isArray(commands) ||
+      !commands.every(
+        (value) => isObject(value) && typeof value.id === "string" && value.id.length > 0,
+      )
+    )
+      return { watch, reports };
+
+    const threshold = stallMinutes * 60_000;
+    if (commands.length > 0) {
+      const started = new Map<string, number>();
+      const prior = before?.commands?.turnId === turnId ? before.commands.started : undefined;
+      const longCommands = watch.longCommands ?? [];
+      for (const { id, startedAt } of commands) {
+        // An outstanding tool can block the model before its execution is confirmed.
+        const observedStart = dateField(startedAt);
+        if (observedStart === null) continue;
+        const since = prior?.get(id) ?? Math.min(now, observedStart);
+        started.set(id, since);
+        if (now - since <= LONG_COMMAND_FACTOR * threshold) continue;
+        const signature = createHash("sha256")
+          .update(JSON.stringify([id, since]))
+          .digest("hex")
+          .slice(0, 16);
+        const key = `long-command:${signature}`;
+        if (lane.reportedTurns.includes(key) || longCommands.some((notice) => notice.key === key))
+          continue;
+        longCommands.push({
+          laneId: lane.id,
+          key,
+          text: workerReport(lane, `a command ran for at least ${elapsed(now - since)}.`),
+          reply: null,
+        });
       }
-      watch.progress = progress;
+      watch.commands = { turnId, started };
+      watch.longCommands = longCommands.slice(-10);
+      return { watch, reports };
     }
+
+    const signal = progressSignal(live);
+    if (signal === null) return { watch, reports };
+    const previousProgress = before?.progress;
+    const since =
+      previousProgress?.turnId === turnId && previousProgress.signal === signal
+        ? previousProgress.since
+        : now;
+    const progress: Progress = { turnId, signal, since };
+    watch.progress = progress;
+    const duration = now - since;
+    if (duration <= threshold) return { watch, reports };
+    const signature = createHash("sha256").update(signal).digest("hex").slice(0, 16);
+    const key = `stall:${turnId}:${signature}`;
+    const event = `may be stalled (no command or model progress observed for ${elapsed(duration)}). Use worker_read to check.`;
+    if (duration > 2 * threshold) add(key, event);
+    else if (!lane.reportedTurns.includes(key))
+      progress.notice = { laneId: lane.id, key, text: workerReport(lane, event), reply: null };
     return { watch, reports };
   }
 
@@ -1349,6 +1446,19 @@ export class OrchestrationService {
     return key && /^limit:unknown:\d+$/.test(key) ? key : undefined;
   }
 
+  #clearStall(laneId: string, turnId: string | null, historyTurnId?: string): void {
+    const sample = this.#workerSamples.get(laneId);
+    if (sample) sample.current = false;
+    const watch = this.#workerWatch.get(laneId);
+    if (
+      watch?.progress &&
+      (turnId === null ||
+        watch.progress.turnId === turnId ||
+        watch.progress.turnId === historyTurnId)
+    )
+      delete watch.progress;
+  }
+
   /**
    * A lane waits for the person's approval or answer: tell the lead once per turn. What the
    * lead may decide itself (`LeadScope.approvals`, `answers`) comes with what it needs to.
@@ -1357,6 +1467,7 @@ export class OrchestrationService {
     const owner = this.registry.leadOfLane(sessionId);
     const key = `${turnId ?? "?"}:${status === "waiting-approval" ? "awaiting-approval" : status}`;
     if (!owner || owner.lane.reportedTurns.includes(key)) return;
+    this.#clearStall(owner.lane.id, turnId);
     const live = await this.#state(sessionId);
     const pending = live ? waitingItems(live, owner.lead.scope) : [];
     const mine = pending.filter((item) => item.youMayDecide);
@@ -1409,34 +1520,78 @@ export class OrchestrationService {
     this.#reportBatch(leadId, [{ laneId, key, text, reply }]);
   }
 
-  #reportBatch(leadId: string, reports: LaneReport[]): void {
-    if (!reports.length || this.#closed) return;
+  #reportBatch(leadId: string, reports: LaneReport[], now = Date.now(), hold = false): void {
+    const waiting = this.#completions.get(leadId);
+    if (this.#closed || (!reports.length && (!waiting || (!hold && now < waiting.until)))) return;
     let fresh: string[];
     try {
-      fresh = this.registry.update(leadId, (lead) => {
+      const batch = this.registry.update(leadId, (lead) => {
+        const lanes = new Map(
+          lead.lanes
+            .filter((lane) => this.#inAssignedWorkspace(lane))
+            .map((lane) => [lane.id, lane]),
+        );
+        const pending = (waiting?.reports ?? []).filter(({ laneId, key }) => {
+          const lane = lanes.get(laneId);
+          return lane && (key === null || !lane.reportedTurns.includes(key));
+        });
+        const ready: LaneReport[] = [];
+        let until = waiting?.until ?? Infinity;
+        for (const report of reports) {
+          const lane = lanes.get(report.laneId);
+          if (!lane || (report.key !== null && lane.reportedTurns.includes(report.key))) continue;
+          if (report.coalesceUntil !== undefined && !lead.paused && lanes.size > 1) {
+            if (!pending.some(({ laneId, key }) => laneId === report.laneId && key === report.key))
+              pending.push(report);
+            until = Math.min(until, report.coalesceUntil);
+          } else {
+            ready.push(report);
+          }
+        }
+        if (ready.some(({ text }) => text !== null) || lead.paused || hold || now >= until)
+          ready.push(...pending.splice(0));
+
         const messages: string[] = [];
-        for (const { laneId, key, text, reply } of reports) {
-          const lane = lead.lanes.find((item) => item.id === laneId);
+        const primary = new Set(ready);
+        const previews = new Set<string>();
+        if (ready.some(({ text }) => text !== null)) {
+          for (const lane of lanes.values()) {
+            const watch = this.#workerWatch.get(lane.id);
+            if (watch?.longCommands) ready.push(...watch.longCommands);
+            if (!hold && watch?.progress?.notice) ready.push(watch.progress.notice);
+          }
+        }
+        for (const report of ready) {
+          const { laneId, key, text, reply } = report;
+          const lane = lanes.get(laneId);
           if (!lane) continue;
           if (key !== null) {
             if (lane.reportedTurns.includes(key)) continue;
             lane.reportedTurns.push(key);
           }
           if (text === null) continue;
-          lane.lastReport = {
-            at: new Date().toISOString(),
-            preview: (reply ?? text).slice(0, 200),
-          };
+          if (primary.has(report) || !previews.has(laneId)) {
+            lane.lastReport = {
+              at: new Date().toISOString(),
+              preview: (reply ?? text).slice(0, 200),
+            };
+            previews.add(laneId);
+          }
           addLeadRecord(lead, "report", laneId, null, key ?? "notice");
           messages.push(text);
         }
-        return messages;
+        if (hold && messages.length) lead.pendingReports.push(joinReports(messages));
+        return { messages, pending, until };
       });
+      if (batch.pending.length)
+        this.#completions.set(leadId, { until: batch.until, reports: batch.pending });
+      else this.#completions.delete(leadId);
+      fresh = batch.messages;
     } catch (error) {
       if (error instanceof Error && error.message === "lead-unavailable") return;
       throw error;
     }
-    if (fresh.length) this.#deliver(leadId, joinReports(fresh));
+    if (fresh.length && !hold) this.#deliver(leadId, joinReports(fresh));
   }
 
   /**
@@ -1629,15 +1784,26 @@ export class OrchestrationService {
   }
 
   async close(): Promise<void> {
-    this.#closed = true;
-    clearInterval(this.#catchUp);
-    const endpoints = [...this.#endpoints.values(), ...[...this.#retiredEndpoints.values()].flat()];
-    this.#endpoints.clear();
-    this.#retiredEndpoints.clear();
-    this.#workerWatch.clear();
-    await Promise.all(
-      endpoints.map((endpoint) => endpoint.then((value) => value.close()).catch(() => undefined)),
-    );
+    // Preserve an open completion window in the existing restart-pause queue.
+    try {
+      for (const leadId of this.#completions.keys())
+        this.#reportBatch(leadId, [], Date.now(), true);
+    } finally {
+      this.#closed = true;
+      clearInterval(this.#catchUp);
+      const endpoints = [
+        ...this.#endpoints.values(),
+        ...[...this.#retiredEndpoints.values()].flat(),
+      ];
+      this.#endpoints.clear();
+      this.#retiredEndpoints.clear();
+      this.#workerWatch.clear();
+      this.#workerSamples.clear();
+      this.#completions.clear();
+      await Promise.all(
+        endpoints.map((endpoint) => endpoint.then((value) => value.close()).catch(() => undefined)),
+      );
+    }
   }
 
   // ---- tools -------------------------------------------------------------------------------
@@ -1841,7 +2007,7 @@ export class OrchestrationService {
     const limit = workerLimit(live);
     const offline =
       offlineState(live) ?? (live?.executionMode === "claude-managed" ? watch?.offline : undefined);
-    const sample = offline ? null : progressSample(live);
+    const turnId = offline || limit ? null : observedTurn(live);
     const progress = watch?.progress;
     return {
       ...(limit ? { usageLimit: limit } : {}),
@@ -1853,12 +2019,9 @@ export class OrchestrationService {
             },
           }
         : {}),
-      ...(sample
+      ...(turnId && progress?.turnId === turnId
         ? {
-            noProgressForMs:
-              progress?.turnId === sample.turnId && progress.signal === sample.signal
-                ? Math.max(0, now - progress.since)
-                : 0,
+            noProgressForMs: Math.max(0, now - progress.since),
           }
         : {}),
     };

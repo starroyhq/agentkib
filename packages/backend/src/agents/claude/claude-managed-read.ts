@@ -3975,6 +3975,14 @@ export class ClaudeManagedReadOwner {
     return { ...status, available: true, reason: null, cliVersion };
   }
 
+  /** Read only the resident worker that provided the caller's live turn. */
+  workerObservation(id: string, turnId: unknown) {
+    const runner = this.#runners.get(id);
+    return runner?.hasWorker && runner.state.turnId === turnId
+      ? runner.state.workerObservation()
+      : {};
+  }
+
   /** Catalog presentation never probes processes or starts a runner. */
   catalogContinuation(
     id: string,

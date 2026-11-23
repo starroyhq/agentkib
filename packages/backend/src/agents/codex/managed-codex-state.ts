@@ -377,6 +377,23 @@ export class ManagedCodexState {
         )
           this.#workerProgress++;
         return { changed: false }; // Private progress only. Never persist reasoning or change revisions.
+      case "item/commandExecution/terminalInteraction":
+      case "item/commandExecution/outputDelta": {
+        const commands = this.#workerCommands;
+        if (
+          commands &&
+          params.turnId === this.#turn &&
+          typeof params.itemId === "string" &&
+          params.itemId &&
+          !commands.has(params.itemId)
+        ) {
+          // A wait or output can establish that a command is active without dating its start.
+          // A late delta for a completed item cannot make that command active again.
+          if (commands.size < MAX_ITEMS) commands.set(params.itemId, undefined);
+          else this.#workerCommands = undefined;
+        }
+        return { changed: false };
+      }
       case "item/started":
       case "item/completed": {
         if (isObject(params.item) && params.item.type === "contextCompaction") {
@@ -429,7 +446,8 @@ export class ManagedCodexState {
           throw new Error("too-many-items");
         if (params.item.type === "commandExecution") {
           if (method === "item/completed") this.#workerCommands?.set(id, null);
-          else if (!this.#workerCommands?.has(id)) this.#workerCommands?.set(id, Date.now());
+          else if (this.#workerCommands?.get(id) === undefined)
+            this.#workerCommands?.set(id, Date.now());
         } else if (params.item.type !== "userMessage" && !this.#items.has(id)) {
           this.#workerProgress++;
         }

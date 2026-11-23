@@ -129,6 +129,11 @@ describe("managed Codex activity and context usage", () => {
     const clock = vi.spyOn(Date, "now").mockReturnValue(observedAt);
     const turnId = "turn-a";
     const item = { type: "commandExecution", id: "shell-1", status: "inProgress" };
+    notify(state, "item/commandExecution/terminalInteraction", { turnId, itemId: item.id });
+    expect(state.workerObservation()).toEqual({
+      commands: [{ id: item.id }],
+      workerProgress: modelProgress,
+    });
     notify(state, "item/started", { turnId, item });
     clock.mockReturnValue(observedAt + 90_000);
     notify(state, "item/started", { turnId, item });
@@ -145,6 +150,7 @@ describe("managed Codex activity and context usage", () => {
     notify(state, "item/completed", { turnId: "another-turn", item });
     expect(state.workerObservation().commands).toHaveLength(1);
     notify(state, "item/completed", { turnId, item: { ...item, status: "completed" } });
+    notify(state, "item/commandExecution/terminalInteraction", { turnId, itemId: item.id });
     expect(state.workerObservation()).toEqual({ commands: [], workerProgress: modelProgress });
   });
 

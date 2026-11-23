@@ -2296,17 +2296,48 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))(
         );
       },
     );
-    it("keeps legacy send but gates advanced settings and queues below the verified version", async () => {
+    it("keeps legacy send and queue reads below the advanced control version", async () => {
       const f = fixture("2.1.263");
       const created = await create(f.owner);
       const id = created.sessionId;
+      const queuedId = randomUUID();
+      new ClaudeHostStateStore(f.root, f.owner.bootId).update(id, (state) => {
+        state.paused = true;
+        state.work.push({
+          id: queuedId,
+          requestId: randomUUID(),
+          deviceId: "browser-device-a",
+          originDeviceId: "browser-device-a",
+          kind: "queue",
+          status: "pending",
+          input: "Previously queued",
+          requiresAttachments: false,
+          createdAt: new Date().toISOString(),
+          report: null,
+          usage: null,
+        });
+      });
       expect(await f.owner.capabilities(id, true)).toMatchObject({
         features: {
           send: { available: true },
           steer: { available: false },
           settings: { available: false },
+          "queue-list": { available: true },
           "queue-add": { available: false },
+          "queue-delete": { available: false },
+          "queue-resume": { available: false },
         },
+      });
+      expect(await f.owner.request({ operation: "queue-list", sessionId: id })).toMatchObject({
+        available: true,
+        paused: true,
+        data: [
+          {
+            id: queuedId,
+            status: "pending",
+            input: [{ type: "text", text: "Previously queued" }],
+          },
+        ],
       });
       expect(await f.owner.settingsState(id)).toMatchObject({
         available: false,

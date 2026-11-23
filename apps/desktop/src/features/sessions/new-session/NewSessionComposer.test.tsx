@@ -45,6 +45,17 @@ const workspaces = [
   { id: "atlas", name: "atlas-studio", last_active_at: "2026-11-08T10:00:00.000Z" },
 ];
 const options: Record<ManagedAgent, ManagedOptions> = {
+  antigravity: {
+    available: true,
+    models: [{ id: "gemini-3.8-flash", efforts: ["low", "medium", "high"] }],
+    permissionModes: [
+      { id: "default", name: "Default" },
+      { id: "accept-edits", name: "Accept edits" },
+      { id: "auto", name: "Auto" },
+      { id: "plan", name: "Plan" },
+    ],
+    workspaces: [],
+  },
   codex: {
     available: true,
     models: [{ id: "gpt-6.1-sol", efforts: ["low", "medium", "high"], defaultEffort: "medium" }],

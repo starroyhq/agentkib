@@ -8,8 +8,10 @@ export const DEVIN_TURN_REASONS: readonly string[] = [
   "devin-login-required",
   "devin-workspace-untrusted",
   "devin-cli-unavailable",
+  // A CLI too old to run over ACP with its own login.
+  "devin-cli-update-required",
   "devin-run-failed",
-  // `devin -p` was ended by a signal without anyone stopping the turn.
+  // Devin's process ended without anyone stopping the turn.
   "devin-run-stopped",
   "devin-session-not-found",
   "session-open-elsewhere",

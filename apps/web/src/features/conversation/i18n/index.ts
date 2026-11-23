@@ -55,6 +55,10 @@ const zh = {
     "未检测到此会话的执行客户端。请在原客户端（如 Codex 或 Claude Code）打开后刷新。",
   unverifiedInstallation:
     "未能确认运行 AgentKib 的电脑上的 Agent 安装或版本，控制已禁用。请在电脑上的 AgentKib 检查安装。",
+  antigravityCliUnavailable:
+    "要在 AgentKib 里控制 Antigravity，需要先安装 Antigravity CLI（Antigravity App 不包含它）。在电脑上的“设置 › 工具与更新”里复制官方安装命令，装好后运行一次 agy 登录。",
+  antigravityAppSession:
+    "这是 Antigravity App 或 IDE 里的会话，AgentKib 只能浏览，请在 Antigravity 中继续。",
   unsupportedControl: "当前平台或 Agent 尚不支持实时控制，仍可阅读历史。",
   process: "执行过程",
   tools: "次工具调用",
@@ -178,6 +182,10 @@ const en: Words = {
     "No execution client was found for this session. Open it in the original client (such as Codex or Claude Code), then refresh.",
   unverifiedInstallation:
     "The Agent installation or version on the computer running AgentKib could not be verified. Control is disabled. Check the installation in AgentKib on that computer.",
+  antigravityCliUnavailable:
+    "To control Antigravity from AgentKib, install the Antigravity CLI first; the Antigravity App does not include it. Copy the official install command from Settings › Tools & updates on your computer, then run agy once to sign in.",
+  antigravityAppSession:
+    "This conversation is from the Antigravity App or IDE. AgentKib can only browse it; continue it in Antigravity.",
   unsupportedControl:
     "Live control is not supported for this platform or Agent. History remains readable.",
   process: "Execution process",
@@ -301,6 +309,10 @@ const tw: Words = {
     "未偵測到此對話的執行客戶端。請在原客戶端（如 Codex 或 Claude Code）開啟後重新整理。",
   unverifiedInstallation:
     "無法確認執行 AgentKib 的電腦上的 Agent 安裝或版本，控制已停用。請在電腦上的 AgentKib 檢查安裝。",
+  antigravityCliUnavailable:
+    "要在 AgentKib 中控制 Antigravity，需要先安裝 Antigravity CLI（Antigravity App 不包含它）。在電腦上的「設定 › 工具與更新」中複製官方安裝指令，安裝後執行一次 agy 登入。",
+  antigravityAppSession:
+    "這是 Antigravity App 或 IDE 中的對話，AgentKib 只能瀏覽，請在 Antigravity 中繼續。",
   unsupportedControl: "目前平台或 Agent 尚不支援即時控制，仍可閱讀歷史。",
   process: "執行過程",
   tools: "次工具呼叫",
@@ -421,6 +433,10 @@ const ja: Words = {
     "この会話の実行クライアントが見つかりません。元のクライアント（Codex や Claude Code など）で開いて更新してください。",
   unverifiedInstallation:
     "AgentKib を実行しているコンピューターの Agent のインストールまたはバージョンを確認できないため、制御は無効です。コンピューター上の AgentKib でインストールを確認してください。",
+  antigravityCliUnavailable:
+    "AgentKib から Antigravity を操作するには、先に Antigravity CLI をインストールしてください（Antigravity App には含まれていません）。コンピューターの「設定 › ツールと更新」で公式のインストールコマンドをコピーし、インストール後に agy を一度実行してサインインしてください。",
+  antigravityAppSession:
+    "これは Antigravity App または IDE の会話です。AgentKib では閲覧のみできます。続きは Antigravity で行ってください。",
   unsupportedControl:
     "このプラットフォームまたは Agent はリアルタイム制御に対応していません。履歴は閲覧できます。",
   process: "実行過程",

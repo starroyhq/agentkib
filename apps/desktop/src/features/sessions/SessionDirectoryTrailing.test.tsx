@@ -174,7 +174,6 @@ describe("the desktop directory's shared trailing status slot", () => {
   it.each([
     { agent: "codex", local: false },
     { agent: "opencode", local: true },
-    { agent: "antigravity", local: true },
   ] as const)("retains unread without offering a menu for %j", ({ agent, local }) => {
     const view = render(<Row session={summary({ agent, readState: unread })} local={local} />);
     const slot = view.container.querySelector(".session-directory-trailing")!;

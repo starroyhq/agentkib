@@ -25,7 +25,12 @@ import {
 } from "../../agents/session-commands";
 import { sessionContinuationRegistration } from "../../agents/session-continuation";
 import { sessionPermissionObservation } from "../../agents/session-permission-observations";
-import { sessionQueuePanel } from "../../agents/session-queue";
+import {
+  queueAccessGranted,
+  queueActionGranted,
+  registeredRunningSteer,
+  registeredSessionQueue,
+} from "../../agents/session-queue";
 import { sessionStopCapabilityAllows } from "../../agents/session-turn-controls";
 import { sessionTurnNotice } from "../../agents/session-turn-notice";
 import { commandPrompt } from "../../command-prompts";
@@ -525,7 +530,7 @@ export function SessionComposer({
   const draft = composerValue;
   const valid = ready && validHistoryMessage(draft, historyReferences, attachmentIds.length > 0);
   const queuePanel =
-    current?.id === selected ? sessionQueuePanel(current.agent, provider) : undefined;
+    current?.id === selected ? registeredSessionQueue(current.agent, provider) : undefined;
   const turnNotice = sessionTurnNotice({
     current,
     selected,
@@ -537,6 +542,16 @@ export function SessionComposer({
   const queueDraftAllowed =
     !serialQueue ||
     (!!draft.trim() && !historyReferences.length && !attachmentIds.length && !resourceIds.length);
+  const queueAddOffered = queuePanel?.actions.includes("add") === true;
+  const queueCapabilities = capabilities?.sessionId === selected ? capabilities : undefined;
+  const queueAdd = queueCapabilities?.features["queue-add"];
+  const steer = queueCapabilities?.features.steer;
+  const steerOffered = current?.id === selected && registeredRunningSteer(provider);
+  const steerReady = steerOffered && queueAccessGranted(access) && steer?.available === true;
+  const queueAddReady =
+    queueDraftAllowed &&
+    queueActionGranted(queuePanel, "add", access) &&
+    queueAdd?.available === true;
   const resourceNeedsMessage =
     resourceIds.length > 0 && !draft.trim() && !attachmentIds.length && !historyReferences.length;
   const panelShortcut = composerPanelShortcut(draft, localSettings, localGoal);
@@ -561,7 +576,8 @@ export function SessionComposer({
   async function send(action: "send" | "steer" | "queue-add") {
     if (
       !valid ||
-      (action === "queue-add" && !queueDraftAllowed) ||
+      (action === "queue-add" && !queueAddReady) ||
+      (action === "steer" && !steerReady) ||
       (startupGoal && action !== "send") ||
       !online ||
       (settingsOnlyBlocked && !(action === "send" && panelShortcut && localCommandReady)) ||
@@ -702,8 +718,7 @@ export function SessionComposer({
     !(canSubmit && !compacting) &&
     canAdvanced &&
     !startupGoal &&
-    !!capabilities?.features[runningAction]?.available &&
-    (runningAction !== "queue-add" || queueDraftAllowed) &&
+    (runningAction === "queue-add" ? queueAddReady : steerReady) &&
     !(compacting && runningAction === "steer") &&
     valid &&
     !submitted;
@@ -726,17 +741,13 @@ export function SessionComposer({
         }
       />
     );
+  const showQueueAdd = queueAddOffered && (serialQueue || running || compacting);
+  const showSteer = steerOffered && (running || compacting);
+  const canQueueNext = canAdvanced && !startupGoal && queueAddReady && valid && !submitted;
+  const canSteerNext =
+    !compacting && canAdvanced && !startupGoal && steerReady && valid && !submitted;
   const advancedActions =
-    (serialQueue &&
-      capabilities?.sessionId === selected &&
-      capabilities.features["queue-add"]?.available) ||
-    ((running || compacting) &&
-      (live?.executionMode === "codex-follower"
-        ? capabilities?.features.steer?.available === true ||
-          capabilities?.features["queue-add"]?.available === true
-        : !isClaude ||
-          capabilities?.features.steer?.available ||
-          capabilities?.features["queue-add"]?.available)) ? (
+    showQueueAdd || showSteer ? (
       <DropdownMenu>
         <DropdownMenuTrigger
           type="button"
@@ -750,37 +761,45 @@ export function SessionComposer({
           <DropdownMenuGroup>
             <DropdownMenuLabel>{copy.advanced}</DropdownMenuLabel>
             <DropdownMenuSeparator />
-            <DropdownMenuItem
-              disabled={
-                compacting ||
-                !canAdvanced ||
-                !!startupGoal ||
-                !capabilities?.features.steer?.available ||
-                !valid ||
-                submitted
-              }
-              onClick={() => void send("steer")}
-            >
-              <CornerDownRight size={16} aria-hidden="true" />
-              {copy.steer}
-            </DropdownMenuItem>
-            <DropdownMenuItem
-              disabled={
-                !canAdvanced ||
-                !!startupGoal ||
-                !capabilities?.features["queue-add"]?.available ||
-                !queueDraftAllowed ||
-                !valid ||
-                submitted
-              }
-              onClick={() => void send("queue-add")}
-            >
-              <ListPlus size={16} aria-hidden="true" />
-              {copy.queueAdd}
-            </DropdownMenuItem>
+            {showSteer && (
+              <DropdownMenuItem
+                className="data-disabled:pointer-events-auto"
+                disabled={!canSteerNext}
+                title={
+                  canSteerNext
+                    ? undefined
+                    : compacting
+                      ? contextUsageCopyForSurface(locale, surface).compactingDetail
+                      : reason(draftReason || steer?.reason || queueCapabilities?.reason)
+                }
+                onClick={() => canSteerNext && void send("steer")}
+              >
+                <CornerDownRight size={16} aria-hidden="true" />
+                {copy.steer}
+              </DropdownMenuItem>
+            )}
+            {showQueueAdd && (
+              <DropdownMenuItem
+                className="data-disabled:pointer-events-auto"
+                disabled={!canQueueNext}
+                title={
+                  canQueueNext
+                    ? undefined
+                    : reason(draftReason || queueAdd?.reason || queueCapabilities?.reason)
+                }
+                onClick={() => canQueueNext && void send("queue-add")}
+              >
+                <ListPlus size={16} aria-hidden="true" />
+                {copy.queueAdd}
+              </DropdownMenuItem>
+            )}
           </DropdownMenuGroup>
-          <DropdownMenuSeparator />
-          <p className="px-1.5 py-1 text-xs leading-5 text-muted-foreground">{layout.queue}</p>
+          {showQueueAdd && (
+            <>
+              <DropdownMenuSeparator />
+              <p className="px-1.5 py-1 text-xs leading-5 text-muted-foreground">{layout.queue}</p>
+            </>
+          )}
         </DropdownMenuContent>
       </DropdownMenu>
     ) : null;

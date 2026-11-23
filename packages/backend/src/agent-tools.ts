@@ -127,7 +127,8 @@ const CHANNELS: Record<string, Channel[]> = {
   "open-claw": ["official-installer", "npm", "pnpm", "bun", "desktop-app"],
   hermes: ["official-installer", "desktop-app", "nix"],
   "grok-build": ["official-installer", "npm"],
-  antigravity: [],
+  // Antigravity App does not include the CLI; `agy acp` comes with the CLI's official installer.
+  antigravity: ["official-installer"],
   // Devin Desktop bundles its own CLI and updates it with the app.
   devin: ["official-installer", "homebrew"],
 };
@@ -642,6 +643,9 @@ export class AgentTools {
         devin: shell
           ? "irm https://static.devin.ai/cli/setup.ps1 | iex"
           : "curl -fsSL https://cli.devin.ai/install.sh | bash",
+        antigravity: shell
+          ? "irm https://antigravity.google/cli/install.ps1 | iex"
+          : "curl -fsSL https://antigravity.google/cli/install.sh | bash",
       };
       return commands[spec.agent] || null;
     }

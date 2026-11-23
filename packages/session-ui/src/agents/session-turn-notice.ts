@@ -1,7 +1,8 @@
 import type { ConversationSessionSummary, Live } from "@agentkib/web-client";
+import { antigravityTurnNotice } from "./antigravity/turn-notice";
 import { devinTurnNotice } from "./devin/turn-notice";
 
-const notices = [devinTurnNotice];
+const notices = [devinTurnNotice, antigravityTurnNotice];
 
 export function sessionTurnNotice({
   current,

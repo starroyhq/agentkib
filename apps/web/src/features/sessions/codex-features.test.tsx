@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { composerAddCopy } from "@agentkib/session-ui";
 import {
   sessionProviderCapabilities,
+  WebClient,
   type SessionCapabilities,
   type SessionSettings,
   type UploadedAttachment,
@@ -40,6 +41,8 @@ beforeEach(() => {
     },
     live: { status: "idle" },
     client: {
+      codexQueue: vi.fn().mockResolvedValue({ data: [] }),
+      sessionQueue: WebClient.prototype.sessionQueue,
       uploadAttachment: vi.fn().mockResolvedValue(uploaded),
       request,
       sessionSettings: vi.fn((sessionId: string) =>
@@ -183,6 +186,7 @@ describe("Codex composer", () => {
   });
 
   it("blocks send and steer during compaction while keeping explicit queueing and native stop available", async () => {
+    state.current = { id: "s", agent: "codex" } as typeof state.current;
     state.message = "next";
     state.live = {
       ...state.live!,
@@ -255,6 +259,7 @@ describe("Codex composer", () => {
     ["queue-add", "加入队列（将自动执行）"],
     ["steer", "追加到当前轮次"],
   ])("sends text-only %s only during a running turn", async (action, label) => {
+    state.current = { id: "s", agent: "codex" } as typeof state.current;
     state.message = "next";
     const view = render(<SessionComposer />);
     expect(screen.queryByRole("button", { name: "更多操作" })).not.toBeInTheDocument();
@@ -854,7 +859,7 @@ it("does not delete a staged attachment while its send outcome is unknown", asyn
   expect(state.client.request).not.toHaveBeenCalled();
 });
 
-it("keeps queued attachment messages read-only while allowing deletion", async () => {
+it("keeps attachments read-only and honors the host's per-item queue grants", async () => {
   state = {
     ...state,
     current: {
@@ -875,7 +880,17 @@ it("keeps queued attachment messages read-only while allowing deletion", async (
     },
     client: Object.assign(state.client, {
       codexQueue: vi.fn().mockResolvedValue({
-        data: [{ id: "queued", text: "Image description", hasAttachments: true }],
+        data: [
+          { id: "queued", text: "Image description", hasAttachments: true },
+          {
+            id: "protected",
+            text: "Protected turn",
+            actions: {
+              update: { available: false, reason: "session-busy" },
+              delete: { available: false, reason: "session-busy" },
+            },
+          },
+        ],
       }),
       request: vi.fn().mockResolvedValue({ available: true, workspaces: [] }),
     }),
@@ -884,9 +899,16 @@ it("keeps queued attachment messages read-only while allowing deletion", async (
   render(<SessionTools />);
   fireEvent.click(screen.getByRole("button", { name: "会话操作" }));
   await screen.findByText("Image description");
-  expect(screen.getByRole("button", { name: "修改" })).toBeDisabled();
+  const [attachmentEdit, protectedEdit] = screen.getAllByRole("button", { name: "修改" });
+  const [attachmentDelete, protectedDelete] = screen.getAllByRole("button", { name: "移除" });
+  expect(attachmentEdit).toBeDisabled();
   expect(screen.getByText("含附件的待发消息暂不支持编辑正文，可删除后重新添加。")).toBeVisible();
-  expect(screen.getByRole("button", { name: "移除" })).toBeEnabled();
+  expect(attachmentDelete).toBeEnabled();
+  expect(protectedEdit).toBeDisabled();
+  expect(protectedDelete).toBeDisabled();
+  expect(protectedDelete).toHaveAttribute("title", sessionReason("zh-CN", "session-busy").text);
+  fireEvent.click(protectedDelete!);
+  expect(state.runSessionAction).not.toHaveBeenCalled();
 });
 
 it("drains a queue invalidation received while an older queue read is pending", async () => {
@@ -1035,6 +1057,9 @@ it("clears the previous queue on session change and ignores its pending response
   };
   view.rerender(<SessionTools open />);
   expect(screen.queryByText("Previous session message")).not.toBeInTheDocument();
+  expect(codexQueue).toHaveBeenCalledTimes(2);
+  state = { ...state, capabilities: { ...state.capabilities!, sessionId: "next" } };
+  view.rerender(<SessionTools open />);
   expect(codexQueue).toHaveBeenLastCalledWith("next", expect.any(AbortSignal));
 
   await act(async () => finishOld(oldQueue));

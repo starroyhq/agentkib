@@ -1,5 +1,6 @@
 import type { ClaudePermissionMode, DevinPermissionMode } from "@agentkib/web-client";
 import type { InteractionLocale } from "../interaction-model";
+import { antigravityPermissionCopy, antigravityPermissions } from "./antigravity/permissions";
 import { claudePermissionCopy, claudePermissions } from "./claude-code/permissions";
 import { codexPermissionCopy, codexPermissions } from "./codex/permissions";
 import { deepSeekHarnessPermissions } from "./deepseek-harness/permissions";
@@ -40,6 +41,7 @@ const permissions = {
   "claude-code": claudePermissions,
   "deepseek-harness": deepSeekHarnessPermissions,
   devin: devinPermissions,
+  antigravity: antigravityPermissions,
 };
 
 export function sessionPermissionDescriptor(
@@ -55,6 +57,7 @@ export function newSessionPermissionCopy(locale: InteractionLocale) {
   return {
     codex: codexPermissionCopy(locale),
     devin: devinPermissionCopy(locale),
+    antigravity: antigravityPermissionCopy(locale),
     "claude-code": claudePermissionCopy(locale),
   };
 }

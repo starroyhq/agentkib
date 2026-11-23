@@ -14,7 +14,7 @@ import {
   type SessionCollection,
   type SubagentCatalog,
 } from "@agentkib/runtime-protocol";
-import { CodexSessions } from "./agents/codex/codex-sessions";
+import { CodexSessions, type NativeSessionSource } from "./agents/codex/codex-sessions";
 import { ClaudeSessions } from "./agents/claude/claude-sessions";
 import { GrokSessions } from "./grok-sessions";
 import { OpenClawSessions } from "./openclaw-sessions";
@@ -319,6 +319,26 @@ export class SessionReaders {
   verifiedClaudeControlTarget(nativeRef: string, workspace: string): string {
     return this.#verifiedClaudeControlSource(nativeRef, workspace).transcript;
   }
+
+  /** A first managed turn can be visible before there is any transcript to verify. */
+  claudeFirstTranscript(nativeRef: string, workspace: string): string | null {
+    return (
+      this.#verifiedClaudeControlSource(nativeRef, workspace, undefined, false, true)?.transcript ??
+      null
+    );
+  }
+
+  async claudeFirstEvents(
+    nativeRef: string,
+    workspace: string,
+    count: number,
+    retain: boolean,
+  ): Promise<ConversationEventPage | null> {
+    const source = this.#verifiedClaudeControlSource(nativeRef, workspace, undefined, false, true);
+    return source
+      ? this.#readEvents(source.session, workspace, null, count, source.transcript, retain)
+      : null;
+  }
   /** A native EnterWorktree move keeps its original UUID and transcript, not its opening cwd. */
   verifyClaudeBridgeWorktree(
     nativeId: string,
@@ -493,8 +513,22 @@ export class SessionReaders {
     nativeRef: string,
     workspace: string,
     share?: ClaudeControlMetadataShare,
+    allowMissingDirectory?: boolean,
+  ): NativeSessionSource;
+  #verifiedClaudeControlSource(
+    nativeRef: string,
+    workspace: string,
+    share: undefined,
+    allowMissingDirectory: false,
+    allowUnwrittenTranscript: true,
+  ): NativeSessionSource | null;
+  #verifiedClaudeControlSource(
+    nativeRef: string,
+    workspace: string,
+    share?: ClaudeControlMetadataShare,
     allowMissingDirectory = false,
-  ) {
+    allowUnwrittenTranscript = false,
+  ): NativeSessionSource | null {
     if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(nativeRef))
       throw new Error("unverified-session-identity");
     const sessionId = nativeRef.toLowerCase();
@@ -502,10 +536,21 @@ export class SessionReaders {
       ? (value: string) => recordedDirectory(value).path
       : canonicalizePath;
     const expectedWorkspace = canonicalize(workspace);
-    const listing = share ? (share.current ??= this.#claude.list(null)) : this.#claude.list(null);
+    const listing = allowUnwrittenTranscript
+      ? this.#claude.list(null, nativeRef)
+      : share
+        ? (share.current ??= this.#claude.list(null))
+        : this.#claude.list(null);
     const source = listing.sessions.find(
       (candidate) => candidate.session.native_ref.toLowerCase() === sessionId,
     );
+    if (
+      !source &&
+      allowUnwrittenTranscript &&
+      !listing.incomplete &&
+      !listing.hasTranscriptCandidate
+    )
+      return null;
     if (
       !source ||
       source.session.sidechain ||
@@ -519,7 +564,9 @@ export class SessionReaders {
         throw new Error("Claude transcript symlink unsupported");
       const fd = openSync(transcript, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
       try {
-        if (!fstatSync(fd).isFile()) throw new Error("unverified-session-identity");
+        const info = fstatSync(fd);
+        if (!info.isFile()) throw new Error("unverified-session-identity");
+        if (allowUnwrittenTranscript && info.size === 0) return false;
         const buffer = Buffer.alloc(256 * 1024);
         const size = readSync(fd, buffer, 0, buffer.length, 0);
         for (const line of buffer.subarray(0, size).toString("utf8").split("\n")) {
@@ -538,7 +585,7 @@ export class SessionReaders {
           if (typeof value.cwd === "string") {
             if (pathIdentity(canonicalize(value.cwd)) !== pathIdentity(expectedWorkspace))
               throw new Error("session-workspace-mismatch");
-            return;
+            return true;
           }
         }
       } finally {
@@ -546,8 +593,7 @@ export class SessionReaders {
       }
       throw new Error("unverified-session-identity");
     };
-    verifyHeader();
-    return source;
+    return verifyHeader() ? source : null;
   }
   claudeControlWorkspace(nativeRef: string, workspaceRoot: string): string {
     if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(nativeRef))

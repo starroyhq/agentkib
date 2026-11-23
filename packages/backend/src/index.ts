@@ -1100,7 +1100,9 @@ export class TypeScriptBackend {
                         index.generation() !== generation
                       )
                         throw new Error("session-unavailable");
-                      return JSON.stringify([String(generation), version]);
+                      return version === null
+                        ? null
+                        : JSON.stringify([String(generation), version]);
                     },
                     readHistory,
                   )

@@ -59,8 +59,12 @@ function runnerFor(
   });
   return { runner, events, snapshots };
 }
-const send = (f: Fake, runner: ClaudeManagedRunnerProcess) =>
-  runner.send(f.executable, "synthetic turn", randomUUID(), runner.snapshot().revision);
+const submittedText = "synthetic turn";
+async function send(f: Fake, runner: ClaudeManagedRunnerProcess) {
+  const turnId = randomUUID();
+  await runner.send(f.executable, submittedText, turnId, runner.snapshot().revision);
+  return turnId;
+}
 const settle = (runner: ClaudeManagedRunnerProcess, status: string) =>
   expect.poll(() => runner.snapshot().status, { timeout: 15_000 }).toBe(status);
 /** The control responses the fake CLI received on stdin. */
@@ -415,7 +419,8 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))(
           ],
         });
         const { runner, snapshots, events } = runnerFor(f);
-        await send(f, runner);
+        const turnId = await send(f, runner);
+        const submitted = { id: turnId, kind: "user-message", content: submittedText };
         await expect
           .poll(() => runner.protocolDiagnostics.unattributedFrames?.user)
           .toBe(parents.length);
@@ -434,6 +439,7 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))(
         });
         expect(events.filter((event) => event.revision >= pending.revision)).toEqual([]);
         expect(events.filter((event) => event.type === "item-upsert")).toMatchObject([
+          { payload: submitted },
           { payload: { id: mainToolId, tool_name: "Bash", tool_status: "running" } },
         ]);
         expect(answers(f)).toEqual([]);
@@ -463,6 +469,7 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))(
         const items = events.flatMap(({ type, payload }) =>
           type === "item-upsert" ? [payload] : type === "snapshot" ? (payload.items ?? []) : [],
         );
+        expect(items.filter((item) => item.kind === "user-message")).toMatchObject([submitted]);
         expect(items.filter((item) => item.kind === "tool-summary")).toMatchObject([
           { id: mainToolId, tool_name: "Bash", tool_status: "running" },
           { id: mainToolId, tool_name: "Bash", tool_status: "completed" },
@@ -542,12 +549,15 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))(
           ],
         });
         const { runner, events } = runnerFor(f);
-        await send(f, runner);
+        const turnId = await send(f, runner);
         await settle(runner, "idle");
         const items = events.flatMap(({ type, payload }) =>
           type === "item-upsert" ? [payload] : type === "snapshot" ? (payload.items ?? []) : [],
         ) as Array<Record<string, any>>;
-        expect(items.some((item) => item.kind === "user-message")).toBe(false);
+        expect(items.filter((item) => item.kind === "user-message")).toMatchObject([
+          { id: turnId, kind: "user-message", content: submittedText },
+        ]);
+        expect(items.some((item) => item.id === promptId)).toBe(false);
         expect(items.some((item) => JSON.stringify(item).includes("sub-agent narration"))).toBe(
           false,
         );

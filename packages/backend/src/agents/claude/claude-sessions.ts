@@ -8,6 +8,7 @@ import {
   readSync,
   statSync,
   type BigIntStats,
+  type Dirent,
 } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
@@ -55,7 +56,11 @@ function readable(file: string): boolean {
     if (fd !== undefined) closeSync(fd);
   }
 }
-function scan(root: string, errors: string[]): string[] {
+function scan(
+  root: string,
+  errors: string[],
+  observeEntry?: (entry: Dirent, file: string) => void,
+): string[] {
   const files: string[] = [];
   const visit = (directory: string, level: number) => {
     if (level > 3) return;
@@ -68,6 +73,7 @@ function scan(root: string, errors: string[]): string[] {
     }
     for (const entry of entries) {
       const value = path.join(directory, entry.name);
+      observeEntry?.(entry, value);
       if (entry.isSymbolicLink()) continue;
       if (entry.isDirectory()) visit(value, level + 1);
       else if (entry.isFile()) files.push(value);
@@ -350,7 +356,7 @@ export class ClaudeSessions {
   home() {
     return this.#config().dir;
   }
-  list(workspace: string | null) {
+  list(workspace: string | null, pendingNativeId?: string) {
     // Many sessions share a cwd. Retain probe checks only within this scan so
     // adding or removing the marker is visible on the next request.
     const probes = new Map<string, boolean>();
@@ -376,10 +382,24 @@ export class ClaudeSessions {
       errors: string[] = [],
       sessions = new Map<string, NativeSessionSource>();
     let paths: string[] = [];
+    let hasTranscriptCandidate = false;
+    const expectedFile = pendingNativeId && `${pendingNativeId.toLowerCase()}.jsonl`;
     try {
       if (!statSync(projects).isDirectory())
         throw new Error("Claude projects path is not a directory");
-      paths = scan(projects, errors);
+      paths = scan(
+        projects,
+        errors,
+        expectedFile
+          ? (entry, file) => {
+              if (entry.name.toLowerCase() !== expectedFile) return;
+              const metadata = lstatSync(file, { throwIfNoEntry: false });
+              // Seen during the CLI's first append: a zero-byte regular file still has no history.
+              if (metadata && (!metadata.isFile() || metadata.size !== 0))
+                hasTranscriptCandidate = true;
+            }
+          : undefined,
+      );
     } catch (error) {
       // An absent installation is a complete empty source. Unreadable or
       // malformed source roots cannot prove that previously indexed rows vanished.
@@ -495,6 +515,7 @@ export class ClaudeSessions {
           (value) => isFile(value.transcript) && !probeWorkspace(value.cwd) && belongs(value.cwd),
         ),
       incomplete: errors.length > 0,
+      ...(expectedFile ? { hasTranscriptCandidate } : {}),
     };
   }
 }

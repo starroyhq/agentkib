@@ -848,8 +848,8 @@ describe("NewSessionComposer", () => {
     });
   });
 
-  it.each(["times out", "is cancelled"] as const)(
-    "keeps Claude's first message as an unsent draft when the new session catalog wait %s",
+  it.each(["times out", "is cancelled", "succeeds late"] as const)(
+    "preserves Claude's first message when the new session catalog wait %s",
     async (end) => {
       const sessionId = `claude-missing-from-catalog-${end}`;
       const retryId = "claude-retry";
@@ -900,11 +900,25 @@ describe("NewSessionComposer", () => {
             files: [file],
             send: false,
           });
-          await act(async () => vi.advanceTimersByTimeAsync(10_000));
+          await act(async () => vi.advanceTimersByTimeAsync(50_000));
           expect(open).not.toHaveBeenCalled();
           return;
         }
-        await act(async () => vi.advanceTimersByTimeAsync(10_000));
+        await act(async () => vi.advanceTimersByTimeAsync(49_999));
+        expect(send()).toBeDisabled();
+        expect(screen.queryByText(copy.notListed)).not.toBeInTheDocument();
+        if (end === "succeeds late") {
+          view.rerender(<Composer sessions={[session]} />);
+          expect(open).toHaveBeenCalledExactlyOnceWith(session);
+          expect(takeNewSessionDraft(sessionId)).toEqual({
+            text: "Review the routes",
+            files: [file],
+            send: true,
+          });
+          expect(takeNewSessionDraft(sessionId)).toBeUndefined();
+          return;
+        }
+        await act(async () => vi.advanceTimersByTimeAsync(1));
         expect(send()).toBeEnabled();
         expect(message()).toHaveValue("Review the routes");
         expect(screen.getByText("spec.md")).toBeVisible();

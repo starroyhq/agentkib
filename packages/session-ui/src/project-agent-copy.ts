@@ -6,6 +6,7 @@ export type ProjectAgentCopy = {
   title: string;
   hint: string;
   designate: string;
+  designatePermission: string;
   /** What the Project Agent may decide for its workers; none unless ticked. */
   decides: string;
   approveFiles: string;
@@ -43,6 +44,7 @@ const copy: Record<"zh-CN" | "zh-Hant" | "ja-JP" | "en-US", ProjectAgentCopy> = 
     title: "项目 Agent",
     hint: "这个会话可以给你指派的 Worker 派任务，并接收它们的汇报。",
     designate: "设为项目 Agent…",
+    designatePermission: "设为项目 Agent 需要此设备具备完全访问、发送、会话管理和高级控制权限。",
     decides: "项目 Agent 可以替你决定",
     approveFiles: "Worker 修改文件的审批",
     approveCommands: "Worker 在沙箱外运行命令的审批",
@@ -87,8 +89,7 @@ const copy: Record<"zh-CN" | "zh-Hant" | "ja-JP" | "en-US", ProjectAgentCopy> = 
       "report-undelivered": "汇报没有送达，已暂停委派。",
     },
     errors: {
-      "lead-requires-managed-claude":
-        "只有由 AgentKib 运行的 Claude Code 或 Codex 会话、已连接终端的 Claude Code 会话，或所在 DSH 装有 AgentKib 插件 0.8.0 及以上的 DeepSeek Harness 会话，可以设为项目 Agent。",
+      "lead-requires-managed-claude": "AgentKib 能控制此会话后，才能将它设为项目 Agent。",
       "session-is-a-worker": "这个会话是另一个项目 Agent 的 Worker。",
       "lead-exists": "这个会话已经是项目 Agent。",
       "worker-unavailable": "这个 Worker 已经不在项目 Agent 名下。",
@@ -100,6 +101,7 @@ const copy: Record<"zh-CN" | "zh-Hant" | "ja-JP" | "en-US", ProjectAgentCopy> = 
     title: "專案 Agent",
     hint: "這個對話可以給你指派的 Worker 派任務，並接收它們的回報。",
     designate: "設為專案 Agent…",
+    designatePermission: "設為專案 Agent 需要此裝置具備完全存取、傳送、會話管理和進階控制權限。",
     decides: "專案 Agent 可以替你決定",
     approveFiles: "Worker 修改檔案的核准",
     approveCommands: "Worker 在沙箱外執行指令的核准",
@@ -144,8 +146,7 @@ const copy: Record<"zh-CN" | "zh-Hant" | "ja-JP" | "en-US", ProjectAgentCopy> = 
       "report-undelivered": "回報沒有送達，已暫停委派。",
     },
     errors: {
-      "lead-requires-managed-claude":
-        "只有由 AgentKib 執行的 Claude Code 或 Codex 對話、已連線終端的 Claude Code 對話，或所在 DSH 裝有 AgentKib 外掛 0.8.0 以上的 DeepSeek Harness 對話，可以設為專案 Agent。",
+      "lead-requires-managed-claude": "AgentKib 能控制此對話後，才能將它設為專案 Agent。",
       "session-is-a-worker": "這個對話是另一個專案 Agent 的 Worker。",
       "lead-exists": "這個對話已經是專案 Agent。",
       "worker-unavailable": "這個 Worker 已經不在專案 Agent 名下。",
@@ -157,6 +158,8 @@ const copy: Record<"zh-CN" | "zh-Hant" | "ja-JP" | "en-US", ProjectAgentCopy> = 
     title: "プロジェクト Agent",
     hint: "この会話は、あなたが割り当てたワーカーにタスクを任せ、結果の報告を受け取れます。",
     designate: "プロジェクト Agent にする…",
+    designatePermission:
+      "プロジェクト Agent に設定するには、この端末にフルアクセス、送信、会話管理、高度な操作の権限が必要です。",
     decides: "プロジェクト Agent に任せること",
     approveFiles: "ワーカーのファイル変更の承認",
     approveCommands: "ワーカーがサンドボックス外で実行するコマンドの承認",
@@ -204,7 +207,7 @@ const copy: Record<"zh-CN" | "zh-Hant" | "ja-JP" | "en-US", ProjectAgentCopy> = 
     },
     errors: {
       "lead-requires-managed-claude":
-        "AgentKib が実行する Claude Code または Codex の会話、接続済みターミナルの Claude Code の会話、または AgentKib プラグイン 0.8.0 以降を入れた DSH の DeepSeek Harness の会話だけがプロジェクト Agent になれます。",
+        "AgentKib がこの会話を制御できるようになると、プロジェクト Agent に設定できます。",
       "session-is-a-worker": "この会話は別のプロジェクト Agent のワーカーです。",
       "lead-exists": "この会話はすでにプロジェクト Agent です。",
       "worker-unavailable": "このワーカーはもうプロジェクト Agent の下にありません。",
@@ -216,6 +219,8 @@ const copy: Record<"zh-CN" | "zh-Hant" | "ja-JP" | "en-US", ProjectAgentCopy> = 
     title: "Project Agent",
     hint: "This session can give tasks to the workers you assign and receive their reports.",
     designate: "Make Project Agent…",
+    designatePermission:
+      "Making a Project Agent requires full access and permission to send, manage sessions, and use advanced controls.",
     decides: "The Project Agent may decide",
     approveFiles: "Workers' file change approvals",
     approveCommands: "Workers' approvals to run commands outside the sandbox",
@@ -263,7 +268,7 @@ const copy: Record<"zh-CN" | "zh-Hant" | "ja-JP" | "en-US", ProjectAgentCopy> = 
     },
     errors: {
       "lead-requires-managed-claude":
-        "Only a Claude Code or Codex session that AgentKib runs, a Claude Code session with its terminal connected, or a DeepSeek Harness session whose DSH has AgentKib's plugin 0.8.0 or later can be a Project Agent.",
+        "AgentKib needs control of this session before it can become a Project Agent.",
       "session-is-a-worker": "This session is another Project Agent's worker.",
       "lead-exists": "This session is already a Project Agent.",
       "worker-unavailable": "This worker no longer belongs to the Project Agent.",

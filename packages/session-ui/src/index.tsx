@@ -146,6 +146,7 @@ export {
   HistoryReferenceChips,
 } from "./conversation/history/history-search-controls";
 export { historyCopy, historySearchCopy } from "./conversation/history/history-copy";
+export { sessionHistoryEntry } from "./agents/session-history";
 export {
   createHistoryOpenLock,
   historySessionTarget,
@@ -327,6 +328,7 @@ export {
 } from "./home-sessions";
 export { codexPolicyLabel } from "./agents/codex/permissions";
 export { dshPolicyLabel } from "./agents/deepseek-harness/permissions";
+export { sessionContinuationRegistration } from "./agents/session-continuation";
 export type { PermissionLabel as PolicyLabel } from "./agents/session-permissions";
 export { commandPrompt, type CommandPromptRequest } from "./command-prompts";
 export {

@@ -104,6 +104,7 @@ describe("shared read-only session continuation", () => {
     );
     const button = screen.getByRole("button", { name: copy.copy });
     expect(button).toBeDisabled();
+    expect(button).toHaveAttribute("title", screen.getByRole("status").textContent);
     expect(button).toHaveClass("min-h-11", "w-full", "sm:w-auto");
     expect(screen.getAllByText("Session restriction")).toHaveLength(1);
     expect(screen.getByRole("group")).toHaveAccessibleDescription(copy.help);
@@ -148,6 +149,7 @@ describe("shared read-only session continuation", () => {
     const copy = screen.getByRole("button", { name: "Copy resume command" });
     await screen.findByText("Could not load the resume command. Try again.");
     expect(copy).toBeDisabled();
+    expect(copy).toHaveAttribute("title", "Could not load the resume command. Try again.");
     expect(screen.queryByText(/private command/)).not.toBeInTheDocument();
     const retry = screen.getByRole("button", { name: "Reload command" });
     expect(retry).toHaveClass("min-h-11");

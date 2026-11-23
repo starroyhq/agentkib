@@ -17,7 +17,11 @@ import { afterEach, expect, it, vi } from "vitest";
 import { CodexAppServerSession } from "../../../packages/backend/src/agents/codex/codex-app-server";
 import { CodexDesktopApp } from "../../../packages/backend/src/agents/codex/codex-desktop-app";
 import { CodexFollowerBridge } from "../../../packages/backend/src/agents/codex/codex-follower-bridge";
-import { CodexFollowerConnection } from "../../../packages/backend/src/agents/codex/codex-follower-connection";
+import {
+  CodexDesktopConnectionError,
+  CodexFollowerConnection,
+} from "../../../packages/backend/src/agents/codex/codex-follower-connection";
+import * as codexFollowerLocks from "../../../packages/backend/src/agents/codex/codex-follower-operation-lock";
 import { CodexFollowerState } from "../../../packages/backend/src/agents/codex/codex-follower-state";
 import { CodexRuntimePreflight } from "../../../packages/backend/src/agents/codex/codex-runtime-preflight";
 import { CodexSessions } from "../../../packages/backend/src/agents/codex/codex-sessions";
@@ -99,7 +103,116 @@ class ReleasedWorkerServer extends EventEmitter {
   }
 }
 
-async function fixture(owner: "available" | "missing" | "released", active = true) {
+function desktopOwnerFixture(endpoint: string, nativeId: string, oldDesktop: boolean) {
+  const ownerClientId = "fixture-owner";
+  let ownerAvailable = false;
+  let revision = 1;
+  let turns: unknown[] = [];
+  let requests: unknown[] = [];
+  let running = false;
+  let onReadable: (() => void) | undefined;
+  const received: unknown[] = [];
+  const startTurn = vi.fn();
+  const discovery = vi.fn(() => (ownerAvailable ? { handledByClientId: ownerClientId } : {}));
+  const queueSnapshot = () => {
+    received.push({
+      type: "broadcast",
+      sourceClientId: ownerClientId,
+      method: "thread-stream-state-changed",
+      version: 11,
+      params: {
+        conversationId: nativeId,
+        hostId: "local",
+        change: {
+          type: "snapshot",
+          revision,
+          conversationState: {
+            id: nativeId,
+            hostId: "local",
+            requests,
+            threadRuntimeStatus: { type: running ? "active" : "idle" },
+            turns,
+          },
+        },
+      },
+    });
+  };
+  const connect = vi
+    .spyOn(CodexFollowerConnection, "connectInstalled")
+    .mockImplementation(async () => {
+      if (oldDesktop) throw new CodexDesktopConnectionError("codex-desktop-version-too-old");
+      const connection = {
+        endpoint,
+        clientId: "fixture-follower",
+        connected: true,
+        supportsThreadSettings: false,
+        get hasPendingMessages() {
+          return received.length > 0;
+        },
+        disconnect() {
+          connection.connected = false;
+          received.length = 0;
+        },
+        onReadable(listener: () => void) {
+          onReadable = listener;
+          return () => {
+            onReadable = undefined;
+          };
+        },
+        async receive() {
+          return received.shift() ?? null;
+        },
+        async broadcast(_method: string, params: { following: boolean }) {
+          if (params.following) queueSnapshot();
+        },
+        async request(
+          method: string,
+          params: unknown,
+          target?: string,
+          _notification?: (message: unknown) => void,
+          dispatch?: () => void,
+        ) {
+          if (method === "thread-owner-discovery") {
+            const owner = discovery(params);
+            if (!owner.handledByClientId)
+              throw new CodexDesktopConnectionError("codex-desktop-owner-missing");
+            return owner;
+          }
+          if (method !== "thread-follower-start-turn")
+            throw new Error(`unexpected IPC method ${method}`);
+          dispatch?.();
+          startTurn(params, target);
+          return { method, handledByClientId: ownerClientId, result: {} };
+        },
+      };
+      return connection as unknown as CodexFollowerConnection;
+    });
+  // Only this lock depends on the real desktop platform and writes to the user's home.
+  vi.spyOn(codexFollowerLocks, "acquireCodexFollowerOperationLock").mockReturnValue(() => {});
+  return {
+    connect,
+    discovery,
+    startTurn,
+    nativeId,
+    exposeOwner() {
+      ownerAvailable = true;
+    },
+    publish(turn: { status: string; turnId: string; items: unknown[] }, pending: unknown[] = []) {
+      revision += 1;
+      turns = [turn];
+      requests = pending;
+      running = turn.status === "inProgress";
+      queueSnapshot();
+      onReadable?.();
+    },
+  };
+}
+
+async function fixture(
+  owner: "available" | "missing" | "released" | "no-desktop-owner" | "old-desktop",
+  active = true,
+  { indexSessions = false } = {},
+) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "agentkib-project-follower-")));
   disposers.push(() => rmSync(root, { recursive: true, force: true }));
   const workspace = join(root, "workspace");
@@ -167,9 +280,10 @@ async function fixture(owner: "available" | "missing" | "released", active = tru
     executable,
     reason: null,
   });
-  vi.spyOn(CodexDesktopApp.prototype, "running").mockResolvedValue(false);
-  vi.spyOn(CodexDesktopApp.prototype, "openThread").mockResolvedValue(false);
-  vi.spyOn(CodexFollowerConnection, "supported").mockReturnValue(owner === "available");
+  const fakeDesktop = owner === "no-desktop-owner" || owner === "old-desktop";
+  vi.spyOn(CodexDesktopApp.prototype, "running").mockResolvedValue(fakeDesktop);
+  const openThread = vi.spyOn(CodexDesktopApp.prototype, "openThread").mockResolvedValue(false);
+  vi.spyOn(CodexFollowerConnection, "supported").mockReturnValue(owner !== "missing");
   const writer = vi
     .spyOn(CodexAppServerSession, "start")
     .mockRejectedValue(new Error("unexpected writer"));
@@ -219,10 +333,17 @@ async function fixture(owner: "available" | "missing" | "released", active = tru
     }),
     mutate,
   };
-  const follow = vi
-    .spyOn(CodexFollowerBridge, "connect")
-    .mockResolvedValue(bridge as unknown as CodexFollowerBridge);
-  const backend = await startBackend({ data, workspace, environment });
+  const desktop = fakeDesktop
+    ? desktopOwnerFixture(join(codexHome, "ipc", "ipc.sock"), nativeId, owner === "old-desktop")
+    : undefined;
+  const follow = vi.spyOn(CodexFollowerBridge, "connect");
+  if (!desktop) follow.mockResolvedValue(bridge as unknown as CodexFollowerBridge);
+  const backend = await startBackend({
+    data,
+    workspace,
+    environment,
+    indexSessions: indexSessions || fakeDesktop,
+  });
   disposers.push(backend.close);
 
   const store = new BackendStore(join(data, "agentkib.db"));
@@ -261,8 +382,14 @@ async function fixture(owner: "available" | "missing" | "released", active = tru
       return assignWorkers.call(this, input);
     },
   );
-  const request = (params: Record<string, unknown>, target?: "claude-code") =>
-    backend.rpc(RUNTIME_METHODS.sessionRequest, { host: { request: params, target } });
+  const request = (
+    params: Record<string, unknown>,
+    target?: "claude-code",
+    restrictCodexNativePolicy?: true,
+  ) =>
+    backend.rpc(RUNTIME_METHODS.sessionRequest, {
+      host: { request: params, target, restrictCodexNativePolicy },
+    });
   await request(
     { operation: "lead-assign-workers", sessionId: leadId, deviceId, workers: [workerId] },
     "claude-code",
@@ -284,6 +411,9 @@ async function fixture(owner: "available" | "missing" | "released", active = tru
     nativeId,
     nativeCalls,
     data,
+    desktop,
+    openThread,
+    workspace,
   };
 }
 
@@ -299,18 +429,20 @@ it.each([
   },
 ])("sends to an idle indexed Worker using its current policy ($sandbox)", async (scenario) => {
   const f = await fixture("released", false);
-  if (scenario.choice) {
-    const live = (await f.request({
+  const live = () =>
+    f.request({
       operation: "live",
       sessionId: f.workerId,
       experimentalEnabled: true,
-    })) as { runtimeBootId: string; revision: number };
+    }) as Promise<{ runtimeBootId: string; revision: number }>;
+  if (scenario.choice) {
+    const state = await live();
     expect(
       await f.request({
         operation: "settings",
         sessionId: f.workerId,
-        runtimeBootId: live.runtimeBootId,
-        expectedRevision: live.revision,
+        runtimeBootId: state.runtimeBootId,
+        expectedRevision: state.revision,
         requestId: randomUUID(),
         deviceId,
         experimentalEnabled: true,
@@ -319,6 +451,27 @@ it.each([
     ).toMatchObject({ accepted: true, appliesTo: "next-turn" });
     expect(readManagedRecord(f.data, f.workerId)).toMatchObject({ policy_id: scenario.choice });
   }
+  const state = await live();
+  expect(
+    await f.request(
+      {
+        operation: "send",
+        sessionId: f.workerId,
+        runtimeBootId: state.runtimeBootId,
+        expectedRevision: state.revision,
+        requestId: randomUUID(),
+        deviceId: "restricted-device",
+        experimentalEnabled: true,
+        text: "Restricted host send",
+      },
+      undefined,
+      true,
+    ),
+  ).toMatchObject({
+    accepted: false,
+    controlOutcome: "not-dispatched",
+    reason: "native-policy-full-access-required",
+  });
   expect(f.writer).not.toHaveBeenCalled();
   const text = "Send a task from the lead";
   const outcome = await f.call("worker_send", { ...worker, text });
@@ -420,4 +573,251 @@ it("shows a held writer lock without turn evidence as busy rather than idle", as
   expect(state.status).not.toBe("idle");
   expect(state).not.toHaveProperty("noProgressForMs");
   expect(f.writer).not.toHaveBeenCalled();
+});
+
+it("catches up once on a turn of an untouched indexed Worker that began after assignment", async () => {
+  const f = await fixture("missing", false, { indexSessions: true });
+  expect(readManagedRecord(f.data, f.workerId)).toBeNull();
+  const status = () => f.orchestration.status(leadId)!;
+  const joined = Date.parse(status().lanes[0]!.createdAt);
+  const timestamp = (offset: number) => new Date(joined + offset).toISOString();
+  const rollout = (offset: number, turn: string, type: string, message?: string) =>
+    f.append({
+      timestamp: timestamp(offset),
+      type: "event_msg",
+      payload: { type, turn_id: turn, ...(message === undefined ? {} : { message }) },
+    });
+  f.orchestration.pause(leadId);
+
+  // The first turn ends after assignment, but it started before the Worker joined.
+  const previousTurn = "before-assignment";
+  const joinedTurn = "after-assignment";
+  rollout(-30_000, previousTurn, "task_started");
+  rollout(1_000, previousTurn, "task_complete");
+  rollout(2_000, "unknown-start", "task_complete");
+  rollout(10_000, joinedTurn, "task_started");
+  await f.orchestration.catchUp(joined + 20_000);
+  expect(status().pendingReports).toEqual([]);
+
+  // The scanner must retain the start timestamp across an incremental rollout read.
+  rollout(21_000, joinedTurn, "agent_message", "Result from the indexed Worker");
+  rollout(30_000, joinedTurn, "task_complete");
+  await f.orchestration.catchUp(joined + 40_000);
+  expect(status().pendingReports).toEqual([]);
+  await f.orchestration.catchUp(joined + 50_000);
+  expect(status().pendingReports).toEqual([
+    expect.stringMatching(/turn ended: completed after 20s[\s\S]*Result from the indexed Worker/),
+  ]);
+  expect(status().lanes[0]!.reportedTurns).toEqual([joinedTurn]);
+  expect(await f.orchestration.lanes.endedTurns?.(f.workerId)).toEqual([
+    {
+      turnId: previousTurn,
+      outcome: "completed",
+      startedAt: timestamp(-30_000),
+      endedAt: timestamp(1_000),
+    },
+    {
+      turnId: joinedTurn,
+      outcome: "completed",
+      startedAt: timestamp(10_000),
+      endedAt: timestamp(30_000),
+    },
+  ]);
+
+  await f.orchestration.catchUp(joined + 60_000);
+  expect(status().pendingReports).toHaveLength(1);
+  expect(status().lanes[0]!.reportedTurns).toEqual([joinedTurn]);
+  expect(readManagedRecord(f.data, f.workerId)).toBeNull();
+  expect(f.follow).not.toHaveBeenCalled();
+  expect(f.writer).not.toHaveBeenCalled();
+});
+
+it("actively discovers an idle desktop owner after a read miss and forwards the worker turn", async () => {
+  const f = await fixture("no-desktop-owner", false);
+  const desktop = f.desktop!;
+  // An expired read miss cannot hide a passive connection attempt. The explicit
+  // live request below records a fresh miss before the owner becomes available.
+  vi.spyOn(Date, "now").mockReturnValue(f.time + 10_000);
+  const connections = desktop.connect.mock.calls.length;
+  await f.orchestration.catchUp();
+  expect(desktop.connect).toHaveBeenCalledTimes(connections);
+  await f.request({ operation: "live", sessionId: f.workerId });
+  expect(desktop.connect).toHaveBeenCalledTimes(connections + 1);
+  expect(desktop.discovery).toHaveBeenLastCalledWith({
+    hostId: "local",
+    conversationId: desktop.nativeId,
+  });
+
+  desktop.exposeOwner();
+  const result = await f.call("worker_send", { ...worker, text: "Work in the desktop thread" });
+  expect(result).toMatchObject({
+    accepted: true,
+    operation: "send",
+    requestId: expect.any(String),
+  });
+  expect(desktop.connect).toHaveBeenCalledTimes(connections + 2);
+  expect(desktop.startTurn).toHaveBeenCalledExactlyOnceWith(
+    {
+      conversationId: desktop.nativeId,
+      turnStart: {
+        request: {
+          threadId: desktop.nativeId,
+          clientUserMessageId: result.requestId,
+          input: [{ type: "text", text: "Work in the desktop thread", text_elements: [] }],
+        },
+      },
+    },
+    "fixture-owner",
+  );
+  expect(f.writer).not.toHaveBeenCalled();
+  expect(f.openThread).not.toHaveBeenCalled();
+
+  // Keep real reports pending so the fixture never needs a Claude runner.
+  f.orchestration.pause(leadId);
+  const rolloutEvent = (payload: Record<string, unknown>) =>
+    f.append({
+      timestamp: new Date(Date.now()).toISOString(),
+      type: "event_msg",
+      payload: { turn_id: turnId, ...payload },
+    });
+  rolloutEvent({ type: "task_started" });
+  const activeTurn = { turnId, status: "inProgress", items: [] };
+  desktop.publish(activeTurn, [
+    {
+      id: "question-1",
+      method: "item/tool/requestUserInput",
+      params: {
+        threadId: desktop.nativeId,
+        turnId,
+        questions: [
+          { id: "choice", question: "Pick one", options: [{ label: "A" }, { label: "B" }] },
+        ],
+      },
+    },
+  ]);
+  await vi.waitFor(async () => {
+    expect(await f.call("worker_read", worker)).toMatchObject({
+      status: "waiting-input",
+      waitingForUser: [
+        {
+          kind: "question",
+          id: "question-1",
+          youMayDecide: false,
+          questions: [{ id: "choice", question: "Pick one", options: ["A", "B"] }],
+        },
+      ],
+    });
+    expect(f.orchestration.status(leadId)?.pendingReports).toEqual([
+      expect.stringContaining("answer to its question"),
+    ]);
+  });
+  desktop.publish(activeTurn, [
+    {
+      id: "approval-1",
+      method: "item/commandExecution/requestApproval",
+      params: {
+        threadId: desktop.nativeId,
+        turnId,
+        command: "pwd",
+        cwd: f.workspace,
+        availableDecisions: ["accept", "decline"],
+      },
+    },
+  ]);
+  await vi.waitFor(async () => {
+    expect(await f.call("worker_read", worker)).toMatchObject({
+      status: "awaiting-approval",
+      waitingForUser: [
+        {
+          kind: "approval",
+          id: "approval-1",
+          approval: "command",
+          command: "pwd",
+          youMayDecide: false,
+        },
+      ],
+    });
+    expect(f.orchestration.status(leadId)?.pendingReports).toEqual([
+      expect.stringContaining("answer to its question"),
+      expect.stringContaining("waiting for the user's approval"),
+    ]);
+  });
+  // The owner reports state over IPC and records the reply in its native
+  // rollout. The lead report reads its reply from the verified history.
+  rolloutEvent({ type: "agent_message", message: "Desktop worker finished" });
+  rolloutEvent({ type: "task_complete" });
+  desktop.publish({
+    turnId,
+    status: "completed",
+    items: [{ id: "assistant-reply", type: "agentMessage", text: "Desktop worker finished" }],
+  });
+  await vi.waitFor(() => {
+    expect(f.orchestration.status(leadId)?.pendingReports).toEqual([
+      expect.stringContaining("answer to its question"),
+      expect.stringContaining("waiting for the user's approval"),
+      expect.stringMatching(/turn ended: completed[\s\S]*Desktop worker finished/),
+    ]);
+  });
+});
+
+it("opens an ownerless desktop thread only for the admitted Worker send", async () => {
+  const f = await fixture("no-desktop-owner", false);
+  const desktop = f.desktop!;
+  f.openThread.mockImplementation(async () => {
+    desktop.exposeOwner();
+    return true;
+  });
+
+  await f.orchestration.catchUp();
+  expect(f.openThread).not.toHaveBeenCalled();
+  const outcome = await f.call("worker_send", { ...worker, text: "Send through the desktop" });
+  expect(outcome).toMatchObject({ accepted: true, requestId: expect.any(String) });
+  expect(f.openThread).toHaveBeenCalledExactlyOnceWith(desktop.nativeId);
+  expect(desktop.startTurn).toHaveBeenCalledExactlyOnceWith(
+    {
+      conversationId: desktop.nativeId,
+      turnStart: {
+        request: {
+          threadId: desktop.nativeId,
+          clientUserMessageId: outcome.requestId,
+          input: [{ type: "text", text: "Send through the desktop", text_elements: [] }],
+        },
+      },
+    },
+    "fixture-owner",
+  );
+  expect(f.writer).not.toHaveBeenCalled();
+});
+
+it("reports an unavailable desktop socket without trying to open a Worker thread", async () => {
+  const f = await fixture("no-desktop-owner", false);
+  f.desktop!.connect.mockRejectedValue(
+    new CodexDesktopConnectionError("codex-desktop-ipc-unavailable"),
+  );
+  expect(await f.call("worker_send", { ...worker, text: "Keep this task unsent" })).toMatchObject({
+    accepted: false,
+    reason: "codex-desktop-ipc-unavailable",
+  });
+  expect(f.desktop!.startTurn).not.toHaveBeenCalled();
+  expect(f.openThread).not.toHaveBeenCalled();
+  expect(f.writer).not.toHaveBeenCalled();
+});
+
+it.each([
+  ["no-desktop-owner", "codex-desktop-thread-open-failed"],
+  ["old-desktop", "codex-desktop-version-too-old"],
+] as const)("refuses a worker send with %s without starting a writer", async (owner, reason) => {
+  const f = await fixture(owner, false);
+  expect(await f.call("worker_send", { ...worker, text: "Must not be sent" })).toMatchObject({
+    accepted: false,
+    reason,
+  });
+  expect(f.desktop?.connect).toHaveBeenCalled();
+  expect(f.desktop?.startTurn).not.toHaveBeenCalled();
+  expect(f.writer).not.toHaveBeenCalled();
+  if (owner === "no-desktop-owner") {
+    expect(f.openThread).toHaveBeenCalledExactlyOnceWith(f.nativeId);
+  } else {
+    expect(f.openThread).not.toHaveBeenCalled();
+  }
 });

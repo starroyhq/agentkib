@@ -1,5 +1,9 @@
 // @vitest-environment node
-import { EventEmitter } from "node:events";
+import { EventEmitter, once } from "node:events";
+import { chmod, mkdtemp, realpath, rename, rm } from "node:fs/promises";
+import { createServer } from "node:net";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { CodexFollowerBridge } from "../../../packages/backend/src/agents/codex/codex-follower-bridge";
 import { CodexFollowerConnection } from "../../../packages/backend/src/agents/codex/codex-follower-connection";
@@ -148,6 +152,62 @@ async function fixture(running = true, streamVersion = 11, settings = false) {
     },
   };
 }
+
+describe("Codex desktop owner connection diagnostics", () => {
+  it.skipIf(process.platform === "win32")(
+    "reports a private socket inode without a listener",
+    async () => {
+      vi.spyOn(CodexFollowerConnection, "supported").mockReturnValue(true);
+      const dir = await realpath(await mkdtemp(join(tmpdir(), "ak-follower-")));
+      const listening = join(dir, "router.sock");
+      const stale = join(dir, "stale.sock");
+      const router = createServer();
+      try {
+        router.listen(listening);
+        await once(router, "listening");
+        await chmod(listening, 0o600);
+        // Keep the filesystem socket after the fake app has stopped listening.
+        await rename(listening, stale);
+        const closed = once(router, "close");
+        router.close();
+        await closed;
+        await expect(CodexFollowerConnection.connectInstalled(stale)).rejects.toMatchObject({
+          code: "codex-desktop-ipc-unavailable",
+        });
+      } finally {
+        if (router.listening) router.close();
+        await rm(dir, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it.each([
+    [{ resultType: "error", error: "no-client-found" }, "codex-desktop-owner-missing"],
+    [{ resultType: "error", error: "different-protocol" }, "codex-desktop-ipc-incompatible"],
+    [{ resultType: "success", result: {} }, "codex-desktop-ipc-incompatible"],
+  ] as const)("classifies the owner discovery response %j", async (response, code) => {
+    const socket = new FixtureSocket();
+    const endpoint = "/synthetic/ipc.sock";
+    const connection = Reflect.construct(CodexFollowerConnection, [
+      socket,
+      "26.1117.41037",
+      endpoint,
+    ]) as CodexFollowerConnection;
+    vi.spyOn(CodexFollowerConnection, "connectInstalled").mockResolvedValue(connection);
+    socket.onFrame = (request) => {
+      if (request.method === "thread-owner-discovery")
+        socket.push({
+          type: "response",
+          requestId: request.requestId,
+          method: request.method,
+          ...response,
+        });
+    };
+    await expect(CodexFollowerBridge.connect(endpoint, threadId)).rejects.toMatchObject({ code });
+    expect(socket.sent.map(({ method }) => method)).toEqual(["thread-owner-discovery"]);
+    expect(socket.destroyed).toBe(true);
+  });
+});
 
 describe("resident native Codex follower stream", () => {
   it.each([

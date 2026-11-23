@@ -1,6 +1,7 @@
 import {
   CODEX_FOLLOWER_READ_MODEL_SETTINGS,
   CODEX_FOLLOWER_UPDATE_THREAD_SETTINGS,
+  CodexDesktopConnectionError,
   CodexFollowerConnection,
 } from "./codex-follower-connection";
 import {
@@ -55,7 +56,8 @@ export class CodexFollowerBridge {
       return bridge;
     } catch (error) {
       bridge.close();
-      throw error;
+      if (error instanceof CodexDesktopConnectionError) throw error;
+      throw new CodexDesktopConnectionError("codex-desktop-ipc-incompatible", { cause: error });
     }
   }
 
@@ -196,8 +198,8 @@ export class CodexFollowerBridge {
       conversationId,
     });
     const ownerClientId = isRecord(response) ? response.handledByClientId : null;
-    if (typeof ownerClientId !== "string" || !ownerClientId)
-      throw new Error("no Codex session owner found");
+    if (typeof ownerClientId !== "string" || !ownerClientId || ownerClientId.length > 256)
+      throw new CodexDesktopConnectionError("codex-desktop-ipc-incompatible");
     if (ownerClientId === this.connection.clientId) throw new Error("cannot follow this client");
     const state = new CodexFollowerState(conversationId, ownerClientId, usageRecovery);
     this.#state = state;

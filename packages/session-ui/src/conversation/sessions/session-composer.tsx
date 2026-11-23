@@ -23,8 +23,10 @@ import {
   resolveSessionCommands,
   type AgentKibPanel,
 } from "../../agents/session-commands";
+import { sessionContinuationRegistration } from "../../agents/session-continuation";
 import { sessionPermissionObservation } from "../../agents/session-permission-observations";
 import { sessionQueuePanel } from "../../agents/session-queue";
+import { sessionStopCapabilityAllows } from "../../agents/session-turn-controls";
 import { sessionTurnNotice } from "../../agents/session-turn-notice";
 import { commandPrompt } from "../../command-prompts";
 import { contextUsageCopyForSurface } from "../../context-usage-copy";
@@ -177,6 +179,9 @@ export function SessionComposer({
     sessionReason(locale, code ?? undefined, surface, platformCopy.unavailableReason).text;
   const isClaude = current?.agent === "claude-code";
   const isCodex = current?.agent === "codex";
+  const resume = sessionContinuationRegistration(
+    current?.id === selected ? current.agent : undefined,
+  );
   const continuation = sessionContinuationCopy(locale);
   const copy = sessionCopyForSurface(locale, surface);
   const layout = composerLayoutCopy[locale];
@@ -705,8 +710,12 @@ export function SessionComposer({
   const runningLabel = runningAction === "steer" ? copy.steer : copy.queueAdd;
   const primaryAction =
     canStop &&
-    (live?.executionMode !== "claude-follower" ||
-      composerCapabilities.feature("stop")?.available === true) ? (
+    sessionStopCapabilityAllows(
+      live,
+      capabilities,
+      selected,
+      sessionProviderDeclaration(current?.agent),
+    ) ? (
       <ComposerPrimaryAction kind="stop" label={t.stop} onStop={() => void control("stop")} />
     ) : (
       <ComposerPrimaryAction
@@ -776,7 +785,7 @@ export function SessionComposer({
       </DropdownMenu>
     ) : null;
   if (
-    (isCodex || isClaude) &&
+    resume?.loadResumeCommand &&
     display.continuation === "view-only" &&
     !composerCapabilities.settingsReadable &&
     !composerCapabilities.resourcesReadable &&
@@ -796,9 +805,9 @@ export function SessionComposer({
   }
   return (
     <div className="relative w-full max-w-3xl shrink-0 self-center space-y-2">
-      {display.continuation === "busy" && (
+      {display.continuation === "busy" && resume && (
         <p role="status" className="px-3 text-xs leading-5 text-muted-foreground">
-          {continuation.busyHint(isClaude ? "Claude Code" : "Codex")}
+          {continuation.busyHint(resume.busyActor)}
         </p>
       )}
       {!terminalInteraction && display.continuation === "terminal-watch" && (
@@ -859,11 +868,11 @@ export function SessionComposer({
           onChange: (event) => setMessage(event.currentTarget.value),
           placeholder: planState.on
             ? copy.planPlaceholder
-            : isCodex || isClaude
+            : resume
               ? continuation.placeholder
               : t.message,
           onFocus: () => {
-            if (isCodex || isClaude) void session.checkContinuation?.();
+            if (resume?.refreshOccupancy) void session.checkContinuation?.();
           },
           disabled: (busy && !settingsOnlyBlocked) || submitted,
           ...slash.inputProps,

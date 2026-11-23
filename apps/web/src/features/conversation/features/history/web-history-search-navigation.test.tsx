@@ -37,7 +37,7 @@ const status: HistorySearchStatus = {
     limitations: [],
   },
 };
-function fixture() {
+function fixture(send: boolean) {
   const grant = { scope: "scope" };
   const source: HistoryLocatedRecord = {
     location: {
@@ -82,7 +82,7 @@ function fixture() {
           device: {
             id: "local",
             name: "Test",
-            send: true,
+            send,
             approve: true,
             manage: true,
             attachments: true,
@@ -176,8 +176,8 @@ function fixture() {
   const client = new WebClient(undefined, { type: "same-origin" }, bridge);
   return { changed, client };
 }
-async function renderConversation() {
-  const f = fixture();
+async function renderConversation(send = true) {
+  const f = fixture(send);
   render(
     <EmbeddedConversation
       client={f.client}
@@ -187,9 +187,11 @@ async function renderConversation() {
     />,
   );
   await screen.findByText("first history");
-  fireEvent.change(screen.getByRole("textbox", { name: "Send a message" }), {
-    target: { value: "Keep my draft" },
-  });
+  if (send) {
+    fireEvent.change(screen.getByRole("textbox", { name: "Send a message" }), {
+      target: { value: "Keep my draft" },
+    });
+  }
   return f;
 }
 async function openSource() {
@@ -211,5 +213,22 @@ describe("history search Web workspace entry", () => {
     await waitFor(() => expect(f.changed).toHaveBeenCalledWith("second"));
     expect(screen.queryByRole("dialog")).toBeNull();
     expect(screen.getByRole("textbox", { name: "Send a message" })).toHaveValue("");
+  });
+
+  it("keeps search and navigation available on a device without send permission", async () => {
+    const f = await renderConversation(false);
+    const requestReference = vi.spyOn(f.client, "historyReferences");
+    await openSource();
+    const quote = screen.getByRole("button", { name: c.quote });
+    expect(quote).toBeDisabled();
+    expect(quote).toHaveAttribute("title", c.referenceSendPermission);
+    expect(screen.queryByText(c.referenceSendPermission)).not.toBeInTheDocument();
+    fireEvent.click(quote);
+    expect(requestReference).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: c.openSession }));
+    fireEvent.click(await screen.findByRole("button", { name: c.openDiscard }));
+    await screen.findByText("second history");
+    await waitFor(() => expect(f.changed).toHaveBeenCalledWith("second"));
   });
 });

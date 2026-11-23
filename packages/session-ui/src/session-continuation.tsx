@@ -1,6 +1,9 @@
 import { readStateCopy, type SessionReadState } from "./read-state";
 import { NEW_SESSION_AGENTS } from "./new-session";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
+import { isDshNativeStatusUnknown } from "./agents/deepseek-harness/turn-controls";
+
+export { isDshNativeStatusUnknown };
 
 export type SessionContinuationCopy = {
   placeholder: string;
@@ -311,7 +314,7 @@ export function claudeTerminalDisplay(
 }
 
 const continuationButtonClass =
-  "inline-flex min-h-11 w-full items-center justify-center rounded-md px-4 py-2 text-sm font-medium whitespace-normal transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50 sm:w-auto";
+  "inline-flex min-h-11 w-full items-center justify-center rounded-md px-4 py-2 text-sm font-medium whitespace-normal transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:opacity-50 sm:w-auto";
 
 export type SessionContinuationStatusProps = {
   label: string | null | undefined;
@@ -412,6 +415,7 @@ export function SessionContinuationReadOnly({
   const outcome = feedback?.source === source ? feedback.status : undefined;
   const loading = !state;
   const copying = outcome === "copying";
+  const copyDisabled = loading || copying || !state?.command;
   async function copyCommand() {
     const request = active.current;
     if (
@@ -473,8 +477,9 @@ export function SessionContinuationReadOnly({
       <div className="flex flex-wrap gap-2">
         <button
           type="button"
-          className={`${continuationButtonClass} border border-border bg-background text-foreground hover:bg-muted`}
-          disabled={loading || copying || !state?.command}
+          className={`${continuationButtonClass} border border-border bg-background text-foreground enabled:hover:bg-muted`}
+          disabled={copyDisabled}
+          title={copyDisabled ? status : undefined}
           aria-busy={loading || copying || undefined}
           onClick={() => void copyCommand()}
         >
@@ -554,20 +559,6 @@ export type SessionListState = {
   dot?: boolean;
   unread?: boolean;
 };
-
-export function isDshNativeStatusUnknown(
-  state?: {
-    status: string;
-    reason?: string | null;
-    ownershipReason?: string | null;
-  } | null,
-) {
-  return (
-    state?.status === "unavailable" ||
-    state?.reason === "dsh-native-status-unknown" ||
-    state?.ownershipReason === "dsh-native-status-unknown"
-  );
-}
 
 export function dshNativeStatusDisplay(
   state:

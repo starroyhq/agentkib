@@ -466,6 +466,10 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
     );
   }
 
+  suspendOwnerWaitDevice(deviceId: string): void {
+    this.#ownerWait.suspendDevice(deviceId);
+  }
+
   ownerWaitScheduleList() {
     return this.#ownerWait.scheduleList();
   }
@@ -3098,7 +3102,12 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
       if (
         source.workspace_id !== waiting.workspaceId ||
         ((restrictNativePolicy || request.ownerWaitOnly) &&
-          (request.deviceId ?? "desktop-local") !== (waiting.request.deviceId ?? "desktop-local"))
+          (request.deviceId ?? "desktop-local") !== (waiting.request.deviceId ?? "desktop-local") &&
+          !(
+            request.deviceId === "desktop-local" &&
+            waiting.delivering &&
+            waiting.bootId !== this.host.runtimeBootId
+          ))
       )
         throw new Error("session-unavailable");
       const prior = claimManagedCommand(

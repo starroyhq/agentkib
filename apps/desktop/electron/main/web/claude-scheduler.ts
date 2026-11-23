@@ -36,6 +36,7 @@ export interface ClaudeScheduleAuthority {
 export class ClaudeHostScheduler {
   private authorities = new Set<ClaudeScheduleAuthority>();
   private epochs = new Map<string, number>();
+  private quittingDevices = new Set<string>();
   private sessions = new Map<string, ClaudeScheduledSession>();
   private timer?: ReturnType<typeof setInterval>;
   private flight?: Promise<void>;
@@ -73,6 +74,8 @@ export class ClaudeHostScheduler {
   ): Promise<void> {
     // Advance before the first await: an in-flight prepare can no longer dispatch.
     this.epochs.set(deviceId, (this.epochs.get(deviceId) ?? 0) + 1);
+    if (quitting) this.quittingDevices.add(deviceId);
+    else this.quittingDevices.delete(deviceId);
     // A disconnected backend must not prevent the host from persisting revocation.
     // The epoch still fences any pending host dispatch; recovery requires confirmation.
     await this.invoke({
@@ -81,7 +84,7 @@ export class ClaudeHostScheduler {
       ...(quitting ? { quitting: true } : {}),
     }).catch(() => undefined);
     for (const session of this.sessions.values()) {
-      if (session.next?.deviceId !== deviceId) continue;
+      if (session.next?.deviceId !== deviceId || (quitting && session.agent === "codex")) continue;
       await this.pause(session, reason).catch(() => undefined);
     }
   }
@@ -146,6 +149,8 @@ export class ClaudeHostScheduler {
         continue;
       }
       const work = session.next;
+      const quitting = () => session.agent === "codex" && this.quittingDevices.has(work.deviceId);
+      if (quitting()) continue;
       const authority = [...this.authorities].find((entry) =>
         entry.owns(work.deviceId, session.agent),
       );
@@ -179,6 +184,7 @@ export class ClaudeHostScheduler {
         const verified = await authority.authorize(session);
         if (ownershipChanged()) continue;
         if (!this.authorities.has(authority) || epoch !== (this.epochs.get(work.deviceId) ?? 0)) {
+          if (quitting()) continue;
           await this.pause(session, "authorization-changed");
           continue;
         }
@@ -202,7 +208,7 @@ export class ClaudeHostScheduler {
       } catch {
         // A replacement desktop can now authorize this item. A prepared but undispatched
         // permit expires in the runtime without invalidating the replacement's authorization.
-        if (ownershipChanged()) continue;
+        if (ownershipChanged() || quitting()) continue;
         // Invalidate the prepared permit even when the backend's completion is uncertain.
         await this.invoke({ operation: "schedule-invalidate", deviceId: work.deviceId }).catch(
           () => undefined,

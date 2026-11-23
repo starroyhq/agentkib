@@ -3133,9 +3133,13 @@ export class TypeScriptBackend {
           ).catch(() => undefined);
         }
         if (deviceId)
-          await this.#withWebRead((owner) =>
-            owner.invalidateSerialSchedule(deviceId, params.quitting === true),
-          ).catch(() => undefined);
+          await this.#withWebRead((owner) => {
+            if (params.quitting === true)
+              (owner.codexSessionProvider() as CodexSessionProvider).suspendOwnerWaitDevice(
+                deviceId,
+              );
+            return owner.invalidateSerialSchedule(deviceId, params.quitting === true);
+          }).catch(() => undefined);
       }
       if (String(params.operation).startsWith("lead-")) return await this.#requestLead(params);
       // The desktop's local management channel also reports the DeepSeek Harness connection.

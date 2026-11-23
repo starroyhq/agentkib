@@ -175,6 +175,21 @@ describe("shared Claude host scheduler", () => {
     );
   });
 
+  it("keeps ready Codex waits on host shutdown", async () => {
+    const f = fixture("codex");
+    vi.mocked(f.authority.reserve).mockReturnValue(false);
+    await f.scheduler.tick();
+    await f.scheduler.invalidate("phone", "host-stopped", true);
+    await f.scheduler.tick();
+    expect(f.invoke).toHaveBeenCalledWith({
+      operation: "schedule-invalidate",
+      deviceId: "phone",
+      quitting: true,
+    });
+    expect(f.operations()).not.toContain("schedule-pause");
+    expect(f.operations()).not.toContain("schedule-dispatch");
+  });
+
   it("schedules a verified LAN Codex wait with a send-only device grant", async () => {
     const root = await mkdtemp(join(tmpdir(), "ak-lan-codex-scheduler-"));
     const f = fixture("codex");

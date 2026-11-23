@@ -93,7 +93,7 @@ export class CodexOwnerWait {
   }
 
   read(sessionId: string): StoredWait | undefined {
-    return this.#withTable(false, (db) => {
+    const entry = this.#withTable(false, (db) => {
       const row = db
         .prepare("SELECT entry, boot_id, delivering FROM codex_owner_wait WHERE session_id=?")
         .get(sessionId) as { entry: string; boot_id: string; delivering: number } | undefined;
@@ -104,6 +104,16 @@ export class CodexOwnerWait {
         delivering: row.delivering === 1,
       };
     });
+    if (
+      entry?.worker &&
+      entry.bootId !== this.deps.bootId &&
+      this.deps.canDeliver(entry) === "revoked"
+    ) {
+      if (entry.delivering) this.dismissInterrupted(entry);
+      else this.cancel(entry);
+      return undefined;
+    }
+    return entry;
   }
 
   paused(entry: StoredWait): boolean {
@@ -235,6 +245,22 @@ export class CodexOwnerWait {
     for (const { entry } of entries ?? []) this.cancel(JSON.parse(entry) as OwnerWaitEntry);
   }
 
+  suspendDevice(deviceId: string): void {
+    const sessions = this.#withTable(
+      false,
+      (db) =>
+        db
+          .prepare(
+            "SELECT session_id FROM codex_owner_wait WHERE device_id=? AND boot_id=? AND delivering=0",
+          )
+          .all(deviceId, this.deps.bootId) as Array<{ session_id: string }>,
+    );
+    for (const { session_id } of sessions ?? []) {
+      this.#clear(session_id);
+      this.deps.changed(session_id);
+    }
+  }
+
   scheduleList() {
     return [...this.#ready.values()].flatMap((entry) => {
       const { request } = entry;
@@ -358,8 +384,10 @@ export class CodexOwnerWait {
   ): Promise<void> {
     const { request } = entry;
     const next = Math.min(delay * 2, MAX_POLL_MS);
+    const timer = this.#timers.get(request.sessionId);
     const current = this.read(request.sessionId);
     if (
+      !timer ||
       !current ||
       current.request.requestId !== request.requestId ||
       current.bootId !== this.deps.bootId ||
@@ -388,6 +416,14 @@ export class CodexOwnerWait {
       if (remote && !authorizedByHost?.()) throw new Error("schedule-permit-unavailable");
       const access = this.deps.canDeliver(entry);
       if (this.#stopped || access === "paused") throw new Error(OWNER_WAIT_PAUSED);
+      if (this.#timers.get(request.sessionId) !== timer) {
+        const waiting = this.read(request.sessionId);
+        throw new Error(
+          waiting?.request.requestId === request.requestId
+            ? OWNER_WAIT_PAUSED
+            : "codex-owner-wait-cancelled",
+        );
+      }
       if (access !== "ready") throw new Error("codex-owner-wait-not-authorized");
       const started = this.#withTable(
         false,
@@ -403,7 +439,11 @@ export class CodexOwnerWait {
     const result = await this.deps.deliver(entry, beforeDispatch);
     // Another authenticated action may have replaced or removed this row during preflight.
     const latest = this.read(request.sessionId);
-    if (latest?.request.requestId !== request.requestId || latest.bootId !== this.deps.bootId)
+    if (
+      latest?.request.requestId !== request.requestId ||
+      latest.bootId !== this.deps.bootId ||
+      (!latest.delivering && this.#timers.get(request.sessionId) !== timer)
+    )
       return;
     this.#clear(request.sessionId);
     if (!latest.delivering && (result.status === "retry" || result.status === "paused")) {

@@ -2647,7 +2647,13 @@ export class OrchestrationService {
     lane: Lane,
     deviceId: string,
     delegated = false,
-  ): Promise<{ accepted: boolean; requestId?: string; reason?: string; cancelled?: true }> {
+  ): Promise<{
+    accepted: boolean;
+    requestId?: string;
+    reason?: string;
+    cancelled?: true;
+    dismissed?: true;
+  }> {
     const live = await this.#state(lane.sessionId);
     const wait = deferredCodexSend(lane, live);
     if (wait) {

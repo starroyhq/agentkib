@@ -395,7 +395,7 @@ describe("host session-control admission by provider and device", () => {
             actions: { delete: { available: true }, update: { available: false } },
           },
           { id: "cannot-delete", actions: { delete: { available: false } } },
-          { id: "interrupted", actions: { delete: { available: false } } },
+          { id: "interrupted", actions: { delete: { available: true } } },
         ],
       },
     });
@@ -426,14 +426,7 @@ describe("host session-control admission by provider and device", () => {
 
     const cancel = (id: string, path = "/codex/queue-delete") =>
       device.control(providers[0], "allowed", "queue-delete", path, { queuedSubmissionId: id });
-    for (const id of [
-      "foreign",
-      "wrong-workspace",
-      "wrong-reason",
-      "cannot-delete",
-      "interrupted",
-      "native",
-    ])
+    for (const id of ["foreign", "wrong-workspace", "wrong-reason", "cannot-delete", "native"])
       expect(await cancel(id)).toMatchObject({
         status: 409,
         body: { error: "queue_item_unavailable", controlOutcome: "not-dispatched" },
@@ -468,11 +461,19 @@ describe("host session-control admission by provider and device", () => {
       status: 403,
       body: { error: "permission_denied" },
     });
+    expect(await cancel("interrupted")).toMatchObject({ status: 200, body: { accepted: true } });
     expect(host.dispatched).toEqual([
       expect.objectContaining({
         operation: "queue-delete",
         sessionId,
         queuedSubmissionId: "waiting",
+        deviceId: device.id,
+        ownerWaitOnly: true,
+      }),
+      expect.objectContaining({
+        operation: "queue-delete",
+        sessionId,
+        queuedSubmissionId: "interrupted",
         deviceId: device.id,
         ownerWaitOnly: true,
       }),

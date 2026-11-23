@@ -358,6 +358,20 @@ describe("Codex owner wait", () => {
     expect(f.read()).toBeUndefined();
   });
 
+  it("withdraws a ready remote wait at shutdown and retains the accepted message", async () => {
+    const f = fixture();
+    const remote = { ...f.entry, request: { ...f.entry.request, deviceId: "paired-device" } };
+    f.accept(remote);
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(f.ownerWait.scheduleList()).toHaveLength(1);
+    f.ownerWait.suspendDevice("paired-device");
+    expect(f.ownerWait.scheduleList()).toEqual([]);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(f.ownerWait.paused(f.read()!)).toBe(true);
+    expect(f.read()?.request).toEqual(remote.request);
+    expect(f.send).not.toHaveBeenCalled();
+  });
+
   it("removes only the revoked device's waits and does not deliver them", async () => {
     const f = fixture();
     const other = {

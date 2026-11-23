@@ -426,7 +426,11 @@ function isOwnerWaitQueueEntry(item: QueueEntry, workspaceId: string) {
 }
 
 function canDeleteOwnerWait(item: QueueEntry, deviceId: string) {
-  return item.ownerWaitDeviceId === deviceId && item.actions?.delete?.available === true;
+  return (
+    item.actions?.delete?.available === true &&
+    (item.ownerWaitDeviceId === deviceId ||
+      (deviceId === "desktop-local" && item.status === "unknown"))
+  );
 }
 
 type ActionDispatch = {

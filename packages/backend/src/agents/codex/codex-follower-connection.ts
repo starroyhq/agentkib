@@ -37,6 +37,22 @@ const METHOD_VERSIONS: Readonly<Record<string, number>> = {
 // gates so compatible future patch releases do not become read-only by default.
 const MINIMUM_DESKTOP_VERSION = "26.917.62051";
 
+export type CodexDesktopConnectionFailure =
+  | "codex-desktop-ipc-unavailable"
+  | "codex-desktop-ipc-peer-unverified"
+  | "codex-desktop-ipc-incompatible"
+  | "codex-desktop-version-too-old"
+  | "codex-desktop-owner-missing";
+
+export class CodexDesktopConnectionError extends Error {
+  constructor(
+    readonly code: CodexDesktopConnectionFailure,
+    options?: ErrorOptions,
+  ) {
+    super(code, options);
+  }
+}
+
 type DesktopInstallation = { version: string; settingsCatalogExecutable?: string };
 
 export function codexFollowerManifestSupportsSettings(source: string): boolean {
@@ -88,20 +104,27 @@ export class CodexFollowerConnection {
 
   static async connectInstalled(endpoint: string): Promise<CodexFollowerConnection> {
     if (!CodexFollowerConnection.supported())
-      throw new Error("Codex follower bridge requires macOS");
+      throw new CodexDesktopConnectionError("codex-desktop-ipc-unavailable");
     const before = await inspectEndpoint(endpoint);
     const socket = await connectUnix(endpoint);
     try {
       const after = await inspectEndpoint(endpoint);
       if (before.dev !== after.dev || before.ino !== after.ino)
-        throw new Error("Codex IPC endpoint changed");
-      const peerPath = await realpath(verifyPeer(socket, process.getuid!()));
-      const installation = await readDesktopInstallation(peerPath);
+        throw new CodexDesktopConnectionError("codex-desktop-ipc-peer-unverified");
+      let installation: DesktopInstallation;
+      try {
+        const peerPath = await realpath(verifyPeer(socket, process.getuid!()));
+        installation = await readDesktopInstallation(peerPath);
+      } catch (error) {
+        throw new CodexDesktopConnectionError("codex-desktop-ipc-peer-unverified", {
+          cause: error,
+        });
+      }
       if (!versionAtLeast(installation.version, MINIMUM_DESKTOP_VERSION))
-        throw new Error(
+        throw new CodexDesktopConnectionError(
           versionAtLeast(installation.version, "0.0.0")
             ? "codex-desktop-version-too-old"
-            : "unverified Codex Desktop installation",
+            : "codex-desktop-ipc-peer-unverified",
         );
       const connection = new CodexFollowerConnection(
         socket,
@@ -120,7 +143,7 @@ export class CodexFollowerConnection {
         return connection;
       } catch (error) {
         connection.disconnect();
-        throw error;
+        throw new CodexDesktopConnectionError("codex-desktop-ipc-incompatible", { cause: error });
       }
     } catch (error) {
       socket.destroy();
@@ -196,10 +219,7 @@ export class CodexFollowerConnection {
         Date.now() + (method === "thread-owner-discovery" ? 12_000 : READ_TIMEOUT_MS);
       while (Date.now() < deadline) {
         const frame = await this.#receive(deadline);
-        if (!frame) {
-          this.disconnect();
-          throw new Error("Codex IPC request timed out; outcome is unknown");
-        }
+        if (!frame) break;
         const message = frame.value;
         if (!isRecord(message)) continue;
         if (message.type === "client-discovery-request") {
@@ -211,6 +231,16 @@ export class CodexFollowerConnection {
           continue;
         }
         if (message.type === "response" && message.requestId === requestId) {
+          if (method === "thread-owner-discovery") {
+            if (message.method !== undefined && message.method !== method)
+              throw new CodexDesktopConnectionError("codex-desktop-ipc-incompatible");
+            if (message.resultType !== "success")
+              throw new CodexDesktopConnectionError(
+                message.error === "no-client-found"
+                  ? "codex-desktop-owner-missing"
+                  : "codex-desktop-ipc-incompatible",
+              );
+          }
           if (message.resultType !== "success")
             throw new Error(
               message.error === "no-client-found"
@@ -344,22 +374,31 @@ export class CodexFollowerConnection {
 }
 
 async function inspectEndpoint(endpoint: string): Promise<{ dev: number; ino: number }> {
-  if (!path.isAbsolute(endpoint) || (await realpath(endpoint)) !== endpoint)
-    throw new Error("Codex IPC endpoint must be canonical and absolute");
-  const uid = process.getuid?.();
-  if (uid === undefined) throw new Error("current user identity is unavailable");
-  const parent = await stat(path.dirname(endpoint));
-  const socket = await stat(endpoint);
-  if (
-    !parent.isDirectory() ||
-    parent.uid !== uid ||
-    (parent.mode & 0o077) !== 0 ||
-    !socket.isSocket() ||
-    socket.uid !== uid ||
-    (socket.mode & 0o077) !== 0
-  )
-    throw new Error("Codex IPC endpoint permissions are unsafe");
-  return { dev: socket.dev, ino: socket.ino };
+  try {
+    if (!path.isAbsolute(endpoint) || (await realpath(endpoint)) !== endpoint)
+      throw new Error("Codex IPC endpoint must be canonical and absolute");
+    const uid = process.getuid?.();
+    if (uid === undefined) throw new Error("current user identity is unavailable");
+    const parent = await stat(path.dirname(endpoint));
+    const socket = await stat(endpoint);
+    if (
+      !parent.isDirectory() ||
+      parent.uid !== uid ||
+      (parent.mode & 0o077) !== 0 ||
+      !socket.isSocket() ||
+      socket.uid !== uid ||
+      (socket.mode & 0o077) !== 0
+    )
+      throw new Error("Codex IPC endpoint permissions are unsafe");
+    return { dev: socket.dev, ino: socket.ino };
+  } catch (error) {
+    throw new CodexDesktopConnectionError(
+      isRecord(error) && (error.code === "ENOENT" || error.code === "ENOTDIR")
+        ? "codex-desktop-ipc-unavailable"
+        : "codex-desktop-ipc-peer-unverified",
+      { cause: error },
+    );
+  }
 }
 
 function connectUnix(endpoint: string): Promise<Socket> {
@@ -372,7 +411,7 @@ function connectUnix(endpoint: string): Promise<Socket> {
       socket.removeListener("error", failed);
       if (error) {
         socket.destroy();
-        reject(error);
+        reject(new CodexDesktopConnectionError("codex-desktop-ipc-unavailable", { cause: error }));
       } else resolve(socket);
     };
     const connected = () => finish();

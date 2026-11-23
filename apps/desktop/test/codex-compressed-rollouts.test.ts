@@ -92,13 +92,21 @@ function codexHome(
     turns?: number;
     padding?: number;
     noisy?: number;
+    filenameSuffix?: string;
   } = {},
 ) {
   const root = temporary("agentkib-codex-zst-");
   const home = path.join(root, "home"),
     codex = path.join(home, ".codex"),
     workspace = path.join(root, "workspace"),
-    plain = path.join(codex, "sessions", "2026", "10", "01", `rollout-${nativeId}.jsonl`);
+    plain = path.join(
+      codex,
+      "sessions",
+      "2026",
+      "10",
+      "01",
+      `rollout-${nativeId}${options.filenameSuffix ?? ""}.jsonl`,
+    );
   mkdirSync(path.dirname(plain), { recursive: true });
   mkdirSync(workspace);
   const body = rollout(workspace, options.turns, options.padding, options.noisy);
@@ -364,7 +372,7 @@ describe("Codex native rollout policy", () => {
 
     const largeEntry = JSON.stringify({
       type: "response_item",
-      payload: { value: "x".repeat(1024 * 1024) },
+      payload: { value: "x".repeat(8 * 1024 * 1024) },
     });
     const data = f.body + turnContext(fullAccess) + largeEntry + "\n";
     writeFileSync(f.plain, data);
@@ -375,6 +383,40 @@ describe("Codex native rollout policy", () => {
     writeFileSync(f.plain, data + turnContext(fullAccess));
     expect(f.reader.historicalSettings(nativeId, f.workspace)?.nativePolicy).toEqual({
       policyId: "full-access-on-request",
+    });
+  });
+
+  it("recovers the latest native policy beyond the display tail from an indexed dual-ID rollout", () => {
+    const f = codexHome({ stored: ["plain"], filenameSuffix: `_${parentId}` });
+    setIndexedModel(f.codex, "indexed-model", "medium");
+    const remainingAfterContext = JSON.stringify({
+      type: "response_item",
+      payload: { value: "x".repeat(832_000) },
+    });
+    const data =
+      f.body +
+      turnContext({ approval_policy: "on-request", sandbox_policy: { type: "read-only" } }) +
+      turnContext({
+        ...fullAccess,
+        approvals_reviewer: "user",
+        model: "older-rollout-model",
+        effort: "high",
+      }) +
+      usageReport(25, 100) +
+      "\n" +
+      remainingAfterContext +
+      "\n";
+    writeFileSync(f.plain, data);
+    expect(f.reader.historicalSettings(nativeId, f.workspace)).toEqual({
+      modelId: "indexed-model",
+      effort: "medium",
+      nativePolicy: { policyId: "full-access-on-request" },
+    });
+    expect(f.reader.historicalSettings(parentId, f.workspace)).toBeUndefined();
+    writeFileSync(f.plain, data + turnContext({ model: "newer-context-without-policy" }));
+    expect(f.reader.historicalSettings(nativeId, f.workspace)?.nativePolicy).toEqual({
+      policyId: null,
+      reason: "native-policy-unconfirmed",
     });
   });
 

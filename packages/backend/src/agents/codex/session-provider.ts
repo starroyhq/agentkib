@@ -40,7 +40,7 @@ import { CodexCatalogCache } from "./codex-catalog-cache";
 import { CodexExternalTurns, type EndedTurn, type ExternalTurn } from "./codex-external-turns";
 import { codexResumeCommand } from "./codex-resume-command";
 import { CodexFollowerBridge } from "./codex-follower-bridge";
-import { CodexFollowerConnection } from "./codex-follower-connection";
+import { CodexDesktopConnectionError, CodexFollowerConnection } from "./codex-follower-connection";
 import { CodexDesktopApp } from "./codex-desktop-app";
 import {
   parseFollowerModelSettings,
@@ -117,12 +117,10 @@ const HANDOFF_POLL_MS = 250;
 
 type WorkerLiveRead = "read" | "send";
 
-/** Owner discovery answered, and nobody answers for the thread. */
-function codexOwnerMissing(error: unknown): boolean {
-  return (
-    error instanceof Error &&
-    ["Codex session owner was not found", "no Codex session owner found"].includes(error.message)
-  );
+function codexDesktopFailure(error: unknown): string {
+  return error instanceof CodexDesktopConnectionError
+    ? error.code
+    : "codex-desktop-owner-unavailable";
 }
 
 const managedReconcileSchema = z
@@ -261,6 +259,8 @@ type ManagedRunner = {
   written?: boolean;
 };
 
+type CodexDesktopHandoff = { follower: CodexFollowerRecord; revision: number } | { reason: string };
+
 type CodexFollowerRecord = {
   bridge: CodexFollowerBridge;
   stream: CodexFollowerStream;
@@ -393,10 +393,7 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
   #handoffFailures = new Map<string, number>();
   #desktopApp: CodexDesktopApp;
   #handoffTimeoutMs: number;
-  #handoffFlights = new Map<
-    string,
-    Promise<{ follower: CodexFollowerRecord; revision: number } | undefined>
-  >();
+  #handoffFlights = new Map<string, Promise<CodexDesktopHandoff>>();
 
   constructor(private readonly host: CodexSessionHost) {
     const { environment } = host;
@@ -425,6 +422,15 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
   control(value: Record<string, unknown>, restrictNativePolicy = false) {
     return this.host.admitControl(value, (request, fingerprint) =>
       this.#codexControl(request, fingerprint, { restrictNativePolicy }),
+    );
+  }
+
+  /** A delegated send was admitted by the lead after discovery found no window owner. */
+  workerDesktopSend(value: Record<string, unknown>) {
+    return this.host.runOperation(() =>
+      this.host.admitControl(value, (request, fingerprint) =>
+        this.#codexControl(request, fingerprint, { desktopOwnerHandoff: true }),
+      ),
     );
   }
 
@@ -661,15 +667,24 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
     );
   }
 
-  /**
-   * The latest turns of a Codex session AgentKib manages whose end Codex recorded, whoever ran
-   * them: a Project Agent hears of those its worker ran while AgentKib did not watch it.
-   */
-  endedTurns(sessionId: string): EndedTurn[] {
-    const record = readManagedRecords(this.host.dataDir, this.host.store).find(
-      (item) => item.id === sessionId && !item.released,
-    );
-    return record?.native_id ? this.#externalTurns.endedTurns(record.native_id) : [];
+  /** The latest native completions, including those from an indexed Worker we never ran. */
+  async endedTurns(sessionId: string): Promise<EndedTurn[]> {
+    const row = readManagedRecord(this.host.dataDir, sessionId);
+    const stored = row && managedRecordSchema.parse(row);
+    try {
+      if (stored && !stored.released) {
+        const record = await this.#inactiveRecord(sessionId, stored);
+        return record.native_id ? this.#externalTurns.endedTurns(record.native_id) : [];
+      }
+      const { nativeId, transcript } = await this.#indexedCodexSource(sessionId);
+      if (!transcript) return [];
+      // A completion without a proven start cannot show that the indexed turn began after assignment.
+      return this.#externalTurns
+        .endedTurns(nativeId, Date.now(), transcript)
+        .filter((turn) => turn.startedAt !== null);
+    } catch {
+      return [];
+    }
   }
 
   /** Existing execution evidence for the read-side observer. No follow or resume is initiated. */
@@ -3066,9 +3081,11 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
     fingerprint: string,
     {
       restrictNativePolicy = false,
+      desktopOwnerHandoff = false,
       workerRestart,
     }: {
       restrictNativePolicy?: boolean;
+      desktopOwnerHandoff?: boolean;
       workerRestart?: { workspaceId: string; beforeDispatch: () => void };
     } = {},
   ) {
@@ -3190,6 +3207,24 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
       try {
         if (request.operation === "settings")
           return await this.#stageCodexSettings(inactive, request);
+        if (desktopOwnerHandoff && request.operation === "send") {
+          const owner = this.#codexWriterOwnership(inactive, true);
+          const offered = await this.#desktopHandoffLive(
+            inactive,
+            { ownershipReason: owner, reason: owner },
+            true,
+          );
+          if (!offered) return rejectInactive("codex-desktop-owner-missing");
+          const handed = await this.#desktopHandoff(inactive);
+          if ("reason" in handed) return rejectInactive(handed.reason);
+          return this.#codexFollowerControl(
+            { ...request, expectedRevision: handed.revision },
+            fingerprint,
+            handed.follower,
+            inactive.workspace_id,
+            true,
+          );
+        }
         runner = await this.#connectCodexForControl(inactive, request, restrictNativePolicy);
         record = { ...(runner.state.record as ManagedRecord) };
         request.expectedRevision = runner.state.revision;
@@ -3203,7 +3238,7 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
           });
         if (busy && request.operation === "send" && inactive.snapshot?.settingsStaged !== true) {
           const handed = await this.#desktopHandoff(inactive).catch(() => undefined);
-          if (handed)
+          if (handed && "follower" in handed)
             return this.#codexFollowerControl(
               { ...request, expectedRevision: handed.revision },
               fingerprint,
@@ -5192,6 +5227,25 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
       this.#assertManagedHome(stored);
       return stored;
     }
+    const { summary, nativeId, workspace } = await this.#indexedCodexSource(sessionId);
+    return {
+      id: sessionId,
+      workspace_id: summary.workspace_id,
+      workspace,
+      cwd: this.host.sessions.verifiedCodexControlDirectory(nativeId)?.cwd,
+      home: canonicalize(this.host.sessions.codexHome()),
+      native_id: nativeId,
+      title: summary.title ?? "Codex",
+      created_at: new Date().toISOString(),
+      policy_id: "workspace-write-on-request",
+      released: true,
+      adopted: true,
+      archived: summary.archived,
+      snapshot: { revision: 0 },
+    };
+  }
+
+  async #indexedCodexSource(sessionId: string) {
     const summary = this.host.store.sessions.get(sessionId);
     if (!summary || summary.agent !== "codex" || summary.sidechain)
       throw new Error("session-not-adoptable");
@@ -5209,21 +5263,8 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
       pathIdentity(workspace)
     )
       throw new Error("session-workspace-mismatch");
-    return {
-      id: sessionId,
-      workspace_id: summary.workspace_id,
-      workspace,
-      cwd: this.host.sessions.verifiedCodexControlDirectory(nativeId)?.cwd,
-      home: canonicalize(this.host.sessions.codexHome()),
-      native_id: nativeId,
-      title: summary.title ?? "Codex",
-      created_at: new Date().toISOString(),
-      policy_id: "workspace-write-on-request",
-      released: true,
-      adopted: true,
-      archived: summary.archived,
-      snapshot: { revision: 0 },
-    };
+    const transcript = "transcript" in resolved ? resolved.transcript : undefined;
+    return { summary, nativeId, workspace, transcript };
   }
 
   #nativeCodexPolicy(record: ManagedRecord): CodexNativePolicy | undefined {
@@ -6162,16 +6203,16 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
         follower.bridge.close();
       }
       this.#followerMisses.set(record.id, Date.now());
-      if (codexOwnerMissing(error)) {
+      const reason = codexDesktopFailure(error);
+      if (reason === "codex-desktop-owner-missing") {
         this.#ownerMissing.add(record.id);
-        return refused("codex-desktop-owner-missing");
+        const handoff = sending
+          ? await this.#desktopHandoffLive(record, inactive, controls)
+          : undefined;
+        return handoff ?? refused(reason);
       }
       this.#ownerMissing.delete(record.id);
-      return refused(
-        error instanceof Error && error.message === "codex-desktop-version-too-old"
-          ? error.message
-          : "codex-desktop-owner-unavailable",
-      );
+      return refused(reason);
     }
   }
 
@@ -6207,19 +6248,18 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
    * Asks the running Codex app to show a thread its server holds with no window answering for
    * it, then follows the app. Only a send asks: opening the session in AgentKib must not move
    * the app's page. Never launches the app, never takes the writer lock and sends nothing by
-   * itself; undefined leaves the session in use in Codex.
+   * itself; a refusal leaves the session in use in Codex.
    */
-  async #desktopHandoff(
-    record: ManagedRecord,
-  ): Promise<{ follower: CodexFollowerRecord; revision: number } | undefined> {
-    if (!CodexFollowerConnection.supported() || !record.native_id) return undefined;
+  async #desktopHandoff(record: ManagedRecord): Promise<CodexDesktopHandoff> {
+    if (!CodexFollowerConnection.supported()) return { reason: "platform-unsupported" };
+    if (!record.native_id) return { reason: "native-session-unconfirmed" };
     const pending = this.#handoffFlights.get(record.id);
     if (pending) return pending;
     const flight = this.#runDesktopHandoff(record, record.native_id);
     this.#handoffFlights.set(record.id, flight);
     try {
       const handed = await flight;
-      if (handed) this.#handoffFailures.delete(record.id);
+      if ("follower" in handed) this.#handoffFailures.delete(record.id);
       else this.#handoffFailures.set(record.id, Date.now());
       return handed;
     } finally {
@@ -6227,39 +6267,40 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
     }
   }
 
-  async #runDesktopHandoff(
-    record: ManagedRecord,
-    nativeId: string,
-  ): Promise<{ follower: CodexFollowerRecord; revision: number } | undefined> {
-    const attach = async () => {
+  async #runDesktopHandoff(record: ManagedRecord, nativeId: string): Promise<CodexDesktopHandoff> {
+    const attach = async (): Promise<CodexDesktopHandoff> => {
       try {
         const follower = await this.#desktopFollower(record);
         const state = await follower.bridge.observeLive();
         follower.lastUsed = Date.now();
         this.#ownerMissing.delete(record.id);
         this.#followerMisses.delete(record.id);
-        return state.revision === null ? undefined : { follower, revision: state.revision };
+        return state.revision === null
+          ? { reason: "codex-desktop-ipc-incompatible" }
+          : { follower, revision: state.revision };
       } catch (error) {
         const follower = this.#codexFollowers.get(record.id);
         if (follower) {
           this.#codexFollowers.delete(record.id);
           follower.bridge.close();
         }
-        return codexOwnerMissing(error) ? ("missing" as const) : undefined;
+        return { reason: codexDesktopFailure(error) };
       }
     };
     // A window may have opened the thread since the session was last looked at.
     const first = await attach();
-    if (first !== "missing") return first;
-    if (!(await this.#desktopApp.running()) || !(await this.#desktopApp.openThread(nativeId)))
-      return undefined;
+    if (!("reason" in first) || first.reason !== "codex-desktop-owner-missing") return first;
+    if (!(await this.#desktopApp.running())) return first;
+    if (!(await this.#desktopApp.openThread(nativeId)))
+      return { reason: "codex-desktop-thread-open-failed" };
     const deadline = Date.now() + this.#handoffTimeoutMs;
     while (Date.now() < deadline && !this.host.isShuttingDown()) {
       await new Promise((resolve) => setTimeout(resolve, HANDOFF_POLL_MS));
       const attached = await attach();
-      if (attached !== "missing") return attached;
+      if (!("reason" in attached) || attached.reason !== "codex-desktop-owner-missing")
+        return attached;
     }
-    return undefined;
+    return first;
   }
 
   async resumeCommand(sessionId: string) {

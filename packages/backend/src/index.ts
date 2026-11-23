@@ -2490,8 +2490,15 @@ export class TypeScriptBackend {
         const limit = claudeLimit(sessionId);
         return limit !== null && limit.continueAt === null && limit.manual !== null;
       },
-      control: (value) => {
+      control: (value, intent) => {
         if (typeof value.sessionId !== "string") throw new Error("session-unavailable");
+        if (intent === "desktop-owner-handoff") {
+          if (value.operation !== "send" || session(value.sessionId)?.agent !== "codex")
+            throw new Error("session-unavailable");
+          return this.#withWebRead((owner) =>
+            (owner.codexSessionProvider() as CodexSessionProvider).workerDesktopSend(value),
+          );
+        }
         const bridge = dsh(value.sessionId);
         if (bridge) return bridge.request(value);
         if (session(value.sessionId)?.agent === "claude-code")

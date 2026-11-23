@@ -25,7 +25,10 @@ import {
   threadTitleModel,
   threadTitlePrompt,
 } from "../../../packages/backend/src/agents/codex/codex-thread-title";
-import { CodexFollowerConnection } from "../../../packages/backend/src/agents/codex/codex-follower-connection";
+import {
+  CodexDesktopConnectionError,
+  CodexFollowerConnection,
+} from "../../../packages/backend/src/agents/codex/codex-follower-connection";
 import { CodexFollowerState } from "../../../packages/backend/src/agents/codex/codex-follower-state";
 import { CodexDesktopApp } from "../../../packages/backend/src/agents/codex/codex-desktop-app";
 import { AUTO_CONTINUE_TEXT } from "../../../packages/backend/src/usage-limit";
@@ -5304,7 +5307,7 @@ describe("Codex Desktop follow", () => {
     const f = fixture();
     vi.spyOn(CodexFollowerConnection, "supported").mockReturnValue(true);
     holdWriterLock(f);
-    f.follower.mockRejectedValue(new Error("no Codex session owner found"));
+    f.follower.mockRejectedValue(new CodexDesktopConnectionError("codex-desktop-owner-missing"));
     let now = Date.now();
     vi.spyOn(Date, "now").mockImplementation(() => now);
     expect(await f.live()).toMatchObject({
@@ -5346,7 +5349,7 @@ describe("Codex Desktop follow", () => {
     vi.spyOn(CodexFollowerConnection, "supported").mockReturnValue(true);
     holdWriterLock(f);
     f.setFailure(activeWriter());
-    f.follower.mockRejectedValue(new Error("no Codex session owner found"));
+    f.follower.mockRejectedValue(new CodexDesktopConnectionError("codex-desktop-owner-missing"));
     const running = vi.spyOn(CodexDesktopApp.prototype, "running").mockResolvedValue(true);
     const open = vi.spyOn(CodexDesktopApp.prototype, "openThread").mockResolvedValue(true);
     expect(await f.live()).toMatchObject({
@@ -5389,7 +5392,7 @@ describe("Codex Desktop follow", () => {
     f.setFailure(activeWriter());
     let shown = false;
     f.follower.mockImplementation(async () => {
-      if (!shown) throw new Error("no Codex session owner found");
+      if (!shown) throw new CodexDesktopConnectionError("codex-desktop-owner-missing");
       return bridge as unknown as CodexFollowerBridge;
     });
     vi.spyOn(CodexDesktopApp.prototype, "running").mockResolvedValue(true);
@@ -5435,12 +5438,64 @@ describe("Codex Desktop follow", () => {
     });
   });
 
+  it("offers a Worker send an owner handoff before opening a window or starting a writer", async () => {
+    const { f, bridge } = followerFixture({ revision: 4 });
+    let shown = false;
+    f.follower.mockImplementation(async () => {
+      if (!shown) throw new CodexDesktopConnectionError("codex-desktop-owner-missing");
+      return bridge as unknown as CodexFollowerBridge;
+    });
+    vi.spyOn(CodexDesktopApp.prototype, "running").mockResolvedValue(true);
+    const open = vi.spyOn(CodexDesktopApp.prototype, "openThread").mockImplementation(async () => {
+      shown = true;
+      return true;
+    });
+    const provider = f.web.codexSessionProvider() as CodexSessionProvider;
+    const state = await provider.workerLive(f.summary.id, true, "send");
+    expect(state).toMatchObject({
+      ownershipReason: "codex-owner-busy",
+      sendEnabled: true,
+      ownerHandoff: true,
+    });
+    expect(open).not.toHaveBeenCalled();
+    const requestId = randomUUID();
+    expect(
+      await provider.workerDesktopSend({
+        operation: "send",
+        sessionId: f.summary.id,
+        requestId,
+        deviceId: "fixture-worker-lead",
+        runtimeBootId: state.runtimeBootId,
+        expectedRevision: state.revision,
+        experimentalEnabled: true,
+        text: "Continue",
+      }),
+    ).toMatchObject({ accepted: true });
+    expect(open).toHaveBeenCalledExactlyOnceWith(nativeId);
+    expect(bridge.mutate).toHaveBeenCalledExactlyOnceWith(
+      "thread-follower-start-turn",
+      {
+        conversationId: nativeId,
+        turnStart: {
+          request: {
+            threadId: nativeId,
+            clientUserMessageId: requestId,
+            input: [{ type: "text", text: "Continue", text_elements: [] }],
+          },
+        },
+      },
+      4,
+      expect.any(Function),
+    );
+    expect(f.start).not.toHaveBeenCalled();
+  });
+
   it("leaves the message unsent when the Codex app does not take the thread", async () => {
     const f = fixture(false, undefined, { AGENTKIB_CODEX_HANDOFF_TIMEOUT_MS: "600" });
     vi.spyOn(CodexFollowerConnection, "supported").mockReturnValue(true);
     holdWriterLock(f);
     f.setFailure(activeWriter());
-    f.follower.mockRejectedValue(new Error("no Codex session owner found"));
+    f.follower.mockRejectedValue(new CodexDesktopConnectionError("codex-desktop-owner-missing"));
     vi.spyOn(CodexDesktopApp.prototype, "running").mockResolvedValue(true);
     const open = vi.spyOn(CodexDesktopApp.prototype, "openThread").mockResolvedValue(true);
     const state = await f.live();

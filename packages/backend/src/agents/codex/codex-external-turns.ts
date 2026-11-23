@@ -12,6 +12,7 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { isCompressedRollout, resolveRollout } from "./codex-rollout-files";
 import { CodexSessions } from "./codex-sessions";
+import { within } from "../../files";
 import { existingFileLeaseBusy } from "../../managed-session-lock";
 import { isReparseOrSymlink } from "../../native-files";
 import { Sql } from "../../sql";
@@ -155,26 +156,31 @@ export class CodexExternalTurns {
    * for a Project Agent's worker that ran while AgentKib did not watch it. Reads where the rollout
    * grew since the last call, or its end the first time. Never throws.
    */
-  endedTurns(threadId: string, now = Date.now()): EndedTurn[] {
+  endedTurns(threadId: string, now = Date.now(), verifiedTranscript?: string): EndedTurn[] {
     try {
       if (!THREAD_ID.test(threadId)) return [];
       const home = this.home();
       const key = threadId.toLowerCase();
-      let thread = this.#endedThreads.get(key);
-      if (!thread) {
-        this.#lookUp(home, [key], now);
-        thread = this.#threads.get(key);
-        if (!thread) return [];
+      let recorded = verifiedTranscript;
+      if (!recorded) {
+        const thread = this.#endedThreads.get(key);
+        if (!thread) this.#lookUp(home, [key], now);
+        recorded = (thread ?? this.#threads.get(key))?.recorded;
+      }
+      if (!recorded) return [];
+      if (!this.#endedThreads.has(key)) {
         if (this.#endedThreads.size >= MAX_ENDED_THREADS) {
           const oldest = this.#endedThreads.keys().next().value!;
           this.#endedThreads.delete(oldest);
           this.#ended.delete(oldest);
         }
-        this.#endedThreads.set(key, thread);
+        this.#endedThreads.set(key, { id: threadId, recorded });
       }
-      const file = resolveRollout(
-        path.isAbsolute(thread.recorded) ? thread.recorded : path.join(home, thread.recorded),
-      );
+      const file = resolveRollout(path.isAbsolute(recorded) ? recorded : path.join(home, recorded));
+      if (!within(file, home)) {
+        this.#endedThreads.delete(key);
+        return [];
+      }
       // Codex compresses only idle threads' rollouts: nothing ended since the last read.
       if (isCompressedRollout(file)) return this.#ended.get(key)?.ended.slice() ?? [];
       const scan = this.#endedScan(key, file);
@@ -210,7 +216,7 @@ export class CodexExternalTurns {
     }
     try {
       const stat = fstatSync(fd);
-      if (!stat.isFile()) return undefined;
+      if (!stat.isFile() || stat.dev !== seen.dev || stat.ino !== seen.ino) return undefined;
       const resume =
         previous &&
         previous.file === file &&

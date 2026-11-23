@@ -17,7 +17,10 @@ import { afterEach, expect, it, vi } from "vitest";
 import { CodexAppServerSession } from "../../../packages/backend/src/agents/codex/codex-app-server";
 import { CodexDesktopApp } from "../../../packages/backend/src/agents/codex/codex-desktop-app";
 import { CodexFollowerBridge } from "../../../packages/backend/src/agents/codex/codex-follower-bridge";
-import { CodexFollowerConnection } from "../../../packages/backend/src/agents/codex/codex-follower-connection";
+import {
+  CodexDesktopConnectionError,
+  CodexFollowerConnection,
+} from "../../../packages/backend/src/agents/codex/codex-follower-connection";
 import * as codexFollowerLocks from "../../../packages/backend/src/agents/codex/codex-follower-operation-lock";
 import { CodexFollowerState } from "../../../packages/backend/src/agents/codex/codex-follower-state";
 import { CodexRuntimePreflight } from "../../../packages/backend/src/agents/codex/codex-runtime-preflight";
@@ -137,7 +140,7 @@ function desktopOwnerFixture(endpoint: string, nativeId: string, oldDesktop: boo
   const connect = vi
     .spyOn(CodexFollowerConnection, "connectInstalled")
     .mockImplementation(async () => {
-      if (oldDesktop) throw new Error("codex-desktop-version-too-old");
+      if (oldDesktop) throw new CodexDesktopConnectionError("codex-desktop-version-too-old");
       const connection = {
         endpoint,
         clientId: "fixture-follower",
@@ -169,7 +172,12 @@ function desktopOwnerFixture(endpoint: string, nativeId: string, oldDesktop: boo
           _notification?: (message: unknown) => void,
           dispatch?: () => void,
         ) {
-          if (method === "thread-owner-discovery") return discovery(params);
+          if (method === "thread-owner-discovery") {
+            const owner = discovery(params);
+            if (!owner.handledByClientId)
+              throw new CodexDesktopConnectionError("codex-desktop-owner-missing");
+            return owner;
+          }
           if (method !== "thread-follower-start-turn")
             throw new Error(`unexpected IPC method ${method}`);
           dispatch?.();
@@ -203,6 +211,7 @@ function desktopOwnerFixture(endpoint: string, nativeId: string, oldDesktop: boo
 async function fixture(
   owner: "available" | "missing" | "released" | "no-desktop-owner" | "old-desktop",
   active = true,
+  { indexSessions = false } = {},
 ) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "agentkib-project-follower-")));
   disposers.push(() => rmSync(root, { recursive: true, force: true }));
@@ -329,7 +338,12 @@ async function fixture(
     : undefined;
   const follow = vi.spyOn(CodexFollowerBridge, "connect");
   if (!desktop) follow.mockResolvedValue(bridge as unknown as CodexFollowerBridge);
-  const backend = await startBackend({ data, workspace, environment, indexSessions: fakeDesktop });
+  const backend = await startBackend({
+    data,
+    workspace,
+    environment,
+    indexSessions: indexSessions || fakeDesktop,
+  });
   disposers.push(backend.close);
 
   const store = new BackendStore(join(data, "agentkib.db"));
@@ -561,6 +575,63 @@ it("shows a held writer lock without turn evidence as busy rather than idle", as
   expect(f.writer).not.toHaveBeenCalled();
 });
 
+it("catches up once on a turn of an untouched indexed Worker that began after assignment", async () => {
+  const f = await fixture("missing", false, { indexSessions: true });
+  expect(readManagedRecord(f.data, f.workerId)).toBeNull();
+  const status = () => f.orchestration.status(leadId)!;
+  const joined = Date.parse(status().lanes[0]!.createdAt);
+  const timestamp = (offset: number) => new Date(joined + offset).toISOString();
+  const rollout = (offset: number, turn: string, type: string, message?: string) =>
+    f.append({
+      timestamp: timestamp(offset),
+      type: "event_msg",
+      payload: { type, turn_id: turn, ...(message === undefined ? {} : { message }) },
+    });
+  f.orchestration.pause(leadId);
+
+  // The first turn ends after assignment, but it started before the Worker joined.
+  const previousTurn = "before-assignment";
+  const joinedTurn = "after-assignment";
+  rollout(-30_000, previousTurn, "task_started");
+  rollout(1_000, previousTurn, "task_complete");
+  rollout(2_000, "unknown-start", "task_complete");
+  rollout(10_000, joinedTurn, "task_started");
+  await f.orchestration.catchUp(joined + 20_000);
+  expect(status().pendingReports).toEqual([]);
+
+  // The scanner must retain the start timestamp across an incremental rollout read.
+  rollout(21_000, joinedTurn, "agent_message", "Result from the indexed Worker");
+  rollout(30_000, joinedTurn, "task_complete");
+  await f.orchestration.catchUp(joined + 40_000);
+  expect(status().pendingReports).toEqual([]);
+  await f.orchestration.catchUp(joined + 50_000);
+  expect(status().pendingReports).toEqual([
+    expect.stringMatching(/turn ended: completed after 20s[\s\S]*Result from the indexed Worker/),
+  ]);
+  expect(status().lanes[0]!.reportedTurns).toEqual([joinedTurn]);
+  expect(await f.orchestration.lanes.endedTurns?.(f.workerId)).toEqual([
+    {
+      turnId: previousTurn,
+      outcome: "completed",
+      startedAt: timestamp(-30_000),
+      endedAt: timestamp(1_000),
+    },
+    {
+      turnId: joinedTurn,
+      outcome: "completed",
+      startedAt: timestamp(10_000),
+      endedAt: timestamp(30_000),
+    },
+  ]);
+
+  await f.orchestration.catchUp(joined + 60_000);
+  expect(status().pendingReports).toHaveLength(1);
+  expect(status().lanes[0]!.reportedTurns).toEqual([joinedTurn]);
+  expect(readManagedRecord(f.data, f.workerId)).toBeNull();
+  expect(f.follow).not.toHaveBeenCalled();
+  expect(f.writer).not.toHaveBeenCalled();
+});
+
 it("actively discovers an idle desktop owner after a read miss and forwards the worker turn", async () => {
   const f = await fixture("no-desktop-owner", false);
   const desktop = f.desktop!;
@@ -689,8 +760,51 @@ it("actively discovers an idle desktop owner after a read miss and forwards the 
   });
 });
 
+it("opens an ownerless desktop thread only for the admitted Worker send", async () => {
+  const f = await fixture("no-desktop-owner", false);
+  const desktop = f.desktop!;
+  f.openThread.mockImplementation(async () => {
+    desktop.exposeOwner();
+    return true;
+  });
+
+  await f.orchestration.catchUp();
+  expect(f.openThread).not.toHaveBeenCalled();
+  const outcome = await f.call("worker_send", { ...worker, text: "Send through the desktop" });
+  expect(outcome).toMatchObject({ accepted: true, requestId: expect.any(String) });
+  expect(f.openThread).toHaveBeenCalledExactlyOnceWith(desktop.nativeId);
+  expect(desktop.startTurn).toHaveBeenCalledExactlyOnceWith(
+    {
+      conversationId: desktop.nativeId,
+      turnStart: {
+        request: {
+          threadId: desktop.nativeId,
+          clientUserMessageId: outcome.requestId,
+          input: [{ type: "text", text: "Send through the desktop", text_elements: [] }],
+        },
+      },
+    },
+    "fixture-owner",
+  );
+  expect(f.writer).not.toHaveBeenCalled();
+});
+
+it("reports an unavailable desktop socket without trying to open a Worker thread", async () => {
+  const f = await fixture("no-desktop-owner", false);
+  f.desktop!.connect.mockRejectedValue(
+    new CodexDesktopConnectionError("codex-desktop-ipc-unavailable"),
+  );
+  expect(await f.call("worker_send", { ...worker, text: "Keep this task unsent" })).toMatchObject({
+    accepted: false,
+    reason: "codex-desktop-ipc-unavailable",
+  });
+  expect(f.desktop!.startTurn).not.toHaveBeenCalled();
+  expect(f.openThread).not.toHaveBeenCalled();
+  expect(f.writer).not.toHaveBeenCalled();
+});
+
 it.each([
-  ["no-desktop-owner", "codex-desktop-owner-missing"],
+  ["no-desktop-owner", "codex-desktop-thread-open-failed"],
   ["old-desktop", "codex-desktop-version-too-old"],
 ] as const)("refuses a worker send with %s without starting a writer", async (owner, reason) => {
   const f = await fixture(owner, false);
@@ -701,5 +815,9 @@ it.each([
   expect(f.desktop?.connect).toHaveBeenCalled();
   expect(f.desktop?.startTurn).not.toHaveBeenCalled();
   expect(f.writer).not.toHaveBeenCalled();
-  expect(f.openThread).not.toHaveBeenCalled();
+  if (owner === "no-desktop-owner") {
+    expect(f.openThread).toHaveBeenCalledExactlyOnceWith(f.nativeId);
+  } else {
+    expect(f.openThread).not.toHaveBeenCalled();
+  }
 });

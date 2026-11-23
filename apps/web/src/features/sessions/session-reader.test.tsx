@@ -336,6 +336,8 @@ describe("conversation reading position", () => {
       message: "hello",
       setMessage: vi.fn(),
       control: vi.fn(),
+      // Antigravity has the managed composer, whose settings controls follow the session's client.
+      client: {} as never,
       current: { ...state.current!, agent: "antigravity" },
       access: {
         ...state.access!,
@@ -382,7 +384,9 @@ describe("conversation reading position", () => {
     expect(screen.getByRole("img", { name: "上下文用量" })).toHaveAccessibleDescription(
       expect.stringContaining("5%"),
     );
-    expect(screen.queryByRole("button", { name: state.t.send })).not.toBeInTheDocument();
+    // The managed composer keeps a read-only device's draft local: its Send stays disabled.
+    const send = screen.queryByRole("button", { name: state.t.send });
+    if (send) expect(send).toBeDisabled();
   });
   it("keeps the reading position and offers an accessible jump for an appended reply", async () => {
     const view = render(<SessionReader />);

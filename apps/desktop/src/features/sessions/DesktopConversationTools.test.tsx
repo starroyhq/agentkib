@@ -545,7 +545,9 @@ describe("desktop window conversation tools", () => {
       await mount(f);
       await screen.findByText("Loaded session body");
       const user = userEvent.setup();
-      await user.click(screen.getByRole("button", { name: tr("common.moreActions") }));
+      const toolbar = document.querySelector<HTMLElement>("[data-session-window-session]");
+      if (!toolbar) throw new Error("Missing session window toolbar");
+      await user.click(within(toolbar).getByRole("button", { name: tr("common.moreActions") }));
       await user.click(await screen.findByRole("menuitem", { name: "Session actions…" }));
       expect(await screen.findByRole("dialog", { name: "Session actions" })).toBeVisible();
       expect(screen.getByRole("button", { name: "Details" })).toBeVisible();

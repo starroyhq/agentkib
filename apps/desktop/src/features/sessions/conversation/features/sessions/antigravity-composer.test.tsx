@@ -65,9 +65,13 @@ describe("Antigravity composer shortcuts", () => {
       },
     } as unknown as SessionController;
     render(<SessionReader />);
-    const queue = screen.getByRole("button", { name: "Queue for automatic execution" });
     expect(screen.getByRole("button", { name: "Stop" })).toBeEnabled();
-    expect(queue).toBeEnabled();
+    // Antigravity has the managed composer: the running send choices sit in its menu.
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "More actions" }));
+    });
+    const queue = await screen.findByRole("menuitem", { name: "Queue for automatic execution" });
+    expect(queue).not.toHaveAttribute("aria-disabled", "true");
     await act(async () => {
       fireEvent.click(queue);
     });
@@ -88,7 +92,8 @@ describe("Antigravity composer shortcuts", () => {
     expect(state.control).not.toHaveBeenCalled();
     expect(fireEvent.keyDown(input, { key: "Enter" })).toBe(false);
     await act(async () => {});
-    expect(state.control).toHaveBeenCalledExactlyOnceWith("send");
+    expect(state.control).toHaveBeenCalledOnce();
+    expect(state.control.mock.calls[0]?.[0]).toBe("send");
   });
   it("keeps coarse-pointer Enter as a newline and uses the send button", async () => {
     vi.stubGlobal(
@@ -102,7 +107,8 @@ describe("Antigravity composer shortcuts", () => {
     fireEvent.change(input, { target: { value: "first line\nsecond line" } });
     fireEvent.click(screen.getByRole("button", { name: "Send" }));
     await act(async () => {});
-    expect(state.control).toHaveBeenCalledExactlyOnceWith("send");
+    expect(state.control).toHaveBeenCalledOnce();
+    expect(state.control.mock.calls[0]?.[0]).toBe("send");
   });
   it("keeps submission locks scoped to the selected session", async () => {
     let finishFirst!: (value: boolean) => void;

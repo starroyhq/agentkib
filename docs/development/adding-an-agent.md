@@ -22,9 +22,9 @@
 
 ## 1. 实现并注册 Provider
 
-- [`packages/backend/src/session-provider.ts`](../../packages/backend/src/session-provider.ts) 定义 `SessionProvider`、`TypedSessionProvider` 和 `SessionProviderRequest`。按实际支持的范围接入实时状态、能力查询和操作。可新建会话时，还需实现创建、选项和设置。参考 [DeepSeek Harness 的 Provider](../../packages/backend/src/agents/dsh/session-provider.ts)。只接入已有会话的例子是 [Antigravity](../../packages/backend/src/agents/antigravity/session-provider.ts)。
+- [`packages/backend/src/session-provider.ts`](../../packages/backend/src/session-provider.ts) 定义 `SessionProvider`、`TypedSessionProvider` 和 `SessionProviderRequest`。按实际支持的范围接入实时状态、能力查询和操作。可新建会话时，还需实现创建、选项和设置。参考 [DeepSeek Harness 的 Provider](../../packages/backend/src/agents/dsh/session-provider.ts)。[Antigravity](../../packages/backend/src/agents/antigravity/session-provider.ts)展示如何通过 ACP 新建、加载和控制已核实的会话。
 - 在 [`packages/backend/src/sessions/providers.ts`](../../packages/backend/src/sessions/providers.ts) 的 `createSessionProviders()` 注册实现，由 `SessionProviderRegistry` 按 Agent 查找。原生 API、参数语义和执行环境适配放在各家的 `packages/backend/src/agents/` 子目录。公共准入需要的原生参数校验接到 Provider 的 `validateControl`，对应校验放在 [`packages/backend/src/sessions/validate/`](../../packages/backend/src/sessions/validate)。
-- 在 [`packages/runtime-protocol/src/agents.ts`](../../packages/runtime-protocol/src/agents.ts) 登记可新建的 `MANAGED_AGENTS`。`LIVE_SESSION_AGENTS` 包含这些 Agent 和只能从已有会话进入实时界面的 Agent。
+- 在 [`packages/runtime-protocol/src/agents.ts`](../../packages/runtime-protocol/src/agents.ts) 登记可新建的 `MANAGED_AGENTS`。`LIVE_SESSION_AGENTS` 用于识别可打开实时界面的 Agent。目前两份名单相同，包括用 `devin acp` 和 `agy acp` 新建的会话。今后若有只控制已有会话的 Agent，只将它加入实时名单。
 - 桌面主机通过 `session.request` 将会话请求送到后端。测试应覆盖从设备请求到 Provider 的实际链路。已有 `/managed/*`、`/codex/*` 和兼容通道仍服务现有客户端，改动要保留原有响应和授权边界。
 
 ### 公共准入、回执和串行队列
@@ -46,7 +46,7 @@
 
 ## 3. 按需注册专属面板
 
-组件和文案放在 `packages/session-ui/src/agents/` 下各家的目录。参考 [`session-connection-panels.ts`](../../packages/session-ui/src/agents/session-connection-panels.ts)，按声明的连接方式查找注册项，再按平台桥接能力和设备授权决定是否能操作。窗口、导航或本机桥接等平台差异通过 [`SessionPlatform`](../../packages/session-ui/src/session-platform.tsx) 接线。共用的会话操作、输入框和面板逻辑放在公共包。
+组件和文案放在 `packages/session-ui/src/agents/` 下各家的目录。参考 [`session-connection-panels.ts`](../../packages/session-ui/src/agents/session-connection-panels.ts)，按声明的连接方式查找注册项，再按平台桥接能力和设备授权决定是否能操作。窗口、导航或本机桥接等平台差异通过 [`SessionPlatform`](../../packages/session-ui/src/session-platform.tsx) 接线。共用的会话操作、输入框和面板逻辑放在公共包。待发队列的显示位置和操作从 [`session-queue.ts`](../../packages/session-ui/src/agents/session-queue.ts) 读取注册，启用状态还要核对同会话能力、条目权限和设备授权。
 
 ## 测试
 

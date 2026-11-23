@@ -778,6 +778,11 @@ export class TypeScriptBackend {
         const codex = (sessionId: string) => this.#webRead?.codexLeadCapable(sessionId) === true;
         // A DSH session whose DSH gives a lead its tools (plugin 0.8.0), or one AgentKib can start.
         const dsh = (sessionId: string) => dshBridge.leadCapable(sessionId);
+        // A Devin session AgentKib runs over ACP; each turn is offered the worker tools.
+        const devin = (sessionId: string) => this.#webRead?.devinLeadCapable(sessionId) === true;
+        // An Antigravity session AgentKib controls over ACP; its connection offers the tools.
+        const antigravity = (sessionId: string) =>
+          this.#webRead?.antigravityLeadCapable(sessionId) === true;
         this.#orchestration = new OrchestrationService(
           dataDir,
           leadOwner.bootId,
@@ -786,12 +791,15 @@ export class TypeScriptBackend {
             leadOwner.hasManagedSession(sessionId) ||
             terminal(sessionId) ||
             codex(sessionId) ||
-            dsh(sessionId),
+            dsh(sessionId) ||
+            devin(sessionId) ||
+            antigravity(sessionId),
           (sessionId, deviceId, text) =>
             terminal(sessionId)
               ? this.#claudeBridge!.queueReport(sessionId, text)
-              : codex(sessionId)
-                ? this.#codexLeadReport(sessionId, deviceId, text)
+              : codex(sessionId) || devin(sessionId) || antigravity(sessionId)
+                ? // Sent or queued through AgentKib's own controls of the session.
+                  this.#codexLeadReport(sessionId, deviceId, text)
                 : // A DSH lead hears through the bridge, whether or not its DSH runs right now.
                   dshBridge.handles(sessionId)
                   ? this.#dshLeadReports.send(sessionId, deviceId, text)
@@ -2105,14 +2113,21 @@ export class TypeScriptBackend {
     // Whether a Codex session could lead is known once its web services are loaded; one AgentKib
     // just created may not be in the catalog yet.
     const agent = this.#store?.sessions.get(sessionId)?.agent;
-    if (agent === undefined || agent === "codex") await this.#withWebRead(() => undefined);
+    if (agent === undefined || agent === "codex" || agent === "devin" || agent === "antigravity")
+      await this.#withWebRead(() => undefined);
+    // App and IDE history read from disk cannot lead; only a session controlled over ACP can.
+    if (agent === "antigravity") await this.#webRead?.prepareAntigravityLead(sessionId);
     const codex = this.#webRead?.codexLeadCapable(sessionId) === true;
     const dsh = this.#dshBridge?.leadCapable(sessionId) === true;
+    const devin = this.#webRead?.devinLeadCapable(sessionId) === true;
+    const antigravity = this.#webRead?.antigravityLeadCapable(sessionId) === true;
     const leadWorkspace = () =>
       this.#claudeManaged?.managedWorkspace(sessionId) ??
       this.#claudeBridge?.workspaceOf(sessionId) ??
       (codex ? this.#webRead?.managedWorkspace(sessionId) : undefined) ??
-      (dsh ? this.#store?.sessions.get(sessionId)?.workspace_id : undefined);
+      (dsh || devin || antigravity
+        ? this.#store?.sessions.get(sessionId)?.workspace_id
+        : undefined);
     const authorizedWorkspaces = (): string[] | undefined => {
       const ids = params.authorizedWorkspaceIds;
       if (ids === undefined) return;
@@ -2507,6 +2522,12 @@ export class TypeScriptBackend {
             throw new Error("session-unavailable");
           return this.#withWebRead((owner) =>
             (owner.codexSessionProvider() as CodexSessionProvider).workerDesktopSend(value),
+          );
+        }
+        if (intent === "codex-worker-turn") {
+          if (session(value.sessionId)?.agent !== "codex") throw new Error("session-unavailable");
+          return this.#withWebRead((owner) =>
+            (owner.codexSessionProvider() as CodexSessionProvider).workerTurnSend(value),
           );
         }
         const bridge = dsh(value.sessionId);
@@ -3022,15 +3043,9 @@ export class TypeScriptBackend {
       this.#webRead.observeResults((target, result, timing) =>
         this.#readStates?.recordTerminal(target, result, timing),
       );
-      // A Codex Project Agent's thread starts with its worker tools.
-      this.#webRead.leadEndpoints(async (sessionId) => {
-        const config = (await this.#orchestration?.leadTools(sessionId)) as
-          | { mcpServers?: Record<string, { url?: unknown }> }
-          | null
-          | undefined;
-        const url = config?.mcpServers?.agentkib_workers?.url;
-        return typeof url === "string" ? url : null;
-      });
+      this.#webRead.leadEndpoints(
+        (sessionId) => this.#orchestration?.leadEndpoint(sessionId) ?? Promise.resolve(null),
+      );
     }
     return await operation(this.#webRead);
   }

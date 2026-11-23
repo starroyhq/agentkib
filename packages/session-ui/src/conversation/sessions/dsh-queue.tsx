@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   CornerDownRight,
   ListEnd,
@@ -18,7 +18,13 @@ import {
   type WebClient,
 } from "@agentkib/web-client";
 import { subscribeSessionInvalidation } from "@agentkib/conversation-state";
-import { sessionQueuePanel, type SessionQueuePanelAgent } from "../../agents/session-queue";
+import {
+  canReadSessionQueue,
+  queueActionGranted,
+  queueItemPending,
+  sessionQueuePanel,
+  type SessionQueuePanelAgent,
+} from "../../agents/session-queue";
 import type { InteractionLocale } from "../../interaction-model";
 import { resolveSessionProvider } from "../../session-provider";
 import { retryBusyRead } from "../../session-read-retry";
@@ -82,28 +88,33 @@ export function SessionSendQueue({
   );
   const serial = panel?.serial === true;
   const offered = (action: QueueControl) => panel?.actions.includes(action) === true;
-  const [queue, setQueue] = useState<SessionQueue>();
-  const [error, setError] = useState("");
-  const [editing, setEditing] = useState("");
-  const [text, setText] = useState("");
+  const readable = canReadSessionQueue(panel, selected, capabilities, access);
+  const scope = JSON.stringify([selected, agent, access?.bootId, access?.device?.id]);
+  const authority = useMemo(() => ({ client, scope, readable }), [client, scope, readable]);
+  const [snapshot, setSnapshot] = useState<{
+    authority: typeof authority;
+    queue?: SessionQueue;
+    error?: string;
+  }>();
+  const [edit, setEdit] = useState<{ authority: typeof authority; id: string; text: string }>();
+  const editing = edit?.authority === authority ? edit.id : undefined;
+  const text = edit?.authority === authority ? edit.text : "";
   const [operation, setOperation] = useState(false);
   const [reload, setReload] = useState(0);
-  const readable =
-    !!panel &&
-    capabilities?.sessionId === selected &&
-    capabilities.features["queue-list"]?.available === true &&
-    (!serial || (access?.status === "approved" && access.device?.advancedControl === true));
+  const current = snapshot?.authority === authority ? snapshot : undefined;
+  const queue = current?.queue;
+  const error = current?.error;
   // The live state changes with every streamed chunk; the queue is read again only when the
   // host says it changed. DSH reports a queued message before the host has finished the
   // control that queued it, and the host turns reads away until then, so a settled control
   // ("receipts") is a reason to read again too.
   useEffect(() => {
-    if (serial && !readable) return;
+    if (!readable) return;
     return subscribeSessionInvalidation(client, (id, domains) => {
       if ((!id || id === selected) && (domains.includes("queue") || domains.includes("receipts")))
         setReload((n) => n + 1);
     });
-  }, [client, selected, readable, serial]);
+  }, [client, selected, readable]);
   // The composer mounts one per session, so nothing carries over from another session.
   useEffect(() => {
     if (!readable) return;
@@ -111,22 +122,33 @@ export function SessionSendQueue({
     retryBusyRead(() => client.sessionQueue(selected, agent, abort.signal), abort.signal).then(
       (value) => {
         if (abort.signal.aborted || (value.sessionId && value.sessionId !== selected)) return;
-        setQueue(value);
-        setError("");
+        setSnapshot({ authority, queue: value });
       },
       (reason) => {
         if (abort.signal.aborted) return;
         // Keep the last known items in view; the note says they may be out of date.
-        setError(
-          reason instanceof ApiError && reason.code === "queue_too_large"
-            ? copy.queueTooLarge
-            : copy.unavailableQueue,
-        );
+        setSnapshot((prior) => ({
+          authority,
+          queue: prior?.authority === authority ? prior.queue : undefined,
+          error:
+            reason instanceof ApiError && reason.code === "queue_too_large"
+              ? copy.queueTooLarge
+              : copy.unavailableQueue,
+        }));
       },
     );
     return () => abort.abort();
-  }, [client, selected, agent, readable, reload, copy.queueTooLarge, copy.unavailableQueue]);
-  if (!readable || (serial ? !queue && !error : !queue?.data.length)) return null;
+  }, [
+    client,
+    selected,
+    agent,
+    readable,
+    reload,
+    authority,
+    copy.queueTooLarge,
+    copy.unavailableQueue,
+  ]);
+  if (!panel || (!serial && !queue?.data.length)) return null;
   const paused = queue?.paused === true || queue?.requiresResume === true;
   const pauseAction = paused ? "resume" : "pause";
   const enabled = (action: QueueControl) =>
@@ -136,13 +158,18 @@ export function SessionSendQueue({
       !operation &&
       online &&
       controlReady &&
-      offered(action) &&
-      capabilities?.features[`queue-${action}`]?.available
+      readable &&
+      queueActionGranted(panel, action, access) &&
+      capabilities?.sessionId === selected &&
+      capabilities.features[`queue-${action}`]?.available
     );
   const reason = (action: QueueControl, itemReason?: string) =>
     sessionReason(
       locale,
-      itemReason || capabilities?.features[`queue-${action}`]?.reason || capabilities?.reason,
+      itemReason ||
+        (capabilities?.sessionId === selected
+          ? capabilities.features[`queue-${action}`]?.reason || capabilities.reason
+          : undefined),
       kind,
       unavailableReason,
     ).text;
@@ -151,8 +178,7 @@ export function SessionSendQueue({
     setOperation(true);
     try {
       if (await runSessionAction(`queue-${action}`, fields)) {
-        setEditing("");
-        setText("");
+        setEdit(undefined);
         if (serial) setReload((n) => n + 1);
       }
     } finally {
@@ -163,32 +189,33 @@ export function SessionSendQueue({
     // Opaque: the conversation scrolls behind the composer area.
     <div className="mx-4 -mb-6 rounded-t-2xl border border-b-0 bg-card px-3 pt-1 pb-6 text-sm">
       {error && <p className="py-1 text-xs text-muted-foreground">{error}</p>}
-      {serial && queue && (
+      {serial && offered(pauseAction) && (
         <div className="flex min-h-9 items-center justify-between gap-2">
           <span className="min-w-0 text-xs text-muted-foreground">
             {paused
-              ? queue.data.some((item) => item.status === "unknown")
+              ? queue?.data.some((item) => item.status === "unknown")
                 ? agentCopy.queueRecovery
                 : agentCopy.queuePaused
-              : queue.data.length
-                ? copy.queue
-                : copy.queueEmpty}
+              : queue?.data.length === 0
+                ? copy.queueEmpty
+                : copy.queue}
           </span>
           <Button
             type="button"
             size="sm"
             variant="ghost"
-            disabled={!enabled(pauseAction)}
-            title={enabled(pauseAction) ? undefined : reason(pauseAction)}
-            onClick={() => void run(pauseAction)}
+            className="disabled:pointer-events-auto"
+            disabled={!queue || !enabled(pauseAction)}
+            title={queue && enabled(pauseAction) ? undefined : reason(pauseAction)}
+            onClick={() => queue && void run(pauseAction)}
           >
             {paused ? agentCopy.resumeQueue : agentCopy.pauseQueue}
           </Button>
         </div>
       )}
-      <ul aria-label={copy.queue}>
+      <ul aria-label={copy.queue} className="empty:hidden">
         {queue?.data.map((item) => {
-          const editable = !serial || item.status === undefined || item.status === "pending";
+          const editable = !serial || queueItemPending(item, panel);
           const removable = editable || item.status === "unknown";
           const canEdit =
             editable && !item.hasAttachments && item.actions?.update?.available !== false;
@@ -222,21 +249,29 @@ export function SessionSendQueue({
                     className="h-8 min-w-0 flex-1"
                     value={text}
                     autoFocus
-                    onChange={(event) => setText(event.target.value)}
+                    onChange={(event) =>
+                      setEdit({ authority, id: item.id, text: event.target.value })
+                    }
                     onKeyDown={(event) => {
-                      if (event.key === "Escape") setEditing("");
+                      if (event.key === "Escape") setEdit(undefined);
                     }}
                   />
                   <Button
                     type="submit"
                     size="sm"
                     variant="outline"
+                    className="disabled:pointer-events-auto"
                     disabled={!enabled("update") || !text.trim()}
-                    title={editTitle}
+                    title={editTitle ?? (!text.trim() ? reason("update") : undefined)}
                   >
                     {copy.queueSave}
                   </Button>
-                  <Button type="button" size="sm" variant="ghost" onClick={() => setEditing("")}>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => setEdit(undefined)}
+                  >
                     {copy.cancel}
                   </Button>
                 </form>
@@ -256,7 +291,7 @@ export function SessionSendQueue({
                       type="button"
                       variant="ghost"
                       size="sm"
-                      className="shrink-0 text-muted-foreground"
+                      className="shrink-0 text-muted-foreground disabled:pointer-events-auto"
                       disabled={!canSteer}
                       title={canSteer ? copy.steer : reason("steer", item.actions?.steer?.reason)}
                       onClick={() => canSteer && void run("steer", { queuedSubmissionId: item.id })}
@@ -270,7 +305,7 @@ export function SessionSendQueue({
                       type="button"
                       variant="ghost"
                       size="icon"
-                      className="size-8 shrink-0 text-muted-foreground"
+                      className="size-8 shrink-0 text-muted-foreground disabled:pointer-events-auto"
                       aria-label={copy.queueDelete}
                       title={
                         canRemove
@@ -297,11 +332,12 @@ export function SessionSendQueue({
                       </DropdownMenuTrigger>
                       <DropdownMenuContent side="top" align="end">
                         <DropdownMenuItem
+                          className="data-disabled:pointer-events-auto"
                           disabled={!canEdit || !enabled("update")}
                           title={editTitle}
                           onClick={() => {
-                            setEditing(item.id);
-                            setText(item.text ?? "");
+                            if (canEdit && enabled("update"))
+                              setEdit({ authority, id: item.id, text: item.text ?? "" });
                           }}
                         >
                           <Pencil size={16} aria-hidden="true" />
@@ -330,6 +366,8 @@ export function useBasicSendQueue(
   },
 ) {
   const {
+    kind,
+    copy: { unavailableReason },
     components: { Button },
   } = useSessionPlatform();
   const {
@@ -350,40 +388,50 @@ export function useBasicSendQueue(
     current?.id === selected
       ? sessionQueuePanel(current.agent, resolveSessionProvider(current, capabilities))
       : undefined;
-  if (
-    panel?.surface !== "basic" ||
-    access?.device?.advancedControl !== true ||
-    capabilities?.sessionId !== selected ||
-    capabilities.features["queue-list"]?.available !== true
-  )
-    return {};
+  if (panel?.surface !== "basic") return {};
 
   const text = message.trim();
+  const readable = canReadSessionQueue(panel, selected, capabilities, access);
   const canQueue =
-    access.experimentalEnabled &&
+    access?.experimentalEnabled &&
     online &&
     !busy &&
     controlReady &&
-    access.device.send === true &&
-    capabilities.features["queue-add"]?.available === true &&
+    readable &&
+    queueActionGranted(panel, "add", access) &&
+    capabilities?.features["queue-add"]?.available === true &&
     !!text &&
     !historyReferences.length;
   const label = sessionCopy[locale].queueAdd;
   return {
     list: (
       <SessionSendQueue
-        key={JSON.stringify([selected, access.bootId, access.device.id])}
+        key={JSON.stringify([selected, access?.bootId, access?.device?.id])}
         agent={panel.agent}
         session={session}
       />
     ),
-    action: (
+    action: panel.actions.includes("add") && (
       <Button
         type="button"
         variant="ghost"
         size="icon"
+        className="disabled:pointer-events-auto"
         aria-label={label}
-        title={label}
+        title={
+          canQueue
+            ? label
+            : sessionReason(
+                locale,
+                capabilities?.sessionId === selected
+                  ? capabilities.features["queue-add"]?.reason ||
+                      capabilities.features["queue-list"]?.reason ||
+                      capabilities.reason
+                  : undefined,
+                kind,
+                unavailableReason,
+              ).text
+        }
         disabled={!canQueue}
         onClick={() => {
           if (canQueue)

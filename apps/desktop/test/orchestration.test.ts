@@ -551,6 +551,81 @@ describe("Project Agent supervision", () => {
     expect(delivered).toHaveLength(1);
   });
 
+  it("silences only a superseded empty success and keeps the older reply and failure", async () => {
+    const at = (offset: number) => new Date(now + offset).toISOString();
+    const { orchestration, delivered, tick } = await supervised({
+      events: async () => [
+        { kind: "agent-message", turn_id: "with-reply", content: "An older useful reply." },
+      ],
+      endedTurns: async () => [
+        {
+          turnId: "empty",
+          outcome: "completed",
+          startedAt: at(1_000),
+          endedAt: at(12_000),
+        },
+        {
+          turnId: "with-reply",
+          outcome: "completed",
+          startedAt: at(13_000),
+          endedAt: at(17_000),
+        },
+        {
+          turnId: "failed",
+          outcome: "failed",
+          startedAt: at(18_000),
+          endedAt: at(20_000),
+        },
+        {
+          turnId: "recent",
+          outcome: "completed",
+          startedAt: at(85_000),
+          endedAt: at(90_000),
+        },
+      ],
+    });
+    await tick(110_000);
+    expect(delivered).toHaveLength(1);
+    expect(delivered[0]).not.toContain("turn ended: completed after 11s");
+    expect(delivered[0]).toContain("An older useful reply.");
+    expect(delivered[0]).toContain("turn ended: failed after 2s");
+    expect(delivered[0]).toContain("turn ended: completed after 5s");
+    expect(orchestration.status(LEAD)?.lanes[0]?.reportedTurns).toEqual([
+      "empty",
+      "with-reply",
+      "failed",
+      "recent",
+    ]);
+    await tick(140_000);
+    expect(delivered).toHaveLength(1);
+  });
+
+  it("retries a superseded completion when its history read fails", async () => {
+    let canReadReply = false;
+    const { orchestration, delivered, tick } = await supervised({
+      events: async () => {
+        if (!canReadReply) throw new Error("temporary history read failure");
+        return [{ kind: "agent-message", turn_id: "older", content: "Recovered reply." }];
+      },
+      endedTurns: async () => [
+        {
+          turnId: "older",
+          outcome: "completed",
+          startedAt: new Date(now + 1_000).toISOString(),
+          endedAt: new Date(now + 5_000).toISOString(),
+          superseded: true,
+        },
+      ],
+    });
+    await tick(80_000);
+    expect(delivered).toEqual([]);
+    expect(orchestration.status(LEAD)?.lanes[0]?.reportedTurns).toEqual([]);
+    canReadReply = true;
+    await tick(100_000);
+    expect(delivered).toHaveLength(1);
+    expect(delivered[0]).toContain("Recovered reply.");
+  });
+
   it("batches missed turns and health events into a single turn and preserves the budget and pause", async () => {
     const { delivered, lives, orchestration, tick } = await supervised({
       scope: { maxAutoTurns: 1 },
@@ -1420,9 +1495,9 @@ describe("orchestration service", () => {
       );
       cleanups.push(() => client.close());
       expect(client.getInstructions()).toBe(leadInstructions({ approvals: ["command"] }));
-      expect((await client.listTools()).tools.map((tool: { name: string }) => tool.name)).toContain(
-        "worker_approve",
-      );
+      const names = (await client.listTools()).tools.map((tool: { name: string }) => tool.name);
+      expect(names).toContain("worker_approve");
+      expect((await orchestration.leadEndpoint(LEAD))?.toolNames).toEqual(names);
       expect(orchestration.status(LEAD)?.scope).toMatchObject({
         workspaceIds: ["w1", "w2"],
         policies: [],
@@ -1475,13 +1550,19 @@ describe("orchestration service", () => {
     expect(client.getInstructions()).toBe(LEAD_INSTRUCTIONS);
     expect(LEAD_INSTRUCTIONS.length).toBeLessThan(2000);
     const tools = await client.listTools();
-    expect(tools.tools.map((tool: { name: string }) => tool.name)).toEqual([
+    const names = tools.tools.map((tool: { name: string }) => tool.name);
+    expect(names).toEqual([
       "worker_list",
       "worker_send",
       "worker_read",
       "worker_stop",
       "worker_restart",
     ]);
+    expect(await orchestration.leadEndpoint(LEAD)).toMatchObject({
+      url,
+      serverName: "agentkib_workers",
+      toolNames: names,
+    });
     for (const [name, args] of [
       ["worker_open", { name: "api", workspace: "w1" }],
       ["worker_open", { name: "api", session: WORKER }],

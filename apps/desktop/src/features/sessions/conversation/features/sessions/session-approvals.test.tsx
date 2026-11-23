@@ -214,6 +214,8 @@ describe("waiting approvals above the composer", () => {
 function acp() {
   state = {
     ...state,
+    // Antigravity has the managed composer, whose settings controls follow the session's client.
+    client: {} as never,
     current: { ...state.current!, agent: "antigravity" },
     access: {
       ...state.access!,
@@ -256,7 +258,8 @@ describe("ACP disconnected draft", () => {
       expect(input).toHaveValue("Edited offline");
       expect(state.control).not.toHaveBeenCalled();
       fireEvent.submit(input.closest("form")!);
-      expect(state.control).toHaveBeenCalledExactlyOnceWith("send");
+      expect(state.control).toHaveBeenCalledOnce();
+      expect(vi.mocked(state.control).mock.calls[0]?.[0]).toBe("send");
     },
   );
 
@@ -282,7 +285,7 @@ describe("ACP disconnected draft", () => {
     expect(state.control).not.toHaveBeenCalled();
   });
 
-  it("does not expose an editor without existing send permission", () => {
+  it("never sends from a device without send permission", () => {
     acp();
     state = {
       ...state,
@@ -290,7 +293,12 @@ describe("ACP disconnected draft", () => {
       access: { ...state.access!, device: { ...state.access!.device!, send: false } },
     };
     render(<SessionReader />);
-    expect(screen.queryByRole("textbox", { name: state.t.message })).not.toBeInTheDocument();
+    // Antigravity has the managed composer: a local draft stays possible, sending does not.
+    const input = screen.getByRole("textbox", { name: state.t.message });
+    fireEvent.change(input, { target: { value: "Local draft" } });
+    fireEvent.submit(input.closest("form")!);
+    const send = screen.queryByRole("button", { name: state.t.send });
+    if (send) expect(send).toBeDisabled();
     expect(state.control).not.toHaveBeenCalled();
   });
 });

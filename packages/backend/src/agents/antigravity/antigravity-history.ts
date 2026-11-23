@@ -106,8 +106,14 @@ export class AntigravityHistory {
     }));
     try {
       const acp = await this.#acp.list(workspace);
+      // The CLI's `agy acp` shares the Antigravity App's sessions: one it lists is the same
+      // conversation, controlled through ACP, so its read-only App copy is not listed twice.
+      const served = new Set(acp.sessions.map((session) => session.native_ref.toLowerCase()));
       return {
-        sessions: [...sessions, ...acp.sessions],
+        sessions: [
+          ...sessions.filter((session) => !served.has(parseRef(session.native_ref).id)),
+          ...acp.sessions,
+        ],
         incomplete: listing.incomplete || acp.incomplete,
       };
     } catch {

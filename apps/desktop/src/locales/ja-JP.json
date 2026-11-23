@@ -2343,6 +2343,8 @@
   "conversation.unavailable": "リアルタイム制御は利用できません。コンピューター上の AgentKib で接続状態を確認してください。",
   "conversation.openOriginalClient": "この会話の実行クライアントが見つかりません。元のクライアント（Codex や Claude Code など）で開いて更新してください。",
   "conversation.unverifiedInstallation": "このコンピューターの Agent のインストールまたはバージョンを確認できないため、制御は無効です。インストールを確認してください。",
+  "conversation.antigravityCliUnavailable": "AgentKib から Antigravity を操作するには、先に Antigravity CLI をインストールしてください（Antigravity App には含まれていません）。コンピューターの「設定 › ツールと更新」で公式のインストールコマンドをコピーし、インストール後に agy を一度実行してサインインしてください。",
+  "conversation.antigravityAppSession": "これは Antigravity App または IDE の会話です。AgentKib では閲覧のみできます。続きは Antigravity で行ってください。",
   "conversation.unsupportedControl": "このプラットフォームまたは Agent はリアルタイム制御に対応していません。履歴は閲覧できます。",
   "conversation.process": "実行過程",
   "conversation.tools": "回のツール呼び出し",

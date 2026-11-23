@@ -1954,7 +1954,7 @@ describe("busy full-refresh recovery", () => {
     "does not acknowledge a new unknown outcome through an old manual retry (durable: %s)",
     async (durable) => {
       const { client, streams, sessions } = fixture();
-      sessions[0].agent = durable ? "codex" : "antigravity";
+      sessions[0].agent = durable ? "codex" : "cursor";
       vi.spyOn(client, "receipt").mockImplementation(async (requestId) => ({
         found: true,
         requestId,
@@ -2491,7 +2491,7 @@ describe("session refresh ownership", () => {
     "retains session-specific unknown outcomes across navigation (durable %s)",
     async (durable) => {
       const { client, sessions } = fixture();
-      sessions[0].agent = durable ? "codex" : "antigravity";
+      sessions[0].agent = durable ? "codex" : "cursor";
       vi.spyOn(client, "receipt").mockImplementation(async (requestId) => ({
         found: true,
         requestId,

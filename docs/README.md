@@ -27,8 +27,8 @@ Start with the repository [README](../README.md) for the overview and downloads.
 - [项目 Agent](agents/project-agent.md)介绍如何设定项目 Agent、分配 Worker，以及怎样派工、汇报和暂停委派。
 - [达到使用上限](agents/usage-limits.md)：Claude Code、Codex、DSH 和 Devin 会话达到使用上限时的提示，以及 Claude Code、Codex 和 Devin 会话重置后像 Claude Code 一样自动继续。
 - [DeepSeek Harness](agents/deepseek-harness.md)介绍插件连接、会话读取、发送与排队。
-- [Antigravity](agents/antigravity.md)：ACP 会话的接入范围和官方接口尚不支持的能力。
-- [Devin](agents/devin.md)：读取 Devin CLI 与 Devin Desktop 共用的会话库和子代理，经 `devin -p` 在桌面、Web 和手机上新建和继续会话，以及规则、Skills 与 MCP 的接入范围。
+- [Antigravity](agents/antigravity.md)介绍 `agy acp` 的会话新建、续接和项目 Agent，以及仅本地 App 或 IDE 会话的只读边界。
+- [Devin](agents/devin.md)介绍其会话库与子代理，以及通过 `devin acp` 新建会话、续接、处理审批和担任项目 Agent。
 
 ## 远程访问
 

@@ -178,6 +178,10 @@ export {
   type NewSessionTarget,
 } from "./conversation/sessions/new-session-draft";
 export {
+  useOpenWhenListed,
+  type NewSessionOpenResult,
+} from "./conversation/sessions/use-open-when-listed";
+export {
   subscribePending,
   pendingScope,
   readPending,

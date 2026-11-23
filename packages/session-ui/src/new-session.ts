@@ -278,6 +278,7 @@ const copy = {
     addWorkspaceButton: "添加工作区",
     removeFile: "移除 {name}",
     notCreated: "没有建成会话：{reason}",
+    notListed: "会话已创建，但未能及时出现在会话列表中。",
     startModelUnconfirmed: "无法确认新会话已应用所选模型。首条消息已保留为草稿。",
     startModelUnavailable: "暂时无法核对 DeepSeek Harness 的模型目录，请稍后再试。",
     startModelUpgrade: "请更新 DeepSeek Harness 中的 AgentKib 插件，以便在创建会话时选择模型。",
@@ -313,6 +314,7 @@ const copy = {
     addWorkspaceButton: "新增工作區",
     removeFile: "移除 {name}",
     notCreated: "沒有建立對話：{reason}",
+    notListed: "對話已建立，但未能及時出現在對話清單中。",
     startModelUnconfirmed: "無法確認新對話已套用所選模型。第一則訊息已保留為草稿。",
     startModelUnavailable: "暫時無法核對 DeepSeek Harness 的模型清單，請稍後再試。",
     startModelUpgrade: "請更新 DeepSeek Harness 中的 AgentKib 外掛，以便在建立對話時選擇模型。",
@@ -349,6 +351,7 @@ const copy = {
     addWorkspaceButton: "Add workspace",
     removeFile: "Remove {name}",
     notCreated: "The session was not created: {reason}",
+    notListed: "The session was created, but it did not appear in the session list in time.",
     startModelUnconfirmed:
       "Could not confirm the model for the new session. Your first message is still a draft.",
     startModelUnavailable: "Could not check the DeepSeek Harness model catalog. Try again shortly.",
@@ -387,6 +390,7 @@ const copy = {
     addWorkspaceButton: "ワークスペースを追加",
     removeFile: "{name} を削除",
     notCreated: "会話を作成できませんでした：{reason}",
+    notListed: "会話は作成されましたが、時間内に会話一覧に表示されませんでした。",
     startModelUnconfirmed:
       "新しい会話に選択したモデルが適用されたか確認できませんでした。最初のメッセージは下書きに残っています。",
     startModelUnavailable:

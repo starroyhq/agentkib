@@ -45,7 +45,7 @@ log({ args });
 const send = value => process.stdout.write(JSON.stringify(value) + '\n');
 const nativeId = (args.find(a=>a.startsWith('--session-id=')) || args.find(a=>a.startsWith('--resume='))).split('=')[1];
 const folder = path.join(process.env.CLAUDE_CONFIG_DIR,'projects',process.cwd().replace(/[^a-zA-Z0-9]/g,'-'));
-fs.mkdirSync(folder,{recursive:true});
+if (!args.includes('--no-session-persistence')) fs.mkdirSync(folder,{recursive:true});
 const transcript = path.join(folder,nativeId+'.jsonl');
 let first, pending;
 const mode = () => fs.readFileSync(process.env.PARITY_MODE,'utf8');
@@ -235,13 +235,14 @@ describe.skipIf(process.platform !== "darwin")(
         allowedWorkspaceIds: ["workspace"],
       });
     }
-    async function create() {
+    async function create(settings?: { model: string; verifyStartupModel: true }) {
       const result = await http("/managed/create", {
         agent: "claude-code",
         bootId,
         workspaceId: "workspace",
         requestId: randomUUID(),
         deviceId: "browser-spoof",
+        ...settings,
       });
       expect(result.status, result.body.error).toBe(200);
       expect(result.body.accepted).toBe(true);
@@ -616,6 +617,56 @@ describe.skipIf(process.platform !== "darwin")(
       await idle(sessionId);
       expect(frames().filter((row) => row.type === "user")).toHaveLength(1);
     }, 10_000);
+
+    it.each(["missing config", "missing projects", "empty projects", "existing history"] as const)(
+      "lists a new Claude session before its first send with %s",
+      async (history) => {
+        const config = environment.CLAUDE_CONFIG_DIR!;
+        const projects = join(config, "projects");
+        if (history === "missing config") rmSync(config, { recursive: true });
+        if (history === "empty projects") mkdirSync(projects);
+        if (history === "existing history") {
+          const otherWorkspace = join(directory, "other-workspace");
+          const otherProject = join(projects, "other-project");
+          mkdirSync(otherWorkspace);
+          mkdirSync(otherProject, { recursive: true });
+          const sessionId = randomUUID();
+          writeFileSync(
+            join(otherProject, `${sessionId}.jsonl`),
+            JSON.stringify({
+              type: "user",
+              uuid: randomUUID(),
+              sessionId,
+              cwd: otherWorkspace,
+              timestamp: new Date().toISOString(),
+              message: { role: "user", content: "Existing unrelated conversation" },
+            }) + "\n",
+          );
+        }
+
+        const sessionId = await create({ model: "fixture-model", verifyStartupModel: true });
+        expect(frames().filter((row) => row.args)).toMatchObject([
+          { args: expect.arrayContaining(["--no-session-persistence"]) },
+        ]);
+        expect(frames().filter((row) => row.type === "user")).toEqual([]);
+        expect(existsSync(config)).toBe(history !== "missing config");
+        expect(existsSync(projects)).toBe(
+          history === "empty projects" || history === "existing history",
+        );
+        const catalog = await http("/catalog");
+        expect(catalog.status, JSON.stringify(catalog.body)).toBe(200);
+        expect(catalog.body.sessions).toContainEqual(
+          expect.objectContaining({ id: sessionId, executionMode: "claude-managed" }),
+        );
+
+        const first = await send(sessionId, "First message from a clean workspace");
+        expect(first.status, JSON.stringify(first.body)).toBe(200);
+        await idle(sessionId);
+        expect(frames().filter((row) => row.type === "user")).toMatchObject([
+          { message: { content: "First message from a clean workspace" } },
+        ]);
+      },
+    );
 
     it("creates with the true device and routes fresh Claude reads, send and receipts through the actual owner", async () => {
       const claudeRoute = vi.spyOn(ClaudeSessionProvider.prototype, "legacy");

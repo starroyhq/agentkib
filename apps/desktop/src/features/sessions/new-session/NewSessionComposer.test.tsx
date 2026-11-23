@@ -20,8 +20,10 @@ import {
   takeNewSessionDraft,
 } from "@agentkib/session-ui";
 import { initializeI18n } from "@/core/i18n";
+import type { ConversationSessionSummary } from "@/core/types";
 import { composerLayoutCopy } from "@agentkib/session-ui";
 import { NewSessionComposer, type NewSessionComposerProps } from "./NewSessionComposer";
+import { useOpenWhenListed } from "./use-open-when-listed";
 
 const doubles = vi.hoisted(() => ({
   client: {
@@ -39,6 +41,9 @@ vi.mock("@/core/conversation-bridge", () => ({
   createDesktopConversationClient: () => doubles.client,
 }));
 vi.mock("@/features/agents/AgentIcon", () => ({ AgentIcon: () => null }));
+vi.mock("../conversation-catalog", () => ({
+  refreshConversationCatalog: async () => undefined,
+}));
 
 const workspaces = [
   { id: "north", name: "northstar-api", last_active_at: "2026-11-09T10:00:00.000Z" },
@@ -842,6 +847,88 @@ describe("NewSessionComposer", () => {
       send: true,
     });
   });
+
+  it.each(["times out", "is cancelled"] as const)(
+    "keeps Claude's first message as an unsent draft when the new session catalog wait %s",
+    async (end) => {
+      const sessionId = `claude-missing-from-catalog-${end}`;
+      const retryId = "claude-retry";
+      const session = {
+        id: sessionId,
+        agent: "claude-code",
+        workspace_id: "north",
+        archived: false,
+        sidechain: false,
+        availability: "readable",
+      } satisfies ConversationSessionSummary;
+      doubles.client.managedAction.mockResolvedValue({ accepted: true, sessionId });
+      const open = vi.fn();
+      const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+      function Composer({ sessions }: { sessions: ConversationSessionSummary[] }) {
+        const onCreated = useOpenWhenListed(sessions, open);
+        return (
+          <QueryClientProvider client={client}>
+            <NewSessionComposer
+              initial={{ agent: "claude-code" }}
+              workspaces={workspaces}
+              placement="home"
+              onCreated={onCreated}
+              onAddWorkspace={vi.fn()}
+              onOpenSettings={vi.fn()}
+            />
+          </QueryClientProvider>
+        );
+      }
+      const view = render(<Composer sessions={[]} />);
+      await write("Review the routes");
+      const file = new File(["spec"], "spec.md", { type: "text/markdown" });
+      fireEvent.change(document.querySelector('input[type="file"]')!, {
+        target: { files: [file] },
+      });
+      vi.useFakeTimers();
+      try {
+        await act(async () => fireEvent.click(send()));
+        expect(doubles.client.managedAction).toHaveBeenCalledExactlyOnceWith(
+          "create",
+          expect.not.objectContaining({ prompt: expect.any(String) }),
+        );
+        expect(send()).toBeDisabled();
+        if (end === "is cancelled") {
+          await act(async () => view.unmount());
+          expect(takeNewSessionDraft(sessionId)).toEqual({
+            text: "Review the routes",
+            files: [file],
+            send: false,
+          });
+          await act(async () => vi.advanceTimersByTimeAsync(10_000));
+          expect(open).not.toHaveBeenCalled();
+          return;
+        }
+        await act(async () => vi.advanceTimersByTimeAsync(10_000));
+        expect(send()).toBeEnabled();
+        expect(message()).toHaveValue("Review the routes");
+        expect(screen.getByText("spec.md")).toBeVisible();
+        expect(screen.getByText(copy.notListed)).toBeVisible();
+
+        const retry = { ...session, id: retryId };
+        view.rerender(<Composer sessions={[session, retry]} />);
+        expect(open).not.toHaveBeenCalled();
+        expect(takeNewSessionDraft(sessionId)).toBeUndefined();
+
+        doubles.client.managedAction.mockResolvedValueOnce({ accepted: true, sessionId: retryId });
+        await act(async () => fireEvent.click(send()));
+        expect(open).toHaveBeenCalledExactlyOnceWith(retry);
+        expect(takeNewSessionDraft(retryId)).toEqual({
+          text: "Review the routes",
+          files: [file],
+          send: true,
+        });
+        expect(takeNewSessionDraft(retryId)).toBeUndefined();
+      } finally {
+        vi.useRealTimers();
+      }
+    },
+  );
 
   it("opens Claude's model list when its default is unknown and resets both model and effort", async () => {
     doubles.client.managedOptions.mockResolvedValue({ ...claudeCatalog, defaults: undefined });

@@ -44,6 +44,7 @@ import {
   useNewSessionAdd,
   useSlashCommandMenu,
   offerNewSessionDraft,
+  type NewSessionOpenResult,
   readNewSessionTarget,
   rememberNewSessionTarget,
   type NewSessionDraft,
@@ -97,8 +98,8 @@ export function NewSessionComposer({
   autoFocus = false,
   disabled = false,
 }: {
-  /** Opens the new session; resolves once it is open. */
-  onCreated: (sessionId: string) => Promise<void> | void;
+  /** Opens the new session, or reports why the wait ended. */
+  onCreated: (sessionId: string) => Promise<NewSessionOpenResult | void> | void;
   autoFocus?: boolean;
   /** The connection is lost: the draft can be written but not sent. */
   disabled?: boolean;
@@ -125,18 +126,24 @@ export function NewSessionComposer({
   const [addMenuOpen, setAddMenuOpen] = useState(false);
   const [agentPreset, setAgentPreset] = useState<string>();
   const [sending, setSending] = useState(false);
+  const [sessionNotListed, setSessionNotListed] = useState(false);
   const draft = useRef<NewSessionDraft>({ text, files });
   // Reconciliation can finish after options have refreshed; use the mode of the submitted request.
   const sentWithPrompt = useRef(false);
   // The composer stays busy until the new session opens.
   const handOff = async (sessionId: string) => {
     setSending(true);
-    if (!sentWithPrompt.current) offerNewSessionDraft(sessionId, draft.current);
-    setText("");
-    setFiles([]);
-    add.clearDraftAdditions();
+    const reclaimDraft = sentWithPrompt.current
+      ? undefined
+      : offerNewSessionDraft(sessionId, draft.current);
     try {
-      await onCreated(sessionId);
+      const timedOut = (await onCreated(sessionId)) === "timed-out";
+      setSessionNotListed(timedOut);
+      if (!timedOut || !reclaimDraft?.()) {
+        setText("");
+        setFiles([]);
+        add.clearDraftAdditions();
+      }
     } finally {
       setSending(false);
     }
@@ -292,6 +299,7 @@ export function NewSessionComposer({
   async function send() {
     if (!canSend || !workspace) return;
     setSending(true);
+    setSessionNotListed(false);
     const fields = newSessionCreateFields(
       {
         agent,
@@ -335,6 +343,10 @@ export function NewSessionComposer({
           <code className="break-all">{session.failure.detail}</code>
         </Disclosure>
       )}
+    </Notice>
+  ) : sessionNotListed ? (
+    <Notice tone="error" icon={<CircleX className="size-3.5" />}>
+      {copy.notListed}
     </Notice>
   ) : unavailableReason ? (
     <Notice tone="warning" icon={<TriangleAlert className="size-3.5" />}>

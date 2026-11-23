@@ -27,7 +27,7 @@ import { validHistoryControl } from "../../history-control-schema";
 import type { Commands } from "../../commands";
 import type { ClaudeControlMetadataShare, SessionReaders } from "../../session-readers";
 import type { BackendStore } from "../../store";
-import { canonicalize, pathIdentity } from "../../paths";
+import { canonicalize, lexicalPathIdentity, pathIdentity } from "../../paths";
 import { within } from "../../files";
 import { restrictRemotePath } from "../../remote-tls";
 import { acquirePortableFileLease } from "../../managed-session-lock";
@@ -4206,7 +4206,7 @@ export class ClaudeManagedReadOwner {
     const config = resolveClaudeConfig(this.environment, this.environment.HOME ?? homedir());
     assertClaudeConfigWritable(config);
     const configured = config.dir;
-    if (existsSync(configured)) return canonicalize(configured);
+    if (lstatSync(configured, { throwIfNoEntry: false })) return canonicalize(configured);
     const parent = path.dirname(configured);
     return path.join(canonicalize(parent), path.basename(configured));
   }
@@ -4328,8 +4328,12 @@ export class ClaudeManagedReadOwner {
     const relative = path.relative(registered, actual);
     if (relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative))
       throw new Error("session-workspace-mismatch");
-    if (pathIdentity(this.#home()) !== pathIdentity(canonicalize(record.home)))
-      throw new Error("claude-home-changed");
+    const home = lexicalPathIdentity(this.#home());
+    // A new session captures the canonical location before Claude creates its config directory.
+    // Forks inherit the source's home and their verified source transcript already exists.
+    const recordedHome =
+      record.fresh && !record.forkSourceNativeId ? record.home : canonicalize(record.home);
+    if (home !== lexicalPathIdentity(recordedHome)) throw new Error("claude-home-changed");
   }
 
   async #installationVersion(): Promise<string | null> {

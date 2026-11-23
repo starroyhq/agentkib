@@ -25,7 +25,10 @@ import {
   threadTitleModel,
   threadTitlePrompt,
 } from "../../../packages/backend/src/agents/codex/codex-thread-title";
-import { CodexFollowerConnection } from "../../../packages/backend/src/agents/codex/codex-follower-connection";
+import {
+  CodexDesktopConnectionError,
+  CodexFollowerConnection,
+} from "../../../packages/backend/src/agents/codex/codex-follower-connection";
 import { CodexFollowerState } from "../../../packages/backend/src/agents/codex/codex-follower-state";
 import { CodexDesktopApp } from "../../../packages/backend/src/agents/codex/codex-desktop-app";
 import { AUTO_CONTINUE_TEXT } from "../../../packages/backend/src/usage-limit";
@@ -634,6 +637,164 @@ describe("restarting an AgentKib Codex worker", () => {
 });
 
 describe("a Codex Project Agent's thread", () => {
+  async function queuedWorker(change: (server: EventEmitter, turnId: string) => void) {
+    const f = fixture();
+    expect(await f.send()).toMatchObject({ accepted: true });
+    expect(await f.sendWithState(await f.live(), { operation: "queue-add" })).toMatchObject({
+      accepted: true,
+    });
+    const worker = f.summary.id;
+    const server = f.servers.at(-1)!;
+    const turnId = "queued-turn";
+    server.complete();
+    server.emit("notification", {
+      method: "turn/started",
+      params: { threadId: nativeId, turn: { id: turnId, status: "inProgress" } },
+    });
+    const before = await f.live();
+    expect(before).toMatchObject({ status: "running", turnId });
+
+    const provider = f.web.codexSessionProvider() as CodexSessionProvider;
+    const lead = new OrchestrationService(
+      f.root,
+      "fixture-boot",
+      {
+        control: async (request, intent) => {
+          expect(intent).toBe("codex-worker-turn");
+          expect(request.expectedRevision).toBe(before.revision);
+          expect(request.turnId).toBe(turnId);
+          change(server, turnId);
+          await f.live();
+          return provider.workerTurnSend(request);
+        },
+        live: f.live,
+        events: async () => [],
+        session: (sessionId) =>
+          sessionId === worker ? { agent: "codex", workspaceId: "workspace", title: null } : null,
+        managed: async () => true,
+        workspaces: () => [{ id: "workspace", name: "Fixture" }],
+      },
+      (id) => id === "project-agent",
+      () => false,
+    );
+    cleanups.push(() => lead.close());
+    await lead.assignWorkers({
+      sessionId: "project-agent",
+      deviceId: "fixture",
+      workspaceId: "workspace",
+      workers: [worker],
+    });
+    return { f, lead, server, turnId, before };
+  }
+
+  function workerUsage(server: EventEmitter, turnId: string, totalTokens = 10) {
+    server.emit("notification", {
+      method: "thread/tokenUsage/updated",
+      params: { threadId: nativeId, turnId, tokenUsage: { total: { totalTokens } } },
+    });
+  }
+
+  describe.each([
+    ["steer", "steer", "turn/steer"],
+    ["queue", "queue-add", "thread/queue/add"],
+  ] as const)("Project Agent %s of a native queued turn", (mode, operation, nativeMethod) => {
+    it("accepts same-turn usage and streamed output updates across admission and dispatch", async () => {
+      const { f, lead, server, turnId, before } = await queuedWorker(workerUsage);
+      server.emit("notification", {
+        method: "item/commandExecution/terminalInteraction",
+        params: { threadId: nativeId, turnId, itemId: "running-command" },
+      });
+      expect(await f.live()).toMatchObject({ revision: before.revision, turnId });
+      f.intercept((method, params, current) => {
+        if (method === "model/list") {
+          workerUsage(current, turnId, 20);
+          current.emit("notification", {
+            method: "item/agentMessage/delta",
+            params: { threadId: nativeId, turnId, delta: "Worker output" },
+          });
+        }
+        if (method === "turn/steer") return { turnId: params.expectedTurnId };
+      });
+      const priorCalls = f.methods.filter((method) => method === nativeMethod).length;
+      const result = await lead.call("project-agent", "worker_send", {
+        worker: "worker-1",
+        mode,
+        text: "New instruction",
+      });
+      const live = await f.live();
+      expect(live).toMatchObject({ turnId, status: "running", streamText: "Worker output" });
+      expect(live.revision).toBeGreaterThan(before.revision);
+      expect(JSON.parse(result.text), result.text).toMatchObject({ accepted: true, operation });
+      expect(f.methods.filter((method) => method === nativeMethod)).toHaveLength(priorCalls + 1);
+      if (mode === "steer")
+        expect(f.requests.findLast(({ method }) => method === nativeMethod)?.params).toMatchObject({
+          threadId: nativeId,
+          expectedTurnId: turnId,
+        });
+    });
+
+    it.each(["turn", "settings", "goal", "identity"] as const)(
+      "rejects a change to the worker's %s during native preflight without dispatching",
+      async (change) => {
+        const { f, lead, turnId } = await queuedWorker(workerUsage);
+        const record = readManagedRecord(f.root, f.summary.id)!;
+        let changed = false;
+        f.intercept((method, _params, server) => {
+          if (method !== "model/list") return;
+          changed = true;
+          if (change === "identity") {
+            saveManagedRecord(f.root, { ...record, native_id: forkId });
+          } else if (change === "turn") {
+            server.complete({ id: turnId });
+            server.emit("notification", {
+              method: "turn/started",
+              params: { threadId: nativeId, turn: { id: "replacement", status: "inProgress" } },
+            });
+          } else if (change === "settings") {
+            for (const settings of [
+              { ...(record.native_settings as object), effort: "high" },
+              record.native_settings,
+            ])
+              server.emit("notification", {
+                method: "thread/settings/updated",
+                params: { threadId: nativeId, threadSettings: settings },
+              });
+          } else {
+            server.activateGoal();
+            server.emit("notification", {
+              method: "thread/goal/cleared",
+              params: { threadId: nativeId },
+            });
+          }
+        });
+        const priorCalls = f.methods.filter((method) => method === nativeMethod).length;
+        const result = await lead.call("project-agent", "worker_send", {
+          worker: "worker-1",
+          mode,
+          text: "Do not dispatch this instruction",
+        });
+        expect(changed).toBe(true);
+        expect(JSON.parse(result.text), result.text).toMatchObject({
+          accepted: false,
+          operation,
+          reason: change === "identity" ? "session-unavailable" : "stale-or-disabled-control",
+        });
+        expect(f.methods.filter((method) => method === nativeMethod)).toHaveLength(priorCalls);
+      },
+    );
+
+    it("keeps strict public revision checks for a direct control", async () => {
+      const { f, server, turnId, before } = await queuedWorker(() => {});
+      workerUsage(server, turnId);
+      expect((await f.live()).revision).toBeGreaterThan(before.revision);
+      const priorCalls = f.methods.filter((method) => method === nativeMethod).length;
+      await expect(f.sendWithState(before, { operation, turnId })).rejects.toThrow(
+        "stale-or-disabled-control",
+      );
+      expect(f.methods.filter((method) => method === nativeMethod)).toHaveLength(priorCalls);
+    });
+  });
+
   it.each(["idle retirement", "backend shutdown"] as const)(
     "starts the first assigned Worker task after %s closes its unwritten native thread",
     async (retirement) => {
@@ -3565,6 +3726,65 @@ describe("Codex automatic CLI continuation", () => {
     expect(f.follower).not.toHaveBeenCalled();
   });
 
+  it("resumes with one turn and pages older native history while the runner is connected", async () => {
+    const f = fixture(true);
+    f.setServerUserAgent("agentkib/0.167.0 (Mac OS 26.0.0; arm64) fixture");
+    f.setPolicyReply({
+      thread: { id: nativeId, cwd: f.workspace, status: { type: "idle" }, turns: [] },
+      initialTurnsPage: {
+        data: [{ id: "finished-turn", status: "completed", items: [] }],
+        nextCursor: "older-turns",
+      },
+    });
+
+    expect(await f.send()).toMatchObject({ accepted: true });
+    expect(f.requests.filter(({ method }) => method === "thread/resume")).toMatchObject([
+      {
+        params: {
+          threadId: nativeId,
+          excludeTurns: true,
+          initialTurnsPage: { limit: 1, sortDirection: "desc", itemsView: "full" },
+        },
+      },
+    ]);
+    expect(f.methods.filter((method) => method === "turn/start")).toHaveLength(1);
+    expect(f.servers[0]?.connected).toBe(true);
+
+    const request = { operation: "events", sessionId: f.summary.id, limit: 1 };
+    const page = await f.web.request(request);
+    expect(page.events).toEqual([expect.objectContaining({ content: "Earlier answer" })]);
+    expect(page.next_cursor).toMatch(/^codex-native-v1:/);
+    expect(await f.web.request({ ...request, cursor: page.next_cursor })).toMatchObject({
+      events: [expect.objectContaining({ content: "Earlier user input" })],
+    });
+    expect(f.requests).not.toContainEqual(
+      expect.objectContaining({
+        method: "thread/read",
+        params: expect.objectContaining({ includeTurns: true }),
+      }),
+    );
+  });
+
+  it("keeps an active turn from the resume page and does not start another turn", async () => {
+    const f = fixture(true);
+    f.setServerUserAgent("agentkib/0.167.0 (Mac OS 26.0.0; arm64) fixture");
+    f.setPolicyReply({
+      thread: { id: nativeId, cwd: f.workspace, status: { type: "active" }, turns: [] },
+      initialTurnsPage: {
+        data: [{ id: "existing-turn", status: "inProgress", items: [] }],
+        nextCursor: "older-turns",
+      },
+    });
+
+    expect(await f.send()).toMatchObject({
+      accepted: false,
+      error: "session-busy",
+      controlOutcome: "not-dispatched",
+    });
+    expect(await f.live()).toMatchObject({ status: "running", turnId: "existing-turn" });
+    expect(f.methods).not.toContain("turn/start");
+  });
+
   it("resets history cursors when switching between native read-only history and a managed runner", async () => {
     vi.useFakeTimers();
     const f = fixture(true);
@@ -5304,7 +5524,7 @@ describe("Codex Desktop follow", () => {
     const f = fixture();
     vi.spyOn(CodexFollowerConnection, "supported").mockReturnValue(true);
     holdWriterLock(f);
-    f.follower.mockRejectedValue(new Error("no Codex session owner found"));
+    f.follower.mockRejectedValue(new CodexDesktopConnectionError("codex-desktop-owner-missing"));
     let now = Date.now();
     vi.spyOn(Date, "now").mockImplementation(() => now);
     expect(await f.live()).toMatchObject({
@@ -5346,7 +5566,7 @@ describe("Codex Desktop follow", () => {
     vi.spyOn(CodexFollowerConnection, "supported").mockReturnValue(true);
     holdWriterLock(f);
     f.setFailure(activeWriter());
-    f.follower.mockRejectedValue(new Error("no Codex session owner found"));
+    f.follower.mockRejectedValue(new CodexDesktopConnectionError("codex-desktop-owner-missing"));
     const running = vi.spyOn(CodexDesktopApp.prototype, "running").mockResolvedValue(true);
     const open = vi.spyOn(CodexDesktopApp.prototype, "openThread").mockResolvedValue(true);
     expect(await f.live()).toMatchObject({
@@ -5389,7 +5609,7 @@ describe("Codex Desktop follow", () => {
     f.setFailure(activeWriter());
     let shown = false;
     f.follower.mockImplementation(async () => {
-      if (!shown) throw new Error("no Codex session owner found");
+      if (!shown) throw new CodexDesktopConnectionError("codex-desktop-owner-missing");
       return bridge as unknown as CodexFollowerBridge;
     });
     vi.spyOn(CodexDesktopApp.prototype, "running").mockResolvedValue(true);
@@ -5435,12 +5655,64 @@ describe("Codex Desktop follow", () => {
     });
   });
 
+  it("offers a Worker send an owner handoff before opening a window or starting a writer", async () => {
+    const { f, bridge } = followerFixture({ revision: 4 });
+    let shown = false;
+    f.follower.mockImplementation(async () => {
+      if (!shown) throw new CodexDesktopConnectionError("codex-desktop-owner-missing");
+      return bridge as unknown as CodexFollowerBridge;
+    });
+    vi.spyOn(CodexDesktopApp.prototype, "running").mockResolvedValue(true);
+    const open = vi.spyOn(CodexDesktopApp.prototype, "openThread").mockImplementation(async () => {
+      shown = true;
+      return true;
+    });
+    const provider = f.web.codexSessionProvider() as CodexSessionProvider;
+    const state = await provider.workerLive(f.summary.id, true, "send");
+    expect(state).toMatchObject({
+      ownershipReason: "codex-owner-busy",
+      sendEnabled: true,
+      ownerHandoff: true,
+    });
+    expect(open).not.toHaveBeenCalled();
+    const requestId = randomUUID();
+    expect(
+      await provider.workerDesktopSend({
+        operation: "send",
+        sessionId: f.summary.id,
+        requestId,
+        deviceId: "fixture-worker-lead",
+        runtimeBootId: state.runtimeBootId,
+        expectedRevision: state.revision,
+        experimentalEnabled: true,
+        text: "Continue",
+      }),
+    ).toMatchObject({ accepted: true });
+    expect(open).toHaveBeenCalledExactlyOnceWith(nativeId);
+    expect(bridge.mutate).toHaveBeenCalledExactlyOnceWith(
+      "thread-follower-start-turn",
+      {
+        conversationId: nativeId,
+        turnStart: {
+          request: {
+            threadId: nativeId,
+            clientUserMessageId: requestId,
+            input: [{ type: "text", text: "Continue", text_elements: [] }],
+          },
+        },
+      },
+      4,
+      expect.any(Function),
+    );
+    expect(f.start).not.toHaveBeenCalled();
+  });
+
   it("leaves the message unsent when the Codex app does not take the thread", async () => {
     const f = fixture(false, undefined, { AGENTKIB_CODEX_HANDOFF_TIMEOUT_MS: "600" });
     vi.spyOn(CodexFollowerConnection, "supported").mockReturnValue(true);
     holdWriterLock(f);
     f.setFailure(activeWriter());
-    f.follower.mockRejectedValue(new Error("no Codex session owner found"));
+    f.follower.mockRejectedValue(new CodexDesktopConnectionError("codex-desktop-owner-missing"));
     vi.spyOn(CodexDesktopApp.prototype, "running").mockResolvedValue(true);
     const open = vi.spyOn(CodexDesktopApp.prototype, "openThread").mockResolvedValue(true);
     const state = await f.live();

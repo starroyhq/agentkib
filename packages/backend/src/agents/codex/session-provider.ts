@@ -40,7 +40,7 @@ import { CodexCatalogCache } from "./codex-catalog-cache";
 import { CodexExternalTurns, type EndedTurn, type ExternalTurn } from "./codex-external-turns";
 import { codexResumeCommand } from "./codex-resume-command";
 import { CodexFollowerBridge } from "./codex-follower-bridge";
-import { CodexFollowerConnection } from "./codex-follower-connection";
+import { CodexDesktopConnectionError, CodexFollowerConnection } from "./codex-follower-connection";
 import { CodexDesktopApp } from "./codex-desktop-app";
 import {
   parseFollowerModelSettings,
@@ -88,22 +88,10 @@ import {
   replayManagedCommand,
   saveManagedRecord,
   saveManagedSettingsReceipt,
-  saveManagedUsageLimit,
 } from "../../managed-ledger";
 import { CodexLeadTurns } from "../../lead-turn-origin";
 import { CodexTitleThreads, codexUserMessageText, threadTitleModel } from "./codex-thread-title";
-import {
-  AUTO_CONTINUE_TEXT,
-  armUsageLimit,
-  codexUsageLimitHit,
-  holdUsageLimit,
-  usageLimitArmable,
-  usageLimitAutoContinue,
-  usageLimitContinue,
-  usageLimitView,
-  type UsageLimit,
-} from "../../usage-limit";
-
+import { CodexUsageLimits } from "./usage-limits";
 import type { LaneObserver } from "../../sessions/lane-observer";
 import type { WorkerRestartRequest, WorkerRestartResult } from "../../orchestration-service";
 import { readManagedRecords, type ManagedRecord } from "./managed-records";
@@ -117,12 +105,10 @@ const HANDOFF_POLL_MS = 250;
 
 type WorkerLiveRead = "read" | "send";
 
-/** Owner discovery answered, and nobody answers for the thread. */
-function codexOwnerMissing(error: unknown): boolean {
-  return (
-    error instanceof Error &&
-    ["Codex session owner was not found", "no Codex session owner found"].includes(error.message)
-  );
+function codexDesktopFailure(error: unknown): string {
+  return error instanceof CodexDesktopConnectionError
+    ? error.code
+    : "codex-desktop-owner-unavailable";
 }
 
 const managedReconcileSchema = z
@@ -254,12 +240,16 @@ type ManagedRunner = {
   leadUrl?: string | null;
   /** Restart once idle, keeping the session AgentKib's: its worker tools changed. */
   restartWhenIdle?: boolean;
+  /** A paginated resume hydrated only the latest turn, so older rows come from native history. */
+  usesNativeHistory?: boolean;
   /**
    * Whether Codex has written the thread: resumed ones are, a new one once a turn starts. A thread
    * it has not written cannot be resumed, so it is not restarted before.
    */
   written?: boolean;
 };
+
+type CodexDesktopHandoff = { follower: CodexFollowerRecord; revision: number } | { reason: string };
 
 type CodexFollowerRecord = {
   bridge: CodexFollowerBridge;
@@ -353,17 +343,7 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
     string,
     { retryAt: number; live: Promise<Record<string, unknown> | undefined> }
   >();
-  /**
-   * The usage limit each managed Codex session's last turn met, and the continue armed for it
-   * (`usage-limit.ts`). In memory only: as Claude Code's own wait does, it ends with AgentKib.
-   * `continuing` is the request of the continue AgentKib sent, until that turn ends.
-   */
-  #codexLimits = new Map<
-    string,
-    { limit: UsageLimit; timer?: ReturnType<typeof setTimeout>; continuing?: string }
-  >();
-  /** The device whose message each managed Codex session last took. */
-  #codexSenders = new Map<string, { deviceId: string; restrictNativePolicy: boolean }>();
+  readonly #usageLimits: CodexUsageLimits;
   /** The temporary threads that name managed Codex threads (`codex-thread-title.ts`). */
   #titleThreads = new CodexTitleThreads();
   /**
@@ -393,16 +373,29 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
   #handoffFailures = new Map<string, number>();
   #desktopApp: CodexDesktopApp;
   #handoffTimeoutMs: number;
-  #handoffFlights = new Map<
-    string,
-    Promise<{ follower: CodexFollowerRecord; revision: number } | undefined>
-  >();
+  #handoffFlights = new Map<string, Promise<CodexDesktopHandoff>>();
 
   constructor(private readonly host: CodexSessionHost) {
     const { environment } = host;
     this.#codex = new CodexAppServerReader(environment);
     this.#preflight = new CodexRuntimePreflight(environment);
     this.#desktopApp = new CodexDesktopApp(environment);
+    this.#usageLimits = new CodexUsageLimits({
+      dataDir: host.dataDir,
+      runtimeBootId: host.runtimeBootId,
+      isShuttingDown: () => host.isShuttingDown(),
+      readLive: (sessionId) => this.#managedLive(sessionId, true),
+      controlSession: (value, restrictNativePolicy) =>
+        host.controlSession(value, restrictNativePolicy),
+      publishLimit: (sessionId, view) => {
+        const runner = this.#managedRunners.get(sessionId);
+        if (runner?.state.showUsageLimit(view)) {
+          const live = runner.state.snapshot(host.runtimeBootId, runner.session.connected);
+          host.publishConversationEvent?.(sessionId, "state", live, live);
+        }
+      },
+      limitEnded: (sessionId) => host.observeLane((observer) => observer.limitEnded?.(sessionId)),
+    });
     const handoffTimeout = Number(environment.AGENTKIB_CODEX_HANDOFF_TIMEOUT_MS);
     this.#handoffTimeoutMs =
       environment.AGENTKIB_CODEX_HANDOFF_TIMEOUT_MS !== undefined &&
@@ -425,6 +418,26 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
   control(value: Record<string, unknown>, restrictNativePolicy = false) {
     return this.host.admitControl(value, (request, fingerprint) =>
       this.#codexControl(request, fingerprint, { restrictNativePolicy }),
+    );
+  }
+
+  /** A delegated send was admitted by the lead after discovery found no window owner. */
+  workerDesktopSend(value: Record<string, unknown>) {
+    return this.host.runOperation(() =>
+      this.host.admitControl(value, (request, fingerprint) =>
+        this.#codexControl(request, fingerprint, { desktopOwnerHandoff: true }),
+      ),
+    );
+  }
+
+  /** Only a Project Agent's follow-up to a running managed Worker uses this admission. */
+  workerTurnSend(value: Record<string, unknown>) {
+    if (value.operation !== "steer" && value.operation !== "queue-add")
+      throw new Error("stale-or-disabled-control");
+    return this.host.runOperation(() =>
+      this.host.admitControl(value, (request, fingerprint) =>
+        this.#codexControl(request, fingerprint, { workerTurn: true }),
+      ),
     );
   }
 
@@ -476,7 +489,7 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
 
   stopTimers(): void {
     clearInterval(this.#retirementTimer);
-    for (const entry of this.#codexLimits.values()) clearTimeout(entry.timer);
+    this.#usageLimits.stopTimers();
   }
 
   closeDiscovery(): void {
@@ -661,15 +674,24 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
     );
   }
 
-  /**
-   * The latest turns of a Codex session AgentKib manages whose end Codex recorded, whoever ran
-   * them: a Project Agent hears of those its worker ran while AgentKib did not watch it.
-   */
-  endedTurns(sessionId: string): EndedTurn[] {
-    const record = readManagedRecords(this.host.dataDir, this.host.store).find(
-      (item) => item.id === sessionId && !item.released,
-    );
-    return record?.native_id ? this.#externalTurns.endedTurns(record.native_id) : [];
+  /** The latest native completions, including those from an indexed Worker we never ran. */
+  async endedTurns(sessionId: string): Promise<EndedTurn[]> {
+    const row = readManagedRecord(this.host.dataDir, sessionId);
+    const stored = row && managedRecordSchema.parse(row);
+    try {
+      if (stored && !stored.released) {
+        const record = await this.#inactiveRecord(sessionId, stored);
+        return record.native_id ? this.#externalTurns.endedTurns(record.native_id) : [];
+      }
+      const { nativeId, transcript } = await this.#indexedCodexSource(sessionId);
+      if (!transcript) return [];
+      // A completion without a proven start cannot show that the indexed turn began after assignment.
+      return this.#externalTurns
+        .endedTurns(nativeId, Date.now(), transcript)
+        .filter((turn) => turn.startedAt !== null);
+    } catch {
+      return [];
+    }
   }
 
   /** Existing execution evidence for the read-side observer. No follow or resume is initiated. */
@@ -2488,13 +2510,12 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
         set(operation, false, "native-operation-not-integrated");
       set(
         "usage-limit-cancel",
-        managed && typeof this.#codexLimits.get(record.id)?.limit.continueAt === "number",
+        managed && this.#usageLimits.canCancel(record.id),
         "usage-limit-continue-unavailable",
       );
       set(
         "usage-limit-continue",
-        managed &&
-          usageLimitArmable(this.#codexLimits.get(record.id)?.limit, this.host.runtimeBootId),
+        managed && this.#usageLimits.canContinue(record.id),
         "usage-limit-continue-unavailable",
       );
       set("approve", managed && verified && healthy && runnerConnected && !unknown, controlReason);
@@ -2697,180 +2718,14 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
     };
   }
 
-  /**
-   * After a managed Codex turn: one that met the account's usage limit is held, with the continue
-   * armed as `usage-limit.ts` says; a turn that completes ends the hold.
-   */
-  #codexTurnLimit(
-    sessionId: string,
-    session: CodexAppServerSession,
-    state: ManagedCodexState,
-    turn: Record<string, unknown>,
-  ): void {
-    const limited = state.limitedTurn;
-    if (limited && limited.turnId === turn.id) {
-      void this.#holdCodexLimit(sessionId, session, limited.message);
-      return;
-    }
-    if (turn.status === "completed" && !turn.error && this.#codexLimits.has(sessionId)) {
-      this.#armCodexLimit(sessionId, null);
-      this.host.observeLane((observer) => observer.limitEnded?.(sessionId));
-    }
-  }
-
   /** Whether a managed Codex session waits for its usage limit to reset. */
   usageLimited(sessionId: string): boolean {
-    const held = this.#codexLimits.get(sessionId);
-    return !!held && !held.continuing;
-  }
-
-  async #holdCodexLimit(
-    sessionId: string,
-    session: CodexAppServerSession,
-    message: string,
-  ): Promise<void> {
-    // Codex's error carries no reset time; the account's limits do, as the Codex app reads them.
-    const read = await session
-      .request("account/rateLimits/read", { excludeResetCreditDetails: true })
-      .catch(() => null);
-    const held = this.#codexLimits.get(sessionId);
-    this.#armCodexLimit(
-      sessionId,
-      holdUsageLimit("codex", codexUsageLimitHit(read, message), {
-        deviceId: this.#codexSenders.get(sessionId)?.deviceId ?? held?.limit.deviceId ?? "",
-        bootId: this.host.runtimeBootId,
-        // Only a turn AgentKib's continue started counts toward the three in a row.
-        previous: held?.continuing ? held.limit : null,
-        autoContinue: usageLimitAutoContinue(this.host.dataDir),
-      }),
-    );
-  }
-
-  /**
-   * Holds `limit` (null ends the hold) and arms its continue; `show` puts it on the live state,
-   * which moves its revision, so never in the middle of a control.
-   */
-  #armCodexLimit(
-    sessionId: string,
-    limit: UsageLimit | null,
-    continuing?: string,
-    show = true,
-  ): void {
-    const held = this.#codexLimits.get(sessionId);
-    clearTimeout(held?.timer);
-    if (!limit) this.#codexLimits.delete(sessionId);
-    else {
-      const timer =
-        limit.continueAt === null
-          ? undefined
-          : setTimeout(
-              () => void this.#fireCodexContinue(sessionId).catch(() => undefined),
-              Math.max(0, limit.continueAt - Date.now()),
-            );
-      timer?.unref?.();
-      this.#codexLimits.set(sessionId, { limit, timer, continuing });
-    }
-    const runner = this.#managedRunners.get(sessionId);
-    if (show && runner?.state.showUsageLimit(usageLimitView(limit, this.host.runtimeBootId))) {
-      const live = runner.state.snapshot(this.host.runtimeBootId, runner.session.connected);
-      this.host.publishConversationEvent?.(sessionId, "state", live, live);
-    }
-  }
-
-  /**
-   * The continue armed after a usage limit is due: AgentKib resumes a goal Codex paused for the
-   * limit, or sends its continue, in the name of the device whose turn met the limit.
-   */
-  async #fireCodexContinue(sessionId: string): Promise<void> {
-    const held = this.#codexLimits.get(sessionId);
-    if (!held || this.host.isShuttingDown()) return;
-    const due = usageLimitContinue(held.limit, this.host.runtimeBootId);
-    if (due === "never") return;
-    if (due === "wait") return this.#armCodexLimit(sessionId, held.limit);
-    if (due === "stale")
-      return this.#armCodexLimit(sessionId, { ...held.limit, continueAt: null, manual: "stale" });
-    const requestId = randomUUID();
-    this.#armCodexLimit(
-      sessionId,
-      { ...held.limit, continueAt: null, autoContinues: held.limit.autoContinues + 1 },
-      requestId,
-      false,
-    );
-    const live = (await this.#managedLive(sessionId, true).catch(() => null)) as Record<
-      string,
-      unknown
-    > | null;
-    if (!live || live.status !== "idle") {
-      // Something else runs: look again shortly.
-      return this.#armCodexLimit(sessionId, { ...held.limit, continueAt: Date.now() + 60_000 });
-    }
-    const goal = isObject(live.goal) && live.goal.status === "usageLimited";
-    const sender = this.#codexSenders.get(sessionId);
-    const result = (await this.host
-      .controlSession(
-        {
-          operation: goal ? "goal-resume" : "send",
-          sessionId,
-          requestId,
-          ...(held.limit.deviceId ? { deviceId: held.limit.deviceId } : {}),
-          runtimeBootId: live.runtimeBootId,
-          expectedRevision: live.revision,
-          experimentalEnabled: true,
-          ...(goal ? {} : { text: AUTO_CONTINUE_TEXT.codex }),
-        },
-        sender?.deviceId === held.limit.deviceId && sender.restrictNativePolicy,
-      )
-      .catch(() => null)) as Record<string, unknown> | null;
-    const current = this.#codexLimits.get(sessionId);
-    if (result?.accepted !== true && current?.continuing === requestId)
-      // Refused: the person continues.
-      this.#armCodexLimit(sessionId, { ...current.limit, manual: "stale" });
-  }
-
-  /** The person's choice about the continue: off this time (`usage-limit-cancel`), or on. */
-  #codexLimitChoice(
-    request: z.infer<typeof managedControlSchema>,
-    record: ManagedRecord | undefined,
-    fingerprint: string,
-    choose: (limit: UsageLimit) => UsageLimit | null,
-  ): Record<string, unknown> {
-    const held = this.#codexLimits.get(request.sessionId);
-    const next = held ? choose(held.limit) : null;
-    if (!record || !next) throw new Error("usage-limit-continue-unavailable");
-    const claimed = claimManagedCommand(
-      this.host.dataDir,
-      request.requestId,
-      request.sessionId,
-      fingerprint,
-      request.deviceId ?? null,
-      {
-        operation: request.operation,
-        workspaceId: record.workspace_id,
-        runtimeBootId: request.runtimeBootId,
-        expectedRevision: request.expectedRevision,
-        executionMode: "codex-managed",
-        turnId: null,
-        nativeRequestId: null,
-      },
-    );
-    if (claimed) return claimed;
-    this.#armCodexLimit(request.sessionId, next);
-    const result = {
-      sessionId: request.sessionId,
-      accepted: true,
-      completed: true,
-      requestId: request.requestId,
-      runtimeBootId: this.host.runtimeBootId,
-    };
-    finishManagedCommand(this.host.dataDir, request.requestId, result);
-    return result;
+    return this.#usageLimits.isLimited(sessionId);
   }
 
   /** A device lost access: AgentKib no longer continues in its name after a usage limit. */
   invalidateUsageLimitDevice(deviceId: string): void {
-    for (const [sessionId, held] of this.#codexLimits)
-      if (held.limit.deviceId === deviceId && held.limit.continueAt !== null)
-        this.#armCodexLimit(sessionId, { ...held.limit, continueAt: null, manual: "cancelled" });
+    this.#usageLimits.invalidateDevice(deviceId);
   }
 
   /** A short-lived subscription must be recorded even between retirement timer ticks. */
@@ -3066,9 +2921,13 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
     fingerprint: string,
     {
       restrictNativePolicy = false,
+      desktopOwnerHandoff = false,
+      workerTurn = false,
       workerRestart,
     }: {
       restrictNativePolicy?: boolean;
+      desktopOwnerHandoff?: boolean;
+      workerTurn?: boolean;
       workerRestart?: { workspaceId: string; beforeDispatch: () => void };
     } = {},
   ) {
@@ -3093,26 +2952,10 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
     )
       throw new Error("stale-or-disabled-control");
     if (request.operation === "usage-limit-cancel")
-      return this.#codexLimitChoice(request, record, fingerprint, (limit) =>
-        limit.continueAt === null ? null : { ...limit, continueAt: null, manual: "cancelled" },
-      );
+      return this.#usageLimits.cancel(request, record, fingerprint);
     if (request.operation === "usage-limit-continue")
-      return this.#codexLimitChoice(request, record, fingerprint, (limit) =>
-        armUsageLimit(limit, { bootId: this.host.runtimeBootId }),
-      );
-    if (["send", "queue-add", "steer", "goal-resume"].includes(request.operation)) {
-      // The person's message takes over from a continue armed after a usage limit.
-      // Only the record changes here: the live revision this control was checked against stays,
-      // and the turn it starts clears what the state shows.
-      const held = this.#codexLimits.get(request.sessionId);
-      if (held && held.continuing !== request.requestId)
-        this.#armCodexLimit(request.sessionId, null, undefined, false);
-      if (request.deviceId)
-        this.#codexSenders.set(request.sessionId, {
-          deviceId: request.deviceId,
-          restrictNativePolicy,
-        });
-    }
+      return this.#usageLimits.continue(request, record, fingerprint);
+    this.#usageLimits.beforeControl(request, restrictNativePolicy);
     let runner = this.#managedRunners.get(request.sessionId);
     if (workerRestart) {
       if (record && record.workspace_id !== workerRestart.workspaceId)
@@ -3124,6 +2967,15 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
         throw new Error("worker-restart-unsupported");
     }
     let resumedControlState: string | undefined;
+    // Observation-only updates may advance revision, but every control change advances
+    // mutationRevision. Keep the original observation and the same native turn at both checks.
+    const matchesObservedControl = (state: ManagedCodexState, live: Record<string, unknown>) =>
+      workerTurn
+        ? Boolean(request.turnId) &&
+          request.turnId === live.turnId &&
+          request.expectedRevision >= state.mutationRevision &&
+          request.expectedRevision <= Number(live.revision)
+        : live.revision === request.expectedRevision;
     let prepared = false;
     const claim = (workspaceId: string) =>
       claimManagedCommand(
@@ -3154,6 +3006,7 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
     if (!runner?.session.connected || runner.retiring) {
       const inactive = record ?? (await this.#inactiveRecord(request.sessionId));
       const rejectInactive = (reason: string) => reject(reason, inactive.workspace_id);
+      if (workerTurn) return rejectInactive("stale-or-disabled-control");
       if (
         runner?.retiring ||
         managedSessionHasUnknownCommands(this.host.dataDir, request.sessionId)
@@ -3190,6 +3043,24 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
       try {
         if (request.operation === "settings")
           return await this.#stageCodexSettings(inactive, request);
+        if (desktopOwnerHandoff && request.operation === "send") {
+          const owner = this.#codexWriterOwnership(inactive, true);
+          const offered = await this.#desktopHandoffLive(
+            inactive,
+            { ownershipReason: owner, reason: owner },
+            true,
+          );
+          if (!offered) return rejectInactive("codex-desktop-owner-missing");
+          const handed = await this.#desktopHandoff(inactive);
+          if ("reason" in handed) return rejectInactive(handed.reason);
+          return this.#codexFollowerControl(
+            { ...request, expectedRevision: handed.revision },
+            fingerprint,
+            handed.follower,
+            inactive.workspace_id,
+            true,
+          );
+        }
         runner = await this.#connectCodexForControl(inactive, request, restrictNativePolicy);
         record = { ...(runner.state.record as ManagedRecord) };
         request.expectedRevision = runner.state.revision;
@@ -3203,7 +3074,7 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
           });
         if (busy && request.operation === "send" && inactive.snapshot?.settingsStaged !== true) {
           const handed = await this.#desktopHandoff(inactive).catch(() => undefined);
-          if (handed)
+          if (handed && "follower" in handed)
             return this.#codexFollowerControl(
               { ...request, expectedRevision: handed.revision },
               fingerprint,
@@ -3241,7 +3112,7 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
         managedControlState(runner.state) === resumedControlState
       )
         request.expectedRevision = Number(snapshot.revision);
-      if (snapshot.reason || snapshot.revision !== request.expectedRevision)
+      if (snapshot.reason || !matchesObservedControl(runner.state, snapshot))
         throw new Error("stale-or-disabled-control");
     } catch (error) {
       if (prepared)
@@ -3574,7 +3445,7 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
         if (
           this.#managedRunners.get(request.sessionId) !== dispatchRunner ||
           !dispatchRunner.session.connected ||
-          (workerRestart && dispatchRunner.retiring) ||
+          ((workerTurn || workerRestart) && dispatchRunner.retiring) ||
           !latest ||
           latest.native_id !== record.native_id ||
           latest.native_id !== dispatchRunner.state.nativeId ||
@@ -3620,7 +3491,7 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
           request.expectedRevision = Number(currentSnapshot.revision);
         if (
           currentSnapshot.reason ||
-          currentSnapshot.revision !== request.expectedRevision ||
+          !matchesObservedControl(dispatchRunner.state, currentSnapshot) ||
           (["send", "compact"].includes(request.operation) &&
             currentSnapshot.sendEnabled !== true) ||
           (request.operation === "stop" &&
@@ -4671,9 +4542,7 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
     this.host.assertOpen();
     const nativeId = record.native_id ?? null;
     const state = new ManagedCodexState(record, record.snapshot?.revision ?? 0);
-    state.showUsageLimit(
-      usageLimitView(this.#codexLimits.get(record.id)?.limit, this.host.runtimeBootId),
-    );
+    state.showUsageLimit(this.#usageLimits.view(record.id));
     const persist = createManagedSnapshotWriter(this.host.dataDir, record);
     let previousStreamText = "";
     let startingRunner: ManagedRunner | undefined;
@@ -4724,7 +4593,7 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
             this.host.catalogChanged?.();
           }
           if (method === "turn/completed" && isObject(params.turn))
-            this.#codexTurnLimit(record.id, session, current, params.turn);
+            this.#usageLimits.onTurnCompleted(record.id, session, current.limitedTurn, params.turn);
           // Also for a session created by this runner, whose native ID the record does not hold
           // yet: a lead hears of its new worker's first turn too.
           if (
@@ -4872,7 +4741,12 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
         params.threadId = fork.nativeId;
         params.lastTurnId = fork.lastTurnId;
         params.deferGoalContinuation = true;
-      } else if (nativeId) params.threadId = nativeId;
+      } else if (nativeId) {
+        params.threadId = nativeId;
+        params.excludeTurns = true;
+        // Hydrate the active/latest turn, including its items for errors and compaction state.
+        params.initialTurnsPage = { limit: 1, sortDirection: "desc", itemsView: "full" };
+      }
       const beforeDispatch = () => {
         this.host.assertOpen();
         if (pathIdentity(this.#managedCwd(record)) !== pathIdentity(cwd))
@@ -4979,7 +4853,15 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
         delete mutableRecord.snapshot.settingsStaged;
         delete mutableRecord.snapshot.policyOnlyStaged;
       }
-      const hydrated = state.hydrate(nativeThread, true, readRevision);
+      const resumePage =
+        nativeId && isObject(response.initialTurnsPage) ? response.initialTurnsPage.data : null;
+      const paginatedResume = Array.isArray(resumePage);
+      const hydrated = state.hydrate(
+        paginatedResume ? { ...nativeThread, turns: resumePage } : nativeThread,
+        true,
+        readRevision,
+      );
+      runner.usesNativeHistory = paginatedResume;
       persist(state, hydrated.events);
       runner.idleSince = Date.now();
       runner.observed =
@@ -5098,7 +4980,7 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
 
   async live(sessionId: string, enabled: boolean) {
     const live = await this.#managedLive(sessionId, enabled);
-    return this.#liveWithLimit(sessionId, live);
+    return this.#usageLimits.projectLive(sessionId, live);
   }
 
   /** Worker reads need output evidence and external ownership, even when no page is open. */
@@ -5107,17 +4989,13 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
       const resident = this.#managedRunners.get(sessionId);
       const live =
         !controls && resident?.session.connected && !resident.retiring
-          ? resident.state.snapshot(this.host.runtimeBootId, false)
+          ? {
+              ...resident.state.snapshot(this.host.runtimeBootId, false),
+              ...resident.state.workerObservation(),
+            }
           : await this.#managedLive(sessionId, controls, intent ?? "read");
-      return this.#liveWithLimit(sessionId, live);
+      return this.#usageLimits.projectLive(sessionId, live);
     });
-  }
-
-  #liveWithLimit(sessionId: string, live: Record<string, unknown>) {
-    const limit = this.#codexLimits.get(sessionId)?.limit;
-    return live.executionMode === "codex-managed"
-      ? { ...live, usageLimit: usageLimitView(limit, this.host.runtimeBootId) }
-      : live;
   }
 
   /** A child run belongs to the resident native connection and owner, across parent turns. */
@@ -5192,6 +5070,25 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
       this.#assertManagedHome(stored);
       return stored;
     }
+    const { summary, nativeId, workspace } = await this.#indexedCodexSource(sessionId);
+    return {
+      id: sessionId,
+      workspace_id: summary.workspace_id,
+      workspace,
+      cwd: this.host.sessions.verifiedCodexControlDirectory(nativeId)?.cwd,
+      home: canonicalize(this.host.sessions.codexHome()),
+      native_id: nativeId,
+      title: summary.title ?? "Codex",
+      created_at: new Date().toISOString(),
+      policy_id: "workspace-write-on-request",
+      released: true,
+      adopted: true,
+      archived: summary.archived,
+      snapshot: { revision: 0 },
+    };
+  }
+
+  async #indexedCodexSource(sessionId: string) {
     const summary = this.host.store.sessions.get(sessionId);
     if (!summary || summary.agent !== "codex" || summary.sidechain)
       throw new Error("session-not-adoptable");
@@ -5209,21 +5106,8 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
       pathIdentity(workspace)
     )
       throw new Error("session-workspace-mismatch");
-    return {
-      id: sessionId,
-      workspace_id: summary.workspace_id,
-      workspace,
-      cwd: this.host.sessions.verifiedCodexControlDirectory(nativeId)?.cwd,
-      home: canonicalize(this.host.sessions.codexHome()),
-      native_id: nativeId,
-      title: summary.title ?? "Codex",
-      created_at: new Date().toISOString(),
-      policy_id: "workspace-write-on-request",
-      released: true,
-      adopted: true,
-      archived: summary.archived,
-      snapshot: { revision: 0 },
-    };
+    const transcript = "transcript" in resolved ? resolved.transcript : undefined;
+    return { summary, nativeId, workspace, transcript };
   }
 
   #nativeCodexPolicy(record: ManagedRecord): CodexNativePolicy | undefined {
@@ -5357,7 +5241,9 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
         : externalId
           ? this.#externalTurns.turnOf(externalId)
           : null,
-      ...(workerTurn ? { workerProgress: workerTurn.workerProgress } : {}),
+      ...(workerTurn
+        ? { workerProgress: workerTurn.workerProgress, commands: workerTurn.commands }
+        : {}),
       sendEnabled: controls && reason === null && !starting,
       stopEnabled: false,
       approvals: [],
@@ -6133,6 +6019,7 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
       const nativeTurn = isObject(inactive.externalTurn) ? inactive.externalTurn.turnId : null;
       const nativeProgress =
         nativeTurn && active && nativeTurn !== active ? null : inactive.workerProgress;
+      const commands = !active || nativeTurn === active ? inactive.commands : undefined;
       const { items } = follower.stream.snapshot();
       const output = active
         ? items.filter((item) => item.turn_id === active && item.kind === "agent-message").at(-1)
@@ -6143,6 +6030,7 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
       return {
         ...live,
         externalTurn: inactive.externalTurn,
+        ...(commands !== undefined ? { commands } : {}),
         ...(active || typeof nativeProgress === "string"
           ? {
               workerProgress: JSON.stringify([
@@ -6162,16 +6050,16 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
         follower.bridge.close();
       }
       this.#followerMisses.set(record.id, Date.now());
-      if (codexOwnerMissing(error)) {
+      const reason = codexDesktopFailure(error);
+      if (reason === "codex-desktop-owner-missing") {
         this.#ownerMissing.add(record.id);
-        return refused("codex-desktop-owner-missing");
+        const handoff = sending
+          ? await this.#desktopHandoffLive(record, inactive, controls)
+          : undefined;
+        return handoff ?? refused(reason);
       }
       this.#ownerMissing.delete(record.id);
-      return refused(
-        error instanceof Error && error.message === "codex-desktop-version-too-old"
-          ? error.message
-          : "codex-desktop-owner-unavailable",
-      );
+      return refused(reason);
     }
   }
 
@@ -6207,19 +6095,18 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
    * Asks the running Codex app to show a thread its server holds with no window answering for
    * it, then follows the app. Only a send asks: opening the session in AgentKib must not move
    * the app's page. Never launches the app, never takes the writer lock and sends nothing by
-   * itself; undefined leaves the session in use in Codex.
+   * itself; a refusal leaves the session in use in Codex.
    */
-  async #desktopHandoff(
-    record: ManagedRecord,
-  ): Promise<{ follower: CodexFollowerRecord; revision: number } | undefined> {
-    if (!CodexFollowerConnection.supported() || !record.native_id) return undefined;
+  async #desktopHandoff(record: ManagedRecord): Promise<CodexDesktopHandoff> {
+    if (!CodexFollowerConnection.supported()) return { reason: "platform-unsupported" };
+    if (!record.native_id) return { reason: "native-session-unconfirmed" };
     const pending = this.#handoffFlights.get(record.id);
     if (pending) return pending;
     const flight = this.#runDesktopHandoff(record, record.native_id);
     this.#handoffFlights.set(record.id, flight);
     try {
       const handed = await flight;
-      if (handed) this.#handoffFailures.delete(record.id);
+      if ("follower" in handed) this.#handoffFailures.delete(record.id);
       else this.#handoffFailures.set(record.id, Date.now());
       return handed;
     } finally {
@@ -6227,39 +6114,40 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
     }
   }
 
-  async #runDesktopHandoff(
-    record: ManagedRecord,
-    nativeId: string,
-  ): Promise<{ follower: CodexFollowerRecord; revision: number } | undefined> {
-    const attach = async () => {
+  async #runDesktopHandoff(record: ManagedRecord, nativeId: string): Promise<CodexDesktopHandoff> {
+    const attach = async (): Promise<CodexDesktopHandoff> => {
       try {
         const follower = await this.#desktopFollower(record);
         const state = await follower.bridge.observeLive();
         follower.lastUsed = Date.now();
         this.#ownerMissing.delete(record.id);
         this.#followerMisses.delete(record.id);
-        return state.revision === null ? undefined : { follower, revision: state.revision };
+        return state.revision === null
+          ? { reason: "codex-desktop-ipc-incompatible" }
+          : { follower, revision: state.revision };
       } catch (error) {
         const follower = this.#codexFollowers.get(record.id);
         if (follower) {
           this.#codexFollowers.delete(record.id);
           follower.bridge.close();
         }
-        return codexOwnerMissing(error) ? ("missing" as const) : undefined;
+        return { reason: codexDesktopFailure(error) };
       }
     };
     // A window may have opened the thread since the session was last looked at.
     const first = await attach();
-    if (first !== "missing") return first;
-    if (!(await this.#desktopApp.running()) || !(await this.#desktopApp.openThread(nativeId)))
-      return undefined;
+    if (!("reason" in first) || first.reason !== "codex-desktop-owner-missing") return first;
+    if (!(await this.#desktopApp.running())) return first;
+    if (!(await this.#desktopApp.openThread(nativeId)))
+      return { reason: "codex-desktop-thread-open-failed" };
     const deadline = Date.now() + this.#handoffTimeoutMs;
     while (Date.now() < deadline && !this.host.isShuttingDown()) {
       await new Promise((resolve) => setTimeout(resolve, HANDOFF_POLL_MS));
       const attached = await attach();
-      if (attached !== "missing") return attached;
+      if (!("reason" in attached) || attached.reason !== "codex-desktop-owner-missing")
+        return attached;
     }
-    return undefined;
+    return first;
   }
 
   async resumeCommand(sessionId: string) {
@@ -6724,8 +6612,9 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
     },
   ) {
     this.#assertManagedHome(managed);
+    const runner = this.#managedRunners.get(managed.id);
     const nativeHistory =
-      !!managed.native_id && !this.#managedRunners.get(managed.id)?.session.connected;
+      !!managed.native_id && (!runner?.session.connected || runner.usesNativeHistory);
     const nativePrefix = "codex-native-v1:";
     if (request.cursor && nativeHistory !== request.cursor.startsWith(nativePrefix))
       throw new Error("TRANSCRIPT_CURSOR_STALE");

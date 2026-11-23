@@ -333,6 +333,10 @@ export class ClaudeRunnerState {
   hostTurnPhase: "queued" | "started" | null = null;
   // Whether the main thread has sent anything in the current turn.
   turnContent = false;
+  // Supervision uses real content and tool transitions, independent of the live revision.
+  workerProgress = 0;
+  workerTools = new Map<string, number | undefined>();
+  workerToolsComplete = true;
   // Turns the CLI started by itself since the last one AgentKib sent.
   selfTurns = 0;
   // The turn the host asked the CLI to interrupt, until a result ends it.
@@ -386,6 +390,9 @@ export class ClaudeRunnerState {
       turnOrigin: this.turnOrigin,
       hostTurnPhase: this.hostTurnPhase,
       turnContent: this.turnContent,
+      workerProgress: this.workerProgress,
+      workerTools: new Map(this.workerTools),
+      workerToolsComplete: this.workerToolsComplete,
       selfTurns: this.selfTurns,
     };
   }
@@ -486,6 +493,9 @@ export class ClaudeRunnerState {
     this.turnOrigin = origin;
     this.hostTurnPhase = null;
     this.turnContent = false;
+    this.workerProgress = 0;
+    this.workerTools.clear();
+    this.workerToolsComplete = true;
     this.selfTurns = origin === "self" ? this.selfTurns + 1 : 0;
     this.streamText = "";
     this.streamItemId = "";
@@ -599,6 +609,8 @@ export class ClaudeRunnerState {
     this.backgroundTaskIds.clear();
     this.scheduled.clear();
     this.schedulingCalls.clear();
+    this.workerTools.clear();
+    this.workerToolsComplete = false;
     this.pendingWakes = 0;
     this.hostTurnPhase = null;
   }
@@ -871,6 +883,7 @@ export class ClaudeRunnerState {
         this.apiRetry = null;
         const event = frame.event;
         if (event?.type === "message_start") {
+          if (object(event.message)) this.workerProgress++;
           if (this.activity !== "compacting") this.#pendingUsage();
           this.#observeUsage(event.message);
           this.streamItemId = "";
@@ -885,15 +898,26 @@ export class ClaudeRunnerState {
           if (typeof event.content_block.text === "string") this.#append(event.content_block.text);
           this.partial = true;
         }
-        if (event?.type === "content_block_start") this.#observeBash(event.content_block, origin);
+        if (event?.type === "content_block_start") {
+          this.#observeBash(event.content_block, origin);
+          this.#observeWorkerBlock(event.content_block);
+        }
         if (event?.type === "content_block_delta" && event.delta?.type === "text_delta") {
           if (typeof event.delta.text !== "string") throw new Error("invalid Claude text delta");
           const index = Number.isSafeInteger(event.index) ? event.index : this.activeTextBlockIndex;
           if (!this.textBlocks.has(index)) this.#startTextBlock(index);
           else this.activeTextBlockIndex = index;
           this.#append(event.delta.text);
+          if (event.delta.text.length) this.workerProgress++;
           this.partial = true;
         }
+        if (
+          event?.type === "content_block_delta" &&
+          event.delta?.type === "thinking_delta" &&
+          typeof event.delta.thinking === "string" &&
+          event.delta.thinking.length > 0
+        )
+          this.workerProgress++;
         break;
       }
       case "assistant": {
@@ -929,6 +953,7 @@ export class ClaudeRunnerState {
           for (const block of blocks) {
             this.#observeBash(block, origin);
             this.#observeScheduling(block);
+            this.#observeWorkerBlock(block);
           }
         if (hasText && nativeId && Array.isArray(blocks)) {
           const textBlocks = blocks.flatMap((block: JsonObject, index: number) => {
@@ -1162,7 +1187,12 @@ export class ClaudeRunnerState {
         this.#assertTurnActive("user");
         this.turnContent = true;
         const blocks = frame.message?.content;
-        if (Array.isArray(blocks)) for (const block of blocks) this.#observeSchedulingResult(block);
+        if (Array.isArray(blocks))
+          for (const block of blocks) {
+            this.#observeSchedulingResult(block);
+            if (block?.type === "tool_result" && this.workerTools.delete(block.tool_use_id))
+              this.workerProgress++;
+          }
         break;
       }
       case "rate_limit_event":
@@ -1394,6 +1424,47 @@ export class ClaudeRunnerState {
       throw new Error("invalid Claude Bash tool ID");
     if (this.bashToolIds.size >= 4096) throw new Error("too many Claude Bash tools");
     this.bashToolIds.add(block.id);
+  }
+
+  #observeWorkerBlock(block: JsonObject): void {
+    if (
+      (block?.type === "text" && typeof block.text === "string" && block.text.length) ||
+      (block?.type === "thinking" && typeof block.thinking === "string" && block.thinking.length)
+    )
+      this.workerProgress++;
+    if (block?.type !== "tool_use" || this.workerTools.has(block.id)) return;
+    if (
+      typeof block.id !== "string" ||
+      !block.id ||
+      block.id.length > 256 ||
+      this.workerTools.size >= 4096
+    ) {
+      this.workerToolsComplete = false;
+      return;
+    }
+    // Other tools may themselves run commands. Hold off on a silence report for those tools too,
+    // but a tool request can precede approval and does not establish the command's start time.
+    this.workerTools.set(block.id, undefined);
+    this.workerProgress++;
+  }
+
+  workerObservation() {
+    if (!this.initialized || !this.#turnActive() || !this.turnId) return {};
+    const background = [...this.backgroundTasks.values()];
+    const backgroundTools = new Set(background.map((task) => task.toolUseId));
+    const commands = [...this.workerTools]
+      .filter(([id]) => !backgroundTools.has(id))
+      .map(([id, startedAt]) => ({ id, startedAt }));
+    for (const task of background)
+      commands.push({
+        id: task.toolUseId ?? `task:${task.id}`,
+        startedAt: task.kind === "command" ? Date.parse(task.startedAt) : undefined,
+      });
+    return {
+      workerProgress: String(this.workerProgress),
+      // An incomplete tracker can still prove positive evidence, but not an empty command set.
+      commands: this.workerToolsComplete || commands.length ? commands : undefined,
+    };
   }
 
   /**
@@ -1651,6 +1722,9 @@ export class ClaudeRunnerState {
       )
         throw new Error("unverified Claude task completion");
       this.foregroundTasks.delete(task);
+      if (this.workerTools.has(frame.tool_use_id))
+        this.workerTools.set(frame.tool_use_id, undefined);
+      this.workerProgress++;
       return true;
     }
     throw new Error("unsupported Claude task update");
@@ -1708,6 +1782,8 @@ export class ClaudeRunnerState {
     )
       throw new Error(UNVERIFIED_START);
     this.foregroundTasks.set(task, tool);
+    this.workerTools.set(tool, Date.now());
+    this.workerProgress++;
     return true;
   }
 

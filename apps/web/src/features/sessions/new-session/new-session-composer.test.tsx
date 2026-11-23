@@ -767,6 +767,39 @@ describe("Web NewSessionComposer", () => {
     expect(client.managedAction).not.toHaveBeenCalled();
   });
 
+  it("starts Antigravity with the chosen model, thought level, mode and first message", async () => {
+    const { client, onCreated } = setup({ created: "antigravity-created" });
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Agent: Codex" }));
+    await user.click(await screen.findByRole("menuitem", { name: "Antigravity" }));
+    const defaultModel = `${modelCopy.chooseModel}: ${modelCopy.defaultModel}`;
+    await user.click(await screen.findByRole("button", { name: defaultModel }));
+    const modelSettings = await screen.findByRole("dialog", { name: modelCopy.modelSettings });
+    await user.click(within(modelSettings).getByRole("button", { name: defaultModel }));
+    const models = await screen.findByRole("dialog", { name: modelCopy.model });
+    await user.click(within(models).getByRole("button", { name: "Gemini 3.8 Flash" }));
+    await highestEffort();
+    await user.keyboard("{Escape}");
+    await user.click(await screen.findByRole("button", { name: /^Tool permissions/ }));
+    await user.click(await screen.findByRole("menuitem", { name: /^Accept edits/ }));
+    await write("Update the parser");
+    fireEvent.click(send());
+
+    await waitFor(() => expect(onCreated).toHaveBeenCalledWith("antigravity-created"));
+    expect(client.managedAction).toHaveBeenCalledExactlyOnceWith(
+      "create",
+      expect.objectContaining({
+        agent: "antigravity",
+        workspaceId: "atlas",
+        model: "gemini-3.8-flash",
+        effort: "high",
+        permissionMode: "accept-edits",
+        prompt: "Update the parser",
+      }),
+    );
+    expect(takeNewSessionDraft("antigravity-created")).toBeUndefined();
+  });
+
   it("starts Devin with an offered effort and Fast pair and never hands off its dispatched prompt", async () => {
     const { client, onCreated } = setup();
     client.managedOptions.mockImplementation(async (agent) =>

@@ -1,5 +1,6 @@
 import { useRef } from "react";
 import type { SessionSettings, Live } from "@agentkib/web-client";
+import type { sessionModelSettings } from "./agents/session-model-settings";
 import type { ComposerModelPickerHandle } from "./composer-model-picker";
 
 export function useComposerModelPanel() {
@@ -27,6 +28,7 @@ export function useComposerModelPanel() {
     prepare: () => void;
     refresh?: () => void;
     terminal: {
+      modelSettings: ReturnType<typeof sessionModelSettings>;
       offered: boolean;
       settingsReadable: boolean;
       sessionId: string;
@@ -39,11 +41,13 @@ export function useComposerModelPanel() {
   }) {
     const terminalLive =
       terminal.live?.sessionId === terminal.sessionId &&
-      terminal.live.executionMode === "claude-follower"
+      terminal.modelSettings?.inTerminal(terminal.live)
         ? terminal.live
         : undefined;
     const terminalPickerOpen =
-      terminal.online && terminalLive?.reason === "claude-model-picker-open";
+      terminal.online &&
+      !!terminalLive &&
+      terminal.modelSettings?.pickerOpen(terminalLive) === true;
     const terminalPickerAvailable =
       terminal.offered &&
       terminal.settingsReadable &&

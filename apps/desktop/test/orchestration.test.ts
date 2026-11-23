@@ -242,52 +242,213 @@ describe("Project Agent supervision", () => {
 
   it("rearms a stalled turn only after progress and skips waiting, truncated and missing signals", async () => {
     const { delivered, lives, tick, read } = await supervised({ scope: { stallMinutes: 3 } });
-    const running = { status: "running", turnId: "turn", streamText: "started", revision: 1 };
+    const running = {
+      status: "running",
+      turnId: "turn",
+      streamText: "started",
+      workerProgress: "thinking-1",
+      commands: [],
+      revision: 1,
+    };
     lives.set(WORKER, running);
     await tick(0);
     lives.set(WORKER, { ...running, revision: 2 });
-    await tick(180_000);
-    expect(delivered).toEqual([]);
     await tick(180_001);
-    await tick(200_000);
+    await tick(360_000);
+    expect(delivered).toEqual([]);
+    await tick(360_001);
+    await tick(380_000);
     expect(delivered).toHaveLength(1);
     expect(delivered[0]).toContain("may be stalled");
-    expect((await read()).noProgressForMs).toBe(200_000);
-    lives.set(WORKER, { ...running, streamText: "progress" });
-    await tick(220_000);
-    await tick(410_000);
+    expect((await read()).noProgressForMs).toBe(380_000);
+    lives.set(WORKER, { ...running, workerProgress: "thinking-2" });
+    await tick(400_000);
+    await tick(759_999);
+    expect(delivered).toHaveLength(1);
+    await tick(760_001);
     expect(delivered).toHaveLength(2);
 
     const states = [
       { ...running, status: "awaiting-approval" },
       { ...running, questions: [{ id: "question" }] },
-      { ...running, streamTextTruncated: true },
-      { ...running, streamText: undefined },
+      { ...running, streamTextTruncated: true, workerProgress: undefined },
+      { ...running, streamText: undefined, workerProgress: undefined },
+      { ...running, commands: undefined },
     ];
     for (const [index, state] of states.entries()) {
       lives.set(WORKER, state);
-      await tick(500_000 + 300_000 * index);
+      await tick(800_000 + 400_000 * index);
       expect(await read()).not.toHaveProperty("noProgressForMs");
     }
     expect(delivered).toHaveLength(2);
   });
 
-  it("reports a silent Codex turn despite repeated tool-wait revisions", async () => {
-    const { delivered, lives, tick, read } = await supervised({ scope: { stallMinutes: 3 } });
+  it("attaches an overdue command to the next report without waking for a tool wait", async () => {
+    const { orchestration, delivered, lives, tick, read } = await supervised();
     const live = {
       executionMode: "codex-managed",
       status: "running",
-      turnId: "silent-command",
+      turnId: "working",
       streamText: "",
+      commands: [{ id: "opaque-private-tool-id", startedAt: now }],
     };
-    for (let seconds = 0; seconds <= 190; seconds += 10) {
-      // The runtime may publish a tool wait again while this same command is still running.
-      lives.set(WORKER, { ...live, revision: 8 + Math.floor(seconds / 30) });
-      await tick(seconds * 1000);
-    }
+    lives.set(WORKER, live);
+    await tick(0);
+    lives.set(WORKER, { ...live, revision: 25 });
+    await tick(1_200_001);
+    expect(delivered).toEqual([]);
+    expect(await read()).not.toHaveProperty("noProgressForMs");
+    await tick(3_620_000);
+    expect(delivered).toEqual([]);
+    lives.set(WORKER, { status: "idle" });
+    await tick(3_640_000);
+    await orchestration.laneTurnEnded(WORKER, "working", "completed");
+    expect(delivered).toHaveLength(1);
+    expect(delivered[0]).toContain("turn ended: completed");
+    expect(delivered[0]).toContain("a command ran for at least 1h");
+    expect(delivered[0]).not.toMatch(/stalled|opaque-private-tool-id/);
+    await orchestration.laneTurnEnded(WORKER, "later", "completed");
+    expect(delivered).toHaveLength(2);
+    expect(delivered[1]).not.toContain("a command ran");
+  });
+
+  it("batches Worker completions without postponing a question or a failure", async () => {
+    const { orchestration, delivered, tick } = await supervised();
+    const second = await assignWorker(orchestration, "codex-branch");
+    await orchestration.laneTurnEnded(WORKER, "first", "completed");
+    await tick(45_000);
+    await orchestration.laneTurnEnded(second, "second", "completed");
+    expect(delivered).toEqual([]);
+    await tick(60_000);
+    expect(delivered).toHaveLength(1);
+    expect(delivered[0]).toContain('Worker "worker-1" (Codex) · turn ended: completed');
+    expect(delivered[0]).toContain('Worker "worker-2" (Codex) · turn ended: completed');
+    expect(orchestration.status(LEAD)?.autoTurns).toBe(1);
+
+    await orchestration.laneTurnEnded(WORKER, "third", "completed");
+    await orchestration.laneWaiting(second, "question", "waiting-input");
+    expect(delivered).toHaveLength(2);
+    expect(delivered[1]).toContain("an answer to its question");
+    expect(delivered[1]).toContain("turn ended: completed");
+
+    await orchestration.laneTurnEnded(second, "failed-turn", "failed");
+    expect(delivered).toHaveLength(3);
+    expect(delivered[2]).toContain("turn ended: failed");
+    await tick(140_000);
+    expect(delivered).toHaveLength(3);
+  });
+
+  it("preserves an unsent completion across shutdown in the restart-pause queue", async () => {
+    const { orchestration, delivered } = await supervised();
+    await assignWorker(orchestration, "codex-branch");
+    await orchestration.laneTurnEnded(WORKER, "completed-at-shutdown", "completed");
+    expect(delivered).toEqual([]);
+    await orchestration.close();
+    expect(delivered).toEqual([]);
+    const resumed = service(
+      orchestration.lanes,
+      orchestration.registry.dataDir,
+      "new-boot",
+      (_session, _device, report) => {
+        delivered.push(report);
+        return false;
+      },
+    );
+    expect(resumed.status(LEAD)).toMatchObject({
+      paused: true,
+      pendingReports: [expect.stringContaining("turn ended: completed")],
+    });
+    resumed.resume(LEAD, DEVICE);
+    expect(delivered).toHaveLength(1);
+  });
+
+  it("keeps an actionable approval in an oversized batch of completions", async () => {
+    const { orchestration, delivered, lives } = await supervised({
+      scope: { approvals: ["command"] },
+    });
+    const second = await assignWorker(orchestration, "codex-branch");
+    for (let round = 0; round < 5; round++)
+      await orchestration.laneTurnEnded(
+        WORKER,
+        `round-${round}`,
+        "completed",
+        null,
+        undefined,
+        ("reply from round " + round).repeat(250),
+      );
+    expect(delivered).toEqual([]);
+    lives.set(second, {
+      status: "awaiting-approval",
+      approvals: [
+        {
+          requestId: "approval-id",
+          supported: true,
+          method: "item/commandExecution/requestApproval",
+          availableDecisions: ["accept", "decline"],
+          command: "check-result",
+        },
+      ],
+    });
+    await orchestration.laneWaiting(second, "needs-approval", "awaiting-approval");
+    expect(delivered).toHaveLength(1);
+    expect(delivered[0]).toContain("worker_approve");
+    expect(delivered[0]).toMatch(/"command":\s*"check-result"/);
+    expect(delivered[0]).toContain("Some report details were omitted");
+    expect(Buffer.byteLength(delivered[0]!)).toBeLessThanOrEqual(16_000);
+  });
+
+  it("discards a stale stall sample when a Worker begins waiting during a history read", async () => {
+    const reading = Promise.withResolvers<void>();
+    const finish = Promise.withResolvers<void>();
+    let blocked = false;
+    const { orchestration, delivered, lives, tick } = await supervised({
+      scope: { stallMinutes: 3 },
+      endedTurns: async () => {
+        if (blocked) {
+          reading.resolve();
+          await finish.promise;
+        }
+        return [];
+      },
+    });
+    lives.set(WORKER, { status: "running", turnId: "busy", workerProgress: "quiet", commands: [] });
+    await tick(0);
+    blocked = true;
+    const checking = tick(400_000);
+    await reading.promise;
+    lives.set(WORKER, { status: "waiting-input", turnId: "busy" });
+    await orchestration.laneWaiting(WORKER, "busy", "waiting-input");
+    finish.resolve();
+    await checking;
+    expect(delivered).toHaveLength(1);
+    expect(delivered[0]).toContain("an answer to its question");
+    expect(delivered[0]).not.toContain("stalled");
+  });
+
+  it("can attach a shorter model stall once and drops it if real activity resumes before a report", async () => {
+    const { orchestration, delivered, lives, tick } = await supervised({
+      scope: { stallMinutes: 3 },
+    });
+    const second = await assignWorker(orchestration, "codex-branch");
+    const run = { status: "running", turnId: "turn", workerProgress: "thinking-1", commands: [] };
+    lives.set(WORKER, run);
+    await tick(0);
+    await tick(180_001);
+    expect(delivered).toEqual([]);
+    await orchestration.laneWaiting(second, "approval", "awaiting-approval");
     expect(delivered).toHaveLength(1);
     expect(delivered[0]).toContain("may be stalled");
-    expect((await read()).noProgressForMs).toBe(190_000);
+    await tick(380_000);
+    expect(delivered).toHaveLength(1);
+
+    lives.set(WORKER, { ...run, workerProgress: "thinking-2" });
+    await tick(400_000);
+    await tick(590_000);
+    lives.set(WORKER, { ...run, workerProgress: "thinking-3" });
+    await tick(600_000);
+    await orchestration.laneWaiting(second, "question", "waiting-input");
+    expect(delivered).toHaveLength(2);
+    expect(delivered[1]).not.toContain("stalled");
   });
 
   it("shows occupied Codex sessions without a proven running turn as busy", async () => {
@@ -320,6 +481,7 @@ describe("Project Agent supervision", () => {
       sendEnabled: true,
       queueEnabled: false,
       streamText: "",
+      commands: [],
       externalTurn: {
         status: "running",
         turnId: "desktop-turn",
@@ -328,9 +490,9 @@ describe("Project Agent supervision", () => {
     };
     lives.set(WORKER, followed);
     await tick(0);
-    await tick(190_000);
-    expect(await list()).toMatchObject({ status: "running", noProgressForMs: 190_000 });
-    expect(await read()).toMatchObject({ status: "running", noProgressForMs: 190_000 });
+    await tick(370_000);
+    expect(await list()).toMatchObject({ status: "running", noProgressForMs: 370_000 });
+    expect(await read()).toMatchObject({ status: "running", noProgressForMs: 370_000 });
     expect(delivered).toHaveLength(1);
     const send = () =>
       orchestration.call(LEAD, "worker_send", { worker: "worker-1", text: "next" });
@@ -350,6 +512,7 @@ describe("Project Agent supervision", () => {
       executionMode: "codex-follower",
       status: "running",
       streamText: "",
+      commands: [],
       externalTurn: { status: "running", turnId: "old-turn" },
     };
     lives.set(WORKER, { ...followed, turnId: "old-turn" });
@@ -386,6 +549,81 @@ describe("Project Agent supervision", () => {
     await tick(800_000);
     expect(await read()).not.toHaveProperty("noProgressForMs");
     expect(delivered).toHaveLength(1);
+  });
+
+  it("silences only a superseded empty success and keeps the older reply and failure", async () => {
+    const at = (offset: number) => new Date(now + offset).toISOString();
+    const { orchestration, delivered, tick } = await supervised({
+      events: async () => [
+        { kind: "agent-message", turn_id: "with-reply", content: "An older useful reply." },
+      ],
+      endedTurns: async () => [
+        {
+          turnId: "empty",
+          outcome: "completed",
+          startedAt: at(1_000),
+          endedAt: at(12_000),
+        },
+        {
+          turnId: "with-reply",
+          outcome: "completed",
+          startedAt: at(13_000),
+          endedAt: at(17_000),
+        },
+        {
+          turnId: "failed",
+          outcome: "failed",
+          startedAt: at(18_000),
+          endedAt: at(20_000),
+        },
+        {
+          turnId: "recent",
+          outcome: "completed",
+          startedAt: at(85_000),
+          endedAt: at(90_000),
+        },
+      ],
+    });
+    await tick(110_000);
+    expect(delivered).toHaveLength(1);
+    expect(delivered[0]).not.toContain("turn ended: completed after 11s");
+    expect(delivered[0]).toContain("An older useful reply.");
+    expect(delivered[0]).toContain("turn ended: failed after 2s");
+    expect(delivered[0]).toContain("turn ended: completed after 5s");
+    expect(orchestration.status(LEAD)?.lanes[0]?.reportedTurns).toEqual([
+      "empty",
+      "with-reply",
+      "failed",
+      "recent",
+    ]);
+    await tick(140_000);
+    expect(delivered).toHaveLength(1);
+  });
+
+  it("retries a superseded completion when its history read fails", async () => {
+    let canReadReply = false;
+    const { orchestration, delivered, tick } = await supervised({
+      events: async () => {
+        if (!canReadReply) throw new Error("temporary history read failure");
+        return [{ kind: "agent-message", turn_id: "older", content: "Recovered reply." }];
+      },
+      endedTurns: async () => [
+        {
+          turnId: "older",
+          outcome: "completed",
+          startedAt: new Date(now + 1_000).toISOString(),
+          endedAt: new Date(now + 5_000).toISOString(),
+          superseded: true,
+        },
+      ],
+    });
+    await tick(80_000);
+    expect(delivered).toEqual([]);
+    expect(orchestration.status(LEAD)?.lanes[0]?.reportedTurns).toEqual([]);
+    canReadReply = true;
+    await tick(100_000);
+    expect(delivered).toHaveLength(1);
+    expect(delivered[0]).toContain("Recovered reply.");
   });
 
   it("batches missed turns and health events into a single turn and preserves the budget and pause", async () => {

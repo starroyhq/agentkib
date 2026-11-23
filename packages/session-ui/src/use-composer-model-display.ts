@@ -125,11 +125,13 @@ export function useComposerModelDisplay({
     provider.models.prepare ||
     !catalog?.available ||
     catalog.options.models.length > 0 ||
+    catalog.writable.restoreDefaults?.available === true ||
     !!id ||
     !!cached;
   return {
     displayFallback: sessionModelDisplayFallback(historicalDisplay, cached, defaults, holdCache),
     retainedEffortOptions: cached?.effortOptions,
-    showModelPicker: !denied && (reservesSlot || ((settingsReadable || !!cached) && modelVisible)),
+    canBrowseModelSettings:
+      !denied && modelVisible && (reservesSlot || settingsReadable || !!cached),
   };
 }

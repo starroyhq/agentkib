@@ -57,6 +57,9 @@ const QUOTA_RESUME_NOTIFICATIONS = new Set([
 ]);
 const TERMINAL_SUBAGENTS_FEATURE = "terminal-subagents";
 const MAX_TERMINAL_SUBAGENTS = 16;
+const TERMINAL_WORKER_ACTIVITY_FEATURE = "terminal-worker-activity";
+const MAX_WORKER_COMMANDS = 64;
+const WORKER_STREAM_SNAPSHOT_MS = 15_000;
 const SUBAGENT_STATES = new Map([
   ["pending", "starting"],
   ["running", "running"],
@@ -271,6 +274,9 @@ export function initialState() {
     nativeWorking: null,
     compacting: false,
     activeTools: new Map(),
+    workerToolCoverage: false,
+    workerActivityRevision: 0,
+    workerActivitySnapshottedAt: 0,
     waits: new Map(),
     // A reload can happen mid-turn. Only native activity events establish idle.
     activityVerified: false,
@@ -855,6 +861,20 @@ function waitingState(state) {
   return waits.includes("unknown") ? "unknown" : null;
 }
 
+function workerActivitySnapshot(state) {
+  if (
+    !state.connection?.features?.includes(TERMINAL_WORKER_ACTIVITY_FEATURE) ||
+    !state.currentTurnId ||
+    !state.workerToolCoverage ||
+    state.activeTools.size > MAX_WORKER_COMMANDS
+  )
+    return undefined;
+  return {
+    revision: state.workerActivityRevision,
+    commands: [...state.activeTools.values()].map(({ command }) => command),
+  };
+}
+
 function sameNativeValue(left, right) {
   if (left === right) return true;
   if (!left || !right || typeof left !== "object" || typeof right !== "object") return false;
@@ -898,6 +918,7 @@ function invalidate(state, reason) {
   state.streamBytes = 0;
   state.streamTruncated = false;
   state.activeTools.clear();
+  state.workerToolCoverage = false;
   state.waits.clear();
   state.terminalSubagents = null;
   state.revision += 1;
@@ -924,6 +945,7 @@ function invalidate(state, reason) {
         answer: false,
       },
     };
+    delete revoked.terminalWorkerActivity;
     state.termination = {
       socketPath: state.socketPath,
       token: state.connection.token,
@@ -1132,6 +1154,8 @@ async function snapshot($, state) {
       : undefined;
   if (offersPicker && state.modelPickerSupported === undefined)
     state.modelPickerSupported = await hasNativeModelPicker($);
+  const terminalWorkerActivity = workerActivitySnapshot(state);
+  if (terminalWorkerActivity !== undefined) state.workerActivitySnapshottedAt = Date.now();
   const result = {
     ...observed,
     revision: state.revision,
@@ -1146,6 +1170,7 @@ async function snapshot($, state) {
     messages: visibleMessages(rows),
     toolItems: state.currentTurnId ? visibleTools(rows) : [],
     ...(terminalSubagents !== undefined ? { terminalSubagents } : {}),
+    ...(terminalWorkerActivity !== undefined ? { terminalWorkerActivity } : {}),
     streamText: state.streamText,
     model,
     ...(offersPicker ? { modelPickerOpen: state.modelPicker !== null } : {}),
@@ -1239,7 +1264,15 @@ async function flush($, state) {
       if (!state.events.some((entry) => entry.event === event))
         state.events.push({ seq: ++state.seq, event });
     }
-    if (state.dirty && state.events.length < MAX_EVENTS) {
+    // Text has its own deltas. Publish the opaque stream counter sparingly so thinking
+    // or clipped text cannot cause a history snapshot on every bridge tick.
+    const previousActivity = state.lastSnapshot?.terminalWorkerActivity;
+    const publishStreamActivity =
+      previousActivity !== undefined &&
+      state.connection.features?.includes(TERMINAL_WORKER_ACTIVITY_FEATURE) &&
+      previousActivity.revision !== state.workerActivityRevision &&
+      Date.now() - state.workerActivitySnapshottedAt >= WORKER_STREAM_SNAPSHOT_MS;
+    if ((state.dirty || publishStreamActivity) && state.events.length < MAX_EVENTS) {
       state.dirty = false;
       const epoch = state.overflowEpoch;
       const seq = record(state, { type: "snapshot", snapshot: await snapshot($, state) });
@@ -2555,6 +2588,8 @@ export function register(on) {
     state.streamTruncated = false;
     state.nativeWorking = true;
     state.activeTools.clear();
+    state.workerToolCoverage = true;
+    state.workerActivityRevision = 0;
     state.waits.clear();
     state.activityVerified = true;
     state.revision += 1;
@@ -2615,12 +2650,20 @@ export function register(on) {
     }
     return yield* observeNativeStream(next(e), (chunk) => {
       if (
-        e.agentId === undefined &&
-        e.turnId === state.currentTurnId &&
-        chunk?.kind === "text" &&
-        typeof chunk.text === "string"
-      ) {
-        if (state.closed || (!state.connection && !state.credentialPath)) return;
+        e.agentId !== undefined ||
+        e.turnId !== state.currentTurnId ||
+        state.closed ||
+        (!state.connection && !state.credentialPath)
+      )
+        return;
+      // Keep thinking private. Only its arrival is relevant to supervision.
+      if (
+        (chunk?.kind === "text" || chunk?.kind === "thinking") &&
+        typeof chunk.text === "string" &&
+        chunk.text.length > 0
+      )
+        state.workerActivityRevision += 1;
+      if (chunk?.kind === "text" && typeof chunk.text === "string") {
         appendStreamText(state, chunk.text);
         if (!recovered || recoveryReady)
           record(state, {
@@ -2650,6 +2693,7 @@ export function register(on) {
       state.currentTurnStartedAt = null;
       state.nativeWorking = false;
       state.activeTools.clear();
+      state.workerToolCoverage = false;
       state.waits.clear();
       state.activityVerified = true;
       state.revision += 1;
@@ -2679,12 +2723,23 @@ export function register(on) {
     return next(e);
   });
   on("tool.call", async ($, e, next) => {
-    if (e.agentId !== undefined || !state.currentTurnId || typeof e.tool_use_id !== "string")
+    if (e.agentId !== undefined || !state.currentTurnId) return next(e);
+    if (typeof e.tool_use_id !== "string" || !e.tool_use_id) {
+      state.workerToolCoverage = false;
+      state.dirty = true;
       return next(e);
+    }
     const turnId = state.currentTurnId;
     const tool = { id: e.tool_use_id, name: e.tool, input: boundedJson(e), status: "running" };
-    const active = { name: e.tool, input: e, turnId };
+    if (state.activeTools.has(tool.id)) state.workerToolCoverage = false;
+    const active = {
+      name: e.tool,
+      input: e,
+      turnId,
+      command: { id: crypto.randomUUID(), startedAt: Date.now() },
+    };
     state.activeTools.set(tool.id, active);
+    state.workerActivityRevision += 1;
     if (e.tool === "AskUserQuestion") state.waits.set(active, "question");
     record(state, { type: "tool-start", turnId, tool, revision: state.revision });
     state.dirty = true;
@@ -2706,6 +2761,7 @@ export function register(on) {
       return result;
     } finally {
       if (state.activeTools.get(tool.id) === active) state.activeTools.delete(tool.id);
+      if (state.currentTurnId === turnId) state.workerActivityRevision += 1;
       state.waits.delete(active);
       for (const owner of state.waits.keys()) if (owner.tool === active) state.waits.delete(owner);
       state.dirty = true;

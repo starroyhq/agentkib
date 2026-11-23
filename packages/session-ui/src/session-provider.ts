@@ -1,12 +1,11 @@
 import {
   sessionProviderDeclaration,
-  type ConversationSessionSummary,
   type SessionCapabilities,
   type SessionProviderDeclaration,
 } from "@agentkib/web-client";
 
 export function resolveSessionProvider(
-  session?: Pick<ConversationSessionSummary, "id" | "agent">,
+  session?: { id: string; agent?: string },
   capabilities?: Pick<SessionCapabilities, "sessionId" | "provider">,
 ): SessionProviderDeclaration | undefined {
   if (!session) return undefined;

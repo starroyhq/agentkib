@@ -781,6 +781,10 @@ it.each([
     expect(
       screen.queryByRole("button", { name: title + ": " + manual.name }),
     ).not.toBeInTheDocument();
+    const permission = screen.getByRole("button", { name: title });
+    expect(permission).toBeDisabled();
+    expect(permission).toHaveAttribute("title", expect.stringMatching(/\S/));
+    expect(permission).not.toHaveAttribute("title", "permission_denied");
     expect(state.client.prepareSessionSettings).not.toHaveBeenCalled();
     expect(state.runSessionAction).not.toHaveBeenCalled();
     expect(state.control).not.toHaveBeenCalled();

@@ -36,6 +36,7 @@ import {
   useNewSessionModel,
   sessionCreationDescription,
   newSessionPermissions,
+  newSessionPermissionFallbackTitle,
   newSessionPresetChoices,
   newSessionAddCapabilities,
   planSlashOption,
@@ -615,6 +616,7 @@ export function NewSessionComposer(props: NewSessionComposerProps) {
                     title: permissions.title,
                     risky: shownPermission?.risky,
                     disabled: locked,
+                    disabledReason: locked ? optionsStatus : undefined,
                     side: side,
                     items:
                       planning && planField === "permissionMode"
@@ -628,7 +630,7 @@ export function NewSessionComposer(props: NewSessionComposerProps) {
             permissionFallback={
               showPermission && !permissions ? (
                 <UnavailableOptionButton
-                  label={agent === "claude-code" ? copy.permissions[agent].title : copy.permission}
+                  label={newSessionPermissionFallbackTitle(agent, locale) ?? copy.permission}
                   status={optionsStatus}
                   loading={session.optionsLoading}
                   className="h-11 min-w-0 rounded-full px-2.5 text-sm font-normal text-muted-foreground"

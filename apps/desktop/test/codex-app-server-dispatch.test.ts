@@ -272,10 +272,13 @@ describe("Codex app-server frame limits", () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
-  it("keeps the outgoing request limit at 4 MiB", async () => {
+  it("keeps the outgoing frame limit at 4 MiB", async () => {
     const f = await fixture();
     const text = "x".repeat(4 * mebibyte);
     await expect(f.session.request("turn/start", { text })).rejects.toThrow(
+      /^Codex request exceeds the frame limit$/,
+    );
+    expect(() => f.session.respond(42, { text })).toThrow(
       /^Codex request exceeds the frame limit$/,
     );
     expect(f.frames).toEqual([]);

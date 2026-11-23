@@ -1,6 +1,14 @@
 // @vitest-environment node
 import { randomUUID } from "node:crypto";
-import { mkdirSync, mkdtempSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  rmdirSync,
+  rmSync,
+  statSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -11,14 +19,17 @@ import {
   type OwnerWaitEntry,
 } from "../../../packages/backend/src/agents/codex/owner-wait";
 import { replayManagedCommand } from "../../../packages/backend/src/managed-ledger";
+import { acquirePortableFileLease } from "../../../packages/backend/src/managed-session-lock";
 
 type OwnerWaitDependencies = ConstructorParameters<typeof CodexOwnerWait>[0];
 const roots: string[] = [];
+const releases: Array<() => void> = [];
 
 beforeEach(() => vi.useFakeTimers());
 afterEach(() => {
   vi.clearAllTimers();
   vi.useRealTimers();
+  for (const release of releases.splice(0)) release();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
@@ -90,6 +101,12 @@ function fixture() {
   };
 }
 
+function holdLock(file: string): () => void {
+  const release = acquirePortableFileLease(file);
+  releases.push(release);
+  return release;
+}
+
 describe("Codex owner wait", () => {
   it("uses the first UUID of a fork rollout only for its matching native thread", () => {
     const home = path.join(tmpdir(), "fixture-codex");
@@ -107,10 +124,10 @@ describe("Codex owner wait", () => {
     );
   });
 
-  it("records one receipt and sends only after the exact lock entry disappears", async () => {
+  it("records one receipt, waits on the exact held lock, and sends on the first probe after release", async () => {
     const f = fixture();
-    writeFileSync(f.lock, "");
-    writeFileSync(codexWriterLockPath(f.home, f.entry.nativeId), "");
+    const release = holdLock(f.lock);
+    holdLock(codexWriterLockPath(f.home, f.entry.nativeId));
 
     const acknowledged = f.accept();
     expect(acknowledged).toMatchObject({
@@ -131,8 +148,11 @@ describe("Codex owner wait", () => {
     expect(f.deliver).not.toHaveBeenCalled();
     expect(f.read()?.request).toEqual(f.entry.request);
 
-    unlinkSync(f.lock);
-    await vi.advanceTimersByTimeAsync(4_000);
+    release();
+    await vi.advanceTimersByTimeAsync(3_999);
+    expect(f.deliver).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(statSync(f.lock).size).toBe(0);
     expect(f.send).toHaveBeenCalledTimes(1);
     expect(f.read()).toBeUndefined();
     expect(f.report).toHaveBeenCalledWith(f.entry, {
@@ -143,6 +163,44 @@ describe("Codex owner wait", () => {
       [f.entry.request.sessionId],
       [f.entry.request.sessionId],
     ]);
+  });
+
+  it("sends on the first probe when an unheld lock file remains", async () => {
+    const f = fixture();
+    writeFileSync(f.lock, "");
+    const leftBehind = statSync(f.lock);
+    f.deliver.mockImplementation(async (entry, beforeDispatch) => {
+      // Taking the lock in the fake native resume also proves that the probe released it.
+      const release = acquirePortableFileLease(entry.lock);
+      try {
+        beforeDispatch();
+        f.send();
+        return { status: "sent", interveningExternalTurns: false };
+      } finally {
+        release();
+      }
+    });
+
+    f.accept();
+    await vi.advanceTimersByTimeAsync(2_000);
+
+    expect(f.send).toHaveBeenCalledTimes(1);
+    expect(f.read()).toBeUndefined();
+    expect(statSync(f.lock)).toMatchObject({ ino: leftBehind.ino, size: 0 });
+  });
+
+  it("continues polling after a lock probe error", async () => {
+    const f = fixture();
+    mkdirSync(f.lock);
+    f.accept();
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(f.deliver).not.toHaveBeenCalled();
+    expect(f.ownerWait.paused(f.read()!)).toBe(false);
+
+    rmdirSync(f.lock);
+    writeFileSync(f.lock, "");
+    await vi.advanceTimersByTimeAsync(4_000);
+    expect(f.send).toHaveBeenCalledTimes(1);
   });
 
   it("can cancel an entry while the lock is still held", async () => {

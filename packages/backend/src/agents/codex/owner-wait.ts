@@ -1,9 +1,9 @@
 import { randomUUID } from "node:crypto";
-import { lstatSync } from "node:fs";
 import path from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import type { z } from "zod";
 import { openManagedLedger } from "../../managed-ledger";
+import { existingFileLeaseBusy } from "../../managed-session-lock";
 import type { DeferredCodexSendOwner, DeferredCodexSendResult } from "../../orchestration-service";
 import type { managedControlSchema } from "../../sessions/control-admission";
 import { finishControlReceiptInTransaction } from "../../sessions/control-receipts";
@@ -57,12 +57,12 @@ export function codexWriterLockPath(home: string, nativeId: string, transcript?:
   return path.join(home, "thread-writer-locks", key + ".lock");
 }
 
-/** Codex deletes the writer lock on release. Poll its directory entry without opening it. */
+/** Codex can leave the file after releasing its advisory lock. Probe and release before resume. */
 function lockReleased(file: string): boolean {
   try {
-    lstatSync(file);
-    return false;
+    return !existingFileLeaseBusy(file);
   } catch (error) {
+    // The file may vanish during the probe. Other errors leave ownership unconfirmed.
     return (error as NodeJS.ErrnoException).code === "ENOENT";
   }
 }

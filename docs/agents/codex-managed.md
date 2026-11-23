@@ -7,7 +7,7 @@ Codex 同 Agent 续接统一使用 AgentKib 自己启动的 `codex app-server`�
 
 AgentKib 优先经可用的桌面端 owner 发送。确认其他进程持有线程写锁、且能确认消息没有经桌面端派发时，主机可以接受一条待发消息。接收回执为 `waiting-for-owner`，原因码为 `codex-waiting-for-owner`。可从现有队列移除同一设备的等待项。LAN 设备只看到自己的等待项，也只能取消这些项。派发结果待核对的消息不会自动重投。
 
-普通线程的写锁是 `<CODEX_HOME>/thread-writer-locks/<原生线程 ID>.lock`。已核验的 fork rollout 文件名若含父、子两个 UUID，取第一个 UUID 作为锁键。等待只按 2 至 30 秒的退避间隔查看该文件的目录项。Codex 正常关闭线程时删除目录项，AgentKib 再经正常准入读取最新原生策略并尝试续接。远端请求还须由桌面宿主核对原设备、发送权限和工作区，才会获得一次性派发许可。原生 resume 仍负责最终取得写锁。旧锁文件未清理时，等待可由用户取消。
+普通线程的写锁是 `<CODEX_HOME>/thread-writer-locks/<原生线程 ID>.lock`。已核验的 fork rollout 文件名若含父、子两个 UUID，取第一个 UUID 作为锁键。等待按 2 至 30 秒的退避间隔非阻塞试锁。Codex 的 `File::try_lock` 在 macOS 和 Linux 用 `flock(LOCK_EX | LOCK_NB)`，在 Windows 用 `LockFileEx` 的独占、立即失败模式。AgentKib 复用对应平台的探针，试锁成功就立即释放，随后读取最新原生策略并开始正常续接，即使锁文件仍在。远端请求还须由桌面宿主核对原设备、发送权限和工作区，才会获得一次性派发许可。原生 resume 负责最终取得写锁，若再次报告 writer busy，则继续等待。 [Codex 写锁实现](https://github.com/openai/codex/blob/rust-v0.171.0/codex-rs/rollout/src/writer_lock.rs#L41-L91)
 
 每条会话最多保留一条，主机最多保留 32 条。重启后未派发的条目保留并显示暂停。原发送身份以相同内容再次发送可恢复原条目。恢复时仍检查当前会话、设备和授权。上次运行已进入派发且结果未知的条目可从队列移除，原回执仍保留待核对状态。
 

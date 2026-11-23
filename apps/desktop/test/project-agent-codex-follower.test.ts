@@ -250,10 +250,10 @@ async function fixture(
   const nativeId = randomUUID();
   const writerLock = join(codexHome, "thread-writer-locks", `${nativeId}.lock`);
   let unlock = owner !== "released" ? acquirePortableFileLease(writerLock) : undefined;
-  const releaseWriter = () => {
+  const releaseWriter = ({ keepFile = false } = {}) => {
     unlock?.();
     unlock = undefined;
-    rmSync(writerLock, { force: true });
+    if (!keepFile) rmSync(writerLock, { force: true });
   };
   if (unlock) disposers.push(releaseWriter);
   const time = Date.now();
@@ -1025,7 +1025,7 @@ it("sends after the lock clears with fresh policy and reports intervening deskto
   // Observe the report without dispatching a turn in the fictitious lead session.
   const transport = vi.spyOn(f.orchestration, "sendReport").mockImplementation(() => false);
   f.allowWriter();
-  f.releaseWriter();
+  f.releaseWriter({ keepFile: true });
   const policy = {
     approvalPolicy: "on-request",
     approvalsReviewer: "user",

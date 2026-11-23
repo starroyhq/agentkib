@@ -53,6 +53,8 @@ import { SessionComposerToolbar } from "../../session-composer-toolbar";
 import { SessionContextUsageGauge } from "../../session-context-usage-gauge";
 import { settingsNoticeGroup } from "../../session-control-receipts";
 import { useSessionPlatform } from "../../session-platform";
+import { sessionModelSettings } from "../../agents/session-model-settings";
+import { resolveSessionProvider } from "../../session-provider";
 import { useComposerModelPanel } from "../../use-composer-model-panel";
 import { useComposerModelDisplay } from "../../use-composer-model-display";
 import { composerLayoutCopy, composerSettingsStatus, composerTerm } from "./composer-layout-copy";
@@ -169,11 +171,14 @@ export function SessionComposerControls({
   } = useSessionPlatform();
   const desktop = kind === "desktop";
   const copy = sessionCopyForSurface(locale, kind);
-  const isClaude = current?.agent === "claude-code";
-  const isCodex = current?.agent === "codex";
+  const declaration = resolveSessionProvider(
+    current?.id === selected ? current : undefined,
+    capabilities,
+  );
+  const registeredSettings = declaration && "models" in declaration ? declaration : undefined;
+  const nativeAppSettings = declaration?.connection?.kind === "native-app";
   const settingsAgent = managedAgentOf(current?.agent);
-  const managedAgent = settingsAgent === "codex" ? null : settingsAgent;
-  const isDevin = managedAgent === "devin";
+  const managedAgent = nativeAppSettings ? null : settingsAgent;
   const modelPanel = useComposerModelPanel();
   const usageGauge = useRef<ContextUsageHandle>(null);
   const agentCopy = sessionAgentCopy[locale];
@@ -187,6 +192,9 @@ export function SessionComposerControls({
     settingsReadOnly,
     terminalModel,
     settingsAccessDenied,
+    settingsReadReason,
+    modelRegistered,
+    permissionRegistered,
     reservesModelSlot,
     reservesPermissionSlot,
     goalReadable: canReadGoal,
@@ -293,15 +301,17 @@ export function SessionComposerControls({
   const settingsUnknown =
     settingsReceiptUncertain ||
     (settingsChangedHere && scopedSettings?.applicationStatus === "unknown");
-  const fallbackProvider = sessionProviderCapabilities(current?.agent);
   const provider =
     (scopedSettings?.sessionId === selected ? scopedSettings?.provider : undefined) ??
-    fallbackProvider;
+    registeredSettings;
   const usesVariants = provider?.models.selection === "variants";
   const preparesSettings = provider?.models.prepare === true;
+  const nativeModels = sessionModelSettings(registeredSettings);
+  const currentLive = live?.sessionId === selected ? live : undefined;
   const canPrepareSettings =
     preparesSettings &&
-    (live?.executionMode === "claude-managed" || (!desktop && !live?.executionMode));
+    (nativeModels?.managed(currentLive) ||
+      (!desktop && (!live || currentLive) && !live?.execution && !live?.executionMode));
   const [settingsRead, setSettingsRead] = useState<{
     scope: string;
     client: typeof client;
@@ -374,7 +384,7 @@ export function SessionComposerControls({
       ? settingsRead
       : undefined;
   const canShowModelFallback =
-    (isCodex
+    (nativeAppSettings
       ? canDisplayCodexModelFallback(settings)
       : settings?.applicationStatus !== "pending") &&
     !pendingModelSettings &&
@@ -421,7 +431,7 @@ export function SessionComposerControls({
         if (desktop || !fromLive || previous?.value.sessionId !== value.sessionId)
           return { ...source, value };
         const registered = value.provider ?? previous.value.provider;
-        const usageSource = registered?.contextUsage ?? fallbackProvider?.contextUsage;
+        const usageSource = registered?.contextUsage ?? registeredSettings?.contextUsage;
         const keepHistory =
           previous.value.usage?.historical &&
           (usageSource !== "last-request" || previous.value.revision === value.revision);
@@ -439,7 +449,7 @@ export function SessionComposerControls({
     [
       client,
       desktop,
-      fallbackProvider,
+      registeredSettings,
       historyScope,
       rememberRead,
       selected,
@@ -803,14 +813,14 @@ export function SessionComposerControls({
   useEffect(() => {
     if (
       !confirmsComposerSettings(settings, pendingSettings, {
-        prepared: isClaude,
+        prepared: preparesSettings,
         variants: usesVariants,
         follower,
       })
     )
       return;
     setPendingSettings(undefined);
-  }, [follower, isClaude, pendingSettings, settings, usesVariants]);
+  }, [follower, preparesSettings, pendingSettings, settings, usesVariants]);
 
   function mutate(name: SessionAction, fields: ComposerMutationFields = {}) {
     const changesSettings = name === "settings";
@@ -939,7 +949,10 @@ export function SessionComposerControls({
   const displayedSettings = scopedSettings
     ? desktop && settingsUnknown
       ? scopedSettings.current
-      : composerSettingsSelection(scopedSettings, isClaude, { live, staged: pendingSettings })
+      : composerSettingsSelection(scopedSettings, preparesSettings, {
+          live,
+          staged: pendingSettings,
+        })
     : undefined;
   const contextLimit =
     settings?.sessionId === selected &&
@@ -960,7 +973,7 @@ export function SessionComposerControls({
       ? live.settings
       : undefined;
   const liveSelection =
-    liveSettings && composerSettingsSelection(liveSettings, !desktop && isClaude);
+    liveSettings && composerSettingsSelection(liveSettings, !desktop && preparesSettings);
   const liveReport =
     liveSelection?.modelId || liveSelection?.effort ? liveSelection : liveSettings?.current;
   const pendingModelChange =
@@ -977,13 +990,13 @@ export function SessionComposerControls({
   const modelApplicationPending =
     scopedSettings?.applicationStatus === "pending" &&
     !permissionsOnlyPending &&
-    (!isCodex || !canDisplayCodexModelFallback(scopedSettings));
+    (!nativeAppSettings || !canDisplayCodexModelFallback(scopedSettings));
   const webReportedSettings =
-    (isCodex || !scopedSettings) &&
+    (nativeAppSettings || !scopedSettings) &&
     !modelApplicationPending &&
     (liveReport?.modelId || liveReport?.effort)
       ? liveReport
-      : displayedSettings?.modelId || displayedSettings?.effort || !isCodex
+      : displayedSettings?.modelId || displayedSettings?.effort || !nativeAppSettings
         ? displayedSettings
         : scopedSettings?.current;
   const reportedSettings = desktop
@@ -992,7 +1005,7 @@ export function SessionComposerControls({
       : undefined
     : webReportedSettings;
   const claudeReadFallbackAllowed =
-    isClaude &&
+    preparesSettings &&
     !settingsUnknown &&
     notice !== "uncertain" &&
     live?.status !== "outcome-unknown" &&
@@ -1002,7 +1015,7 @@ export function SessionComposerControls({
     ? scopedSettings?.historicalSettings
     : undefined;
   const webFallbackSettings =
-    isCodex &&
+    nativeAppSettings &&
     access?.device?.advancedControl === true &&
     !modelApplicationPending &&
     !pendingModelChange &&
@@ -1012,7 +1025,7 @@ export function SessionComposerControls({
   const fallbackDefaults = claudeReadFallbackAllowed
     ? scopedSettings?.defaults
     : desktop
-      ? isCodex && canShowModelFallback
+      ? nativeAppSettings && canShowModelFallback
         ? history?.defaults
         : undefined
       : webFallbackSettings?.defaults;
@@ -1026,7 +1039,7 @@ export function SessionComposerControls({
         claudeHistoricalModel,
         observedModelFallback,
       ].find((value) => value?.modelId)
-    : reportedSettings?.modelId || (!isClaude && reportedSettings?.effort)
+    : reportedSettings?.modelId || (!preparesSettings && reportedSettings?.effort)
       ? reportedSettings
       : claudeHistoricalModel?.modelId
         ? claudeHistoricalModel
@@ -1041,9 +1054,9 @@ export function SessionComposerControls({
       ? undefined
       : observedModel;
   const {
-    showModelPicker,
     displayFallback: displayModelFallback,
     retainedEffortOptions,
+    canBrowseModelSettings,
   } = useComposerModelDisplay({
     client,
     access,
@@ -1059,8 +1072,11 @@ export function SessionComposerControls({
     defaults: fallbackDefaults,
     holdCache: desktop
       ? settingsUnknown ||
-        (isCodex && !!pendingSettings && !pendingModelSettings && !displayedSettings?.modelId)
-      : isCodex &&
+        (nativeAppSettings &&
+          !!pendingSettings &&
+          !pendingModelSettings &&
+          !displayedSettings?.modelId)
+      : nativeAppSettings &&
         !reportedSettings?.modelId &&
         (permissionsOnlyPending || (settingsOnlyBlocked === true && settingsReceiptUncertain)),
     uncertain: desktop && settingsUnknown,
@@ -1069,7 +1085,7 @@ export function SessionComposerControls({
     setPermissionOpen(open);
     if (!open) return;
     const hasPermissionOptions = desktop
-      ? isClaude || isDevin
+      ? registeredSettings?.permissionField === "permissionMode"
         ? settings?.options.permissionModes?.length
         : settings?.options.policies.length
       : permissionItems.length > 0;
@@ -1102,7 +1118,11 @@ export function SessionComposerControls({
     if (goalReadable && goalReadStale) void load();
   };
   const openModel = (page: "models" | "effort", refresh = false) =>
-    modelPanel.open(page, full && !disabled && settingsReadable, refresh);
+    modelPanel.open(
+      page,
+      full && !disabled && modelRegistered && !modelTriggerLocked && settingsReadable,
+      refresh,
+    );
   const stagedGoal = goalDirty ? undefined : startupGoal?.value;
   const disarmStartupGoal = () => {
     if (!startupGoal?.apply || attemptedStartupGoal.current === startupGoal.value) return;
@@ -1187,9 +1207,13 @@ export function SessionComposerControls({
     capabilities,
     feature: feature("settings"),
   });
-  const menuTitle = isClaude || isDevin ? agentCopy.permission : copy.executionPolicy;
+  const menuTitle =
+    registeredSettings?.permissionField === "permissionMode"
+      ? agentCopy.permission
+      : copy.executionPolicy;
   const {
     permissionItems,
+    permissionField,
     permissionReadOnlyWithoutMenu,
     permissionLabel,
     permissionDescription,
@@ -1209,30 +1233,52 @@ export function SessionComposerControls({
     exitPlan,
   } = projectComposerSettingsControls({
     agent: settingsAgent,
-    settings: scopedSettings,
-    selection: displayedSettings,
-    live,
+    provider: registeredSettings,
+    settings: settingsAccessDenied ? undefined : scopedSettings,
+    selection: settingsAccessDenied ? undefined : displayedSettings,
+    live: settingsAccessDenied ? undefined : live,
     sessionId: selected,
     locale,
     locked: settingsWriteLocked,
     full,
     write: (fields) => mutate("settings", fields),
   });
-  const nativePolicy = scopedSettings?.writable.policy;
+  const nativePolicy =
+    !settingsAccessDenied &&
+    registeredSettings?.permissionField === "policyId" &&
+    scopedSettings?.sessionId === selected
+      ? scopedSettings.writable.policy
+      : undefined;
   const nativePolicyReadOnlyReason =
     nativePolicy?.available === false && nativePolicy.reason?.startsWith("native-policy-")
       ? nativePolicy.reason
       : undefined;
-  const showPermissions =
-    !settingsAccessDenied &&
-    (reservesPermissionSlot ||
-      (settingsReadable &&
-        (isCodex ||
-          isClaude ||
-          isDevin ||
-          (desktop ? !!settings?.options.policies?.length : permissionItems.length > 0))));
+  const permissionCatalogEmpty =
+    scopedSettings?.available &&
+    permissionField?.available !== true &&
+    !preparesSettings &&
+    !permissionItems.length &&
+    !permissionHint;
   const permissionTriggerLocked =
-    disabled || permissionReadOnlyWithoutMenu || !!nativePolicyReadOnlyReason;
+    disabled ||
+    permissionCatalogEmpty ||
+    !!nativePolicyReadOnlyReason ||
+    !online ||
+    settingsAccessDenied ||
+    (!settingsReadable && !reservesPermissionSlot && !permissionHint) ||
+    permissionReadOnlyWithoutMenu;
+  const permissionDisabledReason = nativePolicyReadOnlyReason
+    ? `${copy.nativePolicyReadOnly} ${reason(nativePolicyReadOnlyReason)}`
+    : permissionTriggerLocked
+      ? (reasonTitle(settingsReadReason || settingsError || permissionField?.reason) ??
+        copy.settingUnavailable)
+      : undefined;
+  const modelTriggerLocked =
+    settingsAccessDenied || (!canBrowseModelSettings && !canOpenTerminalModel);
+  const modelDisabledReason = modelTriggerLocked
+    ? (reasonTitle(settingsReadReason || settingsError || feature("settings")?.reason) ??
+      copy.settingUnavailable)
+    : undefined;
   useEffect(() => {
     onPlan?.({ on: planOn, available: planAvailable });
   }, [onPlan, planOn, planAvailable]);
@@ -1294,7 +1340,7 @@ export function SessionComposerControls({
     open: (panel) => {
       if (!full || disabled) return false;
       if (panel === "models" || panel === "effort") return openModel(panel);
-      if (panel === "permissions" && showPermissions && !permissionTriggerLocked)
+      if (panel === "permissions" && permissionRegistered && !permissionTriggerLocked)
         changePermissionOpen(true);
       else if (panel === "usage" && usageGauge.current) usageGauge.current.open();
       else if (panel === "goal" && (goalReadable || offersGoalDraft)) openGoal();
@@ -1360,9 +1406,8 @@ export function SessionComposerControls({
         </p>
       )}
       {notice === "notDispatched" &&
-        (isClaude
-          ? noticeReason === "claude-model-unsupported" ||
-            noticeReason === "claude-effort-unsupported"
+        (preparesSettings
+          ? nativeModels?.rejectsModel(noticeReason)
           : noticeReason === "unsupported-model" || noticeReason === "unsupported-effort") && (
           <div role="status" className="space-y-1 px-1 text-xs leading-5 text-muted-foreground">
             <p>{reason(noticeReason)}</p>
@@ -1441,7 +1486,7 @@ export function SessionComposerControls({
             : undefined,
         }}
         permission={
-          showPermissions
+          permissionRegistered
             ? {
                 title: menuTitle,
                 label: nativePolicyReadOnlyReason
@@ -1451,13 +1496,17 @@ export function SessionComposerControls({
                 hint: permissionHint,
                 risky: permissionRisky,
                 disabled: permissionTriggerLocked,
-                disabledReason: nativePolicyReadOnlyReason
-                  ? `${copy.nativePolicyReadOnly} ${reason(nativePolicyReadOnlyReason)}`
-                  : undefined,
+                disabledReason: permissionDisabledReason,
                 side: "top",
-                open: permissionOpen,
+                open: permissionOpen && !permissionTriggerLocked,
                 onOpenChange: changePermissionOpen,
-                items: permissionItems,
+                items: permissionItems.map((item) => ({
+                  ...item,
+                  disabledReason: item.disabled
+                    ? (reasonTitle(permissionField?.reason || feature("settings")?.reason) ??
+                      copy.settingUnavailable)
+                    : undefined,
+                })),
                 onSelect: changePermission,
               }
             : undefined
@@ -1492,7 +1541,7 @@ export function SessionComposerControls({
           />
         }
         model={
-          showModelPicker
+          modelRegistered
             ? {
                 scope: desktop
                   ? `${selected}\0${access?.bootId ?? ""}\0${access?.device?.id ?? ""}\0${access?.device?.advancedControl ?? ""}`
@@ -1502,21 +1551,28 @@ export function SessionComposerControls({
                       access?.device?.id,
                       access?.device?.advancedControl,
                     ]),
-                settings: scopedSettings,
+                settings: settingsAccessDenied ? undefined : scopedSettings,
                 provider,
-                selection: displayedSettings,
-                reportedSettings,
-                displayFallback: displayModelFallback,
+                selection: settingsAccessDenied ? undefined : displayedSettings,
+                reportedSettings: settingsAccessDenied ? undefined : reportedSettings,
+                displayFallback: settingsAccessDenied ? undefined : displayModelFallback,
                 verifiedHistoricalModel:
                   settingsReadable && reservesModelSlot
                     ? claudeHistoricalModel?.modelId
                     : undefined,
                 retainedEffortOptions,
                 disabled: settingsWriteLocked,
-                triggerDisabled: false,
+                triggerDisabled: modelTriggerLocked,
+                disabledReason: modelDisabledReason,
+                writeDisabledReason: (field) =>
+                  reasonTitle(
+                    scopedSettings?.writable[field]?.reason || feature("settings")?.reason,
+                  ) ?? copy.settingUnavailable,
                 readOnly: settingsReadOnly,
                 settingsAuthority: followerAuthority,
                 terminalModel: terminalModel,
+                terminalPickerDisabledReason:
+                  reasonTitle(feature("open-model-picker")?.reason) ?? copy.settingUnavailable,
                 saving: saving,
                 loading:
                   preparingSettings || (online && settingsReadable && !settings && !settingsError),
@@ -1528,6 +1584,7 @@ export function SessionComposerControls({
                   prepare: prepareSettings,
                   refresh: preparesSettings ? () => void load(true, "settings") : undefined,
                   terminal: {
+                    modelSettings: nativeModels,
                     offered: canOpenTerminalModel,
                     settingsReadable,
                     sessionId: selected,
@@ -1549,7 +1606,7 @@ export function SessionComposerControls({
                 clearEffort: desktop
                   ? provider?.models.clearEffort === true &&
                     (!preparesSettings || canPrepareSettings)
-                  : (provider?.models.clearEffort ?? isClaude),
+                  : (provider?.models.clearEffort ?? preparesSettings),
                 onChange: (fields) =>
                   !desktop && settingsWriteLocked
                     ? Promise.resolve(false)

@@ -157,6 +157,34 @@ describe("composer model picker", () => {
     },
   );
 
+  it("keeps a single effort and the service tier visible with their disabled reasons", async () => {
+    const catalog = settings();
+    catalog.options.models[0].efforts = ["high"];
+    catalog.options.models[0].serviceTierIds = ["flex"];
+    catalog.options.serviceTiers = [{ id: "flex", name: "Flex" }];
+    catalog.writable.effort = { available: false };
+    catalog.writable.serviceTier = { available: false };
+    render(
+      <ComposerModelPicker
+        {...props}
+        settings={catalog}
+        writeDisabledReason={(field) =>
+          field === "effort" ? "Effort is unavailable" : "Service tier is unavailable"
+        }
+      />,
+    );
+
+    const popup = within(await openPicker());
+    const effort = popup.getByRole("button", { name: `${copy.chooseEffort}: High` });
+    const tier = popup.getByRole("combobox", { name: copy.serviceTier });
+    expect(effort).toBeDisabled();
+    expect(effort).toHaveAttribute("title", "Effort is unavailable");
+    expect(tier).toBeDisabled();
+    expect(tier).toHaveAttribute("title", "Service tier is unavailable");
+    fireEvent.click(effort);
+    expect(props.onChange).not.toHaveBeenCalled();
+  });
+
   it("previews slider movement and writes only once when the gesture commits", async () => {
     render(<ComposerModelPicker {...props} />);
     const popup = await openPicker();

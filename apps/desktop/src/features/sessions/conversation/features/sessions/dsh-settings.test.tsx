@@ -66,15 +66,17 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe("DeepSeek Harness model settings in the composer", () => {
-  it("reads DSH's own models without a permission picker when none is available", async () => {
+  it("reads DSH's own models and disables the registered picker when no policy is available", async () => {
     render(<SessionComposerControls session={state} {...props} />);
     await waitFor(() =>
       expect(state.client.sessionSettings).toHaveBeenCalledWith("session", "deepseek-harness"),
     );
     expect(await screen.findByRole("button", { name: /DeepSeek Chat/ })).toBeInTheDocument();
-    expect(
-      screen.queryByRole("button", { name: new RegExp(`^${copy.executionPolicy}:`) }),
-    ).not.toBeInTheDocument();
+    const permission = screen.getByRole("button", { name: copy.executionPolicy });
+    expect(permission).toBeDisabled();
+    expect(permission).toHaveAttribute("title", copy.settingUnavailable);
+    fireEvent.click(permission);
+    expect(screen.queryByRole("menu")).not.toBeInTheDocument();
     expect(state.client.codexGoals).not.toHaveBeenCalled();
     expect(state.client.sessionGoals).not.toHaveBeenCalled();
     const gauge = screen.getByRole("img", { name: copy.contextUsage });
@@ -96,6 +98,7 @@ describe("DeepSeek Harness model settings in the composer", () => {
         ...settings.writable,
         model: { available: false },
         effort: { available: false },
+        restoreDefaults: { available: false },
         policy: { available: true },
       },
       options: {
@@ -114,9 +117,11 @@ describe("DeepSeek Harness model settings in the composer", () => {
       "true",
     );
     const picker = composerModelCopy["en-US"];
-    expect(
-      screen.queryByRole("button", { name: new RegExp(`^${picker.chooseModel}:`) }),
-    ).not.toBeInTheDocument();
+    const model = screen.getByRole("button", { name: new RegExp(`^${picker.chooseModel}:`) });
+    expect(model).toBeDisabled();
+    expect(model).toHaveAttribute("title", copy.settingUnavailable);
+    fireEvent.click(model);
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     expect(
       screen.queryByRole("button", { name: new RegExp(`^${picker.chooseEffort}:`) }),
     ).not.toBeInTheDocument();

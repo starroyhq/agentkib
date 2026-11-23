@@ -16,6 +16,7 @@ import {
   type ComponentType,
   type ReactNode,
 } from "react";
+import { sessionApprovalRuntime } from "../../agents/session-approvals";
 import {
   composerPanelShortcut,
   planSlashOption,
@@ -23,6 +24,7 @@ import {
   type AgentKibPanel,
 } from "../../agents/session-commands";
 import { sessionContinuationRegistration } from "../../agents/session-continuation";
+import { sessionPermissionObservation } from "../../agents/session-permission-observations";
 import {
   queueAccessGranted,
   queueActionGranted,
@@ -31,7 +33,6 @@ import {
 } from "../../agents/session-queue";
 import { sessionStopCapabilityAllows } from "../../agents/session-turn-controls";
 import { sessionTurnNotice } from "../../agents/session-turn-notice";
-import { sessionApprovalRuntime } from "../../agents/session-approvals";
 import { commandPrompt } from "../../command-prompts";
 import { contextUsageCopyForSurface } from "../../context-usage-copy";
 import type { ContextUsageHandle } from "../../context-usage-indicator";
@@ -204,6 +205,8 @@ export function SessionComposer({
           surface,
         )
       : undefined;
+  const permissionObservation = sessionPermissionObservation(provider);
+  const separatePlan = provider && "create" in provider && provider.create.planMode === "mode";
   const composerValue = message;
   const setComposerText = setMessage;
   const [submitted, setSubmitted] = useState(false);
@@ -245,12 +248,10 @@ export function SessionComposer({
     live?.connectionGeneration,
   ]);
   const compacting = live?.activity === "compacting";
+  const showLimitedPlan =
+    restrictedPlan && separatePlan === true && !fullAccess && current?.id === selected;
   const limitedSettings =
-    restrictedPlan &&
-    isCodex &&
-    !fullAccess &&
-    current.id === selected &&
-    capabilities?.sessionId === selected
+    showLimitedPlan && capabilities?.sessionId === selected
       ? capabilities.features.settings
       : undefined;
   // Restricted devices can receive the native mode in a live snapshot without its own session ID.
@@ -263,13 +264,13 @@ export function SessionComposer({
   const offeredModes =
     observedSettings?.options?.collaborationModes?.map((item) => item.id) ??
     (["default", "plan"] as const);
-  const showLimitedPlan = !!limitedSettings && offeredModes.includes("plan");
   const limitedPlanOn =
     (observedSettings?.selected?.mode ?? observedSettings?.current?.mode) === "plan";
   const nextMode = limitedPlanOn ? "default" : "plan";
   const canChangeLimitedPlan = !!(
     showLimitedPlan &&
     limitedSettings?.available &&
+    offeredModes.includes("plan") &&
     access?.status === "approved" &&
     access.experimentalEnabled &&
     access.device &&
@@ -292,7 +293,7 @@ export function SessionComposer({
     if (canChangeLimitedPlan) void runSessionAction("settings", { mode: nextMode });
   };
   const settingsNotice =
-    restrictedPlan && !fullAccess && isCodex && session.settingsNotice?.target === "permissions"
+    showLimitedPlan && session.settingsNotice?.target === "permissions"
       ? session.settingsNotice
       : undefined;
   const planWriteStatus = composerSettingsStatus(locale, settingsNotice, reason, t.notDispatched);
@@ -838,9 +839,9 @@ export function SessionComposer({
           {terminalInteraction}
         </p>
       )}
-      {isClaude &&
+      {permissionObservation &&
         live?.sessionId === selected &&
-        (live.executionMode !== "claude-follower" ||
+        (!permissionObservation.isTerminal(live, selected) ||
           (!composerCapabilities.reservesPermissionSlot &&
             !composerCapabilities.settingsAccessDenied)) && (
           <PermissionModeNotice permission={live.permission} locale={locale} compact />
@@ -1007,7 +1008,7 @@ export function SessionComposer({
                   disabled: !canOpenAddMenu,
                   disabledReason: canOpenAddMenu
                     ? undefined
-                    : showLimitedPlan
+                    : limitedSettings
                       ? limitedPlanReason
                       : uploadPermission
                         ? undefined
@@ -1057,7 +1058,7 @@ export function SessionComposer({
           </ComposerToolbarContents>
         }
       />
-      {!isClaude && access?.device?.accessMode !== "full" && (
+      {!permissionObservation && access?.device?.accessMode !== "full" && (
         <Disclosure className="px-3 text-xs text-muted-foreground">
           <DisclosureSummary className="min-h-11 cursor-pointer content-center">
             {layout.help}

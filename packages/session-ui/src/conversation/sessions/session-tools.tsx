@@ -25,6 +25,7 @@ import { contextUsageCopyForSurface } from "../../context-usage-copy";
 import type { InteractionLocale } from "../../interaction-model";
 import { useSessionPlatform } from "../../session-platform";
 import { resolveSessionProvider } from "../../session-provider";
+import { nativeAppControlsSession } from "../../agents/codex/settings-ownership";
 import { composerSettingsStatus } from "./composer-layout-copy";
 import { OperationDisclosure, OperationGroup, OperationRow } from "./operation-layout";
 import { blockedWhileCompacting } from "./session-activity";
@@ -130,12 +131,15 @@ export function SessionTools({
     [client, queueScope, queueReadable],
   );
   const isClaude = current?.agent === "claude-code";
-  // DeepSeek Harness takes management actions here; its model is set from the composer and its
-  // waiting messages sit in the strip above it, so neither is repeated in this panel.
-  const isDsh = current?.agent === "deepseek-harness";
   const modelsInOperations = restrictedModelControls === "operation-panel";
   const modelAccessMode = modelsInOperations ? access?.device?.accessMode : undefined;
-  const limitedSettings = modelsInOperations && !isClaude && !isDsh && modelAccessMode !== "full";
+  const modelProvider = provider && "models" in provider ? provider : undefined;
+  const limitedSettings =
+    modelsInOperations &&
+    modelProvider?.composer?.modelPicker === true &&
+    (modelProvider.connection?.kind === "native-app" ||
+      modelProvider.models.selection === "variants") &&
+    modelAccessMode !== "full";
   const [context, setContext] = useState<unknown>();
   const [localOpen, setLocalOpen] = useState(false);
   const open = controlledOpen ?? localOpen;
@@ -366,8 +370,7 @@ export function SessionTools({
           ? "resume"
           : undefined;
   // A follower write requires a fresh privileged settings read from the current owner.
-  const followerModelReadOnly =
-    live?.sessionId === selected && live.executionMode === "codex-follower";
+  const followerModelReadOnly = nativeAppControlsSession(live, selected);
   const limitedModelWritable = enabled("settings") && !followerModelReadOnly;
   const observedSettings =
     live?.sessionId === selected && live.settings?.sessionId === selected
@@ -526,6 +529,9 @@ export function SessionTools({
                   settings={limitedModel}
                   selection={limitedModel?.selected ?? limitedModel?.current}
                   disabled={!limitedModelWritable}
+                  triggerDisabled={!limitedModel && !limitedModelWritable}
+                  disabledReason={reason("settings")}
+                  writeDisabledReason={() => reason("settings")}
                   readOnly={followerModelReadOnly}
                   saving={operation}
                   side="bottom"

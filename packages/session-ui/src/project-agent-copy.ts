@@ -50,7 +50,7 @@ const copy: Record<"zh-CN" | "zh-Hant" | "ja-JP" | "en-US", ProjectAgentCopy> = 
     decidesNote: "只限普通审批：接受一次或拒绝。要联网、要更多权限或要改规则的审批仍由你处理。",
     decided: (items) => `替你决定：${items.join("、")}`,
     maxAutoTurns: "连续自动轮次上限",
-    stallMinutes: "卡住阈值（分钟）",
+    stallMinutes: "模型静默阈值（分钟）",
     confirm: "设为项目 Agent",
     cancel: "取消",
     summary: (workers, pending) =>
@@ -107,7 +107,7 @@ const copy: Record<"zh-CN" | "zh-Hant" | "ja-JP" | "en-US", ProjectAgentCopy> = 
     decidesNote: "只限一般核准：允許一次或拒絕。要連網、要更多權限或要改規則的核准仍由你處理。",
     decided: (items) => `替你決定：${items.join("、")}`,
     maxAutoTurns: "連續自動輪次上限",
-    stallMinutes: "卡住閾值（分鐘）",
+    stallMinutes: "模型靜默閾值（分鐘）",
     confirm: "設為專案 Agent",
     cancel: "取消",
     summary: (workers, pending) =>
@@ -165,7 +165,7 @@ const copy: Record<"zh-CN" | "zh-Hant" | "ja-JP" | "en-US", ProjectAgentCopy> = 
       "通常の承認（1 回だけ許可、または拒否）に限ります。ネットワーク接続、追加の権限、ルールの変更を求める承認は引き続きあなたが行います。",
     decided: (items) => `任せていること：${items.join("、")}`,
     maxAutoTurns: "連続する自動ターンの上限",
-    stallMinutes: "停滞のしきい値（分）",
+    stallMinutes: "モデルの無応答しきい値（分）",
     confirm: "プロジェクト Agent にする",
     cancel: "キャンセル",
     summary: (workers, pending) =>
@@ -224,7 +224,7 @@ const copy: Record<"zh-CN" | "zh-Hant" | "ja-JP" | "en-US", ProjectAgentCopy> = 
       "Only plain approvals: allow once, or decline. Approvals that ask for network access, more permissions or a rule change still come to you.",
     decided: (items) => `Decides for you: ${items.join(", ")}`,
     maxAutoTurns: "Most automatic turns in a row",
-    stallMinutes: "Stall threshold (minutes)",
+    stallMinutes: "Model inactivity threshold (minutes)",
     confirm: "Make Project Agent",
     cancel: "Cancel",
     summary: (workers, pending) =>

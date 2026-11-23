@@ -5142,7 +5142,10 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
       const resident = this.#managedRunners.get(sessionId);
       const live =
         !controls && resident?.session.connected && !resident.retiring
-          ? resident.state.snapshot(this.host.runtimeBootId, false)
+          ? {
+              ...resident.state.snapshot(this.host.runtimeBootId, false),
+              ...resident.state.workerObservation(),
+            }
           : await this.#managedLive(sessionId, controls, intent ?? "read");
       return this.#liveWithLimit(sessionId, live);
     });
@@ -5398,7 +5401,9 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
         : externalId
           ? this.#externalTurns.turnOf(externalId)
           : null,
-      ...(workerTurn ? { workerProgress: workerTurn.workerProgress } : {}),
+      ...(workerTurn
+        ? { workerProgress: workerTurn.workerProgress, commands: workerTurn.commands }
+        : {}),
       sendEnabled: controls && reason === null && !starting,
       stopEnabled: false,
       approvals: [],
@@ -6174,6 +6179,7 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
       const nativeTurn = isObject(inactive.externalTurn) ? inactive.externalTurn.turnId : null;
       const nativeProgress =
         nativeTurn && active && nativeTurn !== active ? null : inactive.workerProgress;
+      const commands = !active || nativeTurn === active ? inactive.commands : undefined;
       const { items } = follower.stream.snapshot();
       const output = active
         ? items.filter((item) => item.turn_id === active && item.kind === "agent-message").at(-1)
@@ -6184,6 +6190,7 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
       return {
         ...live,
         externalTurn: inactive.externalTurn,
+        ...(commands !== undefined ? { commands } : {}),
         ...(active || typeof nativeProgress === "string"
           ? {
               workerProgress: JSON.stringify([

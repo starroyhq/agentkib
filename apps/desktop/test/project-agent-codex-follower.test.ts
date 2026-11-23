@@ -544,25 +544,102 @@ it("reports a stalled external turn through the real host observation path", asy
     payload: { type: "function_call_output", call_id: "poll-one", output: "Process still running" },
   });
   await f.orchestration.catchUp();
-  clock.mockReturnValue(f.time + 181_000);
+  clock.mockReturnValue(f.time + 360_000);
+  await f.orchestration.catchUp();
+  expect(f.orchestration.status(leadId)?.pendingReports).toEqual([]);
+  clock.mockReturnValue(f.time + 361_000);
   await f.orchestration.catchUp();
   expect(f.orchestration.status(leadId)?.pendingReports).toEqual([
     expect.stringMatching(/no observed progress|may be stalled/),
   ]);
-  clock.mockReturnValue(f.time + 190_000);
+  clock.mockReturnValue(f.time + 370_000);
   f.append({
     type: "event_msg",
-    payload: { type: "agent_message", turn_id: turnId, message: "Actual Worker output" },
+    payload: { type: "agent_reasoning", turn_id: turnId, text: "Actual Worker reasoning" },
   });
   await f.orchestration.catchUp();
-  clock.mockReturnValue(f.time + 360_000);
+  clock.mockReturnValue(f.time + 730_000);
   await f.orchestration.catchUp();
   expect(f.orchestration.status(leadId)?.pendingReports).toHaveLength(1);
-  clock.mockReturnValue(f.time + 371_000);
+  clock.mockReturnValue(f.time + 731_000);
   await f.orchestration.catchUp();
   expect(f.orchestration.status(leadId)?.pendingReports).toHaveLength(2);
   expect(f.writer).not.toHaveBeenCalled();
 });
+
+it.each(["tool call", "native execution"])(
+  "suppresses external stalls during a %s",
+  async (source) => {
+    const f = await fixture("missing");
+    const clock = vi.spyOn(Date, "now").mockReturnValue(f.time);
+    const nativeExecution = source === "native execution";
+    f.orchestration.registry.update(leadId, (lead) => {
+      lead.scope.stallMinutes = 3;
+    });
+    f.orchestration.pause(leadId);
+    f.append({
+      type: "response_item",
+      timestamp: new Date(f.time).toISOString(),
+      payload: { type: "function_call", name: "exec_command", call_id: "shell-1", turn_id: turnId },
+    });
+    if (nativeExecution)
+      f.append({
+        type: "event_msg",
+        timestamp: new Date(f.time).toISOString(),
+        payload: {
+          type: "item_started",
+          turn_id: turnId,
+          item: { type: "CommandExecution", id: "shell-1", status: "in_progress" },
+        },
+      });
+    await f.orchestration.catchUp();
+    clock.mockReturnValue(f.time + 361_000);
+    f.append({
+      type: "response_item",
+      // A tool can return while its matching native execution item is still open.
+      payload: {
+        type: "function_call_output",
+        call_id: nativeExecution ? "shell-1" : "other-call",
+        turn_id: turnId,
+        output: "ok",
+      },
+    });
+    await f.orchestration.catchUp();
+    expect(f.orchestration.status(leadId)?.pendingReports).toEqual([]);
+
+    f.append(
+      nativeExecution
+        ? {
+            type: "event_msg",
+            payload: {
+              type: "item_completed",
+              turn_id: turnId,
+              item: { type: "CommandExecution", id: "shell-1", status: "completed" },
+            },
+          }
+        : {
+            type: "response_item",
+            payload: {
+              type: "function_call_output",
+              call_id: "shell-1",
+              turn_id: turnId,
+              output: "ok",
+            },
+          },
+    );
+    await f.orchestration.catchUp();
+    clock.mockReturnValue(f.time + 721_000);
+    await f.orchestration.catchUp();
+    expect(f.orchestration.status(leadId)?.pendingReports).toEqual([]);
+    clock.mockReturnValue(f.time + 722_000);
+    await f.orchestration.catchUp();
+    expect(f.orchestration.status(leadId)?.pendingReports).toEqual([
+      expect.stringMatching(/no observed progress|may be stalled/),
+    ]);
+    expect(f.follow).not.toHaveBeenCalled();
+    expect(f.writer).not.toHaveBeenCalled();
+  },
+);
 
 it("shows a held writer lock without turn evidence as busy rather than idle", async () => {
   const f = await fixture("missing", false);

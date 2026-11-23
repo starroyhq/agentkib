@@ -74,6 +74,8 @@ export class AntigravityManagedRunner {
   #items = new Map<string, JsonRecord>();
   #lastWorkerReply?: { kind: "agent-message"; turn_id: string; content: string };
   #toolCalls = new Map<string, JsonRecord>();
+  #toolStartedAt = new Map<string, number>();
+  #workerProgress = 0;
   #approvals = new Map<string, PermissionState>();
   #seenPermissions = new Set<string>();
   #updateCount = 0;
@@ -212,6 +214,21 @@ export class AntigravityManagedRunner {
     };
   }
 
+  workerObservation() {
+    if (!this.connected || !this.#turnId || this.#turnId === DISPATCHING_TURN_ID) return {};
+    let incomplete = false;
+    const commands = [...this.#toolCalls].flatMap(([id, call]) => {
+      if (call.status === "pending" || call.status === "in_progress")
+        return [{ id, startedAt: this.#toolStartedAt.get(id) }];
+      if (call.status !== "completed" && call.status !== "failed") incomplete = true;
+      return [];
+    });
+    return {
+      workerProgress: String(this.#workerProgress),
+      commands: !incomplete || commands.length ? commands : undefined,
+    };
+  }
+
   async send(
     text: string,
     expectedRevision: number,
@@ -242,6 +259,8 @@ export class AntigravityManagedRunner {
       this.#streamText = "";
       this.#messageText.clear();
       this.#toolCalls.clear();
+      this.#toolStartedAt.clear();
+      this.#workerProgress = 0;
       this.#approvals.clear();
       this.#seenPermissions.clear();
       this.#updateCount = 0;
@@ -540,6 +559,7 @@ export class AntigravityManagedRunner {
       if (Buffer.byteLength(this.#streamText + text) > MAX_CONTENT_BYTES)
         throw new Error("ACP output exceeds 512 KiB");
       this.#streamText += text;
+      if (text) this.#workerProgress++;
       const item = {
         id: nativeId,
         kind: "agent-message",
@@ -563,6 +583,14 @@ export class AntigravityManagedRunner {
           this.snapshot(),
         );
     }
+    if (
+      update.sessionUpdate === "agent_thought_chunk" &&
+      isRecord(update.content) &&
+      update.content.type === "text" &&
+      typeof update.content.text === "string" &&
+      update.content.text.length > 0
+    )
+      this.#workerProgress++;
     if (update.sessionUpdate === "user_message_chunk") {
       const content =
         isRecord(update.content) && typeof update.content.text === "string"
@@ -591,6 +619,14 @@ export class AntigravityManagedRunner {
       const old = this.#toolCalls.get(update.toolCallId) ?? {};
       const call = { ...old, ...update };
       this.#toolCalls.set(update.toolCallId, call);
+      if (call.status !== old.status || update.sessionUpdate === "tool_call")
+        this.#workerProgress++;
+      if (
+        call.status === "in_progress" &&
+        call.kind === "execute" &&
+        !this.#toolStartedAt.has(update.toolCallId)
+      )
+        this.#toolStartedAt.set(update.toolCallId, Date.now());
       const rawName = [call.title, call.name, call.kind].find(visible);
       const toolName = rawName ? sanitizeHandoffExport(rawName, "markdown").slice(0, 512) : "tool";
       this.#items.set(update.toolCallId, {

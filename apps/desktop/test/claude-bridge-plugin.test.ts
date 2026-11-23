@@ -369,8 +369,8 @@ describe("Claude Code terminal subagents", () => {
         { id: expect.any(String), title: "", status: "completed" },
         { id: expect.any(String), title: "", status: "failed" },
         { id: expect.any(String), title: "", status: "stopped" },
-      { id: expect.any(String), title: "", status: "completed" },
-      { id: expect.any(String), title: "", status: "completed" },
+        { id: expect.any(String), title: "", status: "completed" },
+        { id: expect.any(String), title: "", status: "completed" },
       ]);
     const initial = f.snapshots().at(-1).terminalSubagents;
     const serialized = JSON.stringify(initial);
@@ -431,6 +431,71 @@ describe("Claude Code terminal subagents", () => {
     await f.tick();
     expect(f.snapshots().at(-1)?.status).toBe("disconnected");
     expect(JSON.stringify(f.snapshots())).not.toContain("Late child");
+  });
+});
+
+describe("Claude Code terminal Worker activity", () => {
+  it("tracks foreground tool starts and failures, and records thinking without its content", async () => {
+    const f = await fixture({ features: ["terminal-worker-activity"] });
+    const activity = async () => {
+      await f.flush();
+      return f.snapshots().at(-1)?.terminalWorkerActivity;
+    };
+    const turnId = randomUUID();
+    await f.run("turn.start", { turnId });
+    expect(await activity()).toEqual({ commands: [], revision: 0 });
+
+    const stream = f.stream(turnId, [{ kind: "thinking", text: "private reasoning" }]);
+    expect((await stream.next()).done).toBe(false);
+    expect((await stream.next()).done).toBe(true);
+    expect(await activity()).toEqual({ commands: [], revision: 0 });
+    const now = vi.spyOn(Date, "now").mockReturnValue(Date.now() + 15_000);
+    try {
+      expect(await activity()).toEqual({ commands: [], revision: 1 });
+    } finally {
+      now.mockRestore();
+    }
+    expect(JSON.stringify(f.calls)).not.toContain("private reasoning");
+
+    const nativeId = "native-tool-id";
+    const entered = deferred<void>();
+    const finish = deferred<void>();
+    const running = f.run("tool.call", { tool: "Bash", tool_use_id: nativeId }, async () => {
+      entered.resolve();
+      await finish.promise;
+      throw new Error("tool failed");
+    });
+    await entered.promise;
+    const inFlight = await activity();
+    expect(inFlight).toEqual({
+      commands: [{ id: expect.any(String), startedAt: expect.any(Number) }],
+      revision: 2,
+    });
+    expect(inFlight.commands[0].id).not.toBe(nativeId);
+    await f.flush();
+    expect(await activity()).toEqual(inFlight);
+    const rejected = expect(running).rejects.toThrow("tool failed");
+    finish.resolve();
+    await rejected;
+    expect(await activity()).toEqual({ commands: [], revision: 3 });
+    await f.run("turn.complete", { turnId, answer: "done" });
+    expect(await activity()).toBeUndefined();
+  });
+
+  it("omits claims about a turn that began before the plugin observed it or an older Runtime", async () => {
+    const feature = await fixture({ features: ["terminal-worker-activity"] });
+    const resumed = feature.stream(randomUUID(), [{ kind: "text", text: "resuming" }]);
+    expect((await resumed.next()).done).toBe(false);
+    expect((await resumed.next()).done).toBe(true);
+    await feature.flush();
+    expect(feature.snapshots().at(-1).status).toBe("running");
+    expect(feature.snapshots().at(-1)).not.toHaveProperty("terminalWorkerActivity");
+
+    const legacy = await fixture();
+    await legacy.run("turn.start", { turnId: randomUUID() });
+    await legacy.flush();
+    expect(legacy.snapshots().at(-1).status).toBe("running");
+    expect(legacy.snapshots().at(-1)).not.toHaveProperty("terminalWorkerActivity");
   });
 });
 
@@ -1323,7 +1388,7 @@ describe("Claude Code native session plugin", () => {
       const f = await fixture({ version });
       expect(f.calls.find((call) => call.url.endsWith("/pair"))?.body).toMatchObject({
         cliVersion: version,
-        pluginVersion: "0.5.4",
+        pluginVersion: "0.5.5",
         nativeCapabilities: {
           version: 1,
           available: [
@@ -1497,7 +1562,8 @@ describe("Claude Code native session plugin", () => {
         configure(api) {
           if (location === "sibling directory") current = `${workspace}-other`;
           if (location === "symbolic link") current = `${workspace}/link/child`;
-          if (location === "different checkout") current = root = `${workspace}/.claude/worktrees/new`;
+          if (location === "different checkout")
+            current = root = `${workspace}/.claude/worktrees/new`;
           api.session.root = async () => root;
           api.session.cwd = async () => current;
           api.fs.stat = async (path: string) => ({ kind: "dir", isLink: path.endsWith("/link") });
@@ -1541,7 +1607,7 @@ describe("Claude Code native session plugin", () => {
         bindingId: f.connection.bindingId,
         nativeId: f.nativeId,
         cwd: "/isolated/workspace",
-        pluginVersion: "0.5.4",
+        pluginVersion: "0.5.5",
       });
       expect(report.body).not.toHaveProperty("nativeCapabilities");
       expect(report.body).not.toHaveProperty("token");
@@ -1800,7 +1866,7 @@ describe("Claude Code native session plugin", () => {
     const result = await f.run("command.run", { command: "agentkib-connect", args: f.ticket });
     expect(result.text).toContain("AgentKib connected");
     const pair = f.calls.find((call) => call.url.endsWith("/pair"))?.body;
-    expect(pair).toMatchObject({ pluginVersion: "0.5.4", cliVersion: "2.1.307" });
+    expect(pair).toMatchObject({ pluginVersion: "0.5.5", cliVersion: "2.1.307" });
     expect(pair).not.toHaveProperty("connectionError");
   });
   it.each(["2.1.301-beta", "02.1.301", "not-a-version"])(
@@ -2023,7 +2089,7 @@ describe("Claude Code native session plugin", () => {
       ).toHaveLength(1);
       expect(set).toHaveBeenCalledWith(
         "compatibility:credential-store:1",
-        "agentkib-bridge:0.5.4:capabilities:1",
+        "agentkib-bridge:0.5.5:capabilities:1",
       );
       expect((await f.run("command.run", { command: "agentkib-status", args: "" })).text).toContain(
         "is connected",
@@ -2873,7 +2939,7 @@ describe("Claude Code native session plugin", () => {
     });
     expect(pair.init.headers.Authorization).toBeUndefined();
     expect([...f.stored]).toEqual([
-      ["compatibility:credential-store:1", "agentkib-bridge:0.5.4:capabilities:1"],
+      ["compatibility:credential-store:1", "agentkib-bridge:0.5.5:capabilities:1"],
       [`credentialPath:${f.nativeId}`, f.connection.credentialPath],
     ]);
     expect(JSON.stringify([...f.stored])).not.toContain(f.connection.token);

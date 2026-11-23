@@ -1,7 +1,7 @@
 # AgentKib Claude Code session bridge
 
 First-party local Mods plugin for Claude Code **2.1.301 or later**, using AgentKib
-bridge contract **0.5.4**. It connects AgentKib's existing chat interface to the
+bridge plugin **0.5.5**. It connects AgentKib's existing chat interface to the
 terminal's original execution process. It never starts a replacement Claude
 process, resumes another UUID, calls a model itself, or changes the user's
 permission rules.
@@ -34,7 +34,7 @@ registered directory alone. [Local marketplace loading](https://code.claude.com/
 
 If Claude Code installed a cached copy from another source, it keeps that copy
 when the computed version stays the same, even on `claude plugin update`.
-Version 0.5.4 lets those installs pick up the new files when their registered
+A version bump lets those installs pick up the new files when their registered
 source offers the release. [Cached plugin updates](https://code.claude.com/docs/en/plugins/loading#versions-and-updates)
 
 ### Automatic connection
@@ -154,6 +154,14 @@ command and does not call a model.
 Snapshots are previews of the latest 80 text rows and 100 tool records, subject to
 a byte budget. Clipped text has an explicit marker. Complete history continues to
 use AgentKib's original history provider. Hidden thinking is never forwarded.
+
+When the Runtime offers `terminal-worker-activity`, version 0.5.5 can report
+foreground work for a Project Agent's Worker. The main turn's tool call hook
+provides opaque call IDs and start times until each call returns or fails. A
+counter records arriving text, thinking, and tool transitions without including
+thinking content. This observation starts with the next complete turn if the
+plugin loads mid-turn. Attached tools are observable for the duration of their
+call. Detached background commands have no lifetime signal here.
 
 Approval and question completion remain unavailable in AgentKib.
 A bounded event buffer retains turn-completion evidence until ACK, including

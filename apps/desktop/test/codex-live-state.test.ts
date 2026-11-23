@@ -120,6 +120,52 @@ describe("Codex Desktop application minimums", () => {
 });
 
 describe("managed Codex activity and context usage", () => {
+  it("enters and leaves command execution without treating terminal heartbeats as model progress", () => {
+    const state = managed();
+    start(state);
+    const modelProgress = state.workerObservation().workerProgress;
+    expect(state.workerObservation().commands).toEqual([]);
+    const observedAt = Date.now();
+    const clock = vi.spyOn(Date, "now").mockReturnValue(observedAt);
+    const turnId = "turn-a";
+    const item = { type: "commandExecution", id: "shell-1", status: "inProgress" };
+    notify(state, "item/started", { turnId, item });
+    clock.mockReturnValue(observedAt + 90_000);
+    notify(state, "item/started", { turnId, item });
+    notify(state, "item/commandExecution/terminalInteraction", { turnId, itemId: item.id });
+    notify(state, "item/commandExecution/outputDelta", {
+      turnId,
+      itemId: item.id,
+      delta: "Waiting",
+    });
+    expect(state.workerObservation()).toEqual({
+      commands: [{ id: item.id, startedAt: observedAt }],
+      workerProgress: modelProgress,
+    });
+    notify(state, "item/completed", { turnId: "another-turn", item });
+    expect(state.workerObservation().commands).toHaveLength(1);
+    notify(state, "item/completed", { turnId, item: { ...item, status: "completed" } });
+    expect(state.workerObservation()).toEqual({ commands: [], workerProgress: modelProgress });
+  });
+
+  it("counts real reasoning without adding it or command evidence to the public snapshot", () => {
+    const state = managed();
+    start(state);
+    const before = state.snapshot("boot", false);
+    const observed = state.workerObservation();
+    notify(state, "item/reasoning/summaryTextDelta", {
+      turnId: "old-turn",
+      delta: "Old reasoning",
+    });
+    expect(state.workerObservation()).toEqual(observed);
+    notify(state, "item/reasoning/summaryTextDelta", {
+      turnId: "turn-a",
+      delta: "Internal reasoning",
+    });
+    expect(state.workerObservation().workerProgress).not.toBe(observed.workerProgress);
+    expect(state.snapshot("boot", false)).toEqual(before);
+  });
+
   it("keeps a newer finished turn idle when its matching send receipt is reconciled", () => {
     const state = managed();
     start(state);

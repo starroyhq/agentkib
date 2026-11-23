@@ -1,6 +1,6 @@
 # 项目 Agent：Claude Code、Codex 或 DeepSeek Harness 指挥已指派的 Worker
 
-项目 Agent 是一个由 AgentKib 运行的 Claude Code 或 Codex 会话，在终端里运行、经 AgentKib 插件（0.5.0 起）连接的 Claude Code 会话，或经 AgentKib 插件（0.8.0 起）连接的 DeepSeek Harness 会话。它可以给用户指派的 Worker 派任务、读取状态和回复、停止当前一轮。项目 Agent 无法自行新建或接管会话，也无法移出 Worker。Worker 全部由用户指派和移出。Worker 的一轮结束、开始等用户处理或被用户直接操作时，AgentKib 把汇报作为新的一轮送回项目 Agent。
+项目 Agent 是一个由 AgentKib 运行的 Claude Code 或 Codex 会话，在终端里运行、经 AgentKib 插件（0.5.0 起）连接的 Claude Code 会话，或经 AgentKib 插件（0.8.0 起）连接的 DeepSeek Harness 会话。它可以给用户指派的 Worker 派任务、读取状态和回复、停止当前一轮。项目 Agent 无法自行新建或接管会话，也无法移出 Worker。Worker 全部由用户指派和移出。AgentKib 把轮次结果、等待处理和查活异常汇报给项目 Agent。多个 Worker 正常完成时先合并汇报，等待处理或异常可直接触发汇报。
 
 2026-11-15 用真实登录做了端到端验收（Claude Code 2.1.323 的 Haiku 5.5、Codex 0.167.0 的 gpt-6-luna 分别作项目 Agent，Worker 都是 gpt-6-luna），记录见 [`qa/project-agent-acceptance-2026-11-15.md`](../../qa/project-agent-acceptance-2026-11-15.md)。
 
@@ -101,7 +101,7 @@ AgentKib 每 20 秒查看已指派 Worker 的实时状态，同一轮检查里�
 | Devin | AgentKib 启动的单轮进程及其退出结果。缺少命令生命周期，跳过卡住判断 |
 | Antigravity | ACP 的工具状态、正文和思考事件 |
 
-Codex 的写锁被其他进程持有时，Worker 工具会把有 `externalTurn` 证据的轮次显示为运行中。只有占用证据时显示 `busy` 及 `codex-owner-busy`。外部轮次运行期间，派工依据现有能力排队，当前 Codex 桌面端 follower 会返回 `follower-operation-unverified`。
+Codex 的写锁被其他进程持有时，Worker 工具会把有 `externalTurn` 证据的轮次显示为运行中。只有占用证据时显示 `busy` 及 `codex-owner-busy`。外部轮次运行期间，派工按当前已核实的排队或加入本轮能力执行。能力未核实时派工会被拒绝，例如返回 `follower-operation-unverified`。已授权的空闲会话可由 Codex 桌面端接收派工。桌面端正在运行但没有窗口应答时，也可在后台打开同一条会话后再交给它执行。见[跟随 Codex 桌面端](codex-managed.md)。
 
 ### 恢复 Worker
 
@@ -127,3 +127,9 @@ Codex 的写锁被其他进程持有时，Worker 工具会把有 `externalTurn` 
 - 手机 App 在会话的“更多”菜单里提供“项目 Agent…”页面：查看 Worker、暂停和恢复、取消，或按设备权限设定。
 - 手机通知：Worker 一轮结束不单独通知，由项目 Agent 汇总；项目 Agent 一轮结束时，名下还有 Worker 在运行或等你处理、有汇报正在送去、或它自己有后台任务在跑，就先不通知，全部停下来时通知一次。Worker 和项目 Agent 的“等待你”照常通知。
 - 查活确认终端断线、登录或插件问题、限额需要手动继续等情况时，已订阅的手机可收到现有的“需要你处理”提醒。电脑无人使用时才发送，问题已恢复则取消待发提醒。菜单栏仍按现有会话状态统计。
+
+## 源码与验证
+
+[编排服务](../../packages/backend/src/orchestration-service.ts)管理指派、委派、查活和汇报，经会话 Provider 读取和控制 Worker。用户消息与项目 Agent 的派工共用各 Agent 的会话能力及授权检查。
+
+[编排测试](../../apps/desktop/test/orchestration.test.ts)覆盖委派、轮次去重、查活和汇报合并。[Codex 桌面端 Worker 测试](../../apps/desktop/test/project-agent-codex-follower.test.ts)覆盖外部线程的派工和补报。

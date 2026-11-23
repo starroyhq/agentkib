@@ -24,7 +24,7 @@ Windows（`%APPDATA%\devin\cli`）和 Linux（`$XDG_DATA_HOME/devin/cli`）的�
 
 ## 子代理
 
-Devin 在 `subagent_heads` 里记下每个子代理的链头，子代理的消息是同一会话消息树里的另一条链。子代理列表按各自接到的任务（子代理链上的第一条用户消息）命名；读取某个子代理时从它的链头往回读，不混进会话自己的历史。Devin 不记录子代理是否仍在运行，状态报告为 `unknown`。手机端可以查看会话的子代理，只读；桌面和 Web 目前没有子代理视图。
+Devin 在 `subagent_heads` 里记下每个子代理的链头，子代理的消息是同一会话消息树里的另一条链。子代理列表按各自接到的任务（子代理链上的第一条用户消息）命名；读取某个子代理时从它的链头往回读，不混进会话自己的历史。Devin 不记录子代理是否仍在运行，状态报告为 `unknown`。桌面和 Web 在会话活动区展示主机已报告的子代理。可验证且有正文的子代理可以打开只读历史，手机也可通过子代理入口查看。
 
 ## 在 AgentKib 里运行 Devin
 
@@ -75,7 +75,11 @@ AgentKib 记录自己运行的每轮结果并向项目 Agent 汇报。你在 Age
 
 用量只统计 token：每条回复保存的 `metrics`（输入、输出、缓存读写），按会话、日期和模型汇总；同一条回复在多条链上的副本按消息 ID 只算一次，隐藏的辅助会话不计入。会话元数据里的 credits/ACU 不是剩余额度，不统计。
 
-## 验证
+## 源码与验证
+
+[Devin 会话 Provider](../../packages/backend/src/agents/devin/session-provider.ts)对接新建、发送、停止、设置和实时状态。[历史读取](../../packages/backend/src/agents/devin/history-reader.ts)、[已读状态](../../packages/backend/src/agents/devin/read-state-provider.ts)和[交接来源](../../packages/backend/src/agents/devin/handoff-provider.ts)与执行入口分开。待发文字由 AgentKib 的[串行会话队列](../../packages/backend/src/sessions/serial-session-queue.ts)交给下一轮进程，用户消息和 Worker 派工共用同一个队列。
+
+[会话基线](../../apps/desktop/test/session-baseline/devin.test.ts)覆盖会话请求、实时状态以及发送、排队和停止的行为。
 
 `apps/desktop/test/devin-managed.test.ts` 用一个假的 `devin` 可执行文件覆盖：新建时识别 Devin 存下的会话、继续时带 `-r`、未登录时不启动、失败原因映射、停止、进程被结束（`devin-run-stopped`）、修订号和忙碌检查、使用上限（按 Devin 日志里记下的 `-32011` 原文和 CLI 自己的错误文字识别，退出码为 0 时只看 stderr，下一轮清除；有重置时间才排上自动继续）、每一轮结束时先告诉宿主结果和回答再显示空闲、宿主给的使用上限提示不改修订号、会话锁（只认运行中的 Devin 进程）、CLI 回退到 Desktop 自带的副本，以及 token 用量去重。
 

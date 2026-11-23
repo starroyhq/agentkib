@@ -11,7 +11,7 @@ Start with the repository [README](../README.md) for the overview and downloads.
 
 ## 会话
 
-- [实时会话](sessions/conversations.md)：在桌面和手机上查看、发送、审批，以及工具详情、斜杠命令、附件与产物。
+- [实时会话](sessions/conversations.md)介绍桌面、Web 和手机上的会话阅读、发送、待发队列、审批、工具详情、附件与产物。
 - [会话互通](sessions/interoperability.md)：把会话交给另一个 Agent，原生导入支持的方向、版本和验收范围。
 - [正文搜索与历史引用](sessions/content-search.md)：在本机会话里搜索正文，并把片段引用到当前草稿。
 - [跨端阅读状态](sessions/read-state.md)：未读结果怎样在桌面、Web 和手机之间同步。
@@ -24,9 +24,9 @@ Start with the repository [README](../README.md) for the overview and downloads.
 - [连接 Claude Code 终端](agents/claude-code-terminal.md)：用插件把正在运行的 Claude Code 终端接到 AgentKib。
 - [Claude Code 托管执行](agents/claude-code-managed.md)：由 AgentKib 启动 Claude Code 继续会话，以及审批、高级操作、斜杠命令、登录和额度采集的凭据边界。
 - [Codex 托管执行](agents/codex-managed.md)：AgentKib 自己的 app-server、跟随 Codex 桌面端、按原 ID 续接、压缩和斜杠命令、会话标题。
-- [项目 Agent](agents/project-agent.md)：由 AgentKib 运行的 Claude Code 会话指挥 Codex Worker：设定、工具、汇报和暂停。
+- [项目 Agent](agents/project-agent.md)介绍如何设定项目 Agent、分配 Worker，以及怎样派工、汇报和暂停委派。
 - [达到使用上限](agents/usage-limits.md)：Claude Code、Codex、DSH 和 Devin 会话达到使用上限时的提示，以及 Claude Code、Codex 和 Devin 会话重置后像 Claude Code 一样自动继续。
-- [DeepSeek Harness](agents/deepseek-harness.md)：经插件接入运行中的 DSH，接入方案与分期进度。
+- [DeepSeek Harness](agents/deepseek-harness.md)介绍插件连接、会话读取、发送与排队。
 - [Antigravity](agents/antigravity.md)：ACP 会话的接入范围和官方接口尚不支持的能力。
 - [Devin](agents/devin.md)：读取 Devin CLI 与 Devin Desktop 共用的会话库和子代理，经 `devin -p` 在桌面、Web 和手机上新建和继续会话，以及规则、Skills 与 MCP 的接入范围。
 
@@ -51,7 +51,7 @@ Start with the repository [README](../README.md) for the overview and downloads.
 - [Windows 构建](development/windows.md)：在 Windows 11 x64 上从源码构建和打包。
 - [额度采集器](development/quota-collector.md)：随应用打包的额度采集器的源码、补丁与构建校验。
 - [界面术语](development/ui-terminology.md)：桌面和 Web 界面的用词约定。
-- [新增一个 Agent](development/adding-an-agent.md)：接入新 Agent 要改的地方，分只读和受控两档。
+- [新增一个 Agent](development/adding-an-agent.md)介绍只读发现、Provider 接口与注册、能力声明、专属面板以及测试。
 
 ## 历史归档
 

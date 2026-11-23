@@ -1,4 +1,4 @@
-# Antigravity 接入边界与实施计划
+# Antigravity 接入与会话能力
 
 Antigravity 不能直接复用 Gemini CLI 的会话适配器。两者共享 `GEMINI.md`、`.agents/skills` 和 MCP 配置约定，但会话存储、控制协议和可验证能力不同。AgentKib 将配置资产适配与会话协议适配分开实现。
 
@@ -55,14 +55,16 @@ ACP v1 的 `session/new` 没有导入外部历史的参数。Antigravity CLI 1.2
 
 用户可以指派能由 AgentKib 控制的 Antigravity ACP 会话。只读 App/IDE 条目和新版 CLI ACP 的浏览记录不能指派。指派保留会话的模型、权限和工作区，首次发送仍须通过 ACP 会话及服务端身份校验。
 
-项目 Agent 可以派任务、读取可见回复、停止当前轮，并接收轮次结果与等待审批的汇报。经用户授权可代办符合委派范围的单次命令或文件变更审批，AgentKib 只回传 ACP 给出的对应一次性选项。ACP 目前没有独立的问答协议，也无法把消息加入已在运行的原生轮次。
+项目 Agent 可以派任务、读取可见回复、停止当前轮，并按[汇报规则](project-agent.md#汇报)接收轮次结果与等待审批的消息。经用户授权可代办符合委派范围的单次命令或文件变更审批，AgentKib 只回传 ACP 给出的对应一次性选项。ACP 目前没有独立的问答协议，也无法把消息加入已在运行的原生轮次。
 
 用户和项目 Agent 共用会话的待发队列。AgentKib 保留纯文本任务，在上一轮结束且当前授权仍有效时按顺序发送。桌面和 Web 的会话输入框附近可以查看、编辑、移除任务以及暂停和恢复队列。
 
 执行中的 ACP 连接由 AgentKib 持有。断线后没有确认的轮次保持结果待核实，会话回放提供历史消息，缺少可用于补报的终态和时间关联，因此不能补报宿主关闭期间无法核实的轮次。
 
-## 实施与验收
+## 源码与验收
 
-实施顺序是：冻结官方版本和协议能力；完成资产发现与保留式写入；用 ACP 能力协商接入历史；实现带 session、turn、revision 三重校验的控制；归一化会话；逐方向验证原生导入；最后执行全仓回归。任何缺少官方稳定接口的方向保持不支持，并记录证据。
+[Antigravity 会话 Provider](../../packages/backend/src/agents/antigravity/session-provider.ts)提供已核验 ACP 会话的控制和实时状态。[历史读取](../../packages/backend/src/agents/antigravity/history-reader.ts)同时区分 ACP 与本机 App／IDE 的只读记录。运行中的提示由 ACP 执行，等待的纯文本消息保存在 AgentKib 的[串行会话队列](../../packages/backend/src/sessions/serial-session-queue.ts)。
+
+[会话基线](../../apps/desktop/test/session-baseline/antigravity.test.ts)覆盖 ACP 会话的发送、停止、审批和排队，以及未核实的控制保持不可用。
 
 完整验收定义、八个跨 Agent 方向、A01–A14 场景和证据要求见 [`qa/ANTIGRAVITY-ACCEPTANCE.md`](../../qa/ANTIGRAVITY-ACCEPTANCE.md)。其中 A05 是整体放行条件：只要 Codex/Claude Code → Antigravity 仍不能创建可重启、可继续的 Antigravity 原生历史，完整支持就不能验收通过。

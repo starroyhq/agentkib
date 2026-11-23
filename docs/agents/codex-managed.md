@@ -2,24 +2,17 @@
 
 Codex 同 Agent 续接统一使用 AgentKib 自己启动的 `codex app-server`，`executionMode` 为 `codex-managed`，支持 macOS、Linux 和 Windows 的这条链路。会话的写锁被其他进程持有、且 Codex 桌面端的本地 IPC 报告了这条会话的 owner 时，改为跟随该 owner（`codex-follower`，仅 macOS，见下文“跟随 Codex 桌面端”）；无法跟随时保留普通输入框及占用提示，按能力禁用发送，跟随也不作为续接失败后的自动回退。打开页面只观察，空闲会话发送时自动续接，不再勾选交接。创建与管理仍须对应设备授权；发送继续检查实验控制、工作区和未知回执。Web/Electron 负责授权，TypeScript backend 在每次操作前复核 canonical 路径、会话身份和同一 CODEX_HOME。
 
-## RPC
+## 会话入口与兼容接口
 
-`codex.managed` 接受 camelCase 对象，拒绝未知字段：
+桌面与 Web 共用会话界面。会话读取和控制经主机准入后走 Runtime 的 `session.request`，由 Codex 的 SessionProvider 处理。请求入口定义在 [Runtime 协议](../../packages/runtime-protocol/src/index.ts)，旧的 `codex.managed`、`web.request` 仍由后端适配，浏览器和手机继续使用原有 HTTP 接口。会话的稳定声明和当前能力分别决定显示和可用性。已登记的设置暂不可用时，界面保留入口并置灰，悬停说明原因。
 
-| operation | 参数 | 结果 |
-| --- | --- | --- |
-| options | 无 | `available`, `models:[{id,name,isDefault,efforts}]`, `policies`，不可用附 `reason` |
-| create | `workspaceId`, UUID `requestId`, 可选 `model`, `effort`, `policyId` | `sessionId`, `accepted`, `completed`, `runtimeBootId`, `live` |
-| release | `sessionId`, UUID `requestId` | `released:true`, `accepted:true` |
-| reconcile | `sessionId`, UUID `requestId` | `reconciled:true` 和 `live`，或 `false` 和原因 |
+`GET /api/web/v1/managed/options` 返回当前可用的模型与执行策略。`POST /api/web/v1/managed/create` 先准备会话，不接受首条消息。客户端取得 `sessionId` 后单独发送。托管会话使用 64 位十六进制会话 ID，响应不含原生记录路径。控制继续校验工作区、设备授权、启动实例及适用的会话修订号。相同 `requestId` 和输入重试返回既有回执，同 ID 换输入会拒绝。审批和回答还核对目标轮次与原生请求 ID。
 
-HTTP 另外携带 Electron `bootId`，由 Electron 验证，不直接传给 Runtime。托管 sessionId 为 64 位十六进制，对外不暴露原生路径。create 不接受首条消息；成功获取 sessionId 后再单独 send，避免创建回执丢失时重复执行首条消息。相同 requestId 和输入重试返回持久回执；同 ID 换输入会拒绝。
+打开旧会话或把已有会话指派为 Worker 时，只读取和登记已验证身份。模型、权限与模式先保存设置，发送时按需恢复原生线程。恢复和发送共用原发送回执，仍检查原生身份、写锁和权限。初始化失败也保留草稿，旧版本留下的接管回执仍可核对。指派流程见[项目 Agent](project-agent.md)。
 
-不再提供独立的 `adopt` 操作或 HTTP 接口。打开旧会话、把已有会话指派为 Worker 时，只读取和登记已验证身份。模型、权限与模式先保存设置，原生线程在原 `send` 请求中按需恢复。恢复与发送共用该次发送回执，仍检查原生身份、写锁和权限。初始化失败不会另留一条接管回执，也不会自动重发。旧版本已保存的接管回执继续只读核对。指派流程见[项目 Agent](project-agent.md)。
+历史事件默认取最新 50 条，页内按时间正序，可用 `next_cursor` 向更早历史分页。会话目录合并持久托管记录，索引关闭或正在重建时，已登记的托管会话仍可找到。
 
-现有 `web.request` 对托管会话自动分派 `live`, `events`, `send`, `stop`, `approve`, `answer`。控制参数沿用 `runtimeBootId`, `expectedRevision`, UUID `requestId`, `experimentalEnabled:true`；审批/问答另外验证原生 `turnId` 和请求 ID。`events` 默认最新 50 条、页面内部按时间正序；`next_cursor` 向更早历史分页。catalog 合并持久托管记录，即使会话索引关闭或重建，托管任务仍可见。
-
-`web.request {operation:"diff",workspaceId,kind,path?,oid?}` 返回既有 `GitDiff|null`；kind 为 `worktree`, `staged`, `commit`。只允许注册仓库根目录，commit 需要 oid。读 patch 前验证 Git 文件列表与 rename 两端；不指定 path 时，只要整个候选变更中有敏感路径就拒绝。`.env`、凭据、认证/token 文件、私钥、原生代理私有状态目录等拒绝；允许 `.codex/worktrees/<project>` 中的合法仓库。path 必须是精确变更文件，拒绝目录/pathspec magic。输出前再次复核元数据和工作区授权映射。
+Git 差异查询返回 `GitDiff | null`。参数包括 `workspaceId`、`kind` 与可选的 `path`、`oid`，`kind` 可为 `worktree`、`staged`、`commit`。只允许注册仓库根目录，commit 需要 oid。读 patch 前验证 Git 文件列表与 rename 两端；不指定 path 时，只要整个候选变更中有敏感路径就拒绝。`.env`、凭据、认证/token 文件、私钥、原生代理私有状态目录等拒绝；允许 `.codex/worktrees/<project>` 中的合法仓库。path 必须是精确变更文件，拒绝目录/pathspec magic。输出前再次复核元数据和工作区授权映射。
 
 已授权浏览器打开单个 Codex 会话详情时，`GET /api/web/v1/managed/context?sessionId=…` 按该线程 ID 调用官方 `thread/read`，并设置 `includeTurns:false`。仅返回已授权执行目录、原生项目 ID 和 `gitInfo.branch`；后者是**创建时分支**，不代表当前 Git 分支。原生字段缺失或读取失败时界面显示未知或不可用。此查询不恢复线程、不获取 writer 锁、不持久化另一份工作树状态。Codex 当前协议没有正式的工作树创建、类型或起始分支接口，因此手机端不提供这些操作，也不会凭 `.codex/worktrees` 路径推断工作树类型。上文 Git diff 的 `worktree` 只表示工作区未暂存差异。
 
@@ -27,9 +20,9 @@ HTTP 另外携带 Electron `bootId`，由 Electron 验证，不直接传给 Runt
 
 新建托管会话默认使用 `workspace-write-on-request`：`workspace-write`、`on-request`、人工 reviewer、sandbox network=false。完整授权浏览器可在主机返回的映射策略中显式切换为完全访问（不弹审批）或工作区写入／自动审核；新建时也可以直接选这三种映射策略之一，选默认以外的同样只限完整授权的设备（桌面按本机用户处理）。浏览器不能提交任意 sandbox 对象、cwd、CLI 参数、额外可写根或审核器参数。策略更新携带当前修订号。AgentKib 管理的轮次运行中也可保存。宿主把选择与回执一起写入账本，下一次发送通过 `turn/start` 使用新策略。旧记录缺少策略字段时仍使用原受限默认。
 
-对于从 Codex 桌面版或 CLI 接手的线程，AgentKib 从已核验的原生 rollout 读取最近的执行策略。 明文记录先读取最后 512 KiB，策略仍缺失时扩展搜索范围至最多 8 MiB，只解析候选轮次上下文。审批方式、审核器、沙盒、网络和可写目录等限制都能与现有策略对应时，直接显示并沿用该策略。存在无法对应的原生限制或近期配置无法核实时，「执行策略」照常显示为只读，悬停可查看原因，AgentKib 不会按另一种策略启动轮次。
+对于从 Codex 桌面版或 CLI 接手的线程，AgentKib 从已核验的原生 rollout 读取最近的执行策略。明文记录先读取最后 512 KiB，策略仍缺失时扩展搜索范围至最多 8 MiB，只解析候选轮次上下文。审批方式、审核器、沙盒、网络和可写目录等限制都能与现有策略对应时，直接显示并沿用该策略。存在无法对应的原生限制或近期配置无法核实时，「执行策略」显示「原生配置」并置灰，悬停可查看原因，AgentKib 不会按另一种策略启动轮次。
 
-用户在 AgentKib 明确改选的策略按会话保存，由下一轮使用，从输入框发送和项目 Agent 的 `worker_send` 都读取这份设置。AgentKib 继续用原生策略核对恢复回包，再在下一轮应用明确改选的策略。ChatGPT 再次打开线程时使用它自己的设置。 沿用原生的完全访问或自动审核策略来续跑时，发起续跑的设备需有完全访问权。
+用户在 AgentKib 明确改选的策略按会话保存，由下一轮使用，从输入框发送和项目 Agent 的 `worker_send` 都读取这份设置。AgentKib 继续用原生策略核对恢复回包，再在下一轮应用明确改选的策略。ChatGPT 再次打开线程时使用它自己的设置。沿用原生的完全访问或自动审核策略来续跑时，发起续跑的设备需有完整控制授权。
 
 模型、思考强度和服务档位来自 `model/list`；Plan／执行模式来自实验协议 `collaborationMode/list`：runner 启动时读取一次，同时列出 `plan` 与 `default` 两个预设（按 `mode` 字段识别）才开放 Plan；读取失败或结构不符时 Plan 保持不可用，会话照常使用。0.163.0 与 0.147.0 都已对本地桩核对，见 [Codex 接入补齐验收](../../qa/codex-gaps-2026-10-28.md)。在 AgentKib 保存设置只改变 `selected`，不启动轮次；`current` 保留原生确认值，`applicationStatus` 区分 `pending`、`confirmed` 和 `unknown`。下一次显式发送在 `turn/start.collaborationMode` 传入选择，内外模型和强度一致，`developer_instructions:null` 由 Codex 加载内置指令。没有自定义计划提示词、隐藏空轮次或自动执行计划。实时链路里计划是原生 `plan` 项；原生记录里计划写在 Agent 回复的 `<proposed_plan>` 标签内，读历史时去掉这对标签，只显示计划正文。
 
@@ -57,7 +50,7 @@ Codex 每条会话只允许一个进程写入。ChatGPT 桌面端用自己启动
 - **生命周期**：最多同时跟随 8 条会话；有 follower 时桌面端不会退订这条会话，所以没有订阅者且闲置 30 秒后断开跟随。owner 变化或断开时关闭连接，重新核对写锁：锁已释放则回到托管链路，发送时自动续接；不会在两条链路之间自动重发消息。
 - **授权与回执**：主机继续核对工作区、设备权限、LAN 范围和回执访问。设置变更携带当前 owner 的 `writeScope` 和状态修订号，派发时再次校验。owner 明确拒绝时，AgentKib 保留当前设置。owner 确认已应用后，AgentKib 从同一 owner 的新快照和模型读取接口核对模型与强度，再确认成功。应用结果未知时保留回执供复核。发送、停止和审批沿用各自已有的原生证据。
 - **版本**：基础 follower 仍按 Desktop 最低版本 `26.917.62051` 和 IPC 方法契约校验。模型和强度写入依据已验证安装中的方法声明和实时回包，要求 `thread-follower-read-model-settings` v1 与 `thread-follower-update-thread-settings` v2。状态流按消息结构、增量顺序和会话身份判断兼容性。历史验收涵盖跟随发送、停止、审批与图片发送。见 [跟随 Codex 桌面端验收](../../qa/codex-desktop-follow-2026-11-02.md)及[二期 2b 验收](../../qa/dsh-integration-phase2b-2026-11-05.md)。
-- **限制**：只支持 macOS；桌面端必须已经加载这条会话；两端同时发送的竞争（RACE-022）、桌面端中途退出后的真实切换尚未实机验收。旧的 `#reconcileCodexFollower` 等遗留辅助函数暂保留，待单独清理。
+- **限制**：只支持 macOS；桌面端必须已经加载这条会话；两端同时发送的竞争（RACE-022）、桌面端中途退出后的真实切换尚未实机验收。
 
 ### 原生状态与用量
 
@@ -91,7 +84,7 @@ Codex 把闲置记录压缩为 `.jsonl.zst`、线程表仍登记原 `.jsonl` 时
 
 ## 持久账本及恢复
 
-账本在 `agentkib_store::default_data_dir()/codex-managed/executions.sqlite`，与可重建 conversation index 分离。专属目录权限 0700、主 DB 0600，WAL 文件在同一受限目录。SQLite WAL 和 3 秒 busy timeout；初始化在 IMMEDIATE 事务中建表，并按 table_info 对缺失的 evidence 列做添加式迁移，不删除旧行。
+执行账本保存在 AgentKib 应用数据目录的 `codex-managed/executions.sqlite`，与可重建的会话索引分离。专属目录权限 0700、主 DB 0600，WAL 文件在同一受限目录。SQLite WAL 和 3 秒 busy timeout；初始化在 IMMEDIATE 事务中建表，并按 table_info 对缺失的 evidence 列做添加式迁移，不删除旧行。
 
 - `managed_sessions(id PRIMARY KEY,record)`：工作区授权映射、经核实的执行 `cwd`、canonical HOME、原生 ID、选择的模型/effort、release 标记、最后快照。
 - `managed_commands(request_id PRIMARY KEY,session_id,fingerprint,phase,result,evidence)`：请求 SHA256、prepared/dispatched/resolved 状态、回执与最小原生证据。不会持久化完整原始控制请求。
@@ -119,7 +112,7 @@ reconcile 读取原生 thread/read。send/steer/queue-add 必须找到对应 `us
 
 `/stop` 调用 `thread/backgroundTerminals/clean`，结束仍在后台运行的命令。停止按钮仍只中断当前轮次（`turn/interrupt`），与终端里按 Esc 一致。后台终端随 runner 进程结束，所以 `terminals-clean` 只在 runner 运行时开放。
 
-app-server 没有斜杠命令：`/compact` 这样的文字只会作为消息交给模型。Codex 会话的输入区输入 `/` 时列出 AgentKib 能代为执行的命令：`/compact`、`/review`、`/plan`、`/model`、`/permissions`、`/status`、`/rename`、`/goal`、`/fork`、`/stop`、`/archive`、`/diff`、`/init`。`/plan <提示>`、`/model <模型>`、`/rename <名称>`、`/goal <目标>` 直接执行，`/plan` 切换后把提示留在输入框；不带参数时打开对应界面；当前不可用时保留草稿并说明原因。运行中追加指令或加入队列时不执行这些命令，同样保留草稿并说明原因，与带附件的消息一样。其余 Codex 终端命令（按 0.163.0 的 `SlashCommand`，含别名）不发送，说明只能在终端使用；`/new`、`/clear` 提示新建会话。其他 `/名称` 照常作为文字发送。规则只在客户端：这些文字交给模型不会造成损害，主机不拦截。命令表在 `packages/runtime-protocol/src/codex-commands.ts`。
+app-server 没有斜杠命令：`/compact` 这样的文字只会作为消息交给模型。Codex 会话的输入区输入 `/` 时列出 AgentKib 能代为执行的命令：`/compact`、`/review`、`/plan`、`/model`、`/permissions`、`/status`、`/rename`、`/goal`、`/fork`、`/stop`、`/archive`、`/diff`、`/init`。`/plan <提示>`、`/model <模型>`、`/rename <名称>`、`/goal <目标>` 直接执行，`/plan` 切换后把提示留在输入框；不带参数时打开对应界面；当前不可用时保留草稿并说明原因。运行中追加指令或加入队列时不执行这些命令，同样保留草稿并说明原因，与带附件的消息一样。其余 Codex 终端命令（按 0.163.0 的 `SlashCommand`，含别名）不发送，说明只能在终端使用；`/new`、`/clear` 提示新建会话。其他 `/名称` 照常作为文字发送。规则只在客户端：这些文字交给模型不会造成损害，主机不拦截。原生和受限命令的规则见 [Codex 命令定义](../../packages/runtime-protocol/src/codex-commands.ts)，输入框的本地命令由 [Codex 客户端登记](../../packages/session-ui/src/agents/codex/commands.ts)处理。
 
 `/review [分支]` 和 `/init` 发出 AgentKib 写好的一条普通消息，和 Codex Desktop 的做法一样，不调用 `review/start`：0.163.0 的 `review/start` 返回的轮次 ID 与 `turn/started` 通知里的不同，项目和 `turn/completed` 用前者，按现有状态机会停在运行中。
 
@@ -134,7 +127,7 @@ app-server 没有斜杠命令：`/compact` 这样的文字只会作为消息交�
 
 ## 会话标题（2026-11-16）
 
-Codex 的 app-server 不会自己给会话起名，终端客户端是自己起的（0.167.0 `tui/src/app/thread_title.rs`）。AgentKib 照同样的做法给它运行的 Codex 会话（包括项目 Agent 的 Worker）起标题：这次运行中会话第一次出现用户消息（发送、追加或排队）时，如果 `thread/read` 说这条会话没有名称（`name` 为 `null`；没有这个字段时不起），就在这条会话的 app-server 上另开一个临时线程跑一轮，得到标题后用 `thread/name/set` 设给会话，并通知目录刷新。实现在 `packages/backend/src/codex-thread-title.ts`。
+Codex 的 app-server 不会自己给会话起名，终端客户端是自己起的（0.167.0 `tui/src/app/thread_title.rs`）。AgentKib 照同样的做法给它运行的 Codex 会话（包括项目 Agent 的 Worker）起标题：这次运行中会话第一次出现用户消息（发送、追加或排队）时，如果 `thread/read` 说这条会话没有名称（`name` 为 `null`；没有这个字段时不起），就在这条会话的 app-server 上另开一个临时线程跑一轮，得到标题后用 `thread/name/set` 设给会话，并通知目录刷新。
 
 - **与终端客户端相同**：临时线程 `ephemeral`（不写磁盘，不出现在 Codex 的会话列表里）、只读沙箱（`default_permissions` 为内置的 `:read-only`）、审批 `never`、工作目录与会话相同、`threadSource: "thread_title"`。和终端客户端一样用 `thread/start` 的 `config` 关掉这个线程能用的一切：`features.*` 里的 shell、unified exec、hooks、apps、插件、记忆、多代理、图片等 22 项，skills 说明、update_plan、提问工具和网页搜索；用户的 MCP 服务器先用 `config/read`（带会话的 cwd）读出名字，再逐个设 `enabled: false`，读不到就不起标题。提示词用终端客户端的原文，后面是会话的第一条消息（Codex 的 `preview`；新会话还没有时取刚出现的这条），截到 960 字节；`outputSchema` 只有 `title`（1–36 个字符）。回复按终端客户端的规则解析：必须是只含 `title` 的 JSON 对象，去掉两端引号、合并空白和句末的 `.?!`，截到 36 个字符。结束后 `thread/unsubscribe`；30 秒内没结束先 `turn/interrupt`。
 - **模型与用量**：`model/list` 里有 `gpt-5.6-luna` 时用它，思考强度 low，与终端客户端相同；没有时用会话自己的模型和它支持的最低思考强度。每条新会话因此多一次很小的模型请求，计入账户的 Codex 用量。
@@ -172,11 +165,11 @@ pnpm --filter @agentkib/desktop exec vitest run electron/main/web/codex-actions.
 
 Web 将 Codex 控制和管理操作的 requestId、sessionId/workspaceId、kind 保存到按 host + device 隔离的 sessionStorage，不保存正文、答案、token 或审批详情。刷新/重连只查询回执，不自动重发。found:false 和 unknown 保留屏障；accepted/not-dispatched 才收敛。创建回执可用返回 sessionId 导航找回任务。不同设备授权不加载旧设备 pending。浏览器存储不可写时，Codex 新控制在发送前被拒绝。其他 agent 沿用原行为。同源 HTTP 请求默认 25 秒超时，LAN 默认 15 秒。
 
-`relay.createCsr {privateKeyDer,hosts}` 是仅本机 runtime stdio 的 RPC，不属于 web.request 或 remote.request 操作。privateKeyDer 为 base64 编码的 PKCS#8 P-256 私钥，hosts 为 1–16 个 DNS 主机名；返回 `{csrPem}`。实现复用既有 rcgen/ring，未新增 OpenSSL、外部进程或网络依赖，不落盘私钥。私钥由桌面本地生成保管，给 ACME/broker 的只有签名 CSR。
+`relay.createCsr {privateKeyDer,hosts}` 是仅通过本机 Runtime stdio 开放的 RPC。请求使用 base64 编码的 PKCS#8 P-256 私钥和 1–16 个 DNS 主机名，返回 `{csrPem}`。桌面在本机生成并保管私钥，只将签名 CSR 交给 ACME 或中继服务。
 
 ## 扩展控制与能力查询（2026-09-26）
 
-`GET /api/web/v1/codex/capabilities?sessionId=…` 返回每项原生能力的可用性与禁用原因，桌面服务再次与设备权限、工作区、实验执行开关求交集。app-server 各项能力独立核验，不从保留的 follower 继承未经验证的操作。工作树创建、Git 分支切换继续不可用，不能以自行运行 Git 替代官方语义。
+`GET /api/web/v1/managed/capabilities?sessionId=…` 返回会话声明、各项能力的可用性与禁用原因。`GET /api/web/v1/codex/capabilities?sessionId=…` 保留为兼容路径。桌面服务再核对设备权限、工作区和实验控制开关。app-server 各项能力独立核验，不从保留的 follower 继承未经验证的操作。工作树创建、Git 分支切换继续不可用，不能以自行运行 Git 替代官方语义。
 
 `POST /api/web/v1/codex/<action>` 保留兼容 `inspect`、`resume`、`steer`、原生 `queue-add/update/delete/reorder`、`rename/archive/unarchive/fork/settings`，另有 `compact`（`thread/compact/start`）和 `terminals-clean`（`thread/backgroundTerminals/clean`），两者按发送权限授权；`delete`（`thread/delete`）与重命名、归档一样按整理权限授权。写操作携带唯一 requestId、bootId 和适用的 expectedRevision。inspect 只读核对，不发送模型消息；内部 resume 不要求用户勾选，仍由官方 writer 锁决定是否成功。正常输入区不再提供手动 resume 入口。
 

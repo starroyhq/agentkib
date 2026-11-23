@@ -29,7 +29,7 @@ import {
   projectContextUsage,
   type ContextUsage,
 } from "../../context-usage";
-import type { ClaudeCommandEntry } from "@agentkib/runtime-protocol";
+import { parseClaudeSlashCommand, type ClaudeCommandEntry } from "@agentkib/runtime-protocol";
 import { ClaudeSubagentState, type ClaudeSubagentSnapshot } from "./claude-subagent-state";
 import type { ConversationEvent } from "../../session-events";
 import { claudeUsageLimitHit, type UsageLimitHit } from "../../usage-limit";
@@ -3227,8 +3227,11 @@ export class ClaudeManagedRunnerProcess {
           const item = this.#conversationItems(frame).find(
             (entry) => entry.item.kind === "user-message",
           );
-          if (item) {
-            const clipped = truncateUtf8(String(item.item.content));
+          const content = item?.item.content;
+          // Claude supplies the authoritative invocation for slash commands, which can use
+          // a different UUID from the submitted frame.
+          if (item && typeof content === "string" && !parseClaudeSlashCommand(content)) {
+            const clipped = truncateUtf8(content);
             this.#firstUserItem = {
               ...item.item,
               content: clipped.content,

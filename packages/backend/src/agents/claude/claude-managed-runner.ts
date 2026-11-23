@@ -1936,6 +1936,10 @@ export class ClaudeManagedRunnerProcess {
   #reportedResult?: ClaudeRunnerTerminalResult;
   /** The current turn's last native agent message, which carries the turn end when it comes. */
   #lastAgentItem: Record<string, unknown> | null = null;
+  // A new session can have a live reply before Claude writes any native history.
+  #firstTurnId?: string;
+  #firstUserItem?: Record<string, unknown>;
+  #firstReplyItem?: Record<string, unknown>;
   #subagentEpoch = randomUUID();
 
   constructor(
@@ -2203,6 +2207,18 @@ export class ClaudeManagedRunnerProcess {
   /** What was ignored or refused so far, by category. Counts only; for diagnostics and tests. */
   get protocolDiagnostics() {
     return this.state.diagnostics.snapshot();
+  }
+
+  /** The first prompt and latest reply, available only while this worker is retained. */
+  firstTurnItems(): Record<string, unknown>[] {
+    return [this.#firstUserItem, this.#firstReplyItem].filter((item) => item !== undefined);
+  }
+
+  forgetFirstTurnItems(): void {
+    if (this.state.status !== "idle") return;
+    this.#firstTurnId = undefined;
+    this.#firstUserItem = undefined;
+    this.#firstReplyItem = undefined;
   }
 
   get hasWorker(): boolean {
@@ -3001,8 +3017,11 @@ export class ClaudeManagedRunnerProcess {
         item.ephemeral !== true &&
         typeof item.id === "string" &&
         !item.id.startsWith("live:")
-      )
+      ) {
         this.#lastAgentItem = { ...item };
+        if (this.#firstTurnId && item.turn_id === this.#firstTurnId)
+          this.#firstReplyItem = this.#lastAgentItem;
+      }
     this.onConversationEvent?.(type, payload, live);
   }
 
@@ -3027,6 +3046,7 @@ export class ClaudeManagedRunnerProcess {
     if (Number.isSafeInteger(frame.duration_ms) && frame.duration_ms >= 0)
       meta.duration_ms = frame.duration_ms;
     const ended = { ...item, turn_meta: meta };
+    if (item.turn_id === this.#firstTurnId) this.#firstReplyItem = ended;
     this.#lastAgentItem = null;
     try {
       this.onConversationEvent?.("item-upsert", ended, this.state.snapshot());
@@ -3191,13 +3211,35 @@ export class ClaudeManagedRunnerProcess {
       if (frame.type === "user" && this.state.activity === "compacting")
         throw new ClaudeUndispatchedError();
       beforeWrite?.();
+      const firstTurn = this.#fresh && !this.options.forkSourceNativeId && frame.type === "user";
       if (frame.type === "user") {
         this.#pendingDispatch?.();
         this.#pendingDispatch = undefined;
       }
+      if (firstTurn) this.#firstTurnId = String(frame.uuid);
       await new Promise<void>((resolve, reject) => {
         child.stdin!.write(data, (error) => (error ? reject(error) : resolve()));
       });
+      if (firstTurn) {
+        // Use the submitted native UUID. Once Claude writes or replays the message, it
+        // replaces this event instead of showing a second bubble.
+        try {
+          const item = this.#conversationItems(frame).find(
+            (entry) => entry.item.kind === "user-message",
+          );
+          if (item) {
+            const clipped = truncateUtf8(String(item.item.content));
+            this.#firstUserItem = {
+              ...item.item,
+              content: clipped.content,
+              truncated: clipped.truncated,
+            };
+            this.#emit("item-upsert", this.#firstUserItem, this.state.snapshot());
+          }
+        } catch {
+          // Presentation cannot fail a write that has already reached stdin.
+        }
+      }
     } finally {
       this.#writeCount--;
       release();

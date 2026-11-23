@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useLayoutEffect, useRef } from "react";
 import { keepNewSessionDraftUnsent } from "./new-session-draft";
 
-const SESSION_LIST_WAIT_MS = 10_000;
+// Leave time to open the detail composer within the 60-second automatic send window.
+const SESSION_LIST_WAIT_MS = 50_000;
 export type NewSessionOpenResult = "opened" | "timed-out" | "cancelled";
 
 /** The session page needs a catalog entry before it can open a newly created session. */

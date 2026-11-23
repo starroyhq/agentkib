@@ -165,7 +165,7 @@ async function fixture(titleKind: "prompt" | "ai" | "custom" = "prompt") {
 }
 
 describe.skipIf(process.platform === "win32")("Claude verified managed catalog metadata", () => {
-  it("lists a fresh session before the default Claude config exists and checks its captured location", async () => {
+  it("lists managed sessions before the default Claude config exists and rejects a redirected location", async () => {
     const { root, workspace, environment, frames } = createFakeClaude("agentkib-claude-catalog-");
     const { makeOwner } = managedRuntime(root, workspace, {
       ...environment,
@@ -194,6 +194,25 @@ describe.skipIf(process.platform === "win32")("Claude verified managed catalog m
     rmSync(config);
     mkdirSync(path.join(config, "projects"), { recursive: true });
     expect(owner.catalog()).toEqual([row]);
+
+    const sent = await owner.request({
+      operation: "send",
+      sessionId,
+      requestId: randomUUID(),
+      deviceId: "browser-device-a",
+      runtimeBootId: owner.bootId,
+      expectedRevision: (await owner.live(sessionId, true)).revision,
+      experimentalEnabled: true,
+      text: "Keep the captured home after the first send",
+    });
+    expect(sent).toMatchObject({ accepted: true });
+    await expect.poll(async () => (await owner.live(sessionId, true)).status).toBe("idle");
+    expect(frames().filter((frame) => frame.type === "user")).toHaveLength(1);
+
+    rmSync(config, { recursive: true });
+    expect(owner.catalog()).toEqual([row]);
+    symlinkSync(redirected, config);
+    expect(owner.catalog()).toEqual([]);
   });
 
   it.each(["prompt", "ai", "custom"] as const)(

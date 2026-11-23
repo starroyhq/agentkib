@@ -97,6 +97,49 @@ async function settled(runner: DevinManagedRunner) {
 }
 
 describe.runIf(posix)("Devin managed runner", () => {
+  it("uses the ACP configuration default when creating with only a model family", async () => {
+    const root = temp();
+    const devin = fakeDevinAcp(root, { strictConfig: true });
+    const runner = new DevinManagedRunner(
+      root,
+      null,
+      host(devin.file, () => [], []),
+    );
+    try {
+      await runner.send("First message", 0, () => {}, { model: "swe-2" });
+      await expect(runner.session()).resolves.toBe("fresh-otter");
+      await settled(runner);
+      expect(readFileSync(devin.log, "utf8").trim().split("\n")).toEqual([
+        "new fresh-otter",
+        "prompt First message",
+      ]);
+    } finally {
+      runner.close();
+    }
+  });
+
+  it("sets the separate ACP effort without changing the advertised model", async () => {
+    const root = temp();
+    const devin = fakeDevinAcp(root, { strictConfig: true });
+    const runner = new DevinManagedRunner(
+      root,
+      "known-session",
+      host(devin.file, () => [], []),
+    );
+    const settings = { model: "swe-2-high", effort: "max" } as const;
+    try {
+      await runner.send("Next message", 0, () => {}, settings);
+      await settled(runner);
+      expect(readFileSync(devin.log, "utf8").trim().split("\n")).toEqual([
+        "load known-session",
+        "config thought_level=max",
+        "prompt Next message",
+      ]);
+    } finally {
+      runner.close();
+    }
+  });
+
   it("starts a session with its first message and reports the session Devin stored", async () => {
     const root = temp();
     const devin = fakeDevin(root, { sleep: 1 });

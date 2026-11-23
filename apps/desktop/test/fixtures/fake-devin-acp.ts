@@ -15,6 +15,7 @@ export function fakeDevinAcp(
     models = null as unknown,
     sessionId = "fresh-otter",
     authError = null as string | null,
+    strictConfig = false,
   } = {},
 ) {
   const file = path.join(root, "devin");
@@ -33,7 +34,15 @@ if (args[0] === "auth") { console.log(${JSON.stringify(loggedIn ? "Logged in as 
 if (args[0] === "models") { const value = ${JSON.stringify(JSON.stringify(models))}; if (value === "null") process.exit(1); console.log(value); process.exit(0); }
 if (args[0] !== "acp") process.exit(2);
 const config = { mode: "accept-edits", model: "swe-2-high", thought_level: "high", speed: "standard" };
-const options = () => Object.entries(config).map(([id, currentValue]) => ({ id, type: "select", currentValue, options: [] }));
+const allowed = ${strictConfig} ? {
+  mode: ["ask", "accept-edits", "smart", "dangerous"],
+  model: ["swe-2-high"],
+  thought_level: ["high", "max"],
+  speed: ["standard"],
+} : null;
+const options = () => Object.entries(config).map(([id, currentValue]) => ({
+  id, type: "select", currentValue, options: (allowed?.[id] ?? []).map((value) => ({ value, name: value })),
+}));
 const send = (value) => process.stdout.write(JSON.stringify(value) + "\\n");
 let prompt = null, permission = null, nextId = 1000;
 function finish(result) { if (!prompt) return; const id = prompt.id; prompt = null; clearTimeout(finish.timer); send({ jsonrpc: "2.0", id, ...result }); }
@@ -65,7 +74,15 @@ require("node:readline").createInterface({ input: process.stdin }).on("line", (l
     log((method === "session/new" ? "new " : "load ") + session);
     return send({ jsonrpc: "2.0", id, result: { ...(method === "session/new" ? { sessionId: session } : {}), configOptions: options() } });
   }
-  if (method === "session/set_config_option") { config[params.configId] = params.value; log("config " + params.configId + "=" + params.value); return send({ jsonrpc: "2.0", id, result: { configOptions: options() } }); }
+  if (method === "session/set_config_option") {
+    if (allowed && !allowed[params.configId]?.includes(params.value)) {
+      log("config rejected " + params.configId + "=" + params.value);
+      return send({ jsonrpc: "2.0", id, error: { code: -32602, message: "Invalid params" } });
+    }
+    config[params.configId] = params.value;
+    log("config " + params.configId + "=" + params.value);
+    return send({ jsonrpc: "2.0", id, result: { configOptions: options() } });
+  }
   if (method === "session/cancel") { log("cancel"); return finish({ result: { stopReason: "cancelled" } }); }
   if (method === "session/prompt") {
     const text = (params.prompt ?? []).map((block) => block.text ?? "").join("");

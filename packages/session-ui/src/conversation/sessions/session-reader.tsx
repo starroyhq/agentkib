@@ -57,6 +57,7 @@ type ReaderSession = ReadState["session"] &
     setMessage: (value: string) => void;
     control: (action: "send" | "stop") => unknown;
     liveContentVersion?: number;
+    streamReconnecting?: boolean;
     historySearchOpen: boolean;
     pendingSend?: NonNullable<History["pending"]> & { sessionId: string };
     actionUnavailableReason?: string | null;
@@ -238,6 +239,11 @@ export function SessionReader({
         }
         composer={
           <>
+            {session.streamReconnecting && (
+              <p role="status" className="px-4 py-2 text-sm text-muted-foreground">
+                {webLayoutCopy[locale].streamReconnecting}
+              </p>
+            )}
             <SessionDetailComposerNotices
               agent={current?.agent}
               accessMode={access.device?.accessMode}

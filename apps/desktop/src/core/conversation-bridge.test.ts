@@ -381,6 +381,50 @@ describe("desktop conversation bridge", () => {
     stop();
   });
 
+  it("reports a full IPC subscription budget and retries the observation", async () => {
+    vi.useFakeTimers();
+    const fixture = bridgeFixture();
+    vi.mocked(fixture.bridge.subscribe)
+      .mockRejectedValueOnce(
+        new Error(
+          "Error invoking remote method 'agentkib:conversation:subscribe': Error: stream_limit",
+        ),
+      )
+      .mockRejectedValueOnce(new Error("stream_limit"));
+    const handlers = { event: applyCursor, open: vi.fn(), error: vi.fn() };
+    const stop = createDesktopConversationAdapter(() => fixture.bridge).stream("session", handlers);
+    await flushAcknowledgements();
+    expect(handlers.error).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ status: 429, code: "stream_limit" }),
+    );
+    expect(handlers.open).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(500);
+    expect(handlers.error).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(999);
+    expect(fixture.bridge.subscribe).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(handlers.open).toHaveBeenCalledOnce();
+    expect(fixture.bridge.request).not.toHaveBeenCalled();
+    stop();
+    expect(fixture.bridge.unsubscribe).toHaveBeenCalledExactlyOnceWith("sub");
+  });
+
+  it("does not schedule a retry when the consumer releases a failed stream", async () => {
+    vi.useFakeTimers();
+    const fixture = bridgeFixture();
+    vi.mocked(fixture.bridge.subscribe).mockRejectedValueOnce(new Error("stream_limit"));
+    const stop = createDesktopConversationAdapter(() => fixture.bridge).stream("session", {
+      event: applyCursor,
+      open: vi.fn(),
+      error() {
+        stop();
+      },
+    });
+    await flushAcknowledgements();
+    expect(vi.getTimerCount()).toBe(0);
+    expect(fixture.bridge.subscribe).toHaveBeenCalledOnce();
+  });
+
   it("relays matching control fence notifications without acknowledging a delivery cursor", async () => {
     const fixture = bridgeFixture();
     const receive = vi.fn();

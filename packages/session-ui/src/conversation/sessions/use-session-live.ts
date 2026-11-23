@@ -1,4 +1,4 @@
-import { useEffect, type Dispatch, type SetStateAction, type RefObject } from "react";
+import { useEffect, useState, type Dispatch, type SetStateAction, type RefObject } from "react";
 import {
   ApiError,
   type Access,
@@ -47,7 +47,7 @@ type ProgressPatch = Map<string, { value: unknown; revision: number }>;
 const nativeRevision = (value: unknown): value is number =>
   Number.isSafeInteger(value) && Number(value) >= 0;
 export type WarmSessionNavigation = {
-  park?: () => void;
+  park?: (nextId?: string) => void;
   resume?: { generation: number; onCold: () => void };
 };
 type SettingsWrite = { sessionId: string; generation: number; controlChanged?: boolean };
@@ -129,6 +129,7 @@ export function useSessionLive({
   isSettingsWriteActive,
 }: LiveSyncOptions) {
   const desktop = surface === "desktop";
+  const [retryingSession, setRetryingSession] = useState<string>();
   useEffect(() => {
     if (!selected || access?.status !== "approved" || access.protocolVersion !== 2) return;
     streamReady.current = false;
@@ -329,7 +330,7 @@ export function useSessionLive({
         setPage((page) => page);
       } else warmReturn?.onCold();
       closeStream = () => lease.release();
-      warmNavigation.current.park = () => {
+      warmNavigation.current.park = (nextId) => {
         const projection = liveValue.current;
         const coverage = nativeCoverage.current;
         if (
@@ -349,7 +350,8 @@ export function useSessionLive({
         )
           return;
         const accepted = store.replaceLive(projection);
-        if (accepted.live && accepted.cursor) lease.release({ state: accepted, coverage });
+        if (accepted.live && accepted.cursor)
+          lease.release({ state: accepted, coverage }, desktop ? nextId : undefined);
       };
       const connection = ++connectionEpoch;
       const active = () => current() && connection === connectionEpoch;
@@ -462,6 +464,10 @@ export function useSessionLive({
         error: (error) => {
           if (!active()) return;
           disconnected();
+          if (desktop && error instanceof ApiError && error.code === "stream_limit") {
+            warmStreams.discardParked();
+            setRetryingSession(id);
+          }
           if (error instanceof ApiError && error.code === "incompatible_protocol") fail(error, g);
         },
         event: (type, data) => {
@@ -507,6 +513,7 @@ export function useSessionLive({
                   ]);
                 needsDomainRecovery = false;
                 if (!desktop || !selectedSettingsWrite()) wakeSettingsHistory();
+                setRetryingSession(undefined);
                 setOnline(true);
                 if (!nativeCoverage.current.historyRecoveryFailed) setError(false);
                 streamReady.current = true;
@@ -739,4 +746,5 @@ export function useSessionLive({
     readSettingsControls,
     isSettingsWriteActive,
   ]);
+  return retryingSession === selected;
 }

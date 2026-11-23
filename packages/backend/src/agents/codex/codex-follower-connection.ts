@@ -98,7 +98,11 @@ export class CodexFollowerConnection {
       const peerPath = await realpath(verifyPeer(socket, process.getuid!()));
       const installation = await readDesktopInstallation(peerPath);
       if (!versionAtLeast(installation.version, MINIMUM_DESKTOP_VERSION))
-        throw new Error("unverified Codex Desktop installation");
+        throw new Error(
+          versionAtLeast(installation.version, "0.0.0")
+            ? "codex-desktop-version-too-old"
+            : "unverified Codex Desktop installation",
+        );
       const connection = new CodexFollowerConnection(
         socket,
         installation.version,

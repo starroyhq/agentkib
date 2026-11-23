@@ -10,7 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { approveLegacyBrowser } from "./legacy-pairing-fixture";
-import { HOSTED_ORIGIN, WebAccessService } from "./service";
+import { HOSTED_ORIGIN, WebAccessService, type HostSessionRequest } from "./service";
 
 const providers = [
   { agent: "codex", executionMode: "codex-managed", needsSend: false },
@@ -38,7 +38,7 @@ afterEach(async () => {
   }
 });
 
-async function fixture(lan = false) {
+async function fixture({ lan = false, elevatedCodexPolicy = false } = {}) {
   const root = await mkdtemp(join(tmpdir(), "agentkib-admission-"));
   fixtures.push(() => rm(root, { recursive: true, force: true }));
   const workspaces = await Promise.all(
@@ -56,7 +56,7 @@ async function fixture(lan = false) {
       executionMode,
     })),
   );
-  const dispatched: Record<string, unknown>[] = [];
+  const hostDispatches: HostSessionRequest["host"][] = [];
   const service = new WebAccessService({
     ...(lan ? { mode: "lan", addresses: () => [{ name: "fixture", address: lanAddress }] } : {}),
     dataDir: root,
@@ -67,7 +67,8 @@ async function fixture(lan = false) {
     verifiedDshFollower: true,
     verifiedDevinManaged: true,
     verifiedAntigravityManaged: true,
-    sessionRequest: async ({ host: { request: input } }) => {
+    sessionRequest: async ({ host }) => {
+      const input = host.request;
       if (input.operation === "catalog") return { sessions, workspaces };
       if (input.operation === "provider-validate-control")
         return validateEmbeddedControl(input.call as HostControlValidationCall);
@@ -76,7 +77,7 @@ async function fixture(lan = false) {
       if (input.operation === "capabilities")
         return {
           executionMode: session.executionMode,
-          features: { "queue-add": { available: true } },
+          features: { "queue-add": { available: true }, compact: { available: true } },
         };
       if (input.operation === "live")
         return {
@@ -88,9 +89,24 @@ async function fixture(lan = false) {
           status: "idle",
           sendEnabled: true,
         };
-      if (input.operation !== "queue-add" && input.operation !== "send")
+      if (!["queue-add", "send", "compact"].includes(String(input.operation)))
         throw new Error("unexpected-fixture-operation");
-      dispatched.push(input);
+      hostDispatches.push(host);
+      if (
+        elevatedCodexPolicy &&
+        session.agent === "codex" &&
+        "restrictCodexNativePolicy" in host &&
+        host.restrictCodexNativePolicy === true
+      )
+        return {
+          accepted: false,
+          completed: false,
+          requestId: input.requestId,
+          sessionId: session.id,
+          runtimeBootId: input.runtimeBootId,
+          controlOutcome: "not-dispatched",
+          reason: "native-policy-full-access-required",
+        };
       return { accepted: true, requestId: input.requestId, sessionId: session.id };
     },
   });
@@ -194,9 +210,11 @@ async function fixture(lan = false) {
       control(
         provider: ProviderCase,
         workspaceId: string,
-        operation: "queue-add" | "send" = "queue-add",
+        operation: "queue-add" | "send" | "compact" = "queue-add",
+        path = operation === "send" ? "/send" : "/managed/action",
+        extra: Record<string, unknown> = {},
       ) {
-        return http(operation === "send" ? "/send" : "/managed/action", {
+        return http(path, {
           operation,
           agent: provider.agent === "codex" ? "devin" : "codex",
           bootId: access.body.bootId,
@@ -206,11 +224,19 @@ async function fixture(lan = false) {
           text: "A queued fixture message",
           // The public body does not set the native DSH command grant.
           commandAccess: "all",
+          ...extra,
         });
       },
     };
   }
-  return { device, dispatched };
+  return {
+    device,
+    service,
+    hostDispatches,
+    get dispatched() {
+      return hostDispatches.map(({ request }) => request);
+    },
+  };
 }
 
 describe("host session-control admission by provider and device", () => {
@@ -247,7 +273,7 @@ describe("host session-control admission by provider and device", () => {
   });
 
   it("denies advanced LAN actions while retaining the registered Codex send exception", async () => {
-    const host = await fixture(true);
+    const host = await fixture({ lan: true });
     const device = await host.device("restricted");
     for (const provider of providers) {
       expect(await device.control(provider, "allowed")).toMatchObject({
@@ -269,5 +295,60 @@ describe("host session-control admission by provider and device", () => {
     expect(host.dispatched).toEqual([
       expect.objectContaining({ operation: "send", sessionId: "codex:allowed" }),
     ]);
+    expect(host.hostDispatches[0]).toHaveProperty("restrictCodexNativePolicy", true);
+  });
+
+  it.each(["restricted", "full"] as const)(
+    "takes the Codex native policy grant from the %s device on send and session actions",
+    async (access) => {
+      const host = await fixture({ elevatedCodexPolicy: true });
+      const device = await host.device(access);
+      const restricted = access === "restricted";
+      const spoofed = {
+        restrictCodexNativePolicy: !restricted,
+        host: { restrictCodexNativePolicy: !restricted },
+      };
+      for (const [operation, path] of [
+        ["send", "/send"],
+        ["compact", "/managed/action"],
+        ["compact", "/codex/compact"],
+      ] as const) {
+        const response = await device.control(providers[0], "allowed", operation, path, spoofed);
+        expect(response).toMatchObject(
+          restricted
+            ? {
+                status: 409,
+                body: {
+                  error: "native-policy-full-access-required",
+                  controlOutcome: "not-dispatched",
+                },
+              }
+            : { status: 200, body: { accepted: true } },
+        );
+      }
+      expect(host.hostDispatches).toHaveLength(3);
+      for (const dispatch of host.hostDispatches) {
+        if (restricted) expect(dispatch).toHaveProperty("restrictCodexNativePolicy", true);
+        else expect(dispatch).not.toHaveProperty("restrictCodexNativePolicy");
+        expect(dispatch.request).not.toHaveProperty("restrictCodexNativePolicy");
+        expect(dispatch.request).not.toHaveProperty("host");
+      }
+    },
+  );
+
+  it("does not restrict Codex native policy for the trusted desktop sender", async () => {
+    const host = await fixture({ elevatedCodexPolicy: true });
+    const { body } = await host.service.localRequest("/access");
+    expect(
+      await host.service.localRequest("/send", {
+        bootId: (body as ResponseBody).bootId,
+        expectedRevision: 4,
+        requestId: randomUUID(),
+        sessionId: "codex:allowed",
+        text: "A local fixture message",
+      }),
+    ).toMatchObject({ status: 200, body: { accepted: true } });
+    expect(host.hostDispatches).toHaveLength(1);
+    expect(host.hostDispatches[0]).not.toHaveProperty("restrictCodexNativePolicy");
   });
 });

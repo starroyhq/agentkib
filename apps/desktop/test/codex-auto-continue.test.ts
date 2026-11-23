@@ -420,18 +420,22 @@ function fixture(
   const sendWithState = (
     state: Awaited<ReturnType<typeof live>>,
     fields: Record<string, unknown> = {},
+    restrictNativePolicy?: boolean,
   ) =>
-    web.managedControl({
-      operation: "send",
-      sessionId: summary.id,
-      requestId: randomUUID(),
-      deviceId: "fixture",
-      runtimeBootId: state.runtimeBootId,
-      expectedRevision: state.revision,
-      experimentalEnabled: true,
-      text: "Continue",
-      ...fields,
-    });
+    web.managedControl(
+      {
+        operation: "send",
+        sessionId: summary.id,
+        requestId: randomUUID(),
+        deviceId: "fixture",
+        runtimeBootId: state.runtimeBootId,
+        expectedRevision: state.revision,
+        experimentalEnabled: true,
+        text: "Continue",
+        ...fields,
+      },
+      restrictNativePolicy,
+    );
   const send = async (fields: Record<string, unknown> = {}) => sendWithState(await live(), fields);
   return {
     root,
@@ -1559,6 +1563,85 @@ describe("Codex indexed native execution policy", () => {
       approvalPolicy: "never",
       sandboxPolicy: { type: "dangerFullAccess" },
     });
+  });
+
+  it.each(["never", "on-request"] as const)(
+    "denies a restricted device before adopting a privileged native policy (%s)",
+    async (approvalPolicy) => {
+      const f = fixture(true);
+      const fullAccess = approvalPolicy === "never";
+      setNativePolicy(
+        f,
+        fullAccess
+          ? full
+          : {
+              approval_policy: approvalPolicy,
+              approvals_reviewer: "agent",
+              sandbox_policy: {
+                type: "workspace-write",
+                writable_roots: [],
+                network_access: false,
+                exclude_tmpdir_env_var: true,
+                exclude_slash_tmp: true,
+              },
+            },
+      );
+      f.setPolicyReply(
+        fullAccess
+          ? { approvalPolicy, approvalsReviewer: "user", sandbox: { type: "dangerFullAccess" } }
+          : { approvalPolicy, approvalsReviewer: "auto_review" },
+      );
+      const live = await f.live();
+      const requestId = randomUUID();
+      expect(
+        await f.sendWithState(live, { requestId, deviceId: "restricted-device" }, true),
+      ).toMatchObject({
+        accepted: false,
+        controlOutcome: "not-dispatched",
+        reason: "native-policy-full-access-required",
+      });
+      expect(f.methods).not.toContain("thread/resume");
+      expect(f.methods).not.toContain("turn/start");
+      expect(
+        readControlReceipt(f.root, { requestId, deviceId: "restricted-device" }),
+      ).toMatchObject({
+        status: "not-dispatched",
+      });
+
+      expect(await f.send({ deviceId: "full-access-device" })).toMatchObject({ accepted: true });
+      expect(f.methods).toContain("thread/resume");
+      expect(f.methods).toContain("turn/start");
+
+      f.servers.at(-1)!.complete();
+      const resident = await f.live();
+      expect(resident.status).toBe("idle");
+      expect(
+        await f.sendWithState(resident, { deviceId: "restricted-device" }, true),
+      ).toMatchObject({
+        accepted: false,
+        controlOutcome: "not-dispatched",
+        error: "native-policy-full-access-required",
+      });
+      expect(f.methods.filter((method) => method === "turn/start")).toHaveLength(1);
+    },
+  );
+
+  it("allows a restricted device to adopt the native default workspace policy", async () => {
+    const f = fixture(true);
+    setNativePolicy(f, {
+      approval_policy: "on-request",
+      approvals_reviewer: "user",
+      sandbox_policy: {
+        type: "workspace-write",
+        writable_roots: [],
+        network_access: false,
+        exclude_tmpdir_env_var: true,
+        exclude_slash_tmp: true,
+      },
+    });
+    expect(
+      await f.sendWithState(await f.live(), { deviceId: "restricted-device" }, true),
+    ).toMatchObject({ accepted: true });
   });
 
   it("keeps a differing native policy visible and refuses to run or replace it", async () => {

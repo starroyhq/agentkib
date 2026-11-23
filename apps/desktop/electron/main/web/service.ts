@@ -674,7 +674,11 @@ const DEFAULT: WebConfig = {
 
 type SessionTarget = "codex" | "claude-code";
 export type HostSessionRequest = {
-  host: { target?: SessionTarget; request: Record<string, unknown> };
+  host: {
+    target?: SessionTarget;
+    request: Record<string, unknown>;
+    restrictCodexNativePolicy?: true;
+  };
 };
 type SessionDispatch = (params: unknown) => Promise<unknown>;
 
@@ -843,10 +847,20 @@ export class WebAccessService {
       if (options.sharedControl) options.sharedControl.claudeScheduler = this.scheduler;
     }
   }
-  private readonly requestSession = (params: unknown, target?: SessionTarget): Promise<unknown> => {
+  private readonly requestSession = (
+    params: unknown,
+    target?: SessionTarget,
+    restrictCodexNativePolicy = false,
+  ): Promise<unknown> => {
     const request = params as Record<string, unknown>;
     if (this.options.sessionRequest)
-      return this.options.sessionRequest({ host: { request, ...(target ? { target } : {}) } });
+      return this.options.sessionRequest({
+        host: {
+          request,
+          ...(target ? { target } : {}),
+          ...(restrictCodexNativePolicy ? { restrictCodexNativePolicy: true } : {}),
+        },
+      });
     const dispatch =
       target === "codex"
         ? this.options.managedRequest
@@ -4337,7 +4351,7 @@ export class WebAccessService {
     if (body.bootId !== this.bootId) throw new HttpError(409, "stale_boot");
     if (dispatch.historyScopeKey)
       await this.assertHistoryScope(hash, dispatch.historyScopeKey, true);
-    this.grant(hash, permission);
+    const restrictCodexNativePolicy = !this.isFullAccess(this.grant(hash, permission));
     if (requiresSend) this.grant(hash, "send");
     if (this.requests.has(requestId)) {
       control.priorUncertain = true;
@@ -4351,7 +4365,7 @@ export class WebAccessService {
     control.dispatched = true;
     let settingsConfirmed = false;
     const pending = Promise.resolve()
-      .then(() => this.requestSession(params))
+      .then(() => this.requestSession(params, undefined, restrictCodexNativePolicy))
       .then((result) => {
         if (!settingsControl) return result;
         settingsConfirmed =
@@ -5146,7 +5160,9 @@ export class WebAccessService {
       .then(() =>
         agent === "claude-code" && this.options.receiptRequest
           ? dispatchClaude(managedRequest!, this.options.receiptRequest, params)
-          : managedRequest!(params),
+          : agent === "codex" && operation === "reconcile"
+            ? this.requestSession(params, "codex", !this.isFullAccess(this.grant(hash, "manage")))
+            : managedRequest!(params),
       )
       .finally(() => {
         this.admission = false;
@@ -6443,7 +6459,8 @@ export class WebAccessService {
           ))
         )
           throw new HttpError(403, "workspace_not_authorized");
-        this.grant(hash, permission);
+        const device = this.grant(hash, permission);
+        const restrictCodexNativePolicy = operation === "send" && !this.isFullAccess(device);
         params.runtimeBootId = snapshot.runtimeBootId;
         dispatched = true;
         control.dispatched = true;
@@ -6454,7 +6471,7 @@ export class WebAccessService {
             String((snapshot as { executionMode?: string }).executionMode),
           ) && this.options.receiptRequest
             ? dispatchClaude(this.requestSession, this.options.receiptRequest, params)
-            : this.requestSession(params)
+            : this.requestSession(params, undefined, restrictCodexNativePolicy)
         ).finally(() => {
           this.active.delete(sessionId);
           this.admission = false;

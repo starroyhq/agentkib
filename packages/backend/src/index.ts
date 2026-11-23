@@ -2330,7 +2330,7 @@ export class TypeScriptBackend {
    * A control from a person's device. When the session is a lead's lane,
    * the lead hears that the person stepped in; the service's own controls do not come here.
    */
-  #codexControl(params: Record<string, unknown>) {
+  #codexControl(params: Record<string, unknown>, restrictCodexNativePolicy = false) {
     const sessionId = params.sessionId;
     const operation = String(params.operation);
     if (typeof sessionId === "string") {
@@ -2347,20 +2347,31 @@ export class TypeScriptBackend {
           return result;
         });
     }
-    try {
-      if (typeof params.sessionId === "string") {
-        this.#orchestration?.laneControlled(params.sessionId, String(params.operation));
-        // The person wrote to a Codex Project Agent: its turns without them start over.
-        if (
-          ["send", "steer", "queue-add"].includes(String(params.operation)) &&
-          this.#orchestration?.status(params.sessionId)
-        )
-          this.#orchestration.userSpoke(params.sessionId);
+    const noteControl = () => {
+      try {
+        if (typeof params.sessionId === "string") {
+          this.#orchestration?.laneControlled(params.sessionId, String(params.operation));
+          // The person wrote to a Codex Project Agent: its turns without them start over.
+          if (
+            ["send", "steer", "queue-add"].includes(String(params.operation)) &&
+            this.#orchestration?.status(params.sessionId)
+          )
+            this.#orchestration.userSpoke(params.sessionId);
+        }
+      } catch {
+        /* A lead's bookkeeping never blocks the person's control. */
       }
-    } catch {
-      /* A lead's bookkeeping never blocks the person's control. */
+    };
+    if (!restrictCodexNativePolicy) {
+      noteControl();
+      return this.#withWebRead((owner) => owner.managedControl(params));
     }
-    return this.#withWebRead((owner) => owner.managedControl(params));
+    // A restricted device reaches lane bookkeeping only once its new control is admitted.
+    return this.#withWebRead((owner) => owner.managedControl(params, true)).then((result) => {
+      if (result && typeof result === "object" && "accepted" in result && result.accepted === true)
+        noteControl();
+      return result;
+    });
   }
 
   /** Worker observations never block the native session protocol. */
@@ -2405,13 +2416,17 @@ export class TypeScriptBackend {
         : null;
       return codex ? { agent: "codex", workspaceId: codex, title: null } : null;
     };
-    const live = async (sessionId: string): Promise<Record<string, unknown>> => {
+    const live: LaneHost["live"] = async (sessionId, intent) => {
       const bridge = dsh(sessionId);
       if (bridge) return bridge.live(sessionId, true);
       const agent = session(sessionId)?.agent;
       if (agent === "codex")
         return this.#withWebRead((owner) =>
-          (owner.codexSessionProvider() as CodexSessionProvider).workerLive(sessionId, true),
+          (owner.codexSessionProvider() as CodexSessionProvider).workerLive(
+            sessionId,
+            true,
+            intent,
+          ),
         );
       const request = { operation: "live", sessionId, experimentalEnabled: true };
       return (await (agent === "claude-code"
@@ -2594,9 +2609,9 @@ export class TypeScriptBackend {
     return host ? this.#requestHostSession(host) : this.#requestTypedSession(params);
   }
 
-  #requestHostSession({ target, request: params }: HostSessionRequest) {
+  #requestHostSession({ target, request: params, restrictCodexNativePolicy }: HostSessionRequest) {
     if (target === "claude-code") return this.#requestClaudeManaged(params);
-    if (target === "codex") return this.#requestCodexSession(params);
+    if (target === "codex") return this.#requestCodexSession(params, restrictCodexNativePolicy);
     if (params.operation === "provider-validate-control") {
       const call = hostControlValidationSchema.parse(params.call);
       const agent =
@@ -2614,7 +2629,7 @@ export class TypeScriptBackend {
       const handled = this.#dshSessionProvider.legacy(params.operation, params);
       if (handled !== undefined) return handled;
     }
-    return this.#requestWebSession(params);
+    return this.#requestWebSession(params, restrictCodexNativePolicy);
   }
 
   async #requestTypedSession(params: Record<string, unknown>) {
@@ -2644,16 +2659,18 @@ export class TypeScriptBackend {
     return restrictSessionCommands(request, response);
   }
 
-  #requestCodexSession(params: Record<string, unknown>) {
+  #requestCodexSession(params: Record<string, unknown>, restrictCodexNativePolicy = false) {
     if (typeof params.sessionId === "string") {
       const agent = this.#store!.sessions.get(params.sessionId)?.agent;
       if (agent && agent !== "codex") throw new Error("unsupported-session-provider");
     }
     if (params.operation === "options") return this.#withWebRead((owner) => owner.managedOptions());
     if (params.operation === "reconcile")
-      return this.#withWebRead((owner) => owner.managedReconcile(params));
+      return this.#withWebRead((owner) =>
+        owner.managedReconcile(params, restrictCodexNativePolicy),
+      );
     if (params.operation === "resume")
-      return this.#withWebRead((owner) => owner.managedResume(params));
+      return this.#withWebRead((owner) => owner.managedResume(params, restrictCodexNativePolicy));
     if (params.operation === "queue-list")
       return this.#withWebRead((owner) => owner.managedQueueList(params));
     if (params.operation === "unarchive")
@@ -2694,11 +2711,11 @@ export class TypeScriptBackend {
         "terminals-clean",
       ].includes(String(params.operation))
     )
-      return this.#codexControl(params);
+      return this.#codexControl(params, restrictCodexNativePolicy);
     throw new RpcFault(-32601, "Method not found");
   }
 
-  #requestWebSession(params: Record<string, unknown>) {
+  #requestWebSession(params: Record<string, unknown>, restrictCodexNativePolicy = false) {
     if (params.operation === "desktop-events")
       return this.#withWebRead((owner) =>
         owner.indexedCodexEvents({ ...params, operation: "events" }),
@@ -2816,7 +2833,7 @@ export class TypeScriptBackend {
     if (["capabilities", "inspect"].includes(String(params.operation)))
       return this.#withWebRead((owner) => owner.managedQuery(params));
     if (params.operation === "resume")
-      return this.#withWebRead((owner) => owner.managedResume(params));
+      return this.#withWebRead((owner) => owner.managedResume(params, restrictCodexNativePolicy));
     if (params.operation === "unarchive")
       return this.#withWebRead((owner) => owner.managedUnarchive(params));
     if (params.operation === "delete")
@@ -2849,7 +2866,7 @@ export class TypeScriptBackend {
         "terminals-clean",
       ].includes(String(params.operation))
     )
-      return this.#codexControl(params);
+      return this.#codexControl(params, restrictCodexNativePolicy);
     if (
       params.operation === "catalog" ||
       params.operation === "events" ||

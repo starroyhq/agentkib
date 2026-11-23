@@ -194,6 +194,9 @@ export function projectComposerSettingsControls({
     : availableSettings?.writable.policy;
   const canChoosePermission = !locked && permissionField?.available === true;
   const policyLabel = agent === "deepseek-harness" ? dshPolicyLabel : codexPolicyLabel;
+  const policyId =
+    selection?.policyId ??
+    (settings?.sessionId === sessionId ? settings.current.policyId : undefined);
   const permissionItems = modeAgent
     ? (
         newSessionPermissions(
@@ -223,13 +226,13 @@ export function projectComposerSettingsControls({
           name: label?.name ?? item.name,
           description: label?.description ?? item.description,
           risky: item.id === "full-access-on-request" || item.id === "danger-full-access",
-          selected: selection?.policyId === item.id,
+          selected: policyId === item.id,
           disabled: !canChoosePermission,
           fields: { policyId: item.id },
         };
       });
   const currentPermission = permissionItems.find((item) => item.selected);
-  const observedPolicy = selection?.policyId ? policyLabel(selection.policyId, locale) : undefined;
+  const observedPolicy = policyId ? policyLabel(policyId, locale) : undefined;
   const terminalPermission =
     agent === "claude-code"
       ? claudeTerminalPermission(live, sessionId, selection?.permissionMode, locale)

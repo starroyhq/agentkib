@@ -74,6 +74,54 @@ const chunk = (id: string, text: string) => ({
 });
 
 describe("Claude native context and lifecycle", () => {
+  it("tracks real Worker activity separately from heartbeats and tool wait updates", () => {
+    const state = claude();
+    const initial = state.workerObservation();
+    state.frame({ type: "keep_alive" });
+    state.frame({ type: "tool_progress", tool_use_id: "shell" });
+    expect(state.workerObservation()).toEqual(initial);
+    expect(initial.commands).toEqual([]);
+    state.frame({
+      type: "stream_event",
+      event: { type: "content_block_delta", delta: { type: "thinking_delta", thinking: "private" } },
+    });
+    expect(state.workerObservation().workerProgress).not.toEqual(initial.workerProgress);
+    expect(JSON.stringify(state.workerObservation())).not.toContain("private");
+
+    const call = { type: "tool_use", id: "shell", name: "Bash" };
+    state.foregroundBashContract = true;
+    state.frame({ type: "stream_event", event: { type: "content_block_start", content_block: call } });
+    expect(state.workerObservation().commands).toEqual([{ id: "shell" }]);
+    state.frame({
+      type: "system",
+      subtype: "task_started",
+      task_type: "local_bash",
+      task_id: "command",
+      tool_use_id: "shell",
+      is_backgrounded: false,
+    });
+    const active = state.workerObservation();
+    expect(active.commands).toEqual([{ id: "shell", startedAt: expect.any(Number) }]);
+    state.frame({ type: "assistant", message: { content: [call] } });
+    state.frame({ type: "tool_progress", tool_use_id: "shell" });
+    expect(state.workerObservation()).toEqual(active);
+    state.frame({
+      type: "system",
+      subtype: "task_notification",
+      task_id: "command",
+      tool_use_id: "shell",
+      status: "completed",
+    });
+    expect(state.workerObservation().commands).toEqual([{ id: "shell" }]);
+    state.frame({
+      type: "user",
+      message: { content: [{ type: "tool_result", tool_use_id: "shell", content: "done" }] },
+    });
+    expect(state.workerObservation().commands).toEqual([]);
+    expect(state.workerObservation().workerProgress).not.toEqual(active.workerProgress);
+    expect(state.snapshot()).not.toHaveProperty("commands");
+  });
+
   it("starts a new report generation when the runner state is rebuilt", () => {
     const prior = claude();
     const priorGeneration = prior.snapshot().usage.reportGeneration!;
@@ -728,6 +776,33 @@ async function acpFixture(replayUpdates: Record<string, unknown>[] = []) {
 }
 
 describe("ACP offline managed stream", () => {
+  it("reads command state and thought activity without treating ACP usage as model progress", async () => {
+    const f = await acpFixture();
+    const { runner } = f;
+    await runner.send("hello", Number(runner.snapshot().revision));
+    const initial = runner.workerObservation();
+    const revision = runner.snapshot().revision as number;
+    expect(initial.commands).toEqual([]);
+    f.update({ sessionUpdate: "usage_update", used: 25n, size: 1000n });
+    await vi.waitFor(() => expect(runner.snapshot().revision).toBeGreaterThan(revision));
+    expect(runner.workerObservation()).toEqual(initial);
+
+    f.update({ sessionUpdate: "agent_thought_chunk", content: { type: "text", text: "private" } });
+    await vi.waitFor(() =>
+      expect(runner.workerObservation().workerProgress).not.toEqual(initial.workerProgress),
+    );
+    expect(JSON.stringify(runner.workerObservation())).not.toContain("private");
+    f.update({ sessionUpdate: "tool_call", toolCallId: "shell", status: "pending", kind: "execute" });
+    await vi.waitFor(() => expect(runner.workerObservation().commands).toMatchObject([{ id: "shell" }]));
+    f.update({ sessionUpdate: "tool_call_update", toolCallId: "shell", status: "in_progress" });
+    await vi.waitFor(() =>
+      expect(runner.workerObservation().commands).toEqual([{ id: "shell", startedAt: expect.any(Number) }]),
+    );
+    f.update({ sessionUpdate: "tool_call_update", toolCallId: "shell", status: "completed" });
+    await vi.waitFor(() => expect(runner.workerObservation().commands).toEqual([]));
+    expect(runner.snapshot()).not.toHaveProperty("commands");
+  });
+
   it("starts a new report generation after disconnecting and reconnecting", async () => {
     const prior = await acpFixture();
     const priorGeneration = (prior.runner.snapshot().usage as Record<string, unknown>)

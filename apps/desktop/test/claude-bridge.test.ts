@@ -257,6 +257,36 @@ describe.skipIf(process.platform === "win32")("native Claude borrowed-host broke
     ]);
   });
 
+  it("exposes terminal activity only to supervision and clears it when the observed turn changes", async () => {
+    const f = await fixture();
+    expect(f.connection.features).toContain("terminal-worker-activity");
+    const id = f.target.sessionId;
+    const turnId = randomUUID();
+    const running = { ...f.snapshot, revision: 1, currentTurnId: turnId, status: "running" };
+    const observe = () => f.bridge.workerObservation(id);
+    expect((await f.events({ type: "snapshot", snapshot: running })).status).toBe(200);
+    expect(observe()).not.toHaveProperty("commands");
+
+    const commands = [{ id: randomUUID(), startedAt: Date.now() }];
+    const snapshot = { ...running, terminalWorkerActivity: { commands, revision: 1 } };
+    expect((await f.events({ type: "snapshot", snapshot })).status).toBe(200);
+    expect(observe()).toMatchObject({ commands, workerProgress: "1" });
+    expect(f.live()).not.toHaveProperty("commands");
+    expect(f.live()).not.toHaveProperty("workerProgress");
+
+    expect((await f.events({ type: "gap", revision: 2 })).status).toBe(200);
+    expect(observe()).not.toHaveProperty("commands");
+    expect(
+      (await f.events({ type: "snapshot", snapshot: { ...snapshot, revision: 2 } })).status,
+    ).toBe(200);
+    expect(observe()).toMatchObject({ commands });
+
+    const next = randomUUID();
+    expect((await f.events({ type: "turn-start", turnId: next, revision: 3 })).status).toBe(200);
+    expect(observe()).toMatchObject({ turnId: next });
+    expect(observe()).not.toHaveProperty("commands");
+  });
+
   it("reads a verified permission marker independently of native usage and never makes auto writable", async () => {
     const observed = vi.fn(() => ({ usage: { available: false } }));
     const permission = vi.fn((): ClaudeObservedPermissionMode | null => "auto");
@@ -2331,6 +2361,7 @@ describe.skipIf(process.platform === "win32")(
         "lead-tools",
         "open-model-picker",
         "terminal-subagents",
+        "terminal-worker-activity",
         "lead-rate-limit-pause",
       ]);
       expect(f.bridge.leadCapable(f.target.sessionId)).toBe(false);
@@ -2463,7 +2494,11 @@ describe.skipIf(process.platform === "win32")(
 
     it("offers nothing of it without a lead hook, nor to a plugin that did not ask", async () => {
       const plain = await fixture();
-      expect(plain.connection.features).toEqual(["open-model-picker", "terminal-subagents"]);
+      expect(plain.connection.features).toEqual([
+        "open-model-picker",
+        "terminal-subagents",
+        "terminal-worker-activity",
+      ]);
       expect((await leadPoll(plain)).body).toEqual({ commands: [] });
       expect(plain.bridge.leadCapable(plain.target.sessionId)).toBe(false);
       const l = terminalLead();

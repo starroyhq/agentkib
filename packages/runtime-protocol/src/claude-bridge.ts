@@ -45,11 +45,14 @@ export const CLAUDE_BRIDGE_PATHS = {
  *   the turn (`origin`; none for a turn no one typed, which counts as an automatic turn).
  * - `open-model-picker`: a plugin may advertise the terminal's built-in interactive model picker.
  * - `terminal-subagents`: a plugin may report a bounded list of observed subagents in snapshots.
+ * - `terminal-worker-activity`: a plugin may report the current turn's observed tool calls and
+ *   an opaque activity counter in snapshots.
  */
 export const CLAUDE_BRIDGE_FEATURES = [
   "lead-tools",
   "open-model-picker",
   "terminal-subagents",
+  "terminal-worker-activity",
 ] as const;
 
 export interface ClaudeBridgeTicket {
@@ -191,6 +194,11 @@ export interface ClaudeBridgeSnapshot extends ClaudeBridgeIdentity {
   compactStartedAt?: number;
   /** Feature `terminal-subagents`: present when the plugin can observe the current list. */
   terminalSubagents?: ClaudeBridgeTerminalSubagent[];
+  /** Feature `terminal-worker-activity`: absent when observation cannot cover the current turn. */
+  terminalWorkerActivity?: {
+    revision: number;
+    commands: { id: string; startedAt: number }[];
+  };
   usage: ClaudeBridgeUsage | null;
   outbox: ClaudeBridgeOutboxItem[];
   capabilities: ClaudeBridgeCapabilities;

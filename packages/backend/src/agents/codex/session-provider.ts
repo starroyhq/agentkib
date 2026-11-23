@@ -88,22 +88,10 @@ import {
   replayManagedCommand,
   saveManagedRecord,
   saveManagedSettingsReceipt,
-  saveManagedUsageLimit,
 } from "../../managed-ledger";
 import { CodexLeadTurns } from "../../lead-turn-origin";
 import { CodexTitleThreads, codexUserMessageText, threadTitleModel } from "./codex-thread-title";
-import {
-  AUTO_CONTINUE_TEXT,
-  armUsageLimit,
-  codexUsageLimitHit,
-  holdUsageLimit,
-  usageLimitArmable,
-  usageLimitAutoContinue,
-  usageLimitContinue,
-  usageLimitView,
-  type UsageLimit,
-} from "../../usage-limit";
-
+import { CodexUsageLimits } from "./usage-limits";
 import type { LaneObserver } from "../../sessions/lane-observer";
 import type { WorkerRestartRequest, WorkerRestartResult } from "../../orchestration-service";
 import { readManagedRecords, type ManagedRecord } from "./managed-records";
@@ -355,17 +343,7 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
     string,
     { retryAt: number; live: Promise<Record<string, unknown> | undefined> }
   >();
-  /**
-   * The usage limit each managed Codex session's last turn met, and the continue armed for it
-   * (`usage-limit.ts`). In memory only: as Claude Code's own wait does, it ends with AgentKib.
-   * `continuing` is the request of the continue AgentKib sent, until that turn ends.
-   */
-  #codexLimits = new Map<
-    string,
-    { limit: UsageLimit; timer?: ReturnType<typeof setTimeout>; continuing?: string }
-  >();
-  /** The device whose message each managed Codex session last took. */
-  #codexSenders = new Map<string, { deviceId: string; restrictNativePolicy: boolean }>();
+  readonly #usageLimits: CodexUsageLimits;
   /** The temporary threads that name managed Codex threads (`codex-thread-title.ts`). */
   #titleThreads = new CodexTitleThreads();
   /**
@@ -402,6 +380,22 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
     this.#codex = new CodexAppServerReader(environment);
     this.#preflight = new CodexRuntimePreflight(environment);
     this.#desktopApp = new CodexDesktopApp(environment);
+    this.#usageLimits = new CodexUsageLimits({
+      dataDir: host.dataDir,
+      runtimeBootId: host.runtimeBootId,
+      isShuttingDown: () => host.isShuttingDown(),
+      readLive: (sessionId) => this.#managedLive(sessionId, true),
+      controlSession: (value, restrictNativePolicy) =>
+        host.controlSession(value, restrictNativePolicy),
+      publishLimit: (sessionId, view) => {
+        const runner = this.#managedRunners.get(sessionId);
+        if (runner?.state.showUsageLimit(view)) {
+          const live = runner.state.snapshot(host.runtimeBootId, runner.session.connected);
+          host.publishConversationEvent?.(sessionId, "state", live, live);
+        }
+      },
+      limitEnded: (sessionId) => host.observeLane((observer) => observer.limitEnded?.(sessionId)),
+    });
     const handoffTimeout = Number(environment.AGENTKIB_CODEX_HANDOFF_TIMEOUT_MS);
     this.#handoffTimeoutMs =
       environment.AGENTKIB_CODEX_HANDOFF_TIMEOUT_MS !== undefined &&
@@ -484,7 +478,7 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
 
   stopTimers(): void {
     clearInterval(this.#retirementTimer);
-    for (const entry of this.#codexLimits.values()) clearTimeout(entry.timer);
+    this.#usageLimits.stopTimers();
   }
 
   closeDiscovery(): void {
@@ -2505,13 +2499,12 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
         set(operation, false, "native-operation-not-integrated");
       set(
         "usage-limit-cancel",
-        managed && typeof this.#codexLimits.get(record.id)?.limit.continueAt === "number",
+        managed && this.#usageLimits.canCancel(record.id),
         "usage-limit-continue-unavailable",
       );
       set(
         "usage-limit-continue",
-        managed &&
-          usageLimitArmable(this.#codexLimits.get(record.id)?.limit, this.host.runtimeBootId),
+        managed && this.#usageLimits.canContinue(record.id),
         "usage-limit-continue-unavailable",
       );
       set("approve", managed && verified && healthy && runnerConnected && !unknown, controlReason);
@@ -2714,180 +2707,14 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
     };
   }
 
-  /**
-   * After a managed Codex turn: one that met the account's usage limit is held, with the continue
-   * armed as `usage-limit.ts` says; a turn that completes ends the hold.
-   */
-  #codexTurnLimit(
-    sessionId: string,
-    session: CodexAppServerSession,
-    state: ManagedCodexState,
-    turn: Record<string, unknown>,
-  ): void {
-    const limited = state.limitedTurn;
-    if (limited && limited.turnId === turn.id) {
-      void this.#holdCodexLimit(sessionId, session, limited.message);
-      return;
-    }
-    if (turn.status === "completed" && !turn.error && this.#codexLimits.has(sessionId)) {
-      this.#armCodexLimit(sessionId, null);
-      this.host.observeLane((observer) => observer.limitEnded?.(sessionId));
-    }
-  }
-
   /** Whether a managed Codex session waits for its usage limit to reset. */
   usageLimited(sessionId: string): boolean {
-    const held = this.#codexLimits.get(sessionId);
-    return !!held && !held.continuing;
-  }
-
-  async #holdCodexLimit(
-    sessionId: string,
-    session: CodexAppServerSession,
-    message: string,
-  ): Promise<void> {
-    // Codex's error carries no reset time; the account's limits do, as the Codex app reads them.
-    const read = await session
-      .request("account/rateLimits/read", { excludeResetCreditDetails: true })
-      .catch(() => null);
-    const held = this.#codexLimits.get(sessionId);
-    this.#armCodexLimit(
-      sessionId,
-      holdUsageLimit("codex", codexUsageLimitHit(read, message), {
-        deviceId: this.#codexSenders.get(sessionId)?.deviceId ?? held?.limit.deviceId ?? "",
-        bootId: this.host.runtimeBootId,
-        // Only a turn AgentKib's continue started counts toward the three in a row.
-        previous: held?.continuing ? held.limit : null,
-        autoContinue: usageLimitAutoContinue(this.host.dataDir),
-      }),
-    );
-  }
-
-  /**
-   * Holds `limit` (null ends the hold) and arms its continue; `show` puts it on the live state,
-   * which moves its revision, so never in the middle of a control.
-   */
-  #armCodexLimit(
-    sessionId: string,
-    limit: UsageLimit | null,
-    continuing?: string,
-    show = true,
-  ): void {
-    const held = this.#codexLimits.get(sessionId);
-    clearTimeout(held?.timer);
-    if (!limit) this.#codexLimits.delete(sessionId);
-    else {
-      const timer =
-        limit.continueAt === null
-          ? undefined
-          : setTimeout(
-              () => void this.#fireCodexContinue(sessionId).catch(() => undefined),
-              Math.max(0, limit.continueAt - Date.now()),
-            );
-      timer?.unref?.();
-      this.#codexLimits.set(sessionId, { limit, timer, continuing });
-    }
-    const runner = this.#managedRunners.get(sessionId);
-    if (show && runner?.state.showUsageLimit(usageLimitView(limit, this.host.runtimeBootId))) {
-      const live = runner.state.snapshot(this.host.runtimeBootId, runner.session.connected);
-      this.host.publishConversationEvent?.(sessionId, "state", live, live);
-    }
-  }
-
-  /**
-   * The continue armed after a usage limit is due: AgentKib resumes a goal Codex paused for the
-   * limit, or sends its continue, in the name of the device whose turn met the limit.
-   */
-  async #fireCodexContinue(sessionId: string): Promise<void> {
-    const held = this.#codexLimits.get(sessionId);
-    if (!held || this.host.isShuttingDown()) return;
-    const due = usageLimitContinue(held.limit, this.host.runtimeBootId);
-    if (due === "never") return;
-    if (due === "wait") return this.#armCodexLimit(sessionId, held.limit);
-    if (due === "stale")
-      return this.#armCodexLimit(sessionId, { ...held.limit, continueAt: null, manual: "stale" });
-    const requestId = randomUUID();
-    this.#armCodexLimit(
-      sessionId,
-      { ...held.limit, continueAt: null, autoContinues: held.limit.autoContinues + 1 },
-      requestId,
-      false,
-    );
-    const live = (await this.#managedLive(sessionId, true).catch(() => null)) as Record<
-      string,
-      unknown
-    > | null;
-    if (!live || live.status !== "idle") {
-      // Something else runs: look again shortly.
-      return this.#armCodexLimit(sessionId, { ...held.limit, continueAt: Date.now() + 60_000 });
-    }
-    const goal = isObject(live.goal) && live.goal.status === "usageLimited";
-    const sender = this.#codexSenders.get(sessionId);
-    const result = (await this.host
-      .controlSession(
-        {
-          operation: goal ? "goal-resume" : "send",
-          sessionId,
-          requestId,
-          ...(held.limit.deviceId ? { deviceId: held.limit.deviceId } : {}),
-          runtimeBootId: live.runtimeBootId,
-          expectedRevision: live.revision,
-          experimentalEnabled: true,
-          ...(goal ? {} : { text: AUTO_CONTINUE_TEXT.codex }),
-        },
-        sender?.deviceId === held.limit.deviceId && sender.restrictNativePolicy,
-      )
-      .catch(() => null)) as Record<string, unknown> | null;
-    const current = this.#codexLimits.get(sessionId);
-    if (result?.accepted !== true && current?.continuing === requestId)
-      // Refused: the person continues.
-      this.#armCodexLimit(sessionId, { ...current.limit, manual: "stale" });
-  }
-
-  /** The person's choice about the continue: off this time (`usage-limit-cancel`), or on. */
-  #codexLimitChoice(
-    request: z.infer<typeof managedControlSchema>,
-    record: ManagedRecord | undefined,
-    fingerprint: string,
-    choose: (limit: UsageLimit) => UsageLimit | null,
-  ): Record<string, unknown> {
-    const held = this.#codexLimits.get(request.sessionId);
-    const next = held ? choose(held.limit) : null;
-    if (!record || !next) throw new Error("usage-limit-continue-unavailable");
-    const claimed = claimManagedCommand(
-      this.host.dataDir,
-      request.requestId,
-      request.sessionId,
-      fingerprint,
-      request.deviceId ?? null,
-      {
-        operation: request.operation,
-        workspaceId: record.workspace_id,
-        runtimeBootId: request.runtimeBootId,
-        expectedRevision: request.expectedRevision,
-        executionMode: "codex-managed",
-        turnId: null,
-        nativeRequestId: null,
-      },
-    );
-    if (claimed) return claimed;
-    this.#armCodexLimit(request.sessionId, next);
-    const result = {
-      sessionId: request.sessionId,
-      accepted: true,
-      completed: true,
-      requestId: request.requestId,
-      runtimeBootId: this.host.runtimeBootId,
-    };
-    finishManagedCommand(this.host.dataDir, request.requestId, result);
-    return result;
+    return this.#usageLimits.isLimited(sessionId);
   }
 
   /** A device lost access: AgentKib no longer continues in its name after a usage limit. */
   invalidateUsageLimitDevice(deviceId: string): void {
-    for (const [sessionId, held] of this.#codexLimits)
-      if (held.limit.deviceId === deviceId && held.limit.continueAt !== null)
-        this.#armCodexLimit(sessionId, { ...held.limit, continueAt: null, manual: "cancelled" });
+    this.#usageLimits.invalidateDevice(deviceId);
   }
 
   /** A short-lived subscription must be recorded even between retirement timer ticks. */
@@ -3112,26 +2939,10 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
     )
       throw new Error("stale-or-disabled-control");
     if (request.operation === "usage-limit-cancel")
-      return this.#codexLimitChoice(request, record, fingerprint, (limit) =>
-        limit.continueAt === null ? null : { ...limit, continueAt: null, manual: "cancelled" },
-      );
+      return this.#usageLimits.cancel(request, record, fingerprint);
     if (request.operation === "usage-limit-continue")
-      return this.#codexLimitChoice(request, record, fingerprint, (limit) =>
-        armUsageLimit(limit, { bootId: this.host.runtimeBootId }),
-      );
-    if (["send", "queue-add", "steer", "goal-resume"].includes(request.operation)) {
-      // The person's message takes over from a continue armed after a usage limit.
-      // Only the record changes here: the live revision this control was checked against stays,
-      // and the turn it starts clears what the state shows.
-      const held = this.#codexLimits.get(request.sessionId);
-      if (held && held.continuing !== request.requestId)
-        this.#armCodexLimit(request.sessionId, null, undefined, false);
-      if (request.deviceId)
-        this.#codexSenders.set(request.sessionId, {
-          deviceId: request.deviceId,
-          restrictNativePolicy,
-        });
-    }
+      return this.#usageLimits.continue(request, record, fingerprint);
+    this.#usageLimits.beforeControl(request, restrictNativePolicy);
     let runner = this.#managedRunners.get(request.sessionId);
     if (workerRestart) {
       if (record && record.workspace_id !== workerRestart.workspaceId)
@@ -4708,9 +4519,7 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
     this.host.assertOpen();
     const nativeId = record.native_id ?? null;
     const state = new ManagedCodexState(record, record.snapshot?.revision ?? 0);
-    state.showUsageLimit(
-      usageLimitView(this.#codexLimits.get(record.id)?.limit, this.host.runtimeBootId),
-    );
+    state.showUsageLimit(this.#usageLimits.view(record.id));
     const persist = createManagedSnapshotWriter(this.host.dataDir, record);
     let previousStreamText = "";
     let startingRunner: ManagedRunner | undefined;
@@ -4761,7 +4570,7 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
             this.host.catalogChanged?.();
           }
           if (method === "turn/completed" && isObject(params.turn))
-            this.#codexTurnLimit(record.id, session, current, params.turn);
+            this.#usageLimits.onTurnCompleted(record.id, session, current.limitedTurn, params.turn);
           // Also for a session created by this runner, whose native ID the record does not hold
           // yet: a lead hears of its new worker's first turn too.
           if (
@@ -5148,7 +4957,7 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
 
   async live(sessionId: string, enabled: boolean) {
     const live = await this.#managedLive(sessionId, enabled);
-    return this.#liveWithLimit(sessionId, live);
+    return this.#usageLimits.projectLive(sessionId, live);
   }
 
   /** Worker reads need output evidence and external ownership, even when no page is open. */
@@ -5162,15 +4971,8 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
               ...resident.state.workerObservation(),
             }
           : await this.#managedLive(sessionId, controls, intent ?? "read");
-      return this.#liveWithLimit(sessionId, live);
+      return this.#usageLimits.projectLive(sessionId, live);
     });
-  }
-
-  #liveWithLimit(sessionId: string, live: Record<string, unknown>) {
-    const limit = this.#codexLimits.get(sessionId)?.limit;
-    return live.executionMode === "codex-managed"
-      ? { ...live, usageLimit: usageLimitView(limit, this.host.runtimeBootId) }
-      : live;
   }
 
   /** A child run belongs to the resident native connection and owner, across parent turns. */

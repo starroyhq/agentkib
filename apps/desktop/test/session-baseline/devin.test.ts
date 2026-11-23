@@ -38,13 +38,35 @@ if (args[0] === "auth") {
 } else if (args[0] === "acp") {
   const send = (value) => process.stdout.write(JSON.stringify(value) + "\n");
   const options = () => [
-    { id: "mode", type: "select", currentValue: "accept-edits", options: [] },
-    { id: "model", type: "select", currentValue: "fixture-model", options: [] },
+    {
+      id: "mode", type: "select", currentValue: turn.config.mode ?? "accept-edits",
+      options: ["accept-edits", "ask", "smart", "bypass"].map((value) => ({ value, name: value })),
+    },
+    {
+      id: "model", type: "select", currentValue: turn.config.model ?? "fixture-model",
+      options: ["fixture-model", "fixture-alternate"].map((value) => ({ value, name: value })),
+    },
   ];
   const turn = { cwd: process.cwd(), config: {} };
   let pending = null;
+  const storeNew = () => {
+    const db = new DatabaseSync(process.env.FIXTURE_DB);
+    const now = Math.floor(Date.now() / 1000);
+    db.prepare("INSERT INTO sessions (id, working_directory, title, model, created_at, last_activity_at, hidden) VALUES (?, ?, ?, ?, ?, ?, 0)").run(
+      "new-otter", process.cwd(), "New fixture session", "fixture-alternate", now, now,
+    );
+    if (process.env.FIXTURE_STORE_AFTER_TURN) {
+      const node = db.prepare("INSERT INTO message_nodes VALUES (?, ?, ?, ?, NULL, ?)");
+      node.run("new-otter", 1, null, JSON.stringify({ role: "user", content: turn.prompt, metadata: { is_user_input: true } }), now);
+      node.run("new-otter", 2, 1, JSON.stringify({ role: "assistant", content: "Persisted Devin reply" }), now);
+      db.prepare("UPDATE sessions SET main_chain_id=2 WHERE id=?").run("new-otter");
+    }
+    db.close();
+    if (process.env.FIXTURE_STORE_AFTER_TURN) log({ persisted: "new-otter" });
+  };
   const finish = (stopReason) => {
     if (pending === null) return;
+    if (stopReason === "end_turn" && turn.acp[0] === "session/new" && process.env.FIXTURE_STORE_AFTER_TURN) storeNew();
     send({ jsonrpc: "2.0", id: pending, result: { stopReason } });
     pending = null;
   };
@@ -53,12 +75,7 @@ if (args[0] === "auth") {
     if (method === "initialize")
       return send({ jsonrpc: "2.0", id, result: { protocolVersion: 1, agentCapabilities: { loadSession: true } } });
     if (method === "session/new") {
-      const db = new DatabaseSync(process.env.FIXTURE_DB);
-      const now = Math.floor(Date.now() / 1000);
-      db.prepare("INSERT INTO sessions VALUES (?, ?, ?, ?, ?, ?, 0)").run(
-        "new-otter", process.cwd(), "New fixture session", "fixture-alternate", now, now,
-      );
-      db.close();
+      if (!process.env.FIXTURE_STORE_AFTER_TURN) storeNew();
       turn.acp = ["session/new"];
       return send({ jsonrpc: "2.0", id, result: { sessionId: "new-otter", configOptions: options() } });
     }
@@ -71,7 +88,8 @@ if (args[0] === "auth") {
       return send({ jsonrpc: "2.0", id, result: { configOptions: options() } });
     }
     if (method === "session/prompt") {
-      log({ ...turn, prompt: (params.prompt ?? []).map((block) => block.text ?? "").join("") });
+      turn.prompt = (params.prompt ?? []).map((block) => block.text ?? "").join("");
+      log(turn);
       pending = id;
       const timer = setInterval(() => {
         if (existsSync(process.env.FIXTURE_HOLD)) return;
@@ -114,7 +132,7 @@ afterEach(async () => {
   for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
 });
 
-async function fixture() {
+async function fixture({ storeAfterTurn = false } = {}) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "agentkib-baseline-devin-")));
   cleanups.push(() => rmSync(root, { recursive: true, force: true }));
   const home = join(root, "home");
@@ -154,6 +172,10 @@ async function fixture() {
         1_794_400_000,
         1_794_400_000,
       );
+    if (storeAfterTurn)
+      native.exec(`ALTER TABLE sessions ADD COLUMN main_chain_id INTEGER;
+        CREATE TABLE message_nodes (session_id TEXT, node_id INTEGER, parent_node_id INTEGER,
+          chat_message TEXT, metadata TEXT, created_at INTEGER);`);
   } finally {
     native.close();
   }
@@ -170,6 +192,7 @@ async function fixture() {
     FIXTURE_LOG: log,
     FIXTURE_MODELS: modelFile,
     FIXTURE_HOLD: hold,
+    ...(storeAfterTurn ? { FIXTURE_STORE_AFTER_TURN: "1" } : {}),
   };
   const backend = await startBackend({ data, workspace, indexSessions: true, environment });
   cleanups.push(backend.close);
@@ -410,6 +433,7 @@ describe.skipIf(process.platform === "win32")("Devin session HTTP baseline", () 
     ]);
     expect(f.runtimeCalls()).toEqual([
       auth,
+      modelQuery,
       {
         cwd: "<workspace>",
         acp: ["session/new"],
@@ -444,6 +468,49 @@ describe.skipIf(process.platform === "win32")("Devin session HTTP baseline", () 
         status: 200,
         body: liveBody(f.createdId, runtimeBootId, 2, { completed: turnId }),
       });
+  });
+
+  it("lists the session and its reply for a paired Web client when Devin persists after create acknowledges", async () => {
+    const f = await fixture({ storeAfterTurn: true });
+    const requestId = requestIds.create;
+    const prompt = "Persist after acknowledging the start";
+    const created = await f.http("/managed/create", {
+      agent: "devin",
+      bootId: f.bootId,
+      workspaceId,
+      requestId,
+      model: alternateModel,
+      prompt,
+    });
+    expect(created).toMatchObject({
+      status: 200,
+      body: { accepted: true, completed: true, sessionId: f.createdId },
+    });
+    expect(await f.receipt(requestId)).toMatchObject({
+      status: 200,
+      body: { status: "accepted", sessionId: f.createdId },
+    });
+    f.release();
+    await expect.poll(f.runtimeCalls).toContainEqual({ persisted: "new-otter" });
+    await expect
+      .poll(() => f.http("/catalog"))
+      .toMatchObject({
+        status: 200,
+        body: {
+          sessions: expect.arrayContaining([
+            expect.objectContaining({ id: f.createdId, agent: "devin", availability: "readable" }),
+          ]),
+        },
+      });
+    expect(await f.http(`/events?sessionId=${f.createdId}&limit=10`)).toMatchObject({
+      status: 200,
+      body: {
+        events: expect.arrayContaining([
+          expect.objectContaining({ content: "Persisted Devin reply" }),
+        ]),
+      },
+    });
+    expect(f.runtimeCalls().filter((call) => call.prompt === prompt)).toHaveLength(1);
   });
 
   it("stages model and permission for the next print turn, then sends and stops it", async () => {

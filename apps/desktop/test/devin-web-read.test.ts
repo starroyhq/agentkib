@@ -109,8 +109,9 @@ const names = { ask: "auto", bypass: "dangerous" };
 const send = (value) => process.stdout.write(JSON.stringify(value) + "\\n");
 let pending = null;
 const options = (id) => {
-  const value = { mode: "accept-edits", model: "swe-2-high", ...saved()[id] };
-  return Object.entries(value).map(([key, currentValue]) => ({ id: key, type: "select", currentValue, options: [] }));
+  const declared = JSON.parse(read("declared-options") ?? "null");
+  const value = { mode: "accept-edits", model: "swe-2-high", ...(declared ? { thought_level: "high" } : {}), ...saved()[id] };
+  return Object.entries(value).map(([key, currentValue]) => ({ id: key, type: "select", currentValue, options: (declared?.[key] ?? []).map(value => ({ value, name: value })) }));
 };
 function finish(result) {
   if (!pending) return;
@@ -132,9 +133,13 @@ require("node:readline").createInterface({ input: process.stdin }).on("line", (l
   if (method === "session/new") return send({ jsonrpc: "2.0", id, result: { sessionId: read("new-session-id") ?? "new-otter", configOptions: options("") } });
   if (method === "session/load") { append("resume.log", params.sessionId); return send({ jsonrpc: "2.0", id, result: { configOptions: options(params.sessionId) } }); }
   if (method === "session/set_config_option") {
+    const choices = options(params.sessionId).find(option => option.id === params.configId)?.options;
+    if (choices?.length && !choices.some(choice => choice.value === params.value))
+      return send({ jsonrpc: "2.0", id, error: { code: -32602, message: "Invalid params" } });
     const all = saved(); all[params.sessionId] = { ...all[params.sessionId], [params.configId]: params.value };
     fs.writeFileSync(file("acp-sessions.json"), JSON.stringify(all));
     if (params.configId === "model") append("models.log", params.value);
+    if (params.configId === "thought_level") append("efforts.log", params.value);
     if (params.configId === "mode") append("permissions.log", names[params.value] ?? params.value);
     return send({ jsonrpc: "2.0", id, result: { configOptions: options(params.sessionId) } });
   }
@@ -322,6 +327,72 @@ process.on("SIGHUP", () => process.exit(0));
 }
 
 describe.runIf(process.platform !== "win32")("Devin sessions run by AgentKib", () => {
+  it("offers a thought level declared by ACP even without a matching CLI variant", async () => {
+    const f = fixture();
+    f.models([{ slug: "swe-2", variants: [{ model_uid: "swe-2-high" }] }]);
+    vi.spyOn(f.readers, "devinSessionModel").mockReturnValue("swe-2-high");
+    writeFileSync(
+      path.join(f.root, "bin", "declared-options"),
+      JSON.stringify({
+        model: ["swe-2-high"],
+        thought_level: ["high", "max"],
+      }),
+    );
+    expect(await f.send("Read native options")).toMatchObject({ accepted: true });
+    await f.ended();
+    expect(
+      await f.web.sessionProviderSettingsState({ operation: "settings-state", sessionId: f.id }),
+    ).toMatchObject({
+      models: expect.arrayContaining([
+        expect.objectContaining({ id: "swe-2", efforts: ["high", "max"] }),
+      ]),
+    });
+    expect(await f.control("settings", { effort: "max" })).toMatchObject({ accepted: true });
+    expect(await f.send("Use native maximum")).toMatchObject({ accepted: true });
+    await f.ended();
+    expect(f.log("models.log")).toBe("");
+    expect(f.log("efforts.log")).toBe("max\n");
+  });
+
+  it.each(["new settings", "legacy file"])(
+    "uses the separate ACP thought level from %s",
+    async (source) => {
+      const f = fixture();
+      f.models([
+        { slug: "swe-2", variants: [{ model_uid: "swe-2-high" }, { model_uid: "swe-2-max" }] },
+      ]);
+      vi.spyOn(f.readers, "devinSessionModel").mockReturnValue("swe-2-high");
+      writeFileSync(
+        path.join(f.root, "bin", "declared-options"),
+        JSON.stringify({
+          model: ["swe-2-high"],
+          thought_level: ["high", "max"],
+        }),
+      );
+      const settingsFile = path.join(f.root, "devin-session-settings.json");
+      if (source === "legacy file") {
+        writeFileSync(settingsFile, JSON.stringify({ "brisk-otter": { model: "swe-2-max" } }));
+      } else {
+        expect(await f.control("settings", { effort: "max" })).toMatchObject({ accepted: true });
+        expect(JSON.parse(readFileSync(settingsFile, "utf8"))["brisk-otter"]).toMatchObject({
+          model: "swe-2",
+          effort: "max",
+        });
+      }
+      await f.restart();
+      expect(
+        await f.web.sessionProviderSettingsState({ operation: "settings-state", sessionId: f.id }),
+      ).toMatchObject({
+        selected: { model: "swe-2", effort: "max" },
+      });
+      expect(await f.send("Use maximum effort")).toMatchObject({ accepted: true });
+      await f.ended();
+      expect(f.log("models.log")).toBe("");
+      expect(f.log("efforts.log")).toBe("max\n");
+      expect(f.log("prompts.log")).toBe("Use maximum effort\n");
+    },
+  );
+
   it("browses its verified workspace without launching Devin or enabling native resource references", async () => {
     const f = fixture();
     const run = vi.spyOn(Commands.prototype, "run");

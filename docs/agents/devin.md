@@ -35,7 +35,7 @@ Devin 在 `subagent_heads` 里记下每个子代理的链头，子代理的消�
   用 3000.12.59 和 swe-2 在临时工作区实测：`auto` 下写文件被拒绝；`accept-edits` 下能写文件，但运行 shell 命令被拒绝。
 - **工作区信任**：不传 `--respect-workspace-trust false`。Devin 还没信任的工作区会拒绝运行，AgentKib 说明需要先在那个目录里运行一次 `devin` 并选择信任。读取重置时间时启动的交互式 `devin` 也不替用户回答信任提问（见“重置时间”）。
 - **会话锁**：Devin 在 `session_locks/<会话 ID>.lock` 里记下持有者的 PID，退出后文件仍留着。持有者仍是运行中的 Devin 进程（例如会话正在 Devin Desktop 或终端里打开）时，AgentKib 不发送，并提示到那边关掉后再发。
-- **模型**：桌面首页和已有会话使用 `devin models list --format json` 提供的模型家族和具体变体。只选家族时把家族 slug 传给 Devin，由它选默认变体。选择推理强度或 Fast 时，AgentKib 匹配目录中真实存在的组合，把具体变体 ID 通过 `--model` 传给 Devin。目录中的特殊变体也可单独选择。已有会话的改动从下一轮生效。没有登录时列表为空，沿用 Devin 的默认配置。列表缓存 10 分钟。
+- **模型**：桌面首页和已有会话使用 `devin models list --format json` 提供的家族、名称和规格。每轮以 ACP `configOptions` 核对实际模型和档位。只选家族时沿用该家族的 ACP 默认配置（例如 SWE-2 的 `swe-2-high`），推理强度用独立的 `thought_level`，速度用 ACP 的 `speed`。旧保存项里的组合值按目录识别并拆成 ACP 实际提供的模型和档位。已有会话的改动从下一轮生效。没有登录时列表为空，沿用 Devin 的默认配置。列表缓存 10 分钟。
 - **环境**：Devin 给 ACP 宿主（例如 Devin Desktop）下的进程设置 `ACP_BACKEND`，继承了它的 CLI 会不用自己的登录。AgentKib 启动 `devin` 时去掉这个变量。
 - **上下文用量**：已有会话复用上下文圆环。详情中的模型上限取自目录的 `max_context_tokens`。如果当前会话主链保存了同一模型变体的最近一次请求用量，可以显示该次请求的输入 token 和比例，并标明是历史记录。未找到匹配记录时，详情只显示已知的模型上限。日／周账户额度独立计算。
 - **附件限制**：只能发送文字，不能带图片或文件。

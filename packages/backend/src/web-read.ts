@@ -241,6 +241,8 @@ export class WebReadRequests {
       runtimeBootId: this.#bootId,
       publishConversationEvent,
       catalogChanged,
+      indexGeneration,
+      indexEnabled: () => indexEnabled(dataDir),
       recordResult: (target, result, options) => this.#resultObserver?.(target, result, options),
       turnEnded: (...args) => this.#observeLane((observer) => observer.turnEnded(...args)),
       laneWaiting: (sessionId, turnId) =>

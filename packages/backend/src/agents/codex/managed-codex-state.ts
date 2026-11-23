@@ -2,7 +2,7 @@ import type { CodexAppServerSession } from "./codex-app-server";
 import { isDeepStrictEqual } from "node:util";
 import { createContextUsageGeneration, projectContextUsage } from "../../context-usage";
 import { codexItemTool, type ToolContext } from "../../conversation-tools";
-import { codexErrorText, codexTurnErrorEvent } from "./codex-turn-error";
+import { CODEX_TURN_START_REJECTED, codexErrorText, codexTurnErrorEvent } from "./codex-turn-error";
 import { codexTurnEndEvent, codexTurnMeta } from "./codex-turn-end";
 import type { UsageLimitView } from "../../usage-limit";
 
@@ -72,6 +72,7 @@ export class ManagedCodexState {
   #usageBarrierTurn: string | null | undefined;
   #compactionRecoveryTurn: string | null | undefined;
   #retry: CodexApiRetry | null = null;
+  #turnStartError: string | null = null;
   /** The final `error` of the running turn, for a completion that carries none itself. */
   #turnError: { turnId: string; text: string } | null = null;
   /** The last completed turn met the account's usage limit (`codexErrorInfo` 0.167.0). */
@@ -207,9 +208,18 @@ export class ManagedCodexState {
       ),
       goal: this.#record.goal ?? null,
       apiRetry: this.#retry && this.#turn !== null ? { ...this.#retry } : null,
+      turnStartError:
+        this.#turnStartError === null
+          ? null
+          : { reason: CODEX_TURN_START_REJECTED, message: this.#turnStartError },
       reason: this.#reason,
       usageLimit: this.#usageLimit ? { ...this.#usageLimit } : null,
     };
+  }
+
+  noteTurnStartRejection(message: string): void {
+    this.#turnStartError = message;
+    this.#changed(false, true);
   }
 
   /** The last completed turn met the account's usage limit, with Codex's own message. */
@@ -273,6 +283,7 @@ export class ManagedCodexState {
         this.#reason = null;
         this.#lastTurnEvent = null;
         this.#retry = null;
+        this.#turnStartError = null;
         this.#turnError = null;
         this.#limitedTurn = null;
         this.#errorLimit = null;
@@ -748,6 +759,7 @@ export class ManagedCodexState {
     this.#lastTurn = turnId;
     this.#status = "running";
     this.#reason = null;
+    this.#turnStartError = null;
     this.#runtimeRevision = this.#mutationRevision = ++this.#revision;
   }
 
@@ -795,6 +807,7 @@ export class ManagedCodexState {
     try {
       this.commitManagedMutation(update);
       persist();
+      this.#turnStartError = null;
     } catch (error) {
       this.#record = record;
       this.#revision = revision;

@@ -5320,12 +5320,12 @@ export class ClaudeManagedReadOwner {
       "goal-clear": writable && !!host?.goal,
     };
     if (!supportsClaudeVersion(this.#version?.value ?? "", "2.1.286")) {
+      // Reading the queue only needs the local ledger.
       for (const feature of [
         "steer",
         "settings",
         "settings-state",
         "queue",
-        "queue-list",
         "queue-add",
         "queue-update",
         "queue-delete",

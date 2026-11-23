@@ -462,6 +462,8 @@ const reasons: Record<Locale, Record<string, string>> = {
       "Codex 返回的工作目录与会话目录不一致，已停止本次操作。请检查会话状态后重试。",
     "codex-sandbox-mismatch":
       "Codex 返回的可写范围与会话目录不一致，已停止本次操作。请检查会话状态后重试。",
+    "codex-waiting-for-owner": "等待 ChatGPT 放开会话",
+    "codex-owner-wait-paused": "等待发送已暂停",
     "native-policy-unconfirmed": "无法确认这条会话的原生执行策略。",
     "native-policy-full-access-required": "续跑使用的原生执行策略要求此设备具有完全访问权限。",
     "native-policy-approval-policy-mismatch": "原生审批方式与支持的策略不符。",
@@ -622,6 +624,8 @@ const reasons: Record<Locale, Record<string, string>> = {
       "Codex 傳回的工作目錄與對話目錄不一致，已停止本次操作。請檢查對話狀態後重試。",
     "codex-sandbox-mismatch":
       "Codex 傳回的可寫範圍與對話目錄不一致，已停止本次操作。請檢查對話狀態後重試。",
+    "codex-waiting-for-owner": "等待 ChatGPT 釋放對話",
+    "codex-owner-wait-paused": "等待傳送已暫停",
     "native-policy-unconfirmed": "無法確認這筆對話的原生執行策略。",
     "native-policy-full-access-required": "續跑使用的原生執行策略要求此裝置具備完全存取權限。",
     "native-policy-approval-policy-mismatch": "原生核准方式與支援的策略不符。",
@@ -783,6 +787,8 @@ const reasons: Record<Locale, Record<string, string>> = {
       "Codex returned a working directory that differs from the session directory. The operation was stopped. Check the session state, then retry.",
     "codex-sandbox-mismatch":
       "Codex returned a writable scope that differs from the session directory. The operation was stopped. Check the session state, then retry.",
+    "codex-waiting-for-owner": "Waiting for ChatGPT to release the conversation",
+    "codex-owner-wait-paused": "Queued send paused",
     "native-policy-unconfirmed": "This session’s native execution policy is unconfirmed.",
     "native-policy-full-access-required":
       "This device needs full access to continue with the native execution policy.",
@@ -975,6 +981,8 @@ const reasons: Record<Locale, Record<string, string>> = {
       "Codex が返した作業ディレクトリが会話のディレクトリと一致しないため、操作を停止しました。会話の状態を確認してから再試行してください。",
     "codex-sandbox-mismatch":
       "Codex が返した書き込み可能範囲が会話のディレクトリと一致しないため、操作を停止しました。会話の状態を確認してから再試行してください。",
+    "codex-waiting-for-owner": "ChatGPT が会話を解放するまで待機中",
+    "codex-owner-wait-paused": "送信待ちを一時停止中",
     "native-policy-unconfirmed": "この会話のネイティブ実行ポリシーを確認できません。",
     "native-policy-full-access-required":
       "ネイティブ実行ポリシーで続行するには、このデバイスにフルアクセス権が必要です。",

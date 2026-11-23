@@ -911,6 +911,72 @@ it("keeps attachments read-only and honors the host's per-item queue grants", as
   expect(state.runSessionAction).not.toHaveBeenCalled();
 });
 
+it.each(["same-origin", "lan-http"] as const)(
+  "labels a message waiting for ChatGPT and keeps removal available over %s",
+  async (transport) => {
+    const lan = transport === "lan-http";
+    const reason = "codex-waiting-for-owner";
+    state = {
+      ...state,
+      current: {
+        id: "s",
+        agent: "codex",
+        title: "Codex",
+        workspace_id: "w",
+        archived: false,
+        sidechain: false,
+        availability: "readable",
+      },
+      access: {
+        ...state.access!,
+        experimentalEnabled: true,
+        device: { ...state.access!.device!, send: true, advancedControl: !lan },
+      },
+      capabilities: {
+        sessionId: "s",
+        executionMode: "codex-managed",
+        status: "idle",
+        features: {
+          "queue-list": { available: true },
+          "queue-update": { available: true },
+          "queue-delete": { available: true },
+        },
+      },
+      client: Object.assign(state.client, {
+        connection: lan
+          ? { type: transport, origin: "http://192.168.1.20:1422" }
+          : { type: transport },
+        codexQueue: vi.fn().mockResolvedValue({
+          sessionId: "s",
+          data: [
+            {
+              id: "waiting",
+              text: "Next message",
+              status: "pending",
+              reason,
+              actions: { update: { available: false, reason }, delete: { available: true } },
+            },
+          ],
+        }),
+      }),
+      refresh: vi.fn(),
+    };
+    render(<SessionTools open />);
+    const waiting = await screen.findByText("等待 ChatGPT 放开会话");
+    expect(waiting).toHaveAttribute("role", "status");
+    expect(screen.getByText("Next message")).toBeVisible();
+    expect(screen.getByRole("button", { name: "修改" })).toBeDisabled();
+    const remove = screen.getByRole("button", { name: "移除" });
+    expect(remove).toBeEnabled();
+    fireEvent.click(remove);
+    await waitFor(() =>
+      expect(state.runSessionAction).toHaveBeenCalledExactlyOnceWith("queue-delete", {
+        queuedSubmissionId: "waiting",
+      }),
+    );
+  },
+);
+
 it("drains a queue invalidation received while an older queue read is pending", async () => {
   let finish!: (value: { sessionId: string; data: { id: string; text: string }[] }) => void;
   const codexQueue = vi

@@ -38,7 +38,11 @@ afterEach(async () => {
   }
 });
 
-async function fixture({ lan = false, elevatedCodexPolicy = false } = {}) {
+async function fixture({
+  lan = false,
+  elevatedCodexPolicy = false,
+  codexFollowerMode = false,
+} = {}) {
   const root = await mkdtemp(join(tmpdir(), "agentkib-admission-"));
   fixtures.push(() => rm(root, { recursive: true, force: true }));
   const workspaces = await Promise.all(
@@ -53,10 +57,16 @@ async function fixture({ lan = false, elevatedCodexPolicy = false } = {}) {
       id: `${agent}:${id}`,
       workspace_id: id,
       agent,
-      executionMode,
+      executionMode: codexFollowerMode && agent === "codex" ? "codex-follower" : executionMode,
     })),
   );
   const hostDispatches: HostSessionRequest["host"][] = [];
+  const queues = new Map<string, Record<string, unknown>[]>();
+  const queueReads: Record<string, unknown>[] = [];
+  const queueReceipts = new Map<
+    string,
+    { deviceId: string; sessionId: string; workspaceId: string; ownerWaitOnly?: true }
+  >();
   const service = new WebAccessService({
     ...(lan ? { mode: "lan", addresses: () => [{ name: "fixture", address: lanAddress }] } : {}),
     dataDir: root,
@@ -67,6 +77,21 @@ async function fixture({ lan = false, elevatedCodexPolicy = false } = {}) {
     verifiedDshFollower: true,
     verifiedDevinManaged: true,
     verifiedAntigravityManaged: true,
+    receiptRequest: async ({ requestId, deviceId }) => {
+      const receipt = queueReceipts.get(requestId);
+      if (!receipt || receipt.deviceId !== deviceId) return { found: false, requestId };
+      return {
+        found: true,
+        requestId,
+        sessionId: receipt.sessionId,
+        workspaceId: receipt.workspaceId,
+        operation: "queue-delete",
+        executionMode: "codex-managed",
+        status: "accepted",
+        completionObserved: false,
+        ack: { accepted: true, requestId, ownerWaitOnly: receipt.ownerWaitOnly },
+      };
+    },
     sessionRequest: async ({ host }) => {
       const input = host.request;
       if (input.operation === "catalog") return { sessions, workspaces };
@@ -77,8 +102,20 @@ async function fixture({ lan = false, elevatedCodexPolicy = false } = {}) {
       if (input.operation === "capabilities")
         return {
           executionMode: session.executionMode,
-          features: { "queue-add": { available: true }, compact: { available: true } },
+          features: {
+            "queue-add": { available: true },
+            compact: { available: true },
+            ...(queues.has(session.id) && {
+              "queue-list": { available: true },
+              "queue-delete": { available: true },
+            }),
+          },
+          ...(queues.has(session.id) && { ownerWaitQueue: true }),
         };
+      if (input.operation === "queue-list") {
+        queueReads.push(input);
+        return { data: queues.get(session.id) ?? [] };
+      }
       if (input.operation === "live")
         return {
           sessionId: session.id,
@@ -89,7 +126,7 @@ async function fixture({ lan = false, elevatedCodexPolicy = false } = {}) {
           status: "idle",
           sendEnabled: true,
         };
-      if (!["queue-add", "send", "compact"].includes(String(input.operation)))
+      if (!["queue-add", "queue-delete", "send", "compact"].includes(String(input.operation)))
         throw new Error("unexpected-fixture-operation");
       hostDispatches.push(host);
       if (
@@ -107,6 +144,20 @@ async function fixture({ lan = false, elevatedCodexPolicy = false } = {}) {
           controlOutcome: "not-dispatched",
           reason: "native-policy-full-access-required",
         };
+      if (input.operation === "queue-delete" && input.ownerWaitOnly === true) {
+        queueReceipts.set(String(input.requestId), {
+          deviceId: String(input.deviceId),
+          sessionId: session.id,
+          workspaceId: session.workspace_id,
+          ownerWaitOnly: true,
+        });
+        return {
+          accepted: true,
+          requestId: input.requestId,
+          sessionId: session.id,
+          ownerWaitOnly: true,
+        };
+      }
       return { accepted: true, requestId: input.requestId, sessionId: session.id };
     },
   });
@@ -195,9 +246,9 @@ async function fixture({ lan = false, elevatedCodexPolicy = false } = {}) {
         await service.request({
           operation: "approve",
           id: paired.body.pending!.id,
-          send: true,
+          send: kind !== "queue-only",
           approve: true,
-          advancedControl: true,
+          advancedControl: kind !== "send-only",
         });
       else expect(paired.body.device).toMatchObject({ accessMode: "full" });
     } else {
@@ -206,11 +257,14 @@ async function fixture({ lan = false, elevatedCodexPolicy = false } = {}) {
         advancedControl: kind !== "send-only",
       });
     }
+    const paired = await http("/access");
     return {
+      id: (paired.body.device as { id: string }).id,
+      http,
       control(
         provider: ProviderCase,
         workspaceId: string,
-        operation: "queue-add" | "send" | "compact" = "queue-add",
+        operation: "queue-add" | "queue-delete" | "send" | "compact" = "queue-add",
         path = operation === "send" ? "/send" : "/managed/action",
         extra: Record<string, unknown> = {},
       ) {
@@ -233,6 +287,9 @@ async function fixture({ lan = false, elevatedCodexPolicy = false } = {}) {
     device,
     service,
     hostDispatches,
+    queues,
+    queueReads,
+    queueReceipts,
     get dispatched() {
       return hostDispatches.map(({ request }) => request);
     },
@@ -296,6 +353,180 @@ describe("host session-control admission by provider and device", () => {
       expect.objectContaining({ operation: "send", sessionId: "codex:allowed" }),
     ]);
     expect(host.hostDispatches[0]).toHaveProperty("restrictCodexNativePolicy", true);
+  });
+
+  it("limits LAN queue reads and cancels to the requesting device's waiting item", async () => {
+    const host = await fixture({ lan: true });
+    const device = await host.device("send-only");
+    const other = await host.device("send-only");
+    const noSend = await host.device("queue-only");
+    const sessionId = "codex:allowed";
+    const waiting = {
+      id: "waiting",
+      status: "pending",
+      reason: "codex-waiting-for-owner",
+      ownerWait: true,
+      ownerWaitDeviceId: device.id,
+      ownerWaitWorkspaceId: "allowed",
+      input: [{ type: "text", text: "Waiting message" }],
+      actions: { delete: { available: true } },
+    };
+    host.queues.set(sessionId, [
+      waiting,
+      { ...waiting, id: "foreign", ownerWaitDeviceId: other.id },
+      { ...waiting, id: "wrong-workspace", ownerWaitWorkspaceId: "other" },
+      { ...waiting, id: "wrong-reason", reason: "session-busy" },
+      { ...waiting, id: "cannot-delete", actions: { delete: { available: false } } },
+      { ...waiting, id: "interrupted", status: "unknown", reason: "control-outcome-unconfirmed" },
+      { id: "native", input: [{ type: "text", text: "Native message" }] },
+    ]);
+    const queuePath = `/codex/queue?sessionId=${sessionId}`;
+    const own = await device.http(queuePath);
+    expect(own).toMatchObject({
+      status: 200,
+      body: {
+        sessionId,
+        data: [
+          {
+            id: "waiting",
+            status: "pending",
+            reason: "codex-waiting-for-owner",
+            text: "Waiting message",
+            actions: { delete: { available: true }, update: { available: false } },
+          },
+          { id: "cannot-delete", actions: { delete: { available: false } } },
+          { id: "interrupted", actions: { delete: { available: false } } },
+        ],
+      },
+    });
+    expect(JSON.stringify(own.body)).not.toContain(device.id);
+    expect(JSON.stringify(own.body)).not.toContain(other.id);
+    expect(await other.http(queuePath)).toMatchObject({
+      status: 200,
+      body: { data: [{ id: "foreign" }] },
+    });
+    expect(await noSend.http(queuePath)).toMatchObject({
+      status: 403,
+      body: { error: "permission_denied" },
+    });
+    expect(await device.http("/codex/queue?sessionId=codex:missing")).toMatchObject({
+      status: 403,
+      body: { error: "workspace_not_authorized" },
+    });
+    expect(await device.http(`/codex/capabilities?sessionId=${sessionId}`)).toMatchObject({
+      status: 200,
+      body: {
+        features: {
+          "queue-list": { available: true },
+          "queue-delete": { available: true },
+          "queue-add": { available: false },
+        },
+      },
+    });
+
+    const cancel = (id: string, path = "/codex/queue-delete") =>
+      device.control(providers[0], "allowed", "queue-delete", path, { queuedSubmissionId: id });
+    for (const id of [
+      "foreign",
+      "wrong-workspace",
+      "wrong-reason",
+      "cannot-delete",
+      "interrupted",
+      "native",
+    ])
+      expect(await cancel(id)).toMatchObject({
+        status: 409,
+        body: { error: "queue_item_unavailable", controlOutcome: "not-dispatched" },
+      });
+    expect(await cancel("waiting", "/managed/action")).toMatchObject({ status: 403 });
+    expect(
+      await noSend.control(providers[0], "allowed", "queue-delete", "/codex/queue-delete", {
+        queuedSubmissionId: "waiting",
+      }),
+    ).toMatchObject({ status: 403, body: { error: "permission_denied" } });
+    expect(host.dispatched).toEqual([]);
+    const cancelled = await cancel("waiting");
+    expect(cancelled).toMatchObject({ status: 200, body: { accepted: true } });
+    expect(cancelled.body).not.toHaveProperty("ownerWaitOnly");
+    const receiptPath = `/requests/${cancelled.body.requestId}`;
+    expect(await device.http(receiptPath)).toMatchObject({
+      status: 200,
+      body: { status: "accepted", ack: { accepted: true } },
+    });
+    expect((await device.http(receiptPath)).body.ack).not.toHaveProperty("ownerWaitOnly");
+    expect(await other.http(receiptPath)).toMatchObject({
+      status: 200,
+      body: { found: false },
+    });
+    const nativeReceiptId = randomUUID();
+    host.queueReceipts.set(nativeReceiptId, {
+      deviceId: device.id,
+      sessionId,
+      workspaceId: "allowed",
+    });
+    expect(await device.http(`/requests/${nativeReceiptId}`)).toMatchObject({
+      status: 403,
+      body: { error: "permission_denied" },
+    });
+    expect(host.dispatched).toEqual([
+      expect.objectContaining({
+        operation: "queue-delete",
+        sessionId,
+        queuedSubmissionId: "waiting",
+        deviceId: device.id,
+        ownerWaitOnly: true,
+      }),
+    ]);
+    expect(host.hostDispatches[0]).toHaveProperty("restrictCodexNativePolicy", true);
+    expect(host.queueReads.length).toBeGreaterThan(0);
+    for (const request of host.queueReads) expect(request.ownerWaitOnly).toBe(true);
+  });
+
+  it("lets the owning non-LAN device dismiss an interrupted wait on a followed session", async () => {
+    const host = await fixture({ codexFollowerMode: true });
+    const owner = await host.device("full");
+    const other = await host.device("full");
+    const sessionId = "codex:allowed";
+    host.queues.set(sessionId, [
+      {
+        id: "interrupted",
+        status: "unknown",
+        reason: "control-outcome-unconfirmed",
+        ownerWait: true,
+        ownerWaitDeviceId: owner.id,
+        ownerWaitWorkspaceId: "allowed",
+        input: [{ type: "text", text: "Interrupted message" }],
+        actions: { delete: { available: true } },
+      },
+    ]);
+    const queuePath = `/codex/queue?sessionId=${sessionId}`;
+    expect(await owner.http(queuePath)).toMatchObject({
+      status: 200,
+      body: {
+        data: [
+          {
+            id: "interrupted",
+            status: "unknown",
+            reason: "control-outcome-unconfirmed",
+            actions: { delete: { available: true } },
+          },
+        ],
+      },
+    });
+    expect(await other.http(queuePath)).toMatchObject({
+      status: 200,
+      body: { data: [{ actions: { delete: { available: false } } }] },
+    });
+    const cancel = (device: typeof owner) =>
+      device.control(providers[0], "allowed", "queue-delete", "/managed/action", {
+        queuedSubmissionId: "interrupted",
+      });
+    expect(await cancel(other)).toMatchObject({ status: 409 });
+    expect(host.dispatched).toEqual([]);
+    expect(await cancel(owner)).toMatchObject({ status: 200 });
+    expect(host.dispatched).toEqual([
+      expect.objectContaining({ ownerWaitOnly: true, deviceId: owner.id }),
+    ]);
   });
 
   it.each(["restricted", "full"] as const)(

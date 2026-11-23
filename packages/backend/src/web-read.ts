@@ -1,3 +1,4 @@
+import type { OrchestrationService } from "./orchestration-service";
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import path from "node:path";
@@ -179,6 +180,10 @@ export class WebReadRequests {
     dshProvider = new DshSessionProvider(),
     personControlled?: (sessionId: string, operation: string) => void,
     requestCodexSession?: (request: Record<string, unknown>) => Promise<unknown>,
+    deferredCodex?: Pick<
+      OrchestrationService,
+      "checkDeferredCodexSend" | "deferredCodexSendResult"
+    >,
   ) {
     this.#codex = new CodexSessionProvider({
       store,
@@ -204,6 +209,8 @@ export class WebReadRequests {
         this.managedControl(request, restrictNativePolicy),
       querySession: (request) => this.managedQuery(request),
       requestSession: requestCodexSession,
+      checkDeferredCodexSend: deferredCodex?.checkDeferredCodexSend,
+      deferredCodexSendResult: deferredCodex?.deferredCodexSendResult,
       normalizeContextUsage,
       compactingRejection,
     });

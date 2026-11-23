@@ -109,6 +109,12 @@ export function sessionControlRefusalReason(
       reason === "native-effort-unconfirmed",
   );
 }
+export function isWaitingForOwnerAcknowledgement(
+  value: { status?: string; reason?: string } | null | undefined,
+): boolean {
+  return value?.status === "waiting-for-owner" || value?.reason === "codex-waiting-for-owner";
+}
+
 export interface SessionControlPending {
   requestId: string;
   sessionId?: string;
@@ -393,7 +399,7 @@ export function createSessionControl<Pending extends SessionControlPending>({
           throw new ApiError(409, "pending_storage_unavailable", "not-dispatched");
         }
       }
-      await client.request(kind, {
+      const result = await client.request<{ status?: string; reason?: string }>(kind, {
         sessionId: id,
         requestId,
         bootId: access.bootId,
@@ -433,21 +439,25 @@ export function createSessionControl<Pending extends SessionControlPending>({
         if (durableScope.current === scope) durablePending.current = readPending(scope);
       }
       if (g !== generation.current) return;
-      receipt.current = {
-        sessionId: id,
-        requestId,
-        turnId:
-          kind === "send"
-            ? undefined
-            : kind === "stop"
-              ? live.turnId
-              : kind === "answer"
-                ? question!.turnId
-                : approval!.turnId,
-        // A current native interaction already establishes an active turn,
-        // even if the owner uses an unfamiliar waiting-status label.
-        observedActive: kind !== "send",
-      };
+      // An accepted queue entry owns no native turn yet. The current owner may run its own turns.
+      receipt.current =
+        kind === "send" && isWaitingForOwnerAcknowledgement(result)
+          ? undefined
+          : {
+              sessionId: id,
+              requestId,
+              turnId:
+                kind === "send"
+                  ? undefined
+                  : kind === "stop"
+                    ? live.turnId
+                    : kind === "answer"
+                      ? question!.turnId
+                      : approval!.turnId,
+              // A current native interaction already establishes an active turn,
+              // even if the owner uses an unfamiliar waiting-status label.
+              observedActive: kind !== "send",
+            };
       setNotice("accepted", undefined, kind);
       if (kind === "send" && command === undefined) {
         setMessage("");

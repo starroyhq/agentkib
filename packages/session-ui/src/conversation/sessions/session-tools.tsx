@@ -118,7 +118,15 @@ export function SessionTools({
       ? registeredQueue
       : undefined;
   const queueAgent = operationsQueue?.agent;
-  const queueReadable = canReadSessionQueue(operationsQueue, selected, capabilities, access);
+  // LAN Codex capabilities only grant queue actions for this device's own waiting item.
+  const lanWaitQueue =
+    client.connection?.type === "lan-http" && operationsQueue?.connection === "native-app";
+  const queueReadable = lanWaitQueue
+    ? access?.status === "approved" &&
+      access.device?.send === true &&
+      capabilities?.sessionId === selected &&
+      capabilities.features["queue-list"]?.available === true
+    : canReadSessionQueue(operationsQueue, selected, capabilities, access);
   const queueScope = JSON.stringify([
     selected,
     queueAgent,
@@ -592,6 +600,11 @@ export function SessionTools({
                 return (
                   <OperationRow key={item.id} className="block space-y-2">
                     <p className="whitespace-pre-wrap break-words">{item.text || item.id}</p>
+                    {item.reason && (
+                      <span role="status" className="text-xs text-muted-foreground">
+                        {explainReason(item.reason).text}
+                      </span>
+                    )}
                     {item.hasAttachments && (
                       <p className="text-xs text-muted-foreground">{copy.queueAttachments}</p>
                     )}
@@ -643,7 +656,7 @@ export function SessionTools({
                           "queue-delete",
                           copy.queueDelete,
                           { queuedSubmissionId: item.id },
-                          pending && item.actions?.delete?.available !== false,
+                          item.actions?.delete?.available ?? pending,
                           "sm",
                           queueReason("delete", item.actions?.delete?.reason),
                         )}

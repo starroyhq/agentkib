@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 export interface ClaudeScheduledSession {
   sessionId: string;
   /** Absent on the existing Claude host path. */
-  agent?: "devin" | "antigravity";
+  agent?: "devin" | "antigravity" | "codex";
   workspaceId: string;
   runtimeBootId: string;
   revision: number;
@@ -24,8 +24,8 @@ export interface ClaudeScheduledSession {
 }
 
 export interface ClaudeScheduleAuthority {
-  owns(deviceId: string): boolean;
-  authorize(session: ClaudeScheduledSession): Promise<void>;
+  owns(deviceId: string, agent?: ClaudeScheduledSession["agent"]): boolean;
+  authorize(session: ClaudeScheduledSession): Promise<void | { restrictNativePolicy: boolean }>;
   reserve(sessionId: string): boolean;
   release(sessionId: string): void;
   settled(sessionId: string): Promise<void>;
@@ -102,6 +102,7 @@ export class ClaudeHostScheduler {
     if (!session.next) return;
     await this.invoke({
       operation: "schedule-pause",
+      ...(session.agent === "codex" ? { agent: "codex", itemId: session.next.itemId } : {}),
       sessionId: session.sessionId,
       deviceId: session.next.deviceId,
       requestId: randomUUID(),
@@ -118,6 +119,9 @@ export class ClaudeHostScheduler {
       sessions?: ClaudeScheduledSession[];
     };
     if (!Array.isArray(result?.sessions)) return;
+    const reported = new Set(result.sessions.map(({ sessionId }) => sessionId));
+    for (const [id, session] of this.sessions)
+      if (session.agent === "codex" && !reported.has(id)) this.sessions.delete(id);
     for (const session of result.sessions) {
       if (this.serialOnly && session.agent === undefined) continue;
       const previous = this.sessions.get(session.sessionId);
@@ -135,12 +139,16 @@ export class ClaudeHostScheduler {
       }
       if (!session.next || session.paused) {
         const owner = previous?.next?.deviceId;
-        const authority = [...this.authorities].find((entry) => owner && entry.owns(owner));
+        const authority = [...this.authorities].find(
+          (entry) => owner && entry.owns(owner, session.agent),
+        );
         await authority?.settled(session.sessionId);
         continue;
       }
       const work = session.next;
-      const authority = [...this.authorities].find((entry) => entry.owns(work.deviceId));
+      const authority = [...this.authorities].find((entry) =>
+        entry.owns(work.deviceId, session.agent),
+      );
       if (!authority) {
         // The device can belong to a different desktop connected to the same runtime.
         if (this.sharedRuntimePrimary === undefined)
@@ -149,7 +157,7 @@ export class ClaudeHostScheduler {
       }
       const ownershipChanged = () =>
         this.sharedRuntimePrimary !== undefined &&
-        (!this.authorities.has(authority) || !authority.owns(work.deviceId));
+        (!this.authorities.has(authority) || !authority.owns(work.deviceId, session.agent));
       const epoch = this.epochs.get(work.deviceId) ?? 0;
       if (!authority.reserve(session.sessionId)) continue;
       let dispatched = false;
@@ -158,6 +166,7 @@ export class ClaudeHostScheduler {
         if (ownershipChanged()) continue;
         const prepared = (await this.invoke({
           operation: "schedule-prepare",
+          ...(session.agent === "codex" ? { agent: "codex" } : {}),
           sessionId: session.sessionId,
           itemId: work.itemId,
           deviceId: work.deviceId,
@@ -167,7 +176,7 @@ export class ClaudeHostScheduler {
         })) as Record<string, unknown>;
         if (prepared?.accepted !== true || typeof prepared.permitId !== "string") continue;
         if (ownershipChanged()) continue;
-        await authority.authorize(session);
+        const verified = await authority.authorize(session);
         if (ownershipChanged()) continue;
         if (!this.authorities.has(authority) || epoch !== (this.epochs.get(work.deviceId) ?? 0)) {
           await this.pause(session, "authorization-changed");
@@ -176,6 +185,7 @@ export class ClaudeHostScheduler {
         dispatched = true;
         const outcome = (await this.invoke({
           operation: "schedule-dispatch",
+          ...(session.agent === "codex" ? { agent: "codex" } : {}),
           sessionId: session.sessionId,
           itemId: work.itemId,
           deviceId: work.deviceId,
@@ -183,6 +193,9 @@ export class ClaudeHostScheduler {
           expectedRevision: prepared.expectedRevision,
           runtimeBootId: prepared.runtimeBootId,
           permitId: prepared.permitId,
+          ...(session.agent === "codex" && {
+            restrictNativePolicy: verified?.restrictNativePolicy !== false,
+          }),
         })) as Record<string, unknown>;
         if (outcome?.accepted !== true && !ownershipChanged())
           await this.pause(session, "scheduled-dispatch-unconfirmed");

@@ -85,8 +85,19 @@ class ReleasedWorkerServer extends EventEmitter {
           cwd: this.workspace,
           model: "fixture-model",
           reasoningEffort: null,
-          ...nativePolicy,
-          sandbox: { type: "dangerFullAccess" },
+          ...(params.sandbox === "workspace-write"
+            ? {
+                approvalPolicy: "on-request",
+                approvalsReviewer: params.approvalsReviewer,
+                sandbox: {
+                  type: "workspaceWrite",
+                  writableRoots: [this.workspace],
+                  networkAccess: false,
+                  excludeTmpdirEnvVar: true,
+                  excludeSlashTmp: true,
+                },
+              }
+            : { ...nativePolicy, sandbox: { type: "dangerFullAccess" } }),
         };
       case "turn/start":
         return { turn: { id: "dispatched-turn", status: "inProgress" } };
@@ -95,6 +106,13 @@ class ReleasedWorkerServer extends EventEmitter {
       default:
         throw new Error(`Unexpected Worker app-server method: ${method}`);
     }
+  }
+
+  complete() {
+    this.emit("notification", {
+      method: "turn/completed",
+      params: { threadId: this.nativeId, turn: { id: "dispatched-turn", status: "completed" } },
+    });
   }
 
   async close() {
@@ -230,10 +248,14 @@ async function fixture(
   const executable = join(bin, process.platform === "win32" ? "codex.exe" : "codex");
   writeFileSync(executable, "synthetic executable", { mode: 0o700 });
   const nativeId = randomUUID();
-  if (owner !== "released")
-    disposers.push(
-      acquirePortableFileLease(join(codexHome, "thread-writer-locks", `${nativeId}.lock`)),
-    );
+  const writerLock = join(codexHome, "thread-writer-locks", `${nativeId}.lock`);
+  let unlock = owner !== "released" ? acquirePortableFileLease(writerLock) : undefined;
+  const releaseWriter = () => {
+    unlock?.();
+    unlock = undefined;
+    rmSync(writerLock, { force: true });
+  };
+  if (unlock) disposers.push(releaseWriter);
   const time = Date.now();
   const startedAt = new Date(time).toISOString();
   const transcript = join(codexHome, "sessions", `${nativeId}.jsonl`);
@@ -288,15 +310,17 @@ async function fixture(
     .spyOn(CodexAppServerSession, "start")
     .mockRejectedValue(new Error("unexpected writer"));
   const nativeCalls: NativeRequest[] = [];
-  if (owner === "released")
+  let lastWriter: ReleasedWorkerServer | undefined;
+  const allowWriter = () =>
     writer.mockImplementation(async (command, cwd, _home, _env, _notify, onStarted) => {
       expect(command).toBe(executable);
       expect(cwd).toBe(workspace);
-      const server = new ReleasedWorkerServer(nativeId, workspace, nativeCalls);
-      const session = server as unknown as CodexAppServerSession;
+      lastWriter = new ReleasedWorkerServer(nativeId, workspace, nativeCalls);
+      const session = lastWriter as unknown as CodexAppServerSession;
       onStarted?.(session);
       return session;
     });
+  if (owner === "released") allowWriter();
   const state = new CodexFollowerState(nativeId, "fixture-owner");
   // The owner has answered discovery, but its stream has not delivered the turn yet.
   state.notification({
@@ -403,6 +427,12 @@ async function fixture(
     mutate,
     follow,
     writer,
+    allowWriter,
+    releaseWriter,
+    completeWorkerTurn: () => {
+      if (!lastWriter) throw new Error("fake app-server has not started");
+      lastWriter.complete();
+    },
     time,
     request,
     workerId,
@@ -907,35 +937,178 @@ it("opens an ownerless desktop thread only for the admitted Worker send", async 
   expect(f.writer).not.toHaveBeenCalled();
 });
 
-it("reports an unavailable desktop socket without trying to open a Worker thread", async () => {
+it("waits on an unavailable desktop socket and can cancel without interrupting the desktop", async () => {
   const f = await fixture("no-desktop-owner", false);
   f.desktop!.connect.mockRejectedValue(
     new CodexDesktopConnectionError("codex-desktop-ipc-unavailable"),
   );
-  expect(await f.call("worker_send", { ...worker, text: "Keep this task unsent" })).toMatchObject({
-    accepted: false,
-    reason: "codex-desktop-ipc-unavailable",
-  });
-  expect(f.desktop!.startTurn).not.toHaveBeenCalled();
-  expect(f.openThread).not.toHaveBeenCalled();
-  expect(f.writer).not.toHaveBeenCalled();
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  try {
+    const outcome = await f.call("worker_send", { ...worker, text: "Cancel this unsent task" });
+    const waiting = { status: "waiting-for-owner", reason: "codex-waiting-for-owner" };
+    expect(outcome).toMatchObject({ accepted: true, ...waiting });
+    expect(await f.call("worker_read", worker)).toMatchObject(waiting);
+    expect(await f.call("worker_list")).toMatchObject({ workers: [{ ...worker, ...waiting }] });
+    expect(f.desktop!.startTurn).not.toHaveBeenCalled();
+    expect(f.openThread).not.toHaveBeenCalled();
+    expect(f.writer).not.toHaveBeenCalled();
+
+    expect(await f.call("worker_stop", worker)).toMatchObject({
+      accepted: true,
+      cancelled: true,
+      requestId: outcome.requestId,
+    });
+    f.releaseWriter();
+    await vi.advanceTimersByTimeAsync(4_000);
+    expect(f.writer).not.toHaveBeenCalled();
+    expect(await f.call("worker_read", worker)).not.toMatchObject(waiting);
+  } finally {
+    vi.useRealTimers();
+  }
 });
 
-it.each([
-  ["no-desktop-owner", "codex-desktop-thread-open-failed"],
-  ["old-desktop", "codex-desktop-version-too-old"],
-] as const)("refuses a worker send with %s without starting a writer", async (owner, reason) => {
-  const f = await fixture(owner, false);
+it("sends after the lock clears with fresh policy and reports intervening desktop turns", async () => {
+  const f = await fixture("no-desktop-owner", false);
+  f.append({
+    type: "turn_context",
+    payload: {
+      cwd: f.workspace,
+      model: "fixture-model",
+      approval_policy: "never",
+      sandbox_policy: { type: "danger-full-access" },
+    },
+  });
+  const text = "Continue after the desktop releases";
+  const outcome = await f.call("worker_send", { ...worker, text });
+  expect(outcome).toMatchObject({
+    accepted: true,
+    status: "waiting-for-owner",
+    reason: "codex-waiting-for-owner",
+  });
+  expect(f.openThread).toHaveBeenCalledExactlyOnceWith(f.nativeId);
+  expect(f.desktop?.startTurn).not.toHaveBeenCalled();
+  expect(f.writer).not.toHaveBeenCalled();
+
+  const timestamp = new Date().toISOString();
+  f.append({
+    timestamp,
+    type: "event_msg",
+    payload: { type: "task_started", turn_id: "intervening-turn" },
+  });
+  expect(await f.call("worker_read", worker)).toMatchObject({
+    status: "waiting-for-owner",
+    reason: "codex-waiting-for-owner",
+  });
+  f.append({
+    type: "turn_context",
+    payload: {
+      turn_id: "intervening-turn",
+      cwd: f.workspace,
+      model: "fixture-model",
+      approval_policy: "on-request",
+      approvals_reviewer: "user",
+      sandbox_policy: {
+        type: "workspace-write",
+        writable_roots: [f.workspace],
+        network_access: false,
+        exclude_tmpdir_env_var: true,
+        exclude_slash_tmp: true,
+      },
+    },
+  });
+  f.append({
+    timestamp: new Date().toISOString(),
+    type: "event_msg",
+    payload: { type: "task_complete", turn_id: "intervening-turn" },
+  });
+  expect(f.writer).not.toHaveBeenCalled();
+  // Observe the report without dispatching a turn in the fictitious lead session.
+  const transport = vi.spyOn(f.orchestration, "sendReport").mockImplementation(() => false);
+  f.allowWriter();
+  f.releaseWriter();
+  const policy = {
+    approvalPolicy: "on-request",
+    approvalsReviewer: "user",
+    sandbox: "workspace-write",
+  };
+  await vi.waitFor(
+    () => {
+      expect(f.nativeCalls.filter(({ method }) => method === "thread/resume")).toEqual([
+        { method: "thread/resume", params: expect.objectContaining({ ...policy }) },
+      ]);
+      expect(f.nativeCalls.filter(({ method }) => method === "turn/start")).toEqual([
+        {
+          method: "turn/start",
+          params: expect.objectContaining({
+            ...policy,
+            threadId: f.nativeId,
+            clientUserMessageId: expect.any(String),
+            input: [expect.objectContaining({ type: "text", text })],
+          }),
+        },
+      ]);
+      expect(transport).toHaveBeenCalledWith(
+        leadId,
+        deviceId,
+        expect.stringContaining("ChatGPT ran other turns while it waited"),
+      );
+    },
+    { timeout: 4_000 },
+  );
+  f.completeWorkerTurn();
+  await vi.waitFor(() => {
+    expect(transport).toHaveBeenCalledWith(
+      leadId,
+      deviceId,
+      expect.stringContaining("turn ended: completed"),
+    );
+  });
+  expect(f.nativeCalls.filter(({ method }) => method === "turn/start")).toHaveLength(1);
+});
+
+it("reports native policy refusal at delivery without starting a writer", async () => {
+  const f = await fixture("no-desktop-owner", false);
+  const nativeContext = (approval_policy: string) => ({
+    type: "turn_context",
+    payload: {
+      cwd: f.workspace,
+      model: "fixture-model",
+      approval_policy,
+      sandbox_policy: { type: "danger-full-access" },
+    },
+  });
+  f.append(nativeContext("never"));
+  expect(
+    await f.call("worker_send", { ...worker, text: "Only with a supported policy" }),
+  ).toMatchObject({
+    accepted: true,
+    status: "waiting-for-owner",
+  });
+  f.append(nativeContext("on-request"));
+  const transport = vi.spyOn(f.orchestration, "sendReport").mockImplementation(() => false);
+  f.releaseWriter();
+  await vi.waitFor(
+    () =>
+      expect(transport).toHaveBeenCalledWith(
+        leadId,
+        deviceId,
+        expect.stringContaining("native-policy-approval-policy-mismatch"),
+      ),
+    { timeout: 4_000 },
+  );
+  expect(f.writer).not.toHaveBeenCalled();
+  expect(f.desktop?.startTurn).not.toHaveBeenCalled();
+  expect(await f.call("worker_read", worker)).not.toHaveProperty("status", "waiting-for-owner");
+});
+
+it("keeps the explicit older-desktop refusal without starting a writer", async () => {
+  const f = await fixture("old-desktop", false);
   expect(await f.call("worker_send", { ...worker, text: "Must not be sent" })).toMatchObject({
     accepted: false,
-    reason,
+    reason: "codex-desktop-version-too-old",
   });
   expect(f.desktop?.connect).toHaveBeenCalled();
   expect(f.desktop?.startTurn).not.toHaveBeenCalled();
   expect(f.writer).not.toHaveBeenCalled();
-  if (owner === "no-desktop-owner") {
-    expect(f.openThread).toHaveBeenCalledExactlyOnceWith(f.nativeId);
-  } else {
-    expect(f.openThread).not.toHaveBeenCalled();
-  }
+  expect(f.openThread).not.toHaveBeenCalled();
 });

@@ -1,5 +1,6 @@
 import {
   createSessionControl,
+  isWaitingForOwnerAcknowledgement,
   sessionControlRefusalReason,
   type ControlKind,
   type ControlNotice,
@@ -997,12 +998,15 @@ export function useSessionController<Words extends ControllerWords>(
           setNotice(result.status === "accepted" ? "accepted" : "notDispatched", reason);
           // A receipt confirms admission, never resolves or removes native approvals.
           if (result.status === "accepted")
-            receipt.current = {
-              sessionId: result.sessionId,
-              requestId: entry.requestId,
-              turnId: result.turnId ?? undefined,
-              observedActive: entry.kind !== "send",
-            };
+            receipt.current =
+              entry.kind === "send" && isWaitingForOwnerAcknowledgement(result.ack)
+                ? undefined
+                : {
+                    sessionId: result.sessionId,
+                    requestId: entry.requestId,
+                    turnId: result.turnId ?? undefined,
+                    observedActive: entry.kind !== "send",
+                  };
         }
       }
       let readSettings = false;
@@ -2097,6 +2101,16 @@ export function useSessionController<Words extends ControllerWords>(
     > = {},
   ) {
     const settingsAction = isSessionSettingsAction(action);
+    const canDismissOwnerWait = (state: Live | undefined) =>
+      action === "queue-delete" &&
+      !isLan &&
+      accessRef.current?.device?.advancedControl === true &&
+      state?.sessionId === selected &&
+      state.ownerWait?.source === "user" &&
+      state.ownerWait.status === "paused" &&
+      state.ownerWait.dismissible === true &&
+      state.ownerWait.requestId === fields.queuedSubmissionId;
+    const dismissingOwnerWait = canDismissOwnerWait(live);
     if (
       mutating.current ||
       excludedIds.current.has(selected) ||
@@ -2104,6 +2118,7 @@ export function useSessionController<Words extends ControllerWords>(
       !access ||
       !live ||
       (action !== "inspect" &&
+        !dismissingOwnerWait &&
         (live.status === "outcome-unknown" ||
           live.reason === "control-outcome-unconfirmed" ||
           capabilities?.reason === "control-outcome-unconfirmed")) ||
@@ -2173,7 +2188,9 @@ export function useSessionController<Words extends ControllerWords>(
       capabilityAccessBinding(accessRef.current) !== accessBinding ||
       liveValue.current?.sessionId !== id ||
       liveValue.current?.status !== live.status ||
+      (dismissingOwnerWait && !canDismissOwnerWait(liveValue.current)) ||
       (action !== "inspect" &&
+        !dismissingOwnerWait &&
         (liveValue.current?.status === "outcome-unknown" ||
           liveValue.current?.reason === "control-outcome-unconfirmed" ||
           checked?.reason === "control-outcome-unconfirmed")) ||

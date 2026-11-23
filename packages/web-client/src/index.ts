@@ -483,6 +483,13 @@ export interface Live {
    * and a message asks the app to show the thread, then goes through it.
    */
   ownerHandoff?: boolean;
+  /** A Codex send retained by the host while its native owner holds the writer lock. */
+  ownerWait?: {
+    requestId: string;
+    status: "paused" | "waiting-for-owner";
+    source: "user" | "worker";
+    dismissible?: true;
+  };
   /** Observed native terminal version; does not grant sending or stopping. */
   bridgeCompatibility?: import("@agentkib/runtime-protocol").ClaudeBridgeCompatibilityStatus | null;
   /** Authenticated offline reconnect failure; never a control grant. Null clears prior feedback. */
@@ -559,6 +566,7 @@ export type ControlReceipt =
         requestId?: string;
         sessionId?: string;
         reconciled?: boolean;
+        status?: string;
         reason?: string;
         error?: string;
       } | null;
@@ -826,6 +834,8 @@ export interface CodexQueueItem {
   /** Only present when the provider knows availability for this item. */
   actions?: SessionQueueItemActions;
   status?: "pending" | "claimed" | "dispatched" | "unknown";
+  /** A provider reason describing the current state of this queue entry. */
+  reason?: string;
   hasAttachments?: boolean;
   clientUserMessageId?: string;
   text?: string;
@@ -1399,6 +1409,8 @@ export class WebClient {
       return Promise.reject(new ApiError(409, "operation_unavailable", "not-dispatched"));
     if (action === "inspect" && agent !== "codex")
       return this.managedInspect(body.sessionId, agent).then((context) => ({ context }));
+    if (this.connection.type === "lan-http" && agent === "codex" && action === "queue-delete")
+      return this.codexAction(action, body);
     return this.request<SessionActionResult>("managed/action", {
       ...body,
       operation: action,

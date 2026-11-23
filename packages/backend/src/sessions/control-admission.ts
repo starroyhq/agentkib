@@ -70,6 +70,8 @@ export const managedControlSchema = z
     name: z.string().max(256).optional(),
     queuedSubmissionId: z.string().min(1).max(256).optional(),
     queuedSubmissionIds: z.array(z.string().min(1).max(256)).max(100).optional(),
+    ownerWaitOnly: z.literal(true).optional(),
+    allowOwnerWait: z.literal(true).optional(),
     model: z.string().min(1).max(256).optional(),
     /** Devin: the permission mode its next turns run with. */
     permissionMode: z.enum(DEVIN_PERMISSION_MODES).optional(),
@@ -85,6 +87,8 @@ export const managedControlSchema = z
   })
   .strict()
   .refine(validHistoryControl)
+  .refine((request) => !request.ownerWaitOnly || request.operation === "queue-delete")
+  .refine((request) => !request.allowOwnerWait || request.operation === "send")
   .refine(
     (request) => request.operation === "settings" || request.expectedSettingsScope === undefined,
   )

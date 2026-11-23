@@ -102,7 +102,9 @@ AgentKib 每 20 秒查看已指派 Worker 的实时状态，同一轮检查里�
 | Devin | AgentKib 启动的单轮进程及其退出结果。缺少命令生命周期，跳过卡住判断 |
 | Antigravity | ACP 的工具状态、正文和思考事件 |
 
-Codex 的写锁被其他进程持有时，Worker 工具会把有 `externalTurn` 证据的轮次显示为运行中。只有占用证据时显示 `busy` 及 `codex-owner-busy`。外部轮次运行期间，派工依据现有能力排队，当前 Codex 桌面端 follower 会返回 `follower-operation-unverified`。
+Codex 的写锁被其他进程持有时，Worker 工具会把有 `externalTurn` 证据的轮次显示为运行中。只有占用证据时显示 `busy` 及 `codex-owner-busy`。桌面端能送达时继续优先交给当前 owner。确认桌面端未派发且写锁仍存在时，`worker_send` 可返回 `waiting-for-owner` 和 `codex-waiting-for-owner`。`worker_list` 和 `worker_read` 展示该等待，`worker_stop` 优先取消同一 Worker 的待发消息。
+
+锁释放后，宿主用原来获准的设备和委派身份重新核权，并按最新原生策略续接。策略不兼容时回报原原因。送达前若有已记录的 ChatGPT 轮次，会单独提示项目 Agent 先读取上下文，该消息所属的轮次结束后照常汇报。重启后，由用户先恢复委派，再由项目 Agent 用 `worker_send` 重送相同内容，恢复原条目。
 
 ### 恢复 Worker
 

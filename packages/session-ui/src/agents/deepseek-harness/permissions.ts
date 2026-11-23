@@ -1,25 +1,10 @@
-import type { InteractionLocale } from "./interaction-model";
-import { newSessionCopy } from "./new-session";
-
-export interface PolicyLabel {
-  name: string;
-  description: string;
-}
-
-/**
- * Codex's execution policies in the words of its own desktop app. The host sends English only
- * (Codex's app-server has no locale), so clients localize by id and fall back to the host's text
- * for an id this table does not know. Shares the new-session composer's table.
- */
-export function codexPolicyLabel(id: string, locale: InteractionLocale): PolicyLabel | undefined {
-  const choices = newSessionCopy(locale).permissions.codex.choices as Record<string, PolicyLabel>;
-  return choices[id];
-}
+import type { InteractionLocale } from "../../interaction-model";
+import type { PermissionLabel, SessionPermissionDescriptor } from "../session-permissions";
 
 // Names from DeepSeek Harness's own client (dsh-client-ui-permission-presets); DSH has no
 // Traditional Chinese, so that column is AgentKib's. Descriptions are AgentKib's: the host only
 // reports the preset keys.
-const DSH_POLICIES: Record<string, Record<InteractionLocale, PolicyLabel>> = {
+const DSH_POLICIES: Record<string, Record<InteractionLocale, PermissionLabel>> = {
   "read-only": {
     "zh-CN": { name: "仅可查看", description: "可读取工作区；修改和其他操作需要你批准。" },
     "zh-Hant": { name: "僅可檢視", description: "可讀取工作區；修改和其他操作需要你核准。" },
@@ -86,6 +71,13 @@ const DSH_POLICIES: Record<string, Record<InteractionLocale, PolicyLabel>> = {
   },
 };
 
-export function dshPolicyLabel(id: string, locale: InteractionLocale): PolicyLabel | undefined {
+export function dshPolicyLabel(id: string, locale: InteractionLocale): PermissionLabel | undefined {
   return DSH_POLICIES[id]?.[locale];
 }
+
+export const deepSeekHarnessPermissions = {
+  settings: {
+    label: dshPolicyLabel,
+    risky: (id) => id === "full-access-on-request" || id === "danger-full-access",
+  },
+} satisfies SessionPermissionDescriptor;

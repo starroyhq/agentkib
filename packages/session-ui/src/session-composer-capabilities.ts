@@ -1,5 +1,4 @@
 import {
-  sessionProviderCapabilities,
   type Access,
   type SessionSettings,
   type Live,
@@ -9,34 +8,11 @@ import {
   type WebClient,
 } from "@agentkib/web-client";
 import { useCallback, useLayoutEffect, useMemo, useRef } from "react";
-import type { InteractionLocale } from "./interaction-model";
+import { resolveSessionProvider } from "./session-provider";
+import { nativeAppControlsSession } from "./agents/codex/settings-ownership";
+import { sessionModelSettings } from "./agents/session-model-settings";
 
-/** Observed native modes are labels, not additional writable permission choices. */
-export function observedClaudePermissionLabel(mode: string | undefined, locale: InteractionLocale) {
-  const labels = {
-    auto: {
-      "zh-CN": "自动批准",
-      "zh-Hant": "自動核准",
-      "en-US": "Auto approval",
-      "ja-JP": "自動承認",
-    },
-    dontAsk: {
-      "zh-CN": "不询问",
-      "zh-Hant": "不詢問",
-      "en-US": "Don't ask",
-      "ja-JP": "確認しない",
-    },
-    bypassPermissions: {
-      "zh-CN": "跳过权限检查",
-      "zh-Hant": "略過權限檢查",
-      "en-US": "Bypass permissions",
-      "ja-JP": "権限確認をスキップ",
-    },
-  };
-  return mode && Object.hasOwn(labels, mode)
-    ? labels[mode as keyof typeof labels][locale]
-    : undefined;
-}
+export { observedClaudePermissionLabel } from "./agents/claude-code/permission-observation";
 
 const goalFeatures = ["goal", "goal-set", "goal-pause", "goal-resume", "goal-clear"] as const;
 
@@ -63,7 +39,7 @@ export function useComposerFollowerSettings(
   sessionId: string,
   live: Live | undefined,
 ) {
-  const follower = live?.sessionId === sessionId && live.executionMode === "codex-follower";
+  const follower = nativeAppControlsSession(live, sessionId);
   const authority = useMemo(
     () => ({ client, sessionId, follower }),
     [
@@ -121,12 +97,16 @@ export function existingSessionComposerCapabilities({
   access?: Access;
   legacyReads: boolean;
 }) {
+  const declaration = resolveSessionProvider(
+    currentId === sessionId && currentId && agent ? { id: currentId, agent } : undefined,
+    capabilities,
+  );
   return sessionComposerCapabilities({
     capabilities,
     sessionId,
     legacyReads,
     attachmentsGranted: access?.device?.attachments === true,
-    provider: sessionProviderCapabilities(agent),
+    provider: declaration && "models" in declaration ? declaration : undefined,
     slotsGranted:
       currentId === sessionId &&
       access?.status === "approved" &&
@@ -165,7 +145,7 @@ export function sessionComposerCapabilities({
   const slots = slotsGranted ? provider?.composer : undefined;
   const settingsWriteReason =
     feature("settings")?.available === false ? feature("settings")?.reason : undefined;
-  const terminalModel = selectedCapabilities?.executionMode === "claude-follower";
+  const terminalModel = sessionModelSettings(provider)?.inTerminal(selectedCapabilities) === true;
   const goalReadable = legacyFallback || goalFeatures.some((key) => feature(key)?.available);
   const goalDraftOffered = feature("goal-draft")?.available === true;
   const resourcesReadable =
@@ -187,6 +167,9 @@ export function sessionComposerCapabilities({
       !settingsAccessDenied && slotsGranted && feature("open-model-picker")?.available === true,
     settingsAccessDenied,
     settingsReadReason,
+    modelRegistered: (provider?.composer?.modelPicker ?? settingsSlots?.modelPicker) === true,
+    permissionRegistered:
+      (provider?.composer?.permissionPicker ?? settingsSlots?.permissionPicker) === true,
     reservesModelSlot:
       !settingsAccessDenied && (slots?.modelPicker ?? settingsSlots?.modelPicker) === true,
     reservesPermissionSlot:

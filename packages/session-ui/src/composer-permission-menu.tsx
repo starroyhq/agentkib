@@ -8,6 +8,7 @@ interface ComposerPermissionItem {
   description?: string;
   risky?: boolean;
   disabled?: boolean;
+  disabledReason?: string;
   selected?: boolean;
 }
 
@@ -75,6 +76,11 @@ export function ComposerPermissionMenu({
                     key={item.id}
                     className={`flex cursor-default items-start gap-1.5 rounded-md px-1.5 py-1 text-sm outline-none select-none data-highlighted:bg-accent data-highlighted:text-accent-foreground data-disabled:opacity-50 data-disabled:grayscale ${item.risky ? "text-orange-600" : ""}`}
                     disabled={disabled || item.disabled}
+                    title={
+                      disabled || item.disabled
+                        ? (item.disabledReason ?? disabledReason)
+                        : undefined
+                    }
                     aria-current={active || undefined}
                     onClick={() => onSelect(item.id)}
                   >

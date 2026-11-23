@@ -1,4 +1,4 @@
-import type { InteractionLocale as Locale } from "./interaction-model";
+import type { InteractionLocale as Locale } from "../../interaction-model";
 
 // Wording for the Claude permission mode notice. Each line states what the CLI does in that mode;
 // none of it describes a control AgentKib offers.

@@ -2,8 +2,9 @@ import { z } from "zod";
 import { DEVIN_PERMISSION_MODES } from "../agents/devin/devin-managed-runner";
 import { historyReferenceSchema, validHistoryControl } from "../history-control-schema";
 import { admitControlReceipt } from "./control-receipts";
+import { ANTIGRAVITY_PERMISSION_MODES } from "./validate/antigravity";
 
-export const managedControlSchema = z
+const managedControlFields = z
   .object({
     operation: z.enum([
       "send",
@@ -71,8 +72,6 @@ export const managedControlSchema = z
     queuedSubmissionId: z.string().min(1).max(256).optional(),
     queuedSubmissionIds: z.array(z.string().min(1).max(256)).max(100).optional(),
     model: z.string().min(1).max(256).optional(),
-    /** Devin: the permission mode its next turns run with. */
-    permissionMode: z.enum(DEVIN_PERMISSION_MODES).optional(),
     effort: z.string().min(1).max(64).nullable().optional(),
     serviceTier: z.string().min(1).max(128).nullable().optional(),
     mode: z.string().min(1).max(128).nullable().optional(),
@@ -83,18 +82,29 @@ export const managedControlSchema = z
     expectedSettingsScope: z.string().uuid().optional(),
     goal: z.unknown().optional(),
   })
-  .strict()
-  .refine(validHistoryControl)
-  .refine(
-    (request) => request.operation === "settings" || request.expectedSettingsScope === undefined,
-  )
-  .refine(
-    (request) =>
-      request.operation === "settings" || (request.effort !== null && request.serviceTier !== null),
-  );
+  .strict();
 
-export type ApplyManagedControl = (
-  request: z.infer<typeof managedControlSchema>,
+function controlSchemaFor<Mode extends string>(modes: readonly [Mode, ...Mode[]]) {
+  return managedControlFields
+    .extend({ permissionMode: z.enum(modes).optional() })
+    .refine(validHistoryControl)
+    .refine(
+      (request) => request.operation === "settings" || request.expectedSettingsScope === undefined,
+    )
+    .refine(
+      (request) =>
+        request.operation === "settings" ||
+        (request.effort !== null && request.serviceTier !== null),
+    );
+}
+
+export const managedControlSchema = controlSchemaFor(DEVIN_PERMISSION_MODES);
+export const antigravityManagedControlSchema = controlSchemaFor(ANTIGRAVITY_PERMISSION_MODES);
+
+export type ManagedControlRequest = z.infer<typeof managedControlFields>;
+
+export type ApplyManagedControl<Request = z.infer<typeof managedControlSchema>> = (
+  request: Request,
   fingerprint: string,
 ) => Promise<unknown>;
 
@@ -105,12 +115,13 @@ type ControlAdmissionContext = {
   runnerForSession(sessionId: string): { observed: boolean } | undefined;
 };
 
-export async function admitManagedControl(
+export async function admitManagedControl<Request extends ManagedControlRequest>(
   context: ControlAdmissionContext,
   value: unknown,
-  execute: ApplyManagedControl,
+  schema: { parse(value: unknown): Request },
+  execute: ApplyManagedControl<Request>,
 ): Promise<unknown> {
-  const request = managedControlSchema.parse(value);
+  const request = schema.parse(value);
   const id = request.sessionId;
   const admission = context.controlSessions.get(id) ?? { count: 0, observed: false };
   admission.count += 1;

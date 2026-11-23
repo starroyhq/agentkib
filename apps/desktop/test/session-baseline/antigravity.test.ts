@@ -92,6 +92,17 @@ describe("Antigravity session baseline through HTTP, backend RPC and ACP frames"
   let sessionId: string;
   let localSessionId: string;
 
+  const openBackend = (reuseData = false) => {
+    const home = join(root, "home");
+    return startBackend({
+      data: join(root, "backend"),
+      workspace,
+      environment: { HOME: home, USERPROFILE: home, CODEX_HOME: join(home, ".codex"), PATH: root },
+      indexSessions: true,
+      reuseData,
+    });
+  };
+
   beforeEach(async () => {
     root = await realpath(await mkdtemp(join(tmpdir(), "ak-baseline-acp-")));
     workspace = join(root, "workspace");
@@ -129,12 +140,7 @@ describe("Antigravity session baseline through HTTP, backend RPC and ACP frames"
       warnings: [],
     });
     acp = fakeAcp();
-    backend = await startBackend({
-      data,
-      workspace,
-      environment: { HOME: home, USERPROFILE: home, CODEX_HOME: join(home, ".codex"), PATH: root },
-      indexSessions: true,
-    });
+    backend = await openBackend();
     const store = new BackendStore(join(data, "agentkib.db"));
     try {
       store.sessions.sync("workspace", "antigravity", nativeSessions);
@@ -160,6 +166,97 @@ describe("Antigravity session baseline through HTTP, backend RPC and ACP frames"
   });
 
   const live = (id = sessionId) => host.http(`/live?sessionId=${id}`);
+
+  it("confirms Web permission writes and keeps settings writable on desktop after reopening", async () => {
+    const settingsPath = `/managed/settings?sessionId=${sessionId}`;
+    let settings = await host.http(settingsPath);
+    expect(settings).toMatchObject({
+      status: 200,
+      body: {
+        current: { permissionMode: "default" },
+        writable: { permissionMode: allowed },
+      },
+    });
+    for (const permissionMode of ["plan", "default"]) {
+      const requestId = randomUUID();
+      const revision = settings.body.revision;
+      const before = await live();
+      const acknowledgement = {
+        accepted: true,
+        completed: true,
+        appliesTo: "next-turn",
+        sessionId,
+        requestId,
+        runtimeBootId: before.body.runtimeBootId,
+      };
+      const request = permissionMode === "plan" ? host.http : host.desktop;
+      const response = await request("/managed/action", {
+        operation: "settings",
+        agent: "antigravity",
+        sessionId,
+        bootId: host.bootId,
+        requestId,
+        expectedRevision: revision,
+        permissionMode,
+      });
+      const receipt = await request(`/requests/${requestId}`);
+      expect({ response, receipt, lastFrame: acp.frames.at(-1) }).toMatchObject({
+        response: { status: 200, body: acknowledgement },
+        receipt: {
+          status: 200,
+          body: { status: "accepted", expectedRevision: revision, ack: acknowledgement },
+        },
+        lastFrame: {
+          method: "session/set_config_option",
+          params: { sessionId: nativeId, configId: "mode", value: permissionMode },
+        },
+      });
+      settings = await host.http(settingsPath);
+      expect(settings).toMatchObject({
+        status: 200,
+        body: {
+          applicationStatus: "confirmed",
+          current: { permissionMode },
+          selected: { permissionMode },
+          writable: { permissionMode: allowed },
+        },
+      });
+      expect(Number(settings.body.revision)).toBeGreaterThan(Number(revision));
+      expect(await live()).toMatchObject({
+        status: 200,
+        body: { status: "idle", revision: settings.body.revision, sendEnabled: true, reason: null },
+      });
+      if (permissionMode === "plan") {
+        await host.dispose();
+        await backend.close();
+        acp = fakeAcp();
+        backend = await openBackend(true);
+        host = await startHost({ root, workspace, rpc: backend.rpc, enableClaudeScheduler: true });
+        settings = await host.http(settingsPath);
+        expect(settings).toMatchObject({
+          status: 200,
+          body: {
+            current: { permissionMode: "plan" },
+            selected: { permissionMode: "plan" },
+            writable: { permissionMode: allowed },
+          },
+        });
+        expect(await host.desktop(settingsPath)).toMatchObject({
+          status: 200,
+          body: {
+            current: { permissionMode: "plan" },
+            writable: { permissionMode: allowed },
+          },
+        });
+        expect(acp.frames).toContainEqual(
+          expect.objectContaining({
+            method: "session/set_config_option",
+            params: { sessionId: nativeId, configId: "mode", value: "plan" },
+          }),
+        );
+      }
+    }
+  });
 
   it("assigns an ACP worker, reports approvals and replies, and stops its exact turn", async () => {
     const leadId = "offline-claude-lead";

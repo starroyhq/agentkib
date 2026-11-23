@@ -46,7 +46,7 @@ export function ComposerPermissionMenu({
   return (
     <Menu.Root open={open} onOpenChange={onOpenChange}>
       <Menu.Trigger
-        className={`${composerButtonClasses} h-11 min-w-0 gap-1.5 rounded-full px-2.5 text-sm font-normal disabled:pointer-events-auto disabled:opacity-50 disabled:grayscale ${risky ? "text-orange-600 hover:text-orange-700" : "text-muted-foreground"}`}
+        className={`${composerButtonClasses} h-11 min-w-0 gap-1.5 rounded-full px-2.5 text-sm font-normal disabled:opacity-50 disabled:grayscale ${disabledReason ? "disabled:pointer-events-auto!" : ""} ${risky ? "text-orange-600 hover:text-orange-700" : "text-muted-foreground"}`}
         disabled={disabled}
         title={disabledReason}
         aria-label={title === label ? title : `${title}: ${label}`}

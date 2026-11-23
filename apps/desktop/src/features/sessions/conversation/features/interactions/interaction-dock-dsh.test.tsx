@@ -113,6 +113,24 @@ describe.each(["desktop", "web"] as const)(
       expect(within(card).queryByRole("button", { name: "Allow once" })).not.toBeInTheDocument();
     });
 
+    it("uses the declared connection and live owner even without the legacy execution mode", () => {
+      state = {
+        ...state,
+        current: { id: "session", agent: "deepseek-harness" },
+        live: live({
+          status: "awaiting-approval",
+          approvals: [approval],
+          executionMode: undefined,
+          executionLocation: undefined,
+          execution: { owner: "external", observed: true, confidence: "live" },
+        }),
+      };
+      const view = render(dock());
+      state = { ...state, live: live({ status: "running", approvals: [] }) };
+      view.rerender(dock());
+      expect(screen.getByText(handledThere)).toBeVisible();
+    });
+
     it("does not claim that while our own answer is in flight or the runtime is gone", () => {
       state = { ...state, live: live({ status: "awaiting-approval", approvals: [approval] }) };
       const view = render(dock());

@@ -334,6 +334,49 @@ describe("approval card", () => {
     expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
   });
 
+  it("uses the reported presentation while preserving the choices and their native decisions", () => {
+    const approval: Approval = {
+      ...command,
+      method: "example/request",
+      presentation: "files",
+      changes: [{ path: "src/main.ts" }],
+    };
+    const onChoose = renderApprovals([approval], { locale: "en-US" });
+    const card = screen.getByRole("region", { name: "Approval required" });
+    expect(
+      within(card).getByRole("heading", { name: "Allow Codex to edit the following files?" }),
+    ).toBeVisible();
+    const choices = within(
+      within(card).getByRole("group", { name: "Approval required" }),
+    ).getAllByRole("button");
+    expect(choices.map((choice) => choice.getAttribute("aria-label"))).toEqual([
+      "Allow once",
+      "Allow all edits",
+      "Always allow",
+      "Deny",
+    ]);
+    fireEvent.click(choices[2]);
+    expect(onChoose.mock.calls[0][1]).toMatchObject({
+      key: "persist",
+      nativeDecision: command.decisionOptions![2].decision,
+    });
+  });
+
+  it("shows an unsupported offered decision disabled with the reason in its title", () => {
+    const onChoose = renderApprovals([
+      {
+        ...command,
+        decisionOptions: [{ id: "new", decision: { unknown: true }, label: "new", scope: "once" }],
+      },
+    ]);
+    const choice = screen.getByRole("button", { name: /new/ });
+    expect(choice).toBeVisible();
+    expect(choice).toBeDisabled();
+    expect(choice.getAttribute("title")).toBeTruthy();
+    fireEvent.click(choice);
+    expect(onChoose).not.toHaveBeenCalled();
+  });
+
   it("offers deny-and-stop only when the composer cannot stop the turn", () => {
     renderApprovals([command], { canStop: false });
     expect(screen.getByRole("button", { name: "拒绝并停止本轮" })).toBeEnabled();
@@ -389,6 +432,18 @@ describe("approval card", () => {
 });
 
 describe("approval card model", () => {
+  it("uses the generic presentation when the host declares an unknown kind", () => {
+    const card = model({ ...command, presentation: "unknown" }, "en-US");
+    expect(card.icon).toBe("unknown");
+    expect(card.block).toBeUndefined();
+    expect(card.choices.map((choice) => choice.key)).toEqual([
+      "once",
+      "session",
+      "persist",
+      "decline",
+    ]);
+  });
+
   it("drops the shell wrapper Codex adds around commands", () => {
     expect(displayCommand(["/bin/zsh", "-lc", "pnpm install"])).toBe("pnpm install");
     expect(displayCommand("/bin/bash -lc 'echo '\\''hi'\\'''")).toBe("echo 'hi'");

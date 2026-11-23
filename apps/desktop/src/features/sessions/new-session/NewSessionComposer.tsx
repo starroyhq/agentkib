@@ -27,18 +27,17 @@ import {
   ComposerGoalFields,
   ComposerPrimaryAction,
   SessionComposerToolbar,
-  dshAgentPresetText,
+  DEFAULT_NEW_SESSION_AGENT,
   fillCopy,
   NEW_SESSION_AGENTS,
   NewSessionAddDraftChips,
   newSessionCopy,
   newSessionCreateFields,
   useNewSessionModel,
-  devinTerminalAction,
-  devinTerminalCopy,
+  sessionCreationDescription,
   newSessionPermissions,
   newSessionPermissionFallbackTitle,
-  newSessionPresets,
+  newSessionPresetChoices,
   newSessionAddCapabilities,
   planSlashOption,
   SessionComposerInput,
@@ -102,9 +101,8 @@ export function NewSessionComposer(props: NewSessionComposerProps) {
   const copy = newSessionCopy(locale);
   const [target] = useState(() => ({ ...readNewSessionTarget(), ...props.initial }));
   const [agent, setAgent] = useState<ManagedAgent>(
-    target.agent && !notInstalled?.has(target.agent) ? target.agent : "codex",
+    target.agent && !notInstalled?.has(target.agent) ? target.agent : DEFAULT_NEW_SESSION_AGENT,
   );
-  const isDevin = agent === "devin";
   const [workspaceId, setWorkspaceId] = useState(target.workspaceId ?? "");
   const workspace =
     workspaces.find((item) => item.id === workspaceId) ??
@@ -253,9 +251,10 @@ export function NewSessionComposer(props: NewSessionComposerProps) {
       : undefined,
     onChoose: setText,
   });
-  const { presets, defaultId: defaultPreset } = newSessionPresets(
+  const { presets, defaultId: defaultPreset } = newSessionPresetChoices(
     agent,
     verifiedOptions,
+    locale,
     provider?.create,
   );
   const preset = presets.find((item) => item.id === (agentPreset ?? defaultPreset));
@@ -325,23 +324,21 @@ export function NewSessionComposer(props: NewSessionComposerProps) {
     if (room > 0) setFiles((current) => [...current, ...list.slice(0, room)]);
   }
 
-  // Devin CLI's own login or workspace trust stopped the session from starting: offer to open it.
   const terminalDetail = session.failure?.detail?.replaceAll("_", "-");
-  const terminalAction = isDevin ? devinTerminalAction(terminalDetail) : undefined;
-  const openDevinTerminal = async () => {
+  const terminalAction = sessionCreationDescription(agent)?.terminalAction?.(
+    terminalDetail,
+    locale,
+  );
+  const openTerminal = async () => {
     if (!terminalAction || !terminalDetail || !workspace) return;
-    const words = devinTerminalCopy(locale);
     try {
-      const result = await session.devinTerminal({
-        action: terminalAction,
-        workspaceId: workspace.id,
-      });
+      const result = await terminalAction.open(session.client, workspace.id);
       setTerminalNote({
         detail: terminalDetail,
-        text: words.opened.replace("{terminal}", result.terminal),
+        text: terminalAction.opened.replace("{terminal}", result.terminal),
       });
     } catch {
-      setTerminalNote({ detail: terminalDetail, text: words.failed });
+      setTerminalNote({ detail: terminalDetail, text: terminalAction.failed });
     }
   };
 
@@ -355,13 +352,8 @@ export function NewSessionComposer(props: NewSessionComposerProps) {
       icon={<CircleX className="size-3.5" />}
       action={
         terminalAction ? (
-          <Button
-            type="button"
-            size="sm"
-            variant="outline"
-            onClick={() => void openDevinTerminal()}
-          >
-            {devinTerminalCopy(locale)[terminalAction]}
+          <Button type="button" size="sm" variant="outline" onClick={() => void openTerminal()}>
+            {terminalAction.label}
           </Button>
         ) : undefined
       }
@@ -446,6 +438,8 @@ export function NewSessionComposer(props: NewSessionComposerProps) {
               <DropdownMenuItem
                 key={item}
                 disabled={notInstalled?.has(item)}
+                title={notInstalled?.has(item) ? copy.notInstalled : undefined}
+                className="data-disabled:pointer-events-auto"
                 onClick={() => {
                   if (item === agent) return;
                   setAgent(item);
@@ -457,12 +451,7 @@ export function NewSessionComposer(props: NewSessionComposerProps) {
                 }}
               >
                 <AgentIcon agent={item} compact />
-                <span className="grid min-w-0 flex-1">
-                  <span className="truncate">{AGENT_LABELS[item]}</span>
-                  {notInstalled?.has(item) && (
-                    <span className="text-xs text-muted-foreground">{copy.notInstalled}</span>
-                  )}
-                </span>
+                <span className="min-w-0 flex-1 truncate">{AGENT_LABELS[item]}</span>
                 {item === agent && <Check className="size-4" aria-hidden />}
               </DropdownMenuItem>
             ))}
@@ -471,28 +460,33 @@ export function NewSessionComposer(props: NewSessionComposerProps) {
         {showPresets && presets.length > 0 && (
           <DropdownMenu>
             <DropdownMenuTrigger
-              render={<Button variant="ghost" className={chip} disabled={locked} />}
+              render={
+                <Button
+                  variant="ghost"
+                  className={cn(chip, "disabled:pointer-events-auto")}
+                  disabled={locked}
+                  title={locked ? optionsStatus : undefined}
+                />
+              }
             >
               <Layers className="size-3.5 shrink-0" aria-hidden />
               <span className="@max-[28rem]:sr-only">{copy.preset}</span>
-              <span className="truncate text-foreground">
-                {preset ? dshAgentPresetText(preset, locale).name : ""}
-              </span>
+              <span className="truncate text-foreground">{preset?.name ?? ""}</span>
               <ChevronDown className="size-3.5 shrink-0" aria-hidden />
             </DropdownMenuTrigger>
             <DropdownMenuContent side={side} className="w-64">
               {presets.map((item) => (
                 <DropdownMenuItem
                   key={item.id}
-                  disabled={!!item.broken}
+                  disabled={!!item.disabledReason}
+                  title={item.disabledReason}
+                  className="data-disabled:pointer-events-auto"
                   onClick={() => setAgentPreset(item.id)}
                 >
                   <span className="grid min-w-0 flex-1">
-                    <span className="truncate">{dshAgentPresetText(item, locale).name}</span>
-                    {dshAgentPresetText(item, locale).description && (
-                      <span className="text-xs text-muted-foreground">
-                        {dshAgentPresetText(item, locale).description}
-                      </span>
+                    <span className="truncate">{item.name}</span>
+                    {item.description && (
+                      <span className="text-xs text-muted-foreground">{item.description}</span>
                     )}
                   </span>
                   {item.id === preset?.id && <Check className="size-4" aria-hidden />}
@@ -751,7 +745,7 @@ function UnavailableOptionButton({
     <Button
       type="button"
       variant="ghost"
-      className={className}
+      className={cn(className, "disabled:pointer-events-auto")}
       disabled
       aria-busy={loading || undefined}
       aria-label={`${label}: ${status}`}

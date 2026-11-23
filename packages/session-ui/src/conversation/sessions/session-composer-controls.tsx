@@ -1243,6 +1243,16 @@ export function SessionComposerControls({
     full,
     write: (fields) => mutate("settings", fields),
   });
+  const nativePolicy =
+    !settingsAccessDenied &&
+    registeredSettings?.permissionField === "policyId" &&
+    scopedSettings?.sessionId === selected
+      ? scopedSettings.writable.policy
+      : undefined;
+  const nativePolicyReadOnlyReason =
+    nativePolicy?.available === false && nativePolicy.reason?.startsWith("native-policy-")
+      ? nativePolicy.reason
+      : undefined;
   const permissionCatalogEmpty =
     scopedSettings?.available &&
     permissionField?.available !== true &&
@@ -1252,14 +1262,17 @@ export function SessionComposerControls({
   const permissionTriggerLocked =
     disabled ||
     permissionCatalogEmpty ||
+    !!nativePolicyReadOnlyReason ||
     !online ||
     settingsAccessDenied ||
     (!settingsReadable && !reservesPermissionSlot && !permissionHint) ||
     permissionReadOnlyWithoutMenu;
-  const permissionDisabledReason = permissionTriggerLocked
-    ? (reasonTitle(settingsReadReason || settingsError || permissionField?.reason) ??
-      copy.settingUnavailable)
-    : undefined;
+  const permissionDisabledReason = nativePolicyReadOnlyReason
+    ? `${copy.nativePolicyReadOnly} ${reason(nativePolicyReadOnlyReason)}`
+    : permissionTriggerLocked
+      ? (reasonTitle(settingsReadReason || settingsError || permissionField?.reason) ??
+        copy.settingUnavailable)
+      : undefined;
   const modelTriggerLocked =
     settingsAccessDenied || (!canBrowseModelSettings && !canOpenTerminalModel);
   const modelDisabledReason = modelTriggerLocked
@@ -1476,7 +1489,9 @@ export function SessionComposerControls({
           permissionRegistered
             ? {
                 title: menuTitle,
-                label: permissionLabel ?? menuTitle,
+                label: nativePolicyReadOnlyReason
+                  ? copy.nativePolicy
+                  : (permissionLabel ?? menuTitle),
                 description: permissionDescription,
                 hint: permissionHint,
                 risky: permissionRisky,

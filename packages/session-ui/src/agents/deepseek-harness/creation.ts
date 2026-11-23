@@ -1,3 +1,5 @@
+import type { SessionCreationDescription } from "../session-creation";
+
 /** One of DeepSeek Harness's Agent presets, as the Host lists them for a new session. */
 export interface DshAgentPreset {
   id: string;
@@ -114,3 +116,7 @@ const COPY: Record<Locale, { label: string; broken: string }> = {
 export function dshAgentPresetCopy(locale: string): { label: string; broken: string } {
   return COPY[localeOf(locale)];
 }
+
+export const dshCreation = {
+  preset: { text: dshAgentPresetText, copy: dshAgentPresetCopy },
+} satisfies SessionCreationDescription;

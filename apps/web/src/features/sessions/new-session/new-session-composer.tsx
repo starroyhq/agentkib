@@ -27,7 +27,7 @@ import {
   ComposerGoalFields,
   ComposerPrimaryAction,
   SessionComposerToolbar,
-  dshAgentPresetText,
+  DEFAULT_NEW_SESSION_AGENT,
   fillCopy,
   NEW_SESSION_AGENTS,
   NewSessionAddDraftChips,
@@ -37,7 +37,7 @@ import {
   newSessionPermissions,
   newSessionPermissionFallbackTitle,
   newSessionAddCapabilities,
-  newSessionPresets,
+  newSessionPresetChoices,
   planSlashOption,
   SessionComposerInput,
   slashCommandCopy,
@@ -112,7 +112,7 @@ export function NewSessionComposer({
   const copy = newSessionCopy(locale);
   const conversationCopy = sessionCopyForSurface(locale, "web");
   const [target] = useState(readNewSessionTarget);
-  const [agent, setAgent] = useState<ManagedAgent>(target.agent ?? "codex");
+  const [agent, setAgent] = useState<ManagedAgent>(target.agent ?? DEFAULT_NEW_SESSION_AGENT);
   const [workspaceId, setWorkspaceId] = useState(target.workspaceId ?? "");
   const workspace =
     workspaces.find((item) => item.id === workspaceId) ??
@@ -228,7 +228,12 @@ export function NewSessionComposer({
   const shownPermission =
     permissionChoices?.find((item) => item.id === permission) ??
     permissionChoices?.find((item) => item.id === permissions?.initial);
-  const { presets, defaultId: defaultPreset } = newSessionPresets(agent, options, provider?.create);
+  const { presets, defaultId: defaultPreset } = newSessionPresetChoices(
+    agent,
+    options,
+    locale,
+    provider?.create,
+  );
   const preset =
     presets.find((item) => item.id === agentPreset) ??
     presets.find((item) => item.id === defaultPreset);
@@ -397,29 +402,33 @@ export function NewSessionComposer({
           <DropdownMenu>
             <DropdownMenuTrigger
               render={
-                <Button type="button" variant="ghost" className={chip} disabled={optionsLocked} />
+                <Button
+                  type="button"
+                  variant="ghost"
+                  className={cn(chip, "disabled:pointer-events-auto")}
+                  disabled={optionsLocked}
+                  title={optionsLocked ? (unavailableReason ?? optionStatus) : undefined}
+                />
               }
             >
               <Layers className="size-3.5 shrink-0" aria-hidden />
               <span className="@max-[28rem]:sr-only">{copy.preset}</span>
-              <span className="truncate text-foreground">
-                {preset ? dshAgentPresetText(preset, locale).name : ""}
-              </span>
+              <span className="truncate text-foreground">{preset?.name ?? ""}</span>
               <ChevronDown className="size-3.5 shrink-0" aria-hidden />
             </DropdownMenuTrigger>
             <DropdownMenuContent className="w-64">
               {presets.map((item) => (
                 <DropdownMenuItem
                   key={item.id}
-                  disabled={!!item.broken}
+                  disabled={!!item.disabledReason}
+                  title={item.disabledReason}
+                  className="data-disabled:pointer-events-auto"
                   onClick={() => setAgentPreset(item.id)}
                 >
                   <span className="grid min-w-0 flex-1">
-                    <span className="truncate">{dshAgentPresetText(item, locale).name}</span>
-                    {dshAgentPresetText(item, locale).description && (
-                      <span className="text-xs text-muted-foreground">
-                        {dshAgentPresetText(item, locale).description}
-                      </span>
+                    <span className="truncate">{item.name}</span>
+                    {item.description && (
+                      <span className="text-xs text-muted-foreground">{item.description}</span>
                     )}
                   </span>
                   {item.id === preset?.id && <Check className="size-4" aria-hidden />}
@@ -666,7 +675,7 @@ function OptionPlaceholder({
     <Button
       type="button"
       variant="ghost"
-      className={chip}
+      className={cn(chip, "disabled:pointer-events-auto")}
       disabled
       aria-busy={loading || undefined}
       aria-label={`${label}: ${status}`}

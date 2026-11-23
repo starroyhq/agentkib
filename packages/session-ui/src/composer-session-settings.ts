@@ -188,6 +188,9 @@ export function projectComposerSettingsControls({
         ? available?.writable.policy
         : undefined;
   const canChoosePermission = !locked && permissionField?.available === true;
+  const policyId =
+    selection?.policyId ??
+    (settings?.sessionId === sessionId ? settings.current.policyId : undefined);
   const permissionItems =
     field === "permissionMode"
       ? (permission?.modeIds ?? [])
@@ -209,7 +212,7 @@ export function projectComposerSettingsControls({
               name: label?.name ?? item.name,
               description: label?.description ?? item.description,
               risky: permission?.risky(item.id),
-              selected: selection?.policyId === item.id,
+              selected: policyId === item.id,
               disabled: !canChoosePermission,
               fields: { policyId: item.id },
             };
@@ -217,9 +220,7 @@ export function projectComposerSettingsControls({
         : [];
   const currentPermission = permissionItems.find((item) => item.selected);
   const observedPolicy =
-    field === "policyId" && selection?.policyId
-      ? permission?.label(selection.policyId, locale)
-      : undefined;
+    field === "policyId" && policyId ? permission?.label(policyId, locale) : undefined;
   const observation = sessionPermissionObservation(provider);
   const terminalPermission = observation?.terminal(
     live,

@@ -300,6 +300,7 @@ export {
   newSessionPermissions,
   newSessionPermissionFallbackTitle,
   newSessionPresets,
+  newSessionPresetChoices,
   PROMPT_AT_CREATE_AGENTS,
   type ClaudeStartMode,
   type DevinStartMode,
@@ -328,7 +329,16 @@ export { codexPolicyLabel } from "./agents/codex/permissions";
 export { dshPolicyLabel } from "./agents/deepseek-harness/permissions";
 export type { PermissionLabel as PolicyLabel } from "./agents/session-permissions";
 export { commandPrompt, type CommandPromptRequest } from "./command-prompts";
-export { dshAgentPresetCopy, dshAgentPresetText, type DshAgentPreset } from "./dsh-agent-presets";
+export {
+  dshAgentPresetCopy,
+  dshAgentPresetText,
+  type DshAgentPreset,
+} from "./agents/deepseek-harness/creation";
+export {
+  DEFAULT_NEW_SESSION_AGENT,
+  newSessionAgentOf,
+  sessionCreationDescription,
+} from "./agents/session-creation";
 export {
   agentKibCommand,
   agentKibPanel,
@@ -336,17 +346,19 @@ export {
   composerLocalSlashOptions,
   sessionSlashOptions,
   composerPanelShortcut,
-  matchSlashCommands,
   codexSlashOptions,
   dshSlashOptions,
   planSlashOption,
   slashCommandCopy,
-  slashCommandQuery,
-  slashPlanQuery,
   unsupportedEffortReason,
-  useSlashCommandMenu,
   type AgentKibCommand,
   type AgentKibPanel,
+} from "./agents/session-commands";
+export {
+  matchSlashCommands,
+  slashCommandQuery,
+  slashPlanQuery,
+  useSlashCommandMenu,
   type SlashCommandOption,
 } from "./slash-commands";
 

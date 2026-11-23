@@ -362,12 +362,13 @@ export class CodexSessions {
     );
   }
 
-  /** Read history for display only, after the caller has resolved the indexed session. */
+  /** Read retained settings after the caller has resolved the indexed session. */
   historicalSettings(nativeRef: string, workspace: string): CodexHistoricalSettings | undefined {
     const id = uuid(nativeRef);
     if (!id || !path.isAbsolute(workspace)) return;
     const workspaceIdentity = pathIdentity(workspace);
     const homeIdentity = pathIdentity(this.home());
+    let displayDirectoriesMatch = true;
     try {
       const result = this.#verifyIndexed(
         [id],
@@ -375,10 +376,10 @@ export class CodexSessions {
         (row, transcript) => {
           const indexedCwd = nonempty(row.cwd);
           if (!indexedCwd || !path.isAbsolute(indexedCwd)) return null;
-          const cwd = pathIdentity(indexedCwd);
+          const indexedDirectory = pathIdentity(indexedCwd);
           const file = pathIdentity(transcript);
           if (
-            !withinIdentity(cwd, workspaceIdentity) ||
+            !withinIdentity(indexedDirectory, workspaceIdentity) ||
             !withinIdentity(file, homeIdentity) ||
             isReparseOrSymlink(transcript)
           )
@@ -388,23 +389,27 @@ export class CodexSessions {
             const before = fstatSync(fd, { bigint: true });
             const identity = rolloutIdentity(before);
             const previous = this.#historicalFields.get(file);
-            let fields: CodexHistoricalSettings;
-            if (previous?.identity === identity) {
-              if (previous.id !== id || previous.cwd !== cwd) return null;
-              fields = previous.fields;
-            } else {
+            const cached = previous?.identity === identity ? previous : undefined;
+            if (cached && cached.id !== id) return null;
+            let cwd = cached?.cwd;
+            if (!cwd) {
               const header = openedHeaderPayload(fd, file, 64 * 1024);
               const headerCwd = nonempty(header?.cwd);
               if (
                 typeof header?.id !== "string" ||
                 uuid(header.id) !== id ||
                 !headerCwd ||
-                !path.isAbsolute(headerCwd) ||
-                pathIdentity(headerCwd) !== cwd
+                !path.isAbsolute(headerCwd)
               )
                 return null;
-              fields = readCodexHistoricalFields(fd, file, Number(before.size));
+              cwd = pathIdentity(headerCwd);
             }
+            // An older resume could broaden SQLite cwd. Only the policy may use the
+            // verified creation directory when it is narrower than the authorized index row.
+            if (!withinIdentity(cwd, indexedDirectory)) return null;
+            displayDirectoriesMatch &&= cwd === indexedDirectory;
+            const fields =
+              cached?.fields ?? readCodexHistoricalFields(fd, file, Number(before.size), cwd);
             if (rolloutIdentity(lstatSync(file, { bigint: true })) !== identity) return null;
             this.#historicalFields.delete(file);
             if (this.#historicalFields.size >= 128)
@@ -415,7 +420,14 @@ export class CodexSessions {
             const effort =
               fields.effort ??
               (indexedModel === modelId ? codexHistoricalSetting(row.reasoning_effort) : undefined);
-            return { cwd, file, modelId, effort, usage: fields.usage };
+            return {
+              cwd,
+              file,
+              modelId,
+              effort,
+              usage: fields.usage,
+              nativePolicy: fields.nativePolicy,
+            };
           } finally {
             closeSync(fd);
           }
@@ -428,12 +440,15 @@ export class CodexSessions {
           caseInsensitive: false,
         },
       ).get(id);
-      if (result && (result.modelId || result.effort || result.usage)) {
-        const { modelId, effort, usage } = result;
+      // An empty projection confirms a readable legacy rollout. Undefined means the
+      // indexed source could not be verified, so its execution policy is unconfirmed.
+      if (result) {
+        const { modelId, effort, usage, nativePolicy } = result;
         return {
-          ...(modelId ? { modelId } : {}),
-          ...(effort ? { effort } : {}),
-          ...(usage ? { usage: { ...usage } } : {}),
+          ...(displayDirectoriesMatch && modelId ? { modelId } : {}),
+          ...(displayDirectoriesMatch && effort ? { effort } : {}),
+          ...(displayDirectoriesMatch && usage ? { usage: { ...usage } } : {}),
+          ...(nativePolicy ? { nativePolicy: { ...nativePolicy } } : {}),
         };
       }
     } catch {

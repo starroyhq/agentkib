@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { ChevronRight, Loader2, Square } from "lucide-react";
 import { AgentMark, agentName } from "@agentkib/agent-identity";
-import type { InteractionReply, Live } from "@agentkib/web-client";
+import { sessionProviderDeclaration, type InteractionReply, type Live } from "@agentkib/web-client";
 import {
   CompactApprovalCard,
   homeSessionCopy,
@@ -429,6 +429,7 @@ function MenuBarApproval({
     sessionId: session.id,
     agent: agentName(session.agent),
     workspacePath,
+    connection: sessionProviderDeclaration(session.agent)?.connection?.kind,
     canStop: false,
     ready: !busy,
     uncertain: false,

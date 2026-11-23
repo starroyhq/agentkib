@@ -3,11 +3,17 @@ import { zstdDecompressSync } from "node:zlib";
 import { projectContextUsage } from "../../context-usage";
 import { isCompressedRollout } from "./codex-rollout-files";
 import { jsonTimestamp } from "../../session-history";
+import {
+  readCodexNativeTurnPolicy,
+  unconfirmedCodexNativePolicy,
+  type CodexNativePolicy,
+} from "./codex-native-policy";
 
 export interface CodexHistoricalSettings {
   modelId?: string;
   effort?: string;
   usage?: { usedTokens: number; contextWindow: number; updatedAt?: string };
+  nativePolicy?: CodexNativePolicy;
 }
 
 const tailBytes = 512 * 1024;
@@ -37,36 +43,57 @@ export function codexHistoricalSetting(value: unknown): string | undefined {
     : undefined;
 }
 
-function readRows(bytes: Buffer, isTail: boolean): CodexHistoricalSettings {
+const turnContextMarker = /"type"\s*:\s*"turn_context"/u;
+
+function readRows(
+  bytes: Buffer,
+  cwd: string,
+  prefix: "included" | "omitted" | "partial-row",
+): CodexHistoricalSettings {
   const result: CodexHistoricalSettings = {};
   let hasSettings = false;
+  let newerContext = false;
   // Only newline-terminated records are committed. Skip the partial record
   // where a bounded tail starts in the middle of a line.
   let end = bytes.lastIndexOf(10);
-  while (end >= 0 && (!hasSettings || !result.usage)) {
+  if (turnContextMarker.test(bytes.subarray(end + 1).toString("utf8")))
+    result.nativePolicy = unconfirmedCodexNativePolicy;
+  while (end >= 0 && (!hasSettings || !result.usage || !result.nativePolicy)) {
     const start = end > 0 ? bytes.lastIndexOf(10, end - 1) : -1;
-    if (start < 0 && isTail) break;
+    if (start < 0 && prefix === "partial-row") break;
     const line = bytes.subarray(start + 1, end);
     end = start;
-    const settings = !hasSettings && line.includes('"turn_context"');
+    const settings = (!hasSettings || !result.nativePolicy) && line.includes('"turn_context"');
     const usage = !result.usage && line.includes('"token_count"');
     if (!settings && !usage) continue;
     let row: Record<string, unknown> | undefined;
     try {
       row = record(JSON.parse(line.toString("utf8")));
     } catch {
+      if (settings && !result.nativePolicy && turnContextMarker.test(line.toString("utf8")))
+        result.nativePolicy = unconfirmedCodexNativePolicy;
       continue;
     }
     const payload = record(row?.payload);
-    if (!payload) continue;
     if (settings && row?.type === "turn_context") {
-      const modelId = codexHistoricalSetting(payload.model);
-      const effort = codexHistoricalSetting(payload.effort ?? payload.reasoning_effort);
-      if (!modelId && !effort) continue;
-      result.modelId = modelId;
-      result.effort = effort;
-      hasSettings = true;
-    } else if (usage && row?.type === "event_msg" && payload.type === "token_count") {
+      if (!result.nativePolicy) {
+        const policy = payload
+          ? readCodexNativeTurnPolicy(payload, cwd)
+          : unconfirmedCodexNativePolicy;
+        // If newer turns stopped reporting permissions, a prior policy is no longer current.
+        if (policy) result.nativePolicy = newerContext ? unconfirmedCodexNativePolicy : policy;
+        newerContext = true;
+      }
+      if (!hasSettings && payload) {
+        const modelId = codexHistoricalSetting(payload.model);
+        const effort = codexHistoricalSetting(payload.effort ?? payload.reasoning_effort);
+        if (modelId || effort) {
+          result.modelId = modelId;
+          result.effort = effort;
+          hasSettings = true;
+        }
+      }
+    } else if (usage && row?.type === "event_msg" && payload?.type === "token_count") {
       const info = record(payload.info) ?? payload;
       const projected = projectContextUsage({
         available: true,
@@ -81,6 +108,7 @@ function readRows(bytes: Buffer, isTail: boolean): CodexHistoricalSettings {
       };
     }
   }
+  if (prefix !== "included") result.nativePolicy ??= unconfirmedCodexNativePolicy;
   return result;
 }
 
@@ -89,23 +117,33 @@ export function readCodexHistoricalFields(
   fd: number,
   file: string,
   size: number,
+  cwd: string,
 ): CodexHistoricalSettings {
-  if (!isCompressedRollout(file)) {
-    const offset = Math.max(0, size - tailBytes);
-    if (!offset) return readRows(bytesAt(fd, 0, size), false);
-    const bytes = bytesAt(fd, offset - 1, tailBytes + 1);
-    return readRows(bytes.subarray(1), bytes[0] !== 10);
-  }
-  // Zstandard rollouts are sequential. Only decode small frames for this
-  // optional metadata read. The history reader owns any decompressed copy.
-  if (size > maxCompressedBytes) return {};
   try {
-    const bytes = zstdDecompressSync(bytesAt(fd, 0, size), {
+    if (!isCompressedRollout(file)) {
+      const offset = Math.max(0, size - tailBytes);
+      const start = Math.max(0, offset - 1);
+      const bytes = bytesAt(fd, start, size - start);
+      if (bytes.length !== size - start) return { nativePolicy: unconfirmedCodexNativePolicy };
+      if (!offset) return readRows(bytes, cwd, "included");
+      return readRows(bytes.subarray(1), cwd, bytes[0] === 10 ? "omitted" : "partial-row");
+    }
+    // Zstandard rollouts are sequential. Only decode small frames for this
+    // metadata read. The history reader owns any decompressed copy.
+    if (size > maxCompressedBytes) return { nativePolicy: unconfirmedCodexNativePolicy };
+    const compressed = bytesAt(fd, 0, size);
+    if (compressed.length !== size) return { nativePolicy: unconfirmedCodexNativePolicy };
+    const bytes = zstdDecompressSync(compressed, {
       maxOutputLength: maxDecompressedBytes,
     });
     const offset = Math.max(0, bytes.length - tailBytes);
-    return readRows(bytes.subarray(offset), offset > 0 && bytes[offset - 1] !== 10);
+    if (!offset) return readRows(bytes, cwd, "included");
+    return readRows(
+      bytes.subarray(offset),
+      cwd,
+      bytes[offset - 1] === 10 ? "omitted" : "partial-row",
+    );
   } catch {
-    return {};
+    return { nativePolicy: unconfirmedCodexNativePolicy };
   }
 }

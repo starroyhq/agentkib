@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import type { InteractionReply, Live } from "@agentkib/web-client";
+import { sessionProviderDeclaration, type InteractionReply, type Live } from "@agentkib/web-client";
 import { agentName } from "@agentkib/agent-identity";
 import {
   answerRequestBody,
@@ -77,6 +77,7 @@ export function HomeInteraction({
     sessionId: session.id,
     agent: agentName(session.agent),
     workspacePath,
+    connection: sessionProviderDeclaration(session.agent)?.connection?.kind,
     // Stopping the turn stays in the session view's composer.
     canStop: false,
     ready: !busy && !offline,

@@ -1,3 +1,15 @@
+import type { SessionApprovalKind } from "@agentkib/web-client";
+import {
+  namedApprovalChoices,
+  nativeApprovalChoices,
+  networkHost,
+  resolveApprovalPresentation,
+  type LegacyApproval,
+} from "./agents/session-approvals";
+import { fillCopy, object, strings, text } from "./interaction-text";
+
+export { fillCopy } from "./interaction-text";
+
 export type InteractionLocale = "zh-CN" | "zh-Hant" | "en-US" | "ja-JP";
 
 /** The fields of an approval the card reads; web-client's `Approval` satisfies it. */
@@ -5,6 +17,7 @@ export interface InteractionApproval {
   requestId: string | number;
   turnId: string;
   method: string;
+  presentation?: SessionApprovalKind;
   toolName?: string;
   input?: unknown;
   context?: { description?: unknown; decisionReason?: unknown };
@@ -106,6 +119,7 @@ const copy = {
     sendFailed: "未能发送你的决定。请检查网络连接后重试。",
     uncertain: "上次的决定还没确认送达，正在查询，不会自动重发",
     answeredElsewhere: "已在 {agent} 中处理",
+    approvalUnavailable: "当前无法审批此请求",
     noApprovePermission: "这次访问没有审批权限，请在电脑上处理",
     noSendPermission: "这次访问没有回答权限，请在电脑上处理",
     unsupported: "AgentKib 还不能处理这类请求，请在 {agent} 中处理",
@@ -176,6 +190,7 @@ const copy = {
     sendFailed: "無法傳送你的決定。請檢查連線後再試一次。",
     uncertain: "上次的決定尚未確認送達，正在查詢，不會自動重送",
     answeredElsewhere: "已在 {agent} 中處理",
+    approvalUnavailable: "目前無法核准此請求",
     noApprovePermission: "這次存取沒有審批權限，請在電腦上處理",
     noSendPermission: "這次存取沒有回答權限，請在電腦上處理",
     unsupported: "AgentKib 尚無法處理這類請求，請在 {agent} 中處理",
@@ -247,6 +262,7 @@ const copy = {
     uncertain:
       "Your last decision isn't confirmed yet. Checking now; it won't be resent automatically.",
     answeredElsewhere: "Handled in {agent}",
+    approvalUnavailable: "This approval is unavailable right now",
     noApprovePermission: "This access can't approve requests. Handle it on the computer.",
     noSendPermission: "This access can't answer questions. Handle it on the computer.",
     unsupported: "AgentKib can't handle this request yet. Handle it in {agent}.",
@@ -318,6 +334,7 @@ const copy = {
     sendFailed: "選択内容を送信できませんでした。接続を確認して、もう一度試してください。",
     uncertain: "前回の決定が届いたかまだ確認できていません。確認中です。自動で再送はしません。",
     answeredElsewhere: "{agent} で対応済みです",
+    approvalUnavailable: "現在このリクエストを承認できません",
     noApprovePermission: "このアクセスでは承認できません。コンピューターで対応してください。",
     noSendPermission: "このアクセスでは回答できません。コンピューターで対応してください。",
     unsupported: "AgentKib ではまだこのリクエストを処理できません。{agent} で対応してください。",
@@ -334,25 +351,6 @@ export function interactionCardCopy(locale: InteractionLocale): InteractionCardC
   return copy[locale] ?? copy["en-US"];
 }
 
-export function fillCopy(template: string, values: Record<string, string | number>): string {
-  return template.replace(/\{(\w+)\}/g, (match, key: string) =>
-    Object.hasOwn(values, key) ? String(values[key]) : match,
-  );
-}
-
-function object(value: unknown): Record<string, unknown> {
-  return value && typeof value === "object" && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : {};
-}
-function text(value: unknown): string | undefined {
-  return typeof value === "string" && value.trim() ? value.trim() : undefined;
-}
-function strings(value: unknown): string[] {
-  return Array.isArray(value)
-    ? value.filter((item): item is string => typeof item === "string")
-    : [];
-}
 const SHELL = /^(?:\S*\/)?(?:ba|z|da|k|fi)?sh$/;
 
 /**
@@ -418,12 +416,6 @@ function parameterLines(input: unknown): string[] {
     });
 }
 
-function networkHost(context: Record<string, unknown>): string | undefined {
-  const network = object(context.networkApprovalContext);
-  const host = text(network.host);
-  return host && text(network.protocol) ? `${network.protocol}://${host}` : host;
-}
-
 /** What the request asks to be allowed, in plain words, one item per permission. */
 function permissionNeeds(context: Record<string, unknown>, t: InteractionCardCopy): string[] {
   const needs: string[] = [];
@@ -485,6 +477,7 @@ export interface ApprovalChoice {
   /** A basic decision name, sent as `decision`. */
   decision?: string;
   disabled?: boolean;
+  disabledReason?: string;
   /**
    * The one-click answers a compact card offers, such as the menu bar's: allow this request once,
    * or deny it ("stop" denies it and stops the turn, for requests that offer no plain denial).
@@ -522,109 +515,18 @@ export interface ApprovalCardContext {
   canStop: boolean;
 }
 
-function commandPrefix(decision: unknown): string | undefined {
-  const parts = strings(
-    object(object(decision).acceptWithExecpolicyAmendment).execpolicy_amendment,
-  );
-  return parts.length
-    ? parts.map((part) => (/\s/.test(part) ? JSON.stringify(part) : part)).join(" ")
-    : undefined;
-}
-
-function extendedChoices(
-  approval: InteractionApproval,
-  t: InteractionCardCopy,
-  canStop: boolean,
-): ApprovalChoice[] {
-  const files = approval.method === "item/fileChange/requestApproval";
-  return (approval.decisionOptions ?? []).flatMap((option): ApprovalChoice[] => {
-    const base = { key: option.id, nativeDecision: option.decision };
-    switch (option.label) {
-      case "accept":
-        return [{ ...base, label: t.allowOnce, quick: "allow" }];
-      case "acceptForSession":
-        return [
-          files
-            ? { ...base, label: t.allowAllEdits, detail: t.allEditsDetail }
-            : { ...base, label: t.allowSession, detail: t.sessionCommandDetail },
-        ];
-      case "acceptWithExecpolicyAmendment": {
-        const command = commandPrefix(option.decision);
-        return [
-          {
-            ...base,
-            label: t.alwaysAllow,
-            detail: command ? fillCopy(t.persistentCommandDetail, { command }) : undefined,
-          },
-        ];
-      }
-      case "applyNetworkPolicyAmendment": {
-        const rule = object(
-          object(object(option.decision).applyNetworkPolicyAmendment).network_policy_amendment,
-        );
-        const host = text(rule.host);
-        const deny = rule.action === "deny";
-        return [
-          {
-            ...base,
-            label: deny ? t.alwaysDeny : t.alwaysAllow,
-            detail: host
-              ? fillCopy(deny ? t.networkDenyDetail : t.networkAllowDetail, { host })
-              : undefined,
-          },
-        ];
-      }
-      case "decline":
-      case "deny-permissions":
-        return [{ ...base, label: t.deny, quick: "deny" }];
-      case "cancel":
-        return canStop ? [] : [{ ...base, label: t.denyAndStop, quick: "stop" }];
-      case "grant-turn":
-        return [{ ...base, label: t.allowTurn, quick: "allow" }];
-      case "grant-session":
-        return [{ ...base, label: t.allowSession }];
-      default:
-        return [{ ...base, label: option.label, detail: t.unsupportedOption, disabled: true }];
-    }
-  });
-}
-
 function basicChoices(
   approval: InteractionApproval,
   t: InteractionCardCopy,
   canStop: boolean,
+  kind: SessionApprovalKind,
+  legacy: LegacyApproval | undefined,
 ): ApprovalChoice[] {
-  const method = approval.method;
-  if (method === "session/request_permission") {
-    // ACP agents name their own options; show those names, in the agent's order.
-    const ids = new Set(approval.availableDecisions);
-    return (approval.options ?? [])
-      .filter((option) => ids.has(option.optionId))
-      .map((option) => ({
-        key: option.optionId,
-        label: option.name,
-        decision: option.optionId,
-        ...(option.kind === "allow_once"
-          ? { quick: "allow" as const }
-          : option.kind === "reject_once"
-            ? { quick: "deny" as const }
-            : {}),
-      }));
-  }
-  if (method === "claude/can_use_tool")
-    return approval.availableDecisions
-      .filter((decision) => decision === "allow" || decision === "deny")
-      .map((decision) => ({
-        key: decision,
-        label: decision === "allow" ? t.allow : t.deny,
-        decision,
-        quick: decision === "allow" ? ("allow" as const) : ("deny" as const),
-      }));
-  // An MCP form or link is accepted as a whole; everything else is allowed for this call only.
-  const mcpForm =
-    method === "mcpServer/elicitation/request" && object(approval.input).kind !== "tool-approval";
+  if (legacy?.choices) return legacy.choices(approval, t);
+  if (kind === "tool" && approval.options?.length) return namedApprovalChoices(approval);
+  // An MCP form is filled in on the full card, never accepted in one click.
+  const mcpForm = kind === "mcp" && object(approval.input).kind !== "tool-approval";
   return approval.availableDecisions.flatMap((decision): ApprovalChoice[] => {
-    // An MCP form is filled in on the full card, never accepted in one click.
     if (decision === "accept")
       return [
         mcpForm
@@ -657,9 +559,10 @@ export function approvalCardModel(
   const reasonText = text(requestContext.reason);
   const host = networkHost(requestContext);
   const input = object(approval.input);
+  const { kind, legacy, nativeToolCall } = resolveApprovalPresentation(approval);
   const choices = approval.decisionOptions?.length
-    ? extendedChoices(approval, t, context.canStop)
-    : basicChoices(approval, t, context.canStop);
+    ? nativeApprovalChoices(approval, t, context.canStop, kind)
+    : basicChoices(approval, t, context.canStop, kind, legacy);
   let icon: InteractionIcon = "unknown";
   let title = fillCopy(t.unknownTitle, { agent });
   let block: ApprovalCardModel["block"];
@@ -668,11 +571,12 @@ export function approvalCardModel(
   let summary: string | undefined;
   let declineOnly: string | undefined;
   const tool = text(approval.toolName);
-  switch (approval.method) {
-    case "item/commandExecution/requestApproval": {
+  switch (kind) {
+    case "network":
+    case "command": {
       const command = displayCommand(approval.command);
       if (command) block = { label: t.terminal, lines: [command] };
-      if (host) {
+      if (kind === "network" && host) {
         icon = "network";
         title = fillCopy(t.networkTitle, { agent, host });
         reason ??= { label: t.reason, text: fillCopy(t.networkReason, { host }) };
@@ -683,7 +587,7 @@ export function approvalCardModel(
       summary = command ?? host;
       break;
     }
-    case "item/fileChange/requestApproval": {
+    case "files": {
       const lines = fileLines(approval.changes, t);
       icon = "files";
       title = fillCopy(t.filesTitle, { agent });
@@ -691,12 +595,21 @@ export function approvalCardModel(
       summary = lines[0]?.split("   ")[0];
       break;
     }
-    case "item/permissions/requestApproval":
+    case "permissions":
       icon = "permissions";
       title = fillCopy(t.permissionsTitle, { agent });
       break;
-    case "claude/can_use_tool":
-    case "dsh/approval": {
+    case "tool": {
+      if (nativeToolCall) {
+        const call = object(approval.toolCall);
+        const name = text(call.title) ?? tool ?? t.unknownTool;
+        icon = "tool";
+        title = fillCopy(t.toolTitle, { agent, tool: name });
+        const lines = parameterLines(call.rawInput);
+        if (lines.length) block = { label: t.parameters, lines };
+        summary = name;
+        break;
+      }
       const command = text(input.command);
       const path = text(input.file_path) ?? text(input.notebook_path) ?? text(input.path);
       if (command) {
@@ -720,17 +633,7 @@ export function approvalCardModel(
       if (why) reason = { label: t.reason, text: why };
       break;
     }
-    case "session/request_permission": {
-      const call = object(approval.toolCall);
-      const name = text(call.title) ?? tool ?? t.unknownTool;
-      icon = "tool";
-      title = fillCopy(t.toolTitle, { agent, tool: name });
-      const lines = parameterLines(call.rawInput);
-      if (lines.length) block = { label: t.parameters, lines };
-      summary = name;
-      break;
-    }
-    case "mcpServer/elicitation/request": {
+    case "mcp": {
       const server = text(input.serverName) ?? text(input.server) ?? agent;
       const toolLabel = text(input.tool);
       icon = "tool";

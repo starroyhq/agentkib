@@ -37,13 +37,21 @@ _Example screen with demo data._
 ## What you can do
 
 - **Keep track of work across agents.** Browse conversations by project and spot unread results. When you switch conversations on desktop, you can come back to your draft. Turn on conversation search to find a detail from an earlier session. [Working with conversations](docs/sessions/conversations.md) · [Search guide](docs/sessions/content-search.md)
+- **See what is running in a conversation.** On desktop and Web, see background tasks and subagents on supported sessions, including subagents in connected Claude Code terminals. Open a subagent's history where available. [Working with conversations](docs/sessions/conversations.md)
+- **Manage follow-ups while an agent works.** In supported desktop and Web sessions, see queued messages and edit or remove them. Pause or resume the queue where the agent offers those controls. [Working with conversations](docs/sessions/conversations.md)
 - **Hand off a task.** If you want a different agent to take over, review the handoff first. The receiving agent can open it as a conversation or read a handoff file, depending on what it supports. [Handoff guide](docs/sessions/interoperability.md)
-- **Coordinate several conversations.** On macOS, a supported conversation can become a Project Agent. Use **Assign Workers** to bring existing Codex or DeepSeek Harness conversations into the project, with up to 10 Workers per Project Agent. The Project Agent can give them tasks and receive their reports. [Project Agent guide](docs/agents/project-agent.md)
+- **Coordinate several conversations.** On macOS, a supported conversation can become a Project Agent. Use **Assign Workers** to add up to 10 existing Codex, Claude Code, DeepSeek Harness, Devin, or Antigravity conversations. The Project Agent can give them tasks and restart supported Workers. For a running Codex Worker managed by AgentKib, it can also add instructions to the current turn or queue a follow-up. It receives combined completion reports and alerts about disconnects, usage limits, and possible stalls. [Project Agent guide](docs/agents/project-agent.md)
+- **Pick up after a usage limit.** In supported sessions, see when the limit resets and whether the session can resume automatically. [Usage limits](docs/agents/usage-limits.md)
 - **Manage the tools your agents use.** Check which instructions and Skills a project sees, organize reusable Skills, and manage connections to external tools through MCP. Review proposed configuration changes before applying them. [Skills guide](docs/library/skills.md) · [MCP guide](docs/library/mcp.md)
 
 ## Which agents work with AgentKib?
 
-Codex, Claude Code, Antigravity, and Devin offer new sessions or continuation in supported setups. DeepSeek Harness support is in beta on macOS and depends on the installed version and bridge plugin. You can also browse available local history from Cursor, OpenCode, OpenClaw, Hermes, and Grok Build. See the [compatibility guide](docs/FEATURES.md) for your agent and platform.
+- **Codex** supports starting and continuing conversations. On macOS, a Project Agent can also send work to eligible Workers open in the Codex app. [Codex guide](docs/agents/codex-managed.md)
+- **Claude Code** can run in AgentKib or connect from a supported terminal on macOS. With the bridge plugin installed, run `/agentkib-status` in the terminal to diagnose connection problems and see what to do next. [Claude Code terminal guide](docs/agents/claude-code-terminal.md)
+- **Devin and Antigravity** can start, continue, and control sessions through a supported CLI's ACP connection. Both can serve as Project Agents. Antigravity conversations stored only in the app or IDE are available as read-only history. [Devin guide](docs/agents/devin.md) · [Antigravity guide](docs/agents/antigravity.md)
+- **DeepSeek Harness** support is in beta on macOS and depends on the installed version and bridge plugin.
+
+You can also browse available local history from Cursor, OpenCode, OpenClaw, Hermes, and Grok Build. See the [compatibility guide](docs/FEATURES.md) for your agent and platform.
 
 ## Accounts and privacy
 

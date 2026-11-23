@@ -37,13 +37,21 @@ _界面示例使用演示数据。_
 ## 能做什么
 
 - **跟进多个 Agent 的工作。** 按项目浏览会话，查看未读结果。桌面切换会话时，回来可以接着写草稿。开启正文搜索后，可以找回以前聊过的细节。[会话使用指南](docs/sessions/conversations.md) · [正文搜索指南](docs/sessions/content-search.md)
+- **查看会话里正在运行的工作。** 在桌面和 Web 上，支持的会话会显示后台任务和子代理，包括已连接的 Claude Code 终端中的子代理。支持时还可以打开子代理的历史记录。[会话使用指南](docs/sessions/conversations.md)
+- **Agent 工作时安排后续消息。** 在支持的桌面和 Web 会话中，可以查看、编辑或移除待发消息。如果 Agent 提供相应操作，还可以暂停或恢复队列。[会话使用指南](docs/sessions/conversations.md)
 - **换一个 Agent 接着做。** 先审查交接内容，再交给另一个 Agent。对方可以直接打开会话，或读取交接文件，具体取决于它支持的方式。[会话交接指南](docs/sessions/interoperability.md)
-- **让一个会话协调多项任务。** 在 macOS 上，可以将支持的会话设为项目 Agent，用「指派 Worker」加入已有的 Codex 或 DeepSeek Harness 会话。每个项目 Agent 最多可指派 10 个 Worker，并能给它们分配任务、接收进展汇报。[项目 Agent 指南](docs/agents/project-agent.md)
+- **让一个会话协调多项任务。** 在 macOS 上，可以将支持的会话设为项目 Agent，用「指派 Worker」加入最多 10 个已有的 Codex、Claude Code、DeepSeek Harness、Devin 或 Antigravity 会话。项目 Agent 可以分配任务，重启支持的 Worker。由 AgentKib 运行的 Codex Worker 忙时，项目 Agent 还可向当前轮次追加指令，或把后续消息加入队列。它会收到合并的完成汇报，以及断线、用量上限和疑似卡住的提醒。[项目 Agent 指南](docs/agents/project-agent.md)
+- **达到用量上限后继续。** 在支持的会话中，可以查看额度何时重置、会话是否会自动继续。[用量上限说明](docs/agents/usage-limits.md)
 - **管好 Agent 能用的工具。** 查看项目里的指令和 Skills，整理可复用的 Skills，通过 MCP 管理外部工具连接。应用设置改动前，可以先查看将要更改的内容。[Skills 管理](docs/library/skills.md) · [MCP 管理](docs/library/mcp.md)
 
 ## 支持哪些 Agent？
 
-Codex、Claude Code、Antigravity 和 Devin 在满足条件时支持新建或继续会话。DeepSeek Harness 在 macOS 上提供 Beta 支持，具体能力取决于版本和桥接插件。Cursor、OpenCode、OpenClaw、Hermes 和 Grok Build 也可查看本机已有的会话记录。各平台的具体能力见[兼容性说明](docs/FEATURES.md)。
+- **Codex** 支持新建和继续会话。在 macOS 上，项目 Agent 也可以向在 Codex 应用中打开、符合条件的 Worker 派工。[Codex 指南](docs/agents/codex-managed.md)
+- **Claude Code** 可以由 AgentKib 运行，也可以在 macOS 上从支持的终端连接。在装有桥接插件的终端输入 `/agentkib-status`，可以查看连接失败的原因和下一步。[Claude Code 终端指南](docs/agents/claude-code-terminal.md)
+- **Devin 和 Antigravity** 可通过受支持 CLI 的 ACP 连接新建、继续和控制会话，也可以担任项目 Agent。只保存在 Antigravity 应用或 IDE 里的会话提供只读历史。[Devin 指南](docs/agents/devin.md) · [Antigravity 指南](docs/agents/antigravity.md)
+- **DeepSeek Harness** 在 macOS 上提供 Beta 支持，具体能力取决于安装的版本和桥接插件。
+
+Cursor、OpenCode、OpenClaw、Hermes 和 Grok Build 也可查看本机已有的会话记录。各 Agent 和平台的具体能力见[兼容性说明](docs/FEATURES.md)。
 
 ## 账号与隐私
 

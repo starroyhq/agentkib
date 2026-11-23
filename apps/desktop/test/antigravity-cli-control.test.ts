@@ -10,6 +10,55 @@ import {
 
 type Frame = { id?: number | string; method?: string; params?: any; result?: any; error?: any };
 
+// Captured from agy acp 1.5.14 with a sandboxed MCP fixture. Session and tool call IDs are replaced.
+const ordinaryMcpPermission = {
+  id: "1",
+  method: "session/request_permission",
+  params: {
+    sessionId: "known",
+    toolCall: {
+      sessionUpdate: "tool_call",
+      toolCallId: "call-mcp-1",
+      name: "mcp_rel2_fixture_record_approval",
+      args: { marker: "DENY", toolSummary: "Record DENY approval marker" },
+      status: "pending",
+      kind: "other",
+      title: "Run mcp_rel2_fixture_record_approval",
+      rawInput: { marker: "DENY", toolSummary: "Record DENY approval marker" },
+    },
+    options: [
+      { optionId: "allow", name: "Allow", kind: "allow_once" },
+      { optionId: "deny", name: "Deny", kind: "reject_once" },
+    ],
+  },
+};
+
+// The same CLI replays native-config MCP tools via call_mcp_tool. This payload comes from
+// session/load of the cancelled sandbox turn, with the pending status used in the live envelope.
+const nativeMcpInput = {
+  Arguments: { marker: "DENY" },
+  ServerName: "rel2_fixture",
+  ToolName: "record_approval",
+};
+const nativeMcpToolCall = {
+  ...ordinaryMcpPermission.params.toolCall,
+  name: "call_mcp_tool",
+  kind: "execute",
+  title: "MCP Tool record_approval",
+  args: nativeMcpInput,
+  rawInput: nativeMcpInput,
+};
+const redactedMcpInput = {
+  ...nativeMcpInput,
+  Arguments: { ...nativeMcpInput.Arguments, token: "synthetic private argument" },
+};
+const extraMcpInput = { ...nativeMcpInput, CommandLine: "echo unexpected field" };
+const emptyMcpInput = { ...nativeMcpInput, Arguments: {} };
+const oversizedMcpInput = {
+  ...nativeMcpInput,
+  Arguments: { marker: "x".repeat(64 * 1024) },
+};
+
 /** An in-process `agy acp` (1.5.14) that answers as each test scripts it. */
 function fakeCli() {
   const fromAgent = new PassThrough();
@@ -215,6 +264,141 @@ describe("Antigravity CLI control (agy acp 1.5.14)", () => {
     });
     runner.close();
   });
+
+  it.each([
+    {
+      label: "an ACP-registered tool",
+      toolCall: ordinaryMcpPermission.params.toolCall,
+      toolLabel: "mcp_rel2_fixture_record_approval",
+      parameters: ["marker: DENY", "toolSummary: Record DENY approval marker"],
+      decision: "allow",
+    },
+    {
+      label: "a native-config tool in an ordinary session",
+      toolCall: nativeMcpToolCall,
+      toolLabel: "rel2_fixture / record_approval",
+      parameters: ["marker: DENY"],
+      decision: "allow",
+    },
+    {
+      label: "a native-config tool in a Project Agent session",
+      toolCall: nativeMcpToolCall,
+      toolLabel: "rel2_fixture / record_approval",
+      parameters: ["marker: DENY"],
+      decision: "deny",
+      projectAgent: true,
+    },
+    {
+      label: "a native-config tool with no arguments",
+      toolCall: { ...nativeMcpToolCall, args: emptyMcpInput, rawInput: emptyMcpInput },
+      toolLabel: "rel2_fixture / record_approval",
+      decision: "allow",
+    },
+    {
+      label: "redacted native-config arguments",
+      toolCall: { ...nativeMcpToolCall, args: redactedMcpInput, rawInput: redactedMcpInput },
+      decision: null,
+    },
+    {
+      label: "an unexpected native-config field",
+      toolCall: { ...nativeMcpToolCall, args: extraMcpInput, rawInput: extraMcpInput },
+      decision: null,
+    },
+    {
+      label: "disagreeing native-config arguments",
+      toolCall: {
+        ...nativeMcpToolCall,
+        args: { ...nativeMcpInput, Arguments: { marker: "ALLOW" } },
+      },
+      decision: null,
+    },
+    {
+      label: "oversized native-config arguments",
+      toolCall: { ...nativeMcpToolCall, args: oversizedMcpInput, rawInput: oversizedMcpInput },
+      decision: null,
+    },
+  ])(
+    "handles a captured MCP permission request with $label",
+    async ({ decision, parameters, projectAgent, toolCall, toolLabel }) => {
+      const cli = fakeCli();
+      const leadTools = projectAgent
+        ? {
+            serverName: "agentkib_workers",
+            url: "http://127.0.0.1:1/lead/x",
+            toolNames: ["worker_list"],
+          }
+        : undefined;
+      const runner = await AntigravityManagedRunner.connect(
+        "/bin/agy",
+        "/tmp",
+        "known",
+        {},
+        undefined,
+        undefined,
+        0,
+        undefined,
+        { leadTools },
+      );
+      try {
+        const frame = {
+          ...ordinaryMcpPermission,
+          params: { ...ordinaryMcpPermission.params, toolCall },
+        };
+        cli.prompt(() => cli.send(frame));
+        await runner.send("Request approval", Number(runner.snapshot().revision));
+        await settle(() => runner.snapshot().status === "waiting-approval");
+        const live = runner.snapshot() as unknown as Live;
+        const { items, approvals } = sessionInteractionItems(
+          live,
+          { bootId: "boot", experimentalEnabled: true, device: { approve: true, send: false } },
+          {
+            locale: "en-US",
+            sessionId: "known",
+            agent: "Antigravity",
+            connection: "acp",
+            canStop: false,
+            ready: true,
+            uncertain: false,
+          },
+        );
+        expect(cli.responses()).toEqual([]);
+        const [card] = items;
+        expect(card).toMatchObject({ kind: "approval", enabled: decision !== null });
+        if (card.kind !== "approval") throw new Error("Expected an approval card");
+        const request = approvals.get(card.key)!;
+        expect(request.requestId).toBe(frame.id);
+        if (decision === null) {
+          expect(card.model.choices).toEqual([]);
+          expect(card.model.details).not.toContain("synthetic private argument");
+          await expect(
+            runner.approve(String(request.requestId), request.turnId, "allow", live.revision),
+          ).rejects.toThrow("Antigravity approval is unavailable");
+          expect(cli.responses()).toEqual([]);
+          return;
+        }
+        // A lead can decide a worker's plain commands, but ACP's execute label also covers MCP.
+        expect(request.toolCall).toMatchObject({ kind: "other" });
+        expect(card.model).toMatchObject({
+          title: `Allow Antigravity to use ${toolLabel}?`,
+          choices: [
+            { decision: "allow", label: "Allow", quick: "allow" },
+            { decision: "deny", label: "Deny", quick: "deny" },
+          ],
+        });
+        expect(card.model.block?.lines).toEqual(parameters);
+        await runner.approve(String(request.requestId), request.turnId, decision, live.revision);
+        expect(cli.responses()).toEqual([
+          {
+            id: frame.id,
+            jsonrpc: "2.0",
+            result: { outcome: { outcome: "selected", optionId: decision } },
+          },
+        ]);
+      } finally {
+        runner.close();
+      }
+    },
+  );
 
   it.each([
     {

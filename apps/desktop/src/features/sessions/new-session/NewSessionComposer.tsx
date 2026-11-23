@@ -45,6 +45,7 @@ import {
   useNewSessionAdd,
   useSlashCommandMenu,
   offerNewSessionDraft,
+  type NewSessionOpenResult,
   readNewSessionTarget,
   rememberNewSessionTarget,
   type NewSessionDraft,
@@ -84,7 +85,8 @@ export interface NewSessionComposerProps {
   initial?: Partial<NewSessionTarget>;
   /** Where menus open: below the composer at the top of the home, above it on the sessions page. */
   placement: "home" | "page";
-  onCreated: (sessionId: string) => Promise<void> | void;
+  /** Opens the new session, or reports why the wait ended. */
+  onCreated: (sessionId: string) => Promise<NewSessionOpenResult | void> | void;
   /** Adds a workspace without leaving this page; resolves to its id, or nothing when cancelled. */
   onAddWorkspace: () => Promise<string | undefined>;
   onOpenSettings: () => void;
@@ -115,17 +117,23 @@ export function NewSessionComposer(props: NewSessionComposerProps) {
   const [addMenuOpen, setAddMenuOpen] = useState(false);
   const [agentPreset, setAgentPreset] = useState<string>();
   const [sending, setSending] = useState(false);
+  const [sessionNotListed, setSessionNotListed] = useState(false);
   const draft = useRef<NewSessionDraft>({ text, files });
   const submittedWithPrompt = useRef(false);
   // The composer stays busy until the new session opens.
   const handOff = async (sessionId: string, promptWasSubmitted: boolean) => {
     setSending(true);
-    if (!promptWasSubmitted) offerNewSessionDraft(sessionId, draft.current);
-    setText("");
-    setFiles([]);
-    add.clearDraftAdditions();
+    const reclaimDraft = promptWasSubmitted
+      ? undefined
+      : offerNewSessionDraft(sessionId, draft.current);
     try {
-      await onCreated(sessionId);
+      const timedOut = (await onCreated(sessionId)) === "timed-out";
+      setSessionNotListed(timedOut);
+      if (!timedOut || !reclaimDraft?.()) {
+        setText("");
+        setFiles([]);
+        add.clearDraftAdditions();
+      }
     } finally {
       setSending(false);
     }
@@ -294,6 +302,7 @@ export function NewSessionComposer(props: NewSessionComposerProps) {
   async function send() {
     if (!canSend || !workspace) return;
     setSending(true);
+    setSessionNotListed(false);
     const fields = newSessionCreateFields(
       {
         agent,
@@ -370,6 +379,10 @@ export function NewSessionComposer(props: NewSessionComposerProps) {
           <code className="break-all">{session.failure.detail}</code>
         </Disclosure>
       )}
+    </Notice>
+  ) : sessionNotListed ? (
+    <Notice tone="error" icon={<CircleX className="size-3.5" />}>
+      {copy.notListed}
     </Notice>
   ) : unavailableReason ? (
     <Notice

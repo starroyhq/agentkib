@@ -91,7 +91,6 @@ function WorkspaceShell() {
   // At phone width the home and the directory take turns; wider screens show both.
   const [phoneView, setPhoneView] = useState<"home" | "all">("home");
   const [newOpen, setNewOpen] = useState(false);
-  const openWhenListed = useOpenWhenListed();
   const canCreate = canStartSessions(access);
   const homeView = useMemo(() => ({ showAll: () => setPhoneView("all") }), []);
   // On a wide screen the home beside the directory already lists the unread results.
@@ -465,14 +464,9 @@ function WorkspaceShell() {
           <DialogHeader>
             <DialogTitle>{newSessionCopy(locale).newSession}</DialogTitle>
           </DialogHeader>
-          <NewSessionComposer
-            autoFocus
-            disabled={!!session.error}
-            onCreated={async (sessionId) => {
-              await openWhenListed(sessionId);
-              setNewOpen(false);
-            }}
-          />
+          {newOpen && !session.modal && (
+            <NewSessionDialogComposer disabled={!!session.error} close={() => setNewOpen(false)} />
+          )}
         </DialogContent>
       </Dialog>
       <Dialog open={logoutOpen && !session.modal} onOpenChange={(open) => !open && closeLogout()}>
@@ -514,5 +508,20 @@ function WorkspaceShell() {
         </DialogContent>
       </Dialog>
     </SessionPanelsContext>
+  );
+}
+
+function NewSessionDialogComposer({ disabled, close }: { disabled: boolean; close: () => void }) {
+  const openWhenListed = useOpenWhenListed();
+  return (
+    <NewSessionComposer
+      autoFocus
+      disabled={disabled}
+      onCreated={async (sessionId) => {
+        const result = await openWhenListed(sessionId);
+        if (result === "opened") close();
+        return result;
+      }}
+    />
   );
 }

@@ -25,9 +25,16 @@ import {
   type TypedSessionProvider,
 } from "../../session-provider";
 import type { SessionReaders } from "../../session-readers";
-import { stableJson, type ApplyManagedControl } from "../../sessions/control-admission";
+import {
+  stableJson,
+  type antigravityManagedControlSchema,
+  type ApplyManagedControl,
+} from "../../sessions/control-admission";
 import { legacySessionFields } from "../../sessions/routing";
-import { validateAntigravityControl } from "../../sessions/validate/antigravity";
+import {
+  ANTIGRAVITY_PERMISSION_MODES,
+  validateAntigravityControl,
+} from "../../sessions/validate/antigravity";
 import type { BackendStore } from "../../store";
 import { AcpUndispatchedError } from "./antigravity-acp";
 import { AntigravityManagedRunner } from "./antigravity-managed-runner";
@@ -49,7 +56,10 @@ type AntigravitySessionHost = {
   observeTurn(
     sessionId: string,
   ): NonNullable<Parameters<typeof AntigravityManagedRunner.connect>[7]>;
-  admitControl(value: Record<string, unknown>, execute: ApplyManagedControl): Promise<unknown>;
+  admitControl(
+    value: Record<string, unknown>,
+    execute: ApplyManagedControl<AntigravityControl>,
+  ): Promise<unknown>;
   queue: NonNullable<AntigravityExecutor["queue"]>;
   readSession(value: Record<string, unknown>): Promise<unknown>;
   querySession(value: SessionQuery): Promise<unknown>;
@@ -63,8 +73,7 @@ type AntigravitySessionHost = {
   ): Record<string, unknown>;
 };
 
-/** Antigravity's own session modes (`mode` ACP option of `agy acp` 1.5.14). */
-export const ANTIGRAVITY_MODES = ["default", "accept-edits", "auto", "plan"] as const;
+type AntigravityControl = z.infer<typeof antigravityManagedControlSchema>;
 const OPTION_CACHE_MS = 10 * 60_000;
 
 const antigravityCreateSchema = z
@@ -86,7 +95,7 @@ const antigravityCreateSchema = z
       .regex(/^[A-Za-z0-9._:@/+-]{1,128}$/)
       .optional(),
     effort: z.string().min(1).max(64).optional(),
-    permissionMode: z.enum(ANTIGRAVITY_MODES).optional(),
+    permissionMode: z.enum(ANTIGRAVITY_PERMISSION_MODES).optional(),
   })
   .strict();
 
@@ -114,7 +123,7 @@ function antigravityChoices(options: readonly ConfigOption[]) {
     })),
     serviceTiers: [],
     permissionModes: optionValues(options, "mode")
-      .filter((entry) => (ANTIGRAVITY_MODES as readonly string[]).includes(entry.id))
+      .filter((entry) => (ANTIGRAVITY_PERMISSION_MODES as readonly string[]).includes(entry.id))
       .map((entry) => ({ id: entry.id, name: entry.name })),
   };
 }
@@ -804,7 +813,7 @@ export class AntigravitySessionProvider implements AntigravityExecutor, TypedSes
   }
 
   async #executeControl(
-    request: Parameters<ApplyManagedControl>[0],
+    request: AntigravityControl,
     fingerprint: string,
     beforeNativeDispatch?: () => void,
   ) {

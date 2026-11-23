@@ -24,7 +24,13 @@ import { SerialSessionQueue } from "./sessions/serial-session-queue";
 import type { SessionIndex } from "./session-index";
 import type { SessionProviderRegistry, SessionProviders } from "./session-provider";
 import type { SessionReaders } from "./session-readers";
-import { admitManagedControl, type ApplyManagedControl } from "./sessions/control-admission";
+import {
+  admitManagedControl,
+  antigravityManagedControlSchema,
+  managedControlSchema,
+  type ApplyManagedControl,
+  type ManagedControlRequest,
+} from "./sessions/control-admission";
 import type { LaneObserver } from "./sessions/lane-observer";
 import {
   createSessionProviders,
@@ -200,7 +206,8 @@ export class WebReadRequests {
       isClosing: () => this.#closing !== undefined,
       assertOpen: () => this.#assertOpen(),
       runOperation: (run) => this.#runOperation(run),
-      admitControl: (request, execute) => this.#managedControlAdmission(request, execute),
+      admitControl: (request, execute) =>
+        this.#managedControlAdmission(request, managedControlSchema, execute),
       controlSession: (request, restrictNativePolicy) =>
         this.managedControl(request, restrictNativePolicy),
       querySession: (request) => this.managedQuery(request),
@@ -223,7 +230,8 @@ export class WebReadRequests {
             observer.turnEnded(sessionId, turnId, outcome, durationMs, undefined, replyText),
           ),
       }),
-      admitControl: (request, execute) => this.#managedControlAdmission(request, execute),
+      admitControl: (request, execute) =>
+        this.#managedControlAdmission(request, antigravityManagedControlSchema, execute),
       queue: (request) => this.managedQueueList(request),
       readSession: (request) => this.request(request),
       querySession: (request) => this.managedQuery(request),
@@ -247,7 +255,8 @@ export class WebReadRequests {
         this.#observeLane((observer) => observer.waiting(sessionId, turnId, "waiting-approval")),
       isShuttingDown: () => this.#shuttingDown,
       serialQueueTarget: (sessionId) => this.#serialQueueTarget(sessionId),
-      admitControl: (request, execute) => this.#managedControlAdmission(request, execute),
+      admitControl: (request, execute) =>
+        this.#managedControlAdmission(request, managedControlSchema, execute),
       queue: (request) => this.managedQueueList(request),
       readSession: (request) => this.request(request),
       querySession: (request) => this.managedQuery(request),
@@ -611,7 +620,11 @@ export class WebReadRequests {
     });
   }
 
-  #managedControlAdmission(value: unknown, execute: ApplyManagedControl) {
+  #managedControlAdmission<Request extends ManagedControlRequest>(
+    value: unknown,
+    schema: { parse(value: unknown): Request },
+    execute: ApplyManagedControl<Request>,
+  ) {
     return admitManagedControl(
       {
         dataDir: this.dataDir,
@@ -620,6 +633,7 @@ export class WebReadRequests {
         runnerForSession: (id) => this.#codex.runnerObservation(id),
       },
       value,
+      schema,
       execute,
     );
   }

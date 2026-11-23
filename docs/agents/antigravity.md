@@ -42,7 +42,7 @@ AgentKib 不自动下载 ACP server，也不读取或复制 Google 登录凭据�
 - 通过 Google 分发的 ACP server 列出和读取 ACP 原生会话，归一化为 AgentKib `SessionDocument`。
 - 原生 MCP 迁移会保留无法转换的配置：带静态 OAuth 客户端配置或显式 SSE 传输的服务不会标为可自动迁移；未声明传输的远程服务仍需通过迁移前连接探测。
 - AgentKib 运行的 ACP 会话在会话目录里标出进行中的一轮（`continuation`，`executionLocation: agentkib`）：首页的“进行中”、菜单栏、手机的实时活动和退出确认都算它，等待审批的一轮算作等你处理，结果待核实的算作需要核实，和 Devin 会话一样。
-- 在桌面与 Web 中对已核验的 ACP 会话发送消息、停止精确活动轮次，并只提交服务端真实提供的审批 `optionId`。审批仅在命令、文件编辑或单文件读取的操作范围可完整展示时开放；未验证的工具类型（包括移动、删除）保持不可审批。活动轮次断线后保留 outcome-unknown 防线，不自动重连或重发。
+- 在桌面与 Web 中对已核验的 ACP 会话发送消息、停止精确活动轮次，并只提交服务端真实提供的审批 `optionId`。命令、文件编辑和单文件读取只有在操作范围可完整展示时才支持审批。未验证的工具类型（包括移动、删除）保持不可审批。活动轮次断线后保留 outcome-unknown 防线，不自动重连或重发。
 - 将 Antigravity ACP 会话作为来源，导入 Codex 或 Claude Code 的目标原生历史，并沿用预览、脱敏、损失确认和回读验证流程。
 
 ## 经 Antigravity CLI 控制（agy acp 1.5.14）
@@ -53,7 +53,7 @@ AgentKib 不自动下载 ACP server，也不读取或复制 Google 登录凭据�
 - **与 App 共用会话**：`agy acp` 的 `session/list` 列出的就是 Antigravity App 的会话。实测 ACP 列出了 App 库里 40 条会话中的 38 条。相同会话只显示一份，ACP 确认可控制时优先使用该来源，只在 App/IDE 本地存储里的条目仍然只读（“请在 Antigravity 中继续”）。
 - **受控 Agent**：Antigravity 加入 `MANAGED_AGENTS`。新建会话时在所选工作区 `session/new`，按选择设置模型、推理档位和模式后发出第一条消息；新建选项取自一个不发消息的临时会话（CLI 不保存没有消息的会话）。
 - **设置**：模型、推理档位（`thought_level`）和模式（`mode`：default、accept-edits、auto、plan）是会话自己的 ACP 选项，在两轮之间用 `session/set_config_option` 设置，下一轮生效。Antigravity 续接会话时推理档位回到默认值，所以 AgentKib 把用户的选择记在数据目录的 `antigravity-session-settings.json`，每次连接时重新设置。`auto` 会自动执行它认为安全的命令，只接受完全访问的设备。
-- **审批**：CLI 的工具参数与旧服务不同（命令为 `CommandLine`，编辑为 `Path`、`Target`、`Replacement` 加上差异），AgentKib 先映射到既有的核对规则：命令显示命令行，编辑以差异显示。只提供 CLI 给出的“允许一次”和“拒绝”。
+- **审批**：CLI 的工具参数与旧服务不同（命令为 `CommandLine`，编辑为 `Path`、`Target`、`Replacement` 加上差异），AgentKib 先映射到既有的核对规则：命令显示命令行，编辑以差异显示。对于能完整展示工具名和参数的具名 MCP 请求，也可在会话中审批。参数被脱敏、缺失或无法核对时不可审批。只提供 CLI 给出的“允许一次”和“拒绝”。
 - **项目 Agent**：由 AgentKib 控制的 Antigravity 会话可以担任项目 Agent。连接会话时把 `agentkib_workers` 回环端点作为 `mcpServers` 交给 Antigravity，不写入 Antigravity 的配置。AgentKib 按该端点实际登记的工具生成完整名称（如 `mcp_agentkib_workers_worker_list`），精确匹配时自动允许一次，其余审批照常请求确认。代批、代答范围变化后，在两轮之间重新连接以换上新工具。汇报经 AgentKib 的会话控制发出，忙时排队。
 - **失败原因**：一轮没能运行或完成时，会话保持可用，输入框上方说明原因：额度或速率限制（`antigravity-usage-limited`）、未登录（`antigravity-login-required`，在终端运行一次 `agy` 登录）或其他失败（`antigravity-run-failed`）。
 - **实测但未接入**：`agy acp` 接受图片提示；运行中再发一条提示也会被接受（前一个提示立即以 `end_turn` 返回，内容继续生成）。AgentKib 暂不提供附件和插话，仍按队列在一轮结束后发送。

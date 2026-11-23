@@ -143,19 +143,25 @@ describe("shared Claude host scheduler", () => {
 
   it("fences a Codex device epoch change after its permit is prepared", async () => {
     const f = fixture("codex");
-    const started = Promise.withResolvers<void>();
-    const verified = Promise.withResolvers<{ restrictNativePolicy: boolean }>();
+    let startAuthorize!: () => void;
+    const started = new Promise<void>((resolve) => {
+      startAuthorize = resolve;
+    });
+    let verify!: (policy: { restrictNativePolicy: boolean }) => void;
+    const verified = new Promise<{ restrictNativePolicy: boolean }>((resolve) => {
+      verify = resolve;
+    });
     vi.mocked(f.authority.authorize)
       .mockResolvedValueOnce({ restrictNativePolicy: false })
       .mockImplementationOnce(() => {
-        started.resolve();
-        return verified.promise;
+        startAuthorize();
+        return verified;
       });
     const tick = f.scheduler.tick();
-    await started.promise;
+    await started;
     expect(f.operations()).toEqual(["schedule-list", "schedule-prepare"]);
     await f.scheduler.invalidate("phone");
-    verified.resolve({ restrictNativePolicy: false });
+    verify({ restrictNativePolicy: false });
     await tick;
     expect(f.operations()).not.toContain("schedule-dispatch");
     expect(f.operations()).toContain("schedule-invalidate");

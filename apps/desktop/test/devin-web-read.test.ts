@@ -60,12 +60,12 @@ function usageLine(label: string, used: number, resetsAt: number) {
 }
 
 /**
- * A Devin session in a registered workspace, run by a stand-in `devin` on PATH: its ACP turn
+ * A Devin session in a registered workspace, run by a stand-in `devin` on PATH: its turn
  * waits, answers or fails as the files beside it say and logs its prompt, the session it loads
  * and the model and permission mode set on it (as AgentKib names the mode); its interactive REPL
  * answers `/usage` with the panel in `usage-panel`, or says it has no data.
  */
-function fixture() {
+function fixture(version = "3000.14.30833") {
   const root = realpathSync(mkdtempSync(path.join(tmpdir(), "agentkib-devin-web-")));
   cleanups.push(() => rmSync(root, { recursive: true, force: true }));
   const workspace = path.join(root, "workspace"),
@@ -77,17 +77,22 @@ function fixture() {
     executable,
     `#!/bin/sh
 dir="$(dirname "$0")"
+if [ "$1" = "--version" ]; then echo "Devin CLI ${version}"; exit 0; fi
 if [ "$1" = "auth" ]; then echo "Logged in as tester"; exit 0; fi
 if [ "$1" = "models" ]; then cat "$dir/models.json"; exit; fi
-if [ "$1" = "acp" ]; then exec "${process.execPath}" "$dir/acp.cjs"; fi
+if [ "$1" = "acp" ]; then echo acp >> "$dir/transport.log"; exec "${process.execPath}" "$dir/acp.cjs"; fi
 if [ $# -eq 0 ]; then echo start >> "$dir/usage.log"; exec "${process.execPath}" "$dir/repl.mjs"; fi
+if [ "$1" != "-p" ]; then exit 2; fi
+echo print >> "$dir/transport.log"
+resume=""
 while [ $# -gt 0 ]; do
   if [ "$1" = "--prompt-file" ]; then cat "$2" >> "$dir/prompts.log"; echo >> "$dir/prompts.log"; shift; fi
   if [ "$1" = "--model" ]; then echo "$2" >> "$dir/models.log"; shift; fi
   if [ "$1" = "--permission-mode" ]; then echo "$2" >> "$dir/permissions.log"; shift; fi
-  if [ "$1" = "-r" ]; then echo "$2" >> "$dir/resume.log"; shift; fi
+  if [ "$1" = "-r" ]; then resume="$2"; echo "$resume" >> "$dir/resume.log"; shift; fi
   shift
 done
+[ -z "$resume" ] && echo new-otter >> "$dir/new-session.log"
 while [ -f "$dir/hold-turn" ]; do sleep 0.05; done
 [ -f "$dir/turn-sleep" ] && sleep "$(cat "$dir/turn-sleep")"
 [ -f "$dir/turn-stderr" ] && cat "$dir/turn-stderr" >&2
@@ -129,7 +134,14 @@ require("node:readline").createInterface({ input: process.stdin }).on("line", (l
   const { id, method, params = {} } = JSON.parse(line);
   if (method === undefined) return;
   if (method === "initialize") return send({ jsonrpc: "2.0", id, result: { protocolVersion: 1, agentCapabilities: { loadSession: true } } });
-  if (method === "session/new") return send({ jsonrpc: "2.0", id, result: { sessionId: read("new-session-id") ?? "new-otter", configOptions: options("") } });
+  const attachError = read("acp-attach-error");
+  if (attachError && (method === "session/new" || method === "session/load"))
+    return send({ jsonrpc: "2.0", id, error: { code: -32000, message: attachError } });
+  if (method === "session/new") {
+    const sessionId = read("new-session-id") ?? "new-otter";
+    append("new-session.log", sessionId);
+    return send({ jsonrpc: "2.0", id, result: { sessionId, configOptions: options("") } });
+  }
   if (method === "session/load") { append("resume.log", params.sessionId); return send({ jsonrpc: "2.0", id, result: { configOptions: options(params.sessionId) } }); }
   if (method === "session/set_config_option") {
     const all = saved(); all[params.sessionId] = { ...all[params.sessionId], [params.configId]: params.value };
@@ -165,10 +177,11 @@ process.stdin.on("data", (chunk) => {
 process.on("SIGHUP", () => process.exit(0));
 `,
   );
-  const turn = ({ sleep = 0, stderr = "", code = 0, hold = false } = {}) => {
+  const turn = ({ sleep = 0, stderr = "", code = 0, hold = false, acpAttachError = "" } = {}) => {
     writeFileSync(path.join(bin, "turn-sleep"), String(sleep));
     writeFileSync(path.join(bin, "turn-stderr"), stderr);
     writeFileSync(path.join(bin, "turn-code"), String(code));
+    writeFileSync(path.join(bin, "acp-attach-error"), acpAttachError);
     if (hold) writeFileSync(path.join(bin, "hold-turn"), "");
     else rmSync(path.join(bin, "hold-turn"), { force: true });
   };
@@ -275,8 +288,8 @@ process.on("SIGHUP", () => process.exit(0));
       await f.web.closeAsync();
       f.web = open();
     },
-    live: () =>
-      f.web.request({ operation: "live", sessionId: id, experimentalEnabled: true }) as Promise<
+    live: (sessionId = id) =>
+      f.web.request({ operation: "live", sessionId, experimentalEnabled: true }) as Promise<
         Record<string, unknown> & { usageLimit?: Record<string, unknown> | null }
       >,
     async row() {
@@ -309,9 +322,9 @@ process.on("SIGHUP", () => process.exit(0));
         })) as { features: Record<string, { available: boolean; reason?: string }> }
       ).features;
     },
-    async ended() {
+    async ended(sessionId = id) {
       for (let attempt = 0; attempt < 200; attempt++) {
-        const state = await f.live();
+        const state = await f.live(sessionId);
         if (state.sendEnabled === true) return state;
         await new Promise((resolve) => setTimeout(resolve, 50));
       }
@@ -320,6 +333,181 @@ process.on("SIGHUP", () => process.exit(0));
   };
   return f;
 }
+
+function seedNativeHistory(f: ReturnType<typeof fixture>, nativeId = "brisk-otter") {
+  const cliData = path.join(f.environment.DEVIN_SESSIONS_DIR, "cli");
+  mkdirSync(cliData, { recursive: true });
+  const native = new DatabaseSync(path.join(cliData, "sessions.db"));
+  try {
+    native.exec(`
+      CREATE TABLE sessions(id TEXT PRIMARY KEY, working_directory TEXT, title TEXT,
+        created_at INTEGER, last_activity_at INTEGER, hidden INTEGER, main_chain_id INTEGER);
+      CREATE TABLE message_nodes(session_id TEXT, node_id INTEGER, parent_node_id INTEGER,
+        chat_message TEXT, metadata TEXT, created_at INTEGER);
+    `);
+    native
+      .prepare("INSERT INTO sessions VALUES (?, ?, 'Fixture', 1, 2, 0, 2)")
+      .run(nativeId, f.workspace);
+    const insert = native.prepare("INSERT INTO message_nodes VALUES (?, ?, ?, ?, NULL, ?)");
+    insert.run(
+      nativeId,
+      1,
+      null,
+      JSON.stringify({ role: "user", content: "Hello", metadata: { is_user_input: true } }),
+      1,
+    );
+    insert.run(nativeId, 2, 1, JSON.stringify({ role: "assistant", content: "Done." }), 2);
+  } finally {
+    native.close();
+  }
+}
+
+describe.runIf(process.platform !== "win32")("Devin CLI transport selection", () => {
+  it.each([
+    ["3000.12.59", "print"],
+    ["3000.14.30833", "acp"],
+  ] as const)("creates and resumes with Devin %s over %s", async (version, transport) => {
+    const f = fixture(version);
+    const existing = await f.readers.resolve(f.id);
+    const native = {
+      ...existing.native,
+      native_ref: "new-otter",
+      created_at: new Date().toISOString(),
+    };
+    const sessionId = f.store.sessions.id("devin", native.native_ref);
+    vi.mocked(f.readers.resolve).mockImplementation(async (id) =>
+      id === sessionId ? { ...existing, summary: f.store.sessions.get(id)!, native } : existing,
+    );
+    vi.spyOn(f.readers, "list").mockImplementation(async () => ({
+      sessions: f.log("new-session.log") ? [existing.native, native] : [existing.native],
+      incomplete: false,
+    }));
+    const resultObserved = vi.fn();
+    f.web.observeResults(resultObserved);
+    const create = {
+      requestId: randomUUID(),
+      deviceId: "phone",
+      workspaceId: "workspace",
+      prompt: "Hello",
+    };
+    const created = await f.web.sessionProviderCreate("devin", create);
+    expect(created).toMatchObject({ accepted: true, sessionId });
+    expect(await f.web.sessionProviderCreate("devin", create)).toEqual(created);
+    await f.ended(sessionId);
+    expect(resultObserved).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ nativeId: native.native_ref }),
+      expect.objectContaining({ outcome: "completed", turnId: "devin-m1", itemId: "devin-m2" }),
+      expect.anything(),
+    );
+
+    seedNativeHistory(f, native.native_ref);
+    const history = () => f.web.request({ operation: "events", sessionId, limit: 20 });
+    const before = await history();
+    expect(before).toMatchObject({
+      events: [
+        expect.objectContaining({ kind: "user-message", content: "Hello" }),
+        expect.objectContaining({ kind: "agent-message", content: "Done." }),
+      ],
+    });
+    const state = await f.live(sessionId);
+    const send = {
+      operation: "send",
+      sessionId,
+      requestId: randomUUID(),
+      deviceId: "phone",
+      runtimeBootId: state.runtimeBootId,
+      expectedRevision: state.revision,
+      experimentalEnabled: true,
+      text: "Keep going",
+    };
+    const sent = await f.web.managedControl(send);
+    expect(sent).toMatchObject({ accepted: true });
+    await f.ended(sessionId);
+    expect(await f.web.managedControl(send)).toEqual(sent);
+    expect(await history()).toEqual(before);
+    expect(f.log("transport.log")).toBe(`${transport}\n${transport}\n`);
+    expect(f.log("prompts.log")).toBe("Hello\nKeep going\n");
+    expect(f.log("resume.log")).toBe("new-otter\n");
+    await f.web.prepareDevinLead(sessionId);
+    expect(f.web.devinLeadCapable(sessionId)).toBe(transport === "acp");
+  });
+
+  it("keeps an already spawned print prompt fenced when its new session cannot be verified", async () => {
+    const f = fixture("3000.12.59");
+    const { native } = await f.readers.resolve(f.id);
+    vi.spyOn(f.readers, "list").mockResolvedValue({ sessions: [native], incomplete: false });
+    const create = {
+      requestId: randomUUID(),
+      deviceId: "phone",
+      workspaceId: "workspace",
+      prompt: "No visible session",
+    };
+    const unknown = {
+      accepted: false,
+      controlOutcome: "unknown",
+      reason: "control-outcome-unconfirmed",
+    };
+    expect(await f.web.sessionProviderCreate("devin", create)).toMatchObject(unknown);
+    const { requestId, deviceId } = create;
+    expect(readControlReceipt(f.root, { requestId, deviceId })).toMatchObject({
+      status: "unknown",
+    });
+    await f.restart();
+    expect(await f.web.sessionProviderCreate("devin", create)).toMatchObject(unknown);
+    expect(f.log("transport.log")).toBe("print\n");
+    expect(f.log("prompts.log")).toBe("No visible session\n");
+  });
+
+  it("reports an ACP authentication refusal without retrying in print mode", async () => {
+    const f = fixture("3000.14.30833");
+    f.turn({ acpAttachError: "The host has not authenticated" });
+    const requestId = randomUUID();
+    const send = () => f.control("send", { text: "Do not retry", requestId });
+    const rejected = await send();
+    expect(rejected).toMatchObject({
+      accepted: false,
+      controlOutcome: "not-dispatched",
+      reason: "devin-cli-update-required",
+    });
+    expect(await send()).toEqual(rejected);
+    expect(f.log("transport.log")).toBe("acp\n");
+    expect(f.log("prompts.log")).toBe("");
+  });
+
+  it("passes all four native print permissions and stops without offering an approval", async () => {
+    const f = fixture("3000.12.59");
+    const resultObserved = vi.fn();
+    f.web.observeResults(resultObserved);
+    const permissions = ["auto", "accept-edits", "smart", "dangerous"];
+    for (const permissionMode of permissions) {
+      expect(await f.control("settings", { permissionMode })).toMatchObject({ accepted: true });
+      f.turn({ hold: permissionMode === "dangerous" });
+      expect(await f.send(`Use ${permissionMode}`)).toMatchObject({ accepted: true });
+      if (permissionMode === "dangerous") {
+        await expect.poll(() => f.log("permissions.log")).toBe(`${permissions.join("\n")}\n`);
+        const live = await f.live();
+        expect(live).toMatchObject({ status: "running", stopEnabled: true, approvals: [] });
+        expect(await f.features()).toMatchObject({ approve: { available: false } });
+        expect(
+          await f.control("approve", {
+            turnId: live.turnId,
+            approvalId: "absent",
+            decision: "once",
+          }),
+        ).toMatchObject({ accepted: false, controlOutcome: "not-dispatched" });
+        expect(await f.control("stop", { turnId: live.turnId })).toMatchObject({ accepted: true });
+      }
+      await f.ended();
+    }
+    expect(f.log("transport.log")).toBe("print\n".repeat(4));
+    expect(resultObserved.mock.calls.map(([, result]) => result.outcome)).toEqual([
+      "completed",
+      "completed",
+      "completed",
+      "cancelled",
+    ]);
+  }, 15_000);
+});
 
 describe.runIf(process.platform !== "win32")("Devin sessions run by AgentKib", () => {
   it("browses its verified workspace without launching Devin or enabling native resource references", async () => {
@@ -538,7 +726,7 @@ describe.runIf(process.platform !== "win32")("Devin sessions run by AgentKib", (
     const { native } = await f.readers.resolve(f.id);
     const created = { ...native, native_ref: "new-otter", created_at: new Date().toISOString() };
     vi.spyOn(f.readers, "list").mockImplementation(async () => ({
-      sessions: f.log("prompts.log") ? [native, created] : [native],
+      sessions: f.log("new-session.log") ? [native, created] : [native],
       incomplete: false,
     }));
     f.turn();
@@ -870,32 +1058,7 @@ describe.runIf(process.platform !== "win32")("restart of a managed Devin Worker"
 
   it("recycles only its running process and keeps the native session and its host queue", async () => {
     const f = fixture();
-    const cliData = path.join(f.environment.DEVIN_SESSIONS_DIR, "cli");
-    mkdirSync(cliData, { recursive: true });
-    const native = new DatabaseSync(path.join(cliData, "sessions.db"));
-    try {
-      native.exec(`
-        CREATE TABLE sessions(id TEXT PRIMARY KEY, working_directory TEXT, title TEXT,
-          created_at INTEGER, last_activity_at INTEGER, hidden INTEGER, main_chain_id INTEGER);
-        CREATE TABLE message_nodes(session_id TEXT, node_id INTEGER, parent_node_id INTEGER,
-          chat_message TEXT, metadata TEXT, created_at INTEGER);
-      `);
-      native
-        .prepare("INSERT INTO sessions VALUES ('brisk-otter', ?, 'Fixture', 1, 2, 0, 2)")
-        .run(f.workspace);
-      const insert = native.prepare(
-        "INSERT INTO message_nodes VALUES ('brisk-otter', ?, ?, ?, NULL, ?)",
-      );
-      insert.run(
-        1,
-        null,
-        JSON.stringify({ role: "user", content: "Hello", metadata: { is_user_input: true } }),
-        1,
-      );
-      insert.run(2, 1, JSON.stringify({ role: "assistant", content: "Done." }), 2);
-    } finally {
-      native.close();
-    }
+    seedNativeHistory(f);
     f.turn({ hold: true });
     expect(await f.send("Running work")).toMatchObject({ accepted: true });
     await expect.poll(() => f.log("resume.log")).toBe("brisk-otter\n");

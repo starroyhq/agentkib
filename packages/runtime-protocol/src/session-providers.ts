@@ -96,7 +96,11 @@ interface SessionProviderIntegrationCapabilities {
  */
 export interface SessionProviderCapabilities extends SessionProviderIntegrationCapabilities {
   history: { readState: boolean };
-  operations: { execution: boolean };
+  operations: {
+    execution: boolean;
+    /** Show Project Agent controls independently of the execution controls. */
+    projectAgent?: true;
+  };
   /** Stable session toolbar slots; live grants determine whether each action can run. */
   composer?: {
     modelPicker: boolean;
@@ -136,7 +140,7 @@ export interface SessionProviderCapabilities extends SessionProviderIntegrationC
 export interface BasicSessionProviderCapabilities extends SessionProviderIntegrationCapabilities {
   composer: { surface: "basic" };
   history: { readState: false };
-  operations: { execution: false };
+  operations: SessionProviderCapabilities["operations"] & { execution: false };
   contextUsage: SessionProviderCapabilities["contextUsage"];
   controls: readonly ("send" | "stop" | "approve")[];
 }
@@ -241,7 +245,7 @@ const MANAGED_CAPABILITIES = {
   },
   devin: {
     history: { readState: true },
-    operations: { execution: false },
+    operations: { execution: false, projectAgent: true },
     composer: {
       modelPicker: true,
       permissionPicker: true,
@@ -387,7 +391,7 @@ export function sessionProviderDeclaration(agent: unknown): SessionProviderDecla
 export function sessionDetailCapabilities(agent: unknown): {
   composer?: { surface: "managed" | "basic" };
   history: SessionProviderCapabilities["history"];
-  operations: { execution: boolean };
+  operations: SessionProviderCapabilities["operations"];
 } {
   const provider = sessionProviderCapabilities(agent);
   if (provider)

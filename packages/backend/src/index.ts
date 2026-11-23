@@ -794,16 +794,20 @@ export class TypeScriptBackend {
             dsh(sessionId) ||
             devin(sessionId) ||
             antigravity(sessionId),
-          (sessionId, deviceId, text) =>
-            terminal(sessionId)
-              ? this.#claudeBridge!.queueReport(sessionId, text)
-              : codex(sessionId) || devin(sessionId) || antigravity(sessionId)
-                ? // Sent or queued through AgentKib's own controls of the session.
-                  this.#codexLeadReport(sessionId, deviceId, text)
-                : // A DSH lead hears through the bridge, whether or not its DSH runs right now.
-                  dshBridge.handles(sessionId)
-                  ? this.#dshLeadReports.send(sessionId, deviceId, text)
-                  : leadOwner.queueReport(sessionId, deviceId, text),
+          async (sessionId, deviceId, text) => {
+            if (store.sessions.get(sessionId)?.agent === "devin") {
+              await this.#withWebRead((owner) => owner.prepareDevinLead(sessionId));
+              if (!devin(sessionId)) throw new Error("lead-requires-managed-claude");
+              return this.#codexLeadReport(sessionId, deviceId, text);
+            }
+            if (terminal(sessionId)) return this.#claudeBridge!.queueReport(sessionId, text);
+            if (codex(sessionId) || antigravity(sessionId))
+              return this.#codexLeadReport(sessionId, deviceId, text);
+            // A DSH lead hears through the bridge, whether or not its DSH runs right now.
+            if (dshBridge.handles(sessionId))
+              return this.#dshLeadReports.send(sessionId, deviceId, text);
+            return leadOwner.queueReport(sessionId, deviceId, text);
+          },
           (sessionId) =>
             leadOwner.queuedReports(sessionId) +
             (this.#claudeBridge?.queuedReports(sessionId) ?? 0),
@@ -2115,6 +2119,7 @@ export class TypeScriptBackend {
     const agent = this.#store?.sessions.get(sessionId)?.agent;
     if (agent === undefined || agent === "codex" || agent === "devin" || agent === "antigravity")
       await this.#withWebRead(() => undefined);
+    if (agent === "devin") await this.#webRead?.prepareDevinLead(sessionId);
     // App and IDE history read from disk cannot lead; only a session controlled over ACP can.
     if (agent === "antigravity") await this.#webRead?.prepareAntigravityLead(sessionId);
     const codex = this.#webRead?.codexLeadCapable(sessionId) === true;
@@ -2195,10 +2200,12 @@ export class TypeScriptBackend {
         orchestration.pause(sessionId);
         break;
       case "lead-resume":
+        if (agent === "devin" && !devin) throw new Error("lead-requires-managed-claude");
         orchestration.resume(sessionId, deviceId, authorizedWorkspaces(), leadWorkspace());
         break;
       // The person changes what it may do, as setting it up again would.
       case "lead-update": {
+        if (agent === "devin" && !devin) throw new Error("lead-requires-managed-claude");
         const scope = params.scope;
         if (!scope || typeof scope !== "object" || Array.isArray(scope))
           throw new Error("invalid-lead-request");

@@ -24,7 +24,7 @@ const client = { projectAgent, manageProjectAgent };
 const components = { Button, Input, NativeCheckbox, mergeClassNames: cn };
 type DeviceGrants = Partial<NonNullable<Access["device"]>>;
 
-function DesktopPanel() {
+function DesktopPanel({ showDesignation }: { showDesignation?: boolean }) {
   return (
     <SessionPlatformProvider platform={{ kind: "desktop", components } as SessionPlatform}>
       <ProjectAgentPanel
@@ -33,12 +33,19 @@ function DesktopPanel() {
         choose={choose}
         formatCatalogTime={() => "3 min ago"}
         client={desktopProjectAgentClient}
+        showDesignation={showDesignation}
       />
     </SessionPlatformProvider>
   );
 }
 
-function WebPanel({ device }: { device: DeviceGrants }) {
+function WebPanel({
+  device,
+  showDesignation,
+}: {
+  device: DeviceGrants;
+  showDesignation?: boolean;
+}) {
   return (
     <SessionPlatformProvider platform={{ kind: "web", components } as SessionPlatform}>
       <ProjectAgentPanel
@@ -48,6 +55,7 @@ function WebPanel({ device }: { device: DeviceGrants }) {
         formatCatalogTime={() => "3 min ago"}
         client={client}
         device={{ id: "test", name: "Test", send: false, approve: false, ...device }}
+        showDesignation={showDesignation}
       />
     </SessionPlatformProvider>
   );
@@ -94,6 +102,57 @@ beforeEach(() => {
   projectAgent.mockResolvedValue({ lead: null });
 });
 afterEach(cleanup);
+
+describe("registered Project Agent designation", () => {
+  it.each(["desktop", "web"] as const)(
+    "keeps an unavailable control visible and disabled on %s",
+    async (kind) => {
+      (kind === "desktop" ? request : projectAgent).mockResolvedValueOnce({
+        lead: null,
+        capable: false,
+      });
+      render(
+        kind === "desktop" ? (
+          <DesktopPanel showDesignation />
+        ) : (
+          <WebPanel device={full} showDesignation />
+        ),
+      );
+      expect(await screen.findByRole("button", { name: "Make Project Agent…" })).toBeDisabled();
+    },
+  );
+
+  it("allows designation from the desktop panel when the integration supports it", async () => {
+    request.mockResolvedValueOnce({ lead: null, capable: true });
+    render(<DesktopPanel showDesignation />);
+    fireEvent.click(await screen.findByRole("button", { name: "Make Project Agent…" }));
+    request.mockResolvedValueOnce({ lead, capable: true });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Make Project Agent" }));
+    });
+    expect(request).toHaveBeenLastCalledWith({
+      operation: "lead-designate",
+      sessionId: "lead-1",
+      scope: { approvals: [], answers: false, maxAutoTurns: 25, stallMinutes: 10 },
+    });
+  });
+
+  it("can release a project lead after the integration loses support", async () => {
+    request.mockResolvedValueOnce({ lead: { ...lead, paused: true }, capable: false });
+    render(<DesktopPanel showDesignation />);
+    expect(await screen.findByRole("button", { name: "Resume delegation" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Change settings…" })).toBeDisabled();
+    const release = screen.getByRole("button", { name: "Stop being a Project Agent" });
+    expect(release).toBeEnabled();
+    fireEvent.click(release);
+    request.mockResolvedValueOnce({ lead: null, capable: false });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Stop being a Project Agent" }));
+    });
+    expect(request).toHaveBeenLastCalledWith({ operation: "lead-release", sessionId: "lead-1" });
+    expect(screen.getByRole("button", { name: "Make Project Agent…" })).toBeDisabled();
+  });
+});
 
 describe("Project Agent panel on desktop", () => {
   it("leaves first-time assignment to the session row", async () => {

@@ -2832,7 +2832,10 @@ export class WebAccessService {
       return;
     return {
       history: { readState: history?.readState === true },
-      operations: { execution: operations?.execution === true },
+      operations: {
+        execution: operations?.execution === true,
+        ...(operations?.projectAgent === true ? { projectAgent: true } : {}),
+      },
       create: {
         mode: create.mode,
         catalogScope: create.catalogScope,

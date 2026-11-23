@@ -67,6 +67,7 @@ export function SessionOperations({
     capabilities,
   );
   const hasExecutionControls = provider?.operations.execution === true;
+  const hasProjectAgentControl = provider?.operations.projectAgent === true;
   const connection = sessionConnectionPanels(provider?.connection?.kind, platform);
   const Settings = connection?.Settings;
   const Terminal = connection?.terminal?.Panel;
@@ -103,16 +104,19 @@ export function SessionOperations({
                 unavailableReason={managementUnavailable}
               />
             )}
-            {hasExecutionControls && (kind === "web" || access?.device?.manage) && (
-              <ProjectAgentPanel
-                locale={locale}
-                selected={selected}
-                choose={session.choose}
-                formatCatalogTime={session.formatCatalogTime}
-                client={projectAgentClient}
-                device={access?.device}
-              />
-            )}
+            {(hasExecutionControls || hasProjectAgentControl) &&
+              (kind === "web" || access?.device?.manage) && (
+                <ProjectAgentPanel
+                  key={selected}
+                  locale={locale}
+                  selected={selected}
+                  choose={session.choose}
+                  formatCatalogTime={session.formatCatalogTime}
+                  client={projectAgentClient}
+                  device={access?.device}
+                  showDesignation={hasProjectAgentControl}
+                />
+              )}
           </>
         }
         controls={

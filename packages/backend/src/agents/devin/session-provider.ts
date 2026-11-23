@@ -46,6 +46,7 @@ import {
   type UsageLimit,
   type UsageLimitHit,
 } from "../../usage-limit";
+import { DevinCliRuntime } from "./devin-cli-runtime";
 import { devinExecutable } from "./devin-executable";
 import { devinSessionHome } from "./devin-sessions";
 import { devinLimitReset, readDevinUsage, type DevinUsageWindow } from "./devin-usage";
@@ -282,6 +283,8 @@ export class DevinSessionProvider implements DevinExecutor, TypedSessionProvider
   readonly createOperation = "devin-create";
   readonly typed = this;
   #runners = new Map<string, DevinRunnerRecord>();
+  #creating = new Set<DevinManagedRunner>();
+  #cli = new DevinCliRuntime();
   /** Where a Project Agent's worker tools are served (`OrchestrationService.leadTools`). */
   #leadEndpoint: ((sessionId: string) => Promise<LeadToolRegistration | null>) | undefined;
 
@@ -296,7 +299,16 @@ export class DevinSessionProvider implements DevinExecutor, TypedSessionProvider
    * AgentKib runs over ACP. Its turns are then offered the worker tools.
    */
   leadCapable(sessionId: string): boolean {
-    return this.host.store.sessions.get(sessionId)?.agent === "devin";
+    if (this.host.store.sessions.get(sessionId)?.agent !== "devin") return false;
+    const executable = devinExecutable(this.#childEnvironment());
+    return executable !== null && this.#cli.modeFor(executable) === "acp";
+  }
+
+  async prepareLead(sessionId: string): Promise<void> {
+    if (this.host.store.sessions.get(sessionId)?.agent !== "devin") return;
+    const environment = this.#childEnvironment();
+    const executable = devinExecutable(environment);
+    if (executable) await this.#cli.select(executable, environment);
   }
   #savedSettings: DevinSessionSettings | undefined;
   /**
@@ -324,6 +336,7 @@ export class DevinSessionProvider implements DevinExecutor, TypedSessionProvider
   }
 
   close(): void {
+    for (const runner of this.#creating) runner.close();
     for (const record of this.#runners.values()) record.runner.close();
     this.#runners.clear();
   }
@@ -467,16 +480,22 @@ export class DevinSessionProvider implements DevinExecutor, TypedSessionProvider
     return this.#savedSettings;
   }
 
+  #childEnvironment() {
+    return devinChildEnvironment({ ...process.env, ...this.host.environment });
+  }
+
   #runnerHost(
     workspace: string,
     workspaceId: string,
     sessionId: () => string | null,
+    firstTurnEnded?: (end: DevinTurnEnd) => void,
   ): DevinRunnerHost {
-    const environment = devinChildEnvironment({ ...process.env, ...this.host.environment });
+    const environment = this.#childEnvironment();
     const page = (nativeId: string, limit: number) =>
       this.host.sessions.eventsForNative("devin", nativeId, workspace, null, limit);
     return {
       executable: () => devinExecutable(environment),
+      selectCli: (executable) => this.#cli.select(executable, environment),
       environment,
       latestItems: async (nativeId) =>
         (await page(nativeId, 100)).events.map((event) => ({
@@ -495,6 +514,7 @@ export class DevinSessionProvider implements DevinExecutor, TypedSessionProvider
       turnEnded: (end) => {
         const id = sessionId();
         if (id) this.#turnEnded(id, workspace, end);
+        else firstTurnEnded?.(end);
       },
       waiting: (turnId) => {
         const id = sessionId();
@@ -845,6 +865,9 @@ export class DevinSessionProvider implements DevinExecutor, TypedSessionProvider
       return existing;
     }
     const resolved = await this.host.sessions.resolve(sessionId);
+    // A Live read and a control may both have waited for the same indexed session.
+    const opened = this.#runners.get(sessionId);
+    if (opened) return opened;
     if (resolved.native.agent !== "devin") throw new Error("session-unavailable");
     const workspaceId = resolved.summary.workspace_id;
     const workspace = canonicalize(this.host.store.workspacePath(workspaceId));
@@ -1145,10 +1168,18 @@ export class DevinSessionProvider implements DevinExecutor, TypedSessionProvider
       return result("not-dispatched", { reason: "workspace-unavailable" });
     }
     let created: string | null = null;
+    let firstEnd: DevinTurnEnd | undefined;
     const runner = new DevinManagedRunner(
       workspace,
       null,
-      this.#runnerHost(workspace, request.workspaceId, () => created),
+      this.#runnerHost(
+        workspace,
+        request.workspaceId,
+        () => created,
+        (end) => {
+          firstEnd = end;
+        },
+      ),
     );
     const prior = claimManagedCommand(
       this.host.dataDir,
@@ -1165,6 +1196,7 @@ export class DevinSessionProvider implements DevinExecutor, TypedSessionProvider
       },
     );
     if (prior) return prior;
+    this.#creating.add(runner);
     let dispatched = false;
     try {
       const model =
@@ -1206,6 +1238,7 @@ export class DevinSessionProvider implements DevinExecutor, TypedSessionProvider
           ...(request.permissionMode ? { permissionMode: request.permissionMode } : {}),
         });
       this.#addRunner(created, runner, settings, request.workspaceId);
+      if (firstEnd) this.#turnEnded(created, workspace, firstEnd);
       // Its first turn runs already: the catalog lists it in progress without waiting for it.
       this.host.catalogChanged?.();
       const outcome = result("accepted", { sessionId: created });
@@ -1213,14 +1246,14 @@ export class DevinSessionProvider implements DevinExecutor, TypedSessionProvider
       return outcome;
     } catch (error) {
       const reason = error instanceof Error ? error.message : "control-preflight-rejected";
-      // A turn that ended without storing a session made nothing, so it may be sent again.
-      if (!dispatched || reason !== "devin-session-unconfirmed") {
-        runner.close();
-        const outcome = result("not-dispatched", { reason });
-        finishManagedCommand(this.host.dataDir, request.requestId, outcome);
-        return outcome;
-      }
-      return result("unknown", { reason: "control-outcome-unconfirmed" });
+      runner.close();
+      // A spawned prompt may have run even if no session ID could be confirmed.
+      if (dispatched) return result("unknown", { reason: "control-outcome-unconfirmed" });
+      const outcome = result("not-dispatched", { reason });
+      finishManagedCommand(this.host.dataDir, request.requestId, outcome);
+      return outcome;
+    } finally {
+      this.#creating.delete(runner);
     }
   }
 
@@ -1323,7 +1356,7 @@ export class DevinSessionProvider implements DevinExecutor, TypedSessionProvider
    * configured default applies; the login is explained only when a session is started.
    */
   async options(): Promise<Record<string, unknown>> {
-    const environment = devinChildEnvironment({ ...process.env, ...this.host.environment });
+    const environment = this.#childEnvironment();
     const executable = devinExecutable(environment);
     if (!executable) return { available: false, reason: "devin-cli-unavailable" };
     return {
@@ -1334,7 +1367,7 @@ export class DevinSessionProvider implements DevinExecutor, TypedSessionProvider
   }
 
   async #readCatalog() {
-    const environment = devinChildEnvironment({ ...process.env, ...this.host.environment });
+    const environment = this.#childEnvironment();
     const executable = devinExecutable(environment);
     return executable ? this.#catalog(executable, environment) : emptyDevinModelCatalog();
   }

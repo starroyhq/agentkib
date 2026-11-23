@@ -67,6 +67,7 @@ export function ProjectAgentPanel({
   formatCatalogTime,
   client,
   device,
+  showDesignation = false,
 }: {
   locale: string;
   selected: string;
@@ -74,6 +75,7 @@ export function ProjectAgentPanel({
   formatCatalogTime(value: string): string;
   client: ProjectAgentPanelClient;
   device?: Access["device"];
+  showDesignation?: boolean;
 }) {
   const {
     kind,
@@ -156,7 +158,10 @@ export function ProjectAgentPanel({
   // Desktop only mounts this panel for a user with local manage access.
   const full = device?.accessMode === "full";
   const mayLead = full && !!device?.send && !!device.manage && !!device.advancedControl;
-  if (agent === undefined || !selected || (desktop && agent === null)) return null;
+  const mayDesignate = (desktop || mayLead) && capable;
+  const canManageDelegation = !showDesignation || capable;
+  if (agent === undefined || !selected || (desktop && agent === null && !showDesignation))
+    return null;
   const mayApprove = desktop || !!device?.approve;
   // Changing settings or resuming delegation takes the same permissions as setting it up.
   const mayTakeOver = desktop || (mayLead && (!agent?.scope.approvals?.length || mayApprove));
@@ -171,7 +176,7 @@ export function ProjectAgentPanel({
   });
 
   if (form) {
-    const mayEdit = form.mode === "designate" ? mayLead : mayTakeOver;
+    const mayEdit = form.mode === "designate" ? mayDesignate : mayTakeOver && canManageDelegation;
     return (
       <OperationGroup title={text.title}>
         <OperationRow className="block">
@@ -256,13 +261,14 @@ export function ProjectAgentPanel({
 
   if (agent === null)
     // Only a device that may do what a Project Agent does in its name sets one up.
-    return capable && mayLead ? (
+    return showDesignation || mayDesignate ? (
       <OperationGroup title={text.title}>
         <OperationRow className="flex-wrap">
-          <OperationCopy className="basis-64">{text.hint}</OperationCopy>
+          {mayDesignate && <OperationCopy className="basis-64">{text.hint}</OperationCopy>}
           <Button
             variant="outline"
             className={touchTarget}
+            disabled={!mayDesignate}
             onClick={() => setForm(formOf("designate"))}
           >
             {text.designate}
@@ -403,7 +409,7 @@ export function ProjectAgentPanel({
                 <Button
                   variant="outline"
                   className={touchTarget}
-                  disabled={busy}
+                  disabled={busy || (agent.paused && !canManageDelegation)}
                   onClick={() => void run({ operation: agent.paused ? "resume" : "pause" })}
                 >
                   {agent.paused ? text.resume : text.pause}
@@ -413,6 +419,7 @@ export function ProjectAgentPanel({
                 <Button
                   variant="outline"
                   className={touchTarget}
+                  disabled={!canManageDelegation}
                   onClick={() => {
                     setRemoving(null);
                     setForm(formOf("update", agent.scope));

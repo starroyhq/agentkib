@@ -379,6 +379,10 @@ export class WebReadRequests {
     return this.#devin.leadCapable(sessionId);
   }
 
+  prepareDevinLead(sessionId: string): Promise<void> {
+    return this.#devin.prepareLead(sessionId);
+  }
+
   antigravityLeadCapable(sessionId: string): boolean {
     return this.#antigravity.leadCapable(sessionId);
   }

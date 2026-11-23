@@ -12,7 +12,7 @@ const copy = {
       auto: { name: "只读", description: "只回答和阅读，不修改代码" },
       "accept-edits": {
         name: "自动接受编辑",
-        description: "另外自动批准工作区内的文件修改，其他操作先问你",
+        description: "另外自动批准工作区内的文件修改",
       },
       smart: { name: "智能批准", description: "另外自动执行快速模型判断为安全的操作" },
       dangerous: { name: "全部批准", description: "自动批准所有工具，包括任何命令" },
@@ -24,7 +24,7 @@ const copy = {
       auto: { name: "唯讀", description: "只回答和閱讀，不修改程式碼" },
       "accept-edits": {
         name: "自動接受編輯",
-        description: "另外自動核准工作區內的檔案修改，其他操作先詢問你",
+        description: "另外自動核准工作區內的檔案修改",
       },
       smart: { name: "智慧核准", description: "另外自動執行快速模型判斷為安全的操作" },
       dangerous: { name: "全部核准", description: "自動核准所有工具，包括任何指令" },
@@ -39,7 +39,7 @@ const copy = {
       },
       "accept-edits": {
         name: "Accept edits",
-        description: "Also approve file changes inside the workspace; ask you about the rest",
+        description: "Also approve file changes inside the workspace",
       },
       smart: { name: "Smart", description: "Also run actions a fast model judges safe" },
       dangerous: {
@@ -57,7 +57,7 @@ const copy = {
       },
       "accept-edits": {
         name: "編集を自動承認",
-        description: "ワークスペース内のファイル変更も自動承認し、それ以外はあなたに確認します",
+        description: "ワークスペース内のファイル変更も自動承認します",
       },
       smart: {
         name: "スマート承認",

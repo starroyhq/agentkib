@@ -5,6 +5,8 @@ import path from "node:path";
 import { acpObject } from "../../acp-json";
 import type { LeadToolRegistration } from "../../orchestration-endpoint";
 import { sanitizeHandoffExport } from "../../session-handoff";
+import type { DevinCliSelection } from "./devin-cli-runtime";
+import { startDevinPrintTurn, type DevinPrintTurn } from "./devin-print-turn";
 import { devinSessionDatabase } from "./devin-sessions";
 import {
   AntigravityAcp,
@@ -15,11 +17,8 @@ import {
 import { devinUsageLimitHit, type UsageLimitHit, type UsageLimitView } from "../../usage-limit";
 
 /**
- * AgentKib runs each Devin turn through Devin CLI's ACP server (`devin acp`), which uses the
- * login `devin auth login` stored; AgentKib never reads it. Older CLIs (3000.12) refused that
- * login in ACP mode and wanted the host's API key; they are told to update. The value stays
- * `devin-print` because clients and stored receipts already name "AgentKib runs this Devin
- * session" with it.
+ * Clients and stored receipts name AgentKib's control of a Devin session `devin-print`.
+ * Both transports run with the CLI's own login and use this same value.
  */
 export const DEVIN_EXECUTION_MODE = "devin-print";
 /** Devin's own permission modes, applied to a whole turn. */
@@ -69,6 +68,7 @@ export interface DevinTurnEnd {
 
 export interface DevinRunnerHost {
   executable(): string | null;
+  selectCli?(executable: string): Promise<DevinCliSelection>;
   environment: NodeJS.ProcessEnv;
   /** The newest page of a session's history, as the session readers build it. */
   latestItems(nativeId: string): Promise<Array<Record<string, unknown>>>;
@@ -95,8 +95,8 @@ export interface DevinRunnerHost {
 /**
  * The environment for a Devin CLI that AgentKib starts. Devin marks processes under an ACP host,
  * such as Devin Desktop, with `ACP_BACKEND`, and a CLI that inherits it refuses its own login so
- * that usage goes to the host's account. AgentKib's `devin acp` runs with the login the CLI
- * stored instead, so the marker inherited from wherever AgentKib started is dropped.
+ * that usage goes to the host's account. Both transports run with the login the CLI stored,
+ * so the marker inherited from wherever AgentKib started is dropped.
  */
 export function devinChildEnvironment(environment: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   const { ACP_BACKEND: _host, ...rest } = environment;
@@ -121,19 +121,8 @@ export async function devinSessionLockedElsewhere(
   nativeId: string,
   ownPid?: number,
 ): Promise<boolean> {
-  if (!NATIVE_ID.test(nativeId)) return false;
-  const file = path.join(
-    path.dirname(devinSessionDatabase(environment)),
-    "session_locks",
-    `${nativeId}.lock`,
-  );
-  const text = await readFile(file, "utf8").then(
-    (value) => value.trim(),
-    () => "",
-  );
-  if (!/^\d{1,10}$/.test(text)) return false;
-  const pid = Number(text);
-  if (pid === ownPid) return false;
+  const pid = await devinSessionLockPid(environment, nativeId);
+  if (pid === null || pid === ownPid) return false;
   try {
     process.kill(pid, 0);
   } catch (error) {
@@ -146,6 +135,20 @@ export async function devinSessionLockedElsewhere(
     ),
   );
   return /devin/i.test(command);
+}
+
+async function devinSessionLockPid(environment: NodeJS.ProcessEnv, nativeId: string) {
+  if (!NATIVE_ID.test(nativeId)) return null;
+  const file = path.join(
+    path.dirname(devinSessionDatabase(environment)),
+    "session_locks",
+    `${nativeId}.lock`,
+  );
+  const text = await readFile(file, "utf8").then(
+    (value) => value.trim(),
+    () => "",
+  );
+  return /^\d{1,10}$/.test(text) && Number(text) > 0 ? Number(text) : null;
 }
 
 export const DEVIN_MODEL_EFFORTS = [
@@ -346,6 +349,42 @@ type DevinApproval = {
 };
 
 type DevinAcpOutcome = { stopReason: string } | { error: string; code?: AcpId };
+type DevinOutcome = { acp: DevinAcpOutcome } | { print: Awaited<DevinPrintTurn["outcome"]> };
+
+function completedDevinTurn(outcome: DevinOutcome, cancelling: boolean) {
+  if ("print" in outcome) {
+    const { code, signal, output, errors } = outcome.print;
+    const stopped =
+      cancelling &&
+      (signal === "SIGINT" ||
+        signal === "SIGTERM" ||
+        signal === "SIGKILL" ||
+        code === 130 ||
+        code === 143 ||
+        code === 137);
+    // A reply can quote a quota error. Inspect stdout only on a failed turn.
+    const limit = stopped ? null : devinUsageLimitHit(code === 0 ? errors : output);
+    const reason = code !== 0 && !stopped && !limit ? devinRunFailure(output, code) : null;
+    return { stopped, limit, reason };
+  }
+  const acp = outcome.acp;
+  const stopped = cancelling || ("stopReason" in acp && acp.stopReason === "cancelled");
+  const error = "error" in acp ? acp.error : null;
+  const code = "error" in acp && acp.code !== undefined ? `${acp.code} ` : "";
+  // Devin's words name the limit; only the error code may say it when they do not.
+  const limit =
+    stopped || error === null
+      ? null
+      : (devinUsageLimitHit(error) ?? (code ? devinUsageLimitHit(`${code}${error}`) : null));
+  const refused = "stopReason" in acp && acp.stopReason === "refusal";
+  const reason =
+    !stopped && !limit && (error !== null || refused)
+      ? error !== null
+        ? devinAcpFailure(error)
+        : "devin-run-failed"
+      : null;
+  return { stopped, limit, reason };
+}
 
 /** Reasons AgentKib names itself; anything else is what Devin said, mapped below. */
 const OWN_REASONS = new Set([
@@ -425,6 +464,7 @@ export class DevinManagedRunner {
   #usageLimit: UsageLimitView | null = null;
   #acp: AntigravityAcp | null = null;
   #acpSession: string | null = null;
+  #print: DevinPrintTurn | null = null;
   #approvals = new Map<string, DevinApproval>();
   #runningSettings: DevinTurnSettings | undefined;
   #timer: NodeJS.Timeout | undefined;
@@ -478,6 +518,8 @@ export class DevinManagedRunner {
   /** Resolves with the new session's ID once Devin has created it, for a runner without one. */
   session(): Promise<string> {
     if (this.#nativeId) return Promise.resolve(this.#nativeId);
+    if (this.#completedTurnId)
+      return Promise.reject(new Error(this.#reason ?? "devin-session-not-found"));
     return new Promise((resolve, reject) => {
       this.#found.push(resolve);
       this.#ended.push((reason) => reject(new Error(reason)));
@@ -504,6 +546,11 @@ export class DevinManagedRunner {
       throw new Error("session-open-elsewhere");
     if (!(await devinLoggedIn(executable, this.host.environment)))
       throw new Error("devin-login-required");
+    const cli = await this.host.selectCli?.(executable);
+    if (cli?.mode === "print") {
+      await this.#sendPrint(cli.executable, text, expectedRevision, beforeDispatch, settings);
+      return;
+    }
     const lead = await this.host.leadTools?.().catch(() => null);
     const mcpServers: AcpMcpServer[] = [];
     const leadToolRules = new Set<string>();
@@ -513,9 +560,15 @@ export class DevinManagedRunner {
     }
     let acp: AntigravityAcp;
     try {
-      acp = AntigravityAcp.spawn(executable, ["acp"], this.workspace, this.host.environment, {
-        timeout: ACP_STEP_MS,
-      });
+      acp = AntigravityAcp.spawn(
+        cli?.executable ?? executable,
+        ["acp"],
+        this.workspace,
+        this.host.environment,
+        {
+          timeout: ACP_STEP_MS,
+        },
+      );
     } catch {
       throw new Error("devin-cli-unavailable");
     }
@@ -549,11 +602,20 @@ export class DevinManagedRunner {
     }
     this.#acp = acp;
     this.#acpSession = session;
-    if (!this.#nativeId) {
-      this.#nativeId = session;
-      for (const found of this.#found.splice(0)) found(session);
-      this.#ended = [];
-    }
+    this.#bindNativeId(session);
+    this.#beginTurn(settings);
+    this.#timer = setInterval(() => void this.#publishItems().catch(() => undefined), POLL_MS);
+    void this.#consume(acp, promptId, startedAt, leadToolRules);
+  }
+
+  #bindNativeId(nativeId: string) {
+    if (this.#nativeId) return;
+    this.#nativeId = nativeId;
+    for (const found of this.#found.splice(0)) found(nativeId);
+    this.#ended = [];
+  }
+
+  #beginTurn(settings: DevinTurnSettings) {
     this.#runningSettings = { ...settings };
     this.#status = "running";
     this.#reason = null;
@@ -562,23 +624,103 @@ export class DevinManagedRunner {
     this.#turnId = randomUUID();
     this.#revision++;
     this.#publishState();
-    this.#timer = setInterval(() => void this.#publishItems().catch(() => undefined), POLL_MS);
-    void this.#consume(acp, promptId, startedAt, leadToolRules);
+  }
+
+  async #sendPrint(
+    executable: string,
+    text: string,
+    expectedRevision: number,
+    beforeDispatch: () => void,
+    settings: DevinTurnSettings,
+  ) {
+    const known = this.#nativeId
+      ? null
+      : new Set((await this.host.listSessions()).map(({ nativeId }) => nativeId));
+    let startedAt = 0;
+    const turn = await startDevinPrintTurn({
+      executable,
+      cwd: this.workspace,
+      environment: this.host.environment,
+      nativeId: this.#nativeId,
+      text,
+      ...settings,
+      beforeDispatch: () => {
+        if (this.#closed || expectedRevision !== this.#revision)
+          throw new Error("stale-or-disabled-control");
+        beforeDispatch();
+        startedAt = Date.now();
+      },
+    });
+    this.#print = turn;
+    this.#beginTurn(settings);
+    const pid =
+      process.platform !== "win32" || path.extname(executable).toLowerCase() === ".exe"
+        ? turn.pid
+        : undefined;
+    const readSession = async () => {
+      if (!this.#nativeId && known) await this.#findPrintSession(known, text, startedAt, pid);
+      await this.#publishItems();
+    };
+    let reading: Promise<void> | undefined;
+    const poll = () =>
+      (reading ??= readSession()
+        .catch(() => undefined)
+        .finally(() => {
+          reading = undefined;
+        }));
+    this.#timer = setInterval(() => void poll(), POLL_MS);
+    void turn.outcome.then((outcome) =>
+      this.#finish({ print: outcome }, startedAt, async () => {
+        await reading;
+        if (!this.#nativeId && known) await this.#findPrintSession(known, text, startedAt, pid);
+      }),
+    );
+  }
+
+  async #findPrintSession(
+    known: ReadonlySet<string>,
+    prompt: string,
+    startedAt: number,
+    pid?: number,
+  ) {
+    // A new print session is announced through Devin's shared session store.
+    const fresh = (await this.host.listSessions()).filter(
+      ({ nativeId, createdAt }) =>
+        NATIVE_ID.test(nativeId) && !known.has(nativeId) && createdAt >= startedAt - 5_000,
+    );
+    const matching: string[] = [];
+    const normalized = (value: string) => value.replace(/\s+/g, " ").trim();
+    const expected = normalized(prompt);
+    for (const { nativeId } of fresh) {
+      const holder = pid ? await devinSessionLockPid(this.host.environment, nativeId) : null;
+      if (holder !== null) {
+        if (holder !== pid) continue;
+        this.#bindNativeId(nativeId);
+        return;
+      }
+      const actual = await this.host.firstUserText(nativeId);
+      if (actual !== null && normalized(actual) === expected) matching.push(nativeId);
+    }
+    if (matching.length === 1) this.#bindNativeId(matching[0]!);
   }
 
   async stop(turnId: string, expectedRevision: number, beforeDispatch: () => void) {
     if (expectedRevision !== this.#revision) throw new Error("stale-or-disabled-control");
     const acp = this.#acp;
     const session = this.#acpSession;
-    if (this.#status !== "running" || !acp || !session || turnId !== this.#turnId)
+    const print = this.#print;
+    if (this.#status !== "running" || (!print && (!acp || !session)) || turnId !== this.#turnId)
       throw new Error("session-not-running");
     beforeDispatch();
     this.#status = "stopping";
     this.#approvals.clear();
     this.#revision++;
     this.#publishState();
-    void acp.cancel(session).catch(() => acp.shutdown());
-    setTimeout(() => this.#acp === acp && acp.shutdown(), STOP_KILL_MS).unref();
+    if (print) print.stop();
+    else if (acp && session) {
+      void acp.cancel(session).catch(() => acp.shutdown());
+      setTimeout(() => this.#acp === acp && acp.shutdown(), STOP_KILL_MS).unref();
+    }
   }
 
   /** Answers a permission request Devin made in this turn with one of the offered options. */
@@ -625,6 +767,7 @@ export class DevinManagedRunner {
     this.#closed = true;
     clearInterval(this.#timer);
     this.#acp?.shutdown();
+    this.#print?.close();
   }
 
   /** Sends one setup request and waits for its answer; other traffic before it is not the turn's. */
@@ -670,7 +813,7 @@ export class DevinManagedRunner {
       outcome = { error: "devin-run-stopped" };
     }
     acp.shutdown();
-    await this.#finish(outcome, startedAt);
+    await this.#finish({ acp: outcome }, startedAt);
   }
 
   async #permission(
@@ -727,29 +870,20 @@ export class DevinManagedRunner {
     }
   }
 
-  async #finish(outcome: DevinAcpOutcome, startedAt: number) {
+  async #finish(outcome: DevinOutcome, startedAt: number, discover?: () => Promise<void>) {
     const endedAt = Date.now();
     clearInterval(this.#timer);
     this.#timer = undefined;
+    await discover?.().catch(() => undefined);
     await this.#publishItems().catch(() => undefined);
-    const stopped =
-      this.#status === "stopping" ||
-      ("stopReason" in outcome && outcome.stopReason === "cancelled");
-    const error = "error" in outcome ? outcome.error : null;
-    const code = "error" in outcome && outcome.code !== undefined ? `${outcome.code} ` : "";
-    // Devin's words name the limit; only the error code may say it when they do not.
-    const limit =
-      stopped || error === null
-        ? null
-        : (devinUsageLimitHit(error) ?? (code ? devinUsageLimitHit(`${code}${error}`) : null));
-    const refused = "stopReason" in outcome && outcome.stopReason === "refusal";
-    const failed = !stopped && !limit && (error !== null || refused);
+    const { stopped, limit, reason } = completedDevinTurn(outcome, this.#status === "stopping");
     this.#acp = null;
     this.#acpSession = null;
+    this.#print = null;
     this.#approvals.clear();
     this.#runningSettings = undefined;
-    this.#status = failed ? "failed" : "idle";
-    this.#reason = failed ? (error !== null ? devinAcpFailure(error) : "devin-run-failed") : null;
+    this.#status = reason ? "failed" : "idle";
+    this.#reason = reason ?? (this.#nativeId ? null : "devin-session-not-found");
     // Devin says no reset time: the notice says so until the host learns more
     // (docs/agents/usage-limits.md).
     this.#usageLimit = limit
@@ -759,6 +893,10 @@ export class DevinManagedRunner {
     this.#completedTurnId = turnId;
     this.#turnId = null;
     this.#revision++;
+    if (!this.#nativeId) {
+      for (const end of this.#ended.splice(0)) end(this.#reason ?? "devin-session-not-found");
+      this.#found = [];
+    }
     // Told before the idle state goes out, so that what follows it already knows the outcome.
     if (this.#nativeId && turnId)
       try {
@@ -767,7 +905,7 @@ export class DevinManagedRunner {
           turnId,
           startedAt: new Date(startedAt).toISOString(),
           endedAt: new Date(endedAt).toISOString(),
-          outcome: stopped ? "cancelled" : failed || limit ? "failed" : "completed",
+          outcome: stopped ? "cancelled" : reason || limit ? "failed" : "completed",
           ...this.#answer(startedAt, endedAt),
           usageLimit: limit,
         });

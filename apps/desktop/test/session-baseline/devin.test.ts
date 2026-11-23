@@ -29,7 +29,10 @@ const { DatabaseSync } = require("node:sqlite");
 const { basename } = require("node:path");
 const args = process.argv.slice(2);
 const log = (call) => appendFileSync(process.env.FIXTURE_LOG, JSON.stringify(call) + "\n");
-if (args[0] === "auth") {
+if (args[0] === "--version") {
+  log({ args });
+  console.log("devin 3000.14.30833");
+} else if (args[0] === "auth") {
   log({ args });
   console.log("Logged in as fixture");
 } else if (args[0] === "models") {
@@ -107,6 +110,7 @@ const requestIds = {
   answer: "10000000-0000-4000-8000-000000000009",
 };
 const auth = { args: ["auth", "status"] };
+const versionProbe = { args: ["--version"] };
 const modelQuery = { args: ["models", "list", "--format", "json"] };
 const cleanups: (() => void | Promise<void>)[] = [];
 
@@ -410,6 +414,7 @@ describe.skipIf(process.platform === "win32")("Devin session HTTP baseline", () 
     ]);
     expect(f.runtimeCalls()).toEqual([
       auth,
+      versionProbe,
       {
         cwd: "<workspace>",
         acp: ["session/new"],
@@ -508,6 +513,7 @@ describe.skipIf(process.platform === "win32")("Devin session HTTP baseline", () 
     const runtimeCalls = [
       modelQuery,
       auth,
+      versionProbe,
       {
         cwd: "<workspace>",
         acp: ["session/load", existing],
@@ -658,7 +664,7 @@ describe.skipIf(process.platform === "win32")("Devin session HTTP baseline", () 
     ]);
   });
 
-  it("refuses native steering, approval and answers but shares the host queue for print turns", async () => {
+  it("refuses native steering and unsolicited decisions but shares the host queue for ACP turns", async () => {
     const f = await fixture();
     const { sessionId, bootId } = f;
     const activeTurn = await f.http("/send", {
@@ -669,7 +675,7 @@ describe.skipIf(process.platform === "win32")("Devin session HTTP baseline", () 
       text: "Keep the turn active for unsupported controls",
     });
     expect(activeTurn).toMatchObject({ status: 200, body: { accepted: true } });
-    await expect.poll(f.runtimeCalls).toHaveLength(2);
+    await expect.poll(f.runtimeCalls).toHaveLength(3);
     const runtimeCalls = f.runtimeCalls();
     const running = await f.live();
     const { runtimeBootId } = running.body;

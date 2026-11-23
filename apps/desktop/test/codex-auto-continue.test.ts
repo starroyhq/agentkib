@@ -3871,6 +3871,94 @@ describe("Codex automatic CLI continuation", () => {
     );
   });
 
+  it("reports a resumed Worker's reply before it is visible in native history", async () => {
+    const f = fixture(true);
+    f.setServerUserAgent("agentkib/0.167.0 (Mac OS 26.0.0; arm64) fixture");
+    f.setPolicyReply({
+      thread: { id: nativeId, cwd: f.workspace, status: { type: "idle" }, turns: [] },
+      initialTurnsPage: {
+        data: [{ id: "finished-turn", status: "completed", items: [] }],
+        nextCursor: "older-turns",
+      },
+    });
+    const worker = f.summary.id;
+    const delivered: string[] = [];
+    const lead = new OrchestrationService(
+      f.root,
+      "fixture-boot",
+      {
+        control: (request) => f.web.managedControl(request),
+        live: f.live,
+        events: async (sessionId, limit) =>
+          (await f.web.request({ operation: "events", sessionId, limit, retainCursor: false }))
+            .events,
+        session: (sessionId) =>
+          sessionId === worker ? { agent: "codex", workspaceId: "workspace", title: null } : null,
+        managed: async () => true,
+        workspaces: () => [{ id: "workspace", name: "Fixture" }],
+      },
+      (id) => id === "project-agent",
+      (_id, _deviceId, report) => {
+        delivered.push(report);
+        return false;
+      },
+    );
+    cleanups.push(() => lead.close());
+    f.web.observeLanes({
+      turnEnded: (...args) => void lead.laneTurnEnded(...args),
+      waiting: () => {},
+    });
+    await lead.assignWorkers({
+      sessionId: "project-agent",
+      deviceId: "fixture",
+      workspaceId: "workspace",
+      workers: [worker],
+    });
+    const result = await lead.call("project-agent", "worker_send", {
+      worker: "worker-1",
+      text: "Do the next task.",
+    });
+    expect(JSON.parse(result.text)).toMatchObject({ accepted: true, operation: "send" });
+    expect(f.requests.find(({ method }) => method === "thread/resume")?.params).toMatchObject({
+      initialTurnsPage: { limit: 1 },
+    });
+    const server = f.servers.at(-1)!;
+    const turnId = "new-turn";
+    const commentary = { id: "worker-commentary", type: "agentMessage", text: "Still working." };
+    const answer = {
+      id: "worker-answer",
+      type: "agentMessage",
+      phase: "final_answer",
+      text: "Worker task complete.",
+    };
+    const tool = {
+      id: "worker-tool",
+      type: "commandExecution",
+      command: "true",
+      status: "completed",
+    };
+    for (const item of [commentary, answer, commentary, tool])
+      server.emit("notification", {
+        method: "item/completed",
+        params: { threadId: nativeId, turnId, item },
+      });
+    server.complete();
+
+    await vi.waitFor(() => expect(delivered).toHaveLength(1));
+    expect(readManagedEvents(f.root, worker, null, 50).events.slice(-2)).toMatchObject([
+      { id: "worker-answer", turn_id: turnId, content: "Worker task complete." },
+      { id: "worker-tool", turn_id: turnId, kind: "tool-summary" },
+    ]);
+    expect(
+      (await f.web.request({ operation: "events", sessionId: worker, limit: 50 })).events,
+    ).toEqual([
+      expect.objectContaining({ content: "Earlier user input" }),
+      expect.objectContaining({ content: "Earlier answer" }),
+    ]);
+    expect(delivered[0]).toContain("Worker task complete.");
+    expect(delivered[0]).not.toMatch(/Still working|Earlier answer|no reply was recorded/);
+  });
+
   it("keeps an active turn from the resume page and does not start another turn", async () => {
     const f = fixture(true);
     f.setServerUserAgent("agentkib/0.167.0 (Mac OS 26.0.0; arm64) fixture");
@@ -6874,7 +6962,14 @@ describe("a managed Codex thread without a name", () => {
     });
     server.complete();
     await vi.waitFor(() =>
-      expect(lanes.turnEnded).toHaveBeenCalledWith(f.summary.id, "new-turn", "completed", null),
+      expect(lanes.turnEnded).toHaveBeenCalledWith(
+        f.summary.id,
+        "new-turn",
+        "completed",
+        null,
+        undefined,
+        "Done.",
+      ),
     );
     expect(lanes.turnEnded).toHaveBeenCalledTimes(1);
     expect(

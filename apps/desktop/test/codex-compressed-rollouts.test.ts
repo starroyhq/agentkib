@@ -285,13 +285,38 @@ describe("Codex native rollout policy", () => {
   });
 
   it.each([
+    ["explicit empty writable roots", { writable_roots: [] }],
+    ["omitted writable roots", { writable_roots: undefined }],
+    ["omitted network access", { network_access: undefined }],
+  ])("maps the Codex workspace policy with %s", (_, omitted) => {
+    const f = codexHome({ stored: ["plain"] });
+    writeFileSync(
+      f.plain,
+      f.body +
+        turnContext({
+          cwd: f.workspace,
+          approval_policy: "on-request",
+          approvals_reviewer: "user",
+          sandbox_policy: { ...workspaceWrite, ...omitted },
+        }),
+    );
+    expect(f.reader.historicalSettings(nativeId, f.workspace)?.nativePolicy).toEqual({
+      policyId: "workspace-write-on-request",
+    });
+  });
+
+  it.each([
     ["approval", { approval_policy: "on-failure" }, {}, "approval-policy"],
     ["reviewer", { approvals_reviewer: "other-reviewer" }, {}, "approvals-reviewer"],
     ["missing reviewer", { approvals_reviewer: undefined }, {}, "approvals-reviewer"],
     ["type", {}, { type: "read-only" }, "sandbox-type"],
     ["network", {}, { network_access: true }, "sandbox-network"],
+    ["null network access", {}, { network_access: null }, "sandbox-network"],
+    ["null writable roots", {}, { writable_roots: null }, "sandbox-writable-roots"],
     ["TMPDIR", {}, { exclude_tmpdir_env_var: false }, "sandbox-tmpdir"],
+    ["default TMPDIR", {}, { exclude_tmpdir_env_var: undefined }, "sandbox-tmpdir"],
     ["/tmp", {}, { exclude_slash_tmp: false }, "sandbox-slash-tmp"],
+    ["default /tmp", {}, { exclude_slash_tmp: undefined }, "sandbox-slash-tmp"],
     ["restricted reads", {}, { read_only_access: { type: "restricted" } }, "sandbox-read-access"],
   ])(
     "reports the mismatched native %s without exposing raw values",

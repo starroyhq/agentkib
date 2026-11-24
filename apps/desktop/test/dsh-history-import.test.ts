@@ -1,9 +1,11 @@
 // @vitest-environment node
 import { createHash, randomUUID } from "node:crypto";
-import { mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { prepareDshHistoryDocument } from "../../../packages/backend/src/agents/dsh/history-import";
+import { readCodexDocument } from "../../../packages/backend/src/session-document-providers";
 import {
   historyImportServices,
   historyImportWorkspace,
@@ -12,6 +14,7 @@ import {
 
 const png =
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP49cABAATyAhudsmHgAAAAAElFTkSuQmCC";
+type StoredEvent = { type: string; data: unknown };
 const roots: string[] = [];
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
@@ -21,7 +24,7 @@ function fixture() {
   const cwd = realpathSync(mkdtempSync(path.join(tmpdir(), "ak-dsh-import-")));
   roots.push(cwd);
   const id = randomUUID();
-  const history = new Map<string, { header: Record<string, unknown>; events: unknown[] }>();
+  const history = new Map<string, { header: Record<string, unknown>; events: StoredEvent[] }>();
   const savedImages = new Map<string, Uint8Array>();
   const workspace = {
     id: "native-workspace",
@@ -36,7 +39,7 @@ function fixture() {
     create: vi.fn(async (header: Record<string, unknown> & { id: string }) => {
       if (history.has(header.id)) throw new Error("existing history");
       return {
-        append: async (events: unknown[]) => {
+        append: async (events: StoredEvent[]) => {
           history.set(header.id, { header, events: structuredClone(events) });
         },
         flush: async () => {},
@@ -193,6 +196,66 @@ describe("DSH native history import", () => {
     expect(f.workspace.attachSession).toHaveBeenCalledTimes(1);
     f.savedImages.clear();
     await expect(f.send({ verifyOnly: true })).rejects.toThrow("missing image");
+  });
+
+  it("imports text and images from one Codex record in the same DSH turn", async () => {
+    const f = fixture();
+    const timestamp = "2026-11-05T12:01:00Z";
+    const message = (role: string, content: object[]) => ({
+      type: "response_item",
+      timestamp,
+      payload: { type: "message", role, content },
+    });
+    const image = { type: "input_image", image_url: `data:image/png;base64,${png}` };
+    const rows = [
+      message("user", [{ type: "input_text", text: "Actually unanswered" }]),
+      message("user", [{ type: "input_text", text: "Describe this pixel" }, image]),
+      message("assistant", [{ type: "output_text", text: "A blue pixel" }]),
+      message("user", [image]),
+      message("assistant", [{ type: "output_text", text: "Another blue pixel" }]),
+    ];
+    const file = path.join(f.request.cwd, "codex-history.jsonl");
+    writeFileSync(file, rows.map((row) => JSON.stringify(row)).join("\n") + "\n");
+    const source = readCodexDocument(
+      {
+        agent: "codex",
+        workspace_id: f.workspace.id,
+        title: "Codex image history",
+        created_at: timestamp,
+        updated_at: timestamp,
+        git_branch: null,
+      },
+      file,
+    );
+
+    const document = prepareDshHistoryDocument(source);
+    expect(await f.send({ document })).toEqual({ sessionId: f.id, imported: true });
+    const events = f.history.get(f.id)!.events;
+    expect(events.filter((event) => event.type === "turn/end").map((event) => event.data)).toEqual([
+      {
+        turn: 1,
+        reason: {
+          kind: "error",
+          error: expect.objectContaining({ code: "AGENTKIB_IMPORT_NO_REPLY" }),
+        },
+      },
+      { turn: 2, reason: { kind: "completed" } },
+      { turn: 3, reason: { kind: "completed" } },
+    ]);
+    const messages = events.filter((event) => event.type === "user/message").slice(1);
+    const savedImage = {
+      type: "image",
+      attachment: expect.objectContaining({ attachmentId: expect.stringMatching(/^sha256:/) }),
+    };
+    expect(messages.map((event) => event.data)).toMatchObject([
+      { content: [{ type: "text", text: "Actually unanswered" }] },
+      { content: [{ type: "text", text: "Describe this pixel" }, savedImage] },
+      { content: [savedImage] },
+    ]);
+    expect(await f.send({ document, verifyOnly: true })).toEqual({
+      sessionId: f.id,
+      imported: true,
+    });
   });
 
   it("will not create during reconciliation and can attach a verified prior write", async () => {

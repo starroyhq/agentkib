@@ -92,10 +92,21 @@ export function prepareDshHistoryDocument(source: SessionDocument): SessionDocum
       turn.blocks.some((block) => block.type === "text" && block.text.trim()),
   );
   const document = structuredClone(source);
+  const turns: SessionDocument["turns"] = [];
   let tools = 0;
   let omitted = 0;
   let images = 0;
   for (const turn of document.turns) {
+    // The Codex document reader uses the same record line for a fallback message and its attachments.
+    const previous = turns.at(-1);
+    const sharesCodexRecord =
+      document.source.agent === "codex" &&
+      previous &&
+      previous.role === turn.role &&
+      /^turn-\d+$/.test(previous.id) &&
+      turn.id === `${previous.id}-attachment` &&
+      turn.blocks.length > 0 &&
+      turn.blocks.every((block) => block.type === "attachment");
     turn.blocks = turn.blocks.map((block) => {
       if (
         block.type === "tool-call" ||
@@ -127,7 +138,10 @@ export function prepareDshHistoryDocument(source: SessionDocument): SessionDocum
         text: "[Historical attachment unavailable: " + (block.filename || block.media_type) + "]",
       };
     });
+    if (sharesCodexRecord) previous.blocks = previous.blocks.concat(turn.blocks);
+    else turns.push(turn);
   }
+  document.turns = turns;
   for (const [code, count] of [
     ["target-tool-summary", tools],
     ["target-attachment-omitted", omitted],

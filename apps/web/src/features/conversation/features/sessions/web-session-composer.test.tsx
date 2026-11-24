@@ -2,9 +2,11 @@
 
 import "@testing-library/jest-dom/vitest";
 import { useState, type ReactNode } from "react";
-import { cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { render } from "@/features/conversation/web-reader-test-utils";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { PreferencesDialog } from "@agentkib/session-ui";
+import { dictionaries } from "@/features/conversation/i18n";
 import { SessionComposer } from "@/features/conversation/web-session-composer";
 import { sessionCopy, sessionReason } from "../../session-copy";
 import type { SessionResource } from "@agentkib/web-client";
@@ -31,11 +33,9 @@ vi.mock("@agentkib/session-ui", async (importOriginal) => ({
   SessionContextUsageGauge: () => null,
   SessionComposerControls: ({
     action,
-    advancedActions,
     setResources,
   }: {
     action: ReactNode;
-    advancedActions: ReactNode;
     setResources: (resources: SessionResource[]) => void;
   }) => (
     <>
@@ -47,7 +47,6 @@ vi.mock("@agentkib/session-ui", async (importOriginal) => ({
       >
         Reference file
       </button>
-      {advancedActions}
       {action}
     </>
   ),
@@ -60,8 +59,11 @@ function renderComposer(message = "Draft message") {
   return { ...view, input, form: input.closest("form")! };
 }
 
+const followUpStorageKey = "agentkib.send-while-running";
+
 describe("composer sending shortcuts", () => {
   beforeEach(() => {
+    localStorage.removeItem(followUpStorageKey);
     vi.resetAllMocks();
     doubles.control.mockResolvedValue(true);
     doubles.resumeCommand.mockResolvedValue({
@@ -114,6 +116,7 @@ describe("composer sending shortcuts", () => {
   });
   afterEach(() => {
     cleanup();
+    localStorage.removeItem(followUpStorageKey);
     vi.unstubAllGlobals();
   });
 
@@ -162,63 +165,135 @@ describe("composer sending shortcuts", () => {
     );
   });
 
-  it.each(["steer", "queue-add"] as const)(
-    "keeps %s behind the existing advanced action",
-    async (action) => {
-      doubles.session.access = {
-        ...doubles.session.access,
-        status: "approved",
-        device: { ...doubles.session.access?.device, advancedControl: true },
-      } as SessionController["access"];
-      doubles.session.canSend = false;
-      doubles.session.canStop = true;
-      doubles.session.live = {
-        sessionId: "session",
-        revision: 1,
-        sendEnabled: false,
-        status: "running",
-        executionLocation: "agentkib",
-        turnId: "turn",
-        approvals: [],
-        questions: [],
-      } as SessionController["live"];
-      const { input } = renderComposer();
-      expect(screen.getByRole("button", { name: "Stop" })).toHaveClass(
-        "size-8",
-        "pointer-coarse:size-11",
-        "rounded-full",
-        "text-white",
-      );
-      expect(screen.getByRole("button", { name: sessionCopy["en-US"].advanced })).toHaveClass(
-        "size-11",
-      );
-      // Enter while the turn runs takes this device's running choice, which queues by default.
-      fireEvent.keyDown(input, { key: "Enter" });
-      await waitFor(() =>
-        expect(doubles.runSessionAction).toHaveBeenCalledExactlyOnceWith("queue-add", {
-          text: "Draft message",
-        }),
-      );
-      await waitFor(() => expect(input).toBeEnabled());
-      expect(input).toHaveValue("");
-      expect(doubles.control).not.toHaveBeenCalled();
-      doubles.runSessionAction.mockClear();
-      fireEvent.change(input, { target: { value: "Draft message" } });
-      fireEvent.click(screen.getByRole("button", { name: sessionCopy["en-US"].advanced }));
-      fireEvent.click(
-        await screen.findByRole("menuitem", {
-          name: action === "steer" ? sessionCopy["en-US"].steer : sessionCopy["en-US"].queueAdd,
-        }),
-      );
-      await waitFor(() =>
-        expect(doubles.runSessionAction).toHaveBeenCalledWith(action, {
-          text: "Draft message",
-          ...(action === "steer" ? { turnId: "turn" } : {}),
-        }),
-      );
-      expect(doubles.control).not.toHaveBeenCalled();
-    },
-  );
+  function runningFixture(agent = "codex") {
+    doubles.session.current = {
+      id: "session",
+      agent,
+    } as SessionController["current"];
+    doubles.session.access = {
+      ...doubles.session.access,
+      status: "approved",
+      device: { ...doubles.session.access?.device, advancedControl: true },
+    } as SessionController["access"];
+    doubles.session.canSend = false;
+    doubles.session.canStop = true;
+    doubles.session.live = {
+      ...doubles.session.live!,
+      sendEnabled: false,
+      status: "running",
+      executionLocation: "agentkib",
+      turnId: "turn",
+    };
+    if (agent !== "codex") {
+      doubles.session.capabilities = {
+        ...doubles.session.capabilities!,
+        features: { "queue-add": { available: true } },
+      };
+    }
+  }
+
+  it("steers by default and queues one follow-up with Ctrl+Enter", async () => {
+    runningFixture();
+    const { input } = renderComposer("");
+    expect(screen.getByRole("button", { name: "Stop" })).toBeEnabled();
+
+    fireEvent.change(input, { target: { value: "First follow-up" } });
+    expect(screen.getByRole("button", { name: sessionCopy["en-US"].steer })).toBeEnabled();
+    expect(screen.queryByRole("button", { name: "More actions" })).not.toBeInTheDocument();
+    expect(
+      screen.queryByText("Queued messages run automatically after the current turn."),
+    ).not.toBeInTheDocument();
+    fireEvent.keyDown(input, { key: "Enter" });
+    await waitFor(() => expect(input).toHaveValue(""));
+    expect(doubles.runSessionAction).toHaveBeenCalledExactlyOnceWith("steer", {
+      text: "First follow-up",
+      turnId: "turn",
+    });
+
+    fireEvent.change(input, { target: { value: "Alternate follow-up" } });
+    fireEvent.keyDown(input, { key: "Enter", ctrlKey: true });
+    await waitFor(() => expect(input).toHaveValue(""));
+    expect(doubles.runSessionAction).toHaveBeenCalledTimes(2);
+    expect(doubles.runSessionAction).toHaveBeenLastCalledWith("queue-add", {
+      text: "Alternate follow-up",
+    });
+    expect(doubles.control).not.toHaveBeenCalled();
+  });
+
+  it("uses the saved queue preference and steers one follow-up with Command+Enter", async () => {
+    localStorage.setItem(followUpStorageKey, "queue");
+    runningFixture();
+    const { input } = renderComposer("First follow-up");
+    fireEvent.click(screen.getByRole("button", { name: sessionCopy["en-US"].queueAdd }));
+    await waitFor(() => expect(input).toHaveValue(""));
+    expect(doubles.runSessionAction).toHaveBeenCalledExactlyOnceWith("queue-add", {
+      text: "First follow-up",
+    });
+
+    fireEvent.change(input, { target: { value: "Alternate follow-up" } });
+    fireEvent.keyDown(input, { key: "Enter", metaKey: true });
+    await waitFor(() => expect(input).toHaveValue(""));
+    expect(doubles.runSessionAction).toHaveBeenCalledTimes(2);
+    expect(doubles.runSessionAction).toHaveBeenLastCalledWith("steer", {
+      text: "Alternate follow-up",
+      turnId: "turn",
+    });
+    expect(localStorage.getItem(followUpStorageKey)).toBe("queue");
+  });
+
+  it.each(["devin", "antigravity"])("only queues while %s is running", async (agent) => {
+    runningFixture(agent);
+    const { input } = renderComposer("First follow-up");
+    expect(
+      screen.queryByRole("button", { name: sessionCopy["en-US"].steer }),
+    ).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: sessionCopy["en-US"].queueAdd }));
+    await waitFor(() => expect(input).toHaveValue(""));
+    expect(doubles.runSessionAction).toHaveBeenCalledExactlyOnceWith("queue-add", {
+      text: "First follow-up",
+    });
+
+    fireEvent.change(input, { target: { value: "Alternate follow-up" } });
+    fireEvent.keyDown(input, { key: "Enter", ctrlKey: true });
+    await waitFor(() => expect(input).toHaveValue(""));
+    expect(doubles.runSessionAction).toHaveBeenCalledTimes(2);
+    expect(doubles.runSessionAction).toHaveBeenLastCalledWith("queue-add", {
+      text: "Alternate follow-up",
+    });
+  });
+
+  it("preserves the stored follow-up preference in the Web settings and persists changes", () => {
+    localStorage.setItem(followUpStorageKey, "queue");
+    const labels = dictionaries["en-US"];
+    const preferences = (
+      <PreferencesDialog
+        labels={labels}
+        locale="en-US"
+        theme="system"
+        accent="blue"
+        onLocaleChange={vi.fn()}
+        onThemeChange={vi.fn()}
+        onAccentChange={vi.fn()}
+        onClose={vi.fn()}
+      />
+    );
+    const first = render(preferences);
+    const sessionPreferences = within(
+      screen.getByRole("group", { name: labels.sessionPreferences }),
+    );
+    const followUp = sessionPreferences.getByRole("combobox", { name: labels.sendWhileRunning });
+    expect(followUp).toHaveValue("queue");
+    const shortcuts = within(screen.getByRole("group", { name: labels.keyboardShortcuts }));
+    expect(shortcuts.getByText(labels.alternateFollowUp)).toBeVisible();
+    expect(shortcuts.getByText(/^(?:⌘|Ctrl\+)Enter$/)).toBeVisible();
+
+    fireEvent.change(followUp, { target: { value: "steer" } });
+    expect(followUp).toHaveValue("steer");
+    expect(localStorage.getItem(followUpStorageKey)).toBe("steer");
+    first.unmount();
+    render(preferences);
+    expect(screen.getByRole("combobox", { name: labels.sendWhileRunning })).toHaveValue("steer");
+  });
 
   function continuationFixture() {
     doubles.session.access!.status = "approved";
@@ -252,9 +327,7 @@ describe("composer sending shortcuts", () => {
     // The header already says where it runs; no explanatory line sits over the composer.
     expect(screen.queryByText(/Messages run in Codex/)).not.toBeInTheDocument();
     expect(input).toBeEnabled();
-    expect(
-      screen.queryByRole("button", { name: sessionCopy["en-US"].advanced }),
-    ).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "More actions" })).not.toBeInTheDocument();
     expect(screen.queryByText(/in use in Codex/i)).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Send" })).toBeEnabled();
   });

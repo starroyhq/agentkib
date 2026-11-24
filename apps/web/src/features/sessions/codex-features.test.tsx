@@ -185,7 +185,7 @@ describe("Codex composer", () => {
     expect(state.runSessionAction).toHaveBeenCalledTimes(2);
   });
 
-  it("blocks send and steer during compaction while keeping explicit queueing and native stop available", async () => {
+  it("keeps native stop available during compaction and allows queueing via the alternate shortcut", () => {
     state.current = { id: "s", agent: "codex" } as typeof state.current;
     state.message = "next";
     state.live = {
@@ -199,15 +199,12 @@ describe("Codex composer", () => {
     state.canStop = true;
     render(<SessionComposer />);
     expect(screen.getByRole("button", { name: state.t.stop })).toBeEnabled();
-    fireEvent.click(screen.getByRole("button", { name: "更多操作" }));
-    expect(await screen.findByRole("menuitem", { name: "追加到当前轮次" })).toHaveAttribute(
-      "aria-disabled",
-      "true",
-    );
-    const queue = screen.getByRole("menuitem", { name: "加入队列（将自动执行）" });
-    expect(queue).not.toHaveAttribute("aria-disabled", "true");
-    fireEvent.click(queue);
-    expect(state.runSessionAction).toHaveBeenCalledWith("queue-add", { text: "next" });
+    expect(screen.queryByRole("button", { name: "更多操作" })).not.toBeInTheDocument();
+    const input = screen.getByRole("textbox", { name: state.t.message });
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(state.runSessionAction).not.toHaveBeenCalled();
+    fireEvent.keyDown(input, { key: "Enter", ctrlKey: true });
+    expect(state.runSessionAction).toHaveBeenCalledExactlyOnceWith("queue-add", { text: "next" });
   });
   it("refreshes settings and goals from native invalidation without scanning resources", async () => {
     state.current = { id: "s", agent: "codex" } as typeof state.current;
@@ -254,28 +251,6 @@ describe("Codex composer", () => {
     );
     expect(JSON.stringify(vi.mocked(state.control).mock.calls)).not.toContain("image.png");
     await waitFor(() => expect(screen.queryByText("image.png")).not.toBeInTheDocument());
-  });
-  it.each([
-    ["queue-add", "加入队列（将自动执行）"],
-    ["steer", "追加到当前轮次"],
-  ])("sends text-only %s only during a running turn", async (action, label) => {
-    state.current = { id: "s", agent: "codex" } as typeof state.current;
-    state.message = "next";
-    const view = render(<SessionComposer />);
-    expect(screen.queryByRole("button", { name: "更多操作" })).not.toBeInTheDocument();
-    state = {
-      ...state,
-      live: { ...state.live!, status: "running", turnId: "turn" },
-      canSend: false,
-      canStop: true,
-    };
-    view.rerender(<SessionComposer />);
-    fireEvent.click(screen.getByRole("button", { name: "更多操作" }));
-    fireEvent.click(await screen.findByRole("menuitem", { name: label }));
-    expect(state.runSessionAction).toHaveBeenCalledWith(action, {
-      text: "next",
-      ...(action === "steer" ? { turnId: "turn" } : {}),
-    });
   });
   it("blocks submission while uploading and aborts transfers on unmount", async () => {
     let signal: AbortSignal | undefined;

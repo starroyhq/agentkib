@@ -561,12 +561,7 @@ describe("Codex slash commands in the desktop composer", () => {
         },
       };
       const { input } = renderComposer("/stop");
-      fireEvent.click(screen.getByRole("button", { name: sessionCopy["en-US"].advanced }));
-      const runningAction = await screen.findByRole("menuitem", {
-        name: action === "steer" ? sessionCopy["en-US"].steer : sessionCopy["en-US"].queueAdd,
-      });
-      expect(runningAction).not.toHaveAttribute("aria-disabled", "true");
-      fireEvent.click(runningAction);
+      fireEvent.keyDown(input, { key: "Enter", metaKey: action === "queue-add" });
       expect(
         await screen.findByText(sessionReason("en-US", "codex-command-agentkib").text),
       ).toBeVisible();

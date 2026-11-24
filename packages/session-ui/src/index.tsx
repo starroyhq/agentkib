@@ -154,6 +154,7 @@ export {
 export { PreferencesDialog } from "./conversation/preferences/preferences-dialog";
 export { useAppearance } from "./conversation/preferences/use-appearance";
 export {
+  alternateFollowUpShortcut,
   useSendWhileRunning,
   setSendWhileRunning,
   runningSendAction,

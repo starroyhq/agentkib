@@ -101,7 +101,11 @@ interface SessionProviderIntegrationCapabilities {
  * runtime response.
  */
 export interface SessionProviderCapabilities extends SessionProviderIntegrationCapabilities {
-  history: { readState: boolean };
+  history: {
+    readState: boolean;
+    /** Native history can supply read-only question cards. */
+    questionnaire?: true;
+  };
   operations: { execution: boolean };
   /** Stable session toolbar slots; live grants determine whether each action can run. */
   composer?: {
@@ -141,7 +145,7 @@ export interface SessionProviderCapabilities extends SessionProviderIntegrationC
 
 export interface BasicSessionProviderCapabilities extends SessionProviderIntegrationCapabilities {
   composer: { surface: "basic" };
-  history: { readState: false };
+  history: SessionProviderCapabilities["history"] & { readState: false };
   operations: { execution: false };
   contextUsage: SessionProviderCapabilities["contextUsage"];
   controls: readonly ("send" | "stop" | "approve")[];
@@ -308,6 +312,7 @@ const MANAGED_CAPABILITIES = {
 const PROVIDERS = {
   codex: {
     ...MANAGED_CAPABILITIES.codex,
+    history: { ...MANAGED_CAPABILITIES.codex.history, questionnaire: true },
     commands: { source: "built-in" },
     projectAgent: { lead: true, worker: true },
     queue: { actions: ["list", "add", "update", "delete", "reorder", "start"] },
@@ -321,6 +326,7 @@ const PROVIDERS = {
   },
   "claude-code": {
     ...MANAGED_CAPABILITIES["claude-code"],
+    history: { ...MANAGED_CAPABILITIES["claude-code"].history, questionnaire: true },
     commands: { source: "reported" },
     projectAgent: { lead: true, worker: true },
     queue: { actions: ["list", "add", "update", "delete", "reorder", "pause", "resume"] },
@@ -340,6 +346,7 @@ const PROVIDERS = {
   },
   "deepseek-harness": {
     ...MANAGED_CAPABILITIES["deepseek-harness"],
+    history: { ...MANAGED_CAPABILITIES["deepseek-harness"].history, questionnaire: true },
     commands: { source: "reported" },
     projectAgent: { lead: true, worker: true },
     queue: { actions: ["list", "add", "update", "delete", "steer"] },

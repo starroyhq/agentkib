@@ -13,6 +13,34 @@ import { useI18n } from "@/core/useI18n";
 import { AGENT_LABELS } from "@/core/agents";
 import { sessionSourceNeedsAttention, sessionSourceWasUsed } from "./session-source-status";
 
+const issueReasonKeys: Readonly<Record<string, string>> = {
+  "antigravity-database-record": "sessions.sourceReason.databaseRecord",
+  "antigravity-summary-record": "sessions.sourceReason.summaryRecord",
+  "antigravity-trajectory-record": "sessions.sourceReason.trajectoryRecord",
+  "antigravity-database-source": "sessions.sourceReason.database",
+  "antigravity-summary-source": "sessions.sourceReason.summary",
+  "antigravity-local-limit": "sessions.sourceReason.localLimit",
+  "antigravity-acp-list": "sessions.sourceReason.acpList",
+  "antigravity-acp-record": "sessions.sourceReason.acpRecord",
+  "antigravity-native-list": "sessions.sourceReason.nativeList",
+};
+
+function sourceIssueKeys(detail: string | undefined): string[] {
+  if (!detail?.startsWith("[") || detail.length > 2048) return [];
+  try {
+    const issues: unknown = JSON.parse(detail);
+    if (Array.isArray(issues))
+      return issues.flatMap((code) =>
+        typeof code === "string" && Object.hasOwn(issueReasonKeys, code)
+          ? [issueReasonKeys[code]]
+          : [],
+      );
+  } catch {
+    // Older hosts and unknown details use the generic localized fallback.
+  }
+  return [];
+}
+
 export function SessionSourceNotices({
   statuses,
   sessions,
@@ -35,9 +63,30 @@ export function SessionSourceNotices({
   const agents = [...new Set(failures.map((status) => status.agent))];
   if (!agents.length) return null;
   const warning = failures.some((status) => sessionSourceWasUsed(status, sessions));
-  const names = agents.map((agent) => AGENT_LABELS[agent]).join(locale === "en-US" ? ", " : "、");
+  const separator = locale === "en-US" ? ", " : "、";
+  const names = agents.map((agent) => AGENT_LABELS[agent]).join(separator);
   const workspaceNames = new Map(workspaces?.map((workspace) => [workspace.id, workspace.name]));
   const unavailable = tr("errors.conversations.sourceUnavailable");
+  const details = new Map<string, { agent: AgentKind; reason: string; workspaces: Set<string> }>();
+  for (const status of failures) {
+    const issues = sourceIssueKeys(status.error_detail);
+    const fallback =
+      status.error_detail ===
+      "Some conversation sources could not be read; previous records were retained"
+        ? "sessions.sourcePartialRead"
+        : (status.error_key ?? "errors.conversations.sourceUnavailable");
+    for (const reason of issues.length ? issues : [fallback]) {
+      const key = JSON.stringify([
+        status.agent,
+        reason,
+        issues.length ? null : status.workspace_id,
+      ]);
+      const detail = details.get(key) ?? { agent: status.agent, reason, workspaces: new Set() };
+      const workspaceName = workspaceNames.get(status.workspace_id);
+      if (workspaceName) detail.workspaces.add(workspaceName);
+      details.set(key, detail);
+    }
+  }
   return (
     <Collapsible className="min-w-0 px-4 py-2 text-xs leading-relaxed">
       <div
@@ -64,26 +113,15 @@ export function SessionSourceNotices({
       </div>
       <CollapsibleContent>
         <ul className="mt-2 max-h-40 overflow-y-auto overscroll-contain divide-y divide-border rounded-md border border-border bg-muted/40 text-muted-foreground">
-          {failures.map((status) => {
-            const workspaceName = workspaceNames.get(status.workspace_id);
-            // The index uses one error key for full and partial reads and stores a fixed partial-read detail.
-            const reason =
-              status.error_detail ===
-              "Some conversation sources could not be read; previous records were retained"
-                ? tr("sessions.sourcePartialRead")
-                : tr(status.error_key ?? "errors.conversations.sourceUnavailable", {
-                    defaultValue: unavailable,
-                  });
+          {[...details].map(([key, detail]) => {
+            const workspaceNames = [...detail.workspaces].join(separator);
             return (
-              <li
-                className="px-2.5 py-1.5 [overflow-wrap:anywhere]"
-                key={`${status.workspace_id}:${status.agent}`}
-              >
+              <li className="px-2.5 py-1.5 [overflow-wrap:anywhere]" key={key}>
                 <span className="font-medium text-foreground">
-                  {workspaceName ? `${workspaceName} · ` : ""}
-                  {AGENT_LABELS[status.agent]}
+                  {workspaceNames ? `${workspaceNames} · ` : ""}
+                  {AGENT_LABELS[detail.agent]}
                 </span>
-                <p>{reason}</p>
+                <p>{tr(detail.reason, { defaultValue: unavailable })}</p>
               </li>
             );
           })}

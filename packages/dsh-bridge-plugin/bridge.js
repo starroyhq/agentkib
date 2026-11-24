@@ -724,11 +724,10 @@ export function createBridge(ctx, options = {}) {
       const controller = new AbortController();
       const outer = request.signal;
       if (outer?.aborted) return next();
-      const onOuterAbort = () => controller.abort(outer.reason);
-      outer?.addEventListener("abort", onOuterAbort, { once: true });
       const copy = { ...request, signal: controller.signal };
       derived.add(copy);
       return new Promise((resolve, reject) => {
+        const approval = event === "approval/request";
         let settled = false;
         const finish = (settle) => {
           if (settled) return false;
@@ -738,8 +737,19 @@ export function createBridge(ctx, options = {}) {
           settle();
           return true;
         };
+        const onOuterAbort = () =>
+          finish(() => {
+            // Withdraw the bridge card synchronously, before the native waterfall's
+            // rejected promise or a late reply can reach the bridge.
+            controller.abort(outer.reason);
+            if (approval) resolve("cancelled");
+            else reject(outer.reason);
+          });
+        outer?.addEventListener("abort", onOuterAbort, { once: true });
         Promise.resolve()
-          .then(() => ctx.waterfall(scope, event, copy, fallback))
+          .then(() => {
+            if (!settled) return ctx.waterfall(scope, event, copy, fallback);
+          })
           .then(
             (value) => finish(() => resolve(value)),
             (error) => finish(() => reject(error)),
@@ -747,9 +757,9 @@ export function createBridge(ctx, options = {}) {
         const wire = {
           id,
           sessionId,
-          kind: event === "approval/request" ? "approval" : "question",
+          kind: approval ? "approval" : "question",
           createdAt: Date.now(),
-          ...(event === "approval/request"
+          ...(approval
             ? {
                 toolName: bounded(String(request.toolName ?? ""), 256).text,
                 callId: request.callId ? String(request.callId) : null,

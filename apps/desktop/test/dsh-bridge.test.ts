@@ -1828,6 +1828,97 @@ describe("DeepSeek Harness bridge", () => {
     });
   });
 
+  it("withdraws the native waterfall of a timed question when AgentKib answers", async () => {
+    const f = await fixture({ dshVersion: "0.2.2-rc.5" });
+    const outer = new AbortController();
+    const agent = f.dsh.sessions.get("session-a")!.agent;
+    const wait = { callId: "timed-tool-call", timed: true };
+    const pending = f.dsh.ctx.waterfall(
+      { scoped: agent },
+      "user-questions/request",
+      {
+        agent,
+        signal: outer.signal,
+        wait,
+        questions: [{ id: "q1", question: "Which?", options: [{ label: "A" }, { label: "B" }] }],
+      },
+      () => Promise.reject(new Error("no answerer")),
+    );
+    const question = await until(() => {
+      const live = f.bridge.live("ak-session-a", true);
+      return (live.questions as any[])[0];
+    });
+    expect(f.dsh.nativeAnswers).toHaveLength(1);
+    const forwarded = f.dsh.nativeAnswers[0]!;
+    expect(forwarded.request.wait).toEqual(wait);
+    expect(forwarded.request.signal).not.toBe(outer.signal);
+    const answer = {
+      turnId: question.turnId,
+      questionId: question.requestId,
+      answers: { q1: ["B"] },
+    };
+    await expect(f.control("answer", answer)).resolves.toMatchObject({
+      accepted: true,
+    });
+    expect(forwarded.request.signal.aborted).toBe(true);
+    expect(outer.signal.aborted).toBe(false);
+    forwarded.resolve({ answers: [{ id: "q1", selected: ["A"] }] });
+    await expect(pending).resolves.toEqual({ answers: [{ id: "q1", selected: ["B"] }] });
+    await until(() => (f.bridge.live("ak-session-a", true).questions as unknown[]).length === 0);
+    await expect(f.control("answer", answer)).resolves.toMatchObject({
+      accepted: false,
+      controlOutcome: "not-dispatched",
+      reason: "interaction-answered-elsewhere",
+    });
+  });
+
+  it.each(["approval", "question"] as const)(
+    "rejects a stale bridge %s response as soon as the original request is cancelled",
+    async (kind) => {
+      const f = await fixture({ dshVersion: "0.2.2-rc.5" });
+      const outer = new AbortController();
+      const reason = Object.assign(new Error("The original wait ended"), { code: "ASK_TIMED_OUT" });
+      const agent = f.dsh.sessions.get("session-a")!.agent;
+      const pending = f.dsh.ctx.waterfall(
+        { scoped: agent },
+        kind === "approval" ? "approval/request" : "user-questions/request",
+        {
+          agent,
+          signal: outer.signal,
+          ...(kind === "approval"
+            ? { toolName: "bash" }
+            : {
+                wait: { callId: "timed-tool-call", timed: true },
+                questions: [{ id: "q1", question: "Which?", options: [{ label: "A" }] }],
+              }),
+        },
+        () => Promise.reject(new Error("no answerer")),
+      );
+      const settlement =
+        kind === "approval"
+          ? expect(pending).resolves.toBe("cancelled")
+          : expect(pending).rejects.toBe(reason);
+      await until(() => f.dsh.nativeAnswers[0]);
+      const interactionId = [...f.plugin.interactions.keys()][0];
+      expect(interactionId).toEqual(expect.any(String));
+      outer.abort(reason);
+      // Queue the reply before the downstream promise rejection can propagate. It must not
+      // revive the cancelled interaction or overwrite the native timed-wait reason.
+      const response = await f.plugin.run({
+        type: "answer",
+        interactionId,
+        value:
+          kind === "approval"
+            ? { outcome: "allowed-once" }
+            : { answers: [{ id: "q1", selected: ["A"] }] },
+      });
+      await settlement;
+      expect(response).toEqual({ found: false });
+      expect(f.dsh.nativeAnswers[0]!.request.signal.reason).toBe(reason);
+      expect(f.plugin.interactions.size).toBe(0);
+    },
+  );
+
   it("shows a send still waiting for DSH's reply as busy, not unconfirmed", async () => {
     const f = await fixture();
     const controller = f.dsh.ctx.sessionController;

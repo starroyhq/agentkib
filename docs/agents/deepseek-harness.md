@@ -215,15 +215,15 @@ DSH 的审批和问答经 `approval/request`、`user-questions/request` waterfal
 
 1. 插件在外层登记监听器。收到已绑定会话的请求时，创建派生 AbortController，用 `ctx.waterfall(scopeTarget(agent, agent), 事件名, { ...请求, signal: 派生 signal }, 兜底)` 重新派发一次，不再调用原 `next()`。兜底与原服务一致：审批返回 `unavailable`，问答以无人作答失败。插件识别自己派生的请求，遇到时直接 `next()`，避免递归。
 2. 重新派发的请求照常经 `api-remotes` 到达 DSH 界面；同时插件把请求交给 Host，各端显示可作答的卡片。
-3. AgentKib 先答：插件返回该结果并中止派生 signal，网关据此向 DSH 界面发出撤回。DSH 界面先答：插件返回原生结果，并通知 Host 撤回各端卡片，标为“已在 DeepSeek Harness 中处理”。
-4. 原请求 signal 中止（例如轮次被取消）时，一并中止派生 signal 并撤回各端卡片。只有第一次结算有效，之后到达的回答返回“已在别处处理”，不授予任何操作。
+3. AgentKib 先答：插件先中止派生 signal，再返回答案。网关据此向 DSH 界面发出撤回。DSH 界面先答：插件返回原生结果，并通知 Host 撤回各端卡片，标为“已在 DeepSeek Harness 中处理”。
+4. 原请求 signal 中止时，例如轮次取消或提问超时，插件同步撤下 AgentKib 待答项并中止派生 signal。审批结算为取消，问答保留原生取消或超时原因。AgentKib 的迟到或重复答复返回“已在别处处理”。
 5. 插件与 Host 未连接，或会话未绑定时不拦截，直接调用 `next()`，DSH 原生行为不变。
 
 这一做法只用到 DSH 的公开导出（`ctx.waterfall`，以及 `@deepseek-ai/dsh-scope` 的 `scopeTarget`），网关也按请求上的 signal 撤回待答卡片；但它依赖“重新派发与原派发等价”这一派发细节。一期开工先做技术验证，用合成 fixture 覆盖：审批与问答各自的撤回、计时问题与可继续的问题、plan-review 和带 `approval` intent 的问题、`approval/asked` 与 `approval/decided` 仍各只有一条，以及外层另有监听器时的影响。
 
 技术验证结果（2026-11-04，本机 DSH Desktop 0.2.1-rc.5 自带 CLI，独立 `DSH_HOME`，插件经 `--patch` 挂载）：外层监听器能拿到作用域并重新派发；派生请求经 `api-remotes` 进入网关的待答列表；AgentKib 先答后，中止派生 signal 会让网关撤回待答项；外层请求被取消时两边一起撤回，问答以 `ASK_ABORTED` 结束。0.2.1-rc.5 与核对基线 0.2.2-alpha.3 在这几处的派发与撤回逻辑一致（`dispatch` 按 `this` 过滤并绑定监听器）。“DSH 界面先答”和真实轮次中的工具审批随后在一期验收中覆盖（真实 DSH、合成模型，见[一期 QA](../../qa/dsh-integration-phase1-2026-11-04.md)）。
 
-验证不通过时，一期改用按会话独占：用户显式把会话的答复权交给 AgentKib，插件在外层作答且不调用 `next()`，DSH 界面不再看到这些请求，并提供归还入口。长期向上游提议让 `next()` 支持传入修改后的请求，从而不再需要重新派发。
+DSH 0.2.2-rc.5 的带工具调用 ID 问答还由原生 `userQuestions` 投影管理。隔离测试原生客户端代码发现，如果投影先收到工具结果、撤回稍后到，卡片可能留到下一次投影更新。撤回送达后卡片已失去作答通道，原生客户端会拒绝继续作答。撤回仍在传输途中，网关会按原生规则忽略已结算请求的迟到结果。插件能撤回原生待答请求，卡片显示和迟到结果提示由 DSH 客户端管理。
 
 作答规则：
 

@@ -1,4 +1,5 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -7,15 +8,16 @@ import {
   type ClaudeScheduledSession,
   type ClaudeScheduleAuthority,
 } from "./claude-scheduler";
-import { createWebControlState, WebAccessService } from "./service";
+import { createWebControlState, HOSTED_ORIGIN, WebAccessService } from "./service";
 
 const cleanups: Array<() => void> = [];
 afterEach(() => {
   for (const cleanup of cleanups.splice(0)) cleanup();
 });
-function fixture() {
+function fixture(agent?: ClaudeScheduledSession["agent"]) {
   const session: ClaudeScheduledSession = {
     sessionId: "session",
+    ...(agent && { agent }),
     workspaceId: "workspace",
     runtimeBootId: "runtime",
     revision: 7,
@@ -71,6 +73,197 @@ describe("shared Claude host scheduler", () => {
     );
     expect(f.authority.release).toHaveBeenCalledWith("session");
   });
+  it.each([
+    [false, true],
+    [true, false],
+  ])("dispatches a Codex wait with the fresh restriction (%s to %s)", async (before, after) => {
+    const f = fixture("codex");
+    const authorize = vi
+      .mocked(f.authority.authorize)
+      .mockResolvedValueOnce({ restrictNativePolicy: before })
+      .mockResolvedValueOnce({ restrictNativePolicy: after });
+    await f.scheduler.tick();
+    expect(f.operations()).toEqual(["schedule-list", "schedule-prepare", "schedule-dispatch"]);
+    expect(authorize.mock.calls).toEqual([[f.session], [f.session]]);
+    expect(authorize.mock.invocationCallOrder[0]!).toBeLessThan(
+      f.invoke.mock.invocationCallOrder[1]!,
+    );
+    expect(f.invoke.mock.invocationCallOrder[1]!).toBeLessThan(
+      authorize.mock.invocationCallOrder[1]!,
+    );
+    expect(authorize.mock.invocationCallOrder[1]!).toBeLessThan(
+      f.invoke.mock.invocationCallOrder[2]!,
+    );
+    expect(f.invoke).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        operation: "schedule-prepare",
+        agent: "codex",
+        expectedRevision: 7,
+        itemId: "work",
+        deviceId: "phone",
+      }),
+    );
+    expect(f.invoke).toHaveBeenLastCalledWith({
+      operation: "schedule-dispatch",
+      agent: "codex",
+      sessionId: "session",
+      itemId: "work",
+      deviceId: "phone",
+      requestId: "request",
+      expectedRevision: 8,
+      runtimeBootId: "runtime",
+      permitId: "permit",
+      restrictNativePolicy: after,
+    });
+  });
+
+  it("invalidates a prepared Codex permit when fresh authorization is denied", async () => {
+    const f = fixture("codex");
+    vi.mocked(f.authority.authorize)
+      .mockResolvedValueOnce({ restrictNativePolicy: false })
+      .mockRejectedValueOnce(new Error("Codex send grant revoked"));
+    await f.scheduler.tick();
+    expect(f.operations()).toEqual([
+      "schedule-list",
+      "schedule-prepare",
+      "schedule-invalidate",
+      "schedule-pause",
+    ]);
+    expect(f.invoke).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        operation: "schedule-pause",
+        agent: "codex",
+        itemId: "work",
+        reason: "authorization-or-prepare-failed",
+      }),
+    );
+    expect(f.authority.release).toHaveBeenCalledExactlyOnceWith("session");
+  });
+
+  it("fences a Codex device epoch change after its permit is prepared", async () => {
+    const f = fixture("codex");
+    let startAuthorize!: () => void;
+    const started = new Promise<void>((resolve) => {
+      startAuthorize = resolve;
+    });
+    let verify!: (policy: { restrictNativePolicy: boolean }) => void;
+    const verified = new Promise<{ restrictNativePolicy: boolean }>((resolve) => {
+      verify = resolve;
+    });
+    vi.mocked(f.authority.authorize)
+      .mockResolvedValueOnce({ restrictNativePolicy: false })
+      .mockImplementationOnce(() => {
+        startAuthorize();
+        return verified;
+      });
+    const tick = f.scheduler.tick();
+    await started;
+    expect(f.operations()).toEqual(["schedule-list", "schedule-prepare"]);
+    await f.scheduler.invalidate("phone");
+    verify({ restrictNativePolicy: false });
+    await tick;
+    expect(f.operations()).not.toContain("schedule-dispatch");
+    expect(f.operations()).toContain("schedule-invalidate");
+    expect(f.invoke).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        operation: "schedule-pause",
+        agent: "codex",
+        itemId: "work",
+        reason: "authorization-changed",
+      }),
+    );
+  });
+
+  it("keeps ready Codex waits on host shutdown", async () => {
+    const f = fixture("codex");
+    vi.mocked(f.authority.reserve).mockReturnValue(false);
+    await f.scheduler.tick();
+    await f.scheduler.invalidate("phone", "host-stopped", true);
+    await f.scheduler.tick();
+    expect(f.invoke).toHaveBeenCalledWith({
+      operation: "schedule-invalidate",
+      deviceId: "phone",
+      quitting: true,
+    });
+    expect(f.operations()).not.toContain("schedule-pause");
+    expect(f.operations()).not.toContain("schedule-dispatch");
+  });
+
+  it("schedules a verified LAN Codex wait with a send-only device grant", async () => {
+    const root = await mkdtemp(join(tmpdir(), "ak-lan-codex-scheduler-"));
+    const f = fixture("codex");
+    f.unregister();
+    f.session.next!.requiresAttachments = false;
+    const address = "192.168.20.10";
+    const port = 1422;
+    const workspaces = [{ id: "workspace", name: "Workspace", path: root }];
+    const catalog = vi.fn(async () => ({
+      sessions: [{ id: "session", agent: "codex", workspace_id: "workspace" }],
+      workspaces,
+    }));
+    const control = createWebControlState();
+    const service = new WebAccessService({
+      mode: "lan",
+      addresses: () => [{ name: "test", address }],
+      dataDir: root,
+      staticDir: root,
+      workspaceRequest: async () => workspaces,
+      sessionRequest: async ({ host }) =>
+        host.request.operation === "catalog" ? catalog() : f.invoke(host.request),
+      enableSerialSessionScheduler: true,
+      verifiedCodex: true,
+      sharedControl: control,
+    });
+    const listen = vi.spyOn(Server.prototype, "listen").mockImplementation(function (
+      this: Server,
+      ...input: unknown[]
+    ) {
+      const ready = input.at(-1);
+      if (typeof ready === "function") ready();
+      return this;
+    } as typeof Server.prototype.listen);
+    try {
+      await writeFile(
+        join(root, "web-access.json"),
+        JSON.stringify({
+          config: {
+            enabled: true,
+            port,
+            externalOrigin: HOSTED_ORIGIN,
+            experimentalEnabled: true,
+            lanAddress: address,
+            allowPlaintext: true,
+          },
+          credentials: [
+            {
+              hash: "a".repeat(64),
+              expiresAt: Date.now() + 60_000,
+              binding: `${HOSTED_ORIGIN}|http://${address}:${port}`,
+              device: { id: "phone", name: "LAN phone", send: true, approve: false },
+            },
+          ],
+        }),
+      );
+      await service.initialize();
+      await control.claudeScheduler!.tick();
+      expect(catalog).toHaveBeenCalledTimes(2);
+      expect(f.operations()).toEqual(["schedule-list", "schedule-prepare", "schedule-dispatch"]);
+      expect(f.invoke).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          operation: "schedule-dispatch",
+          agent: "codex",
+          deviceId: "phone",
+          restrictNativePolicy: true,
+        }),
+      );
+    } finally {
+      listen.mockRestore();
+      await service.dispose();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("coalesces ticks and fences a revoke that races the asynchronous native handshake", async () => {
     const f = fixture();
     let ready!: () => void;

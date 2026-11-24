@@ -74,6 +74,31 @@ describe("WebClient transport boundaries", () => {
     expect(transport).toHaveBeenCalledTimes(2);
   });
 
+  it("uses the narrow Codex queue delete route on LAN", async () => {
+    const transport = vi
+      .fn()
+      .mockResolvedValueOnce(json(info))
+      .mockResolvedValueOnce(json(access))
+      .mockResolvedValueOnce(json({ accepted: true }));
+    const origin = "http://192.168.1.10:1422";
+    const client = new WebClient(transport, origin);
+    await client.access();
+    const action = {
+      requestId: "request",
+      sessionId: "session",
+      expectedRevision: 2,
+      bootId: "boot",
+      queuedSubmissionId: "waiting",
+    };
+    await expect(client.sessionAction("queue-delete", action, "codex")).resolves.toEqual({
+      accepted: true,
+    });
+    expect(transport).toHaveBeenLastCalledWith(
+      `${origin}/api/web/v1/codex/queue-delete`,
+      expect.objectContaining({ method: "POST", body: JSON.stringify(action) }),
+    );
+  });
+
   it("does not contact an unpaired LAN host for a session image", async () => {
     const transport = vi.fn();
     const client = new WebClient(transport, "http://192.168.1.10:1422");

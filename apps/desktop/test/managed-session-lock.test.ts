@@ -3,7 +3,10 @@ import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { acquirePortableFileLease } from "../../../packages/backend/src/managed-session-lock";
+import {
+  acquirePortableFileLease,
+  existingFileLeaseBusy,
+} from "../../../packages/backend/src/managed-session-lock";
 
 const directories: string[] = [];
 const leases: Array<() => void> = [];
@@ -41,6 +44,19 @@ describe("portable managed session leases", { timeout: 15_000 }, () => {
     expect(() => acquire(filename)).toThrow("session-managed-by-another-runtime");
     releaseNext();
     expect(await fs.readFile(filename)).toEqual(content);
+  });
+
+  it("probes real ownership without creating or changing the file", async () => {
+    const filename = path.join(await fixture(), "writer.lock");
+    expect(existingFileLeaseBusy(filename)).toBe(false);
+    await expect(fs.stat(filename)).rejects.toMatchObject({ code: "ENOENT" });
+    await fs.writeFile(filename, "");
+    expect(existingFileLeaseBusy(filename)).toBe(false);
+    const release = acquire(filename);
+    expect(existingFileLeaseBusy(filename)).toBe(true);
+    release();
+    expect(existingFileLeaseBusy(filename)).toBe(false);
+    expect((await fs.stat(filename)).size).toBe(0);
   });
 
   it("holds independent leases for different paths", async () => {

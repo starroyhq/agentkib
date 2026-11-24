@@ -2458,6 +2458,21 @@ export class TypeScriptBackend {
     return {
       session,
       live,
+      deferCodexSend: (value, binding, handoff) =>
+        this.#withWebRead((owner) =>
+          (owner.codexSessionProvider() as CodexSessionProvider).deferCodexSend(
+            value,
+            binding,
+            handoff,
+          ),
+        ),
+      cancelDeferredCodexSend: (binding, requestId) =>
+        this.#withWebRead(async (owner) =>
+          (owner.codexSessionProvider() as CodexSessionProvider).cancelDeferredCodexSend(
+            binding,
+            requestId,
+          ),
+        ),
       observe: async (sessionId) => {
         const bridge = dsh(sessionId);
         if (bridge) return bridge.live(sessionId, false);
@@ -3036,6 +3051,12 @@ export class TypeScriptBackend {
         this.#dshSessionProvider,
         (sessionId, operation) => this.#workerObserver.controlled(sessionId, operation),
         async (request) => this.#requestWebSession(request),
+        {
+          checkDeferredCodexSend: (owner) =>
+            this.#orchestration?.checkDeferredCodexSend(owner) ?? "revoked",
+          deferredCodexSendResult: (owner, requestId, result) =>
+            this.#orchestration?.deferredCodexSendResult(owner, requestId, result),
+        },
       );
       this.#webRead.observeLanes({
         turnEnded: this.#workerObserver.turnEnded,
@@ -3077,7 +3098,10 @@ export class TypeScriptBackend {
     try {
       const operation = String(params.operation);
       if (operation === "schedule-list") {
-        const serial = this.#withWebRead((owner) => owner.serialScheduleList());
+        const serial = this.#withWebRead(async (owner) => [
+          ...(await owner.serialScheduleList()),
+          ...(owner.codexSessionProvider() as CodexSessionProvider).ownerWaitScheduleList(),
+        ]);
         if (params.serialOnly === true) return { sessions: await serial };
         const [claude, queued] = await Promise.all([
           this.#claudeManaged!.request(params) as Promise<{ sessions?: unknown[] }>,
@@ -3090,6 +3114,10 @@ export class TypeScriptBackend {
         };
       }
       if (operation.startsWith("schedule-") && typeof params.sessionId === "string") {
+        if (params.agent === "codex")
+          return this.#withWebRead((owner) =>
+            (owner.codexSessionProvider() as CodexSessionProvider).ownerWaitSchedule(params),
+          );
         const agent = this.#store?.sessions.get(params.sessionId)?.agent;
         if (agent === "devin" || agent === "antigravity")
           return this.#withWebRead((owner) => owner.serialSchedule(params));
@@ -3104,14 +3132,18 @@ export class TypeScriptBackend {
         if (deviceId && params.quitting !== true) {
           this.#orchestration?.invalidateDevice(deviceId);
           // Nor does AgentKib continue a Codex session in its name after a usage limit.
-          void this.#withWebRead((owner) => owner.invalidateUsageLimitDevice(deviceId)).catch(
-            () => undefined,
-          );
+          await this.#withWebRead(async (owner) =>
+            owner.invalidateUsageLimitDevice(deviceId),
+          ).catch(() => undefined);
         }
         if (deviceId)
-          await this.#withWebRead((owner) =>
-            owner.invalidateSerialSchedule(deviceId, params.quitting === true),
-          ).catch(() => undefined);
+          await this.#withWebRead((owner) => {
+            if (params.quitting === true)
+              (owner.codexSessionProvider() as CodexSessionProvider).suspendOwnerWaitDevice(
+                deviceId,
+              );
+            return owner.invalidateSerialSchedule(deviceId, params.quitting === true);
+          }).catch(() => undefined);
       }
       if (String(params.operation).startsWith("lead-")) return await this.#requestLead(params);
       // The desktop's local management channel also reports the DeepSeek Harness connection.

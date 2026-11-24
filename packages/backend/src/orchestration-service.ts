@@ -67,6 +67,19 @@ export type WorkerRestartResult = {
   reason?: string;
 };
 
+/** The assignment and device that authorized a Worker send waiting for the Codex writer. */
+export type DeferredCodexSendOwner = {
+  leadId: string;
+  laneId: string;
+  sessionId: string;
+  workspaceId: string;
+  deviceId: string;
+};
+
+export type DeferredCodexSendResult =
+  | { status: "sent"; interveningExternalTurns: boolean }
+  | { status: "refused"; reason: string };
+
 /**
  * The existing session controls and reads. Calls about a Worker go to its assigned provider.
  */
@@ -77,6 +90,15 @@ export type LaneHost = {
     intent?: "desktop-owner-handoff" | "codex-worker-turn",
   ): Promise<unknown>;
   restart?(request: WorkerRestartRequest, beforeDispatch: () => void): Promise<WorkerRestartResult>;
+  deferCodexSend?(
+    request: Record<string, unknown>,
+    owner: DeferredCodexSendOwner,
+    desktopOwnerHandoff: boolean,
+  ): Promise<unknown>;
+  cancelDeferredCodexSend?(
+    owner: DeferredCodexSendOwner,
+    requestId: string,
+  ): Promise<boolean | "dismissed">;
   live(sessionId: string, intent?: "send"): Promise<Record<string, unknown>>;
   /** A lightweight live sample for unattended checks when the full read has extra work. */
   observe?(sessionId: string): Promise<Record<string, unknown>>;
@@ -112,6 +134,7 @@ const SERVER_NAME = "agentkib_workers";
 export const LEAD_ALLOWED_TOOLS = Object.freeze([`mcp__${SERVER_NAME}`]);
 /** One notice per worker and minute that the person worked on it directly. */
 const INTERVENTION_QUIET_MS = 60_000;
+const CODEX_OWNER_WAIT_REASON = "codex-waiting-for-owner";
 /** How often to check workers and catch up on unreported turns. */
 const CATCH_UP_MS = 20_000;
 /** A turn this recent is left to the live observers, which report it with Codex's own measure. */
@@ -214,6 +237,20 @@ function hasLaterTurn(
     const started = Date.parse(later.startedAt ?? "");
     return started >= ended && started <= now;
   });
+}
+
+function deferredCodexSend(
+  lane: Lane,
+  live: Record<string, unknown> | null,
+): { requestId: string; status: "waiting-for-owner" | "paused" } | null {
+  const wait = live?.ownerWait;
+  return isObject(wait) &&
+    wait.source === "worker" &&
+    wait.laneId === lane.id &&
+    typeof wait.requestId === "string" &&
+    (wait.status === "waiting-for-owner" || wait.status === "paused")
+    ? { requestId: wait.requestId, status: wait.status }
+    : null;
 }
 
 /**
@@ -970,7 +1007,7 @@ export class OrchestrationService {
     const lane = lead.lanes.find((item) => item.sessionId === worker);
     if (!lane) throw new Error("worker-unavailable");
     const result = await this.#stopLane(lead, lane, deviceId);
-    if (result.accepted) this.laneControlled(lane.sessionId, "stop");
+    if (result.accepted && !result.cancelled) this.laneControlled(lane.sessionId, "stop");
     return result;
   }
 
@@ -1133,6 +1170,50 @@ export class OrchestrationService {
   }
 
   // ---- reports -----------------------------------------------------------------------------
+
+  #deferredCodexAssignment(owner: DeferredCodexSendOwner): { lead: Lead; lane: Lane } | null {
+    if (this.#closed) return null;
+    const lead = this.registry.get(owner.leadId);
+    const lane = lead?.lanes.find(
+      (item) =>
+        item.id === owner.laneId &&
+        item.sessionId === owner.sessionId &&
+        item.workspaceId === owner.workspaceId &&
+        (item.agent ?? "codex") === "codex",
+    );
+    if (!lead || lead.deviceId !== owner.deviceId || !lane || !this.#inAssignedWorkspace(lane))
+      return null;
+    return { lead, lane };
+  }
+
+  checkDeferredCodexSend(owner: DeferredCodexSendOwner): "ready" | "paused" | "revoked" {
+    const current = this.#deferredCodexAssignment(owner);
+    return !current ? "revoked" : current.lead.paused ? "paused" : "ready";
+  }
+
+  deferredCodexSendResult(
+    owner: DeferredCodexSendOwner,
+    requestId: string,
+    result: DeferredCodexSendResult,
+  ): void {
+    const current = this.#deferredCodexAssignment(owner);
+    if (!current) return;
+    const { lead, lane } = current;
+    const event =
+      result.status === "refused"
+        ? `the message waiting for ChatGPT was refused (${result.reason}).`
+        : result.interveningExternalTurns
+          ? "received the waiting message after ChatGPT released the session. ChatGPT ran other turns while it waited. Use worker_read to review them."
+          : null;
+    if (event)
+      this.#report(
+        lead.sessionId,
+        lane.id,
+        `owner-wait:${requestId}:${result.status}`,
+        workerReport(lane, event),
+        null,
+      );
+  }
 
   /**
    * A lane's turn ended: report it once, with how long it took (Codex's own measure, when it
@@ -1891,7 +1972,8 @@ export class OrchestrationService {
       {
         name: "worker_stop",
         readOnly: false,
-        description: "Interrupt the worker's current turn. The worker and its session stay.",
+        description:
+          "Cancel the worker's message waiting for the Codex desktop app, or interrupt its current turn. The worker and its session stay.",
         inputSchema: {
           type: "object",
           properties: { worker },
@@ -2067,14 +2149,15 @@ export class OrchestrationService {
     const lanes = await Promise.all(
       lead.lanes.map(async (lane) => {
         const live = await this.#state(lane.sessionId);
-        const reason = workerReason(live);
+        const wait = deferredCodexSend(lane, live);
+        const reason = wait ? CODEX_OWNER_WAIT_REASON : workerReason(live);
         return {
           id: lane.id,
           view: {
             worker: lane.name,
             agent: lane.agent ?? "codex",
             session: lane.sessionId,
-            status: workerStatus(live),
+            status: wait?.status ?? workerStatus(live),
             ...(reason ? { reason } : {}),
             ...this.#healthView(lane, live),
             title: lane.title,
@@ -2140,10 +2223,34 @@ export class OrchestrationService {
     }
     const running = workerIsRunning(workerStatus(live));
     const agent = lane.agent ?? "codex";
+    const existingWait = deferredCodexSend(lane, live);
+    const resumeWait =
+      existingWait?.status === "paused" &&
+      agent === "codex" &&
+      mode === "queue" &&
+      this.lanes.deferCodexSend !== undefined;
+    if (existingWait && !resumeWait) {
+      this.#currentAssignment(lead, lane, true);
+      if (!this.#inAssignedWorkspace(lane, live)) return refuse("workspace-not-allowed");
+      return refuse(CODEX_OWNER_WAIT_REASON, {
+        status: existingWait.status,
+        requestId: existingWait.requestId,
+      });
+    }
+    const canWait =
+      resumeWait ||
+      (agent === "codex" &&
+        this.lanes.deferCodexSend !== undefined &&
+        live.ownerWaitAvailable === true &&
+        (!running ||
+          (mode === "queue" &&
+            live.queueEnabled !== true &&
+            (codexExternalTurn(live) !== null || live.executionMode === "codex-follower"))));
     const capability = WORKER_CAPABILITIES[agent];
     if (running && mode === "steer" && !capability.steer) return refuse("steer-unsupported");
     if (
       agent === "codex" &&
+      !canWait &&
       (codexExternalTurn(live) || (running && live.executionMode === "codex-follower")) &&
       (!running || (mode === "queue" ? live.queueEnabled !== true : live.steerEnabled !== true))
     ) {
@@ -2156,10 +2263,14 @@ export class OrchestrationService {
     }
     if (lane.agent === "claude-code" && parseClaudeSlashCommand(body))
       return refuse("worker-command-unsupported");
-    const operation = running ? (mode === "steer" ? "steer" : "queue-add") : "send";
-    if (!running && live.sendEnabled !== true) return refuse(workerReason(live) ?? "worker-busy");
+    const operation = running && !canWait ? (mode === "steer" ? "steer" : "queue-add") : "send";
+    if (operation === "send" && live.sendEnabled !== true && !canWait)
+      return refuse(workerReason(live) ?? "worker-busy");
     this.#currentAssignment(lead, lane, true);
-    const codexWorkerTurn = running && agent === "codex" && live.executionMode === "codex-managed";
+    const codexWorkerTurn =
+      operation !== "send" && agent === "codex" && live.executionMode === "codex-managed";
+    const defer = agent === "codex" && operation === "send" ? this.lanes.deferCodexSend : undefined;
+    if (defer && !this.#inAssignedWorkspace(lane, live)) return refuse("workspace-not-allowed");
     const requestId = randomUUID();
     let outcome: Record<string, unknown>;
     try {
@@ -2174,18 +2285,23 @@ export class OrchestrationService {
         ...(operation === "steer" || codexWorkerTurn ? { turnId: live.turnId } : {}),
         text: body,
       };
+      const desktopOwnerHandoff =
+        agent === "codex" && operation === "send" && live.ownerHandoff === true;
       const intent = codexWorkerTurn
         ? "codex-worker-turn"
-        : agent === "codex" && operation === "send" && live.ownerHandoff === true
+        : desktopOwnerHandoff
           ? "desktop-owner-handoff"
           : undefined;
-      outcome = (await (intent
-        ? this.lanes.control(request, intent)
-        : this.lanes.control(request))) as Record<string, unknown>;
+      outcome = (await (defer
+        ? defer.call(this.lanes, request, this.#deferredCodexOwner(lead, lane), desktopOwnerHandoff)
+        : intent
+          ? this.lanes.control(request, intent)
+          : this.lanes.control(request))) as Record<string, unknown>;
     } catch (error) {
       outcome = { accepted: false, reason: error instanceof Error ? error.message : "send-failed" };
     }
     const accepted = outcome?.accepted === true;
+    const waiting = accepted && outcome?.status === "waiting-for-owner";
     const unknown = outcome?.controlOutcome === "unknown";
     this.registry.update(lead.sessionId, (current) => {
       const target = current.lanes.find((item) => item.id === lane.id);
@@ -2195,7 +2311,7 @@ export class OrchestrationService {
         "send",
         lane.id,
         requestId,
-        accepted ? "accepted" : unknown ? "unknown" : "refused",
+        waiting ? CODEX_OWNER_WAIT_REASON : accepted ? "accepted" : unknown ? "unknown" : "refused",
       );
     });
     return {
@@ -2203,11 +2319,22 @@ export class OrchestrationService {
         accepted,
         requestId,
         operation,
+        ...(waiting ? { status: "waiting-for-owner", reason: CODEX_OWNER_WAIT_REASON } : {}),
         ...(unknown ? { outcome: "unknown" } : {}),
         ...(!accepted && typeof outcome?.reason === "string" ? { reason: outcome.reason } : {}),
         ...(!accepted && typeof outcome?.error === "string" ? { reason: outcome.error } : {}),
       }),
       isError: !accepted,
+    };
+  }
+
+  #deferredCodexOwner(lead: Lead, lane: Lane, deviceId = lead.deviceId): DeferredCodexSendOwner {
+    return {
+      leadId: lead.sessionId,
+      laneId: lane.id,
+      sessionId: lane.sessionId,
+      workspaceId: lane.workspaceId,
+      deviceId,
     };
   }
 
@@ -2231,10 +2358,11 @@ export class OrchestrationService {
     }
     const current = this.#currentAssignment(lead, lane, false);
     const waiting = live ? waitingItems(live, current.scope) : [];
-    const reason = workerReason(live);
+    const wait = deferredCodexSend(lane, live);
+    const reason = wait ? CODEX_OWNER_WAIT_REASON : workerReason(live);
     return text({
       worker: lane.name,
-      status: workerStatus(live),
+      status: wait?.status ?? workerStatus(live),
       ...(reason ? { reason } : {}),
       ...this.#healthView(lane, live),
       title: lane.title,
@@ -2519,8 +2647,36 @@ export class OrchestrationService {
     lane: Lane,
     deviceId: string,
     delegated = false,
-  ): Promise<{ accepted: boolean; requestId?: string; reason?: string }> {
+  ): Promise<{
+    accepted: boolean;
+    requestId?: string;
+    reason?: string;
+    cancelled?: true;
+    dismissed?: true;
+  }> {
     const live = await this.#state(lane.sessionId);
+    const wait = deferredCodexSend(lane, live);
+    if (wait) {
+      this.#currentAssignment(lead, lane, delegated);
+      if (!this.#inAssignedWorkspace(lane, live))
+        return { accepted: false, reason: "workspace-not-allowed" };
+      const cancelled = await this.lanes.cancelDeferredCodexSend?.(
+        this.#deferredCodexOwner(lead, lane, deviceId),
+        wait.requestId,
+      );
+      if (!cancelled) return { accepted: false, reason: "codex-owner-wait-not-cancelled" };
+      if (cancelled === "dismissed")
+        return {
+          accepted: true,
+          requestId: wait.requestId,
+          dismissed: true,
+          reason: "control-outcome-unconfirmed",
+        };
+      this.registry.update(lead.sessionId, (current) =>
+        addLeadRecord(current, "stop", lane.id, wait.requestId, "cancelled"),
+      );
+      return { accepted: true, requestId: wait.requestId, cancelled: true };
+    }
     if (!live || typeof live.turnId !== "string" || live.stopEnabled !== true)
       return { accepted: false, reason: "worker-not-running" };
     this.#currentAssignment(lead, lane, delegated);

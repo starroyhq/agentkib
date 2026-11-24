@@ -108,6 +108,10 @@ AgentKib 每 20 秒查看已指派 Worker 的实时状态，同一轮检查里�
 
 Codex 的写锁被其他进程持有时，Worker 工具会把有 `externalTurn` 证据的轮次显示为运行中。只有占用证据时显示 `busy` 及 `codex-owner-busy`。外部轮次运行期间，派工按当前已核实的排队或加入本轮能力执行。能力未核实时派工会被拒绝，例如返回 `follower-operation-unverified`。已授权的空闲会话可由 Codex 桌面端接收派工。桌面端正在运行但没有窗口应答时，也可在后台打开同一条会话后再交给它执行。见[跟随 Codex 桌面端](codex-managed.md)。
 
+确认桌面端未派发且写锁仍被持有时，`worker_send` 可返回 `waiting-for-owner` 和 `codex-waiting-for-owner`。`worker_list` 和 `worker_read` 展示该等待，`worker_stop` 优先取消同一 Worker 的待发消息。
+
+锁释放后，宿主用原来获准的设备和委派身份重新核权，并按最新原生策略续接。策略不兼容时回报原原因。送达前若有已记录的 ChatGPT 轮次，会单独提示项目 Agent 先读取上下文，该消息所属的轮次结束后照常汇报。重启后，由用户先恢复委派，再由项目 Agent 用 `worker_send` 重送相同内容，恢复原条目。
+
 ### 恢复 Worker
 
 先用 `worker_read` 查看 Worker，再决定是否调用 `worker_restart`。委派暂停时会拒绝。已确认在终端或外部客户端运行的会话返回 `worker-restart-user-only`，由用户恢复。没有安全恢复机制的会话返回 `worker-restart-unsupported`。

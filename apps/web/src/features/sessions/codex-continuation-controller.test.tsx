@@ -837,6 +837,114 @@ describe("Codex next-turn settings recovery", () => {
   });
 });
 
+describe("Codex queued send receipts", () => {
+  const ownerTurn = (sessionId: string): Live => ({
+    ...baseIdle(sessionId),
+    status: "running",
+    turnId: "chatgpt-turn",
+    sendEnabled: false,
+  });
+
+  it.each([{ status: "waiting-for-owner" }, { reason: "codex-waiting-for-owner" }])(
+    "accepts a waiting message without following the owner's turn (%j)",
+    async (ack) => {
+      const host = baseFixture(baseIdle("original"), "codex");
+      const { result } = await open(host);
+      await act(async () => result.current.setMessage("Queued for after ChatGPT"));
+      host.request.mockResolvedValueOnce({ accepted: true, ...ack });
+      await act(async () => result.current.control("send"));
+      expect(result.current.message).toBe("");
+      expect(result.current.notice).toBe("accepted");
+      expect(result.current.pendingSend).toBeUndefined();
+      expect(readPending(host.scope)).toEqual([]);
+
+      host.liveById.set("original", ownerTurn("original"));
+      await act(async () => result.current.refresh());
+      expect(result.current.live?.turnId).toBe("chatgpt-turn");
+      host.liveById.set("original", baseIdle("original"));
+      await act(async () => result.current.refresh());
+      expect(result.current.live?.status).toBe("idle");
+      expect(result.current.notice).toBe("accepted");
+      expect(host.request).toHaveBeenCalledOnce();
+    },
+  );
+
+  it("dismisses only the named interrupted queue entry despite a native unknown outcome", async () => {
+    const initial: Live = {
+      ...baseIdle("original"),
+      reason: "control-outcome-unconfirmed",
+      sendEnabled: false,
+      ownerWait: {
+        requestId: "interrupted",
+        source: "user",
+        status: "paused",
+        dismissible: true,
+      },
+    };
+    const host = baseFixture(initial, "codex");
+    const access = await host.client.access();
+    vi.mocked(host.client.access).mockResolvedValue({
+      ...access,
+      device: { ...access.device!, advancedControl: true },
+    });
+    vi.mocked(host.client.sessionCapabilities).mockResolvedValue({
+      sessionId: "original",
+      status: "idle",
+      executionMode: "codex-managed",
+      reason: "control-outcome-unconfirmed",
+      features: {
+        fork: { available: true },
+        "queue-delete": { available: true },
+      },
+    });
+    const { result } = await open(host);
+    await act(async () =>
+      result.current.runSessionAction("queue-delete", { queuedSubmissionId: "unrelated" }),
+    );
+    expect(host.request).not.toHaveBeenCalled();
+    await act(async () =>
+      result.current.runSessionAction("queue-delete", { queuedSubmissionId: "interrupted" }),
+    );
+    expect(host.request).toHaveBeenCalledExactlyOnceWith(
+      "managed/action",
+      expect.objectContaining({
+        sessionId: "original",
+        operation: "queue-delete",
+        queuedSubmissionId: "interrupted",
+      }),
+    );
+  });
+
+  it("recovers an accepted queued send without changing a newer draft or following the owner's turn", async () => {
+    const host = baseFixture(baseIdle("original"), "codex");
+    const { result } = await open(host);
+    await act(async () => result.current.setMessage("New draft"));
+    const requestId = crypto.randomUUID();
+    rememberPending(host.scope, { requestId, sessionId: "original", kind: "send" });
+    host.receipt.mockResolvedValue({
+      found: true,
+      requestId,
+      sessionId: "original",
+      operation: "send",
+      status: "accepted",
+      completionObserved: false,
+      ack: { accepted: true, reason: "codex-waiting-for-owner" },
+    });
+    host.liveById.set("original", ownerTurn("original"));
+    await act(async () => result.current.refresh());
+    expect(result.current.notice).toBe("accepted");
+    expect(result.current.live?.turnId).toBe("chatgpt-turn");
+    expect(result.current.message).toBe("New draft");
+    expect(readPending(host.scope)).toEqual([]);
+
+    host.liveById.set("original", baseIdle("original"));
+    await act(async () => result.current.refresh());
+    expect(result.current.live?.status).toBe("idle");
+    expect(result.current.notice).toBe("accepted");
+    expect(host.request).not.toHaveBeenCalled();
+  });
+});
+
 describe.each(["codex", "claude-code"] as const)(
   "%s continuation in the production controller",
   (agent) => {

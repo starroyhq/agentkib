@@ -1,22 +1,9 @@
 import { lstat, realpath } from "node:fs/promises";
 import path from "node:path";
-import type { SessionApprovalAuditRisk } from "@agentkib/runtime-protocol";
-
-type SessionInteractionRiskReason =
-  | "deletion"
-  | "network"
-  | "dependency-install"
-  | "outside-workspace"
-  | "git-push"
-  | "unknown-operation"
-  | "unknown-workspace"
-  | "workspace-write"
-  | "read-only"
-  | "test"
-  | "static-check"
-  | "question";
-
-type SessionInteractionRisk = SessionApprovalAuditRisk & { reason: SessionInteractionRiskReason };
+import type {
+  SessionInteractionRisk,
+  SessionInteractionRiskReason,
+} from "@agentkib/runtime-protocol";
 
 export interface InteractionRiskInput {
   kind: "question" | "command" | "read" | "write" | "delete" | "network" | "unknown";

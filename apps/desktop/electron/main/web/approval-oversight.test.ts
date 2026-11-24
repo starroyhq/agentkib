@@ -328,5 +328,28 @@ describe("paired approval oversight", () => {
     expect(sessionRequest.mock.calls.map(([input]) => input.host.request.operation)).not.toContain(
       "approval-audit-expired",
     );
+
+    const staleRequestId = randomUUID();
+    const stale = await api("/approve", {
+      ...body,
+      decision: undefined,
+      approvalAudit: undefined,
+      requestId: staleRequestId,
+      bootId: "previous-host-boot",
+      interactionRuntimeBootId: "runtime",
+      interactionDecisionId: "choice:deny",
+    });
+    expect(stale).toMatchObject({ status: 409, body: { error: "interaction_expired" } });
+    await vi.waitFor(() =>
+      expect(sessionRequest).toHaveBeenCalledWith({
+        host: {
+          request: expect.objectContaining({
+            operation: "approval-audit-expired",
+            requestId: staleRequestId,
+          }),
+          approvalAudit: expect.objectContaining({ decision: { kind: "deny", scope: "once" } }),
+        },
+      }),
+    );
   });
 });

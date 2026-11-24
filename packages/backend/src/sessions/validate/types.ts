@@ -21,7 +21,7 @@ export type ProviderValidation = {
   requiresFullAccess?: boolean;
   textOnlyQueue?: boolean;
   useCommandAccess?: boolean;
-  inputFormat?: "codex" | "claude" | "dsh";
+  inputFormat?: "codex" | "claude" | "claude-terminal" | "dsh";
   idleExecutionMode?: string;
   settings?: Record<string, unknown>;
 };

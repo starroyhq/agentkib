@@ -59,6 +59,13 @@ const MAX_BODY = 1024 * 1024;
 const HEARTBEAT_MS = 35_000;
 const LOCAL_OWNER = "agentkib-local-owner";
 const uuid = z.string().uuid();
+const terminalAttachmentInputSchema = z.tuple([
+  z.strictObject({
+    type: z.literal("claude-terminal-attachments"),
+    cwd: z.string().min(1).max(4096),
+    text: z.string().max(16_000),
+  }),
+]);
 const targetSchema = z
   .object({
     sessionId: z.string().min(1).max(256),
@@ -1354,7 +1361,9 @@ export class ClaudeBridge {
       release: false,
       approve: false,
       answer: false,
-      attachments: false,
+      attachments:
+        this.#connections.get(id)?.snapshot?.capabilities.attachments === true &&
+        (live.sendEnabled === true || live.steerEnabled === true || live.queueEnabled === true),
       steer: live.steerEnabled === true,
       resources: readable,
       settings: false,
@@ -1516,6 +1525,7 @@ export class ClaudeBridge {
         this.options.validate(row.target, false, row.bindingId);
         return {
           available: true,
+          executionMode: "claude-follower",
           cwd: row.target.workspace,
           projectId: null,
           branchAtCreation: null,
@@ -1628,6 +1638,8 @@ export class ClaudeBridge {
     ]);
     if (
       Object.keys(value).some((key) => !allowed.has(key)) ||
+      (Array.isArray(value.input) &&
+        !["send", "steer", "queue-add"].includes(String(value.operation))) ||
       (value.operation === "open-model-picker" &&
         ["text", "input", "turnId", "queuedSubmissionId"].some((key) =>
           Object.hasOwn(value, key),
@@ -1667,9 +1679,19 @@ export class ClaudeBridge {
       throw new Error("claude-bridge-disconnected");
     if (revision !== live.revision) throw new Error("stale-Claude-revision");
     if (connection.pending) throw new Error("session-busy");
-    // Follower text goes through the existing history-reference expansion, never attachment paths.
     const messageText = (): string => {
-      const text = value.text ?? value.input;
+      let text = value.text ?? value.input;
+      if (Array.isArray(value.input)) {
+        const parsed = terminalAttachmentInputSchema.safeParse(value.input);
+        if (value.text !== undefined || !parsed.success) throw new Error("invalid-text-input");
+        const [input] = parsed.data;
+        if (
+          connection.snapshot?.capabilities.attachments !== true ||
+          input.cwd !== row.target.workspace
+        )
+          throw new Error("claude-follower-attachments-unavailable");
+        text = input.text;
+      }
       if (
         typeof text !== "string" ||
         !text.trim() ||

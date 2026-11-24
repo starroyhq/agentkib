@@ -17,7 +17,11 @@ export const validateClaudeControl: ProviderControlValidator = (request, context
     if (operation === "queue-delete")
       return { available: true, publicReceipt: true, queueItem: "pending-or-unknown" };
     const sendingToInbox = operation === "steer" || operation === "queue-add";
-    return { available: sendingToInbox, publicReceipt: sendingToInbox };
+    return {
+      available: sendingToInbox,
+      publicReceipt: sendingToInbox,
+      ...(sendingToInbox ? { inputFormat: "claude-terminal" } : {}),
+    };
   }
   if (context.executionMode !== "claude-managed" || operation === "open-model-picker")
     return { available: false };

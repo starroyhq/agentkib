@@ -166,6 +166,96 @@ describe.skipIf(process.platform === "win32")("native Claude borrowed-host broke
     );
   });
 
+  it("requires negotiated attachment support and an unchanged workspace and lease", async () => {
+    const f = await fixture();
+    const capabilities = (controls = true) => f.bridge.capabilities(f.target.sessionId, controls);
+    const input = {
+      type: "claude-terminal-attachments",
+      cwd: f.target.workspace,
+      text: "Read [notes.txt](/workspace/notes.txt)",
+    };
+    expect(f.connection.features).toContain("terminal-attachments");
+    expect(capabilities()).toMatchObject({
+      features: { attachments: { available: false }, send: { available: true } },
+    });
+    await expect(
+      f.bridge.request(f.control("send", { text: undefined, input: [input] })),
+    ).rejects.toThrow("claude-follower-attachments-unavailable");
+    const enabled = {
+      ...f.snapshot,
+      capabilities: { ...f.snapshot.capabilities, attachments: true },
+    };
+    expect((await f.events({ type: "snapshot", snapshot: enabled })).status).toBe(200);
+    expect(capabilities()).toMatchObject({ features: { attachments: { available: true } } });
+    expect(capabilities(false)).toMatchObject({ features: { attachments: { available: false } } });
+    await expect(
+      f.bridge.request(
+        f.control("send", {
+          text: undefined,
+          input: [{ ...input, cwd: path.join(f.target.workspace, "different") }],
+        }),
+      ),
+    ).rejects.toThrow("claude-follower-attachments-unavailable");
+    await expect(f.bridge.request(f.control("send", { input: [input] }))).rejects.toThrow(
+      "invalid-text-input",
+    );
+    await expect(
+      f.bridge.request(f.control("send", { text: undefined, input: [input, input] })),
+    ).rejects.toThrow("invalid-text-input");
+
+    const stale = f.control("send", { text: undefined, input: [input] });
+    await f.reconnect();
+    expect(f.connection.features).toContain("terminal-attachments");
+    expect(capabilities()).toMatchObject({ features: { attachments: { available: false } } });
+    expect((await f.events({ type: "snapshot", snapshot: enabled })).status).toBe(200);
+    await expect(f.bridge.request(stale)).rejects.toThrow("stale-Claude-revision");
+    expect((await f.poll()).body.commands).toEqual([]);
+  });
+
+  it.each([
+    ["send", "send"],
+    ["steer", "steer"],
+    ["queue-add", "queue"],
+  ])("dispatches linked %s input as ordinary %s text, exactly once", async (operation, kind) => {
+    const f = await fixture();
+    const turnId = randomUUID();
+    const steer = operation === "steer";
+    const snapshot = {
+      ...f.snapshot,
+      currentTurnId: steer ? turnId : null,
+      status: steer ? "running" : "idle",
+      capabilities: { ...f.snapshot.capabilities, attachments: true, send: !steer },
+    };
+    expect((await f.events({ type: "snapshot", snapshot })).status).toBe(200);
+    const text = "[notes.txt](/workspace/notes.txt)";
+    const request = f.control(operation, {
+      text: undefined,
+      input: [{ type: "claude-terminal-attachments", cwd: f.target.workspace, text }],
+    });
+    const sent = f.bridge.request(request);
+    const [command] = (await f.poll()).body.commands;
+    expect(command).toEqual({
+      commandId: expect.any(String),
+      requestId: request.requestId,
+      kind,
+      expectedRevision: snapshot.revision,
+      text,
+      ...(steer ? { turnId } : {}),
+    });
+    if (operation === "send")
+      await f.events({ type: "turn-start", turnId, revision: 1, origin: "agentkib" });
+    await f.post("/v1/results", {
+      commandId: command.commandId,
+      status: "accepted",
+      revision: operation === "send" ? 1 : 0,
+      ...(operation === "queue-add" ? {} : { turnId }),
+    });
+    const receipt = await sent;
+    expect(receipt).toMatchObject({ controlOutcome: "accepted" });
+    expect(await f.bridge.request(request)).toEqual(receipt);
+    expect((await f.poll()).body.commands).toEqual([]);
+  });
+
   it("projects read-only terminal subagents with stable per-lease IDs and clears stale observations", async () => {
     const f = await fixture();
     expect(f.connection.features).toContain("terminal-subagents");
@@ -2362,6 +2452,7 @@ describe.skipIf(process.platform === "win32")(
         "open-model-picker",
         "terminal-subagents",
         "terminal-worker-activity",
+        "terminal-attachments",
         "lead-rate-limit-pause",
       ]);
       expect(f.bridge.leadCapable(f.target.sessionId)).toBe(false);
@@ -2498,6 +2589,7 @@ describe.skipIf(process.platform === "win32")(
         "open-model-picker",
         "terminal-subagents",
         "terminal-worker-activity",
+        "terminal-attachments",
       ]);
       expect((await leadPoll(plain)).body).toEqual({ commands: [] });
       expect(plain.bridge.leadCapable(plain.target.sessionId)).toBe(false);

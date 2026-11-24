@@ -47,12 +47,14 @@ export const CLAUDE_BRIDGE_PATHS = {
  * - `terminal-subagents`: a plugin may report a bounded list of observed subagents in snapshots.
  * - `terminal-worker-activity`: a plugin may report the current turn's observed tool calls and
  *   an opaque activity counter in snapshots.
+ * - `terminal-attachments`: a plugin may accept text containing links to attachments in its workspace.
  */
 export const CLAUDE_BRIDGE_FEATURES = [
   "lead-tools",
   "open-model-picker",
   "terminal-subagents",
   "terminal-worker-activity",
+  "terminal-attachments",
 ] as const;
 
 export interface ClaudeBridgeTicket {
@@ -134,8 +136,17 @@ export interface ClaudeBridgeCapabilities {
   stop: boolean;
   /** Absent from snapshots of plugins without the native model picker. */
   modelPicker?: boolean;
+  /** Present only after the Runtime and plugin agree on workspace attachment links. */
+  attachments?: true;
   approve: false;
   answer: false;
+}
+
+/** Runtime control input prepared by the host. The plugin receives only the resulting text. */
+export interface ClaudeTerminalAttachmentInput {
+  type: "claude-terminal-attachments";
+  cwd: string;
+  text: string;
 }
 
 /** A message AgentKib sent that the terminal has not taken into a turn yet. */

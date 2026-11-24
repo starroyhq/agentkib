@@ -1,7 +1,7 @@
 # AgentKib Claude Code session bridge
 
 First-party local Mods plugin for Claude Code **2.1.301 or later**, using AgentKib
-bridge plugin **0.5.5**. It connects AgentKib's existing chat interface to the
+bridge plugin **0.5.6**. It connects AgentKib's existing chat interface to the
 terminal's original execution process. It never starts a replacement Claude
 process, resumes another UUID, calls a model itself, or changes the user's
 permission rules.
@@ -125,6 +125,10 @@ command and does not call a model.
   fabricated current permission mode, capacity or writable choice. Compaction
   temporarily withholds previous context counts. The workspace browser uses the
   host's existing file grants and cannot attach references to terminal messages.
+- On a writable connection that negotiates `terminal-attachments`, take desktop
+  and Web attachments as Markdown links to copies in the native session's
+  workspace. The Mods prompt API submits text, so images use the same links.
+  Claude Code reads the linked file under its own permission rules.
 - Take user messages sent from AgentKib, in three modes. Each needs a verified,
   writable lease. After any outcome the plugin cannot confirm, that message is
   marked unknown and never sent again, and the plugin takes no more messages

@@ -202,12 +202,11 @@ export async function approvalAuditEvidence(
   )
     return {};
   const turnId = request.turnId;
-  if (
-    typeof turnId !== "string" ||
-    !turnId ||
-    (state.turnId !== undefined && state.turnId !== turnId)
-  )
-    return {};
+  if (typeof turnId !== "string" || !turnId) return {};
+  // DSH can publish a native approval without a numbered running turn.
+  const dshUnnumberedTurn =
+    agent === "deepseek-harness" && state.turnId === null && turnId === "dsh-turn-unknown";
+  if (state.turnId !== undefined && state.turnId !== turnId && !dshUnnumberedTurn) return {};
   const items = operation === "approve" ? state.approvals : state.questions;
   const matching = Array.isArray(items)
     ? items

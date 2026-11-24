@@ -27,6 +27,7 @@ export interface CatalogSession {
   availability: string;
   title?: string | null;
   archived?: boolean;
+  pinned?: boolean;
   origin?: string | null;
   updated_at?: string | null;
   created_at?: string | null;
@@ -113,6 +114,16 @@ function timestamp(session: Pick<CatalogSession, "updated_at" | "created_at">): 
 export function sortSessions<S extends CatalogSession>(sessions: readonly S[]): S[] {
   // Stable sort retains input order for ties and missing timestamps.
   return [...sessions].sort((left, right) => timestamp(right) - timestamp(left));
+}
+
+/** Partition an already ordered set without changing either partition's order. */
+export function pinnedSessionsFirst<S extends Pick<CatalogSession, "pinned">>(
+  sessions: readonly S[],
+): S[] {
+  const pinned: S[] = [];
+  const remaining: S[] = [];
+  for (const session of sessions) (session.pinned === true ? pinned : remaining).push(session);
+  return pinned.concat(remaining);
 }
 
 export function filterSessions<S extends CatalogSession>(
@@ -294,11 +305,15 @@ export function groupSessions<S extends CatalogSession, W extends CatalogWorkspa
       worktree: repository?.worktree ?? false,
     });
   }
-  return groups.sort(
-    (left, right) =>
-      (left.workspace.remote?.host_id ?? "").localeCompare(right.workspace.remote?.host_id ?? "") ||
-      timestamp(right.sessions[0]!) - timestamp(left.sessions[0]!),
-  );
+  // Group recency uses the newest session even when an older one is pinned above it.
+  return groups
+    .sort(
+      (left, right) =>
+        (left.workspace.remote?.host_id ?? "").localeCompare(
+          right.workspace.remote?.host_id ?? "",
+        ) || timestamp(right.sessions[0]!) - timestamp(left.sessions[0]!),
+    )
+    .map((group) => ({ ...group, sessions: pinnedSessionsFirst(group.sessions) }));
 }
 
 /**

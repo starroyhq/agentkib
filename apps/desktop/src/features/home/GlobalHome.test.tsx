@@ -2,6 +2,7 @@
 
 import "@testing-library/jest-dom/vitest";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { initializeI18n, tr } from "@/core/i18n";
 import type { AgentInstallation, RuntimeInfo, WorkspaceSummary } from "@/core/types";
@@ -136,8 +137,15 @@ describe("GlobalHome", () => {
 
   it("separates the workspace and scan-folder callbacks", async () => {
     const props = homeProps();
+    const user = userEvent.setup();
     render(<GlobalHome {...props} />);
-    fireEvent.click(screen.getByRole("button", { name: tr("home.addWorkspace") }));
+    const label = tr("home.addWorkspace");
+    const addWorkspace = screen.getByRole("button", { name: label });
+    expect(addWorkspace).not.toHaveTextContent(label);
+    await user.hover(addWorkspace);
+    expect(await screen.findByRole("tooltip")).toHaveTextContent(label);
+    addWorkspace.focus();
+    await user.keyboard("{Enter}");
     expect(props.onAddWorkspace).toHaveBeenCalledTimes(1);
     expect(props.onAddRoot).not.toHaveBeenCalled();
     await act(async () => {});

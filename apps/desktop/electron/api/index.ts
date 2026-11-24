@@ -434,6 +434,9 @@ export interface DesktopApi {
     doctorSummaries(workspaceIds: string[]): Promise<ContextDoctorSummary[]>;
   };
   shell: {
+    readClipboardAttachmentFiles?(): Promise<
+      { name: string; mime: string; bytes: Uint8Array }[] | undefined
+    >;
     openDirectory(title?: string): Promise<string | undefined>;
     openExternal(url: string): Promise<void>;
     openFilesAndFoldersSettings(): Promise<void>;

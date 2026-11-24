@@ -60,7 +60,7 @@ const oversizedMcpInput = {
 };
 
 /** An in-process `agy acp` (1.5.14) that answers as each test scripts it. */
-function fakeCli() {
+function fakeCli(promptCapabilities?: Record<string, boolean>) {
   const fromAgent = new PassThrough();
   const toAgent = new PassThrough();
   const frames: Frame[] = [];
@@ -91,7 +91,11 @@ function fakeCli() {
           result: {
             protocolVersion: 1,
             agentInfo: { name: "Antigravity ACP Server", version: "1.5.14" },
-            agentCapabilities: { loadSession: true, sessionCapabilities: { resume: {}, load: {} } },
+            agentCapabilities: {
+              loadSession: true,
+              sessionCapabilities: { resume: {}, load: {} },
+              ...(promptCapabilities && { promptCapabilities }),
+            },
           },
         });
       if (frame.method === "session/new") {
@@ -139,6 +143,32 @@ const settle = async (check: () => boolean) => {
 afterEach(() => vi.restoreAllMocks());
 
 describe("Antigravity CLI control (agy acp 1.5.14)", () => {
+  it.each([
+    { support: undefined, length: 8, reason: "attachments-unsupported" },
+    { support: { image: true }, length: 1024 * 1024, reason: "attachments_too_large" },
+  ])(
+    "rejects $reason before acknowledging a native dispatch",
+    async ({ support, length, reason }) => {
+      const cli = fakeCli(support);
+      const runner = await AntigravityManagedRunner.connect("/bin/agy", "/tmp", "known", {});
+      try {
+        const beforeDispatch = vi.fn();
+        await expect(
+          runner.send(
+            [{ type: "image", mimeType: "image/png", data: "A".repeat(length) }],
+            Number(runner.snapshot().revision),
+            beforeDispatch,
+          ),
+        ).rejects.toThrow(reason);
+        expect(beforeDispatch).not.toHaveBeenCalled();
+        expect(runner.snapshot()).toMatchObject({ status: "idle", sendEnabled: true });
+        expect(cli.frames.some(({ method }) => method === "session/prompt")).toBe(false);
+      } finally {
+        runner.close();
+      }
+    },
+  );
+
   it("starts a session with the chosen options and changes them between turns", async () => {
     const cli = fakeCli();
     const runner = await AntigravityManagedRunner.connect(

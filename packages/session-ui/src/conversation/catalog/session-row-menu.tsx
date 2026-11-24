@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ComponentType, type ReactNode } from "react";
-import { MoreHorizontal } from "lucide-react";
+import { MoreHorizontal, Pin } from "lucide-react";
 import {
   ApiError,
   managedAgentOf,
@@ -10,11 +10,59 @@ import {
   type SessionManagementFeatures,
   type WebClient,
 } from "@agentkib/web-client";
+import type { InteractionLocale } from "../../interaction-model";
 import type { SessionPlatform } from "../../session-platform";
+
+const pinCopy = {
+  "zh-CN": {
+    pin: "置顶会话",
+    unpin: "取消置顶",
+    pinned: "已置顶",
+    failed: "无法更改会话的置顶状态。",
+  },
+  "zh-Hant": {
+    pin: "釘選對話",
+    unpin: "取消釘選",
+    pinned: "已釘選",
+    failed: "無法變更對話的釘選狀態。",
+  },
+  "en-US": {
+    pin: "Pin session",
+    unpin: "Unpin session",
+    pinned: "Pinned",
+    failed: "Couldn't change the session's pin status.",
+  },
+  "ja-JP": {
+    pin: "セッションをピン留め",
+    unpin: "ピン留めを解除",
+    pinned: "ピン留め済み",
+    failed: "セッションのピン留めを変更できませんでした。",
+  },
+};
+
+export function hasSessionPinning(
+  session: Pick<ConversationSessionSummary, "pinned" | "pinningAvailable">,
+) {
+  return session.pinned !== undefined || session.pinningAvailable !== undefined;
+}
+
+export function SessionPinnedMark({ locale }: { locale: InteractionLocale }) {
+  return (
+    <Pin
+      size={12}
+      className="shrink-0 text-muted-foreground"
+      role="img"
+      aria-label={pinCopy[locale].pinned}
+    />
+  );
+}
 
 export type SessionManagementRowMenuProps = {
   session: ConversationSessionSummary;
   client: WebClient;
+  locale: InteractionLocale;
+  canPin?: boolean;
+  pinOnly?: boolean;
   copy: Record<
     | "rowMenu"
     | "rename"
@@ -58,6 +106,9 @@ export type SessionManagementRowMenuProps = {
 export function SessionManagementRowMenu({
   session,
   client,
+  locale,
+  canPin = false,
+  pinOnly = false,
   copy,
   sessionTitle,
   deleteDescription,
@@ -86,14 +137,19 @@ export function SessionManagementRowMenu({
   } = components;
   const [open, setOpen] = useState(false);
   const [features, setFeatures] = useState<SessionManagementFeatures>();
-  const [dialog, setDialog] = useState<"rename" | "delete" | "notice" | null>(null);
+  const [dialog, setDialog] = useState<"rename" | "delete" | "notice" | "pin-notice" | null>(null);
   const [name, setName] = useState("");
   const [busy, setBusy] = useState(false);
   const [failure, setFailure] = useState("");
   const inFlight = useRef(false);
   const { id, agent, archived, title } = session;
+  const showPin = hasSessionPinning(session);
+  const canManage = !pinOnly && !!managedAgentOf(agent);
+  const pin = pinCopy[locale];
+  const pinLabel = session.pinned ? pin.unpin : pin.pin;
+  const pinEnabled = canPin && session.pinningAvailable === true;
   useEffect(() => {
-    if (!open) return;
+    if (!open || !canManage) return;
     const abort = new AbortController();
     sessionManagementFeatures(client, { id, agent }, abort.signal)
       .then((value) => {
@@ -103,8 +159,24 @@ export function SessionManagementRowMenu({
         if (!abort.signal.aborted) setFeatures({});
       });
     return () => abort.abort();
-  }, [open, client, id, agent]);
-  if (!managedAgentOf(agent)) return null;
+  }, [open, canManage, client, id, agent]);
+  if (!canManage && !showPin) return null;
+
+  async function togglePin() {
+    if (!pinEnabled || inFlight.current) return;
+    inFlight.current = true;
+    setBusy(true);
+    try {
+      await client.setSessionPinned(id, !session.pinned);
+      onChanged?.();
+    } catch {
+      setFailure(pin.failed);
+      setDialog("pin-notice");
+    } finally {
+      inFlight.current = false;
+      setBusy(false);
+    }
+  }
 
   async function run(action: SessionManagementAction, fields: { name?: string } = {}) {
     if (inFlight.current) return;
@@ -174,18 +246,25 @@ export function SessionManagementRowMenu({
           <MoreHorizontal size={iconSize} aria-hidden="true" />
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end">
-          <DropdownMenuItem
-            disabled={unavailable("rename")}
-            onClick={() => {
-              setName(title ?? "");
-              setFailure("");
-              setDialog("rename");
-            }}
-          >
-            {copy.rename}
-          </DropdownMenuItem>
-          {extraMenuItems}
-          {(features?.archive ?? features?.unarchive) && (
+          {canManage && (
+            <DropdownMenuItem
+              disabled={unavailable("rename")}
+              onClick={() => {
+                setName(title ?? "");
+                setFailure("");
+                setDialog("rename");
+              }}
+            >
+              {copy.rename}
+            </DropdownMenuItem>
+          )}
+          {showPin && (
+            <DropdownMenuItem disabled={busy || !pinEnabled} onClick={() => void togglePin()}>
+              {pinLabel}
+            </DropdownMenuItem>
+          )}
+          {canManage && extraMenuItems}
+          {canManage && (features?.archive ?? features?.unarchive) && (
             <DropdownMenuItem
               disabled={unavailable(archiveAction)}
               onClick={() => void run(archiveAction)}
@@ -193,7 +272,7 @@ export function SessionManagementRowMenu({
               {archiveLabel}
             </DropdownMenuItem>
           )}
-          {features?.delete && (
+          {canManage && features?.delete && (
             <>
               <DropdownMenuSeparator />
               <DropdownMenuItem
@@ -209,8 +288,12 @@ export function SessionManagementRowMenu({
           )}
         </DropdownMenuContent>
       </DropdownMenu>
-      {dialog === "notice" && (
-        <SessionDialog title={archiveLabel} closeLabel={copy.close} onClose={close}>
+      {(dialog === "notice" || dialog === "pin-notice") && (
+        <SessionDialog
+          title={dialog === "pin-notice" ? pinLabel : archiveLabel}
+          closeLabel={copy.close}
+          onClose={close}
+        >
           <p role="alert" className="text-sm">
             {failure}
           </p>

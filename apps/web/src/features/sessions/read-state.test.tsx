@@ -562,7 +562,7 @@ describe("visible result read acknowledgements", () => {
       "ledger:2",
       "result",
     );
-    expect(screen.getByText("Read state syncs within AgentKib only")).toBeVisible();
+    expect(screen.getByTestId("read-observation")).toHaveTextContent("read:ledger:2");
   });
   it.each([false, true])(
     "preserves native manual unread for the same visible result until a new reading action (empty=%s)",
@@ -747,7 +747,7 @@ describe("review lane and shared list semantics", () => {
     expect(status.label).toContain("Unread");
   });
   it.each(["zh-CN", "zh-Hant", "ja-JP", "en-US"])(
-    "provides old-host, stale and fallback scope copy in %s",
+    "shows old-host and stale notices and keeps current AgentKib read state quiet in %s",
     (locale) => {
       const view = render(
         <ReadStateNotice locale={locale} observation={{ status: "unsupported" }} />,
@@ -759,14 +759,14 @@ describe("review lane and shared list semantics", () => {
           observation={{ status: "ready", readState: unread({ freshness: "stale" }) }}
         />,
       );
-      const stale = screen.getByRole("status").textContent;
+      expect(screen.getByRole("status").textContent).toBeTruthy();
       view.rerender(
         <ReadStateNotice
           locale={locale}
           observation={{ status: "ready", readState: unread({ source: "agentkib" }) }}
         />,
       );
-      expect(screen.getByRole("status").textContent).not.toBe(stale);
+      expect(screen.queryByRole("status")).not.toBeInTheDocument();
       view.rerender(
         <PendingReviewLane
           locale={locale}

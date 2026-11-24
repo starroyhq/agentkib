@@ -726,7 +726,7 @@ describe("composer model picker", () => {
       };
       render(<ComposerModelPicker {...props} />);
       const trigger = screen.getByRole("button", { name: copy.modelSettings });
-      expect(trigger).toHaveTextContent(copy.modelSettings);
+      expect(trigger).toHaveTextContent(/^$/);
       fireEvent.click(trigger);
       const overview = await screen.findByRole("dialog", { name: copy.modelSettings });
       expect(within(overview).queryByText(copy.chooseModel)).not.toBeInTheDocument();

@@ -112,11 +112,20 @@ function fakeDsh(cwd: string) {
   const attachmentInvalid = (reason: string) =>
     Object.assign(new Error(reason), { code: "session/attachment-invalid", details: { reason } });
   const archived = new Set<string>();
+  const pinned = new Set<string>();
   // Each agent's own tools (`agent.ctx.tools`), as DSH scopes them to one agent.
   const agentTools = new Map<any, any[]>();
   const followers = new Set<(frame: unknown) => void>();
+  const pushWorkspace = (frame: unknown) => {
+    for (const push of followers) push(frame);
+  };
   const pushArchived = () => {
-    for (const push of followers) push({ type: "archived", archivedSessionIds: [...archived] });
+    pushWorkspace({ type: "archived", archivedSessionIds: [...archived] });
+  };
+  const pinInDsh = (sessionId: string, pin: boolean) => {
+    if (pin) pinned.add(sessionId);
+    else pinned.delete(sessionId);
+    pushWorkspace({ type: "pinned", pinnedSessionIds: [...pinned] });
   };
   const disposers: Array<() => void> = [];
   const nativeAnswers: Array<{
@@ -554,11 +563,19 @@ function fakeDsh(cwd: string) {
         pushArchived();
         return { archivedSessionIds: [...archived] };
       },
+      async pinSession({ sessionId }: { sessionId: string }) {
+        pinInDsh(sessionId, true);
+        return { pinnedSessionIds: [...pinned] };
+      },
+      async unpinSession({ sessionId }: { sessionId: string }) {
+        pinInDsh(sessionId, false);
+        return { pinnedSessionIds: [...pinned] };
+      },
       async *follow(signal: AbortSignal) {
         const queue: unknown[] = [
           {
             type: "baseline",
-            value: { items: [], archivedSessionIds: [...archived], pinnedSessionIds: [] },
+            value: { items: [], archivedSessionIds: [...archived], pinnedSessionIds: [...pinned] },
           },
         ];
         let wake: (() => void) | undefined;
@@ -672,6 +689,9 @@ function fakeDsh(cwd: string) {
     cancels,
     selections,
     archived,
+    pinned,
+    pinInDsh,
+    pushWorkspace,
     /** An archive made in DSH's own window. */
     archiveInDsh(id: string) {
       archived.add(id);
@@ -753,11 +773,15 @@ type FakeContextPressure = { projectedTokens: number; contextWindow?: number };
 
 async function fixture({
   supportsCreateModelSelection = true,
+  supportsPins = true,
+  initiallyPinned = false,
   dshVersion = "0.2.2-rc.3",
   contextPressure,
   lead,
 }: {
   supportsCreateModelSelection?: boolean;
+  supportsPins?: boolean;
+  initiallyPinned?: boolean;
   dshVersion?: string;
   contextPressure?: () => FakeContextPressure;
   lead?: DshBridgeOptions["lead"];
@@ -789,6 +813,10 @@ async function fixture({
   bridge.initialize();
   const dsh = fakeDsh(workspace);
   if (!supportsCreateModelSelection) delete dsh.ctx.llm;
+  if (!supportsPins) {
+    delete dsh.ctx.workspaceController.pinSession;
+    delete dsh.ctx.workspaceController.unpinSession;
+  }
   if (contextPressure) {
     dsh.ctx.tokenMeter = { contextPressure };
     const projections = dsh.ctx.sessionController.projections;
@@ -799,6 +827,7 @@ async function fixture({
     };
   }
   dsh.create("session-a", "First DSH session");
+  if (initiallyPinned) dsh.pinInDsh("session-a", true);
   const plugin = createBridge(dsh.ctx, {
     roots: [agentkibHome],
     dshVersion,
@@ -909,6 +938,62 @@ describe("DeepSeek Harness bridge", () => {
     await complete(batch[0].commandId);
     await expect(other).resolves.toEqual({ runtimeId, workspaceId: "dsh-workspace" });
     expect(await imported).toBe("dsh-native-import-unverified");
+  });
+
+  it("reads native pins in both directions while running and retains the last value offline", async () => {
+    const f = await fixture({ initiallyPinned: true });
+    const id = "ak-session-a";
+    await until(() => f.bridge.pinState(id)?.available);
+    expect(f.bridge.pinState(id)).toEqual({ pinned: true, available: true });
+
+    f.dsh.create("session-b", "Second DSH session");
+    await until(() => f.bridge.handles("ak-session-b"));
+    f.dsh.pushWorkspace({
+      type: "replace",
+      value: { items: [], archivedSessionIds: ["session-b"] },
+    });
+    await until(() =>
+      f.bridge
+        .list(f.workspace)
+        .sessions.some((row) => row.native_ref === "session-b" && row.archived),
+    );
+    expect(f.bridge.pinState(id)).toEqual({ pinned: true, available: true });
+    f.dsh.pushWorkspace({
+      type: "replace",
+      value: { items: [], archivedSessionIds: [], pinnedSessionIds: [] },
+    });
+    await until(() => f.bridge.pinState(id)?.pinned === false);
+
+    await f.control("send", { text: "run the tests" });
+    await until(() => f.bridge.live(id, true).status === "running");
+    await expect(f.bridge.setPinned(id, true)).resolves.toBe(true);
+    expect(f.dsh.pinned.has("session-a")).toBe(true);
+    await until(() => f.bridge.pinState(id)?.pinned === true);
+    await expect(f.bridge.setPinned(id, false)).resolves.toBe(false);
+    expect(f.dsh.pinned.has("session-a")).toBe(false);
+    await until(() => f.bridge.pinState(id)?.pinned === false);
+
+    f.changed.length = 0;
+    f.dsh.pinInDsh("session-a", true);
+    await until(() => f.bridge.pinState(id)?.pinned === true);
+    expect(f.changed).toContainEqual(["workspace"]);
+    f.plugin.close();
+    await until(() => f.bridge.pinState(id)?.available === false);
+    expect(f.bridge.pinState(id)).toEqual({ pinned: true, available: false });
+    await expect(f.bridge.setPinned(id, false)).rejects.toThrow("session-pin-unavailable");
+    await f.bridge.close();
+    const reopened = new DshBridge({ ...f.bridge.options, discoveryFile: undefined });
+    cleanups.push(() => reopened.close());
+    expect(reopened.pinState(id)).toEqual({ pinned: true, available: false });
+  });
+
+  it("does not send pins to a DSH without native pin methods", async () => {
+    const f = await fixture({ supportsPins: false });
+    expect(f.bridge.pinState("ak-session-a")).toBeUndefined();
+    await expect(f.bridge.setPinned("ak-session-a", true)).rejects.toThrow(
+      "session-pin-unavailable",
+    );
+    await expect(f.bridge.setPinned("ak-missing", true)).rejects.toThrow("session-not-found");
   });
 
   it("browses its registered workspace without issuing a native command or enabling references", async () => {
@@ -1807,6 +1892,97 @@ describe("DeepSeek Harness bridge", () => {
       reason: "interaction-answered-elsewhere",
     });
   });
+
+  it("withdraws the native waterfall of a timed question when AgentKib answers", async () => {
+    const f = await fixture({ dshVersion: "0.2.2-rc.5" });
+    const outer = new AbortController();
+    const agent = f.dsh.sessions.get("session-a")!.agent;
+    const wait = { callId: "timed-tool-call", timed: true };
+    const pending = f.dsh.ctx.waterfall(
+      { scoped: agent },
+      "user-questions/request",
+      {
+        agent,
+        signal: outer.signal,
+        wait,
+        questions: [{ id: "q1", question: "Which?", options: [{ label: "A" }, { label: "B" }] }],
+      },
+      () => Promise.reject(new Error("no answerer")),
+    );
+    const question = await until(() => {
+      const live = f.bridge.live("ak-session-a", true);
+      return (live.questions as any[])[0];
+    });
+    expect(f.dsh.nativeAnswers).toHaveLength(1);
+    const forwarded = f.dsh.nativeAnswers[0]!;
+    expect(forwarded.request.wait).toEqual(wait);
+    expect(forwarded.request.signal).not.toBe(outer.signal);
+    const answer = {
+      turnId: question.turnId,
+      questionId: question.requestId,
+      answers: { q1: ["B"] },
+    };
+    await expect(f.control("answer", answer)).resolves.toMatchObject({
+      accepted: true,
+    });
+    expect(forwarded.request.signal.aborted).toBe(true);
+    expect(outer.signal.aborted).toBe(false);
+    forwarded.resolve({ answers: [{ id: "q1", selected: ["A"] }] });
+    await expect(pending).resolves.toEqual({ answers: [{ id: "q1", selected: ["B"] }] });
+    await until(() => (f.bridge.live("ak-session-a", true).questions as unknown[]).length === 0);
+    await expect(f.control("answer", answer)).resolves.toMatchObject({
+      accepted: false,
+      controlOutcome: "not-dispatched",
+      reason: "interaction-answered-elsewhere",
+    });
+  });
+
+  it.each(["approval", "question"] as const)(
+    "rejects a stale bridge %s response as soon as the original request is cancelled",
+    async (kind) => {
+      const f = await fixture({ dshVersion: "0.2.2-rc.5" });
+      const outer = new AbortController();
+      const reason = Object.assign(new Error("The original wait ended"), { code: "ASK_TIMED_OUT" });
+      const agent = f.dsh.sessions.get("session-a")!.agent;
+      const pending = f.dsh.ctx.waterfall(
+        { scoped: agent },
+        kind === "approval" ? "approval/request" : "user-questions/request",
+        {
+          agent,
+          signal: outer.signal,
+          ...(kind === "approval"
+            ? { toolName: "bash" }
+            : {
+                wait: { callId: "timed-tool-call", timed: true },
+                questions: [{ id: "q1", question: "Which?", options: [{ label: "A" }] }],
+              }),
+        },
+        () => Promise.reject(new Error("no answerer")),
+      );
+      const settlement =
+        kind === "approval"
+          ? expect(pending).resolves.toBe("cancelled")
+          : expect(pending).rejects.toBe(reason);
+      await until(() => f.dsh.nativeAnswers[0]);
+      const interactionId = [...f.plugin.interactions.keys()][0];
+      expect(interactionId).toEqual(expect.any(String));
+      outer.abort(reason);
+      // Queue the reply before the downstream promise rejection can propagate. It must not
+      // revive the cancelled interaction or overwrite the native timed-wait reason.
+      const response = await f.plugin.run({
+        type: "answer",
+        interactionId,
+        value:
+          kind === "approval"
+            ? { outcome: "allowed-once" }
+            : { answers: [{ id: "q1", selected: ["A"] }] },
+      });
+      await settlement;
+      expect(response).toEqual({ found: false });
+      expect(f.dsh.nativeAnswers[0]!.request.signal.reason).toBe(reason);
+      expect(f.plugin.interactions.size).toBe(0);
+    },
+  );
 
   it("shows a send still waiting for DSH's reply as busy, not unconfirmed", async () => {
     const f = await fixture();

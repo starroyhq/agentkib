@@ -1,3 +1,4 @@
+import type { SessionActivity } from "@agentkib/web-client";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { useEffect } from "react";
@@ -13,6 +14,9 @@ const fixture = vi.hoisted(() => ({
   files: true,
   offline: false,
   modal: null as string | null,
+  agent: undefined as "codex" | "antigravity" | undefined,
+  liveSessionId: undefined as string | undefined,
+  activities: [] as SessionActivity[],
 }));
 vi.mock("@tanstack/react-router", () => ({
   useLocation: ({ select }: { select: (v: { pathname: string }) => unknown }) =>
@@ -35,8 +39,13 @@ vi.mock("@/features/conversation/web-session-context", () => ({
     online: !fixture.offline,
     controlReady: !fixture.offline,
     canSend: !fixture.offline,
-    live: { sessionId: fixture.selected, status: "idle", approvals: [] },
-    current: fixture.offline ? { id: fixture.selected, agent: "codex" } : undefined,
+    live: {
+      sessionId: fixture.liveSessionId ?? fixture.selected,
+      status: "idle",
+      approvals: [],
+      activities: fixture.activities,
+    },
+    current: fixture.agent ? { id: fixture.selected, agent: fixture.agent } : undefined,
     client: { request: vi.fn() },
     message: "",
     setMessage: vi.fn(),
@@ -70,6 +79,9 @@ afterEach(() => {
   fixture.files = true;
   fixture.offline = false;
   fixture.modal = null;
+  fixture.agent = undefined;
+  fixture.liveSessionId = undefined;
+  fixture.activities = [];
 });
 describe("workspace navigation", () => {
   it("keeps one pending center mounted when entering and leaving a session", () => {
@@ -88,6 +100,7 @@ describe("workspace navigation", () => {
     fixture.pathname = "/sessions/s";
     fixture.selected = "s";
     fixture.offline = true;
+    fixture.agent = "codex";
     renderWeb(<SessionWorkspace />);
     expect(screen.getAllByText(webLayoutCopy["zh-CN"].offline)).toHaveLength(1);
     expect(screen.getByRole("button", { name: dictionaries["zh-CN"].send })).toBeDisabled();
@@ -119,5 +132,37 @@ describe("workspace navigation", () => {
     fixture.modal = "approval";
     view.rerender(<SessionWorkspace />);
     expect(screen.getByTestId("panels")).toHaveTextContent("files-closed");
+  });
+
+  it("keeps the shared activity control in the header and uses only the selected session's activity", () => {
+    fixture.pathname = "/sessions/s";
+    fixture.selected = "s";
+    fixture.agent = "codex";
+    fixture.liveSessionId = "s";
+    fixture.activities = [
+      { id: "research", kind: "subagent", title: "Research subagent", status: "running" },
+    ];
+    const view = render(<SessionWorkspace />);
+    const button = screen.getByRole("button", { name: "会话活动" });
+    expect(button.closest("header")).toContainElement(
+      screen.getByRole("heading", { name: "测试会话" }),
+    );
+    expect(button).toHaveClass("size-11");
+    expect(button).toHaveAttribute("aria-expanded", "false");
+    expect(button).toHaveAttribute("aria-description", expect.stringContaining("1 个子代理"));
+    fireEvent.click(button);
+    fireEvent.click(screen.getByTestId("panels"));
+    expect(button).toHaveAttribute("aria-expanded", "true");
+
+    fixture.pathname = "/sessions/other";
+    fixture.selected = "other";
+    view.rerender(<SessionWorkspace />);
+    expect(button).toHaveAttribute("aria-expanded", "true");
+    expect(button).not.toHaveAttribute("aria-description");
+    fireEvent.click(button);
+
+    fixture.agent = "antigravity";
+    view.rerender(<SessionWorkspace />);
+    expect(button).toBeDisabled();
   });
 });

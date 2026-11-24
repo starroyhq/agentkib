@@ -1,5 +1,6 @@
 import { Info, RefreshCw, SlidersHorizontal } from "lucide-react";
 import type { ReactNode } from "react";
+import { IconAction } from "./icon-action";
 import type { SessionPlatform } from "./session-platform";
 
 export function SessionDetailOperations({
@@ -35,26 +36,48 @@ export function SessionDetailOperations({
     onOpenChange(false);
     onShowModal(modal);
   };
+  const shortcutClassName = `relative min-w-9 after:invisible after:ps-6 after:content-[attr(aria-label)] [&>svg]:absolute ${buttonClassName ?? ""}`;
   const shortcuts = (
     <>
       <div className="flex flex-wrap gap-2">
-        <Button variant="outline" className={buttonClassName} onClick={() => openModal("metadata")}>
+        <IconAction
+          label={labels.details}
+          render={
+            <Button
+              variant="outline"
+              className={shortcutClassName}
+              onClick={() => openModal("metadata")}
+            />
+          }
+        >
           <Info aria-hidden="true" />
-          {labels.details}
-        </Button>
-        <Button variant="outline" className={buttonClassName} disabled={busy} onClick={onRefresh}>
+        </IconAction>
+        <IconAction
+          label={labels.refresh}
+          render={
+            <Button
+              variant="outline"
+              className={shortcutClassName}
+              disabled={busy}
+              onClick={onRefresh}
+            />
+          }
+        >
           <RefreshCw aria-hidden="true" />
-          {labels.refresh}
-        </Button>
+        </IconAction>
         {!embedded && (
-          <Button
-            variant="outline"
-            className={buttonClassName}
-            onClick={() => openModal("preferences")}
+          <IconAction
+            label={labels.preferences}
+            render={
+              <Button
+                variant="outline"
+                className={shortcutClassName}
+                onClick={() => openModal("preferences")}
+              />
+            }
           >
             <SlidersHorizontal aria-hidden="true" />
-            {labels.preferences}
-          </Button>
+          </IconAction>
         )}
       </div>
       {extra}

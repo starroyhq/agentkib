@@ -105,6 +105,10 @@ For sessions in an AgentKib workspace, the plugin listens first on `approval/req
 request again with a signal it owns: DSH's own UI shows it as before, and AgentKib shows it
 too. The first answer wins. When AgentKib answers, the plugin aborts its signal, and DSH's
 gateway withdraws the card from its UI; when DSH's UI answers, AgentKib withdraws its card.
+When the original request ends, the bridge stops accepting answers immediately and preserves
+the native cancellation or question timeout. DSH also tracks questions attached to tool calls
+in its session projection. On DSH 0.2.2-rc.5, a settled card can remain visible until the native
+projection refreshes. Once cancellation reaches DSH, that card cannot submit another answer.
 Without a connected Runtime, or for other sessions, the plugin passes the request on unchanged.
 
 ## Compatibility

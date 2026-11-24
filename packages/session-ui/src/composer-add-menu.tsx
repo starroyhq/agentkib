@@ -226,6 +226,7 @@ function ComposerAddMenu({
     <Popover.Root open={open} onOpenChange={onOpenChange} modal={false}>
       <Popover.Trigger
         ref={anchorForm}
+        data-slot="composer-add-trigger"
         className={`${composerButtonClasses} size-11 rounded-full p-0 text-muted-foreground hover:text-foreground`}
         aria-label={label}
         title={disabledReason ?? label}
@@ -339,7 +340,9 @@ export function SessionComposerAddMenu({
     focusNavigation.current = false;
     row.querySelector("button")?.focus();
   }, []);
-  const offered = !!(attachment || resources || goal || plan || clearMode);
+  const offered = [attachment, resources, goal, plan, clearMode].some(
+    (action) => action && !action.disabled,
+  );
   const open = (controlledOpen ?? localOpen) && !disabled && offered;
   useEffect(() => {
     if (!open || resources?.disabled) {

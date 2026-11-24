@@ -1,12 +1,13 @@
 import { useLayoutEffect, useState } from "react";
 import { Popover } from "@base-ui/react/popover";
-import { managedAgentOf } from "@agentkib/web-client";
+import { managedAgentOf, sessionProviderDeclaration } from "@agentkib/web-client";
 import { createPortal } from "react-dom";
 import { FolderOpen } from "lucide-react";
 import {
   connectionManagementUnavailableReason,
   requestReadStateRefresh,
   resolveSessionProvider,
+  SessionActivityButton,
   sessionConnectionPanels,
   useSessionPlatform,
 } from "@agentkib/session-ui";
@@ -18,7 +19,11 @@ import { webLayoutCopy } from "@agentkib/session-ui";
 import { useSessionViewStore } from "./session-view-store";
 import { useSessionPanels } from "@agentkib/session-ui";
 
-type ToolbarSlots = { files: HTMLElement | null; status: HTMLElement | null };
+type ToolbarSlots = {
+  files: HTMLElement | null;
+  status: HTMLElement | null;
+  activity: HTMLElement | null;
+};
 
 /** Keep the controls in their session context while rendering in the window toolbar. */
 export function ConversationWindowTools({
@@ -33,7 +38,7 @@ export function ConversationWindowTools({
   const session = useSession();
   const { selected, current, access, locale } = session;
   const setTerminalOpen = useSessionPanels()?.setTerminalOpen;
-  const [slots, setSlots] = useState<ToolbarSlots>({ files: null, status: null });
+  const [slots, setSlots] = useState<ToolbarSlots>({ files: null, status: null, activity: null });
   const platform = useSessionPlatform();
   const provider = resolveSessionProvider(
     current?.id === selected ? current : undefined,
@@ -63,8 +68,12 @@ export function ConversationWindowTools({
       const host = toolbar?.dataset.sessionWindowSession === selected ? toolbar : null;
       const files = host?.querySelector<HTMLElement>("[data-session-window-files-slot]") ?? null;
       const status = host?.querySelector<HTMLElement>("[data-session-window-status-slot]") ?? null;
+      const activity =
+        host?.querySelector<HTMLElement>("[data-session-window-activity-slot]") ?? null;
       setSlots((previous) =>
-        previous.files === files && previous.status === status ? previous : { files, status },
+        previous.files === files && previous.status === status && previous.activity === activity
+          ? previous
+          : { files, status, activity },
       );
     };
     sync();
@@ -159,6 +168,17 @@ export function ConversationWindowTools({
             slots.status,
           )
         : null}
+      {slots.activity &&
+        createPortal(
+          <SessionActivityButton
+            sessionId={selected}
+            locale={locale}
+            capabilities={sessionProviderDeclaration(current.agent)?.activities}
+            live={session.live}
+            Button={Button}
+          />,
+          slots.activity,
+        )}
     </>
   );
 }

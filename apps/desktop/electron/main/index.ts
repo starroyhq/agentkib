@@ -425,6 +425,10 @@ async function startApplication(): Promise<void> {
       if (mainWindow && !mainWindow.isDestroyed())
         mainWindow.webContents.send("agentkib:account:status", status);
       nativeShell?.sendToPopover("agentkib:account:status", status);
+      if (status.phase === "signed-in")
+        void webAccess?.updateOfficialRelayAccount(true).catch(() => undefined);
+      if (status.phase === "signed-out" && status.error === "account_login_required")
+        void webAccess?.updateOfficialRelayAccount(false).catch(() => undefined);
       // Signing in to another account ends the phones bound to the previous one.
       const accountId = status.account?.id;
       if (accountId && accountId !== checkedAccountId) {

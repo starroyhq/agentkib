@@ -54,7 +54,7 @@ const brokerUrl = "https://api.agentkib.com";
 const ready: RelayStatus = { phase: "ready", publicUrl: "https://device.control.example.com" };
 const account = {
   signedIn: vi.fn(() => true),
-  accountId: () => "owner",
+  accountId: vi.fn<() => string | undefined>(() => "owner"),
   ensureDeviceOwner: vi.fn(async (accountId?: string) => {
     if (accountId && accountId !== "owner") throw new Error("account_device_conflict");
   }),
@@ -136,6 +136,7 @@ async function configured() {
 beforeEach(async () => {
   relays.length = 0;
   account.signedIn.mockReset().mockReturnValue(true);
+  account.accountId.mockReset().mockReturnValue("owner");
   account.ensureDeviceOwner.mockClear();
   account.registerDevice.mockClear();
   dir = await mkdtemp(join(tmpdir(), "agentkib-remote-enable-"));
@@ -449,6 +450,110 @@ describe("account ownership and durable pause", () => {
     await writeFile(join(directory, "registration.json"), JSON.stringify(value));
     return value;
   }
+  it("pauses official access on account loss and restores the same pairing on owner login", async () => {
+    await saveIdentity({ accountId: "owner" });
+    await service.request({ operation: "remote-enable", brokerUrl });
+    relays[0].report(ready);
+    const headers = await pairBrowser();
+    account.signedIn.mockReturnValue(false);
+    account.accountId.mockReturnValue(undefined);
+    await service.updateOfficialRelayAccount(false);
+
+    expect(relays[0].stop).toHaveBeenCalledTimes(1);
+    expect(await status()).toMatchObject({
+      config: { relay: { enabled: true } },
+      relay: { phase: "offline", reason: "account-required" },
+      devices: [expect.objectContaining({ accountBound: true })],
+    });
+    const persisted = JSON.parse(await readFile(join(dir, "web-access.json"), "utf8"));
+    expect(persisted.config.relay.enabled).toBe(true);
+    for (const route of ["access", "catalog"]) {
+      const denied = await fetch(`http://127.0.0.1:${port}/api/web/v1/${route}`, { headers });
+      expect(denied.status).toBe(503);
+      expect(await denied.json()).toMatchObject({ error: "account_login_unavailable" });
+    }
+
+    account.signedIn.mockReturnValue(true);
+    account.accountId.mockReturnValue("other");
+    await service.updateOfficialRelayAccount(true);
+    expect(relays).toHaveLength(1);
+    expect((await status()).relay).toMatchObject({ phase: "offline", reason: "account-required" });
+
+    account.accountId.mockReturnValue("owner");
+    await service.updateOfficialRelayAccount(true);
+    expect(relays).toHaveLength(2);
+    expect(relays[1].options.reenroll).toBeUndefined();
+    relays[1].report(ready);
+    const access = await fetch(`http://127.0.0.1:${port}/api/web/v1/access`, { headers });
+    expect(access.status).toBe(200);
+    expect(await access.json()).toMatchObject({
+      status: "approved",
+      accountLogin: { bound: true },
+    });
+
+    await service.request({ operation: "relay-stop" });
+    await service.updateOfficialRelayAccount(true);
+    expect(relays).toHaveLength(2);
+  });
+  it("waits for an account at host startup with saved official enablement", async () => {
+    await saveIdentity({ accountId: "owner" });
+    await service.request({ operation: "remote-enable", brokerUrl });
+    await service.shutdown();
+    account.signedIn.mockReturnValue(false);
+    account.accountId.mockReturnValue(undefined);
+    await service.initialize();
+    expect(relays).toHaveLength(1);
+    expect((await status()).relay).toMatchObject({ phase: "offline", reason: "account-required" });
+    account.signedIn.mockReturnValue(true);
+    account.accountId.mockReturnValue("owner");
+    await service.updateOfficialRelayAccount(true);
+    expect(relays).toHaveLength(2);
+  });
+  it("still stops the previous relay when another account signs in before queued account loss runs", async () => {
+    await saveIdentity({ accountId: "owner" });
+    await service.request({ operation: "remote-enable", brokerUrl });
+    relays[0].report(ready);
+    const headers = await pairBrowser();
+    const internals = service as unknown as { adminQueue: Promise<void> };
+    let release!: () => void;
+    internals.adminQueue = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let pause!: Promise<void>;
+    let login!: Promise<void>;
+    try {
+      account.signedIn.mockReturnValue(false);
+      account.accountId.mockReturnValue(undefined);
+      pause = service.updateOfficialRelayAccount(false);
+      account.signedIn.mockReturnValue(true);
+      account.accountId.mockReturnValue("other");
+      login = service.updateOfficialRelayAccount(true);
+      expect(relays[0].status.phase).toBe("ready");
+      const access = await fetch(`http://127.0.0.1:${port}/api/web/v1/access`, { headers });
+      expect(access.status).toBe(503);
+      expect(await access.json()).toMatchObject({ error: "account_login_unavailable" });
+    } finally {
+      release();
+    }
+    await Promise.all([pause, login, service.checkAccountBindings()]);
+
+    expect(relays[0].stop).toHaveBeenCalledTimes(1);
+    expect(relays).toHaveLength(1);
+    expect(await status()).toMatchObject({
+      config: { relay: { enabled: true } },
+      relay: { phase: "offline", reason: "account-required" },
+      devices: [expect.objectContaining({ accountBound: true })],
+    });
+    account.accountId.mockReturnValue("owner");
+    await service.updateOfficialRelayAccount(true);
+    expect(relays).toHaveLength(2);
+    relays[1].report(ready);
+    const restored = await fetch(`http://127.0.0.1:${port}/api/web/v1/access`, { headers });
+    expect(await restored.json()).toMatchObject({
+      status: "approved",
+      accountLogin: { bound: true },
+    });
+  });
   it("refuses account-owned remote enable without an account bridge", async () => {
     await saveIdentity({ accountId: "owner" });
     await service.shutdown();

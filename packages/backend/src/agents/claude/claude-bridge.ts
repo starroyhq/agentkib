@@ -179,6 +179,10 @@ const contextWindowRegistrySchema = z
   .object({ version: z.literal(1), observations: z.array(contextWindowEntrySchema).max(64) })
   .strict();
 type ContextWindowEntry = z.infer<typeof contextWindowEntrySchema>;
+const terminalExitModelsSchema = z.object({
+  version: z.literal(1),
+  models: z.array(z.tuple([uuid, z.string().min(1).max(128)])).max(64),
+});
 
 function transcriptWindowAnchor(observation?: ClaudeTranscriptObservation) {
   const usage = observation?.usage;
@@ -242,6 +246,7 @@ export type ClaudeTerminalHandoverSource = {
   reports: readonly QueuedReport[];
   reason: string | null;
   revision: number;
+  model?: string;
 };
 export type ClaudeTerminalExitSource = {
   target: ClaudeBridgeTarget;
@@ -419,6 +424,7 @@ export class ClaudeBridge {
   readonly root: string;
   #bindings = new Map<string, Binding>();
   #contextWindows = new Map<string, ContextWindowEntry>();
+  #terminalExitModels = new Map<string, string>();
   #compactStartedAt = new WeakMap<Binding, number>();
   #connections = new Map<string, Connection>();
   #lastConnectionLease = new WeakMap<Binding, string>();
@@ -502,6 +508,15 @@ export class ClaudeBridge {
         if (bindings.has(entry.bindingId)) this.#contextWindows.set(entry.bindingId, entry);
     } catch {
       // Optional display data cannot keep the broker from starting.
+    }
+    try {
+      const file = path.join(this.root, "terminal-exit-models-v1.json");
+      const { models } = terminalExitModelsSchema.parse(readLegacyJson(file));
+      const current = new Set([...this.#bindings.values()].map(({ bindingId }) => bindingId));
+      for (const [bindingId, model] of models)
+        if (current.has(bindingId)) this.#terminalExitModels.set(bindingId, model);
+    } catch {
+      // Model observations are optional for older sessions and brokers.
     }
     this.#readLegacyBindings();
     this.#timer = setInterval(() => {
@@ -646,12 +661,17 @@ export class ClaudeBridge {
           : reports.some((report) => report.offered)
             ? "claude-terminal-report-unconfirmed"
             : null;
+    const model =
+      connection && !connection.gap && this.#online(id)
+        ? connection.snapshot?.model
+        : this.#terminalExitModels.get(row.bindingId);
     return {
       bindingId: row.bindingId,
       target: row.target,
       reports,
       reason,
       revision: this.#revision,
+      ...(model ? { model } : {}),
     };
   }
 
@@ -748,6 +768,15 @@ export class ClaudeBridge {
     privateJson(path.join(this.root, "bindings-v1.json"), {
       version: 1,
       bindings: [...this.#bindings.values()],
+    });
+  }
+  #saveTerminalExitModels(): void {
+    const current = new Set([...this.#bindings.values()].map(({ bindingId }) => bindingId));
+    for (const bindingId of this.#terminalExitModels.keys())
+      if (!current.has(bindingId)) this.#terminalExitModels.delete(bindingId);
+    privateJson(path.join(this.root, "terminal-exit-models-v1.json"), {
+      version: 1,
+      models: [...this.#terminalExitModels],
     });
   }
 
@@ -2076,6 +2105,12 @@ export class ClaudeBridge {
     return this.#connections.get(sessionId)?.leadTools === true;
   }
 
+  /** An established lead can still receive reports until a managed record takes over. */
+  canQueueLeadReport(sessionId: string): boolean {
+    const row = this.#bindings.get(sessionId);
+    return !!row && !row.revoked && this.#sourceReadable(row);
+  }
+
   leadReportsPaused(sessionId: string): boolean {
     return this.#connections.get(sessionId)?.leadReportsPaused === true;
   }
@@ -2758,6 +2793,7 @@ export class ClaudeBridge {
   }
 
   #newConnection(row: Binding, identity: ClaudeBridgeIdentity): Connection {
+    if (this.#terminalExitModels.delete(row.bindingId)) this.#saveTerminalExitModels();
     const connection: Connection = {
       leaseId: randomUUID(),
       instanceId: identity.instanceId,
@@ -2820,6 +2856,15 @@ export class ClaudeBridge {
       connection.snapshot = snapshot;
       connection.terminalSubagentsObserved ||= snapshot.terminalSubagents !== undefined;
       connection.gap = false;
+      if (
+        snapshot.terminalModelAtExit === true &&
+        snapshot.model &&
+        snapshot.status === "disconnected" &&
+        !snapshot.capabilities.read
+      ) {
+        this.#terminalExitModels.set(row.bindingId, snapshot.model);
+        this.#saveTerminalExitModels();
+      }
       this.#rememberContextWindow(row, snapshot);
     } else {
       const snapshot = connection.snapshot;

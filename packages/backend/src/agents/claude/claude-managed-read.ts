@@ -3323,7 +3323,11 @@ export class ClaudeManagedReadOwner {
     }
   }
 
-  #terminalHandoverSettings({ target, bindingId }: ClaudeTerminalHandoverSource): ClaudeSettings {
+  #terminalHandoverSettings({
+    target,
+    bindingId,
+    model: observedModel,
+  }: ClaudeTerminalHandoverSource): ClaudeSettings {
     this.validateNativeBridgeTarget(target, false, bindingId);
     const historyWorkspace = this.sessions.claudeControlWorkspace(
       target.nativeId,
@@ -3339,7 +3343,7 @@ export class ClaudeManagedReadOwner {
       target.nativeId,
       "terminal-usage",
     );
-    const model = readClaudeTranscriptModel(transcript, target.nativeId);
+    const model = observedModel ?? readClaudeTranscriptModel(transcript, target.nativeId);
     if (!model) throw new Error("claude-terminal-handover-model-unconfirmed");
     if (
       permissionMode !== "default" &&
@@ -3417,6 +3421,7 @@ export class ClaudeManagedReadOwner {
       try {
         const source = bridge.terminalHandoverSource(id);
         if (!source) throw new Error("claude-terminal-handover-unavailable");
+        const modelAtAdmission = source.model;
         if (source.reason && !remote) throw new Error(source.reason);
         if (this.managedWorkspace(id)) throw new Error("session-already-managed");
         if (!supportsClaudeManagedRunner() || !(await this.#installationVersion()))
@@ -3505,7 +3510,10 @@ export class ClaudeManagedReadOwner {
         const reportDeviceId = reportOwner(id);
         if (current.reports.length && !validClaudeDeviceId(reportDeviceId))
           throw new Error("claude-terminal-report-owner-unavailable");
-        const settings = this.#terminalHandoverSettings(current);
+        const settings = this.#terminalHandoverSettings({
+          ...current,
+          model: current.model ?? modelAtAdmission,
+        });
         const target = {
           ...current.target,
           fingerprint: this.#targetFingerprint(current.target.nativeId, current.target.workspace),

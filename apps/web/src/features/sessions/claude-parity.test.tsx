@@ -667,6 +667,29 @@ describe("remote terminal handover", () => {
       screen.queryByRole("button", { name: /在 AgentKib 中继续|转到 AgentKib 继续/ }),
     ).not.toBeInTheDocument();
   });
+
+  it("drops a confirmation when the underlying native revision changes", async () => {
+    const { state } = createHost({ follower: true });
+    state.features["handover-terminal"] = available;
+    state.live = {
+      ...state.live,
+      turnId: "terminal-turn",
+      status: "awaiting-approval",
+      reason: "claude-terminal-approval",
+      terminalHandover: { available: false, remoteAvailable: true },
+    };
+    await openSession();
+    fireEvent.click(await screen.findByRole("button", { name: "转到 AgentKib 继续" }));
+    expect(await screen.findByRole("dialog", { name: "转到 AgentKib 继续" })).toBeVisible();
+    state.live = { ...state.live, revision: state.live.revision + 1 };
+    act(() => {
+      for (const source of ClaudeEventSource.instances) source.emit(state.live);
+    });
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog", { name: "转到 AgentKib 继续" })).not.toBeInTheDocument(),
+    );
+    expect(state.mutations).toEqual([]);
+  });
 });
 
 describe("Claude Remote parity", () => {

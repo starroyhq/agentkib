@@ -971,7 +971,7 @@ function permissionTool(state, event) {
   return matches.length === 1 ? matches[0] : null;
 }
 
-function invalidate(state, reason) {
+function invalidate(state, reason, terminalModel) {
   state.generation += 1;
   state.sendDisabled = true;
   // A revoked or ended connection sends nothing more. A prompt already waiting
@@ -997,6 +997,7 @@ function invalidate(state, reason) {
   if (state.connection && state.identity && state.lastSnapshot) {
     const revoked = {
       ...state.lastSnapshot,
+      ...(terminalModel ? { model: terminalModel, terminalModelAtExit: true } : {}),
       revision: state.revision,
       status: "disconnected",
       streamText: "",
@@ -1206,18 +1207,22 @@ async function refreshTerminalSubagents($, state) {
   }
 }
 
+async function nativeModel($) {
+  try {
+    const current = await $.session.model();
+    if (typeof current === "string" && current.length > 0 && current.length <= 128) return current;
+  } catch {
+    // This optional getter is absent in older native contracts.
+  }
+  return null;
+}
+
 async function snapshot($, state) {
   const observed = await identity($, state);
   const rows = await $.session.messages();
   const usage = await $.session.usage();
   const context = state.compacting ? null : usage?.context;
-  let model = null;
-  try {
-    const current = await $.session.model();
-    if (typeof current === "string" && current.length > 0 && current.length <= 128) model = current;
-  } catch {
-    // This optional getter is absent in older native contracts.
-  }
+  const model = await nativeModel($);
   const numeric = (v) => (typeof v === "number" && Number.isFinite(v) ? v : null);
   const offersPicker = state.connection?.features?.includes("open-model-picker") === true;
   const offersHandover = state.connection?.features?.includes(TERMINAL_HANDOVER_FEATURE) === true;
@@ -1520,10 +1525,9 @@ async function handoverExit($, state, command, result) {
     state.handoverExit = null;
     state.dirty = true;
   };
-  let nativeAttempted = false;
+  let exitRequested = false;
   try {
     if (turnId !== null) {
-      nativeAttempted = true;
       await $.turn.abort({ turnId });
       // The native abort acknowledgement alone does not prove the turn ended.
       for (let attempt = 0; attempt < 100 && current() && state.currentTurnId === turnId; attempt++)
@@ -1531,13 +1535,13 @@ async function handoverExit($, state, command, result) {
     }
     await identity($, state);
     if (!current() || state.currentTurnId !== null || state.nativeWorking !== false) {
-      if (nativeAttempted) result.status = "unknown";
+      // The stop can be unconfirmed, but this handover has made no exit request.
       result.reason = "native-stop-unconfirmed";
       return;
     }
     // A slash command is dispatched by the native command API; submitting the
     // same text through prompt.submit is refused by Claude Code.
-    nativeAttempted = true;
+    exitRequested = true;
     const exit = await $.command.run({ command: "exit" });
     if (exit?.isError === true) {
       result.status = "unknown";
@@ -1550,8 +1554,8 @@ async function handoverExit($, state, command, result) {
     // the observed process terminates, then recover if the terminal stayed open.
     $.clock.after(5_000, release);
   } catch {
-    if (nativeAttempted) result.status = "unknown";
-    result.reason = "native-exit-unconfirmed";
+    if (exitRequested) result.status = "unknown";
+    result.reason = exitRequested ? "native-exit-unconfirmed" : "native-stop-unconfirmed";
   } finally {
     if (result.status !== "exit-initiated") release();
   }
@@ -3132,7 +3136,19 @@ export function register(on) {
     return next(e);
   });
   on("session.end", async ($, e, next) => {
-    invalidate(state, "native-session-ended");
+    const generation = state.generation;
+    const connection = state.connection;
+    let model = null;
+    if (
+      e.reason === "prompt_input_exit" &&
+      e.sessionId === state.identity?.nativeId &&
+      connection?.features?.includes(TERMINAL_HANDOVER_FEATURE)
+    ) {
+      state.sendDisabled = true;
+      model = await Promise.race([nativeModel($), $.clock.sleep(100).then(() => null)]);
+    }
+    if (state.generation !== generation || state.connection !== connection) return next(e);
+    invalidate(state, "native-session-ended", model);
     // The original terminal must never wait for an offline AgentKib on exit,
     // clear or resume. The old lease notification is deliberately best-effort.
     void flush($, state);

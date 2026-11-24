@@ -60,6 +60,7 @@ export const bridgeSnapshotSchema = bridgeIdentitySchema.extend({
   toolItems: z.array(bridgeToolSchema).max(256),
   streamText: text,
   model: z.string().min(1).max(128).nullable().optional(),
+  terminalModelAtExit: z.literal(true).optional(),
   modelPickerOpen: z.boolean().optional(),
   compacting: z.boolean().optional(),
   compactStartedAt: z.number().int().min(0).max(8_640_000_000_000_000).optional(),

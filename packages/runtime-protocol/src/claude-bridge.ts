@@ -204,6 +204,8 @@ export interface ClaudeBridgeSnapshot extends ClaudeBridgeIdentity {
   streamText: string;
   /** Optional native getter; omitted by older plugins rather than inferred from defaults. */
   model?: string | null;
+  /** The terminal read the current model from the native session as it was exiting. */
+  terminalModelAtExit?: true;
   /** The terminal's interactive model command is open. */
   modelPickerOpen?: boolean;
   compacting?: boolean;

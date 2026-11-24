@@ -66,6 +66,45 @@ describe.skipIf(process.platform === "win32")("native Claude borrowed-host broke
     expect(() => f.bridge.confirmRemoteTerminalExit(source)).toThrow("native-identity-changed");
   });
 
+  it("preserves the verified exit model and parks reports during the handover gap", async () => {
+    const f = await fixture();
+    const id = f.target.sessionId;
+    await f.events({
+      type: "snapshot",
+      snapshot: { ...f.snapshot, revision: 1, model: "live-model" },
+    });
+    expect(f.bridge.terminalHandoverSource(id)?.model).toBe("live-model");
+    await f.events(
+      {
+        type: "snapshot",
+        snapshot: {
+          ...f.snapshot,
+          revision: 2,
+          status: "disconnected",
+          model: "changed-before-exit",
+          terminalModelAtExit: true,
+          capabilities: { ...f.snapshot.capabilities, read: false },
+        },
+      },
+      { type: "invalidated", revision: 2, reason: "native-session-ended" },
+    );
+    expect(f.bridge.leadCapable(id)).toBe(false);
+    expect(f.bridge.canQueueLeadReport(id)).toBe(true);
+    f.bridge.queueReport(id, "The assigned Worker completed during the transfer.");
+    const source = f.bridge.terminalHandoverSource(id)!;
+    expect(source).toMatchObject({
+      model: "changed-before-exit",
+      reason: null,
+      reports: [{ text: "The assigned Worker completed during the transfer." }],
+    });
+    f.bridge.finishTerminalHandover(source);
+    expect(f.bridge.queuedReports(id)).toBe(0);
+    await f.bridge.close();
+    const restarted = new ClaudeBridge(f.options);
+    cleanups.push(() => restarted.close());
+    expect(restarted.terminalHandoverSource(id)?.model).toBe("changed-before-exit");
+  });
+
   it("projects the current native approval as observation only and clears it with the turn", async () => {
     const f = await fixture();
     const turnId = randomUUID();

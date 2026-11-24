@@ -561,6 +561,9 @@ const webStatus: Record<
     | "permissionUnconfirmed"
     | "sendUnverified"
     | "attachments"
+    | "connectionUnconfirmed"
+    | "cliTooOld"
+    | "pluginOutdated"
   >
 > = {
   "zh-CN": {
@@ -572,6 +575,9 @@ const webStatus: Record<
     permissionUnconfirmed: "当前审批状态尚未核实。",
     sendUnverified: "当前会话仅供查看。",
     attachments: "当前会话无法发送附件。",
+    connectionUnconfirmed: "上次操作结果尚未确认。",
+    cliTooOld: "Claude Code {version} 低于连接所需版本 {minimum}。",
+    pluginOutdated: "终端插件版本低于连接要求。",
   },
   "zh-Hant": {
     approval: "等待工具核准",
@@ -582,6 +588,9 @@ const webStatus: Record<
     permissionUnconfirmed: "目前核准狀態尚未確認。",
     sendUnverified: "目前的對話僅供查看。",
     attachments: "目前的對話無法傳送附件。",
+    connectionUnconfirmed: "上次操作結果尚未確認。",
+    cliTooOld: "Claude Code {version} 低於連線所需版本 {minimum}。",
+    pluginOutdated: "終端外掛版本低於連線要求。",
   },
   "en-US": {
     approval: "Tool approval pending",
@@ -592,6 +601,9 @@ const webStatus: Record<
     permissionUnconfirmed: "The current approval status is unconfirmed.",
     sendUnverified: "This session is read-only.",
     attachments: "Attachments are unavailable in this session.",
+    connectionUnconfirmed: "The last operation's outcome is unconfirmed.",
+    cliTooOld: "Claude Code {version} is below the minimum supported version {minimum}.",
+    pluginOutdated: "The terminal plugin is below the supported version.",
   },
   "ja-JP": {
     approval: "ツールの承認待ち",
@@ -602,6 +614,9 @@ const webStatus: Record<
     permissionUnconfirmed: "現在の承認状況は未確認です。",
     sendUnverified: "この会話は読み取り専用です。",
     attachments: "この会話では添付ファイルを送信できません。",
+    connectionUnconfirmed: "前回の操作結果は未確認です。",
+    cliTooOld: "Claude Code {version} は接続に必要な最小バージョン {minimum} より古いです。",
+    pluginOutdated: "ターミナルのプラグインは接続に必要なバージョンより古いです。",
   },
 };
 const webCopies = new Map<Locale, Copy>();

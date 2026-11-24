@@ -818,7 +818,8 @@ export class TypeScriptBackend {
             devin(sessionId) ||
             antigravity(sessionId),
           (sessionId, deviceId, text) =>
-            terminal(sessionId)
+            !leadOwner.managedWorkspace(sessionId) &&
+            this.#claudeBridge?.canQueueLeadReport(sessionId) === true
               ? this.#claudeBridge!.queueReport(sessionId, text)
               : codex(sessionId) || devin(sessionId) || antigravity(sessionId)
                 ? // Sent or queued through AgentKib's own controls of the session.

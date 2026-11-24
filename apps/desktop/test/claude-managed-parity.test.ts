@@ -393,6 +393,7 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))(
       expect(owner.managedWorkspace(id)).toBeNull();
       expect(f.frames()).toEqual([]);
       f.setExternalOwner(null);
+      f.source.model = "model-selected-at-exit";
       await expect(f.take({ ...request, deviceId: "paired-browser" })).rejects.toThrow(
         "invalid-claude-terminal-handover",
       );
@@ -405,7 +406,7 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))(
       expect(await owner.live(id, true)).toMatchObject({ sourceSessionId: id, sessionId: id });
       const host = new ClaudeHostStateStore(f.root, owner.bootId);
       expect(host.read(id)).toMatchObject({
-        settings: { model: "fixture-model", permissionMode: "plan" },
+        settings: { model: "model-selected-at-exit", permissionMode: "plan" },
         work: [
           {
             id: f.source.reports[0]!.id,
@@ -420,7 +421,7 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))(
         expect.arrayContaining([
           `--resume=${id}`,
           "--model",
-          "fixture-model",
+          "model-selected-at-exit",
           "--permission-mode",
           "plan",
         ]),
@@ -446,13 +447,25 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))(
       await expect(f.take({ ...request, turnId: randomUUID() })).rejects.toThrow(
         "stale-Claude-revision",
       );
+      f.source.model = "model-selected-before-transfer";
+      f.bridge.requestTerminalExit.mockImplementationOnce(
+        async (_source, _requestId, _deviceId, _commandId, dispatched) => {
+          dispatched();
+          f.setExternalOwner(null);
+          f.source.model = undefined;
+          f.source.reason = null;
+          return { controlOutcome: "unknown" };
+        },
+      );
       const accepted = await f.take(request);
       expect(accepted).toMatchObject({ accepted: true, sessionId: id });
       expect(await f.take(request)).toEqual(accepted);
       expect(f.bridge.requestTerminalExit).toHaveBeenCalledOnce();
       expect(f.bridge.confirmRemoteTerminalExit).toHaveBeenCalledOnce();
       expect(Number((await owner.live(id, true)).revision)).toBeGreaterThan(f.source.revision);
-      const work = new ClaudeHostStateStore(f.root, owner.bootId).read(id).work;
+      const state = new ClaudeHostStateStore(f.root, owner.bootId).read(id);
+      expect(state.settings.model).toBe("model-selected-before-transfer");
+      const work = state.work;
       expect(work.map(({ kind, deviceId }) => ({ kind, deviceId }))).toEqual([
         { kind: "queue", deviceId: "paired-browser" },
         { kind: "report", deviceId: "lead-owner" },

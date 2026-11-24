@@ -87,6 +87,7 @@ export function ClaudeTerminalHandover({
     live.runtimeBootId,
     live.connectionGeneration,
     live.turnId,
+    live.revision,
   ]);
   return (
     <>

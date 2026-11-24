@@ -3288,7 +3288,7 @@ describe("Claude Code native session plugin", () => {
       expect(f.api.turn.abort).toHaveBeenCalledExactlyOnceWith({ turnId });
       expect(f.api.command.run).not.toHaveBeenCalled();
       expect(f.results().at(-1)).toMatchObject({
-        status: "unknown",
+        status: "rejected",
         reason: "native-stop-unconfirmed",
       });
       expect(f.snapshots().at(-1).currentTurnId).toBe(newTurn);
@@ -3358,6 +3358,20 @@ describe("Claude Code native session plugin", () => {
       expect(f.stops).toBe(0);
       expect(f.api.command.run).toHaveBeenCalledExactlyOnceWith({ command: "exit" });
       expect(f.results().at(-1)).toMatchObject({ status: "exit-initiated" });
+    });
+
+    it("reports a native model changed after the last snapshot when that session exits", async () => {
+      const f = await fixture({ features: ["terminal-handover"], configure: exitAdapter });
+      const previous = f.snapshots().at(-1);
+      f.api.session.model = vi.fn(async () => "new-terminal-model");
+      await f.run("session.end", { reason: "prompt_input_exit", sessionId: previous.nativeId });
+      await expect
+        .poll(() => f.snapshots().at(-1))
+        .toMatchObject({
+          status: "disconnected",
+          model: "new-terminal-model",
+          terminalModelAtExit: true,
+        });
     });
 
     it("keeps a failed native exit invocation unknown without retrying it", async () => {

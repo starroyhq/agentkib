@@ -56,7 +56,6 @@ export function readStateCopy(locale: string) {
           "更新電腦端以同步已讀狀態",
           "已讀狀態暫不可用",
           "已讀狀態可能已過期",
-          "僅在 AgentKib 中同步已讀狀態",
           "空對話",
           "未讀對話",
         ]
@@ -71,7 +70,6 @@ export function readStateCopy(locale: string) {
             "更新电脑端以同步已读状态",
             "已读状态暂不可用",
             "已读状态可能已过期",
-            "仅在 AgentKib 中同步已读状态",
             "空会话",
             "未读会话",
           ]
@@ -86,7 +84,6 @@ export function readStateCopy(locale: string) {
               "既読状態を同期するにはホストを更新してください",
               "既読状態を取得できません",
               "既読状態が古い可能性があります",
-              "既読状態は AgentKib 内でのみ同期されます",
               "空の会話",
               "未読の会話",
             ]
@@ -100,7 +97,6 @@ export function readStateCopy(locale: string) {
               "Update the host to sync read state",
               "Read state unavailable",
               "Read state may be out of date",
-              "Read state syncs within AgentKib only",
               "Empty session",
               "Unread conversation",
             ];
@@ -114,7 +110,6 @@ export function readStateCopy(locale: string) {
     unsupported,
     unavailable,
     stale,
-    fallback,
     empty,
     manualUnread,
   ] = values;
@@ -128,7 +123,6 @@ export function readStateCopy(locale: string) {
     unsupported,
     unavailable,
     stale,
-    fallback,
     empty,
     manualUnread,
   };
@@ -793,18 +787,14 @@ export function ReadStateNotice({
 }) {
   const copy = readStateCopy(locale),
     state = observation.readState;
-  const label = [
+  const label =
     observation.status === "unsupported"
       ? copy.unsupported
       : observation.status === "unavailable"
         ? copy.unavailable
         : state?.freshness === "stale" || state?.status === "unknown"
           ? copy.stale
-          : null,
-    state?.source === "agentkib" ? copy.fallback : null,
-  ]
-    .filter(Boolean)
-    .join(" · ");
+          : null;
   return label ? (
     <p role="status" className="mx-auto mb-3 w-full max-w-3xl text-xs text-muted-foreground">
       {label}

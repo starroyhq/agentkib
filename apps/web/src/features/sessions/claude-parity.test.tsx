@@ -460,7 +460,7 @@ describe("original Claude terminal over Web", () => {
       reason: "claude-follower-send-unverified",
     };
     await openSession();
-    expect(await screen.findByText("在终端中继续这条会话，这里会同步显示")).toBeVisible();
+    expect(screen.queryByText("在终端中继续这条会话，这里会同步显示")).not.toBeInTheDocument();
     expect(screen.getByText("在终端中运行 · 已连接")).toBeVisible();
     // The limitation is explained once, by the bar, not again in a banner.
     expect(
@@ -484,7 +484,7 @@ describe("original Claude terminal over Web", () => {
     };
     state.features.stop = unavailable;
     await openSession();
-    expect(await screen.findByText("在终端中继续这条会话，这里会同步显示")).toBeVisible();
+    expect(screen.queryByText("在终端中继续这条会话，这里会同步显示")).not.toBeInTheDocument();
     expect(screen.getByRole("textbox", { name: "发送消息" })).toBeEnabled();
     expect(screen.queryByRole("button", { name: "停止当前轮次" })).not.toBeInTheDocument();
     expect(state.mutations).toEqual([]);
@@ -558,30 +558,136 @@ describe("original Claude terminal over Web", () => {
   });
 
   it.each([
-    ["claude-terminal-approval", "awaiting-approval", "正在等待工具审批，请在终端处理。"],
-    ["claude-terminal-question", "waiting-input", "正在等待问题回答，请在终端处理。"],
+    ["claude-terminal-approval", "awaiting-approval", "等待工具审批"],
+    ["claude-terminal-question", "waiting-input", "等待回答"],
     [
       "claude-bridge-event-gap",
       "unsupported",
       "事件同步出现缺口，正在重新读取快照和原生历史；恢复前暂停控制。",
     ],
-    [
-      "claude-follower-turn-unconfirmed",
-      "running",
-      "终端正在执行，当前轮次身份尚未核实；暂不能取消，请在终端处理。",
-    ],
-    [
-      "claude-terminal-permission-unconfirmed",
-      "running",
-      "终端曾请求工具审批，当前授权或执行状态尚未核实，请查看终端。",
-    ],
-  ])("handles %s in the original terminal", async (reason, status, text) => {
+    ["claude-follower-turn-unconfirmed", "running", "当前轮次尚未核实。"],
+    ["claude-terminal-permission-unconfirmed", "running", "当前审批状态尚未核实。"],
+  ])("shows %s without directing the user back to the terminal", async (reason, status, text) => {
     const { state } = createHost({ follower: true });
     state.live = { ...state.live, reason, status, sendEnabled: false };
     await openSession();
     expect(await screen.findByText(text)).toBeVisible();
+    expect(screen.queryByText(/请(?:在|查看)终端/)).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "发送" })).toBeDisabled();
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(state.mutations).toEqual([]);
+  });
+
+  it("displays the native terminal approval and its risk with disabled decisions", async () => {
+    const { state } = createHost({ follower: true });
+    state.live = {
+      ...state.live,
+      runtimeBootId: "runtime",
+      turnId: "terminal-turn",
+      status: "awaiting-approval",
+      reason: "claude-terminal-approval",
+      sendEnabled: false,
+      approvals: [
+        {
+          requestId: "native-tool",
+          turnId: "terminal-turn",
+          method: "claude/can_use_tool",
+          toolName: "Bash",
+          input: { command: "git push origin main" },
+          availableDecisions: ["allow", "deny"],
+          supported: false,
+        },
+      ],
+      pendingInteractions: [
+        {
+          version: 1,
+          kind: "approval",
+          binding: {
+            sessionId: "session",
+            runtimeBootId: "runtime",
+            turnId: "terminal-turn",
+            requestId: "native-tool",
+            revision: state.live.revision,
+          },
+          risk: { level: "high", reason: "git-push" },
+          decisions: [],
+        },
+      ],
+    };
+    await openSession();
+    expect(await screen.findByText("git push origin main")).toBeVisible();
+    expect(screen.getByText("高风险")).toBeVisible();
+    expect(screen.getByRole("button", { name: "允许" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "拒绝" })).toBeDisabled();
+    expect(screen.queryByText(/请在终端处理/)).not.toBeInTheDocument();
+    expect(state.mutations).toEqual([]);
+  });
+});
+
+describe("remote terminal handover", () => {
+  it("confirms the current terminal turn before dispatching one handover", async () => {
+    const { state } = createHost({ follower: true });
+    state.features["handover-terminal"] = available;
+    state.live = {
+      ...state.live,
+      turnId: "terminal-turn",
+      status: "waiting-input",
+      reason: "claude-terminal-question",
+      sendEnabled: false,
+      terminalHandover: { available: false, remoteAvailable: true },
+    };
+    await openSession();
+    const transfer = await screen.findByRole("button", { name: "转到 AgentKib 继续" });
+    fireEvent.click(transfer);
+    expect(state.mutations).toEqual([]);
+    const dialog = within(await screen.findByRole("dialog", { name: "转到 AgentKib 继续" }));
+    expect(dialog.getByText(/结束电脑上的 Claude Code 终端会话/)).toBeVisible();
+    fireEvent.click(dialog.getByRole("button", { name: "转到 AgentKib 继续" }));
+    await waitFor(() => expect(state.mutations).toHaveLength(1));
+    expect(state.mutations[0]).toMatchObject({
+      path: "managed/action",
+      operation: "handover-terminal",
+      handoffConfirmed: true,
+      turnId: "terminal-turn",
+      sessionId: "session",
+    });
+  });
+
+  it("omits both handover buttons for an unverified terminal", async () => {
+    const { state } = createHost({ follower: true });
+    state.live = {
+      ...state.live,
+      status: "waiting-input",
+      reason: "claude-terminal-question",
+      sendEnabled: false,
+      terminalHandover: { available: false, reason: "claude-owner-busy" },
+    };
+    await openSession();
+    expect(
+      screen.queryByRole("button", { name: /在 AgentKib 中继续|转到 AgentKib 继续/ }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("drops a confirmation when the underlying native revision changes", async () => {
+    const { state } = createHost({ follower: true });
+    state.features["handover-terminal"] = available;
+    state.live = {
+      ...state.live,
+      turnId: "terminal-turn",
+      status: "awaiting-approval",
+      reason: "claude-terminal-approval",
+      terminalHandover: { available: false, remoteAvailable: true },
+    };
+    await openSession();
+    fireEvent.click(await screen.findByRole("button", { name: "转到 AgentKib 继续" }));
+    expect(await screen.findByRole("dialog", { name: "转到 AgentKib 继续" })).toBeVisible();
+    state.live = { ...state.live, revision: state.live.revision + 1 };
+    act(() => {
+      for (const source of ClaudeEventSource.instances) source.emit(state.live);
+    });
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog", { name: "转到 AgentKib 继续" })).not.toBeInTheDocument(),
+    );
     expect(state.mutations).toEqual([]);
   });
 });

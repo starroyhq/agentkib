@@ -27,6 +27,133 @@ afterEach(async () => {
 const fixture = createClaudeBridgeFixture(cleanups);
 
 describe.skipIf(process.platform === "win32")("native Claude borrowed-host broker", () => {
+  it("offers terminal exit once only for a matching capable lease and leaves exit proof to the host", async () => {
+    const f = await fixture();
+    const id = f.target.sessionId;
+    expect(f.bridge.remoteTerminalExitSource(id)).toBeUndefined();
+    const turnId = randomUUID();
+    const snapshot = {
+      ...f.snapshot,
+      currentTurnId: turnId,
+      status: "waiting",
+      waiting: "question",
+      revision: 1,
+      capabilities: { ...f.snapshot.capabilities, handover: true },
+    };
+    expect((await f.events({ type: "snapshot", snapshot })).status).toBe(200);
+    const source = f.bridge.remoteTerminalExitSource(id)!;
+    expect(source).toMatchObject({ turnId, revision: f.live().revision });
+    const commandId = randomUUID();
+    const dispatch = vi.fn();
+    const exiting = f.bridge.requestTerminalExit(
+      source,
+      randomUUID(),
+      "browser",
+      commandId,
+      dispatch,
+    );
+    expect((await f.poll()).body.commands).toEqual([
+      { kind: "handover-exit", turnId, commandId, expectedRevision: 1 },
+    ]);
+    expect((await f.poll()).body.commands).toEqual([]);
+    expect(dispatch).toHaveBeenCalledOnce();
+    expect(
+      (await f.post("/v1/results", { commandId, status: "exit-initiated", revision: 1 })).status,
+    ).toBe(200);
+    expect(await exiting).toMatchObject({ controlOutcome: "accepted" });
+    expect(f.bridge.blocksManagedResume(id)).toBe(true);
+    await f.reconnect();
+    expect(() => f.bridge.confirmRemoteTerminalExit(source)).toThrow("native-identity-changed");
+  });
+
+  it("preserves the verified exit model and parks reports during the handover gap", async () => {
+    const f = await fixture();
+    const id = f.target.sessionId;
+    await f.events({
+      type: "snapshot",
+      snapshot: { ...f.snapshot, revision: 1, model: "live-model" },
+    });
+    expect(f.bridge.terminalHandoverSource(id)?.model).toBe("live-model");
+    await f.events(
+      {
+        type: "snapshot",
+        snapshot: {
+          ...f.snapshot,
+          revision: 2,
+          status: "disconnected",
+          model: "changed-before-exit",
+          terminalModelAtExit: true,
+          capabilities: { ...f.snapshot.capabilities, read: false },
+        },
+      },
+      { type: "invalidated", revision: 2, reason: "native-session-ended" },
+    );
+    expect(f.bridge.leadCapable(id)).toBe(false);
+    expect(f.bridge.canQueueLeadReport(id)).toBe(true);
+    f.bridge.queueReport(id, "The assigned Worker completed during the transfer.");
+    const source = f.bridge.terminalHandoverSource(id)!;
+    expect(source).toMatchObject({
+      model: "changed-before-exit",
+      reason: null,
+      reports: [{ text: "The assigned Worker completed during the transfer." }],
+    });
+    f.bridge.finishTerminalHandover(source);
+    expect(f.bridge.queuedReports(id)).toBe(0);
+    await f.bridge.close();
+    const restarted = new ClaudeBridge(f.options);
+    cleanups.push(() => restarted.close());
+    expect(restarted.terminalHandoverSource(id)?.model).toBe("changed-before-exit");
+  });
+
+  it("projects the current native approval as observation only and clears it with the turn", async () => {
+    const f = await fixture();
+    const turnId = randomUUID();
+    const waiting = {
+      ...f.snapshot,
+      revision: 2,
+      currentTurnId: turnId,
+      status: "waiting",
+      waiting: "permission",
+    };
+    expect(f.connection.features).toContain("terminal-approval-observation");
+    await f.events({ type: "snapshot", snapshot: waiting });
+    expect(f.live()).toMatchObject({ status: "awaiting-approval", approvals: [] });
+    const pending = {
+      turnId,
+      toolUseId: "native-tool-1",
+      toolName: "Bash",
+      input: { command: "pwd", description: "Show the working directory", password: "synthetic" },
+    };
+    await f.events({
+      type: "snapshot",
+      snapshot: {
+        ...waiting,
+        revision: 3,
+        pendingApprovalDetails: { ...pending, turnId: randomUUID() },
+      },
+    });
+    expect(f.live().approvals).toEqual([]);
+    await f.events({
+      type: "snapshot",
+      snapshot: { ...waiting, revision: 4, pendingApprovalDetails: pending },
+    });
+    expect(f.live()).toMatchObject({
+      status: "awaiting-approval",
+      approvals: [
+        {
+          requestId: pending.toolUseId,
+          turnId,
+          supported: false,
+          method: "claude/can_use_tool",
+          input: { command: "pwd", password: "[REDACTED]" },
+          availableDecisions: ["allow", "deny"],
+        },
+      ],
+    });
+    await f.events({ type: "turn-complete", turnId, revision: 5, text: "", aborted: true });
+    expect(f.live()).toMatchObject({ status: "idle", approvals: [] });
+  });
+
   it("runs a terminal Worker through the native send, queue, steer and stop gates", async () => {
     const f = await fixture(5_000);
     const leadId = "fixture-project-agent";
@@ -2452,7 +2579,9 @@ describe.skipIf(process.platform === "win32")(
         "open-model-picker",
         "terminal-subagents",
         "terminal-worker-activity",
+        "terminal-approval-observation",
         "terminal-attachments",
+        "terminal-handover",
         "lead-rate-limit-pause",
       ]);
       expect(f.bridge.leadCapable(f.target.sessionId)).toBe(false);
@@ -2589,7 +2718,9 @@ describe.skipIf(process.platform === "win32")(
         "open-model-picker",
         "terminal-subagents",
         "terminal-worker-activity",
+        "terminal-approval-observation",
         "terminal-attachments",
+        "terminal-handover",
       ]);
       expect((await leadPoll(plain)).body).toEqual({ commands: [] });
       expect(plain.bridge.leadCapable(plain.target.sessionId)).toBe(false);

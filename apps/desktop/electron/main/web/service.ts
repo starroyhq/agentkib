@@ -1623,6 +1623,53 @@ export class WebAccessService {
     return this.relay.pushSend(input);
   }
 
+  /** Native preview data follows the receiving phone's read scope. */
+  async terminalInteractionPushSummary(
+    target: PushTarget,
+    sessionId: string,
+    kind: "approval" | "question",
+  ): Promise<string | undefined> {
+    const credential = this.credentials.find(
+      (entry) =>
+        entry.account?.sessionId === target.session &&
+        entry.push?.updatedAt === target.updatedAt &&
+        entry.push.publicKey === target.publicKey &&
+        entry.push.alerts &&
+        this.pushReady(entry),
+    );
+    if (!credential) return;
+    const device = this.grant(credential.hash);
+    const scope = this.readerScope();
+    const session = await this.sessionScope(sessionId, credential.hash, true, false);
+    if (session.agent !== "claude-code") return;
+    const live = await this.runtime({ operation: "live", sessionId }, undefined, true);
+    if (
+      this.grant(credential.hash) !== device ||
+      this.readerScope() !== scope ||
+      credential.push?.updatedAt !== target.updatedAt ||
+      this.controlGuard(sessionId) ||
+      snapshotField(live, "sessionId") !== sessionId ||
+      snapshotField(live, "workspaceId") !== session.workspace_id ||
+      snapshotField(live, "executionMode") !== "claude-follower"
+    )
+      return;
+    if (kind === "question" && snapshotField(live, "status") === "waiting-input") {
+      const summary = snapshotField(live, "terminalQuestionSummary");
+      return typeof summary === "string" ? summary : undefined;
+    }
+    if (kind !== "approval" || snapshotField(live, "status") !== "awaiting-approval") return;
+    const approvals = snapshotField(live, "approvals");
+    if (!Array.isArray(approvals) || approvals.length !== 1) return;
+    const [approval] = approvals;
+    const description = snapshotField(snapshotField(approval, "input"), "description");
+    const tool = snapshotField(approval, "toolName");
+    return typeof description === "string" && description.trim()
+      ? description
+      : typeof tool === "string"
+        ? tool
+        : undefined;
+  }
+
   /** A phone subscribed to notifications, changed what it gets, or stopped them. */
   onPushChanged(listener: () => void): () => void {
     this.pushEvents.on("changed", listener);
@@ -3963,6 +4010,8 @@ export class WebAccessService {
       "settings-state": "advancedControl",
       settings: "settings",
       "open-model-picker": "settings",
+      "adopt-terminal": "advancedControl",
+      "handover-terminal": "advancedControl",
       context: "advancedControl",
       resources: "advancedControl",
       goal: "advancedControl",
@@ -4031,6 +4080,8 @@ export class WebAccessService {
             transport &&
             execution &&
             (operation !== "open-model-picker" || data.executionMode === "claude-follower") &&
+            (operation !== "adopt-terminal" || device.id === "desktop-local") &&
+            (operation !== "handover-terminal" || device.send === true) &&
             (!["attachments", "queue-steer"].includes(operation) || device.send === true) &&
             (operation !== "goal-draft" ||
               (data.executionMode === "claude-managed" && device.send === true));
@@ -4105,7 +4156,16 @@ export class WebAccessService {
       "queue-delete",
       "queue-reorder",
       "queue-start",
-      ...(generic ? ["queue-pause", "queue-resume", "queue-steer", "open-model-picker"] : []),
+      ...(generic
+        ? [
+            "queue-pause",
+            "queue-resume",
+            "queue-steer",
+            "open-model-picker",
+            "adopt-terminal",
+            "handover-terminal",
+          ]
+        : []),
       "usage-limit-cancel",
       "usage-limit-continue",
       "rename",
@@ -4137,6 +4197,28 @@ export class WebAccessService {
     const lanQueueDelete = this.options.mode === "lan" && !generic && operation === "queue-delete";
     if (this.options.mode === "lan" && !lanQueueDelete)
       throw new HttpError(403, "capability_unavailable");
+    if (operation === "adopt-terminal" && hash !== "desktop-local")
+      throw new HttpError(403, "owner_required");
+    if (operation === "handover-terminal") {
+      if (
+        body.handoffConfirmed !== true ||
+        Object.keys(body).some(
+          (key) =>
+            ![
+              "operation",
+              "agent",
+              "sessionId",
+              "requestId",
+              "expectedRevision",
+              "bootId",
+              "turnId",
+              "handoffConfirmed",
+            ].includes(key),
+        )
+      )
+        throw new HttpError(400, "invalid_input");
+      this.grant(hash, "send");
+    }
     const permission = lanQueueDelete ? "send" : this.codexPermission(operation);
     const device = this.grant(hash, permission);
     if (operation.startsWith("goal-")) this.fullAccess(hash);
@@ -4497,6 +4579,10 @@ export class WebAccessService {
       ...(policy.publicReceipt ? { publicInputHash } : {}),
       ...(ownerWaitOnly ? { ownerWaitOnly: true } : {}),
     };
+    if (operation === "handover-terminal") {
+      params.confirmed = true;
+      if (body.turnId !== undefined) params.turnId = this.field(body.turnId);
+    }
     // Every operation has an explicit public-field projection. Paths and raw RPC input never pass through.
     if (["steer", "queue-add", "queue-update"].includes(operation)) {
       const rawText = body.text === undefined ? "" : body.text;
@@ -5946,10 +6032,11 @@ export class WebAccessService {
     }
     const enabled = await this.controlsEnabledForSnapshot(sessionId, snapshot, device, reserved);
     const guarded = !!sessionId && !!this.controlGuard(sessionId);
-    // Paired clients can display the host's risk assessment next to the native choices.
+    // Terminal approval cards also use the host's risk assessment on the local desktop.
     const pendingInteractions =
       device &&
-      device.id !== "desktop-local" &&
+      (device.id !== "desktop-local" ||
+        snapshotField(snapshot, "executionMode") === "claude-follower") &&
       !guarded &&
       (hasPendingRows(snapshot, "approvals") || hasPendingRows(snapshot, "questions"))
         ? await this.pendingInteractionDescriptions(sessionId, snapshot, device, enabled, reserved)
@@ -5964,8 +6051,20 @@ export class WebAccessService {
         questions?: { supported?: boolean }[];
         [key: string]: unknown;
       };
+      const handover = state.terminalHandover;
       snapshot = {
         ...state,
+        ...(handover && device.id !== "desktop-local"
+          ? {
+              terminalHandover:
+                enabled &&
+                device.send &&
+                device.advancedControl &&
+                snapshotField(handover, "remoteAvailable") === true
+                  ? { available: false, remoteAvailable: true }
+                  : null,
+            }
+          : {}),
         ...(this.options.mode === "lan" && isCodexMode(state.executionMode) && !device.send
           ? { sendEnabled: false, stopEnabled: false }
           : {}),
@@ -5999,7 +6098,7 @@ export class WebAccessService {
             ? state.approvals.map((approval) => ({
                 ...approval,
                 supported: false,
-                availableDecisions: [],
+                ...(state.executionMode === "claude-follower" ? {} : { availableDecisions: [] }),
               }))
             : [],
         };
@@ -6013,6 +6112,7 @@ export class WebAccessService {
       revision: null,
       turnId: null,
       sendEnabled: false,
+      terminalHandover: null,
       approvals: [],
       questions: [],
       ...(pendingInteractions !== undefined ? { pendingInteractions: [] } : {}),
@@ -8302,7 +8402,9 @@ export class WebAccessService {
                 device.approve &&
                 (!approval.requiresExtendedApproval || device.extendedApproval === true),
               decisionOptions: device.extendedApproval ? approval.decisionOptions : undefined,
-              ...(!enabled ? { availableDecisions: [] } : {}),
+              ...(!enabled && controlContext.executionMode !== "claude-follower"
+                ? { availableDecisions: [] }
+                : {}),
             };
           });
         if (!device.send || !enabled) {

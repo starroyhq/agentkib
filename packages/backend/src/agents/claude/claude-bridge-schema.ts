@@ -5,6 +5,7 @@ import {
   missingClaudeBridgeCapabilities,
 } from "@agentkib/runtime-protocol";
 import { safeTerminalSubagentTitle } from "../../../../claude-bridge-plugin/hooks/terminal-subagents.js";
+import { sanitizeHandoffExport, sanitizeSessionText } from "../../session-handoff";
 
 // What the terminal plugin sends. A plugin of another AgentKib release connects too, so a field
 // this Runtime does not know is dropped rather than failing the message; values it reads stay exact.
@@ -59,6 +60,7 @@ export const bridgeSnapshotSchema = bridgeIdentitySchema.extend({
   toolItems: z.array(bridgeToolSchema).max(256),
   streamText: text,
   model: z.string().min(1).max(128).nullable().optional(),
+  terminalModelAtExit: z.literal(true).optional(),
   modelPickerOpen: z.boolean().optional(),
   compacting: z.boolean().optional(),
   compactStartedAt: z.number().int().min(0).max(8_640_000_000_000_000).optional(),
@@ -83,6 +85,37 @@ export const bridgeSnapshotSchema = bridgeIdentitySchema.extend({
         .max(64),
     })
     .optional(),
+  pendingApprovalDetails: z
+    .object({
+      toolUseId: z.string().min(1).max(256),
+      turnId: id,
+      toolName: z.string().min(1).max(256),
+      input: z.record(z.string(), z.unknown()),
+    })
+    .refine(({ input }) => Buffer.byteLength(JSON.stringify(input)) <= 16 * 1024)
+    .optional()
+    .catch(undefined)
+    .transform((details) => {
+      if (!details) return;
+      try {
+        const input = JSON.parse(
+          sanitizeHandoffExport(JSON.stringify(details.input), "json"),
+        ) as Record<string, unknown>;
+        return {
+          ...details,
+          toolName: sanitizeSessionText(details.toolName, { value: 0 }),
+          input,
+        };
+      } catch {
+        // A malformed optional preview must not interrupt the native permission prompt.
+      }
+    }),
+  pendingQuestionSummary: z
+    .string()
+    .max(256)
+    .optional()
+    .catch(undefined)
+    .transform((value) => value && sanitizeSessionText(value, { value: 0 })),
   usage: z
     .object({
       tokens: revision.nullable(),
@@ -100,6 +133,7 @@ export const bridgeSnapshotSchema = bridgeIdentitySchema.extend({
     stop: z.boolean(),
     modelPicker: z.boolean().optional(),
     attachments: z.literal(true).optional(),
+    handover: z.literal(true).optional(),
     approve: z.literal(false),
     answer: z.literal(false),
   }),
@@ -152,7 +186,7 @@ export const bridgeLeadCallSchema = bridgeLeaseSchema.extend({
 });
 export const bridgeResultSchema = bridgeLeaseSchema.extend({
   commandId: id,
-  status: z.enum(["accepted", "rejected", "unknown"]),
+  status: z.enum(["accepted", "rejected", "unknown", "exit-initiated"]),
   reason: z.string().max(256).optional(),
   revision,
   turnId: id.optional(),

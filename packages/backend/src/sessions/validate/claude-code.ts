@@ -6,6 +6,15 @@ export const validateClaudeControl: ProviderControlValidator = (request, context
   const { operation, legacyCodex, settings } = request;
   if (legacyCodex) return { available: false };
 
+  if (operation === "adopt-terminal")
+    return { available: context.executionMode === "claude-managed", publicReceipt: true };
+  if (operation === "handover-terminal")
+    return {
+      available: context.executionMode === "claude-follower",
+      publicReceipt: true,
+      requiresSend: true,
+    };
+
   if (context.executionMode === "claude-follower") {
     // A connected terminal accepts inbox operations and can open its own model selector.
     if (operation === "open-model-picker")

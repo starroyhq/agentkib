@@ -31,6 +31,7 @@ import { readControlReceipt } from "../../../packages/backend/src/control-receip
 import type { BackendStore } from "../../../packages/backend/src/store";
 import type { SessionReaders } from "../../../packages/backend/src/session-readers";
 import type { Commands } from "../../../packages/backend/src/commands";
+import type { ClaudeTerminalHandoverSource } from "../../../packages/backend/src/agents/claude/claude-bridge";
 
 const cleanups: Array<() => void | Promise<void>> = [];
 afterEach(async () => {
@@ -208,7 +209,7 @@ require('node:readline').createInterface({input:process.stdin}).on('line', line 
     setExternalOwner: (id: string | null) => {
       externalOwner = id;
     },
-    indexNative: () => {
+    indexNative: (settings?: { model: string; permissionMode: string }) => {
       const id = randomUUID();
       indexed.set(id, { agent: "claude-code", workspace_id: "workspace", sidechain: false });
       const user = randomUUID();
@@ -230,10 +231,14 @@ require('node:readline').createInterface({input:process.stdin}).on('line', line 
             cwd: workspace,
             message: {
               role: "assistant",
+              ...(settings ? { model: settings.model } : {}),
               stop_reason: "end_turn",
               content: [{ type: "text", text: "Existing native reply" }],
             },
           },
+          ...(settings
+            ? [{ type: "permission-mode", sessionId: id, permissionMode: settings.permissionMode }]
+            : []),
         ]
           .map((row) => JSON.stringify(row))
           .join("\n") + "\n",
@@ -311,6 +316,174 @@ async function dispatch(owner: ClaudeManagedReadOwner, permit: Record<string, an
 describe.skipIf(!["darwin", "linux"].includes(process.platform))(
   "Claude remote owner parity (synthetic offline CLI)",
   () => {
+    function handoverFixture(mode = "inherited-plan") {
+      const f = fixture("2.1.331", 0, mode);
+      const id = f.indexNative({ model: "fixture-model", permissionMode: "plan" });
+      const source: ClaudeTerminalHandoverSource = {
+        target: {
+          sessionId: id,
+          nativeId: id,
+          workspaceId: "workspace",
+          workspace: f.workspace,
+          registeredWorkspace: f.workspace,
+        },
+        bindingId: randomUUID(),
+        reason: null,
+        revision: 23,
+        reports: [{ id: randomUUID(), text: "Result from the same assigned Worker" }],
+      };
+      const terminal = { ...source, leaseId: randomUUID(), revision: 17, turnId: randomUUID() };
+      const bridge = {
+        terminalHandoverSource: vi.fn(() => source),
+        remoteTerminalExitSource: vi.fn(() => terminal),
+        requestTerminalExit: vi.fn(
+          async (_source, _requestId, _deviceId, _commandId, dispatched: () => void) => {
+            dispatched();
+            f.setExternalOwner(null);
+            source.reason = null;
+            return { controlOutcome: "unknown" };
+          },
+        ),
+        confirmRemoteTerminalExit: vi.fn(),
+        finishTerminalHandover: vi.fn(),
+      };
+      const take = (body: Record<string, unknown>) =>
+        f.owner.adoptTerminal(
+          {
+            sessionId: id,
+            runtimeBootId: f.owner.bootId,
+            experimentalEnabled: true,
+            ...body,
+          },
+          bridge,
+          () => "lead-owner",
+        );
+      const registerForeground = () => {
+        const directory = path.join(path.dirname(f.transcript(id)), "sessions");
+        mkdirSync(directory);
+        writeFileSync(
+          path.join(directory, `${process.pid}.json`),
+          JSON.stringify({
+            pid: process.pid,
+            sessionId: id,
+            kind: "interactive",
+            pidDomain: process.platform,
+            procStart: "Mon Oct 19 00:00:00 2026",
+          }),
+        );
+        f.setExternalOwner(id);
+        source.reason = "claude-owner-busy";
+      };
+      return { ...f, id, source, terminal, bridge, take, registerForeground };
+    }
+
+    it("adopts only after terminal ownership ends and keeps the same native ID, settings and reports", async () => {
+      const f = handoverFixture();
+      const { id, owner } = f;
+      const before = await owner.live(id, true);
+      const request = {
+        operation: "adopt-terminal",
+        deviceId: "desktop-local",
+        requestId: randomUUID(),
+        expectedRevision: before.revision,
+      };
+      f.setExternalOwner(id);
+      // The bridge already disconnected, but its native process is still alive.
+      await expect(f.take(request)).rejects.toThrow("claude-owner-busy");
+      expect(owner.managedWorkspace(id)).toBeNull();
+      expect(f.frames()).toEqual([]);
+      f.setExternalOwner(null);
+      f.source.model = "model-selected-at-exit";
+      await expect(f.take({ ...request, deviceId: "paired-browser" })).rejects.toThrow(
+        "invalid-claude-terminal-handover",
+      );
+      const accepted = await f.take(request);
+      expect(accepted).toMatchObject({ accepted: true, sessionId: id, controlOutcome: "accepted" });
+      expect(await f.take(request)).toEqual(accepted);
+      expect(f.bridge.finishTerminalHandover).toHaveBeenCalledOnce();
+      expect(f.frames()).toEqual([]);
+      expect(owner.managedWorkspace(id)).toBe("workspace");
+      expect(await owner.live(id, true)).toMatchObject({ sourceSessionId: id, sessionId: id });
+      const host = new ClaudeHostStateStore(f.root, owner.bootId);
+      expect(host.read(id)).toMatchObject({
+        settings: { model: "model-selected-at-exit", permissionMode: "plan" },
+        work: [
+          {
+            id: f.source.reports[0]!.id,
+            kind: "report",
+            deviceId: "lead-owner",
+            input: f.source.reports[0]!.text,
+          },
+        ],
+      });
+      await control(owner, id, "send", { text: "Continue manually" });
+      expect(f.frames().find((frame) => frame.args)?.args).toEqual(
+        expect.arrayContaining([
+          `--resume=${id}`,
+          "--model",
+          "model-selected-at-exit",
+          "--permission-mode",
+          "plan",
+        ]),
+      );
+    });
+
+    it("requires explicit remote confirmation and verified process exit, then schedules one continuation", async () => {
+      const f = handoverFixture();
+      const { id, owner, terminal } = f;
+      const request = {
+        operation: "handover-terminal",
+        deviceId: "paired-browser",
+        requestId: randomUUID(),
+        expectedRevision: terminal.revision,
+        turnId: terminal.turnId,
+        confirmed: true,
+      };
+      await expect(f.take({ ...request, confirmed: false })).rejects.toThrow(
+        "invalid-claude-terminal-handover",
+      );
+      await expect(f.take(request)).rejects.toThrow("claude-terminal-foreground-unconfirmed");
+      f.registerForeground();
+      await expect(f.take({ ...request, turnId: randomUUID() })).rejects.toThrow(
+        "stale-Claude-revision",
+      );
+      f.source.model = "model-selected-before-transfer";
+      f.bridge.requestTerminalExit.mockImplementationOnce(
+        async (_source, _requestId, _deviceId, _commandId, dispatched) => {
+          dispatched();
+          f.setExternalOwner(null);
+          f.source.model = undefined;
+          f.source.reason = null;
+          return { controlOutcome: "unknown" };
+        },
+      );
+      const accepted = await f.take(request);
+      expect(accepted).toMatchObject({ accepted: true, sessionId: id });
+      expect(await f.take(request)).toEqual(accepted);
+      expect(f.bridge.requestTerminalExit).toHaveBeenCalledOnce();
+      expect(f.bridge.confirmRemoteTerminalExit).toHaveBeenCalledOnce();
+      expect(Number((await owner.live(id, true)).revision)).toBeGreaterThan(f.source.revision);
+      const state = new ClaudeHostStateStore(f.root, owner.bootId).read(id);
+      expect(state.settings.model).toBe("model-selected-before-transfer");
+      const work = state.work;
+      expect(work.map(({ kind, deviceId }) => ({ kind, deviceId }))).toEqual([
+        { kind: "queue", deviceId: "paired-browser" },
+        { kind: "report", deviceId: "lead-owner" },
+      ]);
+      expect(work[0]?.input).toMatch(/ask for it again without assuming any decision/);
+      const permit = await prepare(owner, id);
+      expect(permit.requestId).toBe(work[0]?.requestId);
+      expect(await dispatch(owner, permit)).toMatchObject({ accepted: true });
+      expect(f.frames().filter((frame) => frame.type === "user")).toHaveLength(1);
+      expect(f.frames().find((frame) => frame.type === "user")?.session_id).toBe(id);
+      await expect
+        .poll(async () => (await next(owner, id)).next)
+        .toMatchObject({
+          kind: "report",
+          deviceId: "lead-owner",
+        });
+    });
+
     it("uses verified terminal capacity on the first imported live read without starting a worker", async () => {
       const f = fixture();
       const id = f.indexNative();
@@ -1373,6 +1546,52 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))(
       });
     });
 
+    it("does not adopt or schedule a continuation after the terminal refuses remote exit", async () => {
+      const f = handoverFixture();
+      f.registerForeground();
+      f.bridge.requestTerminalExit.mockImplementationOnce(
+        async (_source, _requestId, _deviceId, _commandId, dispatched) => {
+          dispatched();
+          return { controlOutcome: "not-dispatched" };
+        },
+      );
+      const request = {
+        operation: "handover-terminal",
+        deviceId: "paired-browser",
+        requestId: randomUUID(),
+        expectedRevision: f.terminal.revision,
+        turnId: f.terminal.turnId,
+        confirmed: true,
+      };
+      const result = await f.take(request);
+      expect(result).toMatchObject({ accepted: false, controlOutcome: "not-dispatched" });
+      expect(await f.take(request)).toEqual(result);
+      expect(f.bridge.requestTerminalExit).toHaveBeenCalledOnce();
+      expect(f.bridge.confirmRemoteTerminalExit).not.toHaveBeenCalled();
+      expect(f.owner.managedWorkspace(f.id)).toBeNull();
+      expect(f.frames()).toEqual([]);
+    });
+
+    it("does not dispatch the first adopted turn if Claude reports a different permission mode", async () => {
+      const f = handoverFixture("startup-permission-mismatch");
+      const live = await f.owner.live(f.id, true);
+      await expect(
+        f.take({
+          operation: "adopt-terminal",
+          deviceId: "desktop-local",
+          requestId: randomUUID(),
+          expectedRevision: live.revision,
+        }),
+      ).resolves.toMatchObject({ accepted: true });
+      const sent = await control(f.owner, f.id, "send", { text: "Preserve plan permission" });
+      expect(sent).toMatchObject({
+        accepted: false,
+        controlOutcome: "not-dispatched",
+        error: "claude-terminal-handover-permission-unconfirmed",
+      });
+      expect(f.frames().filter((frame) => frame.type === "user")).toEqual([]);
+    });
+
     it("applies effort to a resolved inherited model without selecting model or permissions", async () => {
       const f = fixture("2.1.286", 0, "model-alias");
       const created = await create(f.owner);
@@ -1572,10 +1791,12 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))(
         expect.arrayContaining(["--permission-mode", "plan"]),
       );
       expect(f.frames().filter((frame) => frame.type === "user")).toEqual([]);
-      expect(readControlReceipt(f.root, { requestId, deviceId: "browser-device-a" })).toMatchObject({
-        status: "not-dispatched",
-        ack: sent,
-      });
+      expect(readControlReceipt(f.root, { requestId, deviceId: "browser-device-a" })).toMatchObject(
+        {
+          status: "not-dispatched",
+          ack: sent,
+        },
+      );
     });
 
     it("prepares queued input without a user frame and dispatches exactly once with original receipt settlement", async () => {

@@ -30,6 +30,7 @@ export type ClaudeOwnerObservation = {
 };
 /** Lets one maintenance tick evaluate all of its workers against a single observation. */
 export type ClaudeOwnerObservationShare = { current?: Promise<ClaudeOwnerObservation> };
+export type ClaudeForegroundProcess = { pid: number; start: string };
 
 export type ClaudeRegistryTurn = {
   nativeId: string;
@@ -142,6 +143,37 @@ export class ClaudeSessionOwnerProbe {
   ): Promise<ClaudeSessionOwnership> {
     const observation = share ? (share.current ??= this.observe()) : this.observe();
     return this.#evaluate(await observation, nativeId, ownedPid);
+  }
+
+  /** Positive native foreground identity, stricter than the owner-busy check. */
+  async foregroundProcess(
+    nativeId: string,
+    share?: ClaudeOwnerObservationShare,
+  ): Promise<ClaudeForegroundProcess | undefined> {
+    const report = await (share ? (share.current ??= this.observe()) : this.observe());
+    const owner = this.#evaluate(report, nativeId, null);
+    if (owner.kind !== "interactive") return;
+    const processRow = report.processes?.get(owner.pid);
+    if (!processRow) return;
+    const foreground = report.registry.entries.some(
+      ({ pid, value }) =>
+        pid === owner.pid &&
+        object(value) &&
+        value.pid === pid &&
+        value.pidDomain === process.platform &&
+        value.sessionId === nativeId &&
+        value.kind === "interactive" &&
+        typeof value.procStart === "string" &&
+        normalizedStart(value.procStart) === processRow.start,
+    );
+    if (!foreground || this.#evaluate(report, nativeId, owner.pid).kind !== "idle") return;
+    return { pid: owner.pid, start: processRow.start };
+  }
+
+  /** PID reuse ends the old ownership, but a new owner still needs a fresh session check. */
+  async foregroundProcessExited(owner: ClaudeForegroundProcess): Promise<boolean> {
+    const processes = await this.#processes();
+    return processes.get(owner.pid)?.start !== owner.start;
   }
 
   async observe(): Promise<ClaudeOwnerObservation> {

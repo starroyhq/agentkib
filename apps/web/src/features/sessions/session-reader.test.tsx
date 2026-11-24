@@ -147,7 +147,7 @@ describe("conversation reading position", () => {
         const failure = { reason, cliVersion: "2.1.300" };
         state.live = { ...state.live!, reason, bridgeConnectionFailure: failure };
         view.rerender(<SessionReader />);
-        const text = claudeConnectionReason(locale, reason, "desktop", failure)!;
+        const text = claudeConnectionReason(locale, reason, "web", failure)!;
         expect(screen.getAllByText(text)[0]).toBeVisible();
         expect(screen.queryByRole("textbox")).toBeNull();
         expect(screen.queryByRole("button", { name: state.t.send })).toBeNull();

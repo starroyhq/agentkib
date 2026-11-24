@@ -454,6 +454,8 @@ async function startApplication(): Promise<void> {
     targets: () => remoteAccess.pushTargets(),
     deviceId: () => remoteAccess.pushDeviceId(),
     send: (input) => remoteAccess.pushSend(input),
+    terminalSummary: (target, sessionId, kind) =>
+      remoteAccess.terminalInteractionPushSummary(target, sessionId, kind),
     computerName,
     // Input in the last two minutes on an unlocked screen: the person sees this computer.
     present: () => powerMonitor.getSystemIdleState(120) === "active",

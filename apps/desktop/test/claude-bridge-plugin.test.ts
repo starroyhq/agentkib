@@ -3210,6 +3210,185 @@ describe("Claude Code native session plugin", () => {
     expect(f.results().at(-1)).toMatchObject({ status: "accepted", turnId });
   });
 
+  describe("native terminal exit for handover", () => {
+    function exitAdapter(api: Value) {
+      api.command.list = vi.fn(async () => [{ name: "exit", source: "builtin" }]);
+      api.command.run = vi.fn(async () => ({ text: "Exiting" }));
+      api.session.surfaces = vi.fn(async () => ["terminal"]);
+      api.clock.after = vi.fn();
+    }
+
+    it("uses the native command only after the matching turn has stopped, with one invocation on replay", async () => {
+      const waiting = deferred<void>();
+      const stopped = deferred<void>();
+      const f = await fixture({
+        features: ["terminal-handover"],
+        configure: exitAdapter,
+        sleep(ms) {
+          if (ms !== 50) return Promise.resolve();
+          waiting.resolve();
+          return stopped.promise;
+        },
+      });
+      const turnId = randomUUID();
+      await f.run("turn.start", { text: "terminal input", turnId });
+      await f.run("ui.render", { component: "AbovePrompt", props: { isWorking: true } });
+      await f.flush();
+      const snapshot = f.snapshots().at(-1);
+      expect(snapshot.capabilities.handover).toBe(true);
+      const command = {
+        commandId: randomUUID(),
+        kind: "handover-exit",
+        turnId,
+        expectedRevision: snapshot.revision,
+      };
+      const receipt = f.deliver(command);
+      await waiting.promise;
+      expect(f.stops).toBe(1);
+      expect(f.api.command.run).not.toHaveBeenCalled();
+      await f.flush();
+      expect(f.snapshots().at(-1).capabilities).toMatchObject({
+        queue: false,
+        send: false,
+        stop: false,
+      });
+      await f.run("turn.complete", { turnId, isAborted: true });
+      stopped.resolve();
+      await receipt;
+      expect(f.api.command.run).toHaveBeenCalledExactlyOnceWith({ command: "exit" });
+      expect(f.dispatches).toBe(0);
+      const result = f.results().at(-1);
+      expect(result).toMatchObject({ commandId: command.commandId, status: "exit-initiated" });
+      await f.deliver(command);
+      expect(f.results().at(-1)).toEqual(result);
+      expect(f.stops).toBe(1);
+      expect(f.api.command.run).toHaveBeenCalledOnce();
+    });
+
+    it("leaves a new native turn running when it competes with exit", async () => {
+      const abortStarted = deferred<void>();
+      const resume = deferred<void>();
+      const f = await fixture({ features: ["terminal-handover"], configure: exitAdapter });
+      f.api.turn.abort = vi.fn(() => {
+        abortStarted.resolve();
+        return resume.promise;
+      });
+      const turnId = randomUUID();
+      await f.run("turn.start", { text: "old turn", turnId });
+      const receipt = f.deliver({
+        commandId: randomUUID(),
+        kind: "handover-exit",
+        turnId,
+        expectedRevision: 1,
+      });
+      await abortStarted.promise;
+      const newTurn = randomUUID();
+      await f.run("turn.start", { text: "new turn", turnId: newTurn });
+      resume.resolve();
+      await receipt;
+      expect(f.api.turn.abort).toHaveBeenCalledExactlyOnceWith({ turnId });
+      expect(f.api.command.run).not.toHaveBeenCalled();
+      expect(f.results().at(-1)).toMatchObject({
+        status: "rejected",
+        reason: "native-stop-unconfirmed",
+      });
+      expect(f.snapshots().at(-1).currentTurnId).toBe(newTurn);
+    });
+
+    it("requires a matched turn and protects unsent queued submissions", async () => {
+      const f = await fixture({ features: ["terminal-handover"], configure: exitAdapter });
+      const turnId = randomUUID();
+      await f.run("turn.start", { text: "terminal input", turnId });
+      const exit = (id: string) =>
+        f.deliver({
+          commandId: randomUUID(),
+          kind: "handover-exit",
+          turnId: id,
+          expectedRevision: 1,
+        });
+      await exit(randomUUID());
+      expect(f.results().at(-1)).toMatchObject({ status: "rejected", reason: "turn-conflict" });
+      await f.deliver({
+        commandId: randomUUID(),
+        kind: "queue",
+        requestId: randomUUID(),
+        text: "Keep this draft",
+      });
+      await exit(turnId);
+      expect(f.results().at(-1)).toMatchObject({
+        status: "rejected",
+        reason: "session-state-unverified",
+      });
+      expect(f.snapshots().at(-1)).toMatchObject({
+        outbox: [expect.objectContaining({ text: "Keep this draft" })],
+      });
+      expect(f.snapshots().at(-1).capabilities).not.toHaveProperty("handover");
+      expect(f.stops).toBe(0);
+      expect(f.api.command.run).not.toHaveBeenCalled();
+    });
+
+    it.each(["legacy-runtime", "missing-native-api", "nonterminal", "untrusted-command"])(
+      "preserves normal operation when an exit prerequisite is absent (%s)",
+      async (missing) => {
+        const f = await fixture({
+          features: missing === "legacy-runtime" ? [] : ["terminal-handover"],
+          configure(api) {
+            exitAdapter(api);
+            if (missing === "missing-native-api") delete api.session.surfaces;
+            if (missing === "nonterminal") api.session.surfaces = async () => ["web"];
+            if (missing === "untrusted-command")
+              api.command.list = async () => [{ name: "exit", source: "plugin" }];
+          },
+        });
+        expect(f.snapshots().at(-1).capabilities).not.toHaveProperty("handover");
+        await f.deliver({
+          commandId: randomUUID(),
+          kind: "handover-exit",
+          expectedRevision: 0,
+        });
+        expect(f.results().at(-1)).toMatchObject({ status: "rejected" });
+        expect(f.api.command.run).not.toHaveBeenCalled();
+        expect(f.snapshots().at(-1).capabilities.send).toBe(true);
+      },
+    );
+
+    it("invokes native exit without aborting a verified idle terminal", async () => {
+      const f = await fixture({ features: ["terminal-handover"], configure: exitAdapter });
+      expect(f.snapshots().at(-1).capabilities.handover).toBe(true);
+      await f.deliver({ commandId: randomUUID(), kind: "handover-exit", expectedRevision: 0 });
+      expect(f.stops).toBe(0);
+      expect(f.api.command.run).toHaveBeenCalledExactlyOnceWith({ command: "exit" });
+      expect(f.results().at(-1)).toMatchObject({ status: "exit-initiated" });
+    });
+
+    it("reports a native model changed after the last snapshot when that session exits", async () => {
+      const f = await fixture({ features: ["terminal-handover"], configure: exitAdapter });
+      const previous = f.snapshots().at(-1);
+      f.api.session.model = vi.fn(async () => "new-terminal-model");
+      await f.run("session.end", { reason: "prompt_input_exit", sessionId: previous.nativeId });
+      await expect
+        .poll(() => f.snapshots().at(-1))
+        .toMatchObject({
+          status: "disconnected",
+          model: "new-terminal-model",
+          terminalModelAtExit: true,
+        });
+    });
+
+    it("keeps a failed native exit invocation unknown without retrying it", async () => {
+      const f = await fixture({ features: ["terminal-handover"], configure: exitAdapter });
+      f.api.command.run.mockRejectedValue(new Error("native exit failed"));
+      const command = { commandId: randomUUID(), kind: "handover-exit", expectedRevision: 0 };
+      await f.deliver(command);
+      const result = f.results().at(-1);
+      expect(result).toMatchObject({ status: "unknown", reason: "native-exit-unconfirmed" });
+      await f.deliver(command);
+      expect(f.results().at(-1)).toEqual(result);
+      expect(f.stops).toBe(0);
+      expect(f.api.command.run).toHaveBeenCalledExactlyOnceWith({ command: "exit" });
+    });
+  });
+
   it("cancels a streaming turn once even when text advances before command execution", async () => {
     const f = await fixture();
     const turnId = randomUUID();
@@ -3568,6 +3747,145 @@ describe("Claude Code native session plugin", () => {
       expect(f.snapshots().at(-1).waiting).toBeNull();
       gate.resolve();
       await tool;
+    }
+  });
+
+  it.each([true, false])(
+    "publishes only negotiated, native-confirmed approval evidence (negotiated: %s)",
+    async (negotiated) => {
+      const f = await fixture({
+        features: negotiated ? ["terminal-approval-observation"] : [],
+      });
+      const turnId = randomUUID();
+      await f.run("turn.start", { text: "terminal", turnId });
+      const toolId = randomUUID();
+      const check = {
+        tool: "Edit",
+        tool_use_id: toolId,
+        approver: "person",
+        input: {
+          file_path: "notes.md",
+          old_string: "Draft",
+          new_string: "Published",
+          context: { access_token: "synthetic-not-a-credential", area: "notes" },
+        },
+      };
+      const call = { tool: "Edit", tool_use_id: toolId, file_path: "unmodified-input.md" };
+      const ask = { decision: "ask", reason: "native rule" };
+      const output = { content: [{ type: "text", text: "unchanged result" }] };
+      const checked = deferred<void>();
+      const finishTool = deferred<void>();
+      const nextCheck = vi.fn((event) => {
+        expect(event).toBe(check);
+        return ask;
+      });
+      const nextCall = vi.fn(async (event) => {
+        expect(event).toBe(call);
+        expect(await f.run("tool.check", check, nextCheck)).toBe(ask);
+        checked.resolve();
+        await finishTool.promise;
+        return output;
+      });
+      const running = f.run("tool.call", call, nextCall);
+      await checked.promise;
+      await f.flush();
+      expect(f.snapshots().at(-1)).not.toHaveProperty("pendingApprovalDetails");
+      const notification = { notification_type: "permission_prompt", session_id: f.nativeId };
+      await f.run("classic.Notification", { ...notification, session_id: randomUUID() });
+      await f.run("classic.Notification", { ...notification, agent_id: randomUUID() });
+      await f.flush();
+      expect(f.snapshots().at(-1)).not.toHaveProperty("pendingApprovalDetails");
+      expect(await f.run("classic.Notification", notification)).toBe(notification);
+      await f.flush();
+      if (negotiated)
+        expect(f.snapshots().at(-1)).toMatchObject({
+          status: "waiting",
+          waiting: "permission",
+          pendingApprovalDetails: {
+            toolName: "Edit",
+            toolUseId: toolId,
+            turnId,
+            input: {
+              file_path: "notes.md",
+              old_string: "Draft",
+              new_string: "Published",
+              context: { access_token: "[REDACTED]", area: "notes" },
+            },
+          },
+          capabilities: { approve: false, answer: false },
+        });
+      else {
+        expect(f.snapshots().at(-1).waiting).toBe("unknown");
+        expect(f.snapshots().at(-1)).not.toHaveProperty("pendingApprovalDetails");
+      }
+      finishTool.resolve();
+      expect(await running).toBe(output);
+      await f.flush();
+      expect(f.snapshots().at(-1)).not.toHaveProperty("pendingApprovalDetails");
+      expect(nextCall).toHaveBeenCalledOnce();
+      expect(nextCheck).toHaveBeenCalledOnce();
+    },
+  );
+
+  it("does not guess which concurrent tool owns an unbound notification", async () => {
+    const f = await fixture({ features: ["terminal-approval-observation"] });
+    const turnId = randomUUID();
+    await f.run("turn.start", { text: "terminal", turnId });
+    const finishTools = deferred<void>();
+    const ready = [deferred<void>(), deferred<void>()];
+    const running = ready.map((toolReady, i) => {
+      const id = randomUUID();
+      return f.run("tool.call", { tool: "Bash", tool_use_id: id }, async () => {
+        await f.run(
+          "tool.check",
+          { tool: "Bash", input: { command: `echo ${i}` }, tool_use_id: id, approver: "person" },
+          () => ({ decision: "ask" }),
+        );
+        toolReady.resolve();
+        await finishTools.promise;
+        return {};
+      });
+    });
+    await Promise.all(ready.map(({ promise }) => promise));
+    await f.run("classic.Notification", {
+      notification_type: "permission_prompt",
+      session_id: f.nativeId,
+    });
+    await f.flush();
+    expect(f.snapshots().at(-1)).not.toHaveProperty("pendingApprovalDetails");
+    finishTools.resolve();
+    await Promise.all(running);
+  });
+
+  it("bounds question summaries, hides recognizable credentials and clears summaries with the tool", async () => {
+    const f = await fixture({ features: ["terminal-approval-observation"] });
+    await f.run("turn.start", { text: "terminal", turnId: randomUUID() });
+    for (const [question, hidden] of [
+      ["Choose an option ".repeat(30), false],
+      ["Where should I send Authorization: synthetic test value?", true],
+    ] as const) {
+      const toolId = randomUUID();
+      const finish = deferred<void>();
+      const running = f.run(
+        "tool.call",
+        { tool: "AskUserQuestion", tool_use_id: toolId, questions: [{ question }] },
+        async () => {
+          await finish.promise;
+          return {};
+        },
+      );
+      await f.flush();
+      const snapshot = f.snapshots().at(-1);
+      expect(snapshot.waiting).toBe("question");
+      if (hidden) expect(snapshot).not.toHaveProperty("pendingQuestionSummary");
+      else {
+        expect(snapshot.pendingQuestionSummary).toContain("Choose an option");
+        expect(Buffer.byteLength(snapshot.pendingQuestionSummary)).toBeLessThanOrEqual(256);
+      }
+      finish.resolve();
+      await running;
+      await f.flush();
+      expect(f.snapshots().at(-1)).not.toHaveProperty("pendingQuestionSummary");
     }
   });
 

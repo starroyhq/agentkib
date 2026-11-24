@@ -58,6 +58,13 @@ const QUOTA_RESUME_NOTIFICATIONS = new Set([
 const TERMINAL_SUBAGENTS_FEATURE = "terminal-subagents";
 const MAX_TERMINAL_SUBAGENTS = 16;
 const TERMINAL_WORKER_ACTIVITY_FEATURE = "terminal-worker-activity";
+const TERMINAL_HANDOVER_FEATURE = "terminal-handover";
+const TERMINAL_APPROVAL_OBSERVATION_FEATURE = "terminal-approval-observation";
+const MAX_APPROVAL_INPUT_BYTES = 16 * 1024;
+const SENSITIVE_INPUT_KEY =
+  /(?:authorization|cookies?|apikeys?|accesskeys?|privatekeys?|tokens?|secrets?|passwords?|passwd|passphrase|credentials?|databaseurl|dsn)$/i;
+const SENSITIVE_INPUT_TEXT =
+  /-----BEGIN [^\n]*PRIVATE KEY-----|\b(?:Bearer|Basic)\s+\S+|\b(?:sk-|ghp_|github_pat_|xox[bp]-)[A-Za-z0-9_-]{12,}|(?:token|key|secret|password|passwd|passphrase|credential|authorization|cookie|database[-_ ]?url|dsn)\s*[:=]|--[\w-]*(?:token|key|secret|password|passwd|passphrase|credential)(?:=|\s+)|:\/\/[^\s/@]+:[^\s/@]+@/i;
 const MAX_WORKER_COMMANDS = 64;
 const WORKER_STREAM_SNAPSHOT_MS = 15_000;
 const SUBAGENT_STATES = new Map([
@@ -287,6 +294,8 @@ export function initialState() {
     pendingSend: null,
     // The last ambiguous report may still open its native turn after submit returns.
     unconfirmedReport: null,
+    handoverExit: null,
+    handoverSupported: undefined,
     modelPicker: null,
     modelPickerSupported: undefined,
     outbox: [],
@@ -330,6 +339,7 @@ export function initialState() {
 
 /** Runs a Project Agent's worker tool call in AgentKib and answers it as the tool. */
 async function leadCall($, state, name, e) {
+  if (state.handoverExit) return { deny: "AgentKib is transferring this session." };
   if (!leadFeature(state) || !state.connection || state.connection.leaseId === "reconnecting")
     return { deny: "AgentKib is not connected, so this session cannot direct its workers now." };
   const {
@@ -861,6 +871,66 @@ function waitingState(state) {
   return waits.includes("unknown") ? "unknown" : null;
 }
 
+function safeInteractionText(value) {
+  return SENSITIVE_INPUT_TEXT.test(value) ? "[REDACTED]" : value;
+}
+
+function approvalInput(input) {
+  if (!input || typeof input !== "object" || Array.isArray(input)) return {};
+  try {
+    const json = JSON.stringify(input);
+    // A clipped command or parameter object could describe a different operation.
+    if (
+      typeof json === "string" &&
+      utf8Prefix(json, MAX_APPROVAL_INPUT_BYTES).read === json.length
+    ) {
+      const value = JSON.parse(json, (key, value) =>
+        SENSITIVE_INPUT_KEY.test(key.replace(/[^a-z\d]/gi, ""))
+          ? "[REDACTED]"
+          : typeof value === "string"
+            ? safeInteractionText(value)
+            : value,
+      );
+      if (value && typeof value === "object" && !Array.isArray(value)) {
+        const projected = JSON.stringify(value);
+        if (utf8Prefix(projected, MAX_APPROVAL_INPUT_BYTES).read === projected.length) return value;
+      }
+    }
+  } catch {
+    // Malformed or oversized input is still observable by tool name and id.
+  }
+  return {};
+}
+
+function observePermissionPrompt(state) {
+  if (!state.currentTurnId || state.activeTools.size !== 1) return;
+  const waits = [...state.waits].filter(([, kind]) => kind !== "question");
+  const candidates = waits.filter(([owner]) => owner.approvalDetails);
+  // Notification has no tool-use ID and can be emitted for sandbox prompts.
+  // Publish details only when all the permission evidence names the one active call.
+  const [candidate] = candidates;
+  if (
+    candidates.length !== 1 ||
+    candidate[0].turnId !== state.currentTurnId ||
+    waits.some(([owner]) => owner.tool !== candidate[0].tool)
+  )
+    return;
+  state.waits.set(candidate[0], "permission");
+  state.dirty = true;
+}
+
+function questionSummary(state) {
+  const active = [...state.waits].filter(
+    ([owner, kind]) => kind === "question" && owner.turnId === state.currentTurnId,
+  );
+  if (active.length !== 1) return undefined;
+  const questions = active[0][0].input?.questions;
+  const first = Array.isArray(questions) && questions[0]?.question;
+  if (typeof first !== "string" || !first.trim()) return undefined;
+  const preview = safeInteractionText(first);
+  return preview === "[REDACTED]" ? undefined : previewText(preview, 256);
+}
+
 function workerActivitySnapshot(state) {
   if (
     !state.connection?.features?.includes(TERMINAL_WORKER_ACTIVITY_FEATURE) ||
@@ -901,13 +971,15 @@ function permissionTool(state, event) {
   return matches.length === 1 ? matches[0] : null;
 }
 
-function invalidate(state, reason) {
+function invalidate(state, reason, terminalModel) {
   state.generation += 1;
   state.sendDisabled = true;
   // A revoked or ended connection sends nothing more. A prompt already waiting
   // in the native submit is dropped at dispatch, because the state is closed.
   state.outbox = [];
   state.unconfirmedReport = null;
+  state.handoverExit = null;
+  state.handoverSupported = undefined;
   state.activityVerified = false;
   state.nativeWorking = null;
   state.compacting = false;
@@ -925,6 +997,7 @@ function invalidate(state, reason) {
   if (state.connection && state.identity && state.lastSnapshot) {
     const revoked = {
       ...state.lastSnapshot,
+      ...(terminalModel ? { model: terminalModel, terminalModelAtExit: true } : {}),
       revision: state.revision,
       status: "disconnected",
       streamText: "",
@@ -945,6 +1018,8 @@ function invalidate(state, reason) {
         answer: false,
       },
     };
+    delete revoked.pendingApprovalDetails;
+    delete revoked.pendingQuestionSummary;
     delete revoked.terminalWorkerActivity;
     state.termination = {
       socketPath: state.socketPath,
@@ -1132,21 +1207,25 @@ async function refreshTerminalSubagents($, state) {
   }
 }
 
+async function nativeModel($) {
+  try {
+    const current = await $.session.model();
+    if (typeof current === "string" && current.length > 0 && current.length <= 128) return current;
+  } catch {
+    // This optional getter is absent in older native contracts.
+  }
+  return null;
+}
+
 async function snapshot($, state) {
   const observed = await identity($, state);
   const rows = await $.session.messages();
   const usage = await $.session.usage();
   const context = state.compacting ? null : usage?.context;
-  let model = null;
-  try {
-    const current = await $.session.model();
-    if (typeof current === "string" && current.length > 0 && current.length <= 128) model = current;
-  } catch {
-    // This optional getter is absent in older native contracts.
-  }
+  const model = await nativeModel($);
   const numeric = (v) => (typeof v === "number" && Number.isFinite(v) ? v : null);
-  const waiting = waitingState(state);
   const offersPicker = state.connection?.features?.includes("open-model-picker") === true;
+  const offersHandover = state.connection?.features?.includes(TERMINAL_HANDOVER_FEATURE) === true;
   const observation = state.terminalSubagents;
   const terminalSubagents =
     observation?.connection === state.connection && observation?.nativeId === observed.nativeId
@@ -1154,6 +1233,20 @@ async function snapshot($, state) {
       : undefined;
   if (offersPicker && state.modelPickerSupported === undefined)
     state.modelPickerSupported = await hasNativeModelPicker($);
+  if (offersHandover && state.handoverSupported === undefined)
+    state.handoverSupported = await hasNativeHandoverExit($);
+  const waiting = waitingState(state);
+  const observesApproval =
+    state.connection?.features?.includes(TERMINAL_APPROVAL_OBSERVATION_FEATURE) === true;
+  const pendingApprovalDetails =
+    observesApproval && waiting === "permission"
+      ? [...state.waits].find(
+          ([owner, kind]) =>
+            kind === "permission" && owner.approvalDetails && owner.turnId === state.currentTurnId,
+        )?.[0].approvalDetails
+      : undefined;
+  const pendingQuestionSummary =
+    observesApproval && waiting === "question" ? questionSummary(state) : undefined;
   const terminalWorkerActivity = workerActivitySnapshot(state);
   if (terminalWorkerActivity !== undefined) state.workerActivitySnapshottedAt = Date.now();
   const result = {
@@ -1167,6 +1260,8 @@ async function snapshot($, state) {
           ? "running"
           : "idle",
     waiting,
+    ...(pendingApprovalDetails !== undefined ? { pendingApprovalDetails } : {}),
+    ...(pendingQuestionSummary !== undefined ? { pendingQuestionSummary } : {}),
     messages: visibleMessages(rows),
     toolItems: state.currentTurnId ? visibleTools(rows) : [],
     ...(terminalSubagents !== undefined ? { terminalSubagents } : {}),
@@ -1194,6 +1289,9 @@ async function snapshot($, state) {
     capabilities: {
       read: true,
       ...(offersPicker ? { modelPicker: canOpenModelPicker(state) } : {}),
+      ...(offersHandover && state.handoverSupported && canHandoverExit(state)
+        ? { handover: true }
+        : {}),
       ...(state.connection?.features?.includes("terminal-attachments")
         ? { attachments: true }
         : {}),
@@ -1209,6 +1307,7 @@ async function snapshot($, state) {
         !state.closed &&
         !state.needsReconnect &&
         !state.bufferPaused &&
+        !state.handoverExit &&
         Boolean(state.currentTurnId),
       approve: false,
       answer: false,
@@ -1346,6 +1445,7 @@ function writable(state) {
     !state.needsReconnect &&
     !state.sendDisabled &&
     !state.bufferPaused &&
+    !state.handoverExit &&
     !state.modelPicker &&
     !state.compacting
   );
@@ -1357,6 +1457,110 @@ function hasQueuedInput(state) {
     state.unconfirmedReport !== null ||
     state.outbox.some((item) => !item.leadReport || (!reportsPaused && item.status !== "unknown"))
   );
+}
+
+async function hasNativeHandoverExit($) {
+  try {
+    const surfaces = await $.session.surfaces();
+    if (!Array.isArray(surfaces) || !surfaces.includes("terminal")) return false;
+    const exits = (await $.command.list()).filter((entry) => entry.name === "exit");
+    return exits.length === 1 && exits[0].source === "builtin";
+  } catch {
+    return false;
+  }
+}
+
+function canHandoverExit(state) {
+  return (
+    writable(state) &&
+    // The render hook establishes idle only. An active turn is verified by its
+    // native turn ID even when the prompt shows that Claude is working.
+    (state.currentTurnId !== null ||
+      (state.activityVerified && state.nativeWorking === false && !waitingState(state))) &&
+    !state.pendingSend &&
+    !state.dispatching &&
+    !state.unconfirmedReport &&
+    // The terminal owns its queued submissions and any reports it has claimed.
+    // Leave them available for delivery rather than dropping them on exit.
+    state.outbox.length === 0 &&
+    state.takenReports.size === 0
+  );
+}
+
+async function handoverExit($, state, command, result) {
+  const connection = state.connection;
+  const turnId = command.turnId ?? null;
+  if (!connection?.features?.includes(TERMINAL_HANDOVER_FEATURE) || !canHandoverExit(state)) {
+    result.reason = "session-state-unverified";
+    return;
+  }
+  if (state.currentTurnId !== turnId) {
+    result.reason = "turn-conflict";
+    return;
+  }
+  if (!(await hasNativeHandoverExit($))) {
+    state.handoverSupported = false;
+    result.reason = "native-exit-unavailable";
+    return;
+  }
+  await identity($, state);
+  if (
+    state.connection !== connection ||
+    state.revision !== command.expectedRevision ||
+    state.currentTurnId !== turnId ||
+    !canHandoverExit(state)
+  ) {
+    result.reason = "session-state-unverified";
+    return;
+  }
+  const handover = { competing: false };
+  state.handoverExit = handover;
+  state.dirty = true;
+  const current = () =>
+    state.handoverExit === handover &&
+    state.connection === connection &&
+    !state.needsReconnect &&
+    !state.bufferPaused &&
+    !handover.competing;
+  const release = () => {
+    if (state.handoverExit !== handover) return;
+    state.handoverExit = null;
+    state.dirty = true;
+  };
+  let exitRequested = false;
+  try {
+    if (turnId !== null) {
+      await $.turn.abort({ turnId });
+      // The native abort acknowledgement alone does not prove the turn ended.
+      for (let attempt = 0; attempt < 100 && current() && state.currentTurnId === turnId; attempt++)
+        await $.clock.sleep(50);
+    }
+    await identity($, state);
+    if (!current() || state.currentTurnId !== null || state.nativeWorking !== false) {
+      // The stop can be unconfirmed, but this handover has made no exit request.
+      result.reason = "native-stop-unconfirmed";
+      return;
+    }
+    // A slash command is dispatched by the native command API; submitting the
+    // same text through prompt.submit is refused by Claude Code.
+    exitRequested = true;
+    const exit = await $.command.run({ command: "exit" });
+    if (exit?.isError === true) {
+      result.status = "unknown";
+      result.reason = "native-exit-refused";
+      return;
+    }
+    result.status = "exit-initiated";
+    delete result.reason;
+    // An exit may be intercepted by another mod. Keep submissions fenced while
+    // the observed process terminates, then recover if the terminal stayed open.
+    $.clock.after(5_000, release);
+  } catch {
+    if (exitRequested) result.status = "unknown";
+    result.reason = exitRequested ? "native-exit-unconfirmed" : "native-stop-unconfirmed";
+  } finally {
+    if (result.status !== "exit-initiated") release();
+  }
 }
 
 async function hasNativeModelPicker($) {
@@ -1742,6 +1946,7 @@ async function execute($, state, command) {
   else if (command.kind === "cancel") withdraw(state, command, result);
   else if (command.expectedRevision !== state.revision) result.reason = "revision-conflict";
   else if (command.kind === "open-model-picker") await openModelPicker($, state, command, result);
+  else if (command.kind === "handover-exit") await handoverExit($, state, command, result);
   else if (command.kind === "send") {
     if (!validSend(command)) result.reason = "invalid-text";
     else if (
@@ -1874,7 +2079,7 @@ async function pump($, state, nativeEvent = false) {
     for (const id of taken)
       if (!response.lead?.reports?.some?.((r) => r?.id === id)) state.takenReports.delete(id);
     for (const command of response.commands) await execute($, state, command);
-    if (lead && state.connection === connection)
+    if (lead && state.connection === connection && !state.handoverExit)
       await applyLead($, state, response.lead, connection);
   } catch {
     state.dirty = true;
@@ -2539,6 +2744,7 @@ export function register(on) {
       }
       pending.observed = true;
     } else {
+      if (state.handoverExit) state.handoverExit.competing = true;
       if (e.origin?.kind === "composer") resumeLeadReports(state);
       if (pending) pending.competing = true;
       if (state.unconfirmedReport) state.unconfirmedReport.competing = true;
@@ -2583,6 +2789,7 @@ export function register(on) {
   });
   on("turn.start", async ($, e, next) => {
     if (e.agentId !== undefined) return next(e);
+    if (state.handoverExit) state.handoverExit.competing = true;
     startBridge($, state);
     state.currentTurnId = e.turnId;
     state.currentTurnStartedAt = Date.now();
@@ -2821,7 +3028,19 @@ export function register(on) {
         ? state.activeTools.get(e.tool_use_id)
         : undefined;
     if (tool && state.currentTurnId && tool.turnId === state.currentTurnId) {
-      state.waits.set({ tool, turnId: state.currentTurnId }, "unknown");
+      const turnId = state.currentTurnId;
+      const approvalDetails =
+        state.connection?.features?.includes(TERMINAL_APPROVAL_OBSERVATION_FEATURE) &&
+        e.approver === "person" &&
+        e.tool === tool.name &&
+        e.tool !== "AskUserQuestion" &&
+        typeof e.tool === "string" &&
+        e.tool.length > 0 &&
+        e.tool.length <= 256 &&
+        e.tool_use_id.length <= 256
+          ? { toolUseId: e.tool_use_id, turnId, toolName: e.tool, input: approvalInput(e.input) }
+          : undefined;
+      state.waits.set({ tool, turnId, approvalDetails }, "unknown");
       state.dirty = true;
     }
     return result;
@@ -2861,8 +3080,14 @@ export function register(on) {
     return next(e);
   });
   on("classic.Notification", (_$, e, next) => {
-    if (mainClassicEvent(state, e) && QUOTA_RESUME_NOTIFICATIONS.has(e.notification_type))
-      resumeLeadReports(state);
+    if (mainClassicEvent(state, e)) {
+      if (QUOTA_RESUME_NOTIFICATIONS.has(e.notification_type)) resumeLeadReports(state);
+      if (
+        e.notification_type === "permission_prompt" &&
+        state.connection?.features?.includes(TERMINAL_APPROVAL_OBSERVATION_FEATURE)
+      )
+        observePermissionPrompt(state);
+    }
     return next(e);
   });
   on("session.compact", async ($, e, next) => {
@@ -2913,7 +3138,19 @@ export function register(on) {
     return next(e);
   });
   on("session.end", async ($, e, next) => {
-    invalidate(state, "native-session-ended");
+    const generation = state.generation;
+    const connection = state.connection;
+    let model = null;
+    if (
+      e.reason === "prompt_input_exit" &&
+      e.sessionId === state.identity?.nativeId &&
+      connection?.features?.includes(TERMINAL_HANDOVER_FEATURE)
+    ) {
+      state.sendDisabled = true;
+      model = await Promise.race([nativeModel($), $.clock.sleep(100).then(() => null)]);
+    }
+    if (state.generation !== generation || state.connection !== connection) return next(e);
+    invalidate(state, "native-session-ended", model);
     // The original terminal must never wait for an offline AgentKib on exit,
     // clear or resume. The old lease notification is deliberately best-effort.
     void flush($, state);

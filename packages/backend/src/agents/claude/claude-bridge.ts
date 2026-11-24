@@ -179,6 +179,10 @@ const contextWindowRegistrySchema = z
   .object({ version: z.literal(1), observations: z.array(contextWindowEntrySchema).max(64) })
   .strict();
 type ContextWindowEntry = z.infer<typeof contextWindowEntrySchema>;
+const terminalExitModelsSchema = z.object({
+  version: z.literal(1),
+  models: z.array(z.tuple([uuid, z.string().min(1).max(128)])).max(64),
+});
 
 function transcriptWindowAnchor(observation?: ClaudeTranscriptObservation) {
   const usage = observation?.usage;
@@ -236,6 +240,21 @@ type Connection = {
 };
 /** A report on its way into a terminal Project Agent's outbox. */
 type QueuedReport = { id: string; text: string; offered?: true };
+export type ClaudeTerminalHandoverSource = {
+  bindingId: string;
+  target: ClaudeBridgeTarget;
+  reports: readonly QueuedReport[];
+  reason: string | null;
+  revision: number;
+  model?: string;
+};
+export type ClaudeTerminalExitSource = {
+  target: ClaudeBridgeTarget;
+  bindingId: string;
+  leaseId: string;
+  revision: number;
+  turnId: string | null;
+};
 /** A Project Agent in a terminal (docs/agents/project-agent.md); `orchestration-service.ts`. */
 export interface BridgeLead {
   /** Its worker tools, or null when the session directs none. */
@@ -405,8 +424,10 @@ export class ClaudeBridge {
   readonly root: string;
   #bindings = new Map<string, Binding>();
   #contextWindows = new Map<string, ContextWindowEntry>();
+  #terminalExitModels = new Map<string, string>();
   #compactStartedAt = new WeakMap<Binding, number>();
   #connections = new Map<string, Connection>();
+  #lastConnectionLease = new WeakMap<Binding, string>();
   #challenges = new Map<string, Challenge>();
   #connectionAttempts = new Map<string, ConnectionAttempt>();
   #server?: Server;
@@ -487,6 +508,15 @@ export class ClaudeBridge {
         if (bindings.has(entry.bindingId)) this.#contextWindows.set(entry.bindingId, entry);
     } catch {
       // Optional display data cannot keep the broker from starting.
+    }
+    try {
+      const file = path.join(this.root, "terminal-exit-models-v1.json");
+      const { models } = terminalExitModelsSchema.parse(readLegacyJson(file));
+      const current = new Set([...this.#bindings.values()].map(({ bindingId }) => bindingId));
+      for (const [bindingId, model] of models)
+        if (current.has(bindingId)) this.#terminalExitModels.set(bindingId, model);
+    } catch {
+      // Model observations are optional for older sessions and brokers.
     }
     this.#readLegacyBindings();
     this.#timer = setInterval(() => {
@@ -605,10 +635,148 @@ export class ClaudeBridge {
     // Expired, settled bindings retain their credentials without blocking a native resume.
     return !!connection && !row.revoked && Date.now() - connection.lastSeen <= HEARTBEAT_MS;
   }
+
+  /** An expired lease removes the bridge claim, but does not prove native process exit. */
+  terminalHandoverSource(
+    id: string,
+    handoverRequestId?: string,
+  ): ClaudeTerminalHandoverSource | undefined {
+    const row = this.#bindings.get(id);
+    if (!row) return;
+    this.assertRegistryValid();
+    this.#assertLegacySettled(id);
+    const reports = this.#reportQueue(id);
+    const connection = this.#connections.get(id);
+    const reason =
+      row.inflight ||
+      readUnknownManagedCommands(this.options.dataDir, id).some(
+        ({ requestId, evidence }) =>
+          requestId !== handoverRequestId ||
+          evidence?.operation !== "handover-terminal" ||
+          evidence.bindingId !== row.bindingId,
+      )
+        ? "control-outcome-unconfirmed"
+        : connection && !row.revoked && Date.now() - connection.lastSeen <= HEARTBEAT_MS
+          ? "claude-owner-busy"
+          : reports.some((report) => report.offered)
+            ? "claude-terminal-report-unconfirmed"
+            : null;
+    const model =
+      connection && !connection.gap && this.#online(id)
+        ? connection.snapshot?.model
+        : this.#terminalExitModels.get(row.bindingId);
+    return {
+      bindingId: row.bindingId,
+      target: row.target,
+      reports,
+      reason,
+      revision: this.#revision,
+      ...(model ? { model } : {}),
+    };
+  }
+
+  remoteTerminalExitSource(id: string): ClaudeTerminalExitSource | undefined {
+    const source = this.terminalHandoverSource(id);
+    if (source?.reason !== "claude-owner-busy" || source.reports.some((report) => report.offered))
+      return;
+    const connection = this.#connections.get(id);
+    const snapshot = connection?.snapshot;
+    if (
+      !connection ||
+      !snapshot ||
+      !this.#online(id) ||
+      connection.gap ||
+      connection.pending ||
+      snapshot.capabilities.handover !== true ||
+      snapshot.compacting ||
+      snapshot.modelPickerOpen ||
+      snapshot.outbox.length ||
+      (!snapshot.currentTurnId && (snapshot.status !== "idle" || snapshot.waiting))
+    )
+      return;
+    const row = this.#bindings.get(id)!;
+    try {
+      this.options.validate(row.target, true, row.bindingId);
+    } catch {
+      return;
+    }
+    return {
+      target: row.target,
+      bindingId: row.bindingId,
+      leaseId: connection.leaseId,
+      revision: connection.revision,
+      turnId: snapshot.currentTurnId,
+    };
+  }
+
+  requestTerminalExit(
+    source: ClaudeTerminalExitSource,
+    requestId: string,
+    deviceId: string,
+    commandId: string,
+    dispatch: () => void,
+  ): Promise<Record<string, unknown>> {
+    const { sessionId } = source.target;
+    const connection = this.#connections.get(sessionId);
+    const row = this.#bindings.get(sessionId);
+    if (
+      !row ||
+      row.bindingId !== source.bindingId ||
+      !connection?.snapshot ||
+      connection.leaseId !== source.leaseId ||
+      connection.revision !== source.revision ||
+      connection.pending
+    )
+      throw new Error("stale-Claude-revision");
+    const command: ClaudeBridgeCommand = {
+      kind: "handover-exit",
+      commandId,
+      expectedRevision: connection.snapshot.revision,
+      ...(source.turnId ? { turnId: source.turnId } : {}),
+    };
+    // The bridge only acknowledges command delivery here. The caller settles this
+    // receipt once the native process exit and managed transfer are verified.
+    return this.#queueCommand(row, connection, command, requestId, deviceId, {
+      dispatch,
+      finish: () => {},
+    });
+  }
+
+  /** Called only after observing the exact native process die and no alternate owner. */
+  confirmRemoteTerminalExit(source: ClaudeTerminalExitSource): void {
+    const { sessionId } = source.target;
+    const row = this.#bindings.get(sessionId);
+    if (
+      row?.bindingId !== source.bindingId ||
+      this.#lastConnectionLease.get(row) !== source.leaseId
+    )
+      throw new Error("native-identity-changed");
+    this.#disconnect(sessionId);
+  }
+
+  /** Remove only reports which were persisted in the managed queue. */
+  finishTerminalHandover(source: ClaudeTerminalHandoverSource): void {
+    const row = this.#bindings.get(source.target.sessionId);
+    if (!row || row.bindingId !== source.bindingId || source.reports.length === 0) return;
+    const imported = new Set(source.reports.map((report) => report.id));
+    this.#saveReports(
+      row,
+      this.#reportQueue(source.target.sessionId).filter((report) => !imported.has(report.id)),
+    );
+  }
   #save(): void {
     privateJson(path.join(this.root, "bindings-v1.json"), {
       version: 1,
       bindings: [...this.#bindings.values()],
+    });
+  }
+  #saveTerminalExitModels(): void {
+    const current = new Set([...this.#bindings.values()].map(({ bindingId }) => bindingId));
+    for (const bindingId of this.#terminalExitModels.keys())
+      if (!current.has(bindingId)) this.#terminalExitModels.delete(bindingId);
+    privateJson(path.join(this.root, "terminal-exit-models-v1.json"), {
+      version: 1,
+      models: [...this.#terminalExitModels],
     });
   }
 
@@ -1270,6 +1438,7 @@ export class ClaudeBridge {
                   snapshot?.status === "waiting")
               ? "running"
               : "idle";
+    const approval = snapshot?.pendingApprovalDetails;
     return {
       sessionId: id,
       sourceSessionId: row.target.nativeId,
@@ -1319,8 +1488,25 @@ export class ClaudeBridge {
         !connection?.pending &&
         !!snapshot?.currentTurnId &&
         snapshot.capabilities.stop,
-      approvals: [],
+      approvals:
+        status === "awaiting-approval" && approval && approval.turnId === snapshot?.currentTurnId
+          ? [
+              {
+                requestId: approval.toolUseId,
+                turnId: approval.turnId,
+                method: "claude/can_use_tool",
+                toolName: approval.toolName,
+                input: approval.input,
+                cwd: row.target.workspace,
+                supported: false,
+                availableDecisions: ["allow", "deny"],
+              },
+            ]
+          : [],
       questions: [],
+      ...(status === "waiting-input" && snapshot?.pendingQuestionSummary
+        ? { terminalQuestionSummary: snapshot.pendingQuestionSummary }
+        : {}),
       ...(connection?.terminalSubagentsObserved
         ? {
             activities: terminalSubagentActivities(
@@ -1784,6 +1970,17 @@ export class ClaudeBridge {
       row.inflight = { requestId, commandId: command.commandId, turnId: null };
       this.#save();
     }
+    return this.#queueCommand(row, connection, command, requestId, deviceId, receipt);
+  }
+
+  #queueCommand(
+    row: Binding,
+    connection: Connection,
+    command: ClaudeBridgeCommand,
+    requestId: string,
+    deviceId: string,
+    receipt: Pending["receipt"],
+  ): Promise<Record<string, unknown>> {
     return new Promise((resolve) => {
       const timer = setTimeout(() => {
         const pending = connection.pending;
@@ -1906,6 +2103,12 @@ export class ClaudeBridge {
   /** Whether this session's terminal can take a Project Agent's tools now. */
   leadCapable(sessionId: string): boolean {
     return this.#connections.get(sessionId)?.leadTools === true;
+  }
+
+  /** An established lead can still receive reports until a managed record takes over. */
+  canQueueLeadReport(sessionId: string): boolean {
+    const row = this.#bindings.get(sessionId);
+    return !!row && !row.revoked && this.#sourceReadable(row);
   }
 
   leadReportsPaused(sessionId: string): boolean {
@@ -2347,7 +2550,13 @@ export class ClaudeBridge {
           const orderedTools = [...tools].sort(
             (a, b) => Number(a.name === "worker_restart") - Number(b.name === "worker_restart"),
           );
-          const queued = connection.leadReportsPaused ? [] : this.#reportQueue(sessionId);
+          const handover =
+            connection.pending?.command.kind === "handover-exit" ||
+            readUnknownManagedCommands(this.options.dataDir, sessionId).some(
+              ({ evidence }) => evidence?.operation === "handover-terminal",
+            );
+          const queued =
+            connection.leadReportsPaused || handover ? [] : this.#reportQueue(sessionId);
           const offered = queued.slice(0, 4);
           if (offered.some((report) => !report.offered))
             this.#saveReports(row, [
@@ -2431,6 +2640,11 @@ export class ClaudeBridge {
           return;
         }
         if (recovering) {
+          if (lateClaim?.evidence?.operation === "handover-terminal") {
+            // A late plugin ACK can't prove host process exit or the managed commit.
+            reply(200, { ok: true });
+            return;
+          }
           // A late receipt settles a message handed to the outbox, or its withdrawal. They
           // start no turn of their own here, so nothing waits for a completion.
           if (
@@ -2500,6 +2714,8 @@ export class ClaudeBridge {
           return;
         }
         if (!pending) throw new Error("missing-bridge-command");
+        if (input.status === "exit-initiated" && pending.command.kind !== "handover-exit")
+          throw new Error("bridge-result-mismatch");
         if (input.status === "accepted" && pending.command.kind === "send" && !input.turnId)
           throw new Error("missing-native-turn");
         if (
@@ -2523,7 +2739,7 @@ export class ClaudeBridge {
         this.#save();
         clearTimeout(pending.timer);
         const outcome =
-          input.status === "accepted"
+          input.status === "accepted" || input.status === "exit-initiated"
             ? "accepted"
             : input.status === "rejected"
               ? "not-dispatched"
@@ -2577,6 +2793,7 @@ export class ClaudeBridge {
   }
 
   #newConnection(row: Binding, identity: ClaudeBridgeIdentity): Connection {
+    if (this.#terminalExitModels.delete(row.bindingId)) this.#saveTerminalExitModels();
     const connection: Connection = {
       leaseId: randomUUID(),
       instanceId: identity.instanceId,
@@ -2594,6 +2811,7 @@ export class ClaudeBridge {
       publishedTools: new Map(),
     };
     this.#connections.set(row.target.sessionId, connection);
+    this.#lastConnectionLease.set(row, connection.leaseId);
     this.#publish(row.target.sessionId);
     return connection;
   }
@@ -2638,6 +2856,15 @@ export class ClaudeBridge {
       connection.snapshot = snapshot;
       connection.terminalSubagentsObserved ||= snapshot.terminalSubagents !== undefined;
       connection.gap = false;
+      if (
+        snapshot.terminalModelAtExit === true &&
+        snapshot.model &&
+        snapshot.status === "disconnected" &&
+        !snapshot.capabilities.read
+      ) {
+        this.#terminalExitModels.set(row.bindingId, snapshot.model);
+        this.#saveTerminalExitModels();
+      }
       this.#rememberContextWindow(row, snapshot);
     } else {
       const snapshot = connection.snapshot;
@@ -2652,6 +2879,8 @@ export class ClaudeBridge {
         snapshot.currentTurnId = event.turnId;
         snapshot.status = "running";
         snapshot.waiting = null;
+        delete snapshot.pendingApprovalDetails;
+        delete snapshot.pendingQuestionSummary;
         snapshot.streamText = "";
         delete snapshot.terminalWorkerActivity;
         // A Project Agent's count of turns without the person restarts when they type. A turn the
@@ -2680,6 +2909,8 @@ export class ClaudeBridge {
         if (snapshot.currentTurnId === event.turnId) {
           snapshot.status = "idle";
           snapshot.waiting = null;
+          delete snapshot.pendingApprovalDetails;
+          delete snapshot.pendingQuestionSummary;
           snapshot.currentTurnId = null;
           snapshot.streamText = "";
           delete snapshot.terminalWorkerActivity;

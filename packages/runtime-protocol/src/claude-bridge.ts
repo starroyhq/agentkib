@@ -47,14 +47,18 @@ export const CLAUDE_BRIDGE_PATHS = {
  * - `terminal-subagents`: a plugin may report a bounded list of observed subagents in snapshots.
  * - `terminal-worker-activity`: a plugin may report the current turn's observed tool calls and
  *   an opaque activity counter in snapshots.
+ * - `terminal-approval-observation`: a plugin may describe a pending native approval for display.
  * - `terminal-attachments`: a plugin may accept text containing links to attachments in its workspace.
+ * - `terminal-handover`: a foreground plugin may invoke the native exit command when requested.
  */
 export const CLAUDE_BRIDGE_FEATURES = [
   "lead-tools",
   "open-model-picker",
   "terminal-subagents",
   "terminal-worker-activity",
+  "terminal-approval-observation",
   "terminal-attachments",
+  "terminal-handover",
 ] as const;
 
 export interface ClaudeBridgeTicket {
@@ -138,6 +142,8 @@ export interface ClaudeBridgeCapabilities {
   modelPicker?: boolean;
   /** Present only after the Runtime and plugin agree on workspace attachment links. */
   attachments?: true;
+  /** Whether this foreground terminal can invoke Claude Code's native exit command. */
+  handover?: true;
   approve: false;
   answer: false;
 }
@@ -198,6 +204,8 @@ export interface ClaudeBridgeSnapshot extends ClaudeBridgeIdentity {
   streamText: string;
   /** Optional native getter; omitted by older plugins rather than inferred from defaults. */
   model?: string | null;
+  /** The terminal read the current model from the native session as it was exiting. */
+  terminalModelAtExit?: true;
   /** The terminal's interactive model command is open. */
   modelPickerOpen?: boolean;
   compacting?: boolean;
@@ -210,6 +218,15 @@ export interface ClaudeBridgeSnapshot extends ClaudeBridgeIdentity {
     revision: number;
     commands: { id: string; startedAt: number }[];
   };
+  /** Optional observation only. The plugin retains the native permission prompt and its decisions. */
+  pendingApprovalDetails?: {
+    toolUseId: string;
+    turnId: string;
+    toolName: string;
+    input: Record<string, unknown>;
+  };
+  /** Short first question for a notification. The conversation keeps its native question card. */
+  pendingQuestionSummary?: string;
   usage: ClaudeBridgeUsage | null;
   outbox: ClaudeBridgeOutboxItem[];
   capabilities: ClaudeBridgeCapabilities;
@@ -257,6 +274,12 @@ export interface ClaudeBridgeEventsResponse {
 }
 
 export type ClaudeBridgeCommand =
+  | {
+      commandId: string;
+      kind: "handover-exit";
+      turnId?: string;
+      expectedRevision: number;
+    }
   | {
       commandId: string;
       kind: "open-model-picker";
@@ -309,7 +332,7 @@ export interface ClaudeBridgeCommandsResponse {
 
 export interface ClaudeBridgeResultRequest extends ClaudeBridgeLease {
   commandId: string;
-  status: "accepted" | "rejected" | "unknown";
+  status: "accepted" | "rejected" | "unknown" | "exit-initiated";
   reason?: string;
   revision: number;
   turnId?: string;

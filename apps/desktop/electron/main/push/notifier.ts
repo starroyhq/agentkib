@@ -35,6 +35,9 @@ export interface PushAlertMessage {
   agent: string;
   title?: string;
   computer?: string;
+  summary?: string;
+  /** Open the session to view a terminal interaction. The notification offers no decisions. */
+  readOnly?: true;
   /** Milliseconds since the epoch. */
   at: number;
 }
@@ -59,6 +62,11 @@ export interface PushNotifierOptions {
   /** This computer's relay device id; undefined while nothing can be sent. */
   deviceId(): string | undefined;
   send(input: PushSendInput): Promise<PushSendResult>;
+  terminalSummary?(
+    target: PushTarget,
+    sessionId: string,
+    kind: "approval" | "question",
+  ): Promise<string | undefined>;
   computerName?(): Promise<string | undefined>;
   /** Whether someone uses this computer now. Alerts wait until they leave. */
   present?(): boolean;
@@ -77,6 +85,8 @@ const HOUR = 60 * MINUTE;
 const RESULT_HOLD_MS = 15 * MINUTE;
 /** A waiting session stays worth an alert this long. */
 const NEED_HOLD_MS = 8 * HOUR;
+/** Allow the native permission prompt to publish its summary after the initial wait state. */
+const TERMINAL_APPROVAL_DETAILS_WAIT_MS = 8_000;
 /** Alerts one phone receives from this computer at most, per hour. */
 const ALERTS_PER_HOUR = 30;
 /** Live Activity updates are at least this far apart; Apple budgets them. */
@@ -110,6 +120,14 @@ interface PendingAlert {
   at: number;
   /** A Project Agent's result held while its work went on (`#leadBusy`). */
   held?: boolean;
+}
+function terminalWaitKind(alert: PendingAlert): "approval" | "question" | undefined {
+  if (
+    alert.session.agent === "claude-code" &&
+    alert.session.continuation?.executionLocation === "terminal" &&
+    (alert.kind === "approval" || alert.kind === "question")
+  )
+    return alert.kind;
 }
 interface Activity {
   /** An update reached it, so the phone reported its update token after the remote start. */
@@ -364,6 +382,12 @@ export class PushNotifier {
       const expired = now - alert.at > (result ? RESULT_HOLD_MS : NEED_HOLD_MS);
       if (!current || expired) this.#pending.delete(id);
       else if (!present) {
+        if (
+          this.#options.terminalSummary &&
+          terminalWaitKind(alert) === "approval" &&
+          now - alert.at < TERMINAL_APPROVAL_DETAILS_WAIT_MS
+        )
+          continue;
         this.#pending.delete(id);
         this.#sendAlert(alert, now, targets);
       }
@@ -401,6 +425,7 @@ export class PushNotifier {
     });
     if (!recipients.length) return;
     const alertTitle = title(alert.session);
+    const terminalKind = terminalWaitKind(alert);
     this.#track(async () => {
       const computer = clip(
         await (this.#options.computerName?.() ?? Promise.resolve(undefined)).catch(() => undefined),
@@ -408,6 +433,15 @@ export class PushNotifier {
       );
       await Promise.all(
         recipients.map(async (target) => {
+          const summary = terminalKind
+            ? clip(
+                await this.#options
+                  .terminalSummary?.(target, alert.session.id, terminalKind)
+                  .catch(() => undefined),
+                256,
+              )
+            : undefined;
+          if (terminalKind && this.#states.get(alert.session.id) !== alert.state) return;
           const message: PushAlertMessage = {
             v: 1,
             ref: target.ref,
@@ -416,6 +450,8 @@ export class PushNotifier {
             agent: alert.session.agent,
             ...(alertTitle ? { title: alertTitle } : {}),
             ...(computer ? { computer } : {}),
+            ...(terminalKind ? { readOnly: true } : {}),
+            ...(summary ? { summary } : {}),
             at: alert.at,
           };
           let envelope: string;

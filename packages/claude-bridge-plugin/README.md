@@ -1,10 +1,16 @@
 # AgentKib Claude Code session bridge
 
 First-party local Mods plugin for Claude Code **2.1.301 or later**, using AgentKib
-bridge plugin **0.5.6**. It connects AgentKib's existing chat interface to the
+bridge plugin **0.5.8**. It connects AgentKib's existing chat interface to the
 terminal's original execution process. It never starts a replacement Claude
 process, resumes another UUID, calls a model itself, or changes the user's
 permission rules.
+
+When AgentKib and the bridge negotiate `terminal-handover`, the bridge can
+request native exit for a confirmed takeover. It waits for the identified turn
+to stop before invoking the built-in `exit` command. AgentKib independently
+checks ownership before continuing the same session. Queued terminal messages
+and claimed reports stay with the terminal until delivered.
 
 The plugin and the Runtime need not come from the same AgentKib release: within
 protocol 1 the Runtime takes this contract and any later one, and a terminal that
@@ -159,6 +165,13 @@ command and does not call a model.
 - Keep approvals and questions in the original terminal. Apart from a Project
   Agent's own worker tools above, no permission override, synthetic question response,
   or remote approval capability is provided.
+- With the Runtime's optional `terminal-approval-observation` feature, include a
+  bounded preview of an identifiable terminal approval and a short question summary.
+  The plugin correlates a main-thread tool call and its unchanged human `ask` verdict
+  with the native permission-prompt notification. Claude Code emits this notification
+  after roughly six seconds of waiting. Ambiguous calls omit the approval preview.
+  Inputs with recognized credentials are redacted, and no new approval action is exposed.
+  [Claude Code notification hooks](https://code.claude.com/docs/en/hooks#notification)
 
 Snapshots are previews of the latest 80 text rows and 100 tool records, subject to
 a byte budget. Clipped text has an explicit marker. Complete history continues to

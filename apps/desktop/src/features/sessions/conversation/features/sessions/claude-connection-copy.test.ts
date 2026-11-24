@@ -112,18 +112,21 @@ describe("terminal connection guide copy", () => {
     );
   });
 
-  it.each(cases)("keeps the browser-only guide out of desktop copy in $locale", (expected) => {
-    const desktop = claudeConnectionCopyForSurface(expected.locale);
-    const web = claudeConnectionCopyForSurface(expected.locale, "web");
-    expect(desktop).toBe(claudeConnectionCopy[expected.locale]);
-    expect(desktop.disconnected).not.toContain(expected.oldGuide);
-    expect(web.disconnected).toContain(expected.oldGuide);
-    expect(web.disconnected).toContain(expected.webApp);
-    expect(claudeConnectionReason(expected.locale, "claude-bridge-not-connected", "web")).toBe(
-      web.disconnected,
-    );
-    expect(web).toBe(claudeConnectionCopyForSurface(expected.locale, "web"));
-  });
+  it.each(cases)(
+    "reports a disconnected terminal without computer-only steps in $locale",
+    (expected) => {
+      const desktop = claudeConnectionCopyForSurface(expected.locale);
+      const web = claudeConnectionCopyForSurface(expected.locale, "web");
+      expect(desktop).toBe(claudeConnectionCopy[expected.locale]);
+      expect(desktop.disconnected).not.toContain(expected.oldGuide);
+      expect(web.disconnected).not.toContain(expected.oldGuide);
+      expect(web.disconnected).not.toContain(expected.webApp);
+      expect(claudeConnectionReason(expected.locale, "claude-bridge-not-connected", "web")).toBe(
+        web.disconnected,
+      );
+      expect(web).toBe(claudeConnectionCopyForSurface(expected.locale, "web"));
+    },
+  );
 
   it.each(cases)("distinguishes compatibility reasons in $locale", ({ locale }) => {
     const copy = claudeConnectionCopy[locale];
@@ -145,8 +148,11 @@ describe("terminal connection guide copy", () => {
           cliVersion: "2.1.307",
         }),
       ).toBe(copy.missingCapabilities.replace("{version}", "2.1.307"));
-      expect(claudeConnectionReason(locale, "bridge-plugin-update-required", "web")).toBe(
+      expect(claudeConnectionReason(locale, "bridge-plugin-update-required", "desktop")).toBe(
         copy.pluginOutdated,
+      );
+      expect(claudeConnectionReason(locale, "bridge-plugin-update-required", "web")).toBe(
+        claudeConnectionCopyForSurface(locale, "web").pluginOutdated,
       );
       expect(claudeConnectionReason(locale, "bridge-cli-unsupported", "desktop")).toBe(
         copy.cliUnsupported,

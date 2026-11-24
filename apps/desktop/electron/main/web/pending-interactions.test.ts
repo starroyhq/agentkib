@@ -43,6 +43,36 @@ const question = {
 };
 
 describe("paired pending interaction descriptions", () => {
+  it("displays and classifies native terminal approvals without enabling any decision", async () => {
+    root = await mkdtemp(join(tmpdir(), "agentkib-terminal-approval-"));
+    const pending = {
+      ...approval,
+      requestId: "toolu_synthetic",
+      method: "claude/can_use_tool",
+      toolName: "Bash",
+      cwd: root,
+      input: { command: "git push origin main", description: "Publish the local branch" },
+      availableDecisions: ["allow", "deny"],
+      supported: false,
+    };
+    const result = await describePendingInteractions(
+      { ...state, executionMode: "claude-follower", approvals: [pending] },
+      { ...access, workspaceRoot: root },
+    );
+    expect(result).toHaveLength(1);
+    const [item] = result!;
+    expect(item).toMatchObject({
+      summary: pending.input.description,
+      command: pending.input.command,
+      risk: { level: "high", reason: "git-push" },
+      decisions: [
+        { kind: "allow", available: false, lockScreen: false },
+        { kind: "deny", available: false, lockScreen: false },
+      ],
+    });
+    expect(resolvePendingInteractionDecision(item, pending, "choice:allow")).toBeUndefined();
+  });
+
   it("binds a test command and exposes its one-time lock-screen choice", async () => {
     root = await mkdtemp(join(tmpdir(), "agentkib-r25-test-"));
     const pending = { ...approval, command: "flutter test", cwd: root };
@@ -202,7 +232,7 @@ describe("paired pending interaction descriptions", () => {
     ).toEqual([]);
     expect(
       await describePendingInteractions({ ...snapshot, executionMode: "claude-follower" }, access),
-    ).toBeUndefined();
+    ).toEqual([]);
   });
 
   it("includes a proposed command policy when determining risk", async () => {

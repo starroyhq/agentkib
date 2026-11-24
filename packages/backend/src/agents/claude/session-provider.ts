@@ -49,6 +49,7 @@ export class ClaudeSessionProvider implements SessionProvider, TypedSessionProvi
     private readonly bridge: ClaudeBridge,
     deleted: (value: Record<string, unknown>, result: Promise<unknown>) => Promise<unknown>,
     private readonly personControlled: (sessionId: string, operation: string) => void,
+    private readonly leadDevice: (sessionId: string) => string | undefined = () => undefined,
   ) {
     for (const operation of new Set([
       ...managed.sessionOperations.keys(),
@@ -80,6 +81,10 @@ export class ClaudeSessionProvider implements SessionProvider, TypedSessionProvi
       const run: NativeRequest = (value) => this.bridge.management(value);
       this.#routes.set(operation, { run, legacy: run });
     }
+    const adopt: NativeRequest = (value) =>
+      this.managed.adoptTerminal(value, this.bridge, this.leadDevice);
+    this.#routes.set("adopt-terminal", { run: adopt, legacy: adopt });
+    this.#routes.set("handover-terminal", { run: adopt, legacy: adopt });
   }
 
   #legacyRoute(operation: string, run: NativeRequest): NativeRequest {
@@ -128,14 +133,46 @@ export class ClaudeSessionProvider implements SessionProvider, TypedSessionProvi
   async #run(value: Record<string, unknown>, managed: NativeRequest, terminal?: NativeRequest) {
     try {
       const { sessionId } = value;
+      const liveOrResult = await (terminal &&
+      typeof sessionId === "string" &&
+      this.bridge.handles(sessionId) &&
+      this.bridge.blocksManagedResume(sessionId)
+        ? terminal(value)
+        : managed(value));
       if (
-        terminal &&
+        (value.operation === "live" || value.operation === "capabilities") &&
         typeof sessionId === "string" &&
-        this.bridge.handles(sessionId) &&
-        this.bridge.blocksManagedResume(sessionId)
-      )
-        return terminal(value);
-      return await managed(value);
+        value.experimentalEnabled === true &&
+        liveOrResult &&
+        typeof liveOrResult === "object"
+      ) {
+        const response = liveOrResult as Record<string, unknown>;
+        const source = this.bridge.terminalHandoverSource(sessionId);
+        if (!source || this.managed.managedWorkspace(sessionId)) return response;
+        const live =
+          value.operation === "live"
+            ? response
+            : this.bridge.blocksManagedResume(sessionId)
+              ? this.bridge.live(sessionId, true)
+              : await this.managed.live(sessionId, true);
+        const flag = await this.managed.terminalHandoverAvailability(
+          sessionId,
+          live,
+          source,
+          this.bridge.remoteTerminalExitSource(sessionId),
+        );
+        if (flag && value.operation === "live") return { ...live, terminalHandover: flag };
+        if (flag)
+          return {
+            ...response,
+            features: {
+              ...(response.features as Record<string, unknown>),
+              "adopt-terminal": { available: flag.available, reason: flag.reason },
+              "handover-terminal": { available: flag.remoteAvailable === true },
+            },
+          };
+      }
+      return liveOrResult;
     } catch (error) {
       if (error instanceof ClaudeHostControlPreflightError) return error.result;
       throw error;

@@ -19,6 +19,7 @@ import {
 } from "node:fs";
 import path from "node:path";
 import { homedir } from "node:os";
+import { setTimeout as sleep } from "node:timers/promises";
 import { claudeResumeCommand } from "./claude-resume-command";
 import { conversationReadKey, ReadStateLedger } from "../../read-state-ledger";
 import type { ReadStateTarget } from "../../conversation-read-state";
@@ -117,6 +118,11 @@ import {
   openManagedLedger,
 } from "../../managed-ledger";
 import { admitControlReceipt, bindControlReceipt } from "../../sessions/control-receipts";
+import type {
+  ClaudeBridge,
+  ClaudeTerminalExitSource,
+  ClaudeTerminalHandoverSource,
+} from "./claude-bridge";
 
 // Defined in claude-version.ts (imported above for this file's own checks); still exported from here.
 export { supportsClaudeVersion } from "./claude-version";
@@ -161,6 +167,16 @@ export class ClaudeHostControlPreflightError extends Error {
 /** Settings rejections clients explain: the receipt names them instead of a generic reason. */
 const EXPLAINED_SETTINGS_REASONS = new Set(["unsupported-model", "unsupported-effort"]);
 const FILE_LIMIT = 2 * 1024 * 1024;
+const TERMINAL_CONTINUE_TEXT =
+  "Continue the unfinished turn from this same session. If you were waiting for an answer or approval, ask for it again without assuming any decision.";
+type TerminalHandoverBridge = Pick<
+  ClaudeBridge,
+  | "terminalHandoverSource"
+  | "remoteTerminalExitSource"
+  | "requestTerminalExit"
+  | "confirmRemoteTerminalExit"
+  | "finishTerminalHandover"
+>;
 type ClaudeRecord = {
   version: 1;
   id: string;
@@ -172,6 +188,7 @@ type ClaudeRecord = {
   title: string;
   createdAt: string;
   adopted: boolean;
+  terminalHandover?: true;
   released: boolean;
   fresh: boolean;
   fingerprint: string | null;
@@ -1659,6 +1676,7 @@ export class ClaudeManagedReadOwner {
         ...(leadTools ? { allowedTools: [...LEAD_ALLOWED_TOOLS] } : {}),
         onUndispatchedStartup: (proof) => this.#recordStartupCleanup(record, proof),
         beforeStart: () => this.#beforeRunnerStart(id),
+        ...(record.terminalHandover ? { terminalHandover: true } : {}),
         ...(this.#version?.value ? { cliVersion: this.#version.value } : {}),
         backgroundTasks:
           this.continuation.backgroundTasks?.() === true &&
@@ -3263,6 +3281,283 @@ export class ClaudeManagedReadOwner {
     };
   }
 
+  async terminalHandoverAvailability(
+    id: string,
+    live: Record<string, unknown>,
+    source?: ClaudeTerminalHandoverSource,
+    remote?: ClaudeTerminalExitSource,
+  ): Promise<{ available: boolean; reason?: string; remoteAvailable?: true } | undefined> {
+    if (!source || this.managedWorkspace(id)) return;
+    const reason =
+      source.reason ??
+      (typeof live.ownershipReason === "string" ? live.ownershipReason : null) ??
+      (typeof live.reason === "string" ? live.reason : null);
+    if (reason) {
+      if (remote && supportsClaudeManagedRunner()) {
+        try {
+          this.#terminalHandoverSettings(source);
+          if (!this.#displayObservation || Date.now() - this.#displayObservation.at >= 3000)
+            this.#displayObservation = { at: Date.now(), share: {} };
+          if (
+            (await this.#installationVersion()) &&
+            (await this.#ownership.foregroundProcess(
+              remote.target.nativeId,
+              this.#displayObservation.share,
+            ))
+          )
+            return { available: false, reason, remoteAvailable: true };
+        } catch {
+          // The remote entry requires positive foreground and settings evidence.
+        }
+      }
+      return { available: false, reason };
+    }
+    try {
+      this.#terminalHandoverSettings(source);
+      return { available: true };
+    } catch (error) {
+      return {
+        available: false,
+        reason: error instanceof Error ? error.message : "claude-terminal-handover-unavailable",
+      };
+    }
+  }
+
+  #terminalHandoverSettings({
+    target,
+    bindingId,
+    model: observedModel,
+  }: ClaudeTerminalHandoverSource): ClaudeSettings {
+    this.validateNativeBridgeTarget(target, false, bindingId);
+    const historyWorkspace = this.sessions.claudeControlWorkspace(
+      target.nativeId,
+      target.registeredWorkspace,
+    );
+    // A migrated worktree sometimes still has its history under the opening cwd.
+    // Resume there would silently change the session's working directory.
+    if (historyWorkspace !== target.workspace)
+      throw new Error("claude-terminal-handover-workspace-unavailable");
+    const transcript = this.sessions.verifiedClaudeControlTarget(target.nativeId, target.workspace);
+    const { permissionMode } = readClaudeTranscriptObservation(
+      transcript,
+      target.nativeId,
+      "terminal-usage",
+    );
+    const model = observedModel ?? readClaudeTranscriptModel(transcript, target.nativeId);
+    if (!model) throw new Error("claude-terminal-handover-model-unconfirmed");
+    if (
+      permissionMode !== "default" &&
+      permissionMode !== "plan" &&
+      permissionMode !== "acceptEdits"
+    )
+      throw new Error("claude-terminal-handover-permission-unconfirmed");
+    return { model, permissionMode };
+  }
+
+  adoptTerminal(
+    value: Record<string, unknown>,
+    bridge: TerminalHandoverBridge,
+    reportOwner: (id: string) => string | undefined,
+  ) {
+    return this.#sessionOperation(async ({ value, id }) => {
+      const { requestId, deviceId, runtimeBootId, expectedRevision, turnId, publicInputHash } =
+        value;
+      const remote = value.operation === "handover-terminal";
+      if (
+        typeof requestId !== "string" ||
+        !uuidPattern.test(requestId) ||
+        !validClaudeDeviceId(deviceId) ||
+        (remote
+          ? value.confirmed !== true ||
+            (turnId !== undefined && (typeof turnId !== "string" || !uuidPattern.test(turnId)))
+          : !CLAUDE_OWNER_DEVICES.has(deviceId)) ||
+        value.experimentalEnabled !== true ||
+        typeof runtimeBootId !== "string" ||
+        !Number.isSafeInteger(expectedRevision) ||
+        Number(expectedRevision) < 0 ||
+        (publicInputHash !== undefined &&
+          (typeof publicInputHash !== "string" || !/^[0-9a-f]{64}$/.test(publicInputHash))) ||
+        Object.keys(value).some(
+          (key) =>
+            ![
+              "operation",
+              "sessionId",
+              "requestId",
+              "deviceId",
+              "runtimeBootId",
+              "expectedRevision",
+              "experimentalEnabled",
+              "publicInputHash",
+              ...(remote ? ["confirmed", "turnId"] : []),
+            ].includes(key),
+        )
+      )
+        throw new Error("invalid-claude-terminal-handover");
+      const receipt = admitControlReceipt(
+        this.dataDir,
+        requestId,
+        claudeCommandFingerprintInput(value),
+      );
+      if (receipt.previous) return receipt.previous;
+      if (runtimeBootId !== this.bootId) throw new Error("stale-runtime-boot");
+      this.#privateDirectory(true);
+      const owned = this.#ownerLocks.has(id);
+      const release = owned ? null : this.#tryLock(id);
+      if (!owned && !release) throw new Error("session-managed-by-another-runtime");
+      if (release) this.#ownerLocks.set(id, release);
+      const result = (
+        controlOutcome: "accepted" | "not-dispatched" | "unknown",
+        reason?: string,
+      ) => ({
+        accepted: controlOutcome === "accepted",
+        completed: controlOutcome === "accepted",
+        controlOutcome,
+        sessionId: id,
+        requestId,
+        runtimeBootId,
+        ...(reason ? { reason } : {}),
+      });
+      let externalEffect = false;
+      try {
+        const source = bridge.terminalHandoverSource(id);
+        if (!source) throw new Error("claude-terminal-handover-unavailable");
+        const modelAtAdmission = source.model;
+        if (source.reason && !remote) throw new Error(source.reason);
+        if (this.managedWorkspace(id)) throw new Error("session-already-managed");
+        if (!supportsClaudeManagedRunner() || !(await this.#installationVersion()))
+          throw new Error("claude-terminal-handover-unavailable");
+        const evidence = {
+          operation: value.operation,
+          workspaceId: source.target.workspaceId,
+          runtimeBootId,
+          expectedRevision,
+          turnId: turnId ?? null,
+          inputFingerprint: null,
+          executionMode: remote ? "claude-follower" : "claude-managed",
+          ...(publicInputHash ? { publicInputHash } : {}),
+        };
+        let continueId: string | undefined;
+        let localRevision = Number(expectedRevision);
+        if (remote) {
+          const terminal = bridge.remoteTerminalExitSource(id);
+          if (
+            !terminal ||
+            terminal.bindingId !== source.bindingId ||
+            terminal.revision !== expectedRevision ||
+            terminal.turnId !== (turnId ?? null)
+          )
+            throw new Error("stale-Claude-revision");
+          this.#terminalHandoverSettings(source);
+          const process = await this.#ownership.foregroundProcess(terminal.target.nativeId);
+          if (!process) throw new Error("claude-terminal-foreground-unconfirmed");
+          const current = bridge.remoteTerminalExitSource(id);
+          if (
+            !current ||
+            current.bindingId !== terminal.bindingId ||
+            current.leaseId !== terminal.leaseId ||
+            current.revision !== terminal.revision
+          )
+            throw new Error("stale-Claude-revision");
+          const commandId = randomUUID();
+          continueId = randomUUID();
+          const replay = receipt.claim(id, deviceId, {
+            ...evidence,
+            bindingId: terminal.bindingId,
+            nativeId: terminal.target.nativeId,
+            commandId,
+            continuationRequestId: continueId,
+          });
+          if (replay) return replay;
+          const exit = await bridge.requestTerminalExit(
+            current,
+            requestId,
+            deviceId,
+            commandId,
+            () => {
+              receipt.dispatch();
+              externalEffect = true;
+            },
+          );
+          if (!externalEffect || exit.controlOutcome === "not-dispatched") {
+            const refused = result("not-dispatched", "claude-terminal-exit-refused");
+            receipt.finish(refused);
+            return refused;
+          }
+          const deadline = Date.now() + 8000;
+          while (!(await this.#ownership.foregroundProcessExited(process))) {
+            if (Date.now() >= deadline)
+              return result("unknown", "claude-terminal-exit-unconfirmed");
+            await sleep(150);
+          }
+          await this.#ensureNoExternalOwner(source.target.nativeId);
+          bridge.confirmRemoteTerminalExit(terminal);
+          const released = this.#load(id);
+          localRevision =
+            Number(released?.snapshot.revision ?? 0) + this.#hostState.read(id).revision;
+        } else {
+          this.#forgetOwnership(id);
+          const previous = await this.#live(id, true);
+          if (previous.revision !== expectedRevision) throw new Error("stale-Claude-revision");
+          if (previous.sendEnabled !== true)
+            throw new Error(String(previous.reason ?? "session-busy"));
+        }
+        // Check the native owner again under the same managed lock used by sends.
+        await this.#ensureNoExternalOwner(source.target.nativeId);
+        const current = bridge.terminalHandoverSource(id, remote ? requestId : undefined);
+        if (!current || current.bindingId !== source.bindingId)
+          throw new Error("unverified-session-identity");
+        if (current.reason) throw new Error(current.reason);
+        const reportDeviceId = reportOwner(id);
+        if (current.reports.length && !validClaudeDeviceId(reportDeviceId))
+          throw new Error("claude-terminal-report-owner-unavailable");
+        const settings = this.#terminalHandoverSettings({
+          ...current,
+          model: current.model ?? modelAtAdmission,
+        });
+        const target = {
+          ...current.target,
+          fingerprint: this.#targetFingerprint(current.target.nativeId, current.target.workspace),
+        };
+        this.#assertNativeAliasesConfirmed(id, target.nativeId, target.workspace);
+        const existing = this.#load(id);
+        const record = this.#adoptedRecord(
+          id,
+          existing,
+          target,
+          Math.max(localRevision, current.revision) - this.#hostState.read(id).revision,
+        );
+        if (!remote) {
+          const replay = receipt.claim(id, deviceId, evidence);
+          if (replay) return replay;
+          receipt.dispatch();
+          externalEffect = true;
+        }
+        record.terminalHandover = true;
+        this.#hostState.importTerminalHandover(
+          id,
+          settings,
+          current.reports,
+          reportDeviceId,
+          continueId ? { id: continueId, deviceId, text: TERMINAL_CONTINUE_TEXT } : undefined,
+        );
+        this.#save(record);
+        bridge.finishTerminalHandover(current);
+        const accepted = result("accepted");
+        receipt.finish(accepted);
+        this.#catalogChanged?.();
+        return accepted;
+      } catch (error) {
+        if (externalEffect) return result("unknown", "control-outcome-unconfirmed");
+        throw error;
+      } finally {
+        if (release) {
+          this.#ownerLocks.delete(id);
+          release();
+        }
+      }
+    })(value);
+  }
+
   /** Establish the verified execution identity as part of this message's preparation. */
   async #sessionForSend(id: string, expectedRevision: number): Promise<ClaudeRecord> {
     const previous = await this.#live(id, true);
@@ -3297,46 +3592,12 @@ export class ClaudeManagedReadOwner {
           throw new Error("claude-session-fingerprint-changed");
       }
       this.#assertNativeAliasesConfirmed(id, target.nativeId, target.workspace);
-      const hostRevision = this.#hostState.read(id).revision;
-      const snapshotRevision = expectedRevision - hostRevision;
-      if (!Number.isSafeInteger(snapshotRevision) || snapshotRevision < 0)
-        throw new Error("stale-Claude-revision");
-      const namedCreate = existing && !existing.adopted && existing.title !== "Claude Code";
-      const record: ClaudeRecord = {
-        version: 1,
+      const record = this.#adoptedRecord(
         id,
-        workspaceId: target.workspaceId,
-        workspace: target.workspace,
-        registeredWorkspace: canonicalize(this.store.workspacePath(target.workspaceId)),
-        home: this.#home(),
-        nativeId: target.nativeId,
-        title:
-          existing && (existing.forkSourceNativeId || namedCreate)
-            ? existing.title
-            : (this.#nativeMetadata(target.nativeId, target.workspace)?.title ??
-              existing?.title ??
-              "Claude Code"),
-        createdAt: existing?.createdAt ?? new Date().toISOString(),
-        adopted: existing?.adopted ?? true,
-        released: false,
-        fresh: existing?.fresh ?? false,
-        fingerprint,
-        ...(existing?.forkSourceNativeId
-          ? { forkSourceNativeId: existing.forkSourceNativeId, forkCutoff: existing.forkCutoff }
-          : {}),
-        completedRequests: existing?.completedRequests ?? [],
-        snapshot: {
-          ...existing?.snapshot,
-          status: "idle",
-          revision: snapshotRevision,
-          turnId: null,
-          sendEnabled: true,
-          stopEnabled: false,
-          approvals: [],
-          questions: [],
-          streamText: "",
-        },
-      };
+        existing,
+        { ...target, fingerprint },
+        expectedRevision - this.#hostState.read(id).revision,
+      );
       this.#save(record);
       return record;
     } catch (error) {
@@ -3346,6 +3607,52 @@ export class ClaudeManagedReadOwner {
       }
       throw error;
     }
+  }
+
+  #adoptedRecord(
+    id: string,
+    existing: ClaudeRecord | null,
+    target: Pick<ClaudeRecord, "workspaceId" | "workspace" | "nativeId" | "fingerprint">,
+    revision: number,
+  ): ClaudeRecord {
+    if (!Number.isSafeInteger(revision) || revision < 0) throw new Error("stale-Claude-revision");
+    const namedCreate = existing && !existing.adopted && existing.title !== "Claude Code";
+    return {
+      version: 1,
+      id,
+      workspaceId: target.workspaceId,
+      workspace: target.workspace,
+      nativeId: target.nativeId,
+      fingerprint: target.fingerprint,
+      registeredWorkspace: canonicalize(this.store.workspacePath(target.workspaceId)),
+      home: this.#home(),
+      title:
+        existing && (existing.forkSourceNativeId || namedCreate)
+          ? existing.title
+          : (this.#nativeMetadata(target.nativeId, target.workspace)?.title ??
+            existing?.title ??
+            "Claude Code"),
+      createdAt: existing?.createdAt ?? new Date().toISOString(),
+      adopted: existing?.adopted ?? true,
+      released: false,
+      fresh: existing?.fresh ?? false,
+      ...(existing?.terminalHandover ? { terminalHandover: true } : {}),
+      ...(existing?.forkSourceNativeId
+        ? { forkSourceNativeId: existing.forkSourceNativeId, forkCutoff: existing.forkCutoff }
+        : {}),
+      completedRequests: existing?.completedRequests ?? [],
+      snapshot: {
+        ...existing?.snapshot,
+        status: "idle",
+        revision,
+        turnId: null,
+        sendEnabled: true,
+        stopEnabled: false,
+        approvals: [],
+        questions: [],
+        streamText: "",
+      },
+    };
   }
 
   async #release(value: Record<string, any>, id: string): Promise<Record<string, unknown>> {
@@ -4406,6 +4713,7 @@ export class ClaudeManagedReadOwner {
       typeof value.title !== "string" ||
       typeof value.createdAt !== "string" ||
       typeof value.adopted !== "boolean" ||
+      (value.terminalHandover !== undefined && value.terminalHandover !== true) ||
       typeof value.released !== "boolean" ||
       typeof value.fresh !== "boolean" ||
       !isObject(value.snapshot) ||
@@ -5560,7 +5868,12 @@ export class ClaudeManagedReadOwner {
           aliases.set(other.id, other);
     for (const [alias, candidate] of aliases) {
       const runner = this.#runners.get(alias);
-      if (runner?.hasWorker || runner?.isRetiring || this.#starting.has(alias))
+      if (
+        (candidate?.terminalHandover && !candidate.released) ||
+        runner?.hasWorker ||
+        runner?.isRetiring ||
+        this.#starting.has(alias)
+      )
         throw new Error("session-already-managed");
       if (
         readUnknownManagedCommands(this.dataDir, alias).some((command) => {

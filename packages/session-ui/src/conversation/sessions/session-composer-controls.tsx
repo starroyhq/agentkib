@@ -1238,6 +1238,7 @@ export function SessionComposerControls({
     locale,
     locked: settingsWriteLocked,
     full,
+    local: desktop,
     write: (fields) => mutate("settings", fields),
   });
   const nativePolicy =
@@ -1563,6 +1564,7 @@ export function SessionComposerControls({
                 readOnly: settingsReadOnly,
                 settingsAuthority: followerAuthority,
                 terminalModel: terminalModel,
+                terminalPickerVisible: desktop,
                 terminalPickerDisabledReason:
                   reasonTitle(feature("open-model-picker")?.reason) ?? copy.settingUnavailable,
                 saving: saving,
@@ -1577,7 +1579,7 @@ export function SessionComposerControls({
                   refresh: preparesSettings ? () => void load(true, "settings") : undefined,
                   terminal: {
                     modelSettings: nativeModels,
-                    offered: canOpenTerminalModel,
+                    offered: desktop && canOpenTerminalModel,
                     settingsReadable,
                     sessionId: selected,
                     live,

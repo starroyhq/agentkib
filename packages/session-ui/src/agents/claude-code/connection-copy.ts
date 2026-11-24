@@ -549,13 +549,75 @@ export function claudeConnectionReason(
   }
 }
 
-const webDisconnected: Record<Locale, string> = {
-  "zh-CN": "尚未连接终端。请在电脑上的 AgentKib 打开连接指引，并在目标 Claude Code 会话中连接。",
-  "zh-Hant": "尚未連接終端。請在電腦上的 AgentKib 開啟連線指引，並在目標 Claude Code 對話中連接。",
-  "en-US":
-    "The terminal is not connected. Open the connection guide in AgentKib on your computer and connect from the target Claude Code session.",
-  "ja-JP":
-    "ターミナルに未接続です。コンピューター上の AgentKib で接続ガイドを開き、対象の Claude Code 会話から接続してください。",
+const webStatus: Record<
+  Locale,
+  Pick<
+    Copy,
+    | "approval"
+    | "question"
+    | "disconnected"
+    | "lost"
+    | "turnUnconfirmed"
+    | "permissionUnconfirmed"
+    | "sendUnverified"
+    | "attachments"
+    | "connectionUnconfirmed"
+    | "cliTooOld"
+    | "pluginOutdated"
+  >
+> = {
+  "zh-CN": {
+    approval: "等待工具审批",
+    question: "等待回答",
+    disconnected: "终端未连接。",
+    lost: "终端连接已断开。",
+    turnUnconfirmed: "当前轮次尚未核实。",
+    permissionUnconfirmed: "当前审批状态尚未核实。",
+    sendUnverified: "当前会话仅供查看。",
+    attachments: "当前会话无法发送附件。",
+    connectionUnconfirmed: "上次操作结果尚未确认。",
+    cliTooOld: "Claude Code {version} 低于连接所需版本 {minimum}。",
+    pluginOutdated: "终端插件版本低于连接要求。",
+  },
+  "zh-Hant": {
+    approval: "等待工具核准",
+    question: "等待回答",
+    disconnected: "終端未連線。",
+    lost: "終端連線已中斷。",
+    turnUnconfirmed: "目前輪次尚未確認。",
+    permissionUnconfirmed: "目前核准狀態尚未確認。",
+    sendUnverified: "目前的對話僅供查看。",
+    attachments: "目前的對話無法傳送附件。",
+    connectionUnconfirmed: "上次操作結果尚未確認。",
+    cliTooOld: "Claude Code {version} 低於連線所需版本 {minimum}。",
+    pluginOutdated: "終端外掛版本低於連線要求。",
+  },
+  "en-US": {
+    approval: "Tool approval pending",
+    question: "Answer pending",
+    disconnected: "The terminal is disconnected.",
+    lost: "The terminal connection ended.",
+    turnUnconfirmed: "The current turn is unconfirmed.",
+    permissionUnconfirmed: "The current approval status is unconfirmed.",
+    sendUnverified: "This session is read-only.",
+    attachments: "Attachments are unavailable in this session.",
+    connectionUnconfirmed: "The last operation's outcome is unconfirmed.",
+    cliTooOld: "Claude Code {version} is below the minimum supported version {minimum}.",
+    pluginOutdated: "The terminal plugin is below the supported version.",
+  },
+  "ja-JP": {
+    approval: "ツールの承認待ち",
+    question: "回答待ち",
+    disconnected: "ターミナルに未接続です。",
+    lost: "ターミナルとの接続が切れました。",
+    turnUnconfirmed: "現在のターンは未確認です。",
+    permissionUnconfirmed: "現在の承認状況は未確認です。",
+    sendUnverified: "この会話は読み取り専用です。",
+    attachments: "この会話では添付ファイルを送信できません。",
+    connectionUnconfirmed: "前回の操作結果は未確認です。",
+    cliTooOld: "Claude Code {version} は接続に必要な最小バージョン {minimum} より古いです。",
+    pluginOutdated: "ターミナルのプラグインは接続に必要なバージョンより古いです。",
+  },
 };
 const webCopies = new Map<Locale, Copy>();
 
@@ -568,7 +630,7 @@ export function claudeConnectionCopyForSurface(
   if (!copy) {
     copy = {
       ...surfaceCopy(claudeConnectionCopy[locale], surface, locale),
-      disconnected: webDisconnected[locale],
+      ...webStatus[locale],
     };
     webCopies.set(locale, copy);
   }

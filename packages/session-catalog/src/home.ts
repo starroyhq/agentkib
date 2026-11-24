@@ -1,4 +1,4 @@
-import { isSessionVisible, sortSessions, type CatalogSession } from "./index";
+import { isSessionVisible, pinnedSessionsFirst, sortSessions, type CatalogSession } from "./index";
 
 /** What a session on the home waits for from the person. */
 /** "delegation": a Project Agent whose delegation paused until the person looks at it. */
@@ -58,7 +58,7 @@ const DELEGATION_NEEDS = new Set([
 ]);
 
 /**
- * Sorts this computer's sessions into the home's groups, newest first, as the phone's first tab
+ * Sorts this computer's sessions into the home's groups, pinned first then newest first, as the phone's first tab
  * does: what waits for the person, then unread results, then running turns. Each session appears
  * once; a running session that waits for the person is under "needs you" only. Only what the
  * catalog reports counts, so a session another client merely has open shows nothing.
@@ -68,10 +68,15 @@ const DELEGATION_NEEDS = new Set([
  */
 export function homeSessionGroups<S extends HomeSession>(
   sessions: readonly S[],
-  { recent = 8, unconfirmed }: { recent?: number; unconfirmed?: ReadonlySet<string> } = {},
+  {
+    recent = 8,
+    unconfirmed,
+    pinnedFirst = true,
+  }: { recent?: number; unconfirmed?: ReadonlySet<string>; pinnedFirst?: boolean } = {},
 ): HomeSessionGroups<S> {
   const groups: HomeSessionGroups<S> = { needsYou: [], review: [], running: [], recent: [] };
-  for (const session of sortSessions(sessions)) {
+  const sorted = sortSessions(sessions);
+  for (const session of pinnedFirst ? pinnedSessionsFirst(sorted) : sorted) {
     if (
       session.remote ||
       session.archived ||
@@ -129,7 +134,7 @@ export function homeSessionGroups<S extends HomeSession>(
  * running in one. Turns in a connected terminal or another client go on.
  */
 export function workStoppedByQuit<S extends HomeSession>(sessions: readonly S[]): S[] {
-  const groups = homeSessionGroups(sessions, { recent: 0 });
+  const groups = homeSessionGroups(sessions, { recent: 0, pinnedFirst: false });
   const here = (session: S) => {
     const place = session.continuation?.executionLocation;
     return place !== "terminal" && place !== "external";

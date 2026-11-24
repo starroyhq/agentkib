@@ -238,7 +238,9 @@ export function createBridge(ctx, options = {}) {
   const derived = new WeakSet();
   /** DSH's archive set, from its workspace controller. */
   let archived = new Set();
-  let followingArchive = false;
+  let pinned;
+  let pinFeedReady = false;
+  let followingWorkspace = false;
 
   const service = (name) => {
     try {
@@ -509,7 +511,9 @@ export function createBridge(ctx, options = {}) {
     if (typeof controller?.list === "function") {
       try {
         const value = await controller.list({}, lifetime.signal);
-        return (value?.items ?? []).map((item) => sessionSummary(item, archived)).filter(Boolean);
+        return (value?.items ?? [])
+          .map((item) => sessionSummary(item, archived, pinned))
+          .filter(Boolean);
       } catch {
         // Fall back to the persistence corpus below.
       }
@@ -528,6 +532,7 @@ export function createBridge(ctx, options = {}) {
             origin: record?.header?.origin,
           },
           archived,
+          pinned,
         ),
       )
       .filter(Boolean);
@@ -603,21 +608,50 @@ export function createBridge(ctx, options = {}) {
     archived = next;
     refreshList();
   }
-  /** Keeps the archive set current, including archives made in DSH's own window. */
-  async function followArchive() {
+  const hasPinMethods = (workspaces) =>
+    typeof workspaces?.pinSession === "function" && typeof workspaces?.unpinSession === "function";
+
+  function pinSet(ids) {
+    return Array.isArray(ids) && ids.every((id) => typeof id === "string")
+      ? new Set(ids)
+      : undefined;
+  }
+
+  function setPinned(next) {
+    if (pinned && next.size === pinned.size && [...next].every((id) => pinned.has(id))) return;
+    pinned = next;
+    refreshList();
+  }
+
+  /** Follow the workspace sets, including changes made in DSH's own window. */
+  async function followWorkspace() {
     const workspaces = service("workspaceController");
-    if (followingArchive || typeof workspaces?.follow !== "function") return;
-    followingArchive = true;
+    if (followingWorkspace || typeof workspaces?.follow !== "function") return;
+    followingWorkspace = true;
     try {
       for await (const frame of workspaces.follow(lifetime.signal)) {
-        if (frame?.type === "baseline" || frame?.type === "replace")
+        let pins;
+        if (frame?.type === "baseline" || frame?.type === "replace") {
           setArchived(frame.value?.archivedSessionIds);
-        else if (frame?.type === "archived") setArchived(frame.archivedSessionIds);
+          pins = frame.value?.pinnedSessionIds;
+        } else if (frame?.type === "archived") setArchived(frame.archivedSessionIds);
+        else if (frame?.type === "pinned") pins = frame.pinnedSessionIds;
+        const next = hasPinMethods(workspaces) ? pinSet(pins) : undefined;
+        if (!next) continue;
+        setPinned(next);
+        if (!pinFeedReady) {
+          pinFeedReady = true;
+          schedule();
+        }
       }
     } catch {
       // The stream ends with the service or this plugin; the next injection follows again.
     } finally {
-      followingArchive = false;
+      followingWorkspace = false;
+      if (pinFeedReady) {
+        pinFeedReady = false;
+        schedule();
+      }
     }
   }
   function refreshList() {
@@ -1245,6 +1279,18 @@ export function createBridge(ctx, options = {}) {
         setArchived(value?.archivedSessionIds);
         return { archived: archived.has(sessionId) };
       }
+      case "pin": {
+        const workspaces = service("workspaceController");
+        if (!pinFeedReady || !hasPinMethods(workspaces) || typeof command.pinned !== "boolean")
+          throw new Error("session-pin-unavailable");
+        const sessionId = String(command.sessionId);
+        const value = command.pinned
+          ? await workspaces.pinSession({ sessionId })
+          : await workspaces.unpinSession({ sessionId });
+        const next = pinSet(value?.pinnedSessionIds);
+        if (!next) throw new Error("session-pin-unavailable");
+        return { pinned: next.has(sessionId) };
+      }
       case "models": {
         const controller = needController();
         if (command.recordedOnly && typeof command.sessionId === "string")
@@ -1520,6 +1566,7 @@ export function createBridge(ctx, options = {}) {
       approvals: true,
       questions: typeof service("userQuestions")?.ask === "function",
       workspaceController: typeof service("workspaceController")?.archiveSession === "function",
+      workspacePins: pinFeedReady && hasPinMethods(service("workspaceController")),
       modelCatalog: typeof controller?.modelCatalog === "function",
       sessionModelSelection: resolves && canRecordModelSelection(controller),
       createModelSelection: canSelectModelAtCreation(controller),
@@ -1731,12 +1778,12 @@ export function createBridge(ctx, options = {}) {
   ctx.inject?.(["commands"], () => schedule());
   for (const name of ["goals", "permissionPresets", "agentPresets"])
     ctx.inject?.([name], () => schedule());
-  // The archive set lives in the workspace controller, which can also start after this plugin.
+  // The workspace controller can also start after this plugin.
   ctx.inject?.(["workspaceController"], () => {
-    void followArchive();
+    void followWorkspace();
     schedule();
   });
-  void followArchive();
+  void followWorkspace();
   void scan();
   const heartbeat = setInterval(() => {
     for (const host of hosts.values())

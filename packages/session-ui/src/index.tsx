@@ -102,6 +102,8 @@ export { PendingCenter, type PendingCenterCopy } from "./conversation/sessions/p
 export { SessionDetailsDialog } from "./conversation/catalog/session-details-dialog";
 export {
   SessionManagementRowMenu,
+  SessionPinnedMark,
+  hasSessionPinning,
   type SessionManagementRowMenuProps,
 } from "./conversation/catalog/session-row-menu";
 export {

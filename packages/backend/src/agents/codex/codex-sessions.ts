@@ -18,7 +18,7 @@ import {
 } from "./codex-historical-fields";
 import { homedir } from "node:os";
 import path from "node:path";
-import type { Row } from "../../sql";
+import type { Row, Sql } from "../../sql";
 import { withinIdentity } from "../../files";
 import { pathIdentity } from "../../paths";
 import { compareUtf8 } from "../../workspaces";
@@ -27,6 +27,13 @@ import type { NativeSession } from "../../session-store";
 import { isReparseOrSymlink } from "../../native-files";
 
 export type { CodexHistoricalSettings } from "./codex-historical-fields";
+
+// The built-in section installed by the Codex state database migration.
+export const CODEX_PINNED_SECTION = "01984de2-8f74-7c91-a3b2-5c5e937cf318";
+const MAX_PIN_THREADS = 100_000;
+
+type ThreadPin = { pinned: boolean; available: boolean; cwd: string | null };
+
 function nonempty(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value : null;
 }
@@ -267,6 +274,7 @@ export interface NativeSessionSource {
 /** Query metadata before bounded header enrichment so unrelated workspaces never trigger transcript reads. */
 export class CodexSessions {
   #state: CodexStateReader;
+  #pinSnapshots = new WeakMap<Sql, { version: unknown; pins?: Map<string, ThreadPin> }>();
   #historicalFields = new Map<
     string,
     { identity: string; id: string; cwd: string; fields: CodexHistoricalSettings }
@@ -301,6 +309,47 @@ export class CodexSessions {
     const databases = current.length ? current : this.databases(path.join(home, "sqlite"));
     this.#state.keep(databases);
     return databases;
+  }
+
+  /** Reads only section metadata. A retained reader's data_version includes WAL-only commits. */
+  pinSnapshot(): Map<string, ThreadPin> | undefined {
+    const files = this.#stateDatabases(this.home()).sort((left, right) =>
+      right.localeCompare(left, "en", { numeric: true }),
+    );
+    for (const file of files) {
+      const pins = this.#state.read(file, 50, (database) => {
+        const sql = database.sql;
+        const version = sql.one("PRAGMA data_version")?.data_version;
+        const cached = this.#pinSnapshots.get(sql);
+        if (cached && cached.version === version) return cached.pins;
+        const columns = new Set(sql.rows("PRAGMA table_info(threads)").map((row) => row.name));
+        if (!columns.has("thread_section_id")) {
+          this.#pinSnapshots.set(sql, { version });
+          return;
+        }
+        if (!sql.one("SELECT id FROM thread_sections WHERE id=?", CODEX_PINNED_SECTION))
+          throw new Error("session-pin-unavailable");
+        const rows = sql.rows(
+          `SELECT id,thread_section_id,${columns.has("cwd") ? "cwd" : "NULL AS cwd"},
+                  ${columns.has("archived") ? "archived" : "0 AS archived"}
+           FROM threads LIMIT ${MAX_PIN_THREADS + 1}`,
+        );
+        if (rows.length > MAX_PIN_THREADS) throw new Error("session-pin-unavailable");
+        const result = new Map<string, ThreadPin>();
+        for (const row of rows) {
+          const id = typeof row.id === "string" && uuid(row.id) ? row.id : null;
+          if (id)
+            result.set(id, {
+              pinned: row.thread_section_id === CODEX_PINNED_SECTION,
+              available: !row.archived,
+              cwd: typeof row.cwd === "string" ? row.cwd : null,
+            });
+        }
+        this.#pinSnapshots.set(sql, { version, pins: result });
+        return result;
+      });
+      if (pins) return pins;
+    }
   }
   verifiedControlIds(nativeRefs: Iterable<string>): Set<string> {
     return new Set(

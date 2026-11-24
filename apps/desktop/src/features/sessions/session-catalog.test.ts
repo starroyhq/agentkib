@@ -66,6 +66,29 @@ describe("session catalog", () => {
     expect(select("all")).toEqual(["archived", "readable", "metadata"]);
   });
 
+  it("puts pins first within each group without changing group recency or pinned ties", () => {
+    const item = (id: string, workspace_id: string, day: number, pinned = false) => ({
+      ...sessions[0],
+      id,
+      workspace_id,
+      updated_at: `2026-09-0${day}T00:00:00Z`,
+      pinned,
+    });
+    const records = [
+      item("second-pin", "one", 4, true),
+      item("second-recent", "one", 5),
+      item("first-pin-a", "two", 2, true),
+      item("first-recent", "two", 6),
+      item("first-pin-b", "two", 2, true),
+    ];
+    expect(
+      groupSessions(records, workspaces).map(({ id, sessions }) => [id, sessions.map((s) => s.id)]),
+    ).toEqual([
+      ["two", ["first-pin-a", "first-pin-b", "first-recent"]],
+      ["one", ["second-pin", "second-recent"]],
+    ]);
+  });
+
   it("always hides auxiliary and execution records while retaining unknown sources", () => {
     const records: ConversationSessionSummary[] = [
       sessions[0],

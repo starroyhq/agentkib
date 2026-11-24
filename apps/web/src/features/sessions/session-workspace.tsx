@@ -1,5 +1,6 @@
 import { managedAgentOf, sessionProviderDeclaration } from "@agentkib/web-client";
 import {
+  hasSessionPinning,
   homeSessionCopy,
   newSessionCopy,
   PendingCenter,
@@ -416,9 +417,11 @@ function WorkspaceShell() {
               locale={locale}
               indexEnabled={indexEnabled}
               status={session.catalogStatus}
-              // Rename, archive and delete need this browser's organize permission.
-              rowMenu={
-                access?.device?.organize ? (row) => <SessionRowMenu session={row} /> : undefined
+              // Only the disabled pin action is shown without organize permission.
+              rowMenu={(row) =>
+                (access?.device?.organize || hasSessionPinning(row)) && (
+                  <SessionRowMenu session={row} pinOnly={!access?.device?.organize} />
+                )
               }
               execution={session.showExecution}
               onExecutionChange={session.setShowExecution}

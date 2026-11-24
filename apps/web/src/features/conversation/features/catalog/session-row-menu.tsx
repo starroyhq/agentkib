@@ -17,8 +17,14 @@ function DeleteDialog({ children, footer, ...props }: ComponentProps<typeof Dial
   );
 }
 
-export function SessionRowMenu({ session }: { session: ConversationSessionSummary }) {
-  const { client, locale, refresh, dropDeletedSession } = useSession();
+export function SessionRowMenu({
+  session,
+  pinOnly = false,
+}: {
+  session: ConversationSessionSummary;
+  pinOnly?: boolean;
+}) {
+  const { client, locale, refresh, dropDeletedSession, access, error } = useSession();
   const copy = sessionCopyForSurface(locale, "web");
   const reason = (action: SessionManagementAction, code: string) => {
     if (action === "delete" && code === "codex-owner-busy") return copy.deleteOwnerBusy;
@@ -33,6 +39,9 @@ export function SessionRowMenu({ session }: { session: ConversationSessionSummar
     <SessionManagementRowMenu
       session={session}
       client={client}
+      locale={locale}
+      canPin={!error && access?.device?.organize === true}
+      pinOnly={pinOnly}
       copy={copy}
       components={webSessionPlatform.components}
       sessionTitle={displaySessionTitle(session.title, dictionaries[locale].untitled)}

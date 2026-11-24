@@ -64,22 +64,30 @@ function errorMessage(error: unknown, detail: string, tr: typeof Translate): str
 }
 
 /** Shared by connection settings, the quick panel and remote catalog errors. */
-export function RemoteErrorDetails({ error }: { error: unknown }) {
+export function RemoteErrorDetails({
+  error,
+  showDiagnostics = true,
+}: {
+  error: unknown;
+  showDiagnostics?: boolean;
+}) {
   const { tr } = useI18n();
   const detail = diagnosticText(error);
   return (
     <div className="min-w-0 flex-1 break-words">
       <p>{errorMessage(error, detail, tr)}</p>
-      <Collapsible key={detail} className="mt-2 text-xs">
-        <CollapsibleTrigger className="cursor-pointer bg-transparent text-left">
-          {tr("errors.details")}
-        </CollapsibleTrigger>
-        <CollapsibleContent>
-          <pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap break-all">
-            {detail.slice(0, 4096)}
-          </pre>
-        </CollapsibleContent>
-      </Collapsible>
+      {showDiagnostics && (
+        <Collapsible key={detail} className="mt-2 text-xs">
+          <CollapsibleTrigger className="cursor-pointer bg-transparent text-left">
+            {tr("errors.details")}
+          </CollapsibleTrigger>
+          <CollapsibleContent>
+            <pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap break-all">
+              {detail.slice(0, 4096)}
+            </pre>
+          </CollapsibleContent>
+        </Collapsible>
+      )}
     </div>
   );
 }

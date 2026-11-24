@@ -3,8 +3,6 @@ import { isLiveSessionAgent } from "@agentkib/web-client";
 import { useRef, useState } from "react";
 import { Database, RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
-import { RemoteErrorDetails } from "@/features/remote/RemoteErrorDetails";
 import { api } from "@/core/api";
 import { useAppStore } from "@/stores/app-store";
 import { useSessionHub } from "./SessionHubContext";
@@ -90,97 +88,11 @@ export function SessionHubPage() {
         </Button>
       </div>
     );
-  if (hub.workspacesError && !hub.workspaces.length)
-    return (
-      <div className="session-state flex min-w-0 flex-1 flex-col items-center justify-center gap-4 p-8 text-center">
-        <Notice error>{hub.workspacesError}</Notice>
-        <Button onClick={hub.retryWorkspaces}>{tr("sessions.retry")}</Button>
-      </div>
-    );
-
   const selected = hub.selected;
-  const remoteNotices = hub.remoteHosts?.filter(
-    (host) => host.status !== "online" || hub.remoteErrors?.[host.id],
-  );
-  const scanErrors = Object.entries(hub.errors).filter(([, error]) => Boolean(error));
-  const hasCatalogNotices =
-    !!hub.catalogError || !!remoteNotices?.length || !!hub.workspacesError || scanErrors.length > 0;
-
-  const catalogNotices = (
-    <>
-      {hub.catalogError && (
-        <Notice error>
-          {hub.catalogError}
-          <Button variant="ghost" disabled={hub.refreshing} onClick={() => void hub.refresh()}>
-            {tr("sessions.retry")}
-          </Button>
-        </Notice>
-      )}
-      {!interactive && hub.hiddenSessionNotice && <Notice>{tr("sessions.hiddenRecord")}</Notice>}
-      {remoteNotices?.map((host) => (
-        <Notice key={host.id} error={!!hub.remoteErrors?.[host.id]}>
-          {host.name} · {tr(`remote.state.${host.status}`)}
-          {hub.remoteErrors?.[host.id] && <RemoteErrorDetails error={hub.remoteErrors[host.id]} />}
-        </Notice>
-      ))}
-      {hub.workspacesError && (
-        <Notice error>
-          {hub.workspacesError}
-          <Button variant="ghost" onClick={hub.retryWorkspaces}>
-            {tr("sessions.retry")}
-          </Button>
-        </Notice>
-      )}
-      {scanErrors.length > 0 && (
-        <Notice error>
-          <Collapsible>
-            <div className="flex flex-wrap items-center gap-x-3">
-              <span>{tr("sessions.partialFailure", { count: scanErrors.length })}</span>
-              <Button
-                variant="link"
-                size="sm"
-                className="px-0"
-                disabled={hub.refreshing}
-                onClick={() => void hub.refresh()}
-              >
-                {tr("sessions.retry")}
-              </Button>
-              <CollapsibleTrigger render={<Button variant="link" size="sm" className="px-0" />}>
-                {tr("common.details")}
-              </CollapsibleTrigger>
-            </div>
-            <CollapsibleContent>
-              <ul className="mt-2 grid max-h-40 gap-2 overflow-y-auto overscroll-contain text-xs text-muted-foreground">
-                {scanErrors.map(([id, error]) => {
-                  const workspace = hub.workspaces.find((item) => item.id === id);
-                  return (
-                    <li key={id}>
-                      {workspace && <strong className="block font-medium">{workspace.name}</strong>}
-                      <p>{error}</p>
-                    </li>
-                  );
-                })}
-              </ul>
-            </CollapsibleContent>
-          </Collapsible>
-        </Notice>
-      )}
-    </>
-  );
 
   if (interactive)
     return (
       <div className="session-hub-page flex min-w-0 min-h-0 flex-1 flex-col text-sm">
-        {hasCatalogNotices && (
-          <div
-            className="max-h-[40%] shrink-0 overflow-y-auto overscroll-contain focus-visible:outline-2 focus-visible:outline-ring focus-visible:outline-offset-2"
-            role="region"
-            aria-label={tr("sessions.directory")}
-            tabIndex={0}
-          >
-            {catalogNotices}
-          </div>
-        )}
         {continuationDialog}
         {creating ? <NewSessionPane /> : <DesktopConversationPane sessionId={selected?.id} />}
       </div>
@@ -193,7 +105,7 @@ export function SessionHubPage() {
         className="session-hub-body min-h-0 flex-1 overflow-auto overscroll-contain p-6 px-7 pb-8 [overflow-anchor:none] max-[600px]:p-4"
         ref={historyRef}
       >
-        {catalogNotices}
+        {hub.hiddenSessionNotice && <Notice>{tr("sessions.hiddenRecord")}</Notice>}
         {selected ? (
           <SessionHistoryContent
             selected={selected}

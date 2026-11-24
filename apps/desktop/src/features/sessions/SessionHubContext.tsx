@@ -1,5 +1,4 @@
-import { requestReadStateRefresh, isBusyRead } from "@agentkib/session-ui";
-import { sessionReason } from "./conversation/session-copy";
+import { requestReadStateRefresh } from "@agentkib/session-ui";
 import { useI18n } from "@/core/useI18n";
 import { SESSION_COLLECTIONS, sessionCollection } from "@agentkib/runtime-protocol";
 import type { ConversationSessionSummary, WorkspaceSummary } from "@/core/types";
@@ -18,6 +17,7 @@ import { useNavigate, useSearch } from "@tanstack/react-router";
 import { useHomeWorkspaces } from "@/features/home/home-query";
 import { useAppStore } from "@/stores/app-store";
 import { useSessionCatalog } from "./useSessionCatalog";
+import { catalogReadError } from "./catalog-read-error";
 import { filterSessions, isSessionListed } from "./session-catalog";
 import { useSessionViewStore } from "./session-view-store";
 import { SESSION_REFRESH_EVENT } from "./session-refresh";
@@ -32,7 +32,7 @@ import {
 const refreshControlledCatalog = () => refreshConversationCatalog().catch(() => undefined);
 
 function useHub(active: boolean) {
-  const { localizeMessage, tr, locale } = useI18n();
+  const { tr } = useI18n();
   const workspaceQuery = useHomeWorkspaces();
   const runtime = useAppStore((state) => state.runtime);
   const localEnabled = runtime?.session_index_enabled === true;
@@ -65,12 +65,9 @@ function useHub(active: boolean) {
   );
   const controlledCatalog = useConversationCatalog(active && localEnabled, localEnabled);
   const localAccessDenied = controlled && controlledCatalog.accessDenied === true;
-  const catalogError =
-    controlled && active && localEnabled && controlledCatalog.error !== undefined
-      ? isBusyRead(controlledCatalog.error)
-        ? sessionReason(locale, "session-state-unavailable").text
-        : localizeMessage(controlledCatalog.error)
-      : "";
+  const failedControlledCatalog =
+    controlled && active && localEnabled && controlledCatalog.error !== undefined;
+  const catalogError = failedControlledCatalog ? catalogReadError(controlledCatalog.error, tr) : "";
   const localSessions = useMemo(() => {
     if (localAccessDenied) return [];
     // The persisted workspace index can arrive before the managed directory.
@@ -153,11 +150,12 @@ function useHub(active: boolean) {
     for (const host of remote.hosts) requestReadStateRefresh(`remote:${host.id}`);
     await Promise.all([
       localEnabled ? refreshCatalog() : Promise.resolve(),
+      failedControlledCatalog ? refreshControlledCatalog() : Promise.resolve(),
       ...remote.hosts.map((host) => refreshRemoteCatalog(host.id, true)),
     ]);
     setHistoryRevision((revision) => revision + 1);
     setConversationRefreshRevision((revision) => revision + 1);
-  }, [localEnabled, refreshCatalog, remote.hosts]);
+  }, [localEnabled, refreshCatalog, failedControlledCatalog, remote.hosts]);
   const wasRefreshing = useRef(false);
   useEffect(() => {
     if (wasRefreshing.current && !catalog.refreshing && catalog.ready && enabled) {
@@ -336,7 +334,7 @@ function useHub(active: boolean) {
   return {
     statuses: catalog.statuses,
     errors: catalog.errors,
-    refreshing: catalog.refreshing,
+    refreshing: catalog.refreshing || controlledCatalog.refreshing,
     ready: catalog.ready && controlledCatalog.ready,
     usable: directoryUsable,
     loading:
@@ -363,7 +361,7 @@ function useHub(active: boolean) {
     enabled,
     runtimeReady: runtime !== undefined,
     workspacesLoading: workspaceQuery.isPending && remote.sessions.length === 0,
-    workspacesError: workspaceQuery.error ? localizeMessage(workspaceQuery.error) : "",
+    workspacesError: workspaceQuery.error ? catalogReadError(workspaceQuery.error, tr) : "",
     retryWorkspaces: () => void workspaceQuery.refetch(),
   };
 }

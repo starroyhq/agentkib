@@ -29,7 +29,7 @@ import { sessionOrder, useSessionDirectoryOrder } from "./useSessionDirectoryOrd
 import { SessionDirectoryEntry } from "./SessionDirectoryEntry";
 import { SessionDirectoryTrailing } from "./SessionDirectoryTrailing";
 import { SessionDirectoryHoverCard } from "./SessionDirectoryHoverCard";
-import { SessionDirectorySourceNotices } from "./SessionSourceNotices";
+import { SessionDirectoryNotices } from "./SessionSourceNotices";
 import {
   DirectoryAgentFilterSlot,
   useSessionDirectoryAgentMotion,
@@ -53,6 +53,8 @@ export function SessionDirectory({
 }: { onMenuOpenChange?: (open: boolean) => void } = {}) {
   const { formatDateTime, locale, tr } = useI18n();
   const hub = useSessionHub();
+  const hasCatalogReadError =
+    !!hub.catalogError || !!hub.workspacesError || Object.values(hub.errors).some(Boolean);
   const selected =
     !hub.selected?.remote && hub.selected?.availability === "readable" ? hub.selected : undefined;
   const selectedLive = useConversationDisplayLive(selected?.id);
@@ -182,7 +184,11 @@ export function SessionDirectory({
         <p id="session-directory-reorder-hint" className="sr-only">
           {tr("sessions.reorderHint")}
         </p>
-        {hub.statuses?.some((status) => status.error_key) && <SessionDirectorySourceNotices />}
+        {(hub.statuses?.some((status) => status.error_key) ||
+          hasCatalogReadError ||
+          hub.remoteHosts?.some(
+            (host) => host.status !== "online" || hub.remoteErrors?.[host.id],
+          )) && <SessionDirectoryNotices />}
         {agentMotion.displayed.map((group, index) => {
           const { workspace, sessions: workspaceSessions, label } = group;
           const workspaceKey = `workspace:${group.id}`;
@@ -454,7 +460,7 @@ export function SessionDirectory({
             </Fragment>
           );
         })}
-        {hub.enabled && !hub.loading && !hub.catalogError && !agentMotion.displayed.length && (
+        {hub.enabled && !hub.loading && !hasCatalogReadError && !agentMotion.displayed.length && (
           <div className="session-directory-empty p-[18px_10px] text-center text-muted-foreground">
             <p>{tr(hub.sessions.length ? "sessions.noMatches" : "sessions.noSessions")}</p>
             {hub.sessions.length > 0 && (

@@ -430,6 +430,53 @@ describe("Claude host control boundary", () => {
       );
     },
   );
+  it("projects queue row availability without leaking the submitting device ID", async () => {
+    cookie = "";
+    const access = await http("/access");
+    cookie = access.cookies![0].split(";")[0];
+    deviceId = await approveLegacyBrowser(service, cookie, {
+      send: true,
+      advancedControl: true,
+    });
+    const original = runtime.getMockImplementation()!;
+    runtime.mockImplementation(async (value) =>
+      (value as Record<string, unknown>).operation === "queue-list"
+        ? {
+            data: [
+              {
+                id: "mine",
+                status: "pending",
+                actions: { steer: { available: true } },
+                queueSteerDeviceId: deviceId,
+              },
+              {
+                id: "elsewhere",
+                status: "pending",
+                hasAttachments: true,
+                actions: { update: { available: false }, steer: { available: true } },
+                queueSteerDeviceId: "submitter-device-budget",
+              },
+            ],
+          }
+        : original(value),
+    );
+    const response = await http("/managed/queue?sessionId=claude-session");
+    expect(response).toMatchObject({
+      status: 200,
+      body: {
+        data: [
+          { id: "mine", actions: { steer: { available: true } } },
+          {
+            id: "elsewhere",
+            actions: { update: { available: false }, steer: { available: false } },
+            hasAttachments: true,
+          },
+        ],
+      },
+    });
+    expect(JSON.stringify(response.body)).not.toContain("submitter-device-budget");
+  });
+
   describe("opening a connected terminal's native model picker", () => {
     const operation = "open-model-picker";
     const sessionId = "claude-session";

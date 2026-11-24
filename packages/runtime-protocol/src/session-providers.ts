@@ -40,7 +40,7 @@ export interface SessionActionAvailability {
 }
 
 export type SessionQueueItemActions = Partial<
-  Record<"update" | "delete" | "steer", SessionActionAvailability>
+  Record<"update" | "delete" | "reorder" | "steer", SessionActionAvailability>
 >;
 
 export interface SessionCommandEntry {
@@ -239,7 +239,7 @@ const MANAGED_CAPABILITIES = {
       attachments: true,
       serviceTiers: false,
       modelPicker: true,
-      permissionPicker: false,
+      permissionPicker: true,
       agentPresets: true,
       goal: true,
       goalBudget: "rounds",
@@ -336,7 +336,7 @@ const PROVIDERS = {
     history: { ...MANAGED_CAPABILITIES["claude-code"].history, questionnaire: true },
     commands: { source: "reported" },
     projectAgent: { lead: true, worker: true },
-    queue: { actions: ["list", "add", "update", "delete", "reorder", "pause", "resume"] },
+    queue: { actions: ["list", "add", "update", "delete", "reorder", "pause", "resume", "steer"] },
     connection: { kind: "terminal-bridge" },
     permissionField: "permissionMode",
     activities: {
@@ -367,7 +367,7 @@ const PROVIDERS = {
     ...MANAGED_CAPABILITIES.devin,
     commands: { source: "none" },
     projectAgent: { lead: true, worker: true },
-    queue: { actions: ["list", "add", "update", "delete", "pause", "resume"] },
+    queue: { actions: ["list", "add", "update", "delete", "reorder", "pause", "resume"] },
     permissionField: "permissionMode",
     activities: { kinds: ["subagent"], canStopIndividually: false, canOpenSubagentHistory: true },
   },
@@ -375,7 +375,7 @@ const PROVIDERS = {
     ...MANAGED_CAPABILITIES.antigravity,
     commands: { source: "none" },
     projectAgent: { lead: true, worker: true },
-    queue: { actions: ["list", "add", "update", "delete", "pause", "resume"] },
+    queue: { actions: ["list", "add", "update", "delete", "reorder", "pause", "resume"] },
     connection: { kind: "acp" },
     permissionField: "permissionMode",
     activities: { kinds: [], canStopIndividually: false, canOpenSubagentHistory: false },

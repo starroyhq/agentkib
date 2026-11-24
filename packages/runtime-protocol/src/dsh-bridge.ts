@@ -52,6 +52,8 @@ export interface DshBridgeServices {
   sessionModelSelection?: boolean;
   /** Read a model catalog before creating a session and apply its initial selection. */
   createModelSelection?: boolean;
+  /** List presets and verify the initial permission of a blank session before sending. */
+  createPermissionPreset?: boolean;
   /** Images in prompts and reading a session's images. Plugins older than 0.3.0 do not report it. */
   images?: boolean;
   /** Reading and changing a session's goal. Plugins older than 0.4.0 do not report it. */
@@ -64,6 +66,8 @@ export interface DshBridgeServices {
   subagents?: boolean;
   /** Reading a whole session for handoff and search. Plugins older than 0.5.0 do not report it. */
   documents?: boolean;
+  /** Validated storage import of another Agent's reviewed history. */
+  historyImport?: boolean;
   /** DSH's Agent presets, chosen when a session starts. Plugins older than 0.5.0 do not report it. */
   agentPresets?: boolean;
   /**
@@ -180,6 +184,8 @@ export interface DshBridgeQueueItem {
   text: string;
   /** Images in the message; DSH edits only text, so these items cannot be edited. */
   images: number;
+  /** Whether the original inbox item has non-text content or an attached-file note. */
+  hasAttachments?: boolean;
   rpcId: string | null;
 }
 
@@ -342,6 +348,15 @@ export type DshBridgeCommand = { commandId: string } & (
   | { type: "archive"; sessionId: string; archived: boolean }
   | { type: "pin"; sessionId: string; pinned: boolean }
   | { type: "fork"; sessionId: string }
+  | { type: "history-import-context"; cwd: string }
+  | {
+      type: "import-history";
+      sessionId: string;
+      cwd: string;
+      workspaceId: string;
+      document: unknown;
+      verifyOnly?: true;
+    }
   /**
    * `sessionId` is the new session's ID, chosen by AgentKib so a lost reply can be settled.
    * Without `agentPreset` the session runs DSH's default preset.
@@ -352,9 +367,12 @@ export type DshBridgeCommand = { commandId: string } & (
       sessionId: string;
       agentPreset?: string;
       modelSelection?: { provider: string; model: string; reasoningEffort?: string };
+      policyId?: string;
     }
   /** `{ presets }`: DSH's Agent presets, in the order DSH lists them. */
   | { type: "presets" }
+  /** Native permission choices for creation, read without starting a session. */
+  | { type: "create-permissions" }
   | { type: "models"; sessionId?: string; recordedOnly?: boolean }
   | {
       type: "selectModel";

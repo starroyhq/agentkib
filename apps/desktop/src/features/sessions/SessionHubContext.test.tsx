@@ -3,6 +3,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-libra
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ConversationSessionSummary, RuntimeInfo } from "@/core/types";
 import { SESSION_COLLECTIONS } from "@agentkib/runtime-protocol";
+import { ApiError } from "@agentkib/web-client";
 import { useAppStore } from "@/stores/app-store";
 import { useSessionViewStore } from "./session-view-store";
 import { SessionHubProvider, useSessionHub } from "./SessionHubContext";
@@ -48,6 +49,7 @@ vi.mock("./useSessionCatalog", () => ({
     errors: {},
     statuses: [],
     refresh: async () => {
+      if (!Array.isArray(_workspaces) || !_workspaces.length) return;
       await mocks.refresh();
       await afterRefresh?.();
     },
@@ -115,6 +117,7 @@ beforeEach(() => {
   mocks.controlledError = undefined;
   mocks.codexRuntimeReason = undefined;
   mocks.search = {};
+  mocks.workspaces = [{ id: "workspace", name: "Project", path: "/project" }];
   useAppStore.getState().setRuntime({ session_index_enabled: true } as RuntimeInfo);
   useSessionViewStore.getState().resetFilters();
   useSessionViewStore.getState().setCreatingConversation(false);
@@ -165,7 +168,7 @@ describe("desktop authoritative session directory", () => {
     mocks.controlledUsable = false;
     mocks.controlledReady = false;
     mocks.controlledAccessDenied = true;
-    mocks.controlledError = new Error("Directory access denied");
+    mocks.controlledError = new ApiError(403, "permission_denied");
     let snapshot: ReturnType<typeof useSessionHub> | undefined;
     function Probe() {
       snapshot = useSessionHub();
@@ -179,7 +182,7 @@ describe("desktop authoritative session directory", () => {
     expect(snapshot?.sessions).toEqual([]);
     expect(snapshot?.usable).toBe(false);
     expect(snapshot?.loading).toBe(false);
-    expect(screen.getByRole("alert").textContent).toContain("Directory access denied");
+    expect(screen.getByRole("alert").textContent).toBe("sessions.catalogReadDenied");
     expect(screen.queryByRole("button", { name: "indexed-alias" })).toBeNull();
   });
 
@@ -560,14 +563,14 @@ describe("desktop authoritative session directory", () => {
   it("retains a valid deep link after a catalog error and recovers after retry", () => {
     mocks.search = { sessionId: "unmanaged" };
     mocks.controlled = [];
-    mocks.controlledError = new Error("Conversation catalog unavailable");
+    mocks.controlledError = new ApiError(504, "outcome_unknown");
     const view = render(
       <SessionHubProvider>
         <Directory />
       </SessionHubProvider>,
     );
     expect(mocks.navigate).not.toHaveBeenCalled();
-    expect(screen.getByRole("alert").textContent).toContain("Conversation catalog unavailable");
+    expect(screen.getByRole("alert").textContent).toBe("sessions.catalogReadTimeout");
     mocks.controlledError = undefined;
     mocks.controlled = [session("unmanaged")];
     view.rerender(
@@ -578,6 +581,20 @@ describe("desktop authoritative session directory", () => {
     expect(mocks.navigate).not.toHaveBeenCalled();
     expect(screen.queryByRole("alert")).toBeNull();
     expect(screen.getByRole("button", { name: "unmanaged" })).toBeTruthy();
+  });
+
+  it("can retry the directory read when there are no workspaces to scan", async () => {
+    mocks.workspaces = [];
+    mocks.controlledError = new ApiError(504, "catalog_read_timeout");
+    render(
+      <SessionHubProvider>
+        <Directory />
+      </SessionHubProvider>,
+    );
+    expect(screen.getByRole("alert").textContent).toBe("sessions.catalogReadTimeout");
+    fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
+    await waitFor(() => expect(mocks.refreshControlled).toHaveBeenCalledOnce());
+    expect(mocks.refresh).not.toHaveBeenCalled();
   });
 
   it("only clears a missing deep link after the authoritative catalog succeeds", () => {

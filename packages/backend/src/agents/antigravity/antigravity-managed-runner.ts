@@ -229,14 +229,26 @@ export class AntigravityManagedRunner {
       }
       // The person's choices apply before the next message: Antigravity keeps a session's model
       // and mode, but a resumed session starts again at the default thought level.
+      let confirmedMode = runner.option("mode");
       for (const [id, value] of Object.entries(options.config ?? {})) {
-        if (runner.option(id) === value) continue;
-        const changed = await runner.#waitForResponse(
-          await client.setConfigOption(runner.sessionId, id, value),
-          "session/set_config_option",
-          deadline,
-        );
-        runner.#configOptions = configOptionsOf(changed) ?? runner.#configOptions;
+        const verify = options.create && id === "mode";
+        if ((verify ? confirmedMode : runner.option(id)) === value) continue;
+        let changed: unknown;
+        try {
+          changed = await runner.#waitForResponse(
+            await client.setConfigOption(runner.sessionId, id, value),
+            "session/set_config_option",
+            deadline,
+          );
+        } catch (error) {
+          if (verify) throw new Error("create-permission-unconfirmed", { cause: error });
+          throw error;
+        }
+        const config = configOptionsOf(changed);
+        runner.#configOptions = config ?? runner.#configOptions;
+        // An option change can reset other settings. Do not verify mode from the cached options.
+        confirmedMode = config ? runner.option("mode") : undefined;
+        if (verify && confirmedMode !== value) throw new Error("create-permission-unconfirmed");
       }
       // Attachment replays native history. It establishes the baseline, not a live turn.
       runner.#items.clear();

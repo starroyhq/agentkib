@@ -358,6 +358,7 @@ type DevinAcpOutcome = { stopReason: string } | { error: string; code?: AcpId };
 
 /** Reasons AgentKib names itself; anything else is what Devin said, mapped below. */
 const OWN_REASONS = new Set([
+  "create-permission-unconfirmed",
   "stale-or-disabled-control",
   "session-runner-unavailable",
   "devin-session-not-found",
@@ -711,6 +712,7 @@ export class DevinManagedRunner {
     beforeDispatch: () => void,
     settings: DevinTurnSettings = {},
     prepareInput?: (support: AcpPromptAttachmentSupport | undefined) => Promise<AcpPromptBlock[]>,
+    options: { confirmPermission?: boolean } = {},
   ): Promise<void> {
     if (this.#closed) throw new Error("session-runner-unavailable");
     if (expectedRevision !== this.#revision) throw new Error("stale-or-disabled-control");
@@ -762,7 +764,13 @@ export class DevinManagedRunner {
         : await this.#step(acp, acp.newSession(this.workspace, mcpServers));
       session = this.#nativeId ?? String(attached.sessionId ?? "");
       if (!NATIVE_ID.test(session)) throw new Error("devin-session-not-found");
-      applied = await this.#applySettings(acp, session, attached, settings);
+      applied = await this.#applySettings(
+        acp,
+        session,
+        attached,
+        settings,
+        options.confirmPermission,
+      );
       if (this.#closed || expectedRevision !== this.#revision)
         throw new Error("stale-or-disabled-control");
       promptId = await acp.prompt(session, prompt, () => {
@@ -864,13 +872,25 @@ export class DevinManagedRunner {
     session: string,
     attached: Record<string, unknown>,
     settings: DevinTurnSettings,
+    confirmPermission = false,
   ): Promise<AppliedDevinSettings> {
     let config = configOptions(attached) ?? {};
+    // An option change can reset other settings. Only the latest native readback confirms mode.
+    let confirmedMode = config.mode?.current;
     let catalog = emptyDevinModelCatalog();
     const set = async (id: DevinOptionId, value: string) => {
-      if (config[id]?.current === value) return;
-      const result = await this.#step(acp, acp.setConfigOption(session, id, value));
+      const verify = id === "mode" && confirmPermission;
+      if ((verify ? confirmedMode : config[id]?.current) === value) return;
+      let result: Record<string, unknown>;
+      try {
+        result = await this.#step(acp, acp.setConfigOption(session, id, value));
+      } catch (error) {
+        if (verify) throw new Error("create-permission-unconfirmed", { cause: error });
+        throw error;
+      }
       const updated = configOptions(result);
+      confirmedMode = updated?.mode?.current;
+      if (verify && confirmedMode !== value) throw new Error("create-permission-unconfirmed");
       config = updated ?? config;
       const confirmed = updated?.[id];
       if (confirmed?.current && confirmed.current !== value && confirmed.choices.size) {

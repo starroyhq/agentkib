@@ -75,11 +75,19 @@ with every Runtime it finds, and then:
   own `/compact` and `/permission <preset>`;
 - reads the permission presets (`permissionPresets.catalog`) and a session's current one, and
   reports a compaction while it runs (DSH counts the agent as idle meanwhile);
+- offers permission presets for a new session when its native catalog, permission command and
+  projection are available. It creates a blank session, runs its own permission command, and
+  confirms the selection from DSH's projection before the first message can be sent;
 - lists a session's direct subagents from its `subagentCatalog` projection, with whether each is
   running or how its last turn ended;
 - reads a whole session in pages for a handoff or content search (`document`), marking where each
   record sits in what DSH's model currently sees, and lists DSH's Agent presets (`presets`) for a
   new session;
+- imports a reviewed conversation into a registered native workspace when DSH 0.2.2-rc.5
+  exposes the storage and attachment services. It writes through DSH's native writer,
+  checks the stored history before returning a receipt, and leaves the imported session idle.
+  Original user and assistant text and supported user images are retained. Historical tools
+  are plain summaries without their arguments or output;
 - answers verification requests from that record when a result was lost; for a slash command,
   from the requests it ran since DSH started;
 - gives a session AgentKib made a Project Agent its tools for user-assigned Workers, including

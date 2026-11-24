@@ -4,6 +4,10 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { Commands } from "../../../packages/backend/src/commands";
+import {
+  DshHistoryImport,
+  type DshHistoryImportBridge,
+} from "../../../packages/backend/src/agents/dsh/history-import";
 import * as commandResolution from "../../../packages/backend/src/command-resolution";
 import { canonicalize } from "../../../packages/backend/src/paths";
 import { prepareSessionHandoff } from "../../../packages/backend/src/session-continuation";
@@ -11,6 +15,7 @@ import { applySessionHandoff } from "../../../packages/backend/src/session-hando
 import { launchDshHandoff } from "../../../packages/backend/src/session-handoff-launch";
 import { planSessionHandoff } from "../../../packages/backend/src/session-handoff-plan";
 import type { SessionDocument } from "../../../packages/backend/src/session-model";
+import { listNativeImports } from "../../../packages/backend/src/session-native-imports";
 import { BackendStore } from "../../../packages/backend/src/store";
 
 const cleanups: Array<() => void> = [];
@@ -71,7 +76,8 @@ function fixture() {
   vi.spyOn(commands, "run").mockRejectedValue(new Error("Real Agent execution forbidden"));
   const hub = { running: false, port: 1 };
   let dshOptions: { available: boolean; reason?: string } = { available: true };
-  const dsh = { createOptions: async () => dshOptions };
+  const dsh: { createOptions: () => Promise<typeof dshOptions> } & Partial<DshHistoryImportBridge> =
+    { createOptions: async () => dshOptions };
   const prepare = async () =>
     (
       (await prepareSessionHandoff(
@@ -104,6 +110,7 @@ function fixture() {
         filename: draft.filename,
         editedContent: draft.content,
         sourceFingerprint: draft.source_fingerprint,
+        targetFingerprint: draft.target_fingerprint,
         acceptLosses: true,
         historyBudgetTokens: 64000,
         mcpHubStatus: hub,
@@ -123,13 +130,151 @@ function fixture() {
     environment,
     store,
     registered,
+    document,
+    sessions,
     prepare,
     plan,
     setDsh: (value: typeof dshOptions) => (dshOptions = value),
+    setImport: (bridge: DshHistoryImportBridge) => Object.assign(dsh, bridge),
   };
 }
 
 describe("handing a conversation over to DeepSeek Harness", () => {
+  function nativeImport(f: ReturnType<typeof fixture>) {
+    const historyImportContext = vi.fn(async () => ({
+      runtimeId: "2be5173c-9122-44a8-b129-9cc7ff063c5c",
+      workspaceId: "dsh-workspace",
+    }));
+    const importHistory = vi.fn<DshHistoryImportBridge["importHistory"]>(async (value) => {
+      value.beforeDispatch?.();
+      return { sessionId: "ak-imported-dsh-session" };
+    });
+    const bridge = { historyImportContext, importHistory };
+    f.setImport(bridge);
+    const owner = new DshHistoryImport(f.data, f.store, f.sessions, bridge, f.environment);
+    return { owner, bridge };
+  }
+
+  it("reviews and imports all durable history, including images larger than the context window", async () => {
+    const f = fixture();
+    const { owner, bridge } = nativeImport(f);
+    const image = Buffer.alloc(256 * 1024, 12).toString("base64");
+    f.document.turns[0]!.blocks.push({
+      type: "attachment",
+      kind: "image",
+      media_type: "image/png",
+      inline_base64: image,
+    });
+    f.document.turns[1]!.blocks.push({
+      type: "tool-call",
+      call_id: "check",
+      name: "read_file",
+      input: "{}",
+    });
+    f.document.turns.push({
+      id: "result",
+      role: "tool",
+      blocks: [
+        { type: "tool-result", call_id: "check", output: "existing tests", is_error: false },
+      ],
+    });
+    const draft = await f.prepare();
+    expect(draft).toMatchObject({
+      mode: "native-session",
+      window_strategy: "full",
+      native_capability: { supported: true },
+      losses: [{ code: "target-tool-summary", count: 2 }],
+    });
+    expect(draft.archive_id).toBeUndefined();
+    const planned = await f.plan(draft);
+    expect(planned.change_set).toMatchObject({
+      requires_home_approval: true,
+      changes: [{ scope: "application-data" }],
+    });
+    expect(planned.launch_request).toMatchObject({
+      mode: "native-import",
+      target_agent: "deepseek-harness",
+    });
+    await expect(owner.launch(planned.launch_request)).rejects.toThrow();
+    await expect(
+      owner.continue({
+        changeSet: planned.change_set,
+        launchRequest: planned.launch_request,
+        approveHome: false,
+      }),
+    ).rejects.toThrow();
+    expect(bridge.importHistory).not.toHaveBeenCalled();
+    const result = { target_agent: "deepseek-harness", session_id: "ak-imported-dsh-session" };
+    await expect(
+      owner.continue({
+        changeSet: planned.change_set,
+        launchRequest: planned.launch_request,
+        approveHome: true,
+      }),
+    ).resolves.toEqual(result);
+    const [submitted] = bridge.importHistory.mock.calls[0]!;
+    expect(submitted).toMatchObject({
+      cwd: f.project,
+      workspaceId: f.registered,
+      nativeId: planned.launch_request.operation_id,
+      verifyOnly: false,
+      context: { workspaceId: "dsh-workspace" },
+    });
+    expect(submitted.document.turns).toEqual(f.document.turns);
+    expect(existsSync(path.join(f.project, ".agentkib", "handoffs", draft.filename))).toBe(false);
+    await expect(owner.launch(planned.launch_request)).resolves.toEqual(result);
+    expect(bridge.importHistory).toHaveBeenCalledTimes(1);
+    expect(listNativeImports(f.data, f.store, f.registered)).toMatchObject([
+      { status: "launched", target_session_id: planned.launch_request.operation_id },
+    ]);
+  });
+
+  it("checks the native result without trying a second write after a lost import reply", async () => {
+    const f = fixture();
+    const { owner, bridge } = nativeImport(f);
+    bridge.importHistory.mockImplementationOnce(async (input) => {
+      input.beforeDispatch?.();
+      throw new Error("fixture lost the response");
+    });
+    const planned = await f.plan(await f.prepare());
+    await expect(
+      owner.continue({
+        changeSet: planned.change_set,
+        launchRequest: planned.launch_request,
+        approveHome: true,
+      }),
+    ).rejects.toThrow("DSH import outcome needs reconciliation");
+    expect(listNativeImports(f.data, f.store, f.registered)).toMatchObject([
+      { status: "outcome-unknown" },
+    ]);
+    await expect(owner.launch(planned.launch_request)).resolves.toMatchObject({
+      target_agent: "deepseek-harness",
+    });
+    expect(bridge.importHistory).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        verifyOnly: true,
+        nativeId: planned.launch_request.operation_id,
+        beforeDispatch: undefined,
+      }),
+    );
+  });
+
+  it("leaves the native store untouched when the source changes after preview", async () => {
+    const f = fixture();
+    const { owner, bridge } = nativeImport(f);
+    const planned = await f.plan(await f.prepare());
+    f.document.turns[0]!.blocks.push({ type: "text", text: "Later message" });
+    await expect(
+      owner.continue({
+        changeSet: planned.change_set,
+        launchRequest: planned.launch_request,
+        approveHome: true,
+      }),
+    ).rejects.toThrow("Source changed after DSH import preview");
+    expect(bridge.importHistory).not.toHaveBeenCalled();
+  });
+
   it("writes a handoff file and continues it as a new session in the running DSH", async () => {
     const f = fixture();
     const draft = await f.prepare();
@@ -154,9 +299,7 @@ describe("handing a conversation over to DeepSeek Harness", () => {
     expect(planned.change_set.changes.map((change) => change.target)).toContain(file);
     const handoff = vi.fn(async () => ({ sessionId: "ak-session-new" }));
     // Nothing starts before the reviewed file is written.
-    await expect(
-      launchDshHandoff(planned.launch_request, f.store, { handoff }),
-    ).rejects.toThrow();
+    await expect(launchDshHandoff(planned.launch_request, f.store, { handoff })).rejects.toThrow();
     expect(handoff).not.toHaveBeenCalled();
     applySessionHandoff(
       { changeSet: planned.change_set, launchRequest: planned.launch_request, approveHome: false },

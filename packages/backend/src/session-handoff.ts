@@ -231,6 +231,24 @@ function estimateDocumentTokens(document: SessionDocument): number {
   return document.turns.reduce((sum, turn) => sum + estimateTurnTokens(turn), 64);
 }
 
+/** For a target that imports the durable history independently of its active context window. */
+export function fullSessionHistory(document: SessionDocument): SessionWindowPlan {
+  const tokens = estimateDocumentTokens(document);
+  return {
+    strategy: "full",
+    active_document: document,
+    stats: {
+      estimated_total_tokens: tokens,
+      estimated_active_tokens: tokens,
+      estimated_deferred_tokens: 0,
+      active: sessionImportStats(document),
+      deferred_turn_count: 0,
+      deferred_block_count: 0,
+      estimate_quality: "conservative",
+    },
+  };
+}
+
 export function planSessionWindow(
   document: SessionDocument,
   historyBudgetTokens: number,

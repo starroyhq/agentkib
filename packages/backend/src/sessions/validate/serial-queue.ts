@@ -4,6 +4,7 @@ const TEXT_QUEUE_OPERATIONS = [
   "queue-add",
   "queue-update",
   "queue-delete",
+  "queue-reorder",
   "queue-pause",
   "queue-resume",
 ];

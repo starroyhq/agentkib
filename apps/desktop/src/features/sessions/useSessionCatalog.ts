@@ -1,11 +1,10 @@
-import { isBusyRead } from "@agentkib/session-ui";
-import { sessionReason } from "./conversation/session-copy";
 import { useI18n } from "@/core/useI18n";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useMutation, useQueries } from "@tanstack/react-query";
+import { isCancelledError, useMutation, useQueries } from "@tanstack/react-query";
 import { api } from "@/core/api";
 import type { ConversationSessionSummary, WorkspaceSummary } from "@/core/types";
 import { homeKeys, useOptionalQueryClient } from "@/features/home/home-query";
+import { catalogReadError } from "./catalog-read-error";
 import { sortSessions } from "./session-catalog";
 import {
   isStaleCatalogRead,
@@ -33,13 +32,21 @@ const indexContexts = new WeakMap<
 >();
 const emptySessions: ConversationSessionSummary[] = [];
 
+function isReadFailure(error: unknown): boolean {
+  return (
+    !!error &&
+    !isCancelledError(error) &&
+    !(error instanceof DOMException && error.name === "AbortError")
+  );
+}
+
 export function useSessionCatalog(
   workspaces: WorkspaceSummary[],
   enabled: boolean,
   afterRefresh?: () => Promise<unknown>,
   indexEnabled = enabled,
 ) {
-  const { localizeMessage, locale } = useI18n();
+  const { tr } = useI18n();
   const client = useOptionalQueryClient();
   const [runtimeRevision, setRuntimeRevision] = useState(0);
   const scope = useDesktopReadScope();
@@ -156,6 +163,9 @@ export function useSessionCatalog(
         );
       signal.throwIfAborted();
       const errors: Record<string, unknown> = {};
+      const recordFailure = (id: string, error: unknown) => {
+        if (!signal.aborted && isReadFailure(error)) errors[id] = error;
+      };
       const completeWorkspace = (id: string) => {
         setCompleted((current) => ({
           key,
@@ -217,15 +227,15 @@ export function useSessionCatalog(
                 completeWorkspace(id);
                 void notify().catch(() => {});
               } catch (readError) {
-                if (!signal.aborted) errors[id] = readError;
+                recordFailure(id, readError);
               }
-            } else if (!signal.aborted) errors[id] = error;
+            } else recordFailure(id, error);
           }
           if (signal.aborted) return;
           try {
             await client.fetchQuery({ ...sessionStatusOptions(client, id), staleTime: 0 });
           } catch (error) {
-            if (!signal.aborted) errors[id] = error;
+            recordFailure(id, error);
           }
         }),
       );
@@ -275,14 +285,25 @@ export function useSessionCatalog(
     };
   }, [enabled, indexEnabled, ids, key, mutateAsync, performSync]);
   const errors: Record<string, string> = {};
+  let errorUpdatedAt = 0;
   for (const [index, id] of observedIds.entries()) {
-    const error =
-      (sync.variables?.key === key && !sync.isPending ? sync.data?.[id] : undefined) ??
-      (sameIdentity ? (statuses[index]?.error ?? lists[index]?.error) : undefined);
-    if (error)
-      errors[id] = isBusyRead(error)
-        ? sessionReason(locale, "session-state-unavailable").text
-        : localizeMessage(error);
+    const failure = [
+      {
+        error: sync.variables?.key === key && !sync.isPending ? sync.data?.[id] : undefined,
+        at: sync.submittedAt,
+      },
+      ...(sameIdentity
+        ? [statuses[index], lists[index]].map((query) => ({
+            error: query?.error,
+            at: query?.errorUpdatedAt ?? 0,
+          }))
+        : []),
+    ].find(({ error }) => isReadFailure(error));
+    if (failure) {
+      const { error, at } = failure;
+      errors[id] = catalogReadError(error, tr);
+      errorUpdatedAt = Math.max(errorUpdatedAt, at);
+    }
   }
   const refresh = useCallback((): Promise<void> => {
     if (
@@ -393,12 +414,7 @@ export function useSessionCatalog(
     sessions,
     statuses: indexStatuses,
     errors,
-    errorUpdatedAt: Math.max(
-      0,
-      ...lists.map((query) => query.errorUpdatedAt),
-      ...statuses.map((query) => query.errorUpdatedAt),
-      sync.variables?.key === key && Object.keys(sync.data ?? {}).length ? sync.submittedAt : 0,
-    ),
+    errorUpdatedAt,
     loading: enabled && !usable && lists.some((query) => query.isPending && query.isFetching),
     refreshing: enabled && sync.variables?.key === key && sync.isPending,
     usable,

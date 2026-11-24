@@ -19,7 +19,9 @@ import {
 } from "@agentkib/web-client";
 import {
   DEFAULT_NEW_SESSION_AGENT,
+  isNewSessionPermissionFailure,
   newSessionCopy,
+  requiredNewSessionPolicyProof,
   type NewSessionCreateFields,
   forgetPending,
   pendingCreateMatches,
@@ -46,6 +48,8 @@ export function failureOf(error: unknown, locale: SupportedLocale): NewSessionFa
   if (!(error instanceof ApiError)) return { reason: managedErrorCopy[locale].connection };
   const code = error.code.replaceAll("_", "-");
   const copy = newSessionCopy(locale);
+  if (isNewSessionPermissionFailure(code))
+    return { reason: copy.startPermissionUnconfirmed, detail: code };
   if (code === "dsh-create-model-not-applied")
     return { reason: copy.startModelUnconfirmed, detail: code };
   if (code === "dsh-create-model-selection-unsupported")
@@ -152,7 +156,9 @@ export function useNewSession({
   const [busy, setBusy] = useState(false);
   const [failure, setFailure] = useState<{ visit: typeof visit; value: NewSessionFailure }>();
   const flight = useRef(false);
-  const ownRequest = useRef<{ requestId: string; visit: typeof visit }>(undefined);
+  const ownRequest = useRef<{ requestId: string; visit: typeof visit; policyId?: string }>(
+    undefined,
+  );
   const getPendingRequest = useCallback(() => {
     if (!scope || !workspaceId) return undefined;
     try {
@@ -207,19 +213,25 @@ export function useNewSession({
           forgetPending(scope, pendingRequest);
           settled = true;
           const own =
-            ownRequest.current?.visit === visit && ownRequest.current.requestId === pendingRequest;
+            ownRequest.current?.visit === visit && ownRequest.current.requestId === pendingRequest
+              ? ownRequest.current
+              : undefined;
           if (own) ownRequest.current = undefined;
-          if (result.status === "not-dispatched") {
-            const reason = "ack" in result ? result.ack?.reason : undefined;
+          const ack = "ack" in result ? result.ack : undefined;
+          const permissionUnconfirmed =
+            result.status === "accepted" && own?.policyId && ack?.policyId !== own.policyId;
+          if (result.status === "not-dispatched" || permissionUnconfirmed) {
+            const reason = permissionUnconfirmed ? "create-permission-unconfirmed" : ack?.reason;
             setFailure({
               visit,
               value:
-                reason === "dsh-create-model-not-applied"
-                  ? { reason: newSessionCopy(locale).startModelUnconfirmed, detail: reason }
+                reason &&
+                (reason === "dsh-create-model-not-applied" || isNewSessionPermissionFailure(reason))
+                  ? failureOf(new ApiError(409, reason, "not-dispatched"), locale)
                   : { reason: managedErrorCopy[locale].failed },
             });
           } else if (result.sessionId) {
-            reconciled.current(result.sessionId, own);
+            reconciled.current(result.sessionId, !!own);
           }
         } while (!settled && !abort.signal.aborted && checkAgain);
       } catch {
@@ -260,7 +272,8 @@ export function useNewSession({
         agent,
         workspaceId,
       };
-      ownRequest.current = { requestId, visit };
+      const policyId = requiredNewSessionPolicyProof(agent, fields.policyId);
+      ownRequest.current = { requestId, visit, policyId };
       try {
         try {
           rememberPending(scope, entry);
@@ -274,7 +287,18 @@ export function useNewSession({
         });
         forgetPending(scope, requestId);
         ownRequest.current = undefined;
-        return currentVisit.current === visit ? result.sessionId : undefined;
+        if (currentVisit.current !== visit) return;
+        if (policyId && result.policyId !== policyId) {
+          setFailure({
+            visit,
+            value: {
+              reason: newSessionCopy(locale).startPermissionUnconfirmed,
+              detail: "create-permission-unconfirmed",
+            },
+          });
+          return;
+        }
+        return result.sessionId;
       } catch (error) {
         if (error instanceof ApiError && error.controlOutcome === "not-dispatched") {
           try {

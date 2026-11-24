@@ -31,6 +31,7 @@ import { isReparseOrSymlink } from "./native-files";
 import { inspectNativeImportTarget, planNativeImport } from "./session-native-import-owner";
 import { CursorIdeSessions, prepareCursorIdePayload } from "./cursor-ide-sessions";
 import type { CursorBridge } from "./cursor-bridge";
+import { planDshHistoryImport } from "./agents/dsh/history-import";
 
 const requestSchema = z.object({
   sessionId: z.string(),
@@ -293,6 +294,22 @@ export async function planSessionHandoff(
     nativeHistoryIncomplete(document, includePreCompactionHistory)
   )
     throw new Error("Native import requires complete pre-compaction history");
+  if (request.mode === "native-session" && request.targetAgent === "deepseek-harness") {
+    if (request.archiveId) throw new Error("DSH import requires full history");
+    requireUniqueContinuationWorkspace(store, workspace.registeredId, workspace.project);
+    return planDshHistoryImport({
+      bridge: dsh,
+      dataDir,
+      workspace: workspace.project,
+      workspaceId: continuationWorkspaceId,
+      sourceSessionId: request.sessionId,
+      sourceFingerprint: request.sourceFingerprint,
+      targetFingerprint: request.targetFingerprint,
+      document,
+      includePreCompactionHistory,
+      acceptLosses: request.acceptLosses,
+    });
+  }
   const archiveId: string = request.archiveId ?? randomUUID();
   const window = await readHandoff(
     "window",

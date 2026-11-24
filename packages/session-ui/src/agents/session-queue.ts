@@ -120,6 +120,23 @@ export function queueItemPending(item: SessionQueueItem, panel: SessionQueuePane
   return item.status === "pending" || (item.status === undefined && panel.pendingWithoutStatus);
 }
 
+export function reorderableQueueItems(
+  items: readonly SessionQueueItem[] | undefined,
+  panel: SessionQueuePanel,
+) {
+  return (
+    items?.filter(
+      (item) => queueItemPending(item, panel) && item.actions?.reorder?.available !== false,
+    ) ?? []
+  );
+}
+
+export function moveQueuedItemUp(items: readonly SessionQueueItem[], index: number) {
+  const ids = items.map((item) => item.id);
+  [ids[index - 1], ids[index]] = [ids[index]!, ids[index - 1]!];
+  return ids;
+}
+
 function basicComposer(provider: SessionProviderDeclaration) {
   return (
     provider.composer && "surface" in provider.composer && provider.composer.surface === "basic"

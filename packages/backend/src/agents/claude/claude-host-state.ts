@@ -1,6 +1,10 @@
 import { randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
-import { openManagedLedger } from "../../managed-ledger";
+import {
+  dispatchManagedCommandInTransaction,
+  openManagedLedger,
+  prepareManagedCommandInTransaction,
+} from "../../managed-ledger";
 import {
   controlReceiptFingerprint,
   finishControlReceiptInTransaction,
@@ -88,6 +92,18 @@ export type ClaudeHostState = {
   /** The usage limit the last turn met, until a turn succeeds or the person sends something. */
   usageLimit?: UsageLimit | null;
 };
+export function canSteerClaudeQueueItem(
+  item: ClaudeHostWork,
+): item is ClaudeHostWork & { input: string } {
+  return (
+    item.kind === "queue" &&
+    item.status === "pending" &&
+    !item.requiresAttachments &&
+    typeof item.input === "string" &&
+    !item.input.split("\n").some((line) => line.startsWith("User attached file "))
+  );
+}
+
 const fresh = (bootId: string): ClaudeHostState => ({
   version: 1,
   bootId,
@@ -478,6 +494,43 @@ export class ClaudeHostStateStore {
         throw new Error("usage-unavailable");
       item.status = "dispatched";
       item.dispatchedAt = Date.now();
+    });
+  }
+
+  dispatchQueueSteer(
+    sessionId: string,
+    queued: ClaudeHostWork,
+    requestId: string,
+    fingerprint: string,
+    evidence: Record<string, unknown>,
+  ): void {
+    this.#transaction(sessionId, (state, database) => {
+      const item = state.work.find((work) => work.id === queued.id);
+      if (
+        !item ||
+        !canSteerClaudeQueueItem(item) ||
+        item.deviceId !== queued.deviceId ||
+        item.originRequestId !== queued.originRequestId ||
+        item.input !== queued.input
+      )
+        throw new Error("queue-item-unavailable");
+      if (replayControlReceiptInTransaction(database, requestId, fingerprint, false))
+        throw new Error("control-outcome-unconfirmed");
+      prepareManagedCommandInTransaction(
+        database,
+        requestId,
+        sessionId,
+        fingerprint,
+        item.deviceId,
+        evidence,
+      );
+      dispatchManagedCommandInTransaction(database, requestId);
+      // As soon as the native write may take effect, the scheduled copy must never run.
+      // The steer receipt alone tracks the native outcome, including an interrupted write.
+      item.status = "cancelled";
+      item.input = "";
+      if (item.originRequestId) state.settledRequests.push(item.originRequestId);
+      state.revision++;
     });
   }
 

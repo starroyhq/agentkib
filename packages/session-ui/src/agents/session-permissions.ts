@@ -26,6 +26,10 @@ export type SessionPermissionDescriptor = {
       separatePlan?: boolean;
     }[];
     sendShown: boolean;
+    defaultId?: string;
+    fullAccessOnly?: boolean;
+    useNativeCatalog?: boolean;
+    verifyPolicyId?: boolean;
     copy(locale: InteractionLocale): PermissionWords;
     fallbackTitle?: boolean;
   };

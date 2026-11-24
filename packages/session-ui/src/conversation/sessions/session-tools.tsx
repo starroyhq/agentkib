@@ -17,8 +17,11 @@ import {
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import {
   canReadSessionQueue,
+  moveQueuedItemUp,
+  queueActionGranted,
   queueItemPending,
   registeredSessionQueue,
+  reorderableQueueItems,
 } from "../../agents/session-queue";
 import { ComposerModelPicker } from "../../composer-model-picker";
 import { contextUsageCopyForSurface } from "../../context-usage-copy";
@@ -274,6 +277,7 @@ export function SessionTools({
     "queue-update": copy.queueUpdate,
     "queue-delete": copy.queueDelete,
     "queue-reorder": copy.queueUp,
+    "queue-steer": copy.queueSteerItem,
     "queue-start": copy.queueStart,
     "queue-pause": agentCopy.pauseQueue,
     "queue-resume": agentCopy.resumeQueue,
@@ -356,11 +360,14 @@ export function SessionTools({
         ? "unarchive"
         : "archive"
       : null;
-  const pendingQueue = operationsQueue
-    ? (queue?.data.filter((item) => queueItemPending(item, operationsQueue)) ?? [])
-    : [];
+  const reorderable = operationsQueue ? reorderableQueueItems(queue?.data, operationsQueue) : [];
   const offeredQueueAction = (action: SessionQueueAction) =>
     operationsQueue?.actions.includes(action) === true;
+  const queueActionAllowed = (action: SessionQueueAction) =>
+    queueReadable &&
+    (lanWaitQueue
+      ? action === "delete" && offeredQueueAction(action)
+      : queueActionGranted(operationsQueue, action, access));
   const queueReason = (action: SessionQueueAction, itemReason?: string) =>
     explainReason(
       itemReason ||
@@ -369,14 +376,7 @@ export function SessionTools({
           : undefined),
     ).text;
   const queuePaused = queue?.requiresResume === true || queue?.paused === true;
-  const queuePauseAction =
-    queuePaused && offeredQueueAction("resume")
-      ? "resume"
-      : offeredQueueAction("pause")
-        ? "pause"
-        : offeredQueueAction("resume")
-          ? "resume"
-          : undefined;
+  const queuePauseAction = queuePaused ? "resume" : "pause";
   // A follower write requires a fresh privileged settings read from the current owner.
   const followerModelReadOnly = nativeAppControlsSession(live, selected);
   const limitedModelWritable = enabled("settings") && !followerModelReadOnly;
@@ -556,30 +556,43 @@ export function SessionTools({
               )}
             </OperationGroup>
           )}
-          {operationsQueue && (queue || queueError || queuePauseAction) && (
+          {operationsQueue && (
             <OperationGroup title={operationsQueue.title?.(locale) ?? copy.queue}>
-              {queuePauseAction && (
-                <OperationRow className="flex-wrap gap-2">
-                  {queuePaused && (
-                    <p role="status" className="min-w-0 flex-1 text-muted-foreground">
-                      {queue?.requiresResume ? agentCopy.queueRecovery : agentCopy.queuePaused}
-                    </p>
-                  )}
-                  {actionButton(
-                    `queue-${queuePauseAction}`,
-                    queuePauseAction === "resume" ? agentCopy.resumeQueue : agentCopy.pauseQueue,
-                    {},
-                    !!queue &&
-                      (queuePauseAction === "resume"
-                        ? queuePaused
-                        : !queuePaused && queue.data.length > 0),
-                    "sm",
-                    queue?.data.length === 0 && !queuePaused
-                      ? copy.queueEmpty
-                      : queueReason(queuePauseAction),
-                  )}
+              {!queueReadable && (
+                <OperationRow>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="disabled:pointer-events-auto"
+                    disabled
+                    title={queueReason("list")}
+                  >
+                    {copy.queue}
+                  </Button>
                 </OperationRow>
               )}
+              <OperationRow className="flex-wrap gap-2">
+                {queuePaused && (
+                  <p role="status" className="min-w-0 flex-1 text-muted-foreground">
+                    {queue?.requiresResume ? agentCopy.queueRecovery : agentCopy.queuePaused}
+                  </p>
+                )}
+                {actionButton(
+                  `queue-${queuePauseAction}`,
+                  queuePauseAction === "resume" ? agentCopy.resumeQueue : agentCopy.pauseQueue,
+                  {},
+                  queueActionAllowed(queuePauseAction) &&
+                    !!queue &&
+                    (queuePauseAction === "resume"
+                      ? queuePaused
+                      : !queuePaused && queue.data.length > 0),
+                  "sm",
+                  queue?.data.length === 0 && !queuePaused
+                    ? copy.queueEmpty
+                    : queueReason(queuePauseAction),
+                )}
+              </OperationRow>
               {queueError && (
                 <OperationRow>
                   <p role="status">{queueError}</p>
@@ -591,10 +604,13 @@ export function SessionTools({
                 </OperationRow>
               )}
               {queue?.data?.map((item) => {
-                const pendingIndex = pendingQueue.findIndex((entry) => entry.id === item.id);
-                const pending = pendingIndex >= 0;
+                const pending = queueItemPending(item, operationsQueue);
+                const reorderIndex = reorderable.findIndex((entry) => entry.id === item.id);
                 const editable =
-                  pending && !item.hasAttachments && item.actions?.update?.available !== false;
+                  pending &&
+                  queueActionAllowed("update") &&
+                  !item.hasAttachments &&
+                  item.actions?.update?.available !== false;
                 const canEdit =
                   editable && enabled("queue-update") && (editing !== item.id || !!text.trim());
                 return (
@@ -608,7 +624,7 @@ export function SessionTools({
                     {item.hasAttachments && (
                       <p className="text-xs text-muted-foreground">{copy.queueAttachments}</p>
                     )}
-                    {offeredQueueAction("update") && editing === item.id && editable && (
+                    {editing === item.id && editable && (
                       <Input
                         aria-label={copy.text}
                         value={text}
@@ -622,63 +638,66 @@ export function SessionTools({
                       />
                     )}
                     <div className="flex flex-wrap gap-2">
-                      {offeredQueueAction("update") && (
-                        <Button
-                          type="button"
-                          size="sm"
-                          variant="outline"
-                          className={`${touchTargetClassName ?? ""} disabled:pointer-events-auto`}
-                          disabled={!canEdit}
-                          title={
-                            canEdit
-                              ? undefined
-                              : item.hasAttachments
-                                ? copy.queueAttachments
-                                : queueReason("update", item.actions?.update?.reason)
-                          }
-                          onClick={() => {
-                            if (!canEdit) return;
-                            if (editing === item.id)
-                              void run("queue-update", { queuedSubmissionId: item.id, text });
-                            else
-                              setQueueEdit({
-                                authority: queueAuthority,
-                                id: item.id,
-                                text: item.text ?? "",
-                              });
-                          }}
-                        >
-                          {copy.queueUpdate}
-                        </Button>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        className={`${touchTargetClassName ?? ""} disabled:pointer-events-auto`}
+                        disabled={!canEdit}
+                        title={
+                          canEdit
+                            ? undefined
+                            : item.hasAttachments
+                              ? copy.queueAttachments
+                              : queueReason("update", item.actions?.update?.reason)
+                        }
+                        onClick={() => {
+                          if (!canEdit) return;
+                          if (editing === item.id)
+                            void run("queue-update", { queuedSubmissionId: item.id, text });
+                          else
+                            setQueueEdit({
+                              authority: queueAuthority,
+                              id: item.id,
+                              text: item.text ?? "",
+                            });
+                        }}
+                      >
+                        {copy.queueUpdate}
+                      </Button>
+                      {actionButton(
+                        "queue-delete",
+                        copy.queueDelete,
+                        { queuedSubmissionId: item.id },
+                        queueActionAllowed("delete") &&
+                          (item.actions?.delete?.available ?? pending),
+                        "sm",
+                        queueReason("delete", item.actions?.delete?.reason),
                       )}
-                      {offeredQueueAction("delete") &&
-                        actionButton(
-                          "queue-delete",
-                          copy.queueDelete,
-                          { queuedSubmissionId: item.id },
-                          item.actions?.delete?.available ?? pending,
-                          "sm",
-                          queueReason("delete", item.actions?.delete?.reason),
-                        )}
-                      {offeredQueueAction("reorder") &&
-                        actionButton(
-                          "queue-reorder",
-                          copy.queueUp,
-                          pendingIndex > 0
-                            ? {
-                                queuedSubmissionIds: pendingQueue.map((entry, position) =>
-                                  position === pendingIndex - 1
-                                    ? item.id
-                                    : position === pendingIndex
-                                      ? pendingQueue[pendingIndex - 1]!.id
-                                      : entry.id,
-                                ),
-                              }
-                            : {},
-                          pendingIndex > 0,
-                          "sm",
-                          queueReason("reorder"),
-                        )}
+                      {actionButton(
+                        "queue-reorder",
+                        copy.queueUp,
+                        reorderIndex > 0 &&
+                          queueActionAllowed("reorder") &&
+                          enabled("queue-reorder")
+                          ? {
+                              queuedSubmissionIds: moveQueuedItemUp(reorderable, reorderIndex),
+                            }
+                          : {},
+                        reorderIndex > 0 && queueActionAllowed("reorder"),
+                        "sm",
+                        queueReason("reorder", item.actions?.reorder?.reason),
+                      )}
+                      {actionButton(
+                        "queue-steer",
+                        copy.queueSteerItem,
+                        { queuedSubmissionId: item.id },
+                        pending &&
+                          queueActionAllowed("steer") &&
+                          item.actions?.steer?.available === true,
+                        "sm",
+                        queueReason("steer", item.actions?.steer?.reason),
+                      )}
                     </div>
                   </OperationRow>
                 );

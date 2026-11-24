@@ -141,6 +141,21 @@ require("node:readline").createInterface({ input: process.stdin }).on("line", (l
   if (method === "session/new") return send({ jsonrpc: "2.0", id, result: { sessionId: read("new-session-id") ?? "new-otter", configOptions: options("") } });
   if (method === "session/load") { append("resume.log", params.sessionId); return send({ jsonrpc: "2.0", id, result: { configOptions: options(params.sessionId) } }); }
   if (method === "session/set_config_option") {
+    const confirmation = read("mode-confirmation");
+    if (params.configId === "model" && confirmation === "stale") {
+      const all = saved();
+      all[params.sessionId] = { model: params.value, mode: "bypass" };
+      fs.writeFileSync(file("acp-sessions.json"), JSON.stringify(all));
+      return send({ jsonrpc: "2.0", id, result: {} });
+    }
+    if (params.configId === "mode") {
+      if (confirmation === "missing" || confirmation === "stale")
+        return send({ jsonrpc: "2.0", id, result: {} });
+      if (confirmation === "mismatch")
+        return send({ jsonrpc: "2.0", id, result: { configOptions: options(params.sessionId) } });
+      if (confirmation === "rejected")
+        return send({ jsonrpc: "2.0", id, error: { code: -32602, message: "Invalid params" } });
+    }
     const choices = options(params.sessionId).find(option => option.id === params.configId)?.options;
     if (choices?.length && !choices.some(choice => choice.value === params.value))
       return send({ jsonrpc: "2.0", id, error: { code: -32602, message: "Invalid params" } });
@@ -352,6 +367,26 @@ process.on("SIGHUP", () => process.exit(0));
 }
 
 describe.runIf(process.platform !== "win32")("Devin sessions run by AgentKib", () => {
+  it("exposes the host's reorder operation while native queue steer remains unavailable", async () => {
+    const f = fixture();
+    const features = await f.features();
+    expect(features["queue-reorder"]).toMatchObject({ available: true });
+    expect(features["queue-steer"]).toMatchObject({ available: false });
+
+    await f.control("queue-add", { text: "First" });
+    await f.control("queue-add", { text: "Second" });
+    const queue = () =>
+      f.web.managedQueueList({ operation: "queue-list", sessionId: f.id }) as Promise<{
+        data: { id: string; text: string }[];
+      }>;
+    const [first, second] = (await queue()).data;
+    expect(
+      await f.control("queue-reorder", { queuedSubmissionIds: [second!.id, first!.id] }),
+    ).toMatchObject({ accepted: true, completed: true });
+    expect((await queue()).data.map(({ text }) => text)).toEqual(["Second", "First"]);
+    expect(f.log("prompts.log")).toBe("");
+  });
+
   const png = Buffer.from(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+c9esAAAAASUVORK5CYII=",
     "base64",
@@ -797,6 +832,52 @@ describe.runIf(process.platform !== "win32")("Devin sessions run by AgentKib", (
     ).rejects.toThrow("request-id-reused-with-different-input");
     expect(f.log("models.log")).toBe(`${variant("high-fast").model_uid}\n`);
   });
+
+  it.each(["missing", "mismatch", "rejected", "stale", "confirmed", "already-active"] as const)(
+    "requires native confirmation before the first Devin message (%s)",
+    async (confirmation) => {
+      const f = fixture();
+      writeFileSync(path.join(f.root, "bin", "mode-confirmation"), confirmation);
+      const { native } = await f.readers.resolve(f.id);
+      const created = { ...native, native_ref: "new-otter" };
+      vi.spyOn(f.readers, "list").mockImplementation(async () => ({
+        sessions: f.log("prompts.log") ? [native, created] : [native],
+        incomplete: false,
+      }));
+      const request = {
+        requestId: randomUUID(),
+        deviceId: "phone",
+        workspaceId: "workspace",
+        prompt: "Only send with confirmed permissions",
+        permissionMode:
+          confirmation === "already-active" || confirmation === "stale"
+            ? "accept-edits"
+            : "dangerous",
+        ...(confirmation === "stale" ? { model: "opus" } : {}),
+      };
+      const create = () => f.web.sessionProviderCreate("devin", request);
+      const result = await create();
+      if (confirmation === "confirmed" || confirmation === "already-active") {
+        expect(result).toMatchObject({
+          accepted: true,
+          sessionId: f.store.sessions.id("devin", created.native_ref),
+        });
+        await vi.waitFor(() => expect(f.log("prompts.log")).toBe(`${request.prompt}\n`));
+        expect(f.log("permissions.log")).toBe(confirmation === "confirmed" ? "dangerous\n" : "");
+      } else {
+        expect(result).toMatchObject({
+          accepted: false,
+          controlOutcome: "not-dispatched",
+          reason: "create-permission-unconfirmed",
+        });
+        expect(
+          readControlReceipt(f.root, { requestId: request.requestId, deviceId: request.deviceId }),
+        ).toMatchObject({ status: "not-dispatched" });
+        expect(f.log("prompts.log")).toBe("");
+      }
+      expect(await create()).toEqual(result);
+    },
+  );
 
   it("names the session's workspace in its live state and in what it publishes", async () => {
     const f = fixture();

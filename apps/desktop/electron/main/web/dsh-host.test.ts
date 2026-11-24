@@ -277,6 +277,41 @@ describe("DeepSeek Harness host control boundary", () => {
     expect(forwarded("adopt")).toEqual([]);
   });
 
+  it("forwards a DSH startup policy and refuses an unconfirmed acknowledgement", async () => {
+    const access = await service.localRequest("/access");
+    const bootId = (access.body as { bootId: string }).bootId;
+    const original = runtime.getMockImplementation()!;
+    let observedPolicy = "ask-safely";
+    runtime.mockImplementation(async (value) => {
+      const result = await original(value);
+      return (value as Record<string, unknown>).operation === "provider-create"
+        ? { ...(result as object), policyId: observedPolicy }
+        : result;
+    });
+    const create = () =>
+      service.localRequest("/managed/create", {
+        agent: "deepseek-harness",
+        bootId,
+        requestId: randomUUID(),
+        workspaceId: "workspace",
+        policyId: "ask-safely",
+        prompt: "Save this draft for later",
+      });
+    expect(await create()).toMatchObject({
+      status: 200,
+      body: { accepted: true, policyId: "ask-safely" },
+    });
+    const [first] = forwarded("provider-create");
+    expect(first).toMatchObject({ policyId: "ask-safely", deviceId: "desktop-local" });
+    expect(first).not.toHaveProperty("prompt");
+    observedPolicy = "different-policy";
+    expect(await create()).toMatchObject({
+      status: 409,
+      body: { error: "create-permission-unconfirmed", controlOutcome: "not-dispatched" },
+    });
+    expect(forwarded("send")).toEqual([]);
+  });
+
   it("preserves the verified-host gate even when the provider transport is configured", async () => {
     await service.shutdown();
     service = new WebAccessService({
@@ -435,6 +470,14 @@ describe("DeepSeek Harness slash commands from another device", () => {
           sendEnabled: true,
           approvals: [],
         };
+      case "dsh-create":
+        return {
+          accepted: true,
+          completed: true,
+          requestId: params.requestId,
+          sessionId: "dsh-new",
+          policyId: params.policyId,
+        };
       case "capabilities":
         return {
           sessionId: "dsh-session",
@@ -486,7 +529,15 @@ describe("DeepSeek Harness slash commands from another device", () => {
         expectedRevision: 4,
         text,
       });
-    return { api, send, cookie: () => cookie };
+    const create = (fields: Record<string, unknown> = {}) =>
+      api("managed/create", {
+        agent: "deepseek-harness",
+        bootId,
+        requestId: randomUUID(),
+        workspaceId: "workspace",
+        ...fields,
+      });
+    return { api, send, create, cookie: () => cookie };
   }
 
   beforeEach(async () => {
@@ -526,6 +577,18 @@ describe("DeepSeek Harness slash commands from another device", () => {
       .map(([value]) => value as Record<string, unknown>)
       .filter((value) => value.operation === "send")
       .map((value) => [value.text, value.commandAccess]);
+
+  it("requires full access for a new DSH session's explicit permission", async () => {
+    const limited = await browser();
+    const deviceId = await approveLegacyBrowser(service, limited.cookie(), { manage: true });
+    expect((await limited.create()).response.status).toBe(200);
+    const denied = await limited.create({ policyId: "ask-safely" });
+    expect(denied.response.status).toBe(403);
+    expect(denied.data.controlOutcome).toBe("not-dispatched");
+    expect(runtime).not.toHaveBeenCalledWith(
+      expect.objectContaining({ operation: "dsh-create", deviceId, policyId: "ask-safely" }),
+    );
+  });
 
   it("tells DSH whether the device may run the commands that need full access", async () => {
     const limited = await browser();

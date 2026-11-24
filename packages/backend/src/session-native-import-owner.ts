@@ -253,7 +253,7 @@ export async function inspectNativeImportTarget(
   };
 }
 
-function ensureInside(root: string, candidate: string): void {
+export function ensureInside(root: string, candidate: string): void {
   const relative = path.relative(root, candidate);
   if (
     !path.isAbsolute(root) ||
@@ -413,12 +413,12 @@ interface NativeImportReceipt {
   terminal: string | null;
 }
 
-function importDirectory(dataDir: string, workspaceId: string, operationId: string): string {
+export function importDirectory(dataDir: string, workspaceId: string, operationId: string): string {
   const workspaceHash = sha256(workspaceId).slice(0, 32);
   return path.join(dataDir, "continuations", workspaceHash, operationId, "import");
 }
 
-function safeRegularFile(file: string, maxBytes: number): Buffer {
+export function safeRegularFile(file: string, maxBytes: number): Buffer {
   const metadata = lstatSync(file);
   if (!metadata.isFile() || isReparseOrSymlink(file, metadata) || metadata.size > maxBytes)
     throw new Error("Import record is not a bounded regular file");
@@ -433,7 +433,7 @@ function safeRegularFile(file: string, maxBytes: number): Buffer {
   }
 }
 
-function atomicPrivateWrite(directory: string, target: string, content: Buffer): void {
+export function atomicPrivateWrite(directory: string, target: string, content: Buffer): void {
   ensureInside(directory, target);
   mkdirSync(directory, { recursive: true, mode: 0o700 });
   if (process.platform !== "win32") chmodSync(directory, 0o700);
@@ -463,7 +463,7 @@ function atomicPrivateWrite(directory: string, target: string, content: Buffer):
   }
 }
 
-function createPrivateFile(directory: string, target: string, content: Buffer): void {
+export function createPrivateFile(directory: string, target: string, content: Buffer): void {
   ensureInside(directory, target);
   const fd = openSync(target, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY, 0o600);
   try {

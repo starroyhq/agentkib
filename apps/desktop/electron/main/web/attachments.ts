@@ -4,6 +4,7 @@ import {
   SESSION_ATTACHMENT_LIMITS,
   SESSION_ATTACHMENT_RASTER_TYPES,
   sessionAttachmentMarkdown,
+  type ClaudeTerminalAttachmentInput,
 } from "@agentkib/runtime-protocol";
 import {
   mkdir,
@@ -19,6 +20,13 @@ import {
 import { join, dirname } from "node:path";
 import { constants } from "node:fs";
 import { imageDimensions } from "./attachment-images";
+import {
+  removeTerminalAttachment,
+  stageTerminalAttachment,
+  terminalAttachmentPath,
+  validTerminalCopy,
+  type TerminalAttachmentCopy,
+} from "./terminal-attachment-copy";
 
 export class AttachmentError extends Error {
   constructor(
@@ -38,6 +46,7 @@ export interface Attachment {
   sessionId: string;
   createdAt: number;
   sent: boolean;
+  terminalCopy?: TerminalAttachmentCopy;
 }
 const STORE_LIMIT = 2 * 1024 * 1024 * 1024;
 const CLAUDE_IMAGE_LIMIT = 4 * 1024 * 1024;
@@ -48,7 +57,7 @@ const CLAUDE_IMAGES_LIMIT = 12 * 1024 * 1024;
  * handing DSH the bytes. ACP selects its blocks after the native capability handshake.
  * Other files keep a Markdown link to the host-owned copy.
  */
-export type AttachmentFormat = "codex" | "claude" | "dsh" | "acp" | "link";
+export type AttachmentFormat = "codex" | "claude" | "claude-terminal" | "dsh" | "acp" | "link";
 interface AttachmentRequest {
   deviceId: string;
   sessionId: string;
@@ -56,7 +65,12 @@ interface AttachmentRequest {
   fingerprint: string;
   ids: string[];
   settled: boolean;
+  terminalCwd?: string;
 }
+function terminalMessage(input: Record<string, unknown>[]): string {
+  return input.map(({ text }) => text).join("\n\n");
+}
+
 export class AttachmentStore {
   private queue: Promise<unknown> = Promise.resolve();
   constructor(private readonly directory: string) {}
@@ -81,7 +95,8 @@ export class AttachmentStore {
           !/^[a-f0-9-]{36}$/.test(item.id) ||
           !Number.isSafeInteger(item.size) ||
           item.size < 0 ||
-          !/^[a-f0-9]{64}$/.test(item.version),
+          !/^[a-f0-9]{64}$/.test(item.version) ||
+          (item.terminalCopy !== undefined && !validTerminalCopy(item.terminalCopy, item.id)),
       )
     )
       throw new AttachmentError(503, "attachment_index_invalid");
@@ -122,6 +137,7 @@ export class AttachmentStore {
             typeof item.requestId !== "string" ||
             !/^[a-f0-9]{64}$/.test(item.fingerprint) ||
             typeof item.settled !== "boolean" ||
+            (item.terminalCwd !== undefined && typeof item.terminalCwd !== "string") ||
             !Array.isArray(item.ids) ||
             item.ids.some((id: unknown) => typeof id !== "string" || !/^[a-f0-9-]{36}$/.test(id)),
         )
@@ -164,9 +180,13 @@ export class AttachmentStore {
     const next = items.filter((item) => !stale.includes(item));
     if (stale.length) {
       await this.save(next);
-      for (const item of stale) await rm(join(this.directory, item.id), { force: true });
+      for (const item of stale) await this.removeFiles(item);
     }
     return next;
+  }
+  private async removeFiles(item: Attachment) {
+    if (item.terminalCopy) await removeTerminalAttachment(item.terminalCopy, item);
+    await rm(join(this.directory, item.id), { force: true });
   }
   static public(item: Attachment) {
     const { id, name, mime, size, version, sent, createdAt } = item;
@@ -245,7 +265,7 @@ export class AttachmentStore {
       if ((await this.requests()).some((request) => !request.settled && request.ids.includes(id)))
         throw new AttachmentError(409, "attachment_in_use");
       await this.save(items.filter((candidate) => candidate !== item));
-      await rm(join(this.directory, item.id), { force: true });
+      await this.removeFiles(item);
     });
   }
   /**
@@ -261,7 +281,7 @@ export class AttachmentStore {
       const removed = items.filter((item) => item.sessionId === sessionId);
       if (removed.length) {
         await this.save(items.filter((item) => item.sessionId !== sessionId));
-        for (const item of removed) await rm(join(this.directory, item.id), { force: true });
+        for (const item of removed) await this.removeFiles(item);
       }
       return removed.length;
     });
@@ -288,6 +308,28 @@ export class AttachmentStore {
     if (!requestId || requestId.length > 256)
       return Promise.reject(new AttachmentError(400, "invalid_attachment_request"));
     return this.prepareInput(deviceId, sessionId, ids, text, agent, requestId);
+  }
+  /** The cwd comes from the Runtime's verified bridge binding, never from a client payload. */
+  async inputForTerminal(
+    deviceId: string,
+    sessionId: string,
+    ids: unknown,
+    text: string,
+    cwd: string,
+    requestId: string,
+  ): Promise<ClaudeTerminalAttachmentInput> {
+    if (!requestId || requestId.length > 256)
+      throw new AttachmentError(400, "invalid_attachment_request");
+    const input = await this.prepareInput(
+      deviceId,
+      sessionId,
+      ids,
+      text,
+      "claude-terminal",
+      requestId,
+      cwd,
+    );
+    return { type: "claude-terminal-attachments", cwd, text: terminalMessage(input) };
   }
   /** Host-only recovery inventory; listing alone never releases references. */
   pendingRequests(sessionId: string) {
@@ -354,8 +396,11 @@ export class AttachmentStore {
     text: string,
     agent: AttachmentFormat,
     requestId?: string,
+    terminalCwd?: string,
   ) {
     return this.serialize(async () => {
+      if (agent === "claude-terminal" && terminalCwd === undefined)
+        throw new AttachmentError(409, "attachment_workspace_unavailable");
       if (
         !Array.isArray(ids) ||
         !ids.length ||
@@ -377,7 +422,10 @@ export class AttachmentStore {
               request.requestId === requestId,
           )
         : undefined;
-      if (existing && existing.fingerprint !== fingerprint)
+      if (
+        existing &&
+        (existing.fingerprint !== fingerprint || existing.terminalCwd !== terminalCwd)
+      )
         throw new AttachmentError(409, "attachment_request_conflict");
       if (existing?.settled) throw new AttachmentError(409, "attachment_request_settled");
       const selected = ids.map((id) =>
@@ -393,94 +441,144 @@ export class AttachmentStore {
         ? [agent === "codex" ? { type: "text", text, text_elements: [] } : { type: "text", text }]
         : [];
       let imageBytes = 0;
-      for (const item of files) {
-        const path = join(this.directory, item.id);
-        const info = await lstat(path);
-        if (!info.isFile() || info.size !== item.size)
-          throw new AttachmentError(409, "attachment_changed");
-        const canonicalPath = await realpath(path);
-        if (dirname(canonicalPath) !== (await realpath(this.directory)))
-          throw new AttachmentError(409, "attachment_changed");
-        // Read from the validated descriptor: a symlink replacement cannot redirect the read.
-        const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
-        let bytes: Buffer;
-        try {
-          const opened = await handle.stat();
+      const staged = new Map<Attachment, TerminalAttachmentCopy>();
+      try {
+        for (const item of files) {
+          const path = join(this.directory, item.id);
+          const info = await lstat(path);
+          if (!info.isFile() || info.size !== item.size)
+            throw new AttachmentError(409, "attachment_changed");
+          const canonicalPath = await realpath(path);
+          if (dirname(canonicalPath) !== (await realpath(this.directory)))
+            throw new AttachmentError(409, "attachment_changed");
+          // Read from the validated descriptor: a symlink replacement cannot redirect the read.
+          const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+          let bytes: Buffer;
+          try {
+            const opened = await handle.stat();
+            if (
+              !opened.isFile() ||
+              opened.size !== item.size ||
+              opened.ino !== info.ino ||
+              opened.dev !== info.dev
+            )
+              throw new AttachmentError(409, "attachment_changed");
+            bytes = await handle.readFile();
+          } finally {
+            await handle.close();
+          }
           if (
-            !opened.isFile() ||
-            opened.size !== item.size ||
-            opened.ino !== info.ino ||
-            opened.dev !== info.dev
+            bytes.length !== item.size ||
+            createHash("sha256").update(bytes).digest("hex") !== item.version
           )
             throw new AttachmentError(409, "attachment_changed");
-          bytes = await handle.readFile();
-        } finally {
-          await handle.close();
+          if (terminalCwd !== undefined) {
+            let workspaceFile: string;
+            try {
+              if (item.terminalCopy) {
+                workspaceFile = await terminalAttachmentPath(item.terminalCopy, item, terminalCwd);
+              } else {
+                const prepared = await stageTerminalAttachment(terminalCwd, item, bytes);
+                staged.set(item, prepared.copy);
+                workspaceFile = prepared.path;
+              }
+            } catch (error) {
+              throw new AttachmentError(
+                409,
+                error instanceof Error && error.message === "attachment_workspace_changed"
+                  ? "attachment_workspace_changed"
+                  : "attachment_workspace_unavailable",
+              );
+            }
+            input.push({
+              type: "text",
+              text: sessionAttachmentMarkdown(item.name, pathToFileURL(workspaceFile).href),
+            });
+            continue;
+          }
+          const image = agent === "codex" ? null : imageDimensions(bytes);
+          if (agent === "acp") {
+            if (SESSION_ATTACHMENT_RASTER_TYPES.includes(item.mime) && image?.mime !== item.mime)
+              throw new AttachmentError(400, "invalid_attachment_image");
+            const { id, name, mime, size, version } = item;
+            input.push({ type: "acpAttachment", id, name, mime, size, version });
+          } else if (
+            agent === "claude" &&
+            (SESSION_ATTACHMENT_RASTER_TYPES.includes(item.mime) || image)
+          ) {
+            if (
+              !image ||
+              image.mime !== item.mime ||
+              !image.width ||
+              !image.height ||
+              image.width > 8000 ||
+              image.height > 8000
+            )
+              throw new AttachmentError(400, "invalid_attachment_image");
+            imageBytes += bytes.length;
+            if (bytes.length > CLAUDE_IMAGE_LIMIT || imageBytes > CLAUDE_IMAGES_LIMIT)
+              throw new AttachmentError(413, "claude_images_too_large");
+            input.push({
+              type: "image",
+              source: { type: "base64", media_type: image.mime, data: bytes.toString("base64") },
+            });
+          } else if (agent === "codex" && SESSION_ATTACHMENT_RASTER_TYPES.includes(item.mime))
+            input.push({ type: "localImage", path: canonicalPath });
+          else if (agent === "dsh" && SESSION_ATTACHMENT_RASTER_TYPES.includes(item.mime)) {
+            if (image?.mime !== item.mime)
+              throw new AttachmentError(400, "invalid_attachment_image");
+            input.push({
+              type: "image",
+              path: canonicalPath,
+              sha256: item.version,
+              size: item.size,
+              mediaType: item.mime,
+              name: item.name,
+            });
+          } else
+            input.push({
+              type: "text",
+              text: sessionAttachmentMarkdown(item.name, pathToFileURL(canonicalPath).href),
+              ...(agent === "codex" ? { text_elements: [] } : {}),
+            });
         }
-        if (
-          bytes.length !== item.size ||
-          createHash("sha256").update(bytes).digest("hex") !== item.version
-        )
-          throw new AttachmentError(409, "attachment_changed");
-        const image = agent === "codex" ? null : imageDimensions(bytes);
-        if (agent === "acp") {
-          if (SESSION_ATTACHMENT_RASTER_TYPES.includes(item.mime) && image?.mime !== item.mime)
-            throw new AttachmentError(400, "invalid_attachment_image");
-          const { id, name, mime, size, version } = item;
-          input.push({ type: "acpAttachment", id, name, mime, size, version });
-        } else if (
-          agent === "claude" &&
-          (SESSION_ATTACHMENT_RASTER_TYPES.includes(item.mime) || image)
-        ) {
-          if (
-            !image ||
-            image.mime !== item.mime ||
-            !image.width ||
-            !image.height ||
-            image.width > 8000 ||
-            image.height > 8000
-          )
-            throw new AttachmentError(400, "invalid_attachment_image");
-          imageBytes += bytes.length;
-          if (bytes.length > CLAUDE_IMAGE_LIMIT || imageBytes > CLAUDE_IMAGES_LIMIT)
-            throw new AttachmentError(413, "claude_images_too_large");
-          input.push({
-            type: "image",
-            source: { type: "base64", media_type: image.mime, data: bytes.toString("base64") },
-          });
-        } else if (agent === "codex" && SESSION_ATTACHMENT_RASTER_TYPES.includes(item.mime))
-          input.push({ type: "localImage", path: canonicalPath });
-        else if (agent === "dsh" && SESSION_ATTACHMENT_RASTER_TYPES.includes(item.mime)) {
-          if (image?.mime !== item.mime) throw new AttachmentError(400, "invalid_attachment_image");
-          input.push({
-            type: "image",
-            path: canonicalPath,
-            sha256: item.version,
-            size: item.size,
-            mediaType: item.mime,
-            name: item.name,
-          });
-        } else
-          input.push({
-            type: "text",
-            text: sessionAttachmentMarkdown(item.name, pathToFileURL(canonicalPath).href),
-            ...(agent === "codex" ? { text_elements: [] } : {}),
-          });
+        if (terminalCwd !== undefined) {
+          const message = terminalMessage(input);
+          if (message.length > 16_000 || Buffer.byteLength(message) > 16_384)
+            throw new AttachmentError(413, "attachments_too_large");
+          // Record the workspace copies before the request pin. If pinning fails,
+          // retry can safely reuse the already tracked copies.
+          await this.save(
+            items.map((item) => {
+              const copy = staged.get(item);
+              return files.includes(item)
+                ? { ...item, sent: true, ...(copy ? { terminalCopy: copy } : {}) }
+                : item;
+            }),
+          );
+          staged.clear();
+        }
+        if (requestId && !existing)
+          await this.saveRequests([
+            ...requests,
+            {
+              deviceId,
+              sessionId,
+              requestId,
+              fingerprint,
+              ids: files.map((file) => file.id),
+              settled: false,
+              ...(terminalCwd !== undefined ? { terminalCwd } : {}),
+            },
+          ]);
+        if (terminalCwd === undefined)
+          await this.save(
+            items.map((item) => (files.includes(item) ? { ...item, sent: true } : item)),
+          );
+        return input;
+      } finally {
+        for (const [item, copy] of staged) await removeTerminalAttachment(copy, item);
       }
-      if (requestId && !existing)
-        await this.saveRequests([
-          ...requests,
-          {
-            deviceId,
-            sessionId,
-            requestId,
-            fingerprint,
-            ids: files.map((file) => file.id),
-            settled: false,
-          },
-        ]);
-      await this.save(items.map((item) => (files.includes(item) ? { ...item, sent: true } : item)));
-      return input;
     });
   }
 }

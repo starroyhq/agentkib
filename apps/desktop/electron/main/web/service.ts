@@ -92,6 +92,7 @@ const ATTACHMENT_FORMATS: Readonly<Record<string, AttachmentFormat>> = {
   "codex-managed": "codex",
   "codex-follower": "codex",
   "claude-managed": "claude",
+  "claude-follower": "claude-terminal",
   "dsh-follower": "dsh",
   "devin-print": "acp",
   "acp-managed": "acp",
@@ -473,6 +474,7 @@ function canDeleteOwnerWait(item: QueueEntry, deviceId: string) {
 
 type ActionDispatch = {
   dispatched: boolean;
+  terminalAttachments?: true;
   newlyPinnedDevice?: string;
   historyScopeKey?: string;
 };
@@ -4379,6 +4381,59 @@ export class WebAccessService {
     return result.result;
   }
 
+  private async terminalAttachmentInput(
+    hash: string,
+    workspaceId: string,
+    input: {
+      deviceId: string;
+      sessionId: string;
+      ids: unknown;
+      text: string;
+      requestId: string;
+    },
+  ) {
+    // Resolve the bound session's own root, which can be below the registered workspace.
+    const context = (await this.runtime(
+      { operation: "context", sessionId: input.sessionId, experimentalEnabled: true },
+      undefined,
+      true,
+    )) as { available?: boolean; cwd?: string; executionMode?: string };
+    if (
+      context?.available !== true ||
+      context.executionMode !== "claude-follower" ||
+      typeof context.cwd !== "string" ||
+      !isAbsolute(context.cwd)
+    )
+      throw new HttpError(409, "attachments_unavailable");
+    const workspace = (await this.registeredWorkspaces(true)).find(({ id }) => id === workspaceId);
+    if (!workspace) throw new HttpError(403, "workspace_not_authorized");
+    const [root, cwd] = await Promise.all([
+      realpath(workspace.path).catch(() => undefined),
+      realpath(context.cwd).catch(() => undefined),
+    ]);
+    if (!root || !cwd || cwd !== context.cwd) throw new HttpError(409, "attachments_unavailable");
+    const within = relative(root, cwd);
+    if (within === ".." || within.startsWith(`..${sep}`) || isAbsolute(within))
+      throw new HttpError(403, "workspace_not_authorized");
+    const device = this.grant(hash, "attachments");
+    if (
+      device.id !== input.deviceId ||
+      !(await this.workspaceAllowed(workspaceId, device, true)) ||
+      device !== this.grant(hash, "attachments")
+    )
+      throw new HttpError(403, "workspace_not_authorized");
+    return [
+      await this.attachmentStore.inputForTerminal(
+        input.deviceId,
+        input.sessionId,
+        input.ids,
+        input.text,
+        cwd,
+        input.requestId,
+      ),
+    ];
+  }
+
   private async prepareSessionAction(admission: ActionAdmission, dispatch: ActionDispatch) {
     const {
       hash,
@@ -4500,24 +4555,39 @@ export class WebAccessService {
         );
         if (capabilities.features?.attachments?.available !== true || !format)
           throw new HttpError(409, "attachments_unavailable");
-        params.input =
-          format === "claude"
-            ? await this.attachmentStore.inputForAgent(
-                device.id,
-                sessionId,
-                body.attachmentIds,
-                text,
-                format,
-                requestId,
-              )
-            : await this.attachmentStore.input(
-                device.id,
-                sessionId,
-                body.attachmentIds,
-                text,
-                format,
-              );
-        if (format === "claude" && prior?.found !== true) dispatch.newlyPinnedDevice = device.id;
+        if (format === "claude-terminal") {
+          if (snapshot.executionMode !== "claude-follower") throw new HttpError(409, "stale_state");
+          const alreadyPinned = (await this.attachmentStore.pendingRequests(sessionId)).some(
+            (item) => item.deviceId === device.id && item.requestId === requestId,
+          );
+          params.input = await this.terminalAttachmentInput(hash, admission.workspaceId, {
+            deviceId: device.id,
+            sessionId,
+            ids: body.attachmentIds,
+            text,
+            requestId,
+          });
+          dispatch.terminalAttachments = true;
+          if (!alreadyPinned) dispatch.newlyPinnedDevice = device.id;
+        } else if (format === "claude") {
+          params.input = await this.attachmentStore.inputForAgent(
+            device.id,
+            sessionId,
+            body.attachmentIds,
+            text,
+            format,
+            requestId,
+          );
+          if (prior?.found !== true) dispatch.newlyPinnedDevice = device.id;
+        } else {
+          params.input = await this.attachmentStore.input(
+            device.id,
+            sessionId,
+            body.attachmentIds,
+            text,
+            format,
+          );
+        }
         delete params.text;
       }
     }
@@ -4670,6 +4740,7 @@ export class WebAccessService {
       await this.assertHistoryScope(hash, dispatch.historyScopeKey, true);
     const restrictCodexNativePolicy = !this.isFullAccess(this.grant(hash, permission));
     if (requiresSend) this.grant(hash, "send");
+    if (dispatch.terminalAttachments) this.grant(hash, "attachments");
     if (this.requests.has(requestId)) {
       control.priorUncertain = true;
       throw new HttpError(409, "outcome_unknown");
@@ -4681,8 +4752,13 @@ export class WebAccessService {
     dispatch.dispatched = true;
     control.dispatched = true;
     let settingsConfirmed = false;
+    const invoke = () => this.requestSession(params, undefined, restrictCodexNativePolicy);
     const pending = Promise.resolve()
-      .then(() => this.requestSession(params, undefined, restrictCodexNativePolicy))
+      .then(() =>
+        dispatch.terminalAttachments && this.options.receiptRequest
+          ? dispatchClaude(invoke, this.options.receiptRequest, params)
+          : invoke(),
+      )
       .then((result) => {
         if (!settingsControl) return result;
         settingsConfirmed =
@@ -5629,7 +5705,7 @@ export class WebAccessService {
       snapshot &&
       typeof snapshot === "object" &&
       "executionMode" in snapshot &&
-      snapshot.executionMode === "claude-managed"
+      (snapshot.executionMode === "claude-managed" || snapshot.executionMode === "claude-follower")
     ) {
       await settleClaudeAttachments(this.attachmentStore, this.options.receiptRequest, sessionId);
     }
@@ -6912,7 +6988,7 @@ export class WebAccessService {
           params.commandAccess = this.dshCommandAccess(this.grant(hash, permission));
         if (operation === "send" && body.attachmentIds !== undefined) {
           const device = this.grant(hash, "attachments");
-          await this.codexScope(sessionId, hash, true, false);
+          const workspaceId = await this.codexScope(sessionId, hash, true, false);
           const capabilities = (await this.requestSession({
             operation: "capabilities",
             sessionId,
@@ -6942,35 +7018,51 @@ export class WebAccessService {
               if (previous.accepted !== true) throw new HttpError(502, "outcome_unknown");
               return this.json(res, 200, previous);
             }
+            if (prior?.executionMode === "claude-follower")
+              throw new HttpError(409, "request_conflict");
           }
           const format = attachmentInputFormat(
             ATTACHMENT_FORMATS[mode ?? ""],
             capabilities.features?.attachments,
           );
           if (!format) throw new HttpError(409, "attachments_unavailable");
+          const pinnedFormat = format === "claude" || format === "claude-terminal";
           const alreadyPinned =
-            mode === "claude-managed" &&
+            pinnedFormat &&
             (await this.attachmentStore.pendingRequests(sessionId)).some(
               (item) => item.deviceId === device.id && item.requestId === requestId,
             );
-          params.input =
-            format === "claude"
-              ? await this.attachmentStore.inputForAgent(
-                  device.id,
-                  sessionId,
-                  body.attachmentIds,
-                  String(frozenText ?? ""),
-                  format,
-                  requestId,
-                )
-              : await this.attachmentStore.input(
-                  device.id,
-                  sessionId,
-                  body.attachmentIds,
-                  String(frozenText ?? ""),
-                  format,
-                );
-          if (mode === "claude-managed" && !alreadyPinned) newlyPinnedDevice = device.id;
+          const text = String(frozenText ?? "");
+          if (format === "claude-terminal") {
+            if (snapshotField(snapshot, "workspaceId") !== workspaceId)
+              throw new HttpError(403, "workspace_not_authorized");
+            params.input = await this.terminalAttachmentInput(hash, workspaceId, {
+              deviceId: device.id,
+              sessionId,
+              ids: body.attachmentIds,
+              text,
+              requestId,
+            });
+          } else {
+            params.input =
+              format === "claude"
+                ? await this.attachmentStore.inputForAgent(
+                    device.id,
+                    sessionId,
+                    body.attachmentIds,
+                    text,
+                    format,
+                    requestId,
+                  )
+                : await this.attachmentStore.input(
+                    device.id,
+                    sessionId,
+                    body.attachmentIds,
+                    text,
+                    format,
+                  );
+          }
+          if (pinnedFormat && !alreadyPinned) newlyPinnedDevice = device.id;
           delete params.text;
           this.grant(hash, "attachments");
         }
@@ -7065,7 +7157,7 @@ export class WebAccessService {
           this.clearUnconfirmed(sessionId);
           control.dispatched = false;
           control.priorUncertain = false;
-          if ((snapshot as { executionMode?: string }).executionMode === "claude-managed")
+          if (newlyPinnedDevice || snapshot.executionMode === "claude-managed")
             await this.attachmentStore.settle(String(params.deviceId), sessionId, requestId);
           this.grant(hash, permission);
           if (boot !== this.bootId) throw new HttpError(409, "stale_boot");

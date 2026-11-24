@@ -131,6 +131,7 @@ export const bridgeSnapshotSchema = bridgeIdentitySchema.extend({
     queue: z.boolean(),
     stop: z.boolean(),
     modelPicker: z.boolean().optional(),
+    attachments: z.literal(true).optional(),
     approve: z.literal(false),
     answer: z.literal(false),
   }),

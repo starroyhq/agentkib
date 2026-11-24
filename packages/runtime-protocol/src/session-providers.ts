@@ -231,7 +231,7 @@ const MANAGED_CAPABILITIES = {
       attachments: true,
       serviceTiers: false,
       modelPicker: true,
-      permissionPicker: false,
+      permissionPicker: true,
       agentPresets: true,
       goal: true,
       goalBudget: "rounds",

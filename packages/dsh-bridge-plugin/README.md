@@ -75,6 +75,9 @@ with every Runtime it finds, and then:
   own `/compact` and `/permission <preset>`;
 - reads the permission presets (`permissionPresets.catalog`) and a session's current one, and
   reports a compaction while it runs (DSH counts the agent as idle meanwhile);
+- offers permission presets for a new session when its native catalog, permission command and
+  projection are available. It creates a blank session, runs its own permission command, and
+  confirms the selection from DSH's projection before the first message can be sent;
 - lists a session's direct subagents from its `subagentCatalog` projection, with whether each is
   running or how its last turn ended;
 - reads a whole session in pages for a handoff or content search (`document`), marking where each

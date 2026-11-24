@@ -990,7 +990,7 @@ describe("NewSessionComposer", () => {
     renderComposer({ initial: { agent: "deepseek-harness" } });
     expect(optionSlot(copy.preset)).toBeDisabled();
     expect(optionSlot(copy.model)).toBeDisabled();
-    expect(screen.queryByRole("button", { name: /^Permissions/ })).not.toBeInTheDocument();
+    expect(optionSlot(copy.permission)).toBeDisabled();
     await act(async () => resolveCatalog(dshCatalog));
     const user = userEvent.setup();
     await waitFor(() => expect(screen.getByRole("button", { name: /Preset/ })).toBeEnabled());
@@ -1106,6 +1106,62 @@ describe("NewSessionComposer", () => {
       expect(message()).toHaveValue("Keep this draft");
       expect(props.onCreated).not.toHaveBeenCalled();
       expect(doubles.client.managedAction).toHaveBeenCalledOnce();
+    },
+  );
+
+  it.each(["direct", "receipt", "mismatched-response", "mismatched-receipt"])(
+    "keeps the selected native DSH policy and draft when startup permissions fail via %s",
+    async (via) => {
+      const reason = "dsh-create-permission-not-applied";
+      doubles.client.managedOptions.mockResolvedValue({
+        ...dshCatalog,
+        policies: [{ id: "team-policy", name: "Team policy" }],
+      });
+      if (via === "mismatched-response")
+        doubles.client.managedAction.mockResolvedValue({
+          accepted: true,
+          sessionId: "blank",
+          policyId: "other-policy",
+        });
+      else
+        doubles.client.managedAction.mockRejectedValue(
+          via === "direct"
+            ? new ApiError(409, reason, "not-dispatched")
+            : new ApiError(504, "request_timeout"),
+        );
+      const props = renderComposer({ initial: { agent: "deepseek-harness" } });
+      const user = userEvent.setup();
+      await user.click(await screen.findByRole("button", { name: "Permissions" }));
+      await user.click(await screen.findByRole("menuitem", { name: "Team policy" }));
+      await write("Keep this permission and draft");
+      fireEvent.click(send());
+      await waitFor(() =>
+        expect(doubles.client.managedAction).toHaveBeenCalledExactlyOnceWith(
+          "create",
+          expect.objectContaining({ policyId: "team-policy", agent: "deepseek-harness" }),
+        ),
+      );
+
+      if (via === "receipt" || via === "mismatched-receipt") {
+        await waitFor(() => expect(doubles.client.receipt).toHaveBeenCalled());
+        const requestId = doubles.client.managedAction.mock.calls[0]![1].requestId as string;
+        doubles.client.receipt.mockResolvedValue({
+          found: true,
+          operation: "create",
+          requestId,
+          sessionId: "blank",
+          status: via === "receipt" ? "not-dispatched" : "accepted",
+          ack: via === "receipt" ? { reason } : { policyId: "other-policy" },
+        });
+        await act(async () => doubles.controlChanged?.());
+      }
+
+      expect(await screen.findByRole("alert")).toHaveTextContent(
+        "Could not confirm the permissions for the new session. Your first message is still a draft.",
+      );
+      expect(message()).toHaveValue("Keep this permission and draft");
+      expect(screen.getByRole("button", { name: "Permissions: Team policy" })).toBeVisible();
+      expect(props.onCreated).not.toHaveBeenCalled();
     },
   );
 

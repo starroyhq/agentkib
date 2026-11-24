@@ -77,6 +77,8 @@ require('node:readline').createInterface({input:process.stdin}).on('line', line 
   }
   if(frame.request.subtype==='initialize' && process.env.PARITY_MODE==='model-alias')
    send({type:'system',subtype:'init',model:'fixture-actual-model',permissionMode:'plan'});
+  if(frame.request.subtype==='initialize' && process.env.PARITY_MODE==='startup-permission-mismatch')
+   send({type:'system',subtype:'init',model:'fixture-model',permissionMode:'default'});
   if(frame.request.subtype==='initialize' && process.env.PARITY_MODE==='inherited-plan')
    send({type:'system',subtype:'init',model:'fixture-model',permissionMode:'plan'});
   setTimeout(()=>send({type:'control_response',response:{subtype:'success',request_id:frame.request_id,response:
@@ -1551,6 +1553,27 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))(
       expect(
         f.frames().filter((frame) => frame.request?.subtype === "set_permission_mode"),
       ).toHaveLength(before);
+    });
+
+    it("keeps a first message unsent when Claude reports a different startup permission", async () => {
+      const f = fixture("2.1.286", 0, "startup-permission-mismatch");
+      const { sessionId: id } = await create(f.owner, { permissionMode: "plan" });
+      const requestId = randomUUID();
+      const sent = await control(f.owner, id, "send", { requestId, text: "Keep this draft" });
+      expect(sent).toMatchObject({
+        accepted: false,
+        completed: false,
+        controlOutcome: "not-dispatched",
+        error: "create-permission-unconfirmed",
+      });
+      expect(f.frames().find((frame) => frame.args)?.args).toEqual(
+        expect.arrayContaining(["--permission-mode", "plan"]),
+      );
+      expect(f.frames().filter((frame) => frame.type === "user")).toEqual([]);
+      expect(readControlReceipt(f.root, { requestId, deviceId: "browser-device-a" })).toMatchObject({
+        status: "not-dispatched",
+        ack: sent,
+      });
     });
 
     it("prepares queued input without a user frame and dispatches exactly once with original receipt settlement", async () => {

@@ -7,12 +7,14 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vite
 import { homeSessionCopy } from "@agentkib/session-ui";
 import { initializeI18n, tr } from "@/core/i18n";
 import type { ConversationSessionSummary, QuotaSnapshot } from "@/core/types";
+import type { ManagedOptions } from "@agentkib/web-client";
 import { MenuBarPopover } from "./MenuBarPopover";
 
 const state = vi.hoisted(() => ({
   indexEnabled: true,
   sessions: [] as ConversationSessionSummary[],
   snapshot: undefined as QuotaSnapshot | undefined,
+  options: { available: true, workspaces: [] } as ManagedOptions,
   create: vi.fn(async () => "new-session"),
 }));
 
@@ -67,7 +69,7 @@ vi.mock("@/features/sessions/new-session/use-new-session", () => ({
     ready: true,
     fullAccess: true,
     optionsAccessDenied: false,
-    optionsData: { available: true, models: [] },
+    optionsData: state.options,
     options: {
       isError: false,
       isFetching: false,
@@ -98,6 +100,7 @@ describe("menu bar popover", () => {
     state.indexEnabled = true;
     state.sessions = [];
     state.snapshot = undefined;
+    state.options = { available: true, workspaces: [] };
     state.create.mockClear();
     for (const fn of Object.values(shell)) fn.mockClear();
     Object.assign(window.agentkibDesktop as object, { shell });
@@ -180,6 +183,33 @@ describe("menu bar popover", () => {
       page: "sessions",
       session_id: "new-session",
       draft: "Fix the login timeout",
+      configure_popover: false,
+    });
+  });
+
+  it("uses an explicit DSH policy selected in quick create", async () => {
+    state.options.policies = [{ id: "read-only", name: "Read Only" }];
+    localStorage.setItem(
+      "agentkib.newSession.target",
+      JSON.stringify({ workspaceId: "workspace", agent: "deepseek-harness" }),
+    );
+    renderPopover();
+    const input = screen.getByRole("textbox", { name: /New session/ });
+    fireEvent.change(input, { target: { value: "Review this workspace" } });
+    fireEvent.click(screen.getByRole("button", { name: "Permissions" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: /^Read Only/ }));
+    fireEvent.keyDown(input, { key: "Enter" });
+    await waitFor(() =>
+      expect(state.create).toHaveBeenCalledExactlyOnceWith({
+        agent: "deepseek-harness",
+        policyId: "read-only",
+        workspaceId: "workspace",
+      }),
+    );
+    expect(shell.openMain).toHaveBeenCalledExactlyOnceWith({
+      page: "sessions",
+      session_id: "new-session",
+      draft: "Review this workspace",
       configure_popover: false,
     });
   });

@@ -48,6 +48,8 @@ export interface DshBridgeServices {
   sessionModelSelection?: boolean;
   /** Read a model catalog before creating a session and apply its initial selection. */
   createModelSelection?: boolean;
+  /** List presets and verify the initial permission of a blank session before sending. */
+  createPermissionPreset?: boolean;
   /** Images in prompts and reading a session's images. Plugins older than 0.3.0 do not report it. */
   images?: boolean;
   /** Reading and changing a session's goal. Plugins older than 0.4.0 do not report it. */
@@ -330,9 +332,12 @@ export type DshBridgeCommand = { commandId: string } & (
       sessionId: string;
       agentPreset?: string;
       modelSelection?: { provider: string; model: string; reasoningEffort?: string };
+      policyId?: string;
     }
   /** `{ presets }`: DSH's Agent presets, in the order DSH lists them. */
   | { type: "presets" }
+  /** Native permission choices for creation, read without starting a session. */
+  | { type: "create-permissions" }
   | { type: "models"; sessionId?: string; recordedOnly?: boolean }
   | {
       type: "selectModel";

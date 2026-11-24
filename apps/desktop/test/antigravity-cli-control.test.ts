@@ -1,3 +1,7 @@
+import { randomUUID } from "node:crypto";
+import { mkdtemp, realpath, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import { sessionInteractionItems } from "@agentkib/session-ui";
 import type { Live } from "@agentkib/web-client";
@@ -7,6 +11,11 @@ import {
   AntigravityManagedRunner,
   antigravityTurnFailure,
 } from "../../../packages/backend/src/agents/antigravity/antigravity-managed-runner";
+import { Commands } from "../../../packages/backend/src/commands";
+import { readControlReceipt } from "../../../packages/backend/src/control-receipt";
+import { SessionReaders } from "../../../packages/backend/src/session-readers";
+import { BackendStore } from "../../../packages/backend/src/store";
+import { WebReadRequests } from "../../../packages/backend/src/web-read";
 
 type Frame = { id?: number | string; method?: string; params?: any; result?: any; error?: any };
 
@@ -60,7 +69,7 @@ const oversizedMcpInput = {
 };
 
 /** An in-process `agy acp` (1.5.14) that answers as each test scripts it. */
-function fakeCli() {
+function fakeCli(modeConfirmation?: "missing" | "mismatch" | "rejected" | "stale" | "confirmed") {
   const fromAgent = new PassThrough();
   const toAgent = new PassThrough();
   const frames: Frame[] = [];
@@ -111,7 +120,24 @@ function fakeCli() {
           result: { sessionId: frame.params.sessionId, configOptions: configOptions() },
         });
       if (frame.method === "session/set_config_option") {
-        config[frame.params.configId] = frame.params.value;
+        if (frame.params.configId === "model" && modeConfirmation === "stale") {
+          config.model = frame.params.value;
+          config.mode = "auto";
+          send({ id: frame.id, result: {} });
+          continue;
+        }
+        if (frame.params.configId === "mode") {
+          if (modeConfirmation === "missing" || modeConfirmation === "stale") {
+            send({ id: frame.id, result: {} });
+            continue;
+          }
+          if (modeConfirmation === "rejected") {
+            send({ id: frame.id, error: { code: -32602, message: "Invalid params" } });
+            continue;
+          }
+        }
+        if (frame.params.configId !== "mode" || modeConfirmation !== "mismatch")
+          config[frame.params.configId] = frame.params.value;
         send({ id: frame.id, result: { configOptions: configOptions() } });
       }
       if (frame.method === "session/prompt") onPrompt(frame);
@@ -139,6 +165,116 @@ const settle = async (check: () => boolean) => {
 afterEach(() => vi.restoreAllMocks());
 
 describe("Antigravity CLI control (agy acp 1.5.14)", () => {
+  it.each([
+    "missing",
+    "mismatch",
+    "rejected",
+    "stale",
+    "confirmed",
+    "already-active",
+    "omitted",
+  ] as const)(
+    "requires native confirmation before the first Antigravity message (%s)",
+    async (confirmation) => {
+      const implicit = confirmation === "already-active" || confirmation === "omitted";
+      const cli = fakeCli(implicit ? "missing" : confirmation);
+      const root = await realpath(await mkdtemp(join(tmpdir(), "ak-agy-create-")));
+      const store = new BackendStore(join(root, "agentkib.db"));
+      const commands = new Commands();
+      const environment = {
+        HOME: root,
+        USERPROFILE: root,
+        CODEX_HOME: join(root, ".codex"),
+        PATH: root,
+      };
+      const readers = new SessionReaders(store.sessions, commands, environment, {
+        profiles: () => [],
+      });
+      const web = new WebReadRequests(store, readers, root, () => 0n, environment);
+      try {
+        store.sql.run(
+          "INSERT INTO workspaces(id,canonical_path,name,status,last_discovered_at) VALUES(?,?,?,?,?)",
+          "workspace",
+          root,
+          "Fixture",
+          "healthy",
+          "2026-11-16T00:00:00Z",
+        );
+        vi.spyOn(readers, "antigravityControlExecutable").mockReturnValue(join(root, "fake-agy"));
+        vi.spyOn(readers, "list").mockResolvedValue({
+          sessions: [
+            {
+              native_ref: "fresh",
+              agent: "antigravity",
+              title: "Fixture",
+              origin: "interactive",
+              created_at: null,
+              updated_at: null,
+              message_count: 1,
+              git_branch: null,
+              archived: false,
+              sidechain: false,
+              availability: "readable",
+            },
+          ],
+          incomplete: false,
+        });
+        const request = {
+          requestId: randomUUID(),
+          deviceId: "phone",
+          workspaceId: "workspace",
+          prompt: "Only send with confirmed permissions",
+          ...(confirmation === "omitted"
+            ? {}
+            : {
+                permissionMode:
+                  confirmation === "already-active" || confirmation === "stale"
+                    ? "default"
+                    : "plan",
+              }),
+          ...(confirmation === "stale" ? { model: "sonnet" } : {}),
+        };
+        const create = () => web.sessionProviderCreate("antigravity", request);
+        const result = await create();
+        const methods = cli.frames.map((frame) => frame.method);
+        if (confirmation === "confirmed" || implicit) {
+          expect(result).toMatchObject({
+            accepted: true,
+            sessionId: store.sessions.id("antigravity", "fresh"),
+          });
+          expect(methods).toEqual([
+            "initialize",
+            "session/new",
+            ...(confirmation === "confirmed" ? ["session/set_config_option"] : []),
+            "session/prompt",
+          ]);
+        } else {
+          expect(result).toMatchObject({
+            accepted: false,
+            controlOutcome: "not-dispatched",
+            reason: "create-permission-unconfirmed",
+          });
+          expect(
+            readControlReceipt(root, { requestId: request.requestId, deviceId: request.deviceId }),
+          ).toMatchObject({ status: "not-dispatched" });
+          expect(methods).toEqual([
+            "initialize",
+            "session/new",
+            ...(confirmation === "stale" ? ["session/set_config_option"] : []),
+            "session/set_config_option",
+          ]);
+        }
+        expect(await create()).toEqual(result);
+      } finally {
+        await web.closeAsync();
+        readers.close();
+        commands.close();
+        store.close();
+        await rm(root, { recursive: true, force: true });
+      }
+    },
+  );
+
   it("starts a session with the chosen options and changes them between turns", async () => {
     const cli = fakeCli();
     const runner = await AntigravityManagedRunner.connect(

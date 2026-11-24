@@ -28,7 +28,7 @@ describe("managed Agent registry", () => {
     for (const agent of MANAGED_AGENTS) {
       expect(newSessionProvider(agent)?.create).toMatchObject({
         modelPicker: true,
-        permissionPicker: agent !== "deepseek-harness",
+        permissionPicker: true,
       });
     }
     expect(newSessionProvider("deepseek-harness")?.create.agentPresets).toBe(true);

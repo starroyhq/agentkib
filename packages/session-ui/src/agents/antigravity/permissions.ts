@@ -88,7 +88,13 @@ const choices = [
 ] as const;
 
 export const antigravityPermissions = {
-  creation: { field: "permissionMode", choices, sendShown: true, copy: antigravityPermissionCopy },
+  creation: {
+    field: "permissionMode",
+    choices,
+    sendShown: true,
+    defaultId: "default",
+    copy: antigravityPermissionCopy,
+  },
   settings: {
     label: permissionLabel,
     risky: (id) => id === "auto",

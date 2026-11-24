@@ -563,6 +563,37 @@ export function createBridge(ctx, options = {}) {
   function canSelectModelAtCreation(controller) {
     return typeof controller?.create === "function" && canRecordModelSelection(controller);
   }
+  function canSelectPermissionAtCreation(controller) {
+    const commands = service("commands");
+    return (
+      typeof controller?.create === "function" &&
+      typeof controller?.resolveAgent === "function" &&
+      typeof controller?.projections === "function" &&
+      typeof service("permissionPresets")?.catalog === "function" &&
+      typeof commands?.list === "function" &&
+      typeof commands?.find === "function" &&
+      typeof commands?.execute === "function"
+    );
+  }
+  function createPermissions(controller) {
+    if (
+      !canSelectPermissionAtCreation(controller) ||
+      !commandEntries(service("commands").list(undefined)).some(
+        (entry) => entry.name === "permission",
+      )
+    )
+      throw new Error("dsh-create-permission-selection-unsupported");
+    const catalog = service("permissionPresets").catalog();
+    const options = permissionOptions(catalog).filter(
+      (option) => !/[\s\p{Cc}]/u.test(option.value),
+    );
+    return {
+      options,
+      defaultPreset: options.some((option) => option.value === catalog?.defaultPreset)
+        ? catalog.defaultPreset
+        : null,
+    };
+  }
   async function recordedModel(controller, sessionId) {
     const value = await controller.projections({ sessionId }, lifetime.signal);
     const selection = value?.values?.modelSelection;
@@ -1017,6 +1048,21 @@ export function createBridge(ctx, options = {}) {
       text: typeof result?.text === "string" ? bounded(result.text, MAX_PREVIEW).text : null,
     };
   }
+  async function applyInitialPermission(sessionId, requestId, policyId) {
+    try {
+      const agent = await agentFor(sessionId);
+      if (!service("commands").find(agent, "permission"))
+        throw new Error("permission-command-unavailable");
+      const changed = await runCommand(agent, requestId, `/permission ${policyId}`);
+      if (changed.ok !== true) throw new Error("permission-command-unconfirmed");
+      const observed = (await projections(sessionId)).permissions?.currentValue;
+      if (observed !== policyId) throw new Error("permission-projection-mismatch");
+      return observed;
+    } catch {
+      // The blank session may already exist. Only native evidence can settle its receipt now.
+      throw new Error("dsh-create-permission-not-applied");
+    }
+  }
   /**
    * A message naming one of the session's commands runs as that command, as in DSH's own window:
    * DSH's registry for the session's agent decides, also for a session DSH resumes for it. Null
@@ -1093,6 +1139,8 @@ export function createBridge(ctx, options = {}) {
             .filter(Boolean),
         };
       }
+      case "create-permissions":
+        return createPermissions(controller);
       case "verify":
         return present(command);
       case "verify-turn-end":
@@ -1184,6 +1232,12 @@ export function createBridge(ctx, options = {}) {
       case "create": {
         const controller = needController();
         const selection = command.modelSelection;
+        const policyId = command.policyId;
+        if (
+          policyId !== undefined &&
+          !createPermissions(controller).options.some((option) => option.value === policyId)
+        )
+          throw new Error("invalid-policy");
         if (selection) {
           if (!canSelectModelAtCreation(controller))
             throw new Error("dsh-create-model-selection-unsupported");
@@ -1195,28 +1249,36 @@ export function createBridge(ctx, options = {}) {
           sessionId: String(command.sessionId),
           ...(command.agentPreset ? { agentPreset: String(command.agentPreset) } : {}),
         });
-        if (selection)
-          try {
-            const sessionId = value?.sessionId;
-            if (sessionId !== command.sessionId) throw new Error("dsh-create-session-id-changed");
+        try {
+          const sessionId = value?.sessionId;
+          if ((selection || policyId) && sessionId !== command.sessionId)
+            throw new Error(
+              policyId ? "dsh-create-permission-not-applied" : "dsh-create-model-not-applied",
+            );
+          let selected;
+          if (selection) {
             // The native controller's selectModel also saves the global default. The Agent's
             // model interface records the same selection locally for this just-created session.
-            service("agents").get(sessionId).model.select(selection);
-            const selected = await recordedModel(controller, sessionId);
-            if (!sameModelSelection(selected, selection))
+            try {
+              service("agents").get(sessionId).model.select(selection);
+              const recorded = await recordedModel(controller, sessionId);
+              if (!sameModelSelection(recorded, selection)) throw new Error("model-mismatch");
+              selected = { ...selection, reasoningEffort: selection.reasoningEffort ?? null };
+            } catch {
               throw new Error("dsh-create-model-not-applied");
-            return {
-              sessionId,
-              selected: { ...selection, reasoningEffort: selection.reasoningEffort ?? null },
-            };
-          } catch {
-            // The native blank session may already exist. The host reconciles it before sending.
-            throw new Error("dsh-create-model-not-applied");
-          } finally {
-            refreshList();
+            }
           }
-        refreshList();
-        return { sessionId: value?.sessionId ?? null };
+          const observed = policyId
+            ? await applyInitialPermission(sessionId, command.commandId, policyId)
+            : undefined;
+          return {
+            sessionId: sessionId ?? null,
+            ...(selected ? { selected } : {}),
+            ...(observed ? { policyId: observed } : {}),
+          };
+        } finally {
+          refreshList();
+        }
       }
       case "archive": {
         const workspaces = service("workspaceController");
@@ -1508,6 +1570,7 @@ export function createBridge(ctx, options = {}) {
       modelCatalog: typeof controller?.modelCatalog === "function",
       sessionModelSelection: resolves && canRecordModelSelection(controller),
       createModelSelection: canSelectModelAtCreation(controller),
+      createPermissionPreset: canSelectPermissionAtCreation(controller),
       images: typeof controller?.attachment === "function",
       goals: resolves && projects && typeof service("goals")?.get === "function",
       commands: resolves && typeof service("commands")?.execute === "function",

@@ -574,6 +574,8 @@ export type ControlReceipt =
       turnId?: string | null;
       status: "not-dispatched" | "accepted" | "unknown";
       ack?: {
+        /** Native permission proof for an explicitly configured empty session. */
+        policyId?: string;
         accepted?: boolean;
         completed?: boolean;
         requestId?: string;
@@ -823,6 +825,8 @@ export interface ManagedActionBody {
   prompt?: string;
 }
 export interface ManagedActionResult {
+  /** Native permission proof for an explicitly configured empty session. */
+  policyId?: string;
   feedback?: readonly SessionFeedback[];
   accepted?: boolean;
   completed?: boolean;

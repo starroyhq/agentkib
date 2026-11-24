@@ -5170,6 +5170,7 @@ export class WebAccessService {
     const agent = managedAgentOf(body.agent ?? "codex");
     if (!agent) throw new HttpError(400, "invalid_agent");
     const provider = sessionProviderCapabilities(agent);
+    const permissionField = sessionProviderDeclaration(agent)?.permissionField;
     // DeepSeek Harness only starts sessions here; its sessions are controlled through actions.
     if (agent === "deepseek-harness" && operation !== "create")
       throw new HttpError(404, "not_found");
@@ -5223,8 +5224,12 @@ export class WebAccessService {
       requestId,
       deviceId: this.grant(hash, "manage").id,
     };
+    let creationNeedsFullAccess = false;
+    let verifyPolicyReply = false;
     if (operation === "create") {
       params.workspaceId = this.field(body.workspaceId);
+      if (body.permissionMode !== undefined && permissionField !== "permissionMode")
+        throw new HttpError(400, "unsupported_permission_mode");
       if (agent === "codex") {
         const policyId =
           body.policyId === undefined
@@ -5240,8 +5245,14 @@ export class WebAccessService {
           throw new HttpError(400, "unsupported_policy");
         // Starting with another policy is changing it, which a session's settings allow only
         // to a device with full access.
-        if (policyId !== "workspace-write-on-request") this.fullAccess(hash);
+        creationNeedsFullAccess = policyId !== "workspace-write-on-request";
         params.policyId = policyId;
+      } else if (body.policyId !== undefined) {
+        if (provider?.create.permissionPicker !== true || permissionField !== "policyId")
+          throw new HttpError(400, "unsupported_policy");
+        params.policyId = this.field(body.policyId, 128);
+        creationNeedsFullAccess = true;
+        verifyPolicyReply = true;
       }
       if (body.mode !== undefined) {
         if (provider?.create.planMode !== "mode" || body.mode !== "plan")
@@ -5271,7 +5282,7 @@ export class WebAccessService {
         if (!DEVIN_PERMISSION_MODES.includes(mode))
           throw new HttpError(400, "unsupported_permission_mode");
         // Approving more without asking is changing what the session may do: full access only.
-        if (mode === "smart" || mode === "dangerous") this.fullAccess(hash);
+        creationNeedsFullAccess = mode === "smart" || mode === "dangerous";
         params.permissionMode = mode;
       }
       if (agent === "antigravity" && body.permissionMode !== undefined) {
@@ -5279,9 +5290,10 @@ export class WebAccessService {
         if (!ANTIGRAVITY_PERMISSION_MODES.includes(mode))
           throw new HttpError(400, "unsupported_permission_mode");
         // Auto also runs commands Antigravity judges safe: full access only.
-        if (mode === "auto") this.fullAccess(hash);
+        creationNeedsFullAccess = mode === "auto";
         params.permissionMode = mode;
       }
+      if (creationNeedsFullAccess) this.fullAccess(hash);
       if (provider?.create.mode === "with-first-message") {
         if (typeof body.prompt !== "string" || !body.prompt.trim())
           throw new HttpError(400, "missing_prompt");
@@ -5325,6 +5337,7 @@ export class WebAccessService {
     )
       throw new HttpError(403, "workspace_not_authorized");
     this.grant(hash, "manage");
+    if (creationNeedsFullAccess) this.fullAccess(hash);
     if (params.mode === "plan") this.grant(hash, "settings");
     if (body.bootId !== this.bootId) throw new HttpError(409, "stale_boot");
     if (this.admission || (sessionId && this.active.has(sessionId)))
@@ -5358,9 +5371,16 @@ export class WebAccessService {
       controlOutcome?: string;
       reason?: string;
       requestId?: string;
+      policyId?: string;
     };
     this.grant(hash, "manage");
     if (body.bootId !== this.bootId) throw new HttpError(409, "stale_boot");
+    if (verifyPolicyReply && result?.accepted === true && result.policyId !== params.policyId) {
+      // Creation is empty: without permission proof the client must retain the first message.
+      control.dispatched = false;
+      control.priorUncertain = false;
+      throw new HttpError(409, "create-permission-unconfirmed");
+    }
     if (operation !== "reconcile" && result?.accepted !== true) {
       if (
         result?.accepted === false &&
@@ -5402,6 +5422,9 @@ export class WebAccessService {
           "dsh-models-unavailable",
           "dsh-create-model-selection-unsupported",
           "dsh-create-model-not-applied",
+          "dsh-create-permission-selection-unsupported",
+          "dsh-create-permission-not-applied",
+          "invalid-policy",
           // Starting DeepSeek Harness in the background, and a session another DSH holds.
           "dsh-start-failed",
           "dsh-version-unsupported",

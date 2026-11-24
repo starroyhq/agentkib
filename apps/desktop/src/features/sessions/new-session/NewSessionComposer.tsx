@@ -35,7 +35,8 @@ import {
   newSessionCreateFields,
   useNewSessionModel,
   sessionCreationDescription,
-  newSessionPermissions,
+  isNewSessionPermissionFailure,
+  useNewSessionPermission,
   newSessionPermissionFallbackTitle,
   newSessionPresetChoices,
   newSessionAddCapabilities,
@@ -112,7 +113,6 @@ export function NewSessionComposer(props: NewSessionComposerProps) {
   const [text, setText] = useState("");
   const [files, setFiles] = useState<File[]>([]);
   const [terminalNote, setTerminalNote] = useState<{ detail: string; text: string }>();
-  const [permission, setPermission] = useState<string>();
   const [startupPlanning, setStartupPlanning] = useState(false);
   const [addMenuOpen, setAddMenuOpen] = useState(false);
   const [agentPreset, setAgentPreset] = useState<string>();
@@ -150,7 +150,6 @@ export function NewSessionComposer(props: NewSessionComposerProps) {
   });
   const options = session.optionsData;
   const provider = newSessionProvider(agent, options);
-  const showPermission = provider?.create.permissionPicker === true;
   const showModel = provider?.create.modelPicker === true;
   const showPresets = provider?.create.agentPresets === true;
   const optionsStatus = session.optionsLoading ? copy.loadingOptions : copy.optionsUnavailable;
@@ -231,14 +230,12 @@ export function NewSessionComposer(props: NewSessionComposerProps) {
   });
   const { settings: modelSettings, modelId, shownEffort, shownTier } = sessionModel;
   const verifiedOptions = options?.available ? options : undefined;
-  const permissions = newSessionPermissions(agent, verifiedOptions, locale, {
-    fullAccess: session.fullAccess,
-  });
+  const permission = useNewSessionPermission(agent, options, locale, session.fullAccess);
+  const { permissions, selected: selectedPermission, shown: shownPermission } = permission;
   const permissionChoices = permissions?.choices ?? [];
-  const shownPermission = permissionChoices.find(
-    (item) => item.id === (permission ?? permissions?.initial),
-  );
   const planning = startupPlanning;
+  const permissionUnavailable =
+    permission.unavailable && !(planning && planField === "permissionMode");
   const planOption = useMemo(() => planSlashOption(locale), [locale]);
   const slash = useSlashCommandMenu({
     value: text,
@@ -277,13 +274,15 @@ export function NewSessionComposer(props: NewSessionComposerProps) {
   const resourceNeedsMessage = resources.length > 0 && !hasMessage;
   const resourceNeedsReselection = resources.some((item) => !item.available);
   const goalNeedsMessage = !!goal && !hasMessage && planning && planField === "mode";
-  const sendDisabledReason = resourceNeedsReselection
-    ? undefined
-    : resourceNeedsMessage
-      ? composerLayoutCopy[locale].resourceNeedsMessage
-      : goalNeedsMessage
-        ? goalCopy.planNeedsMessage
-        : undefined;
+  const sendDisabledReason = permissionUnavailable
+    ? optionsStatus
+    : resourceNeedsReselection
+      ? undefined
+      : resourceNeedsMessage
+        ? composerLayoutCopy[locale].resourceNeedsMessage
+        : goalNeedsMessage
+          ? goalCopy.planNeedsMessage
+          : undefined;
   const sendLabel = goal && !hasMessage ? sessionCopy[locale].goalCreate : copy.send;
   const canSend =
     session.ready &&
@@ -291,6 +290,7 @@ export function NewSessionComposer(props: NewSessionComposerProps) {
     !!workspace &&
     !locked &&
     !session.unknown &&
+    !permissionUnavailable &&
     (!planning || offersPlan) &&
     (!resources.length ||
       (resourcesAllowed && !resourceNeedsMessage && !resourceNeedsReselection)) &&
@@ -311,7 +311,7 @@ export function NewSessionComposer(props: NewSessionComposerProps) {
         effort: sessionModel.effort,
         serviceTierId: sessionModel.chosenTier,
         shownModel: modelId,
-        permission,
+        permission: permission.requested,
         planning,
         preset: agentPreset,
         fullAccess: session.fullAccess,
@@ -367,7 +367,8 @@ export function NewSessionComposer(props: NewSessionComposerProps) {
         ) : undefined
       }
     >
-      {session.failure.detail === "dsh-create-model-not-applied"
+      {session.failure.detail === "dsh-create-model-not-applied" ||
+      isNewSessionPermissionFailure(session.failure.detail)
         ? session.failure.reason
         : fillCopy(copy.notCreated, { reason: session.failure.reason })}
       {terminalNote && terminalNote.detail === terminalDetail && (
@@ -457,7 +458,7 @@ export function NewSessionComposer(props: NewSessionComposerProps) {
                   if (item === agent) return;
                   setAgent(item);
                   sessionModel.reset();
-                  setPermission(undefined);
+                  permission.reset();
                   setStartupPlanning(false);
                   setAgentPreset(undefined);
                   setAddMenuOpen(false);
@@ -623,7 +624,7 @@ export function NewSessionComposer(props: NewSessionComposerProps) {
                   : undefined,
             }}
             permission={
-              showPermission && permissions
+              permissions
                 ? {
                     label: shownPermission?.name ?? permissions.title,
                     title: permissions.title,
@@ -635,15 +636,19 @@ export function NewSessionComposer(props: NewSessionComposerProps) {
                       planning && planField === "permissionMode"
                         ? permissionChoices.map((item) => ({ ...item, disabled: true }))
                         : permissionChoices,
-                    selected: shownPermission?.id,
-                    onSelect: setPermission,
+                    selected: selectedPermission?.id,
+                    onSelect: permission.select,
                   }
                 : undefined
             }
             permissionFallback={
-              showPermission && !permissions ? (
+              provider && !permissions ? (
                 <UnavailableOptionButton
-                  label={newSessionPermissionFallbackTitle(agent, locale) ?? copy.permission}
+                  label={
+                    shownPermission?.name ??
+                    newSessionPermissionFallbackTitle(agent, locale) ??
+                    copy.permission
+                  }
                   status={optionsStatus}
                   loading={session.optionsLoading}
                   className="h-11 min-w-0 rounded-full px-2.5 text-sm font-normal text-muted-foreground"

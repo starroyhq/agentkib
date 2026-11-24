@@ -18,6 +18,7 @@ type PermissionMenuProps = {
   description?: string;
   hint?: string;
   risky?: boolean;
+  compact?: boolean;
   disabled: boolean;
   side: "top" | "bottom";
   items: ComposerPermissionItem[];
@@ -34,6 +35,7 @@ export function ComposerPermissionMenu({
   description,
   hint,
   risky = false,
+  compact = false,
   disabled,
   side,
   items,
@@ -46,13 +48,13 @@ export function ComposerPermissionMenu({
   return (
     <Menu.Root open={open} onOpenChange={onOpenChange}>
       <Menu.Trigger
-        className={`${composerButtonClasses} h-11 min-w-0 gap-1.5 rounded-full px-2.5 text-sm font-normal disabled:opacity-50 disabled:grayscale ${disabledReason ? "disabled:pointer-events-auto!" : ""} ${risky ? "text-orange-600 hover:text-orange-700" : "text-muted-foreground"}`}
+        className={`${composerButtonClasses} ${compact ? "h-7 shrink-0 gap-1 rounded-lg px-1.5" : "h-11 min-w-0 gap-1.5 rounded-full px-2.5 text-sm font-normal"} disabled:opacity-50 disabled:grayscale ${disabledReason ? "disabled:pointer-events-auto!" : ""} ${risky ? "text-orange-600 hover:text-orange-700" : "text-muted-foreground"}`}
         disabled={disabled}
         title={disabledReason}
         aria-label={title === label ? title : `${title}: ${label}`}
       >
         <Shield className="size-3.5 shrink-0" aria-hidden />
-        <span className="truncate @max-[28rem]:sr-only">{label}</span>
+        <span className={compact ? "sr-only" : "truncate @max-[28rem]:sr-only"}>{label}</span>
         <ChevronDown className="size-3.5 shrink-0" aria-hidden />
       </Menu.Trigger>
       <Menu.Portal>

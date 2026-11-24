@@ -4,6 +4,7 @@ import {
   type ManagedAgent,
   type SessionProviderDeclaration,
 } from "@agentkib/web-client";
+import { useState } from "react";
 import { DEFAULT_NEW_SESSION_AGENT, sessionCreationDescription } from "./agents/session-creation";
 import {
   newSessionPermissionCopy,
@@ -38,8 +39,8 @@ export interface NewSessionOptions {
   }[];
   defaults?: { model?: string | null; effort?: string | null };
   serviceTiers?: { id: string }[];
-  policies?: { id: string }[];
-  permissionModes?: { id: string }[];
+  policies?: { id: string; name?: string; description?: string }[];
+  permissionModes?: { id: string; name?: string; description?: string }[];
   agentPresets?: {
     id: string;
     name: string | null;
@@ -95,9 +96,13 @@ function offeredPermissions(
   fullAccess: boolean,
 ) {
   const offered = spec.field === "policyId" ? options?.policies : options?.permissionModes;
-  return spec.choices.filter(
+  if (!offered || (spec.fullAccessOnly && !fullAccess)) return [];
+  const choices = spec.useNativeCatalog
+    ? offered.map((item) => ({ ...spec.choices.find(({ id }) => id === item.id), id: item.id }))
+    : spec.choices;
+  return choices.filter(
     ({ id, fullAccessOnly }) =>
-      offered?.some((item) => item.id === id) && (fullAccess || !fullAccessOnly),
+      offered.some((item) => item.id === id) && (fullAccess || !fullAccessOnly),
   );
 }
 
@@ -124,16 +129,67 @@ export function newSessionPermissions(
   );
   if (!choices.length) return undefined;
   const words = spec.copy(locale);
+  const catalog = spec.field === "policyId" ? options?.policies : options?.permissionModes;
+  const initial = spec.defaultId ?? (spec.sendShown ? choices[0].id : undefined);
   return {
     title: words.title,
-    initial: spec.sendShown ? choices[0].id : undefined,
-    choices: choices.map(({ id, risky }) => ({
-      id,
-      name: words.choices[id]?.name ?? id,
-      description: words.choices[id]?.description ?? "",
-      risky: !!risky,
-    })),
+    initial: choices.some(({ id }) => id === initial) ? initial : undefined,
+    choices: choices.map(({ id, risky }) => {
+      const native = catalog?.find((item) => item.id === id);
+      const label = Object.hasOwn(words.choices, id) ? words.choices[id] : undefined;
+      return {
+        id,
+        name: label?.name ?? native?.name ?? id,
+        description: label?.description ?? native?.description ?? "",
+        risky: !!risky,
+      };
+    }),
   };
+}
+
+/** Keep a user-picked permission across catalog refreshes without falling back on submit. */
+export function useNewSessionPermission(
+  agent: NewSessionAgent,
+  options: NewSessionOptions | undefined,
+  locale: InteractionLocale,
+  fullAccess: boolean,
+) {
+  const [selection, setSelection] = useState<{
+    agent: NewSessionAgent;
+    choice: NewSessionPermissionChoice;
+  }>();
+  const choice = selection?.agent === agent ? selection.choice : undefined;
+  const verifiedOptions = options?.available ? options : undefined;
+  const permissions = newSessionPermissions(agent, verifiedOptions, locale, { fullAccess });
+  const selectedId = choice?.id ?? permissions?.initial;
+  const selected = permissions?.choices.find((item) => item.id === selectedId);
+  return {
+    permissions,
+    selected,
+    shown: selected ?? choice,
+    requested: choice?.id,
+    unavailable: !!choice && !selected,
+    select(id: string) {
+      const next = permissions?.choices.find((item) => item.id === id);
+      if (next) setSelection({ agent, choice: next });
+    },
+    reset() {
+      setSelection(undefined);
+    },
+  };
+}
+
+export function requiredNewSessionPolicyProof(agent: NewSessionAgent, policyId?: string) {
+  return sessionPermissionDescriptor(agent)?.creation?.verifyPolicyId ? policyId : undefined;
+}
+
+export function isNewSessionPermissionFailure(code?: string) {
+  return (
+    code === "create-permission-unconfirmed" ||
+    code === "dsh-create-permission-not-applied" ||
+    code === "dsh-create-permission-selection-unsupported" ||
+    code === "invalid-policy"
+  );
 }
 
 /** The presets an Agent starts from, and the one it uses when none is chosen. */
@@ -219,12 +275,9 @@ export function newSessionCreateFields(
   const planMode = create?.planMode;
   const requestedPermission =
     selection.planning && planMode === "permissionMode" ? "plan" : permission;
-  const sent =
-    requestedPermission && ids.includes(requestedPermission)
-      ? requestedPermission
-      : spec?.sendShown
-        ? ids[0]
-        : undefined;
+  const candidate =
+    requestedPermission ?? (spec?.sendShown ? (spec.defaultId ?? ids[0]) : undefined);
+  const sent = candidate && ids.includes(candidate) ? candidate : undefined;
   const { presets, defaultId } = newSessionPresets(agent, options, create);
   return {
     // Hosts that predate other Agents read a create without one as Codex.
@@ -280,6 +333,7 @@ const copy = {
     notCreated: "没有建成会话：{reason}",
     notListed: "会话已创建，但未能及时出现在会话列表中。",
     startModelUnconfirmed: "无法确认新会话已应用所选模型。首条消息已保留为草稿。",
+    startPermissionUnconfirmed: "无法确认新会话已应用所选权限。首条消息已保留为草稿。",
     startModelUnavailable: "暂时无法核对 DeepSeek Harness 的模型目录，请稍后再试。",
     startModelUpgrade: "请更新 DeepSeek Harness 中的 AgentKib 插件，以便在创建会话时选择模型。",
     claudeStartupModelsUnavailable: "暂时无法核对 Claude Code 的模型目录，请稍后再试。",
@@ -316,6 +370,7 @@ const copy = {
     notCreated: "沒有建立對話：{reason}",
     notListed: "對話已建立，但未能及時出現在對話清單中。",
     startModelUnconfirmed: "無法確認新對話已套用所選模型。第一則訊息已保留為草稿。",
+    startPermissionUnconfirmed: "無法確認新對話已套用所選權限。第一則訊息已保留為草稿。",
     startModelUnavailable: "暫時無法核對 DeepSeek Harness 的模型清單，請稍後再試。",
     startModelUpgrade: "請更新 DeepSeek Harness 中的 AgentKib 外掛，以便在建立對話時選擇模型。",
     claudeStartupModelsUnavailable: "暫時無法核對 Claude Code 的模型清單，請稍後再試。",
@@ -354,6 +409,8 @@ const copy = {
     notListed: "The session was created, but it did not appear in the session list in time.",
     startModelUnconfirmed:
       "Could not confirm the model for the new session. Your first message is still a draft.",
+    startPermissionUnconfirmed:
+      "Could not confirm the permissions for the new session. Your first message is still a draft.",
     startModelUnavailable: "Could not check the DeepSeek Harness model catalog. Try again shortly.",
     startModelUpgrade:
       "Update the AgentKib plugin in DeepSeek Harness to select a model before starting a session.",
@@ -393,6 +450,8 @@ const copy = {
     notListed: "会話は作成されましたが、時間内に会話一覧に表示されませんでした。",
     startModelUnconfirmed:
       "新しい会話に選択したモデルが適用されたか確認できませんでした。最初のメッセージは下書きに残っています。",
+    startPermissionUnconfirmed:
+      "新しい会話に選択した権限が適用されたか確認できませんでした。最初のメッセージは下書きに残っています。",
     startModelUnavailable:
       "DeepSeek Harness のモデル一覧を確認できませんでした。しばらくしてからもう一度お試しください。",
     startModelUpgrade:

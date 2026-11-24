@@ -2964,6 +2964,187 @@ describe("DeepSeek Harness plugin projections", () => {
     expect(f.dsh.creations).toHaveLength(1);
   });
 
+  it("reads the native create permission choices and confirms the chosen policy before the first prompt", async () => {
+    const f = await fixture();
+    const projections = vi.spyOn(f.dsh.ctx.sessionController, "projections");
+    expect(await f.bridge.createOptions(true)).toMatchObject({
+      available: true,
+      policies: [
+        { id: "read-only", name: expect.any(String) },
+        { id: "workspace-write", name: expect.any(String) },
+        { id: "danger-full-access", name: expect.any(String) },
+      ],
+      defaults: { model: "deepseek/deepseek-chat", policyId: "workspace-write" },
+    });
+    expect(projections).not.toHaveBeenCalled();
+    expect(f.dsh.creations).toEqual([]);
+    const request = {
+      requestId: randomUUID(),
+      deviceId: "device-1",
+      workspaceId: "workspace",
+      agentPreset: "ptc",
+      model: "mock%2Flocal/m-1",
+      policyId: "read-only",
+    };
+    const created = await f.bridge.create(request);
+    expect(created).toMatchObject({ controlOutcome: "accepted", policyId: "read-only" });
+    const sessionId = String(created.sessionId);
+    const nativeId = String(f.bridge.nativeId(sessionId));
+    expect(f.dsh.creations).toEqual([
+      { sessionId: nativeId, cwd: f.workspace, agentPreset: "ptc" },
+    ]);
+    expect(f.dsh.permissionOf.get(nativeId)).toBe("read-only");
+    expect(f.dsh.sessions.get(nativeId)?.selection).toEqual({
+      provider: "mock/local",
+      model: "m-1",
+    });
+    expect(projections).toHaveBeenCalledWith({ sessionId: nativeId }, expect.any(AbortSignal));
+    expect(f.dsh.prompts).toEqual([]);
+    await expect(
+      f.control("send", {
+        sessionId,
+        expectedRevision: f.bridge.live(sessionId, true).revision,
+        text: "use the confirmed policy",
+      }),
+    ).resolves.toMatchObject({ accepted: true });
+    const events = f.dsh.sessions.get(nativeId)!.events;
+    expect(events.findIndex((event) => event.type === "permission/preset")).toBeLessThan(
+      events.findIndex((event) => event.type === "user/message"),
+    );
+    expect(await f.bridge.create(request)).toEqual(created);
+    expect(f.dsh.creations).toHaveLength(1);
+    expect(f.dsh.executed).toEqual(["/permission read-only"]);
+  });
+
+  it("never accepts a listed blank DSH session when policy readback does not match", async () => {
+    const f = await fixture();
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => (release = resolve));
+    // The native command acknowledges the change without recording it.
+    const commands = f.dsh.ctx.commands;
+    vi.spyOn(commands, "execute").mockImplementation(async () => {
+      await held;
+      return { commandId: "ignored", result: { kind: "success" } };
+    });
+    const request = {
+      requestId: randomUUID(),
+      deviceId: "device-1",
+      workspaceId: "workspace",
+      policyId: "read-only",
+    };
+    const pending = f.bridge.create(request);
+    try {
+      const nativeId = await until(() => f.dsh.creations[0]?.sessionId as string | undefined);
+      const sessionId = `ak-${nativeId}`;
+      await until(() => f.bridge.handles(sessionId));
+      expect(f.bridge.live(sessionId, true).sendEnabled).toBe(false);
+      await expect(
+        f.control("send", {
+          sessionId,
+          expectedRevision: f.bridge.live(sessionId, true).revision,
+          text: "must keep this draft",
+        }),
+      ).resolves.toMatchObject({ controlOutcome: "not-dispatched" });
+    } finally {
+      release();
+    }
+    expect(await pending).toMatchObject({ controlOutcome: "unknown" });
+    const stored = () =>
+      f.bridge.receipt(
+        readControlReceipt(f.bridge.options.dataDir, {
+          requestId: request.requestId,
+          deviceId: request.deviceId,
+        }),
+      ) as Record<string, unknown>;
+    expect(stored().status).not.toBe("accepted");
+    await until(() => stored().status === "not-dispatched");
+    expect(stored().ack).toMatchObject({ reason: "dsh-create-permission-not-applied" });
+    expect(await f.bridge.create(request)).toMatchObject({ controlOutcome: "not-dispatched" });
+    expect(f.dsh.creations).toHaveLength(1);
+    expect(f.dsh.prompts).toEqual([]);
+  });
+
+  it("reconciles a lost permission create reply without running the setter or allocating again", async () => {
+    const f = await fixture();
+    const sendRequest = dshClient.post;
+    const transport = vi.spyOn(dshClient, "post").mockImplementation((...args) => {
+      const [, route, body] = args;
+      if (route === DSH_BRIDGE_PATHS.result && body?.value?.policyId === "read-only")
+        return Promise.reject(new Error("test lost create acknowledgement"));
+      return sendRequest(...args);
+    });
+    try {
+      const request = {
+        requestId: randomUUID(),
+        deviceId: "device-1",
+        workspaceId: "workspace",
+        policyId: "read-only",
+        model: "mock%2Flocal/m-1",
+      };
+      expect(await f.bridge.create(request)).toMatchObject({ controlOutcome: "unknown" });
+      const stored = () =>
+        readControlReceipt(f.bridge.options.dataDir, {
+          requestId: request.requestId,
+          deviceId: request.deviceId,
+        });
+      await until(() => stored().status === "accepted");
+      expect(stored().ack).toMatchObject({ policyId: "read-only" });
+      expect(await f.bridge.create(request)).toMatchObject({ controlOutcome: "accepted" });
+      expect(f.dsh.creations).toHaveLength(1);
+      expect(f.dsh.executed).toEqual(["/permission read-only"]);
+      expect(f.dsh.selections).toHaveLength(1);
+      expect(f.dsh.prompts).toEqual([]);
+    } finally {
+      transport.mockRestore();
+    }
+  });
+
+  it("preserves default creation when the plugin has no verified create policy service", async () => {
+    const sendRequest = dshClient.post;
+    const transport = vi.spyOn(dshClient, "post").mockImplementation((...args) => {
+      const [socketPath, route, body, options] = args;
+      if (route !== DSH_BRIDGE_PATHS.register && route !== DSH_BRIDGE_PATHS.report)
+        return sendRequest(...args);
+      const { createPermissionPreset: _createPermissionPreset, ...services } = body.services;
+      return sendRequest(socketPath, route, { ...body, services }, options);
+    });
+    try {
+      const f = await fixture();
+      expect(await f.bridge.createOptions(true)).not.toHaveProperty("policies");
+      const request = { deviceId: "device-1", workspaceId: "workspace" };
+      await expect(
+        f.bridge.create({ ...request, requestId: randomUUID(), policyId: "read-only" }),
+      ).resolves.toMatchObject({
+        controlOutcome: "not-dispatched",
+        reason: "dsh-create-permission-selection-unsupported",
+      });
+      expect(f.dsh.creations).toEqual([]);
+      expect(f.dsh.executed).toEqual([]);
+      await expect(f.bridge.create({ ...request, requestId: randomUUID() })).resolves.toMatchObject(
+        {
+          controlOutcome: "accepted",
+        },
+      );
+    } finally {
+      transport.mockRestore();
+    }
+  });
+
+  it("rejects a DSH create permission preset absent from the native catalog before allocating", async () => {
+    const f = await fixture();
+    await expect(
+      f.bridge.create({
+        requestId: randomUUID(),
+        deviceId: "device-1",
+        workspaceId: "workspace",
+        policyId: "unknown-preset",
+      }),
+    ).resolves.toMatchObject({ controlOutcome: "not-dispatched", reason: "invalid-policy" });
+    expect(f.dsh.creations).toEqual([]);
+    expect(f.dsh.executed).toEqual([]);
+    expect(f.dsh.prompts).toEqual([]);
+  });
+
   it("rejects unavailable models and effort levels before creating the session", async () => {
     const f = await fixture();
     const request = { deviceId: "device-1", workspaceId: "workspace" };

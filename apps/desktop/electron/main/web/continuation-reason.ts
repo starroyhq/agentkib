@@ -20,6 +20,7 @@ export function continuationPreflightReason(
       "unsupported-effort",
       "native-model-unconfirmed",
       "native-effort-unconfirmed",
+      "create-permission-unconfirmed",
       // Verified Codex policy diagnostics. Raw native settings stay on the host.
       "native-policy-unconfirmed",
       "native-policy-full-access-required",

@@ -1295,6 +1295,8 @@ export class DevinSessionProvider implements DevinExecutor, TypedSessionProvider
           dispatched = true;
         },
         settings,
+        undefined,
+        { confirmPermission: request.permissionMode !== undefined },
       );
       let timer: NodeJS.Timeout | undefined;
       const nativeId = await Promise.race([

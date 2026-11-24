@@ -3210,8 +3210,15 @@ export class ClaudeManagedRunnerProcess {
         throw new Error("Claude worker changed before write");
       if (frame.type === "user" && this.state.activity === "compacting")
         throw new ClaudeUndispatchedError();
-      beforeWrite?.();
       const firstTurn = this.#fresh && !this.options.forkSourceNativeId && frame.type === "user";
+      if (
+        firstTurn &&
+        this.#settings.permissionMode !== null &&
+        this.#observedPermissionMode !== null &&
+        this.#observedPermissionMode !== this.#settings.permissionMode
+      )
+        throw new ClaudeUndispatchedError("create-permission-unconfirmed");
+      beforeWrite?.();
       if (frame.type === "user") {
         this.#pendingDispatch?.();
         this.#pendingDispatch = undefined;

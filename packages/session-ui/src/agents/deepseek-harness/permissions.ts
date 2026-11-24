@@ -72,10 +72,38 @@ const DSH_POLICIES: Record<string, Record<InteractionLocale, PermissionLabel>> =
 };
 
 export function dshPolicyLabel(id: string, locale: InteractionLocale): PermissionLabel | undefined {
-  return DSH_POLICIES[id]?.[locale];
+  return Object.hasOwn(DSH_POLICIES, id) ? DSH_POLICIES[id]?.[locale] : undefined;
 }
 
+const titles: Record<InteractionLocale, string> = {
+  "zh-CN": "权限",
+  "zh-Hant": "權限",
+  "en-US": "Permissions",
+  "ja-JP": "権限",
+};
+
 export const deepSeekHarnessPermissions = {
+  creation: {
+    field: "policyId",
+    choices: [
+      { id: "read-only" },
+      { id: "workspace-write" },
+      { id: "danger-full-access", risky: true },
+      { id: "full-access-on-request", risky: true },
+      { id: "auto", risky: true },
+    ],
+    sendShown: false,
+    fullAccessOnly: true,
+    useNativeCatalog: true,
+    verifyPolicyId: true,
+    fallbackTitle: true,
+    copy: (locale) => ({
+      title: titles[locale],
+      choices: Object.fromEntries(
+        Object.entries(DSH_POLICIES).map(([id, words]) => [id, words[locale]]),
+      ),
+    }),
+  },
   settings: {
     label: dshPolicyLabel,
     risky: (id) => id === "full-access-on-request" || id === "danger-full-access",

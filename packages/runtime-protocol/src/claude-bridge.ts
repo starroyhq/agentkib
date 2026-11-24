@@ -49,6 +49,7 @@ export const CLAUDE_BRIDGE_PATHS = {
  *   an opaque activity counter in snapshots.
  * - `terminal-approval-observation`: a plugin may describe a pending native approval for display.
  * - `terminal-attachments`: a plugin may accept text containing links to attachments in its workspace.
+ * - `terminal-handover`: a foreground plugin may invoke the native exit command when requested.
  */
 export const CLAUDE_BRIDGE_FEATURES = [
   "lead-tools",
@@ -57,6 +58,7 @@ export const CLAUDE_BRIDGE_FEATURES = [
   "terminal-worker-activity",
   "terminal-approval-observation",
   "terminal-attachments",
+  "terminal-handover",
 ] as const;
 
 export interface ClaudeBridgeTicket {
@@ -140,6 +142,8 @@ export interface ClaudeBridgeCapabilities {
   modelPicker?: boolean;
   /** Present only after the Runtime and plugin agree on workspace attachment links. */
   attachments?: true;
+  /** Whether this foreground terminal can invoke Claude Code's native exit command. */
+  handover?: true;
   approve: false;
   answer: false;
 }
@@ -200,6 +204,8 @@ export interface ClaudeBridgeSnapshot extends ClaudeBridgeIdentity {
   streamText: string;
   /** Optional native getter; omitted by older plugins rather than inferred from defaults. */
   model?: string | null;
+  /** The terminal read the current model from the native session as it was exiting. */
+  terminalModelAtExit?: true;
   /** The terminal's interactive model command is open. */
   modelPickerOpen?: boolean;
   compacting?: boolean;
@@ -270,6 +276,12 @@ export interface ClaudeBridgeEventsResponse {
 export type ClaudeBridgeCommand =
   | {
       commandId: string;
+      kind: "handover-exit";
+      turnId?: string;
+      expectedRevision: number;
+    }
+  | {
+      commandId: string;
       kind: "open-model-picker";
       expectedRevision: number;
     }
@@ -320,7 +332,7 @@ export interface ClaudeBridgeCommandsResponse {
 
 export interface ClaudeBridgeResultRequest extends ClaudeBridgeLease {
   commandId: string;
-  status: "accepted" | "rejected" | "unknown";
+  status: "accepted" | "rejected" | "unknown" | "exit-initiated";
   reason?: string;
   revision: number;
   turnId?: string;

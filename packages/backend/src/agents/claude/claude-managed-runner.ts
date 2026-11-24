@@ -130,6 +130,8 @@ export type ClaudeRunnerOptions = {
   model?: string;
   effort?: ClaudeEffort;
   permissionMode?: ClaudePermissionMode;
+  /** A resumed terminal's known mode must not be replaced with a contradictory startup mode. */
+  terminalHandover?: true;
   forkSourceNativeId?: string;
   forkCutoff?: string;
   mcpConfig?: Record<string, unknown>;
@@ -1930,6 +1932,7 @@ export class ClaudeManagedRunnerProcess {
   // What the CLI says it runs in (null until the current worker reports). Kept apart from
   // #settings, which records only explicit selections and is what a relaunch replays.
   #observedPermissionMode: ClaudeObservedPermissionMode | null = null;
+  #wroteUserMessage = false;
   #configuring = false;
   #steeringIds = new Set<string>();
   /** Set while a stop waits for the interrupted turn's result. */
@@ -2576,6 +2579,7 @@ export class ClaudeManagedRunnerProcess {
     this.#acquireLease();
     this.#effectiveSettings = { model: null, effort: null, permissionMode: null };
     this.#observedPermissionMode = null;
+    this.#wroteUserMessage = false;
     let child: ChildProcess;
     try {
       child = spawn(
@@ -3235,16 +3239,23 @@ export class ClaudeManagedRunnerProcess {
         throw new Error("Claude worker changed before write");
       if (frame.type === "user" && this.state.activity === "compacting")
         throw new ClaudeUndispatchedError();
-      const firstTurn = this.#fresh && !this.options.forkSourceNativeId && frame.type === "user";
+      const submitsUserMessage = frame.type === "user";
+      const firstTurn = this.#fresh && !this.options.forkSourceNativeId && submitsUserMessage;
+      const resumedTerminal =
+        this.options.terminalHandover && submitsUserMessage && !this.#wroteUserMessage;
       if (
-        firstTurn &&
+        (firstTurn || resumedTerminal) &&
         this.#settings.permissionMode !== null &&
         this.#observedPermissionMode !== null &&
         this.#observedPermissionMode !== this.#settings.permissionMode
       )
-        throw new ClaudeUndispatchedError("create-permission-unconfirmed");
+        throw new ClaudeUndispatchedError(
+          resumedTerminal
+            ? "claude-terminal-handover-permission-unconfirmed"
+            : "create-permission-unconfirmed",
+        );
       beforeWrite?.();
-      if (frame.type === "user") {
+      if (submitsUserMessage) {
         this.#pendingDispatch?.();
         this.#pendingDispatch = undefined;
       }
@@ -3252,6 +3263,7 @@ export class ClaudeManagedRunnerProcess {
       await new Promise<void>((resolve, reject) => {
         child.stdin!.write(data, (error) => (error ? reject(error) : resolve()));
       });
+      if (submitsUserMessage) this.#wroteUserMessage = true;
       if (firstTurn) {
         // Use the submitted native UUID. Once Claude writes or replays the message, it
         // replaces this event instead of showing a second bubble.

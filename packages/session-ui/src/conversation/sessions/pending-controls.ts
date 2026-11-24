@@ -24,6 +24,8 @@ const pendingKinds = {
   answer: true,
   create: true,
   adopt: true,
+  "adopt-terminal": true,
+  "handover-terminal": true,
   release: true,
   reconcile: true,
   resume: true,

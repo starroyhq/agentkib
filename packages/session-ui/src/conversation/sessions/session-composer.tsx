@@ -17,6 +17,7 @@ import {
   type ReactNode,
 } from "react";
 import { sessionApprovalRuntime } from "../../agents/session-approvals";
+import { ClaudeTerminalHandover } from "../../agents/claude-code/terminal-handover";
 import {
   composerPanelShortcut,
   planSlashOption,
@@ -516,6 +517,10 @@ export function SessionComposer({
     !draftReason &&
     uploads.every((item) => !!item.result) &&
     resources.every((item) => item.available);
+  const readOnlyTerminalWait =
+    surface === "web" &&
+    live?.executionMode === "claude-follower" &&
+    (live.status === "awaiting-approval" || live.status === "waiting-input");
   const attachmentIds = uploads.flatMap((item) => (item.result ? [item.result.id] : []));
   const resourceIds = resources.filter((item) => item.available).map((item) => item.id);
   const draft = composerValue;
@@ -566,6 +571,7 @@ export function SessionComposer({
   async function send(action: "send" | "steer" | "queue-add") {
     if (
       !valid ||
+      readOnlyTerminalWait ||
       (action === "queue-add" && !queueAddReady) ||
       (action === "steer" && !steerReady) ||
       (startupGoal && action !== "send") ||
@@ -680,7 +686,8 @@ export function SessionComposer({
       notifications.dismiss(connectionToastId);
     };
   }, [connectionFailure, connectionToastId, display.reason, notifications, selected]);
-  const canSubmit = online && controlReady && canSend && !settingsOnlyBlocked;
+  const canSubmit =
+    online && controlReady && canSend && !settingsOnlyBlocked && !readOnlyTerminalWait;
   useEffect(() => {
     const first = firstMessage.current;
     if (!first) return;
@@ -711,7 +718,8 @@ export function SessionComposer({
     followUp && steerOffered
       ? runningSendAction(followUpPreference === "steer" ? "queue" : "steer")
       : "queue-add";
-  const canSendFollowUp = canAdvanced && !startupGoal && !draftUnknown && valid && !submitted;
+  const canSendFollowUp =
+    canAdvanced && !startupGoal && !draftUnknown && valid && !submitted && !readOnlyTerminalWait;
   const canFollowUp = (action: "queue-add" | "steer") =>
     canSendFollowUp && (action === "queue-add" ? queueAddReady : !compacting && steerReady);
   const runningReady = (followUp || (serialQueue && !canSubmit)) && canFollowUp(runningAction);
@@ -734,6 +742,31 @@ export function SessionComposer({
         disabled={(!directReady && !runningReady) || !valid || submitted}
       />
     );
+  const handover =
+    isClaude &&
+    online &&
+    live?.sessionId === selected &&
+    live.terminalHandover &&
+    (surface === "desktop" || feature("handover-terminal")?.available === true) ? (
+      <div className="flex justify-center">
+        <ClaudeTerminalHandover
+          key={selected}
+          live={live}
+          locale={locale}
+          local={surface === "desktop"}
+          ready={controlReady && !busy}
+          localAvailable={feature("adopt-terminal")?.available === true}
+          remoteAvailable={feature("handover-terminal")?.available === true}
+          onAdopt={() => runSessionAction("adopt-terminal")}
+          onTransfer={(turnId) =>
+            runSessionAction("handover-terminal", {
+              handoffConfirmed: true,
+              ...(turnId ? { turnId } : {}),
+            })
+          }
+        />
+      </div>
+    ) : null;
   if (
     resume?.loadResumeCommand &&
     display.continuation === "view-only" &&
@@ -745,16 +778,20 @@ export function SessionComposer({
     !startupGoal
   ) {
     return (
-      <SessionReadOnly
-        session={session}
-        reason={connectionReasonShown ? undefined : display.reason}
-        local={surface === "desktop"}
-        notify={notifications.success}
-      />
+      <>
+        {handover}
+        <SessionReadOnly
+          session={session}
+          reason={connectionReasonShown ? undefined : display.reason}
+          local={surface === "desktop"}
+          notify={notifications.success}
+        />
+      </>
     );
   }
   return (
     <div className="relative w-full max-w-3xl shrink-0 self-center space-y-2">
+      {handover}
       {display.continuation === "busy" && resume && (surface === "desktop" || !isClaude) && (
         <p role="status" className="px-3 text-xs leading-5 text-muted-foreground">
           {continuation.busyHint(resume.busyActor)}

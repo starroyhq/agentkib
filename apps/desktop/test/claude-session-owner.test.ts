@@ -104,6 +104,27 @@ function fixture() {
 }
 
 describe.skipIf(process.platform === "win32")("Claude session ownership probe", () => {
+  it("requires a verified foreground process for handover and detects disappearance or PID reuse", async () => {
+    const f = fixture();
+    f.process(300);
+    f.agents([{ pid: 300, sessionId: nativeId, kind: "interactive" }]);
+    expect(await f.probe.foregroundProcess(nativeId)).toBeUndefined();
+    f.record(300, { kind: "daemon-worker" });
+    expect(await f.probe.foregroundProcess(nativeId)).toBeUndefined();
+    f.record(300, { procStart: "Mon Oct 19 00:00:00 2026" });
+    expect(await f.probe.foregroundProcess(nativeId)).toBeUndefined();
+    f.record(300);
+    const owner = (await f.probe.foregroundProcess(nativeId))!;
+    expect(owner).toEqual({ pid: 300, start: procStart });
+    expect(await f.probe.foregroundProcessExited(owner)).toBe(false);
+    f.process(301);
+    f.record(301);
+    expect(await f.probe.foregroundProcess(nativeId)).toBeUndefined();
+    f.process(300, "some other process", "Mon Oct 19 04:52:15 2026");
+    expect(await f.probe.foregroundProcessExited(owner)).toBe(true);
+    // Process 300 really ended, but 301 is still a writer for the same conversation.
+    expect(await f.probe.check(nativeId)).toMatchObject({ kind: "interactive" });
+  });
   it("observes working terminal activity from the native registry without launching Claude", async () => {
     const f = fixture();
     const statusUpdatedAt = Date.now() - 2000;

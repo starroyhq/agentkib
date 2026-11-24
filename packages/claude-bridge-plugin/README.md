@@ -1,10 +1,16 @@
 # AgentKib Claude Code session bridge
 
 First-party local Mods plugin for Claude Code **2.1.301 or later**, using AgentKib
-bridge plugin **0.5.7**. It connects AgentKib's existing chat interface to the
+bridge plugin **0.5.8**. It connects AgentKib's existing chat interface to the
 terminal's original execution process. It never starts a replacement Claude
 process, resumes another UUID, calls a model itself, or changes the user's
 permission rules.
+
+When AgentKib and the bridge negotiate `terminal-handover`, the bridge can
+request native exit for a confirmed takeover. It waits for the identified turn
+to stop before invoking the built-in `exit` command. AgentKib independently
+checks ownership before continuing the same session. Queued terminal messages
+and claimed reports stay with the terminal until delivered.
 
 The plugin and the Runtime need not come from the same AgentKib release: within
 protocol 1 the Runtime takes this contract and any later one, and a terminal that

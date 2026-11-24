@@ -60,6 +60,7 @@ export const bridgeSnapshotSchema = bridgeIdentitySchema.extend({
   toolItems: z.array(bridgeToolSchema).max(256),
   streamText: text,
   model: z.string().min(1).max(128).nullable().optional(),
+  terminalModelAtExit: z.literal(true).optional(),
   modelPickerOpen: z.boolean().optional(),
   compacting: z.boolean().optional(),
   compactStartedAt: z.number().int().min(0).max(8_640_000_000_000_000).optional(),
@@ -132,6 +133,7 @@ export const bridgeSnapshotSchema = bridgeIdentitySchema.extend({
     stop: z.boolean(),
     modelPicker: z.boolean().optional(),
     attachments: z.literal(true).optional(),
+    handover: z.literal(true).optional(),
     approve: z.literal(false),
     answer: z.literal(false),
   }),
@@ -184,7 +186,7 @@ export const bridgeLeadCallSchema = bridgeLeaseSchema.extend({
 });
 export const bridgeResultSchema = bridgeLeaseSchema.extend({
   commandId: id,
-  status: z.enum(["accepted", "rejected", "unknown"]),
+  status: z.enum(["accepted", "rejected", "unknown", "exit-initiated"]),
   reason: z.string().max(256).optional(),
   revision,
   turnId: id.optional(),

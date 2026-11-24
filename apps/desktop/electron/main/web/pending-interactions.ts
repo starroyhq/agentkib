@@ -198,6 +198,10 @@ export async function describePendingInteractions(
       const turnId = value?.turnId;
       if (
         !value ||
+        (mode === "claude-follower" &&
+          (kind !== "approval" ||
+            value.method !== "claude/can_use_tool" ||
+            value.supported !== false)) ||
         !(
           (typeof requestId === "string" && requestId.length > 0) ||
           (typeof requestId === "number" && Number.isSafeInteger(requestId))

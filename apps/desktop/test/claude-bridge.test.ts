@@ -27,6 +27,55 @@ afterEach(async () => {
 const fixture = createClaudeBridgeFixture(cleanups);
 
 describe.skipIf(process.platform === "win32")("native Claude borrowed-host broker", () => {
+  it("projects the current native approval as observation only and clears it with the turn", async () => {
+    const f = await fixture();
+    const turnId = randomUUID();
+    const waiting = {
+      ...f.snapshot,
+      revision: 2,
+      currentTurnId: turnId,
+      status: "waiting",
+      waiting: "permission",
+    };
+    expect(f.connection.features).toContain("terminal-approval-observation");
+    await f.events({ type: "snapshot", snapshot: waiting });
+    expect(f.live()).toMatchObject({ status: "awaiting-approval", approvals: [] });
+    const pending = {
+      turnId,
+      toolUseId: "native-tool-1",
+      toolName: "Bash",
+      input: { command: "pwd", description: "Show the working directory", password: "synthetic" },
+    };
+    await f.events({
+      type: "snapshot",
+      snapshot: {
+        ...waiting,
+        revision: 3,
+        pendingApprovalDetails: { ...pending, turnId: randomUUID() },
+      },
+    });
+    expect(f.live().approvals).toEqual([]);
+    await f.events({
+      type: "snapshot",
+      snapshot: { ...waiting, revision: 4, pendingApprovalDetails: pending },
+    });
+    expect(f.live()).toMatchObject({
+      status: "awaiting-approval",
+      approvals: [
+        {
+          requestId: pending.toolUseId,
+          turnId,
+          supported: false,
+          method: "claude/can_use_tool",
+          input: { command: "pwd", password: "[REDACTED]" },
+          availableDecisions: ["allow", "deny"],
+        },
+      ],
+    });
+    await f.events({ type: "turn-complete", turnId, revision: 5, text: "", aborted: true });
+    expect(f.live()).toMatchObject({ status: "idle", approvals: [] });
+  });
+
   it("runs a terminal Worker through the native send, queue, steer and stop gates", async () => {
     const f = await fixture(5_000);
     const leadId = "fixture-project-agent";
@@ -2452,6 +2501,7 @@ describe.skipIf(process.platform === "win32")(
         "open-model-picker",
         "terminal-subagents",
         "terminal-worker-activity",
+        "terminal-approval-observation",
         "terminal-attachments",
         "lead-rate-limit-pause",
       ]);
@@ -2589,6 +2639,7 @@ describe.skipIf(process.platform === "win32")(
         "open-model-picker",
         "terminal-subagents",
         "terminal-worker-activity",
+        "terminal-approval-observation",
         "terminal-attachments",
       ]);
       expect((await leadPoll(plain)).body).toEqual({ commands: [] });

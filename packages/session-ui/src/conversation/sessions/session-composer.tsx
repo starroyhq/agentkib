@@ -760,12 +760,13 @@ export function SessionComposer({
           {continuation.busyHint(resume.busyActor)}
         </p>
       )}
-      {!terminalInteraction && display.continuation === "terminal-watch" &&
+      {!terminalInteraction &&
+        display.continuation === "terminal-watch" &&
         (surface === "desktop" || !isClaude) && (
-        <p role="status" className="px-3 text-xs leading-5 text-muted-foreground">
-          {continuation.terminalWatch}
-        </p>
-      )}
+          <p role="status" className="px-3 text-xs leading-5 text-muted-foreground">
+            {continuation.terminalWatch}
+          </p>
+        )}
       {terminalInteraction && (
         <p role="status" className="px-3 text-xs leading-5 text-muted-foreground">
           {terminalInteraction}

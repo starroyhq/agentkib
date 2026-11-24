@@ -549,15 +549,27 @@ export function claudeConnectionReason(
   }
 }
 
-const webStatus: Record<Locale, Pick<Copy,
-  "approval" | "question" | "disconnected" | "lost" | "turnUnconfirmed" | "sendUnverified" | "attachments"
->> = {
+const webStatus: Record<
+  Locale,
+  Pick<
+    Copy,
+    | "approval"
+    | "question"
+    | "disconnected"
+    | "lost"
+    | "turnUnconfirmed"
+    | "permissionUnconfirmed"
+    | "sendUnverified"
+    | "attachments"
+  >
+> = {
   "zh-CN": {
     approval: "等待工具审批",
     question: "等待回答",
     disconnected: "终端未连接。",
     lost: "终端连接已断开。",
     turnUnconfirmed: "当前轮次尚未核实。",
+    permissionUnconfirmed: "当前审批状态尚未核实。",
     sendUnverified: "当前会话仅供查看。",
     attachments: "当前会话无法发送附件。",
   },
@@ -567,6 +579,7 @@ const webStatus: Record<Locale, Pick<Copy,
     disconnected: "終端未連線。",
     lost: "終端連線已中斷。",
     turnUnconfirmed: "目前輪次尚未確認。",
+    permissionUnconfirmed: "目前核准狀態尚未確認。",
     sendUnverified: "目前的對話僅供查看。",
     attachments: "目前的對話無法傳送附件。",
   },
@@ -576,6 +589,7 @@ const webStatus: Record<Locale, Pick<Copy,
     disconnected: "The terminal is disconnected.",
     lost: "The terminal connection ended.",
     turnUnconfirmed: "The current turn is unconfirmed.",
+    permissionUnconfirmed: "The current approval status is unconfirmed.",
     sendUnverified: "This session is read-only.",
     attachments: "Attachments are unavailable in this session.",
   },
@@ -585,6 +599,7 @@ const webStatus: Record<Locale, Pick<Copy,
     disconnected: "ターミナルに未接続です。",
     lost: "ターミナルとの接続が切れました。",
     turnUnconfirmed: "現在のターンは未確認です。",
+    permissionUnconfirmed: "現在の承認状況は未確認です。",
     sendUnverified: "この会話は読み取り専用です。",
     attachments: "この会話では添付ファイルを送信できません。",
   },

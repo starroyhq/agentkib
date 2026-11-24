@@ -165,6 +165,7 @@ export function projectComposerSettingsControls({
   locale,
   locked,
   full,
+  local,
   write,
 }: {
   agent: ManagedAgent | null;
@@ -176,6 +177,7 @@ export function projectComposerSettingsControls({
   locale: InteractionLocale;
   locked: boolean;
   full: boolean;
+  local: boolean;
   write: (fields: Partial<SessionActionBody>) => Promise<boolean>;
 }) {
   const permission = sessionPermissionDescriptor(agent ?? undefined)?.settings;
@@ -229,6 +231,7 @@ export function projectComposerSettingsControls({
     locale,
   );
   const permissionHint =
+    local &&
     observation?.isTerminal(live, sessionId) &&
     (live?.execution?.owner === "terminal" || live?.executionLocation === "terminal")
       ? observation.terminalHint(locale)

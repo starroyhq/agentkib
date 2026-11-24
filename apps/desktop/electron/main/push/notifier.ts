@@ -62,7 +62,11 @@ export interface PushNotifierOptions {
   /** This computer's relay device id; undefined while nothing can be sent. */
   deviceId(): string | undefined;
   send(input: PushSendInput): Promise<PushSendResult>;
-  terminalSummary?(target: PushTarget, sessionId: string, kind: "approval" | "question"): Promise<string | undefined>;
+  terminalSummary?(
+    target: PushTarget,
+    sessionId: string,
+    kind: "approval" | "question",
+  ): Promise<string | undefined>;
   computerName?(): Promise<string | undefined>;
   /** Whether someone uses this computer now. Alerts wait until they leave. */
   present?(): boolean;

@@ -5765,9 +5765,7 @@ export class WebAccessService {
             ? state.approvals.map((approval) => ({
                 ...approval,
                 supported: false,
-                ...(state.executionMode === "claude-follower"
-                  ? {}
-                  : { availableDecisions: [] }),
+                ...(state.executionMode === "claude-follower" ? {} : { availableDecisions: [] }),
               }))
             : [],
         };

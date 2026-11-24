@@ -26,12 +26,10 @@ type DshBridgeStatus = {
     managed?: boolean;
     running?: number;
   }[];
-  /** Starting DSH in the background; absent from a Runtime without it. */
+  /** Launcher status, absent when the Runtime does not manage DSH. */
   autoStart?: {
-    enabled: boolean;
     available: boolean;
     reason?: string;
-    phase: "stopped" | "starting" | "running" | "stopping";
     failure: string | null;
   } | null;
 };
@@ -49,8 +47,6 @@ const copy: Record<
     version: (version: string) => string;
     background: string;
     readOnly: string;
-    autoStart: string;
-    autoStartHint: string;
     install: string;
     desktop: string;
     copyDirectory: string;
@@ -61,7 +57,6 @@ const copy: Record<
     unsupported: string;
     unavailable: string;
     loading: string;
-    autoStartUnavailable: string;
     installUnavailable: string;
   }
 > = {
@@ -78,9 +73,6 @@ const copy: Record<
     version: (version) => `版本 ${version}`,
     background: "由 AgentKib 在后台启动",
     readOnly: "这个配置只能查看，不能从这里发送",
-    autoStart: "需要时自动启动 DeepSeek Harness",
-    autoStartHint:
-      "没开 DeepSeek Harness 时，在后台启动它，空闲 3 分钟后关闭，退出 AgentKib 时一并关闭。",
     install: "安装 AgentKib 插件",
     desktop:
       "想在 DeepSeek Harness Desktop 开着时也从这里继续会话，在 Desktop 的“添加插件”里粘贴这个目录（只需一次），然后重启 Desktop：",
@@ -91,8 +83,7 @@ const copy: Record<
     copied: "已复制",
     unsupported: "当前只支持 macOS。",
     unavailable: "AgentKib 的连接服务没有启动。",
-    loading: "正在读取连接设置。",
-    autoStartUnavailable: "当前运行时未提供自动启动设置。",
+    loading: "正在读取连接状态。",
     installUnavailable: "当前运行时未提供插件安装信息。",
   },
   "zh-Hant": {
@@ -108,9 +99,6 @@ const copy: Record<
     version: (version) => `版本 ${version}`,
     background: "由 AgentKib 在背景啟動",
     readOnly: "這個設定只能檢視，不能從這裡傳送",
-    autoStart: "需要時自動啟動 DeepSeek Harness",
-    autoStartHint:
-      "沒開 DeepSeek Harness 時，在背景啟動它，閒置 3 分鐘後關閉，結束 AgentKib 時一併關閉。",
     install: "安裝 AgentKib 外掛",
     desktop:
       "想在 DeepSeek Harness Desktop 開著時也從這裡繼續對話，在 Desktop 的「添加插件」裡貼上這個目錄（只需一次），然後重新啟動 Desktop：",
@@ -121,8 +109,7 @@ const copy: Record<
     copied: "已複製",
     unsupported: "目前只支援 macOS。",
     unavailable: "AgentKib 的連線服務沒有啟動。",
-    loading: "正在讀取連線設定。",
-    autoStartUnavailable: "目前的執行環境未提供自動啟動設定。",
+    loading: "正在讀取連線狀態。",
     installUnavailable: "目前的執行環境未提供外掛安裝資訊。",
   },
   "ja-JP": {
@@ -139,9 +126,6 @@ const copy: Record<
     version: (version) => `バージョン ${version}`,
     background: "AgentKib がバックグラウンドで起動",
     readOnly: "このプロファイルは表示のみで、ここからは送信できません",
-    autoStart: "必要なときに DeepSeek Harness を自動で起動",
-    autoStartHint:
-      "DeepSeek Harness が開いていないときはバックグラウンドで起動し、3 分間使われなければ終了します。AgentKib を終了すると一緒に終了します。",
     install: "AgentKib プラグインを入れる",
     desktop:
       "DeepSeek Harness Desktop を開いている間もここから会話を続けるには、Desktop の「プラグインを追加」にこのディレクトリを貼り付け（初回のみ）、Desktop を再起動します：",
@@ -152,8 +136,7 @@ const copy: Record<
     copied: "コピーしました",
     unsupported: "現在は macOS のみ対応しています。",
     unavailable: "AgentKib の接続サービスが起動していません。",
-    loading: "接続設定を読み込んでいます。",
-    autoStartUnavailable: "現在のランタイムでは自動起動を設定できません。",
+    loading: "接続状態を読み込んでいます。",
     installUnavailable: "現在のランタイムではプラグインのインストール情報を取得できません。",
   },
   "en-US": {
@@ -171,9 +154,6 @@ const copy: Record<
     version: (version) => `Version ${version}`,
     background: "Started by AgentKib in the background",
     readOnly: "This profile can be viewed but cannot take messages from here",
-    autoStart: "Start DeepSeek Harness when needed",
-    autoStartHint:
-      "When DeepSeek Harness is not open, AgentKib starts it in the background, closes it after 3 idle minutes, and closes it when you quit AgentKib.",
     install: "Install the AgentKib plugin",
     desktop:
       "To continue sessions from here while DeepSeek Harness Desktop is open, paste this directory into Desktop's “Add plugin” (once), then restart Desktop:",
@@ -184,8 +164,7 @@ const copy: Record<
     copied: "Copied",
     unsupported: "Only macOS is supported for now.",
     unavailable: "AgentKib's connection service is not running.",
-    loading: "Reading connection settings.",
-    autoStartUnavailable: "The current runtime does not provide an automatic start setting.",
+    loading: "Reading connection status.",
     installUnavailable: "The current runtime does not provide plugin installation details.",
   },
 };
@@ -228,10 +207,7 @@ function InstallCopyField({
   );
 }
 
-/**
- * Status and settings of the per-computer DeepSeek Harness connection: whether AgentKib starts DSH
- * in the background, and how to install the plugin into a DSH the user runs. Never installs.
- */
+/** Shows connection status and instructions for installing the plugin into a DSH the user runs. */
 export function DshBridgePanel({
   locale,
   unavailableReason,
@@ -241,11 +217,11 @@ export function DshBridgePanel({
 }) {
   const { desktop } = useSessionPlatform();
   return desktop ? (
-    <DshBridgeSettings desktop={desktop} locale={locale} unavailableReason={unavailableReason} />
+    <DshBridgeStatusPanel desktop={desktop} locale={locale} unavailableReason={unavailableReason} />
   ) : null;
 }
 
-function DshBridgeSettings({
+function DshBridgeStatusPanel({
   desktop,
   locale,
   unavailableReason,
@@ -254,14 +230,10 @@ function DshBridgeSettings({
   locale: Locale;
   unavailableReason?: string;
 }) {
-  const {
-    components: { Switch },
-    requestBridge,
-  } = desktop;
+  const { requestBridge } = desktop;
   const text = copy[locale] ?? copy["en-US"];
   const [observed, setStatus] = useState<DshBridgeStatus>();
   const status = unavailableReason ? undefined : observed;
-  const [switching, setSwitching] = useState(false);
   useEffect(() => {
     if (unavailableReason) return;
     let current = true;
@@ -299,22 +271,10 @@ function DshBridgeSettings({
         : status.reason === "dsh-bridge-unavailable"
           ? text.unavailable
           : undefined);
-  const switchReason =
-    bridgeReason ?? (!autoStart ? text.autoStartUnavailable : switching ? text.loading : undefined);
   const directoryReason = bridgeReason ?? (!directory ? text.installUnavailable : undefined);
   const commandReason = bridgeReason ?? (!command ? text.installUnavailable : undefined);
-  const toggle = (enabled: boolean) => {
-    if (switchReason) return;
-    setSwitching(true);
-    void requestBridge({ operation: "dsh-auto-start", enabled })
-      .then(
-        (value) => setStatus(value as DshBridgeStatus),
-        () => undefined,
-      )
-      .finally(() => setSwitching(false));
-  };
   // What happens when nothing of the user's runs: the background start, or why it cannot.
-  const offline = !autoStart?.enabled
+  const offline = !autoStart
     ? text.none
     : autoStart.available
       ? autoStart.failure && autoStart.failure !== "dsh-exited"
@@ -326,8 +286,7 @@ function DshBridgeSettings({
   // Installing matters when nothing is connected and AgentKib cannot start DSH itself; otherwise
   // the steps stay folded.
   const canInstall = !directoryReason || !commandReason;
-  const installFirst =
-    canInstall && !runtimes.length && !(autoStart?.enabled && autoStart.available);
+  const installFirst = canInstall && !runtimes.length && !autoStart?.available;
   return (
     <OperationGroup title={text.title}>
       {!bridgeReason && (
@@ -357,16 +316,6 @@ function DshBridgeSettings({
           )}
         </OperationRow>
       )}
-      <OperationRow>
-        <OperationCopy title={text.autoStart}>{!switchReason && text.autoStartHint}</OperationCopy>
-        <Switch
-          checked={autoStart?.enabled ?? false}
-          disabled={!!switchReason}
-          title={switchReason}
-          aria-label={text.autoStart}
-          onCheckedChange={toggle}
-        />
-      </OperationRow>
       <OperationDisclosure key={String(canInstall)} title={text.install} defaultOpen={installFirst}>
         <div className="grid gap-1.5">
           {!directoryReason && (

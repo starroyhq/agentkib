@@ -215,8 +215,6 @@ export class TypeScriptBackend {
   #dshLanes?: DshLaneWatch;
   /** A DSH Project Agent's turns, counted when nobody sent them (`DshLeadWatch`). */
   #dshLeads?: DshLeadWatch;
-  /** Whether DeepSeek Harness may be started in the background, read for a moment at a time. */
-  #dshAutoStart?: { at: number; value: boolean };
   #catalogContinuation = new Map<string, string>();
   #webRead?: WebReadRequests;
   #readStates?: ConversationReadStates;
@@ -661,21 +659,7 @@ export class TypeScriptBackend {
           bootId: randomUUID(),
           pluginDirectory: dshPluginDirectory,
           discoveryFile: path.join(agentkibHome, "dsh-bridge", "discovery-v1.json"),
-          ...(dshManaged
-            ? {
-                managed: {
-                  runtime: dshManaged,
-                  // Read for every DSH session state, so kept for a moment.
-                  enabled: () => {
-                    const known = this.#dshAutoStart;
-                    if (known && Date.now() - known.at < 2_000) return known.value;
-                    const value = readPreferences(dataDir).dsh_auto_start !== false;
-                    this.#dshAutoStart = { at: Date.now(), value };
-                    return value;
-                  },
-                },
-              }
-            : {}),
+          ...(dshManaged ? { managed: { runtime: dshManaged } } : {}),
           sessionId: (nativeId) => store.sessions.id("deepseek-harness", nativeId),
           writerStatus: (nativeId, cwd) => probeDshWriter(nativeId, cwd, dshStorage),
           localHistory: async (nativeId, cwd, before, limit) => {
@@ -3417,12 +3401,6 @@ export class TypeScriptBackend {
       if (params.operation === "dsh-bridge-status") {
         if (!this.#dshBridge) throw new Error("dsh-bridge-unavailable");
         return this.#dshBridge.management(params);
-      }
-      if (params.operation === "dsh-auto-start") {
-        if (!this.#dshBridge || !this.#dataDir) throw new Error("dsh-bridge-unavailable");
-        writePreference(this.#dataDir, "dsh_auto_start", params.enabled === true);
-        this.#dshAutoStart = undefined;
-        return this.#dshBridge.management({ ...params, operation: "dsh-bridge-status" });
       }
       // Whether sessions continue after a usage limit resets, for this computer (on by default).
       if (params.operation === "usage-limit-auto-continue") {

@@ -20,7 +20,7 @@ vi.mock("@agentkib/session-ui", async (importOriginal) => ({
 const requestBridge = vi.fn();
 const permissionReason = "This device does not have session management permission.";
 const backgroundLabel = "Let Claude Code run tasks in the background";
-const dshLabel = "Start DeepSeek Harness when needed";
+const dshTitle = "DeepSeek Harness connection";
 function terminalWizard() {
   return screen.queryByRole("dialog", { name: claudeConnectionCopy[session.locale].title });
 }
@@ -62,7 +62,7 @@ beforeEach(() => {
     if (operation === "background-tasks")
       return { backgroundTasks: { available: true, enabled: true, minimumVersion: "2.1.299" } };
     if (operation === "dsh-bridge-status")
-      return { supported: true, autoStart: { available: true, enabled: true }, runtimes: [] };
+      return { supported: true, autoStart: { available: true }, runtimes: [] };
     return {};
   });
   session = {
@@ -162,26 +162,21 @@ describe("registered host settings", () => {
     },
   );
 
-  it("keeps the DSH plugin switch and copy controls disabled without a management grant", async () => {
+  it("omits the DSH switch and gates copying installation information on management access", async () => {
     session.locale = "en-US";
     session.current = { ...session.current!, agent: "deepseek-harness" };
     const view = render(<View />);
     // The full actions come from SessionTools (mocked here as its header).
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
-    expect(screen.getByText("DeepSeek Harness connection")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: dshTitle })).toBeInTheDocument();
     await waitFor(() =>
-      expect(screen.getByRole("switch", { name: dshLabel })).not.toHaveAttribute(
-        "aria-disabled",
-        "true",
-      ),
+      expect(requestBridge).toHaveBeenCalledWith({ operation: "dsh-bridge-status" }),
     );
+    expect(screen.queryByRole("switch")).not.toBeInTheDocument();
     requestBridge.mockClear();
     setManage(false);
     view.rerender(<View revision={1} />);
-    const toggle = screen.getByRole("switch", { name: dshLabel });
-    expect(toggle).toHaveAttribute("aria-disabled", "true");
-    expect(toggle).toHaveAttribute("title", permissionReason);
-    fireEvent.click(toggle);
+    expect(screen.queryByRole("switch")).not.toBeInTheDocument();
     fireEvent.click(screen.getByText("Install the AgentKib plugin"));
     for (const name of ["Copy directory", "Copy command"]) {
       const copy = screen.getByRole("button", { name });
@@ -226,12 +221,12 @@ describe("registered host settings", () => {
       },
     } as SessionController["capabilities"];
     const view = render(<View />);
-    expect(screen.getByRole("switch", { name: dshLabel })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: dshTitle })).toBeInTheDocument();
     expect(screen.queryByRole("switch", { name: backgroundLabel })).not.toBeInTheDocument();
 
     session.capabilities = { ...session.capabilities!, sessionId: "other" };
     view.rerender(<View revision={1} />);
     expect(screen.getByRole("switch", { name: backgroundLabel })).toBeInTheDocument();
-    expect(screen.queryByRole("switch", { name: dshLabel })).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: dshTitle })).not.toBeInTheDocument();
   });
 });

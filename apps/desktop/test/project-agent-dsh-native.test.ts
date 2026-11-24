@@ -215,7 +215,7 @@ async function sandbox(port: number) {
     bootId: randomUUID(),
     pluginDirectory: PLUGIN,
     discoveryFile: path.join(agentkibHome, "dsh-bridge", "discovery-v1.json"),
-    managed: { runtime, enabled: () => true },
+    managed: { runtime },
     sessionId: (nativeId) => `ak-${nativeId}`,
     workspaceFor: (cwd) =>
       cwd === workspace || cwd.startsWith(`${workspace}${path.sep}`)

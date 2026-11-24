@@ -795,8 +795,6 @@ export interface DshBridgeOptions {
       DshManagedRuntime,
       "pid" | "available" | "status" | "start" | "started" | "stop" | "desktopRunning"
     >;
-    /** The user's setting, read before every start. */
-    enabled(): boolean;
     idleMs?: number;
     /** Idle time while DSH Desktop's own window is open. */
     desktopIdleMs?: number;
@@ -1451,11 +1449,11 @@ export class DshBridge {
   }
   /**
    * Whether AgentKib may start DSH to serve a session now: no running DSH can continue
-   * sessions, the user's setting allows it and a launcher of a version the plugin runs in exists.
+   * sessions and a compatible launcher exists.
    */
   #startable(): boolean {
     const managed = this.options.managed;
-    if (!managed || this.#closed || !this.supported || !managed.enabled()) return false;
+    if (!managed || this.#closed || !this.supported) return false;
     if (this.#online().some((runtime) => runtime.services.sessionController)) return false;
     return this.#managedAvailability().available;
   }
@@ -1463,7 +1461,7 @@ export class DshBridge {
   #offlineReason(ambiguous: boolean): string {
     if (ambiguous) return "dsh-runtime-ambiguous";
     const managed = this.options.managed;
-    if (managed && managed.enabled() && !this.#closed && this.supported) {
+    if (managed && !this.#closed && this.supported) {
       const availability = this.#managedAvailability();
       if (!availability.available && availability.reason === "dsh-version-unsupported")
         return availability.reason;
@@ -1536,9 +1534,8 @@ export class DshBridge {
     return false;
   }
   /**
-   * Stops the background DSH once it has had nothing to do for a while, and at once when the user
-   * has a DSH of their own open or turned the setting off, so their DSH can take its sessions:
-   * a DSH keeps a session it resumed until it exits.
+   * Stops the background DSH once it has had nothing to do for a while, or as soon as it is idle
+   * when the user's own DSH connects. DSH keeps a session it resumed until it exits.
    */
   async #reviewManaged(): Promise<void> {
     const managed = this.options.managed;
@@ -1555,9 +1552,9 @@ export class DshBridge {
     this.#idleSince ??= now;
     this.#reviewing = true;
     try {
-      const yieldNow =
-        !managed.enabled() ||
-        this.#online().some((other) => !other.managed && other.services.sessionController);
+      const yieldNow = this.#online().some(
+        (other) => !other.managed && other.services.sessionController,
+      );
       const limit = yieldNow
         ? 0
         : (await managed.runtime.desktopRunning())
@@ -2350,8 +2347,7 @@ export class DshBridge {
     if (!evidence || !target || target.cwd !== evidence.cwd) return false;
     if (
       !evidence.manualOnly &&
-      (!this.options.managed?.enabled() ||
-        (!this.#quitWorkRuntime(target.nativeId) && !this.#startable()))
+      (!this.options.managed || (!this.#quitWorkRuntime(target.nativeId) && !this.#startable()))
     )
       return false;
     const { nativeId, cwd } = target;
@@ -4702,7 +4698,6 @@ export class DshBridge {
       autoStart:
         managed && status && availability
           ? {
-              enabled: managed.enabled(),
               available: availability.available,
               ...(availability.available ? {} : { reason: availability.reason }),
               phase: status.phase,

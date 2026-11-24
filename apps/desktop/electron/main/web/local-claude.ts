@@ -160,11 +160,8 @@ async function localClaudeRequestInner(
     });
   if (operation === "lead-assign-workers") return assignLocalWorkers(deps, input);
   if (operation === "options") return deps.managed({ operation });
-  // The DeepSeek Harness connection is per computer, not per session: its status, and whether
-  // AgentKib starts DSH in the background.
+  // The DeepSeek Harness connection status is per computer.
   if (operation === "dsh-bridge-status") return deps.managed({ operation, deviceId: OWNER });
-  if (operation === "dsh-auto-start")
-    return deps.managed({ operation, enabled: input.enabled === true, deviceId: OWNER });
   // Whether sessions continue after a usage limit resets, for this computer; a read without
   // `enabled`.
   if (operation === "usage-limit-auto-continue")

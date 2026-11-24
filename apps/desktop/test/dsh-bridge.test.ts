@@ -3995,7 +3995,6 @@ describe("DeepSeek Harness documents, Agent presets and handoffs", () => {
  */
 async function managedFixture(
   options: {
-    enabled?: () => boolean;
     available?: { available: true } | { available: false; reason: any };
     idleMs?: number;
     desktopRunning?: boolean;
@@ -4104,7 +4103,6 @@ async function managedFixture(
     publish: vi.fn(),
     managed: {
       runtime: managed,
-      enabled: options.enabled ?? (() => true),
       idleMs: options.idleMs ?? 60_000,
       desktopIdleMs: 200,
       reviewMs: 50,
@@ -4322,19 +4320,7 @@ describe("DeepSeek Harness started in the background", () => {
     await until(() => f.stops.length === 1, 3000);
   });
 
-  it("starts nothing when the setting is off, and says why it cannot start", async () => {
-    const off = await managedFixture({ enabled: () => false });
-    expect(off.bridge.live("ak-session-a", true)).toMatchObject({
-      status: "unsupported",
-      reason: "dsh-runtime-offline",
-      sendEnabled: false,
-    });
-    expect(await off.send("not sent")).toMatchObject({
-      controlOutcome: "not-dispatched",
-      reason: "dsh-runtime-offline",
-    });
-    expect(off.starts).toHaveLength(0);
-
+  it("does not start an unsupported version of DSH and reports why", async () => {
     const old = await managedFixture({
       available: { available: false, reason: "dsh-version-unsupported" },
     });
@@ -4346,6 +4332,11 @@ describe("DeepSeek Harness started in the background", () => {
       status: "unavailable",
       reason: "dsh-version-unsupported",
     });
+    expect(await old.send("not sent")).toMatchObject({
+      controlOutcome: "not-dispatched",
+      reason: "dsh-version-unsupported",
+    });
+    expect(old.starts).toHaveLength(0);
   });
 
   it("reports the reason when the background start fails", async () => {

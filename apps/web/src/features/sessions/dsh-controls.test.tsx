@@ -3,14 +3,14 @@ import "@testing-library/jest-dom/vitest";
 import { act, cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { render } from "@/features/conversation/web-reader-test-utils";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { composerGoalCopy } from "@agentkib/session-ui";
+import { composerGoalCopy, SessionComposerControls, SessionOperations } from "@agentkib/session-ui";
 import {
   sessionProviderCapabilities,
   type SessionGoalState,
   type SessionSettings,
 } from "@agentkib/web-client";
-import { SessionComposerControls } from "@agentkib/session-ui";
 import type { useSession } from "../conversation/web-session-context";
+import { dictionaries } from "../conversation/i18n";
 import { sessionCopy, sessionReason } from "../conversation/session-copy";
 
 const copy = sessionCopy["en-US"];
@@ -103,6 +103,27 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe("DeepSeek Harness controls", () => {
+  it("does not offer a host startup switch in Web session operations", async () => {
+    const projectAgentClient = {
+      projectAgent: vi.fn(async () => ({ capable: false })),
+      manageProjectAgent: vi.fn(),
+    };
+    render(
+      <SessionOperations
+        open
+        onOpenChange={vi.fn()}
+        session={{ ...state, t: dictionaries["en-US"] }}
+        projectAgentClient={projectAgentClient}
+        ExecutionControls={({ shortcuts }) => <section>{shortcuts}</section>}
+      />,
+    );
+    expect(screen.getByRole("button", { name: dictionaries["en-US"].refresh })).toBeVisible();
+    await waitFor(() => expect(projectAgentClient.projectAgent).toHaveBeenCalledWith("session"));
+    expect(
+      screen.queryByRole("switch", { name: /start deepseek harness/i }),
+    ).not.toBeInTheDocument();
+  });
+
   it("keeps model and permission controls gray until the executor becomes idle", async () => {
     const provider = sessionProviderCapabilities("deepseek-harness");
     vi.mocked(state.client.sessionSettings).mockResolvedValue({ ...settings(true), provider });

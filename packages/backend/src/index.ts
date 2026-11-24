@@ -1044,6 +1044,7 @@ export class TypeScriptBackend {
           this.#claudeBridge,
           (params, result) => this.#deleted(params, result),
           this.#workerObserver.controlled,
+          (sessionId) => this.#orchestration?.status(sessionId)?.deviceId,
         );
         this.#claudeSessionProvider = claudeProvider;
         const orchestration = this.#orchestration;

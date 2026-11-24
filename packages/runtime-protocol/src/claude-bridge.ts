@@ -53,6 +53,7 @@ export const CLAUDE_BRIDGE_FEATURES = [
   "open-model-picker",
   "terminal-subagents",
   "terminal-worker-activity",
+  "terminal-handover",
 ] as const;
 
 export interface ClaudeBridgeTicket {
@@ -134,6 +135,8 @@ export interface ClaudeBridgeCapabilities {
   stop: boolean;
   /** Absent from snapshots of plugins without the native model picker. */
   modelPicker?: boolean;
+  /** Whether this foreground terminal can invoke Claude Code's native exit command. */
+  handover?: true;
   approve: false;
   answer: false;
 }
@@ -248,6 +251,12 @@ export interface ClaudeBridgeEventsResponse {
 export type ClaudeBridgeCommand =
   | {
       commandId: string;
+      kind: "handover-exit";
+      turnId?: string;
+      expectedRevision: number;
+    }
+  | {
+      commandId: string;
       kind: "open-model-picker";
       expectedRevision: number;
     }
@@ -298,7 +307,7 @@ export interface ClaudeBridgeCommandsResponse {
 
 export interface ClaudeBridgeResultRequest extends ClaudeBridgeLease {
   commandId: string;
-  status: "accepted" | "rejected" | "unknown";
+  status: "accepted" | "rejected" | "unknown" | "exit-initiated";
   reason?: string;
   revision: number;
   turnId?: string;

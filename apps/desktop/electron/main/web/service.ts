@@ -3879,6 +3879,8 @@ export class WebAccessService {
       "settings-state": "advancedControl",
       settings: "settings",
       "open-model-picker": "settings",
+      "adopt-terminal": "advancedControl",
+      "handover-terminal": "advancedControl",
       context: "advancedControl",
       resources: "advancedControl",
       goal: "advancedControl",
@@ -3947,6 +3949,8 @@ export class WebAccessService {
             transport &&
             execution &&
             (operation !== "open-model-picker" || data.executionMode === "claude-follower") &&
+            (operation !== "adopt-terminal" || device.id === "desktop-local") &&
+            (operation !== "handover-terminal" || device.send === true) &&
             (!["attachments", "queue-steer"].includes(operation) || device.send === true) &&
             (operation !== "goal-draft" ||
               (data.executionMode === "claude-managed" && device.send === true));
@@ -4021,7 +4025,16 @@ export class WebAccessService {
       "queue-delete",
       "queue-reorder",
       "queue-start",
-      ...(generic ? ["queue-pause", "queue-resume", "queue-steer", "open-model-picker"] : []),
+      ...(generic
+        ? [
+            "queue-pause",
+            "queue-resume",
+            "queue-steer",
+            "open-model-picker",
+            "adopt-terminal",
+            "handover-terminal",
+          ]
+        : []),
       "usage-limit-cancel",
       "usage-limit-continue",
       "rename",
@@ -4053,6 +4066,28 @@ export class WebAccessService {
     const lanQueueDelete = this.options.mode === "lan" && !generic && operation === "queue-delete";
     if (this.options.mode === "lan" && !lanQueueDelete)
       throw new HttpError(403, "capability_unavailable");
+    if (operation === "adopt-terminal" && hash !== "desktop-local")
+      throw new HttpError(403, "owner_required");
+    if (operation === "handover-terminal") {
+      if (
+        body.handoffConfirmed !== true ||
+        Object.keys(body).some(
+          (key) =>
+            ![
+              "operation",
+              "agent",
+              "sessionId",
+              "requestId",
+              "expectedRevision",
+              "bootId",
+              "turnId",
+              "handoffConfirmed",
+            ].includes(key),
+        )
+      )
+        throw new HttpError(400, "invalid_input");
+      this.grant(hash, "send");
+    }
     const permission = lanQueueDelete ? "send" : this.codexPermission(operation);
     const device = this.grant(hash, permission);
     if (operation.startsWith("goal-")) this.fullAccess(hash);
@@ -4360,6 +4395,10 @@ export class WebAccessService {
       ...(policy.publicReceipt ? { publicInputHash } : {}),
       ...(ownerWaitOnly ? { ownerWaitOnly: true } : {}),
     };
+    if (operation === "handover-terminal") {
+      params.confirmed = true;
+      if (body.turnId !== undefined) params.turnId = this.field(body.turnId);
+    }
     // Every operation has an explicit public-field projection. Paths and raw RPC input never pass through.
     if (["steer", "queue-add", "queue-update"].includes(operation)) {
       const rawText = body.text === undefined ? "" : body.text;
@@ -5517,8 +5556,20 @@ export class WebAccessService {
         }[];
         [key: string]: unknown;
       };
+      const handover = state.terminalHandover;
       snapshot = {
         ...state,
+        ...(handover && device.id !== "desktop-local"
+          ? {
+              terminalHandover:
+                enabled &&
+                device.send &&
+                device.advancedControl &&
+                snapshotField(handover, "remoteAvailable") === true
+                  ? { available: false, remoteAvailable: true }
+                  : null,
+            }
+          : {}),
         ...(this.options.mode === "lan" && isCodexMode(state.executionMode) && !device.send
           ? { sendEnabled: false, stopEnabled: false }
           : {}),
@@ -5564,6 +5615,7 @@ export class WebAccessService {
       revision: null,
       turnId: null,
       sendEnabled: false,
+      terminalHandover: null,
       approvals: [],
       questions: [],
       reason: "control-outcome-unconfirmed",

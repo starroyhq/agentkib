@@ -1,6 +1,6 @@
 {
   "name": "@agentkib/claude-bridge-plugin",
-  "version": "0.5.5",
+  "version": "0.5.8",
   "private": true,
   "license": "Apache-2.0",
   "type": "module"

@@ -460,6 +460,58 @@ export class ClaudeHostStateStore {
     });
   }
 
+  importTerminalHandover(
+    sessionId: string,
+    settings: ClaudeSettings,
+    reports: readonly { id: string; text: string }[],
+    reportDeviceId: string | undefined,
+    continuation?: { id: string; deviceId: string; text: string },
+  ): void {
+    if (reports.length && !validClaudeDeviceId(reportDeviceId))
+      throw new Error("claude-terminal-report-owner-unavailable");
+    return this.update(sessionId, (state) => {
+      state.settings = settings;
+      if (state.reason === "released") {
+        state.paused = false;
+        state.reason = null;
+      }
+      const known = new Set(state.work.map((work) => work.id));
+      if (continuation && !known.has(continuation.id)) {
+        state.work.push({
+          id: continuation.id,
+          requestId: continuation.id,
+          deviceId: continuation.deviceId,
+          originDeviceId: continuation.deviceId,
+          kind: "queue",
+          status: "pending",
+          input: continuation.text,
+          requiresAttachments: false,
+          createdAt: new Date().toISOString(),
+          report: null,
+          usage: null,
+        });
+      }
+      if (reportDeviceId) {
+        for (const { id, text } of reports) {
+          if (known.has(id)) continue;
+          state.work.push({
+            id,
+            requestId: id,
+            deviceId: reportDeviceId,
+            originDeviceId: reportDeviceId,
+            kind: "report",
+            status: "pending",
+            input: text,
+            requiresAttachments: false,
+            createdAt: new Date().toISOString(),
+            report: null,
+            usage: null,
+          });
+        }
+      }
+    });
+  }
+
   claim(sessionId: string, itemId: string, deviceId: string): ClaudeHostWork {
     return this.update(sessionId, (state) => {
       if (

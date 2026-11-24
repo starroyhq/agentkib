@@ -586,6 +586,51 @@ describe("original Claude terminal over Web", () => {
   });
 });
 
+describe("remote terminal handover", () => {
+  it("confirms the current terminal turn before dispatching one handover", async () => {
+    const { state } = createHost({ follower: true });
+    state.features["handover-terminal"] = available;
+    state.live = {
+      ...state.live,
+      turnId: "terminal-turn",
+      status: "waiting-input",
+      reason: "claude-terminal-question",
+      sendEnabled: false,
+      terminalHandover: { available: false, remoteAvailable: true },
+    };
+    await openSession();
+    const transfer = await screen.findByRole("button", { name: "转到 AgentKib 继续" });
+    fireEvent.click(transfer);
+    expect(state.mutations).toEqual([]);
+    const dialog = within(await screen.findByRole("dialog", { name: "转到 AgentKib 继续" }));
+    expect(dialog.getByText(/结束电脑上的 Claude Code 终端会话/)).toBeVisible();
+    fireEvent.click(dialog.getByRole("button", { name: "转到 AgentKib 继续" }));
+    await waitFor(() => expect(state.mutations).toHaveLength(1));
+    expect(state.mutations[0]).toMatchObject({
+      path: "managed/action",
+      operation: "handover-terminal",
+      handoffConfirmed: true,
+      turnId: "terminal-turn",
+      sessionId: "session",
+    });
+  });
+
+  it("omits both handover buttons for an unverified terminal", async () => {
+    const { state } = createHost({ follower: true });
+    state.live = {
+      ...state.live,
+      status: "waiting-input",
+      reason: "claude-terminal-question",
+      sendEnabled: false,
+      terminalHandover: { available: false, reason: "claude-owner-busy" },
+    };
+    await openSession();
+    expect(
+      screen.queryByRole("button", { name: /在 AgentKib 中继续|转到 AgentKib 继续/ }),
+    ).not.toBeInTheDocument();
+  });
+});
+
 describe("Claude Remote parity", () => {
   beforeEach(() => {
     // Base UI exposes the slider thumb after measuring it. jsdom has no layout.

@@ -58,6 +58,7 @@ const QUOTA_RESUME_NOTIFICATIONS = new Set([
 const TERMINAL_SUBAGENTS_FEATURE = "terminal-subagents";
 const MAX_TERMINAL_SUBAGENTS = 16;
 const TERMINAL_WORKER_ACTIVITY_FEATURE = "terminal-worker-activity";
+const TERMINAL_HANDOVER_FEATURE = "terminal-handover";
 const MAX_WORKER_COMMANDS = 64;
 const WORKER_STREAM_SNAPSHOT_MS = 15_000;
 const SUBAGENT_STATES = new Map([
@@ -287,6 +288,8 @@ export function initialState() {
     pendingSend: null,
     // The last ambiguous report may still open its native turn after submit returns.
     unconfirmedReport: null,
+    handoverExit: null,
+    handoverSupported: undefined,
     modelPicker: null,
     modelPickerSupported: undefined,
     outbox: [],
@@ -330,6 +333,7 @@ export function initialState() {
 
 /** Runs a Project Agent's worker tool call in AgentKib and answers it as the tool. */
 async function leadCall($, state, name, e) {
+  if (state.handoverExit) return { deny: "AgentKib is transferring this session." };
   if (!leadFeature(state) || !state.connection || state.connection.leaseId === "reconnecting")
     return { deny: "AgentKib is not connected, so this session cannot direct its workers now." };
   const {
@@ -908,6 +912,8 @@ function invalidate(state, reason) {
   // in the native submit is dropped at dispatch, because the state is closed.
   state.outbox = [];
   state.unconfirmedReport = null;
+  state.handoverExit = null;
+  state.handoverSupported = undefined;
   state.activityVerified = false;
   state.nativeWorking = null;
   state.compacting = false;
@@ -1147,6 +1153,7 @@ async function snapshot($, state) {
   const numeric = (v) => (typeof v === "number" && Number.isFinite(v) ? v : null);
   const waiting = waitingState(state);
   const offersPicker = state.connection?.features?.includes("open-model-picker") === true;
+  const offersHandover = state.connection?.features?.includes(TERMINAL_HANDOVER_FEATURE) === true;
   const observation = state.terminalSubagents;
   const terminalSubagents =
     observation?.connection === state.connection && observation?.nativeId === observed.nativeId
@@ -1154,6 +1161,8 @@ async function snapshot($, state) {
       : undefined;
   if (offersPicker && state.modelPickerSupported === undefined)
     state.modelPickerSupported = await hasNativeModelPicker($);
+  if (offersHandover && state.handoverSupported === undefined)
+    state.handoverSupported = await hasNativeHandoverExit($);
   const terminalWorkerActivity = workerActivitySnapshot(state);
   if (terminalWorkerActivity !== undefined) state.workerActivitySnapshottedAt = Date.now();
   const result = {
@@ -1194,6 +1203,9 @@ async function snapshot($, state) {
     capabilities: {
       read: true,
       ...(offersPicker ? { modelPicker: canOpenModelPicker(state) } : {}),
+      ...(offersHandover && state.handoverSupported && canHandoverExit(state)
+        ? { handover: true }
+        : {}),
       send:
         writable(state) &&
         state.activityVerified &&
@@ -1206,6 +1218,7 @@ async function snapshot($, state) {
         !state.closed &&
         !state.needsReconnect &&
         !state.bufferPaused &&
+        !state.handoverExit &&
         Boolean(state.currentTurnId),
       approve: false,
       answer: false,
@@ -1343,6 +1356,7 @@ function writable(state) {
     !state.needsReconnect &&
     !state.sendDisabled &&
     !state.bufferPaused &&
+    !state.handoverExit &&
     !state.modelPicker &&
     !state.compacting
   );
@@ -1354,6 +1368,109 @@ function hasQueuedInput(state) {
     state.unconfirmedReport !== null ||
     state.outbox.some((item) => !item.leadReport || (!reportsPaused && item.status !== "unknown"))
   );
+}
+
+async function hasNativeHandoverExit($) {
+  try {
+    const surfaces = await $.session.surfaces();
+    if (!Array.isArray(surfaces) || !surfaces.includes("terminal")) return false;
+    const exits = (await $.command.list()).filter((entry) => entry.name === "exit");
+    return exits.length === 1 && exits[0].source === "builtin";
+  } catch {
+    return false;
+  }
+}
+
+function canHandoverExit(state) {
+  return (
+    writable(state) &&
+    state.activityVerified &&
+    (state.currentTurnId !== null || (state.nativeWorking === false && !waitingState(state))) &&
+    !state.pendingSend &&
+    !state.dispatching &&
+    !state.unconfirmedReport &&
+    // The terminal owns its queued submissions and any reports it has claimed.
+    // Leave them available for delivery rather than dropping them on exit.
+    state.outbox.length === 0 &&
+    state.takenReports.size === 0
+  );
+}
+
+async function handoverExit($, state, command, result) {
+  const connection = state.connection;
+  const turnId = command.turnId ?? null;
+  if (!connection?.features?.includes(TERMINAL_HANDOVER_FEATURE) || !canHandoverExit(state)) {
+    result.reason = "session-state-unverified";
+    return;
+  }
+  if (state.currentTurnId !== turnId) {
+    result.reason = "turn-conflict";
+    return;
+  }
+  if (!(await hasNativeHandoverExit($))) {
+    state.handoverSupported = false;
+    result.reason = "native-exit-unavailable";
+    return;
+  }
+  await identity($, state);
+  if (
+    state.connection !== connection ||
+    state.revision !== command.expectedRevision ||
+    state.currentTurnId !== turnId ||
+    !canHandoverExit(state)
+  ) {
+    result.reason = "session-state-unverified";
+    return;
+  }
+  const handover = { competing: false };
+  state.handoverExit = handover;
+  state.dirty = true;
+  const current = () =>
+    state.handoverExit === handover &&
+    state.connection === connection &&
+    !state.needsReconnect &&
+    !state.bufferPaused &&
+    !handover.competing;
+  const release = () => {
+    if (state.handoverExit !== handover) return;
+    state.handoverExit = null;
+    state.dirty = true;
+  };
+  let nativeAttempted = false;
+  try {
+    if (turnId !== null) {
+      nativeAttempted = true;
+      await $.turn.abort({ turnId });
+      // The native abort acknowledgement alone does not prove the turn ended.
+      for (let attempt = 0; attempt < 100 && current() && state.currentTurnId === turnId; attempt++)
+        await $.clock.sleep(50);
+    }
+    await identity($, state);
+    if (!current() || state.currentTurnId !== null || state.nativeWorking !== false) {
+      if (nativeAttempted) result.status = "unknown";
+      result.reason = "native-stop-unconfirmed";
+      return;
+    }
+    // A slash command is dispatched by the native command API; submitting the
+    // same text through prompt.submit is refused by Claude Code.
+    nativeAttempted = true;
+    const exit = await $.command.run({ command: "exit" });
+    if (exit?.isError === true) {
+      result.status = "unknown";
+      result.reason = "native-exit-refused";
+      return;
+    }
+    result.status = "exit-initiated";
+    delete result.reason;
+    // An exit may be intercepted by another mod. Keep submissions fenced while
+    // the observed process terminates, then recover if the terminal stayed open.
+    $.clock.after(5_000, release);
+  } catch {
+    if (nativeAttempted) result.status = "unknown";
+    result.reason = "native-exit-unconfirmed";
+  } finally {
+    if (result.status !== "exit-initiated") release();
+  }
 }
 
 async function hasNativeModelPicker($) {
@@ -1739,6 +1856,7 @@ async function execute($, state, command) {
   else if (command.kind === "cancel") withdraw(state, command, result);
   else if (command.expectedRevision !== state.revision) result.reason = "revision-conflict";
   else if (command.kind === "open-model-picker") await openModelPicker($, state, command, result);
+  else if (command.kind === "handover-exit") await handoverExit($, state, command, result);
   else if (command.kind === "send") {
     if (!validSend(command)) result.reason = "invalid-text";
     else if (
@@ -1871,7 +1989,7 @@ async function pump($, state, nativeEvent = false) {
     for (const id of taken)
       if (!response.lead?.reports?.some?.((r) => r?.id === id)) state.takenReports.delete(id);
     for (const command of response.commands) await execute($, state, command);
-    if (lead && state.connection === connection)
+    if (lead && state.connection === connection && !state.handoverExit)
       await applyLead($, state, response.lead, connection);
   } catch {
     state.dirty = true;
@@ -2536,6 +2654,7 @@ export function register(on) {
       }
       pending.observed = true;
     } else {
+      if (state.handoverExit) state.handoverExit.competing = true;
       if (e.origin?.kind === "composer") resumeLeadReports(state);
       if (pending) pending.competing = true;
       if (state.unconfirmedReport) state.unconfirmedReport.competing = true;
@@ -2580,6 +2699,7 @@ export function register(on) {
   });
   on("turn.start", async ($, e, next) => {
     if (e.agentId !== undefined) return next(e);
+    if (state.handoverExit) state.handoverExit.competing = true;
     startBridge($, state);
     state.currentTurnId = e.turnId;
     state.currentTurnStartedAt = Date.now();

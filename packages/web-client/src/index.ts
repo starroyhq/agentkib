@@ -483,6 +483,8 @@ export interface Live {
   continuationNoticeId?: string | null;
   /** Whether a connected terminal can take messages sent from AgentKib at all. */
   terminalSend?: boolean;
+  /** A terminal Claude can change writers only after the host verifies the original owner. */
+  terminalHandover?: { available: boolean; reason?: string; remoteAvailable?: true } | null;
   /**
    * Managed Claude: background commands and agents that keep running after a turn. When one ends
    * the CLI may start a turn by itself.
@@ -655,6 +657,8 @@ export type SessionAction =
   | LegacyCodexAction
   | "queue-pause"
   | "queue-resume"
+  | "adopt-terminal"
+  | "handover-terminal"
   | "open-model-picker";
 /** @deprecated Use SessionAction for managed session operations. */
 export type CodexAction = LegacyCodexAction;
@@ -1063,6 +1067,7 @@ export interface SessionActionBody extends Omit<CodexActionBody, "effort"> {
   effort?: string | null;
   expectedSettingsScope?: string;
   permissionMode?: ClaudePermissionMode | DevinPermissionMode;
+  handoffConfirmed?: true;
 }
 export {
   canDisplayCodexModelFallback,

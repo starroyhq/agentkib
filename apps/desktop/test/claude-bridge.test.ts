@@ -27,6 +27,45 @@ afterEach(async () => {
 const fixture = createClaudeBridgeFixture(cleanups);
 
 describe.skipIf(process.platform === "win32")("native Claude borrowed-host broker", () => {
+  it("offers terminal exit once only for a matching capable lease and leaves exit proof to the host", async () => {
+    const f = await fixture();
+    const id = f.target.sessionId;
+    expect(f.bridge.remoteTerminalExitSource(id)).toBeUndefined();
+    const turnId = randomUUID();
+    const snapshot = {
+      ...f.snapshot,
+      currentTurnId: turnId,
+      status: "waiting",
+      waiting: "question",
+      revision: 1,
+      capabilities: { ...f.snapshot.capabilities, handover: true },
+    };
+    expect((await f.events({ type: "snapshot", snapshot })).status).toBe(200);
+    const source = f.bridge.remoteTerminalExitSource(id)!;
+    expect(source).toMatchObject({ turnId, revision: f.live().revision });
+    const commandId = randomUUID();
+    const dispatch = vi.fn();
+    const exiting = f.bridge.requestTerminalExit(
+      source,
+      randomUUID(),
+      "browser",
+      commandId,
+      dispatch,
+    );
+    expect((await f.poll()).body.commands).toEqual([
+      { kind: "handover-exit", turnId, commandId, expectedRevision: 1 },
+    ]);
+    expect((await f.poll()).body.commands).toEqual([]);
+    expect(dispatch).toHaveBeenCalledOnce();
+    expect(
+      (await f.post("/v1/results", { commandId, status: "exit-initiated", revision: 1 })).status,
+    ).toBe(200);
+    expect(await exiting).toMatchObject({ controlOutcome: "accepted" });
+    expect(f.bridge.blocksManagedResume(id)).toBe(true);
+    await f.reconnect();
+    expect(() => f.bridge.confirmRemoteTerminalExit(source)).toThrow("native-identity-changed");
+  });
+
   it("runs a terminal Worker through the native send, queue, steer and stop gates", async () => {
     const f = await fixture(5_000);
     const leadId = "fixture-project-agent";
@@ -2362,6 +2401,7 @@ describe.skipIf(process.platform === "win32")(
         "open-model-picker",
         "terminal-subagents",
         "terminal-worker-activity",
+        "terminal-handover",
         "lead-rate-limit-pause",
       ]);
       expect(f.bridge.leadCapable(f.target.sessionId)).toBe(false);
@@ -2498,6 +2538,7 @@ describe.skipIf(process.platform === "win32")(
         "open-model-picker",
         "terminal-subagents",
         "terminal-worker-activity",
+        "terminal-handover",
       ]);
       expect((await leadPoll(plain)).body).toEqual({ commands: [] });
       expect(plain.bridge.leadCapable(plain.target.sessionId)).toBe(false);

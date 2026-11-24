@@ -99,6 +99,7 @@ export const bridgeSnapshotSchema = bridgeIdentitySchema.extend({
     queue: z.boolean(),
     stop: z.boolean(),
     modelPicker: z.boolean().optional(),
+    handover: z.literal(true).optional(),
     approve: z.literal(false),
     answer: z.literal(false),
   }),
@@ -151,7 +152,7 @@ export const bridgeLeadCallSchema = bridgeLeaseSchema.extend({
 });
 export const bridgeResultSchema = bridgeLeaseSchema.extend({
   commandId: id,
-  status: z.enum(["accepted", "rejected", "unknown"]),
+  status: z.enum(["accepted", "rejected", "unknown", "exit-initiated"]),
   reason: z.string().max(256).optional(),
   revision,
   turnId: id.optional(),

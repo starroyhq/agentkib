@@ -58,6 +58,12 @@ const QUOTA_RESUME_NOTIFICATIONS = new Set([
 const TERMINAL_SUBAGENTS_FEATURE = "terminal-subagents";
 const MAX_TERMINAL_SUBAGENTS = 16;
 const TERMINAL_WORKER_ACTIVITY_FEATURE = "terminal-worker-activity";
+const TERMINAL_APPROVAL_OBSERVATION_FEATURE = "terminal-approval-observation";
+const MAX_APPROVAL_INPUT_BYTES = 16 * 1024;
+const SENSITIVE_INPUT_KEY =
+  /(?:authorization|cookies?|apikeys?|accesskeys?|privatekeys?|tokens?|secrets?|passwords?|passwd|passphrase|credentials?|databaseurl|dsn)$/i;
+const SENSITIVE_INPUT_TEXT =
+  /-----BEGIN [^\n]*PRIVATE KEY-----|\b(?:Bearer|Basic)\s+\S+|\b(?:sk-|ghp_|github_pat_|xox[bp]-)[A-Za-z0-9_-]{12,}|(?:token|key|secret|password|passwd|passphrase|credential|authorization|cookie|database[-_ ]?url|dsn)\s*[:=]|--[\w-]*(?:token|key|secret|password|passwd|passphrase|credential)(?:=|\s+)|:\/\/[^\s/@]+:[^\s/@]+@/i;
 const MAX_WORKER_COMMANDS = 64;
 const WORKER_STREAM_SNAPSHOT_MS = 15_000;
 const SUBAGENT_STATES = new Map([
@@ -861,6 +867,66 @@ function waitingState(state) {
   return waits.includes("unknown") ? "unknown" : null;
 }
 
+function safeInteractionText(value) {
+  return SENSITIVE_INPUT_TEXT.test(value) ? "[REDACTED]" : value;
+}
+
+function approvalInput(input) {
+  if (!input || typeof input !== "object" || Array.isArray(input)) return {};
+  try {
+    const json = JSON.stringify(input);
+    // A clipped command or parameter object could describe a different operation.
+    if (
+      typeof json === "string" &&
+      utf8Prefix(json, MAX_APPROVAL_INPUT_BYTES).read === json.length
+    ) {
+      const value = JSON.parse(json, (key, value) =>
+        SENSITIVE_INPUT_KEY.test(key.replace(/[^a-z\d]/gi, ""))
+          ? "[REDACTED]"
+          : typeof value === "string"
+            ? safeInteractionText(value)
+            : value,
+      );
+      if (value && typeof value === "object" && !Array.isArray(value)) {
+        const projected = JSON.stringify(value);
+        if (utf8Prefix(projected, MAX_APPROVAL_INPUT_BYTES).read === projected.length) return value;
+      }
+    }
+  } catch {
+    // Malformed or oversized input is still observable by tool name and id.
+  }
+  return {};
+}
+
+function observePermissionPrompt(state) {
+  if (!state.currentTurnId || state.activeTools.size !== 1) return;
+  const waits = [...state.waits].filter(([, kind]) => kind !== "question");
+  const candidates = waits.filter(([owner]) => owner.approvalDetails);
+  // Notification has no tool-use ID and can be emitted for sandbox prompts.
+  // Publish details only when all the permission evidence names the one active call.
+  const [candidate] = candidates;
+  if (
+    candidates.length !== 1 ||
+    candidate[0].turnId !== state.currentTurnId ||
+    waits.some(([owner]) => owner.tool !== candidate[0].tool)
+  )
+    return;
+  state.waits.set(candidate[0], "permission");
+  state.dirty = true;
+}
+
+function questionSummary(state) {
+  const active = [...state.waits].filter(
+    ([owner, kind]) => kind === "question" && owner.turnId === state.currentTurnId,
+  );
+  if (active.length !== 1) return undefined;
+  const questions = active[0][0].input?.questions;
+  const first = Array.isArray(questions) && questions[0]?.question;
+  if (typeof first !== "string" || !first.trim()) return undefined;
+  const preview = safeInteractionText(first);
+  return preview === "[REDACTED]" ? undefined : previewText(preview, 256);
+}
+
 function workerActivitySnapshot(state) {
   if (
     !state.connection?.features?.includes(TERMINAL_WORKER_ACTIVITY_FEATURE) ||
@@ -945,6 +1011,8 @@ function invalidate(state, reason) {
         answer: false,
       },
     };
+    delete revoked.pendingApprovalDetails;
+    delete revoked.pendingQuestionSummary;
     delete revoked.terminalWorkerActivity;
     state.termination = {
       socketPath: state.socketPath,
@@ -1145,7 +1213,6 @@ async function snapshot($, state) {
     // This optional getter is absent in older native contracts.
   }
   const numeric = (v) => (typeof v === "number" && Number.isFinite(v) ? v : null);
-  const waiting = waitingState(state);
   const offersPicker = state.connection?.features?.includes("open-model-picker") === true;
   const observation = state.terminalSubagents;
   const terminalSubagents =
@@ -1154,6 +1221,18 @@ async function snapshot($, state) {
       : undefined;
   if (offersPicker && state.modelPickerSupported === undefined)
     state.modelPickerSupported = await hasNativeModelPicker($);
+  const waiting = waitingState(state);
+  const observesApproval =
+    state.connection?.features?.includes(TERMINAL_APPROVAL_OBSERVATION_FEATURE) === true;
+  const pendingApprovalDetails =
+    observesApproval && waiting === "permission"
+      ? [...state.waits].find(
+          ([owner, kind]) =>
+            kind === "permission" && owner.approvalDetails && owner.turnId === state.currentTurnId,
+        )?.[0].approvalDetails
+      : undefined;
+  const pendingQuestionSummary =
+    observesApproval && waiting === "question" ? questionSummary(state) : undefined;
   const terminalWorkerActivity = workerActivitySnapshot(state);
   if (terminalWorkerActivity !== undefined) state.workerActivitySnapshottedAt = Date.now();
   const result = {
@@ -1167,6 +1246,8 @@ async function snapshot($, state) {
           ? "running"
           : "idle",
     waiting,
+    ...(pendingApprovalDetails !== undefined ? { pendingApprovalDetails } : {}),
+    ...(pendingQuestionSummary !== undefined ? { pendingQuestionSummary } : {}),
     messages: visibleMessages(rows),
     toolItems: state.currentTurnId ? visibleTools(rows) : [],
     ...(terminalSubagents !== undefined ? { terminalSubagents } : {}),
@@ -2818,7 +2899,19 @@ export function register(on) {
         ? state.activeTools.get(e.tool_use_id)
         : undefined;
     if (tool && state.currentTurnId && tool.turnId === state.currentTurnId) {
-      state.waits.set({ tool, turnId: state.currentTurnId }, "unknown");
+      const turnId = state.currentTurnId;
+      const approvalDetails =
+        state.connection?.features?.includes(TERMINAL_APPROVAL_OBSERVATION_FEATURE) &&
+        e.approver === "person" &&
+        e.tool === tool.name &&
+        e.tool !== "AskUserQuestion" &&
+        typeof e.tool === "string" &&
+        e.tool.length > 0 &&
+        e.tool.length <= 256 &&
+        e.tool_use_id.length <= 256
+          ? { toolUseId: e.tool_use_id, turnId, toolName: e.tool, input: approvalInput(e.input) }
+          : undefined;
+      state.waits.set({ tool, turnId, approvalDetails }, "unknown");
       state.dirty = true;
     }
     return result;
@@ -2858,8 +2951,14 @@ export function register(on) {
     return next(e);
   });
   on("classic.Notification", (_$, e, next) => {
-    if (mainClassicEvent(state, e) && QUOTA_RESUME_NOTIFICATIONS.has(e.notification_type))
-      resumeLeadReports(state);
+    if (mainClassicEvent(state, e)) {
+      if (QUOTA_RESUME_NOTIFICATIONS.has(e.notification_type)) resumeLeadReports(state);
+      if (
+        e.notification_type === "permission_prompt" &&
+        state.connection?.features?.includes(TERMINAL_APPROVAL_OBSERVATION_FEATURE)
+      )
+        observePermissionPrompt(state);
+    }
     return next(e);
   });
   on("session.compact", async ($, e, next) => {

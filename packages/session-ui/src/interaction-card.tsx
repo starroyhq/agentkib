@@ -28,6 +28,7 @@ export interface ApprovalDockItem {
   /** Whether this device may answer it now; a notice says why not when it matters. */
   enabled: boolean;
   notice?: InteractionNotice;
+  risk?: { label: string; text: string };
 }
 export interface QuestionDockItem {
   kind: "question";
@@ -427,8 +428,15 @@ function ApprovalCard({
         </div>
       )}
       {model.message && <p className="whitespace-pre-wrap break-words text-sm">{model.message}</p>}
-      {(model.reason || model.needs || model.location) && (
+      {(model.reason || model.needs || model.location || item.risk) && (
         <div className="space-y-1 text-xs leading-5">
+          {item.risk && (
+            <p className="break-words">
+              <span className="font-medium">{item.risk.label}</span>
+              {" · "}
+              {item.risk.text}
+            </p>
+          )}
           {model.reason && (
             <p className="break-words">
               <span className="text-muted-foreground">{model.reason.label}</span>

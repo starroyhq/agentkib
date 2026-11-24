@@ -25,6 +25,7 @@ const agentByMode: Readonly<Record<string, LiveSessionAgent>> = {
   "codex-managed": "codex",
   "codex-follower": "codex",
   "claude-managed": "claude-code",
+  "claude-follower": "claude-code",
   "dsh-follower": "deepseek-harness",
   "devin-print": "devin",
   "acp-managed": "antigravity",
@@ -220,7 +221,16 @@ export async function describePendingInteractions(
       const questions = kind === "question" ? questionsOf(value.questions) : undefined;
       const decisions: Decision[] =
         kind === "approval"
-          ? projectDecisions(value, options)
+          ? mode === "claude-follower"
+            ? approvalCandidates(value).map(({ id, kind, scope, label }) => ({
+                id,
+                kind,
+                scope,
+                ...(label !== undefined ? { label } : {}),
+                available: false,
+                lockScreen: false,
+              }))
+            : projectDecisions(value, options)
           : options.enabled && options.send && value.supported === true && questions
             ? [
                 {
@@ -255,7 +265,9 @@ export function resolvePendingInteractionDecision(
   approval: unknown,
   interactionDecisionId: string,
 ): { decision: Decision; nativeChoice?: string; nativeDecision?: unknown } | undefined {
-  const decision = interaction.decisions.find((item) => item.id === interactionDecisionId);
+  const decision = interaction.decisions.find(
+    (item) => item.available && item.id === interactionDecisionId,
+  );
   if (!decision) return undefined;
   if (interaction.kind === "question") return { decision };
   const candidate = approvalCandidates(approval).find(({ id }) => id === interactionDecisionId);

@@ -1263,6 +1263,7 @@ export class ClaudeBridge {
                   snapshot?.status === "waiting")
               ? "running"
               : "idle";
+    const approval = snapshot?.pendingApprovalDetails;
     return {
       sessionId: id,
       sourceSessionId: row.target.nativeId,
@@ -1312,8 +1313,25 @@ export class ClaudeBridge {
         !connection?.pending &&
         !!snapshot?.currentTurnId &&
         snapshot.capabilities.stop,
-      approvals: [],
+      approvals:
+        status === "awaiting-approval" && approval && approval.turnId === snapshot?.currentTurnId
+          ? [
+              {
+                requestId: approval.toolUseId,
+                turnId: approval.turnId,
+                method: "claude/can_use_tool",
+                toolName: approval.toolName,
+                input: approval.input,
+                cwd: row.target.workspace,
+                supported: false,
+                availableDecisions: ["allow", "deny"],
+              },
+            ]
+          : [],
       questions: [],
+      ...(status === "waiting-input" && snapshot?.pendingQuestionSummary
+        ? { terminalQuestionSummary: snapshot.pendingQuestionSummary }
+        : {}),
       ...(connection?.terminalSubagentsObserved
         ? {
             activities: terminalSubagentActivities(
@@ -2630,6 +2648,8 @@ export class ClaudeBridge {
         snapshot.currentTurnId = event.turnId;
         snapshot.status = "running";
         snapshot.waiting = null;
+        delete snapshot.pendingApprovalDetails;
+        delete snapshot.pendingQuestionSummary;
         snapshot.streamText = "";
         delete snapshot.terminalWorkerActivity;
         // A Project Agent's count of turns without the person restarts when they type. A turn the
@@ -2658,6 +2678,8 @@ export class ClaudeBridge {
         if (snapshot.currentTurnId === event.turnId) {
           snapshot.status = "idle";
           snapshot.waiting = null;
+          delete snapshot.pendingApprovalDetails;
+          delete snapshot.pendingQuestionSummary;
           snapshot.currentTurnId = null;
           snapshot.streamText = "";
           delete snapshot.terminalWorkerActivity;

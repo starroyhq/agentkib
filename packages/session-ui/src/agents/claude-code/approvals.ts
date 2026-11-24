@@ -39,6 +39,7 @@ export const terminalApprovalRuntime: ApprovalRuntime = {
   legacyMode: "claude-follower",
   observedText: (live, sessionId, locale, surface: SessionSurface) => {
     const kind = claudeTerminalInteraction(live, sessionId);
+    if (kind === "approval" && live.approvals.length) return;
     return kind ? claudeConnectionCopyForSurface(locale, surface)[kind] : undefined;
   },
 };

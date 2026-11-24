@@ -137,6 +137,31 @@ describe("Claude terminal setup entry", () => {
 });
 
 describe("registered host settings", () => {
+  it.each(["devin", "antigravity"] as const)(
+    "shows the existing %s Project Agent outside execution controls",
+    async (agent) => {
+      session.locale = "en-US";
+      session.t = conversationWords("en-US");
+      session.current = { ...session.current!, agent };
+      requestBridge.mockResolvedValue({
+        capable: true,
+        lead: {
+          sessionId: session.selected,
+          paused: false,
+          scope: { approvals: [], maxAutoTurns: 25 },
+          workers: [],
+          pendingReports: 0,
+        },
+      });
+      render(<View />);
+      expect(await screen.findByRole("heading", { name: "Project Agent" })).toBeVisible();
+      expect(requestBridge).toHaveBeenCalledWith({
+        operation: "lead-status",
+        sessionId: session.selected,
+      });
+    },
+  );
+
   it("keeps the DSH plugin switch and copy controls disabled without a management grant", async () => {
     session.locale = "en-US";
     session.current = { ...session.current!, agent: "deepseek-harness" };

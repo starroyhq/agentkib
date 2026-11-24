@@ -1,4 +1,6 @@
 import { PassThrough } from "node:stream";
+import { sessionInteractionItems } from "@agentkib/session-ui";
+import type { Live } from "@agentkib/web-client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AntigravityAcp } from "../../../packages/backend/src/agents/antigravity/antigravity-acp";
 import {
@@ -7,6 +9,55 @@ import {
 } from "../../../packages/backend/src/agents/antigravity/antigravity-managed-runner";
 
 type Frame = { id?: number | string; method?: string; params?: any; result?: any; error?: any };
+
+// Captured from agy acp 1.5.14 with a sandboxed MCP fixture. Session and tool call IDs are replaced.
+const ordinaryMcpPermission = {
+  id: "1",
+  method: "session/request_permission",
+  params: {
+    sessionId: "known",
+    toolCall: {
+      sessionUpdate: "tool_call",
+      toolCallId: "call-mcp-1",
+      name: "mcp_rel2_fixture_record_approval",
+      args: { marker: "DENY", toolSummary: "Record DENY approval marker" },
+      status: "pending",
+      kind: "other",
+      title: "Run mcp_rel2_fixture_record_approval",
+      rawInput: { marker: "DENY", toolSummary: "Record DENY approval marker" },
+    },
+    options: [
+      { optionId: "allow", name: "Allow", kind: "allow_once" },
+      { optionId: "deny", name: "Deny", kind: "reject_once" },
+    ],
+  },
+};
+
+// The same CLI replays native-config MCP tools via call_mcp_tool. This payload comes from
+// session/load of the cancelled sandbox turn, with the pending status used in the live envelope.
+const nativeMcpInput = {
+  Arguments: { marker: "DENY" },
+  ServerName: "rel2_fixture",
+  ToolName: "record_approval",
+};
+const nativeMcpToolCall = {
+  ...ordinaryMcpPermission.params.toolCall,
+  name: "call_mcp_tool",
+  kind: "execute",
+  title: "MCP Tool record_approval",
+  args: nativeMcpInput,
+  rawInput: nativeMcpInput,
+};
+const redactedMcpInput = {
+  ...nativeMcpInput,
+  Arguments: { ...nativeMcpInput.Arguments, token: "synthetic private argument" },
+};
+const extraMcpInput = { ...nativeMcpInput, CommandLine: "echo unexpected field" };
+const emptyMcpInput = { ...nativeMcpInput, Arguments: {} };
+const oversizedMcpInput = {
+  ...nativeMcpInput,
+  Arguments: { marker: "x".repeat(64 * 1024) },
+};
 
 /** An in-process `agy acp` (1.5.14) that answers as each test scripts it. */
 function fakeCli() {
@@ -212,6 +263,313 @@ describe("Antigravity CLI control (agy acp 1.5.14)", () => {
       toolCall: { kind: "execute", rawInput: { command: "touch ran.txt" } },
     });
     runner.close();
+  });
+
+  it.each([
+    {
+      label: "an ACP-registered tool",
+      toolCall: ordinaryMcpPermission.params.toolCall,
+      toolLabel: "mcp_rel2_fixture_record_approval",
+      parameters: ["marker: DENY", "toolSummary: Record DENY approval marker"],
+      decision: "allow",
+    },
+    {
+      label: "a native-config tool in an ordinary session",
+      toolCall: nativeMcpToolCall,
+      toolLabel: "rel2_fixture / record_approval",
+      parameters: ["marker: DENY"],
+      decision: "allow",
+    },
+    {
+      label: "a native-config tool in a Project Agent session",
+      toolCall: nativeMcpToolCall,
+      toolLabel: "rel2_fixture / record_approval",
+      parameters: ["marker: DENY"],
+      decision: "deny",
+      projectAgent: true,
+    },
+    {
+      label: "a native-config tool with no arguments",
+      toolCall: { ...nativeMcpToolCall, args: emptyMcpInput, rawInput: emptyMcpInput },
+      toolLabel: "rel2_fixture / record_approval",
+      decision: "allow",
+    },
+    {
+      label: "redacted native-config arguments",
+      toolCall: { ...nativeMcpToolCall, args: redactedMcpInput, rawInput: redactedMcpInput },
+      decision: null,
+    },
+    {
+      label: "an unexpected native-config field",
+      toolCall: { ...nativeMcpToolCall, args: extraMcpInput, rawInput: extraMcpInput },
+      decision: null,
+    },
+    {
+      label: "disagreeing native-config arguments",
+      toolCall: {
+        ...nativeMcpToolCall,
+        args: { ...nativeMcpInput, Arguments: { marker: "ALLOW" } },
+      },
+      decision: null,
+    },
+    {
+      label: "oversized native-config arguments",
+      toolCall: { ...nativeMcpToolCall, args: oversizedMcpInput, rawInput: oversizedMcpInput },
+      decision: null,
+    },
+  ])(
+    "handles a captured MCP permission request with $label",
+    async ({ decision, parameters, projectAgent, toolCall, toolLabel }) => {
+      const cli = fakeCli();
+      const leadTools = projectAgent
+        ? {
+            serverName: "agentkib_workers",
+            url: "http://127.0.0.1:1/lead/x",
+            toolNames: ["worker_list"],
+          }
+        : undefined;
+      const runner = await AntigravityManagedRunner.connect(
+        "/bin/agy",
+        "/tmp",
+        "known",
+        {},
+        undefined,
+        undefined,
+        0,
+        undefined,
+        { leadTools },
+      );
+      try {
+        const frame = {
+          ...ordinaryMcpPermission,
+          params: { ...ordinaryMcpPermission.params, toolCall },
+        };
+        cli.prompt(() => cli.send(frame));
+        await runner.send("Request approval", Number(runner.snapshot().revision));
+        await settle(() => runner.snapshot().status === "waiting-approval");
+        const live = runner.snapshot() as unknown as Live;
+        const { items, approvals } = sessionInteractionItems(
+          live,
+          { bootId: "boot", experimentalEnabled: true, device: { approve: true, send: false } },
+          {
+            locale: "en-US",
+            sessionId: "known",
+            agent: "Antigravity",
+            connection: "acp",
+            canStop: false,
+            ready: true,
+            uncertain: false,
+          },
+        );
+        expect(cli.responses()).toEqual([]);
+        const [card] = items;
+        expect(card).toMatchObject({ kind: "approval", enabled: decision !== null });
+        if (card.kind !== "approval") throw new Error("Expected an approval card");
+        const request = approvals.get(card.key)!;
+        expect(request.requestId).toBe(frame.id);
+        if (decision === null) {
+          expect(card.model.choices).toEqual([]);
+          expect(card.model.details).not.toContain("synthetic private argument");
+          await expect(
+            runner.approve(String(request.requestId), request.turnId, "allow", live.revision),
+          ).rejects.toThrow("Antigravity approval is unavailable");
+          expect(cli.responses()).toEqual([]);
+          return;
+        }
+        // A lead can decide a worker's plain commands, but ACP's execute label also covers MCP.
+        expect(request.toolCall).toMatchObject({ kind: "other" });
+        expect(card.model).toMatchObject({
+          title: `Allow Antigravity to use ${toolLabel}?`,
+          choices: [
+            { decision: "allow", label: "Allow", quick: "allow" },
+            { decision: "deny", label: "Deny", quick: "deny" },
+          ],
+        });
+        expect(card.model.block?.lines).toEqual(parameters);
+        await runner.approve(String(request.requestId), request.turnId, decision, live.revision);
+        expect(cli.responses()).toEqual([
+          {
+            id: frame.id,
+            jsonrpc: "2.0",
+            result: { outcome: { outcome: "selected", optionId: decision } },
+          },
+        ]);
+      } finally {
+        runner.close();
+      }
+    },
+  );
+
+  it.each([
+    {
+      label: "shell command",
+      name: "run_command",
+      kind: "execute",
+      input: { CommandLine: "touch /tmp/synthetic-approval.txt", WaitMsBeforeAsync: 0 },
+      decision: "allow",
+    },
+    {
+      label: "ordinary MCP request",
+      name: "mcp_fixture_lookup",
+      kind: "other",
+      input: { query: "synthetic record", limit: 2 },
+      decision: "deny",
+    },
+    {
+      label: "MCP request with no parameters",
+      name: "mcp_fixture_list",
+      kind: "other",
+      input: {},
+      decision: "allow",
+    },
+  ])(
+    "projects a $label to the shared approval card and sends the exact choice",
+    async ({ name, kind, input, decision }) => {
+      const cli = fakeCli();
+      const runner = await AntigravityManagedRunner.connect("/bin/agy", "/tmp", "known", {});
+      try {
+        cli.prompt(() =>
+          cli.send({
+            id: 910,
+            method: "session/request_permission",
+            params: {
+              sessionId: "known",
+              toolCall: {
+                sessionUpdate: "tool_call",
+                toolCallId: "approval-tool",
+                kind,
+                name,
+                title: "Synthetic tool",
+                status: "pending",
+                rawInput: input,
+                args: input,
+              },
+              options: [
+                { optionId: "allow", name: "Allow once", kind: "allow_once" },
+                { optionId: "deny", name: "Reject", kind: "reject_once" },
+                { optionId: "always", name: "Always allow", kind: "allow_always" },
+              ],
+            },
+          }),
+        );
+        await runner.send("Request approval", Number(runner.snapshot().revision));
+        await settle(() => runner.snapshot().status === "waiting-approval");
+        // As on the IPC/SSE path, render directly from the runtime snapshot, before a GET
+        // can enrich it. Both readers use this builder to decide whether to offer actions.
+        const live = runner.snapshot() as unknown as Live;
+        const access = {
+          bootId: "boot",
+          experimentalEnabled: true,
+          device: { approve: true, send: false },
+        };
+        const context = {
+          locale: "en-US" as const,
+          sessionId: "known",
+          agent: "Antigravity",
+          connection: "acp" as const,
+          canStop: false,
+          ready: true,
+          uncertain: false,
+        };
+        const { items, approvals } = sessionInteractionItems(live, access, context);
+        const [card] = items;
+        expect(card).toMatchObject({
+          kind: "approval",
+          enabled: true,
+          model: {
+            title: `Allow Antigravity to use ${kind === "other" ? name : "Synthetic tool"}?`,
+            choices: [
+              { decision: "allow", label: "Allow once", quick: "allow" },
+              { decision: "deny", label: "Reject", quick: "deny" },
+            ],
+          },
+        });
+        if (card.kind !== "approval") throw new Error("Expected an approval card");
+        if (name === "mcp_fixture_lookup") expect(card.model.block?.lines).toContain("limit: 2");
+        const request = approvals.get(card.key)!;
+        expect(
+          sessionInteractionItems(
+            live,
+            { ...access, device: { approve: false, send: true } },
+            context,
+          ).items[0],
+        ).toMatchObject({ enabled: false });
+        expect(
+          sessionInteractionItems(live, access, { ...context, ready: false }).items[0],
+        ).toMatchObject({ enabled: false });
+        expect(cli.responses()).toEqual([]);
+
+        await expect(
+          runner.approve(String(request.requestId), request.turnId, "always", live.revision),
+        ).rejects.toThrow("Antigravity approval option is unavailable");
+        expect(cli.responses()).toEqual([]);
+        const choice = card.model.choices.find((item) => item.decision === decision);
+        expect(choice).toBeDefined();
+        await runner.approve(
+          String(request.requestId),
+          request.turnId,
+          choice!.decision!,
+          live.revision,
+        );
+        expect(cli.responses()).toEqual([
+          {
+            id: 910,
+            jsonrpc: "2.0",
+            result: { outcome: { outcome: "selected", optionId: decision } },
+          },
+        ]);
+        expect(runner.snapshot().approvals).toEqual([]);
+      } finally {
+        runner.close();
+      }
+    },
+  );
+
+  it.each([
+    ["a non-MCP tool", { name: "unidentified_tool", rawInput: { query: "visible" } }],
+    ["redacted arguments", { rawInput: { token: "synthetic private argument" } }],
+    [
+      "disagreeing argument fields",
+      { rawInput: { query: "visible" }, args: { query: "different" } },
+    ],
+    [
+      "an integer the card cannot represent exactly",
+      { rawInput: { limit: 9_007_199_254_740_992 } },
+    ],
+  ])("keeps %s out of the native approval dispatch", async (_label, fields) => {
+    const cli = fakeCli();
+    const runner = await AntigravityManagedRunner.connect("/bin/agy", "/tmp", "known", {});
+    try {
+      cli.prompt(() =>
+        cli.send({
+          id: 911,
+          method: "session/request_permission",
+          params: {
+            sessionId: "known",
+            toolCall: {
+              toolCallId: "unsupported",
+              kind: "other",
+              name: "mcp_fixture_lookup",
+              ...fields,
+            },
+            options: [{ optionId: "allow", name: "Allow once", kind: "allow_once" }],
+          },
+        }),
+      );
+      await runner.send("Request approval", Number(runner.snapshot().revision));
+      await settle(() => runner.snapshot().status === "waiting-approval");
+      const live = runner.snapshot() as unknown as Live;
+      expect(live.approvals).toMatchObject([
+        { requestId: "911", supported: false, availableDecisions: [] },
+      ]);
+      expect(JSON.stringify(live.approvals)).not.toContain("synthetic private argument");
+      await expect(runner.approve("911", live.turnId!, "allow", live.revision)).rejects.toThrow(
+        "Antigravity approval is unavailable",
+      );
+      expect(cli.responses()).toEqual([]);
+    } finally {
+      runner.close();
+    }
   });
 
   it("ends a turn Antigravity could not run as failed and keeps the session usable", async () => {

@@ -313,7 +313,11 @@ describe("Project Agent panel on Web", () => {
     projectAgent.mockResolvedValueOnce({ lead: null });
     const { unmount } = render(<WebPanel device={device} />);
     await act(async () => undefined);
-    expect(screen.queryByRole("button", { name: "Make Project Agent…" })).toBeNull();
+    const designate = screen.getByRole("button", { name: "Make Project Agent…" });
+    expect(designate).toBeDisabled();
+    expect(designate).toHaveAttribute("title", expect.stringContaining("requires full access"));
+    fireEvent.click(designate);
+    expect(manageProjectAgent).not.toHaveBeenCalled();
     unmount();
     projectAgent.mockResolvedValueOnce({ lead });
     render(<WebPanel device={device} />);

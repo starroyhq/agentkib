@@ -9,10 +9,22 @@ import type { NewSessionAgent } from "../../new-session";
  */
 /** A first message goes out by itself only this soon after it was written. */
 const SEND_WINDOW_MS = 60_000;
-const drafts = new Map<string, { draft: NewSessionDraft; at: number }>();
+const drafts = new Map<string, { draft: NewSessionDraft; at: number; manual?: boolean }>();
 
 export function offerNewSessionDraft(sessionId: string, draft: NewSessionDraft, now = Date.now()) {
-  drafts.set(sessionId, { draft, at: now });
+  const offer = { draft, at: now };
+  drafts.set(sessionId, offer);
+  // If nobody took this offer, the creating composer can still keep the draft.
+  return () => {
+    if (drafts.get(sessionId) !== offer) return false;
+    return drafts.delete(sessionId);
+  };
+}
+
+/** Leaving the creating composer keeps its handoff available for manual sending. */
+export function keepNewSessionDraftUnsent(sessionId: string) {
+  const offer = drafts.get(sessionId);
+  if (offer) offer.manual = true;
 }
 
 /**
@@ -25,7 +37,7 @@ export function takeNewSessionDraft(
 ): (NewSessionDraft & { send: boolean }) | undefined {
   const offer = drafts.get(sessionId);
   drafts.delete(sessionId);
-  return offer && { ...offer.draft, send: now - offer.at < SEND_WINDOW_MS };
+  return offer && { ...offer.draft, send: !offer.manual && now - offer.at < SEND_WINDOW_MS };
 }
 
 /** The workspace and Agent the last new session used, the composer's next default. */

@@ -1,9 +1,11 @@
 import { randomUUID } from "node:crypto";
 import {
   appendFileSync,
+  existsSync,
   mkdirSync,
   readFileSync,
   rmSync,
+  symlinkSync,
   utimesSync,
   writeFileSync,
 } from "node:fs";
@@ -23,11 +25,8 @@ afterEach(async () => {
   vi.restoreAllMocks();
 });
 
-async function fixture(titleKind: "prompt" | "ai" | "custom" = "prompt") {
-  const { root, workspace, config, environment } = createFakeClaude("agentkib-claude-catalog-");
+function managedRuntime(root: string, workspace: string, environment: NodeJS.ProcessEnv) {
   cleanups.push(() => rmSync(root, { recursive: true, force: true }));
-  const project = path.join(config, "projects", "fixture");
-  mkdirSync(project, { recursive: true, mode: 0o700 });
   const commands = new Commands();
   cleanups.push(() => commands.close());
   vi.spyOn(commands, "run").mockImplementation(async (program, args) => ({
@@ -53,6 +52,26 @@ async function fixture(titleKind: "prompt" | "ai" | "custom" = "prompt") {
     profiles: () => [],
   } as unknown as CursorBridge);
   cleanups.push(() => sessions.close());
+  const makeOwner = () => {
+    const owner = new ClaudeManagedReadOwner(
+      store,
+      sessions,
+      commands,
+      root,
+      environment,
+      randomUUID(),
+    );
+    cleanups.push(() => owner.shutdown());
+    return owner;
+  };
+  return { commands, store, sessions, makeOwner };
+}
+
+async function fixture(titleKind: "prompt" | "ai" | "custom" = "prompt") {
+  const { root, workspace, config, environment } = createFakeClaude("agentkib-claude-catalog-");
+  const { commands, store, sessions, makeOwner } = managedRuntime(root, workspace, environment);
+  const project = path.join(config, "projects", "fixture");
+  mkdirSync(project, { recursive: true, mode: 0o700 });
   const nativeId = randomUUID();
   const file = path.join(project, `${nativeId}.jsonl`);
   const user = randomUUID();
@@ -103,18 +122,6 @@ async function fixture(titleKind: "prompt" | "ai" | "custom" = "prompt") {
     (await sessions.list("claude-code", workspace)).sessions,
   );
   const id = store.sessions.id("claude-code", nativeId);
-  const makeOwner = () => {
-    const owner = new ClaudeManagedReadOwner(
-      store,
-      sessions,
-      commands,
-      root,
-      environment,
-      randomUUID(),
-    );
-    cleanups.push(() => owner.shutdown());
-    return owner;
-  };
   const owner = makeOwner();
   const send = async (target = owner, sessionId = id) => {
     await target.request({
@@ -158,6 +165,56 @@ async function fixture(titleKind: "prompt" | "ai" | "custom" = "prompt") {
 }
 
 describe.skipIf(process.platform === "win32")("Claude verified managed catalog metadata", () => {
+  it("lists managed sessions before the default Claude config exists and rejects a redirected location", async () => {
+    const { root, workspace, environment, frames } = createFakeClaude("agentkib-claude-catalog-");
+    const { makeOwner } = managedRuntime(root, workspace, {
+      ...environment,
+      CLAUDE_CONFIG_DIR: undefined,
+    });
+    const config = path.join(environment.HOME, ".claude");
+    const owner = makeOwner();
+    const created = await owner.request({
+      operation: "create",
+      workspaceId: "workspace",
+      requestId: randomUUID(),
+      deviceId: "browser-device-a",
+    });
+    expect(created).toMatchObject({ accepted: true, sessionId: expect.any(String) });
+    const { sessionId } = created as { sessionId: string };
+    const row = expect.objectContaining({ id: sessionId, executionMode: "claude-managed" });
+    expect(owner.catalog()).toEqual([row]);
+    expect(existsSync(config)).toBe(false);
+    expect(frames()).toEqual([]);
+
+    const redirected = path.join(root, "redirected-config");
+    symlinkSync(redirected, config);
+    expect(owner.catalog()).toEqual([]);
+    mkdirSync(redirected);
+    expect(owner.catalog()).toEqual([]);
+    rmSync(config);
+    mkdirSync(path.join(config, "projects"), { recursive: true });
+    expect(owner.catalog()).toEqual([row]);
+
+    const sent = await owner.request({
+      operation: "send",
+      sessionId,
+      requestId: randomUUID(),
+      deviceId: "browser-device-a",
+      runtimeBootId: owner.bootId,
+      expectedRevision: (await owner.live(sessionId, true)).revision,
+      experimentalEnabled: true,
+      text: "Keep the captured home after the first send",
+    });
+    expect(sent).toMatchObject({ accepted: true });
+    await expect.poll(async () => (await owner.live(sessionId, true)).status).toBe("idle");
+    expect(frames().filter((frame) => frame.type === "user")).toHaveLength(1);
+
+    rmSync(config, { recursive: true });
+    expect(owner.catalog()).toEqual([row]);
+    symlinkSync(redirected, config);
+    expect(owner.catalog()).toEqual([]);
+  });
+
   it.each(["prompt", "ai", "custom"] as const)(
     "preserves the native %s title through continuation, release and backend restart",
     async (kind) => {

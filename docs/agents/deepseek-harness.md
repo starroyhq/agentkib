@@ -1,67 +1,23 @@
-# DeepSeek Harness 接入方案
+# DeepSeek Harness 接入
 
-状态：一期与二期 2a–2d 已实施并合并（#199、#201、#204、#205）；三期（DSH 未运行时由 AgentKib 在后台启动）2026-11-12 实施，见 §7 三期。日期：2026-11-04；同日按 DSH、AgentKib 与 agentkib-flutter 源码复核修订，并按“完全接管”目标重排分期。
+DeepSeek Harness（DSH）的会话经 AgentKib 插件连接这台电脑上的 AgentKib。已核实的会话可在桌面、Web 和具备对应能力的手机 App 中发送、停止、排队以及处理审批和提问。会话仍由 DSH 执行。DSH 未运行时，可按设置在电脑后台启动后继续。各阶段的版本和验收记录见 §7。
 
-本文记录宿主机插件桥接、Remote 复用现有链路，以及后续 CLI 与 Desktop 共用实例的接入方向。文中的新命令、模块和协议字段均为建议，不代表当前已提供的功能。
+## 1. 会话和数据归属
 
-## 1. 目标与结论
+- DSH 负责模型调用、工具执行、原生权限、会话日志和写入所有权。
+- AgentKib 负责会话映射、设备授权、控制派发、回执和统一界面。DSH 插件调用原生会话服务，报告会话状态和当前可用的功能。
+- 安装插件会修改选定的 DSH profile，由用户在 DSH 中确认或执行。已获授权的发送、停止、作答和设置操作可改变原生会话。
+- 桌面、Web 和手机连接同一个逻辑主机。手机仍使用 AgentKib 远控协议，DSH 在电脑上运行。
 
-目标是让 AgentKib 完全接管 DeepSeek Harness（下文简称 DSH）的会话：在 Desktop、Web 和手机上完成 DSH 原生界面对会话能做的全部操作，包括作答审批和问答；DSH 未运行时由 AgentKib 启动它继续。DSH 原生界面保留可用，两边看到同一状态，交互请求先答者生效。
+当前支持范围见[功能说明](../FEATURES.md)、[实时会话](../sessions/conversations.md)和[会话互通](../sessions/interoperability.md)。
 
-实现方式是在用户电脑上运行的 DSH 中安装 AgentKib 插件。插件连接本机的 AgentKib Host，将原生会话的历史、状态、交互和控制能力接入 AgentKib。Desktop、Web 和 Remote 操作同一逻辑 Host，手机继续使用 AgentKib 的远控协议。
+## 2. 会话入口
 
-建议采用以下分工：
+[DSH 会话 Provider](../../packages/backend/src/agents/dsh/session-provider.ts)接入[公共会话注册](../../packages/backend/src/sessions/providers.ts)，由 [DSH Bridge](../../packages/backend/src/agents/dsh/dsh-bridge.ts)与原生会话服务交互。会话历史可经[历史读取](../../packages/backend/src/agents/dsh/history-reader.ts)和[本机会话文件读取](../../packages/backend/src/agents/dsh/dsh-local-history.ts)只读获取。后台进程生命周期由[托管运行时](../../packages/backend/src/agents/dsh/dsh-managed-runtime.ts)管理。
 
-- DSH 继续负责模型调用、工具执行、原生权限、会话日志和写入所有权。
-- AgentKib Host 负责会话映射、统一事件投影、设备授权、控制调度和持久回执。
-- DSH 插件负责原生能力适配，优先调用 DSH 自带的会话服务，通过本机 Bridge 与 Host 双向通信。
-- Bridge 在 Claude 原会话连接已有的本机发现、私有 socket、绑定和 lease 机制上扩展为多来源，不另建一套连接库。
-- Remote 不在手机上安装或运行 DSH，不直接连接 DSH Web API，也不引入 DSH Remote 的账号和网络通道；需要启动 DSH 时由宿主机完成（三期）。
+[Provider 能力声明](../../packages/runtime-protocol/src/session-providers.ts)描述 DSH 的桥接方式、待发操作、命令来源和活动类型。实际可操作范围由本次连接、插件报告的功能、会话状态及设备授权一起决定。
 
-一期保留当前 Desktop 对 Host 的承载方式。Desktop 在运行或托盘常驻时，插件和 Remote 均连接这个实例。CLI 接入与独立无界面 Host 作为后续演进，不与基本 DSH 接入绑定实施。
-
-分期概览（详见 §7）：
-
-| 阶段 | 交付                                                                                | 完成后用户能做什么                                              |
-| ---- | ----------------------------------------------------------------------------------- | --------------------------------------------------------------- |
-| 一期 | Bridge、插件、会话接入、发送与队列、停止、审批与问答作答、在运行中的 DSH 内恢复会话 | DSH 开着时，在任何设备上继续任意 DSH 会话，不会卡在审批或问答上 |
-| 二期 | 模型与 preset、附件、重命名、分叉、归档、目标、新建会话、子代理、跨 Agent 交接      | 会话管理与设置和 DSH 原生界面对齐                               |
-| 三期 | DSH 未运行时由 AgentKib 启动并托管                                                  | 不需要先打开 DSH                                                |
-| 四期 | 独立常驻 Host 与 CLI 接入                                                           | Desktop 关闭后仍可远控                                          |
-
-一期平台限定 macOS，控制限定 DSH 的 web 与 desktop profile。分期理由：一期先打通“继续会话”的完整闭环，审批和问答必须在一期作答，否则 DSH 界面没打开时会话会一直停在等待中；二期补齐会话管理；三期去掉“必须先打开 DSH”的前提；四期解决 Desktop 退出后的远控。
-
-### 1.1 产品边界变更（2026-11-04 已确认）
-
-现有文档承诺 DSH 是只读 Beta：[功能说明](../FEATURES.md)写明 DSH “is never written to”，[会话互操作说明](../sessions/interoperability.md)写明 DSH “不参与新增续接或原生写入”。2026-11-04 确认需要完全接管，接受以下变更：
-
-- 安装插件会写入用户的 DSH profile，包括 `package.json`、锁文件和组合包列表。
-- 发送、停止、作答审批和问答、修改会话设置等操作会写入原生会话。
-- 三期由 AgentKib 启动和停止 DSH 进程。
-
-一期上线时同步更新上述两份文档和支持矩阵（一期工作树已更新，另含[实时会话](../sessions/conversations.md)与[界面术语](../development/ui-terminology.md)）。插件安装沿用 Claude 原会话连接的做法：AgentKib 只提供插件包、命令和说明，由用户自行执行，不自动修改 DSH profile。
-
-## 2. 当前代码事实
-
-| 范围              | 已核对的现状                                                                                                                                               | 对方案的影响                                                                                          |
-| ----------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
-| AgentKib CLI      | 只提供 scan、context、plan、validate、manifest；每次启动独立 backend 和临时数据目录，退出后清理；只是仓库脚本 `pnpm agentkib`，不随桌面安装包分发          | 不能直接复用作共享实例入口；作为用户入口需先解决分发，四期再评估                                      |
-| Desktop Host      | Electron main 组合 runtime、ConversationHub、WebAccessService、账号及 Relay                                                                                | 一期可以继续由现有桌面进程组合承载                                                                    |
-| 现有会话客户端    | Desktop IPC 与远程 HTTP／SSE 已共用会话服务、控制栅栏和回执路径；`/managed/*` 管理接口只接受 Codex、Claude Code                                            | DSH 应接入这套服务，不另外开放手机专用控制链路；接口需改为按来源能力路由（§8.1）                      |
-| Claude 原会话连接 | 已有插件、0600 发现文件（每次 Runtime 启动更换密钥）、私有 Unix socket、持久绑定、在线 lease、事件同步和控制账本；仅 macOS；审批和问答仍在终端处理         | Bridge 在此基础上扩展为多来源，平台与其对齐；DSH 需要作答审批和问答，超出其交互范围，按 §5.4 单独设计 |
-| DSH 支持范围      | 当前仅发现、上下文及部分只读诊断；产品文档承诺只读、不写入                                                                                                 | 需要新增 provider、能力投影和各端接线；产品边界变更已确认（§1.1）                                     |
-| 各端会话状态      | Web 对 `codex-follower` 单独显示已连接；agentkib-flutter 把 `executionLocation: external` 一律视为被占用，并在多处写死只有 Codex、Claude Code 可用高级控制 | 需要不分来源的跟随状态和按 Host 能力的控制判断（§8.1）                                                |
-| DSH 扩展          | Cordis 插件可访问原生 Agent、会话查询、生命周期事件和交互 waterfall                                                                                        | 已运行会话可通过进程内插件接入，无需为此启动第二个 SDK／ACP 进程                                      |
-| DSH 会话服务      | web-app 组合包提供 `sessionController`：`prompt` 按 requestId 去重并把它记在消息上，统一处理附件准入、冷会话恢复和写入占用；`cancel` 保留待发队列          | 插件优先调用该服务，不直接调用 Agent 底层方法（§4.1）                                                 |
-| DSH 交互转发      | DSH 自身界面经 `api-remotes` 挂在同一 waterfall 上；没有在线客户端时请求挂起等待；`next()` 不能改写下游请求                                                | 直接调用 `next()` 无法与原生界面共存作答，需按 §5.4 重新派发                                          |
-| DSH 插件安装      | 插件以组合包形式安装到具体 profile；`dsh plugin add` 后须重启 profile 才生效；DSH Desktop 与 npm CLI 共享会话数据                                          | 首次接入需重启 DSH；同一会话可能出现在多个 DSH 进程中（§3.3、§5.1）                                   |
-| DSH 启动参数      | `dsh --profile web --no-open --port 0 --host <本机地址>` 可不打开浏览器、在系统分配的端口上启动 web runtime                                                | 三期托管启动的基础（§4.2）                                                                            |
-
-DSH 源码核对基线为本机 `/tmp/deepseek-harness`，commit `8bd073392eef6f54e921a093b95076248eb08cbb`，CLI 版本 `0.2.2-alpha.3`。公开 API 处于预稳定阶段，正式实施需明确支持版本、profile 和能力范围；本文不宣称已完成运行验证。
-
-AgentKib 按 `main`（`cd391c228`，v0.26.0）复核；agentkib-flutter 按 `main`（`2c14526`）核对。
-
-## 3. 目标架构
+## 3. 接入架构
 
 ```mermaid
 flowchart LR
@@ -95,15 +51,15 @@ Host 表示一个逻辑实例，不要求所有模块处于同一个操作系统
 
 Bridge 沿用 Claude 原会话连接的机制：只允许当前用户读写的发现文件、每次 Runtime 启动更换的密钥、私有 Unix socket、控制账本与回执。DSH 插件运行在 DSH 的 Node 进程内，可以直接连接 Host，不需要外部转发进程。
 
-实施时（2026-11-04）没有把 1800 多行的 Claude Bridge 改造成多来源，而是新建 `packages/backend/src/dsh-bridge.ts`，复用同一套做法和账本函数，使用自己的 socket（`/tmp/akdsh-<uid>-<hash>/b.sock`）和发现文件（`<AgentKib home>/dsh-bridge/discovery-v1.json`），以免为接入 DSH 改动已验收的 Claude 连接。两者共有的路径与文件工具函数以后可以抽出共用。DSH 是一个进程服务多个会话，所以注册以运行实例为单位，不做逐会话配对；会话归属由 Host 按登记工作区判断。
+DSH Bridge 使用自己的 socket（`/tmp/akdsh-<uid>-<hash>/b.sock`）和发现文件（`<AgentKib home>/dsh-bridge/discovery-v1.json`）。DSH 的一个进程可以同时服务多个会话，所以插件按运行实例注册。AgentKib 按登记工作区核对会话归属。
 
-CLI 接入（包括曾提议的 `agentkib bridge --stdio` 长期转发器）不纳入前三期：当前 CLI 只是仓库脚本，没有随桌面安装包分发，DSH 接入也没有依赖它的使用场景。四期引入独立 Host 时再评估 CLI 作为管理连接入口；届时 CLI 的管理连接与插件的 provider 注册使用不同身份和权限，共享连接实现不代表共享凭据或全部操作权限。
+桌面应用承载连接服务，仓库中的 `pnpm agentkib` 脚本用于开发和诊断。
 
 ### 3.3 唯一实例、本机发现与插件安装
 
-一期新增入口连接当前 Desktop Host，不启动第二个 backend，不通过同时打开同一数据库来实现“共用实例”。找不到目标 Host 时返回离线状态；是否显式启动 Desktop，留给具体入口设计。
+插件连接正在运行的 AgentKib 桌面主机。找不到目标实例时显示离线。
 
-本机连接应具备版本握手、指定实例发现、认证和方法白名单。一期限定 macOS，与 Claude 原会话连接一致；Windows named pipe 留到后续评估。发现信息和凭据限制在当前用户范围。正式版与开发版实例必须区分：现有 Claude 插件按 `AGENTKIB_HOME`、`~/.agentkib`、`~/.agentkib-dev` 列出全部发现文件并逐个尝试，由已登记该工作区、已索引该会话的实例接受连接，不按“找到第一个发现文件”选择目标；DSH 沿用这一规则。
+本机连接有版本核对、指定实例发现、认证和可调用方法范围。插件连接支持 macOS。发现信息和凭据限制在当前用户范围。正式版与开发版实例必须区分：现有 Claude 插件按 `AGENTKIB_HOME`、`~/.agentkib`、`~/.agentkib-dev` 列出全部发现文件并逐个尝试，由已登记该工作区、已索引该会话的实例接受连接，不按“找到第一个发现文件”选择目标；DSH 沿用这一规则。
 
 插件安装与生效：
 
@@ -115,7 +71,7 @@ CLI 接入（包括曾提议的 `agentkib bridge --stdio` 长期转发器）不�
 
 插件与 Host 的版本兼容（2026-11-09）：
 
-- Host 不再要求插件与自己同版本。同一桥接协议（现为 1）内，Host 接受不低于 `minimumPluginVersion`（0.5.0；DSH 接入尚未随正式版发布，更早的插件只在开发构建中出现过）的任何插件，比自己新的也接受；协议不同时拒绝（`dsh-bridge-protocol-unsupported`），插件低于最低版本时拒绝（`dsh-bridge-plugin-update-required`）。最低版本只在需要停用某个不能再连接的插件时提高。
+- Host 不再要求插件与自己同版本。同一桥接协议（现为 1）内，Host 接受不低于 `minimumPluginVersion`（0.5.0）的任何插件，比自己新的也接受；协议不同时拒绝（`dsh-bridge-protocol-unsupported`），插件低于最低版本时拒绝（`dsh-bridge-plugin-update-required`）。最低版本只在需要停用某个不能再连接的插件时提高。
 - 两边只用共有的功能：插件在 `services` 里报告它提供的每项能力，没有报告的保持关闭，Host 不向它发送这项能力的命令或字段。会改变执行结果的新字段（例如新建会话的 `agentPreset`、消息里的图片）同样只在对方报告支持时才发，不依赖旧插件“忽略不认识的字段”，因为旧插件会照常执行、只是丢掉这个字段。插件收到不认识的命令回 `unknown-command`。
 - 因此 AgentKib 升级后，运行中的 DSH 不必立刻重启：旧插件保持连接，继续使用它已有的能力；重启 DSH 加载新插件后，新能力才打开。正式版与开发版的 AgentKib 也可以同时连接同一个插件。
 - 修改协议时，新插件保持旧 Host 认得的消息：只新增字段（Host 解析时丢弃不认识的字段），不超出 Host 检查的长度上限，不发送旧 Host 不认识的枚举值、记录种类或待答类型；Host 以后需要接收这些时，在注册回复里说明，插件据此决定，回复里没有说明的 Host 按 0.5.0 的消息对待。Host 的新字段一律可选，不能要求旧插件提供。做不到时才升协议版本。
@@ -156,9 +112,9 @@ CLI 接入（包括曾提议的 `agentkib bridge --stdio` 长期转发器）不�
 
 借用的 live Agent 不归插件销毁。经 `sessionController` 恢复的 Agent 同样由 DSH 管理，存续不绑定手机页面或网络连接。
 
-整个 DSH 进程已退出时，插件也不存在，单靠 Bridge 重连不能继续；需要启动正确版本、profile 和数据目录的 DSH 并等待插件注册，这是三期的内容。没有 DSH 进程时浏览历史同样需要 runtime，是否为只读浏览启动 DSH 或改用官方只读 codec，见 §9。
+整个 DSH 进程已退出时，继续执行需要可用的 DSH 运行实例。浏览历史优先用已连接的原生服务，也可在断线时用本次缓存或只读分页的 DSH v4 会话文件。浏览本身不启动 DSH。
 
-一期在没有 DSH 进程时的行为：会话仍按“有历史内容”列出，不归入“无历史内容”，实时状态为仅查看并说明 DSH 未运行。打开会话时显示本次 AgentKib 运行中已经读过的历史（只在内存中保留，不落盘）；没读过的显示为空，更早的分页不会伪造。插件的轮询连接断开后约 3 秒没有重新轮询，即判定该 runtime 离线，不必等 45 秒心跳超时。DSH 重新连接后，用离线结果展示过的会话会自动重新读取历史。插件每 2 秒检查一次发现文件，AgentKib 重启后通常 1 秒内重新连上。
+一期验收时，在没有 DSH 进程时：会话仍按“有历史内容”列出，不归入“无历史内容”，实时状态为仅查看并说明 DSH 未运行。打开会话时显示本次 AgentKib 运行中已经读过的历史（只在内存中保留，不落盘）；没读过的显示为空，更早的分页不会伪造。插件的轮询连接断开后约 3 秒没有重新轮询，即判定该 runtime 离线，不必等 45 秒心跳超时。DSH 重新连接后，用离线结果展示过的会话会自动重新读取历史。插件每 2 秒检查一次发现文件，AgentKib 重启后通常 1 秒内重新连上。
 
 ### 4.3 完整接管的能力对照
 
@@ -192,9 +148,9 @@ Codex／Claude 与 DSH 相互交接时，由宿主机生成统一会话文档、
 
 本次核对未发现 DSH 提供通用的外部会话或 ZIP 导入入口。首选方向是创建新的目标会话并提交经审查的交接上下文，不承诺完整原生历史导入。DSH 内部 fork 和同 ID resume 不能代替跨 Agent 格式转换。
 
-## 5. Bridge 最小协议职责
+## 5. Bridge 协议
 
-以下是职责与字段建议，正式实现前需确定类型、版本和错误语义。
+此节保留接入时的协议职责和验证背景。实际消息类型与可选字段见 [DSH Bridge 协议](../../packages/runtime-protocol/src/dsh-bridge.ts)。
 
 | 消息类别       | 职责                                                          |
 | -------------- | ------------------------------------------------------------- |
@@ -290,6 +246,8 @@ DSH 的审批和问答经 `approval/request`、`user-questions/request` waterfal
 
 ## 7. 分期实施与验收
 
+以下为各阶段的实施和验收记录。界面入口与当前代码路径见 §8。
+
 ### 一期：接入运行中的 DSH，打通会话接管闭环
 
 1. 技术验证（开工第一步）：§5.4 的重新派发，以及插件经 Bridge 注册、进程内调用 `sessionController` 的可行性。结论决定交互采用先答者生效还是按会话独占。
@@ -357,14 +315,14 @@ DSH 的审批和问答经 `approval/request`、`user-questions/request` waterfal
 
 - 插件升到 0.4.0，按 DSH 提供的服务分别报告 `goals`、`commands`、`permissions`、`subagents`，缺少哪项就关闭哪项。安装版 DSH 已自动升到 0.2.2-rc.1，所用接口在该版本上逐项复核过；它不在已验证清单里，照常连接，不常驻显示未验证提示（各 Agent 一致），DSH 缺少的功能在用到时说明原因。
 - 斜杠命令照 DSH 自己窗口的做法：消息开头是会话 Agent 的命令（小写名，后接空白或结束）时，插件用 `commands.execute` 运行它，不交给模型，运行中也可以；其他行（如 `/private/tmp …`）照常作为消息发送。0.2.2-rc.1 的全局命令只有 export、feedback、permission，`/compact`、`/goal`、`/plan` 只在运行中 Agent 自己的命令表里，所以由插件按会话的 Agent 判断（`commands.find`）。插件上报全局命令和每个运行中 Agent 的命令表，Host 给会话自己的那份；会话未运行时给全局命令加上其他运行中 Agent 的命令，发送时 DSH 会先恢复该会话。命令与 DSH 的回答写进历史，显示为用户消息和命令输出；切换权限 preset 的 `/permission` 与 DSH 自己的窗口一样不显示（DSH 聊天界面的可见性规则），preset 只显示在执行策略里，失败的切换保留，原因只在那里能看到。插件最多等命令 2 秒：DSH 自己的命令毫秒级完成，压缩要调模型，之后在后台继续；Host 在控制进行中不回答任何读取，等得久会让各端一直重试。
-- 哪些命令替用户运行、对哪台设备运行，是插件与各端 `/` 菜单共用的一份规则（`dsh-bridge-plugin/commands.js`）：`/export` 在 DSH 窗口里下载文件，不替用户运行（`dsh-command-window-only`）；带附件的命令不运行（`dsh-command-attachments`）；`/compact`、`/plan`、`/feedback` 只作用于本会话，能发送的设备都可用；`/goal`、`/permission` 和其他插件加的命令与 AgentKib 的目标、设置控件一样要求完整访问的设备（`dsh-command-full-access`）。设备是否有完整访问只有 Host 知道，Host 随消息带上 `commandAccess`。命令已不在 DSH 中为 `dsh-command-unavailable`，DSH 运行失败为 `dsh-command-failed`。
+- 哪些命令替用户运行、对哪台设备运行，是插件与各端 `/` 菜单共用的一份规则（[DSH 插件命令规则](../../packages/dsh-bridge-plugin/commands.js)）：`/export` 在 DSH 窗口里下载文件，不替用户运行（`dsh-command-window-only`）；带附件的命令不运行（`dsh-command-attachments`）；`/compact`、`/plan`、`/feedback` 只作用于本会话，能发送的设备都可用；`/goal`、`/permission` 和其他插件加的命令与 AgentKib 的目标、设置控件一样要求完整访问的设备（`dsh-command-full-access`）。设备是否有完整访问只有 Host 知道，Host 随消息带上 `commandAccess`。命令已不在 DSH 中为 `dsh-command-unavailable`，DSH 运行失败为 `dsh-command-failed`。
 - 目标：读取和修改走 `goals`，修改带上目标 ID 与 revision，期间在 DSH 窗口改过则按 `goal-changed` 未执行。“开始目标”在没有目标或目标已完成时新建，否则编辑现有目标；暂停、恢复、清除对应原生动作。DSH 按轮次（默认 256）限制目标，不支持 token 预算：各端显示已开始的轮次，不显示预算输入（带预算为 `goal-token-budget-unavailable`），轮次用完不能恢复（`goal-rounds-exhausted`）。目标是否由 DSH 自动继续（activation）只在当前 DSH 进程内有效，DSH 恢复会话时目标不自动继续，AgentKib 把这种状态显示为已暂停，恢复后继续。会话未运行时从 `goal` 投影读取，不恢复会话。
 - 压缩：`/compact` 与 Web 的压缩按钮都运行 DSH 的 `/compact`（按钮要求会话空闲）。压缩期间 DSH 的 Agent 仍报告 `idle`，插件按 `compaction/start`、`compaction/end` 事件上报 `activity: "compacting"`，各端显示正在压缩。
 - 权限 preset 即各端的“执行策略”：选项来自 `permissionPresets.catalog`，当前值读 `permissions` 投影，切换运行 `/permission <preset>`。DSH 原生命令会影响正在运行的轮次。AgentKib 的执行策略、模型和推理强度设置在空闲时开放。
 - 计划模式按 Codex 的协作模式报告与切换：插件读 `plan` 投影，选中状态为 `pending ? !active : active`，与 DSH 输入框的计划标识一致；切换运行 DSH 自己的 `/plan`、`/plan off`，单独进行。DSH 会在下一步应用，AgentKib 在空闲时开放这个设置入口。桌面和 Web 的输入框与 Codex、Claude 一样识别 `/plan` 并显示可点击退出的“计划”标识，设置对话框也有模式选择。
-- 子代理只读浏览：插件读 `subagentCatalog` 与 `subagentTiming` 投影，每个会话最多 50 个直接子代理；子会话 ID 在 Host 用本次运行的随机盐做 HMAC，不暴露 DSH 原始 ID。手机经现有的子代理接口浏览，Desktop 与 Web 暂无子代理视图。
+- 子代理只读浏览：插件读 `subagentCatalog` 与 `subagentTiming` 投影，每个会话最多 50 个直接子代理；子会话 ID 在 Host 用本次运行的随机盐做 HMAC，不暴露 DSH 原始 ID。二期验收时子代理可在手机浏览。现在桌面和 Web 也可在主会话活动区打开可读的子代理历史。
 - 控制所依据的 revision 也随目标（ID、revision、activation）和压缩状态变化；目标操作结果未知时按目标状态核对：清除看目标是否消失，暂停看是否暂停，恢复看是否在继续，开始看 revision 是否变化。
-- 模型与推理强度：桌面端与 Codex、Claude 一样在输入框里切换（#200 的选择器），与 DSH 自己窗口的模型菜单一致：模型按提供方分组（DSH 后端给每个模型带上提供方名称），推理强度只列该模型支持的等级；未选强度即 DSH 的 Default，显示为“默认 · 该模型的默认强度”，换模型时仍跟随新模型的默认。DSH 没有服务档位，不显示 Fast。Web 与手机仍在设置中切换（Codex 也是）。
+- 模型与推理强度：桌面端与 Codex、Claude 一样在输入框里切换（#200 的选择器），与 DSH 自己窗口的模型菜单一致：模型按提供方分组（DSH 后端给每个模型带上提供方名称），推理强度只列该模型支持的等级；未选强度即 DSH 的 Default，显示为“默认 · 该模型的默认强度”，换模型时仍跟随新模型的默认。DSH 没有服务档位，不显示 Fast。当前桌面和 Web 共用会话输入区的模型控件（见 §8.1）。
 - Agent preset 的切换未纳入 2c（AgentKib 尚无对应概念），与 2d 一起评估（见 2d 实现）。
 
 2d 实现（2026-11-08）：
@@ -428,81 +386,31 @@ DSH 会话可以作 Worker，也可以作项目 Agent，行为见[项目 Agent](
 
 ### 四期：独立常驻 Host 与 CLI 接入
 
-确需 Desktop 关闭后仍可远控时，新增独立 `agentkib serve` 服务，让 Desktop 和 CLI 都 attach。CLI 的分发方式、管理连接身份与权限在此阶段一并确定。
+现有会话连接由 AgentKib 桌面进程承载。真正退出桌面应用时远控服务停止。
 
-需要抽离的是 Host 组装、唯一实例所有权、启动与退出管理，并适配 Electron utility transport、凭据安全存储、登录浏览器、资源路径及系统电源事件。现有 backend、会话服务和 Relay 逻辑可评估复用，不应简单启动另一个 backend 并共享数据文件。
+## 8. 当前代码结构
 
-## 8. 项目影响范围
+- [公共会话注册](../../packages/backend/src/sessions/providers.ts)组装执行 Provider 和只读入口，[主机会话接口](../../apps/desktop/electron/main/web/service.ts)负责设备和工作区授权。会话请求统一走 `session.request` 到后端，再转给 DSH Provider。
+- [DSH 插件](../../packages/dsh-bridge-plugin/index.js)对接原生服务。[DSH Bridge](../../packages/backend/src/agents/dsh/dsh-bridge.ts)处理本机连接、能力协商与会话状态投影。公开 HTTP 与插件仍各用自己的协议。
+- 桌面和 Web 复用 [会话组件](../../packages/session-ui/src/conversation/sessions)及 [DSH 专属连接面板](../../packages/session-ui/src/agents/deepseek-harness/dsh-bridge-panel.tsx)。手机通过远程会话 API 使用主机授权的能力。
 
-| 项目                          | 预计改动                                                                                                                                                                                                     |
-| ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| agentkib                      | Bridge 多来源扩展、DSH 插件（组合包，含审批与问答的重新派发）、会话 provider、控制与事件投影、远程接口改为按来源能力路由、Desktop／Web 通用跟随状态与 DSH 交互卡片、三期托管启动、产品文档边界更新及回归测试 |
-| agentkib-flutter              | DSH 身份与图标已具备，协议模型基本通用；需要通用跟随状态（同时修正 Codex 跟随）、按 Host 能力判断控制、DSH 审批与问答卡片、四语文案及基于 Web 合成 fixture 的回归测试；不增加 DSH runtime                    |
-| agentkib-backend              | 现有账号和中继链路原则上复用；只有发现实际协议需求时再调整                                                                                                                                                   |
-| agentkib-website              | 功能完成并验收后再同步支持范围与使用说明                                                                                                                                                                     |
-| flutter-adaptive-liquid-glass | 当前方案没有直接改动需求                                                                                                                                                                                     |
+### 8.1 各端的会话控件
 
-新增生产依赖、安装用户 profile 插件、持久化迁移和发布行为需按实际实施范围处理；本文不执行这些操作，也不修改现有支持矩阵为“已支持”。
+桌面和 Web 在输入框附近显示待发消息。当前可以按所获能力编辑纯文本、删除消息或加入本轮。带附件的待发消息不可编辑。模型、推理强度和执行策略使用输入区的设置控件。对已登记的设置，实时状态或授权暂不允许操作时保留控件位置，置灰并提供悬停原因。DSH Desktop 插件安装和后台启动设置在桌面专属面板中。
 
-### 8.1 各端现状与改动要点
+插件和当前会话支持时，桌面和 Web 的[会话活动](../../packages/session-ui/src/session-activities.tsx)展示已报告的子代理，可打开可读的子代理历史。手机沿用原有子代理入口。
 
-Host 远程接口（`apps/desktop/electron/main/web/service.ts`）：
+## 9. 当前支持边界
 
-- `/managed/*` 管理接口与 `/managed/options` 只接受 `codex`、`claude-code`，`/managed/capabilities`、`/managed/inspect` 只接受 `claude-code`，其他来源返回 `invalid_agent`；`/managed/action` 按执行模式放行，只认 Codex 与 Claude 托管、Claude 终端连接，以及 Codex 跟随下的 fork。DSH 接入时改为按来源能力路由，不在每处追加 Agent 名称或执行模式。
-
-Desktop／Web 界面：
-
-- `session-display-state.ts` 对 `codex-follower` 单独处理，显示“在 Codex 中运行 · 已连接”。DSH 复用同一状态，改为按跟随状态和 Agent 名称显示，不再新增专用分支。
-- 跟随状态宜由 Host 显式下发，而不是由各端按 `executionMode` 名称推断；如需新增字段，先在共享客户端协议中定义，再同步到 Flutter。
-- 一期的审批与问答卡片需支持 DSH 的请求类型，以及“已在 DeepSeek Harness 中处理”的撤回状态。
-
-agentkib-flutter（按代码核对，未在真机确认）：
-
-- 状态条把 `executionLocation: "external"` 一律视为被占用，显示“正在 {agent} 中使用”和“完全退出 {agent} 后可在这里继续”（`lib/conversations/conversation_status.dart`）；唯一的已连接状态是终端。现有 Codex 跟随返回 `external` 且允许发送，手机会同时出现“退出后继续”和可用的发送按钮。需增加通用的“在 {agent} 中运行 · 已连接”状态，并同时修正 Codex 跟随。
-- 客户端 `_agent()` 对 Codex、Claude Code 以外的来源抛出 `unsupported_agent`，能力查询、托管操作和 inspect 都受影响；运行中发送、能力刷新和高级控制也按这两个来源判断（`packages/agentkib_client/lib/src/client.dart`、`lib/conversations/conversation_controller.dart`、`conversation_controls.dart`、`session_row_menu.dart`）。这与该仓库“能力判断均来自 Host”的约定不一致，改为读取 Host 下发的能力。
-- 一期要在手机上作答 DSH 的审批和问答：`approvalRenderable` 只认固定的几种 method，需加入 DSH 审批；问答卡片需覆盖单选、多选、自定义回答，以及 plan-review 和带 `approval` intent 的问题，持久授权沿用现有扩大授权确认。
-- `unsupportedReason` 没有在界面显示，手机只能给出通用说明。技术验证未通过、只能在 DSH 界面作答的类型，需显示 Host 提供的原因，例如“请在 DeepSeek Harness 中处理”；DSH 界面先答时，卡片按 Host 回执标为“已在 DeepSeek Harness 中处理”。
-- 普通发送、停止、回执和 DSH 身份图标已是通用实现，不需改动；子代理浏览仍限 Codex、Claude Code，二期接入 DSH 子代理时再放开。
-- 该仓库要求协议改动先有 AgentKib Web 客户端的合成 fixture，Flutter 排在 Host 和 Web 之后实施。
-
-一期实现（agentkib-flutter 工作树 `dsh-integration`，基于 `1269df2`，未提交；已在 Android 模拟器上对沙箱 Host 和真实 DSH 验收发送、运行中发送、停止、审批、问答和离线提示，iOS 与真机未验收，见[一期 QA](../../qa/dsh-integration-phase1-2026-11-04.md)）：
-
-- 客户端的受控来源加入 `deepseek-harness`。每个会话能做什么仍取自 Host 下发的能力；新增 `queue-steer` 操作及对应的待确认控制。本地保存待确认控制的 agent 名单必须同步包含新来源，否则读回记录时抛异常，会挡住该电脑上的所有控制；已加测试，要求客户端受控的每个 agent 都能写入并读回。
-- 跟随按 `executionMode` 判断（`codex-follower`、`dsh-follower`），没有新增 Host 字段，Desktop／Web 同样如此；以后再增加跟随来源时，改由 Host 显式下发。状态条显示“在 {agent} 中运行 · 已连接”，不再提示“完全退出后继续”；DSH 未运行、多个 DSH 进程、配置只能查看三种情况分别显示原因和下一步。
-- `dsh/approval`（允许一次、拒绝）和 `dsh/question` 可在手机上作答。只能在 DSH 中作答的请求显示“请在 {agent} 中处理这项请求”，DSH 先答后，已打开的作答框显示“已在 {agent} 中处理”。
-- Host 声明 `queue-steer` 时，待发队列面板每条显示“插入当前轮次”按钮（沿用手机现有的 steer 文案）。手机沿用原队列面板，没有改成输入框上方的待发条。
-- 合成 fixture `packages/agentkib_client/fixtures/dsh_follower.json` 按本工作树 Host 的实际投影整理，来源记入 `manifest.json`。
-
-## 9. 待实施时确定的问题
-
-- §5.4 技术验证的结论；采用按会话独占时的交出与归还入口，以及无人作答时的超时行为。
-- Claude Bridge 扩展为多来源时的协议版本与兼容方式，以及与现有 Claude 插件的升级顺序。
-- 插件随 AgentKib 分发的具体形式（本地 tarball 或 `link:`）、DSH Desktop 保留 profile 的安装入口，以及升级后的重启提示。
-- AgentKib 如何独立核验新 DSH 会话并纳入登记工作区，避免要求“先有索引才能注册”形成循环。
-- 多个 runtime 时默认 runtime 的设置位置与提示方式（§5.1）。
-- 三期托管启动：已定（2026-11-12），见 §7 三期。空闲 3 分钟停止；AgentKib 退出时一并停止并事先确认；叠加 Desktop 的设置；自动启动默认打开；没有 DSH 进程时打开会话即按需启动来读历史，不引入官方只读 codec。
-- 停止等没有原生请求 ID 的操作，在插件重启后能取得哪些回执证据。
-- 进程内调用不记录 `principal`，是否需要在 DSH 原生记录中区分来自 AgentKib 的消息，以及可行做法。
-- 一期验收的 DSH 版本范围，以及未验证版本和未验证能力的降级方式。
+只读浏览无需启动 DSH。控制需要已验证的插件连接，或后台启动后成功建立该连接。对无法核实执行结果的控制，保留回执待核对。DSH 的原生记录中，插件在进程内代发的消息仍显示为本人发送。
 
 ## 10. 源码依据与参考
 
-AgentKib 当前实现：
+AgentKib 当前实现及自动化入口：
 
-- [CLI 临时后端入口](../../apps/desktop/scripts/agentkib.mjs)
-- [Desktop Host 组装](../../apps/desktop/electron/main/index.ts)
-- [统一会话订阅](../../apps/desktop/electron/main/conversation-hub.ts)
-- [会话接口范围](../../apps/desktop/electron/main/web/conversation-transport.ts)
-- [Claude Bridge](../../packages/backend/src/claude-bridge.ts)、[Claude 插件发现与自动连接](../../packages/claude-bridge-plugin/hooks/register.js)与[原会话连接说明](claude-code-terminal.md)
-- [会话来源](../../packages/backend/src/session-readers.ts)与[共享客户端能力类型](../../packages/web-client/src/index.ts)
-- [远程会话接口](../../apps/desktop/electron/main/web/service.ts)与[Web 会话展示状态](../../apps/web/src/features/conversation/features/sessions/session-display-state.ts)
-- [功能说明](../FEATURES.md)与[会话互操作说明](../sessions/interoperability.md)中的 DSH 只读边界
-
-agentkib-flutter（`main`，`2c14526`）：
-
-- `lib/conversations/conversation_status.dart`：状态条与被占用判断
-- `lib/conversations/conversation_controller.dart`、`lib/conversations/conversation_controls.dart`：按来源判断的控制和审批渲染
-- `packages/agentkib_client/lib/src/client.dart`：`_agent()` 来源限制
+- [DSH 会话 Provider](../../packages/backend/src/agents/dsh/session-provider.ts)、[DSH Bridge](../../packages/backend/src/agents/dsh/dsh-bridge.ts)与[插件协议](../../packages/runtime-protocol/src/dsh-bridge.ts)
+- [共享客户端类型](../../packages/web-client/src/index.ts)与[会话显示状态](../../packages/session-ui/src/conversation/sessions/session-display-state.ts)
+- [会话基线](../../apps/desktop/test/session-baseline/dsh.test.ts)、[桥接测试](../../apps/desktop/test/dsh-bridge.test.ts)、[后台启动测试](../../apps/desktop/test/dsh-managed-runtime.test.ts)与[本机历史测试](../../apps/desktop/test/dsh-local-history.test.ts)
 
 DSH 核对基线：
 

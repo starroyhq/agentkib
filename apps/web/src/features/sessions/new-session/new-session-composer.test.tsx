@@ -14,6 +14,7 @@ import {
   composerAddCopy,
   composerGoalCopy,
   composerModelCopy,
+  newSessionCopy,
   planModeCopy,
   takeNewSessionDraft,
 } from "@agentkib/session-ui";
@@ -898,6 +899,39 @@ describe("Web NewSessionComposer", () => {
     expect(onCreated).not.toHaveBeenCalled();
     expect(sessionStorage.length).toBe(0);
   });
+
+  it.each([
+    { agent: "claude-code", takenInSession: false, keepsDraft: true },
+    { agent: "claude-code", takenInSession: true, keepsDraft: false },
+    { agent: "antigravity", takenInSession: false, keepsDraft: false },
+  ] as const)(
+    "shows the catalog failure for $agent and only keeps unsent draft text (taken: $takenInSession)",
+    async ({ agent, takenInSession, keepsDraft }) => {
+      const sessionId = `missing-${agent}-${takenInSession}`;
+      const prompt = "Update the parser";
+      localStorage.setItem(
+        "agentkib.newSession.target",
+        JSON.stringify({ workspaceId: "atlas", agent }),
+      );
+      const { client, onCreated } = setup({ created: sessionId });
+      onCreated.mockImplementation(async (id: string) => {
+        if (takenInSession) expect(takeNewSessionDraft(id)).toMatchObject({ text: prompt });
+        return "timed-out";
+      });
+      await write(prompt);
+      fireEvent.click(send());
+      expect(await screen.findByText(newSessionCopy("en-US").notListed)).toBeVisible();
+      expect(message()).toHaveValue(keepsDraft ? prompt : "");
+      expect(send()).toHaveProperty("disabled", !keepsDraft);
+      expect(client.managedAction).toHaveBeenCalledExactlyOnceWith(
+        "create",
+        agent === "antigravity"
+          ? expect.objectContaining({ agent, prompt })
+          : expect.not.objectContaining({ prompt }),
+      );
+      expect(takeNewSessionDraft(sessionId)).toBeUndefined();
+    },
+  );
 
   it("never sends again while a create's outcome is unknown, and opens what it made", async () => {
     const { client, onCreated } = setup();

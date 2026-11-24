@@ -1,9 +1,9 @@
 # Claude Code 桌面与 Web 托管执行
 
-已有终端可以使用独立的[连接终端插件](claude-code-terminal.md)，按固定版本及已验证能力开放，不启动第二个执行者。AgentKib 后台续接与已连接终端自动按实际归属选择，用户不需要勾选交接。两种模式的发送、审批、附件及高级控制能力分别显示，不能互相外推。
+已有终端可以使用独立的[连接终端插件](claude-code-terminal.md)，按最低版本与已验证能力开放，同一会话只保留一个执行者。AgentKib 后台续接与已连接终端自动按实际归属选择，用户不需要勾选交接。两种模式的发送、审批、附件及高级控制能力分别显示，不能互相外推。
 
-桌面与 Web 的 Claude 控制共用一个 Runtime 执行服务，使用本机 Claude CLI 的原生 `stream-json` 协议，而不是 Codex bridge。
-历史目录仍由现有 Claude provider 发现。可以准备新会话，也可以直接发送以续接有可验证 UUID、工作目录及主会话记录的空闲会话。每次启动及回收后重启都检查外部占用，不以用户确认代替内部校验。创建只预留会话身份，不提交模型消息；模型与设置发现可初始化原生 CLI，但不发送用户轮次。
+桌面与 Web 共用会话界面。主机准入后经 `session.request` 交给 [Claude Code 的 SessionProvider](../../packages/backend/src/agents/claude/session-provider.ts)，托管执行使用本机 Claude CLI 的原生 `stream-json` 协议。原有 HTTP 路径保持兼容，旧的 `claude.managed` 由后端适配。
+历史由 [Claude Code 的历史读取器](../../packages/backend/src/agents/claude/history-reader.ts)读取。可以准备新会话，也可以直接发送以续接有可验证 UUID、工作目录及主会话记录的空闲会话。每次启动及回收后重启都检查外部占用，不以用户确认代替内部校验。创建只预留会话身份，不提交模型消息；模型与设置发现可初始化原生 CLI，但不发送用户轮次。
 
 旧会话不再经过独立的接管操作或回执。发送请求内验证原生身份、记录执行信息并按需启动进程，继续使用原发送请求 ID；打开会话和没有运行进程时修改设置都不恢复目标原生会话。设置先保存在宿主，模型目录通过隔离的临时进程读取；首次发送再应用所选设置。权限、操作锁、外部占用和消息回执校验保留，初始化失败不会自动重发。
 
@@ -11,7 +11,7 @@
 
 未连接的旧会话从已验证日志读取最近主会话的模型和上下文用量。状态读取查看末尾最多 128 KiB，设置和用量查询可查找末尾最多 2 MiB，结果按日志版本缓存。历史模型只用于展示。用量取最近 API 输入、缓存读取与缓存写入之和，压缩后使用新报告。只有同一模型的原生报告给出窗口容量时才显示比例，缺少容量时只显示实际 Token 数。
 
-桌面跨 Agent 会话导入是另一条经过预览、确认和目标回读的流程，详见[互通兼容矩阵](../sessions/interoperability.md)。新增来源或原生导入适配不自动获得 Web 发送、审批或托管权限；本轮不扩展其他 Agent 的 Web 控制。
+桌面跨 Agent 会话导入是另一条经过预览、确认和目标回读的流程，详见[互通兼容矩阵](../sessions/interoperability.md)。发送、审批和托管能力由相应会话的能力与设备授权决定。
 
 ## 使用与边界
 
@@ -116,11 +116,11 @@ macOS 上、Claude Code `2.1.299` 或更新版本时，托管会话默认允许�
 - **显示。** 输入区上方显示“后台运行中：<描述>”或“N 个后台任务运行中”；会话列表在没有轮次运行时显示同样的标记，目录在后台任务数变化时刷新。CLI 在会话文件里把通知记为 `origin.kind: "task-notification"` 的用户行，AgentKib 读历史时把它显示为 CLI 的一行说明（`<summary>`，Monitor 事件另附 `<event>`），不当作用户发的消息；在终端里跑过后台任务的会话同样如此。
 - **重启后的空结果。** 进程在后台命令还在运行时被结束后，下次启动同一会话，CLI 会先发这个命令 `stopped` 的通知和一个空的 `result`（`num_turns: 0`），只在第一次重启时出现，三个版本都有，关闭后台任务时也有。以前这个空结果会被当成刚发出的这一轮的结果，下一帧随即被判为轮次外内容，会话进入“结果待核对”；现在无论是否允许后台任务都忽略并计数。CLI 会在下一轮自己把命令被停止的事告诉模型。
 
-帧的形态用本地模型桩和沙箱里的真实 CLI（2.1.263、2.1.299、2.1.322）核对，13 份帧记录在 `apps/desktop/test/fixtures/claude-background/`，由 `claude-background-turns.test.ts` 回放；真实 CLI（2.1.299、2.1.322、2.1.323）在 AgentKib 的进程管理下的验收见 `claude-background-native.test.ts`（设 `AGENTKIB_CLAUDE_BACKGROUND_NATIVE=1` 才运行）。详情见 `qa/claude-background-tasks-probe-2026-11-13.md`。没有用真实模型验收。2026-11-14 补测：CLI 自己开始的一轮里提问并回答（2.1.263、2.1.299、2.1.301、2.1.323），两个 Monitor 并发约 20 秒、期间不被回收（2.1.323，更早的版本没有 Monitor），在 CLI 开始自己一轮的同一刻发送（四个版本），`/loop` 与持久定时任务（2.1.323）。后台子代理在空闲时请求审批、几小时的长会话还没有核对；Windows 上不允许后台任务。
+帧的形态用本地模型桩和沙箱里的真实 CLI（2.1.263、2.1.299、2.1.322）核对，13 份帧记录在 `apps/desktop/test/fixtures/claude-background/`，由 [后台任务回放测试](../../apps/desktop/test/claude-background-turns.test.ts)覆盖；真实 CLI（2.1.299、2.1.322、2.1.323）在 AgentKib 的进程管理下的验收见 [CLI 后台任务验收](../../apps/desktop/test/claude-background-native.test.ts)（设 `AGENTKIB_CLAUDE_BACKGROUND_NATIVE=1` 才运行）。详情见 `qa/claude-background-tasks-probe-2026-11-13.md`。没有用真实模型验收。2026-11-14 补测：CLI 自己开始的一轮里提问并回答（2.1.263、2.1.299、2.1.301、2.1.323），两个 Monitor 并发约 20 秒、期间不被回收（2.1.323，更早的版本没有 Monitor），在 CLI 开始自己一轮的同一刻发送（四个版本），`/loop` 与持久定时任务（2.1.323）。后台子代理在空闲时请求审批、几小时的长会话还没有核对；Windows 上不允许后台任务。
 
 ## 高级操作与产品语义
 
-下列功能复用桌面/Web 会话面板。控件以主机返回的 capabilities 为准；不满足版本、平台、传输、归属、设备权限或会话状态时禁用，不因界面出现入口而承诺可执行。
+下列功能复用桌面和 Web 的会话面板。模型和权限等入口按 Provider 的声明显示，再由主机返回的实时能力、版本、平台和设备授权决定能否使用。暂不可用时置灰，原因显示在控件的悬停提示。
 
 | 操作 | Claude / AgentKib 的行为 |
 | --- | --- |
@@ -170,11 +170,11 @@ macOS 上、Claude Code `2.1.299` 或更新版本时，托管会话默认允许�
 
 capabilities 附带 CLI 在 initialize 时报告的命令目录（含 `builtin`、`aliases`），没有进程时用上次确认的目录，不为读取目录启动进程；不能发送的设备拿不到目录。输入 `/` 时列出这台设备能用的命令：后台命令、`/clear` 和内部命令不列出，远程设备也不列出只能在本机使用的命令，并去掉只能无参使用的命令的参数提示。`/fast`、`/focus`、`/color` 也不列出：2.1.311 在托管会话里回复前两个不可用（`Fast mode is not available in the Agent SDK`、`/focus isn't available here yet`），`/color` 只改终端提示栏的颜色，AgentKib 里看不到。直接输入仍会发送，由 Claude Code 的回复说明。`/model`、`/effort`、`/rename`、`/goal` 显示 AgentKib 的说明和可选参数。会话还没运行过 Claude Code 时，菜单说明命令稍后出现。
 
-历史里的命令按输入显示（`/hello world`）；本地命令的输出（`/context` 的用量表、`/compact` 的 “Compacted”）显示为 Agent 回复，与实时帧使用相同 ID。Claude Code 自己写的文字带 `cli_output`：本地命令的输出，以及 model 为 `<synthetic>` 的助手消息（例如 API 或登录错误的说明），历史和实时轮次都标记。客户端按原样显示这类消息：每个换行都换行，`<name>` 这类占位显示为文字，代码、标题和表格照常渲染；模型的回复仍按 Markdown 显示，原始 HTML 照旧去掉。CLI 自己附加的上下文不显示：`isMeta` 行（技能展开后的提示词、本地命令前的说明）和压缩摘要。连接终端插件目前不能发送消息，不受这些规则影响；以后开放发送时也须经过同一检查。
+历史里的命令按输入显示（`/hello world`）；本地命令的输出（`/context` 的用量表、`/compact` 的 “Compacted”）显示为 Agent 回复，与实时帧使用相同 ID。Claude Code 自己写的文字带 `cli_output`：本地命令的输出，以及 model 为 `<synthetic>` 的助手消息（例如 API 或登录错误的说明），历史和实时轮次都标记。客户端按原样显示这类消息：每个换行都换行，`<name>` 这类占位显示为文字，代码、标题和表格照常渲染；模型的回复仍按 Markdown 显示，原始 HTML 照旧去掉。CLI 自己附加的上下文不显示：`isMeta` 行（技能展开后的提示词、本地命令前的说明）和压缩摘要。已连接终端的发送受插件的实时能力和授权约束，见[发送和排队](claude-code-terminal.md#发送和排队)。
 
 ## HTTP、SSE 与 WebSocket
 
-浏览器现有 HTTP 操作和 SSE 实时订阅保持兼容。新增 `/api/web/v1/socket` 是可选的有界 JSON 请求适配层，不替代 SSE，也不转发任意 Backend RPC。它仅用于同源 Web 服务及其桌面 TLS/反向代理入口；托管网页到 LAN HTTP 的连接继续保留原有基础能力，不开放此 socket 或新增高级控制。原生桌面连接另一台主机的配对和能力范围见 [REMOTE.md](../remote/desktop-connections.md)，不因本次 Web 改动自动扩展。
+浏览器的 `/api/web/v1/managed/*` HTTP 操作和 SSE 实时订阅保持兼容。 `/api/web/v1/socket` 是可选的有界 JSON 请求适配层，不替代 SSE，也不转发任意 Backend RPC。它仅用于同源 Web 服务及其桌面 TLS/反向代理入口；托管网页到 LAN HTTP 的连接继续保留原有基础能力，不开放此 socket 或新增高级控制。原生桌面连接另一台主机的配对和能力范围见 [REMOTE.md](../remote/desktop-connections.md)，不因本次 Web 改动自动扩展。
 
 - 升级请求必须带 Origin 并通过现有主机、来源和配对鉴权。每帧沿用握手身份，并重新执行 HTTP handler 的 cookie、CSRF、boot/revision、授权、capabilities 和回执校验。
 - 帧结构为 `{ id, path, body?, csrfToken, protocolVersion: 2 }`；`body` 存在时为 POST，否则为 GET。不能提供 headers 或 deviceId。响应为 `{ id, status, body }`。
@@ -196,7 +196,7 @@ capabilities 附带 CLI 在 initialize 时报告的命令目录（含 `builtin`�
 
 ## 开发验收
 
-- 自动化测试默认不调用真实模型。旧 `claude-real.test.ts` 是历史验收脚本，不能作为本期通过证据；本期用隔离数据和合成历史重新验收。
+- 自动化测试默认使用隔离数据和合成历史。托管和终端请求的回归测试见 [会话行为基线](../../apps/desktop/test/session-baseline/)。
 - 本次通用协议、前端、宿主调度和 WebSocket 的验收见 [2026-10-09 QA](../../qa/claude-remote-parity-2026-10-09.md)；早期原生执行证据保留在 [2026-09-30 QA](../../qa/claude-managed-2026-09-30.md)，不外推到新增能力。代码测试通过不等于真实模型、桌面/Web 全工作流、生产中继或实体手机已验收。
 - 公网 Relay 转发的两仓库同步另见 [Relay 离线验收](../../qa/claude-relay-sync-2026-10-09.md)，包括真实 frp、桌面 TLS、WebAccessService、Backend 与合成 CLI。跨仓测试显式启用，默认测试中的跳过不计为真实隧道通过。
 - 真实测试每例单轮，保留 attempt 记录；超时或结果未知后不自动重试、切换模型或复制凭据。

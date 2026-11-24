@@ -1,11 +1,14 @@
 import { randomUUID } from "node:crypto";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ClaudeManagedRunnerProcess } from "../../../packages/backend/src/agents/claude/claude-managed-runner";
 import { ClaudeManagedReadOwner } from "../../../packages/backend/src/agents/claude/claude-managed-read";
-import { ClaudeTurnMetaStore, cleanTurnMeta } from "../../../packages/backend/src/agents/claude/claude-turn-meta";
+import {
+  ClaudeTurnMetaStore,
+  cleanTurnMeta,
+} from "../../../packages/backend/src/agents/claude/claude-turn-meta";
 import type { BackendStore } from "../../../packages/backend/src/store";
 import type { SessionReaders } from "../../../packages/backend/src/session-readers";
 import type { Commands } from "../../../packages/backend/src/commands";
@@ -224,26 +227,32 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))(
         workspacePath: () => f.workspace,
         sessions: { id: (_agent: string, id: string) => id, get: () => undefined },
       } as unknown as BackendStore;
+      const transcript = (id: string) => path.join(f.config, `${id}.jsonl`);
+      const firstTranscript = (id: string) => (existsSync(transcript(id)) ? transcript(id) : null);
+      const firstUserId = () => f.frames().find((frame) => frame.type === "user")!.uuid as string;
+      // History as the transcript reader returns it: the reply without a duration.
+      const readHistory = async (nativeId: string) => {
+        pages.push({ nativeId });
+        return {
+          events: [
+            { id: firstUserId(), kind: "user-message", content: "synthetic turn" },
+            { id: reply, kind: "agent-message", content: "Synthetic reply." },
+            {
+              id: "interactive-1",
+              kind: "agent-message",
+              content: "Kept as read.",
+              turn_meta: { outcome: "completed", duration_ms: 1 },
+            },
+          ],
+          next_cursor: null,
+          warnings: [],
+        };
+      };
       const sessions = {
-        verifiedClaudeControlTarget: (id: string) => path.join(f.config, `${id}.jsonl`),
-        // History as the transcript reader returns it: the reply without a duration.
-        eventsForNative: async (_agent: string, nativeId: string) => {
-          pages.push({ nativeId });
-          return {
-            events: [
-              { id: "u-1", kind: "user-message", content: "synthetic turn" },
-              { id: reply, kind: "agent-message", content: "Synthetic reply." },
-              {
-                id: "interactive-1",
-                kind: "agent-message",
-                content: "Kept as read.",
-                turn_meta: { outcome: "completed", duration_ms: 1 },
-              },
-            ],
-            next_cursor: null,
-            warnings: [],
-          };
-        },
+        verifiedClaudeControlTarget: transcript,
+        claudeFirstTranscript: firstTranscript,
+        claudeFirstEvents: async (id: string) => (firstTranscript(id) ? readHistory(id) : null),
+        eventsForNative: async (_agent: string, nativeId: string) => readHistory(nativeId),
       } as unknown as SessionReaders;
       const owner = new ClaudeManagedReadOwner(
         store,
@@ -333,7 +342,7 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))(
       const page = (await owner.events(id, null, 50)) as { events: Array<Record<string, any>> };
       expect(pages.at(-1)).toEqual({ nativeId });
       expect(page.events.map((event) => [event.id, event.turn_meta ?? null])).toEqual([
-        ["u-1", null],
+        [firstUserId(), null],
         [reply, { outcome: "completed", duration_ms: 2750 }],
         ["interactive-1", { outcome: "completed", duration_ms: 1 }],
       ]);

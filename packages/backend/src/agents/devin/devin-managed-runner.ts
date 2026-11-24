@@ -46,6 +46,8 @@ const NATIVE_ID = /^[A-Za-z0-9_-]{1,128}$/;
 
 export interface DevinTurnSettings {
   model?: string;
+  effort?: DevinModelEffort | null;
+  serviceTier?: DevinModelSpeed | null;
   permissionMode?: DevinPermissionMode;
 }
 
@@ -70,6 +72,8 @@ export interface DevinTurnEnd {
 export interface DevinRunnerHost {
   executable(): string | null;
   environment: NodeJS.ProcessEnv;
+  /** Associates old CLI model variants with families for ACP settings selection. */
+  modelCatalog?(): Promise<DevinModelCatalog>;
   /** The newest page of a session's history, as the session readers build it. */
   latestItems(nativeId: string): Promise<Array<Record<string, unknown>>>;
   /** Devin sessions in the runner's workspace, with when each was created (ms). */
@@ -158,9 +162,9 @@ export const DEVIN_MODEL_EFFORTS = [
   "max",
   "ultra",
 ] as const;
-const DEVIN_MODEL_SPEEDS = ["fast", "priority", "lightning"] as const;
-type DevinModelEffort = (typeof DEVIN_MODEL_EFFORTS)[number];
-type DevinModelSpeed = (typeof DEVIN_MODEL_SPEEDS)[number];
+export const DEVIN_MODEL_SPEEDS = ["fast", "priority", "lightning"] as const;
+export type DevinModelEffort = (typeof DEVIN_MODEL_EFFORTS)[number];
+export type DevinModelSpeed = (typeof DEVIN_MODEL_SPEEDS)[number];
 
 export interface DevinModelVariant {
   id: string;
@@ -354,6 +358,9 @@ const OWN_REASONS = new Set([
   "devin-session-not-found",
   "devin-acp-timeout",
   "devin-run-stopped",
+  "unsupported-model",
+  "unsupported-effort",
+  "unsupported-service-tier",
 ]);
 
 /** Why a turn could not run or failed, in the reason codes clients explain. */
@@ -366,15 +373,162 @@ export function devinAcpFailure(error: unknown): string {
   return devinRunFailure(message, 1);
 }
 
-function configValues(result: Record<string, unknown>): Record<string, string> {
-  const values: Record<string, string> = {};
-  if (Array.isArray(result.configOptions))
-    for (const option of result.configOptions) {
-      if (!option || typeof option !== "object") continue;
-      const { id, currentValue } = option as Record<string, unknown>;
-      if (typeof id === "string" && typeof currentValue === "string") values[id] = currentValue;
-    }
-  return values;
+type DevinOptionId = "model" | "thought_level" | "speed" | "mode";
+type DevinOption = { current?: string; preferred?: string; choices: ReadonlySet<string> };
+type DevinConfig = Partial<Record<DevinOptionId, DevinOption>>;
+type DevinModelControls = {
+  model: string;
+  familyId: string;
+  efforts?: DevinModelEffort[];
+  serviceTierIds?: DevinModelSpeed[];
+};
+type AppliedDevinSettings = {
+  settings: DevinTurnSettings;
+  controls: DevinModelControls | undefined;
+};
+
+function configString(value: unknown): string | undefined {
+  return typeof value === "string" && MODEL_ID.test(value) ? value : undefined;
+}
+
+function configRecord(value: unknown): Record<string, unknown> | undefined {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
+}
+
+function configOptions(result: Record<string, unknown>): DevinConfig | undefined {
+  if (!Array.isArray(result.configOptions)) return;
+  const config: DevinConfig = {};
+  for (const value of result.configOptions) {
+    const entry = configRecord(value);
+    const id = entry?.id;
+    if (!entry || (id !== "model" && id !== "thought_level" && id !== "speed" && id !== "mode"))
+      continue;
+    const choices = new Set<string>();
+    if (Array.isArray(entry.options))
+      for (const value of entry.options) {
+        const item = configRecord(value);
+        const choice = configString(item?.value);
+        if (choice) choices.add(choice);
+        if (Array.isArray(item?.options))
+          for (const member of item.options) {
+            const choice = configString(configRecord(member)?.value);
+            if (choice) choices.add(choice);
+          }
+      }
+    config[id] = {
+      current: configString(entry.currentValue),
+      preferred: configString(entry.defaultValue),
+      choices,
+    };
+  }
+  return config;
+}
+
+function modelFamily(model: string, catalog: DevinModelCatalog): string {
+  const known = catalog.familyOf.get(model);
+  if (known) return known;
+  if (catalog.variantsByFamily.has(model)) return model;
+  const parts = model.split("-");
+  const speed = (DEVIN_MODEL_SPEEDS as readonly string[]).includes(parts.at(-1) ?? "");
+  if (speed) parts.pop();
+  if ((DEVIN_MODEL_EFFORTS as readonly string[]).includes(parts.at(-1) ?? "")) parts.pop();
+  return parts.join("-") || model;
+}
+
+function modelOffered(option: DevinOption | undefined, model: string): boolean {
+  return option?.current === model || option?.choices.has(model) === true;
+}
+
+function advertisedAcpModel(
+  option: DevinOption | undefined,
+  model: string,
+  family: string,
+  catalog: DevinModelCatalog,
+  useFamily: boolean,
+) {
+  if (
+    catalog.variantsByFamily.has(model) &&
+    option?.current &&
+    modelFamily(option.current, catalog) === family
+  )
+    return option.current;
+  if (modelOffered(option, model)) return model;
+  if (useFamily) {
+    if (option?.current && modelFamily(option.current, catalog) === family) return option.current;
+    const familyChoices = [...(option?.choices ?? [])].filter(
+      (choice) => modelFamily(choice, catalog) === family,
+    );
+    if (option?.preferred && familyChoices.includes(option.preferred)) return option.preferred;
+    if (familyChoices.length === 1) return familyChoices[0]!;
+  }
+}
+
+function selectAcpVariant(
+  option: DevinOption | undefined,
+  model: string,
+  family: string,
+  catalog: DevinModelCatalog,
+  effort: DevinModelEffort | undefined,
+  tier: DevinModelSpeed | null | undefined,
+) {
+  const candidates =
+    catalog.variantsByFamily
+      .get(family)
+      ?.filter(
+        (variant) =>
+          (!effort || variant.effort === effort) &&
+          (tier === undefined || variant.serviceTierId === (tier ?? undefined)) &&
+          (!option?.choices.size || modelOffered(option, variant.id)),
+      ) ?? [];
+  const standard = candidates.filter((variant) => variant.serviceTierId === undefined);
+  const choice =
+    candidates.find(({ id }) => id === model) ??
+    candidates.find(({ id }) => id === option?.current) ??
+    (candidates.length === 1 ? candidates[0] : undefined) ??
+    (tier === undefined && standard.length === 1 ? standard[0] : undefined);
+  if (!choice)
+    throw new Error(tier === undefined ? "unsupported-effort" : "unsupported-service-tier");
+  return choice.id;
+}
+
+function confirmedSettings(config: DevinConfig): DevinTurnSettings {
+  const model = config.model?.current;
+  const effort = DEVIN_MODEL_EFFORTS.find((value) => value === config.thought_level?.current);
+  const speed = config.speed?.current;
+  const serviceTier = speed === "standard" ? null : DEVIN_MODEL_SPEEDS.find((id) => id === speed);
+  const permissionMode = DEVIN_PERMISSION_MODES.find(
+    (id) => DEVIN_ACP_MODES[id] === config.mode?.current,
+  );
+  return {
+    ...(model ? { model } : {}),
+    ...(effort ? { effort } : {}),
+    ...(serviceTier !== undefined ? { serviceTier } : {}),
+    ...(permissionMode ? { permissionMode } : {}),
+  };
+}
+
+function modelControls(
+  config: DevinConfig,
+  catalog: DevinModelCatalog,
+): DevinModelControls | undefined {
+  const model = config.model?.current;
+  if (!model) return;
+  return {
+    model,
+    familyId: modelFamily(model, catalog),
+    ...(config.thought_level
+      ? {
+          efforts: DEVIN_MODEL_EFFORTS.filter((effort) =>
+            config.thought_level?.choices.has(effort),
+          ),
+        }
+      : {}),
+    ...(config.speed
+      ? { serviceTierIds: DEVIN_MODEL_SPEEDS.filter((tier) => config.speed?.choices.has(tier)) }
+      : {}),
+  };
 }
 
 /** What a permission card shows of Devin's tool call: bounded and with secrets redacted. */
@@ -427,6 +581,8 @@ export class DevinManagedRunner {
   #acpSession: string | null = null;
   #approvals = new Map<string, DevinApproval>();
   #runningSettings: DevinTurnSettings | undefined;
+  #lastSettings: DevinTurnSettings | undefined;
+  #modelControls: DevinModelControls | undefined;
   #timer: NodeJS.Timeout | undefined;
   #published = "";
   /** The history items last read, which tell the turn's answer once it ends. */
@@ -453,6 +609,14 @@ export class DevinManagedRunner {
 
   get runningSettings(): Readonly<DevinTurnSettings> | undefined {
     return this.#runningSettings;
+  }
+
+  get lastSettings(): Readonly<DevinTurnSettings> | undefined {
+    return this.#lastSettings;
+  }
+
+  get modelControls(): Readonly<DevinModelControls> | undefined {
+    return this.#modelControls;
   }
 
   snapshot(): Record<string, unknown> {
@@ -521,6 +685,7 @@ export class DevinManagedRunner {
     }
     let session: string;
     let promptId: AcpId;
+    let applied: AppliedDevinSettings;
     let startedAt = 0;
     try {
       await this.#step(acp, acp.initialize());
@@ -529,12 +694,7 @@ export class DevinManagedRunner {
         : await this.#step(acp, acp.newSession(this.workspace, mcpServers));
       session = this.#nativeId ?? String(attached.sessionId ?? "");
       if (!NATIVE_ID.test(session)) throw new Error("devin-session-not-found");
-      const current = configValues(attached);
-      if (settings.model && current.model !== settings.model)
-        await this.#step(acp, acp.setConfigOption(session, "model", settings.model));
-      const mode = settings.permissionMode ? DEVIN_ACP_MODES[settings.permissionMode] : null;
-      if (mode && current.mode !== mode)
-        await this.#step(acp, acp.setConfigOption(session, "mode", mode));
+      applied = await this.#applySettings(acp, session, attached, settings);
       if (this.#closed || expectedRevision !== this.#revision)
         throw new Error("stale-or-disabled-control");
       promptId = await acp.prompt(session, text, () => {
@@ -554,7 +714,9 @@ export class DevinManagedRunner {
       for (const found of this.#found.splice(0)) found(session);
       this.#ended = [];
     }
-    this.#runningSettings = { ...settings };
+    this.#runningSettings = applied.settings;
+    this.#lastSettings = applied.settings;
+    this.#modelControls = applied.controls;
     this.#status = "running";
     this.#reason = null;
     this.#usageLimit = null;
@@ -617,6 +779,7 @@ export class DevinManagedRunner {
 
   /** Marks a change to what the next turn runs with, so that a stale control is refused. */
   bump() {
+    this.#lastSettings = undefined;
     this.#revision++;
     this.#publishState();
   }
@@ -625,6 +788,91 @@ export class DevinManagedRunner {
     this.#closed = true;
     clearInterval(this.#timer);
     this.#acp?.shutdown();
+  }
+
+  async #applySettings(
+    acp: AntigravityAcp,
+    session: string,
+    attached: Record<string, unknown>,
+    settings: DevinTurnSettings,
+  ): Promise<AppliedDevinSettings> {
+    let config = configOptions(attached) ?? {};
+    let catalog = emptyDevinModelCatalog();
+    const set = async (id: DevinOptionId, value: string) => {
+      if (config[id]?.current === value) return;
+      const result = await this.#step(acp, acp.setConfigOption(session, id, value));
+      const updated = configOptions(result);
+      config = updated ?? config;
+      const confirmed = updated?.[id];
+      if (confirmed?.current && confirmed.current !== value && confirmed.choices.size) {
+        const reason = {
+          model: "unsupported-model",
+          thought_level: "unsupported-effort",
+          speed: "unsupported-service-tier",
+          mode: "devin-run-failed",
+        }[id];
+        throw new Error(reason);
+      }
+      // Some acknowledgements do not repeat options. Keep the acknowledged value in that case.
+      if (!confirmed?.current)
+        config[id] = { choices: config[id]?.choices ?? new Set(), current: value };
+    };
+    if (settings.model || settings.effort || settings.serviceTier !== undefined) {
+      catalog = (await this.host.modelCatalog?.()) ?? catalog;
+      const requested = settings.model ?? config.model?.current;
+      if (!requested) throw new Error("unsupported-model");
+      const family = modelFamily(requested, catalog);
+      const old =
+        settings.model && !catalog.variantsByFamily.has(requested)
+          ? devinModelVariant(catalog, requested)
+          : undefined;
+      const offered = modelOffered(config.model, requested);
+      const suffix =
+        settings.model && !offered && family !== requested
+          ? devinVariantControls(requested, [family])
+          : {};
+      const base = advertisedAcpModel(
+        config.model,
+        requested,
+        family,
+        catalog,
+        requested === family || !!old || !!suffix.effort || !!suffix.serviceTierId,
+      );
+      if (base) await set("model", base);
+      // A model change can add the independent options or replace their choices.
+      const effort =
+        settings.effort === null
+          ? undefined
+          : (settings.effort ?? old?.effort ?? (config.thought_level ? suffix.effort : undefined));
+      const tier =
+        settings.serviceTier !== undefined
+          ? settings.serviceTier
+          : (old?.serviceTierId ?? (config.speed ? suffix.serviceTierId : undefined));
+      const variantEffort = config.thought_level ? undefined : effort;
+      const variantTier = config.speed ? undefined : tier;
+      if (variantEffort || variantTier !== undefined) {
+        await set(
+          "model",
+          selectAcpVariant(config.model, requested, family, catalog, variantEffort, variantTier),
+        );
+      } else if (!base) {
+        // Some older responses have no model choices. Let that CLI validate an exact ID.
+        if (config.model?.choices.size || catalog.variantsByFamily.has(requested))
+          throw new Error("unsupported-model");
+        await set("model", requested);
+      }
+      if (effort && (config.thought_level || !variantEffort)) {
+        if (!modelOffered(config.thought_level, effort)) throw new Error("unsupported-effort");
+        await set("thought_level", effort);
+      }
+      if (tier !== undefined && (config.speed || variantTier === undefined)) {
+        const speed = tier ?? "standard";
+        if (!modelOffered(config.speed, speed)) throw new Error("unsupported-service-tier");
+        await set("speed", speed);
+      }
+    }
+    if (settings.permissionMode) await set("mode", DEVIN_ACP_MODES[settings.permissionMode]);
+    return { settings: confirmedSettings(config), controls: modelControls(config, catalog) };
   }
 
   /** Sends one setup request and waits for its answer; other traffic before it is not the turn's. */

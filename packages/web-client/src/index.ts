@@ -27,6 +27,7 @@ import type {
   SessionCommandMenu,
   SessionExecution,
   SessionFeedback,
+  SessionProjectAgentCapabilities,
   SessionProviderDeclaration,
   SessionQueueItemActions,
   SubagentCatalog,
@@ -71,6 +72,7 @@ export type {
   SessionCommandMenu,
   SessionExecution,
   SessionFeedback,
+  SessionProjectAgentCapabilities,
   SessionProviderDeclaration,
   SessionQueueAction,
   SessionQueueItemActions,
@@ -161,6 +163,8 @@ export interface ConversationSessionSummary {
   pendingInteraction?: boolean;
   /** The linked git worktree the session ran in; absent for a main checkout and older hosts. */
   worktree?: SessionWorktree | null;
+  /** Stable Provider roles when the host includes them in the catalog. */
+  projectAgent?: SessionProjectAgentCapabilities;
   /** A Project Agent, or a Worker one directs; absent otherwise and on older hosts. */
   orchestration?: SessionOrchestration;
 }
@@ -1435,7 +1439,7 @@ export class WebClient {
   ) {
     return this.request<SessionSettings>("managed/settings-prepare", body, signal);
   }
-  /** Whether a managed Claude Code session is a Project Agent, and its workers. */
+  /** Whether the session can coordinate workers, and any current Project Agent state. */
   projectAgent(sessionId: string, signal?: AbortSignal) {
     return this.request<{ lead: ProjectAgentState | null; capable?: boolean }>(
       `managed/project-agent?${new URLSearchParams({ sessionId })}`,

@@ -37,6 +37,7 @@ describe("Project Agent from a paired device", () => {
           { id: "devin-session", agent: "devin", workspace_id: "first" },
           { id: "antigravity-session", agent: "antigravity", workspace_id: "first" },
           { id: "codex-worker", agent: "codex", workspace_id: "first" },
+          { id: "cursor-session", agent: "cursor", workspace_id: "first" },
         ],
       };
     return {};
@@ -123,6 +124,29 @@ describe("Project Agent from a paired device", () => {
   afterEach(async () => {
     await service.shutdown();
     await rm(directory, { recursive: true, force: true });
+  });
+
+  it("publishes independent Project Agent and Worker declarations in the paired catalog", async () => {
+    await startService(false);
+    const device = await phone();
+    const result = await device.api("catalog");
+    expect(result.status).toBe(200);
+    expect(result.data.sessions).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "devin-session",
+          projectAgent: { lead: true, worker: true },
+        }),
+        expect.objectContaining({
+          id: "antigravity-session",
+          projectAgent: { lead: true, worker: true },
+        }),
+        expect.objectContaining({
+          id: "cursor-session",
+          projectAgent: { lead: false, worker: false },
+        }),
+      ]),
+    );
   });
 
   it("sets one up in the device's name and accepts legacy settings without forwarding them", async () => {

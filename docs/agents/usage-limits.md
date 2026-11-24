@@ -1,6 +1,6 @@
 # 达到使用上限
 
-AgentKib 运行的 Claude Code、Codex、DeepSeek Harness（DSH）和 Devin 会话，在账户达到使用上限时怎么提示、怎么继续。实现在 `packages/backend/src/usage-limit.ts`，Devin 的重置时间在 `packages/backend/src/devin-usage.ts`。
+本页介绍 Claude Code、Codex、DeepSeek Harness（DSH）、Devin 和 Antigravity 会话达到使用上限时的提示，以及支持自动继续的场景。共用的上限与自动继续规则见[使用上限处理](../../packages/backend/src/usage-limit.ts)，各 Agent 的执行路径负责读取原生结果和安排继续。
 
 ## 会话照常可用
 
@@ -9,7 +9,8 @@ AgentKib 运行的 Claude Code、Codex、DeepSeek Harness（DSH）和 Devin 会�
 - **Claude Code**（2.1.299 起，2.1.323 实测于二进制）：被拒绝的请求变成一条 `error: "rate_limit"` 的 assistant 消息，带 `api_error: "usage_limit_reached"` 和 `api_error_params.rate_limit_info`（`resetsAt` 以秒计，`rateLimitType` 如 `five_hour`、`seven_day`、`seven_day_opus`），接着是 `is_error` 的 `result`（HTTP 429）。2.1.263 只在 `rate_limit_event` 里给出限额，AgentKib 两处都读。Claude Code 进程不退出，也不按登录失败那样换新进程。
 - **Codex**（0.167.0）：`error` 通知和失败的 `turn/completed` 带 `codexErrorInfo: "usageLimitExceeded"`，不带重置时间。AgentKib 像 Codex 桌面端一样读 `account/rateLimits/read`：用完的窗口里最晚重置的那个决定重置时间；读不到就不说时间。
 - **DSH**（0.2.2-rc.2）：一轮以错误码 `QUOTA` 或 `ACCOUNT_QUOTA` 结束（插件 0.8.1 起把错误码和原文带给 AgentKib）。DSH 自己不会重试这类错误，也没有重置时间。
-- **Devin**（CLI 3000.12.59）：Devin 的服务以 JSON-RPC 错误 `-32011`（`cognition.ai/errorKind: resource_exhausted`）结束这一轮，原文如 “Your daily usage quota has been exhausted. Visit https://app.devin.ai/settings/usage to purchase on-demand usage or turn on auto-reload.”（也有 weekly）；CLI 自己的错误还有 “Quota exhausted”“Usage limit reached”“Organization usage limit reached”、每月上限、ChatGPT 订阅上限和 “Rate limited”。AgentKib 从 `devin -p` 打印的错误里认出这些说法（退出码为 0 时只看 stderr），原文去掉 “Error:” 前缀和 trace ID 后保存。`devin -p` 不给重置时间：账户的 `daily_quota_reset_at_unix`、`weekly_quota_reset_at_unix` 只在交互式 CLI 的 `/usage` 面板里显示。AgentKib 在后台的伪终端里启动一次交互式 `devin`（会话的工作区为当前目录，用户平常的登录），键入 `/usage` 读出面板，最多 20 秒，每次碰到上限至多一次；按原文说的窗口（daily、weekly）取重置时间，没说时取用完的窗口里最晚重置的那个。读不出就没有时间。AgentKib 不读 Devin 的登录，也不替用户回答 Devin 先问的问题。实现在 `packages/backend/src/devin-usage.ts`，见 [Devin](devin.md)。
+- **Devin**。AgentKib 在 `devin acp` 的轮次结束时，读取 ACP 错误正文或错误码（如 `-32011`）识别额度耗尽。ACP 的轮次结果不提供重置时间，账户的每日或每周重置时间可从交互式 CLI 的 `/usage` 面板读取。AgentKib 在后台的伪终端里启动一次交互式 `devin`（会话的工作区为当前目录，用户平常的登录），键入 `/usage` 读出面板，最多 20 秒，每次碰到上限至多一次；按原文说的窗口（daily、weekly）取重置时间，没说时取用完的窗口里最晚重置的那个。读不出就没有时间。AgentKib 不读 Devin 的登录，也不替用户回答 Devin 先问的问题。重置时间读取实现在 [Devin 的用量模块](../../packages/backend/src/agents/devin/devin-usage.ts)，会话操作见[Devin](devin.md)。
+- **Antigravity**。ACP 返回额度耗尽或限流类错误时，AgentKib 显示 `antigravity-usage-limited` 对应的提示。当前只显示失败原因。
 
 ## 提示
 

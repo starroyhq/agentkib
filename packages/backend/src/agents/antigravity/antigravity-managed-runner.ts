@@ -13,6 +13,7 @@ import {
   AntigravityAcp as AcpClient,
   verifyAcpControlIdentity,
 } from "./antigravity-acp";
+import { stringifyAcpJson } from "../../acp-json";
 import { sanitizeHandoffExport } from "../../session-handoff";
 import { antigravityAcpArgs } from "./antigravity-sessions";
 import {
@@ -27,6 +28,7 @@ const POLL_MS = 100;
 const MAX_CONTENT_BYTES = 512 * 1024;
 const MAX_APPROVAL_DETAILS_BYTES = 64 * 1024;
 const MAX_UPDATES = 4096;
+const CONFIGURED_MCP_TOOL = "call_mcp_tool";
 const DISPATCHING_TURN_ID = "agentkib-prompt-dispatch-in-progress";
 const PROMPT_STOP_REASONS = new Set([
   "end_turn",
@@ -332,6 +334,8 @@ export class AntigravityManagedRunner {
       approvals: [...this.#approvals.values()].map(({ id, ...permission }) => ({
         ...permission,
         requestId: acpIdText(id),
+        method: "session/request_permission",
+        presentation: "tool",
       })),
       reason: this.#reason,
       historySyncPending: this.#historySyncPending,
@@ -450,7 +454,7 @@ export class AntigravityManagedRunner {
     const permission = this.#approvals.get(requestId);
     if (!permission || !permission.supported || permission.turnId !== turnId)
       throw new Error("Antigravity approval is unavailable");
-    if (!permission.options.some((option) => option.optionId === optionId))
+    if (!permission.availableDecisions.includes(optionId))
       throw new Error("Antigravity approval option is unavailable");
     try {
       beforeDispatch?.();
@@ -826,20 +830,25 @@ export class AntigravityManagedRunner {
       )
     )
       throw new Error("invalid Antigravity permission presentation");
-    const options = request.options.map(({ optionId, name, kind }) => ({
+    const offered = this.#cli
+      ? request.options.filter(({ kind }) => kind === "allow_once" || kind === "reject_once")
+      : request.options;
+    const options = offered.map(({ optionId, name, kind }) => ({
       optionId,
       name: sanitizeHandoffExport(name, "markdown").slice(0, 512),
       kind: sanitizeHandoffExport(kind, "markdown").slice(0, 256),
     }));
     const projected = projectPermissionToolCall(
       this.#cli ? normalizeCliToolCall(request.toolCall) : request.toolCall,
+      this.#cli,
     );
     const toolCall = projected.value ?? { toolCallId: "[unavailable]" };
     const idSupported =
       typeof id === "bigint"
         ? id >= -(1n << 53n) + 1n && id <= (1n << 53n) - 1n
         : safeWebField(key);
-    const optionsSupported = request.options.every((option) => safeWebField(option.optionId));
+    const optionsSupported =
+      offered.length > 0 && offered.every(({ optionId }) => safeWebField(optionId));
     const supported = projected.supported && idSupported && optionsSupported;
     this.#approvals.set(key, {
       sessionId: this.sessionId,
@@ -855,7 +864,7 @@ export class AntigravityManagedRunner {
           : !idSupported
             ? "unsupported-request-id"
             : "unsupported-option-id",
-      availableDecisions: supported ? request.options.map((option) => option.optionId) : [],
+      availableDecisions: supported ? offered.map(({ optionId }) => optionId) : [],
     });
     this.#status = "waiting-approval";
   }
@@ -1046,6 +1055,29 @@ function permissionLocationsMatch(
   );
 }
 
+function isCliMcpToolName(value: unknown): value is string {
+  return (
+    typeof value === "string" &&
+    /^mcp_[A-Za-z0-9][A-Za-z0-9_-]*_[A-Za-z0-9][A-Za-z0-9_-]*$/.test(value)
+  );
+}
+
+function configuredMcpDetails(input: JsonRecord) {
+  const { Arguments: args, ServerName: server, ToolName: tool } = input;
+  const label = /^[A-Za-z0-9_.-]{1,256}$/;
+  if (
+    Object.keys(input).length !== 3 ||
+    typeof server !== "string" ||
+    !label.test(server) ||
+    typeof tool !== "string" ||
+    !label.test(tool) ||
+    !isRecord(args)
+  )
+    return null;
+  // The orchestrator may delegate shell approvals to a lead, but not MCP approvals.
+  return { kind: "other", title: `${server} / ${tool}`, rawInput: args };
+}
+
 /**
  * The CLI's `agy acp` (1.5.14) names its tools' inputs its own way (`CommandLine`; `Path`,
  * `Target` and `Replacement` beside a diff) and repeats them as `args`. They are mapped onto the
@@ -1059,6 +1091,17 @@ function normalizeCliToolCall(source: JsonRecord): JsonRecord {
     : isRecord(source.args)
       ? source.args
       : undefined;
+  // Locally configured MCP calls use kind "execute" but do not run a shell command.
+  if (
+    source.name === CONFIGURED_MCP_TOOL ||
+    (source.kind === "other" && isCliMcpToolName(source.name))
+  ) {
+    const matching =
+      source.rawInput == null ||
+      source.args == null ||
+      stringifyAcpJson(source.rawInput) === stringifyAcpJson(source.args);
+    return { ...call, rawInput: matching ? input : undefined };
+  }
   if (source.kind === "execute" && input && typeof input.CommandLine === "string") {
     const cwd = typeof input.Cwd === "string" ? input.Cwd : undefined;
     return { ...call, rawInput: { command: input.CommandLine, ...(cwd ? { cwd } : {}) } };
@@ -1078,7 +1121,10 @@ function normalizeCliToolCall(source: JsonRecord): JsonRecord {
   return call;
 }
 
-function projectPermissionToolCall(source: JsonRecord): {
+function projectPermissionToolCall(
+  source: JsonRecord,
+  cli: boolean,
+): {
   value: JsonRecord | null;
   supported: boolean;
 } {
@@ -1112,9 +1158,23 @@ function projectPermissionToolCall(source: JsonRecord): {
   )
     return { value: null, supported: false };
 
+  const configuredMcp = cli && source.name === CONFIGURED_MCP_TOOL;
+  const mcp = configuredMcp || (cli && source.kind === "other" && isCliMcpToolName(source.name));
   let projected: JsonRecord;
   try {
-    projected = JSON.parse(sanitizeHandoffExport(JSON.stringify(source), "json")) as JsonRecord;
+    const encoded = JSON.stringify(source, (_key, value: unknown) => {
+      if (!mcp) return value;
+      // ACP preserves wire integers. The Web card must show their exact value.
+      const display = typeof value === "bigint" ? Number(value) : value;
+      if (
+        typeof display === "number" &&
+        Number.isInteger(display) &&
+        !Number.isSafeInteger(display)
+      )
+        throw new Error("unreviewable Antigravity argument");
+      return display;
+    });
+    projected = JSON.parse(sanitizeHandoffExport(encoded, "json")) as JsonRecord;
   } catch {
     return { value: null, supported: false };
   }
@@ -1122,6 +1182,21 @@ function projectPermissionToolCall(source: JsonRecord): {
     return { value: null, supported: false };
   const kind = projected.kind;
   const input = projected.rawInput;
+  if (mcp) {
+    const reviewable =
+      isRecord(input) &&
+      !containsRedacted(input) &&
+      [projected.content, projected.locations].every(
+        (value) => value == null || (Array.isArray(value) && value.length === 0),
+      );
+    if (configuredMcp) {
+      const details = kind === "execute" && reviewable ? configuredMcpDetails(input) : null;
+      return { value: details ? { ...projected, ...details } : projected, supported: !!details };
+    }
+    if (isCliMcpToolName(projected.name))
+      return { value: { ...projected, title: projected.name }, supported: reviewable };
+    return { value: projected, supported: false };
+  }
   let actionVisible = false;
   if (["execute", "command", "terminal", "shell"].includes(String(kind)) && isRecord(input)) {
     const command = [input.command, input.cmd, input.script].some(visible);

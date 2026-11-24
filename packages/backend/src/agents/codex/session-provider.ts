@@ -4959,14 +4959,18 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
           ) {
             const turn = params.turn;
             const outcome = codexTurnMeta(turn)?.outcome;
-            this.host.observeLane((observer) =>
-              observer.turnEnded(
+            // Paginated resume reads public history from the rollout, which may not have
+            // this item yet. The bridge already persisted the completed reply before this callback.
+            this.host.observeLane((observer) => {
+              const ended = [
                 record.id,
                 String(turn.id),
                 outcome === "aborted" ? "cancelled" : (outcome ?? "ended"),
                 codexTurnMeta(turn)?.duration_ms ?? null,
-              ),
-            );
+              ] as const;
+              if (result.turnReply === undefined) observer.turnEnded(...ended);
+              else observer.turnEnded(...ended, undefined, result.turnReply);
+            });
           }
           if (live.status === "awaiting-approval" || live.status === "waiting-input")
             this.host.observeLane((observer) =>

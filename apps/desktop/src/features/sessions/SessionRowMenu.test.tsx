@@ -63,6 +63,57 @@ function open(session: ConversationSessionSummary, handlers = {}) {
 }
 
 describe("a session row's menu on the desktop", () => {
+  it.each([
+    ["devin", "antigravity"],
+    ["antigravity", "devin"],
+  ] as const)("offers %s as a lead with a %s Worker", async (leadAgent, workerAgent) => {
+    features({});
+    const session = { ...summary(leadAgent), id: "lead" };
+    const sessions = [
+      session,
+      { ...summary(workerAgent), id: "worker", title: "ACP Worker" },
+      { ...summary(workerAgent), id: "busy", title: "Assigned Worker" },
+      { ...summary("unknown"), id: "unsupported", title: "Unsupported Worker" },
+    ];
+    claudeRequest.mockResolvedValue({
+      capable: true,
+      remaining: 2,
+      candidates: [
+        { sessionId: "worker", reason: null },
+        { sessionId: "busy", reason: "session-is-a-worker" },
+      ],
+    });
+    open(session, { sessions });
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Assign Workers" }));
+    const worker = await screen.findByRole("button", { name: "ACP Worker" });
+    expect(worker).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Assigned Worker" })).toBeDisabled();
+    expect(claudeRequest).toHaveBeenCalledExactlyOnceWith({
+      operation: "lead-assignment-options",
+      sessionId: "lead",
+      candidateIds: ["busy", "worker"],
+    });
+    fireEvent.click(worker);
+    fireEvent.click(screen.getByRole("button", { name: "Assign" }));
+    await waitFor(() =>
+      expect(claudeRequest).toHaveBeenLastCalledWith({
+        operation: "lead-assign-workers",
+        sessionId: "lead",
+        workers: ["worker"],
+      }),
+    );
+  });
+
+  it("keeps the registered assignment action disabled for an archived session", async () => {
+    features({});
+    open(summary("antigravity", true));
+    const assign = await screen.findByRole("menuitem", { name: "Assign Workers" });
+    expect(assign).toHaveAttribute("aria-disabled", "true");
+    expect(assign).toHaveAttribute("title", "This session cannot coordinate Workers right now.");
+    fireEvent.click(assign);
+    expect(claudeRequest).not.toHaveBeenCalled();
+  });
+
   it("names an untitled session as its row does", () => {
     render(
       <AppDialogProvider>

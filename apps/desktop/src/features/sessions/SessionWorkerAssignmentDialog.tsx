@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Check } from "lucide-react";
 import { projectAgentCopy } from "@agentkib/session-ui";
+import { sessionProviderDeclaration } from "@agentkib/web-client";
 import { useAppDialogs } from "@/components/AppDialogProvider";
 import { Button } from "@/components/ui/button";
 import {
@@ -93,7 +94,13 @@ export function SessionWorkerAssignmentDialog({
       if (row.remote || row.sidechain || leadIds.has(row.id)) continue;
       const assigned =
         row.orchestration?.role === "worker" && leadIds.has(row.orchestration.leadId);
-      if (!assigned && (row.archived || row.availability !== "readable")) continue;
+      if (
+        !assigned &&
+        (row.archived ||
+          row.availability !== "readable" ||
+          sessionProviderDeclaration(row.agent)?.projectAgent?.worker !== true)
+      )
+        continue;
       const aliases = (row.indexedSessionIds ?? []).filter((id) => {
         if (usedIds.has(id)) return false;
         usedIds.add(id);

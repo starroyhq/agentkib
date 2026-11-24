@@ -3232,6 +3232,7 @@ describe("Claude Code native session plugin", () => {
       });
       const turnId = randomUUID();
       await f.run("turn.start", { text: "terminal input", turnId });
+      await f.run("ui.render", { component: "AbovePrompt", props: { isWorking: true } });
       await f.flush();
       const snapshot = f.snapshots().at(-1);
       expect(snapshot.capabilities.handover).toBe(true);

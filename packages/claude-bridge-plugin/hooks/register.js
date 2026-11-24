@@ -1473,8 +1473,10 @@ async function hasNativeHandoverExit($) {
 function canHandoverExit(state) {
   return (
     writable(state) &&
-    state.activityVerified &&
-    (state.currentTurnId !== null || (state.nativeWorking === false && !waitingState(state))) &&
+    // The render hook establishes idle only. An active turn is verified by its
+    // native turn ID even when the prompt shows that Claude is working.
+    (state.currentTurnId !== null ||
+      (state.activityVerified && state.nativeWorking === false && !waitingState(state))) &&
     !state.pendingSend &&
     !state.dispatching &&
     !state.unconfirmedReport &&

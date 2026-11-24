@@ -75,7 +75,10 @@ import {
   type PushSendResult,
 } from "./relay/manager";
 import { pushPublicKey } from "../push/envelope";
-import type { PushTarget } from "../push/notifier";
+import type { PushAlertKind, PushTarget } from "../push/notifier";
+import { PushApprovalActions } from "../push/actions";
+import { projectNotificationActivity, type NotificationActivitySession } from "../push/activity";
+import type { NotificationPolicyStore } from "../push/policy";
 
 export const HOSTED_ORIGIN = "https://remote.agentkib.com";
 /** Modes a Claude CLI can report; only the first three are ever selectable from AgentKib. */
@@ -330,6 +333,8 @@ type PushSubscription = {
   ref: string;
   alerts: boolean;
   liveActivity: boolean;
+  approvalActions?: 1;
+  activityDetails?: 1;
   updatedAt: number;
 };
 const PUSH_REF = /^[A-Za-z0-9_-]{8,64}$/;
@@ -342,6 +347,8 @@ const validPushSubscription = (value: unknown): value is PushSubscription => {
     PUSH_REF.test(push.ref) &&
     typeof push.alerts === "boolean" &&
     typeof push.liveActivity === "boolean" &&
+    (push.approvalActions === undefined || push.approvalActions === 1) &&
+    (push.activityDetails === undefined || push.activityDetails === 1) &&
     Number.isSafeInteger(push.updatedAt) &&
     push.updatedAt > 0
   );
@@ -552,6 +559,8 @@ const CODE_ACCESS_PERMISSIONS: Record<WebAccessLevel, DevicePermissions> = {
 type RouteSpec = { lan?: true; control?: true };
 const API_ROUTES: Record<"GET" | "POST", Record<string, RouteSpec>> = {
   GET: {
+    "/push/policy": { lan: true },
+    "/push/activity": { lan: true },
     "/approval-audit": { lan: true },
     "/approval-rules": { lan: true },
     "/history/status": { lan: true },
@@ -587,6 +596,7 @@ const API_ROUTES: Record<"GET" | "POST", Record<string, RouteSpec>> = {
     "/diff": { lan: true },
   },
   POST: {
+    "/push/policy": { control: true },
     "/approval-rules/revoke": { control: true },
     "/read-state": { lan: true },
     "/session-pin": { lan: true },
@@ -870,6 +880,8 @@ export class WebAccessService {
   private requests = new Set<string>();
   private controlEvents = new EventEmitter().setMaxListeners(64);
   private pushEvents = new EventEmitter();
+  private pushSubscriptionAt = 0;
+  private readonly pushApprovalActions = new PushApprovalActions();
   // 正在进行的目录读取（按 runtime 启动区分）；同时到达的权限检查共用它。
   private catalogFlight?: { boot: string; readerScope: string; read: Promise<unknown> };
   private pendingControlNotifications = new Set<string>();
@@ -938,6 +950,7 @@ export class WebAccessService {
        */
       computerName?: () => Promise<string | undefined>;
       workspaceRequest?: () => Promise<{ id: string; name: string; path: string }[]>;
+      notificationPolicy?: NotificationPolicyStore;
       approvalRules?: typeof nativeApprovalRules;
       verifiedCodex?: boolean;
       verifiedExperimental?: boolean;
@@ -1606,6 +1619,8 @@ export class WebAccessService {
           ref: push.ref,
           alerts: push.alerts,
           liveActivity: push.liveActivity,
+          ...(push.approvalActions === 1 ? { approvalActions: 1 } : {}),
+          ...(push.activityDetails === 1 ? { activityDetails: 1 } : {}),
           updatedAt: push.updatedAt,
         });
     }
@@ -1621,6 +1636,99 @@ export class WebAccessService {
     if (this.options.mode === "lan" || !this.relay)
       return Promise.resolve({ delivered: false, error: "relay_unavailable" });
     return this.relay.pushSend(input);
+  }
+
+  private notificationTarget(target: PushTarget): Credential | undefined {
+    const matches = (row: { session: string; publicKey: string; updatedAt: number }) =>
+      row.session === target.session &&
+      row.publicKey === target.publicKey &&
+      row.updatedAt === target.updatedAt;
+    if (!this.pushTargets().some(matches)) return;
+    return this.credentials.find(
+      (entry) =>
+        entry.account?.sessionId === target.session &&
+        entry.push?.publicKey === target.publicKey &&
+        entry.push.updatedAt === target.updatedAt &&
+        entry.expiresAt > Date.now() &&
+        this.pushReady(entry),
+    );
+  }
+
+  private pushActionSubscription(hash: string) {
+    const credential = this.credentials.find((entry) => entry.hash === hash);
+    const push = credential?.push;
+    if (!credential?.account || !push?.alerts || push.approvalActions !== 1) return;
+    const target = { ...push, session: credential.account.sessionId };
+    if (this.notificationTarget(target) !== credential) return;
+    return push;
+  }
+
+  /** Authorize the catalog entry before a preview or a signed decision leaves this host. */
+  async notificationAlertContext(
+    target: PushTarget,
+    session: NotificationActivitySession,
+    kind: PushAlertKind,
+  ) {
+    const credential = this.notificationTarget(target);
+    if (!credential?.push?.alerts || !session.workspace_id) return;
+    const { hash, device } = credential;
+    const boot = this.bootId;
+    const readerScope = this.readerScope();
+    if (!(await this.workspaceAllowed(session.workspace_id, this.grant(hash), true))) return;
+    const check = () =>
+      this.bootId === boot &&
+      this.readerScope() === readerScope &&
+      this.notificationTarget(target) === credential &&
+      this.grant(hash) === device;
+    if (!check()) return;
+    if (
+      credential.push.approvalActions !== 1 ||
+      (kind !== "approval" && kind !== "question") ||
+      (session.agent === "claude-code" && session.continuation?.executionLocation === "terminal")
+    )
+      return {};
+    const live = await this.runtime(
+      {
+        operation: "live",
+        sessionId: session.id,
+        experimentalEnabled: this.controlsEnabled(session.id, device),
+      },
+      undefined,
+      true,
+    ).catch(() => undefined);
+    if (!check()) return;
+    if (
+      snapshotField(live, "sessionId") !== session.id ||
+      snapshotField(live, "workspaceId") !== session.workspace_id ||
+      this.controlGuard(session.id)
+    )
+      return {};
+    const enabled = await this.controlsEnabledForSnapshot(session.id, live, device, true);
+    const matching = (
+      await this.pendingInteractionDescriptions(session.id, live, device, enabled, true)
+    )?.filter((interaction) => interaction.kind === kind);
+    if (!(await this.workspaceAllowed(session.workspace_id, this.grant(hash), true)) || !check())
+      return;
+    if (this.controlGuard(session.id) || matching?.length !== 1) return {};
+    return (
+      this.pushApprovalActions.project(
+        matching[0]!,
+        device.id,
+        boot,
+        undefined,
+        target.updatedAt,
+      ) ?? {}
+    );
+  }
+
+  async notificationActivityForTarget(
+    target: PushTarget,
+    sessions: readonly NotificationActivitySession[],
+  ) {
+    const credential = this.notificationTarget(target);
+    if (!credential?.push?.liveActivity || credential.push.activityDetails !== 1) return;
+    const result = await this.notificationActivity(credential.hash, sessions);
+    if (this.notificationTarget(target) === credential) return result;
   }
 
   /** Native preview data follows the receiving phone's read scope. */
@@ -1643,9 +1751,11 @@ export class WebAccessService {
     const session = await this.sessionScope(sessionId, credential.hash, true, false);
     if (session.agent !== "claude-code") return;
     const live = await this.runtime({ operation: "live", sessionId }, undefined, true);
+    if (!(await this.workspaceAllowed(session.workspace_id, device, true))) return;
     if (
       this.grant(credential.hash) !== device ||
       this.readerScope() !== scope ||
+      this.notificationTarget(target) !== credential ||
       credential.push?.updatedAt !== target.updatedAt ||
       this.controlGuard(sessionId) ||
       snapshotField(live, "sessionId") !== sessionId ||
@@ -1691,14 +1801,23 @@ export class WebAccessService {
    * the pairing. Subscribing again with the same choices changes nothing.
    */
   private async subscribePush(hash: string, body: Record<string, unknown>) {
-    const fields = ["publicKey", "ref", "alerts", "liveActivity"];
+    const fields = [
+      "publicKey",
+      "ref",
+      "alerts",
+      "liveActivity",
+      "approvalActions",
+      "activityDetails",
+    ];
     if (
       Object.keys(body).some((key) => !fields.includes(key)) ||
       !pushPublicKey(body.publicKey) ||
       typeof body.ref !== "string" ||
       !PUSH_REF.test(body.ref) ||
       typeof body.alerts !== "boolean" ||
-      typeof body.liveActivity !== "boolean"
+      typeof body.liveActivity !== "boolean" ||
+      (body.approvalActions !== undefined && body.approvalActions !== 1) ||
+      (body.activityDetails !== undefined && body.activityDetails !== 1)
     )
       throw new HttpError(400, "invalid_push_subscription");
     this.grant(hash);
@@ -1708,6 +1827,8 @@ export class WebAccessService {
       ref: body.ref,
       alerts: body.alerts,
       liveActivity: body.liveActivity,
+      ...(body.approvalActions === 1 ? { approvalActions: 1 } : {}),
+      ...(body.activityDetails === 1 ? { activityDetails: 1 } : {}),
       updatedAt: Date.now(),
     };
     const work = this.adminQueue.then(async () => {
@@ -1719,10 +1840,21 @@ export class WebAccessService {
         earlier?.publicKey === push.publicKey &&
         earlier.ref === push.ref &&
         earlier.alerts === push.alerts &&
-        earlier.liveActivity === push.liveActivity
+        earlier.liveActivity === push.liveActivity &&
+        earlier.approvalActions === push.approvalActions &&
+        earlier.activityDetails === push.activityDetails
       )
         return false;
-      const next = this.credentials.map((row) => (row === credential ? { ...row, push } : row));
+      // An unsubscribe followed by a same-clock resubscribe must not restore old action tokens.
+      this.pushSubscriptionAt = Math.max(
+        this.pushSubscriptionAt + 1,
+        push.updatedAt,
+        (earlier?.updatedAt ?? 0) + 1,
+      );
+      const nextPush = { ...push, updatedAt: this.pushSubscriptionAt };
+      const next = this.credentials.map((row) =>
+        row === credential ? { ...row, push: nextPush } : row,
+      );
       await this.save(this.config, this.remotePairingInitialized, next);
       this.credentials = next;
       return true;
@@ -1739,6 +1871,7 @@ export class WebAccessService {
     const work = this.adminQueue.then(async () => {
       const credential = this.credentials.find((row) => row.hash === hash);
       if (!credential?.push) return false;
+      this.pushSubscriptionAt = Math.max(this.pushSubscriptionAt, credential.push.updatedAt);
       const next = this.credentials.map((row) =>
         row === credential ? { ...row, push: undefined } : row,
       );
@@ -5180,7 +5313,7 @@ export class WebAccessService {
       key: digest(JSON.stringify([access.token, allowedSessionIds, targetSessionIds])),
     };
   }
-  private checkApprovalOversightScope(hash: string) {
+  private checkPairedHostScope(hash: string) {
     this.grant(hash);
     if (this.options.acceptanceSessionId && hash !== "desktop-local")
       throw new HttpError(403, "session_control_not_allowed");
@@ -5318,7 +5451,7 @@ export class WebAccessService {
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100)
       throw new HttpError(400, "invalid_approval_audit_query");
     const scope = async () => {
-      this.checkApprovalOversightScope(hash);
+      this.checkPairedHostScope(hash);
       const boot = this.bootId;
       const device = this.grant(hash);
       const readerScope = this.readerScope();
@@ -5356,7 +5489,7 @@ export class WebAccessService {
     return this.json(res, 200, result);
   }
   private async approvalRuleScope(hash: string, workspaceId: string | undefined, write = false) {
-    this.checkApprovalOversightScope(hash);
+    this.checkPairedHostScope(hash);
     const device =
       write || workspaceId === undefined ? this.fullAccess(hash, "settings") : this.grant(hash);
     const boot = this.bootId;
@@ -6310,6 +6443,52 @@ export class WebAccessService {
       JSON.stringify([access.token, readerScope]),
     );
   }
+  private async notificationActivity(
+    hash: string,
+    sessions?: readonly NotificationActivitySession[],
+  ) {
+    this.checkPairedHostScope(hash);
+    const device = this.grant(hash);
+    const readerScope = this.readerScope();
+    const boot = this.bootId;
+    const source =
+      sessions ??
+      (
+        (await this.runtime({ operation: "catalog" })) as {
+          sessions?: NotificationActivitySession[];
+        }
+      )?.sessions ??
+      [];
+    const access = await this.historyAccessScope(hash);
+    if (boot !== this.bootId || readerScope !== this.readerScope() || this.grant(hash) !== device)
+      throw new HttpError(403, "access_changed");
+    return projectNotificationActivity(source, {
+      workspaceIds: access.workspaces,
+      versionScope: JSON.stringify([access.token, readerScope]),
+      unconfirmed: this.unconfirmed,
+    });
+  }
+  private async notificationPolicy(hash: string, patch?: Record<string, unknown>) {
+    const store = this.options.notificationPolicy;
+    if (!store) throw new HttpError(404, "capability_unavailable");
+    this.checkPairedHostScope(hash);
+    if (patch === undefined) return { policy: store.read() };
+    const device = this.fullAccess(hash, "settings");
+    const boot = this.bootId;
+    const policy = await store
+      .update(patch, () => {
+        if (this.fullAccess(hash, "settings") !== device || this.bootId !== boot)
+          throw new HttpError(403, "access_changed");
+      })
+      .catch((error: unknown) => {
+        if (error instanceof HttpError) throw error;
+        if (error instanceof Error && error.message === "invalid_notification_policy")
+          throw new HttpError(400, error.message);
+        throw new HttpError(503, "notification_policy_unavailable");
+      });
+    this.pushEvents.emit("changed");
+    return { policy };
+  }
   private async conversationReadState(
     res: ConversationResponse,
     hash: string,
@@ -6698,6 +6877,12 @@ export class WebAccessService {
         !this.options.acceptanceSessionId
           ? { approvalAuditVersion: 1 }
           : {}),
+        ...(device &&
+        !browser.ended &&
+        this.options.notificationPolicy &&
+        !this.options.acceptanceSessionId
+          ? { pushPolicyVersion: 1, pushActivityVersion: 1 }
+          : {}),
         csrfToken: browser.csrf,
         bootId: this.bootId,
         device: browser.ended ? undefined : device,
@@ -6718,6 +6903,9 @@ export class WebAccessService {
               push: {
                 version: 1,
                 subscribed: !!credential.push,
+                ...(this.options.notificationPolicy && !this.options.acceptanceSessionId
+                  ? { approvalActionsVersion: 1 }
+                  : {}),
                 ...(credential.push
                   ? { alerts: credential.push.alerts, liveActivity: credential.push.liveActivity }
                   : {}),
@@ -6950,6 +7138,10 @@ export class WebAccessService {
         return this.json(res, 200, await this.subscribePush(hash, body));
       if (path === "/push/unsubscribe")
         return this.json(res, 200, await this.unsubscribePush(hash, body));
+      if (path === "/push/policy") {
+        if (url.search) throw new HttpError(400, "invalid_notification_policy");
+        return this.json(res, 200, await this.notificationPolicy(hash, body));
+      }
       if (path === "/logout") {
         // Share the config transaction queue: a logout captured during a provider
         // switch must not overwrite the new config with an old persistence snapshot.
@@ -7048,6 +7240,24 @@ export class WebAccessService {
         !/^[a-f\d]{8}-[a-f\d]{4}-[a-f\d]{4}-[a-f\d]{4}-[a-f\d]{12}$/i.test(requestId)
       )
         throw new HttpError(400, "invalid_input");
+      const pushSubscription =
+        body.pushActionToken === undefined ? undefined : this.pushActionSubscription(hash);
+      const pushAction =
+        pushSubscription && operation === "approve" && interactionDecisionId
+          ? this.pushApprovalActions.verify(
+              this.grant(hash, permission).id,
+              body,
+              pushSubscription.updatedAt,
+            )
+          : undefined;
+      if (body.pushActionToken !== undefined && !pushAction)
+        throw new HttpError(403, "push_action_unavailable");
+      const checkPushAction = () => {
+        if (!pushAction) return;
+        if (pushAction.expiresAt <= Date.now()) throw new HttpError(409, "interaction_expired");
+        if (this.pushActionSubscription(hash) !== pushSubscription)
+          throw new HttpError(403, "push_action_unavailable");
+      };
       const prior = await this.controlReceipt(requestId, this.grant(hash, permission).id, control);
       const sessionId = this.field(body.sessionId);
       if (this.isFullAccess(this.grant(hash)))
@@ -7070,6 +7280,7 @@ export class WebAccessService {
           throw new HttpError(409, "interaction_expired");
         throw new HttpError(409, "duplicate_request");
       }
+      checkPushAction();
       const historyReplay = this.historyReplay(prior, body, operation, control);
       if (historyReplay !== undefined) return this.json(res, 200, historyReplay);
       if (body.bootId !== this.bootId) {
@@ -7527,6 +7738,12 @@ export class WebAccessService {
         )
           params.allowOwnerWait = true;
         const restrictCodexNativePolicy = operation === "send" && !this.isFullAccess(device);
+        checkPushAction();
+        if (
+          pushAction &&
+          (params.nativeDecision !== undefined || approval?.requiresExtendedApproval)
+        )
+          this.grant(hash, "extendedApproval");
         params.runtimeBootId = snapshot.runtimeBootId;
         if (interactionDecisionId) rememberRequest(this.requests, requestId);
         dispatched = true;
@@ -7631,6 +7848,15 @@ export class WebAccessService {
     }
     if (req.method !== "GET") throw new HttpError(405, "method_not_allowed");
     this.grant(hash);
+    if (path === "/push/policy" || path === "/push/activity") {
+      if (url.search) throw new HttpError(400, "invalid_notification_query");
+      if (!this.options.notificationPolicy) throw new HttpError(404, "capability_unavailable");
+      const payload =
+        path === "/push/policy"
+          ? await this.notificationPolicy(hash)
+          : { activity: await this.notificationActivity(hash) };
+      return this.json(res, 200, payload);
+    }
     if (path === "/approval-audit") return this.approvalAuditPage(res, hash, url);
     if (path === "/approval-rules") {
       if (

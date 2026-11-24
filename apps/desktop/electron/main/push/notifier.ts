@@ -1,4 +1,9 @@
 import { createHash } from "node:crypto";
+import type {
+  NotificationActivitySnapshot,
+  PushApprovalAction,
+  SessionPendingInteraction,
+} from "@agentkib/runtime-protocol";
 import {
   displaySessionTitle,
   homeSessionGroups,
@@ -19,12 +24,20 @@ export interface PushTarget {
   ref: string;
   alerts: boolean;
   liveActivity: boolean;
+  approvalActions?: 1;
+  activityDetails?: 1;
   /** Changes when the phone changes its subscription; refusals remembered for the old one are dropped. */
   updatedAt: number;
 }
 
 /** Why an alert is sent: the session waits for the person, or its turn ended. */
 export type PushAlertKind = HomeNeed | "completed" | "failed";
+
+export interface PushAlertContext {
+  summary?: string;
+  interaction?: SessionPendingInteraction;
+  action?: PushApprovalAction;
+}
 
 /** What an alert says once the phone opens it. */
 export interface PushAlertMessage {
@@ -36,6 +49,8 @@ export interface PushAlertMessage {
   title?: string;
   computer?: string;
   summary?: string;
+  interaction?: SessionPendingInteraction;
+  action?: PushApprovalAction;
   /** Open the session to view a terminal interaction. The notification offers no decisions. */
   readOnly?: true;
   /** Milliseconds since the epoch. */
@@ -54,6 +69,9 @@ export interface PushActivityContent {
   title?: string;
   startedAt: number;
   endedAt?: number;
+  version?: string;
+  /** Sealed {v: 1, activity: NotificationActivitySnapshot}; the relay cannot read its priority. */
+  activityEnvelope?: string;
 }
 
 export interface PushNotifierOptions {
@@ -67,6 +85,21 @@ export interface PushNotifierOptions {
     sessionId: string,
     kind: "approval" | "question",
   ): Promise<string | undefined>;
+  /** Resolve current workspace access and any interaction details for this recipient. */
+  alertContext?(
+    target: PushTarget,
+    session: HomeSession,
+    kind: PushAlertKind,
+  ): Promise<PushAlertContext | undefined>;
+  activitySnapshot?(
+    target: PushTarget,
+    sessions: readonly HomeSession[],
+  ): Promise<NotificationActivitySnapshot | undefined>;
+  delivery?(kind: PushAlertKind, present: boolean, now: number): "send" | "hold" | "drop";
+  /** The host's notification switch also controls the Live Activity. */
+  enabled?(): boolean;
+  /** An ActivityKit remote start shows an alert, unlike its later passive updates. */
+  activityStartAllowed?(now: number): boolean;
   computerName?(): Promise<string | undefined>;
   /** Whether someone uses this computer now. Alerts wait until they leave. */
   present?(): boolean;
@@ -111,6 +144,8 @@ const STOP_TIMEOUT_MS = 3_000;
 const SNAPSHOT_FRESH_MS = 5 * MINUTE;
 const TITLE_LIMIT = 100;
 const COMPUTER_NAME_LIMIT = 64;
+const ALERT_ENVELOPE_LIMIT = 3_000;
+const ACTIVITY_CONTENT_LIMIT = 2_048;
 
 type SessionState = `needs:${HomeNeed}` | "running" | "result:completed" | "result:failed";
 interface PendingAlert {
@@ -120,6 +155,8 @@ interface PendingAlert {
   at: number;
   /** A Project Agent's result held while its work went on (`#leadBusy`). */
   held?: boolean;
+  sending?: boolean;
+  processed?: Set<string>;
 }
 function terminalWaitKind(alert: PendingAlert): "approval" | "question" | undefined {
   if (
@@ -146,6 +183,8 @@ interface TargetState {
   dismissed: boolean;
   alertTimes: number[];
   activity?: Activity;
+  scopedSince?: number;
+  scopedIdleSince?: number;
   busy: boolean;
 }
 
@@ -164,6 +203,31 @@ const retryable = (error: string) =>
   error === "relay_unavailable" ||
   error === "relay_unreachable" ||
   /^http_(5\d\d|403)$/.test(error);
+
+function sealAlert(
+  target: PushTarget,
+  deviceId: string,
+  message: PushAlertMessage,
+  terminal: boolean,
+): string | undefined {
+  const { title, computer, summary, interaction, action, ...base } = message;
+  const minimal = terminal ? { ...base, readOnly: true as const } : base;
+  const candidates = [
+    message,
+    ...(interaction ? [{ ...base, interaction, action }] : []),
+    { ...minimal, title, computer, summary },
+    { ...minimal, title, computer },
+    minimal,
+  ];
+  for (const payload of candidates) {
+    // The envelope has a 61-byte header and tag in addition to its plaintext bytes.
+    if (
+      Math.ceil(((Buffer.byteLength(JSON.stringify(payload)) + 61) * 4) / 3) > ALERT_ENVELOPE_LIMIT
+    )
+      continue;
+    return sealPushEnvelope(target.publicKey, deviceId, payload);
+  }
+}
 
 /**
  * Tells the phones that asked about this computer's sessions: an encrypted alert when a session
@@ -329,6 +393,8 @@ export class PushNotifier {
           alertsOffUntil: 0,
           activityOffUntil: 0,
           dismissed: false,
+          scopedSince: undefined,
+          scopedIdleSince: undefined,
         });
     }
     this.#flushAlerts(now, targets);
@@ -358,18 +424,49 @@ export class PushNotifier {
     };
   }
 
-  #flushAlerts(now: number, targets: Map<string, PushTarget>): void {
-    if (!this.#pending.size) return;
+  #delivery(kind: PushAlertKind, now: number) {
     const present = this.#options.present?.() ?? false;
+    return this.#options.delivery?.(kind, present, now) ?? (present ? "hold" : "send");
+  }
+
+  #currentTarget(target: PushTarget): boolean {
+    return this.#options
+      .targets()
+      .some(
+        (current) =>
+          current.session === target.session &&
+          current.updatedAt === target.updatedAt &&
+          current.publicKey === target.publicKey &&
+          current.ref === target.ref &&
+          current.activityDetails === target.activityDetails &&
+          current.approvalActions === target.approvalActions &&
+          current.alerts === target.alerts &&
+          current.liveActivity === target.liveActivity,
+      );
+  }
+
+  #currentAlert(alert: PendingAlert): boolean {
+    const id = alert.session.id;
+    return (
+      this.#pending.get(id) === alert &&
+      (alert.state === "supervision"
+        ? this.#supervision.has(id)
+        : this.#states.get(id) === alert.state)
+    );
+  }
+
+  #flushAlerts(now: number, targets: Map<string, PushTarget>): void {
     for (const [id, alert] of this.#pending) {
       const result = alert.kind === "completed" || alert.kind === "failed";
-      const current =
-        alert.state === "supervision"
-          ? this.#supervision.has(id)
-          : this.#states.get(id) === alert.state;
+      const current = this.#currentAlert(alert);
+      const delivery = this.#delivery(alert.kind, now);
+      if (!current || delivery === "drop") {
+        this.#pending.delete(id);
+        continue;
+      }
       // A Project Agent's turn ended while its work goes on: one alert once all of it stops,
       // counted from when that is seen.
-      if (result && current) {
+      if (result) {
         if (this.#leadBusy(id)) {
           alert.held = true;
           continue;
@@ -380,15 +477,14 @@ export class PushNotifier {
         }
       }
       const expired = now - alert.at > (result ? RESULT_HOLD_MS : NEED_HOLD_MS);
-      if (!current || expired) this.#pending.delete(id);
-      else if (!present) {
+      if (expired) this.#pending.delete(id);
+      else if (delivery === "send" && !alert.sending) {
         if (
-          this.#options.terminalSummary &&
+          (this.#options.alertContext || this.#options.terminalSummary) &&
           terminalWaitKind(alert) === "approval" &&
           now - alert.at < TERMINAL_APPROVAL_DETAILS_WAIT_MS
         )
           continue;
-        this.#pending.delete(id);
         this.#sendAlert(alert, now, targets);
       }
     }
@@ -413,63 +509,128 @@ export class PushNotifier {
 
   #sendAlert(alert: PendingAlert, now: number, targets: Map<string, PushTarget>): void {
     const deviceId = this.#options.deviceId();
-    if (!deviceId || this.#blockedUntil > now) return;
+    if (!deviceId || this.#blockedUntil > now) {
+      this.#pending.delete(alert.session.id);
+      return;
+    }
     const recipients = [...targets.values()].filter((target) => {
       const state = this.#targets.get(target.session);
-      if (!target.alerts || !state || state.alertsOffUntil > now || state.blockedUntil > now)
+      if (
+        !target.alerts ||
+        !state ||
+        state.alertsOffUntil > now ||
+        state.blockedUntil > now ||
+        alert.processed?.has(target.session)
+      )
         return false;
       state.alertTimes = state.alertTimes.filter((at) => now - at < HOUR);
-      if (state.alertTimes.length >= ALERTS_PER_HOUR) return false;
-      state.alertTimes.push(now);
-      return true;
+      return state.alertTimes.length < ALERTS_PER_HOUR;
     });
-    if (!recipients.length) return;
+    if (!recipients.length) {
+      this.#pending.delete(alert.session.id);
+      return;
+    }
     const alertTitle = title(alert.session);
     const terminalKind = terminalWaitKind(alert);
+    alert.sending = true;
+    const processed = (alert.processed ??= new Set());
     this.#track(async () => {
       const computer = clip(
         await (this.#options.computerName?.() ?? Promise.resolve(undefined)).catch(() => undefined),
         COMPUTER_NAME_LIMIT,
       );
-      await Promise.all(
-        recipients.map(async (target) => {
-          const summary = terminalKind
-            ? clip(
-                await this.#options
-                  .terminalSummary?.(target, alert.session.id, terminalKind)
-                  .catch(() => undefined),
-                256,
-              )
-            : undefined;
-          if (terminalKind && this.#states.get(alert.session.id) !== alert.state) return;
-          const message: PushAlertMessage = {
-            v: 1,
-            ref: target.ref,
-            kind: alert.kind,
-            sessionId: alert.session.id,
-            agent: alert.session.agent,
-            ...(alertTitle ? { title: alertTitle } : {}),
-            ...(computer ? { computer } : {}),
-            ...(terminalKind ? { readOnly: true } : {}),
-            ...(summary ? { summary } : {}),
-            at: alert.at,
-          };
-          let envelope: string;
-          try {
-            envelope = sealPushEnvelope(target.publicKey, deviceId, message);
-          } catch {
-            return;
-          }
-          const result = await this.#options.send({
-            session: target.session,
-            kind: "alert",
-            envelope,
-            collapseId: collapseId(alert.session.id),
-          });
-          const state = this.#targets.get(target.session);
-          if (!result.delivered && state) this.#refused(state, result, "alerts");
-        }),
-      );
+      let held = false;
+      try {
+        await Promise.allSettled(
+          recipients.map(async (target) => {
+            if (this.#stopped || !this.#currentAlert(alert) || !this.#currentTarget(target)) return;
+            const authorize = this.#options.alertContext;
+            let context = authorize ? await authorize(target, alert.session, alert.kind) : {};
+            if (
+              !context ||
+              this.#stopped ||
+              !this.#currentAlert(alert) ||
+              !this.#currentTarget(target)
+            )
+              return;
+            let preview = context.summary;
+            const readTerminalSummary = this.#options.terminalSummary;
+            if (!preview && terminalKind && readTerminalSummary) {
+              preview = await readTerminalSummary(target, alert.session.id, terminalKind).catch(
+                () => undefined,
+              );
+              // A missing preview can also indicate that the target lost workspace access.
+              if (!preview && authorize) {
+                context = await authorize(target, alert.session, alert.kind);
+                if (!context) return;
+                preview = context.summary;
+              }
+            }
+            const time = this.#now();
+            const state = this.#targets.get(target.session);
+            const delivery = this.#delivery(alert.kind, time);
+            const result = alert.kind === "completed" || alert.kind === "failed";
+            if (
+              this.#stopped ||
+              !state ||
+              !this.#currentAlert(alert) ||
+              !this.#currentTarget(target) ||
+              deviceId !== this.#options.deviceId() ||
+              time - alert.at > (result ? RESULT_HOLD_MS : NEED_HOLD_MS)
+            )
+              return;
+            if (delivery === "hold" || (result && this.#leadBusy(alert.session.id))) {
+              held = true;
+              return;
+            }
+            if (delivery !== "send") return;
+            processed.add(target.session);
+            state.alertTimes = state.alertTimes.filter((at) => time - at < HOUR);
+            if (
+              state.alertTimes.length >= ALERTS_PER_HOUR ||
+              state.alertsOffUntil > time ||
+              state.blockedUntil > time ||
+              this.#blockedUntil > time
+            )
+              return;
+            const summary = clip(preview, 256);
+            const interaction = target.approvalActions === 1 ? context.interaction : undefined;
+            const action =
+              interaction && context.action && context.action.expiresAt > time
+                ? context.action
+                : undefined;
+            const message: PushAlertMessage = {
+              v: 1,
+              ref: target.ref,
+              kind: alert.kind,
+              sessionId: alert.session.id,
+              agent: alert.session.agent,
+              ...(alertTitle ? { title: alertTitle } : {}),
+              ...(computer ? { computer } : {}),
+              ...(terminalKind && !action ? { readOnly: true } : {}),
+              ...(summary ? { summary } : {}),
+              ...(interaction ? { interaction } : {}),
+              ...(action ? { action } : {}),
+              at: alert.at,
+            };
+            const envelope = sealAlert(target, deviceId, message, terminalKind !== undefined);
+            if (!envelope) return;
+            state.alertTimes.push(time);
+            const sent = await this.#options.send({
+              session: target.session,
+              kind: "alert",
+              envelope,
+              collapseId: collapseId(alert.session.id),
+            });
+            if (!sent.delivered && this.#currentTarget(target))
+              this.#refused(state, sent, "alerts");
+          }),
+        );
+      } finally {
+        alert.sending = false;
+        if (!held && this.#pending.get(alert.session.id) === alert)
+          this.#pending.delete(alert.session.id);
+      }
     });
   }
 
@@ -479,63 +640,161 @@ export class PushNotifier {
       now - this.#episode.idleSince >= this.#activityEndDelayMs
     ) {
       this.#episode = undefined;
-      for (const state of this.#targets.values()) state.dismissed = false;
+      for (const state of this.#targets.values()) {
+        state.dismissed = false;
+        state.scopedSince = undefined;
+        state.scopedIdleSince = undefined;
+      }
     }
     const episode = this.#episode;
     const content = this.#content;
     // Without recent snapshots the content may be wrong: nothing is sent, and the phone marks
     // the activity outdated at its stale date.
-    const shown =
-      !!episode &&
-      episode.idleSince === undefined &&
-      now - episode.since >= this.#activityDelayMs &&
-      now - this.#snapshotAt < SNAPSHOT_FRESH_MS &&
-      !!content &&
-      !!this.#options.deviceId();
     for (const target of targets.values()) {
       const state = this.#targets.get(target.session)!;
       // Checked again on the next tick, once the send in flight settled.
       if (state.busy) continue;
-      if (state.activity && (!episode || !target.liveActivity)) {
-        this.#end(target.session, state, now, !!episode);
+      const enabled = this.#options.enabled?.() ?? true;
+      if (state.activity && (!episode || !target.liveActivity || !enabled)) {
+        this.#end(target.session, state, now, !!episode || !enabled);
         continue;
       }
       if (
-        !shown ||
+        !episode ||
+        !enabled ||
         !target.liveActivity ||
-        state.dismissed ||
-        this.#blockedUntil > now ||
-        state.blockedUntil > now
+        now - this.#snapshotAt >= SNAPSHOT_FRESH_MS ||
+        !this.#options.deviceId()
       )
         continue;
-      const text = JSON.stringify(content);
-      if (!state.activity) {
-        if (state.activityOffUntil <= now) this.#start(target.session, state, content!, now);
-      } else if (now - state.activity.startedAt >= ACTIVITY_LIFETIME_MS)
-        // A new one starts on a later check, once this one ended.
-        this.#end(target.session, state, now, true);
-      else if (
-        (text !== state.activity.content && now - state.activity.sentAt >= UPDATE_INTERVAL_MS) ||
-        now - state.activity.sentAt >= HEARTBEAT_MS
+      if (target.activityDetails === 1) {
+        this.#scopedActivity(target, state);
+        continue;
+      }
+      if (
+        content &&
+        episode.idleSince === undefined &&
+        now - episode.since >= this.#activityDelayMs
       )
-        this.#update(target.session, state, content!, now);
+        this.#showActivity(target, state, content, now);
     }
   }
 
-  #start(session: string, state: TargetState, content: PushActivityContent, now: number): void {
+  #scopedActivity(target: PushTarget, state: TargetState): void {
+    const read = this.#options.activitySnapshot;
+    const deviceId = this.#options.deviceId();
+    if (!read || !deviceId) return;
+    const sessions = this.#sessions;
+    state.busy = true;
+    this.#track(async () => {
+      let snapshot: NotificationActivitySnapshot | undefined;
+      try {
+        snapshot = await read(target, sessions);
+      } finally {
+        state.busy = false;
+      }
+      const now = this.#now();
+      if (
+        this.#stopped ||
+        !(this.#options.enabled?.() ?? true) ||
+        !this.#currentTarget(target) ||
+        deviceId !== this.#options.deviceId() ||
+        sessions !== this.#sessions ||
+        now - this.#snapshotAt >= SNAPSHOT_FRESH_MS
+      )
+        return;
+      if (!snapshot || (!snapshot.running && !snapshot.waiting)) {
+        state.scopedIdleSince ??= now;
+        if (!snapshot || now - state.scopedIdleSince >= this.#activityEndDelayMs) {
+          state.scopedSince = undefined;
+          state.scopedIdleSince = undefined;
+          state.dismissed = false;
+          if (state.activity) this.#end(target.session, state, now, !snapshot);
+        }
+        return;
+      }
+      state.scopedIdleSince = undefined;
+      state.scopedSince ??= now;
+      if (now - state.scopedSince < this.#activityDelayMs) return;
+      this.#showActivity(
+        target,
+        state,
+        {
+          running: snapshot.running,
+          waiting: snapshot.waiting,
+          ...(snapshot.waiting === 1 && snapshot.priority
+            ? { need: snapshot.priority.category }
+            : {}),
+          startedAt: seconds(state.scopedSince),
+          version: snapshot.version,
+        },
+        now,
+        snapshot,
+      );
+    });
+  }
+
+  #showActivity(
+    target: PushTarget,
+    state: TargetState,
+    content: PushActivityContent,
+    now: number,
+    snapshot?: NotificationActivitySnapshot,
+  ): void {
+    if (state.dismissed || this.#blockedUntil > now || state.blockedUntil > now) return;
+    const text = JSON.stringify(content);
+    if (!state.activity) {
+      if (state.activityOffUntil <= now && (this.#options.activityStartAllowed?.(now) ?? true))
+        this.#start(target, state, content, now, snapshot);
+    } else if (now - state.activity.startedAt >= ACTIVITY_LIFETIME_MS)
+      this.#end(target.session, state, now, true);
+    else if (
+      (text !== state.activity.content && now - state.activity.sentAt >= UPDATE_INTERVAL_MS) ||
+      now - state.activity.sentAt >= HEARTBEAT_MS
+    )
+      this.#update(target, state, content, now, snapshot);
+  }
+
+  #activityPayload(
+    target: PushTarget,
+    content: PushActivityContent,
+    snapshot?: NotificationActivitySnapshot,
+  ): PushActivityContent {
+    const deviceId = this.#options.deviceId();
+    if (!snapshot || !deviceId) return content;
+    try {
+      const activityEnvelope = sealPushEnvelope(target.publicKey, deviceId, {
+        v: 1,
+        activity: snapshot,
+      });
+      const payload = { ...content, activityEnvelope };
+      if (Buffer.byteLength(JSON.stringify(payload)) <= ACTIVITY_CONTENT_LIMIT) return payload;
+    } catch {
+      // The relay can still deliver the scoped counters alone.
+    }
+    return content;
+  }
+
+  #start(
+    target: PushTarget,
+    state: TargetState,
+    content: PushActivityContent,
+    now: number,
+    snapshot?: NotificationActivitySnapshot,
+  ): void {
     state.busy = true;
     this.#track(async () => {
       try {
         const result = await this.#options.send({
-          session,
+          session: target.session,
           kind: "activity",
           event: "start",
-          contentState: { ...content },
+          contentState: { ...this.#activityPayload(target, content, snapshot) },
           // Once per stretch of work, and it should appear while the work is fresh.
           priority: 10,
           staleDate: seconds(now + STALE_AFTER_MS),
         });
-        if (result.delivered)
+        if (result.delivered) {
           state.activity = {
             confirmed: false,
             startedAt: now,
@@ -543,24 +802,35 @@ export class PushNotifier {
             content: JSON.stringify(content),
             waiting: content.waiting,
           };
-        else this.#refused(state, result, "activity");
+        } else this.#refused(state, result, "activity");
       } finally {
         state.busy = false;
       }
+      if (
+        state.activity &&
+        (this.#stopped || !this.#currentTarget(target) || !(this.#options.enabled?.() ?? true))
+      )
+        this.#end(target.session, state, this.#now(), true);
     });
   }
 
-  #update(session: string, state: TargetState, content: PushActivityContent, now: number): void {
+  #update(
+    target: PushTarget,
+    state: TargetState,
+    content: PushActivityContent,
+    now: number,
+    snapshot?: NotificationActivitySnapshot,
+  ): void {
     const activity = state.activity!;
     state.busy = true;
     const text = JSON.stringify(content);
     this.#track(async () => {
       try {
         const result = await this.#options.send({
-          session,
+          session: target.session,
           kind: "activity",
           event: "update",
-          contentState: { ...content },
+          contentState: { ...this.#activityPayload(target, content, snapshot) },
           // Someone waiting is worth showing at once; the rest waits for a good moment.
           priority: content.waiting > activity.waiting ? 10 : 5,
           staleDate: seconds(now + STALE_AFTER_MS),

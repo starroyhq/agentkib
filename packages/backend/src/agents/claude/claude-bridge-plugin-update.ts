@@ -69,20 +69,25 @@ function updatePluginsRoot(environment: NodeJS.ProcessEnv): string | undefined {
 function usesBundledMarketplace(pluginsRoot: string, directory: string): boolean {
   const marketplaces = readJson(path.join(pluginsRoot, "known_marketplaces.json"));
   const marketplace = isRecord(marketplaces) ? marketplaces[MARKETPLACE] : undefined;
-  const source = isRecord(marketplace) ? marketplace.source : undefined;
-  if (
-    !isRecord(source) ||
-    source.source !== "directory" ||
-    typeof source.path !== "string" ||
-    !path.isAbsolute(source.path) ||
-    isNetworkOrDevicePath(source.path, process.platform)
-  )
-    return false;
-  try {
-    return lexicalPathIdentity(canonicalize(source.path)) === lexicalPathIdentity(directory);
-  } catch {
-    return false;
-  }
+  if (!isRecord(marketplace) || !isRecord(marketplace.source)) return false;
+  const sameDirectory = (value: unknown) => {
+    if (
+      typeof value !== "string" ||
+      !path.isAbsolute(value) ||
+      isNetworkOrDevicePath(value, process.platform)
+    )
+      return false;
+    try {
+      return lexicalPathIdentity(canonicalize(value)) === lexicalPathIdentity(directory);
+    } catch {
+      return false;
+    }
+  };
+  return (
+    marketplace.source.source === "directory" &&
+    sameDirectory(marketplace.source.path) &&
+    (marketplace.installLocation === undefined || sameDirectory(marketplace.installLocation))
+  );
 }
 
 /** Owns startup checks and explicit retries. Claude Code alone writes its plugin records. */
@@ -171,7 +176,7 @@ export class ClaudeBridgePluginUpdater {
 
     const receipts = path.join(dataDir, "claude-bridge", "plugin-updates");
     const receipt = path.join(receipts, bundledVersion + ".json");
-    const previous = readJson(receipt);
+    const previous = manual ? undefined : readJson(receipt);
     if (!manual && previous !== undefined) {
       this.#fail(
         isRecord(previous) && typeof previous.reason === "string"

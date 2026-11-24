@@ -26,11 +26,13 @@ afterEach(() => {
 function fixture({
   installedVersion = existingVersion,
   matchingMarketplace = true,
+  staleInstallLocation = false,
   hasCli = true,
   outcome = "success",
 }: {
   installedVersion?: string | null;
   matchingMarketplace?: boolean;
+  staleInstallLocation?: boolean;
   hasCli?: boolean;
   outcome?: Outcome;
 } = {}) {
@@ -75,7 +77,8 @@ function fixture({
         source: "directory",
         path: matchingMarketplace ? pluginDirectory : otherMarketplace,
       },
-      installLocation: matchingMarketplace ? pluginDirectory : otherMarketplace,
+      installLocation:
+        matchingMarketplace && !staleInstallLocation ? pluginDirectory : otherMarketplace,
     },
   });
   writeJson(settingsFile, { enabledPlugins: { [pluginId]: true } });
@@ -181,6 +184,11 @@ switch (fs.readFileSync(${JSON.stringify(outcomeFile)}, "utf8")) {
     calls,
     nativeSettings,
     setOutcome,
+    interruptPreviousAttempt: () => {
+      const receipts = path.join(dataDir, "claude-bridge", "plugin-updates");
+      mkdirSync(receipts, { recursive: true });
+      writeFileSync(path.join(receipts, bundledVersion + ".json"), "");
+    },
     installManually: (version: string) =>
       writeJson(installedFile, {
         version: 2,
@@ -256,6 +264,28 @@ it("does not update an identically named marketplace registered from another dir
 
   expect(updater.status()).toMatchObject({ installedVersion: existingVersion, bundledVersion });
   expect(f.calls()).toEqual([]);
+});
+
+it("refuses an inconsistent marketplace install location", async () => {
+  const f = fixture({ staleInstallLocation: true });
+  await f.makeUpdater().start();
+  expect(f.calls()).toEqual([]);
+});
+
+it("allows explicit retry after an interrupted version claim", async () => {
+  const f = fixture();
+  f.interruptPreviousAttempt();
+  const updater = f.makeUpdater();
+  await updater.start();
+  expect(updater.status()?.status).toBe("failed");
+  expect(f.calls()).toEqual([]);
+
+  expect(await updater.retry()).toMatchObject({
+    installedVersion: bundledVersion,
+    bundledVersion,
+    status: "updated",
+  });
+  expect(f.calls()).toEqual([expectedUpdate]);
 });
 
 it("shows an update failure with Claude Code's error", async () => {

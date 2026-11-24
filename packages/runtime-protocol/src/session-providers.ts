@@ -84,6 +84,8 @@ export interface SessionProjectAgentCapabilities {
 
 interface SessionProviderIntegrationCapabilities {
   commands?: { source: "built-in" | "reported" | "none" };
+  /** Native pending interactions the provider can describe. Live grants still determine availability. */
+  pendingInteractions?: { approval?: true; question?: true };
   queue?: { actions: readonly SessionQueueAction[] };
   projectAgent?: SessionProjectAgentCapabilities;
   /** The provider's native integration, even when no session is connected to it. */
@@ -155,6 +157,7 @@ export interface BasicSessionProviderCapabilities extends SessionProviderIntegra
 const MANAGED_CAPABILITIES = {
   codex: {
     history: { readState: true },
+    pendingInteractions: { approval: true, question: true },
     operations: { execution: true },
     composer: {
       modelPicker: true,
@@ -186,6 +189,7 @@ const MANAGED_CAPABILITIES = {
   },
   "claude-code": {
     history: { readState: true },
+    pendingInteractions: { approval: true, question: true },
     operations: { execution: true },
     composer: {
       modelPicker: true,
@@ -220,6 +224,7 @@ const MANAGED_CAPABILITIES = {
   },
   "deepseek-harness": {
     history: { readState: false },
+    pendingInteractions: { approval: true, question: true },
     operations: { execution: true },
     composer: {
       modelPicker: true,
@@ -251,6 +256,7 @@ const MANAGED_CAPABILITIES = {
   },
   devin: {
     history: { readState: true },
+    pendingInteractions: { approval: true },
     operations: { execution: false },
     composer: {
       modelPicker: true,
@@ -281,6 +287,7 @@ const MANAGED_CAPABILITIES = {
   // ACP options; a new session starts with its first message.
   antigravity: {
     history: { readState: false },
+    pendingInteractions: { approval: true },
     operations: { execution: false },
     composer: {
       modelPicker: true,

@@ -344,6 +344,7 @@ type DevinApproval = {
   method: "session/request_permission";
   presentation: "tool" | "mcp";
   toolCall: Record<string, unknown>;
+  agentDescription?: string;
   options: Array<{ optionId: string; name: string; kind: string }>;
   availableDecisions: string[];
   supported: true;
@@ -951,13 +952,18 @@ export class DevinManagedRunner {
       return;
     }
     const requestId = typeof id === "bigint" ? id.toString() : id;
+    const presented = devinToolCall(toolCall, rule);
     this.#approvals.set(requestId, {
       id,
       requestId,
       turnId,
       method: "session/request_permission",
       presentation: rule.startsWith("mcp__") ? "mcp" : "tool",
-      toolCall: devinToolCall(toolCall, rule),
+      toolCall: presented,
+      // Legacy title can fall back to a permission rule or redact parts of the native text.
+      ...(typeof toolCall.title === "string" && presented.title === toolCall.title
+        ? { agentDescription: toolCall.title }
+        : {}),
       options: choices.map(({ optionId, name, kind }) => ({
         optionId,
         name: sanitizeHandoffExport(name, "markdown").slice(0, 512),

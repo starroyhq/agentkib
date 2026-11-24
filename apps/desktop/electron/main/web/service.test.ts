@@ -1,4 +1,5 @@
 // @vitest-environment node
+import { randomUUID } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdir, mkdtemp, readFile, rm, symlink, truncate, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -970,7 +971,7 @@ describe("WebAccessService loopback security boundary", () => {
         expectedRevision: 4,
         turnId: "turn",
         approvalId: "approval",
-        decision: "accept",
+        decision: "decline",
       };
       const control = http(`/api/web/v1/${operation}`, { method: "POST", body });
       await vi.waitFor(() => expect(finishPreflight).toBeTypeOf("function"));
@@ -995,7 +996,7 @@ describe("WebAccessService loopback security boundary", () => {
             requestId: "approval",
             turnId: "turn",
             supported: true,
-            availableDecisions: ["accept"],
+            availableDecisions: ["decline"],
           },
         ],
       });
@@ -1108,7 +1109,7 @@ describe("WebAccessService loopback security boundary", () => {
         revision: 4,
         sendEnabled: true,
         approvals: [
-          { requestId: "a", turnId: "t", supported: true, availableDecisions: ["accept"] },
+          { requestId: "a", turnId: "t", supported: true, availableDecisions: ["decline"] },
         ],
       };
       runtime.mockImplementation(async (params) => {
@@ -1131,7 +1132,7 @@ describe("WebAccessService loopback security boundary", () => {
         expectedRevision: 4,
         approvalId: "a",
         turnId: "t",
-        decision: "accept",
+        decision: "decline",
       };
       const rejected = await http(`/api/web/v1/${operation}`, { method: "POST", body });
       expect(rejected.status).toBe(409);
@@ -1178,7 +1179,7 @@ describe("WebAccessService loopback security boundary", () => {
               revision: 4,
               sendEnabled: true,
               approvals: [
-                { requestId: "a", turnId: "t", supported: true, availableDecisions: ["accept"] },
+                { requestId: "a", turnId: "t", supported: true, availableDecisions: ["decline"] },
               ],
             },
       );
@@ -1190,7 +1191,7 @@ describe("WebAccessService loopback security boundary", () => {
         expectedRevision: 4,
         approvalId: "a",
         turnId: "t",
-        decision: "accept",
+        decision: "decline",
       };
       const result = await http(`/api/web/v1/${operation}`, { method: "POST", body });
       expect(result.status).toBe(502);
@@ -2627,23 +2628,21 @@ describe("WebAccessService loopback security boundary", () => {
     expect(runtime.mock.calls.every(([value]) => (value as any).operation === "live")).toBe(true);
   });
   it("forwards native Claude decisions only when the exact pending request offers them", async () => {
-    await bootstrap();
-    await pair(true, true);
-    runtime.mockResolvedValue({
-      accepted: true,
-      runtimeBootId: "runtime-one",
-      revision: 4,
-      sendEnabled: false,
+    await pendingInteractionSnapshot({
+      executionMode: "claude-managed",
       approvals: [
         {
           requestId: "claude-request",
           turnId: "turn",
           supported: true,
           method: "claude/can_use_tool",
+          toolName: "Read",
+          input: { file_path: join(dir, "index.html") },
           availableDecisions: ["allow", "deny"],
         },
       ],
     });
+    await pair(true, true);
     for (const decision of ["allow", "deny", "accept", "cancel"]) {
       const response = await http("/api/web/v1/approve", {
         method: "POST",
@@ -2665,24 +2664,322 @@ describe("WebAccessService loopback security boundary", () => {
       ),
     ).toBe(true);
   });
-  it("rejects unavailable send and only forwards exact supported numeric approvals", async () => {
-    await bootstrap();
-    await pair(true, true);
-    const body = { sessionId: "s", text: "x", requestId: "disabled", bootId, expectedRevision: 4 };
-    runtime.mockResolvedValue({
-      accepted: true,
+
+  async function pendingInteractionSnapshot(options?: {
+    approvals?: unknown[];
+    questions?: unknown[];
+    executionMode?: string;
+  }) {
+    await service.request({
+      operation: "configure",
+      enabled: true,
+      port,
+      externalOrigin: "",
+      experimentalEnabled: true,
+      allowedWorkspaceIds: ["workspace"],
+    });
+    const snapshot = {
+      sessionId: "s",
+      workspaceId: "workspace",
+      executionMode: options?.executionMode ?? "codex-managed",
       runtimeBootId: "runtime-one",
       revision: 4,
-      sendEnabled: false,
-      approvals: [
-        {
-          requestId: 860,
+      turnId: "turn",
+      status: "waiting",
+      approvals: options?.approvals ?? [],
+      questions: options?.questions ?? [],
+    };
+    runtime.mockImplementation(async (value) => {
+      const { operation, requestId } = value as { operation: string; requestId?: string };
+      if (operation === "catalog")
+        return {
+          workspaces: [{ id: "workspace", name: "Workspace", path: dir }],
+          sessions: [{ id: "s", agent: "codex", workspace_id: "workspace" }],
+        };
+      if (operation === "live") return snapshot;
+      return { accepted: true, requestId, runtimeBootId: "runtime-one" };
+    });
+    await bootstrap();
+    return snapshot;
+  }
+
+  const pendingCommand = (command: string) => ({
+    requestId: 7,
+    turnId: "turn",
+    supported: true,
+    method: "item/commandExecution/requestApproval",
+    agentDescription: "Agent's own explanation",
+    command,
+    cwd: dir,
+    availableDecisions: ["accept", "acceptForSession", "decline"],
+  });
+
+  it("keeps high-risk paired approval fail-closed for both protocols", async () => {
+    await pendingInteractionSnapshot({ approvals: [pendingCommand("rm -rf build")] });
+    await approveLegacyBrowser(service, cookie, { approve: true, extendedApproval: true });
+    expect((await http("/api/web/v1/access")).json()).toMatchObject({
+      pendingInteractions: { version: 1, deviceVerification: false },
+    });
+    const live = (await http("/api/web/v1/live?sessionId=s")).json();
+    expect(live.approvals[0].availableDecisions).toEqual(["decline"]);
+    expect(live.pendingInteractions).toMatchObject([
+      {
+        kind: "approval",
+        binding: {
+          sessionId: "s",
           turnId: "turn",
-          supported: true,
-          availableDecisions: ["approve-once", "cancel"],
+          requestId: 7,
+          revision: 4,
+          runtimeBootId: "runtime-one",
+        },
+        risk: { level: "high" },
+        summary: "Agent's own explanation",
+        command: "rm -rf build",
+        decisions: [
+          {
+            id: "choice:accept",
+            available: false,
+            scope: "once",
+            verification: "device-user-verification",
+            lockScreen: false,
+          },
+          { id: "choice:decline", available: true, verification: "none" },
+        ],
+      },
+    ]);
+    const post = (decision: Record<string, unknown>) =>
+      http("/api/web/v1/approve", {
+        method: "POST",
+        body: {
+          bootId,
+          sessionId: "s",
+          turnId: "turn",
+          approvalId: 7,
+          requestId: randomUUID(),
+          expectedRevision: 4,
+          interactionRuntimeBootId: "runtime-one",
+          ...decision,
+        },
+      });
+    for (const input of [{ decision: "accept" }, { interactionDecisionId: "choice:accept" }]) {
+      const response = await post({ ...input, verified: true });
+      expect(response.status).toBe(403);
+      expect(response.json().error).toBe("interaction_verification_required");
+    }
+    expect((await post({ decision: "acceptForSession" })).status).toBe(409);
+    expect((await post({ interactionDecisionId: "choice:decline" })).status).toBe(200);
+    expect(
+      runtime.mock.calls
+        .map(([input]) => input)
+        .filter((input: any) => input.operation === "approve"),
+    ).toEqual([expect.objectContaining({ decision: "decline" })]);
+  });
+
+  it("projects low-risk choices, clears them on stream updates, and recovers one receipt", async () => {
+    const snapshot = await pendingInteractionSnapshot({ approvals: [pendingCommand("ls")] });
+    const deviceId = await pair(false, true);
+    const requestId = randomUUID();
+    const body = {
+      bootId,
+      sessionId: "s",
+      turnId: "turn",
+      approvalId: 7,
+      requestId,
+      expectedRevision: 4,
+      interactionDecisionId: "choice:accept",
+      interactionRuntimeBootId: "runtime-one",
+    };
+    const post = (value: unknown) => http("/api/web/v1/approve", { method: "POST", body: value });
+    const stream = await openReadyStream();
+    try {
+      expect(streamEvents(stream.chunks)[0]?.payload).toMatchObject({
+        live: {
+          pendingInteractions: [
+            {
+              risk: { level: "low" },
+              decisions: expect.arrayContaining([
+                {
+                  id: "choice:accept",
+                  available: true,
+                  lockScreen: true,
+                  verification: "none",
+                  scope: "once",
+                  kind: "allow",
+                },
+              ]),
+            },
+          ],
+        },
+      });
+      const stale = await post({ ...body, requestId: randomUUID(), expectedRevision: 3 });
+      expect(stale.status).toBe(409);
+      expect(stale.json()).toMatchObject({
+        error: "interaction_expired",
+        controlOutcome: "not-dispatched",
+      });
+      const oldRuntime = await post({
+        ...body,
+        requestId: randomUUID(),
+        interactionRuntimeBootId: "runtime-before-restart",
+      });
+      expect(oldRuntime.json()).toMatchObject({
+        error: "interaction_expired",
+        controlOutcome: "not-dispatched",
+      });
+      const first = await post(body);
+      expect(first.status).toBe(200);
+      snapshot.approvals = [];
+      snapshot.revision = 5;
+      pushEvent("state", { approvals: [], revision: 5 });
+      await vi.waitFor(() =>
+        expect(streamEvents(stream.chunks).at(-1)?.payload).toMatchObject({
+          pendingInteractions: [],
+        }),
+      );
+      const result = {
+        found: true,
+        requestId,
+        sessionId: "s",
+        workspaceId: "workspace",
+        operation: "approve",
+        executionMode: "codex-managed",
+        status: "accepted",
+        ack: first.json(),
+      };
+      receiptQuery.mockResolvedValueOnce(result);
+      expect((await post(body)).json().error).toBe("duplicate_request");
+      receiptQuery.mockResolvedValueOnce(result);
+      const receipt = await http(`/api/web/v1/requests/${requestId}`);
+      expect(receipt.status).toBe(200);
+      expect(receipt.json()).toMatchObject(result);
+      expect(receiptQuery).toHaveBeenLastCalledWith({ requestId, deviceId });
+      expect(
+        runtime.mock.calls.filter(
+          ([input]) => (input as { operation: string }).operation === "approve",
+        ),
+      ).toHaveLength(1);
+    } finally {
+      stream.close();
+    }
+    const reconnected = await openReadyStream();
+    try {
+      expect(streamEvents(reconnected.chunks)[0]?.payload).toMatchObject({
+        live: { approvals: [] },
+      });
+      expect(streamEvents(reconnected.chunks)[0]?.payload.live).not.toHaveProperty(
+        "pendingInteractions",
+      );
+    } finally {
+      reconnected.close();
+    }
+  });
+
+  it("distinguishes ordinary answers and native questions carrying permission intent", async () => {
+    const question = {
+      requestId: "choice",
+      turnId: "turn",
+      supported: true,
+      questions: [
+        {
+          id: "q",
+          question: "Pick one",
+          options: [{ label: "A" }],
+          multiSelect: false,
+          allowCustom: false,
         },
       ],
+    };
+    await pendingInteractionSnapshot({
+      executionMode: "dsh-follower",
+      questions: [question, { ...question, requestId: "approval", permissionIntent: true }],
     });
+    await pair(false, true);
+    let live = (await http("/api/web/v1/live?sessionId=s")).json();
+    expect(live.pendingInteractions.map((item: any) => item.decisions)).toEqual([[], []]);
+    cookie = "";
+    await bootstrap();
+    await pair(true, false);
+    live = (await http("/api/web/v1/live?sessionId=s")).json();
+    expect(live.questions[1].supported).toBe(false);
+    expect(live.pendingInteractions).toMatchObject([
+      { kind: "question", decisions: [{ id: "answer", available: true }] },
+      { kind: "question", decisions: [], risk: { level: "high" } },
+    ]);
+    const post = (payload: Record<string, unknown>) =>
+      http("/api/web/v1/answer", {
+        method: "POST",
+        body: {
+          bootId,
+          sessionId: "s",
+          turnId: "turn",
+          requestId: randomUUID(),
+          expectedRevision: 4,
+          interactionRuntimeBootId: "runtime-one",
+          answers: { q: ["A"] },
+          ...payload,
+        },
+      });
+    expect((await post({ questionId: "approval" })).json().error).toBe(
+      "interaction_verification_required",
+    );
+    expect((await post({ questionId: "choice", interactionDecisionId: "answer" })).status).toBe(
+      200,
+    );
+    expect(runtime).toHaveBeenLastCalledWith(
+      expect.objectContaining({ operation: "answer", questionId: "choice", answers: { q: ["A"] } }),
+    );
+  });
+  it.each([
+    {
+      runtimeBootId: "runtime-one",
+      status: 409,
+      error: "interaction_expired",
+      outcome: "not-dispatched",
+    },
+    { runtimeBootId: "other", status: 502, error: "outcome_unknown", outcome: "unknown" },
+  ])("reports expiry only for a correlated runtime refusal ($runtimeBootId)", async (expected) => {
+    await pendingInteractionSnapshot({ approvals: [pendingCommand("ls")] });
+    await pair(false, true);
+    const native = runtime.getMockImplementation()!;
+    runtime.mockImplementation(async (value) => {
+      const { operation, requestId } = value as { operation: string; requestId?: string };
+      if (operation !== "approve") return native(value);
+      return {
+        accepted: false,
+        completed: false,
+        controlOutcome: "not-dispatched",
+        reason: "stale-turn",
+        requestId,
+        runtimeBootId: expected.runtimeBootId,
+      };
+    });
+    const response = await http("/api/web/v1/approve", {
+      method: "POST",
+      body: {
+        bootId,
+        sessionId: "s",
+        turnId: "turn",
+        approvalId: 7,
+        requestId: randomUUID(),
+        expectedRevision: 4,
+        interactionDecisionId: "choice:accept",
+        interactionRuntimeBootId: "runtime-one",
+      },
+    });
+    expect(response.status).toBe(expected.status);
+    expect(response.json()).toMatchObject({
+      error: expected.error,
+      controlOutcome: expected.outcome,
+    });
+  });
+  it("rejects unavailable send and only forwards exact supported numeric approvals", async () => {
+    await pendingInteractionSnapshot({
+      approvals: [
+        { ...pendingCommand("ls"), requestId: 860, availableDecisions: ["accept", "cancel"] },
+      ],
+    });
+    await pair(true, true);
+    const body = { sessionId: "s", text: "x", requestId: "disabled", bootId, expectedRevision: 4 };
     expect((await http("/api/web/v1/send", { method: "POST", body })).status).toBe(409);
     const approval = {
       ...body,
@@ -2698,7 +2995,7 @@ describe("WebAccessService loopback security boundary", () => {
       (
         await http("/api/web/v1/approve", {
           method: "POST",
-          body: { ...approval, requestId: "accept", decision: "approve-once" },
+          body: { ...approval, requestId: "accept", decision: "accept" },
         })
       ).status,
     ).toBe(200);
@@ -2706,27 +3003,25 @@ describe("WebAccessService loopback security boundary", () => {
       expect.objectContaining({
         operation: "approve",
         approvalId: 860,
-        decision: "approve-once",
+        decision: "accept",
       }),
     );
   });
   it("forwards a supported negative ACP approval ID without changing its sign", async () => {
-    await bootstrap();
-    await pair(true, true);
-    runtime.mockResolvedValue({
-      accepted: true,
-      runtimeBootId: "runtime-one",
-      revision: 4,
-      sendEnabled: false,
+    await pendingInteractionSnapshot({
+      executionMode: "acp-managed",
       approvals: [
         {
           requestId: -860,
           turnId: "turn",
           supported: true,
+          toolCall: { kind: "execute", rawInput: { command: "ls", cwd: dir } },
+          options: [{ optionId: "native-yes", kind: "allow_once" }],
           availableDecisions: ["native-yes"],
         },
       ],
     });
+    await pair(true, true);
     const response = await http("/api/web/v1/approve", {
       method: "POST",
       body: {

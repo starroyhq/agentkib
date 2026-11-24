@@ -8,9 +8,14 @@ const MAX_BYTES = 8 * 1024 * 1024;
 
 /** Only the historical projection is reusable; live/control checks always run separately. */
 export class SessionSnapshotHistory {
-  #entries = new Map<string, { version: string; value: SnapshotHistory; bytes: number }>();
+  #entries = new Map<
+    string,
+    { version: string; value: SnapshotHistory; bytes: number; imageIds: string[] }
+  >();
   #bytes = 0;
   #revision = 0;
+
+  constructor(private readonly hasImageReferences?: (ids: readonly string[]) => boolean) {}
 
   invalidate(sessionId?: string): void {
     this.#revision++;
@@ -40,7 +45,11 @@ export class SessionSnapshotHistory {
       return load();
     }
     const cached = this.#entries.get(sessionId);
-    if (cached?.version === before && revision === this.#revision) {
+    if (
+      cached?.version === before &&
+      revision === this.#revision &&
+      (!cached.imageIds.length || this.hasImageReferences?.(cached.imageIds) !== false)
+    ) {
       this.#entries.delete(sessionId);
       this.#entries.set(sessionId, cached);
       return structuredClone(cached.value);
@@ -58,7 +67,20 @@ export class SessionSnapshotHistory {
       if (oldest === undefined) break;
       this.#remove(oldest);
     }
-    this.#entries.set(sessionId, { version: before, value: structuredClone(value), bytes });
+    // An unchanged transcript can outlive the opaque media references returned by its last read.
+    const imageIds = new Set<string>();
+    for (const item of value.items) {
+      if (!Array.isArray(item.images)) continue;
+      for (const image of item.images)
+        if (typeof image?.id === "string" && image.id.startsWith("session-image-v1-"))
+          imageIds.add(image.id);
+    }
+    this.#entries.set(sessionId, {
+      version: before,
+      value: structuredClone(value),
+      bytes,
+      imageIds: [...imageIds],
+    });
     this.#bytes += bytes;
     return value;
   }

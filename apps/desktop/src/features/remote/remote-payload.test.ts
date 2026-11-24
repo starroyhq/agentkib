@@ -207,6 +207,28 @@ describe("remote payload validation", () => {
     expect(events[1].turn_meta?.duration_ms).toBeUndefined();
     expect(events[1].cli_output).toBeUndefined();
   });
+  it("preserves read-only questionnaire history and drops malformed questionnaire details", () => {
+    const event = { kind: "tool-summary", attachment_count: 0, truncated: false };
+    const questions = [
+      {
+        id: "1",
+        question: "Which option?",
+        options: [{ label: "A", preview: "Preview A" }],
+        multiSelect: false,
+        answer: { selected: ["A"] },
+      },
+    ];
+    const questionnaire = { status: "answered", questions };
+    const { events } = parseRemoteEvents({
+      events: [
+        { ...event, id: "known", questionnaire: { ...questionnaire, supported: true } },
+        { ...event, id: "invalid", questionnaire: { ...questionnaire, questions: {} } },
+      ],
+      warnings: [],
+    });
+    expect(events[0].questionnaire).toEqual(questionnaire);
+    expect(events[1].questionnaire).toBeUndefined();
+  });
   it("normalizes legacy nullable fields and strips remote-provided provenance", () => {
     const result = parseRemoteCatalog({
       workspaces: [{ ...workspace, remote: { host_id: "forged" } }],

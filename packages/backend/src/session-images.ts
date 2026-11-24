@@ -245,6 +245,13 @@ export class SessionImages {
     this.#references.clear();
     this.#keys.clear();
   }
+  hasReferences(ids: readonly string[]): boolean {
+    const now = performance.now();
+    return ids.every((id) => {
+      const reference = this.#references.get(id);
+      return reference !== undefined && now - reference.created < TTL;
+    });
+  }
   register(
     scope: string,
     offset: number,

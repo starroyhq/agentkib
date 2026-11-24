@@ -20,12 +20,15 @@ import type { Commands } from "../../../packages/backend/src/commands";
 import { saveManagedRecord } from "../../../packages/backend/src/managed-ledger";
 import type { ConversationEventPage } from "../../../packages/backend/src/session-events";
 import { SessionReaders } from "../../../packages/backend/src/session-readers";
+import { SessionSnapshotHistory } from "../../../packages/backend/src/session-snapshot-history";
 import { BackendStore } from "../../../packages/backend/src/store";
 import { WebReadRequests } from "../../../packages/backend/src/web-read";
 
 // A real one-pixel PNG, not a MIME label attached to arbitrary text bytes.
 const png =
-  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aRZsAAAAASUVORK5CYII=";
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGNwaPgPAALDAcBv0mA2AAAAAElFTkSuQmCC";
+const answerPng =
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP438AAAAQBAYDFKhhdAAAAAElFTkSuQmCC";
 const cleanups: Array<() => void | Promise<void>> = [];
 afterEach(async () => {
   for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
@@ -69,7 +72,12 @@ function fixture() {
       .prepare("INSERT INTO threads VALUES(?,?,?,?,?,?)")
       .run(id, transcripts[index]!, workspace, `Image ${index}`, "cli", 0);
   native.close();
-  const environment = { CODEX_HOME: home, HOME: root, PATH: "" };
+  const environment = {
+    CODEX_HOME: home,
+    CLAUDE_CONFIG_DIR: path.join(root, "claude"),
+    HOME: root,
+    PATH: "",
+  };
   const store = new BackendStore(path.join(root, "agentkib.db"));
   cleanups.push(() => store.close());
   store.sql.run(
@@ -127,7 +135,129 @@ function fixture() {
   };
 }
 
+async function claudeFixture() {
+  const f = fixture();
+  const project = path.join(f.root, "claude", "projects", "fixture");
+  mkdirSync(project, { recursive: true });
+  const nativeId = randomUUID();
+  const sessionId = f.store.sessions.id("claude-code", nativeId);
+  const file = path.join(project, `${nativeId}.jsonl`);
+  const image = (data: string) => ({
+    type: "image",
+    source: { type: "base64", media_type: "image/png", data },
+  });
+  const questions = [
+    {
+      question: "What did you see?",
+      header: "Picture",
+      multiSelect: false,
+      options: [{ label: "A square", description: "One square" }],
+    },
+  ];
+  const toolId = "toolu_question";
+  const rows = [
+    {
+      type: "user",
+      message: {
+        role: "user",
+        content: [{ type: "text", text: "Inspect this image" }, image(png)],
+      },
+    },
+    {
+      type: "assistant",
+      message: {
+        role: "assistant",
+        content: [{ type: "tool_use", id: toolId, name: "AskUserQuestion", input: { questions } }],
+      },
+    },
+    {
+      type: "user",
+      message: {
+        role: "user",
+        content: [
+          {
+            type: "tool_result",
+            tool_use_id: toolId,
+            content: 'The user answered: "What did you see?"="A dot (Image attached)"',
+          },
+          image(answerPng),
+        ],
+      },
+      toolUseResult: {
+        questions,
+        answers: { "What did you see?": "A dot (Image attached)" },
+        annotations: {},
+      },
+      imagePasteIds: [68],
+    },
+  ];
+  writeFileSync(
+    file,
+    rows
+      .map((row) =>
+        JSON.stringify({
+          sessionId: nativeId,
+          uuid: randomUUID(),
+          cwd: f.workspace,
+          timestamp: "2026-11-24T00:00:00Z",
+          ...row,
+        }),
+      )
+      .join("\n") + "\n",
+  );
+  f.store.sessions.sync(
+    "workspace",
+    "claude-code",
+    (await f.readers.list("claude-code", f.workspace)).sessions,
+  );
+  expect(f.store.sessions.get(sessionId)).toBeTruthy();
+  return {
+    readEvents: () => f.readers.claudeEventsForSession(sessionId, null, 50, false),
+    image: (id: string) => f.image(id, sessionId),
+    hasImageReferences: (ids: readonly string[]) => f.readers.hasImageReferences(ids),
+  };
+}
+
 describe("native message images through the read-only WebRead boundary", () => {
+  it("reads Claude ordinary and answer images using opaque media references", async () => {
+    const f = await claudeFixture();
+    const page = await f.readEvents();
+    const messages = page.events.filter((event) => event.images?.length);
+    expect(messages).toHaveLength(2);
+    expect(messages[0]?.content).toBe("Inspect this image");
+    expect(JSON.stringify(page)).not.toContain(png);
+    expect(JSON.stringify(page)).not.toContain(answerPng);
+    expect(await f.image(messages[0]!.images![0]!.id)).toEqual({
+      mimeType: "image/png",
+      base64: png,
+    });
+    expect(await f.image(messages[1]!.images![0]!.id)).toEqual({
+      mimeType: "image/png",
+      base64: answerPng,
+    });
+  });
+
+  it("refreshes Claude answer images when an unchanged history snapshot outlives their references", async () => {
+    const f = await claudeFixture();
+    const cache = new SessionSnapshotHistory(f.hasImageReferences);
+    const version = async () => "verified-source";
+    const load = vi.fn(async () => ({ items: (await f.readEvents()).events, completeItems: true }));
+    const answerImage = (items: ConversationEventPage["events"]) =>
+      items.filter((event) => event.images?.length).at(-1)!.images![0]!.id;
+    const read = () => cache.read("claude", version, load);
+    const first = answerImage((await read()).items as ConversationEventPage["events"]);
+    expect(await f.image(first)).toEqual({ mimeType: "image/png", base64: answerPng });
+    expect(answerImage((await read()).items as ConversationEventPage["events"])).toBe(first);
+    expect(load).toHaveBeenCalledTimes(1);
+
+    const now = performance.now();
+    vi.spyOn(performance, "now").mockReturnValue(now + 16 * 60_000);
+    const refreshed = answerImage((await read()).items as ConversationEventPage["events"]);
+    expect(await f.image(refreshed)).toEqual({ mimeType: "image/png", base64: answerPng });
+    expect(refreshed).not.toBe(first);
+    expect(load).toHaveBeenCalledTimes(2);
+  });
+
   it("serves verified bytes separately from stable event references, without acquiring execution ownership", async () => {
     const f = fixture();
     const first = await f.events();

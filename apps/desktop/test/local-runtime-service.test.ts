@@ -94,11 +94,15 @@ async function prepare() {
     cleanups.push(daemon.close);
     return daemon;
   };
-  const attach = async (name: string, protocolVersion = PROTOCOL_VERSION as number) => {
+  const attach = async (
+    name: string,
+    protocolVersion = PROTOCOL_VERSION as number,
+    appVersion = "1.0.0",
+  ) => {
     const desktop = client(await connectLocalRuntime(endpoint));
     await desktop.request(RUNTIME_METHODS.handshake, {
       protocolVersion,
-      client: { name, version: "1.0.0" },
+      client: { name, version: appVersion },
     });
     await desktop.request(BACKEND_INITIALIZE, { dataDir });
     return desktop;
@@ -112,13 +116,13 @@ async function fixture() {
 }
 
 describe("shared local runtime service", () => {
-  it("keeps one initialized backend and one live session source for both clients", async () => {
+  it("shares one backend and session source across stable and prerelease clients", async () => {
     const runtime = await fixture();
-    const stable = await runtime.attach("stable");
+    const stable = await runtime.attach("stable", PROTOCOL_VERSION, "0.33.0");
     const first = await stable.request<SessionSubscription>(RUNTIME_METHODS.sessionsSubscribe, {
       sessionId: "",
     });
-    const dev = await runtime.attach("dev");
+    const dev = await runtime.attach("dev", PROTOCOL_VERSION, "0.33.0-dev.4");
     const second = await dev.request<SessionSubscription>(RUNTIME_METHODS.sessionsSubscribe, {
       sessionId: "",
     });

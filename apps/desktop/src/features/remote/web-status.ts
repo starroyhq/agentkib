@@ -1,9 +1,14 @@
 import { desktopApi } from "@/core/desktop";
 import { useSyncExternalStore } from "react";
 import type { WebAdminRequest, WebAdminStatus } from "../../../electron/main/web/service";
+import { readWebAdminReason, type WebAdminReason } from "../../../electron/main/web/admin-errors";
 import { subscribeVisiblePolling, updateVisiblePolling } from "./visible-polling";
 
-type Listener = { status(value: WebAdminStatus): void; error(): void; success?(): void };
+type Listener = {
+  status(value: WebAdminStatus): void;
+  error(reason: WebAdminReason): void;
+  success?(): void;
+};
 type Channel = {
   listeners: Set<Listener>;
   snapshot?: WebAdminStatus;
@@ -95,8 +100,11 @@ export function subscribeWebStatus(target: "lan" | undefined, listener: Listener
             ...(target ? { target } : {}),
           });
           if (revision === channel.revision) publish(channel, snapshot);
-        } catch {
-          if (revision === channel.revision) channel.listeners.forEach((item) => item.error());
+        } catch (error) {
+          if (revision === channel.revision) {
+            const reason = readWebAdminReason(error);
+            channel.listeners.forEach((item) => item.error(reason));
+          }
         } finally {
           channel.inFlight = false;
         }

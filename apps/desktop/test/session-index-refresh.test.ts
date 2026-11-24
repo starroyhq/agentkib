@@ -212,6 +212,57 @@ describe("cached directory refresh", () => {
       f.store.status("workspace").find((row) => row.agent === "antigravity")?.error_key,
     ).toBeTruthy();
   });
+  it("records actionable Antigravity reasons separately from unattributed records", async () => {
+    const f = fixture(async (agent) =>
+      agent === "antigravity"
+        ? {
+            sessions: [native(agent, "new")],
+            incomplete: true,
+            issues: [
+              { code: "antigravity-acp-list", scope: "source" as const },
+              { code: "antigravity-database-record", scope: "workspace" as const },
+              { code: "antigravity-database-record", scope: "workspace" as const },
+              { code: "antigravity-summary-record", scope: "unattributed" as const },
+            ],
+          }
+        : { sessions: [], incomplete: false },
+    );
+    f.store.sync("workspace", "antigravity", [native("antigravity", "cached")]);
+    await f.index.refresh({ workspaceId: "workspace", force: true });
+    expect(f.store.list("workspace").map((row) => row.title)).toEqual(
+      expect.arrayContaining(["cached", "new"]),
+    );
+    const status = f.store.status("workspace").find((row) => row.agent === "antigravity");
+    expect(JSON.parse(status!.error_detail!)).toEqual([
+      "antigravity-acp-list",
+      "antigravity-database-record",
+    ]);
+  });
+  it("logs an unattributed record ID once without failing any refresh", async () => {
+    const id = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+    const category = "antigravity-acp-workspace-unavailable";
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const f = fixture(async (agent) =>
+        agent === "antigravity"
+          ? {
+              sessions: [],
+              incomplete: false,
+              issues: [{ code: category, scope: "unattributed" as const, id }],
+            }
+          : { sessions: [], incomplete: false },
+      );
+      await f.index.refresh({ workspaceId: "workspace", force: true });
+      await f.index.refresh({ workspaceId: "workspace", force: true });
+      expect(f.index.complete(["workspace"])).toBe(true);
+      expect(warn).toHaveBeenCalledExactlyOnceWith(
+        "Skipped conversation records:",
+        JSON.stringify([{ category, count: 1, ids: [id] }]),
+      );
+    } finally {
+      warn.mockRestore();
+    }
+  });
   it.each(["clear", "disable"])(
     "rejects an invalidated %s scan instead of resolving a false empty snapshot",
     async (action) => {

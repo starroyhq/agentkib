@@ -35,12 +35,10 @@ function fileTransfer(data: DataTransfer) {
 
 function hasFileReference(data: DataTransfer) {
   if (!data.types?.includes("text/uri-list")) return false;
-  return (
-    data
-      .getData?.("text/uri-list")
-      ?.split(/\r?\n/)
-      .some((line) => /^file:/i.test(line.trim())) ?? false
-  );
+  const uris = data.getData?.("text/uri-list")?.trim();
+  // Some Chromium paste events expose the native file type but hide its URI and File.
+  if (!uris) return !data.getData?.("text/plain");
+  return uris.split(/\r?\n/).some((line) => /^file:/i.test(line.trim()));
 }
 
 function transferredFiles(data: DataTransfer, dropped = false): File[] {

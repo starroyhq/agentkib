@@ -35,28 +35,31 @@ function composer(
 describe("clipboard and drop attachment intake", () => {
   afterEach(cleanup);
 
-  it("asks the desktop clipboard only when the browser has no file objects or ordinary text", async () => {
-    const readClipboardFiles = vi.fn().mockResolvedValue([file]);
-    const onFiles = vi.fn();
-    render(composer({ readClipboardFiles }, onFiles));
-    const editor = screen.getByRole("textbox", { name: "Message" });
-    const plainText = {
-      files: [],
-      types: ["text/plain"],
-      getData: (type: string) => (type === "text/plain" ? "Hello" : ""),
-    };
-    expect(fireEvent.paste(editor, { clipboardData: plainText })).toBe(true);
-    expect(readClipboardFiles).not.toHaveBeenCalled();
+  it.each([emptyClipboard, { ...emptyClipboard, types: ["text/uri-list"] }])(
+    "asks the desktop clipboard when the browser hides its file objects",
+    async (fallbackClipboard) => {
+      const readClipboardFiles = vi.fn().mockResolvedValue([file]);
+      const onFiles = vi.fn();
+      render(composer({ readClipboardFiles }, onFiles));
+      const editor = screen.getByRole("textbox", { name: "Message" });
+      const plainText = {
+        files: [],
+        types: ["text/plain"],
+        getData: (type: string) => (type === "text/plain" ? "Hello" : ""),
+      };
+      expect(fireEvent.paste(editor, { clipboardData: plainText })).toBe(true);
+      expect(readClipboardFiles).not.toHaveBeenCalled();
 
-    const browserFile = new File(["image"], "image.png", { type: "image/png" });
-    fireEvent.paste(editor, { clipboardData: { files: [browserFile] } });
-    expect(onFiles).toHaveBeenLastCalledWith([browserFile]);
-    expect(readClipboardFiles).not.toHaveBeenCalled();
+      const browserFile = new File(["image"], "image.png", { type: "image/png" });
+      fireEvent.paste(editor, { clipboardData: { files: [browserFile] } });
+      expect(onFiles).toHaveBeenLastCalledWith([browserFile]);
+      expect(readClipboardFiles).not.toHaveBeenCalled();
 
-    expect(fireEvent.paste(editor, { clipboardData: emptyClipboard })).toBe(false);
-    await waitFor(() => expect(onFiles).toHaveBeenLastCalledWith([file]));
-    expect(readClipboardFiles).toHaveBeenCalledExactlyOnceWith();
-  });
+      expect(fireEvent.paste(editor, { clipboardData: fallbackClipboard })).toBe(false);
+      await waitFor(() => expect(onFiles).toHaveBeenLastCalledWith([file]));
+      expect(readClipboardFiles).toHaveBeenCalledExactlyOnceWith();
+    },
+  );
 
   it("acknowledges unreadable desktop file offers but leaves an empty clipboard unnoticed", async () => {
     const readClipboardFiles = vi.fn().mockResolvedValueOnce(undefined).mockResolvedValueOnce([]);

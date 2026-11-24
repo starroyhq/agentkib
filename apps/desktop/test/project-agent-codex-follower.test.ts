@@ -59,6 +59,7 @@ class ReleasedWorkerServer extends EventEmitter {
     private readonly nativeId: string,
     private readonly workspace: string,
     private readonly calls: NativeRequest[],
+    private readonly catalogModel: string,
   ) {
     super();
   }
@@ -68,7 +69,7 @@ class ReleasedWorkerServer extends EventEmitter {
     this.calls.push({ method, params });
     switch (method) {
       case "model/list":
-        return { data: [{ model: "fixture-model", isDefault: true }] };
+        return { data: [{ model: this.catalogModel, isDefault: true }] };
       case "collaborationMode/list":
       case "thread/queue/list":
         return { data: [], nextCursor: null };
@@ -211,7 +212,7 @@ function desktopOwnerFixture(endpoint: string, nativeId: string, oldDesktop: boo
 async function fixture(
   owner: "available" | "missing" | "released" | "no-desktop-owner" | "old-desktop",
   active = true,
-  { indexSessions = false } = {},
+  { indexSessions = false, catalogModel = "fixture-model" } = {},
 ) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "agentkib-project-follower-")));
   disposers.push(() => rmSync(root, { recursive: true, force: true }));
@@ -292,7 +293,7 @@ async function fixture(
     writer.mockImplementation(async (command, cwd, _home, _env, _notify, onStarted) => {
       expect(command).toBe(executable);
       expect(cwd).toBe(workspace);
-      const server = new ReleasedWorkerServer(nativeId, workspace, nativeCalls);
+      const server = new ReleasedWorkerServer(nativeId, workspace, nativeCalls, catalogModel);
       const session = server as unknown as CodexAppServerSession;
       onStarted?.(session);
       return session;
@@ -502,6 +503,30 @@ it.each([
         clientUserMessageId: outcome.requestId,
         input: [expect.objectContaining({ type: "text", text })],
         ...policy,
+      }),
+    },
+  ]);
+  expect(f.follow).not.toHaveBeenCalled();
+});
+
+it("uses the released Worker's native model even when it is absent from the local catalog", async () => {
+  const f = await fixture("released", false, { catalogModel: "catalog-only-model" });
+
+  const outcome = await f.call("worker_send", { ...worker, text: "Continue on the native model" });
+
+  expect(outcome).toMatchObject({
+    accepted: true,
+    operation: "send",
+    requestId: expect.any(String),
+  });
+  expect(f.nativeCalls.map(({ method }) => method)).toContain("model/list");
+  expect(f.nativeCalls.filter(({ method }) => method === "turn/start")).toEqual([
+    {
+      method: "turn/start",
+      params: expect.objectContaining({
+        threadId: f.nativeId,
+        clientUserMessageId: outcome.requestId,
+        model: "fixture-model",
       }),
     },
   ]);

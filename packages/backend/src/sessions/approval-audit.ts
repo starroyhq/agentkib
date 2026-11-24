@@ -214,11 +214,14 @@ export class SessionApprovalAuditStore {
   }
 
   /** Reserve a single record per submitted decision before it can have an unknown outcome. */
-  begin(input: SessionApprovalAuditInput): Promise<string> {
+  begin(
+    input: SessionApprovalAuditInput,
+    initial: "unknown" | "expired" = "unknown",
+  ): Promise<{ id: string; created: boolean }> {
     return this.#serialize(async () => {
       const id = entryId({ ...input, deviceId: input.source.deviceId });
       const entries = await this.#load();
-      if (entries.some((entry) => entry.id === id)) return id;
+      if (entries.some((entry) => entry.id === id)) return { id, created: false };
 
       // Project only technical identities and fixed vocabulary. Driver text can quote a command,
       // a private path, a credential, or an answer without naming the sensitive value.
@@ -233,12 +236,12 @@ export class SessionApprovalAuditStore {
         decision: { kind: input.decision.kind, scope: input.decision.scope },
         source: { kind: input.source.kind, deviceId: input.source.deviceId },
         time: new Date(this.options.now?.() ?? Date.now()).toISOString(),
-        result: "unknown",
+        result: initial,
       });
       if (!entry.success) throw new Error("approval-audit-unavailable");
       entries.unshift(entry.data);
       await this.#save(entries.slice(0, this.#limit));
-      return id;
+      return { id, created: true };
     });
   }
 

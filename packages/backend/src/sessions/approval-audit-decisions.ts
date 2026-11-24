@@ -238,16 +238,28 @@ export async function classifyAuditDecision(
 }
 
 const expiredReasons = new Set([
-  "stale-boot",
-  "stale-state",
-  "stale-turn",
-  "stale-revision",
+  "approval-unavailable",
   "interaction-answered-elsewhere",
   "interaction-expired",
+  "missing-approval",
+  "missing-question",
+  "question-unavailable",
+  "stale-antigravity-revision",
+  "stale-antigravity-turn",
+  "stale-boot",
+  "stale-claude-question",
+  "stale-claude-revision",
+  "stale-claude-turn",
+  "stale-dsh-revision",
+  "stale-or-disabled-control",
+  "stale-revision",
+  "stale-runtime-boot",
+  "stale-state",
+  "stale-turn",
 ]);
 
 function isExpired(value: unknown): boolean {
-  return typeof value === "string" && expiredReasons.has(value.replaceAll("_", "-"));
+  return typeof value === "string" && expiredReasons.has(value.toLowerCase().replace(/[ _]/g, "-"));
 }
 
 function controlOutcome(
@@ -279,10 +291,10 @@ export async function recordApprovalDecision<T>(
   metadata: SessionApprovalAuditContext,
   run: () => T,
 ): Promise<Awaited<T>> {
-  const id = await beginDecision(audit, operation, request, target, metadata);
+  const entry = await beginDecision(audit, operation, request, target, metadata);
   try {
     const result = await run();
-    if (id) {
+    if (entry) {
       const outcome = controlOutcome(operation, request, result);
       if (outcome === "accepted")
         await audit
@@ -293,12 +305,13 @@ export async function recordApprovalDecision<T>(
             result: "accepted",
           })
           .catch(() => undefined);
-      else if (outcome !== "unknown") await audit.finish(id, outcome).catch(() => undefined);
+      else if (entry.created && outcome !== "unknown")
+        await audit.finish(entry.id, outcome).catch(() => undefined);
     }
     return result;
   } catch (error) {
-    if (id && error instanceof Error && isExpired(error.message))
-      await audit.finish(id, "expired").catch(() => undefined);
+    if (entry?.created && error instanceof Error && isExpired(error.message))
+      await audit.finish(entry.id, "expired").catch(() => undefined);
     throw error;
   }
 }
@@ -330,8 +343,7 @@ export async function recordExpiredApproval(
   target: ApprovalAuditTarget,
   metadata: SessionApprovalAuditContext,
 ): Promise<void> {
-  const id = await beginDecision(audit, operation, request, target, metadata);
-  if (id) await audit.finish(id, "expired").catch(() => undefined);
+  await beginDecision(audit, operation, request, target, metadata, "expired");
 }
 
 function fallbackDecision(operation: ApprovalAuditOperation): SessionApprovalAuditDecision {
@@ -344,22 +356,26 @@ function beginDecision(
   request: ControlRequest,
   target: ApprovalAuditTarget,
   metadata: SessionApprovalAuditContext,
+  initial: "unknown" | "expired" = "unknown",
 ) {
   const decision = metadata.decision ?? fallbackDecision(operation);
   const question = operation === "answer" && decision.kind === "answer";
   return audit
-    .begin({
-      ...target,
-      sessionId: request.sessionId,
-      requestId: request.requestId,
-      kind: question ? "question" : "approval",
-      risk:
-        metadata.risk ??
-        (question
-          ? { level: "low", reason: "question" }
-          : { level: "high", reason: "unknown-operation" }),
-      decision,
-      source: { ...metadata.source, deviceId: request.deviceId ?? metadata.source.deviceId },
-    })
+    .begin(
+      {
+        ...target,
+        sessionId: request.sessionId,
+        requestId: request.requestId,
+        kind: question ? "question" : "approval",
+        risk:
+          metadata.risk ??
+          (question
+            ? { level: "low", reason: "question" }
+            : { level: "high", reason: "unknown-operation" }),
+        decision,
+        source: { ...metadata.source, deviceId: request.deviceId ?? metadata.source.deviceId },
+      },
+      initial,
+    )
     .catch(() => undefined);
 }

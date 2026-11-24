@@ -49,8 +49,8 @@ describe("the local approval audit store", () => {
       decision: { kind: "deny", scope: "persistent" },
       source: { kind: "web", deviceId: "browser-1" },
     });
-    const first = await store.begin(request);
-    const second = await store.begin(
+    const { id: first } = await store.begin(request);
+    const { id: second } = await store.begin(
       input({
         requestId: "receipt-2",
         kind: "question",
@@ -58,8 +58,8 @@ describe("the local approval audit store", () => {
         risk: { level: "low", reason: "question" },
       }),
     );
-    const third = await store.begin(input({ requestId: "receipt-3" }));
-    const fourth = await store.begin(input({ requestId: "receipt-4" }));
+    const { id: third } = await store.begin(input({ requestId: "receipt-3" }));
+    const { id: fourth } = await store.begin(input({ requestId: "receipt-4" }));
     await store.finish(first, "denied");
     await store.finish(second, "executed");
     await store.finish(third, "expired");
@@ -94,14 +94,18 @@ describe("the local approval audit store", () => {
   it("records a retry once and reconciles only an unknown receipt with the same identity", async () => {
     const { store } = await fixture();
     const decision = input({ decision: { kind: "deny", scope: "once" } });
-    const [id, replay] = await Promise.all([store.begin(decision), store.begin(decision)]);
-    expect(id).toBe(replay);
+    const [first, replay] = await Promise.all([
+      store.begin(decision),
+      store.begin(decision, "expired"),
+    ]);
+    expect(first.created).toBe(true);
+    expect(replay).toEqual({ id: first.id, created: false });
     await store.finishReceipt({ ...decision, deviceId: "another-phone", result: "accepted" });
     expect((await store.list()).entries.map(({ result }) => result)).toEqual(["unknown"]);
 
     await store.finishReceipt({ ...decision, deviceId: "phone-1", result: "accepted" });
-    await store.finish(id, "expired");
-    await store.finish(id, "unknown");
+    await store.finish(first.id, "expired");
+    await store.finish(first.id, "unknown");
     expect((await store.list()).entries.map(({ result }) => result)).toEqual(["denied"]);
   });
 
@@ -123,9 +127,11 @@ describe("the local approval audit store", () => {
 
   it("filters before paginating, with no fallback from an unauthorized explicit workspace", async () => {
     const { store, advance } = await fixture();
-    const older = await store.begin(input({ requestId: "older", sessionId: "allowed-older" }));
+    const { id: older } = await store.begin(
+      input({ requestId: "older", sessionId: "allowed-older" }),
+    );
     advance();
-    const newest = await store.begin(
+    const { id: newest } = await store.begin(
       input({ requestId: "newest", sessionId: "allowed-newest", workspaceId: undefined }),
     );
     advance();
@@ -164,7 +170,7 @@ describe("the local approval audit store", () => {
     expect(first.entries).toHaveLength(2);
     expect(next.entries).toHaveLength(1);
     expect(new Set([...first.entries, ...next.entries].map(({ id }) => id))).toEqual(
-      new Set(ids.slice(-3)),
+      new Set(ids.slice(-3).map(({ id }) => id)),
     );
     expect(JSON.parse(await readFile(file, "utf8")).entries).toHaveLength(3);
   });

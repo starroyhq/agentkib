@@ -11,6 +11,7 @@ import {
   approvalAuditEvidence,
   approvalAuditReceipt,
   recordApprovalDecision,
+  recordExpiredApproval,
 } from "../../../packages/backend/src/sessions/approval-audit-decisions";
 import { BackendStore } from "../../../packages/backend/src/store";
 import { startBackend } from "./session-baseline/harness";
@@ -72,9 +73,9 @@ describe("audited decision dispatch", () => {
     ).resolves.toBe(rejection);
     await expect(
       recordApprovalDecision(audit, "answer", two, target, { source }, () => {
-        throw new Error("stale-turn");
+        throw new Error("stale Claude question");
       }),
-    ).rejects.toThrow("stale-turn");
+    ).rejects.toThrow("stale Claude question");
     await expect(
       recordApprovalDecision(audit, "answer", three, target, { source }, () => otherAck),
     ).resolves.toBe(otherAck);
@@ -83,6 +84,23 @@ describe("audited decision dispatch", () => {
       "expired",
       "unknown",
     ]);
+  });
+
+  it("leaves the original unknown on stale or conflicting retries until its own receipt arrives", async () => {
+    const audit = new SessionApprovalAuditStore(root);
+    await recordApprovalDecision(audit, "approve", request, target, { source }, () => ({
+      ...request,
+      controlOutcome: "unknown",
+    }));
+    await recordExpiredApproval(audit, "approve", request, target, { source });
+    await recordApprovalDecision(audit, "approve", request, target, { source }, () => ({
+      ...request,
+      controlOutcome: "not-dispatched",
+      reason: "request-id-conflict",
+    }));
+    expect((await audit.list()).entries).toMatchObject([{ result: "unknown" }]);
+    await audit.finishReceipt({ ...request, agent: target.agent, result: "accepted" });
+    expect((await audit.list()).entries).toMatchObject([{ result: "executed" }]);
   });
 
   it("keeps only a decision's meaning and scope from opaque provider options", () => {

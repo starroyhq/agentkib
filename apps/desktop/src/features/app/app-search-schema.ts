@@ -37,6 +37,7 @@ export const appSearchSchema = z.object({
   settingsSection: z
     .enum([
       "general",
+      "sessions",
       "appearance",
       "shortcuts",
       "discovery",

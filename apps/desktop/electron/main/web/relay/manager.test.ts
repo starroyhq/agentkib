@@ -175,7 +175,9 @@ describe("relay registration and authorization leases", () => {
       reason: "quota-exhausted",
       resetsAt: reset,
     });
-    expect(JSON.parse(fetcher.mock.calls[0][1]!.body as string)).toMatchObject({
+    expect(String(fetcher.mock.calls[0][0])).toBe(`${registration.brokerUrl}/v1/device`);
+    expect(JSON.parse(fetcher.mock.calls[0][1]!.body as string)).toEqual({
+      deviceId: registration.deviceId,
       accountAccessProofVersion: 1,
     });
     fetcher.mockResolvedValueOnce(
@@ -189,6 +191,83 @@ describe("relay registration and authorization leases", () => {
     internal.failClosed("revoked", false);
     expect(directSocket.destroyed).toBe(true);
     expect(internal.directListeners.size).toBe(0);
+  });
+
+  it.each([
+    [
+      "signed out before first registration",
+      undefined,
+      "account-required",
+      "account_login_required",
+    ],
+    [
+      "signed out with saved registration",
+      "account_login_required",
+      "account-required",
+      "account_login_required",
+    ],
+    [
+      "another account owns the registration",
+      "account_device_conflict",
+      "setup",
+      "account_device_conflict",
+    ],
+    ["a pending device claim", "account_claim_pending", "setup", "account_claim_pending"],
+    [
+      "an unexpected local error",
+      "private diagnostic /private/relay",
+      "setup",
+      "relay_setup_failed",
+    ],
+  ])("reports a safe setup reason when %s", async (_name, accountError, reason, setupCode) => {
+    const path = await directory();
+    if (accountError)
+      await writeFile(
+        join(path, "registration.json"),
+        JSON.stringify({ ...registration, brokerUrl: DEFAULT_RELAY_BROKER, accountId: "owner" }),
+      );
+    const frpc = join(path, "frpc");
+    await writeFile(frpc, '#!/bin/sh\nprintf "0.68.0\\n"\n', { mode: 0o700 });
+    const fetcher = vi.fn();
+    vi.stubGlobal("fetch", fetcher);
+    const manager = new RelayManager({
+      brokerUrl: DEFAULT_RELAY_BROKER,
+      stateDirectory: path,
+      frpcPath: frpc,
+      target: { host: "127.0.0.1", port: 1234 },
+      preview: { host: "127.0.0.1", port: 1235 },
+      authorizeAccount: async () => {
+        throw new Error(accountError);
+      },
+    });
+    stops.unshift(() => manager.stop());
+    await manager.start();
+    expect(manager.status).toMatchObject({ phase: "offline", reason, setupCode });
+    expect(JSON.stringify(manager.status)).not.toContain("/private/relay");
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
+  it("reports a missing self-hosted relay invitation during setup", async () => {
+    const path = await directory();
+    const frpc = join(path, "frpc");
+    await writeFile(frpc, '#!/bin/sh\nprintf "0.68.0\\n"\n', { mode: 0o700 });
+    const fetcher = vi.fn();
+    vi.stubGlobal("fetch", fetcher);
+    const manager = new RelayManager({
+      brokerUrl: registration.brokerUrl,
+      stateDirectory: path,
+      frpcPath: frpc,
+      target: { host: "127.0.0.1", port: 1234 },
+      preview: { host: "127.0.0.1", port: 1235 },
+    });
+    stops.unshift(() => manager.stop());
+    await manager.start();
+    expect(manager.status).toMatchObject({
+      phase: "offline",
+      reason: "setup",
+      setupCode: "relay_invitation_required",
+    });
+    expect(fetcher).not.toHaveBeenCalled();
   });
 
   it.each([

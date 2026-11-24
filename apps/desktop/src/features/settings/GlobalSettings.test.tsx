@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
 
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
-import { afterEach, beforeAll, describe, expect, it } from "vitest";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { changeLocale, formatDateTime, initializeI18n, tr } from "@/core/i18n";
 import { AppDialogProvider } from "@/components/AppDialogProvider";
 import type { GlobalSettingsProps } from "./GlobalSettings";
@@ -38,6 +39,56 @@ const insightsStatus: NonNullable<GlobalSettingsProps["insightsStatus"]> = {
   providers: [],
   running: false,
 };
+
+describe("GlobalSettings session preferences", () => {
+  beforeAll(() => initializeI18n("en-US"));
+  afterEach(cleanup);
+
+  it("keeps the existing send and auto-continue preferences readable and writable under Sessions", async () => {
+    const key = "agentkib.send-while-running";
+    const previous = localStorage.getItem(key);
+    const request = vi.fn().mockResolvedValueOnce({ autoContinue: false });
+    vi.stubGlobal("agentkibDesktop", {
+      ...window.agentkibDesktop,
+      claude: { request },
+    });
+    localStorage.setItem(key, "steer");
+    const user = userEvent.setup();
+    const sendLabel = tr("conversation.sendWhileRunning");
+    const autoContinueLabel = tr("settings.usageLimitAutoContinue");
+
+    try {
+      const view = render(<GlobalSettings {...baseProps} section="general" />);
+      expect(screen.queryByRole("combobox", { name: sendLabel })).toBeNull();
+      expect(screen.queryByRole("switch", { name: autoContinueLabel })).toBeNull();
+
+      view.rerender(<GlobalSettings {...baseProps} section="sessions" />);
+      expect(screen.getByRole("heading", { name: "Sessions" })).toBeTruthy();
+      const sendMode = screen.getByRole("combobox", { name: sendLabel });
+      expect(sendMode.textContent).toContain(tr("conversation.sendWhileRunningSteer"));
+      const autoContinue = screen.getByRole("switch", { name: autoContinueLabel });
+      await waitFor(() => expect(autoContinue.getAttribute("aria-checked")).toBe("false"));
+      expect(request).toHaveBeenLastCalledWith({ operation: "usage-limit-auto-continue" });
+
+      await user.click(sendMode);
+      await user.click(
+        await screen.findByRole("option", { name: tr("conversation.sendWhileRunningQueue") }),
+      );
+      expect(localStorage.getItem(key)).toBe("queue");
+      request.mockResolvedValueOnce({ autoContinue: true });
+      await user.click(autoContinue);
+      await waitFor(() => expect(autoContinue.getAttribute("aria-checked")).toBe("true"));
+      expect(request).toHaveBeenLastCalledWith({
+        operation: "usage-limit-auto-continue",
+        enabled: true,
+      });
+    } finally {
+      if (previous === null) localStorage.removeItem(key);
+      else localStorage.setItem(key, previous);
+      vi.unstubAllGlobals();
+    }
+  });
+});
 
 describe("GlobalSettings diagnostics health", () => {
   beforeAll(() => initializeI18n("en-US"));

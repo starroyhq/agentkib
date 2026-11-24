@@ -10,7 +10,10 @@ import { remotePageCopy } from "./remote-page-copy";
 import { remoteSettingsCopy } from "./remote-settings-copy";
 import { webSettingsCopy } from "./web-settings-copy";
 
+import { webRecoveryCopy } from "./web-recovery-copy";
+
 const copyGroups = [
+  webRecoveryCopy,
   remoteEntryCopy,
   remoteAccountCopy,
   remoteNetworkCopy,

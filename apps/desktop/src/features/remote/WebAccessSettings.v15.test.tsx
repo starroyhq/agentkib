@@ -1059,7 +1059,8 @@ it("retries an unpersisted local configuration after every settings controller r
   const firstDialog = await openAdvanced(user);
   fireEvent.change(within(firstDialog).getByLabelText("Port"), { target: { value: "1444" } });
   await user.click(within(firstDialog).getByRole("button", { name: "Save" }));
-  await screen.findByText(remoteEntryCopy["en-US"].saveFailed);
+  expect(await screen.findByRole("alert")).toHaveTextContent(remoteEntryCopy["en-US"].saveFailed);
+  expect(screen.getByRole("alert")).toHaveTextContent("web_request_failed");
   first.unmount();
   request.mockImplementation(async () => local);
   render(<WebAccessSettings />);

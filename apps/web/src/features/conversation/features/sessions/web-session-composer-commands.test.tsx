@@ -796,12 +796,7 @@ describe("Codex slash commands in the composer", () => {
         },
       };
       const { input } = renderComposer("/stop");
-      fireEvent.click(screen.getByRole("button", { name: sessionCopy["en-US"].advanced }));
-      fireEvent.click(
-        await screen.findByRole("menuitem", {
-          name: action === "steer" ? sessionCopy["en-US"].steer : sessionCopy["en-US"].queueAdd,
-        }),
-      );
+      fireEvent.keyDown(input, { key: "Enter", ctrlKey: action === "queue-add" });
       expect(await screen.findByText(reason("codex-command-agentkib"))).toBeVisible();
       expect(input).toHaveValue("/stop");
       await act(async () => {});

@@ -109,7 +109,6 @@ export type SessionComposerControlsProps = {
   openPhoneFiles: () => void;
   disabled: boolean;
   action?: ReactNode;
-  advancedActions?: ReactNode;
   /** Lets commands and session actions open the same controls as the toolbar. */
   controlsRef?: Ref<ComposerControlsHandle>;
   /** Told when plan mode or the composer's ability to switch it changes. */
@@ -136,7 +135,6 @@ export function SessionComposerControls({
   openPhoneFiles,
   disabled,
   action,
-  advancedActions,
   controlsRef,
   onPlan,
   startupGoal,
@@ -1529,7 +1527,6 @@ export function SessionComposerControls({
               }
             : undefined
         }
-        actions={advancedActions}
         usage={
           <SessionContextUsageGauge
             session={session}

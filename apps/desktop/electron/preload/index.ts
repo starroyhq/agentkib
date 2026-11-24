@@ -1,4 +1,6 @@
 import type { NativeMemoryQuery, QuitWorkDecision } from "@agentkib/runtime-protocol";
+import type { WebAdminReply } from "../main/web/admin-errors";
+import type { WebAdminRequest } from "../main/web/service";
 import type { DesktopAccountRequest, DesktopAccountStatus } from "../main/account/state";
 import { contextBridge, ipcRenderer } from "electron";
 import type { DesktopApi, DesktopRuntimeStatus, DesktopConversationApi, QuitRequest } from "../api";
@@ -381,7 +383,11 @@ const desktopApi = Object.freeze({
     request: (request: unknown) => ipcRenderer.invoke("agentkib:claude:request", request),
   }),
   web: Object.freeze({
-    request: (request: unknown) => ipcRenderer.invoke("agentkib:web:request", request),
+    request: async (request: WebAdminRequest) => {
+      const result: WebAdminReply = await ipcRenderer.invoke("agentkib:web:request", request);
+      if (!result.ok) throw new Error(result.reason);
+      return result.status;
+    },
   }),
   settings: Object.freeze({
     setCloseBehavior: (value: unknown) =>

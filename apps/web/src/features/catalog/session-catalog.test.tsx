@@ -1,5 +1,6 @@
 import { sessionContinuationCopy } from "@agentkib/session-ui";
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { ConversationSessionSummary } from "@agentkib/web-client";
@@ -126,7 +127,7 @@ describe("SessionCatalog", () => {
     fireEvent.click(screen.getByRole("button", { name: /Newest session/ }));
     expect(onSelect).toHaveBeenCalledWith("newest");
 
-    const options = screen.getByLabelText("目录选项");
+    const options = screen.getByRole("button", { name: "目录选项" });
     expect(options).toHaveTextContent(/^$/);
     fireEvent.click(options);
     expect(screen.queryByRole("checkbox")).toBeNull();
@@ -137,6 +138,37 @@ describe("SessionCatalog", () => {
       target: { value: "Helper" },
     });
     expect(screen.queryByRole("button", { name: /Helper session/ })).toBeNull();
+  });
+
+  it("opens the filter controls below the name search and preserves their values when closed", async () => {
+    const user = userEvent.setup();
+    render(
+      <SessionCatalog sessions={sessions} workspaces={workspaces} selected="" onSelect={vi.fn()} />,
+    );
+    const search = screen.getByRole("textbox", { name: "搜索会话" });
+    const options = screen.getByRole("button", { name: "目录选项" });
+    expect(options).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByRole("combobox", { name: "记录类型" })).not.toBeInTheDocument();
+
+    options.focus();
+    await user.keyboard("{Enter}");
+    expect(options).toHaveAttribute("aria-expanded", "true");
+    const records = screen.getByRole("combobox", { name: "记录类型" });
+    expect(document.getElementById(options.getAttribute("aria-controls")!)).toContainElement(
+      records,
+    );
+    expect(search.compareDocumentPosition(records) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    await user.selectOptions(records, "metadata");
+    expect(screen.getByRole("button", { name: /Metadata session/ })).toBeVisible();
+    expect(screen.queryByRole("button", { name: /Newest session/ })).not.toBeInTheDocument();
+
+    options.focus();
+    await user.keyboard("[Space]");
+    expect(options).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByRole("combobox", { name: "记录类型" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Metadata session/ })).toBeVisible();
+    await user.keyboard("{Enter}");
+    expect(screen.getByRole("combobox", { name: "记录类型" })).toHaveValue("metadata");
   });
 
   it("counts five ordinary conversations without the 36 execution records", () => {
@@ -374,6 +406,7 @@ describe("git worktrees and program-started sessions", () => {
       />,
     );
     expect(screen.queryByText("pen session")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Catalog options" }));
     fireEvent.click(screen.getByRole("checkbox", { name: "Show program-started sessions" }));
     expect(onExecutionChange).toHaveBeenCalledWith(true);
     rerender(

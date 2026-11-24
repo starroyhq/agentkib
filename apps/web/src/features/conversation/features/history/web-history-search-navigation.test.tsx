@@ -196,7 +196,7 @@ async function renderConversation(send = true) {
 }
 async function openSource() {
   const search = screen.getByRole("button", { name: c.title });
-  expect(search).toHaveClass("min-h-11", "w-full");
+  expect(search).toHaveClass("size-11");
   expect(search).toHaveTextContent(/^$/);
   fireEvent.click(search);
   fireEvent.change(screen.getByRole("textbox", { name: c.query }), { target: { value: "needle" } });

@@ -41,7 +41,7 @@ function SearchTrigger({ locale, onOpen }: { locale: Locale; onOpen: () => void 
           type="button"
           variant="ghost"
           size="icon"
-          className="min-h-11 w-full justify-start px-3"
+          className="size-11 p-0"
           onClick={onOpen}
         />
       }

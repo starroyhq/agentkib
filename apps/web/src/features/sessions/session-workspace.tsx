@@ -17,7 +17,6 @@ import {
   MoreHorizontal,
   Plus,
   Settings2,
-  RefreshCw,
   LogOut,
   Monitor,
 } from "lucide-react";
@@ -380,27 +379,12 @@ function WorkspaceShell() {
                 )}
               </IconAction>
             </div>
-            <header className="flex items-center justify-between px-5 pb-4 pt-6 md:pt-4">
-              <div className="flex items-center gap-2">
-                <h1 className="text-sm font-semibold">{t.sessions}</h1>
-                <span className="rounded-md bg-muted px-1.5 text-xs tabular-nums text-muted-foreground">
-                  {sessions.length}
-                </span>
-              </div>
-              <Button
-                variant="ghost"
-                className="size-11 p-0"
-                aria-label={t.refresh}
-                onClick={() => {
-                  requestReadStateRefresh(session.client, selected);
-                  void refresh(true);
-                }}
-              >
-                <RefreshCw className="size-3.5" />
-              </Button>
-            </header>
-            <WebHistorySearchTrigger />
             <SessionCatalog
+              historySearch={<WebHistorySearchTrigger />}
+              onRefresh={() => {
+                requestReadStateRefresh(session.client, selected);
+                void refresh(true);
+              }}
               readContext={session.client}
               pendingSessions={pendingMarks}
               sessions={sessions}

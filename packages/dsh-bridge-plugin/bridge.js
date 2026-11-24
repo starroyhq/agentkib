@@ -22,6 +22,7 @@ import {
   modelsProjection,
   permissionOptions,
   presetEntry,
+  queueItemHasAttachments,
   queueItems,
   questionItems,
   sessionSummary,
@@ -1133,10 +1134,22 @@ export function createBridge(ctx, options = {}) {
           throw new Error("image-too-large");
         return { mediaType: value.attachment?.mediaType ?? null, data: value.data };
       }
-      case "queue":
-        return needController().updateQueue({
-          sessionId: String(command.sessionId),
-          itemId: String(command.itemId),
+      case "queue": {
+        const controller = needController();
+        const sessionId = String(command.sessionId);
+        const itemId = String(command.itemId);
+        if (command.action?.kind === "edit") {
+          // The last report can be stale. Check the current native item in the same tick as the edit.
+          const queue = service("agents")?.get?.(sessionId)?.inbox?.nextTurn;
+          const item = Array.isArray(queue)
+            ? queue.find((message) => isHumanMessage(message) && String(message.id) === itemId)
+            : null;
+          if (!item) throw new Error("queue-item-unavailable");
+          if (queueItemHasAttachments(item)) throw new Error("queue_attachments_edit_unsupported");
+        }
+        return controller.updateQueue({
+          sessionId,
+          itemId,
           action:
             command.action?.kind === "edit"
               ? { kind: "edit", content: [{ type: "text", text: String(command.action.text) }] }
@@ -1144,6 +1157,7 @@ export function createBridge(ctx, options = {}) {
                 ? { kind: "steer" }
                 : { kind: "remove" },
         });
+      }
       case "cancel-turn": {
         if (!canCancelTurn()) throw new Error("dsh-stop-unavailable");
         const { sessionId, turn } = command;

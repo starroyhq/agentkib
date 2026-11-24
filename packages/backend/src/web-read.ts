@@ -616,9 +616,14 @@ export class WebReadRequests {
       if (!provider) throw new Error("unsupported-session-provider");
       if (
         this.#serialQueueTarget(value.sessionId) &&
-        ["queue-add", "queue-update", "queue-delete", "queue-pause", "queue-resume"].includes(
-          String(value.operation),
-        )
+        [
+          "queue-add",
+          "queue-update",
+          "queue-delete",
+          "queue-reorder",
+          "queue-pause",
+          "queue-resume",
+        ].includes(String(value.operation))
       )
         return this.#serialQueue.control(value);
       if (value.operation === "settings" && "updateSettings" in provider)

@@ -29,6 +29,7 @@ import {
   type DshBridgeInteraction,
   type DshBridgeLead,
   type DshBridgePromptPart,
+  type DshBridgeQueueItem,
   type DshBridgeServices,
   type DshBridgeSessionState,
   type DshBridgeSessionSummary,
@@ -250,6 +251,7 @@ const stateSchema = z
             placement: z.enum(["queued", "steering"]),
             text: z.string().max(8192),
             images: z.number().int().nonnegative().max(64),
+            hasAttachments: z.boolean().optional(),
             rpcId: z.string().max(256).nullable(),
           })
           .strip(),
@@ -813,6 +815,17 @@ export const dshTurnOutcome = (reason: string | null): string =>
 /** Messages waiting for the next turn. Steering is already part of the running turn. */
 const queuedFor = (state: DshBridgeSessionState | null | undefined) =>
   (state?.queue ?? []).filter((item) => item.placement === "queued");
+const attachedFileNote = (line: string) => line.startsWith("User attached file ");
+function queueEditRefusal(item: DshBridgeQueueItem) {
+  if (
+    item.hasAttachments === true ||
+    item.images > 0 ||
+    item.text.split("\n").some(attachedFileNote)
+  )
+    return "queue_attachments_edit_unsupported";
+  // Earlier plugins omitted native file blocks from the preview.
+  return item.hasAttachments === false ? null : "dsh-queue-edit-unverified";
+}
 /**
  * Why DSH's goal service refused a change. It checks the goal's own revision, so a goal changed
  * meanwhile in DSH's window is refused rather than overwritten.
@@ -2533,21 +2546,22 @@ export class DshBridge {
       requiresResume: false,
       reason: null,
       data: queuedFor(state).map((item) => {
-        // An attached file reaches DSH as its own line of text (see the Host's attachment store).
-        // Listing those lines and the images, which are already in DSH, as their own inputs
-        // marks the item as one with attachments; an edit would replace them with text only.
         const lines = item.text.split("\n");
-        const note = (line: string) => line.startsWith("User attached file ");
+        const editRefusal = queueEditRefusal(item);
         return {
           id: item.id,
           kind: "queue",
           // The request that queued it, when AgentKib did (a Project Agent's reports merge by it).
           ...(item.rpcId ? { clientUserMessageId: item.rpcId } : {}),
           input: [
-            { type: "text", text: lines.filter((line) => !note(line)).join("\n") },
-            ...lines.filter(note).map((text) => ({ type: "text", text })),
+            { type: "text", text: lines.filter((line) => !attachedFileNote(line)).join("\n") },
+            ...lines.filter(attachedFileNote).map((text) => ({ type: "text", text })),
             ...Array.from({ length: item.images }, () => ({ type: "image" })),
           ],
+          ...(editRefusal === "queue_attachments_edit_unsupported" ? { hasAttachments: true } : {}),
+          ...(editRefusal
+            ? { actions: { update: { available: false, reason: editRefusal } } }
+            : {}),
           status: "pending",
           createdAt: null,
           requiresAttachments: false,
@@ -3742,8 +3756,12 @@ export class DshBridge {
           if (value.operation === "queue-steer" && live.steerEnabled !== true)
             throw new Error("stale-turn");
           const itemId = z.string().min(1).max(256).parse(value.queuedSubmissionId);
-          if (!queuedFor(this.#state(nativeId).state).some((item) => item.id === itemId))
-            throw new Error("queue-item-unavailable");
+          const item = queuedFor(this.#state(nativeId).state).find((item) => item.id === itemId);
+          if (!item) throw new Error("queue-item-unavailable");
+          if (value.operation === "queue-update") {
+            const editRefusal = queueEditRefusal(item);
+            if (editRefusal) throw new Error(editRefusal);
+          }
           command = {
             commandId,
             type: "queue",

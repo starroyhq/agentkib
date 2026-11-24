@@ -930,6 +930,38 @@ describe("Claude Remote parity", () => {
     await screen.findByText("Revised follow-up");
   });
 
+  it("joins the current turn with the selected queued item only when the host allows it", async () => {
+    const host = createHost();
+    host.state.features["queue-steer"] = available;
+    host.state.live = {
+      ...host.state.live,
+      status: "running",
+      sendEnabled: false,
+      turnId: "native-turn",
+    };
+    host.state.queue.paused = false;
+    host.state.queue.requiresResume = false;
+    host.state.queue.data[0]!.actions = { steer: available };
+    await openSession();
+    fireEvent.click(screen.getByRole("button", { name: "会话操作" }));
+    const queued = await screen.findByText("Queued follow-up");
+    const [join, unverified] = within(queued.closest("section")!).getAllByRole("button", {
+      name: copy.queueSteerItem,
+    });
+    await waitFor(() => expect(join).toBeEnabled());
+    expect(unverified).toBeDisabled();
+    fireEvent.click(join!);
+    await waitFor(() =>
+      expect(host.state.mutations[0]).toMatchObject({
+        path: "managed/action",
+        operation: "queue-steer",
+        agent: "claude-code",
+        queuedSubmissionId: "queued-1",
+        expectedRevision: 1,
+      }),
+    );
+  });
+
   it.each(["claimed", "dispatched", "unknown"] as const)(
     "keeps %s entries immutable and reorders only pending entries",
     async (status) => {

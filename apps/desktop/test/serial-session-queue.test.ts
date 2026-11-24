@@ -105,6 +105,7 @@ describe("host-scheduled text for Devin and Antigravity", () => {
         "add",
         "update",
         "delete",
+        "reorder",
         "pause",
         "resume",
       ]);
@@ -174,6 +175,81 @@ describe("host-scheduled text for Devin and Antigravity", () => {
       expect(await restarted.scheduleList()).toEqual([]);
     },
   );
+
+  it.each(["devin", "antigravity"] as const)(
+    "persists the %s order while retaining existing items, device ownership and receipts",
+    async (agent) => {
+      const f = await fixture(agent);
+      const control = f.control();
+      await control("queue-add", { text: "First" });
+      await control("queue-add", { text: "Second", deviceId: "device-b" });
+      const [first, second] = f.queue.list(f.sessionId).data;
+
+      for (const ids of [[first!.id], [first!.id, first!.id], [first!.id, randomUUID()]]) {
+        await expect(control("queue-reorder", { queuedSubmissionIds: ids })).rejects.toThrow(
+          "stale-queue-order",
+        );
+      }
+      expect(f.queue.list(f.sessionId).data).toEqual([first, second]);
+      const requestId = randomUUID();
+      const reverse = { requestId, queuedSubmissionIds: [second!.id, first!.id] };
+      const reordered = await control("queue-reorder", reverse);
+      expect(reordered).toMatchObject({ accepted: true, completed: true });
+      expect(f.queue.list(f.sessionId).data).toEqual([second, first]);
+      expect(await control("queue-reorder", reverse)).toEqual(reordered);
+      await expect(
+        control("queue-reorder", { requestId, queuedSubmissionIds: [first!.id, second!.id] }),
+      ).rejects.toThrow("request-id-reused");
+      expect(f.changed).toHaveBeenCalledTimes(3);
+      expect(readControlReceipt(f.directory, { requestId, deviceId: "device-a" })).toMatchObject({
+        found: true,
+        sessionId: f.sessionId,
+        operation: "queue-reorder",
+      });
+
+      const restarted = f.open("replacement-boot");
+      expect(restarted.list(f.sessionId)).toMatchObject({
+        paused: true,
+        reason: "restart-confirmation-required",
+        data: [second, first],
+      });
+      expect(await restarted.scheduleList()).toMatchObject([{ next: null }]);
+      await f.control(restarted)("queue-resume");
+      const next = await f.prepare(restarted);
+      expect(next).toMatchObject({ itemId: second!.id, deviceId: "device-b" });
+      expect(await restarted.schedule(next)).toMatchObject({ accepted: true });
+      await expect(restarted.schedule(next)).rejects.toThrow("schedule-permit-unavailable");
+      expect(f.requests).toEqual([
+        expect.objectContaining({ text: "Second", deviceId: "device-b" }),
+      ]);
+      expect(restarted.list(f.sessionId).data).toEqual([first]);
+    },
+  );
+
+  it("reorders only pending rows and leaves a claimed head's one-time permit intact", async () => {
+    const f = await fixture();
+    const control = f.control();
+    for (const text of ["Claimed", "Second", "Third"]) await control("queue-add", { text });
+    const [first, second, third] = f.queue.list(f.sessionId).data;
+    const prepared = await f.prepare();
+
+    await expect(
+      control("queue-reorder", { queuedSubmissionIds: [third!.id, second!.id, first!.id] }),
+    ).rejects.toThrow("stale-queue-order");
+    await control("queue-reorder", { queuedSubmissionIds: [third!.id, second!.id] });
+    expect(f.queue.list(f.sessionId).data.map(({ id, status }) => ({ id, status }))).toEqual([
+      { id: first!.id, status: "claimed" },
+      { id: third!.id, status: "pending" },
+      { id: second!.id, status: "pending" },
+    ]);
+    expect(await f.queue.scheduleList()).toMatchObject([{ next: null }]);
+    expect(await f.queue.schedule(prepared)).toMatchObject({ accepted: true });
+    await expect(f.queue.schedule(prepared)).rejects.toThrow("schedule-permit-unavailable");
+    const next = await f.prepare();
+    expect(next.itemId).toBe(third!.id);
+    await f.queue.schedule(next);
+    expect(f.requests.map(({ text }) => text)).toEqual(["Claimed", "Third"]);
+  });
 
   it("revokes a permit during native preflight before any side effect can run", async () => {
     const f = await fixture();
@@ -263,7 +339,13 @@ describe("host-scheduled text for Devin and Antigravity", () => {
       const resume = f.control(restarted);
       expect(restarted.list(f.sessionId)).toMatchObject({
         paused: true,
-        data: [{ status: "unknown" }, { status: "pending" }],
+        data: [
+          {
+            status: "unknown",
+            actions: { update: { available: false }, delete: { available: true } },
+          },
+          { status: "pending" },
+        ],
       });
       await expect(resume("queue-resume")).rejects.toThrow("control-outcome-unconfirmed");
       const unknown = restarted.list(f.sessionId).data[0]!;

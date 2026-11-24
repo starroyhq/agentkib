@@ -20,6 +20,7 @@ import {
   SESSION_EVENT_NOTIFICATION,
   sessionProviderCapabilities,
   type SessionSubscription,
+  type DshBridgeSessionState,
   type SubagentCatalog,
 } from "@agentkib/runtime-protocol";
 import {
@@ -39,6 +40,7 @@ import { withSessionActivities } from "../../../packages/backend/src/session-act
 import { McpHub } from "../../../packages/backend/src/mcp-hub";
 import { RemoteAgent } from "../../../packages/backend/src/remote-agent";
 import { BackendStore } from "../../../packages/backend/src/store";
+import { validateDeepSeekHarnessControl } from "../../../packages/backend/src/sessions/validate/deepseek-harness";
 import {
   createBridge,
   DSH_BRIDGE_PATHS,
@@ -1523,7 +1525,7 @@ describe("DeepSeek Harness bridge", () => {
     expect(f.dsh.sessions.get("session-a")!.events).toEqual([]);
   });
 
-  it("marks a queued message with images or files, which an edit would drop", async () => {
+  it("protects queued DSH attachments while retaining native delete and steer", async () => {
     const f = await fixture();
     await f.control("send", { text: "run the tests" });
     await until(() => f.bridge.live("ak-session-a", true).status === "running");
@@ -1551,20 +1553,175 @@ describe("DeepSeek Harness bridge", () => {
         ],
         source: { kind: "user" },
       },
+      {
+        id: "q3",
+        role: "user",
+        content: [{ type: "file", name: "native.txt" }],
+        source: { kind: "user" },
+      },
+      {
+        id: "q4",
+        role: "user",
+        content: [
+          { type: "text", text: "x".repeat(4096) },
+          { type: "text", text: "User attached file [notes.txt](file:///tmp/notes.txt)" },
+        ],
+        source: { kind: "user" },
+      },
     ];
     f.dsh.emit("agent/status", { agent, status: "running" });
-    await until(() => f.bridge.live("ak-session-a", true).queuedCount === 2);
+    await until(() => f.bridge.live("ak-session-a", true).queuedCount === 4);
     const queued = (await f.bridge.request({
       operation: "queue-list",
       sessionId: "ak-session-a",
-    })) as { data: { input: unknown[] }[] };
-    expect(queued.data.map((item) => item.input)).toEqual([
+    })) as { data: { id: string; input: unknown[] }[] };
+    expect(queued.data.slice(0, 2).map((item) => item.input)).toEqual([
       [{ type: "text", text: "see this" }, { type: "image" }],
       [
         { type: "text", text: "read this" },
         { type: "text", text: 'User attached file "a.txt": /tmp/a.txt' },
       ],
     ]);
+    for (const item of queued.data) {
+      expect(item).toMatchObject({
+        hasAttachments: true,
+        actions: { update: { available: false, reason: "queue_attachments_edit_unsupported" } },
+      });
+      await expect(
+        f.control("queue-update", { queuedSubmissionId: item.id, text: "drop the attachment" }),
+      ).resolves.toMatchObject({
+        controlOutcome: "not-dispatched",
+        reason: "queue_attachments_edit_unsupported",
+      });
+    }
+    expect(f.dsh.queueUpdates).toEqual([]);
+    expect(f.bridge.capabilities("ak-session-a", true).features).toMatchObject({
+      "queue-list": { available: true },
+      "queue-update": { available: true },
+      "queue-delete": { available: true },
+      "queue-steer": { available: true },
+      "queue-reorder": { available: false },
+      "queue-pause": { available: false },
+      "queue-resume": { available: false },
+    });
+    const steered = await f.control("queue-steer", { queuedSubmissionId: "q3" });
+    expect(steered).toMatchObject({ accepted: true });
+    await expect(f.bridge.request(f.lastBody())).resolves.toEqual(steered);
+    await expect(f.control("queue-delete", { queuedSubmissionId: "q4" })).resolves.toMatchObject({
+      accepted: true,
+    });
+    expect(f.dsh.queueUpdates).toEqual([
+      { sessionId: "session-a", itemId: "q3", action: { kind: "steer" } },
+      { sessionId: "session-a", itemId: "q4", action: { kind: "remove" } },
+    ]);
+    expect(f.dsh.prompts).toHaveLength(1);
+  });
+
+  it("checks a DSH queue edit against the native item even before the next bridge report", async () => {
+    const f = await fixture();
+    await f.control("send", { text: "run the tests" });
+    await until(() => f.bridge.live("ak-session-a", true).status === "running");
+    const agent = f.dsh.sessions.get("session-a")!.agent;
+    const plain = { id: "queued", role: "user", content: "plain text", source: { kind: "user" } };
+    agent.inbox.nextTurn = [plain];
+    f.dsh.emit("agent/status", { agent, status: "running" });
+    await until(() => f.bridge.live("ak-session-a", true).queuedCount === 1);
+    await expect(
+      f.control("queue-update", { queuedSubmissionId: "queued", text: "edited text" }),
+    ).resolves.toMatchObject({ accepted: true });
+    expect(f.dsh.queueUpdates).toEqual([
+      {
+        sessionId: "session-a",
+        itemId: "queued",
+        action: { kind: "edit", content: [{ type: "text", text: "edited text" }] },
+      },
+    ]);
+
+    // The bridge still sees the plain snapshot; the real inbox item changed before dispatch.
+    agent.inbox.nextTurn = [{ ...plain, content: [{ type: "file", name: "new.txt" }] }];
+    await expect(
+      f.control("queue-update", { queuedSubmissionId: "queued", text: "erase the attachment" }),
+    ).resolves.toMatchObject({
+      controlOutcome: "not-dispatched",
+      reason: "queue_attachments_edit_unsupported",
+    });
+    expect(f.dsh.queueUpdates).toHaveLength(1);
+  });
+
+  it("keeps legacy DSH queue actions when the bridge cannot verify plain text for editing", async () => {
+    const sendRequest = dshClient.post;
+    const transport = vi.spyOn(dshClient, "post").mockImplementation((...args) => {
+      const [socketPath, route, body, options] = args;
+      if (route !== DSH_BRIDGE_PATHS.report || !Array.isArray(body?.states))
+        return sendRequest(...args);
+      return sendRequest(
+        socketPath,
+        route,
+        {
+          ...body,
+          states: body.states.map((state: DshBridgeSessionState) => ({
+            ...state,
+            queue: state.queue.map(({ hasAttachments: _hasAttachments, ...item }) => item),
+          })),
+        },
+        options,
+      );
+    });
+    try {
+      const f = await fixture();
+      await f.control("send", { text: "run the tests" });
+      await until(() => f.bridge.live("ak-session-a", true).status === "running");
+      const agent = f.dsh.sessions.get("session-a")!.agent;
+      agent.inbox.nextTurn = [
+        { id: "legacy", role: "user", content: "legacy text", source: { kind: "user" } },
+      ];
+      f.dsh.emit("agent/status", { agent, status: "running" });
+      await until(() => f.bridge.live("ak-session-a", true).queuedCount === 1);
+      await expect(
+        f.bridge.request({ operation: "queue-list", sessionId: "ak-session-a" }),
+      ).resolves.toMatchObject({
+        data: [
+          {
+            id: "legacy",
+            input: [{ type: "text", text: "legacy text" }],
+            actions: { update: { available: false, reason: "dsh-queue-edit-unverified" } },
+          },
+        ],
+      });
+      await expect(
+        f.control("queue-update", { queuedSubmissionId: "legacy", text: "cannot verify" }),
+      ).resolves.toMatchObject({
+        controlOutcome: "not-dispatched",
+        reason: "dsh-queue-edit-unverified",
+      });
+      await expect(f.control("queue-add", { text: "keep queueing text" })).resolves.toMatchObject({
+        accepted: true,
+      });
+      expect(f.dsh.prompts.at(-1)?.content).toEqual([{ type: "text", text: "keep queueing text" }]);
+      await expect(
+        f.control("queue-delete", { queuedSubmissionId: "legacy" }),
+      ).resolves.toMatchObject({ accepted: true });
+      expect(f.dsh.queueUpdates).toEqual([
+        { sessionId: "session-a", itemId: "legacy", action: { kind: "remove" } },
+      ]);
+    } finally {
+      transport.mockRestore();
+    }
+  });
+
+  it("requires send permission to steer a pending DSH queue item", () => {
+    const context = {
+      executionMode: "dsh-follower",
+      verifiedClaudeManaged: false,
+      verifiedSerialQueue: false,
+      requireFullAccess: vi.fn(),
+    };
+    expect(
+      validateDeepSeekHarnessControl({ operation: "queue-steer", legacyCodex: false }, context),
+    ).toMatchObject({ available: true, requiresSend: true, queueItem: "pending" });
+    expect(
+      validateDeepSeekHarnessControl({ operation: "queue-delete", legacyCodex: false }, context),
+    ).not.toHaveProperty("requiresSend", true);
   });
 
   it("shows an approval in both places and the first answer wins", async () => {
@@ -1938,7 +2095,16 @@ describe("DeepSeek Harness plugin projections", () => {
           nextStep: [{ id: "2", content: "notice", source: { kind: "context" } }],
         },
       }),
-    ).toEqual([{ id: "1", placement: "queued", text: "queued", images: 0, rpcId: "r" }]);
+    ).toEqual([
+      {
+        id: "1",
+        placement: "queued",
+        text: "queued",
+        images: 0,
+        hasAttachments: false,
+        rpcId: "r",
+      },
+    ]);
     // Images keep DSH's stored reference; one without a well-formed reference is left out.
     expect(
       historyRecord({

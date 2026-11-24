@@ -265,6 +265,7 @@ export function queueItems(agent) {
         placement,
         text: bounded(parts.text, MAX_PREVIEW).text,
         images: Math.min(parts.images, 64),
+        hasAttachments: queueItemHasAttachments(message),
         rpcId: typeof message.source?.rpcId === "string" ? message.source.rpcId : null,
       });
     }
@@ -272,6 +273,19 @@ export function queueItems(agent) {
   add(agent?.inbox?.nextTurn, "queued");
   add(agent?.inbox?.nextStep, "steering");
   return items.slice(0, 64);
+}
+
+/** Editing replaces the entire native input, including blocks absent from its text preview. */
+export function queueItemHasAttachments(message) {
+  const { content } = message;
+  const fileNote = (text) => /^User attached file /m.test(text);
+  if (typeof content === "string") return fileNote(content);
+  return (
+    !Array.isArray(content) ||
+    content.some(
+      (part) => part?.type !== "text" || typeof part.text !== "string" || fileNote(part.text),
+    )
+  );
 }
 
 const titleOf = (projections) => {

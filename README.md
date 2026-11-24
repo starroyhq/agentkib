@@ -36,20 +36,26 @@ _Example screen with demo data._
 
 ## What you can do
 
-- **Keep track of work across agents.** Browse conversations by project and spot unread results. When you switch conversations on desktop, you can come back to your draft. Turn on conversation search to find a detail from an earlier session. [Working with conversations](docs/sessions/conversations.md) · [Search guide](docs/sessions/content-search.md)
-- **See what is running in a conversation.** On desktop and Web, see background tasks and subagents on supported sessions, including subagents in connected Claude Code terminals. Open a subagent's history where available. [Working with conversations](docs/sessions/conversations.md)
-- **Manage follow-ups while an agent works.** In supported desktop and Web sessions, see queued messages and edit or remove them. Pause or resume the queue where the agent offers those controls. [Working with conversations](docs/sessions/conversations.md)
+- **Resume work after quitting.** When you quit AgentKib, you can choose to resume eligible Codex, Claude Code, and DeepSeek Harness tasks the next time you open it. You can also pick up interrupted tasks yourself from Home. [Working with conversations](docs/sessions/conversations.md#退出后继续任务)
+- **Paste or drop attachments.** Paste a screenshot or a copied file, drag files into the message box, or choose them with **+** in supported desktop and Web sessions. [Working with conversations](docs/sessions/conversations.md)
+- **Manage follow-ups in one queue.** On desktop and Web, use the same controls to edit, remove, reorder, pause, resume, or send a queued message into the current turn where the agent supports it. [Working with conversations](docs/sessions/conversations.md)
+- **Choose permissions before sending.** When you start a session, choose from the permissions the agent supports. Your choice applies to the first message. [Working with conversations](docs/sessions/conversations.md)
+- **Keep track of work across agents.** Browse conversations by project, pin the ones you need, and spot unread results. Pick up desktop drafts and search earlier conversations. Desktop **Settings → Sessions** groups options for sending follow-ups and picking up work after limits or quitting. [Working with conversations](docs/sessions/conversations.md) · [Search guide](docs/sessions/content-search.md)
+- **See what is running in a conversation.** Open the floating **Session activity** panel to see background tasks and subagents in supported sessions, including connected Claude Code terminals. Open a subagent's history where available. Common controls such as search and new session now use icon buttons. [Working with conversations](docs/sessions/conversations.md)
+- **Review past questions and approvals.** Read question-and-answer cards in supported histories. In desktop **Settings → Sessions → Security and approvals**, review recent decisions made in AgentKib and auto-allow rules, and revoke eligible Claude Code rules. [Working with conversations](docs/sessions/conversations.md)
 - **Hand off a task.** If you want a different agent to take over, review the handoff first. The receiving agent can open it as a conversation or read a handoff file, depending on what it supports. [Handoff guide](docs/sessions/interoperability.md)
 - **Coordinate several conversations.** On macOS, a supported conversation can become a Project Agent. Use **Assign Workers** to add up to 10 existing Codex, Claude Code, DeepSeek Harness, Devin, or Antigravity conversations. The Project Agent can give them tasks and restart supported Workers. For a running Codex Worker managed by AgentKib, it can also add instructions to the current turn or queue a follow-up. It receives combined completion reports and alerts about disconnects, usage limits, and possible stalls. [Project Agent guide](docs/agents/project-agent.md)
 - **Pick up after a usage limit.** In supported sessions, see when the limit resets and whether the session can resume automatically. [Usage limits](docs/agents/usage-limits.md)
 - **Manage the tools your agents use.** Check which instructions and Skills a project sees, organize reusable Skills, and manage connections to external tools through MCP. Review proposed configuration changes before applying them. [Skills guide](docs/library/skills.md) · [MCP guide](docs/library/mcp.md)
 
+The desktop session list retries once if loading times out. If it still cannot load, it shows the reason and lets you retry.
+
 ## Which agents work with AgentKib?
 
 - **Codex** supports starting and continuing conversations. On macOS, AgentKib can take over eligible conversations that aren’t open in the Codex app. [Codex guide](docs/agents/codex-managed.md)
-- **Claude Code** can run in AgentKib or connect from a supported terminal on macOS. With the bridge plugin installed, run `/agentkib-status` in the terminal to diagnose connection problems and see what to do next. [Claude Code terminal guide](docs/agents/claude-code-terminal.md)
-- **Devin and Antigravity** can start, continue, and control sessions through a supported CLI's ACP connection. Both can serve as Project Agents. Antigravity conversations stored only in the app or IDE are available as read-only history. [Devin guide](docs/agents/devin.md) · [Antigravity guide](docs/agents/antigravity.md)
-- **DeepSeek Harness** support is in beta on macOS and depends on the installed version and bridge plugin.
+- **Claude Code** can run in AgentKib or connect from a supported macOS terminal. View terminal approval requests and questions as read-only, get notifications on iPhone, and move eligible sessions into AgentKib from a paired device. AgentKib automatically updates the bridge plugin it supplied if you have already installed it. Run `/agentkib-status` in the terminal for connection details. [Claude Code terminal guide](docs/agents/claude-code-terminal.md)
+- **Devin and Antigravity** can start, continue, and control sessions through a supported CLI's ACP connection. Both can serve as Project Agents. Antigravity also shows read-only app and IDE history, keeps the records it can read, and explains which sources are unavailable. [Devin guide](docs/agents/devin.md) · [Antigravity guide](docs/agents/antigravity.md)
+- **DeepSeek Harness** is in beta on macOS. Import reviewed history from supported agents into a new session and preview images in DSH history. AgentKib starts a compatible DSH automatically when you create or continue a session that needs it. [DeepSeek Harness guide](docs/agents/deepseek-harness.md)
 
 You can also browse available local history from Cursor, OpenCode, OpenClaw, Hermes, and Grok Build. See the [compatibility guide](docs/FEATURES.md) for your agent and platform.
 
@@ -58,6 +64,8 @@ You can also browse available local history from Cursor, OpenCode, OpenClaw, Her
 Reading local history needs no AgentKib account and makes no model calls. Sending a message uses your agent's own sign-in, permissions, and usage limits.
 
 Remote access is off by default. When you pair a device, choose read-only access or full control and revoke it from the desktop whenever you want. The official remote service uses an AgentKib account. [Local Wi-Fi access](docs/remote/hosted-web-lan.md) can be set up without an account on a trusted network.
+
+If phone pairing fails, AgentKib shows the reason and what you can do next. [Phone setup guide](docs/remote/phone-access.md)
 
 ## Help
 

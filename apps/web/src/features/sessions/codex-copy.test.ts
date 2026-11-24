@@ -15,6 +15,22 @@ describe("Codex capability reasons", () => {
       expect(explanation.text).toContain("Codex");
     }
   });
+  it.each([
+    ["zh-CN", "等待 ChatGPT 放开会话"],
+    ["zh-Hant", "等待 ChatGPT 釋放對話"],
+    ["en-US", "Waiting for ChatGPT to release the conversation"],
+    ["ja-JP", "ChatGPT が会話を解放するまで待機中"],
+  ] as const)("labels a queued message that is waiting for the owner in %s", (locale, label) => {
+    expect(sessionReason(locale, "codex-waiting-for-owner")).toEqual({ text: label });
+  });
+  it.each([
+    ["zh-CN", "等待发送已暂停"],
+    ["zh-Hant", "等待傳送已暫停"],
+    ["en-US", "Queued send paused"],
+    ["ja-JP", "送信待ちを一時停止中"],
+  ] as const)("labels a paused queued send in %s", (locale, label) => {
+    expect(sessionReason(locale, "codex-owner-wait-paused")).toEqual({ text: label });
+  });
   it.each(locales)("explains directory failures and projects view only in %s", (locale) => {
     for (const reason of [
       "codex-session-directory-unsafe",

@@ -107,6 +107,244 @@ function service(
 
 const parse = (result: { text: string }) => JSON.parse(result.text);
 
+describe("Codex Worker sends waiting for the desktop owner", () => {
+  const occupied = {
+    status: "idle",
+    sendEnabled: false,
+    ownershipReason: "codex-owner-busy",
+    reason: "codex-desktop-ipc-unavailable",
+    ownerWaitAvailable: true,
+    workspaceId: "w1",
+    runtimeBootId: "boot",
+    revision: 3,
+  };
+
+  async function assigned(laneHost: LaneHost, delivered: string[] = []) {
+    const orchestration = service(laneHost, directory(), "boot", (_session, _device, message) => {
+      delivered.push(message);
+      return false;
+    });
+    orchestration.designate(OWNER);
+    await assignWorker(orchestration);
+    return orchestration;
+  }
+
+  it("shows the waiting request and cancels it without stopping an intervening desktop turn", async () => {
+    const submit = vi.fn<NonNullable<LaneHost["deferCodexSend"]>>();
+    const cancel = vi.fn<NonNullable<LaneHost["cancelDeferredCodexSend"]>>();
+    const { lanes, calls, lives } = host({
+      deferCodexSend: submit,
+      cancelDeferredCodexSend: cancel,
+    });
+    lives.set(WORKER, occupied);
+    submit.mockImplementation(async (request, owner) => {
+      lives.set(WORKER, {
+        ...occupied,
+        ownerWait: {
+          requestId: request.requestId,
+          status: "waiting-for-owner",
+          source: "worker",
+          laneId: owner.laneId,
+        },
+      });
+      return { accepted: true, status: "waiting-for-owner", requestId: request.requestId };
+    });
+    cancel.mockImplementation(async () => {
+      lives.set(WORKER, occupied);
+      return true;
+    });
+
+    const orchestration = await assigned(lanes);
+    const worker = { worker: "worker-1" };
+    const result = parse(
+      await orchestration.call(LEAD, "worker_send", { ...worker, text: "Finish the review" }),
+    );
+    const owner = {
+      leadId: LEAD,
+      laneId: orchestration.status(LEAD)!.lanes[0]!.id,
+      sessionId: WORKER,
+      workspaceId: "w1",
+      deviceId: DEVICE,
+    };
+    expect(result).toMatchObject({
+      accepted: true,
+      status: "waiting-for-owner",
+      reason: "codex-waiting-for-owner",
+      operation: "send",
+    });
+    expect(submit).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ requestId: result.requestId, text: "Finish the review" }),
+      owner,
+      false,
+    );
+    const waiting = { status: "waiting-for-owner", reason: "codex-waiting-for-owner" };
+    expect(parse(await orchestration.call(LEAD, "worker_list", {})).workers).toMatchObject([
+      waiting,
+    ]);
+    lives.set(WORKER, {
+      ...lives.get(WORKER),
+      status: "running",
+      turnId: "external-turn",
+      stopEnabled: true,
+    });
+    expect(parse(await orchestration.call(LEAD, "worker_read", worker))).toMatchObject(waiting);
+    expect(
+      parse(await orchestration.call(LEAD, "worker_send", { ...worker, text: "Duplicate" })),
+    ).toMatchObject({ accepted: false, ...waiting, requestId: result.requestId });
+    expect(submit).toHaveBeenCalledTimes(1);
+    expect(parse(await orchestration.call(LEAD, "worker_stop", worker))).toEqual({
+      accepted: true,
+      requestId: result.requestId,
+      cancelled: true,
+    });
+    expect(cancel).toHaveBeenCalledExactlyOnceWith(owner, result.requestId);
+    expect(calls).toEqual([]);
+    expect(parse(await orchestration.call(LEAD, "worker_read", worker))).toMatchObject({
+      status: "busy",
+    });
+  });
+
+  it("sends via the deferred entry even when idle, preserves handoff intent, and exposes an unknown outcome", async () => {
+    const submit = vi.fn<NonNullable<LaneHost["deferCodexSend"]>>();
+    const { lanes, calls, lives } = host({ deferCodexSend: submit });
+    submit.mockResolvedValue({ accepted: false, controlOutcome: "unknown" });
+    const orchestration = await assigned(lanes);
+    const worker = { worker: "worker-1", text: "Do it once" };
+    const result = await orchestration.call(LEAD, "worker_send", worker);
+    expect(parse(result)).toMatchObject({ accepted: false, outcome: "unknown", operation: "send" });
+    expect(result.isError).toBe(true);
+    expect(submit).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ operation: "send" }),
+      expect.objectContaining({ sessionId: WORKER }),
+      false,
+    );
+    expect(calls).toEqual([]);
+
+    lives.set(WORKER, { ...occupied, ownerHandoff: true, sendEnabled: true });
+    submit.mockResolvedValue({ accepted: true });
+    expect(parse(await orchestration.call(LEAD, "worker_send", worker))).toMatchObject({
+      accepted: true,
+      operation: "send",
+    });
+    expect(submit).toHaveBeenLastCalledWith(
+      expect.objectContaining({ operation: "send" }),
+      expect.objectContaining({ sessionId: WORKER }),
+      true,
+    );
+  });
+
+  it("lets a resumed Project Agent request the same paused send after rechecking its assignment", async () => {
+    const original = "Continue when the session is free";
+    const submit = vi.fn<NonNullable<LaneHost["deferCodexSend"]>>(async ({ text }) =>
+      text === original
+        ? { accepted: true, status: "waiting-for-owner" }
+        : { accepted: false, reason: "codex-waiting-for-owner" },
+    );
+    const { lanes, lives } = host({ deferCodexSend: submit });
+    const orchestration = await assigned(lanes);
+    const lane = orchestration.status(LEAD)!.lanes[0]!;
+    lives.set(WORKER, {
+      ...occupied,
+      ownerWaitAvailable: false,
+      ownerWait: {
+        requestId: "persisted-request",
+        status: "paused",
+        source: "worker",
+        laneId: lane.id,
+      },
+    });
+    const worker = { worker: "worker-1" };
+    orchestration.pause(LEAD, "restart-confirmation-required");
+    expect(parse(await orchestration.call(LEAD, "worker_read", worker))).toMatchObject({
+      status: "paused",
+      reason: "codex-waiting-for-owner",
+    });
+    expect(
+      parse(await orchestration.call(LEAD, "worker_send", { ...worker, text: original })),
+    ).toMatchObject({ accepted: false, reason: "delegation-paused" });
+    expect(submit).not.toHaveBeenCalled();
+
+    orchestration.resume(LEAD, DEVICE);
+    expect(
+      parse(await orchestration.call(LEAD, "worker_send", { ...worker, text: "Other text" })),
+    ).toMatchObject({ accepted: false, reason: "codex-waiting-for-owner" });
+    expect(
+      parse(await orchestration.call(LEAD, "worker_send", { ...worker, text: original })),
+    ).toMatchObject({ accepted: true, status: "waiting-for-owner" });
+    expect(submit).toHaveBeenCalledTimes(2);
+    expect(submit).toHaveBeenLastCalledWith(
+      expect.objectContaining({ operation: "send", text: original }),
+      expect.objectContaining({ laneId: lane.id, deviceId: DEVICE }),
+      false,
+    );
+  });
+
+  it("offers waiting even during an observed external Codex turn while retaining steer rules", async () => {
+    const submit = vi
+      .fn<NonNullable<LaneHost["deferCodexSend"]>>()
+      .mockResolvedValue({ accepted: true, status: "waiting-for-owner" });
+    const { lanes, lives } = host({ deferCodexSend: submit });
+    lives.set(WORKER, {
+      ...occupied,
+      externalTurn: { status: "running", turnId: "external-turn" },
+    });
+    const orchestration = await assigned(lanes);
+    const worker = { worker: "worker-1", text: "After the desktop user" };
+    expect(
+      parse(await orchestration.call(LEAD, "worker_send", { ...worker, mode: "steer" })),
+    ).toMatchObject({ accepted: false, reason: "codex-desktop-ipc-unavailable" });
+    expect(submit).not.toHaveBeenCalled();
+    expect(parse(await orchestration.call(LEAD, "worker_send", worker))).toMatchObject({
+      accepted: true,
+      operation: "send",
+      status: "waiting-for-owner",
+    });
+  });
+
+  it("rechecks the original assignment and reports refused or delayed sends once", async () => {
+    const { lanes } = host();
+    const reports: string[] = [];
+    const orchestration = await assigned(lanes, reports);
+    const owner = {
+      leadId: LEAD,
+      laneId: orchestration.status(LEAD)!.lanes[0]!.id,
+      sessionId: WORKER,
+      workspaceId: "w1",
+      deviceId: DEVICE,
+    };
+    expect(orchestration.checkDeferredCodexSend(owner)).toBe("ready");
+    expect(orchestration.checkDeferredCodexSend({ ...owner, deviceId: "other-device" })).toBe(
+      "revoked",
+    );
+    expect(orchestration.checkDeferredCodexSend({ ...owner, workspaceId: "w2" })).toBe("revoked");
+    orchestration.pause(LEAD);
+    expect(orchestration.checkDeferredCodexSend(owner)).toBe("paused");
+    orchestration.deferredCodexSendResult(owner, "refused-request", {
+      status: "refused",
+      reason: "native-policy-unconfirmed",
+    });
+    expect(reports).toEqual([]);
+    expect(orchestration.status(LEAD)?.pendingReports).toEqual([
+      expect.stringContaining("native-policy-unconfirmed"),
+    ]);
+    orchestration.resume(LEAD, DEVICE);
+    expect(orchestration.checkDeferredCodexSend(owner)).toBe("ready");
+    expect(reports).toHaveLength(1);
+    const sent = { status: "sent", interveningExternalTurns: true } as const;
+    orchestration.deferredCodexSendResult(owner, "sent-request", sent);
+    orchestration.deferredCodexSendResult(owner, "sent-request", sent);
+    expect(reports).toHaveLength(2);
+    expect(reports[1]).toContain("ChatGPT ran other turns while it waited");
+    await orchestration.laneTurnEnded(WORKER, "t1", "completed");
+    expect(reports[2]).toContain("turn ended: completed");
+    orchestration.removeWorker(LEAD, WORKER);
+    await assignWorker(orchestration);
+    expect(orchestration.checkDeferredCodexSend(owner)).toBe("revoked");
+    orchestration.deferredCodexSendResult(owner, "stale-request", sent);
+    expect(reports).toHaveLength(3);
+  });
+});
+
 describe("Project Agent supervision", () => {
   const now = Date.parse("2026-01-01T12:00:00Z");
 

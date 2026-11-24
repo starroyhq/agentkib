@@ -87,6 +87,105 @@ afterEach(() => {
 });
 
 describe("Claude terminal connection management", () => {
+  it("shows plugin versions and a completed update next to the install commands", async () => {
+    vi.useFakeTimers();
+    const installed = { ...status(), hasBinding: true, connected: true };
+    state.request.mockResolvedValue({
+      ...installed,
+      pluginUpdate: { installedVersion: "0.5.3", bundledVersion: "0.5.4", status: "updating" },
+    });
+    render(<ClaudeBridgePanel active />);
+    await act(async () => {});
+    expect(screen.getByRole("button", { name: "已安装插件" })).toHaveAttribute(
+      "aria-expanded",
+      "false",
+    );
+    expect(screen.getByText("已安装 0.5.3 · 随包版本 0.5.4")).toBeVisible();
+    expect(screen.getByText("正在更新插件…")).toBeVisible();
+
+    state.request.mockResolvedValue({
+      ...installed,
+      pluginUpdate: { installedVersion: "0.5.4", bundledVersion: "0.5.4", status: "updated" },
+    });
+    await act(async () => vi.advanceTimersByTimeAsync(2_500));
+    expect(screen.getByText("已安装 0.5.4 · 随包版本 0.5.4")).toBeVisible();
+    expect(
+      screen.getByText("插件已更新。新开的 Claude Code 会话或执行 /reload-plugins 后生效。"),
+    ).toBeVisible();
+  });
+
+  it("keeps connection actions available with an unsupported plugin update status", async () => {
+    state.request.mockResolvedValue({
+      ...status(),
+      pluginUpdate: { installedVersion: "0.5.3", bundledVersion: "0.5.4", status: "unrecognized" },
+    });
+    render(<ClaudeBridgePanel active />);
+    await screen.findByText("Install isolated plugin");
+    expect(screen.getByRole("button", { name: "生成连接码" })).toBeEnabled();
+    expect(screen.queryByText(/随包版本/)).not.toBeInTheDocument();
+  });
+
+  it("shows why the CLI could not update and retries through the local bridge entry", async () => {
+    const retry = deferred<unknown>();
+    state.request.mockImplementation(async ({ operation }) =>
+      operation === "bridge-plugin-retry"
+        ? retry.promise
+        : {
+            ...status(),
+            pluginUpdate: {
+              installedVersion: "0.5.3",
+              bundledVersion: "0.5.4",
+              status: "failed",
+              reason: "Claude Code could not refresh the installed plugin",
+            },
+          },
+    );
+    render(<ClaudeBridgePanel active />);
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Claude Code could not refresh the installed plugin",
+    );
+    fireEvent.click(screen.getByRole("button", { name: "重试" }));
+    expect(state.request).toHaveBeenCalledWith({
+      operation: "bridge-plugin-retry",
+      sessionId: "s",
+    });
+    expect(screen.getByText("正在更新插件…")).toBeVisible();
+    expect(screen.queryByRole("button", { name: "重试" })).not.toBeInTheDocument();
+
+    await act(async () => {
+      retry.resolve({ installedVersion: "0.5.4", bundledVersion: "0.5.4", status: "updated" });
+    });
+    expect(screen.getByText("已安装 0.5.4 · 随包版本 0.5.4")).toBeVisible();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it("drops a deferred plugin retry result after the session changes", async () => {
+    const retry = deferred<unknown>();
+    state.request.mockImplementation(async ({ operation, sessionId }) =>
+      operation === "bridge-plugin-retry"
+        ? retry.promise
+        : {
+            ...status(sessionId),
+            pluginUpdate: {
+              installedVersion: "0.5.3",
+              bundledVersion: "0.5.4",
+              status: sessionId === "s" ? "failed" : "idle",
+            },
+          },
+    );
+    const { rerender } = render(<ClaudeBridgePanel active />);
+    fireEvent.click(await screen.findByRole("button", { name: "重试" }));
+    state.session.selected = "other";
+    state.session.current = { ...state.session.current!, id: "other" };
+    state.session.live = { ...state.session.live!, sessionId: "other" };
+    rerender(<ClaudeBridgePanel active />);
+    await act(async () => {
+      retry.resolve({ installedVersion: "0.5.4", bundledVersion: "0.5.4", status: "updated" });
+    });
+    expect(screen.getByText("已安装 0.5.3 · 随包版本 0.5.4")).toBeVisible();
+    expect(screen.queryByText("已安装 0.5.4 · 随包版本 0.5.4")).not.toBeInTheDocument();
+  });
+
   it("shows the workspace automatic connection switch on by default and saves a change", async () => {
     let enabled = true;
     state.request.mockImplementation(async (input) =>

@@ -273,7 +273,11 @@ async function localClaudeRequestInner(
     })
   )
     throw new Error("claude_session_unavailable");
-  if (["bridge-status", "bridge-challenge", "bridge-disconnect"].includes(operation))
+  if (
+    ["bridge-status", "bridge-challenge", "bridge-disconnect", "bridge-plugin-retry"].includes(
+      operation,
+    )
+  )
     return deps.managed({ operation, sessionId, deviceId: OWNER });
   if (operation === "bridge-auto-connect") {
     if (typeof input.enabled !== "boolean") throw new Error("invalid_request");

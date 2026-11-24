@@ -71,6 +71,8 @@ const managedControlFields = z
     name: z.string().max(256).optional(),
     queuedSubmissionId: z.string().min(1).max(256).optional(),
     queuedSubmissionIds: z.array(z.string().min(1).max(256)).max(100).optional(),
+    ownerWaitOnly: z.literal(true).optional(),
+    allowOwnerWait: z.literal(true).optional(),
     model: z.string().min(1).max(256).optional(),
     effort: z.string().min(1).max(64).nullable().optional(),
     serviceTier: z.string().min(1).max(128).nullable().optional(),
@@ -88,6 +90,8 @@ function controlSchemaFor<Mode extends string>(modes: readonly [Mode, ...Mode[]]
   return managedControlFields
     .extend({ permissionMode: z.enum(modes).optional() })
     .refine(validHistoryControl)
+    .refine((request) => !request.ownerWaitOnly || request.operation === "queue-delete")
+    .refine((request) => !request.allowOwnerWait || request.operation === "send")
     .refine(
       (request) => request.operation === "settings" || request.expectedSettingsScope === undefined,
     )

@@ -252,3 +252,4 @@ export interface RuntimeRpcError {
 export * from "./claude-bridge";
 export * from "./quota-cost";
 export * from "./dsh-bridge";
+export * from "./session-attachments";

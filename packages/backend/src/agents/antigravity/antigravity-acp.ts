@@ -3,6 +3,11 @@ import type { Readable, Writable } from "node:stream";
 import path from "node:path";
 import { performance } from "node:perf_hooks";
 import { acpObject, parseAcpJson, stringifyAcpJson } from "../../acp-json";
+import {
+  acpPromptAttachmentSupport,
+  type AcpPromptAttachmentSupport,
+  type AcpPromptBlock,
+} from "../../acp-prompt-attachments";
 import { windowsProcessTree, type NativeProcessTree } from "../../native-process";
 import { hasText } from "../../session-events";
 import { versionAtLeast } from "../../native-version";
@@ -25,6 +30,7 @@ export interface AcpCompatibility {
   loadSession: boolean;
   listSessions: boolean;
   resumeSession: boolean;
+  promptAttachments: AcpPromptAttachmentSupport | undefined;
 }
 export interface AcpPermission {
   sessionId: string;
@@ -72,6 +78,7 @@ export function acpCompatibility(value: unknown): AcpCompatibility {
     loadSession: caps.loadSession === true,
     listSessions: object(sessions) && object((sessions as Record<string, unknown>).list),
     resumeSession: object(sessions) && object((sessions as Record<string, unknown>).resume),
+    promptAttachments: acpPromptAttachmentSupport(value),
   };
 }
 /** The newest Antigravity CLI (`agy acp`) whose control AgentKib verified end to end. */
@@ -337,18 +344,39 @@ export class AntigravityAcp {
       );
     });
   }
-  prompt(value: string, text: string, beforeDispatch?: () => void): Promise<AcpId> {
+  prompt(
+    value: string,
+    input: string | AcpPromptBlock[],
+    beforeDispatch?: () => void,
+  ): Promise<AcpId> {
     return this.#serialize(async () => {
-      this.#ready();
+      const support = this.#ready().promptAttachments;
       if (!this.#sessions.has(value)) throw new Error("ACP session is not attached");
       if (this.#active.has(value)) throw new Error("ACP session has an active turn");
-      if (!hasText(text) || Buffer.byteLength(text) > 65536)
-        throw new Error("ACP prompt must be 1–65536 bytes");
-      beforeDispatch?.();
+      const prompt: AcpPromptBlock[] =
+        typeof input === "string" ? [{ type: "text", text: input }] : input;
+      const text = prompt.flatMap((block) => (block.type === "text" ? [block.text] : [])).join("");
+      if (
+        Buffer.byteLength(text) > 65_536 ||
+        (!hasText(text) && !prompt.some((block) => block.type !== "text"))
+      )
+        throw new AcpUndispatchedError(
+          "ACP prompt must be 1–65536 text bytes or contain attachments",
+        );
+      if (
+        prompt.some(
+          (block) =>
+            (block.type === "image" && !support?.image) ||
+            (block.type === "resource" && !support?.embeddedContext) ||
+            (block.type === "resource_link" && !support?.resourceLink),
+        )
+      )
+        throw new AcpUndispatchedError("attachments-unsupported");
       const request = await this.#request(
         "session/prompt",
-        { sessionId: value, prompt: [{ type: "text", text }] },
+        { sessionId: value, prompt },
         value,
+        beforeDispatch ?? (() => {}),
       );
       this.#cancelled.delete(value);
       this.#active.add(value);
@@ -541,12 +569,17 @@ export class AntigravityAcp {
     if (!this.#compatibility) throw new Error("ACP initialize has not succeeded");
     return this.#compatibility;
   }
-  async #request(method: string, params: unknown, session: string | null): Promise<AcpId> {
+  async #request(
+    method: string,
+    params: unknown,
+    session: string | null,
+    beforeDispatch?: () => void,
+  ): Promise<AcpId> {
     if (this.#pending.size >= 128) throw new Error("Too many outstanding ACP requests");
     const request = this.#nextId;
     if (request === 9223372036854775807n) throw new Error("ACP request id exhausted");
+    await this.#write({ jsonrpc: "2.0", id: request, method, params }, beforeDispatch);
     this.#nextId++;
-    await this.#write({ jsonrpc: "2.0", id: request, method, params });
     this.#pending.set(request, { method, sessionId: session });
     return request;
   }
@@ -578,10 +611,13 @@ export class AntigravityAcp {
       .catch(() => {});
     return task;
   }
-  async #write(value: unknown): Promise<void> {
+  async #write(value: unknown, beforeDispatch?: () => void): Promise<void> {
     this.#check();
     const bytes = Buffer.from(stringifyAcpJson(value) + "\n");
-    if (bytes.length > MAX_ACP_FRAME_BYTES) throw new Error("Outgoing ACP frame exceeds limit");
+    if (bytes.length > MAX_ACP_FRAME_BYTES) {
+      if (beforeDispatch) throw new AcpUndispatchedError("attachments_too_large");
+      throw new Error("Outgoing ACP frame exceeds limit");
+    }
     const remaining = Math.min(
       this.options.timeout ?? 10_000,
       (this.options.deadline ?? Infinity) - performance.now(),
@@ -592,6 +628,7 @@ export class AntigravityAcp {
       this.#poison(error);
       throw error;
     }
+    beforeDispatch?.();
     try {
       await new Promise<void>((resolve, reject) => {
         const timer = setTimeout(
@@ -692,4 +729,22 @@ export class AntigravityAcp {
       }
     }
   }
+}
+
+/** Read only the handshake. Callers verify their native identity and close the probe client. */
+export async function initializeAcpProbe(
+  client: AntigravityAcp,
+  timeout: number,
+): Promise<unknown> {
+  const deadline = performance.now() + timeout;
+  const request = await client.initialize();
+  for (let count = 0; count < 64 && performance.now() < deadline; count++) {
+    const event = await client.nextEvent(Math.max(0, deadline - performance.now()));
+    if (event?.type === "response" && event.id === request) {
+      if (event.method === "initialize" && !event.error) return event.result;
+      break;
+    }
+    if (event?.type !== "notification") break;
+  }
+  throw new Error("ACP attachment capability probe did not initialize");
 }

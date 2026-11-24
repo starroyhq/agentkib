@@ -167,7 +167,38 @@ describe("private attachment input storage", () => {
       "file-request",
     );
     expect(input).toEqual([{ type: "text", text: expect.stringContaining(file.id) }]);
-    expect(input[0].text).toContain('"notes.txt"');
+    expect(input[0].text).toContain("[notes.txt](file:");
+  });
+  it("projects only host-resolved ACP uploads for the provider's native handshake", async () => {
+    const file = await store.upload(bytes(), owner, "notes.txt", "text/plain", () => {});
+    await expect(store.input("other", "task", [file.id], "", "acp")).rejects.toThrow(
+      "attachment_not_found",
+    );
+    expect(await store.input("phone", "task", [file.id], "open", "acp")).toEqual([
+      { type: "text", text: "open" },
+      {
+        type: "acpAttachment",
+        id: file.id,
+        name: "notes.txt",
+        mime: "text/plain",
+        size: file.size,
+        version: file.version,
+      },
+    ]);
+  });
+  it("uses a Markdown link for an image with no native raster format", async () => {
+    const image = await store.upload(
+      bytes("<svg></svg>"),
+      owner,
+      "icon [draft].svg",
+      "image/svg+xml",
+      () => {},
+    );
+    for (const agent of ["codex", "claude", "dsh"] as const) {
+      const input = await store.input("phone", "task", [image.id], "", agent);
+      expect(input[0]).toMatchObject({ type: "text", text: expect.stringContaining("file:") });
+      expect(input[0].text).toContain("User attached file [icon \\[draft\\].svg]");
+    }
   });
   it("preserves Codex localImage encoding", async () => {
     const image = await store.upload(binary(png), owner, "one.png", "image/png", () => {});
@@ -178,7 +209,7 @@ describe("private attachment input storage", () => {
       { type: "localImage", path: expect.stringContaining(image.id) },
     ]);
   });
-  it("hands DeepSeek Harness checked image files and other files as paths", async () => {
+  it("hands DeepSeek Harness checked image files and other files as Markdown links", async () => {
     const image = await store.upload(binary(png), owner, "one.png", "image/png", () => {});
     const file = await store.upload(bytes(), owner, "notes.txt", "text/plain", () => {});
     const input = await store.input("phone", "task", [image.id, file.id], "look", "dsh");
@@ -194,21 +225,20 @@ describe("private attachment input storage", () => {
       },
       { type: "text", text: expect.stringContaining(file.id) },
     ]);
-    expect(input[2].text).toContain('"notes.txt"');
+    expect(input[2].text).toContain("[notes.txt](file:");
     // An image whose bytes are not what its type says is refused, as it is for Claude.
     const spoofed = await store.upload(binary(png), owner, "two.jpg", "image/jpeg", () => {});
     await expect(store.input("phone", "task", [spoofed.id], "", "dsh")).rejects.toThrow(
       "invalid_attachment_image",
     );
   });
-  it("rejects MIME spoofing, unknown image formats and invalid encoded dimensions before pinning", async () => {
+  it("rejects MIME spoofing and invalid native raster dimensions before pinning", async () => {
     const oversized = Buffer.from(png);
     oversized.writeUInt32BE(8001, 16);
     for (const [value, mime] of [
       [png, "image/jpeg"],
       [png, "text/plain"],
       [Buffer.from("fake"), "image/png"],
-      [Buffer.from("<svg/>"), "image/svg+xml"],
       [oversized, "image/png"],
     ] as const) {
       const image = await store.upload(binary(value), owner, "img", mime, () => {});

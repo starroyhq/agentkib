@@ -255,7 +255,7 @@ const MANAGED_CAPABILITIES = {
     composer: {
       modelPicker: true,
       permissionPicker: true,
-      attachments: false,
+      attachments: true,
       workspaceResources: true,
       plan: false,
       goal: false,
@@ -285,7 +285,7 @@ const MANAGED_CAPABILITIES = {
     composer: {
       modelPicker: true,
       permissionPicker: true,
-      attachments: false,
+      attachments: true,
       workspaceResources: false,
       plan: false,
       goal: false,

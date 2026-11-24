@@ -1,5 +1,6 @@
 import {
   useEffect,
+  useLayoutEffect,
   useRef,
   useState,
   type ComponentPropsWithRef,
@@ -14,8 +15,46 @@ type Attachments = {
   inputRef: Ref<HTMLInputElement>;
   label: string;
   disabled?: boolean;
+  scope?: string;
   onFiles: (files: File[]) => void;
 };
+
+const attachmentFeedbackMs = 600;
+
+function fileTransfer(data: DataTransfer) {
+  return (
+    !!data.files?.length ||
+    Array.from(data.items ?? []).some((item) => item.kind === "file") ||
+    Array.from(data.types ?? []).some((type) =>
+      ["files", "application/x-moz-file", "public.file-url", "nsfilenamespboardtype"].includes(
+        type.toLowerCase(),
+      ),
+    )
+  );
+}
+
+function hasFileReference(data: DataTransfer) {
+  if (!data.types?.includes("text/uri-list")) return false;
+  const uris = data.getData?.("text/uri-list")?.trim();
+  // Some Chromium paste events expose the native file type but hide its URI and File.
+  if (!uris) return !data.getData?.("text/plain");
+  return uris.split(/\r?\n/).some((line) => /^file:/i.test(line.trim()));
+}
+
+function transferredFiles(data: DataTransfer, dropped = false): File[] {
+  const files = Array.from(data.files ?? []);
+  const items = Array.from(data.items ?? []).filter((item) => item.kind === "file");
+  const directories = dropped
+    ? new Set(items.filter((item) => item.webkitGetAsEntry?.()?.isDirectory))
+    : undefined;
+  // Prefer the FileList when it is populated. Use File items when the browser only supplies
+  // those, or to remove directory entries without treating empty files as directories.
+  if (files.length && !directories?.size) return files;
+  return items.flatMap((item) => {
+    const file = !directories?.has(item) && item.getAsFile?.();
+    return file ? [file] : [];
+  });
+}
 
 function useEnterSends() {
   const coarsePointer = () =>
@@ -56,6 +95,7 @@ export function SessionComposerInput({
   onEditorKeyDown,
   canSubmitFromKeyboard,
   attachments,
+  readClipboardFiles,
 }: {
   editor: Omit<ComponentPropsWithRef<"textarea">, "className" | "rows">;
   editorContextKey?: string;
@@ -66,19 +106,65 @@ export function SessionComposerInput({
   onEditorKeyDown?: (event: KeyboardEvent<HTMLTextAreaElement>, composing: boolean) => boolean;
   canSubmitFromKeyboard?: () => boolean;
   attachments?: Attachments;
+  /** Desktop only: read file objects from the OS clipboard, never an arbitrary renderer path. */
+  readClipboardFiles?: () => Promise<File[] | undefined>;
 }) {
   const composing = useRef(false);
   useEffect(() => {
     composing.current = false;
   }, [editorContextKey]);
   const enterSends = useEnterSends();
+  const [attachmentRejected, setAttachmentRejected] = useState<{ scope?: string }>();
+  const feedbackTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const clipboardRequest = useRef(0);
+  const currentAttachments = useRef(attachments);
+  const attachmentScope = attachments?.scope ?? editorContextKey;
+  useLayoutEffect(() => {
+    currentAttachments.current = attachments;
+  }, [attachments]);
+  useLayoutEffect(() => {
+    return () => {
+      clipboardRequest.current++;
+    };
+  }, [attachmentScope]);
+  useEffect(() => () => clearTimeout(feedbackTimer.current), []);
+
+  function rejectAttachment() {
+    clearTimeout(feedbackTimer.current);
+    setAttachmentRejected({ scope: attachmentScope });
+    feedbackTimer.current = setTimeout(
+      () => setAttachmentRejected(undefined),
+      attachmentFeedbackMs,
+    );
+  }
+
+  function offerFiles(files: File[]) {
+    const target = currentAttachments.current;
+    if (!target || target.disabled || !files.length) rejectAttachment();
+    else target.onFiles(files);
+  }
+
   return (
     <form
       data-slot="session-composer"
+      data-attachment-rejected={
+        attachmentRejected && attachmentRejected.scope === attachmentScope ? "" : undefined
+      }
       className="relative min-h-30 w-full space-y-2 rounded-3xl border border-border bg-sidebar px-2 pt-2 pb-1 shadow-sm transition-colors focus-within:border-ring/40 md:px-3 md:pt-3"
       onSubmit={(event) => {
         event.preventDefault();
         onSubmit?.();
+      }}
+      onDragOver={(event) => {
+        if (!fileTransfer(event.dataTransfer)) return;
+        event.preventDefault();
+        // Receive the drop so an unavailable attachment can be acknowledged without navigating.
+        event.dataTransfer.dropEffect = "copy";
+      }}
+      onDrop={(event) => {
+        if (!fileTransfer(event.dataTransfer) && !hasFileReference(event.dataTransfer)) return;
+        event.preventDefault();
+        offerFiles(transferredFiles(event.dataTransfer, true));
       }}
     >
       {beforeEditor}
@@ -109,11 +195,27 @@ export function SessionComposerInput({
         }}
         onPaste={(event) => {
           editor.onPaste?.(event);
-          if (event.defaultPrevented || !attachments || attachments.disabled) return;
-          const files = Array.from(event.clipboardData.files);
-          if (!files.length) return;
+          if (event.defaultPrevented) return;
+          const data = event.clipboardData;
+          const files = transferredFiles(data);
+          const hasFiles = files.length > 0 || fileTransfer(data) || hasFileReference(data);
+          const emptyBrowserClipboard = !data.types?.length && !data.getData?.("text/plain");
+          if (!hasFiles && !(readClipboardFiles && emptyBrowserClipboard)) return;
+
           event.preventDefault();
-          attachments.onFiles(files);
+          if (!attachments || attachments.disabled || files.length || !readClipboardFiles) {
+            offerFiles(files);
+            return;
+          }
+          const request = ++clipboardRequest.current;
+          void readClipboardFiles()
+            .then((nativeFiles) => {
+              if (request !== clipboardRequest.current) return;
+              if (nativeFiles !== undefined || hasFiles) offerFiles(nativeFiles ?? []);
+            })
+            .catch(() => {
+              if (request === clipboardRequest.current) rejectAttachment();
+            });
         }}
       />
       {afterEditor}

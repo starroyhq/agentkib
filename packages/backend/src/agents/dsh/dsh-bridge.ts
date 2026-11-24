@@ -1750,9 +1750,8 @@ export class DshBridge {
     return page.records;
   }
   /**
-   * One image a session's history shows, read from the DSH that has the session. DSH returns only
-   * images the session's own log refers to; the ID is the digest of the stored bytes, so the
-   * bytes are checked against it here.
+   * One image a session's history shows. The plugin checks that the session's own log refers to
+   * the image. The ID is the digest of the stored bytes, so the bytes are checked against it here.
    */
   async image(nativeId: string, imageId: string): Promise<{ mimeType: string; base64: string }> {
     const sha256 = imageId.startsWith(IMAGE_ID_PREFIX) ? imageId.slice(IMAGE_ID_PREFIX.length) : "";

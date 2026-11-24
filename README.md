@@ -24,6 +24,8 @@ AgentKib brings conversations from tools such as Codex and Claude Code into one 
 
 Download from the official release and check the matching `.sha256` file before installing. Mac releases are signed and notarized. Windows installers are currently unsigned, so SmartScreen may show a warning. If you already have AgentKib, use **Settings → General → Check for updates** or follow the [upgrade guide](docs/UPGRADING.md) for your package.
 
+Packaged development builds can also check for stable releases.
+
 ## Get started
 
 1. **Open AgentKib.** It looks for coding agents and projects already on your computer. If a project is missing, open **Workspaces → Add workspace** and choose its folder.
@@ -66,6 +68,8 @@ Reading local history needs no AgentKib account and makes no model calls. Sendin
 Remote access is off by default. When you pair a device, choose read-only access or full control and revoke it from the desktop whenever you want. The official remote service uses an AgentKib account. [Local Wi-Fi access](docs/remote/hosted-web-lan.md) can be set up without an account on a trusted network.
 
 If phone pairing fails, AgentKib shows the reason and what you can do next. [Phone setup guide](docs/remote/phone-access.md)
+
+AgentKib prompts you when your desktop sign-in expires. Choose **Sign in again** in Remote connections or the menu bar. Signing back in to the same account automatically restores the official relay if it was on.
 
 ## Help
 

@@ -24,6 +24,8 @@ AgentKib 把 Codex、Claude Code 等工具的会话放进同一个桌面应用�
 
 请从官方发布页下载并核对对应的 `.sha256` 校验文件。Mac 正式包已签名并经 Apple 公证。Windows 安装包目前未签名，SmartScreen 可能弹出提示。已安装 AgentKib 的用户可在「设置 → 常规 → 检查更新」检查新版，各安装包的更新方式见[升级指南](docs/UPGRADING.md)。
 
+已打包的开发版也能通过「检查更新」找到正式版更新。
+
 ## 第一次使用
 
 1. **打开 AgentKib。** 它会查找电脑上已有的 Agent 和项目。找不到项目时，到「工作区 → 添加工作区」选择项目文件夹。
@@ -66,6 +68,8 @@ Cursor、OpenCode、OpenClaw、Hermes 和 Grok Build 也可查看本机已有的
 远程访问默认关闭。配对时可为设备选择只读或完整控制，也可以随时从桌面撤销。使用官方远程服务需要 AgentKib 账号。在可信的同一 Wi-Fi 网络上，可选择[局域网直连](docs/remote/hosted-web-lan.md)，无需登录。
 
 手机配对失败时会显示具体原因和下一步。[手机访问指南](docs/remote/phone-access.md)
+
+电脑上的登录失效时，AgentKib 会主动提示。可在「远程连接」页或菜单栏点「重新登录」。登录原账号后，之前开启的官方中继会自动恢复。
 
 ## 帮助
 

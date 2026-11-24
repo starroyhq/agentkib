@@ -182,8 +182,6 @@ export function GlobalSettings({
               onChange={onCloseBehaviorChanged}
             />
           </SettingsRow>
-          <SendWhileRunningSetting />
-          <UsageLimitAutoContinueSetting />
           <SettingsRow>
             <SettingsCopy>
               <strong>{tr("settings.onboarding")}</strong>
@@ -200,6 +198,19 @@ export function GlobalSettings({
           )}
         </SettingsSection>
         <QuotaAutoRefreshSetting runtime={runtime} onChanged={onLocaleChanged} />
+      </SettingsPage>
+    );
+  if (section === "sessions")
+    return (
+      <SettingsPage variant="form">
+        <SettingsPageHeader title={tr("settings.section.sessions")} />
+        <SettingsSection title={tr("settings.sessionMessaging")} target="sessions-messaging">
+          <SendWhileRunningSetting />
+        </SettingsSection>
+        <SettingsSection title={tr("settings.sessionContinuation")} target="sessions-continuation">
+          {/* The preference for resuming tasks after quitting belongs here. */}
+          <UsageLimitAutoContinueSetting />
+        </SettingsSection>
       </SettingsPage>
     );
   if (section === "tools")

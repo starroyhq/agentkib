@@ -1,3 +1,4 @@
+import { alternateFollowUpShortcut } from "@agentkib/session-ui";
 import { useI18n } from "@/core/useI18n";
 import { Button } from "@/components/ui/button";
 import {
@@ -26,7 +27,7 @@ export function KeyboardShortcutsSettings() {
       <SettingsSection title={tr("shortcuts.group.navigation")} target="shortcuts-list">
         <ShortcutRows group="navigation" platform={platform} />
       </SettingsSection>
-      <SettingsSection title={tr("shortcuts.group.actions")}>
+      <SettingsSection title={tr("shortcuts.group.actions")} target="shortcuts-actions">
         <ShortcutRows group="actions" platform={platform} />
       </SettingsSection>
     </SettingsPage>
@@ -41,16 +42,27 @@ function ShortcutRows({
   platform: ReturnType<typeof currentAppPlatform>;
 }) {
   const { tr } = useI18n();
+  const rows: { id: string; label: string; keys: string }[] = shortcutsForGroup(group).map(
+    (definition) => ({
+      id: definition.id,
+      label: tr(definition.labelKey),
+      keys: formatShortcut(definition, platform),
+    }),
+  );
+  if (group === "actions") {
+    rows.push({
+      id: "alternate-follow-up",
+      label: tr("conversation.alternateFollowUp"),
+      keys: alternateFollowUpShortcut(platform === "macos"),
+    });
+  }
   return (
     <div className="divide-y divide-border/60">
-      {shortcutsForGroup(group).map((definition) => (
-        <div
-          key={definition.id}
-          className="flex min-h-12 items-center justify-between gap-4 px-5 py-2.5"
-        >
-          <span className="min-w-0 truncate">{tr(definition.labelKey)}</span>
+      {rows.map(({ id, label, keys }) => (
+        <div key={id} className="flex min-h-12 items-center justify-between gap-4 px-5 py-2.5">
+          <span className="min-w-0 truncate">{label}</span>
           <kbd className="shrink-0 rounded border border-border bg-muted px-2 py-0.5 font-mono text-xs text-muted-foreground">
-            {formatShortcut(definition, platform)}
+            {keys}
           </kbd>
         </div>
       ))}

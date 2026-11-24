@@ -6,6 +6,7 @@ import type {
   WebClient,
 } from "@agentkib/web-client";
 import type { InteractionLocale as Locale } from "../../interaction-model";
+import { IconAction } from "../../icon-action";
 import { sessionHistoryEntry } from "../../agents/session-history";
 import { useSessionPlatform } from "../../session-platform";
 import { historyCopy } from "./history-copy";
@@ -33,10 +34,20 @@ function SearchTrigger({ locale, onOpen }: { locale: Locale; onOpen: () => void 
     components: { Button },
   } = useSessionPlatform();
   return (
-    <Button type="button" variant="ghost" size="sm" className="min-h-11" onClick={onOpen}>
-      <Search size={16} />
-      {historyCopy[locale].title}
-    </Button>
+    <IconAction
+      label={historyCopy[locale].title}
+      render={
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon"
+          className="min-h-11 w-full justify-start px-3"
+          onClick={onOpen}
+        />
+      }
+    >
+      <Search size={16} aria-hidden="true" />
+    </IconAction>
   );
 }
 type HistorySearchSession = {

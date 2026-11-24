@@ -1487,9 +1487,7 @@ export function SessionComposerControls({
           permissionRegistered
             ? {
                 title: menuTitle,
-                label: nativePolicyReadOnlyReason
-                  ? copy.nativePolicy
-                  : (permissionLabel ?? menuTitle),
+                label: nativePolicyReadOnlyReason ? copy.nativePolicy : permissionLabel,
                 description: permissionDescription,
                 hint: permissionHint,
                 risky: permissionRisky,

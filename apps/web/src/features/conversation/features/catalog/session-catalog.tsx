@@ -1,4 +1,5 @@
 import {
+  IconAction,
   PendingReviewLane,
   sessionContinuationListState,
   SessionContinuationDot,
@@ -21,6 +22,7 @@ import {
   FolderOpen,
   GitBranch,
   Info,
+  ListFilter,
   Search,
   Split,
 } from "lucide-react";
@@ -99,8 +101,15 @@ export function SessionCatalog({
           onChange={(e) => setQuery(e.target.value)}
         />
       </label>
-      <details className="mx-4 mb-4 rounded-lg border bg-background/50 px-3 py-1 text-xs text-muted-foreground [&>summary]:cursor-pointer [&>summary]:py-2 [&>label]:my-3 [&>label]:flex [&>label]:items-center [&>label]:justify-between [&>label]:gap-2 [&_select]:max-w-40 [&_select]:text-xs">
-        <summary>{c.options}</summary>
+      <details className="mx-4 mb-4 rounded-lg border bg-background/50 text-xs text-muted-foreground [&>label]:my-3 [&>label]:flex [&>label]:items-center [&>label]:justify-between [&>label]:gap-2 [&>label]:px-3 [&_select]:max-w-40 [&_select]:text-xs">
+        <IconAction
+          label={c.options}
+          render={
+            <summary className="grid min-h-11 cursor-pointer list-none items-center justify-start rounded-lg px-3 outline-none hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring [&::-webkit-details-marker]:hidden" />
+          }
+        >
+          <ListFilter className="size-4" />
+        </IconAction>
         <label>
           {c.agent}
           <NativeSelect value={agent} onChange={(e) => setAgent(e.target.value)}>

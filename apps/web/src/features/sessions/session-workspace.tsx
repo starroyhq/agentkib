@@ -1,6 +1,7 @@
 import { managedAgentOf } from "@agentkib/web-client";
 import {
   homeSessionCopy,
+  IconAction,
   newSessionCopy,
   PendingCenter,
   requestReadStateRefresh,
@@ -41,6 +42,10 @@ import { canStartSessions, HomeViewContext } from "./home/session-home";
 import { useMediaQuery } from "./home/use-media-query";
 import { NewSessionComposer } from "./new-session/new-session-composer";
 import { useOpenWhenListed } from "./new-session/use-open-when-listed";
+
+// Preserve the full toolbar hit area while centering the icon on wider screens.
+const sessionActionButtonClass =
+  "relative size-11 rounded-lg p-0 text-muted-foreground aria-expanded:text-foreground sm:h-9 md:w-auto md:px-2.5 lg:after:invisible lg:after:pl-[1.375rem] lg:after:content-[attr(aria-label)] lg:[&>svg]:absolute";
 
 export function SessionWorkspace() {
   return (
@@ -88,6 +93,7 @@ function WorkspaceShell() {
   const home = homeSessionCopy(locale);
   const attention = useHomeAttention();
   const needsYou = attention?.groups.needsYou.length ?? 0;
+  const homeLabel = needsYou ? `${home.home} · ${home.needsYou} ${needsYou}` : home.home;
   // At phone width the home and the directory take turns; wider screens show both.
   const [phoneView, setPhoneView] = useState<"home" | "all">("home");
   const [newOpen, setNewOpen] = useState(false);
@@ -261,28 +267,34 @@ function WorkspaceShell() {
             {reading ? (
               <>
                 {access?.device?.files && (
-                  <Button
-                    variant={filesOpen ? "secondary" : "ghost"}
-                    className="size-11 rounded-lg p-0 text-muted-foreground aria-expanded:text-foreground sm:h-9 md:w-auto md:gap-1.5 md:px-2.5"
-                    aria-label={copy.files}
-                    aria-expanded={filesOpen}
-                    onClick={() => setFilesOpen(!filesOpen)}
+                  <IconAction
+                    label={copy.files}
+                    render={
+                      <Button
+                        variant={filesOpen ? "secondary" : "ghost"}
+                        className={sessionActionButtonClass}
+                        aria-expanded={filesOpen}
+                        onClick={() => setFilesOpen(!filesOpen)}
+                      />
+                    }
                   >
                     <FolderOpen />
-                    <span className="hidden lg:inline">{copy.files}</span>
-                  </Button>
+                  </IconAction>
                 )}
-                <Button
-                  variant="ghost"
-                  className="size-11 rounded-lg p-0 text-muted-foreground aria-expanded:text-foreground sm:h-9 md:w-auto md:gap-1.5 md:px-2.5"
-                  data-dialog-return-focus="true"
-                  aria-label={copy.actions}
-                  aria-expanded={actionsOpen}
-                  onClick={() => setActionsOpen(true)}
+                <IconAction
+                  label={copy.actions}
+                  render={
+                    <Button
+                      variant="ghost"
+                      className={sessionActionButtonClass}
+                      data-dialog-return-focus="true"
+                      aria-expanded={actionsOpen}
+                      onClick={() => setActionsOpen(true)}
+                    />
+                  }
                 >
                   <MoreHorizontal />
-                  <span className="hidden lg:inline">{copy.actions}</span>
-                </Button>
+                </IconAction>
               </>
             ) : (
               <Button
@@ -343,27 +355,30 @@ function WorkspaceShell() {
             )}
           >
             <div className="hidden px-3 pt-4 md:block">
-              <Button
-                variant="ghost"
-                aria-current={!reading ? "page" : undefined}
-                aria-label={needsYou ? `${home.home} · ${home.needsYou} ${needsYou}` : home.home}
-                className={cn(
-                  "h-10 w-full justify-start gap-2 rounded-lg px-3 text-sm font-normal",
-                  !reading && "bg-background text-foreground shadow-xs ring-1 ring-border",
-                )}
-                onClick={goHome}
+              <IconAction
+                label={homeLabel}
+                render={
+                  <Button
+                    variant="ghost"
+                    aria-current={!reading ? "page" : undefined}
+                    className={cn(
+                      "relative h-11 w-full justify-start rounded-lg px-3",
+                      !reading && "bg-background text-foreground shadow-xs ring-1 ring-border",
+                    )}
+                    onClick={goHome}
+                  />
+                }
               >
                 <House className="size-4" />
-                <span className="flex-1 text-left">{home.home}</span>
                 {needsYou > 0 && (
                   <span
                     aria-hidden="true"
-                    className="grid h-5 min-w-5 place-items-center rounded-full bg-amber-600 px-1 text-[11px] font-semibold tabular-nums text-white"
+                    className="absolute end-3 grid h-5 min-w-5 place-items-center rounded-full bg-amber-600 px-1 text-[11px] font-semibold tabular-nums text-white"
                   >
                     {needsYou}
                   </span>
                 )}
-              </Button>
+              </IconAction>
             </div>
             <header className="flex items-center justify-between px-5 pb-4 pt-6 md:pt-4">
               <div className="flex items-center gap-2">
@@ -418,24 +433,28 @@ function WorkspaceShell() {
                 <div className="text-xs text-muted-foreground">{t.device}</div>
                 <div className="truncate text-xs font-medium">{access?.device?.name}</div>
               </div>
-              <Button
-                ref={logoutTrigger}
-                className="size-11"
-                variant="ghost"
-                size="icon"
-                aria-label={t.logout}
-                aria-haspopup="dialog"
-                disabled={logoutPending || session.busy}
-                onClick={() => {
-                  if (logoutLocked.current || session.busy) return;
-                  setFilesOpen(false);
-                  setActionsOpen(false);
-                  setLogoutFailed(false);
-                  setLogoutOpen(true);
-                }}
+              <IconAction
+                label={t.logout}
+                render={
+                  <Button
+                    ref={logoutTrigger}
+                    className="size-11"
+                    variant="ghost"
+                    size="icon"
+                    aria-haspopup="dialog"
+                    disabled={logoutPending || session.busy}
+                    onClick={() => {
+                      if (logoutLocked.current || session.busy) return;
+                      setFilesOpen(false);
+                      setActionsOpen(false);
+                      setLogoutFailed(false);
+                      setLogoutOpen(true);
+                    }}
+                  />
+                }
               >
                 <LogOut className="size-4" />
-              </Button>
+              </IconAction>
             </footer>
           </aside>
           <main

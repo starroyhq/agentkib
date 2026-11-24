@@ -195,8 +195,10 @@ async function renderConversation(send = true) {
   return f;
 }
 async function openSource() {
-  expect(screen.getByRole("button", { name: c.title })).toHaveClass("min-h-11");
-  fireEvent.click(screen.getByRole("button", { name: c.title }));
+  const search = screen.getByRole("button", { name: c.title });
+  expect(search).toHaveClass("min-h-11", "w-full");
+  expect(search).toHaveTextContent(/^$/);
+  fireEvent.click(search);
   fireEvent.change(screen.getByRole("textbox", { name: c.query }), { target: { value: "needle" } });
   fireEvent.click(await screen.findByRole("button", { name: /Source history/ }, { timeout: 3000 }));
   await screen.findByRole("region", { name: c.source });

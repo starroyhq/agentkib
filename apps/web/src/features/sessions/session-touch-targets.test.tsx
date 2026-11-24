@@ -1,9 +1,10 @@
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ConversationSessionSummary } from "@agentkib/web-client";
 import { SessionWorkspace } from "./session-workspace";
 import { dictionaries, type Locale } from "@/features/conversation/i18n";
-import { catalogCopy } from "@agentkib/session-ui";
+import { catalogCopy, webLayoutCopy } from "@agentkib/session-ui";
 
 const fixture = vi.hoisted(() => ({
   locale: "zh-CN" as Locale,
@@ -144,5 +145,24 @@ describe("Web session touch targets", () => {
       "aria-current",
       "page",
     );
+  });
+
+  it("shows a tooltip for the icon-only header control and opens files with Enter", async () => {
+    fixture.pathname = "/sessions/readable";
+    const user = userEvent.setup();
+    render(<SessionWorkspace />);
+    const copy = webLayoutCopy[fixture.locale];
+    const files = screen.getByRole("button", { name: copy.files });
+    const actions = screen.getByRole("button", { name: copy.actions });
+    expect(files).toHaveClass("size-11");
+    expect(files).toHaveTextContent(/^$/);
+    expect(actions).toHaveClass("size-11");
+    expect(actions).toHaveTextContent(/^$/);
+    await user.hover(files);
+    expect(await screen.findByRole("tooltip", { name: copy.files })).toBeVisible();
+
+    files.focus();
+    await user.keyboard("{Enter}");
+    expect(files).toHaveAttribute("aria-expanded", "true");
   });
 });

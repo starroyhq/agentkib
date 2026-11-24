@@ -11,9 +11,9 @@ import {
   ImageIcon,
   Layers,
   LoaderCircle,
-  Plus,
   Search,
   Shield,
+  SlidersHorizontal,
   TriangleAlert,
   X,
 } from "lucide-react";
@@ -29,6 +29,7 @@ import {
   SessionComposerToolbar,
   DEFAULT_NEW_SESSION_AGENT,
   fillCopy,
+  IconAction,
   NEW_SESSION_AGENTS,
   NewSessionAddDraftChips,
   newSessionCopy,
@@ -415,10 +416,12 @@ export function NewSessionComposer(props: NewSessionComposerProps) {
             {addError}
           </p>
         )}
-        <Button variant="outline" size="sm" onClick={() => void addWorkspace()}>
+        <IconAction
+          label={copy.addWorkspaceButton}
+          render={<Button variant="outline" size="icon-lg" onClick={() => void addWorkspace()} />}
+        >
           <FolderPlus size={15} aria-hidden />
-          {copy.addWorkspaceButton}
-        </Button>
+        </IconAction>
       </section>
     );
 
@@ -625,7 +628,7 @@ export function NewSessionComposer(props: NewSessionComposerProps) {
             permission={
               showPermission && permissions
                 ? {
-                    label: shownPermission?.name ?? permissions.title,
+                    label: shownPermission?.name,
                     title: permissions.title,
                     risky: shownPermission?.risky,
                     disabled: locked,
@@ -646,8 +649,7 @@ export function NewSessionComposer(props: NewSessionComposerProps) {
                   label={newSessionPermissionFallbackTitle(agent, locale) ?? copy.permission}
                   status={optionsStatus}
                   loading={session.optionsLoading}
-                  className="h-11 min-w-0 rounded-full px-2.5 text-sm font-normal text-muted-foreground"
-                  compact
+                  className="h-11 min-w-11 rounded-full px-2.5 text-sm font-normal text-muted-foreground"
                   icon={<Shield className="size-3.5 shrink-0" aria-hidden />}
                 />
               ) : undefined
@@ -692,7 +694,8 @@ export function NewSessionComposer(props: NewSessionComposerProps) {
                   label={copy.model}
                   status={optionsStatus}
                   loading={session.optionsLoading}
-                  className="h-9 min-w-0 max-w-64 rounded-full px-2 text-sm font-normal"
+                  className="h-9 min-w-9 max-w-64 rounded-full px-2 text-sm font-normal"
+                  icon={<SlidersHorizontal className="size-3.5 shrink-0" aria-hidden />}
                 />
               ) : undefined
             }
@@ -745,33 +748,33 @@ function UnavailableOptionButton({
   loading,
   className,
   icon,
-  compact,
 }: {
   label: string;
   status: string;
   loading: boolean;
   className: string;
-  icon?: ReactNode;
-  compact?: boolean;
+  icon: ReactNode;
 }) {
+  const name = `${label}: ${status}`;
   return (
-    <Button
-      type="button"
-      variant="ghost"
-      className={cn(className, "disabled:pointer-events-auto")}
-      disabled
-      aria-busy={loading || undefined}
-      aria-label={`${label}: ${status}`}
-      title={status}
+    <IconAction
+      label={name}
+      render={
+        <Button
+          type="button"
+          variant="ghost"
+          className={cn(className, "gap-1.5 aria-disabled:opacity-50")}
+          disabled
+          focusableWhenDisabled
+          aria-busy={loading || undefined}
+        />
+      }
     >
       {icon}
-      <span className={cn("truncate", compact && "@max-[28rem]:sr-only")}>{label}</span>
-      {loading ? (
+      {loading && (
         <LoaderCircle className="size-3.5 shrink-0 motion-safe:animate-spin" aria-hidden />
-      ) : (
-        <ChevronDown className="size-3.5 shrink-0" aria-hidden />
       )}
-    </Button>
+    </IconAction>
   );
 }
 
@@ -907,17 +910,21 @@ function WorkspacePicker({
                 </div>
               ))}
             </div>
-            <Button
-              variant="ghost"
-              className="h-auto justify-start gap-2 rounded-none border-t border-border px-2 pt-2 pb-1.5 text-left text-sm font-normal text-muted-foreground"
-              onClick={() => {
-                setOpen(false);
-                onAdd();
-              }}
+            <IconAction
+              label={copy.addWorkspace}
+              render={
+                <Button
+                  variant="ghost"
+                  className="h-9 w-full justify-start rounded-none border-t border-border px-2 text-muted-foreground"
+                  onClick={() => {
+                    setOpen(false);
+                    onAdd();
+                  }}
+                />
+              }
             >
-              <Plus className="size-3.5" aria-hidden />
-              {copy.addWorkspace}
-            </Button>
+              <FolderPlus className="size-3.5" aria-hidden />
+            </IconAction>
           </Popover.Popup>
         </Popover.Positioner>
       </Popover.Portal>

@@ -126,7 +126,9 @@ describe("SessionCatalog", () => {
     fireEvent.click(screen.getByRole("button", { name: /Newest session/ }));
     expect(onSelect).toHaveBeenCalledWith("newest");
 
-    fireEvent.click(screen.getByText("目录选项"));
+    const options = screen.getByLabelText("目录选项");
+    expect(options).toHaveTextContent(/^$/);
+    fireEvent.click(options);
     expect(screen.queryByRole("checkbox")).toBeNull();
     fireEvent.change(screen.getByRole("combobox", { name: "记录类型" }), {
       target: { value: "all" },

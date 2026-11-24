@@ -13,7 +13,7 @@ import {
 import { Popover } from "@base-ui/react/popover";
 import { Slider } from "@base-ui/react/slider";
 import { Tooltip } from "@base-ui/react/tooltip";
-import { Check, ChevronDown, ChevronRight, RotateCcw } from "lucide-react";
+import { Check, ChevronDown, ChevronRight, RotateCcw, SlidersHorizontal } from "lucide-react";
 import { ComposerFastIcon } from "./composer-fast-icon";
 import { modelEffortsForTier, modelSupportsTier } from "./model-capabilities";
 import { composerButtonClasses } from "./composer-control-style";
@@ -63,6 +63,7 @@ function TooltipContent({ className, children }: ComponentProps<"div">) {
     <Tooltip.Portal>
       <Tooltip.Positioner side="top" sideOffset={4} className="isolate z-[100]">
         <Tooltip.Popup
+          role="tooltip"
           className={`w-fit max-w-xs rounded-md border border-border px-2.5 py-1.5 text-xs font-medium shadow-lg ${className ?? "bg-foreground text-background"}`}
         >
           {children}
@@ -526,6 +527,7 @@ export function ComposerModelPicker({
     >
       <Tooltip.Root>
         <Tooltip.Trigger
+          id={triggerId}
           render={
             <Popover.Trigger
               handle={popover}
@@ -537,7 +539,7 @@ export function ComposerModelPicker({
                   type="button"
                   variant="ghost"
                   title={triggerDisabled ? disabledReason : undefined}
-                  className={`${nextTurnLabel ? "h-10" : "h-9"} min-w-0 max-w-64 gap-1.5 rounded-full px-2 text-sm font-normal disabled:pointer-events-auto`}
+                  className={`${nextTurnLabel ? "h-10" : "h-9"} min-w-9 max-w-64 gap-1.5 rounded-full px-2 text-sm font-normal disabled:pointer-events-auto ${hasDisplaySelection || nextTurnLabel ? "" : "relative after:invisible after:ps-5 after:content-[attr(aria-label)]"}`}
                   aria-label={
                     nextTurnLabel
                       ? `${triggerLabel} · ${nextTurnLabel} · ${historicalLabel}`
@@ -555,10 +557,10 @@ export function ComposerModelPicker({
               <span className="truncate">{nextTurnLabel}</span>
               <span className="truncate text-muted-foreground">{historicalLabel}</span>
             </span>
-          ) : (
+          ) : hasDisplaySelection ? (
             <>
               <span className="truncate">{displayModelName}</span>
-              {hasDisplaySelection && displayEffort && (
+              {displayEffort && (
                 <span
                   className={`shrink-0 @max-[25rem]:hidden ${displayEffort === efforts.at(-1) ? "text-violet-600 dark:text-violet-400" : "text-muted-foreground"}`}
                 >
@@ -566,9 +568,16 @@ export function ComposerModelPicker({
                 </span>
               )}
             </>
+          ) : (
+            <SlidersHorizontal
+              className="absolute size-4 text-muted-foreground"
+              aria-hidden="true"
+            />
           )}
           {displayFast && <ComposerFastIcon active />}
-          <ChevronDown className="size-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
+          {(nextTurnLabel || hasDisplaySelection) && (
+            <ChevronDown className="size-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
+          )}
         </Tooltip.Trigger>
         <TooltipContent>
           {nextTurnLabel ? (

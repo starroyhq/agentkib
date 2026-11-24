@@ -464,6 +464,7 @@ export {
 } from "./agents/claude-code/permission-mode-copy";
 export { claudeTerminalInteraction, claudeTerminalPermission } from "./claude-terminal-permission";
 export { ComposerPermissionMenu } from "./composer-permission-menu";
+export { IconAction } from "./icon-action";
 export {
   ComposerPrimaryAction,
   ComposerToolbar,

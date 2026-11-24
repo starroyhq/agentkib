@@ -1,11 +1,11 @@
 import path from "node:path";
 import { performance } from "node:perf_hooks";
 import { resolveCommand } from "../../command-resolution";
-import { canonicalize, pathIdentity } from "../../paths";
+import { canonicalize, lexicalPathIdentity } from "../../paths";
 import { compareUtf8 } from "../../workspaces";
 import { sessionTitle } from "../codex/codex-sessions";
 import { hasText } from "../../session-events";
-import type { NativeSession } from "../../session-store";
+import type { NativeListing, SessionListingIssue } from "../../sessions/history-provider";
 import { acpObject, acpTimestamp, stringifyAcpJson } from "../../acp-json";
 import { AntigravityAcp, type AcpId } from "./antigravity-acp";
 import { AntigravityPaging } from "./antigravity-paging";
@@ -33,7 +33,8 @@ export function parseAntigravitySession(value: unknown): AntigravitySession | nu
   if (
     typeof fields.sessionId !== "string" ||
     typeof fields.cwd !== "string" ||
-    !path.isAbsolute(fields.cwd)
+    !path.isAbsolute(fields.cwd) ||
+    fields.cwd.includes("\0")
   )
     throw new Error("Invalid Antigravity ACP session metadata");
   validateRef(fields.sessionId);
@@ -51,6 +52,36 @@ export function parseAntigravitySession(value: unknown): AntigravitySession | nu
     updated_at: acpTimestamp(
       Object.hasOwn(fields, "updatedAt") ? fields.updatedAt : fields.lastActiveAt,
     ),
+  };
+}
+
+function listRecordIssue(
+  value: unknown,
+  filter: string | null,
+  workspaceUnavailable: boolean,
+): SessionListingIssue | undefined {
+  const fields =
+    value !== null && typeof value === "object" && !Array.isArray(value)
+      ? (value as Record<string, unknown>)
+      : {};
+  let cwd: string | null = null;
+  if (
+    !workspaceUnavailable &&
+    typeof fields.cwd === "string" &&
+    path.isAbsolute(fields.cwd) &&
+    !fields.cwd.includes("\0")
+  )
+    try {
+      cwd = lexicalPathIdentity(canonicalize(fields.cwd));
+    } catch {
+      // A stale or otherwise inaccessible path does not prove workspace ownership.
+    }
+  if (cwd !== null && filter !== null && cwd !== filter) return;
+  const id = fields.sessionId;
+  return {
+    code: workspaceUnavailable ? "antigravity-acp-workspace-unavailable" : "antigravity-acp-record",
+    scope: cwd === null ? "unattributed" : "workspace",
+    ...(typeof id === "string" && /^[a-z\d][a-z\d_.-]{0,255}$/i.test(id) ? { id } : {}),
   };
 }
 /** Native history is listed and replayed only through a verified official ACP executable. */
@@ -149,17 +180,15 @@ export class AntigravitySessions {
       throw new Error("antigravity-cli-unavailable");
     return command;
   }
-  async list(
-    workspace: string,
-    deadline = performance.now() + 30_000,
-  ): Promise<{ sessions: NativeSession[]; incomplete: boolean }> {
+  async list(workspace: string, deadline = performance.now() + 30_000): Promise<NativeListing> {
     const command = this.optionalReadCommand();
     // ACP is optional; its absence is not a failed history scan. Locally stored
     // App/IDE sessions are indexed independently of this provider.
     if (command === null) return { sessions: [], incomplete: false };
     const collected = await this.#collect(command, workspace, deadline);
     return {
-      incomplete: collected.incomplete,
+      incomplete: collected.issues.some((issue) => issue.scope === "workspace"),
+      ...(collected.issues.length ? { issues: collected.issues } : {}),
       sessions: collected.sessions.map((session) => ({
         native_ref: session.id,
         agent: "antigravity",
@@ -229,16 +258,17 @@ export class AntigravitySessions {
   }
   async #collect(command: AntigravityReadCommand, workspace: string | null, deadline: number) {
     const filter = workspace === null ? null : canonicalize(workspace),
+      filterIdentity = filter === null ? null : lexicalPathIdentity(filter),
       cwd = filter ?? canonicalize(process.cwd()),
       client = await this.#connect(command, cwd, deadline);
     try {
       if (!client.compatibility!.listSessions)
         throw new Error("Antigravity ACP does not support session/list");
       const sessions: AntigravitySession[] = [],
+        issues: SessionListingIssue[] = [],
         seen = new Set<string>(),
         listDeadline = Math.min(deadline, performance.now() + 10_000);
-      let cursor: string | null = null,
-        incomplete = false;
+      let cursor: string | null = null;
       for (let page = 0; page < 100; page++) {
         const request = await client.listSessions(filter, cursor),
           response = acpObject(await this.#wait(client, request, "session/list", listDeadline));
@@ -246,19 +276,24 @@ export class AntigravitySessions {
           throw new Error("Antigravity ACP session/list response is missing sessions");
         for (const value of response.sessions) {
           let session: AntigravitySession | null;
+          let workspaceUnavailable = false;
           try {
             session = parseAntigravitySession(value);
+            workspaceUnavailable = session === null;
           } catch {
-            incomplete = true;
-            continue;
+            // Keep malformed list metadata separate from failures of the ACP transport.
+            session = null;
           }
           if (session === null) {
-            incomplete = true;
-            continue;
+            const issue = listRecordIssue(value, filterIdentity, workspaceUnavailable);
+            if (issue) issues.push(issue);
+          } else if (
+            filterIdentity === null ||
+            lexicalPathIdentity(session.workspace) === filterIdentity
+          ) {
+            sessions.push(session);
           }
-          if (filter !== null && pathIdentity(filter) !== pathIdentity(session.workspace)) continue;
-          sessions.push(session);
-          if (sessions.length > 10_000)
+          if (sessions.length + issues.length > 10_000)
             throw new Error("Antigravity ACP session/list exceeds the session limit");
         }
         const next = response.nextCursor;
@@ -266,13 +301,16 @@ export class AntigravitySessions {
           const unique = new Map<string, AntigravitySession>();
           for (const session of sessions) {
             const previous = unique.get(session.id);
-            if (previous && pathIdentity(previous.workspace) !== pathIdentity(session.workspace))
+            if (
+              previous &&
+              lexicalPathIdentity(previous.workspace) !== lexicalPathIdentity(session.workspace)
+            )
               throw new Error("Antigravity ACP returned one session ID for multiple workspaces");
             unique.set(session.id, session);
           }
           return {
             sessions: [...unique.values()].sort((a, b) => compareUtf8(a.id, b.id)),
-            incomplete,
+            issues,
             loadSession: client.compatibility!.loadSession,
           };
         }

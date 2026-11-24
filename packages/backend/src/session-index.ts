@@ -22,6 +22,10 @@ interface Refresh {
   promise: Promise<ReturnType<SessionStore["list"]>>;
 }
 
+const MAX_REPORTED_RECORD_ISSUES = 2048;
+const issueCodePattern = /^[a-z][a-z0-9-]{0,79}$/;
+const nativeRecordIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 /** Invalidate scans before clearing or changing preferences; no await occurs between validation and writes. */
 export class SessionIndex {
   #epoch = 0n;
@@ -29,6 +33,7 @@ export class SessionIndex {
   #refreshes = new Map<string, Refresh>();
   #classification = new Map<string, ReturnType<typeof setTimeout>>();
   #classificationRetryAfter = new Map<string, number>();
+  #reportedRecordIssues = new Set<string>();
   #changed?: ReturnType<typeof setTimeout>;
   constructor(
     readonly store: SessionStore,
@@ -262,6 +267,7 @@ export class SessionIndex {
         continue;
       }
       this.#assertCurrent(epoch);
+      this.#reportSkippedRecords(listing.issues);
       const owner = ["open-claw", "hermes", "grok-build"].includes(agent)
         ? (normalizedOwner ??= this.store.owner(workspaceId))
         : undefined;
@@ -274,12 +280,24 @@ export class SessionIndex {
       );
       if (agent === "codex" && !this.store.codexClassificationPending(workspaceId))
         this.#classificationRetryAfter.delete(workspaceId);
-      if (listing.incomplete)
+      if (listing.incomplete) {
+        const reasons = [
+          ...new Set(
+            listing.issues
+              ?.filter(
+                (issue) => issue.scope !== "unattributed" && issueCodePattern.test(issue.code),
+              )
+              .map((issue) => issue.code),
+          ),
+        ].sort();
         this.store.failure(
           workspaceId,
           agent,
-          "Some conversation sources could not be read; previous records were retained",
+          reasons.length
+            ? JSON.stringify(reasons)
+            : "Some conversation sources could not be read; previous records were retained",
         );
+      }
       refresh.remaining.delete(agent);
       this.#sourceChanged();
       // Most native metadata readers are synchronous. Yield between sources so
@@ -289,6 +307,25 @@ export class SessionIndex {
     this.#assertCurrent(epoch);
     this.refreshed();
     return this.store.list(workspaceId);
+  }
+  #reportSkippedRecords(issues: NativeListing["issues"]): void {
+    if (!issues?.length || this.#reportedRecordIssues.size >= MAX_REPORTED_RECORD_ISSUES) return;
+    const summary = new Map<string, { category: string; count: number; ids: string[] }>();
+    for (const issue of issues) {
+      if (issue.scope === "source" || !issueCodePattern.test(issue.code)) continue;
+      const id = issue.id && nativeRecordIdPattern.test(issue.id) ? issue.id.toLowerCase() : "";
+      const key = JSON.stringify([issue.code, issue.surface, id]);
+      if (this.#reportedRecordIssues.has(key)) continue;
+      this.#reportedRecordIssues.add(key);
+      const category = summary.get(issue.code) ?? { category: issue.code, count: 0, ids: [] };
+      category.count++;
+      if (id) category.ids.push(id);
+      summary.set(issue.code, category);
+      if (this.#reportedRecordIssues.size >= MAX_REPORTED_RECORD_ISSUES) break;
+    }
+    // Every workspace may inspect the same store. Report new identities once, without paths or content.
+    if (summary.size)
+      console.warn("Skipped conversation records:", JSON.stringify([...summary.values()]));
   }
   /** AgentKib's own Claude runs start in print mode, yet they are the user's conversations. */
   #managed(sessions: NativeListing["sessions"]): NativeListing["sessions"] {

@@ -146,6 +146,29 @@ describe("offline Antigravity histories", () => {
     ]);
     expect(() => f.store.events("ide", ID, f.workspace, null, 20)).toThrow();
   });
+  it("uses a malformed summary's verified workspace without dropping other entries", () => {
+    const f = fixture();
+    const other = path.join(f.home, "elsewhere");
+    mkdirSync(other);
+    writeFileSync(path.join(f.ide, `conversations/${SECOND}.pb`), Buffer.from([1]));
+    const malformed = Buffer.concat([
+      field(1, Buffer.from([0xff])),
+      field(9, field(1, pathToFileURL(f.workspace).href)),
+    ]);
+    writeFileSync(
+      path.join(f.ide, "agyhub_summaries_proto.pb"),
+      Buffer.concat([
+        field(1, Buffer.concat([field(1, ID), field(2, malformed)])),
+        field(1, Buffer.concat([field(1, SECOND), field(2, summary(SECOND, other))])),
+      ]),
+    );
+    expect(f.store.list(f.workspace)).toMatchObject({
+      records: [],
+      incomplete: true,
+      issues: [{ code: "antigravity-summary-record", surface: "ide", scope: "workspace", id: ID }],
+    });
+    expect(f.store.list(other)).toMatchObject({ records: [{ id: SECOND }], incomplete: false });
+  });
   it("recognizes migrated IDs without assigning orphan trajectories to a project", () => {
     const f = fixture();
     f.add();
@@ -254,6 +277,50 @@ describe("offline Antigravity histories", () => {
       .run(JSON.stringify(["file://remote-host/secret"]));
     expect(f.store.list().records).toEqual([]);
   });
+  it("keeps a malformed database row from marking a different workspace incomplete", () => {
+    const f = fixture();
+    const other = path.join(f.home, "elsewhere");
+    mkdirSync(other);
+    f.add();
+    f.add(SECOND, other);
+    f.db
+      .prepare("UPDATE conversation_summaries SET raw_summary=? WHERE conversation_id=?")
+      .run(Buffer.from([10, 255]), ID);
+    expect(f.store.list(f.workspace)).toMatchObject({
+      records: [],
+      incomplete: true,
+      issues: [{ code: "antigravity-database-record", surface: "app", scope: "workspace", id: ID }],
+    });
+    const unrelated = f.store.list(other);
+    expect(unrelated).toMatchObject({ records: [{ id: SECOND }], incomplete: false });
+    expect(unrelated.issues).toBeUndefined();
+  });
+  it("ignores an unscoped corrupt row while listing a valid workspace", () => {
+    const f = fixture();
+    f.add();
+    f.add(SECOND);
+    f.db
+      .prepare(
+        "UPDATE conversation_summaries SET workspace_uris=?,raw_summary=NULL WHERE conversation_id=?",
+      )
+      .run("invalid json", SECOND);
+    expect(f.store.list(f.workspace)).toMatchObject({
+      records: [{ id: ID }],
+      incomplete: false,
+      issues: [
+        { code: "antigravity-database-record", surface: "app", scope: "unattributed", id: SECOND },
+      ],
+    });
+  });
+  it("keeps readable records when a row exceeds the metadata limit", () => {
+    const f = fixture();
+    f.add();
+    f.add(SECOND);
+    f.db
+      .prepare("UPDATE conversation_summaries SET raw_summary=? WHERE conversation_id=?")
+      .run(Buffer.alloc(2 * 1024 * 1024 + 1), SECOND);
+    expect(f.store.list(f.workspace)).toMatchObject({ records: [{ id: ID }], incomplete: true });
+  });
   it("flags corrupt configured databases without recreating them", () => {
     const f = fixture();
     const broken = path.join(f.ide, "conversation_summaries.db");
@@ -267,7 +334,13 @@ describe("offline Antigravity histories", () => {
     const target = path.join(f.app, `conversations/${ID}.pb`);
     rmSync(target);
     symlinkSync(f.file, target);
-    expect(f.store.list()).toEqual({ records: [], incomplete: true });
+    expect(f.store.list()).toMatchObject({
+      records: [],
+      incomplete: true,
+      issues: [
+        { code: "antigravity-trajectory-record", surface: "app", scope: "workspace", id: ID },
+      ],
+    });
   });
   it("rejects oversized or malformed summaries", () => {
     const f = fixture();
@@ -275,7 +348,7 @@ describe("offline Antigravity histories", () => {
     f.db
       .prepare("UPDATE conversation_summaries SET raw_summary=?")
       .run(Buffer.alloc(2 * 1024 * 1024 + 1));
-    expect(f.store.list()).toEqual({ records: [], incomplete: true });
+    expect(f.store.list()).toMatchObject({ records: [], incomplete: true });
     writeFileSync(path.join(f.ide, "agyhub_summaries_proto.pb"), Buffer.from([10, 255]));
     expect(f.store.list().incomplete).toBe(true);
   });

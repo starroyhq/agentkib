@@ -2,6 +2,7 @@
 
 import "@testing-library/jest-dom/vitest";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   homeSessionCopy,
@@ -9,10 +10,12 @@ import {
   readStateCopy,
   sessionContinuationCopy,
 } from "@agentkib/session-ui";
+import { AppDialogProvider } from "@/components/AppDialogProvider";
 import { initializeI18n, tr } from "@/core/i18n";
 import type { ConversationSessionSummary, WorkspaceSummary } from "@/core/types";
 import type { Approval, Live } from "@agentkib/web-client";
 import { HomeSessions, type HomeSessionsState } from "./HomeSessions";
+import { sessionCopy } from "@/features/sessions/conversation/session-copy";
 import type { HomeReplies } from "./home-replies";
 
 const workspace = {
@@ -56,13 +59,15 @@ function renderSessions(
     onRetrySources: vi.fn().mockResolvedValue(undefined),
   };
   render(
-    <HomeSessions
-      state={state}
-      sessions={sessions}
-      workspaces={[workspace]}
-      {...props}
-      {...extra}
-    />,
+    <AppDialogProvider>
+      <HomeSessions
+        state={state}
+        sessions={sessions}
+        workspaces={[workspace]}
+        {...props}
+        {...extra}
+      />
+    </AppDialogProvider>,
   );
   return props;
 }
@@ -73,6 +78,26 @@ const groupNamed = (name: string) => screen.getByRole("region", { name });
 describe("HomeSessions", () => {
   beforeAll(() => initializeI18n("en-US"));
   afterEach(cleanup);
+
+  it("shows a pin-only menu beside a pinned recent row without opening the session", () => {
+    const props = renderSessions([
+      session("newer", "Newest unpinned", { updated_at: "2026-11-10T00:00:00Z" }),
+      session("pinned", "Older pinned", { pinned: true, pinningAvailable: false }),
+    ]);
+    const recent = groupNamed(home.recentSessions);
+    const first = within(recent).getAllByRole("listitem")[0]!;
+    const browse = within(first).getByRole("button", { name: /Older pinned/ });
+    const menu = within(first).getByRole("button", { name: sessionCopy["en-US"].rowMenu });
+    expect(browse).not.toContainElement(menu);
+    expect(within(browse).getByRole("img", { name: "Pinned" })).toBeInTheDocument();
+    fireEvent.click(menu);
+    expect(screen.getByRole("menuitem", { name: "Unpin session" })).toHaveAttribute(
+      "aria-disabled",
+      "true",
+    );
+    expect(screen.queryByRole("menuitem", { name: "Rename" })).not.toBeInTheDocument();
+    expect(props.onOpen).not.toHaveBeenCalled();
+  });
 
   it("lists what needs the person, running turns and unread results in order", () => {
     const approval = session("approval", "Fix the login timeout", {
@@ -145,7 +170,7 @@ describe("HomeSessions", () => {
     expect(row).toHaveTextContent(sessionContinuationCopy("en-US").runningIn("Codex"));
   });
 
-  it("is all caught up when nothing waits, and keeps the recent sessions", () => {
+  it("keeps recent sessions and opens the directory from a named icon", async () => {
     const recent = session("recent", "Tidy the routes", { agent: "claude-code" });
     const props = renderSessions([recent]);
     expect(screen.getByRole("heading", { name: home.allClear })).toBeVisible();
@@ -154,7 +179,14 @@ describe("HomeSessions", () => {
     const list = screen.getByRole("region", { name: home.recentSessions });
     fireEvent.click(within(list).getByRole("button", { name: /Tidy the routes/ }));
     expect(props.onOpen).toHaveBeenCalledExactlyOnceWith(recent);
-    fireEvent.click(within(list).getByRole("button", { name: tr("home.viewAll") }));
+    const allSessions = within(list).getByRole("button", { name: tr("home.viewAll") });
+    expect(allSessions).toHaveTextContent(/^$/);
+    const user = userEvent.setup();
+    await user.hover(allSessions);
+    expect(await screen.findByRole("tooltip")).toHaveTextContent(tr("home.viewAll"));
+    await user.tab();
+    expect(allSessions).toHaveFocus();
+    await user.keyboard("{Enter}");
     expect(props.onShowAll).toHaveBeenCalledOnce();
   });
 

@@ -5,7 +5,11 @@ import path from "node:path";
 import { pipeline } from "node:stream/promises";
 import { createZstdDecompress } from "node:zlib";
 import { DSH_HIDDEN_COMMANDS } from "agentkib-dsh-bridge/commands.js";
-import { historyRecord, quitInterruptionId } from "agentkib-dsh-bridge/projection.js";
+import {
+  createQuestionHistoryProjector,
+  historyRecord,
+  quitInterruptionId,
+} from "agentkib-dsh-bridge/projection.js";
 import { isReparseOrSymlink } from "../../native-files";
 
 const MAX_COMPRESSED_BYTES = 64 * 1024 * 1024;
@@ -167,6 +171,7 @@ export async function readLocalDshHistory(
     const pageSize = Math.min(Math.max(limit, 1), 100);
     const records: DshBridgeHistoryRecord[] = [];
     const pending = new Map<string, DshBridgeHistoryRecord>();
+    const projectQuestions = createQuestionHistoryProjector();
     let header: { cwd: string | null; createdAt: number | null } | undefined;
     let cursor = -1;
 
@@ -193,8 +198,8 @@ export async function readLocalDshHistory(
       cursor = seq;
 
       const inPage = before === undefined || seq < before;
-      if (!inPage && event.type !== "command/done") return;
-      const record = historyRecord(event);
+      const record = inPage || event.type === "command/done" ? historyRecord(event) : null;
+      projectQuestions(event, record);
       if (!record) return;
       if (record.kind === "command" && DSH_HIDDEN_COMMANDS.includes(record.name)) {
         if (pending.size >= MAX_PENDING_COMMANDS) throw new Error("dsh-history-command-limit");

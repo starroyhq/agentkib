@@ -93,6 +93,68 @@ describe("DSH local history", () => {
     ).toEqual([1, 3, 5]);
   });
 
+  it("pairs a late DSH answer with its earlier timeout across offline history pages", async () => {
+    const dir = fixture();
+    const questions = [{ id: "confirm", question: "是否继续？", options: [{ label: "继续" }] }];
+    const answers = [{ id: "confirm", selected: ["继续"] }];
+    writeFileSync(
+      path.join(dir, logName),
+      encode(
+        header,
+        {
+          seq: 1,
+          type: "tool/call",
+          data: {
+            turn: 1,
+            callId: "ask",
+            name: "ask_user_question",
+            arguments: JSON.stringify({ questions, timeout: 30 }),
+          },
+        },
+        {
+          seq: 2,
+          type: "tool/result",
+          data: {
+            turn: 1,
+            message: {
+              toolCallId: "ask",
+              content: [{ type: "text", text: JSON.stringify({ pending: true, callId: "ask" }) }],
+            },
+          },
+        },
+        {
+          seq: 3,
+          type: "user/message",
+          data: {
+            source: { kind: "user-question-reply", callId: "ask", outcome: "answered" },
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify({
+                  kind: "answer_to_pending_question",
+                  tool: "ask_user_question",
+                  callId: "ask",
+                  questions,
+                  answers,
+                }),
+              },
+            ],
+          },
+        },
+      ),
+    );
+    const questionnaire = [{ ...questions[0], multiSelect: false, answer: { selected: ["继续"] } }];
+    const latest = await readLocalDshHistory(dir, nativeId, undefined, 1);
+    expect(latest).toMatchObject({
+      nextBefore: 2,
+      records: [{ seq: 2, kind: "tool-result", questionnaire }],
+    });
+    expect(await readLocalDshHistory(dir, nativeId, 2, 1)).toMatchObject({
+      nextBefore: null,
+      records: [{ seq: 1, kind: "tool-call", questionnaire }],
+    });
+  });
+
   it("rejects a mismatched native id and unknown versions", async () => {
     const dir = fixture();
     const log = path.join(dir, logName);

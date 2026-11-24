@@ -6,6 +6,7 @@ import {
   readFileSync,
   realpathSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -33,9 +34,28 @@ afterEach(() => {
 function fixture(name: "agy" | "agy_acp_server.par" = "agy", mode = "ready") {
   const root = realpathSync(mkdtempSync(path.join(tmpdir(), "agentkib-acp-read-")));
   const workspace = path.join(root, "workspace");
+  const otherWorkspace = path.join(root, "other-workspace");
   mkdirSync(workspace);
+  mkdirSync(otherWorkspace);
   const executable = path.join(root, name);
   const log = path.join(root, "requests.jsonl");
+  const sessionsList: Record<string, unknown>[] = [
+    {
+      sessionId: "synthetic-session",
+      cwd: workspace,
+      title: "Synthetic history",
+      updatedAt: "2026-11-10T00:00:00Z",
+    },
+  ];
+  if (mode === "partial-list") {
+    const workspaceAlias = path.join(root, "workspace-alias");
+    symlinkSync(workspace, workspaceAlias, process.platform === "win32" ? "junction" : "dir");
+    sessionsList.push(
+      { cwd: workspaceAlias },
+      { sessionId: "unattributed", cwd: "relative" },
+      { sessionId: "removed-workspace", cwd: path.join(root, "removed-workspace") },
+    );
+  }
   writeFileSync(
     executable,
     `#!${process.execPath}
@@ -58,7 +78,7 @@ readline.createInterface({input:process.stdin}).on('line', (line) => {
  }
  if(r.method==='session/list') {
   if(mode==='list-failed') { send({jsonrpc:'2.0',id:r.id,error:{code:-32000,message:'Authentication required'}}); return; }
-  send({jsonrpc:'2.0',id:r.id,result:{sessions:[{sessionId:'synthetic-session',cwd:${JSON.stringify(workspace)},title:'Synthetic history',updatedAt:'2026-11-10T00:00:00Z'}]}});
+  send({jsonrpc:'2.0',id:r.id,result:{sessions:${JSON.stringify(sessionsList)}}});
  }
  if(r.method==='session/load') {
   for(const [sessionUpdate,text] of [['user_message_chunk','Synthetic question'],['agent_message_chunk','Synthetic answer']])
@@ -123,16 +143,7 @@ readline.createInterface({input:process.stdin}).on('line', (line) => {
               : {
                   jsonrpc: "2.0",
                   id: request.id,
-                  result: {
-                    sessions: [
-                      {
-                        sessionId: "synthetic-session",
-                        cwd: workspace,
-                        title: "Synthetic history",
-                        updatedAt: "2026-11-10T00:00:00Z",
-                      },
-                    ],
-                  },
+                  result: { sessions: sessionsList },
                 },
           );
         if (method === "session/load") {
@@ -160,6 +171,7 @@ readline.createInterface({input:process.stdin}).on('line', (line) => {
     sessions,
     environment,
     workspace,
+    otherWorkspace,
     executable,
     executableByName,
     requests: () =>
@@ -280,6 +292,39 @@ describe("Antigravity optional ACP history", () => {
     await expect(f.sessions.readEvents("synthetic-session", null, 50)).rejects.toThrow(
       "session/load",
     );
+  });
+
+  it("retains valid ACP records and reports malformed rows only in the matching workspace", async () => {
+    const f = fixture("agy", "partial-list");
+    await expect(f.sessions.list(f.workspace)).resolves.toMatchObject({
+      incomplete: true,
+      sessions: [{ native_ref: "synthetic-session" }],
+      issues: [
+        { code: "antigravity-acp-record", scope: "workspace" },
+        { code: "antigravity-acp-record", scope: "unattributed", id: "unattributed" },
+        {
+          code: "antigravity-acp-workspace-unavailable",
+          scope: "unattributed",
+          id: "removed-workspace",
+        },
+      ],
+    });
+  });
+
+  it("leaves an unrelated ACP workspace complete and keeps unknown ownership diagnostic-only", async () => {
+    const f = fixture("agy", "partial-list");
+    await expect(f.sessions.list(f.otherWorkspace)).resolves.toEqual({
+      incomplete: false,
+      sessions: [],
+      issues: [
+        { code: "antigravity-acp-record", scope: "unattributed", id: "unattributed" },
+        {
+          code: "antigravity-acp-workspace-unavailable",
+          scope: "unattributed",
+          id: "removed-workspace",
+        },
+      ],
+    });
   });
 
   it("bounds an unresponsive CLI by the caller's deadline", async () => {

@@ -50,6 +50,17 @@ function subscribe<T>(channel: string, listener: (value: T) => void): () => void
   return () => ipcRenderer.removeListener(channel, ipcListener);
 }
 
+// Only a real paste in this renderer can request native file references.
+let lastPasteAt = -Infinity;
+if (typeof window !== "undefined")
+  window.addEventListener(
+    "paste",
+    (event) => {
+      if (event.isTrusted) lastPasteAt = performance.now();
+    },
+    { capture: true },
+  );
+
 const desktopApi = Object.freeze({
   platform: process.platform,
   paths: Object.freeze({
@@ -365,6 +376,11 @@ const desktopApi = Object.freeze({
       ipcRenderer.invoke("agentkib:workspace:doctor-summaries", workspaceIds),
   }),
   shell: Object.freeze({
+    readClipboardAttachmentFiles: () => {
+      if (performance.now() - lastPasteAt > 1_000) return Promise.resolve(undefined);
+      lastPasteAt = -Infinity;
+      return ipcRenderer.invoke("agentkib:clipboard:attachment-files");
+    },
     openDirectory: (title?: string) => ipcRenderer.invoke("agentkib:shell:open-directory", title),
     openExternal: (url: string) => ipcRenderer.invoke("agentkib:shell:open-external", url),
     openFilesAndFoldersSettings: () =>

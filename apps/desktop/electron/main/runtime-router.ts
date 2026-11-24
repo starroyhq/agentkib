@@ -310,6 +310,7 @@ export class RuntimeRouter extends EventEmitter implements RuntimeHost {
         "session-directory",
         "read-state",
         "read-state-update",
+        "session-pin",
         // Read-only subagent browsing for every agent.
         "subagents",
         "subagent-events",

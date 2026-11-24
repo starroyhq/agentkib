@@ -91,6 +91,7 @@ export const api = {
     desktopApi().home.executeAgentTool(agent, actionId),
   updateOnboarding: (event: OnboardingEvent) => desktopApi().home.updateOnboarding(event),
   openFilesAndFoldersSettings: () => desktopApi().shell.openFilesAndFoldersSettings(),
+  readClipboardAttachmentFiles: () => desktopApi().shell.readClipboardAttachmentFiles?.(),
   openExternal: (url: string) => desktopApi().shell.openExternal(url),
   quitApp: (decision?: QuitWorkDecision) => desktopApi().shell.quit(decision),
   cancelQuit: (ticket: string) => desktopApi().shell.cancelQuit(ticket),

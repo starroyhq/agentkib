@@ -9,11 +9,13 @@ import { webAdminReply } from "./web/admin-errors";
 import { acceptanceSession } from "./web/acceptance";
 import { ConversationHub } from "./conversation-hub";
 import { registerConversationIpc } from "./ipc/conversation";
+import { readClipboardAttachments } from "./clipboard-attachments";
 import { requireRemoteRequest } from "./ipc/remote-validation";
 import {
   app,
   autoUpdater as nativeAutoUpdater,
   BrowserWindow,
+  clipboard,
   dialog,
   ipcMain,
   nativeImage,
@@ -235,11 +237,20 @@ async function startApplication(): Promise<void> {
   );
   const shared = profile.shared;
   usesSharedRuntime = shared !== undefined;
+  const webDataDir = path.join(electronDataPath, "web");
+  const hostAttachmentDirs = new Set([path.join(webDataDir, "attachments")]);
+  if (shared)
+    // Stable and Dev can attach to the same runtime while keeping their web data separate.
+    for (const flavor of ["ai.agentkib", "ai.agentkib.dev"])
+      hostAttachmentDirs.add(
+        path.join(app.getPath("appData"), flavor, "electron", "web", "attachments"),
+      );
   const backendEnvironment = {
     AGENTKIB_APP_FLAVOR: shared ? "ai.agentkib" : appFlavor,
     AGENTKIB_APP_NAME: shared ? "AgentKib" : appDisplayName,
     ...(shared ? { AGENTKIB_LEGACY_DEV_DATA_DIR: shared.legacyDevDataDir } : {}),
     AGENTKIB_APP_VERSION: app.getVersion(),
+    AGENTKIB_HOST_ATTACHMENTS_DIRS: JSON.stringify([...hostAttachmentDirs]),
     AGENTKIB_LOCALE: normalizeSystemLocale(app.getLocale()),
     AGENTKIB_SYSTEM_THEME: nativeTheme.shouldUseDarkColors ? "dark" : "light",
     AGENTKIB_QUOTA_SIDECAR: resolveQuotaSidecar(),
@@ -387,7 +398,7 @@ async function startApplication(): Promise<void> {
     createRelayCsr: (params) =>
       requestWhenRuntimeReady<{ csrPem: string }>(RUNTIME_METHODS.relayCreateCsr, params),
     acceptanceSessionId: acceptanceSession(process.env),
-    dataDir: path.join(electronDataPath, "web"),
+    dataDir: webDataDir,
     staticDir: app.isPackaged
       ? path.join(process.resourcesPath, "web")
       : path.resolve(app.getAppPath(), "../web/dist"),
@@ -948,6 +959,16 @@ function registerHomeIpc(): void {
     if (!fromMainWindow && !statusFromPopover) throw new Error("account_untrusted_renderer");
     if (!accountService) throw new Error("account_unavailable");
     return accountService.request(input as DesktopAccountRequest);
+  });
+  handle("agentkib:clipboard:attachment-files", async (event) => {
+    if (
+      process.platform !== "darwin" ||
+      event.senderFrame !== event.sender.mainFrame ||
+      !event.sender.isFocused()
+    )
+      return undefined;
+    if (!(await clipboard.has("text/uri-list"))) return undefined;
+    return readClipboardAttachments(await clipboard.read());
   });
   ipcMain.handle("agentkib:claude:request", (event, input: unknown) => {
     assertTrustedRenderer(event);

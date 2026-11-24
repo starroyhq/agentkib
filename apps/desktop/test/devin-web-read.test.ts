@@ -1,5 +1,5 @@
 // @vitest-environment node
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
   chmodSync,
   existsSync,
@@ -17,6 +17,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { homeSessionGroups, workStoppedByQuit, type HomeSession } from "@agentkib/session-catalog";
 import { DevinManagedRunner } from "../../../packages/backend/src/agents/devin/devin-managed-runner";
 import type { DevinSessionProvider } from "../../../packages/backend/src/agents/devin/session-provider";
+import { ACP_INLINE_ATTACHMENT_LIMIT } from "../../../packages/backend/src/acp-prompt-attachments";
 import { Commands } from "../../../packages/backend/src/commands";
 import { readControlReceipt } from "../../../packages/backend/src/control-receipt";
 import { ConversationReadStates } from "../../../packages/backend/src/conversation-read-state";
@@ -129,7 +130,14 @@ async function turn() {
 require("node:readline").createInterface({ input: process.stdin }).on("line", (line) => {
   const { id, method, params = {} } = JSON.parse(line);
   if (method === undefined) return;
-  if (method === "initialize") return send({ jsonrpc: "2.0", id, result: { protocolVersion: 1, agentCapabilities: { loadSession: true } } });
+  if (method === "initialize") {
+    append("initialize.log", "initialize");
+    const promptCapabilities = JSON.parse(read("prompt-capabilities") ?? "null");
+    return send({ jsonrpc: "2.0", id, result: {
+      protocolVersion: 1,
+      agentCapabilities: { loadSession: true, ...(promptCapabilities && { promptCapabilities }) },
+    } });
+  }
   if (method === "session/new") return send({ jsonrpc: "2.0", id, result: { sessionId: read("new-session-id") ?? "new-otter", configOptions: options("") } });
   if (method === "session/load") { append("resume.log", params.sessionId); return send({ jsonrpc: "2.0", id, result: { configOptions: options(params.sessionId) } }); }
   if (method === "session/set_config_option") {
@@ -145,6 +153,7 @@ require("node:readline").createInterface({ input: process.stdin }).on("line", (l
   }
   if (method === "session/cancel") return finish({ result: { stopReason: "cancelled" } });
   if (method === "session/prompt") {
+    append("prompt-blocks.log", JSON.stringify(params.prompt));
     append("prompts.log", (params.prompt ?? []).map((block) => block.text ?? "").join(""));
     pending = id;
     return void turn();
@@ -274,6 +283,22 @@ process.on("SIGHUP", () => process.exit(0));
     usage,
     models,
     log,
+    promptCapabilities: (value: Record<string, boolean> | null) =>
+      writeFileSync(path.join(bin, "prompt-capabilities"), JSON.stringify(value)),
+    attachment: (name: string, mime: string, bytes: Buffer) => {
+      const dir = path.join(root, "attachments");
+      const id = randomUUID();
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(path.join(dir, id), bytes);
+      return {
+        type: "acpAttachment",
+        id,
+        name,
+        mime,
+        size: bytes.length,
+        version: createHash("sha256").update(bytes).digest("hex"),
+      };
+    },
     web: open(),
     /** AgentKib quits and starts again on the same data. */
     async restart() {
@@ -327,6 +352,128 @@ process.on("SIGHUP", () => process.exit(0));
 }
 
 describe.runIf(process.platform !== "win32")("Devin sessions run by AgentKib", () => {
+  const png = Buffer.from(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+c9esAAAAASUVORK5CYII=",
+    "base64",
+  );
+
+  it("uses the negotiated prompt capability before enabling ACP attachments", async () => {
+    const f = fixture();
+    f.promptCapabilities({ image: true, embeddedContext: true });
+    const probes = await Promise.all([f.features(), f.features()]);
+    for (const features of probes) {
+      expect(features.attachments).toMatchObject({
+        available: true,
+        attachmentKinds: { image: true, files: true },
+      });
+    }
+    expect(f.log("initialize.log")).toBe("initialize\n");
+    expect(f.log("resume.log")).toBe("");
+
+    const input = [
+      f.attachment("screenshot.png", "image/png", png),
+      f.attachment("notes.txt", "text/plain", Buffer.from("Offline attachment")),
+    ];
+    f.turn({ hold: true });
+    expect(await f.control("send", { input })).toMatchObject({ accepted: true });
+    await expect.poll(() => f.log("prompt-blocks.log").trim()).not.toBe("");
+    const blocks = JSON.parse(f.log("prompt-blocks.log"));
+    expect(blocks).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: "image",
+          mimeType: "image/png",
+          data: png.toString("base64"),
+        }),
+        expect.objectContaining({ type: "text", text: expect.stringContaining("[notes.txt](") }),
+      ]),
+    );
+    expect((await f.features()).attachments).toMatchObject({ available: false });
+    f.turn();
+    await f.ended();
+  });
+
+  it("sends an image as a Markdown file link when Devin accepts files only", async () => {
+    const f = fixture();
+    f.promptCapabilities({ image: false, resourceLink: true });
+    expect((await f.features()).attachments).toMatchObject({
+      available: true,
+      attachmentKinds: { image: false, files: true },
+    });
+
+    const input = [f.attachment("screenshot.png", "image/png", png)];
+    expect(await f.control("send", { input })).toMatchObject({ accepted: true });
+    await f.ended();
+
+    const blocks = JSON.parse(f.log("prompt-blocks.log"));
+    expect(blocks).not.toContainEqual(expect.objectContaining({ type: "image" }));
+    expect(blocks).toContainEqual(
+      expect.objectContaining({ type: "text", text: expect.stringContaining("[screenshot.png](") }),
+    );
+  });
+
+  it("links a picture above the native inline budget when the negotiated file link is available", async () => {
+    const f = fixture();
+    f.promptCapabilities({ image: true });
+    const large = Buffer.alloc(ACP_INLINE_ATTACHMENT_LIMIT + 1);
+    png.copy(large);
+    const input = [f.attachment("screenshot.png", "image/png", large)];
+
+    expect(await f.control("send", { input })).toMatchObject({ accepted: true });
+    await f.ended();
+    const blocks = JSON.parse(f.log("prompt-blocks.log"));
+    expect(blocks).toMatchObject([
+      { type: "resource_link", name: "screenshot.png", mimeType: "image/png" },
+      { type: "text", text: expect.stringContaining("[screenshot.png](") },
+    ]);
+  });
+
+  it("refuses an over-budget native picture before Devin loads or prompts the session", async () => {
+    const f = fixture();
+    f.promptCapabilities({ image: true, resourceLink: false });
+    const large = Buffer.alloc(ACP_INLINE_ATTACHMENT_LIMIT + 1);
+    png.copy(large);
+    const input = [f.attachment("screenshot.png", "image/png", large)];
+
+    expect(await f.control("send", { input })).toMatchObject({
+      accepted: false,
+      controlOutcome: "not-dispatched",
+      reason: "attachments_too_large",
+    });
+    expect(f.log("resume.log")).toBe("");
+    expect(f.log("prompt-blocks.log")).toBe("");
+  });
+
+  it("leaves attachments unavailable when ACP omits prompt capabilities", async () => {
+    const f = fixture();
+    expect((await f.features()).attachments).toMatchObject({ available: false });
+
+    const input = [f.attachment("screenshot.png", "image/png", png)];
+    expect(await f.control("send", { input })).toMatchObject({
+      accepted: false,
+      controlOutcome: "not-dispatched",
+    });
+    expect(f.log("resume.log")).toBe("");
+    expect(f.log("prompt-blocks.log")).toBe("");
+  });
+
+  it("rechecks attachment support in the actual turn before loading or sending", async () => {
+    const f = fixture();
+    f.promptCapabilities({ image: true, embeddedContext: true });
+    expect((await f.features()).attachments).toMatchObject({ available: true });
+
+    f.promptCapabilities(null);
+    const input = [f.attachment("screenshot.png", "image/png", png)];
+    expect(await f.control("send", { input })).toMatchObject({
+      accepted: false,
+      controlOutcome: "not-dispatched",
+    });
+    expect(f.log("initialize.log")).toBe("initialize\ninitialize\n");
+    expect(f.log("resume.log")).toBe("");
+    expect(f.log("prompt-blocks.log")).toBe("");
+    expect((await f.features()).attachments).toMatchObject({ available: false });
+  });
+
   it("offers a thought level declared by ACP even without a matching CLI variant", async () => {
     const f = fixture();
     f.models([{ slug: "swe-2", variants: [{ model_uid: "swe-2-high" }] }]);

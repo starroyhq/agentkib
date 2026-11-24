@@ -188,14 +188,20 @@ it("updates activities for the displayed session without showing another session
     title: "Review changes",
     status: "running",
   } as const;
+  localStorage.setItem("agentkib.session-activities.open", "true");
   const view = reader();
-  expect(screen.getByRole("button", { name: "Session activities" })).toBeDisabled();
+  const panel = screen.getByRole("region", { name: "Session activities" });
+  expect(view.viewport).not.toContainElement(panel);
+  expect(panel.parentElement).toHaveStyle({ bottom: "80px" });
 
   state = { ...state, live: { ...state.live!, activities: [activity] } };
   view.update();
-  fireEvent.click(screen.getByRole("button", { name: "1 subagent" }));
   expect(screen.getByText(activity.title)).toBeVisible();
   expect(screen.getByText("Running")).toBeVisible();
+
+  composerHeight = 160;
+  resize();
+  expect(panel.parentElement).toHaveStyle({ bottom: "160px" });
 
   state = {
     ...state,
@@ -206,8 +212,9 @@ it("updates activities for the displayed session without showing another session
 
   state = { ...state, live: { ...state.live!, sessionId: "another-session" } };
   view.update();
-  expect(screen.getByRole("button", { name: "Session activities" })).toBeDisabled();
+  expect(panel).toBeVisible();
   expect(screen.queryByText(activity.title)).not.toBeInTheDocument();
+  localStorage.removeItem("agentkib.session-activities.open");
 });
 
 describe("reader follows user intent across transcript and viewport layout", () => {

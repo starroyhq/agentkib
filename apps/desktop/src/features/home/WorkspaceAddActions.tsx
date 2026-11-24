@@ -1,5 +1,6 @@
 import { useI18n } from "@/core/useI18n";
 import { FolderGit2 } from "lucide-react";
+import { IconAction } from "@agentkib/session-ui";
 import { Button } from "@/components/ui/button";
 
 /** The empty home's ways to add a first workspace, when the getting-started card is closed. */
@@ -13,13 +14,16 @@ export function WorkspaceAddActions({
   onAddRoot: () => Promise<void>;
 }) {
   const { tr } = useI18n();
+  const addWorkspace = tr("home.addWorkspace");
   return (
     <div className="grid gap-3 text-left">
       <div className="grid gap-1.5">
-        <Button disabled={busy} aria-busy={busy} onClick={() => void onAddWorkspace()}>
-          <FolderGit2 size={14} />
-          {tr("home.addWorkspace")}
-        </Button>
+        <IconAction
+          label={addWorkspace}
+          render={<Button disabled={busy} aria-busy={busy} onClick={() => void onAddWorkspace()} />}
+        >
+          <FolderGit2 size={14} aria-hidden />
+        </IconAction>
         <p className="text-xs leading-5 text-muted-foreground">{tr("home.addWorkspaceHint")}</p>
       </div>
       <div className="grid gap-1.5">

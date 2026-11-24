@@ -217,6 +217,13 @@ describe("remote payload validation", () => {
         multiSelect: false,
         answer: { selected: ["A"] },
       },
+      {
+        id: "2",
+        question: "Any extra notes?",
+        options: [],
+        multiSelect: false,
+        answer: { selected: [], custom: "Include the demo." },
+      },
     ];
     const questionnaire = { status: "answered", questions };
     const { events } = parseRemoteEvents({

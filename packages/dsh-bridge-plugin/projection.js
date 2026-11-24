@@ -156,6 +156,149 @@ export function historyRecord(event) {
   }
 }
 
+const ASK_USER_TOOL = "ask_user_question";
+const MAX_QUESTION_PAYLOAD = 16 * 1024;
+const MAX_QUESTION_BATCH = 8;
+const MAX_QUESTION_OPTIONS = 20;
+const MAX_PENDING_QUESTIONS = 128;
+
+function questionJson(text) {
+  if (typeof text !== "string" || text.length > MAX_QUESTION_PAYLOAD) return null;
+  try {
+    const value = JSON.parse(text);
+    return value && typeof value === "object" && !Array.isArray(value) ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+function questionText(content) {
+  return Array.isArray(content) ? content.find((block) => block?.type === "text")?.text : null;
+}
+
+function questionDefinitions(value) {
+  if (!Array.isArray(value) || !value.length || value.length > MAX_QUESTION_BATCH) return null;
+  const questions = new Map();
+  for (const question of value) {
+    if (
+      typeof question?.id !== "string" ||
+      !question.id ||
+      question.id.length > 128 ||
+      questions.has(question.id) ||
+      typeof question.question !== "string" ||
+      !question.question.trim()
+    )
+      return null;
+    const choices = question.options ?? [];
+    if (
+      !Array.isArray(choices) ||
+      choices.length > MAX_QUESTION_OPTIONS ||
+      choices.some((option) => typeof option?.label !== "string" || !option.label.trim())
+    )
+      return null;
+    const options = choices.map((option) => ({
+      label: option.label,
+      ...(typeof option.description === "string" ? { description: option.description } : {}),
+    }));
+    questions.set(question.id, {
+      id: question.id,
+      question: question.question,
+      ...(typeof question.header === "string" ? { header: question.header } : {}),
+      multiSelect: question.multi_select === true,
+      options,
+    });
+  }
+  return questions;
+}
+
+function answeredQuestions(questions, value) {
+  if (!Array.isArray(value) || value.length !== questions.size) return null;
+  const answers = new Map();
+  for (const answer of value) {
+    if (
+      !questions.has(answer?.id) ||
+      answers.has(answer.id) ||
+      !Array.isArray(answer.selected) ||
+      answer.selected.length > MAX_QUESTION_OPTIONS ||
+      answer.selected.some((label) => typeof label !== "string") ||
+      (answer.custom !== undefined && typeof answer.custom !== "string")
+    )
+      return null;
+    answers.set(answer.id, {
+      selected: answer.selected,
+      ...(answer.custom ? { custom: answer.custom } : {}),
+    });
+  }
+  return [...questions.values()].map((question) => ({
+    ...question,
+    answer: answers.get(question.id),
+  }));
+}
+
+export function isQuestionHistoryReply(event) {
+  return (
+    event?.type === "user/message" &&
+    event.data?.source?.kind === "user-question-reply" &&
+    event.data.source.outcome === "answered"
+  );
+}
+
+/**
+ * Annotate ordinary tool rows without exposing other tool inputs or changing old bridge pages.
+ * Both sides of a pair can be on different pages, so the caller visits native events in order
+ * and passes the ordinary row only when it is part of the page being read.
+ */
+export function createQuestionHistoryProjector() {
+  const pending = new Map();
+  return (event, record) => {
+    const data = event?.data;
+    if (event?.type === "tool/call" && data?.name === ASK_USER_TOOL) {
+      const id = data.callId;
+      if (typeof id !== "string" || !id || id.length > 256) return;
+      pending.delete(id);
+      const questions = questionDefinitions(questionJson(data.arguments)?.questions);
+      if (!questions) return;
+      if (pending.size === MAX_PENDING_QUESTIONS) pending.delete(pending.keys().next().value);
+      pending.set(id, { questions, call: record, turn: data.turn, result: null, continued: false });
+      return;
+    }
+    if (event?.type === "tool/result") {
+      const id = data?.message?.toolCallId;
+      const entry = pending.get(id);
+      if (!entry || entry.turn !== data.turn) return;
+      const value = questionJson(questionText(data.message.content));
+      if (value?.pending === true || data.error?.code === "TOOL_OUTCOME_UNKNOWN") {
+        entry.result = record;
+        entry.continued = true;
+        return;
+      }
+      pending.delete(id);
+      if (data.error || data.message.isError === true) return;
+      const questions = answeredQuestions(entry.questions, value?.answers);
+      if (!questions) return;
+      if (entry.call) entry.call.questionnaire = questions;
+      if (record) record.questionnaire = questions;
+      return;
+    }
+    if (!isQuestionHistoryReply(event)) return;
+    const id = data.source.callId;
+    const entry = pending.get(id);
+    if (!entry?.continued) return;
+    const value = questionJson(questionText(data.content));
+    if (
+      value?.kind !== "answer_to_pending_question" ||
+      value.tool !== ASK_USER_TOOL ||
+      value.callId !== id
+    )
+      return;
+    const questions = answeredQuestions(entry.questions, value.answers);
+    if (!questions) return;
+    pending.delete(id);
+    if (entry.call) entry.call.questionnaire = questions;
+    if (entry.result) entry.result.questionnaire = questions;
+  };
+}
+
 // A handoff or search reads whole messages; a page is still bounded (`DOCUMENT_PAGE_BYTES`).
 export const MAX_DOCUMENT_TEXT = 256 * 1024;
 export const MAX_DOCUMENT_ARGUMENTS = 64 * 1024;
@@ -296,10 +439,10 @@ const titleOf = (projections) => {
 };
 
 /**
- * One row of `sessionController.list`, reduced to what the AgentKib catalog stores. `archived`
- * is DSH's archive set, which lives in its workspace controller, not in the session list.
+ * One row of `sessionController.list`, reduced to what the AgentKib catalog stores.
+ * The workspace controller supplies the archive and pin sets.
  */
-export function sessionSummary(item, archived) {
+export function sessionSummary(item, archived, pinned) {
   if (!item || typeof item.sessionId !== "string" || typeof item.cwd !== "string") return null;
   return {
     sessionId: item.sessionId,
@@ -312,6 +455,7 @@ export function sessionSummary(item, archived) {
     parentSessionId: typeof item.parentSessionId === "string" ? item.parentSessionId : null,
     origin: item.origin === "subagent" ? "subagent" : null,
     archived: archived?.has(item.sessionId) === true,
+    ...(pinned ? { pinned: pinned.has(item.sessionId) } : {}),
   };
 }
 

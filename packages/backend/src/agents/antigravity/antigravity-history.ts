@@ -2,6 +2,7 @@ import { AntigravitySessions } from "./antigravity-sessions";
 import { AntigravityLocalStore, type AntigravityLocalRecord } from "./antigravity-local-store";
 import { AntigravityLocalRuntime } from "./antigravity-local-runtime";
 import type { NativeSession } from "../../session-store";
+import type { NativeListing, SessionListingIssue } from "../../sessions/history-provider";
 import { pathIdentity } from "../../paths";
 
 const PREFIX = "antigravity-local-v1-";
@@ -43,6 +44,7 @@ export class AntigravityHistory {
   }
   async #records(workspace: string) {
     const listing = this.#local.list(workspace);
+    const issues: SessionListingIssue[] = [...(listing.issues ?? [])];
     for (const surface of ["app", "ide"] as const) {
       try {
         const live = this.#runtime.available(surface);
@@ -72,11 +74,12 @@ export class AntigravityHistory {
             listing.records.push(record);
       } catch {
         listing.incomplete = true;
+        issues.push({ code: "antigravity-native-list", scope: "source", surface });
       }
     }
-    return listing;
+    return { ...listing, issues };
   }
-  async list(workspace: string): Promise<{ sessions: NativeSession[]; incomplete: boolean }> {
+  async list(workspace: string): Promise<NativeListing> {
     const listing = await this.#records(workspace);
     const unique = new Map<string, AntigravityLocalRecord>();
     for (const record of listing.records) {
@@ -106,6 +109,7 @@ export class AntigravityHistory {
     }));
     try {
       const acp = await this.#acp.list(workspace);
+      const issues = [...listing.issues, ...(acp.issues ?? [])];
       // The CLI's `agy acp` shares the Antigravity App's sessions: one it lists is the same
       // conversation, controlled through ACP, so its read-only App copy is not listed twice.
       const served = new Set(acp.sessions.map((session) => session.native_ref.toLowerCase()));
@@ -115,10 +119,14 @@ export class AntigravityHistory {
           ...acp.sessions,
         ],
         incomplete: listing.incomplete || acp.incomplete,
+        ...(issues.length ? { issues } : {}),
       };
     } catch {
-      if (!sessions.length) throw new Error("Antigravity configured source could not be read");
-      return { sessions, incomplete: true };
+      return {
+        sessions,
+        incomplete: true,
+        issues: [...listing.issues, { code: "antigravity-acp-list", scope: "source" }],
+      };
     }
   }
   async readEvents(ref: string, cursor: string | null, limit: number, workspace?: string) {

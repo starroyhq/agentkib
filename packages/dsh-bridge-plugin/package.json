@@ -1,6 +1,6 @@
 {
   "name": "agentkib-dsh-bridge",
-  "version": "0.8.3",
+  "version": "0.8.6",
   "private": true,
   "description": "Connects running DeepSeek Harness sessions to AgentKib on this computer.",
   "license": "Apache-2.0",

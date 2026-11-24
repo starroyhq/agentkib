@@ -161,11 +161,36 @@ describe("Antigravity read-only history aggregation", () => {
     expect(await new AntigravityHistory({}).list(workspace)).toMatchObject({
       incomplete: true,
       sessions: [{ native_ref: antigravityLocalRef("app", ID) }],
+      issues: [{ code: "antigravity-acp-list", scope: "source" }],
     });
   });
   it("keeps source failure visible if no local history can be retained", async () => {
     sources.acp.list.mockRejectedValue(new Error("configured server failed"));
-    await expect(new AntigravityHistory({}).list(workspace)).rejects.toThrow();
+    expect(await new AntigravityHistory({}).list(workspace)).toEqual({
+      incomplete: true,
+      sessions: [],
+      issues: [{ code: "antigravity-acp-list", scope: "source" }],
+    });
+  });
+  it("returns diagnostics from both stores without promoting an unattributed ACP row", async () => {
+    sources.local.list.mockReturnValue({
+      records: [record("app")],
+      incomplete: true,
+      issues: [{ code: "antigravity-local-record", scope: "workspace", id: OTHER_ID }],
+    });
+    sources.acp.list.mockResolvedValue({
+      sessions: [],
+      incomplete: false,
+      issues: [{ code: "antigravity-acp-record", scope: "unattributed", id: "no-workspace" }],
+    });
+    expect(await new AntigravityHistory({}).list(workspace)).toMatchObject({
+      incomplete: true,
+      sessions: [{ native_ref: antigravityLocalRef("app", ID) }],
+      issues: [
+        { code: "antigravity-local-record", scope: "workspace", id: OTHER_ID },
+        { code: "antigravity-acp-record", scope: "unattributed", id: "no-workspace" },
+      ],
+    });
   });
   it("preserves genuine offline index failure with other successful sources", async () => {
     sources.local.list.mockReturnValue({ records: [record("app")], incomplete: true });
@@ -339,6 +364,10 @@ describe("Antigravity read-only history aggregation", () => {
     expect(await new AntigravityHistory({}).list(workspace)).toMatchObject({
       incomplete: true,
       sessions: [{ native_ref: antigravityLocalRef("app", ID) }],
+      issues: [
+        { code: "antigravity-native-list", scope: "source", surface: "app" },
+        { code: "antigravity-native-list", scope: "source", surface: "ide" },
+      ],
     });
   });
   it("leaves ACP identity routing intact and closes its subprocess provider", async () => {

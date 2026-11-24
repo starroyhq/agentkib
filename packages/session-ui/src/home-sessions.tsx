@@ -1,4 +1,6 @@
+import { SessionPinnedMark } from "./conversation/catalog/session-row-menu";
 import { useId, type ReactNode } from "react";
+import { IconAction } from "./icon-action";
 import { interactionCardCopy, type InteractionLocale } from "./interaction-model";
 import { readStateCopy } from "./read-state";
 import { sessionContinuationCopy } from "./session-continuation";
@@ -285,7 +287,7 @@ function Icon({ name, className = "size-4" }: { name: IconName; className?: stri
 const focusRing =
   "outline-none focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:ring-offset-0";
 
-export interface HomeSessionListProps<S extends { id: string }> {
+export interface HomeSessionListProps<S extends { id: string; pinned?: boolean }> {
   locale: InteractionLocale;
   /** "wide" puts each status in a tag at the row's end; "compact" starts the second line with it. */
   layout: "wide" | "compact";
@@ -293,6 +295,8 @@ export interface HomeSessionListProps<S extends { id: string }> {
   describe: (session: S) => HomeRowText;
   /** The Agent's mark for recent rows. */
   agentMark?: (session: S) => ReactNode;
+  /** Optional management, beside the session button so it does not open the row. */
+  rowMenu?: (session: S) => ReactNode;
   /** Recent sessions below the groups and the link to all of them; left out when absent. */
   recent?: { limit: number; label: "viewAll" | "allSessions"; onShowAll: () => void };
   /** The session whose waiting request is open in its row. */
@@ -309,12 +313,13 @@ export interface HomeSessionListProps<S extends { id: string }> {
  * the most recent other sessions. "All clear" stands in for the first three groups. An approval
  * or a question can open its card in its row and be answered there; other rows open the session.
  */
-export function HomeSessionList<S extends { id: string }>({
+export function HomeSessionList<S extends { id: string; pinned?: boolean }>({
   locale,
   layout,
   groups,
   describe,
   agentMark,
+  rowMenu,
   recent,
   expanded,
   onToggle,
@@ -349,6 +354,7 @@ export function HomeSessionList<S extends { id: string }>({
   const wide = layout === "wide";
   const attention = groups.needsYou.length + groups.review.length + groups.running.length;
   const recentRows = recent ? groups.recent.slice(0, recent.limit) : [];
+  const pinMark = (session: S) => session.pinned === true && <SessionPinnedMark locale={locale} />;
 
   return (
     <div className={wide ? "grid gap-5" : "grid gap-3"}>
@@ -368,6 +374,8 @@ export function HomeSessionList<S extends { id: string }>({
                   icon={NEED_ICONS[need]}
                   tone="waiting"
                   title={text.title}
+                  menu={rowMenu?.(session)}
+                  pinMark={pinMark(session)}
                   status={needLabels[need]}
                   statusIcon={NEED_ICONS[need]}
                   meta={
@@ -407,6 +415,8 @@ export function HomeSessionList<S extends { id: string }>({
                   spin
                   tone="running"
                   title={text.title}
+                  menu={rowMenu?.(session)}
+                  pinMark={pinMark(session)}
                   status={placeLabel(place, text.agent)}
                   statusIcon={PLACE_ICONS[place]}
                   meta={wide ? join([text.agent, text.workspace, time]) : join([time])}
@@ -425,6 +435,8 @@ export function HomeSessionList<S extends { id: string }>({
                   icon={RESULTS[result].icon}
                   tone={RESULTS[result].tone}
                   title={text.title}
+                  menu={rowMenu?.(session)}
+                  pinMark={pinMark(session)}
                   status={resultLabels[result]}
                   statusIcon={RESULTS[result].tag}
                   meta={
@@ -456,14 +468,18 @@ export function HomeSessionList<S extends { id: string }>({
             <h2 id={recentId} className="text-sm font-semibold">
               {t.recentSessions}
             </h2>
-            <button
-              type="button"
-              className={`inline-flex items-center gap-1 rounded-md text-xs font-medium text-primary-text underline-offset-4 hover:underline ${focusRing}`}
-              onClick={recent.onShowAll}
+            <IconAction
+              label={t[recent.label]}
+              render={
+                <button
+                  type="button"
+                  className={`grid size-9 shrink-0 place-items-center rounded-md text-primary-text hover:bg-muted pointer-coarse:size-11 ${focusRing}`}
+                  onClick={recent.onShowAll}
+                />
+              }
             >
-              {t[recent.label]}
               <Icon name={recent.label === "viewAll" ? "arrow" : "chevron"} className="size-3.5" />
-            </button>
+            </IconAction>
           </div>
           <ul className="divide-y divide-border">
             {recentRows.map((session) => {
@@ -471,10 +487,10 @@ export function HomeSessionList<S extends { id: string }>({
               const unread =
                 (session as { readState?: { status?: string } }).readState?.status === "unread";
               return (
-                <li key={session.id}>
+                <li key={session.id} className="group/session flex items-center">
                   <button
                     type="button"
-                    className={`grid w-full items-center gap-3 px-4 py-2.5 text-left hover:bg-muted/40 sm:px-5 ${focusRing} ${
+                    className={`grid min-w-0 flex-1 items-center gap-3 px-4 py-2.5 text-left hover:bg-muted/40 sm:px-5 ${focusRing} ${
                       wide
                         ? "grid-cols-[auto_minmax(0,1fr)_minmax(0,auto)_auto]"
                         : "grid-cols-[auto_minmax(0,1fr)_auto]"
@@ -482,7 +498,10 @@ export function HomeSessionList<S extends { id: string }>({
                     onClick={() => onOpen(session)}
                   >
                     {agentMark?.(session) ?? <span />}
-                    <span className="truncate text-sm">{text.title}</span>
+                    <span className="flex min-w-0 items-center gap-2">
+                      <span className="truncate text-sm">{text.title}</span>
+                      {pinMark(session)}
+                    </span>
                     {wide ? (
                       <>
                         <span className="truncate text-xs text-muted-foreground">
@@ -503,6 +522,7 @@ export function HomeSessionList<S extends { id: string }>({
                       </span>
                     )}
                   </button>
+                  {rowMenu?.(session)}
                 </li>
               );
             })}
@@ -532,6 +552,8 @@ function Row({
   spin = false,
   tone,
   title,
+  menu,
+  pinMark,
   status,
   statusIcon,
   meta,
@@ -544,6 +566,8 @@ function Row({
   spin?: boolean;
   tone: Tone;
   title: string;
+  menu?: ReactNode;
+  pinMark?: ReactNode;
   status: string;
   statusIcon: IconName;
   meta: string;
@@ -556,45 +580,53 @@ function Row({
   const wide = layout === "wide";
   return (
     <li>
-      <button
-        type="button"
-        aria-expanded={expanded}
-        aria-controls={expanded ? panel : undefined}
-        className={`grid w-full items-center gap-3 px-4 py-2.5 text-left hover:bg-muted/40 sm:px-5 ${focusRing} ${
-          wide ? "grid-cols-[auto_minmax(0,1fr)_auto_auto]" : "grid-cols-[auto_minmax(0,1fr)_auto]"
-        }`}
-        onClick={onClick}
-      >
-        <span className={`grid size-8 place-items-center rounded-full ${TONES[tone]}`}>
-          <Icon
-            name={icon}
-            className={spin ? "size-4 animate-spin motion-reduce:animate-none" : "size-4"}
-          />
-        </span>
-        <span className="grid min-w-0">
-          <strong className="truncate text-sm font-medium">{title}</strong>
-          {wide ? (
-            <span className="truncate text-xs text-muted-foreground">{meta}</span>
-          ) : (
-            <span className="truncate text-xs text-muted-foreground">
-              <span className={`font-medium ${TEXT_TONES[tone]}`}>{status}</span>
-              {meta && ` · ${meta}`}
+      <div className="group/session flex items-center">
+        <button
+          type="button"
+          aria-expanded={expanded}
+          aria-controls={expanded ? panel : undefined}
+          className={`grid min-w-0 flex-1 items-center gap-3 px-4 py-2.5 text-left hover:bg-muted/40 sm:px-5 ${focusRing} ${
+            wide
+              ? "grid-cols-[auto_minmax(0,1fr)_auto_auto]"
+              : "grid-cols-[auto_minmax(0,1fr)_auto]"
+          }`}
+          onClick={onClick}
+        >
+          <span className={`grid size-8 place-items-center rounded-full ${TONES[tone]}`}>
+            <Icon
+              name={icon}
+              className={spin ? "size-4 animate-spin motion-reduce:animate-none" : "size-4"}
+            />
+          </span>
+          <span className="grid min-w-0">
+            <span className="flex min-w-0 items-center gap-2">
+              <strong className="truncate text-sm font-medium">{title}</strong>
+              {pinMark}
+            </span>
+            {wide ? (
+              <span className="truncate text-xs text-muted-foreground">{meta}</span>
+            ) : (
+              <span className="truncate text-xs text-muted-foreground">
+                <span className={`font-medium ${TEXT_TONES[tone]}`}>{status}</span>
+                {meta && ` · ${meta}`}
+              </span>
+            )}
+          </span>
+          {wide && (
+            <span
+              className={`inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-md px-2 py-0.5 text-xs font-medium ${TONES[tone]}`}
+            >
+              <Icon name={statusIcon} className="size-3" />
+              {status}
             </span>
           )}
-        </span>
-        {wide && (
-          <span
-            className={`inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-md px-2 py-0.5 text-xs font-medium ${TONES[tone]}`}
-          >
-            <Icon name={statusIcon} className="size-3" />
-            {status}
-          </span>
-        )}
-        <Icon
-          name="chevron"
-          className={`size-4 text-muted-foreground ${expanded ? "rotate-90" : ""}`}
-        />
-      </button>
+          <Icon
+            name="chevron"
+            className={`size-4 text-muted-foreground ${expanded ? "rotate-90" : ""}`}
+          />
+        </button>
+        {menu}
+      </div>
       {expanded && (
         <div id={panel} role="group" aria-label={title}>
           {children}

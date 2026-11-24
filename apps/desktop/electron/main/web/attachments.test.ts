@@ -1,8 +1,20 @@
 // @vitest-environment node
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { mkdtemp, readFile, rm, symlink, unlink, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  realpath,
+  rename,
+  rm,
+  symlink,
+  unlink,
+  writeFile,
+} from "node:fs/promises";
+import { dirname, extname, join } from "node:path";
 import { tmpdir } from "node:os";
+import { fileURLToPath } from "node:url";
 import { AttachmentStore } from "./attachments";
 
 describe("private attachment input storage", () => {
@@ -19,6 +31,14 @@ describe("private attachment input storage", () => {
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aE1sAAAAASUVORK5CYII=",
     "base64",
   );
+  async function terminalWorkspace(name = "work tree") {
+    const cwd = join(dir, name);
+    await mkdir(cwd);
+    return realpath(cwd);
+  }
+  function terminalFiles(text: string) {
+    return [...text.matchAll(/\((file:[^\s)]+)\)/g)].map((match) => fileURLToPath(match[1]));
+  }
   beforeEach(async () => {
     dir = await mkdtemp(join(tmpdir(), "ak-attachments-"));
     store = new AttachmentStore(dir);
@@ -199,6 +219,113 @@ describe("private attachment input storage", () => {
       expect(input[0]).toMatchObject({ type: "text", text: expect.stringContaining("file:") });
       expect(input[0].text).toContain("User attached file [icon \\[draft\\].svg]");
     }
+  });
+  it("links terminal files and images from an ignored folder under the verified cwd", async () => {
+    const cwd = await terminalWorkspace("work tree (staging)");
+    const image = await store.upload(binary(png), owner, "pasted", "image/png", () => {});
+    const file = await store.upload(bytes(), owner, "notes [today].txt", "text/plain", () => {});
+    const input = await store.inputForTerminal(
+      "phone",
+      "task",
+      [file.id, image.id],
+      "Look at these",
+      cwd,
+      "terminal-request",
+    );
+    expect(input).toMatchObject({ type: "claude-terminal-attachments", cwd });
+    expect(input.text).toMatch(/^Look at these\n\nUser attached file/);
+    expect(input.text).toContain("User attached file [notes \\[today\\].txt]");
+    expect(input.text).toContain("User attached file [pasted]");
+    const files = terminalFiles(input.text);
+    expect(files.map((file) => dirname(dirname(file)))).toEqual([cwd, cwd]);
+    expect(files.map((file) => extname(file))).toEqual([".txt", ".png"]);
+    expect(await readFile(files[0], "utf8")).toBe("hello");
+    expect(await readFile(files[1])).toEqual(png);
+    for (const file of files)
+      expect(await readFile(join(dirname(file), ".gitignore"), "utf8")).toBe("*\n");
+    expect((await store.list("phone", "task")).every((item) => !("terminalCopy" in item))).toBe(
+      true,
+    );
+  });
+
+  it("keeps stable terminal paths and pins across restart and rejects changed scope", async () => {
+    const cwd = await terminalWorkspace();
+    const other = await terminalWorkspace("other work tree");
+    const file = await store.upload(bytes(), owner, "note.md", "text/plain", () => {});
+    await expect(
+      store.inputForTerminal("other", "task", [file.id], "", cwd, "wrong-owner"),
+    ).rejects.toThrow("attachment_not_found");
+    await expect(
+      store.inputForTerminal("phone", "other-task", [file.id], "", cwd, "wrong-session"),
+    ).rejects.toThrow("attachment_not_found");
+    expect(await readdir(cwd)).toEqual([]);
+    const first = await store.inputForTerminal("phone", "task", [file.id], "First", cwd, "request");
+    store = new AttachmentStore(dir);
+    await expect(
+      store.inputForTerminal("phone", "task", [file.id], "First", cwd, "request"),
+    ).resolves.toEqual(first);
+    expect(await readdir(cwd)).toHaveLength(1);
+    await expect(
+      store.inputForTerminal("phone", "task", [file.id], "First", other, "request"),
+    ).rejects.toThrow("attachment_request_conflict");
+    await expect(
+      store.inputForTerminal("phone", "task", [file.id], "Other", other, "new"),
+    ).rejects.toThrow("attachment_workspace_changed");
+    await expect(
+      store.verifyReplay("phone", "task", [file.id], "First", "claude-terminal", "request"),
+    ).resolves.toBe(true);
+    await expect(
+      store.verifyReplay("phone", "task", [file.id], "Other", "claude-terminal", "request"),
+    ).rejects.toThrow("attachment_request_conflict");
+    await expect(store.remove("phone", "task", file.id, file.version)).rejects.toThrow(
+      "attachment_in_use",
+    );
+    await store.settle("phone", "task", "request");
+    expect(await readFile(terminalFiles(first.text)[0], "utf8")).toBe("hello");
+    await store.remove("phone", "task", file.id, file.version);
+    expect(await readdir(cwd)).toEqual([]);
+    await expect(
+      store.verifyReplay("phone", "task", [file.id], "First", "claude-terminal", "request"),
+    ).resolves.toBe(true);
+  });
+
+  it("cleans new terminal files if the rendered prompt exceeds the bridge limit", async () => {
+    const cwd = await terminalWorkspace();
+    const file = await store.upload(bytes(), owner, "notes.txt", "text/plain", () => {});
+    await expect(
+      store.inputForTerminal("phone", "task", [file.id], "x".repeat(16_000), cwd, "large"),
+    ).rejects.toThrow("attachments_too_large");
+    expect(await readdir(cwd)).toEqual([]);
+    expect(await store.pendingRequests("task")).toEqual([]);
+    expect((await store.list("phone", "task"))[0].sent).toBe(false);
+    await expect(store.input("phone", "task", [file.id], "", "claude-terminal")).rejects.toThrow(
+      "attachment_workspace_unavailable",
+    );
+  });
+
+  it("refuses a symlinked cwd and preserves user files if a staged directory is replaced", async () => {
+    const cwd = await terminalWorkspace();
+    const outside = await terminalWorkspace("outside");
+    const alias = join(dir, "alias");
+    await symlink(outside, alias, "junction");
+    const file = await store.upload(bytes(), owner, "note.txt", "text/plain", () => {});
+    await expect(
+      store.inputForTerminal("phone", "task", [file.id], "", alias, "symlink"),
+    ).rejects.toThrow("attachment_workspace_changed");
+    expect(await readdir(outside)).toEqual([]);
+    const staged = await store.inputForTerminal("phone", "task", [file.id], "", cwd, "staged");
+    const [copy] = terminalFiles(staged.text);
+    const folder = dirname(copy);
+    await rename(folder, join(cwd, "archived"));
+    await symlink(outside, folder, "junction");
+    await writeFile(join(outside, ".gitignore"), "*\n");
+    await writeFile(join(outside, file.id + ".txt"), "hello");
+    await expect(
+      store.inputForTerminal("phone", "task", [file.id], "", cwd, "staged"),
+    ).rejects.toThrow("attachment_workspace_changed");
+    await store.removeSession("task");
+    expect(await readFile(join(outside, file.id + ".txt"), "utf8")).toBe("hello");
+    expect(await readFile(join(outside, ".gitignore"), "utf8")).toBe("*\n");
   });
   it("preserves Codex localImage encoding", async () => {
     const image = await store.upload(binary(png), owner, "one.png", "image/png", () => {});

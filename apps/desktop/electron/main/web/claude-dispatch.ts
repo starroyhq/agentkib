@@ -8,6 +8,7 @@ const PRE_DISPATCH_ERRORS = new Set([
   "session-managed-by-another-runtime",
   "session-already-bridged",
   "claude-bridge-disconnected",
+  "claude-follower-attachments-unavailable",
   "unverified-session-identity",
 ]);
 

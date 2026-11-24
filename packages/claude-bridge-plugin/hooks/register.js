@@ -1194,6 +1194,9 @@ async function snapshot($, state) {
     capabilities: {
       read: true,
       ...(offersPicker ? { modelPicker: canOpenModelPicker(state) } : {}),
+      ...(state.connection?.features?.includes("terminal-attachments")
+        ? { attachments: true }
+        : {}),
       send:
         writable(state) &&
         state.activityVerified &&

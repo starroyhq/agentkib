@@ -1,5 +1,6 @@
 // @vitest-environment node
 import { randomUUID } from "node:crypto";
+import { CLAUDE_BRIDGE_PLUGIN_VERSION } from "@agentkib/runtime-protocol";
 import { describe, expect, it, vi } from "vitest";
 import {
   decodeTicket,
@@ -330,6 +331,16 @@ async function fixture(
     },
   };
 }
+
+it("advertises workspace attachment links only to Runtimes that name the feature", async () => {
+  const older = await fixture();
+  await older.flush();
+  expect(older.snapshots().at(-1)?.capabilities).not.toHaveProperty("attachments");
+
+  const enabled = await fixture({ features: ["terminal-attachments"] });
+  await enabled.flush();
+  expect(enabled.snapshots().at(-1)?.capabilities).toMatchObject({ attachments: true });
+});
 
 describe("Claude Code terminal subagents", () => {
   async function observed(f: Awaited<ReturnType<typeof fixture>>) {
@@ -1388,7 +1399,7 @@ describe("Claude Code native session plugin", () => {
       const f = await fixture({ version });
       expect(f.calls.find((call) => call.url.endsWith("/pair"))?.body).toMatchObject({
         cliVersion: version,
-        pluginVersion: "0.5.5",
+        pluginVersion: CLAUDE_BRIDGE_PLUGIN_VERSION,
         nativeCapabilities: {
           version: 1,
           available: [
@@ -1607,7 +1618,7 @@ describe("Claude Code native session plugin", () => {
         bindingId: f.connection.bindingId,
         nativeId: f.nativeId,
         cwd: "/isolated/workspace",
-        pluginVersion: "0.5.5",
+        pluginVersion: CLAUDE_BRIDGE_PLUGIN_VERSION,
       });
       expect(report.body).not.toHaveProperty("nativeCapabilities");
       expect(report.body).not.toHaveProperty("token");
@@ -1866,7 +1877,10 @@ describe("Claude Code native session plugin", () => {
     const result = await f.run("command.run", { command: "agentkib-connect", args: f.ticket });
     expect(result.text).toContain("AgentKib connected");
     const pair = f.calls.find((call) => call.url.endsWith("/pair"))?.body;
-    expect(pair).toMatchObject({ pluginVersion: "0.5.5", cliVersion: "2.1.307" });
+    expect(pair).toMatchObject({
+      pluginVersion: CLAUDE_BRIDGE_PLUGIN_VERSION,
+      cliVersion: "2.1.307",
+    });
     expect(pair).not.toHaveProperty("connectionError");
   });
   it.each(["2.1.301-beta", "02.1.301", "not-a-version"])(
@@ -2089,7 +2103,7 @@ describe("Claude Code native session plugin", () => {
       ).toHaveLength(1);
       expect(set).toHaveBeenCalledWith(
         "compatibility:credential-store:1",
-        "agentkib-bridge:0.5.5:capabilities:1",
+        `agentkib-bridge:${CLAUDE_BRIDGE_PLUGIN_VERSION}:capabilities:1`,
       );
       expect((await f.run("command.run", { command: "agentkib-status", args: "" })).text).toContain(
         "is connected",
@@ -2939,7 +2953,10 @@ describe("Claude Code native session plugin", () => {
     });
     expect(pair.init.headers.Authorization).toBeUndefined();
     expect([...f.stored]).toEqual([
-      ["compatibility:credential-store:1", "agentkib-bridge:0.5.5:capabilities:1"],
+      [
+        "compatibility:credential-store:1",
+        `agentkib-bridge:${CLAUDE_BRIDGE_PLUGIN_VERSION}:capabilities:1`,
+      ],
       [`credentialPath:${f.nativeId}`, f.connection.credentialPath],
     ]);
     expect(JSON.stringify([...f.stored])).not.toContain(f.connection.token);

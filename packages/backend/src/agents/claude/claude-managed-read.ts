@@ -1033,9 +1033,6 @@ export class ClaudeManagedReadOwner {
       ...(value.historyInputHash ? { historyInputHash: value.historyInputHash } : {}),
       ...(value.publicInputHash ? { publicInputHash: value.publicInputHash } : {}),
     };
-    const firstPermission = record.fresh
-      ? this.#hostState.read(id).settings.permissionMode
-      : undefined;
     let reservedRunnerSlot = false;
     try {
       if (operation === "send") reservedRunnerSlot = await this.#reserveRunner(id);
@@ -1073,13 +1070,6 @@ export class ClaudeManagedReadOwner {
               () => {
                 if (runner.snapshot().activity === "compacting")
                   throw new ClaudeUndispatchedError();
-                const observedPermission = runner.observedPermissionMode;
-                if (
-                  firstPermission &&
-                  observedPermission !== null &&
-                  observedPermission !== firstPermission
-                )
-                  throw new ClaudeUndispatchedError("create-permission-unconfirmed");
                 // A new worker has just reported its catalog at initialize. A command it marks
                 // built-in may have been unknown when this message was accepted.
                 const refusal = claudeInputCommandRefusal(content, {

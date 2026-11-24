@@ -683,7 +683,7 @@ export interface SessionCapabilities {
       | "stop"
       | "files"
       | "usage",
-      { available: boolean; reason?: string }
+      { available: boolean; reason?: string; attachmentKinds?: { image: boolean; files: boolean } }
     >
   >;
   /**

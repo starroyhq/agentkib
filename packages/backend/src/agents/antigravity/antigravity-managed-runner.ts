@@ -14,6 +14,7 @@ import {
   verifyAcpControlIdentity,
 } from "./antigravity-acp";
 import { stringifyAcpJson } from "../../acp-json";
+import type { AcpPromptBlock } from "../../acp-prompt-attachments";
 import { sanitizeHandoffExport } from "../../session-handoff";
 import { antigravityAcpArgs } from "./antigravity-sessions";
 import {
@@ -358,12 +359,18 @@ export class AntigravityManagedRunner {
   }
 
   async send(
-    text: string,
+    input: string | AcpPromptBlock[],
     expectedRevision: number,
     beforeDispatch?: () => void,
     reporting?: ReportableSend,
   ): Promise<void> {
-    if (!text.trim() || Buffer.byteLength(text) > 65_536)
+    const text =
+      typeof input === "string"
+        ? input
+        : input.flatMap((block) => (block.type === "text" ? [block.text] : [])).join("\n");
+    const attachmentCount =
+      typeof input === "string" ? 0 : input.filter((block) => block.type !== "text").length;
+    if ((!text.trim() && !attachmentCount) || Buffer.byteLength(text) > 65_536)
       throw new Error("invalid Antigravity prompt");
     this.#checkRevision(expectedRevision);
     if (this.#liveCompactionIds.size) throw new AcpUndispatchedError();
@@ -376,7 +383,7 @@ export class AntigravityManagedRunner {
     this.#publishSnapshot();
     try {
       const startedAt = performance.now();
-      const id = await this.client.prompt(this.sessionId, text, () => {
+      const id = await this.client.prompt(this.sessionId, input, () => {
         if (this.#liveCompactionIds.size) throw new AcpUndispatchedError();
         beforeDispatch?.();
       });
@@ -398,7 +405,7 @@ export class AntigravityManagedRunner {
         kind: "user-message",
         turn_id: this.#turnId,
         content: text,
-        attachment_count: 0,
+        attachment_count: attachmentCount,
         truncated: false,
         ephemeral: true,
       };

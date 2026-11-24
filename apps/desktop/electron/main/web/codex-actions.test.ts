@@ -749,6 +749,36 @@ describe.each([
     expect(dispatched("send")).toBe(true);
   });
 
+  it("stages a device-owned upload as an input for the ACP provider", async () => {
+    await pair({ attachments: true });
+    executionMode = mode;
+    const file = await http(
+      "/attachments?sessionId=session&name=note.txt&mime=text%2Fplain",
+      "notes",
+      true,
+    );
+    expect(file.status).toBe(201);
+    expect(file.data).not.toHaveProperty("path");
+
+    expect((await http("/send", { ...action(""), attachmentIds: [file.data.id] })).status).toBe(
+      200,
+    );
+    const dispatched = runtime.mock.calls.find(
+      ([p]) => (p as { operation: string }).operation === "send",
+    )?.[0];
+    expect(dispatched).toMatchObject({
+      input: [
+        {
+          type: "acpAttachment",
+          id: file.data.id,
+          name: "note.txt",
+          mime: "text/plain",
+          version: file.data.version,
+        },
+      ],
+    });
+  });
+
   it.each(["/send", "/stop"])("refuses %s outside the device's workspaces", async (path) => {
     await pair();
     executionMode = mode;

@@ -2333,9 +2333,9 @@ export class DshBridge {
       files: workspaceReadable,
       reconcile: true,
       resources: workspaceReadable,
-      // Images go with any message DSH takes now: sent, queued or added to the running turn.
+      // Older connected plugins still take file links as text.
       attachments:
-        services?.images === true &&
+        online &&
         (live.sendEnabled === true || live.queueEnabled === true || live.steerEnabled === true),
       settings: idle && (modelSelection || presets),
       "settings-state": online && (services?.modelCatalog === true || presets),
@@ -2382,22 +2382,25 @@ export class DshBridge {
         Object.entries(flags).map(([key, available]) => [
           key,
           available
-            ? { available: true }
+            ? {
+                available: true,
+                ...(key === "attachments" && {
+                  attachmentKinds: { image: services?.images === true, files: true },
+                }),
+              }
             : {
                 available: false,
+                // Offered once the turn ends, so say that rather than "unavailable".
                 reason:
-                  key === "attachments" && online && services?.images !== true
-                    ? "dsh-attachments-unavailable"
-                    : // Offered once the turn ends, so say that rather than "unavailable".
-                      controllable &&
-                        !idle &&
-                        live.activity !== "compacting" &&
-                        ((key === "settings" && (modelSelection || presets)) ||
-                          (key === "compact" && compactable) ||
-                          (["archive", "unarchive"].includes(key) &&
-                            services?.workspaceController === true))
-                      ? "session-busy"
-                      : ((live.reason as string | undefined) ?? "operation-unavailable"),
+                  controllable &&
+                  !idle &&
+                  live.activity !== "compacting" &&
+                  ((key === "settings" && (modelSelection || presets)) ||
+                    (key === "compact" && compactable) ||
+                    (["archive", "unarchive"].includes(key) &&
+                      services?.workspaceController === true))
+                    ? "session-busy"
+                    : ((live.reason as string | undefined) ?? "operation-unavailable"),
               },
         ]),
       ),

@@ -9,6 +9,7 @@ import {
   type ManagedAgent,
   type ResolvedHistoryReference,
   type SessionProviderCapabilities,
+  type SessionAttachmentKinds,
 } from "@agentkib/runtime-protocol";
 import {
   historyInputHash,
@@ -84,7 +85,22 @@ const ATTACHMENT_FORMATS: Readonly<Record<string, AttachmentFormat>> = {
   "codex-follower": "codex",
   "claude-managed": "claude",
   "dsh-follower": "dsh",
+  "devin-print": "acp",
+  "acp-managed": "acp",
 };
+type AttachmentAvailability = {
+  available: boolean;
+  reason?: string;
+  attachmentKinds?: SessionAttachmentKinds;
+};
+
+function attachmentInputFormat(
+  format: AttachmentFormat | undefined,
+  feature: AttachmentAvailability | undefined,
+): AttachmentFormat | undefined {
+  return format === "dsh" && feature?.attachmentKinds?.image === false ? "link" : format;
+}
+
 /** Freeze browser-visible inputs so durable replay never needs to reopen resources. */
 function managedActionInputHash(operation: string, body: Record<string, unknown>): string {
   const fields = [
@@ -4125,7 +4141,7 @@ export class WebAccessService {
       undefined,
       true,
     )) as {
-      features?: Record<string, { available: boolean; reason?: string }>;
+      features?: Record<string, AttachmentAvailability>;
       executionMode?: string;
     };
     const policy = await this.validateSessionAction(admission, capabilities.executionMode);
@@ -4202,7 +4218,10 @@ export class WebAccessService {
         params.commandAccess = this.dshCommandAccess(this.grant(hash, permission));
       if (hasAttachments) {
         this.grant(hash, "attachments");
-        const format = policy.inputFormat;
+        const format = attachmentInputFormat(
+          policy.inputFormat,
+          capabilities.features?.attachments,
+        );
         if (capabilities.features?.attachments?.available !== true || !format)
           throw new HttpError(409, "attachments_unavailable");
         params.input =
@@ -6384,7 +6403,7 @@ export class WebAccessService {
             operation: "capabilities",
             sessionId,
             experimentalEnabled: true,
-          })) as { features?: Record<string, { available: boolean }> };
+          })) as { features?: Record<string, AttachmentAvailability> };
           if (!claudeReplay && capabilities.features?.attachments?.available !== true)
             throw new HttpError(409, "attachments_unavailable");
           const mode = (snapshot as { executionMode?: string }).executionMode;
@@ -6410,7 +6429,10 @@ export class WebAccessService {
               return this.json(res, 200, previous);
             }
           }
-          const format = ATTACHMENT_FORMATS[mode ?? ""];
+          const format = attachmentInputFormat(
+            ATTACHMENT_FORMATS[mode ?? ""],
+            capabilities.features?.attachments,
+          );
           if (!format) throw new HttpError(409, "attachments_unavailable");
           const alreadyPinned =
             mode === "claude-managed" &&

@@ -331,6 +331,31 @@ describe("composer sending shortcuts", () => {
     expect(fileInput).toBeDisabled();
   });
 
+  it("uses the same attachment intake for desktop paste and drop as the file picker", async () => {
+    const { input, form } = renderComposer();
+    doubles.upload.mockImplementation(async (_sessionId: string, file: File) => ({
+      ...attachment,
+      id: file.name,
+      name: file.name,
+      mime: file.type,
+      size: file.size,
+    }));
+    const screenshot = new File(["png"], "Screenshot.png", { type: "image/png" });
+    const copied = new File(["pdf"], "Finder copy.pdf", { type: "application/pdf" });
+    expect(
+      fireEvent.paste(input, {
+        clipboardData: { files: [], items: [{ kind: "file", getAsFile: () => screenshot }] },
+      }),
+    ).toBe(false);
+    expect(fireEvent.drop(form, { dataTransfer: { files: [copied], types: ["Files"] } })).toBe(
+      false,
+    );
+
+    await screen.findByText(copied.name);
+    expect(doubles.upload.mock.calls.map(([, file]) => file)).toEqual([screenshot, copied]);
+    expect(form).not.toHaveAttribute("data-attachment-rejected");
+  });
+
   it("waits for uploads and permits an attachment-only message once ready", async () => {
     const upload = deferred<UploadedAttachment>();
     doubles.upload.mockReturnValue(upload.promise);

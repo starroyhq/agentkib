@@ -108,8 +108,8 @@ require('node:readline').createInterface({input:process.stdin}).on('line', line 
   } else if(frame.type==='user') {
     first ||= frame.uuid; pending=frame;
     for (const block of Array.isArray(frame.message.content)?frame.message.content:[]) {
-      const match = block.type === 'text' && /^User attached file .*: (.+)$/.exec(block.text);
-      if (match) log({attachmentBytes:fs.readFileSync(match[1],'utf8')});
+      const match = block.type === 'text' && /^User attached file .*\((file:[^)]*)\)$/.exec(block.text);
+      if (match) log({attachmentBytes:fs.readFileSync(new URL(match[1]),'utf8')});
     }
     append({type:'user',uuid:frame.uuid,message:{role:'user',content:frame.message.content}});
     if(mode()==='hold' && !frame.priority) return;

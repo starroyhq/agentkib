@@ -116,6 +116,7 @@ type LocalBridgeRequest =
 type DesktopSessionOperations = {
   isMacOS: boolean;
   requestBridge(request: LocalBridgeRequest): Promise<unknown>;
+  readClipboardFiles?(): Promise<File[] | undefined>;
   openExternal(url: string): Promise<void>;
   components: {
     DialogDescription: ComponentType<Dialog.Description.Props>;

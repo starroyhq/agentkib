@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { ConversationReadResult } from "@agentkib/runtime-protocol";
 import { z } from "zod";
+import { acpAttachmentFeature, acpPromptInput } from "../../acp-prompt-attachments";
 import type { ContextUsage } from "../../context-usage";
 import type { ReadStateTarget } from "../../conversation-read-state";
 import {
@@ -975,11 +976,16 @@ export class DevinSessionProvider implements DevinExecutor, TypedSessionProvider
           ? ((live.reason as string | null) ?? null)
           : "control-disabled";
     const unsupported = { available: false, reason: "unsupported-operation" };
+    const canSend = experimental && live.sendEnabled === true;
     const features = {
-      send:
-        experimental && live.sendEnabled === true
-          ? { available: true }
+      send: canSend ? { available: true } : { available: false, reason: reason ?? "session-busy" },
+      ...(request.operation === "capabilities" && {
+        attachments: canSend
+          ? acpAttachmentFeature(
+              await this.#runners.get(request.sessionId)?.runner.promptAttachmentSupport(),
+            )
           : { available: false, reason: reason ?? "session-busy" },
+      }),
       stop:
         experimental && live.stopEnabled === true
           ? { available: true }
@@ -1060,8 +1066,11 @@ export class DevinSessionProvider implements DevinExecutor, TypedSessionProvider
       !/^[A-Za-z0-9._:@/+-]{1,128}$/.test(request.model)
     )
       throw new Error("unsupported-model");
-    // AgentKib sends Devin text only; attachments are refused rather than dropped.
-    if (request.input?.length || request.historyReferences?.length || request.resourceRefs?.length)
+    if (
+      request.historyReferences?.length ||
+      request.resourceRefs?.length ||
+      (request.operation !== "send" && request.input?.length)
+    )
       throw new Error("attachments-unsupported");
     if (managedSessionHasUnknownCommands(this.host.dataDir, request.sessionId))
       throw new Error("control-outcome-unconfirmed");
@@ -1100,12 +1109,23 @@ export class DevinSessionProvider implements DevinExecutor, TypedSessionProvider
     };
     try {
       if (request.operation === "send") {
-        if (typeof request.text !== "string") throw new Error("missing-text");
+        const withAttachments = !!request.input?.length;
+        if (!withAttachments && typeof request.text !== "string") throw new Error("missing-text");
         await record.runner.send(
-          request.text,
+          request.text ?? "",
           request.expectedRevision,
           beforeDispatch,
           record.settings,
+          withAttachments
+            ? (support) =>
+                acpPromptInput(
+                  this.host.dataDir,
+                  request.text,
+                  request.input,
+                  support,
+                  this.host.environment,
+                )
+            : undefined,
         );
       } else if (request.operation === "settings") {
         const { runner } = record;

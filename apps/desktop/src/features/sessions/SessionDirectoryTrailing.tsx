@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 import { Bot, CircleAlert, GitBranch } from "lucide-react";
 import { managedAgentOf } from "@agentkib/web-client";
 import {
+  hasSessionPinning,
   readStateCopy,
   sessionContinuationListState,
   SessionContinuationDot,
@@ -29,7 +30,7 @@ export function SessionDirectoryTrailing({
 }) {
   const { locale, tr, formatDateTime } = useI18n();
   const status = sessionContinuationListState(session, locale);
-  const hasMenu = local && !!managedAgentOf(session.agent);
+  const hasMenu = hasSessionPinning(session) || (local && !!managedAgentOf(session.agent));
   let indicator: ReactNode = null;
   if (session.readState?.status === "unread") {
     const copy = readStateCopy(locale);
@@ -95,6 +96,8 @@ export function SessionDirectoryTrailing({
         <SessionRowMenu
           session={session}
           sessions={workerSessions}
+          canPin={local && !session.remote}
+          pinOnly={!local}
           onChanged={onChanged}
           onDeleted={onDeleted}
         />

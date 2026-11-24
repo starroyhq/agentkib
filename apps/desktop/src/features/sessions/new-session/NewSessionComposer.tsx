@@ -70,6 +70,7 @@ import { cn } from "cn";
 import { sessionCopy, sessionReason } from "../conversation/session-copy";
 import { composerLayoutCopy } from "@agentkib/session-ui";
 import { Dialog } from "../conversation/components/dialog";
+import { readDesktopClipboardFiles } from "../conversation/session-platform";
 import { MAX_MESSAGE_LENGTH } from "@agentkib/conversation-state";
 import { failureOf, useNewSession } from "./use-new-session";
 
@@ -195,6 +196,7 @@ export function NewSessionComposer(props: NewSessionComposerProps) {
   }, [text, files, resources, goal]);
   // The create request can carry the first message's text. Attachments use the opened session.
   const acceptsAttachments = (provider?.create.attachments ?? true) && !promptAtCreate;
+  const addActionsScope = JSON.stringify([agent, workspace?.id, session.resourceAuthority]);
   const workspaceCatalog = provider?.create.catalogScope !== "host";
   const fileInput = useRef<HTMLInputElement>(null);
   const [fileLimit, setFileLimit] = useState(false);
@@ -538,8 +540,14 @@ export function NewSessionComposer(props: NewSessionComposerProps) {
           inputRef: fileInput,
           label: copy.attach,
           disabled: locked || !acceptsAttachments,
+          scope: addActionsScope,
           onFiles: addFiles,
         }}
+        readClipboardFiles={
+          globalThis.document?.documentElement.dataset.platform === "macos"
+            ? readDesktopClipboardFiles
+            : undefined
+        }
         afterEditor={slash.menu}
         beforeEditor={
           <>
@@ -592,20 +600,21 @@ export function NewSessionComposer(props: NewSessionComposerProps) {
           <SessionComposerToolbar
             locale={locale}
             add={{
-              scope: JSON.stringify([agent, workspace?.id, session.resourceAuthority]),
+              scope: addActionsScope,
               label: sessionCopy[locale].addContext,
               disabled: locked,
               disabledReason: session.optionsLoading ? copy.loadingOptions : undefined,
               side: side,
               open: addMenuOpen && !locked,
               onOpenChange: setAddMenuOpen,
-              attachment: acceptsAttachments
-                ? {
-                    disabled: files.length >= MAX_FILES,
-                    reason: files.length >= MAX_FILES ? sessionCopy[locale].limit : undefined,
-                    onPick: () => fileInput.current?.click(),
-                  }
-                : undefined,
+              attachment: {
+                disabled: !acceptsAttachments || files.length >= MAX_FILES,
+                reason:
+                  acceptsAttachments && files.length >= MAX_FILES
+                    ? sessionCopy[locale].limit
+                    : undefined,
+                onPick: () => fileInput.current?.click(),
+              },
               resources: add.resourceBrowser,
               goal: goalsOffered
                 ? {

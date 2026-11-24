@@ -53,6 +53,27 @@ describe("homeSessionGroups", () => {
     expect(groups.running).toEqual([]);
   });
 
+  it("orders pins within each section and includes an older pin before the recent cutoff", () => {
+    const groups = homeSessionGroups(
+      [
+        session("old-pin", { pinned: true }),
+        session("waiting-pin", { pinned: true, continuation: { status: "waiting-input" } }),
+        session("running-pin", { pinned: true, continuation: { status: "running" } }),
+        session("review-pin", { pinned: true, readState: unread("completed") }),
+        session("new-recent-1"),
+        session("new-recent-2"),
+        session("waiting-new", { continuation: { status: "awaiting-approval" } }),
+        session("running-new", { continuation: { status: "running" } }),
+        session("review-new", { readState: unread("completed") }),
+      ],
+      { recent: 2 },
+    );
+    expect(ids(groups.needsYou)).toEqual(["waiting-pin", "waiting-new"]);
+    expect(ids(groups.running)).toEqual(["running-pin", "running-new"]);
+    expect(ids(groups.review)).toEqual(["review-pin", "review-new"]);
+    expect(groups.recent.map(({ id }) => id)).toEqual(["old-pin", "new-recent-2"]);
+  });
+
   it("lists a session whose decision may not have arrived as to verify, never to answer again", () => {
     const groups = homeSessionGroups(
       [

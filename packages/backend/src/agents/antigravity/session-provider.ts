@@ -4,6 +4,11 @@ import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { z } from "zod";
+import {
+  acpAttachmentFeature,
+  acpPromptInput,
+  type AcpPromptAttachmentSupport,
+} from "../../acp-prompt-attachments";
 import type { ContextUsage } from "../../context-usage";
 import { within } from "../../files";
 import type { LeadToolRegistration } from "../../orchestration-endpoint";
@@ -36,8 +41,14 @@ import {
   validateAntigravityControl,
 } from "../../sessions/validate/antigravity";
 import type { BackendStore } from "../../store";
-import { AcpUndispatchedError } from "./antigravity-acp";
+import {
+  AcpUndispatchedError,
+  AntigravityAcp,
+  initializeAcpProbe,
+  verifyAcpControlIdentity,
+} from "./antigravity-acp";
 import { AntigravityManagedRunner } from "./antigravity-managed-runner";
+import { antigravityAcpArgs } from "./antigravity-sessions";
 
 type AntigravityExecutor = SessionProviders["antigravity"];
 
@@ -75,6 +86,8 @@ type AntigravitySessionHost = {
 
 type AntigravityControl = z.infer<typeof antigravityManagedControlSchema>;
 const OPTION_CACHE_MS = 10 * 60_000;
+const ATTACHMENT_PROBE_CACHE_MS = 60_000;
+const ATTACHMENT_PROBE_TIMEOUT_MS = 3_000;
 
 const antigravityCreateSchema = z
   .object({
@@ -151,6 +164,12 @@ export class AntigravitySessionProvider implements AntigravityExecutor, TypedSes
   #retiredRevisions = new Map<string, number>();
   #runnerFlights = new Map<string, Promise<AntigravityRunnerRecord>>();
   #options: { at: number; choices: Promise<Record<string, unknown>> } | undefined;
+  #attachmentProbe?: {
+    executable: string;
+    at: number;
+    client: AntigravityAcp;
+    support: Promise<AcpPromptAttachmentSupport | undefined>;
+  };
   /** Sessions whose ACP control was confirmed (not App or IDE history read from disk). */
   #controllable = new Set<string>();
   #leadEndpoint: ((sessionId: string) => Promise<LeadToolRegistration | null>) | undefined;
@@ -219,6 +238,8 @@ export class AntigravitySessionProvider implements AntigravityExecutor, TypedSes
   constructor(private readonly host: AntigravitySessionHost) {}
 
   close(): void {
+    this.#attachmentProbe?.client.shutdown();
+    this.#attachmentProbe = undefined;
     for (const record of this.#runners.values()) record.runner.close();
     this.#runners.clear();
     this.#retiredRevisions.clear();
@@ -500,31 +521,34 @@ export class AntigravitySessionProvider implements AntigravityExecutor, TypedSes
   }
 
   async query(request: SessionQuery) {
-    const live = await this.live(request.sessionId);
+    const experimental = request.experimentalEnabled === true;
+    const live = await this.#live(
+      request.sessionId,
+      false,
+      request.operation === "capabilities" && experimental,
+    );
     if (live.status === "unsupported") {
       if (request.operation !== "capabilities") return live;
       return {
         ...live,
         features: Object.fromEntries(
-          ["send", "stop", "approve", "answer", "inspect", "resume", "usage"].map((operation) => [
-            operation,
-            { available: false, reason: live.reason },
-          ]),
+          ["send", "stop", "approve", "answer", "inspect", "resume", "usage", "attachments"].map(
+            (operation) => [operation, { available: false, reason: live.reason }],
+          ),
         ),
       };
     }
-    const experimental = request.experimentalEnabled === true;
     const approvals = Array.isArray(live.approvals) ? live.approvals : [];
     const reason = experimental ? live.reason : "control-disabled";
+    const canSend = experimental && live.status === "idle" && live.sendEnabled === true;
     const features = {
-      send:
-        experimental && live.status === "idle" && live.sendEnabled === true
-          ? { available: true }
-          : {
-              available: false,
-              reason:
-                live.activity === "compacting" ? "session-compacting" : (reason ?? "session-busy"),
-            },
+      send: canSend
+        ? { available: true }
+        : {
+            available: false,
+            reason:
+              live.activity === "compacting" ? "session-compacting" : (reason ?? "session-busy"),
+          },
       stop:
         experimental && live.stopEnabled === true
           ? { available: true }
@@ -534,6 +558,9 @@ export class AntigravitySessionProvider implements AntigravityExecutor, TypedSes
           ? { available: true }
           : { available: false, reason: reason ?? "no-supported-approval" },
       answer: { available: false, reason: "unsupported-operation" },
+      attachments: canSend
+        ? acpAttachmentFeature(live.promptAttachments)
+        : { available: false, reason: reason ?? "session-busy" },
       "settings-state": { available: true },
       settings:
         experimental && live.status === "idle" && live.turnId === null
@@ -575,10 +602,14 @@ export class AntigravitySessionProvider implements AntigravityExecutor, TypedSes
     return this.#live(sessionId, true);
   }
 
-  async #live(sessionId: string, supervision: boolean): Promise<Record<string, unknown>> {
+  async #live(
+    sessionId: string,
+    supervision: boolean,
+    attachments = false,
+  ): Promise<Record<string, unknown> & { promptAttachments?: AcpPromptAttachmentSupport }> {
     try {
       const target = await this.#target(sessionId);
-      this.host.sessions.antigravityControlExecutable();
+      const executable = this.host.sessions.antigravityControlExecutable();
       const cached = this.#runners.get(sessionId);
       const unknown =
         cached?.runner.snapshot().status === "outcome-unknown" ||
@@ -601,8 +632,15 @@ export class AntigravitySessionProvider implements AntigravityExecutor, TypedSes
         approvals: [],
         reason: null,
       };
+      const promptAttachments =
+        attachments && !unknown && snapshot.status === "idle" && snapshot.sendEnabled === true
+          ? current
+            ? current.client.compatibility?.promptAttachments
+            : await this.#probeAttachments(executable)
+          : undefined;
       return {
         ...snapshot,
+        ...(promptAttachments && { promptAttachments }),
         ...(supervision && !unknown ? current?.workerObservation() : undefined),
         ...(unknown
           ? {
@@ -631,6 +669,34 @@ export class AntigravitySessionProvider implements AntigravityExecutor, TypedSes
         approvals: [],
         reason: error instanceof Error ? error.message : "open-in-original-client",
       };
+    }
+  }
+
+  #probeAttachments(executable: string): Promise<AcpPromptAttachmentSupport | undefined> {
+    const cached = this.#attachmentProbe;
+    if (cached?.executable === executable && Date.now() - cached.at < ATTACHMENT_PROBE_CACHE_MS)
+      return cached.support;
+    cached?.client.shutdown();
+    try {
+      const client = AntigravityAcp.spawn(
+        executable,
+        antigravityAcpArgs(executable),
+        canonicalize(this.host.dataDir),
+        { ...process.env, ...this.host.environment },
+        { timeout: ATTACHMENT_PROBE_TIMEOUT_MS, version: "0.15.1" },
+      );
+      // Only a composer capability query probes an inactive process. It never attaches a session.
+      const support = initializeAcpProbe(client, ATTACHMENT_PROBE_TIMEOUT_MS)
+        .then((initialized) => {
+          verifyAcpControlIdentity(initialized);
+          return client.compatibility?.promptAttachments;
+        })
+        .catch(() => undefined)
+        .finally(() => client.shutdown());
+      this.#attachmentProbe = { executable, at: Date.now(), client, support };
+      return support;
+    } catch {
+      return Promise.resolve(undefined);
     }
   }
 
@@ -834,7 +900,11 @@ export class AntigravitySessionProvider implements AntigravityExecutor, TypedSes
         throw new Error("session-not-running");
       if (!before.sendEnabled)
         throw new Error(typeof before.reason === "string" ? before.reason : "session-unavailable");
-      if (request.operation === "send" && typeof request.text !== "string")
+      if (
+        request.operation === "send" &&
+        typeof request.text !== "string" &&
+        !request.input?.length
+      )
         throw new Error("missing-text");
     }
     const record = await this.#runner(request.sessionId);
@@ -879,8 +949,17 @@ export class AntigravitySessionProvider implements AntigravityExecutor, TypedSes
     };
     try {
       if (request.operation === "send") {
-        if (typeof request.text !== "string") throw new Error("missing-text");
-        await record.runner.send(request.text, request.expectedRevision, beforeDispatch, {
+        const prompt = request.input?.length
+          ? await acpPromptInput(
+              this.host.dataDir,
+              request.text,
+              request.input,
+              record.runner.client.compatibility?.promptAttachments,
+              this.host.environment,
+            )
+          : request.text;
+        if (prompt === undefined) throw new Error("missing-text");
+        await record.runner.send(prompt, request.expectedRevision, beforeDispatch, {
           requestId: request.requestId,
           accepted: sendAccepted,
         });

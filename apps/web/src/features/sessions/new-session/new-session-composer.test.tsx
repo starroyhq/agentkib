@@ -777,7 +777,7 @@ describe("Web NewSessionComposer", () => {
     expect(add).toBeEnabled();
     fireEvent.click(add);
     const menu = await screen.findByRole("dialog", { name: "Add context" });
-    expect(within(menu).queryByRole("button", { name: addCopy.attachment })).toBeNull();
+    expect(within(menu).getByRole("button", { name: addCopy.attachment })).toBeDisabled();
     for (const name of [addCopy.filesAndFolders, goalCopy.title, planLabel])
       expect(within(menu).getByRole("button", { name })).toBeEnabled();
     expect(client.newSessionResources).not.toHaveBeenCalled();

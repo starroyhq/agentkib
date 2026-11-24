@@ -224,6 +224,7 @@ export function NewSessionComposer({
     ? newSessionPermissions(agent, options, locale, { fullAccess })
     : undefined;
   const canPickFiles = attachments && files.length < MAX_FILES;
+  const addActionsScope = JSON.stringify([agent, workspace?.id, resourceAuthority]);
   const hasAddActions = attachments || planOffered || planning || resourcesOffered || goalsOffered;
   const addDisabledReason = !hasAddActions
     ? !access?.device?.attachments
@@ -484,6 +485,7 @@ export function NewSessionComposer({
           inputRef: fileInput,
           label: copy.attach,
           disabled: !attachments || locked,
+          scope: addActionsScope,
           onFiles: addFiles,
         }}
         beforeEditor={
@@ -538,20 +540,18 @@ export function NewSessionComposer({
           <SessionComposerToolbar
             locale={locale}
             add={{
-              scope: JSON.stringify([agent, workspace?.id, resourceAuthority]),
+              scope: addActionsScope,
               label: conversationCopy.addContext,
               side: "bottom",
               disabled: locked,
               disabledReason: addDisabledReason,
               open: addMenuOpen && hasAddActions && !locked,
               onOpenChange: setAddMenuOpen,
-              attachment: attachments
-                ? {
-                    disabled: !canPickFiles,
-                    reason: !canPickFiles ? conversationCopy.limit : undefined,
-                    onPick: () => fileInput.current?.click(),
-                  }
-                : undefined,
+              attachment: {
+                disabled: !canPickFiles,
+                reason: attachments && !canPickFiles ? conversationCopy.limit : undefined,
+                onPick: () => fileInput.current?.click(),
+              },
               resources: add.resourceBrowser,
               goal: goalsOffered
                 ? {

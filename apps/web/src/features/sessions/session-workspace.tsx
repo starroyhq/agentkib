@@ -1,10 +1,12 @@
-import { managedAgentOf } from "@agentkib/web-client";
+import { managedAgentOf, sessionProviderDeclaration } from "@agentkib/web-client";
 import {
+  hasSessionPinning,
   homeSessionCopy,
   IconAction,
   newSessionCopy,
   PendingCenter,
   requestReadStateRefresh,
+  SessionActivityButton,
   SessionContinuationStatus,
 } from "@agentkib/session-ui";
 import { WebHistorySearchTrigger } from "@/features/conversation/features/history/web-history-search";
@@ -158,6 +160,10 @@ function WorkspaceShell() {
   }
   const copy = webLayoutCopy[locale];
   const status = sessionDisplayState(session, "web");
+  const activityCapabilities =
+    session.current?.id === selected
+      ? sessionProviderDeclaration(session.current.agent)?.activities
+      : undefined;
   return (
     <SessionPanelsContext
       value={{
@@ -294,6 +300,15 @@ function WorkspaceShell() {
                 >
                   <MoreHorizontal />
                 </IconAction>
+                <SessionActivityButton
+                  sessionId={selected}
+                  locale={locale}
+                  capabilities={activityCapabilities}
+                  live={session.live}
+                  Button={Button}
+                  variant="ghost"
+                  className="size-11 rounded-lg p-0 text-muted-foreground aria-expanded:text-foreground sm:size-9"
+                />
               </>
             ) : (
               <Button
@@ -401,9 +416,11 @@ function WorkspaceShell() {
               locale={locale}
               indexEnabled={indexEnabled}
               status={session.catalogStatus}
-              // Rename, archive and delete need this browser's organize permission.
-              rowMenu={
-                access?.device?.organize ? (row) => <SessionRowMenu session={row} /> : undefined
+              // Only the disabled pin action is shown without organize permission.
+              rowMenu={(row) =>
+                (access?.device?.organize || hasSessionPinning(row)) && (
+                  <SessionRowMenu session={row} pinOnly={!access?.device?.organize} />
+                )
               }
               execution={session.showExecution}
               onExecutionChange={session.setShowExecution}

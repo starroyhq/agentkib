@@ -5,16 +5,23 @@ import type {
   SessionActivityKind,
   WebClient,
 } from "@agentkib/web-client";
-import { ChevronDown, ListTodo } from "lucide-react";
-import { useEffect, useId, useRef, useState } from "react";
+import { ListTodo, X } from "lucide-react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import {
+  setActivityPanelOpen,
+  useActivityPanelOpen,
+} from "./conversation/preferences/activity-panel";
 import type { InteractionLocale } from "./interaction-model";
 import { SessionActivityHistory } from "./session-activity-history";
+import type { SessionPlatform } from "./session-platform";
 
 type ActivityGroup = SessionActivityKind | "mixed";
 type ActivityCopy = {
   label: string;
   empty: string;
   unavailable: string;
+  close: string;
+  active: string;
   history: string;
   stop: string;
   stopUnavailable: string;
@@ -31,6 +38,8 @@ const activityCopy: Record<InteractionLocale, ActivityCopy> = {
     label: "会话活动",
     empty: "暂无会话活动",
     unavailable: "暂时无法查看会话活动",
+    close: "关闭会话活动",
+    active: "进行中",
     history: "查看记录",
     stop: "停止",
     stopUnavailable: "暂时无法停止此活动",
@@ -58,6 +67,8 @@ const activityCopy: Record<InteractionLocale, ActivityCopy> = {
     label: "對話活動",
     empty: "暫無對話活動",
     unavailable: "暫時無法查看對話活動",
+    close: "關閉對話活動",
+    active: "進行中",
     history: "查看記錄",
     stop: "停止",
     stopUnavailable: "暫時無法停止此活動",
@@ -85,6 +96,8 @@ const activityCopy: Record<InteractionLocale, ActivityCopy> = {
     label: "Session activities",
     empty: "No session activities",
     unavailable: "Session activities are unavailable",
+    close: "Close session activities",
+    active: "In progress",
     history: "View history",
     stop: "Stop",
     stopUnavailable: "This activity cannot be stopped right now",
@@ -118,6 +131,8 @@ const activityCopy: Record<InteractionLocale, ActivityCopy> = {
     label: "セッションのアクティビティ",
     empty: "アクティビティはありません",
     unavailable: "今はアクティビティを表示できません",
+    close: "セッションのアクティビティを閉じる",
+    active: "進行中",
     history: "履歴を表示",
     stop: "停止",
     stopUnavailable: "今はこのアクティビティを停止できません",
@@ -182,21 +197,101 @@ function stopReason(copy: ActivityCopy, reason?: string) {
   return copy.stopUnavailable;
 }
 
-export type SessionActivitiesProps = {
+type ActivitySource = {
   sessionId: string;
   locale: InteractionLocale;
   capabilities?: SessionActivityCapabilities;
   live?: Pick<Live, "sessionId" | "activities">;
+};
+
+type SessionActivitiesProps = ActivitySource & {
   client: WebClient;
   onStop?: (activityId: string) => void;
 };
 
-export function SessionActivities({ capabilities, ...props }: SessionActivitiesProps) {
-  if (!capabilities?.kinds.length) return null;
-  return <ActivityDisclosure key={props.sessionId} capabilities={capabilities} {...props} />;
+const panelId = (id: string) => `session-activities-${encodeURIComponent(id)}`;
+const triggerId = (id: string) => `${panelId(id)}-trigger`;
+
+function activityProjection({ sessionId, live }: ActivitySource) {
+  return live?.sessionId === sessionId ? live.activities : undefined;
 }
 
-function ActivityDisclosure({
+function supportedActivities(
+  projection: ReturnType<typeof activityProjection>,
+  capabilities?: SessionActivityCapabilities,
+) {
+  return (projection ?? []).filter((activity) => capabilities?.kinds.includes(activity.kind));
+}
+
+export function SessionActivityButton({
+  Button,
+  className,
+  variant = "outline",
+  ...source
+}: ActivitySource & {
+  Button: SessionPlatform["components"]["Button"];
+  className?: string;
+  variant?: "outline" | "ghost";
+}) {
+  const { sessionId, locale, capabilities } = source;
+  const copy = activityCopy[locale];
+  const open = useActivityPanelOpen();
+  const disabled = !capabilities?.kinds.length;
+  const expanded = open && !disabled;
+  const focusOnOpen = useRef(false);
+  const active = supportedActivities(activityProjection(source), capabilities).filter(
+    ({ status }) => inProgress.has(status),
+  );
+  const first = active[0];
+  const group = first && active.every(({ kind }) => kind === first.kind) ? first.kind : "mixed";
+  const count = active.length;
+  const status = count
+    ? ((count === 1 ? copy.singular?.[group] : undefined) ?? copy.counts[group]).replace(
+        "{count}",
+        count.toLocaleString(locale),
+      )
+    : undefined;
+  useLayoutEffect(() => {
+    if (expanded && focusOnOpen.current) {
+      focusOnOpen.current = false;
+      document.getElementById(panelId(sessionId))?.focus({ preventScroll: true });
+    }
+  }, [expanded, sessionId]);
+  return (
+    <Button
+      id={triggerId(sessionId)}
+      type="button"
+      variant={expanded ? "secondary" : variant}
+      size="icon"
+      className={className}
+      disabled={disabled}
+      aria-label={copy.label}
+      aria-description={status ? `${copy.active} · ${status}` : undefined}
+      aria-expanded={expanded}
+      aria-controls={expanded ? panelId(sessionId) : undefined}
+      title={copy.label}
+      onClick={(event) => {
+        focusOnOpen.current = !expanded && event.detail === 0;
+        setActivityPanelOpen(!expanded);
+      }}
+    >
+      <span className="relative" aria-hidden="true">
+        <ListTodo className="size-4" />
+        {!!count && (
+          <span className="absolute -right-1 -top-0.5 size-1.5 rounded-full bg-primary-text" />
+        )}
+      </span>
+    </Button>
+  );
+}
+
+export function SessionActivities({ capabilities, ...props }: SessionActivitiesProps) {
+  const open = useActivityPanelOpen();
+  if (!open || !capabilities?.kinds.length) return null;
+  return <ActivityPanel key={props.sessionId} capabilities={capabilities} {...props} />;
+}
+
+function ActivityPanel({
   sessionId,
   locale,
   capabilities,
@@ -205,27 +300,13 @@ function ActivityDisclosure({
   onStop,
 }: SessionActivitiesProps & { capabilities: SessionActivityCapabilities }) {
   const copy = activityCopy[locale];
-  const projection = live && live.sessionId === sessionId ? live.activities : undefined;
-  const activities = (projection ?? []).filter((activity) =>
-    capabilities.kinds.includes(activity.kind),
-  );
-  const [open, setOpen] = useState(false);
+  const projection = activityProjection({ sessionId, locale, live });
+  const activities = supportedActivities(projection, capabilities);
   const [selection, setSelection] = useState<{ id: string; childId: string; client: WebClient }>();
   const [now, setNow] = useState(Date.now);
-  const trigger = useRef<HTMLButtonElement>(null);
-  const panelId = useId();
-  const count = activities.length;
-  const expanded = open && count > 0;
-  const first = activities[0];
-  const group = first && activities.every(({ kind }) => kind === first.kind) ? first.kind : "mixed";
-  const label = count
-    ? ((count === 1 ? copy.singular?.[group] : undefined) ?? copy.counts[group]).replace(
-        "{count}",
-        count.toLocaleString(locale),
-      )
-    : copy.label;
+  const close = useRef<HTMLButtonElement>(null);
   const selectedActivity =
-    expanded && capabilities.canOpenSubagentHistory && selection && selection.client === client
+    capabilities.canOpenSubagentHistory && selection && selection.client === client
       ? activities.find(
           ({ id, kind, childId }) =>
             id === selection.id && kind === "subagent" && childId === selection.childId,
@@ -233,12 +314,10 @@ function ActivityDisclosure({
       : undefined;
 
   useEffect(() => {
-    if (!count) setOpen(false);
     if (!selectedActivity) setSelection(undefined);
-  }, [count, selectedActivity]);
+  }, [selectedActivity]);
 
   const ticking =
-    expanded &&
     !selectedActivity &&
     activities.some(
       ({ startedAt, endedAt, status }) =>
@@ -253,99 +332,98 @@ function ActivityDisclosure({
   }, [ticking]);
 
   return (
-    <div className="mx-auto w-full max-w-3xl px-3">
-      <button
-        ref={trigger}
-        type="button"
-        aria-expanded={expanded}
-        aria-controls={panelId}
-        disabled={!count}
-        title={count ? undefined : projection ? copy.empty : copy.unavailable}
-        className="inline-flex min-h-8 max-w-full items-center gap-1.5 rounded-md px-2 py-1 text-xs font-medium text-muted-foreground outline-none enabled:hover:bg-muted enabled:hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50 pointer-coarse:min-h-11"
-        onClick={() => {
-          if (expanded) setSelection(undefined);
-          setOpen(!expanded);
-        }}
-      >
-        <ListTodo className="size-4 shrink-0" aria-hidden />
-        <span className="truncate">{label}</span>
-        <ChevronDown
-          className={expanded ? "size-3.5 shrink-0 rotate-180" : "size-3.5 shrink-0"}
-          aria-hidden
-        />
-      </button>
-      <section
-        id={panelId}
-        aria-label={copy.label}
-        hidden={!expanded}
-        className="mt-1 max-h-[min(24rem,45vh)] overflow-y-auto overscroll-contain rounded-xl border border-border bg-background"
-      >
-        {expanded &&
-          (selectedActivity && selection ? (
-            <SessionActivityHistory
-              key={selection.childId}
-              client={client}
-              sessionId={sessionId}
-              childId={selection.childId}
-              title={selectedActivity.title.trim() || copy.kinds[selectedActivity.kind]}
-              locale={locale}
-              onClose={() => {
-                setSelection(undefined);
-                trigger.current?.focus();
-              }}
-            />
-          ) : (
-            <ul className="divide-y divide-border">
-              {activities.map((activity) => {
-                const { childId } = activity;
-                const title = activity.title.trim() || copy.kinds[activity.kind];
-                const elapsed = activityDuration(activity, now, locale);
-                const stop = activity.actions?.stop;
-                const stopEnabled = stop?.available === true && !!onStop;
-                return (
-                  <li
-                    key={activity.id}
-                    className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 px-3 py-2 text-xs"
-                  >
-                    <span className="min-w-0 flex-1 basis-32 truncate" title={title}>
-                      {title}
-                    </span>
-                    <span className="shrink-0 text-muted-foreground">
-                      {copy.status[activity.status] ?? copy.status.unknown}
-                    </span>
-                    {elapsed && (
-                      <span className="shrink-0 text-muted-foreground tabular-nums">{elapsed}</span>
-                    )}
-                    {capabilities.canOpenSubagentHistory &&
-                      activity.kind === "subagent" &&
-                      childId && (
-                        <button
-                          type="button"
-                          aria-label={`${copy.history} · ${title}`}
-                          className="min-h-7 shrink-0 rounded-md px-2 font-medium text-primary-text outline-none hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring pointer-coarse:min-h-11"
-                          onClick={() => setSelection({ id: activity.id, childId, client })}
-                        >
-                          {copy.history}
-                        </button>
-                      )}
-                    {capabilities.canStopIndividually && (
+    <section
+      id={panelId(sessionId)}
+      aria-label={copy.label}
+      tabIndex={-1}
+      className="pointer-events-auto flex max-h-full w-[26rem] max-w-full flex-col overflow-hidden rounded-xl border border-border bg-popover text-popover-foreground shadow-lg outline-none"
+    >
+      <div className="flex min-h-9 shrink-0 items-center justify-between gap-2 border-b border-border px-3">
+        <h2 className="text-xs font-medium">{copy.label}</h2>
+        <button
+          ref={close}
+          type="button"
+          aria-label={copy.close}
+          title={copy.close}
+          className="grid size-7 shrink-0 place-items-center rounded-md text-muted-foreground outline-none hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring pointer-coarse:size-11"
+          onClick={() => {
+            document.getElementById(triggerId(sessionId))?.focus({ preventScroll: true });
+            setActivityPanelOpen(false);
+          }}
+        >
+          <X className="size-4" aria-hidden="true" />
+        </button>
+      </div>
+      <div className="min-h-0 max-h-96 overflow-y-auto overscroll-contain">
+        {selectedActivity && selection ? (
+          <SessionActivityHistory
+            key={selection.childId}
+            client={client}
+            sessionId={sessionId}
+            childId={selection.childId}
+            title={selectedActivity.title.trim() || copy.kinds[selectedActivity.kind]}
+            locale={locale}
+            onClose={() => {
+              setSelection(undefined);
+              close.current?.focus();
+            }}
+          />
+        ) : activities.length ? (
+          <ul className="divide-y divide-border">
+            {activities.map((activity) => {
+              const { childId } = activity;
+              const title = activity.title.trim() || copy.kinds[activity.kind];
+              const elapsed = activityDuration(activity, now, locale);
+              const stop = activity.actions?.stop;
+              const stopEnabled = stop?.available === true && !!onStop;
+              return (
+                <li
+                  key={activity.id}
+                  className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 px-3 py-2 text-xs"
+                >
+                  <span className="min-w-0 flex-1 basis-32 truncate" title={title}>
+                    {title}
+                  </span>
+                  <span className="shrink-0 text-muted-foreground">
+                    {copy.status[activity.status] ?? copy.status.unknown}
+                  </span>
+                  {elapsed && (
+                    <span className="shrink-0 text-muted-foreground tabular-nums">{elapsed}</span>
+                  )}
+                  {capabilities.canOpenSubagentHistory &&
+                    activity.kind === "subagent" &&
+                    childId && (
                       <button
                         type="button"
-                        aria-label={`${copy.stop} · ${title}`}
-                        disabled={!stopEnabled}
-                        title={stopEnabled ? undefined : stopReason(copy, stop?.reason)}
-                        className="min-h-7 shrink-0 rounded-md px-2 outline-none enabled:hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50 pointer-coarse:min-h-11"
-                        onClick={() => onStop?.(activity.id)}
+                        aria-label={`${copy.history} · ${title}`}
+                        className="min-h-7 shrink-0 rounded-md px-2 font-medium text-primary-text outline-none hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring pointer-coarse:min-h-11"
+                        onClick={() => setSelection({ id: activity.id, childId, client })}
                       >
-                        {copy.stop}
+                        {copy.history}
                       </button>
                     )}
-                  </li>
-                );
-              })}
-            </ul>
-          ))}
-      </section>
-    </div>
+                  {capabilities.canStopIndividually && (
+                    <button
+                      type="button"
+                      aria-label={`${copy.stop} · ${title}`}
+                      disabled={!stopEnabled}
+                      title={stopEnabled ? undefined : stopReason(copy, stop?.reason)}
+                      className="min-h-7 shrink-0 rounded-md px-2 outline-none enabled:hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50 pointer-coarse:min-h-11"
+                      onClick={() => onStop?.(activity.id)}
+                    >
+                      {copy.stop}
+                    </button>
+                  )}
+                </li>
+              );
+            })}
+          </ul>
+        ) : (
+          <p className="px-3 py-2 text-xs text-muted-foreground">
+            {projection ? copy.empty : copy.unavailable}
+          </p>
+        )}
+      </div>
+    </section>
   );
 }

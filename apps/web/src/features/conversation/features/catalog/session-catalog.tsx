@@ -3,6 +3,7 @@ import {
   PendingReviewLane,
   sessionContinuationListState,
   SessionContinuationDot,
+  SessionPinnedMark,
   interactionCopy,
   sessionGroupActivity,
   SessionGroupActivity,
@@ -292,6 +293,7 @@ export function SessionCatalog({
                           >
                             <AgentMark agent={s.agent} />
                             <strong>{title}</strong>
+                            {s.pinned === true && <SessionPinnedMark locale={locale} />}
                             {runtime?.dot && (
                               <SessionContinuationDot
                                 label={runtime.label}

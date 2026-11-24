@@ -1319,6 +1319,8 @@ export type SessionIndexFreshness = "fresh" | "stale" | "unavailable";
 export type ConversationEventKind = "user-message" | "agent-message" | "tool-summary";
 export type MessagePhase = "commentary" | "final_answer";
 export interface ConversationSessionSummary {
+  pinned?: boolean;
+  pinningAvailable?: boolean;
   readState?: ConversationReadState;
   /** Read-only runtime observation; absent when the host has not observed an owner. */
   continuation?: {

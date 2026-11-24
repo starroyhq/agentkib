@@ -200,7 +200,6 @@ export function SessionComposerControls({
     planOffered,
     resourcesReadable,
     resourcesOffered,
-    attachmentOffered,
     attachmentAllowed,
   } = composerCapabilities ??
   existingSessionComposerCapabilities({
@@ -1433,13 +1432,11 @@ export function SessionComposerControls({
             setAddOpen(open);
             if (open) void load(false, desktop ? "settings" : undefined);
           },
-          attachment: attachmentOffered
-            ? {
-                disabled: disabled || !attachmentAllowed,
-                reason: reasonTitle(feature("attachments")?.reason),
-                onPick: openPhoneFiles,
-              }
-            : undefined,
+          attachment: {
+            disabled: disabled || !attachmentAllowed,
+            reason: reasonTitle(feature("attachments")?.reason),
+            onPick: openPhoneFiles,
+          },
           resources: resourcesOffered
             ? {
                 disabled: !resourcesReadable,

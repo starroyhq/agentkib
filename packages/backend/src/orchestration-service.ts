@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { PROJECT_AGENT_MAX_WORKERS, parseClaudeSlashCommand } from "@agentkib/runtime-protocol";
 import { readControlReceipt } from "./control-receipt";
-import { LeadReportUsageLimit } from "./message-lead-reports";
+import { LeadReportNotDispatched, LeadReportUsageLimit } from "./message-lead-reports";
 import { sanitizeSessionText } from "./session-handoff";
 import {
   openLeadEndpoint,
@@ -377,7 +377,6 @@ type LaneReport = {
   text: string | null;
   reply: string | null;
   coalesceUntil?: number;
-  interruptedTurnId?: string;
 };
 
 const OFFLINE_REASONS = new Set([
@@ -697,6 +696,7 @@ export class OrchestrationService {
   #workerWatch = new Map<string, WorkerWatch>();
   #workerSamples = new Map<string, { current: boolean }>();
   #completions = new Map<string, { until: number; reports: LaneReport[] }>();
+  #sendingQuitReports = new Set<string>();
   #workerRestarts = new Set<string>();
   #closed = false;
   #catchUp: ReturnType<typeof setInterval> | undefined;
@@ -722,6 +722,7 @@ export class OrchestrationService {
       leadSessionId: string,
       deviceId: string,
       text: string,
+      canSend?: () => boolean,
     ) => boolean | Promise<boolean> = () => false,
     /** Reports queued for a lead's next turn (`ClaudeManagedReadOwner.queuedReports`). */
     readonly queuedReports: (leadSessionId: string) => number = () => 0,
@@ -1027,6 +1028,8 @@ export class OrchestrationService {
 
   pause(sessionId: string, reason = "user-paused"): Lead {
     const paused = this.registry.update(sessionId, (lead) => {
+      // Pausing again cannot restore the device's authorization.
+      if (lead.reason === "authorization-changed") return structuredClone(lead);
       if (!lead.paused) addLeadRecord(lead, "pause", null, null, reason);
       lead.paused = true;
       lead.reason = reason;
@@ -1058,6 +1061,7 @@ export class OrchestrationService {
     });
     this.#leadUsageHolds.delete(sessionId);
     if (held.length) this.#deliver(sessionId, joinReports(held), true);
+    this.#deliverQuitReports(sessionId, true);
     return this.registry.get(sessionId)!;
   }
 
@@ -1075,6 +1079,7 @@ export class OrchestrationService {
     });
     this.#leadUsageHolds.delete(sessionId);
     if (held.length) this.#deliver(sessionId, joinReports(held));
+    this.#deliverQuitReports(sessionId);
   }
 
   #leadNeedsUser(sessionId: string): boolean {
@@ -1261,18 +1266,23 @@ export class OrchestrationService {
       "not-continued": "AgentKib did not start a continuation.",
       unknown: "AgentKib could not confirm whether a continuation started.",
     }[outcome];
-    this.#reportBatch(assignment.leadId, [
-      {
-        laneId: assignment.laneId,
-        key: `quit:${turnId}`,
-        interruptedTurnId: turnId,
-        text: workerReport(
-          owner.lane,
-          `its turn was interrupted when AgentKib quit. ${continuation}`,
-        ),
-        reply: null,
-      },
-    ]);
+    this.registry.update(assignment.leadId, (lead) => {
+      const lane = lead.lanes.find((item) => item.id === assignment.laneId);
+      const key = `quit:${turnId}`;
+      if (!lane || !this.#inAssignedWorkspace(lane) || lane.reportedTurns.includes(key)) return;
+      // The quit status supersedes the generic cancelled-turn report. Persist the status
+      // before QuitWork marks this interruption reported in its journal.
+      lane.reportedTurns.push(key);
+      if (!lane.reportedTurns.includes(turnId)) lane.reportedTurns.push(turnId);
+      const text = workerReport(
+        lane,
+        `its turn was interrupted when AgentKib quit. ${continuation}`,
+      );
+      lane.lastReport = { at: new Date().toISOString(), preview: text.slice(0, 200) };
+      addLeadRecord(lead, "report", lane.id, null, key);
+      (lead.pendingQuitReports ??= []).push({ laneId: lane.id, turnId, text });
+    });
+    this.#deliverQuitReports(assignment.leadId);
   }
 
   async #turnReport(
@@ -1417,6 +1427,8 @@ export class OrchestrationService {
           now,
         );
         await this.#checkLeadUsageLimit(lead.sessionId);
+        if (lead.pendingQuitReports?.some((report) => !report.attempted))
+          this.#deliverQuitReports(lead.sessionId);
       }
     } finally {
       this.#workerSamples.clear();
@@ -1713,18 +1725,6 @@ export class OrchestrationService {
             if (lane.reportedTurns.includes(key)) continue;
             lane.reportedTurns.push(key);
           }
-          if (report.interruptedTurnId) {
-            // This report supersedes the generic cancelled-turn report.
-            if (!lane.reportedTurns.includes(report.interruptedTurnId))
-              lane.reportedTurns.push(report.interruptedTurnId);
-            if (lead.paused && lead.reason === "restart-confirmation-required") {
-              lead.paused = false;
-              lead.reason = null;
-              addLeadRecord(lead, "resume", null, null, "quit-interruption-report");
-              messages.push(...lead.pendingReports);
-              lead.pendingReports = [];
-            }
-          }
           if (text === null) continue;
           if (primary.has(report) || !previews.has(laneId)) {
             lane.lastReport = {
@@ -1812,10 +1812,94 @@ export class OrchestrationService {
     if (merged) giveBack();
   }
 
+  #deliverQuitReports(leadId: string, retryUnconfirmed = false): void {
+    void this.#flushQuitReports(leadId, retryUnconfirmed).catch(() => undefined);
+  }
+
+  async #flushQuitReports(leadId: string, retryUnconfirmed: boolean): Promise<void> {
+    if (this.#closed || this.#sendingQuitReports.has(leadId)) return;
+    const lead = this.registry.get(leadId);
+    if (
+      !lead ||
+      lead.reason === "authorization-changed" ||
+      !lead.pendingQuitReports?.some((report) => retryUnconfirmed || !report.attempted) ||
+      this.leadLimited(leadId)
+    )
+      return;
+    const pending = this.registry.update(leadId, (current) => {
+      const lanes = new Set(
+        current.lanes.filter((lane) => this.#inAssignedWorkspace(lane)).map((lane) => lane.id),
+      );
+      const reports = (current.pendingQuitReports ?? []).filter(({ laneId }) => lanes.has(laneId));
+      const ready = reports.filter((report) => retryUnconfirmed || !report.attempted);
+      // If the host goes away after dispatch, the result may be unknown.
+      for (const report of ready) report.attempted = true;
+      current.pendingQuitReports = reports;
+      return ready;
+    });
+    if (!pending.length) return;
+    this.#sendingQuitReports.add(leadId);
+    const canSend = () => {
+      if (this.#closed) return false;
+      const current = this.registry.get(leadId);
+      const authorized =
+        current?.createdAt === lead.createdAt &&
+        current.deviceId === lead.deviceId &&
+        current.reason !== "authorization-changed" &&
+        pending.every(({ laneId }) =>
+          current.lanes.some((lane) => lane.id === laneId && this.#inAssignedWorkspace(lane)),
+        );
+      if (authorized && this.leadLimited(leadId)) throw new LeadReportUsageLimit("usage-limit");
+      return authorized;
+    };
+    const settle = (result: "sent" | "merged" | "retry" | "unknown") => {
+      if (this.registry.get(leadId)?.createdAt !== lead.createdAt) return;
+      this.registry.update(leadId, (current) => {
+        if (result === "unknown") {
+          if (!current.paused) {
+            current.paused = true;
+            current.reason = "report-undelivered";
+            addLeadRecord(current, "pause", null, null, current.reason);
+          }
+          return;
+        }
+        current.pendingQuitReports = (current.pendingQuitReports ?? []).filter((report) => {
+          if (
+            !pending.some(
+              ({ laneId, turnId }) => laneId === report.laneId && turnId === report.turnId,
+            )
+          )
+            return true;
+          if (result !== "retry") return false;
+          delete report.attempted;
+          return true;
+        });
+        if (result === "sent") current.autoTurns++;
+      });
+    };
+    try {
+      let merged: boolean;
+      try {
+        merged = await this.sendReport(
+          leadId,
+          lead.deviceId,
+          joinReports(pending.map(({ text }) => text)),
+          canSend,
+        );
+      } catch (error) {
+        settle(error instanceof LeadReportNotDispatched ? "retry" : "unknown");
+        return;
+      }
+      settle(merged ? "merged" : "sent");
+    } finally {
+      this.#sendingQuitReports.delete(leadId);
+    }
+  }
+
   /** A device lost or changed its authorization: what it set going stops until resumed. */
   invalidateDevice(deviceId: string): void {
     for (const lead of this.registry.list())
-      if (lead.deviceId === deviceId && (!lead.paused || RESUMED_BY_MESSAGE.has(lead.reason ?? "")))
+      if (lead.deviceId === deviceId && lead.reason !== "authorization-changed")
         this.pause(lead.sessionId, "authorization-changed");
   }
 
@@ -1886,7 +1970,7 @@ export class OrchestrationService {
       reason: lead.reason,
       scope: this.#effectiveScope(lead, workspaceId),
       autoTurns: lead.autoTurns,
-      pendingReports: lead.pendingReports.length,
+      pendingReports: lead.pendingReports.length + (lead.pendingQuitReports?.length ?? 0),
       workers,
     };
   }

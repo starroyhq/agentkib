@@ -820,17 +820,26 @@ export class TypeScriptBackend {
             dsh(sessionId) ||
             devin(sessionId) ||
             antigravity(sessionId),
-          (sessionId, deviceId, text) =>
-            !leadOwner.managedWorkspace(sessionId) &&
-            this.#claudeBridge?.canQueueLeadReport(sessionId) === true
-              ? this.#claudeBridge!.queueReport(sessionId, text)
-              : codex(sessionId) || devin(sessionId) || antigravity(sessionId)
-                ? // Sent or queued through AgentKib's own controls of the session.
-                  this.#codexLeadReport(sessionId, deviceId, text)
-                : // A DSH lead hears through the bridge, whether or not its DSH runs right now.
-                  dshBridge.handles(sessionId)
-                  ? this.#dshLeadReports.send(sessionId, deviceId, text)
-                  : leadOwner.queueReport(sessionId, deviceId, text),
+          async (sessionId, deviceId, text, ...admission) => {
+            if (
+              !leadOwner.managedWorkspace(sessionId) &&
+              this.#claudeBridge?.canQueueLeadReport(sessionId) === true
+            )
+              return this.#claudeBridge.queueReport(sessionId, text);
+            // A quit report can arrive before the session catalog initializes the providers.
+            if (
+              !this.#webRead &&
+              !leadOwner.hasManagedSession(sessionId) &&
+              !dshBridge.handles(sessionId)
+            )
+              await this.#withWebRead(() => undefined);
+            if (codex(sessionId) || devin(sessionId) || antigravity(sessionId))
+              return this.#codexLeadReport(sessionId, deviceId, text, ...admission);
+            // A DSH lead hears through the bridge, whether or not its DSH runs right now.
+            if (dshBridge.handles(sessionId))
+              return this.#dshLeadReports.send(sessionId, deviceId, text, ...admission);
+            return leadOwner.queueReport(sessionId, deviceId, text);
+          },
           (sessionId) =>
             leadOwner.queuedReports(sessionId) +
             (this.#claudeBridge?.queuedReports(sessionId) ?? 0),
@@ -2503,8 +2512,13 @@ export class TypeScriptBackend {
       }>,
   });
 
-  #codexLeadReport(sessionId: string, deviceId: string, text: string): Promise<boolean> {
-    return this.#codexLeadReports.send(sessionId, deviceId, text);
+  #codexLeadReport(
+    sessionId: string,
+    deviceId: string,
+    text: string,
+    ...admission: [canSend?: () => boolean]
+  ): Promise<boolean> {
+    return this.#codexLeadReports.send(sessionId, deviceId, text, ...admission);
   }
 
   /** Reports for DeepSeek Harness Project Agents, sent through the DSH bridge's own controls. */

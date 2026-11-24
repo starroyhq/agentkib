@@ -38,6 +38,7 @@ function SettingsRoute() {
     section === "tools" || section === "integrations"
       ? "workspace"
       : section === "general" ||
+          section === "sessions" ||
           section === "appearance" ||
           section === "shortcuts" ||
           section === "privacy"

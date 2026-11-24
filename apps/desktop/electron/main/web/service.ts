@@ -4307,8 +4307,7 @@ export class WebAccessService {
       realpath(workspace.path).catch(() => undefined),
       realpath(context.cwd).catch(() => undefined),
     ]);
-    if (!root || !cwd || cwd !== context.cwd)
-      throw new HttpError(409, "attachments_unavailable");
+    if (!root || !cwd || cwd !== context.cwd) throw new HttpError(409, "attachments_unavailable");
     const within = relative(root, cwd);
     if (within === ".." || within.startsWith(`..${sep}`) || isAbsolute(within))
       throw new HttpError(403, "workspace_not_authorized");
@@ -4453,8 +4452,7 @@ export class WebAccessService {
         if (capabilities.features?.attachments?.available !== true || !format)
           throw new HttpError(409, "attachments_unavailable");
         if (format === "claude-terminal") {
-          if (snapshot.executionMode !== "claude-follower")
-            throw new HttpError(409, "stale_state");
+          if (snapshot.executionMode !== "claude-follower") throw new HttpError(409, "stale_state");
           const alreadyPinned = (await this.attachmentStore.pendingRequests(sessionId)).some(
             (item) => item.deviceId === device.id && item.requestId === requestId,
           );

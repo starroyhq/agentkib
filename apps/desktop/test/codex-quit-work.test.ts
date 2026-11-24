@@ -5,6 +5,7 @@ import {
   appendFileSync,
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   realpathSync,
   rmSync,
   writeFileSync,
@@ -499,6 +500,44 @@ async function fixture({
 }
 
 describe("Codex quit continuation through the backend runtime", () => {
+  it("delivers a saved quit report to a paused Codex lead before opening any sessions", async () => {
+    const f = await fixture();
+    const lead = await f.assignLead();
+    await f.before.session(
+      { operation: "lead-pause", sessionId: lead.lead, deviceId: lead.leadDevice },
+      "claude-code",
+    );
+    const preview = await f.before.preview();
+    await f.before.quit(preview.ticket);
+    const journalFile = join(f.data, "quit-work.json");
+    const journal = JSON.parse(readFileSync(journalFile, "utf8")) as {
+      version: number;
+      entries: Array<{ phase: string; reported: boolean }>;
+    };
+    expect(journal.entries).toMatchObject([{ phase: "pending", reported: false }]);
+    // The previous backend recorded the result and shut down before reporting it.
+    journal.entries[0]!.phase = "skipped";
+    writeFileSync(journalFile, JSON.stringify(journal));
+
+    const after = await f.boot();
+    after.backend.activateQuitWork();
+    await after.rpc(RUNTIME_METHODS.quitWorkList);
+    await vi.waitFor(() =>
+      expect(lead.report).toHaveBeenCalledExactlyOnceWith(
+        lead.lead,
+        lead.leadDevice,
+        expect.stringContaining("did not start a continuation"),
+        expect.any(Function),
+      ),
+    );
+    expect(
+      await after.session(
+        { operation: "lead-status", sessionId: lead.lead, deviceId: lead.leadDevice },
+        "claude-code",
+      ),
+    ).toMatchObject({ lead: { paused: true, reason: "user-paused" } });
+  });
+
   it("resumes the same thread once with its native settings and puts the existing FIFO behind the continuation", async () => {
     const f = await fixture();
     for (const text of ["First queued", "Second queued"])
@@ -573,6 +612,7 @@ describe("Codex quit continuation through the backend runtime", () => {
         expect.stringMatching(
           /\[AgentKib report\][\s\S]*interrupted when AgentKib quit[\s\S]*continuation/,
         ),
+        expect.any(Function),
       ),
     );
     const continuation = f.nativeRuns[1];

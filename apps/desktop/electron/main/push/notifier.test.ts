@@ -118,6 +118,10 @@ describe("push alerts", () => {
     test.notifier.update([terminal("approval")]);
     test.notifier.update([terminal("approval")]);
     await settle();
+    expect(lookup).not.toHaveBeenCalled();
+    test.advance(8_000);
+    test.notifier.refresh();
+    await settle();
     expect(test.take().map(alertOf)).toEqual([
       expect.objectContaining({
         kind: "approval",

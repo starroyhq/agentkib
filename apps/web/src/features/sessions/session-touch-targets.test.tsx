@@ -1,14 +1,17 @@
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ConversationSessionSummary } from "@agentkib/web-client";
 import { SessionWorkspace } from "./session-workspace";
 import { dictionaries, type Locale } from "@/features/conversation/i18n";
-import { catalogCopy } from "@agentkib/session-ui";
+import { catalogCopy, SessionPlatformProvider, webLayoutCopy } from "@agentkib/session-ui";
+import { webSessionPlatform } from "@/features/conversation/session-platform";
 
 const fixture = vi.hoisted(() => ({
   locale: "zh-CN" as Locale,
   pathname: "/sessions",
   refresh: vi.fn(),
+  setHistorySearchOpen: vi.fn(),
   choose: vi.fn(),
   navigate: vi.fn(),
 }));
@@ -43,12 +46,18 @@ vi.mock("@/features/conversation/web-session-context", () => ({
     controlReady: true,
     canSend: true,
     live: { status: "idle", approvals: [] },
-    access: { experimentalEnabled: true, device: { name: "Test browser", files: true } },
+    access: {
+      status: "approved",
+      experimentalEnabled: true,
+      historySearch: true,
+      device: { name: "Test browser", files: true },
+    },
     sessions,
     workspaces: [workspace],
     pendingSessions: {},
     indexEnabled: true,
     setModal: vi.fn(),
+    setHistorySearchOpen: fixture.setHistorySearchOpen,
     refresh: fixture.refresh,
     choose: fixture.choose,
     post: vi.fn(),
@@ -59,9 +68,6 @@ vi.mock("@agentkib/session-ui", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@agentkib/session-ui")>()),
   PendingCenter: () => null,
 }));
-vi.mock("@/features/conversation/features/history/web-history-search", () => ({
-  WebHistorySearchTrigger: () => null,
-}));
 afterEach(() => {
   cleanup();
   fixture.locale = "zh-CN";
@@ -69,12 +75,20 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
+function renderWorkspace() {
+  return render(<SessionWorkspace />, {
+    wrapper: ({ children }) => (
+      <SessionPlatformProvider platform={webSessionPlatform}>{children}</SessionPlatformProvider>
+    ),
+  });
+}
+
 describe("Web session touch targets", () => {
   it.each(["zh-CN", "zh-Hant", "en-US", "ja-JP"] as const)(
     "keeps refresh, workspace toggle and path disclosure independently reachable in %s",
     (locale) => {
       fixture.locale = locale;
-      render(<SessionWorkspace />);
+      renderWorkspace();
       const refresh = screen.getByRole("button", { name: dictionaries[locale].refresh });
       expect(refresh).toHaveClass("size-11");
       expect(screen.getByRole("button", { name: dictionaries[locale].logout })).toHaveClass(
@@ -117,7 +131,7 @@ describe("Web session touch targets", () => {
   );
 
   it("keeps the enlarged workspace toggle expanded during a matching search", () => {
-    render(<SessionWorkspace />);
+    renderWorkspace();
     const toggle = screen.getByRole("button", { name: "Project · 1" });
     fireEvent.click(toggle);
     expect(screen.queryByRole("button", { name: /Readable session/ })).toBeNull();
@@ -131,7 +145,7 @@ describe("Web session touch targets", () => {
   });
 
   it("keeps the same refresh and workspace controls when the route changes to a reader", () => {
-    const view = render(<SessionWorkspace />);
+    const view = renderWorkspace();
     const refresh = screen.getByRole("button", { name: dictionaries["zh-CN"].refresh });
     const toggle = screen.getByRole("button", { name: "Project · 1" });
     fixture.pathname = "/sessions/readable";
@@ -144,5 +158,51 @@ describe("Web session touch targets", () => {
       "aria-current",
       "page",
     );
+  });
+
+  it("aligns history search, directory options and refresh with the directory title", async () => {
+    const user = userEvent.setup();
+    renderWorkspace();
+    const title = screen.getByRole("heading", { name: dictionaries[fixture.locale].sessions });
+    const header = title.closest("header")!;
+    expect(header).not.toBeNull();
+    const search = within(header).getByRole("button", { name: "搜索会话正文" });
+    const options = within(header).getByRole("button", {
+      name: catalogCopy[fixture.locale].options,
+    });
+    const refresh = within(header).getByRole("button", {
+      name: dictionaries[fixture.locale].refresh,
+    });
+    for (const button of [search, options, refresh]) {
+      expect(button).toHaveClass("size-11");
+      expect(button).not.toHaveClass("w-full");
+      expect(button).toHaveTextContent(/^$/);
+    }
+    await user.hover(options);
+    expect(
+      await screen.findByRole("tooltip", { name: catalogCopy[fixture.locale].options }),
+    ).toBeVisible();
+    await user.click(search);
+    expect(fixture.setHistorySearchOpen).toHaveBeenCalledExactlyOnceWith(true);
+    expect(fixture.choose).not.toHaveBeenCalled();
+  });
+
+  it("shows a tooltip for the icon-only header control and opens files with Enter", async () => {
+    fixture.pathname = "/sessions/readable";
+    const user = userEvent.setup();
+    renderWorkspace();
+    const copy = webLayoutCopy[fixture.locale];
+    const files = screen.getByRole("button", { name: copy.files });
+    const actions = screen.getByRole("button", { name: copy.actions });
+    expect(files).toHaveClass("size-11");
+    expect(files).toHaveTextContent(/^$/);
+    expect(actions).toHaveClass("size-11");
+    expect(actions).toHaveTextContent(/^$/);
+    await user.hover(files);
+    expect(await screen.findByRole("tooltip", { name: copy.files })).toBeVisible();
+
+    files.focus();
+    await user.keyboard("{Enter}");
+    expect(files).toHaveAttribute("aria-expanded", "true");
   });
 });

@@ -83,11 +83,15 @@ function DeleteDialog({
 export function SessionRowMenu({
   session,
   sessions = [],
+  canPin = !session.remote,
+  pinOnly = false,
   onChanged,
   onDeleted,
 }: {
   session: ConversationSessionSummary;
   sessions?: ConversationSessionSummary[];
+  canPin?: boolean;
+  pinOnly?: boolean;
   onChanged?: () => void;
   onDeleted?: () => void;
 }) {
@@ -109,6 +113,9 @@ export function SessionRowMenu({
       <SessionManagementRowMenu
         session={session}
         client={client}
+        locale={locale}
+        canPin={canPin}
+        pinOnly={pinOnly}
         copy={copy}
         components={components}
         sessionTitle={displaySessionTitle(session.title ?? undefined, tr)}

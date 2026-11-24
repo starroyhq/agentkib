@@ -1,6 +1,7 @@
 import { Check, ChevronDown, Shield } from "lucide-react";
 import { Menu } from "@base-ui/react/menu";
 import { composerButtonClasses } from "./composer-control-style";
+import { IconAction } from "./icon-action";
 
 interface ComposerPermissionItem {
   id: string;
@@ -13,7 +14,7 @@ interface ComposerPermissionItem {
 }
 
 type PermissionMenuProps = {
-  label: string;
+  label?: string;
   title: string;
   description?: string;
   hint?: string;
@@ -45,16 +46,24 @@ export function ComposerPermissionMenu({
 }: PermissionMenuProps) {
   return (
     <Menu.Root open={open} onOpenChange={onOpenChange}>
-      <Menu.Trigger
-        className={`${composerButtonClasses} h-11 min-w-0 gap-1.5 rounded-full px-2.5 text-sm font-normal disabled:opacity-50 disabled:grayscale ${disabledReason ? "disabled:pointer-events-auto!" : ""} ${risky ? "text-orange-600 hover:text-orange-700" : "text-muted-foreground"}`}
-        disabled={disabled}
-        title={disabledReason}
-        aria-label={title === label ? title : `${title}: ${label}`}
+      <IconAction
+        label={label ? `${title}: ${label}` : title}
+        render={
+          <Menu.Trigger
+            className={`${composerButtonClasses} h-11 min-w-11 rounded-full px-2.5 text-sm font-normal disabled:opacity-50 disabled:grayscale ${disabledReason ? "disabled:pointer-events-auto!" : ""} ${risky ? "text-orange-600 hover:text-orange-700" : "text-muted-foreground"} ${label ? "" : "relative after:invisible after:ps-10 after:content-[attr(aria-label)] @max-[28rem]:after:hidden"}`}
+            disabled={disabled}
+            title={disabledReason}
+          />
+        }
       >
-        <Shield className="size-3.5 shrink-0" aria-hidden />
-        <span className="truncate @max-[28rem]:sr-only">{label}</span>
-        <ChevronDown className="size-3.5 shrink-0" aria-hidden />
-      </Menu.Trigger>
+        <Shield className={`size-3.5 shrink-0 ${label ? "" : "absolute"}`} aria-hidden />
+        {label && (
+          <>
+            <span className="truncate @max-[28rem]:sr-only">{label}</span>
+            <ChevronDown className="size-3.5 shrink-0" aria-hidden />
+          </>
+        )}
+      </IconAction>
       <Menu.Portal>
         <Menu.Positioner side={side} sideOffset={4} align="start" className="isolate z-50">
           <Menu.Popup

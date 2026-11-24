@@ -124,6 +124,9 @@ export function isHistoryReadPath(path: string): boolean {
 }
 
 export interface ConversationSessionSummary {
+  /** Host-wide directory organization. Absent on older hosts. */
+  pinned?: boolean;
+  pinningAvailable?: boolean;
   /** Absent on hosts predating shared read state. */
   readState?: ConversationReadState;
   /** Read-only runtime observation; absent when the host has not observed an owner. */
@@ -698,7 +701,7 @@ export interface SessionCapabilities {
       | "stop"
       | "files"
       | "usage",
-      { available: boolean; reason?: string }
+      { available: boolean; reason?: string; attachmentKinds?: { image: boolean; files: boolean } }
     >
   >;
   /**
@@ -1668,6 +1671,9 @@ export class WebClient {
   }
   catalog(signal?: AbortSignal) {
     return this.request<ConversationCatalog>("catalog", undefined, signal);
+  }
+  setSessionPinned(sessionId: string, pinned: boolean) {
+    return this.request<{ pinned: boolean }>("session-pin", { sessionId, pinned });
   }
   readState(sessionId: string, signal?: AbortSignal) {
     return this.request<{ readState: ConversationReadState }>(

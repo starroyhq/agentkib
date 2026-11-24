@@ -1,4 +1,10 @@
 import { createHash, randomUUID } from "node:crypto";
+import { pathToFileURL } from "node:url";
+import {
+  SESSION_ATTACHMENT_LIMITS,
+  SESSION_ATTACHMENT_RASTER_TYPES,
+  sessionAttachmentMarkdown,
+} from "@agentkib/runtime-protocol";
 import {
   mkdir,
   open,
@@ -33,18 +39,16 @@ export interface Attachment {
   createdAt: number;
   sent: boolean;
 }
-const FILE_LIMIT = 25 * 1024 * 1024;
-const MESSAGE_LIMIT = 100 * 1024 * 1024;
 const STORE_LIMIT = 2 * 1024 * 1024 * 1024;
 const CLAUDE_IMAGE_LIMIT = 4 * 1024 * 1024;
 const CLAUDE_IMAGES_LIMIT = 12 * 1024 * 1024;
-const IMAGE_TYPES = ["image/png", "image/jpeg", "image/webp", "image/gif"];
 /**
  * How an executor takes the images in a message: Codex reads the file by path, Claude takes the
  * bytes in the message, and DeepSeek Harness's plugin reads the file and checks its digest before
- * handing DSH the bytes. Every executor gets other files as a path in the message text.
+ * handing DSH the bytes. ACP selects its blocks after the native capability handshake.
+ * Other files keep a Markdown link to the host-owned copy.
  */
-export type AttachmentFormat = "codex" | "claude" | "dsh";
+export type AttachmentFormat = "codex" | "claude" | "dsh" | "acp" | "link";
 interface AttachmentRequest {
   deviceId: string;
   sessionId: string;
@@ -191,7 +195,8 @@ export class AttachmentStore {
         for await (const chunk of source) {
           check();
           size += chunk.byteLength;
-          if (size > FILE_LIMIT) throw new AttachmentError(413, "attachment_too_large");
+          if (size > SESSION_ATTACHMENT_LIMITS.fileBytes)
+            throw new AttachmentError(413, "attachment_too_large");
           if (used + size > STORE_LIMIT) throw new AttachmentError(507, "attachment_storage_full");
           hash.update(chunk);
           await handle.writeFile(chunk);
@@ -354,7 +359,7 @@ export class AttachmentStore {
       if (
         !Array.isArray(ids) ||
         !ids.length ||
-        ids.length > 10 ||
+        ids.length > SESSION_ATTACHMENT_LIMITS.count ||
         ids.some((id) => typeof id !== "string") ||
         new Set(ids).size !== ids.length
       )
@@ -382,7 +387,7 @@ export class AttachmentStore {
       );
       if (selected.some((item) => !item)) throw new AttachmentError(404, "attachment_not_found");
       const files = selected as Attachment[];
-      if (files.reduce((sum, item) => sum + item.size, 0) > MESSAGE_LIMIT)
+      if (files.reduce((sum, item) => sum + item.size, 0) > SESSION_ATTACHMENT_LIMITS.messageBytes)
         throw new AttachmentError(413, "attachments_too_large");
       const input: Record<string, unknown>[] = text.trim()
         ? [agent === "codex" ? { type: "text", text, text_elements: [] } : { type: "text", text }]
@@ -418,7 +423,15 @@ export class AttachmentStore {
         )
           throw new AttachmentError(409, "attachment_changed");
         const image = agent === "codex" ? null : imageDimensions(bytes);
-        if (agent === "claude" && (item.mime.startsWith("image/") || image)) {
+        if (agent === "acp") {
+          if (SESSION_ATTACHMENT_RASTER_TYPES.includes(item.mime) && image?.mime !== item.mime)
+            throw new AttachmentError(400, "invalid_attachment_image");
+          const { id, name, mime, size, version } = item;
+          input.push({ type: "acpAttachment", id, name, mime, size, version });
+        } else if (
+          agent === "claude" &&
+          (SESSION_ATTACHMENT_RASTER_TYPES.includes(item.mime) || image)
+        ) {
           if (
             !image ||
             image.mime !== item.mime ||
@@ -435,9 +448,9 @@ export class AttachmentStore {
             type: "image",
             source: { type: "base64", media_type: image.mime, data: bytes.toString("base64") },
           });
-        } else if (agent === "codex" && IMAGE_TYPES.includes(item.mime))
+        } else if (agent === "codex" && SESSION_ATTACHMENT_RASTER_TYPES.includes(item.mime))
           input.push({ type: "localImage", path: canonicalPath });
-        else if (agent === "dsh" && IMAGE_TYPES.includes(item.mime)) {
+        else if (agent === "dsh" && SESSION_ATTACHMENT_RASTER_TYPES.includes(item.mime)) {
           if (image?.mime !== item.mime) throw new AttachmentError(400, "invalid_attachment_image");
           input.push({
             type: "image",
@@ -450,7 +463,7 @@ export class AttachmentStore {
         } else
           input.push({
             type: "text",
-            text: `User attached file ${JSON.stringify(item.name)}: ${canonicalPath}`,
+            text: sessionAttachmentMarkdown(item.name, pathToFileURL(canonicalPath).href),
             ...(agent === "codex" ? { text_elements: [] } : {}),
           });
       }

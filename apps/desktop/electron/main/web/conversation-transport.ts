@@ -65,6 +65,7 @@ export function isConversationPath(path: string, post: boolean) {
   return post
     ? [
         "/read-state",
+        "/session-pin",
         "/history/search",
         "/history/locate",
         "/history/references",

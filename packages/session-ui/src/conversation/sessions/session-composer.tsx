@@ -145,6 +145,7 @@ export function SessionComposer({
     controls: platformControls,
     copy: platformCopy,
     notifications,
+    desktop,
   } = useSessionPlatform();
   const { Button, Disclosure, DisclosureSummary, SessionDialog } = components;
   const commandOwner = platformControls.commandSurface === "local-owner";
@@ -847,8 +848,10 @@ export function SessionComposer({
           inputRef: fileInput,
           label: copy.attachment,
           disabled: !uploadPermission || busy || submitted,
-          onFiles: (files) => void add(files),
+          scope: addActionsScope,
+          onFiles: add,
         }}
+        readClipboardFiles={desktop?.readClipboardFiles}
         afterEditor={
           <>
             {slash.menu}
@@ -955,13 +958,11 @@ export function SessionComposer({
                         : attachmentsReason,
                   open: canOpenAddMenu && addMenuScope === addActionsScope,
                   onOpenChange: (open) => setAddMenuScope(open ? addActionsScope : undefined),
-                  attachment: uploadPermission
-                    ? {
-                        disabled: !canChooseAttachments,
-                        reason: copy.attachmentNote,
-                        onPick: () => fileInput.current?.click(),
-                      }
-                    : undefined,
+                  attachment: {
+                    disabled: !canChooseAttachments,
+                    reason: uploadPermission ? copy.attachmentNote : attachmentsReason,
+                    onPick: () => fileInput.current?.click(),
+                  },
                   plan: showLimitedPlan
                     ? {
                         active: limitedPlanOn,

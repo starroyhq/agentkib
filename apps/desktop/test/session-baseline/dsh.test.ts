@@ -509,7 +509,10 @@ describe.skipIf(process.platform !== "darwin")("DeepSeek Harness HTTP behavior b
       status: 200,
       body: {
         available: true,
-        provider: { create: { mode: "empty", catalogScope: "workspace" } },
+        provider: {
+          create: { mode: "empty", catalogScope: "workspace" },
+          history: { readState: false },
+        },
         models: [
           { id: model, name: "DeepSeek Chat", efforts: ["low", "high"] },
           { id: reasoner, name: "DeepSeek Reasoner", efforts: ["low", "high"] },
@@ -581,6 +584,22 @@ describe.skipIf(process.platform !== "darwin")("DeepSeek Harness HTTP behavior b
         })),
       ]),
     );
+    expect(plugin.drainCommands()).toEqual([]);
+  });
+
+  it("does not expose a reading receipt for a connected DSH session", async () => {
+    const catalog = await host.http("/catalog");
+    expect(catalog.status).toBe(200);
+    const sessions = catalog.body.sessions as { id: string }[];
+    const session = sessions.find(({ id }) => id === sessionId);
+    expect(session).toMatchObject({ agent });
+    expect(session).not.toHaveProperty("readState");
+
+    const unsupported = { status: 404, body: { error: "read_state_unsupported" } };
+    expect(await host.http("/read-state?sessionId=" + sessionId)).toMatchObject(unsupported);
+    expect(
+      await host.http("/read-state", { sessionId, expectedVersion: "seen", seenResultId: null }),
+    ).toMatchObject(unsupported);
     expect(plugin.drainCommands()).toEqual([]);
   });
 

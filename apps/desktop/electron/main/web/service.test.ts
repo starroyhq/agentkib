@@ -295,6 +295,112 @@ describe("WebAccessService loopback security boundary", () => {
     expect((await http("/api/web/v1/managed/context?sessionId=unknown")).status).toBe(403);
   });
 
+  describe("session pinning", () => {
+    const endpoint = "/api/web/v1/session-pin";
+    const pin = { sessionId: "session-visible", pinned: true };
+    const pinCalls = () =>
+      runtime.mock.calls
+        .map(([input]) => input as { operation: string })
+        .filter(({ operation }) => operation === "session-pin");
+    const post = (body: unknown, headers?: Record<string, string>) =>
+      http(endpoint, { method: "POST", body, headers });
+
+    beforeEach(async () => {
+      runtime.mockImplementation(async (params) => {
+        const { operation, pinned } = params as { operation: string; pinned?: boolean };
+        if (operation === "catalog")
+          return {
+            workspaces: [
+              { id: "visible", name: "Visible", path: dir },
+              { id: "hidden", name: "Hidden", path: dir },
+            ],
+            sessions: [
+              { id: "session-visible", workspace_id: "visible", agent: "claude-code" },
+              { id: "session-hidden", workspace_id: "hidden", agent: "codex" },
+            ],
+          };
+        if (operation === "session-pin") return { pinned };
+        throw new Error(`Unexpected runtime operation: ${operation}`);
+      });
+      await service.request({
+        operation: "configure",
+        enabled: true,
+        port,
+        externalOrigin: "",
+        experimentalEnabled: true,
+        allowedWorkspaceIds: ["visible"],
+      });
+      await bootstrap();
+    });
+
+    it("sends the authorized workspace and desired state without a live revision", async () => {
+      await approveLegacyBrowser(service, cookie, { organize: true });
+      const paired = await post(pin);
+      expect(paired.status).toBe(200);
+      expect(paired.json()).toEqual({ pinned: true });
+      expect(await service.localRequest("/session-pin", { ...pin, pinned: false })).toMatchObject({
+        status: 200,
+        body: { pinned: false },
+      });
+      expect(pinCalls()).toEqual([
+        { operation: "session-pin", ...pin, workspaceId: "visible" },
+        { operation: "session-pin", ...pin, workspaceId: "visible", pinned: false },
+      ]);
+      expect(runtime).not.toHaveBeenCalledWith(expect.objectContaining({ operation: "live" }));
+    });
+
+    it("requires organize even if the browser can send messages", async () => {
+      await pair(true);
+      const response = await post(pin);
+      expect(response.status).toBe(403);
+      expect(response.json()).toEqual({ error: "permission_denied" });
+      expect(pinCalls()).toEqual([]);
+    });
+
+    it("allows the trusted desktop to ask about a collection without widening Web scope", async () => {
+      const collectionPin = { ...pin, sessionId: "desktop-only-collection" };
+      await approveLegacyBrowser(service, cookie, { organize: true });
+      expect((await post(collectionPin)).status).toBe(403);
+      expect(pinCalls()).toEqual([]);
+      expect(await service.localRequest("/session-pin", collectionPin)).toMatchObject({
+        status: 200,
+        body: { pinned: true },
+      });
+      expect(pinCalls()).toEqual([{ operation: "session-pin", ...collectionPin }]);
+    });
+
+    it("accepts the approved relay browser on its own origin", async () => {
+      const relayOrigin = "https://control.example.test";
+      await service.setRelayOrigins(relayOrigin, "https://preview.example.test");
+      const headers = { Host: new URL(relayOrigin).host, Origin: relayOrigin };
+      cookie = "";
+      const access = await http("/api/web/v1/access", { headers });
+      expect(access.status).toBe(200);
+      cookie = access.headers["set-cookie"]![0].split(";")[0];
+      csrf = access.json().csrfToken;
+      await approveLegacyBrowser(service, cookie, { organize: true });
+      const response = await post(pin, headers);
+      expect(response.status).toBe(200);
+      expect(response.json()).toEqual({ pinned: true });
+      expect(pinCalls()).toEqual([{ operation: "session-pin", ...pin, workspaceId: "visible" }]);
+    });
+
+    it("rejects another workspace, an unknown session and malformed requests before dispatch", async () => {
+      await approveLegacyBrowser(service, cookie, { organize: true });
+      expect((await post({ ...pin, sessionId: "session-hidden" })).status).toBe(403);
+      expect((await post({ ...pin, sessionId: "missing" })).status).toBe(403);
+      expect((await post(pin, { "X-CSRF-Token": "wrong" })).status).toBe(403);
+      expect((await post(pin, { Origin: "https://untrusted.example" })).status).toBe(403);
+      expect((await post({ ...pin, workspaceId: "visible" })).status).toBe(400);
+      expect((await post({ ...pin, pinned: "true" })).status).toBe(400);
+      expect((await post({ sessionId: pin.sessionId })).status).toBe(400);
+      expect((await http(`${endpoint}?pinned=false`, { method: "POST", body: pin })).status).toBe(
+        400,
+      );
+      expect(pinCalls()).toEqual([]);
+    });
+  });
+
   it("scopes durable receipt queries to the paired device and current permissions", async () => {
     const id = "a169d42b-c32a-45e0-83b6-c2460c111bed";
     expect((await http(`/api/web/v1/requests/${id}`)).status).toBe(401);

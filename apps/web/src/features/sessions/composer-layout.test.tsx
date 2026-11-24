@@ -213,8 +213,11 @@ describe("responsive composer behavior", () => {
       await waitFor(() => expect(state.client.sessionSettings).toHaveBeenCalled());
       const copy = composerModelCopy[locale];
       const trigger = screen.getByRole("button", { name: copy.modelSettings });
-      expect(trigger).toHaveTextContent(copy.modelSettings);
-      fireEvent.click(trigger);
+      expect(trigger).toHaveTextContent(/^$/);
+      const user = userEvent.setup();
+      await user.hover(trigger);
+      expect(await screen.findByRole("tooltip")).toHaveTextContent(copy.modelSettings);
+      await user.click(trigger);
       const overview = within(await screen.findByRole("dialog", { name: copy.modelSettings }));
       expect(overview.getByRole("button", { name: copy.chooseModel })).toHaveTextContent(
         copy.model,

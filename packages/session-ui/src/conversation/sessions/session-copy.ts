@@ -513,7 +513,7 @@ const reasons: Record<Locale, Record<string, string>> = {
     "devin-run-stopped": "Devin CLI 的进程在这一轮完成前被结束了。可以再发送一次。",
     "devin-session-not-found": "Devin 结束了这一轮，但没有找到它保存的会话。",
     "session-open-elsewhere": "这条会话正在 Devin Desktop 或终端里打开，关掉那边后再从这里发送。",
-    "attachments-unsupported": "Devin 只能从这里接收文字，不能带图片或文件。",
+    "attachments-unsupported": "当前会话无法接收所选附件。",
     "dsh-create-ambiguous":
       "有多个 DeepSeek Harness 在运行，无法确定用哪一个。请直接在要用的那个里新建会话，它会出现在这里。",
     "dsh-session-controller-unavailable": "这个 DeepSeek Harness 配置只能查看，不能从这里发送。",
@@ -685,7 +685,7 @@ const reasons: Record<Locale, Record<string, string>> = {
     "devin-run-stopped": "Devin CLI 的程序在這一輪完成前被結束了。可以再傳送一次。",
     "devin-session-not-found": "Devin 結束了這一輪，但找不到它儲存的對話。",
     "session-open-elsewhere": "這個對話正在 Devin Desktop 或終端機中開啟，關閉那邊後再從這裡傳送。",
-    "attachments-unsupported": "Devin 只能從這裡接收文字，無法附帶圖片或檔案。",
+    "attachments-unsupported": "目前的對話無法接收選取的附件。",
     "dsh-create-ambiguous":
       "有多個 DeepSeek Harness 正在執行，無法確定要用哪一個。請直接在要用的那個裡新建對話，它會出現在這裡。",
     "dsh-session-controller-unavailable": "這個 DeepSeek Harness 設定只能檢視，不能從這裡傳送。",
@@ -875,7 +875,7 @@ const reasons: Record<Locale, Record<string, string>> = {
     "devin-session-not-found": "Devin finished the turn, but the session it saved was not found.",
     "session-open-elsewhere":
       "This session is open in Devin Desktop or a terminal. Close it there, then send from here.",
-    "attachments-unsupported": "Devin takes only text from here, without images or files.",
+    "attachments-unsupported": "This session cannot accept the selected attachments.",
     "dsh-create-ambiguous":
       "More than one DeepSeek Harness is running, so AgentKib cannot tell which to use. Start the session in the one you want; it will show up here.",
     "dsh-session-controller-unavailable":
@@ -1081,8 +1081,7 @@ const reasons: Record<Locale, Record<string, string>> = {
     "devin-session-not-found": "Devin はターンを終えましたが、保存したセッションが見つかりません。",
     "session-open-elsewhere":
       "このセッションは Devin Desktop またはターミナルで開かれています。そちらを閉じてから、ここから送信してください。",
-    "attachments-unsupported":
-      "Devin はここからテキストのみを受け取れます。画像やファイルは添付できません。",
+    "attachments-unsupported": "このセッションには選択した添付ファイルを送信できません。",
     "dsh-create-ambiguous":
       "複数の DeepSeek Harness が起動しているため、どれを使うか判断できません。使いたい DeepSeek Harness で直接セッションを作成すると、ここに表示されます。",
     "dsh-session-controller-unavailable":

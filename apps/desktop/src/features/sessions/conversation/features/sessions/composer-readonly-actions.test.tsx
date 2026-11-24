@@ -31,6 +31,14 @@ it.each(["zh-CN", "zh-Hant", "en-US", "ja-JP"] as const)(
         }}
         goal={{ disabled: true, reason, onOpen: onGoal }}
         plan={{ disabled: true, reason, active: false, onToggle: onPlan }}
+        resources={{
+          path: [],
+          selected: [],
+          selectable: true,
+          page: { resources: [] },
+          load: vi.fn(),
+          onSelect: vi.fn(),
+        }}
       />,
     );
     const user = userEvent.setup();
@@ -68,10 +76,10 @@ it("keeps revoked grants natively disabled without presenting them as an executo
       }}
     />,
   );
-  fireEvent.click(screen.getByRole("button", { name: "Add" }));
-  const action = screen.getByRole("button", { name: "Choose attachment files" });
-  expect(action).toBeDisabled();
-  fireEvent.click(action);
+  const add = screen.getByRole("button", { name: "Add" });
+  expect(add).toBeDisabled();
+  fireEvent.click(add);
+  expect(screen.queryByRole("dialog", { name: "Add" })).not.toBeInTheDocument();
   expect(screen.queryByRole("status")).not.toBeInTheDocument();
   expect(onPick).not.toHaveBeenCalled();
 });

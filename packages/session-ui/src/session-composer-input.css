@@ -15,3 +15,8 @@
 [data-slot="composer-primary-action"]:enabled:hover {
   background-color: color-mix(in oklab, var(--action-background) 88%, black);
 }
+
+[data-slot="session-composer"][data-attachment-rejected] [data-slot="composer-add-trigger"] {
+  outline: 2px solid var(--destructive-text, var(--destructive));
+  outline-offset: 2px;
+}

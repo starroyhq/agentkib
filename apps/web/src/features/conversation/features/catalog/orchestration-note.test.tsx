@@ -19,6 +19,21 @@ describe("delegation line", () => {
     ).toBe(worker);
   });
 
+  it.each(["usage-limit", "report-undelivered"])(
+    "shows automatic %s recovery under the title",
+    (reason) => {
+      render(
+        <OrchestrationNote
+          orchestration={{ role: "lead", workers: 2, paused: true, recovering: true, reason }}
+          leadTitle={null}
+          locale="zh-CN"
+        />,
+      );
+      expect(screen.getByText("项目 Agent · 正在恢复委派")).toBeVisible();
+      expect(screen.queryByText(/委派已暂停/)).not.toBeInTheDocument();
+    },
+  );
+
   it("says only Project Agent while delegation runs, and for a Worker whose lead is not listed", () => {
     expect(orchestrationText({ role: "lead", workers: 0, paused: false }, null, "zh-CN")).toBe(
       "项目 Agent",

@@ -23,6 +23,7 @@ export type ProjectAgentCopy = {
   open: string;
   pause: string;
   resume: string;
+  recovering: string;
   release: string;
   releaseConfirm: string;
   /** Changing what an existing Project Agent may do: the setup form again. */
@@ -61,6 +62,7 @@ const copy: Record<"zh-CN" | "zh-Hant" | "ja-JP" | "en-US", ProjectAgentCopy> = 
     open: "打开",
     pause: "暂停委派",
     resume: "恢复委派",
+    recovering: "正在恢复委派",
     release: "不再作为项目 Agent",
     releaseConfirm: "确定不再作为项目 Agent？Worker 会话会保留为普通会话。",
     edit: "修改设定…",
@@ -118,6 +120,7 @@ const copy: Record<"zh-CN" | "zh-Hant" | "ja-JP" | "en-US", ProjectAgentCopy> = 
     open: "開啟",
     pause: "暫停委派",
     resume: "恢復委派",
+    recovering: "正在恢復委派",
     release: "不再作為專案 Agent",
     releaseConfirm: "確定不再作為專案 Agent？Worker 對話會保留為一般對話。",
     edit: "修改設定…",
@@ -177,6 +180,7 @@ const copy: Record<"zh-CN" | "zh-Hant" | "ja-JP" | "en-US", ProjectAgentCopy> = 
     open: "開く",
     pause: "委任を一時停止",
     resume: "委任を再開",
+    recovering: "委任を再開中",
     release: "プロジェクト Agent をやめる",
     releaseConfirm: "プロジェクト Agent をやめますか？ワーカーの会話は通常の会話として残ります。",
     edit: "設定を変更…",
@@ -238,6 +242,7 @@ const copy: Record<"zh-CN" | "zh-Hant" | "ja-JP" | "en-US", ProjectAgentCopy> = 
     open: "Open",
     pause: "Pause delegation",
     resume: "Resume delegation",
+    recovering: "Resuming delegation…",
     release: "Stop being a Project Agent",
     releaseConfirm: "Stop being a Project Agent? The workers stay as ordinary sessions.",
     edit: "Change settings…",

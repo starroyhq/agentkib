@@ -129,6 +129,21 @@ describe("homeSessionGroups", () => {
     expect(workStoppedByQuit(groups.needsYou.map(({ session }) => session))).toEqual([]);
   });
 
+  it("keeps automatic report recovery out of needs you", () => {
+    const recovering = session("recovering", {
+      orchestration: {
+        role: "lead",
+        workers: 1,
+        paused: true,
+        reason: "report-undelivered",
+        recovering: true,
+      },
+    });
+    const groups = homeSessionGroups([recovering]);
+    expect(groups.needsYou).toEqual([]);
+    expect(groups.recent).toEqual([recovering]);
+  });
+
   it("names where each turn runs and keeps a waiting session out of in progress", () => {
     const groups = homeSessionGroups([
       session("agentkib", { continuation: { status: "running", executionLocation: "agentkib" } }),

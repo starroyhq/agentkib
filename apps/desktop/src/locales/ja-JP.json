@@ -269,6 +269,7 @@
   "sessions.executionSession": "プログラムが起動したセッション",
   "sessions.projectAgent": "プロジェクト Agent",
   "sessions.projectAgentPaused": "プロジェクト Agent · 委任を一時停止中",
+  "sessions.projectAgentRecovering": "プロジェクト Agent · 委任を再開中",
   "sessions.workerOf": "ワーカー {{name}} · 委任元 {{lead}}",
   "sessions.showCollections": "プロジェクトフォルダのないセッションを表示",
   "sessions.hideCollections": "プロジェクトフォルダのないセッションを隠す",

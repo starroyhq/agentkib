@@ -2637,6 +2637,10 @@ export class DshBridge {
       method: "dsh/question",
       supported: enabled,
       unsupportedReason: enabled ? null : "dsh-handle-in-native-ui",
+      agentDescription: item.questions[0]?.question,
+      ...(item.questions.some((question) => question.intent != null)
+        ? { permissionIntent: true }
+        : {}),
       questions: item.questions.map((question) => {
         const options = question.options.map((option) => ({
           label: option.label,

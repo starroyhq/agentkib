@@ -45,6 +45,7 @@ type PermissionState = AcpPermission & {
   turnId: string;
   supported: boolean;
   toolCall: JsonRecord;
+  agentDescription?: string;
   availableDecisions: string[];
   unsupportedReason: string | null;
 };
@@ -869,10 +870,18 @@ export class AntigravityManagedRunner {
     const optionsSupported =
       offered.length > 0 && offered.every(({ optionId }) => safeWebField(optionId));
     const supported = projected.supported && idSupported && optionsSupported;
+    const originalTitle = request.toolCall.title;
     this.#approvals.set(key, {
       sessionId: this.sessionId,
       options,
       toolCall,
+      ...(typeof originalTitle === "string" &&
+      originalTitle.trim() &&
+      !originalTitle.includes("\0") &&
+      Buffer.byteLength(originalTitle, "utf8") <= 16 * 1024 &&
+      sanitizeHandoffExport(originalTitle, "markdown") === originalTitle
+        ? { agentDescription: originalTitle }
+        : {}),
       id,
       turnId: this.#turnId,
       supported,

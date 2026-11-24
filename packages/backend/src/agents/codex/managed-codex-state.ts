@@ -1272,6 +1272,7 @@ function projectApproval(
     command: details.command ?? null,
     cwd: details.cwd ?? null,
     changes: details.changes ?? null,
+    ...(bounded(details.reason, 16 * 1024) ? { agentDescription: details.reason } : {}),
     availableDecisions: basicSupported ? decisions : [],
     ...(extendedSupported ? { decisionOptions } : {}),
     ...(extendedSupported

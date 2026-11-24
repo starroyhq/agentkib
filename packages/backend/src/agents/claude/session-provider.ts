@@ -217,15 +217,49 @@ export class ClaudeSessionProvider implements SessionProvider, TypedSessionProvi
     return this.native(value);
   }
 
+  #terminalOwnsSession(sessionId: string): boolean {
+    return (
+      this.bridge.handles(sessionId) &&
+      (this.bridge.blocksManagedResume(sessionId) || !this.managed.hasManagedSession(sessionId))
+    );
+  }
+
+  async quitCandidate(sessionId: string) {
+    if (!this.#terminalOwnsSession(sessionId)) return this.managed.quitCandidate(sessionId);
+  }
+
+  async interruptForQuit(sessionId: string, turnId: string) {
+    if (!this.#terminalOwnsSession(sessionId))
+      return this.managed.interruptForQuit(sessionId, turnId);
+  }
+
+  async checkAfterQuit(sessionId: string, evidence: Record<string, unknown>) {
+    return (
+      !this.#terminalOwnsSession(sessionId) &&
+      (await this.managed.checkAfterQuit(sessionId, evidence))
+    );
+  }
+
+  async resumeAfterQuit(
+    sessionId: string,
+    evidence: Record<string, unknown>,
+    requestId: string,
+    text: string,
+  ) {
+    if (this.#terminalOwnsSession(sessionId)) return "skipped" as const;
+    return this.managed.resumeAfterQuit(sessionId, evidence, requestId, text);
+  }
+
+  restoreQuitQueue(sessionId: string, evidence: Record<string, unknown>): void {
+    if (!this.#terminalOwnsSession(sessionId)) this.managed.restoreQuitQueue(sessionId, evidence);
+  }
+
   restartWorker(
     request: WorkerRestartRequest,
     beforeDispatch: () => void,
   ): Promise<WorkerRestartResult> {
     const { sessionId, requestId } = request;
-    if (
-      this.bridge.handles(sessionId) &&
-      (this.bridge.blocksManagedResume(sessionId) || !this.managed.hasManagedSession(sessionId))
-    )
+    if (this.#terminalOwnsSession(sessionId))
       return Promise.resolve({
         accepted: false,
         controlOutcome: "not-dispatched",

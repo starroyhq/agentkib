@@ -86,6 +86,8 @@ interface SessionProviderIntegrationCapabilities {
   commands?: { source: "built-in" | "reported" | "none" };
   queue?: { actions: readonly SessionQueueAction[] };
   projectAgent?: SessionProjectAgentCapabilities;
+  /** A locally managed turn may be resumed after an explicit desktop quit. */
+  resumeAfterQuit?: boolean;
   /** The provider's native integration, even when no session is connected to it. */
   connection?: { kind: "native-app" | "terminal-bridge" | "plugin-bridge" | "acp" };
   permissionField?: "policyId" | "permissionMode";
@@ -314,6 +316,7 @@ const MANAGED_CAPABILITIES = {
 const PROVIDERS = {
   codex: {
     ...MANAGED_CAPABILITIES.codex,
+    resumeAfterQuit: true,
     history: { ...MANAGED_CAPABILITIES.codex.history, questionnaire: true },
     commands: { source: "built-in" },
     projectAgent: { lead: true, worker: true },
@@ -329,6 +332,7 @@ const PROVIDERS = {
   },
   "claude-code": {
     ...MANAGED_CAPABILITIES["claude-code"],
+    resumeAfterQuit: true,
     history: { ...MANAGED_CAPABILITIES["claude-code"].history, questionnaire: true },
     commands: { source: "reported" },
     projectAgent: { lead: true, worker: true },
@@ -349,6 +353,7 @@ const PROVIDERS = {
   },
   "deepseek-harness": {
     ...MANAGED_CAPABILITIES["deepseek-harness"],
+    resumeAfterQuit: true,
     history: { ...MANAGED_CAPABILITIES["deepseek-harness"].history, questionnaire: true },
     commands: { source: "reported" },
     projectAgent: { lead: true, worker: true },

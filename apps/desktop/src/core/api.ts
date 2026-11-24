@@ -1,3 +1,4 @@
+import type { QuitWorkDecision } from "@agentkib/runtime-protocol";
 import type { NativeMemoryQuery } from "@agentkib/runtime-protocol";
 import type {
   McpBatchConnectionRequest,
@@ -92,7 +93,11 @@ export const api = {
   openFilesAndFoldersSettings: () => desktopApi().shell.openFilesAndFoldersSettings(),
   readClipboardAttachmentFiles: () => desktopApi().shell.readClipboardAttachmentFiles?.(),
   openExternal: (url: string) => desktopApi().shell.openExternal(url),
-  quitApp: () => desktopApi().shell.quit(),
+  quitApp: (decision?: QuitWorkDecision) => desktopApi().shell.quit(decision),
+  cancelQuit: (ticket: string) => desktopApi().shell.cancelQuit(ticket),
+  interruptedQuitWork: () => desktopApi().home.interruptedQuitWork(),
+  resumeInterruptedQuitWork: (id: string) => desktopApi().home.resumeInterruptedQuitWork(id),
+  setQuitResumePreference: (value: boolean) => desktopApi().settings.setQuitResumePreference(value),
   setCloseBehavior: (behavior?: CloseBehavior) => desktopApi().settings.setCloseBehavior(behavior),
   setLocale: (preference: LocalePreference) => desktopApi().settings.setLocale(preference),
   setThemePreference: (preference: ThemePreference) =>

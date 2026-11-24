@@ -825,6 +825,23 @@ describe("RuntimeRouter migration ownership and recovery", () => {
     await router.stop();
   });
 
+  it("routes quit work operations and passes the approved ticket only to shutdown", async () => {
+    const host = new Host();
+    const router = new RuntimeRouter(host);
+    await router.start();
+    const decision = { ticket: "fixture", resume: false };
+    await router.request(RUNTIME_METHODS.quitWorkPrepare, {});
+    await router.request(RUNTIME_METHODS.quitWorkList, {});
+    await router.request(RUNTIME_METHODS.quitWorkResume, { id: "task" });
+    await router.stop(decision);
+    expect(host.calls.slice(-3)).toEqual([
+      RUNTIME_METHODS.quitWorkPrepare,
+      RUNTIME_METHODS.quitWorkList,
+      RUNTIME_METHODS.quitWorkResume,
+    ]);
+    expect(host.stop).toHaveBeenCalledExactlyOnceWith(decision);
+  });
+
   it("cancels queued requests and cannot become ready after shutdown", async () => {
     const ts = new Host();
     const initialized = gate();

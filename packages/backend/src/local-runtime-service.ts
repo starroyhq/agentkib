@@ -8,6 +8,7 @@ import {
   RUNTIME_METHODS,
   SESSION_EVENT_NOTIFICATION,
   type LocalCostProvider,
+  type QuitWorkDecision,
 } from "@agentkib/runtime-protocol";
 import { TypeScriptBackend } from "./index";
 import {
@@ -21,6 +22,7 @@ import {
 import { acquirePortableFileLease, existingFileLeaseBusy } from "./managed-session-lock";
 import { BACKEND_INITIALIZE } from "./migration";
 import { readPreferences } from "./preferences";
+import { quitWorkDecisionSchema } from "./sessions/quit-work";
 import { restrictRemotePath } from "./remote-tls";
 
 const MAX_CLIENTS = 32;
@@ -29,7 +31,7 @@ const MAX_FRAME_BYTES = 64 * 1024 * 1024;
 const IDLE_TIMEOUT_MS = 15_000;
 
 type RecordValue = Record<string, unknown>;
-type Client = { socket: Socket; requests: number; observesMemory: boolean };
+type Client = { socket: Socket; requests: number; observesMemory: boolean; ending?: boolean };
 
 function record(value: unknown): RecordValue | undefined {
   return typeof value === "object" && value !== null && !Array.isArray(value)
@@ -168,6 +170,7 @@ export async function serveLocalRuntime(
   });
   let listener: Server | undefined;
   let idleTimer: NodeJS.Timeout | undefined;
+  let lastQuitDecision: QuitWorkDecision | undefined;
   let closing = false;
   let endpointOwned = false;
   let keyOwned = false;
@@ -239,9 +242,11 @@ export async function serveLocalRuntime(
     }
     if (method === RUNTIME_METHODS.handshake) {
       const reply = await backend.handleAsync(value);
-      const joined = !reply.error && clients.has(client) && !compatibleClients.has(client);
+      const joined =
+        !reply.error && clients.has(client) && !client.ending && !compatibleClients.has(client);
       if (joined) {
         compatibleClients.add(client);
+        lastQuitDecision = undefined;
         clearTimeout(idleTimer);
       }
       writeFrame(client, reply);
@@ -267,11 +272,21 @@ export async function serveLocalRuntime(
           ? { jsonrpc: "2.0", id, result: null }
           : failure(id, -32602, "Local runtime data directory does not match"),
       );
+      if (exactDirectory) backend.activateQuitWork();
       return;
     }
     if (method === RUNTIME_METHODS.shutdown) {
+      // A quit decision can only accompany the last desktop leaving. The actual stop
+      // still waits for idle; a desktop joining the same runtime cancels the decision.
+      if (compatibleClients.size === 1)
+        lastQuitDecision = quitWorkDecisionSchema.safeParse(params?.quitWork).data;
+      // A peer can quit as soon as it receives this reply, before this socket closes.
+      client.ending = true;
+      compatibleClients.delete(client);
       // DesktopRuntimeHost expects a reply and then an exit. This is just its transport.
       client.socket.end(`${JSON.stringify({ jsonrpc: "2.0", id, result: null })}\n`);
+      publishPresence();
+      scheduleIdleCheck();
       return;
     }
     if (
@@ -343,7 +358,7 @@ export async function serveLocalRuntime(
     return socket;
   }
 
-  async function close() {
+  async function close(quitWork?: QuitWorkDecision) {
     if (closing) return closed;
     closing = true;
     clearTimeout(idleTimer);
@@ -355,7 +370,7 @@ export async function serveLocalRuntime(
       for (const client of clients) client.socket.destroy();
       backend.cancelPendingOperations();
       await Promise.allSettled([...pending]);
-      await backend.closeAsync();
+      await backend.closeAsync(quitWork);
       await stopped;
     } finally {
       try {
@@ -372,13 +387,12 @@ export async function serveLocalRuntime(
   function scheduleIdleCheck() {
     if (closing || compatibleClients.size) return;
     clearTimeout(idleTimer);
-    idleTimer = setTimeout(
-      () =>
-        void close().catch(() => {
-          process.exitCode = 1;
-        }),
-      idleTimeoutMs,
-    );
+    idleTimer = setTimeout(() => {
+      if (compatibleClients.size) return;
+      void close(lastQuitDecision).catch(() => {
+        process.exitCode = 1;
+      });
+    }, idleTimeoutMs);
   }
 
   try {

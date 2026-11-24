@@ -1,4 +1,4 @@
-import type { NativeMemoryQuery } from "@agentkib/runtime-protocol";
+import type { NativeMemoryQuery, QuitWorkDecision } from "@agentkib/runtime-protocol";
 import type { WebAdminReply } from "../main/web/admin-errors";
 import type { WebAdminRequest } from "../main/web/service";
 import type { DesktopAccountRequest, DesktopAccountStatus } from "../main/account/state";
@@ -19,16 +19,27 @@ import type {
 
 /** The work a quit would stop, as the main process names it; anything malformed names none. */
 function quitRequest(value: unknown): QuitRequest {
-  const work = (value as { work?: unknown } | undefined)?.work;
+  const { work, ticket, resumeByDefault } = (value ?? {}) as {
+    work?: unknown;
+    ticket?: unknown;
+    resumeByDefault?: unknown;
+  };
   return {
+    ...(typeof ticket === "string" && ticket.length <= 128 && typeof resumeByDefault === "boolean"
+      ? { ticket, resumeByDefault }
+      : {}),
     work: Array.isArray(work)
       ? work
           .filter(
-            (item): item is { title: string; agent: string } =>
+            (item): item is { title: string; agent: string; resumable?: boolean } =>
               typeof item?.title === "string" && typeof item?.agent === "string",
           )
           .slice(0, 50)
-          .map((item) => ({ title: item.title.slice(0, 200), agent: item.agent.slice(0, 64) }))
+          .map((item) => ({
+            title: item.title.slice(0, 200),
+            agent: item.agent.slice(0, 64),
+            resumable: item.resumable === true,
+          }))
       : [],
   };
 }
@@ -378,7 +389,8 @@ const desktopApi = Object.freeze({
     setPopoverHeight: (height: number) =>
       ipcRenderer.invoke("agentkib:shell:popover-height", height),
     hideWindow: () => ipcRenderer.invoke("agentkib:shell:hide-window"),
-    quit: () => ipcRenderer.invoke("agentkib:shell:quit"),
+    quit: (decision?: QuitWorkDecision) => ipcRenderer.invoke("agentkib:shell:quit", decision),
+    cancelQuit: (ticket: string) => ipcRenderer.invoke("agentkib:shell:cancel-quit", ticket),
   }),
   remote: Object.freeze({
     request: (request: unknown) => ipcRenderer.invoke("agentkib:remote:request", request),
@@ -396,6 +408,8 @@ const desktopApi = Object.freeze({
   settings: Object.freeze({
     setCloseBehavior: (value: unknown) =>
       ipcRenderer.invoke("agentkib:settings:set-close-behavior", value),
+    setQuitResumePreference: (value: boolean) =>
+      ipcRenderer.invoke("agentkib:settings:set-quit-resume-preference", value),
     setLocale: (preference: string) =>
       ipcRenderer.invoke("agentkib:settings:set-locale", preference),
     setThemePreference: (preference: string) =>
@@ -409,6 +423,9 @@ const desktopApi = Object.freeze({
   }),
   home: Object.freeze({
     runtime: () => ipcRenderer.invoke("agentkib:home:runtime"),
+    interruptedQuitWork: () => ipcRenderer.invoke("agentkib:home:interrupted-quit-work"),
+    resumeInterruptedQuitWork: (id: string) =>
+      ipcRenderer.invoke("agentkib:home:resume-interrupted-quit-work", id),
     workspaces: () => ipcRenderer.invoke("agentkib:home:workspaces"),
     agentInstallations: () => ipcRenderer.invoke("agentkib:home:agent-installations"),
     agentTools: (force?: boolean) => ipcRenderer.invoke("agentkib:home:agent-tools", force),

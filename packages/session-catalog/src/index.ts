@@ -342,10 +342,13 @@ export function sessionGroupId<S extends CatalogSession, W extends CatalogWorksp
 
 export {
   homeSessionGroups,
+  homeTaskGroups,
   workStoppedByQuit,
   type HomeNeed,
   type HomePlace,
   type HomeResult,
   type HomeSession,
   type HomeSessionGroups,
+  type HomeTaskGroups,
+  type HomeTaskOutcome,
 } from "./home";

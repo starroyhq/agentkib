@@ -21,6 +21,7 @@ import {
 } from "lucide-react";
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
+import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select";
 import { Switch } from "@/components/ui/switch";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import {
@@ -208,8 +209,8 @@ export function GlobalSettings({
           <SendWhileRunningSetting />
         </SettingsSection>
         <SettingsSection title={tr("settings.sessionContinuation")} target="sessions-continuation">
-          {/* The preference for resuming tasks after quitting belongs here. */}
           <UsageLimitAutoContinueSetting />
+          <QuitResumeSetting runtime={runtime} onChanged={onLocaleChanged} />
         </SettingsSection>
       </SettingsPage>
     );
@@ -952,6 +953,56 @@ function SendWhileRunningSetting() {
         </SelectContent>
       </Select>
     </SettingsRow>
+  );
+}
+
+function QuitResumeSetting({
+  runtime,
+  onChanged,
+}: {
+  runtime?: RuntimeInfo;
+  onChanged: (runtime: RuntimeInfo) => void;
+}) {
+  const { t: tr } = useTranslation();
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const change = async (enabled: boolean) => {
+    setBusy(true);
+    setError("");
+    try {
+      await api.setQuitResumePreference(enabled);
+      onChanged(await api.runtime());
+    } catch (error) {
+      setError(localizeMessage(error));
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <SettingsAnchor target="sessions-quit-resume">
+      <SettingsRow border={false}>
+        <SettingsCopy>
+          <strong>{tr("settings.quitResume")}</strong>
+        </SettingsCopy>
+        <NativeSelect
+          aria-label={tr("settings.quitResume")}
+          className={settingsControlClass}
+          value={runtime?.resume_after_quit === false ? "stop" : "continue"}
+          disabled={busy || runtime?.resume_after_quit === undefined}
+          onChange={(event) => void change(event.currentTarget.value === "continue")}
+        >
+          <NativeSelectOption value="continue">
+            {tr("settings.quitResume.continue")}
+          </NativeSelectOption>
+          <NativeSelectOption value="stop">{tr("settings.quitResume.stop")}</NativeSelectOption>
+        </NativeSelect>
+      </SettingsRow>
+      {error && (
+        <SettingsNotice tone="error" role="alert">
+          {error}
+        </SettingsNotice>
+      )}
+    </SettingsAnchor>
   );
 }
 

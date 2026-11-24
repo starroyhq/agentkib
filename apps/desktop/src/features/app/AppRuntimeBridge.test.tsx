@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import "@testing-library/jest-dom/vitest";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -26,6 +27,7 @@ vi.mock("@/core/api", () => ({
     setAccentThemePreference,
     setSidebarWidthPreference,
     quitApp: vi.fn(),
+    cancelQuit: vi.fn(async () => undefined),
   },
 }));
 
@@ -188,6 +190,59 @@ describe("AppRuntimeBridge", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Quit anyway" }));
     await waitFor(() => expect(api.quitApp).toHaveBeenCalledOnce());
   });
+
+  it.each([true, false])(
+    "uses the saved quit work default %s for each confirmation",
+    async (resumeByDefault) => {
+      runtimeInfo.mockResolvedValue({
+        effective_theme: "light",
+        effective_locale: "en-US",
+        accent_theme_preference: "vtron",
+      });
+      await changeLocale("en-US");
+      let quit: ((request: QuitRequest) => void) | undefined;
+      vi.spyOn(window.agentkibDesktop!.events, "onQuitRequested").mockImplementation((listener) => {
+        quit = listener;
+        return () => undefined;
+      });
+      const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+      render(
+        <QueryClientProvider client={queryClient}>
+          <AppDialogProvider>
+            <AppRuntimeBridge />
+          </AppDialogProvider>
+        </QueryClientProvider>,
+      );
+      await waitFor(() => expect(useAppStore.getState().runtime?.effective_locale).toBe("en-US"));
+      const work = [
+        { title: "Fix login", agent: "claude", resumable: true },
+        { title: "Unsupported runner", agent: "deepseek-harness", resumable: false },
+      ];
+      const checkboxName = "Continue these tasks the next time AgentKib opens";
+      act(() => quit!({ work, ticket: "first", resumeByDefault }));
+      const first = await screen.findByRole("checkbox", { name: checkboxName });
+      expect(first).toHaveAttribute("aria-checked", String(resumeByDefault));
+      const unsupported = screen.getByRole("checkbox", { name: "Unsupported runner" });
+      expect(unsupported).toHaveAttribute("aria-disabled", "true");
+      expect(unsupported).toHaveAttribute("aria-checked", "false");
+      fireEvent.click(first);
+      fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+      await waitFor(() => expect(api.cancelQuit).toHaveBeenCalledWith("first"));
+      expect(api.quitApp).not.toHaveBeenCalled();
+
+      act(() => quit!({ work, ticket: "second", resumeByDefault }));
+      const second = await screen.findByRole("checkbox", { name: checkboxName });
+      expect(second).toHaveAttribute("aria-checked", String(resumeByDefault));
+      fireEvent.click(second);
+      fireEvent.click(screen.getByRole("button", { name: "Quit anyway" }));
+      await waitFor(() =>
+        expect(api.quitApp).toHaveBeenCalledWith({
+          ticket: "second",
+          resume: !resumeByDefault,
+        }),
+      );
+    },
+  );
 
   it("quits without asking when nothing runs in AgentKib", async () => {
     runtimeInfo.mockResolvedValue({

@@ -35,12 +35,14 @@ import {
   type DshBridgeServices,
   type DshBridgeSessionState,
   type DshBridgeSessionSummary,
+  type QuitWorkOutcome,
   type SessionStreamEvent,
   type SubagentCatalog,
 } from "@agentkib/runtime-protocol";
 import { acquirePortableFileLease } from "../../managed-session-lock";
 import {
   finishManagedCommand,
+  managedSessionHasUnknownCommands,
   observeManagedCommandCompletion,
   readUnknownManagedCommands,
 } from "../../managed-ledger";
@@ -416,6 +418,7 @@ const servicesSchema = z
     sessionController: z.boolean(),
     sessionQuery: z.boolean(),
     turnScopedCancel: z.boolean().optional(),
+    quitWork: z.boolean().optional(),
     contextUsage: z.boolean().optional(),
     approvals: z.boolean(),
     questions: z.boolean(),
@@ -818,6 +821,20 @@ export interface DshBridgeOptions {
     ): Promise<{ text: string; isError?: boolean }>;
   };
 }
+
+const quitEvidenceSchema = z
+  .object({
+    turn: z.number().safe().int().positive(),
+    interruptionId: z.uuid(),
+    endSeq: z.number().safe().int().nonnegative(),
+    settings: z
+      .string()
+      .regex(/^[0-9a-f]{64}$/)
+      .optional(),
+    manualOnly: z.literal(true).optional(),
+    cwd: z.string().min(1).max(4096),
+  })
+  .refine((evidence) => evidence.manualOnly === true || evidence.settings !== undefined);
 
 /** DSH's refusals that clients explain in their own words. */
 const dshRefusal = (error: string | undefined) =>
@@ -1641,7 +1658,11 @@ export class DshBridge {
         page = report;
         if (runtime === preferred)
           for (const record of page.records)
-            if (record.kind === "turn-end" && record.reason === "aborted")
+            if (
+              record.kind === "turn-end" &&
+              record.reason === "aborted" &&
+              !record.quitInterruption
+            )
               this.#observeStoppedTurn(nativeId, record.turn);
       } else
         failure = result.outcome === "timeout" ? "dsh-history-timeout" : "dsh-history-unavailable";
@@ -1688,7 +1709,8 @@ export class DshBridge {
     }> = [];
     for (const record of records)
       if (record.kind === "turn-start") started.set(record.turn, record.time);
-      else if (record.kind === "turn-end" && turnIdOf(record.turn))
+      // The exit journal reports this exact cancellation after reopening.
+      else if (record.kind === "turn-end" && !record.quitInterruption && turnIdOf(record.turn))
         ended.push({
           turnId: turnIdOf(record.turn)!,
           outcome: dshTurnOutcome(record.reason),
@@ -2245,6 +2267,193 @@ export class DshBridge {
       runtime.queue.push(command);
       runtime.waiting?.();
     });
+  }
+
+  #quitWorkTarget(id: string) {
+    const nativeId = this.#ids.get(id);
+    const row = nativeId ? this.#catalog.get(nativeId) : null;
+    if (
+      !nativeId ||
+      !row ||
+      row.archived ||
+      row.origin === "subagent" ||
+      !this.options.workspaceFor(row.cwd) ||
+      this.#closed ||
+      this.#inflight.has(id) ||
+      managedSessionHasUnknownCommands(this.options.dataDir, id)
+    )
+      return null;
+    return { nativeId, cwd: row.cwd };
+  }
+
+  #quitWorkRuntime(nativeId: string) {
+    const runtime = this.#controlRuntime(nativeId);
+    return runtime?.managed && runtime.services.quitWork === true ? runtime : null;
+  }
+
+  async quitCandidate(id: string): Promise<{ turnId: string; manualOnly?: true } | undefined> {
+    const target = this.#quitWorkTarget(id);
+    if (!target) return;
+    const runtime = this.#quitWorkRuntime(target.nativeId);
+    if (!runtime || runtime.states.get(target.nativeId)?.live !== true) return;
+    const result = await this.#command(
+      runtime,
+      {
+        commandId: randomUUID(),
+        type: "quit-candidate",
+        sessionId: target.nativeId,
+      },
+      ACTIVITY_READ_TIMEOUT_MS,
+    );
+    const candidate = result.value as { turn?: number; manualOnly?: boolean } | null;
+    if (result.ok && candidate?.turn && nativeTurn(turnIdOf(candidate.turn)) === candidate.turn)
+      return {
+        turnId: turnIdOf(candidate.turn)!,
+        ...(candidate.manualOnly === true ? { manualOnly: true } : {}),
+      };
+  }
+
+  async interruptForQuit(id: string, turnId: string): Promise<Record<string, unknown> | undefined> {
+    const target = this.#quitWorkTarget(id);
+    const turn = nativeTurn(turnId);
+    if (!target || turn === null) return;
+    const runtime = this.#quitWorkRuntime(target.nativeId);
+    if (!runtime || runtime.states.get(target.nativeId)?.live !== true) return;
+    const interruptionId = randomUUID();
+    const result = await this.#command(
+      runtime,
+      {
+        commandId: randomUUID(),
+        type: "quit-interrupt",
+        sessionId: target.nativeId,
+        turn,
+        interruptionId,
+      },
+      4_000,
+    );
+    const evidence = quitEvidenceSchema.safeParse(result.value).data;
+    if (
+      result.ok &&
+      evidence?.turn === turn &&
+      evidence.interruptionId === interruptionId &&
+      evidence.cwd === target.cwd
+    )
+      return evidence;
+  }
+
+  async checkAfterQuit(
+    id: string,
+    value: Record<string, unknown>,
+  ): Promise<boolean | "open-session"> {
+    const evidence = quitEvidenceSchema.safeParse(value).data;
+    const target = this.#quitWorkTarget(id);
+    if (!evidence || !target || target.cwd !== evidence.cwd) return false;
+    if (
+      !evidence.manualOnly &&
+      (!this.options.managed?.enabled() ||
+        (!this.#quitWorkRuntime(target.nativeId) && !this.#startable()))
+    )
+      return false;
+    const { nativeId, cwd } = target;
+    const writerFree = () => this.options.writerStatus?.(nativeId, cwd) === "free";
+    const otherRuntime = () =>
+      this.#online().some(
+        (runtime) =>
+          !runtime.managed &&
+          (runtime.states.get(nativeId)?.live ||
+            runtime.summaries.get(nativeId)?.live ||
+            (!evidence.manualOnly && runtime.services.sessionController)),
+      );
+    if (!writerFree() || otherRuntime()) return false;
+    const snapshot = await this.options.localTurn?.(nativeId, cwd).catch(() => null);
+    const current = this.#quitWorkTarget(id);
+    const interrupted = snapshot?.quitInterruption;
+    if (
+      interrupted?.turn !== evidence.turn ||
+      interrupted.interruptionId !== evidence.interruptionId ||
+      interrupted.endSeq !== evidence.endSeq ||
+      current?.nativeId !== nativeId ||
+      current.cwd !== cwd ||
+      !writerFree() ||
+      otherRuntime()
+    )
+      return false;
+    // Only the navigation fallback tolerates native inbox cleanup after the quit settlement.
+    if (evidence.manualOnly) return "open-session";
+    return snapshot?.seq === evidence.endSeq;
+  }
+
+  async resumeAfterQuit(
+    id: string,
+    value: Record<string, unknown>,
+    requestId: string,
+    text: string,
+  ): Promise<QuitWorkOutcome> {
+    const evidence = quitEvidenceSchema.safeParse(value).data;
+    const target = this.#quitWorkTarget(id);
+    if (!evidence || !target) return "skipped";
+    const check = await this.checkAfterQuit(id, value);
+    if (check === "open-session") return "manual-required";
+    if (!check || !evidence.settings) return "skipped";
+    const start = await this.#ensureManaged().catch(() => null);
+    if (
+      !start ||
+      this.#quitWorkRuntime(target.nativeId) !== start ||
+      (await this.checkAfterQuit(id, value)) !== true
+    )
+      return "skipped";
+    const receipt = admitControlReceipt(
+      this.options.dataDir,
+      requestId,
+      stable({ id, evidence, text }),
+    );
+    const outcomeOf = (result: Record<string, unknown>): QuitWorkOutcome =>
+      result.controlOutcome === "accepted"
+        ? "continued"
+        : result.controlOutcome === "not-dispatched"
+          ? "skipped"
+          : "unknown";
+    if (receipt.previous) return outcomeOf(receipt.previous);
+    if (this.#inflight.has(id) || this.#quitWorkRuntime(target.nativeId) !== start)
+      return "skipped";
+    const commandId = randomUUID();
+    const prior = receipt.claim(id, "desktop-local", {
+      operation: "send",
+      executionMode: DSH_EXECUTION_MODE,
+      nativeId: target.nativeId,
+      commandId,
+    });
+    if (prior) return outcomeOf(prior);
+    this.#inflight.set(id, { requestId, commandId, runtime: start.token });
+    try {
+      const result = await this.#command(
+        start,
+        {
+          commandId,
+          type: "quit-continue",
+          sessionId: target.nativeId,
+          requestId,
+          text,
+          evidence: { ...evidence, settings: evidence.settings },
+        },
+        undefined,
+        receipt.dispatch,
+      );
+      const outcome = (result.value as { outcome?: string } | null)?.outcome;
+      if (result.ok && outcome === "continued") {
+        receipt.finish(this.#result(id, requestId, "accepted"));
+        return "continued";
+      }
+      if ((result.ok && outcome === "skipped") || result.error === "not-dispatched") {
+        receipt.finish(this.#result(id, requestId, "not-dispatched"));
+        return "skipped";
+      }
+      this.#unknownSessions.add(target.nativeId);
+      this.#unknownSince.set(requestId, Date.now());
+      return "unknown";
+    } finally {
+      this.#inflight.delete(id);
+    }
   }
 
   // ---- live projection --------------------------------------------------------------------

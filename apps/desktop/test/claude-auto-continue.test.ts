@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { spawn, type ChildProcess } from "node:child_process";
 import {
+  appendFileSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -43,6 +44,8 @@ function fixture(
     maintenanceIntervalMs?: number;
     isSessionObserved?: (id: string) => boolean;
     registerWorkers?: boolean;
+    quitSettings?: boolean;
+    changeHistoryDuringResume?: boolean;
     /** Put a launcher on PATH that runs the CLI as its child, as Volta-style shims do. */
     shim?: boolean;
   } = {},
@@ -93,11 +96,21 @@ if (process.env.AUTO_EXTERNAL === "1") {
     agents.push({ pid: process.pid, sessionId, kind: "background" });
     fs.writeFileSync(process.env.AUTO_AGENTS, JSON.stringify(agents));
   }
+  const resumedSession = process.argv.find((arg) => arg.startsWith("--resume="))?.slice(9);
+  if (resumedSession && process.env.AUTO_QUIT_CHANGE_HISTORY === "1") {
+    const transcript = process.env.CLAUDE_CONFIG_DIR + "/" + resumedSession + ".jsonl";
+    fs.appendFileSync(transcript, JSON.stringify({
+      type: "user", uuid: require("node:crypto").randomUUID(), sessionId: resumedSession,
+      message: { role: "user", content: "A new task entered during startup" },
+    }) + "\n");
+  }
   log({ started: true, pid: process.pid, ppid: process.ppid, args: process.argv.slice(2) });
   require("node:readline").createInterface({ input: process.stdin }).on("line", (line) => {
     const frame = JSON.parse(line);
     log(frame);
     if (frame.type === "control_request") {
+      if (process.env.AUTO_QUIT_SETTINGS === "1")
+        send({ type: "system", subtype: "init", model: "synthetic-model", permissionMode: "default" });
       send({ type: "control_response", response: {
         subtype: "success", request_id: frame.request_id,
         response: { models: [], commands: [] },
@@ -113,7 +126,7 @@ if (process.env.AUTO_EXTERNAL === "1") {
         send({ type: "result", subtype: "success", usage: { input_tokens: 10, output_tokens: 1 },
           modelUsage: { "synthetic-model": { contextWindow: 100 } } });
       };
-      if (frame.message.content === "hold result") {
+      if (["hold result", "Continue the interrupted task."].includes(frame.message.content)) {
         const timer = setInterval(() => {
           if (fs.existsSync(process.env.AUTO_RESULT_GATE)) { clearInterval(timer); finish(); }
         }, 10);
@@ -147,38 +160,57 @@ child.on("exit", (code) => process.exit(code ?? 1));
     AUTO_RESULT_GATE: resultGate,
     AUTO_AGENTS: agentsFile,
     AUTO_REGISTER_WORKERS: options.registerWorkers ? "1" : "0",
+    AUTO_QUIT_SETTINGS: options.quitSettings ? "1" : "0",
+    AUTO_QUIT_CHANGE_HISTORY: options.changeHistoryDuringResume ? "1" : "0",
     AUTO_REAL_CLI: cli,
   };
   const events: Array<{ id: string; type: string; live: Record<string, unknown> }> = [];
-  const owner = new ClaudeManagedReadOwner(
-    {
-      workspacePath: () => workspace,
-      sessions: { id: (_agent: string, id: string) => id },
-    } as unknown as BackendStore,
-    {
-      verifiedClaudeControlTarget: (id: string) => path.join(config, `${id}.jsonl`),
-    } as unknown as SessionReaders,
-    {
-      run: vi.fn(async (command: string, args: string[]) => ({
-        success: true,
-        bytes:
-          command === "/bin/ps"
-            ? processTable()
-            : Buffer.from(
-                args[0] === "agents" ? readFileSync(agentsFile, "utf8") : "2.1.302 (Claude Code)\n",
-              ),
-      })),
-    } as unknown as Commands,
-    root,
-    environment,
-    randomUUID(),
-    {
-      publish: (id, type, _payload, live) => events.push({ id, type, live }),
-      alias: () => undefined,
-    },
-    options,
-  );
+  let commandsClosed = false;
+  const makeCommands = (closed: () => boolean) =>
+    ({
+      close: vi.fn(),
+      run: vi.fn(async (command: string, args: string[]) => {
+        if (closed()) throw new Error("Backend command supervisor is closed");
+        return {
+          success: true,
+          bytes:
+            command === "/bin/ps"
+              ? processTable()
+              : Buffer.from(
+                  args[0] === "agents"
+                    ? readFileSync(agentsFile, "utf8")
+                    : "2.1.302 (Claude Code)\n",
+                ),
+        };
+      }),
+    }) as unknown as Commands;
+  const openOwner = () =>
+    new ClaudeManagedReadOwner(
+      {
+        workspacePath: () => workspace,
+        sessions: { id: (_agent: string, id: string) => id },
+      } as unknown as BackendStore,
+      {
+        verifiedClaudeControlTarget: (id: string) => path.join(config, `${id}.jsonl`),
+      } as unknown as SessionReaders,
+      makeCommands(() => commandsClosed),
+      root,
+      environment,
+      randomUUID(),
+      {
+        publish: (id, type, _payload, live) => events.push({ id, type, live }),
+        alias: () => undefined,
+      },
+      { ...options, quitCommands: () => makeCommands(() => false) },
+    );
+  let owner = openOwner();
   cleanups.push(() => owner.shutdown());
+  const reopen = async () => {
+    await owner.shutdown();
+    commandsClosed = false;
+    owner = openOwner();
+    return owner;
+  };
   const sends = vi.spyOn(ClaudeManagedRunnerProcess.prototype, "send");
   const frames = (): Array<Record<string, unknown>> =>
     existsSync(log)
@@ -310,7 +342,14 @@ child.on("exit", (code) => process.exit(code ?? 1));
   };
   return {
     root,
-    owner,
+    get owner() {
+      return owner;
+    },
+    reopen,
+    closeCommands: () => {
+      commandsClosed = true;
+      return () => (commandsClosed = false);
+    },
     create,
     control,
     dispatch,
@@ -344,6 +383,214 @@ async function rejectedControl(action: Promise<unknown>) {
     return { accepted: false, error: error instanceof Error ? error.message : String(error) };
   }
 }
+
+describe.skipIf(!["darwin", "linux"].includes(process.platform))(
+  "managed Claude quit continuation",
+  () => {
+    const continuation = "Continue the interrupted task.";
+    async function running(f: ReturnType<typeof fixture>, id: string) {
+      await expect(f.control(id, "send", { text: "hold result" })).resolves.toMatchObject({
+        accepted: true,
+      });
+      await expect
+        .poll(async () => (await f.owner.quitCandidate(id))?.turnId)
+        .toMatch(/^[\da-f-]+$/);
+      return (await f.owner.quitCandidate(id))!.turnId;
+    }
+
+    function updateNativeHistoryAtStop(
+      f: ReturnType<typeof fixture>,
+      nativeId: string,
+      row: Record<string, unknown>,
+    ) {
+      const transcript = path.join(f.root, "home", ".claude", `${nativeId}.jsonl`);
+      const runner = f.runner(nativeId);
+      const restart = runner.restartForDelegation.bind(runner);
+      vi.spyOn(runner, "restartForDelegation").mockImplementationOnce((revision, dispatch) =>
+        restart(revision, () => {
+          dispatch();
+          appendFileSync(
+            transcript,
+            `${JSON.stringify({ sessionId: nativeId, uuid: randomUUID(), ...row })}\n`,
+          );
+        }),
+      );
+      return transcript;
+    }
+
+    it("resumes the same native session only once, with its model and permissions, ahead of the original queue", async () => {
+      const f = fixture({ quitSettings: true });
+      const { id, nativeId } = f.create();
+      const turnId = await running(f, id);
+      await expect(f.control(id, "queue-add", { text: "already waiting" })).resolves.toMatchObject({
+        accepted: true,
+      });
+      const turnEnded = vi.fn();
+      f.owner.observeWorkers({ isWorker: () => true, waiting: vi.fn(), turnEnded });
+      const transcript = updateNativeHistoryAtStop(f, nativeId, {
+        type: "assistant",
+        message: { role: "assistant", content: "Last progress before exit" },
+      });
+      const allowOrdinaryCommands = f.closeCommands();
+      const evidence = await f.owner.interruptForQuit(id, turnId);
+      allowOrdinaryCommands();
+      expect(evidence).toBeDefined();
+      expect(f.runner(nativeId).hasWorker).toBe(false);
+      expect(turnEnded).not.toHaveBeenCalled();
+      expect(readFileSync(transcript, "utf8")).toContain("Last progress before exit");
+      await expect(f.owner.request({ operation: "schedule-list" })).resolves.toMatchObject({
+        sessions: [expect.objectContaining({ sessionId: id, paused: true, next: null })],
+      });
+      const owner = await f.reopen();
+      await expect(owner.checkAfterQuit(id, evidence!)).resolves.toBe(true);
+      const requestId = randomUUID();
+      await expect(owner.resumeAfterQuit(id, evidence!, requestId, continuation)).resolves.toBe(
+        "continued",
+      );
+      await expect(owner.resumeAfterQuit(id, evidence!, requestId, continuation)).resolves.toBe(
+        "skipped",
+      );
+      const candidate = () => owner.request({ operation: "schedule-list" });
+      await expect(candidate()).resolves.toMatchObject({
+        sessions: [expect.objectContaining({ sessionId: id, paused: false, next: null })],
+      });
+      expect(f.frames().findLast((frame) => frame.started)).toMatchObject({
+        args: expect.arrayContaining([
+          `--resume=${nativeId}`,
+          "--model",
+          "synthetic-model",
+          "--permission-mode",
+          "default",
+        ]),
+      });
+      const prompts = () => f.frames().filter((frame) => frame.type === "user");
+      await expect.poll(() => prompts().map((frame) => frame.uuid)).toEqual([turnId, requestId]);
+      writeFileSync(f.resultGate, "");
+      const nextCandidate = async () => {
+        const result = (await candidate()) as {
+          sessions: Array<{ next: { itemId: string; requestId: string } | null }>;
+        };
+        return result.sessions[0]?.next;
+      };
+      await expect.poll(nextCandidate).toMatchObject({
+        kind: "queue",
+      });
+      const next = (await nextCandidate())!;
+      const prepared = (await f.control(id, "schedule-prepare", next)) as {
+        permitId: string;
+        expectedRevision: number;
+      };
+      await expect(
+        f.control(id, "schedule-dispatch", {
+          ...next,
+          permitId: prepared.permitId,
+          expectedRevision: prepared.expectedRevision,
+        }),
+      ).resolves.toMatchObject({ accepted: true });
+      await expect
+        .poll(() => prompts().map((frame) => frame.uuid))
+        .toEqual([turnId, requestId, next.requestId]);
+    });
+
+    it("skips a turn that already ended, even if the quit preview saw it running", async () => {
+      const f = fixture({ quitSettings: true });
+      const { id, nativeId } = f.create();
+      const turnId = await running(f, id);
+      writeFileSync(f.resultGate, "");
+      await expect.poll(async () => (await f.owner.live(id)).status).toBe("idle");
+      await expect(f.owner.interruptForQuit(id, turnId)).resolves.toBeUndefined();
+      expect(f.runner(nativeId).hasWorker).toBe(true);
+    });
+
+    it("does not authorize continuation if the native turn ends while its process is stopping", async () => {
+      const f = fixture({ quitSettings: true });
+      const { id, nativeId } = f.create();
+      const turnId = await running(f, id);
+      updateNativeHistoryAtStop(f, nativeId, {
+        type: "system",
+        subtype: "turn_duration",
+        turn_id: turnId,
+      });
+      await expect(f.owner.interruptForQuit(id, turnId)).resolves.toBeUndefined();
+      expect(f.runner(nativeId).hasWorker).toBe(false);
+    });
+
+    it("keeps an explicitly paused queue paused across a quit continuation", async () => {
+      const f = fixture({ quitSettings: true });
+      const { id } = f.create();
+      const turnId = await running(f, id);
+      await expect(
+        f.control(id, "queue-add", { text: "hold for the user" }),
+      ).resolves.toMatchObject({
+        accepted: true,
+      });
+      await expect(f.control(id, "queue-pause")).resolves.toMatchObject({ accepted: true });
+      const evidence = await f.owner.interruptForQuit(id, turnId);
+      expect(evidence).toBeDefined();
+      const owner = await f.reopen();
+      await expect(owner.resumeAfterQuit(id, evidence!, randomUUID(), continuation)).resolves.toBe(
+        "continued",
+      );
+      writeFileSync(f.resultGate, "");
+      await expect.poll(async () => (await owner.live(id)).status).toBe("idle");
+      await expect(owner.request({ operation: "schedule-list" })).resolves.toMatchObject({
+        sessions: [
+          expect.objectContaining({
+            sessionId: id,
+            paused: true,
+            reason: "user-paused",
+            next: null,
+          }),
+        ],
+      });
+    });
+
+    it.each(["external owner", "newer native history"])(
+      "skips a stopped task with %s on the next boot",
+      async (change) => {
+        const f = fixture({ quitSettings: true });
+        const { id, nativeId } = f.create();
+        const turnId = await running(f, id);
+        const evidence = await f.owner.interruptForQuit(id, turnId);
+        expect(evidence).toBeDefined();
+        const owner = await f.reopen();
+        if (change === "external owner") await f.startExternal(nativeId);
+        else {
+          const transcript = path.join(f.root, "home", ".claude", `${nativeId}.jsonl`);
+          appendFileSync(
+            transcript,
+            `${JSON.stringify({
+              type: "user",
+              uuid: randomUUID(),
+              sessionId: nativeId,
+              message: { role: "user", content: "A newer task elsewhere" },
+            })}\n`,
+          );
+        }
+        await expect(owner.checkAfterQuit(id, evidence!)).resolves.toBe(false);
+        await expect(
+          owner.resumeAfterQuit(id, evidence!, randomUUID(), continuation),
+        ).resolves.toBe("skipped");
+        expect(f.frames().filter((frame) => frame.type === "user")).toHaveLength(1);
+      },
+    );
+
+    it("rechecks history immediately before sending to the freshly started CLI", async () => {
+      const f = fixture({ quitSettings: true, changeHistoryDuringResume: true });
+      const { id, nativeId } = f.create();
+      const turnId = await running(f, id);
+      const evidence = await f.owner.interruptForQuit(id, turnId);
+      expect(evidence).toBeDefined();
+      const owner = await f.reopen();
+      await expect(owner.checkAfterQuit(id, evidence!)).resolves.toBe(true);
+      await expect(owner.resumeAfterQuit(id, evidence!, randomUUID(), continuation)).resolves.toBe(
+        "skipped",
+      );
+      expect(f.frames().filter((frame) => frame.type === "user")).toHaveLength(1);
+      expect(f.runner(nativeId).hasWorker).toBe(false);
+    });
+  },
+);
 
 describe.skipIf(!["darwin", "linux"].includes(process.platform))(
   "managed Claude Worker restart",

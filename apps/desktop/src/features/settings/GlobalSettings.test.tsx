@@ -3,6 +3,7 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { useState } from "react";
 import { changeLocale, formatDateTime, initializeI18n, tr } from "@/core/i18n";
 import { AppDialogProvider } from "@/components/AppDialogProvider";
 import type { GlobalSettingsProps } from "./GlobalSettings";
@@ -43,6 +44,58 @@ const insightsStatus: NonNullable<GlobalSettingsProps["insightsStatus"]> = {
 describe("GlobalSettings session preferences", () => {
   beforeAll(() => initializeI18n("en-US"));
   afterEach(cleanup);
+
+  it("loads and saves the quit continuation default under Sessions", async () => {
+    const label = "Tasks in progress when quitting";
+    const initialRuntime = {
+      resume_after_quit: true,
+    } as NonNullable<GlobalSettingsProps["runtime"]>;
+    let saved = true;
+    const setQuitResumePreference = vi.fn(async (value: boolean) => {
+      saved = value;
+    });
+    const runtime = vi.fn(async () => ({ ...initialRuntime, resume_after_quit: saved }));
+    vi.stubGlobal("agentkibDesktop", {
+      ...window.agentkibDesktop,
+      home: { runtime },
+      settings: { setQuitResumePreference },
+    });
+    function Settings({ section }: Pick<GlobalSettingsProps, "section">) {
+      const [current, setCurrent] = useState(initialRuntime);
+      return (
+        <GlobalSettings
+          {...baseProps}
+          section={section}
+          runtime={current}
+          onLocaleChanged={setCurrent}
+        />
+      );
+    }
+
+    try {
+      const user = userEvent.setup();
+      const view = render(<Settings section="general" />);
+      expect(screen.queryByRole("combobox", { name: label })).toBeNull();
+      view.rerender(<Settings section="sessions" />);
+      const select = screen.getByRole<HTMLSelectElement>("combobox", { name: label });
+      expect(select.value).toBe("continue");
+      expect([...select.options].map((option) => option.text)).toEqual([
+        "Continue next time AgentKib opens",
+        "Do not continue",
+      ]);
+
+      await user.selectOptions(select, "stop");
+      await waitFor(() => expect(select.value).toBe("stop"));
+      expect(setQuitResumePreference).toHaveBeenLastCalledWith(false);
+      expect(runtime).toHaveBeenCalledTimes(1);
+
+      view.rerender(<Settings section="general" />);
+      view.rerender(<Settings section="sessions" />);
+      expect(screen.getByRole<HTMLSelectElement>("combobox", { name: label }).value).toBe("stop");
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
 
   it("keeps the existing send and auto-continue preferences readable and writable under Sessions", async () => {
     const key = "agentkib.send-while-running";

@@ -134,7 +134,12 @@ export class CodexAppServerSession extends EventEmitter {
     return this.#didClose;
   }
 
-  async request(method: string, params: unknown, onDispatch?: () => void): Promise<unknown> {
+  async request(
+    method: string,
+    params: unknown,
+    onDispatch?: () => void,
+    timeoutMs = REQUEST_TIMEOUT_MS,
+  ): Promise<unknown> {
     if (!this.connected) throw this.#closed ?? new Error("Codex app-server is unavailable");
     if (this.#pending.size >= 128) throw new Error("Codex app-server is busy");
     const id = ++this.#nextId;
@@ -147,7 +152,7 @@ export class CodexAppServerSession extends EventEmitter {
       timer = setTimeout(() => {
         this.#pending.delete(id);
         reject(new Error("Codex app-server request timed out"));
-      }, REQUEST_TIMEOUT_MS);
+      }, timeoutMs);
       this.#pending.set(id, (value) => {
         clearTimeout(timer);
         resolve(value);

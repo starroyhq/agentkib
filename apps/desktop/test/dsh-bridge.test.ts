@@ -4005,6 +4005,7 @@ async function managedFixture(
     stopDelayMs?: number;
     writerStatus?: DshBridgeOptions["writerStatus"];
     localTurn?: DshBridgeOptions["localTurn"];
+    quitWork?: boolean;
   } = {},
 ) {
   const root = realpathSync(mkdtempSync(path.join(tmpdir(), "ak-dsh-managed-")));
@@ -4026,7 +4027,7 @@ async function managedFixture(
   const stops: number[] = [];
   const pluginOptions = {
     roots: [agentkibHome],
-    dshVersion: "0.2.1-rc.5",
+    dshVersion: options.quitWork ? "0.2.2-rc.5" : "0.2.1-rc.5",
     discoveryMs: 50,
     debounceMs: 10,
     listThrottleMs: 20,
@@ -4054,7 +4055,13 @@ async function managedFixture(
       current = {
         pid,
         phase: "starting",
-        plugin: createBridge(dsh.ctx, { ...pluginOptions, pid }),
+        plugin: createBridge(dsh.ctx, {
+          ...pluginOptions,
+          pid,
+          ...(options.quitWork
+            ? { managed: { home: agentkibHome }, stdin: new PassThrough() }
+            : {}),
+        }),
       };
       return pid;
     }),
@@ -4077,7 +4084,7 @@ async function managedFixture(
     }),
     desktopRunning: vi.fn(async () => options.desktopRunning ?? false),
   };
-  bridge = new DshBridge({
+  const bridgeOptions: DshBridgeOptions = {
     dataDir: path.join(root, "data"),
     bootId: randomUUID(),
     pluginDirectory: path.join(root, "plugin"),
@@ -4103,7 +4110,8 @@ async function managedFixture(
       reviewMs: 50,
       settleMs: 300,
     },
-  });
+  };
+  bridge = new DshBridge(bridgeOptions);
   bridge.initialize();
   // The user's own DSH ran once, so AgentKib knows the session; then they closed it.
   if (!options.empty) {
@@ -4147,6 +4155,12 @@ async function managedFixture(
     create,
     userDsh,
     pluginOptions,
+    async reopen() {
+      await bridge.close();
+      bridge = new DshBridge({ ...bridgeOptions, bootId: randomUUID() });
+      bridge.initialize();
+      return bridge;
+    },
   };
 }
 
@@ -4465,6 +4479,151 @@ describe("DeepSeek Harness started in the background", () => {
     expect(f.managed.stop).toHaveBeenCalled();
     expect(f.stops).toHaveLength(1);
   });
+});
+
+describe("DeepSeek Harness quit work", () => {
+  const scenarios = [
+    "same settings",
+    "settings changed during restore",
+    "steering pending at preview",
+    "queued after preview",
+  ];
+  it.each(scenarios)(
+    "verifies the managed interruption and sends no continuation when native input was queued: %s",
+    async (settings) => {
+      const writerStatus = vi.fn(() => "free" as "free" | "held");
+      const localTurn = vi.fn();
+      const f = await managedFixture({ quitWork: true, writerStatus, localTurn });
+      const session = f.dsh.sessions.get("session-a")!;
+      const agent = session.agent;
+      const cwd = path.join(f.root, "workspace");
+      const model = { provider: "deepseek", model: "deepseek-chat", reasoningEffort: "low" };
+      const followup = vi.fn();
+      let loaded = true;
+      let resumed = false;
+      const manualOnly =
+        settings === "steering pending at preview" || settings === "queued after preview";
+      agent.session.header = { id: agent.id, cwd };
+      agent.session.requestHeader = () => ({ config: model });
+      agent.session.eventAt = (seq: number) => session.events[seq];
+      agent.model.current = () => model;
+      agent.followup = followup;
+      agent.cancel = vi.fn((reason: unknown) => {
+        f.dsh.append(agent.id, "turn/end", { turn: 1, reason: { kind: "aborted", reason } });
+        agent.status = "idle";
+        f.dsh.emit("agent/status", { agent, status: "idle" });
+      });
+      agent.whenIdle = async () => {};
+      f.dsh.ctx.agents.get = () => (loaded ? agent : undefined);
+      f.dsh.ctx.agents.list = () => (loaded ? [agent] : []);
+      f.dsh.ctx.workspaceRegistry = { archivedSessionIds: [] };
+      f.dsh.ctx.sessionProjections = {
+        snapshot: () => ({
+          values: {
+            agentPreset: "standard",
+            permissions: { currentValue: "workspace-write" },
+            plan: {
+              active: resumed && settings === "settings changed during restore",
+              pending: false,
+            },
+          },
+        }),
+      };
+      f.dsh.ctx.permissionPresets.resolve = () => ({
+        sandbox: "workspace-write",
+        approval: "on-request",
+      });
+      f.dsh.ctx.sessionPersistence = {
+        flush: vi.fn(async () => {}),
+        open: async () => ({
+          header: agent.session.header,
+          read: async (offset: number) => ({ events: session.events.slice(offset) }),
+          close: async () => {},
+        }),
+      };
+      f.dsh.ctx.sessionController.resolveAgent = async () => {
+        resumed = true;
+        loaded = true;
+        f.dsh.append(agent.id, "session/end-seed", {});
+        f.dsh.emit("agent/created", { agent, source: "resume" });
+        return { agent };
+      };
+
+      const id = "ak-session-a";
+      await expect(f.bridge.quitCandidate(id)).resolves.toBeUndefined();
+      expect(await f.send("first")).toMatchObject({ controlOutcome: "accepted" });
+      await until(() => f.bridge.live(id, true).turnId === "dsh-turn-1");
+      if (settings === "steering pending at preview") agent.inbox.nextStep = [{ id: "steering" }];
+      expect(await f.bridge.quitCandidate(id)).toEqual({
+        turnId: "dsh-turn-1",
+        ...(settings === "steering pending at preview" ? { manualOnly: true } : {}),
+      });
+      if (settings === "queued after preview") agent.inbox.nextTurn = [{ id: "queued" }];
+      expect(await f.bridge.interruptForQuit(id, "dsh-turn-2")).toBeUndefined();
+      expect(agent.cancel).not.toHaveBeenCalled();
+      const evidence = (await f.bridge.interruptForQuit(id, "dsh-turn-1"))!;
+      expect(evidence).toMatchObject({ cwd, turn: 1, endSeq: session.events.at(-1).seq });
+      expect(evidence.manualOnly === true).toBe(manualOnly);
+      if (manualOnly) expect([...agent.inbox.nextTurn, ...agent.inbox.nextStep]).toHaveLength(1);
+      expect(agent.cancel).toHaveBeenCalledExactlyOnceWith(
+        { kind: "hook", reason: `agentkib-quit:${evidence.interruptionId}` },
+        { keepInbox: true },
+      );
+      expect(f.dsh.ctx.sessionPersistence.flush).toHaveBeenCalledTimes(1);
+      expect(await f.bridge.endedTurns(id)).toEqual([]);
+      const reopened = await f.reopen();
+      loaded = false;
+      expect(reopened.handles(id)).toBe(true);
+      localTurn.mockResolvedValue({
+        seq: Number(evidence.endSeq) + (manualOnly ? 1 : 0),
+        quitInterruption: {
+          turn: 1,
+          interruptionId: evidence.interruptionId,
+          endSeq: evidence.endSeq,
+          ...(manualOnly ? { cleanup: "next-turn" } : {}),
+        },
+      });
+      writerStatus.mockReturnValueOnce("held");
+      expect(await reopened.checkAfterQuit(id, evidence)).toBe(false);
+      expect(await reopened.checkAfterQuit(id, { ...evidence, interruptionId: randomUUID() })).toBe(
+        false,
+      );
+      writerStatus.mockReturnValueOnce("free").mockReturnValueOnce("held");
+      expect(await reopened.checkAfterQuit(id, evidence)).toBe(false);
+      expect(await reopened.checkAfterQuit(id, evidence)).toBe(manualOnly ? "open-session" : true);
+      const requestId = randomUUID();
+      if (manualOnly) {
+        const starts = f.starts.length;
+        expect(await reopened.resumeAfterQuit(id, evidence, requestId, "Continue")).toBe(
+          "manual-required",
+        );
+        expect(f.starts).toHaveLength(starts);
+        expect(f.dsh.prompts).toHaveLength(1);
+        expect(followup).not.toHaveBeenCalled();
+        return;
+      }
+      if (settings === "settings changed during restore") {
+        expect(await reopened.resumeAfterQuit(id, evidence, requestId, "Continue")).toBe("skipped");
+        expect(resumed).toBe(true);
+        expect(followup).not.toHaveBeenCalled();
+        return;
+      }
+      expect(await reopened.resumeAfterQuit(id, evidence, requestId, "Continue")).toBe("continued");
+      expect(followup).toHaveBeenCalledExactlyOnceWith({
+        id: requestId,
+        role: "user",
+        content: [{ type: "text", text: "Continue" }],
+        source: { kind: "user", rpcId: requestId },
+      });
+      expect(
+        readControlReceipt(path.join(f.root, "data"), { requestId, deviceId: "desktop-local" }),
+      ).toMatchObject({ sessionId: id, status: "accepted", operation: "send" });
+      expect(await reopened.resumeAfterQuit(id, evidence, randomUUID(), "Do not continue")).toBe(
+        "skipped",
+      );
+      expect(followup).toHaveBeenCalledTimes(1);
+    },
+  );
 });
 
 describe("DeepSeek Harness plugin in a DSH that AgentKib started", () => {

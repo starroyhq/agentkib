@@ -32,6 +32,7 @@ import {
   queueItemHasAttachments,
   queueItems,
   questionItems,
+  quitInterruptionId,
   sessionSummary,
   subagentEntry,
 } from "./projection.js";
@@ -311,6 +312,176 @@ export function createBridge(ctx, options = {}) {
       typeof service("sessionQuery")?.observeSession === "function"
     );
   };
+  function canQuitWork() {
+    return (
+      !!managed &&
+      dshVersion === "0.2.2-rc.5" &&
+      canCancelTurn() &&
+      typeof service("sessionController")?.resolveAgent === "function" &&
+      typeof service("sessionPersistence")?.flush === "function" &&
+      typeof service("sessionPersistence")?.open === "function" &&
+      typeof service("sessionProjections")?.snapshot === "function" &&
+      typeof service("permissionPresets")?.resolve === "function" &&
+      !!service("workspaceRegistry")
+    );
+  }
+
+  function quitSettings(agent) {
+    const model = agent.model?.current?.();
+    const header = agent.session.requestHeader?.();
+    const config = header?.config;
+    if (
+      !model?.provider ||
+      !model.model ||
+      !config ||
+      !sameModelSelection(model, {
+        ...config,
+        reasoningEffort: header.adapterDefaults?.reasoningEffort
+          ? undefined
+          : config.reasoningEffort,
+      })
+    )
+      return null;
+    const { values } = service("sessionProjections").snapshot(agent.session, [
+      "agentPreset",
+      "permissions",
+      "plan",
+    ]);
+    const preset = values.permissions?.currentValue;
+    const plan = values.plan;
+    if (
+      !preset ||
+      preset === "custom" ||
+      preset === "auto" ||
+      !values.agentPreset ||
+      typeof plan?.active !== "boolean" ||
+      plan.pending !== false
+    )
+      return null;
+    const { sandbox, approval } = service("permissionPresets").resolve(preset);
+    if (typeof sandbox !== "string" || typeof approval !== "string") return null;
+    return createHash("sha256")
+      .update(
+        JSON.stringify([
+          model.provider,
+          model.model,
+          model.reasoningEffort ?? null,
+          config.reasoningEffort ?? null,
+          values.agentPreset,
+          preset,
+          sandbox,
+          approval,
+          plan.active,
+        ]),
+      )
+      .digest("hex");
+  }
+
+  function quitAgent(agent, sessionId) {
+    return (
+      !!agent &&
+      agent.id === sessionId &&
+      service("agents").get(sessionId) === agent &&
+      !service("workspaceRegistry").archivedSessionIds.includes(sessionId) &&
+      !agent.session?.header?.origin &&
+      agent.session?.header?.id === sessionId &&
+      typeof agent.session.header.cwd === "string" &&
+      typeof agent.session?.eventAt === "function" &&
+      Array.isArray(agent.inbox?.nextTurn) &&
+      Array.isArray(agent.inbox?.nextStep) &&
+      goalRefOf(agent)?.activation !== "armed"
+    );
+  }
+
+  function quitHasPendingInput(agent) {
+    return agent.inbox.nextTurn.length > 0 || agent.inbox.nextStep.length > 0;
+  }
+
+  function quitCandidate(sessionId) {
+    const agents = service("agents");
+    const agent = agents.get(sessionId);
+    if (
+      !quitAgent(agent, sessionId) ||
+      agent.status !== "running" ||
+      typeof agent.cancel !== "function" ||
+      typeof agent.whenIdle !== "function"
+    )
+      return null;
+    const turn = openTurn(turnBoundary(agents, agent));
+    const manualOnly = quitHasPendingInput(agent);
+    const settings = manualOnly ? null : quitSettings(agent);
+    return turn && (manualOnly || settings) ? { agent, turn, settings, manualOnly } : null;
+  }
+
+  function quitEnding(event, { interruptionId, turn }) {
+    return event?.data?.turn === turn && quitInterruptionId(event) === interruptionId;
+  }
+
+  async function interruptForQuit({ sessionId, turn, interruptionId }) {
+    const candidate = quitCandidate(sessionId);
+    if (!candidate || candidate.turn !== turn) return null;
+    const { agent, settings } = candidate;
+    agent.cancel({ kind: "hook", reason: `agentkib-quit:${interruptionId}` }, { keepInbox: true });
+    await agent.whenIdle();
+    if (!quitAgent(agent, sessionId) || agent.status !== "idle") return null;
+    const manualOnly = candidate.manualOnly || quitHasPendingInput(agent);
+    if (!manualOnly && quitSettings(agent) !== settings) return null;
+    const endSeq = agent.session.seq - 1;
+    if (!quitEnding(agent.session.eventAt(endSeq), { interruptionId, turn })) return null;
+    const persistence = service("sessionPersistence");
+    await persistence.flush();
+    const handle = await persistence.open(sessionId, "read");
+    try {
+      const { events } = await handle.read(endSeq, 2);
+      return handle.header?.id === sessionId &&
+        handle.header.cwd === agent.session.header.cwd &&
+        events.length === 1 &&
+        quitEnding(events[0], { interruptionId, turn })
+        ? {
+            endSeq,
+            interruptionId,
+            turn,
+            cwd: handle.header.cwd,
+            ...(manualOnly ? { manualOnly: true } : { settings }),
+          }
+        : null;
+    } finally {
+      await handle.close();
+    }
+  }
+
+  async function continueAfterQuit({ sessionId, requestId, text, evidence }) {
+    if (evidence.manualOnly === true || service("agents").get(sessionId))
+      return { outcome: "skipped" };
+    // The ordinary resolver composes the original preset and atomically acquires the native
+    // writer. It doesn't submit a prompt. Check again on that exact agent before waking it.
+    const { agent } = await service("sessionController").resolveAgent(sessionId);
+    if (
+      !quitAgent(agent, sessionId) ||
+      agent.status !== "idle" ||
+      quitHasPendingInput(agent) ||
+      agent.session.header.cwd !== evidence.cwd ||
+      agent.session.seq !== evidence.endSeq + 2 ||
+      agent.session.eventAt(evidence.endSeq + 1)?.type !== "session/end-seed" ||
+      !quitEnding(agent.session.eventAt(evidence.endSeq), evidence) ||
+      quitSettings(agent) !== evidence.settings ||
+      typeof agent.followup !== "function"
+    )
+      return { outcome: "skipped" };
+    try {
+      agent.followup({
+        id: requestId,
+        role: "user",
+        content: [{ type: "text", text }],
+        source: { kind: "user", rpcId: requestId },
+      });
+      return { outcome: "continued" };
+    } catch {
+      // A native listener can throw after the inbox insertion took effect.
+      return { outcome: "unknown" };
+    }
+  }
+
   /**
    * Which goal a change must name. It is part of what a control is decided on, so a goal changed
    * in DSH's own window makes AgentKib read it again before changing it.
@@ -1228,6 +1399,17 @@ export function createBridge(ctx, options = {}) {
         return present(command);
       case "verify-turn-end":
         return verifyTurnEnd(command);
+      case "quit-candidate": {
+        if (!canQuitWork()) return null;
+        const candidate = quitCandidate(command.sessionId);
+        return candidate
+          ? { turn: candidate.turn, ...(candidate.manualOnly ? { manualOnly: true } : {}) }
+          : null;
+      }
+      case "quit-interrupt":
+        return canQuitWork() ? interruptForQuit(command) : null;
+      case "quit-continue":
+        return canQuitWork() ? continueAfterQuit(command) : { outcome: "skipped" };
       case "prompt": {
         const requestId = String(command.requestId);
         const controller = needController();
@@ -1671,6 +1853,7 @@ export function createBridge(ctx, options = {}) {
       sessionController: typeof controller?.prompt === "function",
       sessionQuery: typeof query?.observeSession === "function",
       turnScopedCancel: canCancelTurn(),
+      quitWork: canQuitWork(),
       contextUsage: projects && typeof service("tokenMeter")?.contextPressure === "function",
       approvals: true,
       questions: typeof service("userQuestions")?.ask === "function",

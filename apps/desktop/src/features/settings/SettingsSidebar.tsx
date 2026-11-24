@@ -39,6 +39,7 @@ export const settingsTargets = [
   "general-quota",
   "sessions-messaging",
   "sessions-continuation",
+  "sessions-quit-resume",
   "appearance-mode",
   "appearance-theme",
   "shortcuts-list",
@@ -123,6 +124,16 @@ const searchEntries: Array<{
     target: "sessions-continuation",
     label: "settings.usageLimitAutoContinue",
     keywords: ["settings.sessionContinuation", "settings.usageLimitAutoContinueHint"],
+  },
+  {
+    section: "sessions",
+    target: "sessions-quit-resume",
+    label: "settings.quitResume",
+    keywords: [
+      "settings.sessionContinuation",
+      "settings.quitResume.continue",
+      "settings.quitResume.stop",
+    ],
   },
   {
     section: "appearance",

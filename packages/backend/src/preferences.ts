@@ -48,6 +48,7 @@ export function preferenceSnapshot(dataDir: string, environment: NodeJS.ProcessE
   const width = preferences.sidebar_width_preference;
   return {
     close_behavior: member(preferences.close_behavior, CLOSE_BEHAVIORS),
+    resume_after_quit: booleanPreference(preferences.resume_after_quit, true),
     locale_preference: locale,
     effective_locale: locale === "system" ? (environment.AGENTKIB_LOCALE ?? "en-US") : locale,
     theme_preference: theme,

@@ -352,6 +352,26 @@ process.on("SIGHUP", () => process.exit(0));
 }
 
 describe.runIf(process.platform !== "win32")("Devin sessions run by AgentKib", () => {
+  it("exposes the host's reorder operation while native queue steer remains unavailable", async () => {
+    const f = fixture();
+    const features = await f.features();
+    expect(features["queue-reorder"]).toMatchObject({ available: true });
+    expect(features["queue-steer"]).toMatchObject({ available: false });
+
+    await f.control("queue-add", { text: "First" });
+    await f.control("queue-add", { text: "Second" });
+    const queue = () =>
+      f.web.managedQueueList({ operation: "queue-list", sessionId: f.id }) as Promise<{
+        data: { id: string; text: string }[];
+      }>;
+    const [first, second] = (await queue()).data;
+    expect(
+      await f.control("queue-reorder", { queuedSubmissionIds: [second!.id, first!.id] }),
+    ).toMatchObject({ accepted: true, completed: true });
+    expect((await queue()).data.map(({ text }) => text)).toEqual(["Second", "First"]);
+    expect(f.log("prompts.log")).toBe("");
+  });
+
   const png = Buffer.from(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+c9esAAAAASUVORK5CYII=",
     "base64",

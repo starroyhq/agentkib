@@ -10,6 +10,7 @@ import {
   type ResolvedHistoryReference,
   type SessionProviderCapabilities,
   type SessionAttachmentKinds,
+  type SessionQueueItemActions,
 } from "@agentkib/runtime-protocol";
 import {
   historyInputHash,
@@ -427,8 +428,21 @@ type QueueEntry = {
   ownerWait?: boolean;
   ownerWaitDeviceId?: string;
   ownerWaitWorkspaceId?: string;
-  actions?: { delete?: Availability };
+  actions?: SessionQueueItemActions;
+  hasAttachments?: boolean;
+  queueSteerDeviceId?: string;
 };
+
+function queueEntryHasAttachments(item: QueueEntry): boolean {
+  return (
+    item.hasAttachments === true ||
+    (item.input ?? []).some(
+      (input) =>
+        input.type !== "text" ||
+        input.text?.split("\n").some((line) => line.startsWith("User attached file ")),
+    )
+  );
+}
 
 function isOwnerWaitQueueEntry(item: QueueEntry, workspaceId: string) {
   return (
@@ -3930,7 +3944,7 @@ export class WebAccessService {
             transport &&
             execution &&
             (operation !== "open-model-picker" || data.executionMode === "claude-follower") &&
-            (operation !== "attachments" || device.send === true) &&
+            (!["attachments", "queue-steer"].includes(operation) || device.send === true) &&
             (operation !== "goal-draft" ||
               (data.executionMode === "claude-managed" && device.send === true));
           return [
@@ -4406,7 +4420,7 @@ export class WebAccessService {
         undefined,
         true,
       )) as {
-        data?: { id: string; status?: string; input?: { type: string; text?: string }[] }[];
+        data?: QueueEntry[];
       };
       if (
         (queued as { reason?: string }).reason === "queue-too-large" ||
@@ -4419,13 +4433,18 @@ export class WebAccessService {
         policy.queueItem === "pending-or-unknown" ? ["pending", "unknown"] : ["pending"];
       if (!target || (target.status !== undefined && !removable.includes(target.status)))
         throw new HttpError(409, "queue_item_unavailable");
+      if (operation === "queue-update") {
+        if (queueEntryHasAttachments(target))
+          throw new HttpError(409, "queue_attachments_edit_unsupported");
+        if (target.actions?.update?.available === false)
+          throw new HttpError(409, "queue_item_unavailable");
+      }
       if (
-        operation === "queue-update" &&
-        target.input?.some(
-          (input) => input.type !== "text" || input.text?.startsWith("User attached file "),
-        )
+        operation === "queue-steer" &&
+        (target.actions?.steer?.available === false ||
+          (target.queueSteerDeviceId !== undefined && target.queueSteerDeviceId !== device.id))
       )
-        throw new HttpError(409, "queue_attachments_edit_unsupported");
+        throw new HttpError(409, "queue_item_unavailable");
     }
     if (operation === "steer") params.turnId = this.field(body.turnId);
     if (["queue-update", "queue-delete", "queue-steer"].includes(operation))
@@ -6989,12 +7008,28 @@ export class WebAccessService {
                 actions: {
                   update: { available: false, reason: item.reason },
                   delete: { available: canDeleteOwnerWait(item, current.id) },
+                  ...(!lan ? { reorder: { available: false }, steer: { available: false } } : {}),
                 },
               }
-            : {}),
-          hasAttachments: (item.input ?? []).some(
-            (input) => input.type !== "text" || input.text?.startsWith("User attached file "),
-          ),
+            : !legacyCodex && item.actions
+              ? {
+                  actions: {
+                    ...item.actions,
+                    ...(item.actions.steer
+                      ? {
+                          steer: {
+                            available:
+                              item.actions.steer.available &&
+                              current.send === true &&
+                              (item.queueSteerDeviceId === undefined ||
+                                item.queueSteerDeviceId === current.id),
+                          },
+                        }
+                      : {}),
+                  },
+                }
+              : {}),
+          hasAttachments: queueEntryHasAttachments(item),
           text: (item.input ?? [])
             .filter(
               (input) => input.type === "text" && !input.text?.startsWith("User attached file "),

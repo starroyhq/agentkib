@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
 import {
+  ArrowUp,
   CornerDownRight,
   ListEnd,
   ListPlus,
-  MoreHorizontal,
   Paperclip,
   Pencil,
   Trash2,
@@ -20,8 +20,10 @@ import {
 import { subscribeSessionInvalidation } from "@agentkib/conversation-state";
 import {
   canReadSessionQueue,
+  moveQueuedItemUp,
   queueActionGranted,
   queueItemPending,
+  reorderableQueueItems,
   sessionQueuePanel,
   type SessionQueuePanelAgent,
 } from "../../agents/session-queue";
@@ -32,17 +34,15 @@ import { useSessionPlatform } from "../../session-platform";
 import { sessionCopy, sessionCopyForSurface, sessionReason } from "./session-copy";
 import { sessionAgentCopy } from "./session-agent-copy";
 
-type QueueControl = "update" | "delete" | "steer" | "pause" | "resume";
+type QueueControl = "update" | "delete" | "reorder" | "steer" | "pause" | "resume";
 type QueueAction = `queue-${QueueControl}`;
+type QueueFields = { queuedSubmissionId?: string; queuedSubmissionIds?: string[]; text?: string };
 
 type SendQueueSession = {
   selected: string;
   client: WebClient;
   capabilities?: SessionCapabilities;
-  runSessionAction: (
-    action: QueueAction | "queue-add",
-    fields?: { queuedSubmissionId?: string; text?: string },
-  ) => Promise<unknown>;
+  runSessionAction: (action: QueueAction | "queue-add", fields?: QueueFields) => Promise<unknown>;
   busy: boolean;
   online: boolean;
   controlReady: boolean;
@@ -60,14 +60,7 @@ export function SessionSendQueue({
   const {
     kind,
     copy: { unavailableReason },
-    components: {
-      Button,
-      Input,
-      DropdownMenu,
-      DropdownMenuContent,
-      DropdownMenuItem,
-      DropdownMenuTrigger,
-    },
+    components: { Button, Input },
   } = useSessionPlatform();
   const {
     selected,
@@ -87,7 +80,6 @@ export function SessionSendQueue({
     resolveSessionProvider({ id: selected, agent }, capabilities),
   );
   const serial = panel?.serial === true;
-  const offered = (action: QueueControl) => panel?.actions.includes(action) === true;
   const readable = canReadSessionQueue(panel, selected, capabilities, access);
   const scope = JSON.stringify([selected, agent, access?.bootId, access?.device?.id]);
   const authority = useMemo(() => ({ client, scope, readable }), [client, scope, readable]);
@@ -148,9 +140,10 @@ export function SessionSendQueue({
     copy.queueTooLarge,
     copy.unavailableQueue,
   ]);
-  if (!panel || (!serial && !queue?.data.length)) return null;
+  if (!panel) return null;
   const paused = queue?.paused === true || queue?.requiresResume === true;
   const pauseAction = paused ? "resume" : "pause";
+  const reorderable = reorderableQueueItems(queue?.data, panel);
   const enabled = (action: QueueControl) =>
     !!(
       access?.experimentalEnabled &&
@@ -159,11 +152,12 @@ export function SessionSendQueue({
       online &&
       controlReady &&
       readable &&
+      !error &&
       queueActionGranted(panel, action, access) &&
       capabilities?.sessionId === selected &&
       capabilities.features[`queue-${action}`]?.available
     );
-  const reason = (action: QueueControl, itemReason?: string) =>
+  const reason = (action: QueueControl | "list", itemReason?: string) =>
     sessionReason(
       locale,
       itemReason ||
@@ -173,23 +167,44 @@ export function SessionSendQueue({
       kind,
       unavailableReason,
     ).text;
-  async function run(action: QueueControl, fields?: { queuedSubmissionId: string; text?: string }) {
+  async function run(action: QueueControl, fields?: QueueFields) {
     if (!enabled(action)) return;
     setOperation(true);
     try {
       if (await runSessionAction(`queue-${action}`, fields)) {
         setEdit(undefined);
-        if (serial) setReload((n) => n + 1);
+        if (serial || action === "reorder") setReload((n) => n + 1);
       }
     } finally {
       setOperation(false);
     }
   }
+  if (!readable) {
+    return (
+      <div className="mx-4">
+        <Button
+          type="button"
+          size="sm"
+          variant="ghost"
+          className="disabled:pointer-events-auto"
+          title={reason("list")}
+          disabled
+        >
+          {copy.queue}
+        </Button>
+      </div>
+    );
+  }
+  if (!serial && !queue?.data.length && !error) return null;
   return (
     // Opaque: the conversation scrolls behind the composer area.
     <div className="mx-4 -mb-6 rounded-t-2xl border border-b-0 bg-card px-3 pt-1 pb-6 text-sm">
-      {error && <p className="py-1 text-xs text-muted-foreground">{error}</p>}
-      {serial && offered(pauseAction) && (
+      {error && (
+        <p role="status" className="py-1 text-xs text-muted-foreground">
+          {error}
+        </p>
+      )}
+      {(serial || !!queue?.data.length) && (
         <div className="flex min-h-9 items-center justify-between gap-2">
           <span className="min-w-0 text-xs text-muted-foreground">
             {paused
@@ -215,19 +230,22 @@ export function SessionSendQueue({
       )}
       <ul aria-label={copy.queue} className="empty:hidden">
         {queue?.data.map((item) => {
-          const editable = !serial || queueItemPending(item, panel);
+          const pending = queueItemPending(item, panel);
+          const editable = !serial || pending;
           const removable = editable || item.status === "unknown";
-          const canEdit =
+          const editableText =
             editable && !item.hasAttachments && item.actions?.update?.available !== false;
-          const editTitle =
-            canEdit && enabled("update")
-              ? undefined
-              : item.hasAttachments
-                ? copy.queueAttachments
-                : reason("update", item.actions?.update?.reason);
+          const canEdit = editableText && enabled("update");
+          const editTitle = canEdit
+            ? copy.queueEditItem
+            : item.hasAttachments
+              ? copy.queueAttachments
+              : reason("update", item.actions?.update?.reason);
           const canRemove =
             removable && enabled("delete") && item.actions?.delete?.available !== false;
-          const canSteer = enabled("steer") && item.actions?.steer?.available !== false;
+          const canSteer = pending && enabled("steer") && item.actions?.steer?.available !== false;
+          const reorderIndex = reorderable.findIndex((entry) => entry.id === item.id);
+          const canMoveUp = reorderIndex > 0 && enabled("reorder");
           return (
             <li key={item.id} className="flex min-h-10 min-w-0 items-center gap-1">
               <ListEnd
@@ -235,7 +253,7 @@ export function SessionSendQueue({
                 aria-hidden="true"
                 className="mr-1 shrink-0 text-muted-foreground"
               />
-              {editing === item.id && canEdit ? (
+              {editing === item.id && editableText ? (
                 <form
                   className="flex min-w-0 flex-1 items-center gap-2"
                   onSubmit={(event) => {
@@ -262,7 +280,7 @@ export function SessionSendQueue({
                     variant="outline"
                     className="disabled:pointer-events-auto"
                     disabled={!enabled("update") || !text.trim()}
-                    title={editTitle ?? (!text.trim() ? reason("update") : undefined)}
+                    title={canEdit && text.trim() ? undefined : reason("update")}
                   >
                     {copy.queueSave}
                   </Button>
@@ -286,66 +304,68 @@ export function SessionSendQueue({
                   <span className="min-w-0 flex-1 truncate" title={item.text}>
                     {item.text || (item.hasAttachments ? "" : item.id)}
                   </span>
-                  {offered("steer") && (
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="sm"
-                      className="shrink-0 text-muted-foreground disabled:pointer-events-auto"
-                      disabled={!canSteer}
-                      title={canSteer ? copy.steer : reason("steer", item.actions?.steer?.reason)}
-                      onClick={() => canSteer && void run("steer", { queuedSubmissionId: item.id })}
-                    >
-                      <CornerDownRight size={16} aria-hidden="true" />
-                      {copy.queueSteerItem}
-                    </Button>
-                  )}
-                  {offered("delete") && (
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="icon"
-                      className="size-8 shrink-0 text-muted-foreground disabled:pointer-events-auto"
-                      aria-label={copy.queueDelete}
-                      title={
-                        canRemove
-                          ? copy.queueDelete
-                          : reason("delete", item.actions?.delete?.reason)
-                      }
-                      disabled={!canRemove}
-                      onClick={() =>
-                        canRemove && void run("delete", { queuedSubmissionId: item.id })
-                      }
-                    >
-                      <Trash2 size={16} aria-hidden="true" />
-                    </Button>
-                  )}
-                  {offered("update") && (
-                    <DropdownMenu>
-                      <DropdownMenuTrigger
-                        type="button"
-                        className="inline-flex size-8 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground"
-                        aria-label={copy.advanced}
-                        title={copy.advanced}
-                      >
-                        <MoreHorizontal size={16} aria-hidden="true" />
-                      </DropdownMenuTrigger>
-                      <DropdownMenuContent side="top" align="end">
-                        <DropdownMenuItem
-                          className="data-disabled:pointer-events-auto"
-                          disabled={!canEdit || !enabled("update")}
-                          title={editTitle}
-                          onClick={() => {
-                            if (canEdit && enabled("update"))
-                              setEdit({ authority, id: item.id, text: item.text ?? "" });
-                          }}
-                        >
-                          <Pencil size={16} aria-hidden="true" />
-                          {copy.queueEditItem}
-                        </DropdownMenuItem>
-                      </DropdownMenuContent>
-                    </DropdownMenu>
-                  )}
+
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="shrink-0 text-muted-foreground disabled:pointer-events-auto"
+                    disabled={!canSteer}
+                    title={canSteer ? copy.steer : reason("steer", item.actions?.steer?.reason)}
+                    onClick={() => canSteer && void run("steer", { queuedSubmissionId: item.id })}
+                  >
+                    <CornerDownRight size={16} aria-hidden="true" />
+                    {copy.queueSteerItem}
+                  </Button>
+
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    className="size-8 shrink-0 text-muted-foreground disabled:pointer-events-auto"
+                    aria-label={copy.queueDelete}
+                    title={
+                      canRemove ? copy.queueDelete : reason("delete", item.actions?.delete?.reason)
+                    }
+                    disabled={!canRemove}
+                    onClick={() => canRemove && void run("delete", { queuedSubmissionId: item.id })}
+                  >
+                    <Trash2 size={16} aria-hidden="true" />
+                  </Button>
+
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    className="size-8 shrink-0 text-muted-foreground disabled:pointer-events-auto"
+                    aria-label={copy.queueUp}
+                    title={
+                      canMoveUp ? copy.queueUp : reason("reorder", item.actions?.reorder?.reason)
+                    }
+                    disabled={!canMoveUp}
+                    onClick={() =>
+                      canMoveUp &&
+                      void run("reorder", {
+                        queuedSubmissionIds: moveQueuedItemUp(reorderable, reorderIndex),
+                      })
+                    }
+                  >
+                    <ArrowUp size={16} aria-hidden="true" />
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    className="size-8 shrink-0 text-muted-foreground disabled:pointer-events-auto"
+                    aria-label={copy.queueEditItem}
+                    title={editTitle}
+                    disabled={!canEdit}
+                    onClick={() =>
+                      canEdit && setEdit({ authority, id: item.id, text: item.text ?? "" })
+                    }
+                  >
+                    <Pencil size={16} aria-hidden="true" />
+                  </Button>
                 </>
               )}
             </li>

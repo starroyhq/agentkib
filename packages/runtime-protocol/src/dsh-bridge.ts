@@ -180,6 +180,8 @@ export interface DshBridgeQueueItem {
   text: string;
   /** Images in the message; DSH edits only text, so these items cannot be edited. */
   images: number;
+  /** Whether the original inbox item has non-text content or an attached-file note. */
+  hasAttachments?: boolean;
   rpcId: string | null;
 }
 

@@ -886,6 +886,61 @@ it("keeps attachments read-only and honors the host's per-item queue grants", as
   expect(state.runSessionAction).not.toHaveBeenCalled();
 });
 
+it("keeps unavailable queue actions visible and omits protected items from sorting", async () => {
+  const copy = sessionCopyForSurface("zh-CN", "web");
+  state = {
+    ...state,
+    current: {
+      id: "s",
+      agent: "codex",
+      title: "Codex",
+      workspace_id: "w",
+      archived: false,
+      sidechain: false,
+      availability: "readable",
+    },
+    access: { ...state.access!, experimentalEnabled: true },
+    capabilities: {
+      sessionId: "s",
+      executionMode: "codex-managed",
+      status: "idle",
+      features: {
+        "queue-reorder": { available: true },
+        "queue-steer": { available: true },
+      },
+    },
+    client: Object.assign(state.client, {
+      codexQueue: vi.fn().mockResolvedValue({
+        data: [
+          { id: "first", text: "First queued turn" },
+          {
+            id: "protected",
+            status: "pending",
+            text: "Waiting for the owner",
+            actions: { reorder: { available: false } },
+          },
+          { id: "second", text: "Second queued turn" },
+        ],
+      }),
+      request: vi.fn().mockResolvedValue({ available: true, workspaces: [] }),
+    }),
+    refresh: vi.fn(),
+  };
+  render(<SessionTools open />);
+  const queue = within(await screen.findByRole("region", { name: copy.queue }));
+  await queue.findByText("Second queued turn");
+  const [first, protectedItem, second] = queue.getAllByRole("button", { name: copy.queueUp });
+  expect(first).toBeDisabled();
+  expect(protectedItem).toBeDisabled();
+  expect(second).toBeEnabled();
+  expect(queue.getAllByRole("button", { name: copy.queueSteerItem })[0]).toBeDisabled();
+  expect(queue.getByRole("button", { name: "暂停队列" })).toBeDisabled();
+  fireEvent.click(second!);
+  expect(state.runSessionAction).toHaveBeenCalledExactlyOnceWith("queue-reorder", {
+    queuedSubmissionIds: ["second", "first"],
+  });
+});
+
 it.each(["same-origin", "lan-http"] as const)(
   "labels a message waiting for ChatGPT and keeps removal available over %s",
   async (transport) => {

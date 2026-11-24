@@ -365,6 +365,21 @@ export function replayManagedCommand(
   }
 }
 
+export function prepareManagedCommandInTransaction(
+  database: DatabaseSync,
+  requestId: string,
+  sessionId: string,
+  fingerprint: string,
+  deviceId: string | null,
+  evidence: Record<string, unknown>,
+): void {
+  database
+    .prepare(
+      "INSERT INTO managed_commands(request_id,session_id,fingerprint,phase,result,device_id,evidence,claim_version) VALUES(?,?,?,'prepared',NULL,?,?,1)",
+    )
+    .run(requestId, sessionId, fingerprint, deviceId ?? "", JSON.stringify(evidence));
+}
+
 /** Claim a command atomically before any external side effect can be dispatched. */
 export function claimManagedCommand(
   dataDir: string,
@@ -400,11 +415,14 @@ export function claimManagedCommand(
         reason: prior.phase === "prepared" ? "request-interrupted" : "control-outcome-unconfirmed",
       };
     }
-    database
-      .prepare(
-        "INSERT INTO managed_commands(request_id,session_id,fingerprint,phase,result,device_id,evidence,claim_version) VALUES(?,?,?,'prepared',NULL,?,?,1)",
-      )
-      .run(requestId, sessionId, fingerprint, deviceId ?? "", JSON.stringify(evidence));
+    prepareManagedCommandInTransaction(
+      database,
+      requestId,
+      sessionId,
+      fingerprint,
+      deviceId,
+      evidence,
+    );
     database.exec("COMMIT");
     return null;
   } catch (error) {
@@ -442,16 +460,23 @@ export function deleteManagedSessions(dataDir: string, ids: readonly string[]): 
   }
 }
 
+export function dispatchManagedCommandInTransaction(
+  database: DatabaseSync,
+  requestId: string,
+): void {
+  const changed = database
+    .prepare(
+      "UPDATE managed_commands SET phase='dispatched' WHERE request_id=? AND phase='prepared'",
+    )
+    .run(requestId).changes;
+  if (changed !== 1) throw new Error("control-ledger-not-prepared");
+}
+
 export function dispatchManagedCommand(dataDir: string, requestId: string): void {
   const database = openManagedLedger(dataDir);
   if (!database) throw new Error("session-unavailable");
   try {
-    const changed = database
-      .prepare(
-        "UPDATE managed_commands SET phase='dispatched' WHERE request_id=? AND phase='prepared'",
-      )
-      .run(requestId).changes;
-    if (changed !== 1) throw new Error("control-ledger-not-prepared");
+    dispatchManagedCommandInTransaction(database, requestId);
   } finally {
     database.close();
   }

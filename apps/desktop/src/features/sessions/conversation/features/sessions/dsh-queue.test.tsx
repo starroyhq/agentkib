@@ -118,10 +118,9 @@ it.each(["devin", "antigravity"] as const)(
     render(<SessionSendQueue session={state} agent={agent} />);
     await screen.findByText("run the tests next");
     expect(read).toHaveBeenCalledWith("session", agent, expect.any(AbortSignal));
-    expect(screen.queryByRole("button", { name: /Steer/ })).not.toBeInTheDocument();
+    expect(screen.getAllByRole("button", { name: /Steer/ })[0]).toBeDisabled();
     expect(screen.getAllByRole("button", { name: "Remove" })[1]).toBeDisabled();
-    await user.click(screen.getAllByRole("button", { name: "More actions" })[0]!);
-    await user.click(await screen.findByRole("menuitem", { name: "Edit message" }));
+    await user.click(screen.getAllByRole("button", { name: "Edit message" })[0]!);
     const input = screen.getByRole("textbox", { name: "Message text" });
     await user.clear(input);
     await user.type(input, "run tests first");
@@ -137,6 +136,53 @@ it.each(["devin", "antigravity"] as const)(
     expect(state.runSessionAction).toHaveBeenLastCalledWith("queue-resume", undefined);
   },
 );
+
+it("moves a serial queued message up with a complete pending permutation", async () => {
+  const user = userEvent.setup();
+  state = session(
+    {
+      "queue-list": available,
+      "queue-reorder": available,
+    },
+    [
+      { id: "first", status: "pending", text: "First message" },
+      { id: "sent", status: "dispatched", text: "Already sent" },
+      { id: "second", status: "pending", text: "Second message" },
+    ],
+  );
+  const provider = sessionProviderDeclaration("devin")!;
+  state.capabilities!.provider = {
+    ...provider,
+    queue: { actions: ["list", "reorder", "pause", "resume"] },
+  };
+  render(<SessionSendQueue session={state} agent="devin" />);
+  const [first, dispatched, second] = await screen.findAllByRole("button", { name: "Move up" });
+  expect(first).toBeDisabled();
+  expect(dispatched).toBeDisabled();
+  expect(second).toBeEnabled();
+  await user.click(second!);
+  expect(state.runSessionAction).toHaveBeenCalledExactlyOnceWith("queue-reorder", {
+    queuedSubmissionIds: ["second", "first"],
+  });
+});
+
+it("routes a reorder from the basic composer to the managed queue", async () => {
+  const client = new WebClient();
+  const request = vi.spyOn(client, "request").mockResolvedValue({ accepted: true });
+  const body = {
+    sessionId: "session",
+    requestId: "request",
+    bootId: "boot",
+    expectedRevision: 4,
+    queuedSubmissionIds: ["second", "first"],
+  };
+  await dispatchSessionAction(client, "devin", "queue-reorder", body);
+  expect(request).toHaveBeenCalledExactlyOnceWith("managed/action", {
+    ...body,
+    agent: "devin",
+    operation: "queue-reorder",
+  });
+});
 
 describe("DSH queued messages above the composer", () => {
   it("lists what waits for the next turn, steers one in or withdraws it", async () => {
@@ -202,11 +248,10 @@ describe("DSH queued messages above the composer", () => {
     expect(sessionQueuePanel("claude-code")).toBeUndefined();
   });
 
-  it("edits a message from its menu", async () => {
+  it("edits a queued message from its row", async () => {
     const user = userEvent.setup();
     render(<SessionSendQueue session={state} agent="deepseek-harness" />);
-    await user.click(await screen.findByRole("button", { name: "More actions" }));
-    await user.click(await screen.findByRole("menuitem", { name: "Edit message" }));
+    await user.click(await screen.findByRole("button", { name: "Edit message" }));
     const input = screen.getByRole("textbox", { name: "Message text" });
     await user.clear(input);
     await user.type(input, "run the tests first");
@@ -230,12 +275,7 @@ describe("DSH queued messages above the composer", () => {
     );
     render(<SessionSendQueue session={state} agent="deepseek-harness" />);
     expect(await screen.findByRole("img", { name: /cannot be edited/ })).toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "More actions" }));
-    expect(await screen.findByRole("menuitem", { name: "Edit message" })).toHaveAttribute(
-      "aria-disabled",
-      "true",
-    );
-    await user.keyboard("{Escape}");
+    expect(screen.getByRole("button", { name: "Edit message" })).toBeDisabled();
     await user.click(screen.getByRole("button", { name: "Remove" }));
     expect(state.runSessionAction).toHaveBeenLastCalledWith("queue-delete", {
       queuedSubmissionId: "item-1",
@@ -275,7 +315,7 @@ describe("DSH queued messages above the composer", () => {
     await vi.waitFor(() => expect(read).toHaveBeenCalledTimes(4));
   });
 
-  it("takes no room when nothing waits or the queue cannot be read here", async () => {
+  it("takes no room when nothing waits and disables viewing if the queue cannot be read", async () => {
     state = session({ "queue-list": available }, []);
     const { container, rerender } = render(
       <SessionSendQueue session={state} agent="deepseek-harness" />,
@@ -284,7 +324,7 @@ describe("DSH queued messages above the composer", () => {
     expect(container).toBeEmptyDOMElement();
     state = session({ "queue-list": { available: false, reason: "dsh-runtime-offline" } });
     rerender(<SessionSendQueue session={state} agent="deepseek-harness" />);
-    expect(container).toBeEmptyDOMElement();
+    expect(screen.getByRole("button", { name: "Queued messages" })).toBeDisabled();
     expect(state.client.sessionQueue).not.toHaveBeenCalled();
   });
 
@@ -298,6 +338,7 @@ describe("DSH queued messages above the composer", () => {
     };
     rerender(<SessionSendQueue session={state} agent="deepseek-harness" />);
     expect(screen.queryByText("run the tests next")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Queued messages" })).toBeDisabled();
     expect(read).toHaveBeenCalledOnce();
   });
 });

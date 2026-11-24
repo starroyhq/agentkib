@@ -32,6 +32,7 @@ const operations = [
   "queue-add",
   "queue-update",
   "queue-delete",
+  "queue-reorder",
   "queue-pause",
   "queue-resume",
 ] as const;
@@ -41,18 +42,24 @@ const identifiers = {
   deviceId: z.string().refine(validClaudeDeviceId),
   runtimeBootId: z.string(),
 };
-const controlRequest = z.strictObject({
-  ...identifiers,
-  operation: z.enum(operations),
-  expectedRevision: z.number().int().nonnegative(),
-  experimentalEnabled: z.literal(true),
-  text: z
-    .string()
-    .max(64 * 1024)
-    .optional(),
-  queuedSubmissionId: z.uuid().optional(),
-  publicInputHash: z.string().max(256).optional(),
-});
+const controlRequest = z
+  .strictObject({
+    ...identifiers,
+    operation: z.enum(operations),
+    expectedRevision: z.number().int().nonnegative(),
+    experimentalEnabled: z.literal(true),
+    text: z
+      .string()
+      .max(64 * 1024)
+      .optional(),
+    queuedSubmissionId: z.uuid().optional(),
+    queuedSubmissionIds: z.array(z.uuid()).max(100).optional(),
+    publicInputHash: z.string().max(256).optional(),
+  })
+  .refine(
+    ({ operation, queuedSubmissionIds }) =>
+      (operation === "queue-reorder") === (queuedSubmissionIds !== undefined),
+  );
 const scheduleTarget = {
   ...identifiers,
   expectedRevision: z.number().int().nonnegative(),
@@ -170,6 +177,8 @@ export class SerialSessionQueue {
       "queue-add": grant(writable),
       "queue-update": grant(writable),
       "queue-delete": grant(writable),
+      "queue-reorder": grant(writable),
+      "queue-steer": grant(false, "unsupported-operation"),
       "queue-pause": grant(writable && !state?.paused),
       "queue-resume": grant(
         writable && state?.paused === true && !unresolved,
@@ -194,6 +203,16 @@ export class SerialSessionQueue {
           hasAttachments: false,
           text: item.input,
           input: [{ type: "text" as const, text: item.input }],
+          actions: {
+            update:
+              item.status === "pending"
+                ? { available: true }
+                : { available: false, reason: "queue-item-unavailable" },
+            delete:
+              item.status === "pending" || item.status === "unknown"
+                ? { available: true }
+                : { available: false, reason: "queue-item-unavailable" },
+          },
         })),
     };
   }
@@ -244,6 +263,24 @@ export class SerialSessionQueue {
             throw new Error("control-outcome-unconfirmed");
           state.paused = false;
           state.reason = null;
+          return {};
+        }
+        if (request.operation === "queue-reorder") {
+          const orderedIds = request.queuedSubmissionIds ?? [];
+          const pending = state.work.filter((work) => work.status === "pending");
+          const pendingById = new Map(pending.map((work) => [work.id, work]));
+          if (
+            orderedIds.length !== pending.length ||
+            new Set(orderedIds).size !== pending.length ||
+            !orderedIds.every((id) => pendingById.has(id))
+          )
+            throw new Error("stale-queue-order");
+
+          // Only pending rows can move. A permit's claimed row stays fenced in place.
+          let index = 0;
+          state.work = state.work.map((work) =>
+            work.status === "pending" ? pendingById.get(orderedIds[index++]!)! : work,
+          );
           return {};
         }
         const item = state.work.find(({ id }) => id === request.queuedSubmissionId);

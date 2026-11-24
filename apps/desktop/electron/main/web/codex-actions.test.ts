@@ -356,14 +356,9 @@ it("forwards an exact advertised native decision separately from the legacy stri
         requestId: 7,
         turnId: "turn",
         supported: true,
-        method: "item/commandExecution/requestApproval",
-        command: "ls",
-        cwd: dir,
         requiresExtendedApproval: true,
         availableDecisions: [],
-        decisionOptions: [
-          { id: "amend", label: "acceptWithExecpolicyAmendment", scope: "persistent", decision },
-        ],
+        decisionOptions: [{ decision }],
       },
     ],
   }));

@@ -1,23 +1,16 @@
-import { isDeepStrictEqual } from "node:util";
 import {
   sessionProviderDeclaration,
   type LiveSessionAgent,
   type SessionInteractionDecision,
   type SessionInteractionQuestion,
-  type SessionInteractionRisk,
   type SessionPendingInteraction,
 } from "@agentkib/runtime-protocol";
 import { interactionEvidence } from "./interaction-evidence";
 import { classifyInteractionRisk } from "./interaction-risk";
 
 type Decision = SessionInteractionDecision;
-type Candidate = Pick<Decision, "id" | "kind" | "scope"> & {
+type Candidate = Pick<Decision, "id" | "kind" | "scope" | "label"> & {
   nativeChoice?: string;
-  nativeDecision?: unknown;
-};
-type RequestDecision = {
-  interactionDecisionId?: string;
-  decision?: string;
   nativeDecision?: unknown;
 };
 type Projection = {
@@ -56,6 +49,7 @@ function decisionKind(action: unknown): Decision["kind"] | undefined {
     case "allow_always":
       return "allow";
     case "reject_once":
+    case "reject_always":
     case "deny-permissions":
     case "deny":
     case "decline":
@@ -79,25 +73,41 @@ function approvalCandidates(approval: unknown): Candidate[] {
     const option = options.find((row) => row?.optionId === choice);
     const native = extended.find((row) => row?.decision === choice);
     const action = option?.kind ?? native?.label ?? choice;
-    const kind = decisionKind(action);
-    if (!kind) continue;
+    const kind = decisionKind(action) ?? "native";
+    const label =
+      typeof option?.name === "string" && option.name
+        ? option.name
+        : kind === "native"
+          ? choice
+          : undefined;
     const scope =
       native?.scope === "session" || action === "acceptForSession"
         ? "session"
-        : native?.scope === "persistent" || action === "allow_always"
+        : native?.scope === "persistent" || action === "allow_always" || action === "reject_always"
           ? "persistent"
-          : "once";
-    candidates.push({ id: `choice:${choice}`, kind, scope, nativeChoice: choice });
+          : kind === "native" && native?.scope !== "once"
+            ? "unknown"
+            : "once";
+    candidates.push({
+      id: `choice:${choice}`,
+      kind,
+      scope,
+      ...(label !== undefined ? { label } : {}),
+      nativeChoice: choice,
+    });
   }
   for (const option of extended) {
     if (!option || typeof option.id !== "string" || option.decision === undefined) continue;
-    const kind = decisionKind(option.label);
+    const kind = decisionKind(option.label) ?? "native";
     const scope = option.scope;
-    if (!kind || (scope !== "once" && scope !== "session" && scope !== "persistent")) continue;
+    if (scope !== "once" && scope !== "session" && scope !== "persistent") continue;
     candidates.push({
       id: `native:${option.id}`,
       kind,
       scope,
+      ...(kind === "native"
+        ? { label: typeof option.label === "string" ? option.label : option.id }
+        : {}),
       nativeDecision: option.decision,
     });
   }
@@ -107,11 +117,7 @@ function approvalCandidates(approval: unknown): Candidate[] {
   return candidates.filter((candidate) => counts.get(candidate.id) === 1);
 }
 
-function projectDecisions(
-  approval: Record<string, unknown>,
-  risk: SessionInteractionRisk,
-  options: Projection,
-): Decision[] {
+function projectDecisions(approval: Record<string, unknown>, options: Projection): Decision[] {
   if (
     !options.enabled ||
     !options.approve ||
@@ -120,14 +126,8 @@ function projectDecisions(
   )
     return [];
   const candidates = approvalCandidates(approval);
-  return candidates.flatMap(({ id, kind, scope, nativeDecision }): Decision[] => {
-    if ((nativeDecision !== undefined || scope !== "once") && !options.extendedApproval) return [];
-    if (
-      risk.level === "high" &&
-      kind === "allow" &&
-      (scope !== "once" || approval.method === "item/permissions/requestApproval")
-    )
-      return [];
+  return candidates.flatMap(({ id, kind, scope, label, nativeDecision }): Decision[] => {
+    if (nativeDecision !== undefined && !options.extendedApproval) return [];
     if (
       nativeDecision !== undefined &&
       candidates.some(
@@ -135,27 +135,14 @@ function projectDecisions(
       )
     )
       return [];
-    if (risk.level === "high" && kind === "allow")
-      return [
-        {
-          id,
-          kind,
-          scope,
-          available: false,
-          verification: "device-user-verification",
-          lockScreen: false,
-          reason: "verification-unavailable",
-        },
-      ];
     return [
       {
         id,
         kind,
         scope,
+        ...(label !== undefined ? { label } : {}),
         available: true,
-        verification: scope === "once" ? "none" : "confirmation",
-        lockScreen:
-          scope === "once" && (kind === "deny" || (kind === "allow" && risk.level === "low")),
+        lockScreen: scope === "once" && (kind === "deny" || kind === "allow"),
       },
     ];
   });
@@ -233,18 +220,13 @@ export async function describePendingInteractions(
       const questions = kind === "question" ? questionsOf(value.questions) : undefined;
       const decisions: Decision[] =
         kind === "approval"
-          ? projectDecisions(value, risk, options)
-          : options.enabled &&
-              options.send &&
-              value.supported === true &&
-              questions &&
-              value.permissionIntent !== true
+          ? projectDecisions(value, options)
+          : options.enabled && options.send && value.supported === true && questions
             ? [
                 {
                   id: "answer",
                   kind: "answer",
                   scope: "once",
-                  verification: "none",
                   lockScreen: false,
                   available: true,
                 },
@@ -271,72 +253,13 @@ export async function describePendingInteractions(
 export function resolvePendingInteractionDecision(
   interaction: SessionPendingInteraction,
   approval: unknown,
-  requested: RequestDecision,
+  interactionDecisionId: string,
 ): { decision: Decision; nativeChoice?: string; nativeDecision?: unknown } | undefined {
-  if (interaction.kind === "question") {
-    const decision = interaction.decisions.find(
-      (item) => item.id === requested.interactionDecisionId,
-    );
-    return decision ? { decision } : undefined;
-  }
-  const candidate = matchingCandidate(approval, requested);
-  if (!candidate) return undefined;
-  const decision = interaction.decisions.find(
-    (item) =>
-      item.id === candidate.id ||
-      (typeof candidate.nativeDecision === "string" &&
-        item.id === `choice:${candidate.nativeDecision}` &&
-        item.scope === candidate.scope),
-  );
+  const decision = interaction.decisions.find((item) => item.id === interactionDecisionId);
   if (!decision) return undefined;
+  if (interaction.kind === "question") return { decision };
+  const candidate = approvalCandidates(approval).find(({ id }) => id === interactionDecisionId);
+  if (!candidate) return undefined;
   const { nativeChoice, nativeDecision } = candidate;
   return { decision, nativeChoice, nativeDecision };
-}
-
-function matchingCandidate(approval: unknown, requested: RequestDecision) {
-  return approvalCandidates(approval).find((item) =>
-    requested.interactionDecisionId !== undefined
-      ? item.id === requested.interactionDecisionId
-      : requested.nativeDecision !== undefined
-        ? item.nativeDecision !== undefined &&
-          isDeepStrictEqual(item.nativeDecision, requested.nativeDecision)
-        : item.nativeChoice !== undefined && item.nativeChoice === requested.decision,
-  );
-}
-
-function isNonAuthorizing(candidate: Candidate | undefined) {
-  return candidate?.scope === "once" && (candidate.kind === "deny" || candidate.kind === "cancel");
-}
-
-export function isNonAuthorizingLegacyApproval(approval: unknown, requested: RequestDecision) {
-  return isNonAuthorizing(matchingCandidate(approval, requested));
-}
-
-export function filterLegacyApproval<T>(
-  interaction: SessionPendingInteraction | undefined,
-  approval: T,
-): T {
-  const value = record(approval);
-  if ((interaction && interaction.risk.level !== "high") || !value) return approval;
-  const candidates = approvalCandidates(value).filter(isNonAuthorizing);
-  const availableDecisions = candidates.flatMap(({ nativeChoice }) =>
-    nativeChoice === undefined ? [] : [nativeChoice],
-  );
-  const decisionOptions = Array.isArray(value.decisionOptions)
-    ? value.decisionOptions.filter((option) =>
-        candidates.some(({ id }) => id === `native:${option?.id}`),
-      )
-    : undefined;
-  const options = Array.isArray(value.options)
-    ? value.options.filter((option) => availableDecisions.includes(option?.optionId))
-    : undefined;
-  return {
-    ...approval,
-    availableDecisions,
-    decisionOptions,
-    options,
-    supported:
-      value.supported === true &&
-      (availableDecisions.length > 0 || (decisionOptions?.length ?? 0) > 0),
-  };
 }

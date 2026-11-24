@@ -4,7 +4,6 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   describePendingInteractions,
-  filterLegacyApproval,
   resolvePendingInteractionDecision,
 } from "./pending-interactions";
 
@@ -64,16 +63,15 @@ describe("paired pending interaction descriptions", () => {
       id: "choice:accept",
       kind: "allow",
       scope: "once",
-      verification: "none",
       available: true,
       lockScreen: true,
     });
-    expect(
-      resolvePendingInteractionDecision(item, pending, { interactionDecisionId: "choice:accept" }),
-    ).toMatchObject({ nativeChoice: "accept" });
+    expect(resolvePendingInteractionDecision(item, pending, "choice:accept")).toMatchObject({
+      nativeChoice: "accept",
+    });
   });
 
-  it("keeps the agent's words separate from risk and does not offer broader high-risk decisions", async () => {
+  it("keeps the agent's words and high risk separate from the approved device's choices", async () => {
     root = await mkdtemp(join(tmpdir(), "agentkib-r25-delete-"));
     const pending = {
       ...approval,
@@ -90,10 +88,11 @@ describe("paired pending interaction descriptions", () => {
         { id: "reject", label: "decline", scope: "once", decision: "decline" },
       ],
     };
-    const [item] = (await describePendingInteractions(
-      { ...state, approvals: [pending] },
-      { ...access, workspaceRoot: root },
-    ))!;
+    const snapshot = { ...state, approvals: [pending] };
+    const [item] = (await describePendingInteractions(snapshot, {
+      ...access,
+      workspaceRoot: root,
+    }))!;
     expect(item.summary).toBe("This is only a harmless check.");
     expect(item.risk).toEqual({ level: "high", reason: "deletion" });
     expect(item.decisions.filter(({ kind }) => kind === "allow")).toEqual([
@@ -101,18 +100,75 @@ describe("paired pending interaction descriptions", () => {
         id: "choice:accept",
         kind: "allow",
         scope: "once",
-        available: false,
-        verification: "device-user-verification",
+        available: true,
+        lockScreen: true,
+      },
+      {
+        id: "native:grant-session",
+        kind: "allow",
+        scope: "session",
+        available: true,
         lockScreen: false,
-        reason: "verification-unavailable",
       },
     ]);
-    expect(
-      resolvePendingInteractionDecision(item, pending, { nativeDecision: "acceptForSession" }),
-    ).toBeUndefined();
-    expect(filterLegacyApproval(item, pending)).toMatchObject({
-      availableDecisions: ["decline"],
-      supported: true,
+    expect(resolvePendingInteractionDecision(item, pending, "native:grant-session")).toMatchObject({
+      nativeDecision: "acceptForSession",
+    });
+    const standardAccess = { ...access, extendedApproval: false, workspaceRoot: root };
+    const [standard] = (await describePendingInteractions(snapshot, standardAccess))!;
+    expect(standard.decisions.map(({ id }) => id)).toEqual(["choice:accept", "choice:decline"]);
+    const [requiresExtended] = (await describePendingInteractions(
+      {
+        ...snapshot,
+        approvals: [{ ...pending, requiresExtendedApproval: true }],
+      },
+      standardAccess,
+    ))!;
+    expect(requiresExtended.decisions).toEqual([]);
+  });
+
+  it("shows ACP choices under the same grants as their native option IDs", async () => {
+    const pending = {
+      ...approval,
+      availableDecisions: ["allow", "reject", "open-settings"],
+      options: [
+        { optionId: "allow", kind: "allow_always", name: "Remember Allow" },
+        { optionId: "reject", kind: "reject_always", name: "Remember Deny" },
+        { optionId: "open-settings", kind: "configure", name: "Open settings" },
+      ],
+    };
+    const [item] = (await describePendingInteractions(
+      { ...state, executionMode: "acp-managed", approvals: [pending] },
+      { ...access, extendedApproval: false },
+    ))!;
+    expect(item.decisions).toEqual([
+      {
+        id: "choice:allow",
+        kind: "allow",
+        scope: "persistent",
+        available: true,
+        lockScreen: false,
+        label: "Remember Allow",
+      },
+      {
+        id: "choice:reject",
+        kind: "deny",
+        scope: "persistent",
+        available: true,
+        lockScreen: false,
+        label: "Remember Deny",
+      },
+      {
+        id: "choice:open-settings",
+        kind: "native",
+        scope: "unknown",
+        available: true,
+        lockScreen: false,
+        label: "Open settings",
+      },
+    ]);
+    expect(resolvePendingInteractionDecision(item, pending, "choice:open-settings")).toMatchObject({
+      nativeChoice: "open-settings",
     });
   });
 
@@ -135,7 +191,6 @@ describe("paired pending interaction descriptions", () => {
         kind: "answer",
         scope: "once",
         available: true,
-        verification: "none",
         lockScreen: false,
       },
     ]);
@@ -171,10 +226,16 @@ describe("paired pending interaction descriptions", () => {
       { ...access, workspaceRoot: root },
     ))!;
     expect(item.risk).toEqual({ level: "high", reason: "git-push" });
-    expect(item.decisions.every(({ scope }) => scope === "once")).toBe(true);
+    expect(item.decisions).toContainEqual({
+      id: "native:amend",
+      kind: "allow",
+      scope: "persistent",
+      available: true,
+      lockScreen: false,
+    });
   });
 
-  it("keeps permission-style bridge questions out of the answer path", async () => {
+  it("offers permission-style bridge answers to a device with send permission", async () => {
     const [item] = (await describePendingInteractions(
       {
         ...state,
@@ -184,6 +245,8 @@ describe("paired pending interaction descriptions", () => {
       access,
     ))!;
     expect(item.risk.level).toBe("high");
-    expect(item.decisions).toEqual([]);
+    expect(item.decisions).toEqual([
+      { id: "answer", kind: "answer", scope: "once", available: true, lockScreen: false },
+    ]);
   });
 });

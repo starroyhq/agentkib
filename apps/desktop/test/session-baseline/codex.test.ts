@@ -665,7 +665,7 @@ describe("Codex session baseline through HTTP and backend RPC", () => {
     runtime.prompt(41, "item/commandExecution/requestApproval", {
       cwd: workspace,
       itemId: "offline-command",
-      command: "pwd",
+      command: "printf offline",
     });
     await expect
       .poll(() => live(sessionId))

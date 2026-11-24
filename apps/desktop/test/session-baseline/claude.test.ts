@@ -521,7 +521,9 @@ describe.skipIf(process.platform === "win32")(
         operation: "approve",
         status: "waiting-approval",
         method: "Read",
+        input: { file_path: "notes.txt" },
         fields: { approvalId: "offline-interaction", decision: "allow" },
+        nativeInput: { file_path: "notes.txt" },
       },
       {
         operation: "answer",
@@ -534,10 +536,6 @@ describe.skipIf(process.platform === "win32")(
     ])(
       "sends the correlated $operation frame and clears the pending interaction",
       async (scenario) => {
-        const input =
-          scenario.operation === "approve"
-            ? { file_path: join(cli.workspace, "notes.txt") }
-            : scenario.input;
         cli.setPlan({
           noResult: true,
           onUser: [
@@ -547,7 +545,7 @@ describe.skipIf(process.platform === "win32")(
               request: {
                 subtype: "can_use_tool",
                 tool_name: scenario.method,
-                input,
+                input: scenario.input,
               },
             },
             { __wait: "offline-interaction" },
@@ -573,7 +571,7 @@ describe.skipIf(process.platform === "win32")(
             response: {
               subtype: "success",
               request_id: "offline-interaction",
-              response: { behavior: "allow", updatedInput: scenario.nativeInput ?? input },
+              response: { behavior: "allow", updatedInput: scenario.nativeInput },
             },
           },
         ]);

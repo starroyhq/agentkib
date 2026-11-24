@@ -45,8 +45,6 @@ import { replayClaudeAttachments, settleClaudeAttachments } from "./claude-attac
 import { fileReferencePath, fileReferenceTargets } from "./markdown-links";
 import {
   describePendingInteractions,
-  filterLegacyApproval,
-  isNonAuthorizingLegacyApproval,
   resolvePendingInteractionDecision,
 } from "./pending-interactions";
 import {
@@ -700,17 +698,6 @@ function expiredInteractionRefusal(result: unknown): boolean {
   );
 }
 
-function projectRemoteApproval<T>(
-  approval: T,
-  descriptions: readonly SessionPendingInteraction[] | undefined,
-): T {
-  const turnId = snapshotField(approval, "turnId");
-  if (typeof turnId !== "string" || !turnId) return approval;
-  return filterLegacyApproval(
-    interactionFor(descriptions, "approval", snapshotField(approval, "requestId"), turnId),
-    approval,
-  );
-}
 /** The owner-wait receipt marker is host routing metadata. */
 function projectQueueActionAck(ack: unknown): unknown {
   if (snapshotField(ack, "ownerWaitOnly") !== true) return ack;
@@ -5556,8 +5543,7 @@ export class WebAccessService {
     }
     const enabled = await this.controlsEnabledForSnapshot(sessionId, snapshot, device, reserved);
     const guarded = !!sessionId && !!this.controlGuard(sessionId);
-    // The native desktop still uses its existing controls. These descriptions
-    // carry policy for a paired device, including the lock-screen surface.
+    // Paired clients can display the host's risk assessment next to the native choices.
     const pendingInteractions =
       device &&
       device.id !== "desktop-local" &&
@@ -5568,13 +5554,11 @@ export class WebAccessService {
     if (device && snapshot && typeof snapshot === "object") {
       const state = snapshot as {
         approvals?: {
-          requestId?: unknown;
-          turnId?: unknown;
           requiresExtendedApproval?: boolean;
           supported?: boolean;
           decisionOptions?: { scope: string }[];
         }[];
-        questions?: { supported?: boolean; permissionIntent?: boolean }[];
+        questions?: { supported?: boolean }[];
         [key: string]: unknown;
       };
       snapshot = {
@@ -5582,27 +5566,17 @@ export class WebAccessService {
         ...(this.options.mode === "lan" && isCodexMode(state.executionMode) && !device.send
           ? { sendEnabled: false, stopEnabled: false }
           : {}),
-        approvals: state.approvals?.map((approval) => {
-          const projected = {
-            ...approval,
-            supported:
-              approval.supported === true &&
-              device.approve === true &&
-              (!approval.requiresExtendedApproval || device.extendedApproval === true),
-            decisionOptions:
-              device.extendedApproval === true ? approval.decisionOptions : undefined,
-          };
-          return device.id === "desktop-local"
-            ? projected
-            : projectRemoteApproval(projected, pendingInteractions);
-        }),
-        ...(state.questions && device.id !== "desktop-local"
+        approvals: state.approvals?.map((approval) => ({
+          ...approval,
+          supported:
+            approval.supported === true &&
+            device.approve === true &&
+            (!approval.requiresExtendedApproval || device.extendedApproval === true),
+          decisionOptions: device.extendedApproval === true ? approval.decisionOptions : undefined,
+        })),
+        ...(state.questions && !device.send
           ? {
-              questions: state.questions.map((question) =>
-                !device.send || question.permissionIntent === true
-                  ? { ...question, supported: false }
-                  : question,
-              ),
+              questions: state.questions.map((question) => ({ ...question, supported: false })),
             }
           : {}),
         ...(pendingInteractions?.length ? { pendingInteractions } : {}),
@@ -6177,7 +6151,7 @@ export class WebAccessService {
         protocolVersion: 2,
         readStateVersion: 1,
         ...(device && !trustedLocal && !browser.ended
-          ? { pendingInteractions: { version: 1, deviceVerification: false } }
+          ? { pendingInteractions: { version: 1 } }
           : {}),
         csrfToken: browser.csrf,
         bootId: this.bootId,
@@ -6657,7 +6631,6 @@ export class WebAccessService {
             requestId: unknown;
             turnId: string;
             supported: boolean;
-            permissionIntent?: boolean;
             questions: {
               id: string;
               multiSelect: boolean;
@@ -6717,8 +6690,6 @@ export class WebAccessService {
               409,
               interactionDecisionId ? "interaction_expired" : "question_unavailable",
             );
-          if (!trustedLocal && question.permissionIntent === true)
-            throw new HttpError(403, "interaction_verification_required");
           const answers = body.answers as Record<string, string[]>;
           if (
             Object.keys(answers).length !== question.questions.length ||
@@ -6760,14 +6731,7 @@ export class WebAccessService {
               )
             : Array.isArray(approval.availableDecisions) &&
               approval.availableDecisions.includes(String(params.decision)));
-        if (
-          !claudeReplay &&
-          !interactionDecisionId &&
-          operation === "approve" &&
-          !nativeApprovalOffered()
-        )
-          throw new HttpError(409, "approval_unavailable");
-        if (!claudeReplay && (interactionDecisionId || (approval && !trustedLocal))) {
+        if (!claudeReplay && interactionDecisionId) {
           const device = this.grant(hash, permission);
           const descriptions = await this.pendingInteractionDescriptions(
             sessionId,
@@ -6781,48 +6745,30 @@ export class WebAccessService {
             device !== this.grant(hash, permission)
           )
             throw new HttpError(403, "access_changed");
-          if (boot !== this.bootId)
-            throw new HttpError(409, interactionDecisionId ? "interaction_expired" : "stale_boot");
+          if (boot !== this.bootId) throw new HttpError(409, "interaction_expired");
           const interaction = interactionFor(
             descriptions,
             operation === "approve" ? "approval" : "question",
             operation === "approve" ? params.approvalId : params.questionId,
             params.turnId,
           );
-          const requested = {
+          if (!interaction) throw new HttpError(409, "interaction_expired");
+          const selected = resolvePendingInteractionDecision(
+            interaction,
+            approval,
             interactionDecisionId,
-            decision: typeof params.decision === "string" ? params.decision : undefined,
-            nativeDecision: params.nativeDecision,
-          };
-          if (!interaction) {
-            if (interactionDecisionId) throw new HttpError(409, "interaction_expired");
-            if (!isNonAuthorizingLegacyApproval(approval, requested))
-              throw new HttpError(409, "interaction_decision_unavailable");
-          } else {
-            const selected = resolvePendingInteractionDecision(interaction, approval, requested);
-            if (!selected && (interactionDecisionId || interaction.risk.level === "high"))
-              throw new HttpError(409, "interaction_decision_unavailable");
-            if (selected?.decision.verification === "device-user-verification")
-              throw new HttpError(403, "interaction_verification_required");
-            if (interactionDecisionId && selected) {
-              if (!selected.decision.available)
-                throw new HttpError(403, "interaction_decision_unavailable");
-              if (selected.nativeDecision !== undefined) {
-                this.grant(hash, "extendedApproval");
-                params.nativeDecision = selected.nativeDecision;
-                params.decision = "native";
-              } else if (selected.nativeChoice !== undefined) {
-                params.decision = selected.nativeChoice;
-              }
-            }
+          );
+          if (!selected?.decision.available)
+            throw new HttpError(409, "interaction_decision_unavailable");
+          if (selected.nativeDecision !== undefined) {
+            this.grant(hash, "extendedApproval");
+            params.nativeDecision = selected.nativeDecision;
+            params.decision = "native";
+          } else if (selected.nativeChoice !== undefined) {
+            params.decision = selected.nativeChoice;
           }
         }
-        if (
-          !claudeReplay &&
-          interactionDecisionId &&
-          operation === "approve" &&
-          !nativeApprovalOffered()
-        ) {
+        if (!claudeReplay && operation === "approve" && !nativeApprovalOffered()) {
           throw new HttpError(409, "approval_unavailable");
         }
         if (operation === "send" && body.historyReferences !== undefined) {
@@ -7739,30 +7685,26 @@ export class WebAccessService {
         if (Array.isArray(patch.approvals))
           patch.approvals = patch.approvals.map((value) => {
             const approval = value as Record<string, unknown>;
-            return projectRemoteApproval(
-              {
-                ...approval,
-                supported:
-                  approval.supported === true &&
-                  enabled &&
-                  device.approve &&
-                  (!approval.requiresExtendedApproval || device.extendedApproval === true),
-                decisionOptions: device.extendedApproval ? approval.decisionOptions : undefined,
-                ...(!enabled ? { availableDecisions: [] } : {}),
-              },
-              pendingInteractions,
-            );
+            return {
+              ...approval,
+              supported:
+                approval.supported === true &&
+                enabled &&
+                device.approve &&
+                (!approval.requiresExtendedApproval || device.extendedApproval === true),
+              decisionOptions: device.extendedApproval ? approval.decisionOptions : undefined,
+              ...(!enabled ? { availableDecisions: [] } : {}),
+            };
           });
         if (!device.send || !enabled) {
           if ("sendEnabled" in patch) patch.sendEnabled = false;
           if ("stopEnabled" in patch) patch.stopEnabled = false;
+          if (Array.isArray(patch.questions))
+            patch.questions = patch.questions.map((question) => ({
+              ...question,
+              supported: false,
+            }));
         }
-        if (Array.isArray(patch.questions))
-          patch.questions = patch.questions.map((question) =>
-            !device.send || !enabled || question.permissionIntent === true
-              ? { ...question, supported: false }
-              : question,
-          );
         if (guard) Object.assign(patch, guard);
         return { ...event, payload: patch };
       };

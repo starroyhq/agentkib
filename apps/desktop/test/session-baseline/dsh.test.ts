@@ -974,7 +974,7 @@ describe.skipIf(process.platform !== "darwin")("DeepSeek Harness HTTP behavior b
       callId: "tool-call",
       reason: null,
       displayReason: null,
-      arguments: JSON.stringify({ path: join(workspace, "notes.txt") }),
+      arguments: JSON.stringify({ path: "notes.txt" }),
     });
     expect(await getLive()).toMatchObject({
       status: 200,

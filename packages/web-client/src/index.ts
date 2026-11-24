@@ -341,8 +341,8 @@ export interface Access {
   };
   /** Additive capability; absent on older hosts. */
   historySearch?: true;
-  /** The host supplies request descriptions independently of device verification support. */
-  pendingInteractions?: { version: 1; deviceVerification: boolean };
+  /** Additive descriptions and bound decisions for paired clients. */
+  pendingInteractions?: { version: 1 };
   historySearchScope?: string;
   /**
    * Notifications from this computer (`/push/subscribe`): present when this pairing can get

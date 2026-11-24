@@ -20,12 +20,12 @@ export interface SessionInteractionRisk {
 export interface SessionInteractionDecision {
   /** Only valid for this interaction binding. */
   id: string;
-  kind: "allow" | "deny" | "cancel" | "answer";
-  scope: "once" | "session" | "persistent";
-  verification: "none" | "confirmation" | "device-user-verification";
+  kind: "allow" | "deny" | "cancel" | "answer" | "native";
+  scope: "once" | "session" | "persistent" | "unknown";
+  /** Native label for choices without a standardized action. */
+  label?: string;
   lockScreen: boolean;
   available: boolean;
-  reason?: "verification-unavailable";
 }
 
 export interface SessionInteractionQuestion {

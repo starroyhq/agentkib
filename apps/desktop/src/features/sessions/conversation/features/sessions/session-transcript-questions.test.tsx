@@ -2,8 +2,13 @@
 import "@testing-library/jest-dom/vitest";
 import { cleanup, render, screen, within } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
-import type { ConversationEvent } from "@agentkib/web-client";
-import { SessionTranscript } from "@agentkib/session-ui";
+import { ApiError, WebClient, type Access, type ConversationEvent } from "@agentkib/web-client";
+import {
+  clearMessageImageCache,
+  createSessionImageScope,
+  SessionTranscript,
+  useSessionImageLoader,
+} from "@agentkib/session-ui";
 
 const props = {
   labels: {
@@ -60,6 +65,7 @@ const questionEvent: ConversationEvent = {
 
 afterEach(() => {
   cleanup();
+  clearMessageImageCache();
   vi.unstubAllGlobals();
 });
 
@@ -168,4 +174,84 @@ it("shows selections and preview and puts the image in the custom answer of a co
   expect(imageLoader).toHaveBeenCalledWith("question-image", expect.any(AbortSignal));
   expect(screen.queryByText("AskUserQuestion")).toBeNull();
   expect(screen.getByText("Thanks")).toBeVisible();
+});
+
+it("loads a refreshed Claude history image in the associated question after the visit changes", async () => {
+  vi.stubGlobal("IntersectionObserver", undefined);
+  vi.stubGlobal(
+    "URL",
+    class extends URL {
+      static createObjectURL = vi.fn(() => "blob:refreshed-question-image");
+      static revokeObjectURL = vi.fn();
+    },
+  );
+  const access: Access = {
+    status: "approved",
+    protocolVersion: 2,
+    csrfToken: "csrf",
+    bootId: "boot",
+    historySearchScope: "workspace-grant",
+    experimentalEnabled: true,
+    device: { id: "device", name: "Fixture", send: true, approve: true },
+  };
+  const client = new WebClient();
+  const loadImage = vi
+    .spyOn(client, "sessionImage")
+    .mockRejectedValueOnce(new ApiError(404, "image_unavailable"))
+    .mockResolvedValueOnce({ mimeType: "image/png", base64: "iVBORw0KGgo=" });
+  const images = createSessionImageScope("desktop", {
+    getImageSnapshot: () => ({ ready: true, identityKey: "fixture" }),
+  });
+  const stop = images.mountSessionImages(client);
+  images.acceptSessionImageAccess(client, access);
+  let version = 1;
+  const requestVersion = () => version;
+  const [layout, , notes] = questionEvent.questionnaire!.questions;
+  const questionnaire: NonNullable<ConversationEvent["questionnaire"]> = {
+    status: "answered",
+    questions: [layout, { ...notes, answer: { selected: [], custom: "See preview" } }],
+    imageQuestionId: notes.id,
+  };
+  function History({ imageId }: { imageId: string }) {
+    const imageLoader = useSessionImageLoader({
+      images,
+      client,
+      access,
+      sessionId: "claude-session",
+      requestVersion,
+    });
+    const event = {
+      ...questionEvent,
+      questionnaire,
+      attachment_count: 1,
+      images: [{ id: imageId, name: "preview.png" }],
+    };
+    return <SessionTranscript {...props} events={[event]} imageLoader={imageLoader} />;
+  }
+
+  try {
+    const view = render(<History imageId="expired-image" />);
+    await screen.findByRole("button", { name: "Retry image: preview.png" });
+    version++;
+    view.rerender(<History imageId="refreshed-image" />);
+    const remarks = screen.getByRole("region", { name: "Any notes?" });
+    expect(await within(remarks).findByRole("img", { name: "preview.png" })).toBeVisible();
+    expect(
+      within(screen.getByRole("region", { name: "Layout · Which layout?" })).queryByRole("img"),
+    ).toBeNull();
+    expect(loadImage).toHaveBeenNthCalledWith(
+      1,
+      "claude-session",
+      "expired-image",
+      expect.any(AbortSignal),
+    );
+    expect(loadImage).toHaveBeenNthCalledWith(
+      2,
+      "claude-session",
+      "refreshed-image",
+      expect.any(AbortSignal),
+    );
+  } finally {
+    stop();
+  }
 });

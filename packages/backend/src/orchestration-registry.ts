@@ -106,6 +106,14 @@ export type LeadRecord = {
   outcome: string;
 };
 
+export type QuitReport = {
+  laneId: string;
+  turnId: string;
+  text: string;
+  /** The provider may have accepted the report. Do not retry automatically. */
+  attempted?: true;
+};
+
 export type Lead = {
   version: 1;
   /** The Claude Code session that directs the lanes. */
@@ -123,6 +131,8 @@ export type Lead = {
   records: LeadRecord[];
   /** Reports held while delegation is paused, sent together when it resumes. */
   pendingReports: string[];
+  /** Quit status survives a restart and has its own delivery rules. */
+  pendingQuitReports?: QuitReport[];
 };
 
 type NewLead = Omit<
@@ -182,6 +192,8 @@ export class LeadRegistry {
       } else {
         lead.records = lead.records.slice(-MAX_RECORDS);
         lead.pendingReports = (lead.pendingReports ?? []).slice(-MAX_PENDING_REPORTS);
+        if (lead.pendingQuitReports && lead.pendingQuitReports.length > MAX_PENDING_REPORTS)
+          lead.pendingQuitReports = lead.pendingQuitReports.slice(-MAX_PENDING_REPORTS);
         for (const lane of lead.lanes)
           lane.reportedTurns = lane.reportedTurns.slice(-MAX_REPORTED_TURNS);
         database

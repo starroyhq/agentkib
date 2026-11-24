@@ -301,8 +301,21 @@ describe("Web NewSessionComposer", () => {
     await user.click(screen.getByRole("button", { name: "Agent: Codex" }));
     await user.click(await screen.findByRole("menuitem", { name: "Devin" }));
 
-    expect(screen.getByRole("button", { name: "Model: Loading options…" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Permissions: Loading options…" })).toBeDisabled();
+    const modelPlaceholder = screen.getByRole("button", { name: "Model: Loading options…" });
+    const permissionPlaceholder = screen.getByRole("button", {
+      name: "Permissions: Loading options…",
+    });
+    expect(modelPlaceholder).toHaveAttribute("aria-disabled", "true");
+    expect(modelPlaceholder).toHaveTextContent(/^$/);
+    expect(permissionPlaceholder).toHaveAttribute("aria-disabled", "true");
+    expect(permissionPlaceholder).toHaveTextContent(/^$/);
+    await user.hover(modelPlaceholder);
+    expect(await screen.findByRole("tooltip", { name: "Model: Loading options…" })).toBeVisible();
+    await user.unhover(modelPlaceholder);
+    modelPlaceholder.focus();
+    expect(modelPlaceholder).toHaveFocus();
+    await user.keyboard("{Enter}");
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Ask for approval/ })).not.toBeInTheDocument();
     fireEvent.change(message(), { target: { value: "Check the parser" } });
     expect(send()).toBeDisabled();
@@ -380,7 +393,10 @@ describe("Web NewSessionComposer", () => {
     fixture.session = { ...fixture.session, access: { ...access, bootId: "rebooted" } };
     view.rerender(<NewSessionComposer onCreated={onCreated} />);
 
-    expect(screen.getByRole("button", { name: "Model: Loading options…" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Model: Loading options…" })).toHaveAttribute(
+      "aria-disabled",
+      "true",
+    );
     expect(screen.queryByRole("button", { name: /gpt-6.1-sol/ })).not.toBeInTheDocument();
     expect(client.managedOptions).toHaveBeenCalledTimes(2);
   });
@@ -413,7 +429,7 @@ describe("Web NewSessionComposer", () => {
       render(<NewSessionComposer onCreated={onCreated} />);
       expect(
         await screen.findByRole("button", { name: "Model: Options unavailable" }),
-      ).toBeDisabled();
+      ).toHaveAttribute("aria-disabled", "true");
       expect(screen.queryByRole("button", { name: model })).not.toBeInTheDocument();
       fireEvent.click(screen.getByRole("button", { name: "Add context" }));
       const deniedMenu = await screen.findByRole("dialog", { name: "Add context" });
@@ -1016,8 +1032,11 @@ describe("Web NewSessionComposer", () => {
     const dsh = setup();
     await user.click(screen.getByRole("button", { name: "Agent: Codex" }));
     await user.click(await screen.findByRole("menuitem", { name: /DeepSeek Harness/ }));
-    await user.click(await screen.findByRole("button", { name: /Preset/ }));
+    const defaultPreset = await screen.findByRole("button", { name: "Preset: General" });
+    expect(defaultPreset).toHaveTextContent(/^General$/);
+    await user.click(defaultPreset);
     await user.click(await screen.findByRole("menuitem", { name: /PTC/ }));
+    expect(screen.getByRole("button", { name: "Preset: PTC" })).toHaveTextContent(/^PTC$/);
     await write("Profile the parser");
     fireEvent.click(send());
     await waitFor(() => expect(dsh.client.managedAction).toHaveBeenCalledOnce());
@@ -1058,9 +1077,11 @@ describe("Web NewSessionComposer", () => {
       "north",
     );
     const loadingPreset = screen.getByRole("button", { name: "Preset: Loading options…" });
-    expect(loadingPreset).toBeDisabled();
-    expect(loadingPreset).toHaveAttribute("title", "Loading options…");
-    expect(screen.getByRole("button", { name: "Model: Loading options…" })).toBeDisabled();
+    expect(loadingPreset).toHaveAttribute("aria-disabled", "true");
+    expect(screen.getByRole("button", { name: "Model: Loading options…" })).toHaveAttribute(
+      "aria-disabled",
+      "true",
+    );
     expect(screen.queryByRole("button", { name: /^Permissions:/ })).not.toBeInTheDocument();
     await act(async () =>
       resolveNorth({
@@ -1076,7 +1097,10 @@ describe("Web NewSessionComposer", () => {
       await screen.findByRole("button", { name: settingLabel("DeepSeek Chat · Low") }),
     );
     expect(screen.queryByRole("button", { name: modelCopy.fast })).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Preset: Options unavailable" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Preset: Options unavailable" })).toHaveAttribute(
+      "aria-disabled",
+      "true",
+    );
     await highestEffort();
     await user.keyboard("{Escape}");
     await write("Profile the parser");

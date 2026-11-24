@@ -306,7 +306,8 @@ describe("Codex settings recovery on desktop", () => {
     read.mockRejectedValue(new ApiError(403, "permission_denied"));
     mounted.rerender(controls("reopen"));
     expect(screen.getByRole("button", { name: /unlisted-model · Low/ })).toBeVisible();
-    await screen.findByRole("button", { name: "Model settings" });
+    const modelSettings = await screen.findByRole("button", { name: "Model settings" });
+    expect(modelSettings).toHaveTextContent(/^$/);
     expect(screen.queryByRole("button", { name: /unlisted-model · Low/ })).not.toBeInTheDocument();
   });
 
@@ -356,6 +357,7 @@ describe("Codex settings recovery on desktop", () => {
     );
     await screen.findByRole("button", { name: /unlisted-model · Low/ });
     const permission = screen.getByRole("button", { name: "Execution policy" });
+    expect(permission).toHaveTextContent(/^$/);
     const feedback = screen.getByRole("status");
     const message = sessionReason("en-US", state.settingsNotice.reason).text;
     expect(feedback).toHaveTextContent(message);

@@ -1,4 +1,5 @@
 import {
+  IconAction,
   PendingReviewLane,
   sessionContinuationListState,
   SessionContinuationDot,
@@ -13,7 +14,7 @@ import { WorktreeMark, worktreeCopy, worktreeLabel } from "@agentkib/session-ui"
 import { NativeSelect } from "../../components/ui/native-select";
 import { Input } from "../../components/ui/input";
 import { Button } from "../../components/ui/button";
-import { useState, type ReactNode } from "react";
+import { useId, useState, type ReactNode } from "react";
 import {
   Bot,
   ChevronDown,
@@ -22,6 +23,8 @@ import {
   FolderOpen,
   GitBranch,
   Info,
+  ListFilter,
+  RefreshCw,
   Search,
   Split,
 } from "lucide-react";
@@ -44,6 +47,8 @@ export function SessionCatalog({
   workspaces,
   selected,
   onSelect,
+  historySearch,
+  onRefresh,
   locale = "zh-CN",
   indexEnabled = true,
   pendingSessions = {},
@@ -61,6 +66,8 @@ export function SessionCatalog({
   workspaces?: ConversationWorkspaceSummary[];
   selected: string;
   onSelect: (id: string) => void;
+  historySearch?: ReactNode;
+  onRefresh?: () => void;
   locale?: Locale;
   indexEnabled?: boolean;
   pendingSessions?: Record<string, boolean>;
@@ -76,6 +83,8 @@ export function SessionCatalog({
   const [query, setQuery] = useState("");
   const [agent, setAgent] = useState("all");
   const [filter, setFilter] = useState<"current" | "archived" | "metadata" | "all">("current");
+  const [optionsOpen, setOptionsOpen] = useState(false);
+  const optionsId = useId();
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
   const w = worktreeCopy[locale];
   const visibleSessions = sessions.filter((s) => isSessionListed(s, { execution }));
@@ -91,6 +100,49 @@ export function SessionCatalog({
   ];
   return (
     <>
+      <header className="flex items-center justify-between gap-2 px-4 pb-2 pt-6 md:pt-4">
+        <div className="flex min-w-0 items-center gap-2">
+          <h1 className="truncate text-sm font-semibold">{t.sessions}</h1>
+          <span className="shrink-0 rounded-md bg-muted px-1.5 text-xs tabular-nums text-muted-foreground">
+            {sessions.length}
+          </span>
+        </div>
+        <div className="flex shrink-0 items-center gap-0.5">
+          {historySearch}
+          <IconAction
+            label={c.options}
+            render={
+              <Button
+                type="button"
+                variant={optionsOpen ? "secondary" : "ghost"}
+                size="icon"
+                className="size-11 p-0"
+                aria-expanded={optionsOpen}
+                aria-controls={optionsId}
+                onClick={() => setOptionsOpen((open) => !open)}
+              />
+            }
+          >
+            <ListFilter className="size-4" aria-hidden="true" />
+          </IconAction>
+          {onRefresh && (
+            <IconAction
+              label={t.refresh}
+              render={
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  className="size-11 p-0"
+                  onClick={onRefresh}
+                />
+              }
+            >
+              <RefreshCw className="size-3.5" aria-hidden="true" />
+            </IconAction>
+          )}
+        </div>
+      </header>
       <label className="relative mx-4 mb-3 flex items-center text-muted-foreground [&>svg]:pointer-events-none [&>svg]:absolute [&>svg]:left-3 [&>input]:bg-background [&>input]:pl-9">
         <Search size={16} />
         <Input
@@ -100,8 +152,11 @@ export function SessionCatalog({
           onChange={(e) => setQuery(e.target.value)}
         />
       </label>
-      <details className="mx-4 mb-4 rounded-lg border bg-background/50 px-3 py-1 text-xs text-muted-foreground [&>summary]:cursor-pointer [&>summary]:py-2 [&>label]:my-3 [&>label]:flex [&>label]:items-center [&>label]:justify-between [&>label]:gap-2 [&_select]:max-w-40 [&_select]:text-xs">
-        <summary>{c.options}</summary>
+      <div
+        id={optionsId}
+        hidden={!optionsOpen}
+        className="mx-4 mb-3 space-y-2 border-b pb-3 text-xs text-muted-foreground [&>label]:flex [&>label]:items-center [&>label]:justify-between [&>label]:gap-2 [&_select]:max-w-40 [&_select]:text-xs"
+      >
         <label>
           {c.agent}
           <NativeSelect value={agent} onChange={(e) => setAgent(e.target.value)}>
@@ -134,7 +189,7 @@ export function SessionCatalog({
             />
           </label>
         )}
-      </details>
+      </div>
       {reviewLane && (
         <PendingReviewLane
           sessions={filtered}

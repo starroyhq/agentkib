@@ -1,5 +1,6 @@
 import { SessionPinnedMark } from "./conversation/catalog/session-row-menu";
 import { useId, type ReactNode } from "react";
+import { IconAction } from "./icon-action";
 import { interactionCardCopy, type InteractionLocale } from "./interaction-model";
 import { readStateCopy } from "./read-state";
 import { sessionContinuationCopy } from "./session-continuation";
@@ -467,14 +468,18 @@ export function HomeSessionList<S extends { id: string; pinned?: boolean }>({
             <h2 id={recentId} className="text-sm font-semibold">
               {t.recentSessions}
             </h2>
-            <button
-              type="button"
-              className={`inline-flex items-center gap-1 rounded-md text-xs font-medium text-primary-text underline-offset-4 hover:underline ${focusRing}`}
-              onClick={recent.onShowAll}
+            <IconAction
+              label={t[recent.label]}
+              render={
+                <button
+                  type="button"
+                  className={`grid size-9 shrink-0 place-items-center rounded-md text-primary-text hover:bg-muted pointer-coarse:size-11 ${focusRing}`}
+                  onClick={recent.onShowAll}
+                />
+              }
             >
-              {t[recent.label]}
               <Icon name={recent.label === "viewAll" ? "arrow" : "chevron"} className="size-3.5" />
-            </button>
+            </IconAction>
           </div>
           <ul className="divide-y divide-border">
             {recentRows.map((session) => {

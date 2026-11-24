@@ -1,9 +1,11 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { Button as ButtonPrimitive } from "@base-ui/react/button";
 import { Popover } from "@base-ui/react/popover";
 import {
   Check,
   ChevronDown,
   CircleX,
+  Cpu,
   FileText,
   Folder,
   Hourglass,
@@ -29,6 +31,7 @@ import {
   SessionComposerToolbar,
   DEFAULT_NEW_SESSION_AGENT,
   fillCopy,
+  IconAction,
   NEW_SESSION_AGENTS,
   NewSessionAddDraftChips,
   newSessionCopy,
@@ -49,7 +52,7 @@ import {
   rememberNewSessionTarget,
   type NewSessionDraft,
 } from "@agentkib/session-ui";
-import { Button } from "@/features/conversation/components/ui/button";
+import { Button, buttonVariants } from "@/features/conversation/components/ui/button";
 import { Dialog, DialogContent, DialogTitle } from "@/features/conversation/components/ui/dialog";
 import { Disclosure, DisclosureSummary } from "@/features/conversation/components/ui/disclosure";
 import {
@@ -242,9 +245,7 @@ export function NewSessionComposer({
     locale,
     provider?.create,
   );
-  const preset =
-    presets.find((item) => item.id === agentPreset) ??
-    presets.find((item) => item.id === defaultPreset);
+  const preset = presets.find((item) => item.id === (agentPreset ?? defaultPreset));
   const optionStatus = session.optionsLoading ? copy.loadingOptions : copy.optionsUnavailable;
 
   const unavailableReason = session.optionsError
@@ -413,22 +414,30 @@ export function NewSessionComposer({
         </DropdownMenu>
         {presets.length > 0 ? (
           <DropdownMenu>
-            <DropdownMenuTrigger
+            <IconAction
+              label={preset ? `${copy.preset}: ${preset.name}` : copy.preset}
               render={
-                <Button
-                  type="button"
-                  variant="ghost"
-                  className={cn(chip, "disabled:pointer-events-auto")}
-                  disabled={optionsLocked}
-                  title={optionsLocked ? (unavailableReason ?? optionStatus) : undefined}
+                <DropdownMenuTrigger
+                  render={
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      className={cn(chip, "min-w-9 disabled:pointer-events-auto")}
+                      disabled={optionsLocked}
+                      title={optionsLocked ? (unavailableReason ?? optionStatus) : undefined}
+                    />
+                  }
                 />
               }
             >
               <Layers className="size-3.5 shrink-0" aria-hidden />
-              <span className="@max-[28rem]:sr-only">{copy.preset}</span>
-              <span className="truncate text-foreground">{preset?.name ?? ""}</span>
-              <ChevronDown className="size-3.5 shrink-0" aria-hidden />
-            </DropdownMenuTrigger>
+              {preset && (
+                <>
+                  <span className="truncate text-foreground">{preset.name}</span>
+                  <ChevronDown className="size-3.5 shrink-0" aria-hidden />
+                </>
+              )}
+            </IconAction>
             <DropdownMenuContent className="w-64">
               {presets.map((item) => (
                 <DropdownMenuItem
@@ -565,7 +574,7 @@ export function NewSessionComposer({
             permission={
               permissions && permissionChoices
                 ? {
-                    label: shownPermission?.name ?? permissions.title,
+                    label: shownPermission?.name,
                     title: permissions.title,
                     risky: shownPermission?.risky,
                     disabled: optionsLocked,
@@ -630,6 +639,7 @@ export function NewSessionComposer({
                   label={copy.model}
                   status={optionStatus}
                   loading={session.optionsLoading}
+                  icon={<Cpu className="size-3.5 shrink-0" aria-hidden />}
                 />
               ) : undefined
             }
@@ -681,26 +691,30 @@ function OptionPlaceholder({
   label: string;
   status: string;
   loading: boolean;
-  icon?: ReactNode;
+  icon: ReactNode;
 }) {
   return (
-    <Button
-      type="button"
-      variant="ghost"
-      className={cn(chip, "disabled:pointer-events-auto")}
-      disabled
-      aria-busy={loading || undefined}
-      aria-label={`${label}: ${status}`}
-      title={status}
+    <IconAction
+      label={`${label}: ${status}`}
+      render={
+        <ButtonPrimitive
+          type="button"
+          className={cn(
+            buttonVariants({ variant: "ghost" }),
+            chip,
+            "h-9 min-w-9 aria-disabled:opacity-50",
+          )}
+          disabled
+          focusableWhenDisabled
+          aria-busy={loading || undefined}
+        />
+      }
     >
       {icon}
-      <span className="truncate">{label}</span>
-      {loading ? (
+      {loading && (
         <LoaderCircle className="size-3.5 shrink-0 motion-safe:animate-spin" aria-hidden />
-      ) : (
-        <ChevronDown className="size-3.5 shrink-0" aria-hidden />
       )}
-    </Button>
+    </IconAction>
   );
 }
 

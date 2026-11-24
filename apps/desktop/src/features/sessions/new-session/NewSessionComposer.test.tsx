@@ -254,9 +254,15 @@ describe("NewSessionComposer", () => {
     await write("Keep this draft while switching");
     await chooseAgent("Codex", "Devin");
     for (const label of [copy.permission, copy.model]) {
-      expect(optionSlot(label)).toBeDisabled();
+      expect(optionSlot(label)).toHaveAttribute("aria-disabled", "true");
       expect(optionSlot(label)).toHaveAttribute("aria-busy", "true");
+      expect(optionSlot(label)).not.toHaveTextContent(label);
     }
+    const user = userEvent.setup();
+    await user.hover(optionSlot(copy.model));
+    expect(await screen.findByRole("tooltip")).toHaveTextContent(
+      `${copy.model}: ${copy.loadingOptions}`,
+    );
     expect(screen.queryByRole("button", { name: /Ask for approval/ })).not.toBeInTheDocument();
     expect(addContext()).toBeDisabled();
     expect(send()).toBeDisabled();
@@ -328,8 +334,14 @@ describe("NewSessionComposer", () => {
     });
     renderComposer();
     await screen.findByRole("button", { name: `${copy.permission}: ${copy.optionsUnavailable}` });
-    expect(optionSlot(copy.permission, copy.optionsUnavailable)).toBeDisabled();
-    expect(optionSlot(copy.model, copy.optionsUnavailable)).toBeDisabled();
+    expect(optionSlot(copy.permission, copy.optionsUnavailable)).toHaveAttribute(
+      "aria-disabled",
+      "true",
+    );
+    expect(optionSlot(copy.model, copy.optionsUnavailable)).toHaveAttribute(
+      "aria-disabled",
+      "true",
+    );
     expect(doubles.client.managedOptions).not.toHaveBeenCalled();
     fireEvent.change(message(), { target: { value: "Draft only" } });
     expect(send()).toBeDisabled();
@@ -374,8 +386,16 @@ describe("NewSessionComposer", () => {
 
     doubles.client.managedOptions.mockRejectedValueOnce(new ApiError(403, "permission_denied"));
     await act(refresh);
-    await waitFor(() => expect(optionSlot(copy.model, copy.optionsUnavailable)).toBeDisabled());
-    expect(optionSlot(copy.permission, copy.optionsUnavailable)).toBeDisabled();
+    await waitFor(() =>
+      expect(optionSlot(copy.model, copy.optionsUnavailable)).toHaveAttribute(
+        "aria-disabled",
+        "true",
+      ),
+    );
+    expect(optionSlot(copy.permission, copy.optionsUnavailable)).toHaveAttribute(
+      "aria-disabled",
+      "true",
+    );
     for (const name of [addCopy.filesAndFolders, goalCopy.title, planLabel()])
       expect(within(menu).getByRole("button", { name })).toBeDisabled();
     expect(doubles.client.newSessionResources).not.toHaveBeenCalled();
@@ -383,7 +403,10 @@ describe("NewSessionComposer", () => {
     expect(message()).toHaveValue("Keep this draft");
     doubles.client.managedOptions.mockRejectedValueOnce(new ApiError(503, "host_offline"));
     await act(refresh);
-    expect(optionSlot(copy.model, copy.optionsUnavailable)).toBeDisabled();
+    expect(optionSlot(copy.model, copy.optionsUnavailable)).toHaveAttribute(
+      "aria-disabled",
+      "true",
+    );
     expect(send()).toBeDisabled();
   });
 
@@ -985,13 +1008,12 @@ describe("NewSessionComposer", () => {
     );
     doubles.client.managedAction.mockResolvedValue({ accepted: true, sessionId: "created" });
     renderComposer({ initial: { agent: "deepseek-harness" } });
-    expect(optionSlot(copy.preset)).toBeDisabled();
-    expect(optionSlot(copy.model)).toBeDisabled();
+    expect(optionSlot(copy.preset)).toHaveAttribute("aria-disabled", "true");
+    expect(optionSlot(copy.model)).toHaveAttribute("aria-disabled", "true");
     expect(screen.queryByRole("button", { name: /^Permissions/ })).not.toBeInTheDocument();
     await act(async () => resolveCatalog(dshCatalog));
     const user = userEvent.setup();
-    await waitFor(() => expect(screen.getByRole("button", { name: /Preset/ })).toBeEnabled());
-    await user.click(screen.getByRole("button", { name: /Preset/ }));
+    await user.click(await screen.findByRole("button", { name: /General/ }));
     await user.click(await screen.findByRole("menuitem", { name: /PTC/ }));
     const models = await openModels("Flash");
     expect(within(models).getByText("Official")).toBeVisible();
@@ -1135,8 +1157,7 @@ describe("NewSessionComposer", () => {
     doubles.client.managedAction.mockResolvedValue({ accepted: true, sessionId: "created" });
     renderComposer({ initial: { agent: "deepseek-harness" } });
     const user = userEvent.setup();
-    await waitFor(() => expect(screen.getByRole("button", { name: /Preset/ })).toBeEnabled());
-    await user.click(screen.getByRole("button", { name: /Preset/ }));
+    await user.click(await screen.findByRole("button", { name: /General/ }));
     await user.click(await screen.findByRole("menuitem", { name: /PTC/ }));
     await write("Profile the parser");
     fireEvent.click(send());
@@ -1272,10 +1293,29 @@ describe("NewSessionComposer", () => {
     expect(props.onOpenSettings).toHaveBeenCalledOnce();
   });
 
-  it("offers to add a workspace when there is none", () => {
+  it("offers an icon-only add action when there is no workspace", async () => {
     const props = renderComposer({ workspaces: [] });
-    fireEvent.click(screen.getByRole("button", { name: "Add workspace" }));
+    const user = userEvent.setup();
+    const add = screen.getByRole("button", { name: copy.addWorkspaceButton });
+    expect(add).not.toHaveTextContent(copy.addWorkspaceButton);
+    await user.tab();
+    expect(add).toHaveFocus();
+    await user.keyboard("{Enter}");
     expect(props.onAddWorkspace).toHaveBeenCalledOnce();
     expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
+  });
+
+  it("keeps workspace names and exposes the icon-only add action in the workspace picker", async () => {
+    const props = renderComposer();
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Workspace: northstar-api" }));
+    const picker = await screen.findByRole("dialog");
+    expect(within(picker).getByRole("button", { name: "northstar-api" })).toHaveTextContent(
+      "northstar-api",
+    );
+    const add = within(picker).getByRole("button", { name: copy.addWorkspace });
+    expect(add).not.toHaveTextContent(copy.addWorkspace);
+    await user.click(add);
+    expect(props.onAddWorkspace).toHaveBeenCalledOnce();
   });
 });

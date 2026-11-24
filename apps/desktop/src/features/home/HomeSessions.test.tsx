@@ -2,6 +2,7 @@
 
 import "@testing-library/jest-dom/vitest";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   homeSessionCopy,
@@ -169,7 +170,7 @@ describe("HomeSessions", () => {
     expect(row).toHaveTextContent(sessionContinuationCopy("en-US").runningIn("Codex"));
   });
 
-  it("is all caught up when nothing waits, and keeps the recent sessions", () => {
+  it("keeps recent sessions and opens the directory from a named icon", async () => {
     const recent = session("recent", "Tidy the routes", { agent: "claude-code" });
     const props = renderSessions([recent]);
     expect(screen.getByRole("heading", { name: home.allClear })).toBeVisible();
@@ -178,7 +179,14 @@ describe("HomeSessions", () => {
     const list = screen.getByRole("region", { name: home.recentSessions });
     fireEvent.click(within(list).getByRole("button", { name: /Tidy the routes/ }));
     expect(props.onOpen).toHaveBeenCalledExactlyOnceWith(recent);
-    fireEvent.click(within(list).getByRole("button", { name: tr("home.viewAll") }));
+    const allSessions = within(list).getByRole("button", { name: tr("home.viewAll") });
+    expect(allSessions).toHaveTextContent(/^$/);
+    const user = userEvent.setup();
+    await user.hover(allSessions);
+    expect(await screen.findByRole("tooltip")).toHaveTextContent(tr("home.viewAll"));
+    await user.tab();
+    expect(allSessions).toHaveFocus();
+    await user.keyboard("{Enter}");
     expect(props.onShowAll).toHaveBeenCalledOnce();
   });
 

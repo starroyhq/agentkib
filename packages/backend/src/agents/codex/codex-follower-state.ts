@@ -1,7 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { createContextUsageGeneration, projectContextUsage } from "../../context-usage";
+import { codexItemTool } from "../../conversation-tools";
+import { TurnSummaryProjection } from "../../session-turn-summary";
 import { codexTurnEndEvent, codexTurnMeta } from "./codex-turn-end";
 import { codexErrorText, codexTurnErrorEvent } from "./codex-turn-error";
+import { codexPlanProgress } from "./plan-progress";
 
 type JsonRecord = Record<string, unknown>;
 export type FollowerModelSettings = { model: string; effort: string | null; modelProvider: string };
@@ -244,6 +247,23 @@ export class CodexFollowerState {
     const questions = this.questions(controls);
     const turnId = this.activeTurn();
     const status = questions.length > 0 ? "waiting-input" : this.#status;
+    const turns = this.#conversationTurns();
+    const planTurn = turnId
+      ? turns?.find((turn) => turn.turnId === turnId)
+      : status === "idle"
+        ? turns?.at(-1)
+        : undefined;
+    const turnMatches = turns?.filter((turn) => turn.turnId === planTurn?.turnId);
+    const planItems: unknown[] =
+      turnMatches?.length === 1 && Array.isArray(planTurn?.items) ? planTurn.items : [];
+    let planProgress = null;
+    for (let index = planItems.length - 1; index >= 0; index--) {
+      const item = planItems[index];
+      if (isRecord(item) && item.type === "todo-list") {
+        planProgress = codexPlanProgress(planTurn?.turnId, item.plan) ?? null;
+        break;
+      }
+    }
     return {
       sessionId: this.conversationId,
       executionMode: "codex-follower",
@@ -251,6 +271,7 @@ export class CodexFollowerState {
       activity: this.#activity,
       revision: this.#revision,
       turnId,
+      planProgress,
       sendEnabled: controls && status === "idle" && this.#activity === null,
       stopEnabled:
         controls &&
@@ -360,6 +381,24 @@ export class CodexFollowerState {
       });
       const meta = ambiguous.has(turnId) ? undefined : codexTurnMeta(turn);
       if (meta) {
+        const workspace = typeof this.#snapshot?.cwd === "string" ? this.#snapshot.cwd : undefined;
+        const evidence = new TurnSummaryProjection(turnId);
+        for (const item of turn.items) {
+          if (!isRecord(item) || (item.type !== "commandExecution" && item.type !== "fileChange"))
+            continue;
+          const tool = codexItemTool(item, { cwd: workspace, workspace });
+          if (tool)
+            evidence.add({
+              id: item.id,
+              kind: "tool-summary",
+              turn_id: turnId,
+              tool_name: tool.name,
+              tool_status: tool.status,
+              tool: tool.detail,
+            });
+        }
+        const summary = evidence.summary();
+        if (summary) meta.summary = summary;
         const error = meta.outcome === "failed" ? codexErrorText(turn.error) : null;
         if (error) items.push({ ...codexTurnErrorEvent(turnId, error, null), turn_meta: meta });
         else {

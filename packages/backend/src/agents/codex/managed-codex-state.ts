@@ -2,9 +2,12 @@ import type { CodexAppServerSession } from "./codex-app-server";
 import { isDeepStrictEqual } from "node:util";
 import { createContextUsageGeneration, projectContextUsage } from "../../context-usage";
 import { codexItemTool, type ToolContext } from "../../conversation-tools";
+import { TurnSummaryProjection } from "../../session-turn-summary";
 import { CODEX_TURN_START_REJECTED, codexErrorText, codexTurnErrorEvent } from "./codex-turn-error";
 import { codexTurnEndEvent, codexTurnMeta } from "./codex-turn-end";
 import type { UsageLimitView } from "../../usage-limit";
+import type { SessionPlanProgress } from "@agentkib/runtime-protocol";
+import { codexPlanProgress } from "./plan-progress";
 
 type JsonObject = Record<string, unknown>;
 type ManagedRecord = JsonObject & {
@@ -54,6 +57,7 @@ export class ManagedCodexState {
   #goalRevision = 0;
   #status = "starting";
   #turn: string | null = null;
+  #planProgress: SessionPlanProgress | null = null;
   #stream = "";
   #streamBytes = 0;
   #approvals = new Map<string, JsonObject>();
@@ -72,6 +76,7 @@ export class ManagedCodexState {
   #lastTurn: string | null = null;
   /** Last item projected in the running turn; turn/completed adds the turn duration to it. */
   #lastTurnEvent: JsonObject | null = null;
+  #turnSummary?: TurnSummaryProjection;
   // A tool or error can follow the last reply in the same turn.
   #lastTurnReply?: JsonObject;
   #completedReplyIds = new Set<string>();
@@ -185,6 +190,7 @@ export class ManagedCodexState {
       activity: this.activity,
       revision: this.#revision,
       turnId: this.#turn,
+      planProgress: this.#planProgress,
       sendEnabled: controls && healthy && this.#status === "idle" && this.activity === null,
       stopEnabled:
         controls &&
@@ -278,6 +284,7 @@ export class ManagedCodexState {
         if (typeof turn.id === "string" && this.#closedTurns.has(turn.id))
           return { changed: false };
         if (turn.id !== this.#turn) {
+          this.#planProgress = null;
           this.#workerCommands = new Map();
           this.#workerProgress = 0;
           this.#lastTurnReply = undefined;
@@ -309,6 +316,7 @@ export class ManagedCodexState {
         if (id !== this.#turn && ![...this.#compactions.values()].includes(id))
           return { changed: false };
         this.#lastTurn = id;
+        if (this.#planProgress?.turnId !== id) this.#planProgress = null;
         this.#remember(this.#closedTurns, id);
         for (const [key, turnId] of this.#compactions)
           if (turnId === id) this.#compactions.delete(key);
@@ -333,6 +341,11 @@ export class ManagedCodexState {
         // The native turn reports its duration; history readers attach the same
         // value to the turn's last item, so the live row carries it too.
         const meta = codexTurnMeta(params.turn);
+        if (meta && this.#turnSummary?.turnId === id) {
+          const summary = this.#turnSummary.summary();
+          if (summary) meta.summary = summary;
+        }
+        this.#turnSummary = undefined;
         const last = this.#lastTurnEvent;
         this.#lastTurnEvent = null;
         const reply = this.#lastTurnReply;
@@ -481,6 +494,11 @@ export class ManagedCodexState {
         if (method === "item/completed") {
           const event = projectItem(params.item, this.#turn, this.#toolContext());
           if (event) {
+            if (event.kind === "tool-summary") {
+              if (this.#turnSummary?.turnId !== this.#turn)
+                this.#turnSummary = new TurnSummaryProjection(this.#turn);
+              this.#turnSummary.add(event);
+            }
             this.#lastTurnEvent = event;
             // Like the ledger, keep the first version and position of a completed item.
             if (event.kind === "agent-message" && !this.#completedReplyIds.has(id)) {
@@ -576,6 +594,14 @@ export class ManagedCodexState {
           this.#invalidateUsage(applyingSelection);
         break;
       }
+      case "turn/plan/updated": {
+        if (!this.nativeId || params.threadId !== this.nativeId || params.turnId !== this.#turn)
+          return { changed: false };
+        const plan = codexPlanProgress(params.turnId, params.plan);
+        if (!plan || isDeepStrictEqual(plan, this.#planProgress)) return { changed: false };
+        this.#planProgress = plan;
+        return this.#changed(false, true);
+      }
       case "thread/tokenUsage/updated": {
         if (!isObject(params.tokenUsage)) throw new Error("invalid-token-usage");
         const turnId = typeof params.turnId === "string" ? params.turnId : null;
@@ -654,6 +680,10 @@ export class ManagedCodexState {
       if (failure) events.push(failure);
       const meta = codexTurnMeta(turn);
       if (meta && typeof turn.id === "string" && turn.id) {
+        const evidence = new TurnSummaryProjection(turn.id);
+        for (let index = first; index < events.length; index++) evidence.add(events[index]!);
+        const summary = evidence.summary();
+        if (summary) meta.summary = summary;
         if (events.length > first) events[events.length - 1]!.turn_meta = meta;
         else events.push(codexTurnEndEvent(turn.id, meta, null));
       }
@@ -678,6 +708,7 @@ export class ManagedCodexState {
     }
     this.#turn = active;
     this.#lastTurn = active ?? (typeof latest?.id === "string" ? latest.id : this.#lastTurn);
+    if (this.#planProgress?.turnId !== this.#lastTurn) this.#planProgress = null;
     this.#status = active === null ? "idle" : "running";
     this.#reason = null;
     this.#approvals.clear();
@@ -710,6 +741,11 @@ export class ManagedCodexState {
     if (this.#turnError?.turnId !== active) this.#turnError = null;
     // An attached running turn can still end with a duration; keep its last row.
     const activeEvents = active === null ? [] : events.filter((event) => event.turn_id === active);
+    if (active !== null) {
+      if (this.#turnSummary?.turnId !== active)
+        this.#turnSummary = new TurnSummaryProjection(active);
+      for (const event of activeEvents) this.#turnSummary.add(event);
+    } else this.#turnSummary = undefined;
     this.#lastTurnEvent = activeEvents.at(-1) ?? null;
     for (const event of activeEvents)
       if (event.kind === "agent-message" && typeof event.id === "string")
@@ -748,6 +784,7 @@ export class ManagedCodexState {
   fail(reason: string): void {
     this.#status = "outcome-unknown";
     this.#reason = reason;
+    this.#planProgress = null;
     this.#record.native_settings = null;
     this.#lastTurnReply = undefined;
     this.#compactions.clear();
@@ -783,6 +820,7 @@ export class ManagedCodexState {
       throw new Error("stale-or-disabled-control");
     this.#turn = turnId;
     this.#lastTurn = turnId;
+    this.#planProgress = null;
     this.#status = "running";
     this.#reason = null;
     this.#turnStartError = null;

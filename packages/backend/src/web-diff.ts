@@ -1,9 +1,11 @@
 import path from "node:path";
 import { z } from "zod";
-import { canonicalize, pathIdentity } from "./paths";
+import { canonicalize, lexicalPathIdentity, pathIdentity } from "./paths";
 import { Git } from "./git";
 import { BackendStore } from "./store";
 import { parameters } from "./rpc";
+import { supplementalDiffContext } from "./web-diff-context";
+import type { WorkspaceDiff, WorkspaceDiffContext } from "@agentkib/runtime-protocol";
 
 const requestSchema = z
   .object({
@@ -12,14 +14,20 @@ const requestSchema = z
     kind: z.enum(["commit", "worktree", "staged"]),
     path: z.string().nullable().optional(),
     oid: z.string().nullable().optional(),
+    context: z.boolean().optional(),
   })
   .strict();
 
 type ChangedFile = { status: string; path: string; old_path?: string | null };
 
-export async function webDiff(value: unknown, store: BackendStore, git: Git) {
+export async function webDiff(
+  value: unknown,
+  store: BackendStore,
+  git: Git,
+): Promise<WorkspaceDiff | null> {
   const request = parameters(requestSchema, value);
   const workspace = canonicalize(store.workspacePath(request.workspaceId));
+  const workspaceIdentity = lexicalPathIdentity(workspace);
   if (sensitiveRoot(workspace)) throw new Error("diff-sensitive-path");
   const repository = await git.repository(workspace);
   if (
@@ -40,20 +48,43 @@ export async function webDiff(value: unknown, store: BackendStore, git: Git) {
       !files.some((file) => file.path === request.path || file.old_path === request.path)
     )
       throw new Error("diff-path-not-changed-file");
-    for (const file of files) {
-      if (request.path && file.path !== request.path && file.old_path !== request.path) continue;
+    const selected = request.path
+      ? files.filter((file) => file.path === request.path || file.old_path === request.path)
+      : files;
+    for (const file of selected) {
       if (sensitiveDiffPath(file.path) || (file.old_path && sensitiveDiffPath(file.old_path)))
         throw new Error("diff-sensitive-path");
     }
+    return selected;
   };
-  await verifyPaths();
+  const files = await verifyPaths();
   const result = await git.diff(workspace, diffRequest);
+  let context: WorkspaceDiffContext | undefined;
+  if (
+    request.context &&
+    result &&
+    !result.binary &&
+    !result.submodule &&
+    !result.encoding_lossy &&
+    !result.truncated
+  ) {
+    try {
+      const supplemental = await supplementalDiffContext(git, workspace, result.patch, files);
+      // Git reads the worktree and index separately. Discard supplemental rows if the
+      // requested patch, including both blob IDs, changed during collection.
+      if (supplemental && (await git.diff(workspace, diffRequest))?.patch === result.patch)
+        context = supplemental;
+    } catch {
+      // The ordinary patch remains useful when optional context is unavailable.
+    }
+  }
   await verifyPaths();
   if (
-    pathIdentity(canonicalize(store.workspacePath(request.workspaceId))) !== pathIdentity(workspace)
+    lexicalPathIdentity(canonicalize(store.workspacePath(request.workspaceId))) !==
+    workspaceIdentity
   )
     throw new Error("workspace-unavailable");
-  return result;
+  return context && result ? { ...result, context } : result;
 }
 
 async function changedFiles(

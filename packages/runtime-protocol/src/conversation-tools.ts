@@ -97,8 +97,23 @@ export interface ConversationQuestionnaire {
   imageQuestionId?: string;
 }
 
+/** Evidence from the provider's tool records for a single ended turn. */
+export interface ConversationTurnSummary {
+  /** Workspace paths and sums from observed successful edits, not a net working-tree diff. */
+  files?: { path: string; added?: number; removed?: number }[];
+  /** Each entry is an observed run. A repeated check can have different results. */
+  checks?: {
+    name: string;
+    status: "passed" | "failed" | "unknown";
+    exit_code?: number;
+  }[];
+  /** True when records or statistics were missing, omitted or reached a projection limit. */
+  partial?: true;
+}
+
 /** Carried by the last item of a turn; clients read it from any item of that turn. */
 export interface ConversationTurnMeta {
   duration_ms?: number;
   outcome?: "completed" | "aborted" | "failed";
+  summary?: ConversationTurnSummary;
 }

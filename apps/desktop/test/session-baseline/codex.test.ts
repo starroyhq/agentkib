@@ -498,6 +498,65 @@ describe("Codex session baseline through HTTP and backend RPC", () => {
     await receipt(requestId, "send", sessionId, typed.result);
   });
 
+  it("exposes a turn plan in live reads, stream replay and a fresh snapshot", async () => {
+    const sessionId = await create();
+    await control(sessionId, "/send", "send", { text: "Plan the offline work" });
+    expect(await host.http(`/managed/capabilities?sessionId=${sessionId}`)).toMatchObject({
+      status: 200,
+      body: { planProgress: { live: true } },
+    });
+    expect(await host.http("/live?sessionId=unregistered-session")).toMatchObject({
+      status: 403,
+    });
+
+    const rpc = backend!.rpc;
+    const subscriptions: string[] = [];
+    async function subscribe(afterCursor?: string) {
+      const subscription = (await rpc(RUNTIME_METHODS.sessionsSubscribe, {
+        sessionId,
+        ...(afterCursor ? { afterCursor } : {}),
+      })) as SessionSubscription;
+      subscriptions.push(subscription.subscriptionId);
+      return subscription;
+    }
+    try {
+      const initial = await subscribe();
+      expect(initial.events[0]).toMatchObject({
+        type: "snapshot",
+        payload: { live: { turnId, planProgress: null } },
+      });
+      const plan = [{ step: "Run the offline test", status: "inProgress" }];
+      runtime.emit("notification", {
+        method: "turn/plan/updated",
+        params: { threadId, turnId, plan },
+      });
+      const projected = {
+        turnId,
+        steps: [{ id: "step:1", text: plan[0]!.step, status: "in_progress" }],
+        currentStepId: "step:1",
+      };
+      await expect.poll(() => live(sessionId)).toMatchObject({ planProgress: projected });
+      const replay = await subscribe(initial.cursor);
+      expect(replay.events).toContainEqual(
+        expect.objectContaining({
+          type: "state",
+          payload: expect.objectContaining({ planProgress: projected }),
+        }),
+      );
+      const fresh = await subscribe();
+      expect(fresh.events[0]).toMatchObject({
+        type: "snapshot",
+        payload: { live: { turnId, planProgress: projected } },
+      });
+    } finally {
+      await Promise.all(
+        subscriptions.map((subscriptionId) =>
+          rpc(RUNTIME_METHODS.sessionsUnsubscribe, { subscriptionId }),
+        ),
+      );
+    }
+  });
+
   it("publishes parent-scoped Codex subagent activity in stream snapshots and preserves child history", async () => {
     const sessionId = await create();
     const childNativeId = randomUUID();

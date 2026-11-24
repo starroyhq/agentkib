@@ -11,6 +11,7 @@ const entries = [
   "cordis.patch.yml",
   "index.js",
   "bridge.js",
+  "history-import.js",
   "client.js",
   "projection.js",
   "compatibility.js",

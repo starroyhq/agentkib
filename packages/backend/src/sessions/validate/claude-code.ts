@@ -26,6 +26,7 @@ export const validateClaudeControl: ProviderControlValidator = (request, context
     available: true,
     publicReceipt: true,
     inputFormat: "claude",
+    ...(operation === "queue-steer" ? { requiresSend: true } : {}),
     ...(["queue-update", "queue-delete", "queue-steer"].includes(operation)
       ? { queueItem: "pending" }
       : {}),

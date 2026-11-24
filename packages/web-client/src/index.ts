@@ -1,6 +1,16 @@
 export { mergeCatalogSessions, isStaleCatalogRead, retryStaleCatalogRead } from "./catalog";
 export type { IncompleteSessionSource } from "./catalog";
 export { PROJECT_AGENT_MAX_WORKERS, SESSION_RESOURCE_LIMIT } from "@agentkib/runtime-protocol";
+import type { ConversationTaskSummary } from "./task-summary";
+export type {
+  ConversationTaskCoverage,
+  ConversationTaskEntry,
+  ConversationTaskKind,
+  ConversationTaskSource,
+  ConversationTaskSourceReason,
+  ConversationTaskStreamFields,
+  ConversationTaskSummary,
+} from "./task-summary";
 
 import {
   managedAgentOf,
@@ -331,6 +341,7 @@ export interface LivePreviewTicket {
 }
 export interface Access {
   readStateVersion?: 1;
+  taskSummaryVersion?: 1;
   accountLogin?: {
     required: true;
     proofVersion: 1;
@@ -584,6 +595,8 @@ export type ControlReceipt =
       turnId?: string | null;
       status: "not-dispatched" | "accepted" | "unknown";
       ack?: {
+        /** Native permission proof for an explicitly configured empty session. */
+        policyId?: string;
         accepted?: boolean;
         completed?: boolean;
         requestId?: string;
@@ -833,6 +846,8 @@ export interface ManagedActionBody {
   prompt?: string;
 }
 export interface ManagedActionResult {
+  /** Native permission proof for an explicitly configured empty session. */
+  policyId?: string;
   feedback?: readonly SessionFeedback[];
   accepted?: boolean;
   completed?: boolean;
@@ -1259,7 +1274,11 @@ export class WebClient {
     const { bearerToken: _credential, ...publicAccess } = result;
     return publicAccess;
   }
-  stream(sessionId: string, handlers: SessionStreamHandlers) {
+  stream(
+    sessionId: string,
+    handlers: SessionStreamHandlers,
+    { taskSummary }: { taskSummary?: boolean } = {},
+  ) {
     if (this.realtimeVersion !== 2) {
       queueMicrotask(() => handlers.error(new ApiError(409, "incompatible_protocol")));
       return () => {};
@@ -1267,6 +1286,7 @@ export class WebClient {
     if (this.bridge) return this.bridge.stream(sessionId, handlers);
     const query = new URLSearchParams({ protocolVersion: "2" });
     if (sessionId) query.set("sessionId", sessionId);
+    else if (taskSummary) query.set("taskSummary", "1");
     const path = `/api/web/v1/stream?${query}`;
     if (this.connection.type === "same-origin") {
       let closed = false;
@@ -1671,6 +1691,14 @@ export class WebClient {
   }
   catalog(signal?: AbortSignal) {
     return this.request<ConversationCatalog>("catalog", undefined, signal);
+  }
+  async taskSummary(signal?: AbortSignal) {
+    const response = await this.request<{ taskSummary?: ConversationTaskSummary }>(
+      "catalog?taskSummary=1",
+      undefined,
+      signal,
+    );
+    return response.taskSummary;
   }
   setSessionPinned(sessionId: string, pinned: boolean) {
     return this.request<{ pinned: boolean }>("session-pin", { sessionId, pinned });

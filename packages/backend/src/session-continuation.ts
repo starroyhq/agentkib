@@ -21,10 +21,16 @@ import { probeClaudeSessionFormat } from "./agents/claude/claude-session-probe";
 import { resolveCommand } from "./command-resolution";
 import { devinExecutable } from "./agents/devin/devin-executable";
 import type { DshBridge } from "./agents/dsh/dsh-bridge";
+import { dshImportFingerprint, prepareDshHistoryDocument } from "./agents/dsh/history-import";
 import { isReparseOrSymlink } from "./native-files";
 import { versionAtLeast } from "./native-version";
 import { userHome } from "./mcp-config-read";
-import { planSessionWindow, renderHandoff, sessionImportStats } from "./session-handoff";
+import {
+  fullSessionHistory,
+  planSessionWindow,
+  renderHandoff,
+  sessionImportStats,
+} from "./session-handoff";
 import type { DocumentOptions, SessionDocument } from "./session-model";
 import type { SessionStore } from "./session-store";
 import { Commands } from "./commands";
@@ -189,7 +195,8 @@ function safeWritableRoot(root: string): boolean {
 }
 
 /** Starting a DSH session for a handoff needs exactly one running DSH, as starting any does. */
-export type DshHandoffTarget = Pick<DshBridge, "createOptions">;
+export type DshHandoffTarget = Pick<DshBridge, "createOptions"> &
+  Partial<Pick<DshBridge, "historyImportContext" | "importHistory">>;
 
 /**
  * Whether "continue" can start the target once the handoff is written: Codex and Claude Code in a
@@ -226,7 +233,6 @@ export async function nativeImportCapability(
   env: NodeJS.ProcessEnv,
   project: string,
 ): Promise<Capability> {
-  // DSH has no way to take another Agent's history as its own; a handoff file is read instead.
   // Devin has no interface that imports another Agent's history, and its store is private.
   if (target === "antigravity" || target === "deepseek-harness" || target === "devin")
     return { supported: false, beta: false, reason: "native-history-import-unsupported" };
@@ -433,6 +439,7 @@ export async function prepareSessionHandoff(
   const sourceFingerprint = await fingerprintHandoff(document);
   const candidateArchiveId = randomUUID();
   let nativeSnapshot: ImportTargetSnapshot | undefined;
+  let dshFullHistory = false;
   let nativeCapability: Capability;
   if (nativeHistoryIncomplete(document, includePreCompactionHistory)) {
     nativeCapability = {
@@ -440,6 +447,24 @@ export async function prepareSessionHandoff(
       beta: true,
       reason: "compaction-link-unavailable",
     };
+  } else if (request.target_agent === "deepseek-harness" && dsh?.historyImportContext) {
+    try {
+      requireUniqueContinuationWorkspace(store, workspace.registeredId, workspace.project);
+      const context = await dsh.historyImportContext(workspace.project);
+      document = prepareDshHistoryDocument(document);
+      nativeCapability = {
+        supported: true,
+        beta: true,
+        target_fingerprint: dshImportFingerprint(context),
+      };
+      dshFullHistory = true;
+    } catch (error) {
+      nativeCapability = {
+        supported: false,
+        beta: true,
+        reason: error instanceof Error ? error.message : "dsh-native-history-import-unavailable",
+      };
+    }
   } else if (
     request.target_agent === "opencode" ||
     request.target_agent === "open-claw" ||
@@ -490,11 +515,13 @@ export async function prepareSessionHandoff(
       workspace.project,
     );
   }
-  const window = await readHandoff(
-    "window",
-    [document, request.history_budget_tokens, candidateArchiveId],
-    () => planSessionWindow(document, request.history_budget_tokens, candidateArchiveId),
-  );
+  const window = dshFullHistory
+    ? fullSessionHistory(document)
+    : await readHandoff(
+        "window",
+        [document, request.history_budget_tokens, candidateArchiveId],
+        () => planSessionWindow(document, request.history_budget_tokens, candidateArchiveId),
+      );
   if (
     nativeCapability.supported &&
     request.target_agent === "cursor" &&

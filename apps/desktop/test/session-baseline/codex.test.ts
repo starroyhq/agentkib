@@ -328,6 +328,41 @@ describe("Codex session baseline through HTTP and backend RPC", () => {
     return requestId;
   }
 
+  it("passes the chosen review policy to native creation and waits for its acknowledgement", async () => {
+    const chosen = {
+      agent: "codex",
+      bootId: host.bootId,
+      workspaceId: "workspace",
+      policyId: "workspace-write-auto-review",
+      prompt: "Do not send at creation",
+    };
+    const original = OfflineAppServer.prototype.request;
+    const replies = vi.spyOn(OfflineAppServer.prototype, "request").mockImplementation(async function (
+      this: OfflineAppServer,
+      method,
+      params,
+      dispatch,
+    ) {
+      const response = await original.call(this, method, params, dispatch);
+      if (method === "thread/start") return { ...(response as object), approvalsReviewer: "user" };
+      return response;
+    });
+    expect(await host.http("/managed/create", { ...chosen, requestId: randomUUID() })).toMatchObject({
+      status: 502,
+      body: { error: "outcome_unknown" },
+    });
+    replies.mockRestore();
+    expect(await host.http("/managed/create", { ...chosen, requestId: randomUUID() })).toMatchObject({
+      status: 200,
+      body: { accepted: true, completed: true },
+    });
+    expect(nativeCalls.filter(({ method }) => method === "thread/start")).toMatchObject([
+      { params: { approvalsReviewer: "auto_review", sandbox: "workspace-write" } },
+      { params: { approvalsReviewer: "auto_review", sandbox: "workspace-write" } },
+    ]);
+    expect(nativeCalls.some(({ method }) => method === "turn/start")).toBe(false);
+  });
+
   it.each([
     ["without a first message", undefined],
     ["with an ignored first message", "Ignored at creation"],

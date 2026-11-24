@@ -77,6 +77,8 @@ require('node:readline').createInterface({input:process.stdin}).on('line', line 
   }
   if(frame.request.subtype==='initialize' && process.env.PARITY_MODE==='model-alias')
    send({type:'system',subtype:'init',model:'fixture-actual-model',permissionMode:'plan'});
+  if(frame.request.subtype==='initialize' && process.env.PARITY_MODE==='startup-permission-mismatch')
+   send({type:'system',subtype:'init',model:'fixture-model',permissionMode:'default'});
   if(frame.request.subtype==='initialize' && process.env.PARITY_MODE==='inherited-plan')
    send({type:'system',subtype:'init',model:'fixture-model',permissionMode:'plan'});
   setTimeout(()=>send({type:'control_response',response:{subtype:'success',request_id:frame.request_id,response:
@@ -164,7 +166,9 @@ require('node:readline').createInterface({input:process.stdin}).on('line', line 
     document: async () => ({ source: { agent: "claude-code", workspace_id: "workspace" } }),
   } as unknown as SessionReaders;
   cleanups.push(() => rmSync(root, { recursive: true, force: true }));
-  const makeOwner = (retainedTerminalUsage?: ClaudeContinuationOptions["retainedTerminalUsage"]) => {
+  const makeOwner = (
+    retainedTerminalUsage?: ClaudeContinuationOptions["retainedTerminalUsage"],
+  ) => {
     const owner = new ClaudeManagedReadOwner(
       store,
       sessions,
@@ -1553,6 +1557,27 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))(
       ).toHaveLength(before);
     });
 
+    it("keeps a first message unsent when Claude reports a different startup permission", async () => {
+      const f = fixture("2.1.286", 0, "startup-permission-mismatch");
+      const { sessionId: id } = await create(f.owner, { permissionMode: "plan" });
+      const requestId = randomUUID();
+      const sent = await control(f.owner, id, "send", { requestId, text: "Keep this draft" });
+      expect(sent).toMatchObject({
+        accepted: false,
+        completed: false,
+        controlOutcome: "not-dispatched",
+        error: "create-permission-unconfirmed",
+      });
+      expect(f.frames().find((frame) => frame.args)?.args).toEqual(
+        expect.arrayContaining(["--permission-mode", "plan"]),
+      );
+      expect(f.frames().filter((frame) => frame.type === "user")).toEqual([]);
+      expect(readControlReceipt(f.root, { requestId, deviceId: "browser-device-a" })).toMatchObject({
+        status: "not-dispatched",
+        ack: sent,
+      });
+    });
+
     it("prepares queued input without a user frame and dispatches exactly once with original receipt settlement", async () => {
       const f = fixture();
       const created = await create(f.owner);
@@ -1866,6 +1891,101 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))(
         "invalid-Claude-metadata",
       );
       expect(f.frames()).toEqual(before);
+    });
+
+    it("steers a pending queue entry into the current turn once and keeps the remaining order", async () => {
+      const f = fixture("2.1.286", 0, "steer");
+      const { sessionId: id } = await create(f.owner);
+      const turnId = randomUUID();
+      await control(f.owner, id, "send", { requestId: turnId, text: "First input" });
+      const a = await control(f.owner, id, "queue-add", { text: "Keep waiting" });
+      const b = await control(f.owner, id, "queue-add", { text: "Join current turn" });
+      const c = await control(f.owner, id, "queue-add", { text: "Keep waiting afterwards" });
+      const request = {
+        operation: "queue-steer",
+        sessionId: id,
+        requestId: randomUUID(),
+        deviceId: "browser-device-a",
+        runtimeBootId: f.owner.bootId,
+        experimentalEnabled: true,
+        expectedRevision: (await f.owner.live(id, true)).revision,
+        queuedSubmissionId: b.queuedSubmission.id,
+      };
+      expect(await f.owner.capabilities(id, true)).toMatchObject({
+        features: { "queue-steer": { available: true } },
+      });
+      await expect(f.owner.request({ ...request, deviceId: "browser-device-b" })).rejects.toThrow(
+        "queue-item-unavailable",
+      );
+      request.requestId = randomUUID();
+      request.expectedRevision = (await f.owner.live(id, true)).revision;
+      const accepted = await f.owner.request(request);
+      expect(accepted).toMatchObject({ accepted: true, completed: false });
+      await expect(f.owner.request(request)).resolves.toEqual(accepted);
+      await expect(
+        f.owner.request({ ...request, queuedSubmissionId: a.queuedSubmission.id }),
+      ).rejects.toThrow("request-id-reused-with-different-input");
+      const queue = await f.owner.request({ operation: "queue-list", sessionId: id });
+      expect(queue.data).toMatchObject([
+        { id: a.queuedSubmission.id },
+        { id: c.queuedSubmission.id },
+      ]);
+      await expect.poll(() => f.frames().filter((frame) => frame.type === "user").length).toBe(2);
+      expect(
+        f
+          .frames()
+          .filter((frame) => frame.type === "user")
+          .at(-1),
+      ).toMatchObject({
+        uuid: request.requestId,
+        priority: "next",
+        message: { content: "Join current turn" },
+      });
+      f.releaseResult();
+      await expect.poll(async () => (await f.owner.live(id, true)).status).toBe("idle");
+      expect(
+        await f.owner.receipt(
+          readControlReceipt(f.root, { requestId: request.requestId, deviceId: request.deviceId }),
+        ),
+      ).toMatchObject({ operation: "queue-steer", completionObserved: true });
+    });
+
+    it("keeps an interrupted queue-steer receipt unknown without scheduling the item again", async () => {
+      const f = fixture("2.1.286", 0, "steer");
+      const { sessionId: id } = await create(f.owner);
+      await control(f.owner, id, "send", { text: "First input" });
+      const original = await control(f.owner, id, "queue-add", { text: "Move into this turn" });
+      const remaining = await control(f.owner, id, "queue-add", { text: "Keep waiting" });
+      const requestId = randomUUID();
+      const deviceId = "browser-device-a";
+      const steer = vi
+        .spyOn(ClaudeManagedRunnerProcess.prototype, "steer")
+        .mockImplementationOnce(async (_content, _requestId, _turn, _revision, beforeDispatch) => {
+          beforeDispatch?.();
+          throw new Error("synthetic lost write acknowledgement");
+        });
+      await expect(
+        control(f.owner, id, "queue-steer", {
+          requestId,
+          queuedSubmissionId: original.queuedSubmission.id,
+        }),
+      ).rejects.toThrow("synthetic lost write acknowledgement");
+      expect(steer).toHaveBeenCalledTimes(1);
+      await f.owner.shutdown();
+      const restarted = f.makeOwner();
+      expect(readControlReceipt(f.root, { requestId, deviceId })).toMatchObject({
+        operation: "queue-steer",
+        status: "unknown",
+      });
+      expect(await restarted.request({ operation: "queue-list", sessionId: id })).toMatchObject({
+        paused: true,
+        data: [{ id: remaining.queuedSubmission.id, status: "pending" }],
+      });
+      await expect(control(restarted, id, "queue-resume")).rejects.toThrow(
+        "control-outcome-unconfirmed",
+      );
+      expect((await next(restarted, id)).next).toBeNull();
+      expect(f.frames().filter((frame) => frame.type === "user")).toHaveLength(1);
     });
 
     it("settles accepted steering only when its bound original turn completes and supports a fork after steering", async () => {

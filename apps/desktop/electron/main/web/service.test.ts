@@ -20,6 +20,7 @@ describe("WebAccessService loopback security boundary", () => {
   let cookie: string;
   let csrf: string;
   let bootId: string;
+  let owner: string | undefined;
   let hub: ConversationHub;
   let control: ReturnType<typeof createWebControlState>;
   let nextSubscription = 0;
@@ -104,13 +105,22 @@ describe("WebAccessService loopback security boundary", () => {
   async function pair(send = false, approve = false) {
     return approveLegacyBrowser(service, cookie, { send, approve });
   }
-  function openStream(streamCookie = cookie, sessionId = "s", afterCursor?: string) {
+  function openStream(
+    streamCookie = cookie,
+    sessionId = "s",
+    afterCursor?: string,
+    taskSummary = false,
+  ) {
     const chunks: string[] = [];
+    const query = new URLSearchParams({ protocolVersion: "2" });
+    if (sessionId) query.set("sessionId", sessionId);
+    if (afterCursor) query.set("afterCursor", afterCursor);
+    if (taskSummary) query.set("taskSummary", "1");
     const req = request(
       {
         hostname: "127.0.0.1",
         port,
-        path: `/api/web/v1/stream?protocolVersion=2${sessionId ? `&sessionId=${sessionId}` : ""}${afterCursor ? `&afterCursor=${encodeURIComponent(afterCursor)}` : ""}`,
+        path: `/api/web/v1/stream?${query}`,
         headers: { Cookie: streamCookie },
       },
       (res) => {
@@ -147,6 +157,7 @@ describe("WebAccessService loopback security boundary", () => {
     cookie = "";
     csrf = "";
     bootId = "";
+    owner = undefined;
     dir = await mkdtemp(join(tmpdir(), "agentkib-web-unit-"));
     await writeFile(join(dir, "index.html"), "<html>local web</html>");
     const listener = createServer();
@@ -193,6 +204,12 @@ describe("WebAccessService loopback security boundary", () => {
       receiptRequest: receiptQuery,
       onPairingRequested,
       verifiedExperimental: true,
+      account: {
+        signedIn: () => owner !== undefined,
+        accountId: () => owner,
+        ensureDeviceOwner: async () => undefined,
+        registerDevice: async () => ({}),
+      },
     });
     await service.initialize();
     expect((await service.request({ operation: "status" })).running).toBe(false);
@@ -733,6 +750,29 @@ describe("WebAccessService loopback security boundary", () => {
       });
     },
   );
+
+  it("reports a slow local catalog request as a read timeout", async () => {
+    let begin!: () => void;
+    const started = new Promise<void>((resolve) => {
+      begin = resolve;
+    });
+    let finish!: (value: unknown) => void;
+    runtime.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+          begin();
+        }),
+    );
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const pending = service.localRequest("catalog");
+    await started;
+    await vi.advanceTimersByTimeAsync(20_000);
+    const response = await pending;
+    finish({ sessions: [], workspaces: [] });
+    expect(response).toEqual({ status: 504, body: { error: "catalog_read_timeout" } });
+    expect(runtime).toHaveBeenCalledTimes(1);
+  });
 
   it("keeps revocation authoritative when a pending catalog becomes stale", async () => {
     await bootstrap();
@@ -1954,6 +1994,300 @@ describe("WebAccessService loopback security boundary", () => {
       }
     },
   );
+
+  describe("task summary stream", () => {
+    const workspaceRows = () => [
+      { id: "allowed", name: "Allowed", path: join(dir, "allowed") },
+      { id: "private", name: "Private", path: join(dir, "private") },
+    ];
+    const session = (id: string, workspace_id: string, status = "running") => ({
+      id,
+      workspace_id,
+      agent: "codex",
+      title: id,
+      availability: "readable",
+      continuation: { status },
+    });
+    const readFrames = (stream: ReturnType<typeof openStream>) =>
+      stream.chunks
+        .join("")
+        .split("\n\n")
+        .slice(0, -1)
+        .flatMap((frame) => {
+          const [event, data] = frame.split("\n");
+          if (event !== "event: session-ready" && event !== "event: catalog-invalidated") return [];
+          return [
+            {
+              event,
+              data: JSON.parse(data.slice("data: ".length)) as {
+                cursor?: string;
+                taskSummary?: { version: string };
+                taskSummaryVersion?: string;
+              },
+            },
+          ];
+        });
+    const taskSource = () =>
+      service as unknown as {
+        taskSummary(hash: string): Promise<{ version: string; [key: string]: unknown } | undefined>;
+      };
+    let deviceId: string;
+
+    beforeEach(async () => {
+      await service.request({
+        operation: "configure",
+        enabled: true,
+        port,
+        externalOrigin: "",
+        experimentalEnabled: true,
+        allowedWorkspaceIds: ["allowed"],
+      });
+      await bootstrap();
+      deviceId = await pair();
+    });
+
+    it("pushes a scoped snapshot on opt-in, version changes and reconnect", async () => {
+      owner = "owner-first";
+      let status = "running";
+      let secret = "private-first";
+      runtime.mockImplementation(async (input) => {
+        const params = input as { operation: string; readerScope?: string };
+        if (params.operation !== "catalog") return {};
+        return {
+          complete: true,
+          indexEnabled: true,
+          workspaces: workspaceRows(),
+          taskSummarySourceCoverage: {
+            indexEnabled: true,
+            managedComplete: true,
+            sources: [
+              { workspaceId: "allowed", agent: "codex", complete: true },
+              { workspaceId: "private", agent: "codex", complete: false },
+            ],
+          },
+          sessions: [
+            session(
+              params.readerScope === "account:owner-first" ? "first-task" : "second-task",
+              "allowed",
+              status,
+            ),
+            session(secret, "private"),
+          ],
+        };
+      });
+      const legacy = openStream(cookie, "");
+      const stream = openStream(cookie, "", undefined, true);
+      let reconnect: ReturnType<typeof openStream> | undefined;
+      try {
+        const access = await http("/api/web/v1/access");
+        expect(access.json()).toMatchObject({ status: "approved", taskSummaryVersion: 1 });
+        const plain = await http("/api/web/v1/catalog");
+        expect(plain.status).toBe(200);
+        expect(plain.json()).not.toHaveProperty("taskSummary");
+        expect(plain.json()).not.toHaveProperty("taskSummarySourceCoverage");
+        await vi.waitFor(() =>
+          expect(readFrames(legacy)[0]?.data).toEqual({ cursor: "epoch-one:0" }),
+        );
+        await vi.waitFor(() => expect(readFrames(stream)[0]?.data.taskSummary).toBeDefined());
+        const first = readFrames(stream)[0].data.taskSummary!;
+        expect(first.version).toEqual(expect.any(String));
+        expect(JSON.stringify(first)).toContain("first-task");
+        expect(JSON.stringify(first)).not.toContain("private-first");
+        const snapshot = await http("/api/web/v1/catalog?taskSummary=1");
+        expect(snapshot.status).toBe(200);
+        expect(snapshot.json()).toEqual({ taskSummary: first });
+        expect(snapshot.body).not.toContain("private");
+
+        secret = "private-second";
+        pushEvent("invalidate", { domains: ["catalog"] }, 1);
+        await vi.waitFor(() => expect(readFrames(stream)[1]?.data).toEqual({}));
+        await vi.waitFor(() => expect(readFrames(legacy)[1]?.data).toEqual({}));
+
+        status = "awaiting-approval";
+        pushEvent("invalidate", { domains: ["catalog"] }, 2);
+        await vi.waitFor(() => expect(readFrames(stream)[2]?.data.taskSummary).toBeDefined());
+        const second = readFrames(stream)[2].data.taskSummary!;
+        expect(second.version).not.toBe(first.version);
+        expect(JSON.stringify(second)).toContain("first-task");
+        expect(stream.chunks.join("")).not.toContain("private-second");
+
+        stream.close();
+        owner = "owner-second";
+        reconnect = openStream(cookie, "", "epoch-one:0", true);
+        await vi.waitFor(() => expect(readFrames(reconnect!)[0]?.data.taskSummary).toBeDefined());
+        const resumed = readFrames(reconnect)[0].data.taskSummary!;
+        expect(resumed.version).not.toBe(second.version);
+        expect(JSON.stringify(resumed)).toContain("second-task");
+        expect(reconnect.chunks.join("")).not.toContain("first-task");
+      } finally {
+        reconnect?.close();
+        stream.close();
+        legacy.close();
+      }
+    });
+
+    it("sends the ready snapshot before changes queued while it is being read or drained", async () => {
+      let finish: ((value: { version: string }) => void) | undefined;
+      vi.spyOn(taskSource(), "taskSummary")
+        .mockImplementationOnce(() => new Promise((resolve) => (finish = resolve)))
+        .mockResolvedValue({ version: "after" });
+      let response: ServerResponse | undefined;
+      const original = ServerResponse.prototype.write;
+      vi.spyOn(ServerResponse.prototype, "write").mockImplementation(function (
+        this: ServerResponse,
+        ...args: Parameters<typeof original>
+      ) {
+        const accepted = original.apply(this, args);
+        if (String(args[0]).startsWith("event: session-ready\n")) {
+          response = this;
+          return false;
+        }
+        return accepted;
+      });
+      const stream = openStream(cookie, "", undefined, true);
+      try {
+        await vi.waitFor(() => expect(finish).toBeDefined());
+        pushEvent("invalidate", { domains: ["catalog"] }, 1);
+        finish!({ version: "before" });
+        await vi.waitFor(() => expect(response?.listenerCount("drain")).toBe(1));
+        pushEvent("invalidate", { domains: ["catalog"] }, 2);
+        pushEvent("invalidate", { domains: ["catalog"] }, 3);
+        response!.emit("drain");
+        await vi.waitFor(() =>
+          expect(readFrames(stream)).toEqual([
+            {
+              event: "event: session-ready",
+              data: { cursor: "epoch-one:0", taskSummary: { version: "before" } },
+            },
+            {
+              event: "event: catalog-invalidated",
+              data: { taskSummary: { version: "after" } },
+            },
+          ]),
+        );
+      } finally {
+        finish?.({ version: "before" });
+        stream.close();
+      }
+    });
+
+    it.each(["revoke", "change owner"])("discards a snapshot in flight on %s", async (change) => {
+      owner = "owner-first";
+      let finish: ((value: { version: string }) => void) | undefined;
+      vi.spyOn(taskSource(), "taskSummary").mockImplementationOnce(
+        () => new Promise((resolve) => (finish = resolve)),
+      );
+      const stream = openStream(cookie, "", undefined, true);
+      try {
+        await vi.waitFor(() => expect(finish).toBeDefined());
+        if (change === "revoke") await service.request({ operation: "revoke", id: deviceId });
+        else owner = "owner-second";
+        finish!({ version: "first-owner-only" });
+        await vi.waitFor(() =>
+          expect(stream.chunks.join("")).toContain(
+            change === "revoke" ? "event: access-ended" : "event: unavailable",
+          ),
+        );
+        expect(readFrames(stream)).toHaveLength(0);
+        expect(stream.chunks.join("")).not.toContain("first-owner-only");
+      } finally {
+        finish?.({ version: "first-owner-only" });
+        stream.close();
+      }
+    });
+
+    it("keeps oversize snapshots within the SSE limit and provides the catalog version", async () => {
+      const taskSummary = { version: "oversize", summary: "中".repeat(1_400_000) };
+      vi.spyOn(taskSource(), "taskSummary").mockResolvedValue(taskSummary);
+      const stream = openStream(cookie, "", undefined, true);
+      try {
+        await vi.waitFor(() =>
+          expect(readFrames(stream)[0]?.data).toEqual({
+            cursor: "epoch-one:0",
+            taskSummaryVersion: "oversize",
+          }),
+        );
+        const snapshot = await http("/api/web/v1/catalog?taskSummary=1");
+        expect(snapshot.status).toBe(200);
+        expect(snapshot.json()).toEqual({ taskSummary });
+        pushEvent("invalidate", { domains: ["catalog"] }, 1);
+        await vi.waitFor(() => expect(readFrames(stream)[1]?.data).toEqual({}));
+      } finally {
+        stream.close();
+      }
+    });
+
+    it("keeps its subscription and coalesces catalog invalidations while write admission is busy", async () => {
+      let status = "running";
+      runtime.mockImplementation(async (input) =>
+        (input as { operation: string }).operation === "catalog"
+          ? { workspaces: workspaceRows(), sessions: [session("task", "allowed", status)] }
+          : {},
+      );
+      const read = vi.spyOn(taskSource(), "taskSummary");
+      const stream = openStream(cookie, "", undefined, true);
+      try {
+        await vi.waitFor(() => expect(readFrames(stream)[0]?.data.taskSummary).toBeDefined());
+        const first = readFrames(stream)[0].data.taskSummary!;
+        control.admission = true;
+        status = "awaiting-approval";
+        pushEvent("invalidate", { domains: ["catalog"] }, 1);
+        await vi.waitFor(() => expect(read.mock.calls.length).toBeGreaterThanOrEqual(2));
+        await expect(read.mock.results[1].value).rejects.toThrow("operation_busy");
+        status = "waiting-input";
+        pushEvent("invalidate", { domains: ["catalog"] }, 2);
+        pushEvent("invalidate", { domains: ["catalog"] }, 3);
+        control.events.emit("changed", "task");
+        await vi.waitFor(() => expect(stream.chunks.join("")).toContain("event: control-changed"));
+        // Waiting for an actual retry keeps write admission held through one
+        // backoff and confirms that receipt wakeups do not trigger extra reads.
+        await vi.waitFor(() => expect(read.mock.calls.length).toBeGreaterThanOrEqual(3));
+        await expect(read.mock.results[2].value).rejects.toThrow("operation_busy");
+        expect(readFrames(stream)).toHaveLength(1);
+        control.admission = false;
+        await vi.waitFor(() =>
+          expect(readFrames(stream)[1]?.data.taskSummary).toMatchObject({
+            groups: {
+              pendingAnswer: { count: 1 },
+              pendingApproval: { count: 0 },
+              running: { count: 0 },
+            },
+          }),
+        );
+        expect(readFrames(stream)[1].data.taskSummary!.version).not.toBe(first.version);
+        expect(readFrames(stream)).toHaveLength(2);
+        expect(stream.chunks.join("")).not.toContain("event: unavailable");
+      } finally {
+        control.admission = false;
+        stream.close();
+      }
+    });
+
+    it("closes on a failed projection so reconnect can install the missing snapshot", async () => {
+      const read = vi.spyOn(taskSource(), "taskSummary");
+      read
+        .mockResolvedValueOnce({ version: "first" })
+        .mockRejectedValueOnce(new Error("catalog-stale"))
+        .mockResolvedValue({ version: "current" });
+      const stream = openStream(cookie, "", undefined, true);
+      let reconnect: ReturnType<typeof openStream> | undefined;
+      try {
+        await vi.waitFor(() =>
+          expect(readFrames(stream)[0]?.data.taskSummary?.version).toBe("first"),
+        );
+        pushEvent("invalidate", { domains: ["catalog"] });
+        await vi.waitFor(() => expect(stream.chunks.join("")).toContain("event: unavailable"));
+        expect(readFrames(stream)).toHaveLength(1);
+        reconnect = openStream(cookie, "", "epoch-one:0", true);
+        await vi.waitFor(() =>
+          expect(readFrames(reconnect!)[0]?.data.taskSummary?.version).toBe("current"),
+        );
+      } finally {
+        reconnect?.close();
+        stream.close();
+      }
+    });
+  });
 
   it("independently rechecks revocation while subscribers initialize", async () => {
     await bootstrap();

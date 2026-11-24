@@ -37,7 +37,8 @@ import {
   newSessionCopy,
   newSessionCreateFields,
   useNewSessionModel,
-  newSessionPermissions,
+  isNewSessionPermissionFailure,
+  useNewSessionPermission,
   newSessionPermissionFallbackTitle,
   newSessionAddCapabilities,
   newSessionPresetChoices,
@@ -124,7 +125,6 @@ export function NewSessionComposer({
     workspaces[0];
   const [text, setText] = useState("");
   const [files, setFiles] = useState<File[]>([]);
-  const [permission, setPermission] = useState<string>();
   const [planning, setPlanning] = useState(false);
   const [addMenuOpen, setAddMenuOpen] = useState(false);
   const [agentPreset, setAgentPreset] = useState<string>();
@@ -163,7 +163,6 @@ export function NewSessionComposer({
   const options = session.options;
   const provider = newSessionProvider(agent, options);
   const showsModelPicker = provider?.create.modelPicker === true;
-  const showsPermissionPicker = provider?.create.permissionPicker === true;
   const promptAtCreate = provider?.create.mode === "with-first-message";
   const locked = sending || session.busy;
   const advancedAccess = fullAccess && access?.device?.advancedControl === true && session.ready;
@@ -220,9 +219,10 @@ export function NewSessionComposer({
     provider,
   });
   const { settings: modelSettings, modelId, shownEffort, shownTier } = sessionModel;
-  const permissions = showsPermissionPicker
-    ? newSessionPermissions(agent, options, locale, { fullAccess })
-    : undefined;
+  const permission = useNewSessionPermission(agent, options, locale, fullAccess);
+  const { permissions, selected: selectedPermission, shown: shownPermission } = permission;
+  const permissionUnavailable =
+    permission.unavailable && !(planning && planField === "permissionMode");
   const canPickFiles = attachments && files.length < MAX_FILES;
   const addActionsScope = JSON.stringify([agent, workspace?.id, resourceAuthority]);
   const hasAddActions = attachments || planOffered || planning || resourcesOffered || goalsOffered;
@@ -236,9 +236,6 @@ export function NewSessionComposer({
   const permissionChoices = permissions?.choices.map((item) =>
     planning && planField === "permissionMode" ? { ...item, disabled: true } : item,
   );
-  const shownPermission =
-    permissionChoices?.find((item) => item.id === permission) ??
-    permissionChoices?.find((item) => item.id === permissions?.initial);
   const { presets, defaultId: defaultPreset } = newSessionPresetChoices(
     agent,
     options,
@@ -258,13 +255,15 @@ export function NewSessionComposer({
   const goalNeedsMessage = !!goal && !hasMessage && planning && planField === "mode";
   const resourceNeedsMessage = resources.length > 0 && !hasMessage;
   const resourceNeedsReselection = resources.some((item) => !item.available);
-  const sendDisabledReason = resourceNeedsReselection
-    ? undefined
-    : resourceNeedsMessage
-      ? composerLayoutCopy[locale].resourceNeedsMessage
-      : goalNeedsMessage
-        ? goalCopy.planNeedsMessage
-        : undefined;
+  const sendDisabledReason = permissionUnavailable
+    ? optionStatus
+    : resourceNeedsReselection
+      ? undefined
+      : resourceNeedsMessage
+        ? composerLayoutCopy[locale].resourceNeedsMessage
+        : goalNeedsMessage
+          ? goalCopy.planNeedsMessage
+          : undefined;
   const sendLabel = goal && !hasMessage ? conversationCopy.goalCreate : copy.send;
   const canSend =
     !disabled &&
@@ -274,6 +273,7 @@ export function NewSessionComposer({
     (!planning || offersPlan) &&
     !locked &&
     !session.unknown &&
+    !permissionUnavailable &&
     (!resources.length ||
       (resourcesAllowed && !resourceNeedsMessage && !resourceNeedsReselection)) &&
     (!goal || goalsAllowed) &&
@@ -310,7 +310,7 @@ export function NewSessionComposer({
         effort: sessionModel.effort,
         serviceTierId: sessionModel.chosenTier,
         shownModel: modelId,
-        permission,
+        permission: permission.requested,
         planning,
         preset: agentPreset,
         fullAccess,
@@ -338,7 +338,9 @@ export function NewSessionComposer({
     </Notice>
   ) : session.failure ? (
     <Notice tone="error" icon={<CircleX className="size-3.5" />}>
-      {fillCopy(copy.notCreated, { reason: session.failure.reason })}
+      {isNewSessionPermissionFailure(session.failure.detail)
+        ? session.failure.reason
+        : fillCopy(copy.notCreated, { reason: session.failure.reason })}
       {session.failure.detail && (
         <Disclosure className="mt-1">
           <DisclosureSummary>{copy.details}</DisclosureSummary>
@@ -399,7 +401,7 @@ export function NewSessionComposer({
                   if (item === agent) return;
                   setAgent(item);
                   sessionModel.reset();
-                  setPermission(undefined);
+                  permission.reset();
                   setPlanning(false);
                   setAddMenuOpen(false);
                   setAgentPreset(undefined);
@@ -581,15 +583,19 @@ export function NewSessionComposer({
                     disabledReason: optionsLocked ? (unavailableReason ?? optionStatus) : undefined,
                     side: "bottom",
                     items: permissionChoices,
-                    selected: shownPermission?.id,
-                    onSelect: setPermission,
+                    selected: selectedPermission?.id,
+                    onSelect: permission.select,
                   }
                 : undefined
             }
             permissionFallback={
-              !(permissions && permissionChoices) && showsPermissionPicker ? (
+              provider && !permissions ? (
                 <OptionPlaceholder
-                  label={newSessionPermissionFallbackTitle(agent, locale) ?? copy.permission}
+                  label={
+                    shownPermission?.name ??
+                    newSessionPermissionFallbackTitle(agent, locale) ??
+                    copy.permission
+                  }
                   status={optionStatus}
                   loading={session.optionsLoading}
                   icon={<Shield className="size-3.5 shrink-0" aria-hidden />}

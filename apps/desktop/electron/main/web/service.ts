@@ -11,6 +11,7 @@ import {
   type SessionPendingInteraction,
   type SessionProviderCapabilities,
   type SessionAttachmentKinds,
+  type SessionQueueItemActions,
 } from "@agentkib/runtime-protocol";
 import {
   historyInputHash,
@@ -56,6 +57,8 @@ import {
 } from "./conversation-transport";
 import type { ConversationHub } from "../conversation-hub";
 import { RuntimeRequestError } from "../runtime-host";
+import type { ConversationTaskSummary } from "@agentkib/web-client";
+import { projectTaskSummary } from "./task-summary";
 import type { SessionStreamEvent, SessionSubscription } from "../../generated/runtime-protocol";
 import {
   DEFAULT_RELAY_BROKER,
@@ -432,8 +435,21 @@ type QueueEntry = {
   ownerWait?: boolean;
   ownerWaitDeviceId?: string;
   ownerWaitWorkspaceId?: string;
-  actions?: { delete?: Availability };
+  actions?: SessionQueueItemActions;
+  hasAttachments?: boolean;
+  queueSteerDeviceId?: string;
 };
+
+function queueEntryHasAttachments(item: QueueEntry): boolean {
+  return (
+    item.hasAttachments === true ||
+    (item.input ?? []).some(
+      (input) =>
+        input.type !== "text" ||
+        input.text?.split("\n").some((line) => line.startsWith("User attached file ")),
+    )
+  );
+}
 
 function isOwnerWaitQueueEntry(item: QueueEntry, workspaceId: string) {
   return (
@@ -738,6 +754,7 @@ const WORKSPACE_SCOPED_MODES: readonly string[] = [
 ];
 /** 小于这个大小的回复不压缩，省下的字节抵不过压缩本身。 */
 const COMPRESSED_REPLY_MIN_BYTES = 16 * 1024;
+const TASK_CATALOG_MAX_BYTES = 32 * 1024 * 1024;
 const MAX_EVENT_STREAMS = 16;
 const MAX_DEVICE_STREAMS = 4;
 const MAX_DEVICE_DETAIL_STREAMS = 3;
@@ -3987,7 +4004,7 @@ export class WebAccessService {
             transport &&
             execution &&
             (operation !== "open-model-picker" || data.executionMode === "claude-follower") &&
-            (operation !== "attachments" || device.send === true) &&
+            (!["attachments", "queue-steer"].includes(operation) || device.send === true) &&
             (operation !== "goal-draft" ||
               (data.executionMode === "claude-managed" && device.send === true));
           return [
@@ -4463,7 +4480,7 @@ export class WebAccessService {
         undefined,
         true,
       )) as {
-        data?: { id: string; status?: string; input?: { type: string; text?: string }[] }[];
+        data?: QueueEntry[];
       };
       if (
         (queued as { reason?: string }).reason === "queue-too-large" ||
@@ -4476,13 +4493,18 @@ export class WebAccessService {
         policy.queueItem === "pending-or-unknown" ? ["pending", "unknown"] : ["pending"];
       if (!target || (target.status !== undefined && !removable.includes(target.status)))
         throw new HttpError(409, "queue_item_unavailable");
+      if (operation === "queue-update") {
+        if (queueEntryHasAttachments(target))
+          throw new HttpError(409, "queue_attachments_edit_unsupported");
+        if (target.actions?.update?.available === false)
+          throw new HttpError(409, "queue_item_unavailable");
+      }
       if (
-        operation === "queue-update" &&
-        target.input?.some(
-          (input) => input.type !== "text" || input.text?.startsWith("User attached file "),
-        )
+        operation === "queue-steer" &&
+        (target.actions?.steer?.available === false ||
+          (target.queueSteerDeviceId !== undefined && target.queueSteerDeviceId !== device.id))
       )
-        throw new HttpError(409, "queue_attachments_edit_unsupported");
+        throw new HttpError(409, "queue_item_unavailable");
     }
     if (operation === "steer") params.turnId = this.field(body.turnId);
     if (["queue-update", "queue-delete", "queue-steer"].includes(operation))
@@ -5247,6 +5269,7 @@ export class WebAccessService {
     const agent = managedAgentOf(body.agent ?? "codex");
     if (!agent) throw new HttpError(400, "invalid_agent");
     const provider = sessionProviderCapabilities(agent);
+    const permissionField = sessionProviderDeclaration(agent)?.permissionField;
     // DeepSeek Harness only starts sessions here; its sessions are controlled through actions.
     if (agent === "deepseek-harness" && operation !== "create")
       throw new HttpError(404, "not_found");
@@ -5300,8 +5323,12 @@ export class WebAccessService {
       requestId,
       deviceId: this.grant(hash, "manage").id,
     };
+    let creationNeedsFullAccess = false;
+    let verifyPolicyReply = false;
     if (operation === "create") {
       params.workspaceId = this.field(body.workspaceId);
+      if (body.permissionMode !== undefined && permissionField !== "permissionMode")
+        throw new HttpError(400, "unsupported_permission_mode");
       if (agent === "codex") {
         const policyId =
           body.policyId === undefined
@@ -5317,8 +5344,14 @@ export class WebAccessService {
           throw new HttpError(400, "unsupported_policy");
         // Starting with another policy is changing it, which a session's settings allow only
         // to a device with full access.
-        if (policyId !== "workspace-write-on-request") this.fullAccess(hash);
+        creationNeedsFullAccess = policyId !== "workspace-write-on-request";
         params.policyId = policyId;
+      } else if (body.policyId !== undefined) {
+        if (provider?.create.permissionPicker !== true || permissionField !== "policyId")
+          throw new HttpError(400, "unsupported_policy");
+        params.policyId = this.field(body.policyId, 128);
+        creationNeedsFullAccess = true;
+        verifyPolicyReply = true;
       }
       if (body.mode !== undefined) {
         if (provider?.create.planMode !== "mode" || body.mode !== "plan")
@@ -5348,7 +5381,7 @@ export class WebAccessService {
         if (!DEVIN_PERMISSION_MODES.includes(mode))
           throw new HttpError(400, "unsupported_permission_mode");
         // Approving more without asking is changing what the session may do: full access only.
-        if (mode === "smart" || mode === "dangerous") this.fullAccess(hash);
+        creationNeedsFullAccess = mode === "smart" || mode === "dangerous";
         params.permissionMode = mode;
       }
       if (agent === "antigravity" && body.permissionMode !== undefined) {
@@ -5356,9 +5389,10 @@ export class WebAccessService {
         if (!ANTIGRAVITY_PERMISSION_MODES.includes(mode))
           throw new HttpError(400, "unsupported_permission_mode");
         // Auto also runs commands Antigravity judges safe: full access only.
-        if (mode === "auto") this.fullAccess(hash);
+        creationNeedsFullAccess = mode === "auto";
         params.permissionMode = mode;
       }
+      if (creationNeedsFullAccess) this.fullAccess(hash);
       if (provider?.create.mode === "with-first-message") {
         if (typeof body.prompt !== "string" || !body.prompt.trim())
           throw new HttpError(400, "missing_prompt");
@@ -5402,6 +5436,7 @@ export class WebAccessService {
     )
       throw new HttpError(403, "workspace_not_authorized");
     this.grant(hash, "manage");
+    if (creationNeedsFullAccess) this.fullAccess(hash);
     if (params.mode === "plan") this.grant(hash, "settings");
     if (body.bootId !== this.bootId) throw new HttpError(409, "stale_boot");
     if (this.admission || (sessionId && this.active.has(sessionId)))
@@ -5435,9 +5470,16 @@ export class WebAccessService {
       controlOutcome?: string;
       reason?: string;
       requestId?: string;
+      policyId?: string;
     };
     this.grant(hash, "manage");
     if (body.bootId !== this.bootId) throw new HttpError(409, "stale_boot");
+    if (verifyPolicyReply && result?.accepted === true && result.policyId !== params.policyId) {
+      // Creation is empty: without permission proof the client must retain the first message.
+      control.dispatched = false;
+      control.priorUncertain = false;
+      throw new HttpError(409, "create-permission-unconfirmed");
+    }
     if (operation !== "reconcile" && result?.accepted !== true) {
       if (
         result?.accepted === false &&
@@ -5479,6 +5521,9 @@ export class WebAccessService {
           "dsh-models-unavailable",
           "dsh-create-model-selection-unsupported",
           "dsh-create-model-not-applied",
+          "dsh-create-permission-selection-unsupported",
+          "dsh-create-permission-not-applied",
+          "invalid-policy",
           // Starting DeepSeek Harness in the background, and a session another DSH holds.
           "dsh-start-failed",
           "dsh-version-unsupported",
@@ -5734,7 +5779,12 @@ export class WebAccessService {
       throw new HttpError(400, "invalid_input");
     return value;
   }
-  private async runtime(params: unknown, existing?: Promise<unknown>, reserved = false) {
+  private async runtime(
+    params: unknown,
+    existing?: Promise<unknown>,
+    reserved = false,
+    timeoutError: "outcome_unknown" | "catalog_read_timeout" = "outcome_unknown",
+  ) {
     if (!existing && !reserved && this.admission) throw new HttpError(409, "operation_busy");
     // Timeout does not cancel owner execution. Callers never automatically retry mutations.
     let timer: ReturnType<typeof setTimeout>;
@@ -5742,7 +5792,7 @@ export class WebAccessService {
       return await Promise.race([
         existing ?? this.runtimeCall(params),
         new Promise<never>((_, reject) => {
-          timer = setTimeout(() => reject(new HttpError(504, "outcome_unknown")), 20_000);
+          timer = setTimeout(() => reject(new HttpError(504, timeoutError)), 20_000);
         }),
       ]);
     } finally {
@@ -5780,6 +5830,27 @@ export class WebAccessService {
       return this.runtime({ operation: "catalog" }, undefined, reserved);
     if (!reserved && this.admission) throw new HttpError(409, "operation_busy");
     return this.runtime({ operation: "catalog" }, flight.read, reserved);
+  }
+  private async taskSummary(
+    hash: string,
+    catalog?: unknown,
+  ): Promise<ConversationTaskSummary | undefined> {
+    const boot = this.bootId;
+    const readerScope = this.readerScope();
+    const device = this.grant(hash);
+    // A stream invalidation must observe a read started after that notification.
+    const source = catalog ?? (await this.runtime({ operation: "catalog" }));
+    const access = await this.historyAccessScope(hash);
+    const current = this.grant(hash);
+    if (boot !== this.bootId) throw new HttpError(409, "stale_boot");
+    if (readerScope !== this.readerScope() || current !== device)
+      throw new HttpError(409, "access_changed");
+    return projectTaskSummary(
+      source,
+      access.workspaces,
+      this.isFullAccess(current) || this.options.mode === "lan",
+      JSON.stringify([access.token, readerScope]),
+    );
   }
   private async conversationReadState(
     res: ConversationResponse,
@@ -6152,6 +6223,9 @@ export class WebAccessService {
         readStateVersion: 1,
         ...(device && !trustedLocal && !browser.ended
           ? { pendingInteractions: { version: 1 } }
+          : {}),
+        ...(device && !browser.ended && this.options.conversationHub
+          ? { taskSummaryVersion: 1 }
           : {}),
         csrfToken: browser.csrf,
         bootId: this.bootId,
@@ -7159,12 +7233,28 @@ export class WebAccessService {
                 actions: {
                   update: { available: false, reason: item.reason },
                   delete: { available: canDeleteOwnerWait(item, current.id) },
+                  ...(!lan ? { reorder: { available: false }, steer: { available: false } } : {}),
                 },
               }
-            : {}),
-          hasAttachments: (item.input ?? []).some(
-            (input) => input.type !== "text" || input.text?.startsWith("User attached file "),
-          ),
+            : !legacyCodex && item.actions
+              ? {
+                  actions: {
+                    ...item.actions,
+                    ...(item.actions.steer
+                      ? {
+                          steer: {
+                            available:
+                              item.actions.steer.available &&
+                              current.send === true &&
+                              (item.queueSteerDeviceId === undefined ||
+                                item.queueSteerDeviceId === current.id),
+                          },
+                        }
+                      : {}),
+                  },
+                }
+              : {}),
+          hasAttachments: queueEntryHasAttachments(item),
           text: (item.input ?? [])
             .filter(
               (input) => input.type === "text" && !input.text?.startsWith("User attached file "),
@@ -7493,6 +7583,8 @@ export class WebAccessService {
     if (path === "/stream") {
       if (url.searchParams.get("protocolVersion") !== "2" || !this.options.conversationHub)
         throw new HttpError(409, "incompatible_protocol");
+      const watchTaskSummary =
+        sessionId === undefined && url.searchParams.get("taskSummary") === "1";
       const afterCursor =
         url.searchParams.get("afterCursor") ||
         String(req.headers["last-event-id"] ?? "") ||
@@ -7533,6 +7625,8 @@ export class WebAccessService {
       let readyCursor: string | undefined;
       let controlChangedPending = false;
       let catalogChangedPending = false;
+      let taskSummaryVersion: string | undefined;
+      let taskSummaryRetry: ReturnType<typeof setTimeout> | undefined;
       let queuedBytes = 0;
       let cancelDrain: (() => void) | undefined;
       let controlContext: { executionMode?: unknown; workspaceId?: unknown } = {};
@@ -7566,6 +7660,7 @@ export class WebAccessService {
         if (blocked && !res.destroyed) res.destroy();
         clearInterval(heartbeat);
         clearTimeout(expiration);
+        clearTimeout(taskSummaryRetry);
         hub.off("catalog-invalidated", catalogChanged);
         hub.off("unavailable", unavailable);
         this.controlEvents.off("changed", controlChanged);
@@ -7608,6 +7703,52 @@ export class WebAccessService {
           res.once("drain", drained);
           res.once("close", drained);
         });
+      };
+      const writeCatalogEvent = async (
+        type: "session-ready" | "catalog-invalidated",
+        payload: { cursor?: string },
+      ): Promise<boolean> => {
+        let data = JSON.stringify(payload);
+        if (watchTaskSummary) {
+          const device = authorized();
+          const boot = this.bootId;
+          const readerScope = this.readerScope();
+          let summary: ConversationTaskSummary | undefined;
+          try {
+            summary = await this.taskSummary(hash);
+          } catch (error) {
+            if (!(error instanceof HttpError) || error.message !== "operation_busy") throw error;
+            if (!closed) {
+              // Reads wait for write admission to release without tearing down
+              // the subscription or losing the last queued invalidation.
+              taskSummaryRetry = setTimeout(() => {
+                taskSummaryRetry = undefined;
+                void flush();
+              }, 250);
+              taskSummaryRetry.unref();
+            }
+            return false;
+          }
+          if (closed || res.destroyed || res.writableEnded) {
+            cleanup();
+            return false;
+          }
+          if (boot !== this.bootId) throw new HttpError(409, "stale_boot");
+          if (authorized() !== device || readerScope !== this.readerScope())
+            throw new HttpError(403, "access_changed");
+          if (summary && summary.version !== taskSummaryVersion) {
+            taskSummaryVersion = summary.version;
+            const snapshot = JSON.stringify({ ...payload, taskSummary: summary });
+            // LAN's SSE parser caps JSON data at 4 MiB. The version lets the
+            // subscriber recover larger snapshots from the catalog endpoint.
+            data =
+              Buffer.byteLength(snapshot) <= 4 * 1024 * 1024
+                ? snapshot
+                : JSON.stringify({ ...payload, taskSummaryVersion });
+          }
+        }
+        await write(`event: ${type}\ndata: ${data}\n\n`);
+        return true;
       };
       const project = async (event: SessionStreamEvent): Promise<SessionStreamEvent> => {
         let device = authorized();
@@ -7730,20 +7871,33 @@ export class WebAccessService {
               `event: control-changed\ndata: ${JSON.stringify(sessionId ? { sessionId } : {})}\n\n`,
             );
           }
-          if (catalogChangedPending && !closed) {
-            catalogChangedPending = false;
-            await write("event: catalog-invalidated\ndata: {}\n\n");
+          if (watchTaskSummary && readyCursor && !closed && !taskSummaryRetry) {
+            // Install the new connection's baseline before any invalidation that
+            // arrived while subscribing. Changes during this read stay pending.
+            if (await writeCatalogEvent("session-ready", { cursor: readyCursor }))
+              readyCursor = undefined;
           }
-          if (readyCursor && !closed) {
+          if (catalogChangedPending && !closed && !taskSummaryRetry) {
+            catalogChangedPending = false;
+            if (!(await writeCatalogEvent("catalog-invalidated", {})))
+              catalogChangedPending = !closed;
+          }
+          if (!watchTaskSummary && readyCursor && !closed) {
             const cursor = readyCursor;
             readyCursor = undefined;
-            await write(`event: session-ready\ndata: ${JSON.stringify({ cursor })}\n\n`);
+            await writeCatalogEvent("session-ready", { cursor });
           }
         } catch {
           unavailable();
         } finally {
           processing = false;
-          if (queue.length || controlChangedPending || catalogChangedPending) void flush();
+          if (
+            !closed &&
+            (queue.length ||
+              controlChangedPending ||
+              (!taskSummaryRetry && (catalogChangedPending || readyCursor)))
+          )
+            void flush();
         }
       };
       const enqueue = (event: SessionStreamEvent) => {
@@ -7862,6 +8016,8 @@ export class WebAccessService {
           await this.codexScope(sessionId!, hash, false, false);
           result = await this.runtime(params);
         }
+      } else if (path === "/catalog") {
+        result = await this.runtime(params, undefined, false, "catalog_read_timeout");
       } else result = await this.runtime(params);
     } catch (error) {
       if (path === "/catalog" || (path === "/events" && params.cursor)) {
@@ -7885,8 +8041,9 @@ export class WebAccessService {
       }
       throw error;
     }
+    const wantsTaskSummary = path === "/catalog" && url.searchParams.get("taskSummary") === "1";
     const device = this.grant(hash);
-    if (path === "/catalog" && this.isFullAccess(device)) {
+    if (path === "/catalog" && !wantsTaskSummary && this.isFullAccess(device)) {
       const registered = new Set(
         (await this.registeredWorkspaces()).map((workspace) => workspace.id),
       );
@@ -7905,20 +8062,26 @@ export class WebAccessService {
       result = await this.projectLive(sessionId, result, device);
       if (device !== this.grant(hash) || readerScope !== this.readerScope())
         throw new HttpError(403, "access_changed");
-    } else this.grant(hash);
+    }
+    const taskSummary = wantsTaskSummary ? await this.taskSummary(hash, result) : undefined;
+    this.grant(hash);
     if (boot !== this.bootId) throw new HttpError(409, "stale_boot");
     if ((path === "/catalog" || localEvents) && readerScope !== this.readerScope())
       throw new HttpError(409, "access_changed");
     // 桌面内嵌会话页走可信本地桥，仍拿完整目录；远程（中继、局域网）客户端从不列出
     // 子代理会话，去掉它们并压缩，目录回复从约 800 KiB 降到几十 KiB。
     const remoteCatalog = path === "/catalog" && !trustedLocal;
+    const gzip = remoteCatalog && acceptsGzip(req.headers["accept-encoding"]);
+    // Large task snapshots remain readable independently of the legacy directory size.
+    if (wantsTaskSummary) return this.json(res, 200, { taskSummary }, gzip, TASK_CATALOG_MAX_BYTES);
     if (remoteCatalog) result = projectRemoteCatalog(result);
-    return this.json(
-      res,
-      200,
-      result,
-      remoteCatalog && acceptsGzip(req.headers["accept-encoding"]),
-    );
+    if (path === "/catalog" && result && typeof result === "object" && !Array.isArray(result)) {
+      const catalog = { ...result } as Record<string, unknown>;
+      // Runtime completeness spans every registered workspace. Only the authorized projection is public.
+      delete catalog.taskSummarySourceCoverage;
+      result = catalog;
+    }
+    return this.json(res, 200, result, gzip);
   }
   private async static(req: ConversationRequest, res: ConversationResponse) {
     if (req.method !== "GET" && req.method !== "HEAD")

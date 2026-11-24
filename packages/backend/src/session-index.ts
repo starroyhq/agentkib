@@ -25,6 +25,31 @@ interface Refresh {
 const MAX_REPORTED_RECORD_ISSUES = 2048;
 const issueCodePattern = /^[a-z][a-z0-9-]{0,79}$/;
 const nativeRecordIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const PARTIAL_SOURCE_DETAIL =
+  "Some conversation sources could not be read; previous records were retained";
+
+type IndexStatus = ReturnType<SessionStore["status"]>[number];
+
+function sourceIssues(status: IndexStatus | undefined): string[] {
+  if (!status?.last_success_at && !status?.error_key) return ["not-scanned"];
+  if (!status?.error_key) return [];
+  const detail = status.error_detail;
+  if (detail === PARTIAL_SOURCE_DETAIL) return ["source-partial"];
+  if (detail?.startsWith("[") && detail.length <= 2048) {
+    try {
+      const issues: unknown = JSON.parse(detail);
+      if (Array.isArray(issues)) {
+        const codes = issues.filter(
+          (code): code is string => typeof code === "string" && issueCodePattern.test(code),
+        );
+        if (codes.length > 0) return codes;
+      }
+    } catch {
+      // The status predates structured source issues or could not be decoded.
+    }
+  }
+  return ["source-unavailable"];
+}
 
 /** Invalidate scans before clearing or changing preferences; no await occurs between validation and writes. */
 export class SessionIndex {
@@ -104,36 +129,60 @@ export class SessionIndex {
     workspaceIds: readonly string[],
   ): Array<{ workspaceId: string; agent: SessionAgent }> {
     if (!this.enabled()) return [];
-    const result: Array<{ workspaceId: string; agent: SessionAgent }> = [];
-    for (const workspaceId of new Set(workspaceIds)) {
-      const statuses = this.store.status(workspaceId);
+    return this.catalogSources(workspaceIds).flatMap(({ workspaceId, agent, complete }) =>
+      complete ? [] : [{ workspaceId, agent }],
+    );
+  }
+  /** Coverage of cached Provider reads, including sources that returned zero sessions. */
+  catalogSources(workspaceIds: readonly string[]): Array<{
+    workspaceId: string;
+    agent: SessionAgent;
+    complete: boolean;
+    reasons?: string[];
+  }> {
+    const enabled = this.enabled();
+    return [...new Set(workspaceIds)].flatMap((workspaceId) => {
       const agents = sessionCollection(workspaceId) ? ["codex" as const] : SESSION_AGENTS;
-      const pending = new Set(
-        agents.filter(
-          (agent) =>
-            !statuses.some(
-              (status) =>
-                status.agent === agent &&
-                status.last_success_at !== null &&
-                status.error_key === null,
-            ),
-        ),
-      );
-      if (
-        this.#classification.has(workspaceId) ||
-        this.store.codexClassificationPending(workspaceId)
-      )
-        pending.add("codex");
+      if (!enabled)
+        return agents.map((agent) => ({
+          workspaceId,
+          agent,
+          complete: false,
+          reasons: ["index-disabled"],
+        }));
+      const statuses = new Map(this.store.status(workspaceId).map((row) => [row.agent, row]));
+      const classifying =
+        this.#classification.has(workspaceId) || this.store.codexClassificationPending(workspaceId);
       const refresh = this.#refreshes.get(workspaceId);
+      const refreshing = new Set<SessionAgent>();
       if (refresh?.epoch === this.#epoch) {
         for (const agent of refresh.remaining ?? this.#due(workspaceId, refresh.active))
-          pending.add(agent);
+          refreshing.add(agent);
         if (refresh.next)
-          for (const agent of this.#due(workspaceId, refresh.next)) pending.add(agent);
+          for (const agent of this.#due(workspaceId, refresh.next)) refreshing.add(agent);
       }
-      for (const agent of pending) result.push({ workspaceId, agent });
-    }
-    return result;
+      const issues = new Map<SessionAgent, string[]>();
+      const addIssue = (agent: SessionAgent, issue: string) => {
+        const reasons = issues.get(agent);
+        if (reasons) reasons.push(issue);
+        else issues.set(agent, [issue]);
+      };
+      for (const agent of agents) {
+        const reasons = sourceIssues(statuses.get(agent));
+        if (reasons.length > 0) issues.set(agent, reasons);
+      }
+      if (classifying) addIssue("codex", "classification-pending");
+      for (const agent of refreshing) addIssue(agent, "refreshing");
+      return [...new Set([...issues.keys(), ...agents])].map((agent) => {
+        const reasons = issues.get(agent);
+        return {
+          workspaceId,
+          agent,
+          complete: reasons === undefined,
+          ...(reasons ? { reasons } : {}),
+        };
+      });
+    });
   }
   #due(workspaceId: string, pass: ScanPass): Set<SessionAgent> {
     const agents =
@@ -293,9 +342,7 @@ export class SessionIndex {
         this.store.failure(
           workspaceId,
           agent,
-          reasons.length
-            ? JSON.stringify(reasons)
-            : "Some conversation sources could not be read; previous records were retained",
+          reasons.length ? JSON.stringify(reasons) : PARTIAL_SOURCE_DETAIL,
         );
       }
       refresh.remaining.delete(agent);

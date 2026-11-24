@@ -11,6 +11,7 @@ import {
   type DesktopConversationBridge,
 } from "@/core/conversation-bridge";
 import type { ConversationSessionSummary } from "@/core/types";
+import { isCatalogReadTimeout } from "./catalog-read-error";
 import {
   isStaleCatalogRead,
   mergeCatalogSessions,
@@ -133,6 +134,7 @@ export function refreshConversationCatalog({
   const request = generation;
   let blockedVersion: number | undefined;
   const task = (async () => {
+    let retriedTimeout = false;
     while (true) {
       const version = invalidation;
       let catalog: ConversationCatalog;
@@ -141,6 +143,12 @@ export function refreshConversationCatalog({
           retryBusyRead(() => desktopConversationRequest<ConversationCatalog>("catalog")),
         );
       } catch (error) {
+        // A timed-out catalog read can be repeated without reissuing any command.
+        if (generation === request && !retriedTimeout && isCatalogReadTimeout(error)) {
+          retriedTimeout = true;
+          await new Promise<void>((resolve) => setTimeout(resolve, 250));
+          if (generation === request) continue;
+        }
         if (generation === request && (isBusyRead(error) || isStaleCatalogRead(error))) {
           waitingForSettlement = true;
           blockedVersion = version;

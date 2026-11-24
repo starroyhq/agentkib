@@ -10,6 +10,11 @@ import { DSH_BRIDGE_COMPATIBILITY } from "./compatibility.js";
 import { BridgeHttpError, discover, discoveryRoots, post } from "./client.js";
 import { DSH_COMMAND_LINE, DSH_HIDDEN_COMMANDS, dshCommandRefusal } from "./commands.js";
 import {
+  historyImportServices,
+  historyImportWorkspace,
+  importDshHistory,
+} from "./history-import.js";
+import {
   MAX_PREVIEW,
   MAX_STREAM,
   bounded,
@@ -24,6 +29,7 @@ import {
   modelsProjection,
   permissionOptions,
   presetEntry,
+  queueItemHasAttachments,
   queueItems,
   questionItems,
   sessionSummary,
@@ -570,6 +576,37 @@ export function createBridge(ctx, options = {}) {
   function canSelectModelAtCreation(controller) {
     return typeof controller?.create === "function" && canRecordModelSelection(controller);
   }
+  function canSelectPermissionAtCreation(controller) {
+    const commands = service("commands");
+    return (
+      typeof controller?.create === "function" &&
+      typeof controller?.resolveAgent === "function" &&
+      typeof controller?.projections === "function" &&
+      typeof service("permissionPresets")?.catalog === "function" &&
+      typeof commands?.list === "function" &&
+      typeof commands?.find === "function" &&
+      typeof commands?.execute === "function"
+    );
+  }
+  function createPermissions(controller) {
+    if (
+      !canSelectPermissionAtCreation(controller) ||
+      !commandEntries(service("commands").list(undefined)).some(
+        (entry) => entry.name === "permission",
+      )
+    )
+      throw new Error("dsh-create-permission-selection-unsupported");
+    const catalog = service("permissionPresets").catalog();
+    const options = permissionOptions(catalog).filter(
+      (option) => !/[\s\p{Cc}]/u.test(option.value),
+    );
+    return {
+      options,
+      defaultPreset: options.some((option) => option.value === catalog?.defaultPreset)
+        ? catalog.defaultPreset
+        : null,
+    };
+  }
   async function recordedModel(controller, sessionId) {
     const value = await controller.projections({ sessionId }, lifetime.signal);
     const selection = value?.values?.modelSelection;
@@ -1076,6 +1113,21 @@ export function createBridge(ctx, options = {}) {
       text: typeof result?.text === "string" ? bounded(result.text, MAX_PREVIEW).text : null,
     };
   }
+  async function applyInitialPermission(sessionId, requestId, policyId) {
+    try {
+      const agent = await agentFor(sessionId);
+      if (!service("commands").find(agent, "permission"))
+        throw new Error("permission-command-unavailable");
+      const changed = await runCommand(agent, requestId, `/permission ${policyId}`);
+      if (changed.ok !== true) throw new Error("permission-command-unconfirmed");
+      const observed = (await projections(sessionId)).permissions?.currentValue;
+      if (observed !== policyId) throw new Error("permission-projection-mismatch");
+      return observed;
+    } catch {
+      // The blank session may already exist. Only native evidence can settle its receipt now.
+      throw new Error("dsh-create-permission-not-applied");
+    }
+  }
   /**
    * A message naming one of the session's commands runs as that command, as in DSH's own window:
    * DSH's registry for the session's agent decides, also for a session DSH resumes for it. Null
@@ -1140,6 +1192,24 @@ export function createBridge(ctx, options = {}) {
       }
       case "document":
         return conversation(command);
+      case "history-import-context":
+      case "import-history": {
+        const native = historyImportServices(service, dshVersion);
+        if (!native) throw new Error("dsh-history-import-unavailable");
+        try {
+          if (command.type === "history-import-context") {
+            const workspace = await historyImportWorkspace(native.workspaceRegistry, command.cwd);
+            return { workspaceId: workspace.id };
+          }
+          return await importDshHistory(native, command, lifetime.signal);
+        } catch (error) {
+          if (error instanceof Error && /^dsh-history-import-[a-z-]+$/.test(error.message))
+            throw error;
+          throw new Error("dsh-history-import-unconfirmed");
+        } finally {
+          if (command.type === "import-history") refreshList();
+        }
+      }
       case "presets": {
         const registry = service("agentPresets");
         if (typeof registry?.remoteExportList !== "function")
@@ -1152,6 +1222,8 @@ export function createBridge(ctx, options = {}) {
             .filter(Boolean),
         };
       }
+      case "create-permissions":
+        return createPermissions(controller);
       case "verify":
         return present(command);
       case "verify-turn-end":
@@ -1192,10 +1264,22 @@ export function createBridge(ctx, options = {}) {
           throw new Error("image-too-large");
         return { mediaType: value.attachment?.mediaType ?? null, data: value.data };
       }
-      case "queue":
-        return needController().updateQueue({
-          sessionId: String(command.sessionId),
-          itemId: String(command.itemId),
+      case "queue": {
+        const controller = needController();
+        const sessionId = String(command.sessionId);
+        const itemId = String(command.itemId);
+        if (command.action?.kind === "edit") {
+          // The last report can be stale. Check the current native item in the same tick as the edit.
+          const queue = service("agents")?.get?.(sessionId)?.inbox?.nextTurn;
+          const item = Array.isArray(queue)
+            ? queue.find((message) => isHumanMessage(message) && String(message.id) === itemId)
+            : null;
+          if (!item) throw new Error("queue-item-unavailable");
+          if (queueItemHasAttachments(item)) throw new Error("queue_attachments_edit_unsupported");
+        }
+        return controller.updateQueue({
+          sessionId,
+          itemId,
           action:
             command.action?.kind === "edit"
               ? { kind: "edit", content: [{ type: "text", text: String(command.action.text) }] }
@@ -1203,6 +1287,7 @@ export function createBridge(ctx, options = {}) {
                 ? { kind: "steer" }
                 : { kind: "remove" },
         });
+      }
       case "cancel-turn": {
         if (!canCancelTurn()) throw new Error("dsh-stop-unavailable");
         const { sessionId, turn } = command;
@@ -1243,6 +1328,12 @@ export function createBridge(ctx, options = {}) {
       case "create": {
         const controller = needController();
         const selection = command.modelSelection;
+        const policyId = command.policyId;
+        if (
+          policyId !== undefined &&
+          !createPermissions(controller).options.some((option) => option.value === policyId)
+        )
+          throw new Error("invalid-policy");
         if (selection) {
           if (!canSelectModelAtCreation(controller))
             throw new Error("dsh-create-model-selection-unsupported");
@@ -1254,28 +1345,36 @@ export function createBridge(ctx, options = {}) {
           sessionId: String(command.sessionId),
           ...(command.agentPreset ? { agentPreset: String(command.agentPreset) } : {}),
         });
-        if (selection)
-          try {
-            const sessionId = value?.sessionId;
-            if (sessionId !== command.sessionId) throw new Error("dsh-create-session-id-changed");
+        try {
+          const sessionId = value?.sessionId;
+          if ((selection || policyId) && sessionId !== command.sessionId)
+            throw new Error(
+              policyId ? "dsh-create-permission-not-applied" : "dsh-create-model-not-applied",
+            );
+          let selected;
+          if (selection) {
             // The native controller's selectModel also saves the global default. The Agent's
             // model interface records the same selection locally for this just-created session.
-            service("agents").get(sessionId).model.select(selection);
-            const selected = await recordedModel(controller, sessionId);
-            if (!sameModelSelection(selected, selection))
+            try {
+              service("agents").get(sessionId).model.select(selection);
+              const recorded = await recordedModel(controller, sessionId);
+              if (!sameModelSelection(recorded, selection)) throw new Error("model-mismatch");
+              selected = { ...selection, reasoningEffort: selection.reasoningEffort ?? null };
+            } catch {
               throw new Error("dsh-create-model-not-applied");
-            return {
-              sessionId,
-              selected: { ...selection, reasoningEffort: selection.reasoningEffort ?? null },
-            };
-          } catch {
-            // The native blank session may already exist. The host reconciles it before sending.
-            throw new Error("dsh-create-model-not-applied");
-          } finally {
-            refreshList();
+            }
           }
-        refreshList();
-        return { sessionId: value?.sessionId ?? null };
+          const observed = policyId
+            ? await applyInitialPermission(sessionId, command.commandId, policyId)
+            : undefined;
+          return {
+            sessionId: sessionId ?? null,
+            ...(selected ? { selected } : {}),
+            ...(observed ? { policyId: observed } : {}),
+          };
+        } finally {
+          refreshList();
+        }
       }
       case "archive": {
         const workspaces = service("workspaceController");
@@ -1580,6 +1679,7 @@ export function createBridge(ctx, options = {}) {
       modelCatalog: typeof controller?.modelCatalog === "function",
       sessionModelSelection: resolves && canRecordModelSelection(controller),
       createModelSelection: canSelectModelAtCreation(controller),
+      createPermissionPreset: canSelectPermissionAtCreation(controller),
       images: typeof controller?.attachment === "function",
       goals: resolves && projects && typeof service("goals")?.get === "function",
       commands: resolves && typeof service("commands")?.execute === "function",
@@ -1587,6 +1687,7 @@ export function createBridge(ctx, options = {}) {
       subagents: projects,
       documents:
         typeof query?.observeSession === "function" && typeof query?.readSurface === "function",
+      historyImport: historyImportServices(service, dshVersion) !== null,
       agentPresets: typeof service("agentPresets")?.remoteExportList === "function",
       // A session's own agent takes the worker tools of a Project Agent.
       leadTools:

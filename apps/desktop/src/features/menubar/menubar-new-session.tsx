@@ -3,12 +3,16 @@ import { ChevronDown, Loader2, Plus } from "lucide-react";
 import { AgentMark, agentName } from "@agentkib/agent-identity";
 import { newSessionProvider, type ManagedAgent } from "@agentkib/web-client";
 import {
+  ComposerPermissionMenu,
   fillCopy,
+  isNewSessionPermissionFailure,
   NEW_SESSION_AGENTS,
   newSessionCopy,
   newSessionCreateFields,
+  newSessionPermissionFallbackTitle,
   readNewSessionTarget,
   rememberNewSessionTarget,
+  useNewSessionPermission,
 } from "@agentkib/session-ui";
 import { cn } from "cn";
 import { Button } from "@/components/ui/button";
@@ -70,6 +74,10 @@ export function MenuBarNewSession({
     },
   });
   const options = session.optionsData;
+  const permission = useNewSessionPermission(agent, options, locale, session.fullAccess);
+  const { permissions, selected: selectedPermission, shown: shownPermission } = permission;
+  const permissionTitle =
+    permissions?.title ?? newSessionPermissionFallbackTitle(agent, locale) ?? copy.permission;
   const unavailable =
     session.options.isError && !options
       ? failureOf(session.options.error, locale).reason
@@ -85,6 +93,7 @@ export function MenuBarNewSession({
     !!workspace &&
     !session.busy &&
     !session.unknown &&
+    !permission.unavailable &&
     !!text.trim();
 
   async function send() {
@@ -95,9 +104,20 @@ export function MenuBarNewSession({
     const value = text.trim();
     const promptAtCreate = newSessionProvider(agent, read)?.create.mode === "with-first-message";
     const fields = newSessionCreateFields(
-      { agent, workspaceId: workspace.id, fullAccess: session.fullAccess },
+      {
+        agent,
+        workspaceId: workspace.id,
+        permission: permission.requested,
+        fullAccess: session.fullAccess,
+      },
       read,
     );
+    if (
+      permission.requested &&
+      fields.policyId !== permission.requested &&
+      fields.permissionMode !== permission.requested
+    )
+      return;
     const draft = promptAtCreate ? undefined : value;
     submittedDraft.current = draft;
     rememberNewSessionTarget({ workspaceId: workspace.id, agent });
@@ -112,7 +132,9 @@ export function MenuBarNewSession({
     : session.unknown
       ? copy.unknown
       : session.failure
-        ? fillCopy(copy.notCreated, { reason: session.failure.reason })
+        ? isNewSessionPermissionFailure(session.failure.detail)
+          ? session.failure.reason
+          : fillCopy(copy.notCreated, { reason: session.failure.reason })
         : unavailable;
   const recent = recentContinuationWorkspaces(workspaces, MENU_WORKSPACES);
   return (
@@ -158,6 +180,26 @@ export function MenuBarNewSession({
           }}
         />
         {workspace && (
+          <ComposerPermissionMenu
+            compact
+            label={shownPermission?.name ?? permissionTitle}
+            title={permissionTitle}
+            risky={shownPermission?.risky}
+            disabled={!permissions || session.busy || session.unknown}
+            disabledReason={
+              !permissions
+                ? session.optionsLoading
+                  ? copy.loadingOptions
+                  : copy.optionsUnavailable
+                : undefined
+            }
+            side="bottom"
+            items={permissions?.choices ?? []}
+            selected={selectedPermission?.id}
+            onSelect={permission.select}
+          />
+        )}
+        {workspace && (
           <DropdownMenu>
             <DropdownMenuTrigger
               render={
@@ -194,9 +236,10 @@ export function MenuBarNewSession({
               <DropdownMenuLabel>{copy.agent}</DropdownMenuLabel>
               <DropdownMenuRadioGroup
                 value={agent}
-                onValueChange={(value) =>
-                  setTarget((current) => ({ ...current, agent: value as ManagedAgent }))
-                }
+                onValueChange={(value) => {
+                  permission.reset();
+                  setTarget((current) => ({ ...current, agent: value as ManagedAgent }));
+                }}
               >
                 {NEW_SESSION_AGENTS.map((item) => (
                   <DropdownMenuRadioItem key={item} value={item} disabled={notInstalled.has(item)}>

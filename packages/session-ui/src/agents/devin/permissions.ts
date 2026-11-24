@@ -89,7 +89,13 @@ const choices = [
 ] as const;
 
 export const devinPermissions = {
-  creation: { field: "permissionMode", choices, sendShown: true, copy: devinPermissionCopy },
+  creation: {
+    field: "permissionMode",
+    choices,
+    sendShown: false,
+    defaultId: "accept-edits",
+    copy: devinPermissionCopy,
+  },
   settings: {
     label: permissionLabel,
     risky: (id) => id === "dangerous",

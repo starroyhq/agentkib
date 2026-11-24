@@ -50,6 +50,22 @@ it("recovers a persisted unknown import with one reconciliation call and retains
   expect(screen.getByRole("button", { name: "Check import and continue" })).toBeEnabled();
 });
 
+it("opens the verified DSH session after reconciling its native receipt", async () => {
+  const dsh = {
+    ...operation,
+    launch_request: { ...operation.launch_request, target_agent: "deepseek-harness" as const },
+  };
+  vi.mocked(api.nativeImportOperations).mockResolvedValue([dsh]);
+  vi.mocked(api.launchSessionHandoff).mockResolvedValue({
+    target_agent: "deepseek-harness",
+    session_id: "recovered-dsh",
+  });
+  const open = vi.fn();
+  render(<NativeImportRecoveryPanel workspaceId="workspace" onOpenSession={open} />);
+  fireEvent.click(await screen.findByRole("button", { name: "Check import and continue" }));
+  await waitFor(() => expect(open).toHaveBeenCalledExactlyOnceWith("recovered-dsh"));
+});
+
 it("ignores a previous workspace recovery list that resolves late", async () => {
   let resolve!: (value: NativeImportOperation[]) => void;
   vi.mocked(api.nativeImportOperations)

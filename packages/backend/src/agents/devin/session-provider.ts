@@ -869,16 +869,22 @@ export class DevinSessionProvider implements DevinExecutor, TypedSessionProvider
   /**
    * A Devin row of the catalog while AgentKib holds the session's runner. Its turns run in a
    * `devin acp` AgentKib started, which quitting ends, so the home, menu bar, push and the quit
-   * confirmation count a running one as they do the other agents' turns.
+   * confirmation count a running or waiting turn as they do the other agents' turns.
    */
   continuation<T extends { id: string }>(session: T): T {
     const live = this.#runners.get(session.id)?.runner.snapshot();
     if (!live) return session;
+    // A turn being stopped runs until its process exits.
+    const status =
+      live.status === "waiting-approval"
+        ? "awaiting-approval"
+        : live.status === "running" || live.status === "stopping"
+          ? "running"
+          : "idle";
     return {
       ...session,
       continuation: {
-        // A turn being stopped runs until its process exits.
-        status: live.status === "running" || live.status === "stopping" ? "running" : "idle",
+        status,
         executionLocation: "agentkib",
         ownershipReason: null,
         reason: live.reason ?? null,
@@ -1295,6 +1301,8 @@ export class DevinSessionProvider implements DevinExecutor, TypedSessionProvider
           dispatched = true;
         },
         settings,
+        undefined,
+        { confirmPermission: request.permissionMode !== undefined },
       );
       let timer: NodeJS.Timeout | undefined;
       const nativeId = await Promise.race([

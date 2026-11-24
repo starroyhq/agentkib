@@ -890,6 +890,7 @@ describe("Web NewSessionComposer", () => {
       serviceTierId: "fast",
       prompt: "Check the parser",
     });
+    expect(request).not.toHaveProperty("permissionMode");
     client.receipt.mockResolvedValue({
       found: true,
       requestId: request.requestId,
@@ -914,6 +915,126 @@ describe("Web NewSessionComposer", () => {
     expect(message()).toHaveValue("Add rate limiting");
     expect(onCreated).not.toHaveBeenCalled();
     expect(sessionStorage.length).toBe(0);
+  });
+
+  it("blocks creation while an explicitly chosen policy is absent from the workspace catalog", async () => {
+    const { client, onCreated } = setup();
+    client.managedAction.mockImplementation(async (_operation, fields) => ({
+      accepted: true,
+      sessionId: "created",
+      policyId: fields.policyId,
+    }));
+    const provider = sessionProviderCapabilities("deepseek-harness")!;
+    client.managedOptions.mockImplementation(async (agent, _signal, workspaceId) =>
+      agent === "deepseek-harness"
+        ? {
+            ...options[agent],
+            provider: { ...provider, create: { ...provider.create, permissionPicker: true } },
+            policies:
+              workspaceId === "atlas"
+                ? [{ id: "team-policy", name: "Team policy" }]
+                : [{ id: "read-only", name: "Read only" }],
+          }
+        : options[agent],
+    );
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Agent: Codex" }));
+    await user.click(await screen.findByRole("menuitem", { name: "DeepSeek Harness" }));
+    await user.click(await screen.findByRole("button", { name: "Permissions" }));
+    await user.click(await screen.findByRole("menuitem", { name: "Team policy" }));
+    await write("Keep the draft and its selected policy");
+    await user.click(screen.getByRole("button", { name: "Workspace: atlas-studio" }));
+    await user.click(await screen.findByRole("button", { name: "northstar-api" }));
+    const permission = await screen.findByRole("button", { name: "Permissions: Team policy" });
+    await waitFor(() => expect(permission).toBeEnabled());
+    expect(send()).toBeDisabled();
+    expect(message()).toHaveValue("Keep the draft and its selected policy");
+    expect(client.managedAction).not.toHaveBeenCalled();
+    expect(onCreated).not.toHaveBeenCalled();
+
+    await user.click(permission);
+    await user.click(await screen.findByRole("menuitem", { name: /^Read Only/ }));
+    await user.click(send());
+    expect(client.managedAction).toHaveBeenCalledExactlyOnceWith(
+      "create",
+      expect.objectContaining({
+        workspaceId: "north",
+        agent: "deepseek-harness",
+        policyId: "read-only",
+      }),
+    );
+    await waitFor(() => expect(onCreated).toHaveBeenCalledWith("created"));
+  });
+
+  it("keeps the draft when a recovered DSH create lacks policy confirmation", async () => {
+    const { client, onCreated } = setup();
+    const provider = sessionProviderCapabilities("deepseek-harness")!;
+    client.managedOptions.mockImplementation(async (agent) =>
+      agent === "deepseek-harness"
+        ? {
+            ...options[agent],
+            provider: { ...provider, create: { ...provider.create, permissionPicker: true } },
+            policies: [{ id: "team-policy", name: "Team policy" }],
+          }
+        : options[agent],
+    );
+    client.managedAction.mockRejectedValue(new ApiError(504, "request_timeout"));
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Agent: Codex" }));
+    await user.click(await screen.findByRole("menuitem", { name: "DeepSeek Harness" }));
+    await user.click(await screen.findByRole("button", { name: "Permissions" }));
+    await user.click(await screen.findByRole("menuitem", { name: "Team policy" }));
+    await write("Only send with the team policy");
+    await user.click(send());
+    await waitFor(() => expect(client.receipt).toHaveBeenCalled());
+    client.receipt.mockResolvedValue({
+      found: true,
+      requestId: client.managedAction.mock.calls[0]![1].requestId,
+      operation: "create",
+      status: "accepted",
+      sessionId: "unconfirmed-session",
+    } as never);
+    await act(async () => publishSessionInvalidation(client, "", ["receipts"]));
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Could not confirm the permissions for the new session. Your first message is still a draft.",
+    );
+    expect(message()).toHaveValue("Only send with the team policy");
+    expect(onCreated).not.toHaveBeenCalled();
+    expect(takeNewSessionDraft("unconfirmed-session")).toBeUndefined();
+  });
+
+  it("disables the fixed permission slot when a host explicitly does not support it", async () => {
+    const provider = sessionProviderCapabilities("codex")!;
+    const { client } = setup({
+      codexOptions: {
+        ...options.codex,
+        provider: { ...provider, create: { ...provider.create, permissionPicker: false } },
+      },
+    });
+    expect(
+      await screen.findByRole("button", { name: "Permissions: Options unavailable" }),
+    ).toHaveAttribute("aria-disabled", "true");
+    await write("Start with the native default");
+    await userEvent.setup().click(send());
+    expect(client.managedAction.mock.calls[0]?.[1]).not.toHaveProperty("policyId");
+  });
+
+  it("keeps an offered DSH startup permission disabled on a restricted device", async () => {
+    const { client } = setup({ full: false });
+    client.managedOptions.mockImplementation(async (agent) =>
+      agent === "deepseek-harness"
+        ? { ...options[agent], policies: [{ id: "read-only", name: "Read Only" }] }
+        : options[agent],
+    );
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Agent: Codex" }));
+    await user.click(await screen.findByRole("menuitem", { name: "DeepSeek Harness" }));
+    expect(
+      await screen.findByRole("button", { name: "Permissions: Options unavailable" }),
+    ).toHaveAttribute("aria-disabled", "true");
+    await write("Start without an explicit policy");
+    await user.click(send());
+    expect(client.managedAction.mock.calls[0]?.[1]).not.toHaveProperty("policyId");
   });
 
   it.each([
@@ -1082,7 +1203,10 @@ describe("Web NewSessionComposer", () => {
       "aria-disabled",
       "true",
     );
-    expect(screen.queryByRole("button", { name: /^Permissions:/ })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Permissions: Loading options…" })).toHaveAttribute(
+      "aria-disabled",
+      "true",
+    );
     await act(async () =>
       resolveNorth({
         available: true,

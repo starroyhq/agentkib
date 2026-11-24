@@ -4,7 +4,9 @@ import type {
   ConversationSessionSummary,
   WorkspaceSummary,
 } from "@/core/types";
+import type { ReactNode } from "react";
 import { useHomeInstallations } from "@/features/home/home-query";
+import { RemoteErrorDetails } from "@/features/remote/RemoteErrorDetails";
 import { useSessionViewStore } from "./session-view-store";
 import { useSessionHub } from "./SessionHubContext";
 import { Button } from "@/components/ui/button";
@@ -41,6 +43,12 @@ function sourceIssueKeys(detail: string | undefined): string[] {
   return [];
 }
 
+interface DirectoryNoticeDetail {
+  key: string;
+  label?: string;
+  content: ReactNode;
+}
+
 export function SessionSourceNotices({
   statuses,
   sessions,
@@ -48,6 +56,8 @@ export function SessionSourceNotices({
   installedAgents,
   refreshing,
   onRetry,
+  directorySummary,
+  directoryDetails = [],
 }: {
   statuses: ConversationIndexStatus[];
   sessions: ConversationSessionSummary[];
@@ -55,13 +65,15 @@ export function SessionSourceNotices({
   installedAgents?: AgentKind[];
   refreshing: boolean;
   onRetry: () => unknown;
+  directorySummary?: string;
+  directoryDetails?: DirectoryNoticeDetail[];
 }) {
   const { locale, tr } = useI18n();
   const failures = statuses.filter((status) =>
     sessionSourceNeedsAttention(status, installedAgents),
   );
   const agents = [...new Set(failures.map((status) => status.agent))];
-  if (!agents.length) return null;
+  if (!agents.length && !directoryDetails.length) return null;
   const warning = failures.some((status) => sessionSourceWasUsed(status, sessions));
   const separator = locale === "en-US" ? ", " : "、";
   const names = agents.map((agent) => AGENT_LABELS[agent]).join(separator);
@@ -94,7 +106,7 @@ export function SessionSourceNotices({
         className={warning ? "text-warning" : "text-muted-foreground"}
       >
         <span className="whitespace-normal break-words">
-          {tr("sessions.sourceUnavailable", { agent: names })}
+          {directorySummary ?? tr("sessions.sourceUnavailable", { agent: names })}
         </span>{" "}
         <span className="inline-flex items-center gap-2 whitespace-nowrap">
           <Button
@@ -125,22 +137,30 @@ export function SessionSourceNotices({
               </li>
             );
           })}
+          {directoryDetails.map(({ key, label, content }) => (
+            <li className="px-2.5 py-1.5 [overflow-wrap:anywhere]" key={key}>
+              {label && <span className="font-medium text-foreground">{label}</span>}
+              {content}
+            </li>
+          ))}
         </ul>
       </CollapsibleContent>
     </Collapsible>
   );
 }
 
-export function SessionDirectorySourceNotices() {
+export function SessionDirectoryNotices() {
   const hub = useSessionHub();
+  const { locale, tr } = useI18n();
   const installations = useHomeInstallations();
   const agent = useSessionViewStore((state) => state.agent);
   const host = useSessionViewStore((state) => state.host);
   const installedAgents = (installations.data ?? [])
     .filter((item) => item.installed)
     .map((item) => item.agent);
+  const workspaces = new Map(hub.workspaces.map((workspace) => [workspace.id, workspace]));
   const statuses = (hub.statuses ?? []).filter((status) => {
-    const workspace = hub.workspaces.find((item) => item.id === status.workspace_id);
+    const workspace = workspaces.get(status.workspace_id);
     return (
       workspace &&
       (host === "all" || host === (workspace.remote?.host_id ?? "local")) &&
@@ -148,17 +168,64 @@ export function SessionDirectorySourceNotices() {
       sessionSourceNeedsAttention(status, installedAgents)
     );
   });
-  if (!statuses.length) return null;
+  const showLocal = host === "all" || host === "local";
+  const catalogError = showLocal ? hub.catalogError : "";
+  const workspaceError = showLocal ? hub.workspacesError : "";
+  const scanErrors = showLocal ? Object.entries(hub.errors).filter(([, error]) => !!error) : [];
+  const errors = new Map<string, Set<string>>();
+  for (const error of [catalogError, workspaceError]) {
+    if (error) errors.set(error, new Set());
+  }
+  for (const [id, error] of scanErrors) {
+    const names = errors.get(error) ?? new Set<string>();
+    const name = workspaces.get(id)?.name;
+    if (name) names.add(name);
+    errors.set(error, names);
+  }
+  const separator = locale === "en-US" ? ", " : "、";
+  const directoryDetails: DirectoryNoticeDetail[] = [...errors].map(([error, names]) => ({
+    key: `local:${error}`,
+    label: [...names].join(separator),
+    content: <p>{error}</p>,
+  }));
+  const remoteNotices = (hub.remoteHosts ?? []).filter(
+    (remote) =>
+      (host === "all" || host === remote.id) &&
+      (remote.status !== "online" || hub.remoteErrors?.[remote.id]),
+  );
+  for (const remote of remoteNotices) {
+    const error = hub.remoteErrors?.[remote.id];
+    directoryDetails.push({
+      key: `remote:${remote.id}`,
+      label: `${remote.name} · ${tr(`remote.state.${remote.status}`)}`,
+      content: error && <RemoteErrorDetails error={error} showDiagnostics={false} />,
+    });
+  }
+  const directorySummary = scanErrors.length
+    ? tr("sessions.partialFailure", { count: scanErrors.length })
+    : directoryDetails.length
+      ? tr("sessions.catalogReadIncomplete")
+      : undefined;
   return (
-    <div className="text-xs text-muted-foreground">
-      <SessionSourceNotices
-        statuses={statuses}
-        sessions={hub.sessions}
-        workspaces={hub.workspaces}
-        installedAgents={installedAgents}
-        refreshing={hub.refreshing}
-        onRetry={hub.refresh}
-      />
-    </div>
+    <SessionSourceNotices
+      statuses={statuses}
+      sessions={hub.sessions}
+      workspaces={hub.workspaces}
+      installedAgents={installedAgents}
+      refreshing={hub.refreshing || hub.workspacesLoading}
+      directorySummary={directorySummary}
+      directoryDetails={directoryDetails}
+      onRetry={() => {
+        if (workspaceError) hub.retryWorkspaces();
+        if (
+          !workspaceError ||
+          statuses.length ||
+          catalogError ||
+          scanErrors.length ||
+          remoteNotices.length
+        )
+          return hub.refresh();
+      }}
+    />
   );
 }

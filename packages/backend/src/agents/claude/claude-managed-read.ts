@@ -72,6 +72,7 @@ import {
   ClaudeHostStateStore,
   validClaudeDeviceId,
   claudeCommandFingerprintInput,
+  canSteerClaudeQueueItem,
   type ClaudeHostWork,
   type ClaudeSettings,
 } from "./claude-host-state";
@@ -626,6 +627,7 @@ export class ClaudeManagedReadOwner {
     ["queue-add", this.#hostOperation],
     ["queue-update", this.#hostOperation],
     ["queue-delete", this.#hostOperation],
+    ["queue-steer", this.#hostOperation],
     ["queue-reorder", this.#hostOperation],
     ["queue-resume", this.#hostOperation],
     ["queue-pause", this.#hostOperation],
@@ -1759,6 +1761,8 @@ export class ClaudeManagedReadOwner {
           status: item.status,
           createdAt: item.createdAt,
           requiresAttachments: item.requiresAttachments,
+          actions: { steer: { available: canSteerClaudeQueueItem(item) } },
+          queueSteerDeviceId: item.deviceId,
         })),
       nextCursor: null,
     };
@@ -1897,7 +1901,7 @@ export class ClaudeManagedReadOwner {
       const result: unknown = JSON.parse(row.result);
       return (
         isObject(evidence) &&
-        evidence.operation === "steer" &&
+        ["steer", "queue-steer"].includes(String(evidence.operation)) &&
         evidence.executionMode === "claude-managed" &&
         evidence.turnId === turnId &&
         isObject(result) &&
@@ -2097,25 +2101,59 @@ export class ClaudeManagedReadOwner {
     let nextSettings: ClaudeSettings | undefined;
     let renamedTitle: string | undefined;
     let externallyDispatched = false;
-    const claimExternalEffect = () => {
-      onExternalClaim();
+    const claimExternalEffect = (steer?: { item: ClaudeHostWork; turnId: string }) => {
       const externalReceipt = bindControlReceipt(
         this.dataDir,
         value.requestId,
         claudeCommandFingerprintInput(value),
       );
-      const prior = externalReceipt.claim(id, value.deviceId, {
+      const evidence = {
         operation,
+        ...(steer ? { turnId: steer.turnId } : {}),
         workspaceId: record.workspaceId,
         executionMode: "claude-managed",
         runtimeBootId: this.bootId,
         ...(value.publicInputHash ? { publicInputHash: value.publicInputHash } : {}),
-      });
-      if (prior) throw new Error("control-outcome-unconfirmed");
-      externalReceipt.dispatch();
+      };
+      if (steer) {
+        this.#hostState.dispatchQueueSteer(
+          id,
+          steer.item,
+          value.requestId,
+          externalReceipt.fingerprint,
+          evidence,
+        );
+        onExternalClaim();
+      } else {
+        onExternalClaim();
+        const prior = externalReceipt.claim(id, value.deviceId, evidence);
+        if (prior) throw new Error("control-outcome-unconfirmed");
+        externalReceipt.dispatch();
+      }
       this.#activeHostClaims.set(id, value.requestId);
       externallyDispatched = true;
     };
+    if (operation === "queue-steer") {
+      const runner = this.#runners.get(id);
+      const turnId = live.turnId;
+      if (
+        !runner?.hasWorker ||
+        live.status !== "running" ||
+        live.activity === "compacting" ||
+        live.ownershipReason ||
+        typeof turnId !== "string"
+      )
+        throw new Error("session-requires-running-turn");
+      const item = state.work.find((work) => work.id === value.queuedSubmissionId);
+      if (!item || !canSteerClaudeQueueItem(item) || item.deviceId !== value.deviceId)
+        throw new Error("queue-item-unavailable");
+      if (value.input !== undefined || value.text !== undefined || value.resourceRefs !== undefined)
+        throw new Error("invalid-queue-steer-input");
+      assertClaudeCommandAllowed(item.input, item.deviceId, this.#commandCatalog(id));
+      await runner.steer(item.input, value.requestId, turnId, runner.snapshot().revision, () =>
+        claimExternalEffect({ item, turnId }),
+      );
+    }
     if (operation === "settings") {
       nextSettings = this.#settings(value, state.settings);
       let runner = stageSettings ? settingsRunner : await this.#prepareRunner(record);
@@ -2383,6 +2421,8 @@ export class ClaudeManagedReadOwner {
               },
             };
           }
+          case "queue-steer":
+            return { completed: false };
           case "queue-reorder": {
             const queue = host.work.filter(
               (work) => work.kind === "queue" && work.status === "pending",
@@ -3994,10 +4034,11 @@ export class ClaudeManagedReadOwner {
     persisted?: Record<string, unknown>,
   ): Record<string, unknown> | undefined {
     const runner = this.#runners.get(id);
-    const status = this.#catalogUnconfirmed.has(id)
+    const runnerStatus = this.#catalogUnconfirmed.has(id)
       ? "outcome-unknown"
       : (runner?.status ??
         (persisted && interruptedSelfTurn(persisted) ? "idle" : persisted?.status));
+    const status = runnerStatus === "waiting-approval" ? "awaiting-approval" : runnerStatus;
     // A cached external owner cannot turn an unresolved outcome into a fork choice.
     if (status === "outcome-unknown")
       return {
@@ -5197,7 +5238,7 @@ export class ClaudeManagedReadOwner {
     const current = this.#load(value.sessionId);
     const completionObserved = Boolean(
       current?.completedRequests.includes(value.requestId) ||
-      (value.operation === "steer" &&
+      (["steer", "queue-steer"].includes(String(value.operation)) &&
         value.status === "accepted" &&
         typeof value.turnId === "string" &&
         current?.completedRequests.includes(value.turnId)) ||
@@ -5307,6 +5348,13 @@ export class ClaudeManagedReadOwner {
       "queue-list": owned,
       "queue-add": writable,
       "queue-update": writable,
+      "queue-steer":
+        writable &&
+        !unconfirmed &&
+        !live.ownershipReason &&
+        live.status === "running" &&
+        live.activity !== "compacting" &&
+        this.#runners.get(id)?.hasWorker === true,
       "queue-delete": writable,
       "queue-reorder": writable,
       "queue-resume": idle && host?.paused === true,
@@ -5341,6 +5389,7 @@ export class ClaudeManagedReadOwner {
         "queue",
         "queue-add",
         "queue-update",
+        "queue-steer",
         "queue-delete",
         "queue-reorder",
         "queue-resume",

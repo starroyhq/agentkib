@@ -34,6 +34,7 @@ export const validateDeepSeekHarnessControl: ProviderControlValidator = (request
     inputFormat: "dsh",
     // Editing a queued entry leaves it as a message.
     useCommandAccess: operation === "steer" || operation === "queue-add",
+    ...(operation === "queue-steer" ? { requiresSend: true } : {}),
     ...(["queue-update", "queue-delete", "queue-steer"].includes(operation)
       ? { queueItem: "pending" }
       : {}),

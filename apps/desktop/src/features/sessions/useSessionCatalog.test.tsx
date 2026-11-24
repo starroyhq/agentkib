@@ -12,7 +12,7 @@ import type {
 } from "@/core/types";
 import { homeKeys } from "@/features/home/home-query";
 import { useSessionCatalog } from "./useSessionCatalog";
-import { SESSION_CATALOG_RUNTIME_CHANGED } from "./session-query";
+import { SESSION_CATALOG_RUNTIME_CHANGED, sessionKeys } from "./session-query";
 
 vi.mock("@/core/api", () => ({
   api: {
@@ -66,8 +66,7 @@ describe("useSessionCatalog", () => {
     const { result } = renderHook(() => useSessionCatalog([workspace("one")], true), { wrapper });
     await waitFor(() => expect(result.current.ready).toBe(true));
     expect(api.refreshWorkspaceSessions).toHaveBeenCalledOnce();
-    expect(result.current.errors.one).toBeTruthy();
-    expect(result.current.errors.one).not.toContain("operation_busy");
+    expect(result.current.errors.one).toBe("sessions.catalogReadBusy");
   });
 
   it("does not read or refresh sessions while indexing is disabled, even with cached records", () => {
@@ -188,7 +187,7 @@ describe("useSessionCatalog", () => {
     );
     await waitFor(() => expect(result.current.ready).toBe(true));
     expect(result.current.sessions.map(({ title }) => title)).toEqual(["one", "fresh"]);
-    expect(result.current.errors.one).toContain("refresh unavailable");
+    expect(result.current.errors.one).toBe("sessions.catalogReadUnavailable");
     expect(result.current.errors.two).toBeUndefined();
     vi.mocked(api.refreshWorkspaceSessions).mockImplementation(async (id) => [
       session(id, "recovered"),
@@ -199,13 +198,49 @@ describe("useSessionCatalog", () => {
     expect(result.current.sessions.every(({ title }) => title === "recovered")).toBe(true);
   });
 
-  it("keeps session data if only status loading fails", async () => {
-    const { wrapper } = setup();
-    vi.mocked(api.workspaceSessionStatus).mockRejectedValue(new Error("status unavailable"));
+  it.each(["status unavailable", "CancelledError"])(
+    "keeps session data and reports a genuine status failure (%s)",
+    async (message) => {
+      const { wrapper } = setup();
+      vi.mocked(api.workspaceSessionStatus).mockRejectedValue(new Error(message));
+      const { result } = renderHook(() => useSessionCatalog([workspace("one")], true), { wrapper });
+      await waitFor(() => expect(result.current.ready).toBe(true));
+      expect(result.current.sessions).toHaveLength(1);
+      expect(result.current.errors.one).toBe("sessions.catalogReadUnavailable");
+    },
+  );
+
+  it("keeps a refreshed workspace complete when TanStack replaces an unfinished status read", async () => {
+    const { wrapper, client } = setup();
+    const read = deferred<ConversationIndexStatus[]>();
+    const scan = deferred<ConversationSessionSummary[]>();
+    const status: ConversationIndexStatus = {
+      workspace_id: "one",
+      agent: "codex",
+      freshness: "fresh",
+      session_count: 1,
+    };
+    const query = { queryKey: sessionKeys.status("one"), exact: true };
+    vi.mocked(api.workspaceSessionStatus).mockReturnValueOnce(read.promise);
+    vi.mocked(api.refreshWorkspaceSessions).mockReturnValueOnce(scan.promise);
     const { result } = renderHook(() => useSessionCatalog([workspace("one")], true), { wrapper });
+    await waitFor(() => expect(api.workspaceSessionStatus).toHaveBeenCalledOnce());
+    // Another reader cancels an initial load before the Query cache has any status data.
+    await act(async () => client.cancelQueries(query));
+    await waitFor(() => expect(api.refreshWorkspaceSessions).toHaveBeenCalledOnce());
+    await act(async () => scan.resolve([session("one", "updated")]));
+    await waitFor(() => expect(client.getQueryState(query.queryKey)?.fetchStatus).toBe("fetching"));
+    await act(async () => {
+      await client.cancelQueries(query);
+      const replacement = client.refetchQueries(query);
+      read.resolve([status]);
+      await replacement;
+    });
     await waitFor(() => expect(result.current.ready).toBe(true));
-    expect(result.current.sessions).toHaveLength(1);
-    expect(result.current.errors.one).toContain("status unavailable");
+    expect(result.current.sessions).toEqual([session("one", "updated")]);
+    expect(result.current.statuses).toEqual([status]);
+    expect(result.current.errors).toEqual({});
+    expect(result.current.complete).toBe(true);
   });
 
   it("preserves the query cache when both stored reads and refresh fail", async () => {
@@ -216,7 +251,7 @@ describe("useSessionCatalog", () => {
     const { result } = renderHook(() => useSessionCatalog([workspace("one")], true), { wrapper });
     await waitFor(() => expect(result.current.ready).toBe(true));
     expect(result.current.sessions).toEqual([session("one", "last known")]);
-    expect(result.current.errors.one).toContain("refresh unavailable");
+    expect(result.current.errors.one).toBe("sessions.catalogReadUnavailable");
   });
 
   it("does not repeat automatic scans when workspace names or list order change", async () => {

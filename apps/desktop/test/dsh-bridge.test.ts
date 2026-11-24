@@ -846,6 +846,71 @@ async function fixture({
 }
 
 describe("DeepSeek Harness bridge", () => {
+  it("keeps other commands in a poll when a native import fails its final admission", async () => {
+    const f = await fixture({ dshVersion: "0.2.2-rc.5" });
+    const runtimeId = f.plugin.runtimeId;
+    f.plugin.close();
+    const discovery = JSON.parse(
+      readFileSync(path.join(f.agentkibHome, "dsh-bridge", "discovery-v1.json"), "utf8"),
+    );
+    const { token } = await post(discovery.socketPath, DSH_BRIDGE_PATHS.register, {
+      key: discovery.key,
+      protocol: 1,
+      pluginVersion: DSH_BRIDGE_PLUGIN_VERSION,
+      dshVersion: "0.2.2-rc.5",
+      runtimeId,
+      pid: process.pid,
+      services: {
+        sessionController: true,
+        sessionQuery: true,
+        approvals: true,
+        questions: true,
+        historyImport: true,
+      },
+    });
+    const poll = () => post(discovery.socketPath, DSH_BRIDGE_PATHS.poll, { token });
+    const imported = f.bridge
+      .importHistory({
+        context: { runtimeId, workspaceId: "dsh-workspace" },
+        workspaceId: "workspace",
+        cwd: f.workspace,
+        nativeId: randomUUID(),
+        document: {
+          schema_version: 1,
+          source: { agent: "codex", workspace_id: "workspace" },
+          turns: [{ id: "user", role: "user", blocks: [{ type: "text", text: "hello" }] }],
+          redaction_count: 0,
+          losses: [],
+        },
+        verifyOnly: false,
+        beforeDispatch: () => {
+          throw new Error("the authorized workspace changed");
+        },
+      })
+      .then(
+        () => null,
+        (error: Error) => error.message,
+      );
+    const read = (await poll()).commands[0];
+    expect(read.type).toBe("history-import-context");
+    const complete = (commandId: string) =>
+      post(discovery.socketPath, DSH_BRIDGE_PATHS.result, {
+        token,
+        commandId,
+        ok: true,
+        value: { workspaceId: "dsh-workspace" },
+      });
+    await complete(read.commandId);
+    const other = f.bridge.historyImportContext(f.workspace);
+    const batch = (await poll()).commands;
+    expect(batch.map((command: { type: string }) => command.type)).toEqual([
+      "history-import-context",
+    ]);
+    await complete(batch[0].commandId);
+    await expect(other).resolves.toEqual({ runtimeId, workspaceId: "dsh-workspace" });
+    expect(await imported).toBe("dsh-native-import-unverified");
+  });
+
   it("browses its registered workspace without issuing a native command or enabling references", async () => {
     const f = await fixture();
     const before = f.dsh.executed.length;

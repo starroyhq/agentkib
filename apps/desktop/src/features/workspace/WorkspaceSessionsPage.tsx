@@ -555,6 +555,7 @@ export function WorkspaceSessionsPage({
         <NativeImportRecoveryPanel
           workspaceId={workspace.id}
           workspace={workspace}
+          onOpenSession={onOpenSession}
           readableSourceIds={visibleSessions
             .filter((session) => session.availability === "readable")
             .map((session) => session.id)}
@@ -975,6 +976,7 @@ export function WorkspaceSessionsPage({
                 <NativeImportRecoveryPanel
                   workspaceId={workspace.id}
                   workspace={workspace}
+                  onOpenSession={onContinueSession}
                   readableSourceIds={visibleSessions
                     .filter((session) => session.availability === "readable")
                     .map((session) => session.id)}

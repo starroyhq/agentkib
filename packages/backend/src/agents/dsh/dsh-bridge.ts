@@ -4550,13 +4550,19 @@ export class DshBridge {
             return;
           }
           if (!this.#runtimes.has(runtime.token)) return;
-          const commands = runtime.queue.splice(0);
-          for (const command of commands) {
+          const commands = runtime.queue.splice(0).filter((command) => {
             const waiter = runtime.commands.get(command.commandId);
-            if (!waiter) continue;
+            if (!waiter) return false;
+            try {
+              waiter.onDelivered?.();
+            } catch {
+              clearTimeout(waiter.timer);
+              waiter.settle({ ok: false, error: "not-dispatched" });
+              return false;
+            }
             waiter.delivered = true;
-            waiter.onDelivered?.();
-          }
+            return true;
+          });
           runtime.lastSeen = Date.now();
           reply(200, { commands, ...this.#leads(runtime) });
           return;

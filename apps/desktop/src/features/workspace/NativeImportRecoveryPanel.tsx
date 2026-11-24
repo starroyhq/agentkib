@@ -1,6 +1,6 @@
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { queryDefaults, useOptionalQueryClient } from "@/features/home/home-query";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api } from "@/core/api";
 import type { NativeImportOperation, WorkspaceSummary } from "@/core/types";
 import { useI18n } from "@/core/useI18n";
@@ -13,11 +13,13 @@ export function NativeImportRecoveryPanel({
   workspaceId,
   readableSourceIds = [],
   onReview,
+  onOpenSession,
   workspace,
 }: {
   workspaceId: string;
   readableSourceIds?: string[];
   onReview?: (operation: NativeImportOperation) => void;
+  onOpenSession?: (sessionId: string) => void;
   workspace?: WorkspaceSummary;
 }) {
   const { tr, localizeMessage } = useI18n();
@@ -34,6 +36,13 @@ export function NativeImportRecoveryPanel({
   );
   const [connectionOperationId, setConnectionOperationId] = useState<string>();
   const locked = useRef(false);
+  const generation = useRef(0);
+  useEffect(
+    () => () => {
+      generation.current++;
+    },
+    [workspaceId],
+  );
   const recovery = useMutation(
     {
       mutationFn: ({
@@ -61,9 +70,12 @@ export function NativeImportRecoveryPanel({
   const recover = async (operation: NativeImportOperation) => {
     if (locked.current) return;
     locked.current = true;
+    const startedIn = generation.current;
     try {
       const request = api.launchSessionHandoff(operation.launch_request);
-      await recovery.mutateAsync({ operation, workspaceId, request });
+      const receipt = await recovery.mutateAsync({ operation, workspaceId, request });
+      if (receipt?.session_id && generation.current === startedIn)
+        onOpenSession?.(receipt.session_id);
     } catch {
       /* Display mutation.error. */
     } finally {

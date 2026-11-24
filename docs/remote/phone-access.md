@@ -71,25 +71,25 @@ HTML 以入口所在目录生成明确清单和固定版本快照，默认限制
 
 现有 `/api/web/v1` 路径保持兼容，增加：
 
-| 接口                                           | 用途                                                                                                                                                    |
-| ---------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `GET managed/options`                          | 可用性、模型、主机映射策略、默认值与已授权工作区                                                                                                        |
-| `POST managed/create/adopt/release/reconcile`  | 管理任务；需要 manage、主机 boot ID 和唯一 request ID                                                                                                   |
-| `GET files/workspaces`                         | 文件读取授权根                                                                                                                                          |
-| `GET files/list`                               | 目录 ID 浏览                                                                                                                                            |
-| `GET files/text`                               | 文件 ID 与版本读取                                                                                                                                      |
-| `GET artifacts`                                | 指定会话、工作区和可选 cursor 的文件引用                                                                                                                |
-| `GET artifacts/resolve`                        | 按同样规则解析会话回复里的一个文件引用（`reference`），返回文件条目；找不到或不允许读取时为 null                                                        |
-| `GET diff`                                     | 授权项目的只读 Git diff                                                                                                                                 |
-| `POST artifact-tickets`                        | 文件或 HTML 包的预览/下载票据                                                                                                                           |
-| `POST account-binding`                         | 官方中继验证 PKCE 云登录证明；独立旧主机仍可核对 `sessionId`。返回 `{bound}`，同账号的已验证新登录可续接有效配对，跨账号拒绝；登录证明不授予配对权限    |
-| `POST live-preview-tickets`                    | 电脑上某个回环端口的网页预览票据；只给完整控制                                                                                                          |
-| `POST push/subscribe`、`POST push/unsubscribe` | 订阅或取消这台电脑的手机通知，见[手机通知](#手机通知)                                                                                                   |
-| `GET codex/session-settings`                   | 原生 `current`、下一轮 `selected`、`applicationStatus`、主机默认设置、逐字段写能力、`options.collaborationModes` 与上下文用量；新增字段缺失不推断已支持 |
-| `GET codex/goals`                              | 原生目标、预算、token 消耗、运行时间及可用操作                                                                                                          |
-| `GET codex/context-options`                    | 当前会话可引用的电脑文件／目录、技能、插件和应用候选                                                                                                    |
-| `POST codex/settings`                          | 按 revision 更新下一轮设置或恢复主机默认                                                                                                                |
-| `POST codex/goal-*`                            | 设置、暂停、恢复或清除原生目标；`goal-set.intent` 为 `start`／`update`，预算省略保留、null 清除                                                         |
+| 接口 | 用途 |
+| --- | --- |
+| `GET managed/options` | 可用性、模型、主机映射策略、默认值与已授权工作区 |
+| `POST managed/create/adopt/release/reconcile` | 管理任务；需要 manage、主机 boot ID 和唯一 request ID |
+| `GET files/workspaces` | 文件读取授权根 |
+| `GET files/list` | 目录 ID 浏览 |
+| `GET files/text` | 文件 ID 与版本读取 |
+| `GET artifacts` | 指定会话、工作区和可选 cursor 的文件引用 |
+| `GET artifacts/resolve` | 按同样规则解析会话回复里的一个文件引用（`reference`），返回文件条目；找不到或不允许读取时为 null |
+| `GET diff` | 授权项目的只读 Git diff |
+| `POST artifact-tickets` | 文件或 HTML 包的预览/下载票据 |
+| `POST account-binding` | 官方中继验证 PKCE 云登录证明；独立旧主机仍可核对 `sessionId`。返回 `{bound}`，同账号的已验证新登录可续接有效配对，跨账号拒绝；登录证明不授予配对权限 |
+| `POST live-preview-tickets` | 电脑上某个回环端口的网页预览票据；只给完整控制 |
+| `POST push/subscribe`、`POST push/unsubscribe` | 订阅或取消这台电脑的手机通知，见[手机通知](#手机通知) |
+| `GET codex/session-settings` | 原生 `current`、下一轮 `selected`、`applicationStatus`、主机默认设置、逐字段写能力、`options.collaborationModes` 与上下文用量；新增字段缺失不推断已支持 |
+| `GET codex/goals` | 原生目标、预算、token 消耗、运行时间及可用操作 |
+| `GET codex/context-options` | 当前会话可引用的电脑文件／目录、技能、插件和应用候选 |
+| `POST codex/settings` | 按 revision 更新下一轮设置或恢复主机默认 |
+| `POST codex/goal-*` | 设置、暂停、恢复或清除原生目标；`goal-set.intent` 为 `start`／`update`，预算省略保留、null 清除 |
 
 预览 origin 的 `/p/...` 只处理票据内容，`/live/...` 与 `/live-sw.js` 只处理网页预览，都拒绝控制 API；主 API 继续校验设备、Origin 和 CSRF。`GET access` 的 `pairingMode=code` 表示支持授权码直接连接；缺少字段或为 `confirmation` 时保留旧确认流程。新授权凭证含 `device.accessMode=full`；旧凭证不自动增加此标记或扩大授权。已批准的设备还会拿到 `computerName`，即系统设置里的电脑名称（macOS 读 `scutil --get ComputerName`，Linux 读 PRETTY_HOSTNAME，其他平台用主机名，每 10 分钟重读一次），手机在名称还是连接地址时用它称呼这台电脑，账号里的名称仍然优先；未批准、配对中和已结束的请求都不带这个字段。执行账本与可重建会话索引分开保存。
 
@@ -138,15 +138,15 @@ Plan／Goal 后续修正与分项验收见 [原生 Plan／Goal 接入验收](../
 - **提醒**：会话开始等待批准、回答或核对结果时提醒。电脑观察到运行中的一轮完成或失败时也提醒。默认只在电脑闲置两分钟或锁定后发送。暂缓的提醒在条件恢复时仍须有效，等待处理的最多保留 8 小时，完成或失败最多保留 15 分钟。同一会话的新提醒会替换旧提醒，每部手机每小时最多 30 条。
 - **实时活动**（锁屏和灵动岛）：会话持续工作 1 分钟后开始，显示运行中和等你处理的会话数、开始时间，只有一个会话时显示它的标题，只有一个会话在等待时显示它在等什么。全部停下 30 秒后结束，结束状态在锁屏保留 5 分钟。内容变化时更新，两次至少间隔 30 秒，有会话开始等待的那次以高优先级发送，没有变化时每 15 分钟刷新一次；超过 20 分钟没有更新（电脑休眠、断网或无法读取会话目录）时手机把它标为过时。iOS 限制一个实时活动 8 小时，电脑会在此之前换一个新的。在手机上移除后，这一轮工作不再重新出现；退出 AgentKib 时结束。
 
-提醒在电脑上加密，中继和 Apple 只转发密文；手机的通知扩展解密后显示，解不开时显示通用文字。每条提醒用新的 X25519 临时密钥与手机公钥协商，经 HKDF-SHA256（salt 为临时公钥接手机公钥，info 为 `agentkib-push-v1`）派生 AES-256-GCM 密钥，电脑的中继设备 ID 作为附加数据，中继无法把一台电脑的提醒冒充成另一台的。密文格式为 base64url：版本 `1`（1 字节）、临时公钥（32）、nonce（12）、密文、tag（16）；明文是 `{v: 1, ref, kind, sessionId, agent, title?, computer?, summary?, readOnly?, at}`，`kind` 为 `approval`、`question`、`verify`、`completed` 或 `failed`，`at` 为毫秒时间戳。实时活动的内容按 Apple 的要求以明文经过中继和 APNs，所以只有 `{running, waiting, need?, title?, startedAt, endedAt?}`（时间为秒）。手机公钥经已配对的 HTTPS 连接交给电脑，不经过账号服务。 终端 Claude 的审批和提问通知带 `readOnly: true`，有核实内容时在加密载荷附带 `summary`，点按后打开原会话。
+提醒在电脑上加密，中继和 Apple 只转发密文；手机的通知扩展解密后显示，解不开时显示通用文字。每条提醒用新的 X25519 临时密钥与手机公钥协商，经 HKDF-SHA256（salt 为临时公钥接手机公钥，info 为 `agentkib-push-v1`）派生 AES-256-GCM 密钥，电脑的中继设备 ID 作为附加数据，中继无法把一台电脑的提醒冒充成另一台的。密文格式为 base64url：版本 `1`（1 字节）、临时公钥（32）、nonce（12）、密文、tag（16）；明文是 `{v: 1, ref, kind, sessionId, agent, title?, computer?, summary?, readOnly?, at}`，`kind` 为 `approval`、`question`、`verify`、`completed` 或 `failed`，`at` 为毫秒时间戳。原有实时活动的明文内容只有 `{running, waiting, need?, title?, startedAt, endedAt?}`（时间为秒）。手机公钥经已配对的 HTTPS 连接交给电脑，不经过账号服务。 终端 Claude 的审批和提问通知带 `readOnly: true`，有核实内容时在加密载荷附带 `summary`，点按后打开原会话。
 
 `POST push/subscribe` 的正文为 `{publicKey, ref, alerts, liveActivity}`：`publicKey` 是 32 字节 X25519 公钥的 base64url，`ref` 是手机给这台电脑起的标识（8–64 位字母、数字、`_` 或 `-`），原样放进每条提醒，手机用它打开对应的电脑。选择不变时重复订阅不产生变化，App 每次启动都可以订阅。`POST push/unsubscribe` 取消。`GET access` 只对可以接收通知的配对返回 `push: {version: 1, subscribed, alerts?, liveActivity?}`；局域网连接、未绑定账号或自建中继没有这个字段，订阅返回 `409 push_unavailable`。订阅随配对保存，配对撤销、退出登录或账号登录结束时一起失效，同一登录配对了多次时以最近的订阅为准。
 
 ### 通知里的审批决定
 
-主机在 `GET access` 的 `push.approvalActionsVersion: 1` 宣告支持。手机可在订阅中加 `approvalActions: 1`。可投递的审批或提问会在加密提醒中附带可选 `interaction`，包含 R25 的会话绑定、简述、风险和当前决定。问题的具体回答仍在会话填写。一个通知可明确绑定一个可用的审批时，还会附带 `action: {requestId, bootId, expiresAt, choices}`。超出推送大小上限或主机无法确认此刻的交互时，仍可收到原有的打开会话提醒。
+主机在 `GET access` 的 `push.approvalActionsVersion: 1` 宣告支持。手机可在订阅中加 `approvalActions: 1`。可投递的审批或提问会在加密提醒中附带可选 `interaction`，包含 R25 的会话绑定、简述、风险和当前决定。问题的具体回答仍在会话填写。一个通知可明确绑定一个可用的审批时，还会附带 `action: {requestId, bootId, expiresAt, choices}`。命令无法完整展示、超出推送大小上限或主机无法确认此刻的交互时，仍可收到原有的打开会话提醒。
 
-手机使用已有认证、CSRF 和协议 2 向 `POST /api/web/v1/approve` 提交下列字段：
+手机使用已有认证、CSRF 和协议 2 向 `POST /api/web/v1/approve` 提交这些字段。
 
 | 字段                                           | 来源                                                   |
 | ---------------------------------------------- | ------------------------------------------------------ |

@@ -5,7 +5,7 @@ import {
   type ResolvedHistoryReference,
   type SessionResource,
 } from "@agentkib/web-client";
-import { AlertTriangle, CornerDownRight, ListPlus, MoreHorizontal, X } from "lucide-react";
+import { AlertTriangle, X } from "lucide-react";
 import {
   useEffect,
   useId,
@@ -51,7 +51,11 @@ import { slashPlanQuery, stripSlashPlan, useSlashCommandMenu } from "../../slash
 import { useComposerAttachments } from "../../use-composer-attachments";
 import { HistoryReferenceChips } from "../history/history-search-controls";
 import { validHistoryMessage } from "../history/history-reference-model";
-import { runningSendAction, useSendWhileRunning } from "../preferences/send-while-running";
+import {
+  matchesAlternateFollowUpShortcut,
+  runningSendAction,
+  useSendWhileRunning,
+} from "../preferences/send-while-running";
 import { claudeConnectionCopyForSurface } from "../../agents/claude-code/connection-copy";
 import type {
   SessionComposerControlsProps,
@@ -143,19 +147,7 @@ export function SessionComposer({
     notifications,
     desktop,
   } = useSessionPlatform();
-  const {
-    Button,
-    Disclosure,
-    DisclosureSummary,
-    DropdownMenu,
-    DropdownMenuContent,
-    DropdownMenuGroup,
-    DropdownMenuItem,
-    DropdownMenuLabel,
-    DropdownMenuSeparator,
-    DropdownMenuTrigger,
-    SessionDialog,
-  } = components;
+  const { Button, Disclosure, DisclosureSummary, SessionDialog } = components;
   const commandOwner = platformControls.commandSurface === "local-owner";
   const restrictedPlan = platformControls.restrictedComposer === "attachments-and-plan";
   const {
@@ -212,9 +204,7 @@ export function SessionComposer({
   const setComposerText = setMessage;
   const [submitted, setSubmitted] = useState(false);
   const submitPending = useRef(false);
-  // While the agent runs, Send queues the message or adds it to the running turn, as this
-  // device chose in preferences; the menu beside Send offers both either way.
-  const runningAction = runningSendAction(useSendWhileRunning());
+  const followUpPreference = useSendWhileRunning();
   const [error, setError] = useState("");
   const [resources, setResources] = useState<SessionResource[]>([]);
   const workspaceId = current?.workspace_id;
@@ -543,7 +533,6 @@ export function SessionComposer({
   const queueDraftAllowed =
     !serialQueue ||
     (!!draft.trim() && !historyReferences.length && !attachmentIds.length && !resourceIds.length);
-  const queueAddOffered = queuePanel?.actions.includes("add") === true;
   const queueCapabilities = capabilities?.sessionId === selected ? capabilities : undefined;
   const queueAdd = queueCapabilities?.features["queue-add"];
   const steer = queueCapabilities?.features.steer;
@@ -713,18 +702,23 @@ export function SessionComposer({
     !busy &&
     !settingsOnlyBlocked
   );
-  // Send, and Enter, take the device's running choice when a direct send cannot go now.
-  const runningReady =
-    (running || compacting) &&
-    !(canSubmit && !compacting) &&
-    canAdvanced &&
-    !startupGoal &&
-    (runningAction === "queue-add" ? queueAddReady : steerReady) &&
-    !(compacting && runningAction === "steer") &&
-    valid &&
-    !submitted;
+  // A provider without steering has just one follow-up action. A temporarily
+  // unavailable action keeps its meaning rather than silently sending another way.
+  const followUp = running || compacting;
+  const runningAction = runningSendAction(steerOffered ? followUpPreference : "queue");
+  // The shortcut also replaces the old menu for explicitly adding to an idle serial queue.
+  const alternateAction =
+    followUp && steerOffered
+      ? runningSendAction(followUpPreference === "steer" ? "queue" : "steer")
+      : "queue-add";
+  const canSendFollowUp = canAdvanced && !startupGoal && !draftUnknown && valid && !submitted;
+  const canFollowUp = (action: "queue-add" | "steer") =>
+    canSendFollowUp && (action === "queue-add" ? queueAddReady : !compacting && steerReady);
+  const runningReady = (followUp || (serialQueue && !canSubmit)) && canFollowUp(runningAction);
+  const directReady = localCommandReady || (!followUp && canSubmit);
   const runningLabel = runningAction === "steer" ? copy.steer : copy.queueAdd;
   const primaryAction =
+    !runningReady &&
     canStop &&
     sessionStopCapabilityAllows(
       live,
@@ -737,73 +731,9 @@ export function SessionComposer({
       <ComposerPrimaryAction
         label={runningReady ? runningLabel : t.send}
         title={draftReason ? reason(draftReason) : runningReady ? runningLabel : undefined}
-        disabled={
-          ((!canSubmit || compacting) && !runningReady && !localCommandReady) || !valid || submitted
-        }
+        disabled={(!directReady && !runningReady) || !valid || submitted}
       />
     );
-  const showQueueAdd = queueAddOffered && (serialQueue || running || compacting);
-  const showSteer = steerOffered && (running || compacting);
-  const canQueueNext = canAdvanced && !startupGoal && queueAddReady && valid && !submitted;
-  const canSteerNext =
-    !compacting && canAdvanced && !startupGoal && steerReady && valid && !submitted;
-  const advancedActions =
-    showQueueAdd || showSteer ? (
-      <DropdownMenu>
-        <DropdownMenuTrigger
-          type="button"
-          className="inline-flex size-11 shrink-0 items-center justify-center rounded-full text-muted-foreground hover:bg-muted hover:text-foreground"
-          aria-label={copy.advanced}
-          title={copy.advanced}
-        >
-          <MoreHorizontal size={18} aria-hidden="true" />
-        </DropdownMenuTrigger>
-        <DropdownMenuContent side="top" align="end" className="min-w-64">
-          <DropdownMenuGroup>
-            <DropdownMenuLabel>{copy.advanced}</DropdownMenuLabel>
-            <DropdownMenuSeparator />
-            {showSteer && (
-              <DropdownMenuItem
-                className="data-disabled:pointer-events-auto"
-                disabled={!canSteerNext}
-                title={
-                  canSteerNext
-                    ? undefined
-                    : compacting
-                      ? contextUsageCopyForSurface(locale, surface).compactingDetail
-                      : reason(draftReason || steer?.reason || queueCapabilities?.reason)
-                }
-                onClick={() => canSteerNext && void send("steer")}
-              >
-                <CornerDownRight size={16} aria-hidden="true" />
-                {copy.steer}
-              </DropdownMenuItem>
-            )}
-            {showQueueAdd && (
-              <DropdownMenuItem
-                className="data-disabled:pointer-events-auto"
-                disabled={!canQueueNext}
-                title={
-                  canQueueNext
-                    ? undefined
-                    : reason(draftReason || queueAdd?.reason || queueCapabilities?.reason)
-                }
-                onClick={() => canQueueNext && void send("queue-add")}
-              >
-                <ListPlus size={16} aria-hidden="true" />
-                {copy.queueAdd}
-              </DropdownMenuItem>
-            )}
-          </DropdownMenuGroup>
-          {showQueueAdd && (
-            <>
-              <DropdownMenuSeparator />
-              <p className="px-1.5 py-1 text-xs leading-5 text-muted-foreground">{layout.queue}</p>
-            </>
-          )}
-        </DropdownMenuContent>
-      </DropdownMenu>
-    ) : null;
   if (
     resume?.loadResumeCommand &&
     display.continuation === "view-only" &&
@@ -877,7 +807,7 @@ export function SessionComposer({
       <SessionComposerInput
         editorContextKey={selected}
         onSubmit={() => {
-          if (localCommandReady || (canSubmit && !compacting)) void send("send");
+          if (directReady) void send("send");
           else if (runningReady) void send(runningAction);
         }}
         editor={{
@@ -897,11 +827,22 @@ export function SessionComposer({
           disabled: (busy && !settingsOnlyBlocked) || submitted,
           ...slash.inputProps,
         }}
-        onEditorKeyDown={slash.onKeyDown}
+        onEditorKeyDown={(event, composing) => {
+          if (slash.onKeyDown(event, composing)) return true;
+          if (
+            (!followUp && !serialQueue) ||
+            composing ||
+            event.nativeEvent.isComposing ||
+            event.nativeEvent.keyCode === 229 ||
+            !matchesAlternateFollowUpShortcut(event)
+          )
+            return false;
+          event.preventDefault();
+          if (!event.repeat && canFollowUp(alternateAction)) void send(alternateAction);
+          return true;
+        }}
         canSubmitFromKeyboard={() =>
-          (localCommandReady || (canSubmit && !compacting) || runningReady) &&
-          valid &&
-          !submitPending.current
+          (directReady || runningReady) && valid && !submitPending.current
         }
         attachments={{
           inputRef: fileInput,
@@ -996,7 +937,6 @@ export function SessionComposer({
                 openPhoneFiles={() => fileInput.current?.click()}
                 disabled={busy || submitted || !online}
                 action={primaryAction}
-                advancedActions={advancedActions}
                 startupGoal={startupGoal}
                 onStageGoal={stageGoal}
                 onStartupGoalHandled={startupGoalHandled}
@@ -1040,7 +980,6 @@ export function SessionComposer({
                       }
                     : undefined
                 }
-                actions={advancedActions}
                 usage={
                   <ContextUsage
                     session={session}

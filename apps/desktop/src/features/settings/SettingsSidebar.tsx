@@ -7,6 +7,7 @@ import {
   Database,
   FolderSearch,
   Keyboard,
+  MessagesSquare,
   MonitorSmartphone,
   PackageSearch,
   Palette,
@@ -23,6 +24,7 @@ import { focusSettingsTarget } from "./components/SettingsLayout";
 
 export type SettingsSection =
   | "general"
+  | "sessions"
   | "appearance"
   | "shortcuts"
   | "discovery"
@@ -35,9 +37,12 @@ export type SettingsSection =
 export const settingsTargets = [
   "general-interface",
   "general-quota",
+  "sessions-messaging",
+  "sessions-continuation",
   "appearance-mode",
   "appearance-theme",
   "shortcuts-list",
+  "shortcuts-actions",
   "discovery-status",
   "discovery-sources",
   "discovery-roots",
@@ -68,6 +73,7 @@ const sections: Array<{
   icon: ComponentType<{ size?: number }>;
 }> = [
   { id: "general", label: "settings.section.general", icon: Settings2 },
+  { id: "sessions", label: "settings.section.sessions", icon: MessagesSquare },
   { id: "appearance", label: "settings.section.appearance", icon: Palette },
   { id: "shortcuts", label: "settings.section.shortcuts", icon: Keyboard },
   { id: "discovery", label: "settings.section.discovery", icon: FolderSearch },
@@ -100,12 +106,23 @@ const searchEntries: Array<{
     section: "general",
     target: "general-interface",
     label: "settings.interface",
+    keywords: ["settings.appIcon", "settings.language", "settings.closeBehavior"],
+  },
+  {
+    section: "sessions",
+    target: "sessions-messaging",
+    label: "conversation.sendWhileRunning",
     keywords: [
-      "settings.appIcon",
-      "settings.language",
-      "settings.closeBehavior",
-      "conversation.sendWhileRunning",
+      "settings.sessionMessaging",
+      "conversation.sendWhileRunningQueue",
+      "conversation.sendWhileRunningSteer",
     ],
+  },
+  {
+    section: "sessions",
+    target: "sessions-continuation",
+    label: "settings.usageLimitAutoContinue",
+    keywords: ["settings.sessionContinuation", "settings.usageLimitAutoContinueHint"],
   },
   {
     section: "appearance",
@@ -136,6 +153,12 @@ const searchEntries: Array<{
       "shortcuts.group.navigation",
       "shortcuts.group.actions",
     ],
+  },
+  {
+    section: "shortcuts",
+    target: "shortcuts-actions",
+    label: "conversation.alternateFollowUp",
+    keywords: ["shortcuts.group.actions"],
   },
   {
     section: "general",

@@ -118,7 +118,10 @@ describe("composer drafts across connection changes", () => {
       } as unknown as SessionController["client"],
     };
   });
-  afterEach(cleanup);
+  afterEach(() => {
+    cleanup();
+    localStorage.removeItem("agentkib.send-while-running");
+  });
 
   it.each(["codex", "claude-code"])(
     "keeps the %s draft editable and focused offline, then requires an explicit send after recovery",
@@ -267,8 +270,9 @@ describe("composer drafts across connection changes", () => {
   });
 
   it.each(["running", "compacting"])(
-    "keeps %s advanced actions and submission disabled offline",
+    "keeps %s follow-ups and submission disabled offline",
     async (activity) => {
+      localStorage.setItem("agentkib.send-while-running", "queue");
       doubles.session.access = { ...doubles.session.access!, status: "approved" };
       disconnected();
       doubles.session.live = {
@@ -286,30 +290,13 @@ describe("composer drafts across connection changes", () => {
       expect(input).toBeEnabled();
       fireEvent.change(input, { target: { value: "Next turn draft" } });
       attemptSend(input, form);
-      fireEvent.click(screen.getByRole("button", { name: sessionCopy["en-US"].advanced }));
-      const steer = await screen.findByRole("menuitem", { name: sessionCopy["en-US"].steer });
-      const queue = screen.getByRole("menuitem", { name: sessionCopy["en-US"].queueAdd });
-      expect(steer).toHaveAttribute("aria-disabled", "true");
-      expect(queue).toHaveAttribute("aria-disabled", "true");
-      fireEvent.click(steer);
-      fireEvent.click(queue);
+      fireEvent.keyDown(input, { key: "Enter", metaKey: true });
       expectNoDispatch();
-      fireEvent.keyDown(queue, { key: "Escape" });
+
       reconnected(false);
       rerender(<SessionComposer />);
       expect(input).toHaveValue("Next turn draft");
-      fireEvent.click(screen.getByRole("button", { name: sessionCopy["en-US"].advanced }));
-      const recoveredQueue = await screen.findByRole("menuitem", {
-        name: sessionCopy["en-US"].queueAdd,
-      });
-      expect(recoveredQueue).not.toHaveAttribute("aria-disabled", "true");
-      if (activity === "compacting")
-        expect(screen.getByRole("menuitem", { name: sessionCopy["en-US"].steer })).toHaveAttribute(
-          "aria-disabled",
-          "true",
-        );
-      fireEvent.keyDown(recoveredQueue, { key: "Escape" });
-      // Send while the agent runs takes this device's running choice, which queues by default.
+      expect(screen.getByRole("button", { name: sessionCopy["en-US"].queueAdd })).toBeEnabled();
       attemptSend(input, form);
       await waitFor(() =>
         expect(doubles.runSessionAction).toHaveBeenCalledExactlyOnceWith("queue-add", {

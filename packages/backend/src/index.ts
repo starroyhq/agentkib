@@ -67,7 +67,7 @@ import {
   type HostSessionRequest,
   type SessionMethod,
 } from "./sessions/routing";
-import { QuitWork, quitWorkDecisionSchema } from "./sessions/quit-work";
+import { QUIT_WORK_MANUAL_REASON, QuitWork, quitWorkDecisionSchema } from "./sessions/quit-work";
 import { hostControlValidationSchema, runProviderValidation } from "./sessions/validate/control";
 import { RemoteGateways } from "./remote-gateways";
 import { RemoteAgent } from "./remote-agent";
@@ -1071,6 +1071,14 @@ export class TypeScriptBackend {
               if (agent === "claude-code") claudeProvider.restoreQuitQueue(sessionId, evidence);
               return "continued";
             }
+            if (
+              receipt.status === "not-dispatched" &&
+              typeof receipt.ack === "object" &&
+              receipt.ack !== null &&
+              "reason" in receipt.ack &&
+              receipt.ack.reason === QUIT_WORK_MANUAL_REASON
+            )
+              return "manual-required";
             return receipt.status === "not-dispatched" ? "skipped" : "unknown";
           },
           report: ({ sessionId, turnId }, assignment, outcome) =>

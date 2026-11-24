@@ -14,7 +14,10 @@ vi.mock("@/features/sessions/conversation-catalog", () => ({
   refreshConversationCatalog: async () => undefined,
 }));
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  vi.resetAllMocks();
+});
 
 it("offers one manual continuation and disables unconfirmed work", async () => {
   await initializeI18n("en-US");
@@ -39,7 +42,7 @@ it("offers one manual continuation and disables unconfirmed work", async () => {
   const query = new QueryClient();
   render(
     <QueryClientProvider client={query}>
-      <InterruptedQuitWork />
+      <InterruptedQuitWork onOpenSession={vi.fn()} />
     </QueryClientProvider>,
   );
   expect(await screen.findByText("Interrupted on quit")).toBeVisible();
@@ -50,4 +53,28 @@ it("offers one manual continuation and disables unconfirmed work", async () => {
   await waitFor(() => expect(screen.queryByText("Fix login")).toBeNull());
   expect(api.resumeInterruptedQuitWork).toHaveBeenCalledExactlyOnceWith("work");
   expect(screen.getByRole("button", { name: "Continue" })).toBeDisabled();
+});
+
+it("opens the original session for a manual-only task without sending a message", async () => {
+  await initializeI18n("en-US");
+  vi.mocked(api.interruptedQuitWork).mockResolvedValue([
+    {
+      id: "manual-work",
+      sessionId: "original-session",
+      agent: "deepseek-harness",
+      title: "Check tests",
+      resumable: false,
+      status: "interrupted",
+      openSession: true,
+    },
+  ]);
+  const onOpenSession = vi.fn();
+  render(
+    <QueryClientProvider client={new QueryClient()}>
+      <InterruptedQuitWork onOpenSession={onOpenSession} />
+    </QueryClientProvider>,
+  );
+  fireEvent.click(await screen.findByRole("button", { name: "Open session" }));
+  expect(onOpenSession).toHaveBeenCalledExactlyOnceWith("original-session");
+  expect(api.resumeInterruptedQuitWork).not.toHaveBeenCalled();
 });

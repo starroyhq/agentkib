@@ -36,7 +36,7 @@ export interface DshBridgeServices {
   sessionQuery: boolean;
   /** Cancels only a checked native turn and can look up native evidence for its end. */
   turnScopedCancel?: boolean;
-  /** Managed rc.5 runtimes can stop and continue a turn with an empty native inbox. */
+  /** Managed rc.5 runtimes can record a quit interruption for recovery on reopen. */
   quitWork?: boolean;
   /** Reads the native context-pressure projection without resuming the session. */
   contextUsage?: boolean;

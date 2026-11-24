@@ -169,13 +169,29 @@ describe("DSH persisted turn evidence", () => {
     expect(interrupted).toMatchObject({
       seq: ended.seq,
       open: null,
-      quitInterruption: { turn: 3, interruptionId },
+      quitInterruption: { turn: 3, interruptionId, endSeq: 3 },
     });
     expect(await readLocalDshTurn(dir, nativeId)).toEqual(interrupted);
 
-    appendFileSync(log, encode({ seq: 4, time: 121, type: "turn/start", data: { turn: 4 } }));
-    const later = await readLocalDshTurn(dir, nativeId, interrupted!);
-    expect(later).toMatchObject({ seq: 4, open: { turn: 4, startedAt: 121 } });
+    const clear = (seq: number, target: string) => ({
+      seq,
+      time: 120 + seq,
+      type: "agent/inbox/spliced",
+      data: { target, inserted: [], start: 0, removedCount: 1, outcome: "canceled" },
+    });
+    appendFileSync(log, encode(clear(4, "next-step"), clear(5, "next-turn")));
+    const afterCleanup = await readLocalDshTurn(dir, nativeId, interrupted!);
+    expect(afterCleanup).toMatchObject({
+      seq: 5,
+      open: null,
+      quitInterruption: { turn: 3, interruptionId, endSeq: 3, cleanup: "next-turn" },
+    });
+    expect(await readLocalDshTurn(dir, nativeId)).toEqual(afterCleanup);
+
+    const resumed = { seq: 6, time: 128, type: "turn/start", data: { turn: 4 } };
+    appendFileSync(log, encode(resumed));
+    const later = await readLocalDshTurn(dir, nativeId, afterCleanup!);
+    expect(later).toMatchObject({ seq: 6, open: { turn: 4, startedAt: 128 } });
     expect(later?.quitInterruption).toBeUndefined();
   });
 

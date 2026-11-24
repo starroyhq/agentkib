@@ -19,6 +19,7 @@ export interface QuitWorkDecision {
 export interface InterruptedQuitWork extends QuitWorkEntry {
   sessionId: string;
   status: "interrupted" | "unknown";
+  openSession?: true;
 }
 
-export type QuitWorkOutcome = "continued" | "skipped" | "unknown";
+export type QuitWorkOutcome = "continued" | "skipped" | "unknown" | "manual-required";

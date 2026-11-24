@@ -186,7 +186,15 @@ function HomeRoute() {
         },
       }}
       interruptedWork={
-        runtime?.resume_after_quit !== undefined ? <InterruptedQuitWork /> : undefined
+        runtime?.resume_after_quit !== undefined ? (
+          <InterruptedQuitWork
+            onOpenSession={(sessionId) => {
+              const session = catalog.sessions.find(({ id }) => id === sessionId);
+              if (session) prepareSessionNavigation(session);
+              void navigate({ to: "/sessions", search: { sessionId } });
+            }}
+          />
+        ) : undefined
       }
       newSession={
         // A session opens on the sessions page, which needs the session index.

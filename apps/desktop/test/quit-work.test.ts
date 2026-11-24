@@ -22,12 +22,13 @@ function fixture() {
   const deps = {
     sessions: vi.fn(async () => [session, unmanaged]),
     resumeByDefault: vi.fn(() => true),
-    candidate: vi.fn(async ({ sessionId }: typeof session) =>
-      sessionId === session.sessionId ? { turnId: "interrupted-turn" } : undefined,
+    candidate: vi.fn<ConstructorParameters<typeof QuitWork>[1]["candidate"]>(
+      async ({ sessionId }) =>
+        sessionId === session.sessionId ? { turnId: "interrupted-turn" } : undefined,
     ),
     assignment: vi.fn(() => assignment),
     interrupt: vi.fn<ConstructorParameters<typeof QuitWork>[1]["interrupt"]>(async () => evidence),
-    check: vi.fn(async () => true),
+    check: vi.fn<ConstructorParameters<typeof QuitWork>[1]["check"]>(async () => true),
     dispatch: vi.fn<ConstructorParameters<typeof QuitWork>[1]["dispatch"]>(async () => "continued"),
     receipt: vi.fn<ConstructorParameters<typeof QuitWork>[1]["receipt"]>(() => "unknown"),
     report: vi.fn(),
@@ -165,7 +166,73 @@ describe("explicit desktop quit work", () => {
     expect(deps.dispatch).not.toHaveBeenCalled();
   });
 
-  it.each(["continued", "unknown"] as const)(
+  it("records a confirmed interruption even when its quit row is disabled", async () => {
+    const { boot, deps } = fixture();
+    deps.candidate.mockImplementation(async ({ sessionId }) =>
+      sessionId === session.sessionId
+        ? { turnId: "interrupted-turn", manualOnly: true }
+        : undefined,
+    );
+    deps.check.mockResolvedValue("open-session");
+    const before = boot();
+    const preview = await before.prepare();
+    const { id } = preview.work[0]!;
+    expect(preview.work[0]?.resumable).toBe(false);
+    await before.stop({ ticket: preview.ticket, resume: true });
+
+    const after = boot();
+    after.start();
+    const expected = [
+      expect.objectContaining({
+        id,
+        sessionId: session.sessionId,
+        status: "interrupted",
+        resumable: false,
+        openSession: true,
+      }),
+    ];
+    await expect(after.list()).resolves.toEqual(expected);
+    await expect(after.resume(id)).resolves.toEqual({ outcome: "manual-required" });
+    await after.stop();
+    expect(deps.dispatch).not.toHaveBeenCalled();
+    expect(deps.report).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ id, evidence: { ...evidence, manualOnly: true } }),
+      assignment,
+      "not-continued",
+    );
+
+    const reopened = boot();
+    reopened.start();
+    await expect(reopened.list()).resolves.toEqual(expected);
+    expect(deps.report).toHaveBeenCalledTimes(1);
+  });
+
+  it("exposes the manual fallback from an asynchronous startup attempt without replaying it", async () => {
+    const { boot, deps } = fixture();
+    const dispatch = Promise.withResolvers<"manual-required">();
+    deps.dispatch.mockReturnValueOnce(dispatch.promise);
+    const before = boot();
+    const preview = await before.prepare();
+    const { id } = preview.work[0]!;
+    await before.stop({ ticket: preview.ticket, resume: true });
+    const after = boot();
+    after.start();
+    const list = after.list();
+    dispatch.resolve("manual-required");
+    await expect(list).resolves.toEqual([
+      expect.objectContaining({ id, status: "interrupted", resumable: false, openSession: true }),
+    ]);
+    // A provider does not need to honor the UI flag to stop this request.
+    await expect(after.resume(id)).resolves.toEqual({ outcome: "manual-required" });
+    expect(deps.dispatch).toHaveBeenCalledTimes(1);
+    expect(deps.report).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ id }),
+      assignment,
+      "not-continued",
+    );
+  });
+
+  it.each(["continued", "unknown", "manual-required"] as const)(
     "reconciles a claimed continuation as %s from its receipt without replay",
     async (outcome) => {
       const { boot, deps, file } = fixture();
@@ -173,7 +240,7 @@ describe("explicit desktop quit work", () => {
       const preview = await before.prepare();
       const id = preview.work[0]!.id;
       await before.stop({ ticket: preview.ticket, resume: true });
-      // Simulate process exit after claiming the continuation but before recording its receipt.
+      // Simulate process exit after claiming the continuation but before updating the quit journal.
       const journal = JSON.parse(readFileSync(file, "utf8"));
       journal.entries[0].phase = "claimed";
       writeFileSync(file, JSON.stringify(journal));
@@ -182,12 +249,30 @@ describe("explicit desktop quit work", () => {
       after.start();
       await expect.poll(() => deps.report.mock.calls.length).toBe(1);
       expect(deps.receipt).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ id }));
+      const list = await after.list();
+      if (outcome === "manual-required") {
+        expect(list).toEqual([
+          expect.objectContaining({
+            id,
+            status: "interrupted",
+            resumable: false,
+            openSession: true,
+          }),
+        ]);
+        await expect(after.resume(id)).resolves.toEqual({ outcome });
+        expect(deps.report).toHaveBeenCalledWith(
+          expect.objectContaining({ id }),
+          assignment,
+          "not-continued",
+        );
+      } else {
+        expect(list).toEqual(
+          outcome === "unknown"
+            ? [expect.objectContaining({ id, status: "unknown", resumable: false })]
+            : [],
+        );
+      }
       expect(deps.dispatch).not.toHaveBeenCalled();
-      expect(await after.list()).toEqual(
-        outcome === "unknown"
-          ? [expect.objectContaining({ id, status: "unknown", resumable: false })]
-          : [],
-      );
     },
   );
 });

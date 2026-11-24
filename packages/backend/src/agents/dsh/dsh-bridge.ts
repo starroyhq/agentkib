@@ -742,13 +742,19 @@ export interface DshBridgeOptions {
   };
 }
 
-const quitEvidenceSchema = z.object({
-  turn: z.number().safe().int().positive(),
-  interruptionId: z.uuid(),
-  endSeq: z.number().safe().int().nonnegative(),
-  settings: z.string().regex(/^[0-9a-f]{64}$/),
-  cwd: z.string().min(1).max(4096),
-});
+const quitEvidenceSchema = z
+  .object({
+    turn: z.number().safe().int().positive(),
+    interruptionId: z.uuid(),
+    endSeq: z.number().safe().int().nonnegative(),
+    settings: z
+      .string()
+      .regex(/^[0-9a-f]{64}$/)
+      .optional(),
+    manualOnly: z.literal(true).optional(),
+    cwd: z.string().min(1).max(4096),
+  })
+  .refine((evidence) => evidence.manualOnly === true || evidence.settings !== undefined);
 
 /** DSH's refusals that clients explain in their own words. */
 const dshRefusal = (error: string | undefined) =>
@@ -2136,7 +2142,7 @@ export class DshBridge {
     return runtime?.managed && runtime.services.quitWork === true ? runtime : null;
   }
 
-  async quitCandidate(id: string): Promise<{ turnId: string } | undefined> {
+  async quitCandidate(id: string): Promise<{ turnId: string; manualOnly?: true } | undefined> {
     const target = this.#quitWorkTarget(id);
     if (!target) return;
     const runtime = this.#quitWorkRuntime(target.nativeId);
@@ -2150,9 +2156,12 @@ export class DshBridge {
       },
       ACTIVITY_READ_TIMEOUT_MS,
     );
-    const turn = (result.value as { turn?: number } | null)?.turn;
-    if (result.ok && turn && nativeTurn(turnIdOf(turn)) === turn)
-      return { turnId: turnIdOf(turn)! };
+    const candidate = result.value as { turn?: number; manualOnly?: boolean } | null;
+    if (result.ok && candidate?.turn && nativeTurn(turnIdOf(candidate.turn)) === candidate.turn)
+      return {
+        turnId: turnIdOf(candidate.turn)!,
+        ...(candidate.manualOnly === true ? { manualOnly: true } : {}),
+      };
   }
 
   async interruptForQuit(id: string, turnId: string): Promise<Record<string, unknown> | undefined> {
@@ -2183,15 +2192,17 @@ export class DshBridge {
       return evidence;
   }
 
-  async checkAfterQuit(id: string, value: Record<string, unknown>): Promise<boolean> {
+  async checkAfterQuit(
+    id: string,
+    value: Record<string, unknown>,
+  ): Promise<boolean | "open-session"> {
     const evidence = quitEvidenceSchema.safeParse(value).data;
     const target = this.#quitWorkTarget(id);
+    if (!evidence || !target || target.cwd !== evidence.cwd) return false;
     if (
-      !evidence ||
-      !target ||
-      target.cwd !== evidence.cwd ||
-      !this.options.managed?.enabled() ||
-      (!this.#quitWorkRuntime(target.nativeId) && !this.#startable())
+      !evidence.manualOnly &&
+      (!this.options.managed?.enabled() ||
+        (!this.#quitWorkRuntime(target.nativeId) && !this.#startable()))
     )
       return false;
     const { nativeId, cwd } = target;
@@ -2200,17 +2211,27 @@ export class DshBridge {
       this.#online().some(
         (runtime) =>
           !runtime.managed &&
-          (runtime.states.get(nativeId)?.live || runtime.services.sessionController),
+          (runtime.states.get(nativeId)?.live ||
+            runtime.summaries.get(nativeId)?.live ||
+            (!evidence.manualOnly && runtime.services.sessionController)),
       );
     if (!writerFree() || otherRuntime()) return false;
     const snapshot = await this.options.localTurn?.(nativeId, cwd).catch(() => null);
-    return (
-      snapshot?.seq === evidence.endSeq &&
-      snapshot.quitInterruption?.turn === evidence.turn &&
-      snapshot.quitInterruption.interruptionId === evidence.interruptionId &&
-      writerFree() &&
-      !otherRuntime()
-    );
+    const current = this.#quitWorkTarget(id);
+    const interrupted = snapshot?.quitInterruption;
+    if (
+      interrupted?.turn !== evidence.turn ||
+      interrupted.interruptionId !== evidence.interruptionId ||
+      interrupted.endSeq !== evidence.endSeq ||
+      current?.nativeId !== nativeId ||
+      current.cwd !== cwd ||
+      !writerFree() ||
+      otherRuntime()
+    )
+      return false;
+    // Only the navigation fallback tolerates native inbox cleanup after the quit settlement.
+    if (evidence.manualOnly) return "open-session";
+    return snapshot?.seq === evidence.endSeq;
   }
 
   async resumeAfterQuit(
@@ -2221,12 +2242,15 @@ export class DshBridge {
   ): Promise<QuitWorkOutcome> {
     const evidence = quitEvidenceSchema.safeParse(value).data;
     const target = this.#quitWorkTarget(id);
-    if (!evidence || !target || !(await this.checkAfterQuit(id, value))) return "skipped";
+    if (!evidence || !target) return "skipped";
+    const check = await this.checkAfterQuit(id, value);
+    if (check === "open-session") return "manual-required";
+    if (!check || !evidence.settings) return "skipped";
     const start = await this.#ensureManaged().catch(() => null);
     if (
       !start ||
       this.#quitWorkRuntime(target.nativeId) !== start ||
-      !(await this.checkAfterQuit(id, value))
+      (await this.checkAfterQuit(id, value)) !== true
     )
       return "skipped";
     const receipt = admitControlReceipt(
@@ -2261,7 +2285,7 @@ export class DshBridge {
           sessionId: target.nativeId,
           requestId,
           text,
-          evidence,
+          evidence: { ...evidence, settings: evidence.settings },
         },
         undefined,
         receipt.dispatch,

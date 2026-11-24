@@ -25,6 +25,7 @@ const CONTINUATION =
   "The previous turn was interrupted when AgentKib quit. Please continue from where it stopped.";
 
 export const quitWorkDecisionSchema = z.object({ ticket: z.uuid(), resume: z.boolean() }).strict();
+export const QUIT_WORK_MANUAL_REASON = "quit-work-manual-required";
 
 const assignmentSchema = z.object({ leadId: z.string(), laneId: z.string() });
 const sessionSchema = z.object({
@@ -48,16 +49,18 @@ const journalSchema = z.object({
 type Session = z.infer<typeof sessionSchema>;
 type Assignment = z.infer<typeof assignmentSchema>;
 type Checkpoint = z.infer<typeof checkpointSchema>;
-type Candidate = Session & { id: string; turnId?: string };
+type QuitWorkCandidate = { turnId: string; manualOnly?: boolean };
+type Candidate = Session & { id: string } & Partial<QuitWorkCandidate>;
 type WorkerOutcome = "continued" | "not-continued" | "unknown";
+type FinishedOutcome = Exclude<QuitWorkOutcome, "manual-required">;
 
 interface QuitWorkDependencies {
   sessions: () => Promise<Session[]>;
   resumeByDefault: () => boolean;
-  candidate: (session: Session) => Promise<{ turnId: string } | undefined>;
+  candidate: (session: Session) => Promise<QuitWorkCandidate | undefined>;
   assignment: (sessionId: string) => Assignment | undefined;
   interrupt: (session: Candidate, turnId: string) => Promise<Record<string, unknown> | undefined>;
-  check: (entry: Checkpoint) => Promise<boolean>;
+  check: (entry: Checkpoint) => Promise<boolean | "open-session">;
   dispatch: (entry: Checkpoint, text: string) => Promise<QuitWorkOutcome>;
   receipt: (entry: Checkpoint) => QuitWorkOutcome;
   report: (entry: Checkpoint, assignment: Assignment, outcome: WorkerOutcome) => void;
@@ -67,9 +70,9 @@ export class QuitWork {
   readonly #file: string;
   #entries: Checkpoint[] = [];
   readonly #tickets = new Map<string, Candidate[]>();
-  readonly #verifiedManual = new Set<string>();
+  readonly #verifiedManual = new Map<string, "continue" | "open-session">();
   readonly #inFlight = new Set<Promise<unknown>>();
-  #manualReady?: Promise<void>;
+  #startupReady?: Promise<unknown>;
   #started = false;
   #stopping = false;
 
@@ -134,7 +137,12 @@ export class QuitWork {
     const candidates = await Promise.all(
       sessions.map(async (session): Promise<Candidate> => {
         const candidate = await this.dependencies.candidate(session).catch(() => undefined);
-        return { ...session, id: randomUUID(), turnId: candidate?.turnId };
+        return {
+          ...session,
+          id: randomUUID(),
+          turnId: candidate?.turnId,
+          manualOnly: candidate?.manualOnly,
+        };
       }),
     );
     const ticket = randomUUID();
@@ -146,11 +154,11 @@ export class QuitWork {
     return {
       ticket,
       resumeByDefault: this.dependencies.resumeByDefault(),
-      work: candidates.map(({ id, title, agent, turnId }) => ({
+      work: candidates.map(({ id, title, agent, turnId, manualOnly }) => ({
         id,
         title,
         agent,
-        resumable: turnId !== undefined,
+        resumable: turnId !== undefined && !manualOnly,
       })),
     };
   }
@@ -172,6 +180,7 @@ export class QuitWork {
           const assignment = this.dependencies.assignment(candidate.sessionId);
           const evidence = await this.dependencies.interrupt(candidate, turnId);
           if (!evidence) return;
+          const manualOnly = candidate.manualOnly === true || evidence.manualOnly === true;
           this.#write([
             ...this.#entries,
             {
@@ -181,8 +190,8 @@ export class QuitWork {
               agent: candidate.agent,
               turnId,
               assignment,
-              evidence,
-              phase: decision.resume ? "pending" : "manual",
+              evidence: manualOnly ? { ...evidence, manualOnly: true } : evidence,
+              phase: decision.resume && !manualOnly ? "pending" : "manual",
               reported: false,
             },
           ]);
@@ -196,10 +205,10 @@ export class QuitWork {
   start(): void {
     if (this.#started || this.#stopping) return;
     this.#started = true;
-    this.#manualReady = this.#run(this.#verifyManual());
-    void this.#manualReady.catch(() => undefined);
-    void this.#run(this.#continuePending()).catch(() =>
-      console.error("AgentKib could not finish resuming interrupted work"),
+    // A delayed auto attempt can become a manual task. Index the finished batch for
+    // the first Home read so it cannot cache an empty result while recovery is in flight.
+    this.#startupReady = this.#run(
+      Promise.allSettled([this.#verifyManual(), this.#continuePending()]),
     );
   }
 
@@ -208,16 +217,25 @@ export class QuitWork {
       if (this.#stopping) return;
       if (entry.phase !== "manual") continue;
       try {
-        if (await this.dependencies.check(entry)) {
-          this.#report(entry, "not-continued");
-          this.#verifiedManual.add(entry.id);
-        } else {
-          this.#finish(entry, "skipped");
-        }
+        await this.#checkManual(entry);
       } catch {
         console.error("AgentKib could not verify manually resumable work");
       }
     }
+  }
+
+  async #checkManual(entry: Checkpoint): Promise<boolean> {
+    const check = await this.dependencies.check(entry);
+    if (!check) {
+      this.#finish(entry, "skipped");
+      return false;
+    }
+    this.#report(entry, "not-continued");
+    this.#verifiedManual.set(
+      entry.id,
+      check === "open-session" || entry.evidence.manualOnly === true ? "open-session" : "continue",
+    );
+    return true;
   }
 
   async #continuePending(): Promise<void> {
@@ -227,7 +245,9 @@ export class QuitWork {
         if (entry.phase === "pending") {
           await this.#dispatch(entry);
         } else if (entry.phase === "claimed") {
-          this.#finish(entry, this.dependencies.receipt(entry));
+          const outcome = this.dependencies.receipt(entry);
+          if (outcome === "manual-required") await this.#requireManual(entry);
+          else this.#finish(entry, outcome);
         } else if (
           entry.phase === "continued" ||
           entry.phase === "skipped" ||
@@ -241,13 +261,15 @@ export class QuitWork {
     }
   }
 
-  #finish(entry: Checkpoint, outcome: QuitWorkOutcome): void {
+  #finish(entry: Checkpoint, outcome: FinishedOutcome): void {
     const current = this.#update(entry, { phase: outcome });
     this.#report(current, outcome === "skipped" ? "not-continued" : outcome);
   }
 
   async #dispatch(entry: Checkpoint): Promise<QuitWorkOutcome> {
     if (this.#stopping) return "skipped";
+    this.#verifiedManual.delete(entry.id);
+    if (entry.evidence.manualOnly === true) return this.#requireManual(entry);
     // The claim must hit disk before dispatch. Across a crash, only a receipt can
     // establish whether this request was accepted; never submit the request again.
     const claimed = this.#update(entry, { phase: "claimed" });
@@ -257,26 +279,45 @@ export class QuitWork {
     } catch {
       outcome = this.dependencies.receipt(claimed);
     }
+    if (outcome === "manual-required") return this.#requireManual(claimed);
     this.#finish(claimed, outcome);
     return outcome;
   }
 
+  async #requireManual(entry: Checkpoint): Promise<QuitWorkOutcome> {
+    const manual = this.#update(entry, {
+      phase: "manual",
+      evidence: { ...entry.evidence, manualOnly: true },
+    });
+    return (await this.#checkManual(manual)) ? "manual-required" : "skipped";
+  }
+
   async list(): Promise<InterruptedQuitWork[]> {
-    await this.#manualReady?.catch(() => undefined);
+    await this.#startupReady;
     return this.#entries.flatMap(({ id, sessionId, title, agent, phase }) => {
-      const resumable = phase === "manual" && this.#verifiedManual.has(id);
-      if (!resumable && phase !== "unknown") return [];
+      const action = phase === "manual" ? this.#verifiedManual.get(id) : undefined;
+      if (!action && phase !== "unknown") return [];
       return [
-        { id, sessionId, title, agent, resumable, status: resumable ? "interrupted" : "unknown" },
+        {
+          id,
+          sessionId,
+          title,
+          agent,
+          resumable: action === "continue",
+          status: action ? "interrupted" : "unknown",
+          ...(action === "open-session" && { openSession: true as const }),
+        },
       ];
     });
   }
 
   async resume(id: string): Promise<{ outcome: QuitWorkOutcome }> {
-    await this.#manualReady?.catch(() => undefined);
+    await this.#startupReady;
     const entry = this.#entries.find((item) => item.id === id);
     if (entry?.phase === "unknown") return { outcome: "unknown" };
-    if (entry?.phase !== "manual" || !this.#verifiedManual.has(id)) return { outcome: "skipped" };
+    const action = this.#verifiedManual.get(id);
+    if (entry?.phase !== "manual" || !action) return { outcome: "skipped" };
+    if (action === "open-session") return { outcome: "manual-required" };
     return { outcome: await this.#run(this.#dispatch(entry)) };
   }
 }

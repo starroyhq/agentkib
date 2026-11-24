@@ -378,11 +378,13 @@ export function createBridge(ctx, options = {}) {
       typeof agent.session.header.cwd === "string" &&
       typeof agent.session?.eventAt === "function" &&
       Array.isArray(agent.inbox?.nextTurn) &&
-      !agent.inbox.nextTurn.length &&
       Array.isArray(agent.inbox?.nextStep) &&
-      !agent.inbox.nextStep.length &&
       goalRefOf(agent)?.activation !== "armed"
     );
+  }
+
+  function quitHasPendingInput(agent) {
+    return agent.inbox.nextTurn.length > 0 || agent.inbox.nextStep.length > 0;
   }
 
   function quitCandidate(sessionId) {
@@ -396,8 +398,9 @@ export function createBridge(ctx, options = {}) {
     )
       return null;
     const turn = openTurn(turnBoundary(agents, agent));
-    const settings = quitSettings(agent);
-    return turn && settings ? { agent, turn, settings } : null;
+    const manualOnly = quitHasPendingInput(agent);
+    const settings = manualOnly ? null : quitSettings(agent);
+    return turn && (manualOnly || settings) ? { agent, turn, settings, manualOnly } : null;
   }
 
   function quitEnding(event, { interruptionId, turn }) {
@@ -410,8 +413,9 @@ export function createBridge(ctx, options = {}) {
     const { agent, settings } = candidate;
     agent.cancel({ kind: "hook", reason: `agentkib-quit:${interruptionId}` }, { keepInbox: true });
     await agent.whenIdle();
-    if (!quitAgent(agent, sessionId) || agent.status !== "idle" || quitSettings(agent) !== settings)
-      return null;
+    if (!quitAgent(agent, sessionId) || agent.status !== "idle") return null;
+    const manualOnly = candidate.manualOnly || quitHasPendingInput(agent);
+    if (!manualOnly && quitSettings(agent) !== settings) return null;
     const endSeq = agent.session.seq - 1;
     if (!quitEnding(agent.session.eventAt(endSeq), { interruptionId, turn })) return null;
     const persistence = service("sessionPersistence");
@@ -423,7 +427,13 @@ export function createBridge(ctx, options = {}) {
         handle.header.cwd === agent.session.header.cwd &&
         events.length === 1 &&
         quitEnding(events[0], { interruptionId, turn })
-        ? { endSeq, interruptionId, turn, settings, cwd: handle.header.cwd }
+        ? {
+            endSeq,
+            interruptionId,
+            turn,
+            cwd: handle.header.cwd,
+            ...(manualOnly ? { manualOnly: true } : { settings }),
+          }
         : null;
     } finally {
       await handle.close();
@@ -431,13 +441,15 @@ export function createBridge(ctx, options = {}) {
   }
 
   async function continueAfterQuit({ sessionId, requestId, text, evidence }) {
-    if (service("agents").get(sessionId)) return { outcome: "skipped" };
+    if (evidence.manualOnly === true || service("agents").get(sessionId))
+      return { outcome: "skipped" };
     // The ordinary resolver composes the original preset and atomically acquires the native
     // writer. It doesn't submit a prompt. Check again on that exact agent before waking it.
     const { agent } = await service("sessionController").resolveAgent(sessionId);
     if (
       !quitAgent(agent, sessionId) ||
       agent.status !== "idle" ||
+      quitHasPendingInput(agent) ||
       agent.session.header.cwd !== evidence.cwd ||
       agent.session.seq !== evidence.endSeq + 2 ||
       agent.session.eventAt(evidence.endSeq + 1)?.type !== "session/end-seed" ||
@@ -1259,7 +1271,9 @@ export function createBridge(ctx, options = {}) {
       case "quit-candidate": {
         if (!canQuitWork()) return null;
         const candidate = quitCandidate(command.sessionId);
-        return candidate ? { turn: candidate.turn } : null;
+        return candidate
+          ? { turn: candidate.turn, ...(candidate.manualOnly ? { manualOnly: true } : {}) }
+          : null;
       }
       case "quit-interrupt":
         return canQuitWork() ? interruptForQuit(command) : null;

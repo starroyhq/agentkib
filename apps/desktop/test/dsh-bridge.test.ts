@@ -12,6 +12,7 @@ import {
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { PassThrough } from "node:stream";
+import { isDeepStrictEqual } from "node:util";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   DSH_BRIDGE_PLUGIN_VERSION,
@@ -71,7 +72,7 @@ const PNG = Buffer.from(
 );
 
 /** Just enough of a DSH process: Cordis events and waterfalls, agents, queries and the session service. */
-function fakeDsh(cwd: string) {
+function fakeDsh(cwd: string, attachmentByReference = false) {
   const hooks = new Map<string, Listener[]>();
   const sessions = new Map<
     string,
@@ -304,8 +305,15 @@ function fakeDsh(cwd: string) {
         });
         return { accepted: true };
       },
-      // Only an image the session's own log refers to.
-      async attachment(request: any) {
+      attachment: vi.fn(async (request: any) => {
+        // DSH 0.2.2-rc.5 reads a durable reference from the global image store.
+        if (attachmentByReference) {
+          const stored = images.get(request.attachment?.attachmentId);
+          if (!stored || !isDeepStrictEqual(stored.ref, request.attachment))
+            throw attachmentInvalid("INVALID_ATTACHMENT_REFERENCE");
+          return { attachment: stored.ref, data: stored.data };
+        }
+        // The earlier controller also checks that the image belongs to the requested session.
         const stored = images.get(request.attachmentId);
         const referenced = sessions
           .get(request.sessionId)
@@ -318,7 +326,7 @@ function fakeDsh(cwd: string) {
           );
         if (!stored || !referenced) throw attachmentInvalid("ATTACHMENT_NOT_REFERENCED");
         return { attachment: stored.ref, data: stored.data };
-      },
+      }),
       async updateQueue(request: any) {
         queueUpdates.push(request);
         return { accepted: true };
@@ -813,7 +821,7 @@ async function fixture({
     ...(lead ? { lead } : {}),
   });
   bridge.initialize();
-  const dsh = fakeDsh(workspace);
+  const dsh = fakeDsh(workspace, dshVersion === "0.2.2-rc.5");
   if (!supportsCreateModelSelection) delete dsh.ctx.llm;
   if (!supportsPins) {
     delete dsh.ctx.workspaceController.pinSession;
@@ -1692,51 +1700,66 @@ describe("DeepSeek Harness bridge", () => {
     ]);
   });
 
-  it("sends images through DSH's own prompt and reads them back for its history", async () => {
-    const f = await fixture();
-    expect(f.bridge.capabilities("ak-session-a", true).features).toMatchObject({
-      attachments: { available: true },
-    });
-    const file = path.join(f.root, "shot.png");
-    writeFileSync(file, PNG);
-    const sha256 = createHash("sha256").update(PNG).digest("hex");
-    const result = await f.control("send", {
-      input: [
+  it.each(["0.2.1-rc.5", "0.2.2-rc.5"])(
+    "reads %s images only from their own session history",
+    async (dshVersion) => {
+      const f = await fixture({ dshVersion });
+      expect(f.bridge.capabilities("ak-session-a", true).features).toMatchObject({
+        attachments: { available: true },
+      });
+      const file = path.join(f.root, "shot.png");
+      writeFileSync(file, PNG);
+      const sha256 = createHash("sha256").update(PNG).digest("hex");
+      const imageId = `dsh-image-v1-${sha256}`;
+      const result = await f.control("send", {
+        input: [
+          { type: "text", text: "what is this?" },
+          {
+            type: "image",
+            path: file,
+            sha256,
+            size: PNG.length,
+            mediaType: "image/png",
+            name: "shot.png",
+          },
+        ],
+      });
+      expect(result).toMatchObject({ accepted: true });
+      // The plugin read the file and handed DSH its bytes; the path stays on this side.
+      expect(f.dsh.prompts[0].content).toEqual([
         { type: "text", text: "what is this?" },
-        {
-          type: "image",
-          path: file,
-          sha256,
-          size: PNG.length,
-          mediaType: "image/png",
-          name: "shot.png",
-        },
-      ],
-    });
-    expect(result).toMatchObject({ accepted: true });
-    // The plugin read the file and handed DSH its bytes; the path stays on this side.
-    expect(f.dsh.prompts[0].content).toEqual([
-      { type: "text", text: "what is this?" },
-      { type: "image", mediaType: "image/png", data: PNG.toString("base64"), name: "shot.png" },
-    ]);
-    const page = await f.bridge.events("session-a", null, 50);
-    expect(page.events.find((event) => event.kind === "user-message")).toMatchObject({
-      content: "what is this?",
-      attachment_count: 1,
-      images: [{ id: `dsh-image-v1-${sha256}`, mimeType: "image/png", name: "shot.png" }],
-    });
-    await expect(f.bridge.image("session-a", `dsh-image-v1-${sha256}`)).resolves.toEqual({
-      mimeType: "image/png",
-      base64: PNG.toString("base64"),
-    });
-    // DSH reads an image only for a session whose log refers to it.
-    await expect(f.bridge.image("session-b", `dsh-image-v1-${sha256}`)).rejects.toThrow(
-      "session-image-unavailable",
-    );
-    await expect(f.bridge.image("session-a", "session-image-v1-x")).rejects.toThrow(
-      "session-image-invalid",
-    );
-  });
+        { type: "image", mediaType: "image/png", data: PNG.toString("base64"), name: "shot.png" },
+      ]);
+      const page = await f.bridge.events("session-a", null, 50);
+      expect(page.events.find((event) => event.kind === "user-message")).toMatchObject({
+        content: "what is this?",
+        attachment_count: 1,
+        images: [{ id: imageId, mimeType: "image/png", name: "shot.png" }],
+      });
+      const preview = {
+        mimeType: "image/png",
+        base64: PNG.toString("base64"),
+      };
+      await expect(f.bridge.image("session-a", imageId)).resolves.toEqual(preview);
+      f.dsh.create("session-b", "Another session");
+      const read = f.dsh.ctx.sessionController.attachment;
+      read.mockClear();
+      // Even when the bytes are in the global store, an unrelated session cannot read them.
+      await expect(f.bridge.image("session-b", imageId)).rejects.toThrow(
+        "session-image-unavailable",
+      );
+      expect(read).not.toHaveBeenCalled();
+      // Native import persists the same full image reference without running a live prompt.
+      const imported = f.dsh.sessions
+        .get("session-a")!
+        .events.find((event) => event.type === "user/message")!.data;
+      f.dsh.append("session-b", "user/message", { ...imported, source: { kind: "user" } });
+      await expect(f.bridge.image("session-b", imageId)).resolves.toEqual(preview);
+      await expect(f.bridge.image("session-a", "session-image-v1-x")).rejects.toThrow(
+        "session-image-invalid",
+      );
+    },
+  );
 
   it("refuses images DSH cannot take, whether AgentKib or DSH finds out", async () => {
     const f = await fixture();

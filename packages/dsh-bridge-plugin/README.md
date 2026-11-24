@@ -61,8 +61,9 @@ with every Runtime it finds, and then:
   last token count and window from the same reading for disconnected and restarted hosts;
 - sends images: AgentKib names each image by its attachment file, size and SHA-256; the plugin
   reads the file, checks it and hands DSH the bytes in the prompt, so images never cross the
-  socket. `attachment` reads an image back for the session's history; DSH returns only images
-  that session's log refers to;
+  socket on send. For previews, the plugin finds the original attachment reference in that
+  session's history before calling DSH's `attachment`. This supports both the earlier
+  session-scoped read and DSH 0.2.2-rc.5's shared image store;
 - archives and unarchives through the workspace controller, and follows its archive set so
   archives made in DSH's own window reach AgentKib too;
 - reads and changes a session's goal through DSH's goal service (`goals`); each change names

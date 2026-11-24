@@ -310,7 +310,7 @@ DSH 0.2.2-rc.5 的带工具调用 ID 问答还由原生 `userQuestions` 投影�
 - 图片不经桥接 socket 传输：插件 HTTP 客户端单次响应上限 4 MiB，DSH 单图上限 20 MiB，所以 Host 只下发路径、大小、摘要与类型；文件读出的字节与摘要不符时不发，原因为 `attachment-changed`。
 - 插件升到 0.3.0，有 `sessionController.attachment` 时报告 `images`。会话能发送、排队或加入本轮时开放 `attachments`，所以运行中也能随排队或加入本轮的消息发图片。
 - DSH 拒收图片时说明原因，都是“未执行”，草稿保留：当前模型不收图片（`MODEL_DOES_NOT_SUPPORT_IMAGES`）为 `model-images-unsupported`，超出 DSH 的格式、尺寸或大小限制为 `attachment-invalid`。模型是否收图片由 DSH 在发送时判断，AgentKib 不预先读取模型的输入模态。
-- 历史图片：插件在用户消息记录里带上 DSH 存储的图片引用（`sha256:` 摘要、类型、名称），Host 生成 `dsh-image-v1-<摘要>` 图片 ID，与 Codex、Claude 的历史图片走同一个 `/session-images`。读取时插件调用 `sessionController.attachment`，DSH 只返回该会话记录引用的图片，Host 再核对字节摘要与 ID 一致。没有运行的 DSH 时图片显示不可用。
+- 历史图片：插件在用户消息记录里带上 DSH 存储的图片引用（`sha256:` 摘要、类型、名称），Host 生成 `dsh-image-v1-<摘要>` 图片 ID，与 Codex、Claude 的历史图片走同一个 `/session-images`。插件 0.8.7 起，读取时先在目标会话的原生用户消息内查找完整引用，再调用 `sessionController.attachment`，兼容 DSH 0.2.2-rc.5 的共享图片存储和较早的按会话读取接口。Host 再核对字节摘要与 ID 一致。没有运行的 DSH 时图片显示不可用。
 - 待发队列：DSH 只能编辑纯文本，含图片或文件的待发消息标为带附件，不能编辑，可以删除或加入本轮。
 - 其他执行模式：Codex 跟随（ChatGPT 桌面端）与发送同条件开放附件，图片按 Codex 格式（`localImage`）交给 owner，已在 Desktop `26.1029.61003` 上真实验收；经 app-server 发出的 Codex 图片消息末尾的 `<image …>` 标签在消息中不再显示。Claude 终端连接的提交接口只接受文本，不提供图片。
 - 被拒原因对所有 Agent 一致：客户端以前只为 Codex 和 Claude 保留未执行原因，其他 Agent 一律显示“本次操作未执行”；现在图片被拒（`model-images-unsupported`、`attachment-invalid`、`attachment-changed`、`attachment-unavailable`、Host 自己的 `invalid_attachment_image`）对任何 Agent 都说明具体原因，手机端同样。

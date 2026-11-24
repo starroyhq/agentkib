@@ -1136,6 +1136,36 @@ export function createBridge(ctx, options = {}) {
     }
   }
 
+  async function imageReference(sessionId, attachmentId) {
+    const query = service("sessionQuery");
+    if (typeof query?.observeSession !== "function") throw new Error("images-unavailable");
+    // DSH 0.2.2-rc.5 reads from a shared image store. Establish ownership from the session's
+    // native history before handing its original reference to the store.
+    const observation = await query.observeSession(sessionId, { projectionMode: "none" });
+    try {
+      if (observation.header?.id !== sessionId) throw new Error("images-unavailable");
+      for (let index = observation.events.length - 1; index >= 0; index--) {
+        const event = observation.events[index];
+        if (
+          event?.type !== "user/message" ||
+          !isHumanMessage(event.data) ||
+          !Array.isArray(event.data.content)
+        )
+          continue;
+        const image = event.data.content.find(
+          (part) =>
+            part?.type === "image" &&
+            part.attachment?.attachmentId === attachmentId &&
+            IMAGE_TYPES.has(part.attachment.mediaType),
+        );
+        if (image) return image.attachment;
+      }
+      throw new Error("images-unavailable");
+    } finally {
+      observation[Symbol.dispose]?.();
+    }
+  }
+
   async function verifyTurnEnd({ sessionId, turn }) {
     const query = service("sessionQuery");
     if (typeof query?.observeSession !== "function") throw new Error("history-unavailable");
@@ -1437,10 +1467,14 @@ export function createBridge(ctx, options = {}) {
       case "image": {
         const controller = needController();
         if (typeof controller.attachment !== "function") throw new Error("images-unavailable");
-        // DSH returns only images the session's own log refers to.
+        const sessionId = String(command.sessionId);
+        const attachmentId = String(command.attachmentId);
+        const attachment = await imageReference(sessionId, attachmentId);
+        // Earlier controllers take the session and attachment IDs.
         const value = await controller.attachment({
-          sessionId: String(command.sessionId),
-          attachmentId: String(command.attachmentId),
+          sessionId,
+          attachmentId,
+          attachment,
         });
         if (typeof value?.data !== "string" || value.data.length > MAX_IMAGE_READ_CHARS)
           throw new Error("image-too-large");

@@ -88,6 +88,7 @@ export type LaneHost = {
   control(
     value: Record<string, unknown>,
     intent?: "desktop-owner-handoff" | "codex-worker-turn",
+    interaction?: Record<string, unknown>,
   ): Promise<unknown>;
   restart?(request: WorkerRestartRequest, beforeDispatch: () => void): Promise<WorkerRestartResult>;
   deferCodexSend?(
@@ -2434,13 +2435,19 @@ export class OrchestrationService {
       .find((entry) => String(entry.requestId) === id)!;
     const delegated = delegatedApproval(live, approval);
     if (!delegated) return refuse("approval-not-delegated");
-    return this.#decide(lead, lane, "approve", {
-      runtimeBootId: live.runtimeBootId,
-      expectedRevision: live.revision,
-      turnId: approval.turnId,
-      approvalId: approval.requestId,
-      decision: delegated[decision],
-    });
+    return this.#decide(
+      lead,
+      lane,
+      "approve",
+      {
+        runtimeBootId: live.runtimeBootId,
+        expectedRevision: live.revision,
+        turnId: approval.turnId,
+        approvalId: approval.requestId,
+        decision: delegated[decision],
+      },
+      approval,
+    );
   }
 
   /** Answers a question card its lane waits for, where the person let the lead. */
@@ -2468,15 +2475,21 @@ export class OrchestrationService {
     const question = (live.questions as unknown[])
       .filter(isObject)
       .find((entry) => String(entry.requestId) === id)!;
-    return this.#decide(lead, lane, "answer", {
-      runtimeBootId: live.runtimeBootId,
-      expectedRevision: live.revision,
-      turnId: question.turnId,
-      questionId: question.requestId,
-      answers: Object.fromEntries(
-        Object.entries(given).map(([questionId, answer]) => [questionId, [answer as string]]),
-      ),
-    });
+    return this.#decide(
+      lead,
+      lane,
+      "answer",
+      {
+        runtimeBootId: live.runtimeBootId,
+        expectedRevision: live.revision,
+        turnId: question.turnId,
+        questionId: question.requestId,
+        answers: Object.fromEntries(
+          Object.entries(given).map(([questionId, answer]) => [questionId, [answer as string]]),
+        ),
+      },
+      question,
+    );
   }
 
   /** An approval or answer through the session's own control, recorded as the lead's. */
@@ -2485,18 +2498,23 @@ export class OrchestrationService {
     lane: Lane,
     operation: "approve" | "answer",
     fields: Record<string, unknown>,
+    interaction: Record<string, unknown>,
   ): Promise<EndpointResult> {
     const requestId = randomUUID();
     let outcome: Record<string, unknown>;
     try {
-      outcome = (await this.lanes.control({
-        operation,
-        sessionId: lane.sessionId,
-        requestId,
-        deviceId: lead.deviceId,
-        experimentalEnabled: true,
-        ...fields,
-      })) as Record<string, unknown>;
+      outcome = (await this.lanes.control(
+        {
+          operation,
+          sessionId: lane.sessionId,
+          requestId,
+          deviceId: lead.deviceId,
+          experimentalEnabled: true,
+          ...fields,
+        },
+        undefined,
+        interaction,
+      )) as Record<string, unknown>;
     } catch (error) {
       outcome = {
         accepted: false,

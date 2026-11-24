@@ -3,7 +3,7 @@ import {
   sessionProviderDeclaration,
 } from "@agentkib/runtime-protocol";
 import { describe, expect, it } from "vitest";
-import { interactionEvidence } from "./interaction-evidence";
+import { interactionEvidence } from "@agentkib/backend/session-interaction-evidence";
 
 const workspace = "/work/project";
 

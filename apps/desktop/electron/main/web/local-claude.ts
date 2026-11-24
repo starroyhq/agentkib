@@ -16,6 +16,8 @@ export interface LocalClaudeDependencies {
   managed(params: unknown): Promise<unknown>;
   runtime(params: unknown): Promise<unknown>;
   receipt(params: { requestId: string; deviceId: string }): Promise<unknown>;
+  approvalEvidence?(snapshot: unknown, params: Record<string, unknown>): Promise<void>;
+  expiredApproval?(snapshot: unknown, params: Record<string, unknown>): void;
   attachments: AttachmentStore;
   history?: (body: Record<string, unknown>) => Promise<{
     text: string;
@@ -351,7 +353,10 @@ async function localClaudeRequestInner(
     await deps.managed({ operation: "live", sessionId, experimentalEnabled: true }),
   );
   const replay = receipt.found === true && receipt.sessionId === sessionId;
-  if (!replay && live.revision !== input.expectedRevision) throw new Error("stale_state");
+  if (!replay && live.revision !== input.expectedRevision) {
+    deps.expiredApproval?.(live, input);
+    throw new Error("stale_state");
+  }
   const params: Record<string, unknown> = {
     operation,
     sessionId,
@@ -403,7 +408,10 @@ async function localClaudeRequestInner(
     }
   } else {
     params.turnId = field(input.turnId);
-    if (!replay && params.turnId !== live.turnId) throw new Error("stale_turn");
+    if (!replay && params.turnId !== live.turnId) {
+      deps.expiredApproval?.(live, input);
+      throw new Error("stale_turn");
+    }
     if (operation === "approve") {
       params.approvalId = input.approvalId;
       if (!["allow", "deny"].includes(String(input.decision))) throw new Error("invalid_decision");
@@ -416,6 +424,8 @@ async function localClaudeRequestInner(
       params.answers = record(input.answers);
     }
   }
+  if (!replay && (operation === "approve" || operation === "answer"))
+    await deps.approvalEvidence?.(live, params);
   await validateHistory?.();
   const result = record(await deps.managed(params));
   if (result.requestId === requestId && result.controlOutcome === "not-dispatched")

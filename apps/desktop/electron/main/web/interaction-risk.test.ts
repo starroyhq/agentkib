@@ -2,7 +2,7 @@ import { link, mkdir, mkdtemp, realpath, rm, symlink, writeFile } from "node:fs/
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { classifyInteractionRisk } from "./interaction-risk";
+import { classifyInteractionRisk } from "@agentkib/backend/session-interaction-risk";
 
 describe("host interaction risk", () => {
   let directory: string;

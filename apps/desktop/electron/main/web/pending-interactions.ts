@@ -5,8 +5,8 @@ import {
   type SessionInteractionQuestion,
   type SessionPendingInteraction,
 } from "@agentkib/runtime-protocol";
-import { interactionEvidence } from "./interaction-evidence";
-import { classifyInteractionRisk } from "./interaction-risk";
+import { interactionEvidence } from "@agentkib/backend/session-interaction-evidence";
+import { classifyInteractionRisk } from "@agentkib/backend/session-interaction-risk";
 
 type Decision = SessionInteractionDecision;
 type Candidate = Pick<Decision, "id" | "kind" | "scope" | "label"> & {

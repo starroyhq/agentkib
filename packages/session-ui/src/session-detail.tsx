@@ -56,6 +56,7 @@ export interface SessionDetailProps {
   };
   operations?: ReactNode;
   beforeTranscript?: ReactNode;
+  activityPanel?: ReactNode;
   composer: ReactNode;
   Transcript?: ComponentType<SessionTranscriptProps>;
 }
@@ -70,6 +71,7 @@ export function SessionDetail({
   history,
   operations,
   beforeTranscript,
+  activityPanel,
   composer,
   Transcript = SessionTranscript,
 }: SessionDetailProps) {
@@ -95,26 +97,29 @@ export function SessionDetail({
           : undefined;
   const composerRef = useRef<HTMLDivElement>(null);
   const [composerHeight, setComposerHeight] = useState(0);
+  const measureComposer = sticky || !!activityPanel;
   useLayoutEffect(() => {
-    if (!sticky) return;
+    if (!measureComposer) return;
     const composer = composerRef.current;
     if (!composer) return;
     // Reserve the sticky composer's visible height and keep the backing below its card.
     function measure() {
       if (!composer) return;
       const bounds = composer.getBoundingClientRect();
-      const card = composer.querySelector('[data-slot="session-composer"]');
-      const cardTop = card
-        ? card.getBoundingClientRect().top - bounds.top
-        : parseFloat(getComputedStyle(composer).paddingTop) || 0;
-      composer.style.setProperty("--reader-composer-card-top", `${Math.max(0, cardTop)}px`);
+      if (sticky) {
+        const card = composer.querySelector('[data-slot="session-composer"]');
+        const cardTop = card
+          ? card.getBoundingClientRect().top - bounds.top
+          : parseFloat(getComputedStyle(composer).paddingTop) || 0;
+        composer.style.setProperty("--reader-composer-card-top", `${Math.max(0, cardTop)}px`);
+      }
       setComposerHeight(Math.ceil(bounds.height));
     }
     measure();
     const observer = typeof ResizeObserver !== "undefined" ? new ResizeObserver(measure) : null;
     observer?.observe(composer);
     return () => observer?.disconnect();
-  }, [sticky, sessionId]);
+  }, [measureComposer, sticky, sessionId]);
 
   const liveStreamText = live?.status !== "idle" ? live?.streamText : undefined;
   const { awayFromBottom, contentRef, pause, resume } = useTranscriptFollow({
@@ -133,7 +138,7 @@ export function SessionDetail({
 
   const composerArea = (
     <div
-      ref={sticky ? composerRef : undefined}
+      ref={measureComposer ? composerRef : undefined}
       className={
         sticky
           ? "reader-composer sticky bottom-0 z-10 mt-auto shrink-0 px-3 pb-3 pt-2 md:px-6"
@@ -174,8 +179,16 @@ export function SessionDetail({
   const threadStart =
     currentReadState && !result && currentReadState.firstUnread?.type === "threadStart";
   return (
-    <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+    <div className="relative flex min-h-0 min-w-0 flex-1 flex-col">
       {operations}
+      {activityPanel && (
+        <div
+          className={`pointer-events-none absolute inset-x-0 top-0 z-20 flex items-start justify-end overflow-hidden pb-1 pt-2 ${sticky ? "px-3" : "px-2 md:px-5"}`}
+          style={{ bottom: composerHeight }}
+        >
+          {activityPanel}
+        </div>
+      )}
       <section
         className={`reader-scroll relative min-h-0 flex flex-1 flex-col overflow-y-auto overscroll-contain pt-4 [scrollbar-gutter:stable] ${sticky ? "" : "px-4 pb-2 md:px-8"}`}
         style={sticky ? { scrollPaddingBottom: composerHeight } : undefined}

@@ -93,6 +93,22 @@ HTML 以入口所在目录生成明确清单和固定版本快照，默认限制
 
 预览 origin 的 `/p/...` 只处理票据内容，`/live/...` 与 `/live-sw.js` 只处理网页预览，都拒绝控制 API；主 API 继续校验设备、Origin 和 CSRF。`GET access` 的 `pairingMode=code` 表示支持授权码直接连接；缺少字段或为 `confirmation` 时保留旧确认流程。新授权凭证含 `device.accessMode=full`；旧凭证不自动增加此标记或扩大授权。已批准的设备还会拿到 `computerName`，即系统设置里的电脑名称（macOS 读 `scutil --get ComputerName`，Linux 读 PRETTY_HOSTNAME，其他平台用主机名，每 10 分钟重读一次），手机在名称还是连接地址时用它称呼这台电脑，账号里的名称仍然优先；未批准、配对中和已结束的请求都不带这个字段。执行账本与可重建会话索引分开保存。
 
+## 首页任务汇总
+
+已授权设备可以从 `GET /api/web/v1/access` 的可选字段 `taskSummaryVersion: 1` 发现这项能力。用 `GET /api/web/v1/catalog?taskSummary=1` 读取只包含可选字段 `taskSummary` 的响应。普通目录请求保留原有格式。旧主机缺少能力声明或汇总时，首页将任务汇总显示为不可用。
+
+- `taskSummary.groups` 包含 `pendingApproval`（待批准）、`pendingAnswer`（待回答）、`running`（运行中）、`needsReview`（待查看）、`failed`（失败）和 `completed`（完成）。每组提供 `count` 和同样数量的 `entries`，按任务时间由新到旧排列。
+- 条目提供 `sessionId`、`agent`、`workspaceId`、`time` 和单行 `summary`。时间取可观察的开始／结束时间或会话更新时间，缺失时为 `null`。摘要来自会话标题，缺失时为空。运行条目附带执行位置 `place`，结果条目附带 `outcome`。
+- 当前等待或运行优先于旧结果。失败与完成记录同一会话最近可观察的相应结果。已确认有未读结果的会话也列入待查看，所以两个用途的计数可以重叠。已取消、结果未知、仅手动标成未读的空会话各自保留原有语义。
+- `coverage.sources` 逐工作区和 Agent 报告 `complete` 与可选的 `reasons`。覆盖不全时可以显示已观察到的条目，计数是已确认的数量。常见原因包括 `not-scanned`、`refreshing`、`classification-pending`、`source-unavailable`、`source-partial`、`index-disabled`、`coverage-unknown`、`read-state-stale` 和现有的 Antigravity 来源诊断代码。无法归属到单一来源的缺口见 `coverage.reasons`。例如，受限设备只能看到授权来源，主机无法按该范围独立验证全局托管账本的完整性，因而报告 `coverage-unknown`。
+- 汇总沿用设备的读取范围与主机的会话已读状态。完整访问与局域网读取登记的工作区，受限的旧中继设备读取获准的工作区。审批和问答操作仍通过各自的接口重新验证权限、轮次和请求。
+
+各组按会话计数。主机采用目录已观察到的当前等待状态。外部客户端的运行迹象可以列入运行中，其审批或问答状态若不可观察，相应来源仍报告覆盖不完整。
+
+通过全局 `GET /api/web/v1/stream?protocolVersion=2&taskSummary=1` 订阅。在每次连接和重连的 `session-ready` 中接收快照，随后将 `catalog-invalidated` 中带 `taskSummary` 的快照整份替换到首页。没有汇总变化的普通目录通知仍可出现。如果快照超过 SSE 的 4 MiB 上限，通知仅包含可选的 `taskSummaryVersion`，客户端重新读取带汇总的目录。汇总目录的响应上限为 32 MiB。
+
+快照 `version` 是当前授权范围内的相等性标记。客户端可以忽略同版本的重复快照，按当前连接的事件顺序应用变化，并在重连接受新的基线。切换主机或授权结束时丢弃旧快照。若在流更新期间另行请求目录，应丢弃发起后已经被流快照覆盖的读取结果。
+
 ## 验证边界
 
 预览默认每台电脑合计 2 MiB/s，在高级设置保存后生效。大文件同时最多 8 路、每个配对设备最多 4 路，超额返回 429 与 `Retry-After: 1`；控制与预览的服务端代理另有独立限额。视频仍受主机上行带宽、运营商链路和浏览器编解码支持限制。续票暂时失败会保留仍有效的预览并重试，到期或撤销后停止；续票成功恢复播放位置，文件版本改变则要求重新打开。

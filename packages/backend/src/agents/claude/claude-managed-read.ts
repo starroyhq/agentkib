@@ -4137,10 +4137,11 @@ export class ClaudeManagedReadOwner {
     persisted?: Record<string, unknown>,
   ): Record<string, unknown> | undefined {
     const runner = this.#runners.get(id);
-    const status = this.#catalogUnconfirmed.has(id)
+    const runnerStatus = this.#catalogUnconfirmed.has(id)
       ? "outcome-unknown"
       : (runner?.status ??
         (persisted && interruptedSelfTurn(persisted) ? "idle" : persisted?.status));
+    const status = runnerStatus === "waiting-approval" ? "awaiting-approval" : runnerStatus;
     // A cached external owner cannot turn an unresolved outcome into a fork choice.
     if (status === "outcome-unknown")
       return {

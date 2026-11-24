@@ -12,7 +12,7 @@ import { sessionCopy, sessionReason } from "./conversation/session-copy";
 import { SessionRowMenu } from "./SessionRowMenu";
 import { SessionWorkerAssignmentDialog } from "./SessionWorkerAssignmentDialog";
 
-const { client, claudeRequest } = vi.hoisted(() => ({
+const { client, claudeRequest, createConversationClient } = vi.hoisted(() => ({
   client: {
     sessionCapabilities: vi.fn(),
     access: vi.fn(),
@@ -21,9 +21,10 @@ const { client, claudeRequest } = vi.hoisted(() => ({
     setSessionPinned: vi.fn(),
   },
   claudeRequest: vi.fn(),
+  createConversationClient: vi.fn(),
 }));
 vi.mock("@/core/conversation-bridge", () => ({
-  createDesktopConversationClient: () => client,
+  createDesktopConversationClient: createConversationClient,
 }));
 vi.mock("@/core/desktop", () => ({
   desktopApi: () => ({ claude: { request: claudeRequest } }),
@@ -46,11 +47,15 @@ beforeAll(() => initializeI18n("en-US"));
 beforeEach(() => {
   for (const mock of Object.values(client)) mock.mockReset();
   claudeRequest.mockReset();
+  createConversationClient.mockReset().mockReturnValue(client);
   client.access.mockResolvedValue({ status: "approved", bootId: "boot", csrfToken: "" });
   client.live.mockResolvedValue({ sessionId: "session", revision: 7, status: "idle" });
   client.sessionAction.mockResolvedValue({ accepted: true });
 });
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  vi.unstubAllGlobals();
+});
 
 function open(session: ConversationSessionSummary, handlers = {}) {
   render(
@@ -64,6 +69,62 @@ function open(session: ConversationSessionSummary, handlers = {}) {
 }
 
 describe("a session row's menu on the desktop", () => {
+  describe("with a new desktop conversation client", () => {
+    const request = vi.fn();
+
+    beforeEach(async () => {
+      const { createDesktopConversationClient } = await vi.importActual<
+        typeof import("@/core/conversation-bridge")
+      >("@/core/conversation-bridge");
+      createConversationClient.mockImplementation(createDesktopConversationClient);
+      request.mockReset();
+      vi.stubGlobal("desktopConversation", { request });
+    });
+
+    it.each([
+      [false, "Pin session"],
+      [true, "Unpin session"],
+    ] as const)("updates a DSH row (initially pinned: %s)", async (pinned, label) => {
+      const onChanged = vi.fn();
+      request
+        .mockResolvedValueOnce({
+          status: 200,
+          body: { status: "approved", csrfToken: "desktop-local", protocolVersion: 2 },
+        })
+        .mockResolvedValueOnce({ status: 200, body: { pinned: !pinned } });
+      open({ ...summary("dsh"), pinned, pinningAvailable: true }, { onChanged, pinOnly: true });
+
+      fireEvent.click(screen.getByRole("menuitem", { name: label }));
+
+      await waitFor(() => expect(onChanged).toHaveBeenCalledOnce());
+      expect(request.mock.calls).toEqual([
+        ["access", undefined],
+        ["session-pin", { sessionId: "session", pinned: !pinned }],
+      ]);
+    });
+
+    it.each([
+      ["approved", 1],
+      ["ended", 2],
+    ] as const)("refuses to pin with access %s on protocol %s", async (status, protocolVersion) => {
+      const onChanged = vi.fn();
+      request.mockResolvedValue({
+        status: 200,
+        body: { status, csrfToken: "desktop-local", protocolVersion },
+      });
+      open(
+        { ...summary("dsh"), pinned: false, pinningAvailable: true },
+        { onChanged, pinOnly: true },
+      );
+
+      fireEvent.click(screen.getByRole("menuitem", { name: "Pin session" }));
+
+      expect(await screen.findByRole("alert")).toBeInTheDocument();
+      expect(request).toHaveBeenCalledExactlyOnceWith("access", undefined);
+      expect(onChanged).not.toHaveBeenCalled();
+    });
+  });
+
   it("pins sessions without requesting provider management capabilities for a pin-only row", async () => {
     const onChanged = vi.fn();
     client.setSessionPinned.mockResolvedValue({ pinned: true });

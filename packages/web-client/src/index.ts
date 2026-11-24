@@ -1693,7 +1693,12 @@ export class WebClient {
     );
     return response.taskSummary;
   }
-  setSessionPinned(sessionId: string, pinned: boolean) {
+  async setSessionPinned(sessionId: string, pinned: boolean) {
+    // A row can have its own client that has not negotiated the mutation protocol yet.
+    if (this.realtimeVersion === 0) {
+      const access = await this.access();
+      if (access.status !== "approved") throw new ApiError(401, "access_ended", "not-dispatched");
+    }
     return this.request<{ pinned: boolean }>("session-pin", { sessionId, pinned });
   }
   readState(sessionId: string, signal?: AbortSignal) {

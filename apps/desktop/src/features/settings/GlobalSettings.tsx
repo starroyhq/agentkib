@@ -1,6 +1,7 @@
 import { AgentIntegrationsSettings } from "./AgentIntegrationsSettings";
 import { UsageLimitAutoContinueSetting } from "./UsageLimitAutoContinueSetting";
 import { HistorySearchSettings } from "./HistorySearchSettings";
+import { ApprovalOversightSettings } from "./ApprovalOversightSettings";
 import { useOptionalAppNavigationContext } from "@/features/app/AppNavigationContext";
 import { useTranslation } from "react-i18next";
 import { useI18n } from "@/core/useI18n";
@@ -212,6 +213,9 @@ export function GlobalSettings({
           <UsageLimitAutoContinueSetting />
           <QuitResumeSetting runtime={runtime} onChanged={onLocaleChanged} />
         </SettingsSection>
+        <ApprovalOversightSettings
+          workspaces={workspaces.filter((workspace) => !workspace.remote)}
+        />
       </SettingsPage>
     );
   if (section === "tools")

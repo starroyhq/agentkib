@@ -5,6 +5,7 @@ import { readFile, writeFile, mkdir, rename } from "node:fs/promises";
 import path from "node:path";
 import { homedir } from "node:os";
 import { WebAccessService, createWebControlState } from "./web/service";
+import { nativeApprovalRules } from "@agentkib/backend/approval-rule-providers";
 import { webAdminReply } from "./web/admin-errors";
 import { acceptanceSession } from "./web/acceptance";
 import { ConversationHub } from "./conversation-hub";
@@ -349,6 +350,7 @@ async function startApplication(): Promise<void> {
     return computerNameRead.name;
   };
   const sharedWebOptions = {
+    approvalRules: nativeApprovalRules,
     historyRequest: (method: string, params: unknown) => requestWhenRuntimeReady(method, params),
     computerName,
     conversationHub,

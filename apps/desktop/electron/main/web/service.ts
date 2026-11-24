@@ -7,6 +7,7 @@ import {
   sessionProviderDeclaration,
   type HistoryReference,
   type ManagedAgent,
+  type SessionApprovalAuditContext,
   type ResolvedHistoryReference,
   type SessionProviderCapabilities,
   type SessionAttachmentKinds,
@@ -19,6 +20,8 @@ import {
   historyText,
 } from "./history-references";
 import { EventEmitter } from "node:events";
+import { approvalAuditEvidence } from "@agentkib/backend/approval-audit-decisions";
+import type { nativeApprovalRules } from "@agentkib/backend/approval-rule-providers";
 import { projectContextUsage } from "@agentkib/backend/context-usage";
 import {
   isSerialQueueMode,
@@ -542,6 +545,8 @@ const CODE_ACCESS_PERMISSIONS: Record<WebAccessLevel, DevicePermissions> = {
 type RouteSpec = { lan?: true; control?: true };
 const API_ROUTES: Record<"GET" | "POST", Record<string, RouteSpec>> = {
   GET: {
+    "/approval-audit": { lan: true },
+    "/approval-rules": { lan: true },
     "/history/status": { lan: true },
     "/access": { lan: true },
     "/info": { lan: true },
@@ -575,6 +580,7 @@ const API_ROUTES: Record<"GET" | "POST", Record<string, RouteSpec>> = {
     "/diff": { lan: true },
   },
   POST: {
+    "/approval-rules/revoke": { control: true },
     "/read-state": { lan: true },
     "/session-pin": { lan: true },
     "/history/search": { lan: true },
@@ -765,6 +771,7 @@ export type HostSessionRequest = {
     target?: SessionTarget;
     request: Record<string, unknown>;
     restrictCodexNativePolicy?: true;
+    approvalAudit?: SessionApprovalAuditContext;
   };
 };
 type SessionDispatch = (params: unknown) => Promise<unknown>;
@@ -880,6 +887,7 @@ export class WebAccessService {
        */
       computerName?: () => Promise<string | undefined>;
       workspaceRequest?: () => Promise<{ id: string; name: string; path: string }[]>;
+      approvalRules?: typeof nativeApprovalRules;
       verifiedCodex?: boolean;
       verifiedExperimental?: boolean;
       verifiedClaudeManaged?: boolean;
@@ -938,6 +946,7 @@ export class WebAccessService {
     params: unknown,
     target?: SessionTarget,
     restrictCodexNativePolicy = false,
+    approvalAudit?: SessionApprovalAuditContext,
   ): Promise<unknown> => {
     const request = params as Record<string, unknown>;
     if (this.options.sessionRequest)
@@ -946,6 +955,7 @@ export class WebAccessService {
           request,
           ...(target ? { target } : {}),
           ...(restrictCodexNativePolicy ? { restrictCodexNativePolicy: true } : {}),
+          ...(approvalAudit ? { approvalAudit } : {}),
         },
       });
     const dispatch =
@@ -1074,9 +1084,14 @@ export class WebAccessService {
       if (sessionId) this.active.add(sessionId);
     }
     let dispatched = false;
-    const invoke = (request: (params: unknown) => Promise<unknown>, params: unknown) => {
+    let approvalAudit: SessionApprovalAuditContext | undefined =
+      operation === "approve" || operation === "answer"
+        ? { source: { kind: "desktop", deviceId: CLAUDE_LOCAL_OWNER } }
+        : undefined;
+    const invoke = (target: SessionTarget | undefined, params: unknown) => {
       const value = params as Record<string, unknown>;
-      if (mutation && value.operation === operation) {
+      const dispatching = mutation && value.operation === operation;
+      if (dispatching) {
         dispatched = true;
         if (requestId) rememberRequest(this.requests, requestId);
         if (sessionId && requestId && operation !== "reconcile") {
@@ -1084,13 +1099,23 @@ export class WebAccessService {
           this.unconfirmedRequests.set(sessionId, requestId);
         }
       } else if (!mutation && this.admission) throw new HttpError(409, "operation_busy");
-      return request(params);
+      return this.requestSession(params, target, false, dispatching ? approvalAudit : undefined);
     };
     try {
       const result = await localClaudeRequest(
         {
-          managed: (params) => invoke(this.claudeSessionRequest!, params),
-          runtime: (params) => invoke(this.requestSession, params),
+          managed: (params) => invoke("claude-code", params),
+          runtime: (params) => invoke(undefined, params),
+          approvalEvidence: async (snapshot, params) => {
+            if (approvalAudit)
+              approvalAudit = {
+                ...approvalAudit,
+                ...(await this.readApprovalEvidence(snapshot, params)),
+              };
+          },
+          expiredApproval: (snapshot, params) => {
+            if (approvalAudit) void this.recordExpiredApproval(approvalAudit, snapshot, params);
+          },
           receipt: this.options.receiptRequest,
           attachments: this.attachmentStore,
           history: async (body) => {
@@ -1172,7 +1197,7 @@ export class WebAccessService {
   private dshCommandAccess(device: WebDevice): "all" | "session" {
     return this.isFullAccess(device) ? "all" : "session";
   }
-  private fullAccess(hash: string, permission?: "advancedControl") {
+  private fullAccess(hash: string, permission?: "advancedControl" | "settings") {
     const device = this.grant(hash, permission);
     if (!this.isFullAccess(device)) throw new HttpError(403, "permission_denied");
     return device;
@@ -4936,6 +4961,220 @@ export class WebAccessService {
       key: digest(JSON.stringify([access.token, allowedSessionIds, targetSessionIds])),
     };
   }
+  private checkApprovalOversightScope(hash: string) {
+    this.grant(hash);
+    if (this.options.acceptanceSessionId && hash !== "desktop-local")
+      throw new HttpError(403, "session_control_not_allowed");
+  }
+  private approvalAuditSource(
+    hash: string,
+    device: WebDevice,
+    client: unknown,
+  ): SessionApprovalAuditContext {
+    const credential = this.credentials.find((row) => row.hash === hash);
+    // Client kind is presentation metadata. Identity and control grants still come from pairing.
+    const phone = client === "mobile" || !!credential?.account?.sessionId;
+    return {
+      source: {
+        kind: hash === "desktop-local" ? "desktop" : phone ? "phone" : "web",
+        deviceId: device.id,
+      },
+    };
+  }
+  private async recordExpiredApproval(
+    context: SessionApprovalAuditContext,
+    snapshot: unknown,
+    params: Record<string, unknown>,
+  ) {
+    const { operation, sessionId, requestId } = params;
+    if (!this.options.sessionRequest || (operation !== "approve" && operation !== "answer")) return;
+    // A stale request alone is not proof an approval existed. Bind the record to native evidence.
+    const evidence = await this.readApprovalEvidence(snapshot, params);
+    if (!evidence.risk || !evidence.decision) return;
+    await this.requestSession(
+      {
+        operation: "approval-audit-expired",
+        sessionId,
+        requestId,
+        deviceId: context.source.deviceId,
+        interactionKind: operation === "approve" ? "approval" : "question",
+      },
+      undefined,
+      false,
+      { ...context, ...evidence },
+    ).catch(() => undefined);
+  }
+  private async readApprovalEvidence(snapshot: unknown, params: Record<string, unknown>) {
+    try {
+      const workspaceId = snapshotField(snapshot, "workspaceId");
+      const workspace =
+        typeof workspaceId === "string"
+          ? (await this.registeredWorkspaces(true)).find((item) => item.id === workspaceId)
+          : undefined;
+      return await approvalAuditEvidence(snapshot, params, workspace?.path);
+    } catch {
+      // Audit evidence is optional and must not alter dispatch authorization or the decision.
+      return {};
+    }
+  }
+  private async recordStaleClientApproval(
+    hash: string,
+    context: SessionApprovalAuditContext,
+    params: Record<string, unknown> & { sessionId: string },
+    permission: "approve" | "send",
+  ) {
+    const boot = this.bootId;
+    const { sessionId } = params;
+    const snapshot = await this.runtime({
+      operation: "live",
+      sessionId,
+      experimentalEnabled: true,
+    });
+    const device = this.grant(hash, permission);
+    if (
+      boot !== this.bootId ||
+      device.id !== context.source.deviceId ||
+      !snapshotField(snapshot, "runtimeBootId") ||
+      !(await this.controlsEnabledForSnapshot(sessionId, snapshot, device))
+    )
+      return;
+    if (boot === this.bootId && this.grant(hash, permission) === device)
+      await this.recordExpiredApproval(context, snapshot, params);
+  }
+  private async approvalAuditPage(res: ConversationResponse, hash: string, url: URL) {
+    if (!this.options.sessionRequest) throw new HttpError(404, "capability_unavailable");
+    if (
+      [...url.searchParams.keys()].some((key) => key !== "before" && key !== "limit") ||
+      url.searchParams.getAll("before").length > 1 ||
+      url.searchParams.getAll("limit").length > 1
+    )
+      throw new HttpError(400, "invalid_approval_audit_query");
+    const before = url.searchParams.get("before");
+    if (before !== null && !/^[A-Za-z0-9_-]{1,160}$/.test(before))
+      throw new HttpError(400, "invalid_approval_audit_query");
+    const limit = Number(url.searchParams.get("limit") ?? "30");
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100)
+      throw new HttpError(400, "invalid_approval_audit_query");
+    const scope = async () => {
+      this.checkApprovalOversightScope(hash);
+      const boot = this.bootId;
+      const device = this.grant(hash);
+      const readerScope = this.readerScope();
+      const workspaces =
+        hash === "desktop-local"
+          ? undefined
+          : (await this.registeredWorkspaces(true))
+              .filter(
+                (item) =>
+                  this.isFullAccess(device) ||
+                  this.options.mode === "lan" ||
+                  this.config.allowedWorkspaceIds?.includes(item.id),
+              )
+              .map(({ id, path }) => ({ id, path }))
+              .sort((a, b) => a.id.localeCompare(b.id));
+      if (this.bootId !== boot || this.grant(hash) !== device || this.readerScope() !== readerScope)
+        throw new HttpError(403, "access_changed");
+      return { boot, readerScope, device, workspaces };
+    };
+    const initial = await scope();
+    const result = await this.requestSession({
+      operation: "approval-audit-list",
+      ...(before !== null ? { before } : {}),
+      limit,
+      ...(initial.workspaces ? { workspaces: initial.workspaces } : {}),
+    }).catch((error: unknown) => {
+      const detail =
+        error instanceof RuntimeRequestError ? snapshotField(error.data, "detail") : undefined;
+      if (detail === "invalid_approval_audit_cursor")
+        throw new HttpError(400, "invalid_approval_audit_query");
+      throw new HttpError(503, "approval_audit_unavailable");
+    });
+    if (JSON.stringify(initial) !== JSON.stringify(await scope()))
+      throw new HttpError(403, "access_changed");
+    return this.json(res, 200, result);
+  }
+  private async approvalRuleScope(hash: string, workspaceId: string | undefined, write = false) {
+    this.checkApprovalOversightScope(hash);
+    const device =
+      write || workspaceId === undefined ? this.fullAccess(hash, "settings") : this.grant(hash);
+    const boot = this.bootId;
+    const allowsWorkspace = (caller: WebDevice) =>
+      !workspaceId ||
+      this.isFullAccess(caller) ||
+      this.options.mode === "lan" ||
+      this.config.allowedWorkspaceIds?.includes(workspaceId);
+    if (!allowsWorkspace(device)) throw new HttpError(403, "workspace_not_authorized");
+    const workspace = workspaceId
+      ? (await this.registeredWorkspaces()).find((item) => item.id === workspaceId)
+      : undefined;
+    if (workspaceId && !workspace) throw new HttpError(403, "workspace_not_authorized");
+    const canonical = workspace ? await realpath(workspace.path).catch(() => undefined) : undefined;
+    const pathKey = (path: string) =>
+      process.platform === "win32" ? resolve(path).toLowerCase() : resolve(path);
+    const current =
+      write || workspaceId === undefined ? this.fullAccess(hash, "settings") : this.grant(hash);
+    if (current !== device || boot !== this.bootId) throw new HttpError(403, "access_changed");
+    const full = this.isFullAccess(current);
+    if (
+      !allowsWorkspace(current) ||
+      (workspace && (!canonical || pathKey(canonical) !== pathKey(workspace.path)))
+    )
+      throw new HttpError(403, "workspace_not_authorized");
+    return {
+      canonical,
+      canRevoke: full && current.settings === true && this.controlsEnabled(undefined, current),
+      device,
+      boot,
+    };
+  }
+  private async approvalRuleRequest(
+    res: ConversationResponse,
+    hash: string,
+    workspaceId?: string,
+    revoke?: { agent: ManagedAgent; ruleId: string },
+  ) {
+    const service = this.options.approvalRules;
+    if (!service) throw new HttpError(404, "capability_unavailable");
+    const scope = await this.approvalRuleScope(hash, workspaceId, revoke !== undefined);
+    const recheck = async () => {
+      const next = await this.approvalRuleScope(hash, workspaceId, revoke !== undefined);
+      if (
+        next.device !== scope.device ||
+        next.boot !== scope.boot ||
+        next.canonical !== scope.canonical
+      )
+        throw new HttpError(403, "access_changed");
+    };
+    const context = {
+      ...(scope.canonical ? { workspace: scope.canonical } : {}),
+      includeGlobal: workspaceId === undefined,
+      dataDir: this.options.dataDir,
+      authorizeWrite: recheck,
+    };
+    if (revoke) {
+      try {
+        await service.revoke(context, revoke.agent, revoke.ruleId);
+      } catch (error) {
+        if (error instanceof HttpError) throw error;
+        const reason = error instanceof Error ? error.message : "";
+        if (reason === "approval-rule-read-only")
+          throw new HttpError(403, "approval_rule_read_only");
+        if (reason === "approval-rule-stale") throw new HttpError(409, "approval_rule_stale");
+        throw new HttpError(503, "approval_rule_revoke_failed");
+      }
+      return this.json(res, 200, { revoked: true });
+    }
+    const result = await service.list(context).catch(() => {
+      throw new HttpError(503, "approval_rules_unavailable");
+    });
+    await recheck();
+    return this.json(res, 200, {
+      providers: result.providers,
+      rules: result.rules
+        .filter((rule) => (rule.scope === "global") === (workspaceId === undefined))
+        .map((rule) => ({ ...rule, revocable: rule.revocable && scope.canRevoke })),
+    });
+  }
   private async historyTargetScope(sessionId: string, hash: string, reserved = false) {
     if (this.options.mode !== "lan") return this.codexScope(sessionId, hash, reserved, false);
     const scope = await this.historyScope(hash, reserved);
@@ -6018,6 +6257,7 @@ export class WebAccessService {
               "content-type",
               "x-csrf-token",
               "x-agentkib-protocol",
+              "x-agentkib-client",
               "last-event-id",
             ].includes(header),
         )
@@ -6132,6 +6372,18 @@ export class WebAccessService {
         ...(device && !browser.ended && this.options.conversationHub
           ? { taskSummaryVersion: 1 }
           : {}),
+        ...(device &&
+        !browser.ended &&
+        this.options.approvalRules &&
+        !this.options.acceptanceSessionId
+          ? { approvalRulesVersion: 1 }
+          : {}),
+        ...(device &&
+        !browser.ended &&
+        this.options.sessionRequest &&
+        !this.options.acceptanceSessionId
+          ? { approvalAuditVersion: 1 }
+          : {}),
         csrfToken: browser.csrf,
         bootId: this.bootId,
         device: browser.ended ? undefined : device,
@@ -6211,6 +6463,21 @@ export class WebAccessService {
         return this.json(res, 201, result);
       }
       const body = await this.body(req);
+      if (path === "/approval-rules/revoke") {
+        if (
+          url.search ||
+          Object.keys(body).some((key) => !["workspaceId", "agent", "ruleId"].includes(key))
+        )
+          throw new HttpError(400, "invalid_approval_rule_request");
+        const agent = managedAgentOf(body.agent);
+        if (!agent) throw new HttpError(400, "invalid_agent");
+        return this.approvalRuleRequest(
+          res,
+          hash,
+          body.workspaceId === undefined ? undefined : this.field(body.workspaceId),
+          { agent, ruleId: this.field(body.ruleId, 128) },
+        );
+      }
       if (path === "/session-pin") {
         if (
           url.search ||
@@ -6461,7 +6728,27 @@ export class WebAccessService {
       this.grant(hash, permission);
       const historyReplay = this.historyReplay(prior, body, operation, control);
       if (historyReplay !== undefined) return this.json(res, 200, historyReplay);
-      if (body.bootId !== this.bootId) throw new HttpError(409, "stale_boot");
+      if (body.bootId !== this.bootId) {
+        if (
+          this.options.sessionRequest &&
+          typeof body.bootId === "string" &&
+          body.bootId.length > 0 &&
+          (operation === "approve" || operation === "answer")
+        ) {
+          const source = this.approvalAuditSource(
+            hash,
+            this.grant(hash, permission),
+            req.headers["x-agentkib-client"],
+          );
+          void this.recordStaleClientApproval(
+            hash,
+            source,
+            { ...body, operation, sessionId, requestId },
+            permission,
+          ).catch(() => undefined);
+        }
+        throw new HttpError(409, "stale_boot");
+      }
       // Bridged and managed providers replay a receipted request from their own ledger.
       const claudeReplay =
         prior?.found === true &&
@@ -6599,11 +6886,22 @@ export class WebAccessService {
         if (boot !== this.bootId) throw new HttpError(409, "stale_boot");
         if (!(await this.controlsEnabledForSnapshot(sessionId, snapshot, this.grant(hash), true)))
           throw new HttpError(403, "provider_control_not_allowed");
+        let approvalAudit =
+          operation === "approve" || operation === "answer"
+            ? this.approvalAuditSource(
+                hash,
+                this.grant(hash, permission),
+                req.headers["x-agentkib-client"],
+              )
+            : undefined;
         if (
           !snapshot?.runtimeBootId ||
           (!claudeReplay && snapshot.revision !== body.expectedRevision)
-        )
+        ) {
+          if (approvalAudit && snapshot?.runtimeBootId)
+            void this.recordExpiredApproval(approvalAudit, snapshot, params);
           throw new HttpError(409, "stale_state");
+        }
         if (
           !claudeReplay &&
           operation === "send" &&
@@ -6788,6 +7086,16 @@ export class WebAccessService {
         this.grant(hash, permission);
         if (boot !== this.bootId) throw new HttpError(409, "stale_boot");
         if (historyScopeKey) await this.assertHistoryScope(hash, historyScopeKey, true);
+        if (approvalAudit && !claudeReplay) {
+          approvalAudit = {
+            ...approvalAudit,
+            ...(await this.readApprovalEvidence(snapshot, params)),
+          };
+          const current = this.grant(hash, permission);
+          if (boot !== this.bootId) throw new HttpError(409, "stale_boot");
+          if (!(await this.controlsEnabledForSnapshot(sessionId, snapshot, current, true)))
+            throw new HttpError(403, "provider_control_not_allowed");
+        }
         if (
           lan &&
           isCodexMode(snapshotField(snapshot, "executionMode")) &&
@@ -6816,8 +7124,12 @@ export class WebAccessService {
           ["claude-managed", "claude-follower"].includes(
             String((snapshot as { executionMode?: string }).executionMode),
           ) && this.options.receiptRequest
-            ? dispatchClaude(this.requestSession, this.options.receiptRequest, params)
-            : this.requestSession(params, undefined, restrictCodexNativePolicy)
+            ? dispatchClaude(
+                (value) => this.requestSession(value, undefined, false, approvalAudit),
+                this.options.receiptRequest,
+                params,
+              )
+            : this.requestSession(params, undefined, restrictCodexNativePolicy, approvalAudit)
         ).finally(() => {
           this.active.delete(sessionId);
           this.admission = false;
@@ -6902,6 +7214,20 @@ export class WebAccessService {
     }
     if (req.method !== "GET") throw new HttpError(405, "method_not_allowed");
     this.grant(hash);
+    if (path === "/approval-audit") return this.approvalAuditPage(res, hash, url);
+    if (path === "/approval-rules") {
+      if (
+        [...url.searchParams.keys()].some((key) => key !== "workspaceId") ||
+        url.searchParams.getAll("workspaceId").length > 1
+      )
+        throw new HttpError(400, "invalid_approval_rule_request");
+      const workspaceId = url.searchParams.get("workspaceId");
+      return this.approvalRuleRequest(
+        res,
+        hash,
+        workspaceId === null ? undefined : this.field(workspaceId),
+      );
+    }
     if (path === "/read-state") {
       if (
         [...url.searchParams.keys()].some((key) => key !== "sessionId") ||

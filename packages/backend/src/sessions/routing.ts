@@ -7,6 +7,7 @@ import {
   type SessionProviderResponse,
 } from "../session-provider";
 import { parameters } from "../rpc";
+import { approvalAuditContextSchema } from "./approval-audit-decisions";
 
 export type SessionMethod =
   | typeof RUNTIME_METHODS.codexManaged
@@ -31,6 +32,7 @@ const hostSessionEnvelope = z.strictObject({
     request: z.record(z.string(), z.unknown()),
     // Host-derived device authorization stays outside the user's request and receipt fingerprint.
     restrictCodexNativePolicy: z.literal(true).optional(),
+    approvalAudit: approvalAuditContextSchema.optional(),
   }),
 });
 

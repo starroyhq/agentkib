@@ -13,6 +13,7 @@ export * from "./mcp-management";
 export * from "./skill-sync";
 export * from "./native-memory";
 export * from "./quit-work";
+export * from "./approval-oversight";
 export {
   SESSION_COLLECTIONS,
   sessionCollection,

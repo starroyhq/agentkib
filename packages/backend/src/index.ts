@@ -69,6 +69,20 @@ import {
   type SessionMethod,
 } from "./sessions/routing";
 import { QUIT_WORK_MANUAL_REASON, QuitWork, quitWorkDecisionSchema } from "./sessions/quit-work";
+import { SessionApprovalAuditStore } from "./sessions/approval-audit";
+import {
+  approvalAuditDecision,
+  approvalAuditEvidence,
+  approvalAuditIdentitySchema,
+  approvalAuditListSchema,
+  approvalAuditReceipt,
+  classifyAuditDecision,
+  expiredApprovalAuditSchema,
+  isApprovalDecision,
+  recordApprovalDecision,
+  recordExpiredApproval,
+  type ApprovalAuditTarget,
+} from "./sessions/approval-audit-decisions";
 import { hostControlValidationSchema, runProviderValidation } from "./sessions/validate/control";
 import { RemoteGateways } from "./remote-gateways";
 import { RemoteAgent } from "./remote-agent";
@@ -125,6 +139,8 @@ import {
   RUNTIME_METHODS,
   SESSION_EVENT_NOTIFICATION,
   sessionCollection,
+  managedAgentOf,
+  type SessionApprovalAuditContext,
   sessionProviderDeclaration,
   type QuitWorkDecision,
   type RuntimeRpcError,
@@ -196,6 +212,7 @@ export class TypeScriptBackend {
   #nativeMemory?: NativeMemoryOwner;
   #quitWork?: QuitWork;
   #dataDir?: string;
+  #approvalAudit?: SessionApprovalAuditStore;
   #releaseManagedLedgerReaders?: () => void;
   #commands = new Commands();
   #git?: Git;
@@ -333,6 +350,7 @@ export class TypeScriptBackend {
     this.#store?.close();
     this.#store = undefined;
     this.#dataDir = undefined;
+    this.#approvalAudit = undefined;
   }
 
   closeAsync(quitWorkDecision?: QuitWorkDecision): Promise<void> {
@@ -518,6 +536,7 @@ export class TypeScriptBackend {
         this.#handoffWork = new HandoffWork();
         this.#store = store;
         this.#dataDir = dataDir;
+        this.#approvalAudit = new SessionApprovalAuditStore(dataDir);
         this.#releaseManagedLedgerReaders = retainManagedLedgerReaders(dataDir);
         this.#nativeMemory = new NativeMemoryOwner({
           store,
@@ -1324,7 +1343,11 @@ export class TypeScriptBackend {
       const receipt = readControlReceipt(this.#dataDir, params);
       const dshReceipt = this.#dshBridge?.receipt(receipt) ?? receipt;
       const nativeReceipt = this.#claudeBridge?.receipt(dshReceipt) ?? dshReceipt;
-      return this.#claudeManaged ? this.#claudeManaged.receipt(nativeReceipt) : nativeReceipt;
+      const result = this.#claudeManaged
+        ? this.#claudeManaged.receipt(nativeReceipt)
+        : nativeReceipt;
+      this.#settleApprovalAuditReceipt(result, params.deviceId);
+      return result;
     }
     if (isSessionMethod(method)) return this.#routeSession(method, params);
     if (method === RUNTIME_METHODS.refreshInsights) return this.#insightRefresh!.refresh();
@@ -2702,7 +2725,7 @@ export class TypeScriptBackend {
         const limit = claudeLimit(sessionId);
         return limit !== null && limit.continueAt === null && limit.manual !== null;
       },
-      control: (value, intent) => {
+      control: (value, intent, interaction) => {
         if (typeof value.sessionId !== "string") throw new Error("session-unavailable");
         if (intent === "desktop-owner-handoff") {
           if (value.operation !== "send" || session(value.sessionId)?.agent !== "codex")
@@ -2717,11 +2740,19 @@ export class TypeScriptBackend {
             (owner.codexSessionProvider() as CodexSessionProvider).workerTurnSend(value),
           );
         }
-        const bridge = dsh(value.sessionId);
-        if (bridge) return bridge.request(value);
-        if (session(value.sessionId)?.agent === "claude-code")
-          return this.#claudeSessionProvider!.native(value);
-        return this.#withWebRead((owner) => owner.managedControl(value));
+        const sessionId = value.sessionId;
+        return this.#auditApprovalDecision(
+          value,
+          { source: { kind: "project-agent" } },
+          () => {
+            const bridge = dsh(sessionId);
+            if (bridge) return bridge.request(value);
+            if (session(sessionId)?.agent === "claude-code")
+              return this.#claudeSessionProvider!.native(value);
+            return this.#withWebRead((owner) => owner.managedControl(value));
+          },
+          interaction,
+        );
       },
       restart: async (request, beforeDispatch) => {
         const target = session(request.sessionId);
@@ -2831,10 +2862,37 @@ export class TypeScriptBackend {
 
   #routeSession(method: SessionMethod, params: Record<string, unknown>) {
     const host = readHostSessionRequest(method, params);
-    return host ? this.#requestHostSession(host) : this.#requestTypedSession(params);
+    const hostOperation = host?.request.operation;
+    if (
+      method !== RUNTIME_METHODS.sessionRequest &&
+      (hostOperation === "approval-audit-list" || hostOperation === "approval-audit-expired")
+    )
+      throw new RpcFault(-32601, "Method not found");
+    return this.#auditApprovalDecision(host?.request ?? params, host?.approvalAudit, () =>
+      host ? this.#requestHostSession(host) : this.#requestTypedSession(params),
+    );
   }
 
-  #requestHostSession({ target, request: params, restrictCodexNativePolicy }: HostSessionRequest) {
+  /** These reads are limited to the host's authorized workspace snapshot. */
+  #requestHostSession({
+    target,
+    request: params,
+    restrictCodexNativePolicy,
+    approvalAudit,
+  }: HostSessionRequest) {
+    if (!target && params.operation === "approval-audit-list") {
+      const input = parameters(approvalAuditListSchema, params);
+      return this.#approvalAudit!.list({
+        before: input.before,
+        limit: input.limit,
+        workspaceScopes: input.workspaces,
+      });
+    }
+    if (!target && params.operation === "approval-audit-expired") {
+      const input = parameters(expiredApprovalAuditSchema, params);
+      if (!approvalAudit) throw new Error("invalid-approval-audit-source");
+      return this.#recordExpiredApproval(input, approvalAudit);
+    }
     if (target === "claude-code") return this.#requestClaudeManaged(params);
     if (target === "codex") return this.#requestCodexSession(params, restrictCodexNativePolicy);
     if (params.operation === "provider-validate-control") {
@@ -2855,6 +2913,141 @@ export class TypeScriptBackend {
       if (handled !== undefined) return handled;
     }
     return this.#requestWebSession(params, restrictCodexNativePolicy);
+  }
+
+  #approvalAuditTarget(sessionId: string): ApprovalAuditTarget | undefined {
+    const store = this.#store;
+    if (!store) return;
+    const indexed = store.sessions.get(sessionId);
+    let agent = managedAgentOf(indexed?.agent);
+    let workspaceId = indexed?.workspace_id ?? null;
+    if (!indexed) {
+      workspaceId =
+        this.#claudeManaged?.managedWorkspace(sessionId) ??
+        this.#claudeBridge?.workspaceOf(sessionId) ??
+        null;
+      if (workspaceId) agent = "claude-code";
+      if (!agent && this.#dshBridge?.handles(sessionId)) {
+        const live = this.#dshBridge.live(sessionId, false);
+        agent = "deepseek-harness";
+        workspaceId = typeof live.workspaceId === "string" ? live.workspaceId : null;
+      }
+      if (!agent && this.#webRead) {
+        workspaceId = this.#webRead.managedWorkspace(sessionId);
+        if (workspaceId || this.#webRead.codexLeadCapable(sessionId)) agent = "codex";
+      }
+    }
+    if (!agent) return;
+    let workspacePath: string | undefined;
+    if (workspaceId)
+      try {
+        workspacePath = store.workspacePath(workspaceId);
+      } catch {
+        // Projectless sessions and removed workspaces have no registered path.
+      }
+    return { agent, workspaceId: workspaceId ?? undefined, workspacePath };
+  }
+
+  #auditApprovalDecision<T>(
+    params: Record<string, unknown>,
+    metadata: SessionApprovalAuditContext | undefined,
+    run: () => T,
+    interaction?: Record<string, unknown>,
+  ): T | Promise<Awaited<T>> {
+    const audit = this.#approvalAudit;
+    const { operation } = params;
+    if (!audit || !isApprovalDecision(operation)) return run();
+    const request = approvalAuditIdentitySchema.safeParse(params);
+    if (!request.success) return run();
+    let target: ApprovalAuditTarget | undefined;
+    try {
+      target = this.#approvalAuditTarget(request.data.sessionId);
+    } catch {
+      // An unavailable audit target must not break the provider's existing admission path.
+      return run();
+    }
+    if (!target) return run();
+    const source = metadata?.source ?? { kind: "desktop" };
+    const fallback = {
+      source,
+      risk: metadata?.risk,
+      decision: metadata?.decision ?? approvalAuditDecision(operation, params, interaction),
+    };
+    const matched = target;
+    let evidence = interaction
+      ? classifyAuditDecision(matched.agent, operation, params, interaction, matched.workspacePath)
+      : undefined;
+    const bridge = this.#dshBridge;
+    if (
+      !evidence &&
+      !metadata?.decision &&
+      operation === "answer" &&
+      matched.agent === "deepseek-harness" &&
+      bridge?.handles(request.data.sessionId)
+    ) {
+      try {
+        evidence = approvalAuditEvidence(
+          bridge.live(request.data.sessionId, false),
+          params,
+          matched.workspacePath,
+        );
+      } catch {
+        // The native control still owns admission if the audit cannot project the card.
+      }
+    }
+    if (!evidence)
+      return recordApprovalDecision(audit, operation, request.data, matched, fallback, run);
+    return evidence
+      .catch(() => ({}))
+      .then((evidence) =>
+        recordApprovalDecision(
+          audit,
+          operation,
+          request.data,
+          matched,
+          { ...fallback, ...evidence },
+          run,
+        ),
+      );
+  }
+
+  async #recordExpiredApproval(
+    input: z.infer<typeof expiredApprovalAuditSchema>,
+    metadata: NonNullable<HostSessionRequest["approvalAudit"]>,
+  ) {
+    const target = this.#approvalAuditTarget(input.sessionId);
+    if (target)
+      await recordExpiredApproval(
+        this.#approvalAudit!,
+        input.interactionKind === "approval" ? "approve" : "answer",
+        input,
+        target,
+        {
+          ...metadata,
+          decision:
+            metadata.decision ??
+            approvalAuditDecision(
+              input.interactionKind === "approval" ? "approve" : "answer",
+              input,
+            ),
+        },
+      );
+    return null;
+  }
+
+  #settleApprovalAuditReceipt(receipt: unknown, deviceId: unknown): void {
+    const update = approvalAuditReceipt(receipt);
+    const audit = this.#approvalAudit;
+    if (!update || !audit || typeof deviceId !== "string") return;
+    try {
+      const target = this.#approvalAuditTarget(update.sessionId);
+      if (target)
+        void audit
+          .finishReceipt({ ...update, agent: target.agent, deviceId })
+          .catch(() => undefined);
+    } catch {
+      // Receipt delivery does not depend on being able to update the audit history.
+    }
   }
 
   async #requestTypedSession(params: Record<string, unknown>) {

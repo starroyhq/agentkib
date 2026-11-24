@@ -38,6 +38,11 @@ import { readControlReceipt } from "../../../packages/backend/src/control-receip
 import type { ContextUsage } from "../../../packages/backend/src/context-usage";
 import { TypeScriptBackend } from "../../../packages/backend/src/index";
 import { withSessionActivities } from "../../../packages/backend/src/session-activities";
+import { SessionApprovalAuditStore } from "../../../packages/backend/src/sessions/approval-audit";
+import {
+  approvalAuditEvidence,
+  recordApprovalDecision,
+} from "../../../packages/backend/src/sessions/approval-audit-decisions";
 import { McpHub } from "../../../packages/backend/src/mcp-hub";
 import { RemoteAgent } from "../../../packages/backend/src/remote-agent";
 import { BackendStore } from "../../../packages/backend/src/store";
@@ -2014,6 +2019,80 @@ describe("DeepSeek Harness bridge", () => {
     ).resolves.toBe("aborted");
     await until(() => (f.bridge.live("ak-session-a", true).approvals as unknown[]).length === 0);
   });
+
+  it.each([
+    ["Fixture approve this run", "allow", "once", "executed"],
+    ["Fixture reject this run", "deny", "once", "denied"],
+    ["Fixture save this allowance", "allow", "persistent", "executed"],
+  ] as const)(
+    "records the native DSH permission choice %s without keeping answer text",
+    async (label, kind, scope, result) => {
+      const f = await fixture();
+      const agent = f.dsh.sessions.get("session-a")!.agent;
+      const questions = [
+        {
+          id: "fixture-permission",
+          question: "Fixture private approval prompt",
+          options: [{ label: "Fixture approve this run" }, { label: "Fixture reject this run" }],
+          intent: {
+            kind: "approval",
+            approve: "Fixture approve this run",
+            reject: "Fixture reject this run",
+            always: "Fixture save this allowance",
+          },
+        },
+      ];
+      const pending = f.dsh.ctx.waterfall(
+        { scoped: agent },
+        "user-questions/request",
+        { agent, questions },
+        () => Promise.reject(new Error("no answerer")),
+      );
+      const live = await until(() => {
+        const value = f.bridge.live("ak-session-a", true);
+        return (value.questions as unknown[]).length > 0 && value;
+      });
+      const [question] = live.questions as Record<string, unknown>[];
+      const request = {
+        operation: "answer",
+        sessionId: "ak-session-a",
+        deviceId: "device-1",
+        requestId: randomUUID(),
+        turnId: question?.turnId,
+        questionId: question?.requestId,
+        answers: { "fixture-permission": [label] },
+      };
+      const evidence = await approvalAuditEvidence(live, request, f.workspace);
+      expect(evidence).toEqual({
+        risk: { level: "high", reason: "unknown-operation" },
+        decision: { kind, scope },
+      });
+      const audit = new SessionApprovalAuditStore(path.join(f.root, "audit"));
+      await expect(
+        recordApprovalDecision(
+          audit,
+          "answer",
+          request,
+          { agent: "deepseek-harness", workspaceId: "workspace" },
+          { source: { kind: "desktop" }, ...evidence },
+          () => f.control("answer", request),
+        ),
+      ).resolves.toMatchObject({ accepted: true });
+      await expect(pending).resolves.toEqual({
+        answers: [{ id: "fixture-permission", selected: [label] }],
+      });
+      expect((await audit.list()).entries).toMatchObject([
+        {
+          kind: "approval",
+          decision: { kind, scope },
+          result,
+        },
+      ]);
+      const kept = readFileSync(path.join(f.root, "audit", "approval-audit.json"), "utf8");
+      expect(kept).not.toContain(label);
+      expect(kept).not.toContain("Fixture private approval prompt");
+    },
+  );
 
   it("withdraws the AgentKib copy when DSH's UI answers first", async () => {
     const f = await fixture();

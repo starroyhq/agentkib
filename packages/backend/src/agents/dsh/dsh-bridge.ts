@@ -2637,13 +2637,26 @@ export class DshBridge {
       method: "dsh/question",
       supported: enabled,
       unsupportedReason: enabled ? null : "dsh-handle-in-native-ui",
+      ...(item.questions.some((question) => question.intent != null)
+        ? { permissionIntent: true }
+        : {}),
       questions: item.questions.map((question) => {
+        const intent = question.intent?.kind === "approval" ? question.intent : undefined;
+        const approvalKind = (label: string) => {
+          if (!intent) return {};
+          const roles = [
+            ...(label === intent.approve ? ["allow_once"] : []),
+            ...(label === intent.reject ? ["reject_once"] : []),
+            ...(label === intent.always ? ["allow_always"] : []),
+          ];
+          return roles.length === 1 ? { approvalKind: roles[0] } : {};
+        };
         const options = question.options.map((option) => ({
           label: option.label,
           ...(option.description ? { description: option.description } : {}),
+          ...approvalKind(option.label),
         }));
-        if (question.intent?.kind === "approval" && question.intent.always)
-          options.push({ label: question.intent.always });
+        if (intent?.always) options.push({ label: intent.always, ...approvalKind(intent.always) });
         return {
           id: question.id,
           ...(question.header ? { header: question.header } : {}),

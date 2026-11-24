@@ -1,4 +1,5 @@
 import type { ManagedAgent } from "./agents";
+import type { ApprovalRuleCapability } from "./approval-oversight";
 import type { SubagentStatus } from "./subagents";
 
 export const SESSION_RESOURCE_LIMIT = 10;
@@ -83,6 +84,7 @@ export interface SessionProjectAgentCapabilities {
 }
 
 interface SessionProviderIntegrationCapabilities {
+  approvalRules?: ApprovalRuleCapability;
   commands?: { source: "built-in" | "reported" | "none" };
   queue?: { actions: readonly SessionQueueAction[] };
   projectAgent?: SessionProjectAgentCapabilities;
@@ -316,6 +318,7 @@ const MANAGED_CAPABILITIES = {
 const PROVIDERS = {
   codex: {
     ...MANAGED_CAPABILITIES.codex,
+    approvalRules: { list: true, revoke: false },
     resumeAfterQuit: true,
     history: { ...MANAGED_CAPABILITIES.codex.history, questionnaire: true },
     commands: { source: "built-in" },
@@ -332,6 +335,7 @@ const PROVIDERS = {
   },
   "claude-code": {
     ...MANAGED_CAPABILITIES["claude-code"],
+    approvalRules: { list: true, revoke: true },
     resumeAfterQuit: true,
     history: { ...MANAGED_CAPABILITIES["claude-code"].history, questionnaire: true },
     commands: { source: "reported" },
@@ -353,6 +357,7 @@ const PROVIDERS = {
   },
   "deepseek-harness": {
     ...MANAGED_CAPABILITIES["deepseek-harness"],
+    approvalRules: { list: false, revoke: false },
     resumeAfterQuit: true,
     history: { ...MANAGED_CAPABILITIES["deepseek-harness"].history, questionnaire: true },
     commands: { source: "reported" },
@@ -365,6 +370,7 @@ const PROVIDERS = {
   },
   devin: {
     ...MANAGED_CAPABILITIES.devin,
+    approvalRules: { list: true, revoke: false },
     commands: { source: "none" },
     projectAgent: { lead: true, worker: true },
     queue: { actions: ["list", "add", "update", "delete", "reorder", "pause", "resume"] },
@@ -373,6 +379,7 @@ const PROVIDERS = {
   },
   antigravity: {
     ...MANAGED_CAPABILITIES.antigravity,
+    approvalRules: { list: true, revoke: false },
     commands: { source: "none" },
     projectAgent: { lead: true, worker: true },
     queue: { actions: ["list", "add", "update", "delete", "reorder", "pause", "resume"] },

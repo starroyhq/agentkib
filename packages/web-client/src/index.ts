@@ -20,6 +20,8 @@ import {
   type SessionProviderCapabilities,
 } from "@agentkib/runtime-protocol";
 import type {
+  ApprovalRuleList,
+  SessionApprovalAuditPage,
   ConversationReadState,
   ConversationReadResult,
   ConversationQuestionnaire,
@@ -44,6 +46,10 @@ import type {
   SubagentCatalog,
 } from "@agentkib/runtime-protocol";
 export type {
+  ApprovalRule,
+  ApprovalRuleList,
+  SessionApprovalAuditEntry,
+  SessionApprovalAuditPage,
   ClaudeCommandAccess,
   ClaudeCommandDecision,
   ConversationReadState,
@@ -336,6 +342,8 @@ export interface LivePreviewTicket {
   expiresAt: number;
 }
 export interface Access {
+  approvalAuditVersion?: 1;
+  approvalRulesVersion?: 1;
   readStateVersion?: 1;
   taskSummaryVersion?: 1;
   accountLogin?: {
@@ -1672,6 +1680,21 @@ export class WebClient {
   }
   historyStatus(signal?: AbortSignal) {
     return this.request<HistorySearchStatus>("history/status", undefined, signal);
+  }
+  approvalRules(workspaceId?: string) {
+    const query = workspaceId === undefined ? "" : `?${new URLSearchParams({ workspaceId })}`;
+    return this.request<ApprovalRuleList>(`approval-rules${query}`);
+  }
+  revokeApprovalRule(agent: ManagedAgent, ruleId: string, workspaceId?: string) {
+    return this.request<{ revoked: true }>("approval-rules/revoke", {
+      agent,
+      ruleId,
+      workspaceId,
+    });
+  }
+  approvalAudit(before?: string) {
+    const query = before === undefined ? "" : `?${new URLSearchParams({ before })}`;
+    return this.request<SessionApprovalAuditPage>(`approval-audit${query}`);
   }
   historyConfigure(enabled: boolean) {
     return this.request<HistorySearchStatus>("history/configure", { enabled });

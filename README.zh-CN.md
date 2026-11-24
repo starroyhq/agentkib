@@ -36,13 +36,13 @@ _界面示例使用演示数据。_
 
 ## 能做什么
 
-- **退出后接着做。** 退出 AgentKib 时，可选择下次打开后继续符合条件的 Codex、Claude Code 和 DeepSeek Harness 任务，也可在首页手动继续因退出而中断的任务。[会话使用指南](docs/sessions/conversations.md#退出后继续任务)
+- **退出后接着做。** 退出 AgentKib 时，可选择下次打开后继续符合条件的 Codex、Claude Code 和 DeepSeek Harness 任务，也可在首页手动继续因退出而中断的任务。暂停委派期间，项目 Agent 也会收到 Worker 因退出中断或续跑的汇报。[会话使用指南](docs/sessions/conversations.md#退出后继续任务)
 - **粘贴或拖放附件。** 在支持附件的桌面和 Web 会话中，可以粘贴截图或复制的文件，把文件拖进输入框，或用「+」选择文件。[会话使用指南](docs/sessions/conversations.md)
 - **在同一个队列里安排后续消息。** 桌面和 Web 使用相同的待发队列控件。根据 Agent 提供的能力，可以编辑、删除、调序、暂停、恢复，或把待发消息加入本轮。[会话使用指南](docs/sessions/conversations.md)
 - **发送首条消息前选权限。** 新建会话时可选择 Agent 支持的权限，所选权限从首条消息开始生效。[会话使用指南](docs/sessions/conversations.md)
 - **跟进多个 Agent 的工作。** 按项目浏览会话，置顶常用会话，查看未读结果。可以在桌面接着写草稿，也可以搜索以往的对话。桌面「设置 → 会话」集中管理后续消息的发送方式、用量限额后继续和退出后继续。[会话使用指南](docs/sessions/conversations.md) · [正文搜索指南](docs/sessions/content-search.md)
 - **查看会话里正在运行的工作。** 打开「会话活动」浮窗，可查看支持会话里的后台任务和子代理，包括已连接的 Claude Code 终端。支持时可打开子代理的历史记录。搜索、新建会话等常用控件改为纯图标按钮。[会话使用指南](docs/sessions/conversations.md)
-- **查看以往的提问和审批。** 支持的会话历史会显示问题和回答卡片。在桌面「设置 → 会话 → 安全与审批」可查看近期通过 AgentKib 作出的决定和自动允许规则，并撤销符合条件的 Claude Code 规则。[会话使用指南](docs/sessions/conversations.md)
+- **查看以往的提问和审批。** 支持的会话历史会显示问题和回答卡片。在 Claude Code 历史中，你作答时添加的图片会显示在对应问题下。在桌面「设置 → 会话 → 安全与审批」可查看近期通过 AgentKib 作出的决定和自动允许规则，并撤销符合条件的 Claude Code 规则。[会话使用指南](docs/sessions/conversations.md)
 - **换一个 Agent 接着做。** 先审查交接内容，再交给另一个 Agent。对方可以直接打开会话，或读取交接文件，具体取决于它支持的方式。[会话交接指南](docs/sessions/interoperability.md)
 - **让一个会话协调多项任务。** 在 macOS 上，可以将支持的会话设为项目 Agent，用「指派 Worker」加入最多 10 个已有的 Codex、Claude Code、DeepSeek Harness、Devin 或 Antigravity 会话。项目 Agent 可以分配任务，重启支持的 Worker。由 AgentKib 运行的 Codex Worker 忙时，项目 Agent 还可向当前轮次追加指令，或把后续消息加入队列。它会收到合并的完成汇报，以及断线、用量上限和疑似卡住的提醒。[项目 Agent 指南](docs/agents/project-agent.md)
 - **达到用量上限后继续。** 在支持的会话中，可以查看额度何时重置、会话是否会自动继续。[用量上限说明](docs/agents/usage-limits.md)

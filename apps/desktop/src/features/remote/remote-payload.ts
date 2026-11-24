@@ -145,6 +145,7 @@ const catalog = z.object({
 });
 const label = z.string().min(1).max(1025);
 const questionDetail = z.string().max(8193);
+const maxQuestionOptions = 20;
 const questionnaire = z
   .object({
     status: z.enum(["pending", "answered", "closed"]),
@@ -163,11 +164,10 @@ const questionnaire = z
                 preview: questionDetail.optional(),
               }),
             )
-            .min(1)
-            .max(4),
+            .max(maxQuestionOptions),
           answer: z
             .object({
-              selected: z.array(label).max(4),
+              selected: z.array(label).max(maxQuestionOptions),
               custom: questionDetail.optional(),
               preview: questionDetail.optional(),
             })
@@ -175,7 +175,7 @@ const questionnaire = z
         }),
       )
       .min(1)
-      .max(4),
+      .max(8),
     imageQuestionId: id.max(256).optional(),
   })
   .optional()

@@ -5,6 +5,15 @@ export interface DshBridgeImage {
   name: string | null;
 }
 
+export interface DshHistoryQuestion {
+  id: string;
+  question: string;
+  header?: string;
+  multiSelect: boolean;
+  options: { label: string; description?: string }[];
+  answer: { selected: string[]; custom?: string };
+}
+
 /** Displayable history records; everything else in the DSH log stays in DSH. */
 export type DshBridgeHistoryRecord = { seq: number; time: number | null } & (
   | { kind: "turn-start"; turn: number }
@@ -19,7 +28,13 @@ export type DshBridgeHistoryRecord = { seq: number; time: number | null } & (
       rpcId: string | null;
     }
   | { kind: "assistant"; turn: number; text: string; truncated: boolean; interrupted: boolean }
-  | { kind: "tool-call"; turn: number; callId: string; name: string }
+  | {
+      kind: "tool-call";
+      turn: number;
+      callId: string;
+      name: string;
+      questionnaire?: DshHistoryQuestion[];
+    }
   | {
       kind: "tool-result";
       turn: number;
@@ -27,6 +42,7 @@ export type DshBridgeHistoryRecord = { seq: number; time: number | null } & (
       isError: boolean;
       preview: string;
       truncated: boolean;
+      questionnaire?: DshHistoryQuestion[];
     }
   /** A slash command DSH ran itself, and its answer; `args` is what followed the name. */
   | { kind: "command"; commandId: string; name: string; args: string | null }
@@ -34,3 +50,8 @@ export type DshBridgeHistoryRecord = { seq: number; time: number | null } & (
 );
 
 export function historyRecord(event: unknown): DshBridgeHistoryRecord | null;
+export function isQuestionHistoryReply(event: unknown): boolean;
+export function createQuestionHistoryProjector(): (
+  event: unknown,
+  record: DshBridgeHistoryRecord | undefined | null,
+) => void;

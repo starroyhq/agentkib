@@ -1,6 +1,11 @@
 import path from "node:path";
 import { parse as parseYaml } from "yaml";
-import { claudeConfigFiles, resolveClaudeConfig, type ClaudeConfig } from "./claude-config";
+import {
+  claudeConfigFiles,
+  claudePluginsRoot,
+  resolveClaudeConfig,
+  type ClaudeConfig,
+} from "./claude-config";
 import { claudeProjectKeyForm } from "./claude-project-config";
 import {
   redactText,
@@ -245,23 +250,6 @@ function manifestPaths(value: unknown, allowRoot = false): string[] | undefined 
     .map((item) => (allowRoot && item === "./" ? "." : item.replace(/^\.\//, "")))
     .filter((item) => item !== "" && !path.posix.isAbsolute(item))
     .slice(0, 16);
-}
-
-function resolvePluginsRoot(
-  options: ClaudeAssetsOptions,
-  config: ClaudeConfig,
-  reader: Reader,
-): string {
-  const configured = options.environment.CLAUDE_CODE_PLUGIN_CACHE_DIR;
-  if (
-    configured &&
-    configured.trim() === configured &&
-    reader.p.isAbsolute(configured) &&
-    !configured.split(/[\\/]+/).includes("..") &&
-    !isNetworkOrDevicePath(configured, reader.platform)
-  )
-    return configured;
-  return claudeConfigFiles(config, reader.platform).plugins;
 }
 
 function applicableInstalls(reader: Reader, records: unknown): Record<string, unknown>[] {
@@ -543,7 +531,7 @@ export function readClaudeAssets(options: ClaudeAssetsOptions): ClaudeAssets {
   const result = empty;
 
   // Plugins: what settings enable, matched against the install records.
-  const root = resolvePluginsRoot(options, config, reader);
+  const root = claudePluginsRoot(config, options.environment, reader.platform);
   const installed = reader.json(
     p.join(root, "installed_plugins.json"),
     null,

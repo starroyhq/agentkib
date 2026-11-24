@@ -8,6 +8,19 @@ import { WebAccessSettings } from "./WebAccessSettings";
 import { remotePhoneCopy } from "./remote-phone-copy";
 import { remotePageCopy } from "./remote-page-copy";
 const request = vi.fn();
+const accountRequest = vi.fn();
+const signedInAccount = {
+  phase: "signed-in",
+  secureStorage: true,
+  account: {
+    id: "test",
+    username: "demo@example.com",
+    deviceLimit: 3,
+    deviceCount: 1,
+    totpEnabled: false,
+  },
+  device: { ownership: "owned" },
+};
 let lanTest = false;
 vi.mock("@/core/desktop", () => ({
   desktopApi: () => ({
@@ -19,19 +32,7 @@ vi.mock("@/core/desktop", () => ({
     },
     account: {
       onStatus: () => () => {},
-      request: () =>
-        Promise.resolve({
-          phase: "signed-in",
-          secureStorage: true,
-          account: {
-            id: "test",
-            username: "demo@example.com",
-            deviceLimit: 3,
-            deviceCount: 1,
-            totpEnabled: false,
-          },
-          device: { ownership: "owned" },
-        }),
+      request: accountRequest,
     },
   }),
 }));
@@ -47,6 +48,8 @@ beforeEach(() => {
   lanTest = false;
   request.mockReset();
   request.mockResolvedValue(status);
+  accountRequest.mockReset();
+  accountRequest.mockResolvedValue(signedInAccount);
 });
 afterEach(() => {
   cleanup();
@@ -172,6 +175,132 @@ it("connects with the default service and bundled connector without an invitatio
     1,
   );
 });
+it("repairs invalid saved Web settings only after opening settings and explicitly saving", async () => {
+  request.mockResolvedValue({ ...status, error: "invalid_saved_configuration" });
+  render(<WebAccessSettings />);
+  const alert = await screen.findByRole("alert");
+  expect(alert).toHaveTextContent(/saved Web configuration/i);
+  expect(alert).not.toHaveTextContent("Web settings unavailable");
+  fireEvent.click(within(alert).getByRole("button", { name: "Advanced settings" }));
+  const dialog = await screen.findByRole("dialog", { name: "Advanced settings" });
+  expect(request.mock.calls.every(([input]) => input.operation === "status")).toBe(true);
+  request.mockResolvedValue(status);
+  fireEvent.click(within(dialog).getByRole("button", { name: "Save" }));
+  await waitFor(() =>
+    expect(request).toHaveBeenCalledWith({ operation: "configure", ...status.config }),
+  );
+});
+
+const officialRelay = {
+  ...status,
+  config: {
+    ...status.config,
+    enabled: true,
+    relay: { enabled: true, brokerUrl: "https://api.agentkib.com" },
+  },
+  running: true,
+};
+
+it("offers direct sign-in and then retries the saved official relay", async () => {
+  let signedIn = false;
+  accountRequest.mockImplementation(async ({ operation }) => {
+    if (operation === "login") signedIn = true;
+    return signedIn ? signedInAccount : { phase: "signed-out", secureStorage: true };
+  });
+  request.mockResolvedValue({
+    ...officialRelay,
+    relay: { phase: "offline", reason: "account-required", setupCode: "account_login_required" },
+  });
+  render(<WebAccessSettings />);
+  fireEvent.click(await screen.findByRole("button", { name: "Connect phone" }));
+  const dialog = await screen.findByRole("dialog", { name: "Connect phone" });
+  expect(within(dialog).getByRole("alert")).toHaveTextContent(/account that owns this computer/i);
+  expect(within(dialog).queryByText("Web settings unavailable")).not.toBeInTheDocument();
+  const login = await within(dialog).findByRole("button", { name: /sign in.*browser/i });
+  await waitFor(() => expect(login).toBeEnabled());
+  fireEvent.click(login);
+  expect(accountRequest).toHaveBeenCalledWith({ operation: "login" });
+  const retry = await within(dialog).findByRole("button", { name: "Retry now" });
+  fireEvent.click(retry);
+  await waitFor(() =>
+    expect(request).toHaveBeenCalledWith({
+      operation: "remote-enable",
+      brokerUrl: "https://api.agentkib.com",
+    }),
+  );
+});
+
+it("offers account settings when the remote retry rejects the current account", async () => {
+  request.mockImplementation(async ({ operation }) => {
+    if (operation === "remote-enable") throw new Error("account_device_conflict");
+    return { ...officialRelay, relay: { phase: "offline", reason: "setup" } };
+  });
+  render(<WebAccessSettings />);
+  fireEvent.click(await screen.findByRole("button", { name: "Connect phone" }));
+  const dialog = await screen.findByRole("dialog", { name: "Connect phone" });
+  fireEvent.click(await within(dialog).findByRole("button", { name: "Retry now" }));
+  const account = await within(dialog).findByRole("button", { name: "Account settings" });
+  expect(within(dialog).getByRole("alert")).toHaveTextContent(/account/i);
+  expect(within(dialog).getByRole("alert")).not.toHaveTextContent("Web settings unavailable");
+  fireEvent.click(account);
+  expect(await screen.findByRole("dialog", { name: "Remote account" })).toBeVisible();
+});
+
+it("restarts an interrupted local Web service using the saved configuration", async () => {
+  request.mockResolvedValue({
+    ...officialRelay,
+    error: "web_server_error",
+    relay: { phase: "offline", reason: "setup" },
+  });
+  render(<WebAccessSettings />);
+  fireEvent.click(await screen.findByRole("button", { name: "Connect phone" }));
+  const dialog = await screen.findByRole("dialog", { name: "Connect phone" });
+  expect(within(dialog).getByRole("alert")).toHaveTextContent(/local Web service was interrupted/i);
+  request.mockResolvedValue(officialRelay);
+  fireEvent.click(within(dialog).getByRole("button", { name: "Restart Web service" }));
+  await waitFor(() =>
+    expect(request).toHaveBeenCalledWith({ operation: "configure", ...officialRelay.config }),
+  );
+});
+
+it("can apply a required invitation to an unchanged self-hosted service", async () => {
+  const brokerUrl = "https://self-hosted.example.com";
+  request.mockResolvedValue({
+    ...officialRelay,
+    config: { ...officialRelay.config, relay: { enabled: true, brokerUrl } },
+    relay: { phase: "offline", reason: "setup", setupCode: "relay_invitation_required" },
+  });
+  render(<WebAccessSettings />);
+  fireEvent.click(await screen.findByRole("button", { name: "Connect phone" }));
+  const dialog = await screen.findByRole("dialog", { name: "Connect phone" });
+  expect(within(dialog).getByRole("alert")).toHaveTextContent(/invitation to register/);
+  fireEvent.click(within(dialog).getByRole("button", { name: "Advanced settings" }));
+  const settings = await screen.findByRole("dialog", { name: "Advanced settings" });
+  const invitation = within(settings).getByLabelText(
+    "Self-hosted service invitation (if required)",
+  );
+  fireEvent.change(invitation, { target: { value: "fixture-invitation" } });
+  const save = within(settings).getByRole("button", { name: "Save" });
+  expect(save).toBeEnabled();
+  fireEvent.click(save);
+  await waitFor(() =>
+    expect(request).toHaveBeenCalledWith({
+      operation: "remote-enable",
+      brokerUrl,
+      inviteCode: "fixture-invitation",
+    }),
+  );
+});
+
+it("uses a fixed fallback code when reloading fails with unexpected text", async () => {
+  request.mockRejectedValueOnce(new Error("failed to read /private/user/account/credential.json"));
+  render(<WebAccessSettings />);
+  const alert = await screen.findByRole("alert");
+  expect(alert).toHaveTextContent("web_request_failed");
+  expect(alert).not.toHaveTextContent("/private/user/account");
+  expect(within(alert).getByRole("button", { name: "Reload settings" })).toBeEnabled();
+});
+
 it("shows the failed relay stage and retry time without exposing raw errors or a pairing code", async () => {
   request.mockResolvedValue({
     ...status,

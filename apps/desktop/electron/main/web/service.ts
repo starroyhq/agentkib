@@ -419,6 +419,37 @@ type ActionAdmission = {
   prior: Record<string, unknown> | undefined;
   publicInputHash: string | undefined;
 };
+type QueueEntry = {
+  id: string;
+  status?: string;
+  reason?: string;
+  input?: { type: string; text?: string }[];
+  ownerWait?: boolean;
+  ownerWaitDeviceId?: string;
+  ownerWaitWorkspaceId?: string;
+  actions?: { delete?: Availability };
+};
+
+function isOwnerWaitQueueEntry(item: QueueEntry, workspaceId: string) {
+  return (
+    item?.ownerWait === true &&
+    typeof item.id === "string" &&
+    typeof item.ownerWaitDeviceId === "string" &&
+    item.ownerWaitWorkspaceId === workspaceId &&
+    ((item.status === "pending" &&
+      (item.reason === "codex-waiting-for-owner" || item.reason === "codex-owner-wait-paused")) ||
+      (item.status === "unknown" && item.reason === "control-outcome-unconfirmed"))
+  );
+}
+
+function canDeleteOwnerWait(item: QueueEntry, deviceId: string) {
+  return (
+    item.actions?.delete?.available === true &&
+    (item.ownerWaitDeviceId === deviceId ||
+      (deviceId === "desktop-local" && item.status === "unknown"))
+  );
+}
+
 type ActionDispatch = {
   dispatched: boolean;
   newlyPinnedDevice?: string;
@@ -548,6 +579,7 @@ const API_ROUTES: Record<"GET" | "POST", Record<string, RouteSpec>> = {
     "/stop": { lan: true, control: true },
     "/approve": { lan: true, control: true },
     "/answer": { lan: true, control: true },
+    "/codex/queue-delete": { lan: true, control: true },
     "/codex/goal-set": { lan: true, control: true },
     "/codex/goal-pause": { lan: true, control: true },
     "/codex/goal-resume": { lan: true, control: true },
@@ -616,6 +648,13 @@ function snapshotField(snapshot: unknown, key: string): unknown {
     ? (snapshot as Record<string, unknown>)[key]
     : undefined;
 }
+/** The owner-wait receipt marker is host routing metadata. */
+function projectQueueActionAck(ack: unknown): unknown {
+  if (snapshotField(ack, "ownerWaitOnly") !== true) return ack;
+  const { ownerWaitOnly: _ownerWaitOnly, ...publicAck } = ack as Record<string, unknown>;
+  return publicAck;
+}
+
 function settingsControlOutcome(
   ack: unknown,
   requestId: string,
@@ -1245,7 +1284,7 @@ export class WebAccessService {
     }
     if (this.scheduler && !this.unregisterScheduler) {
       this.unregisterScheduler = this.scheduler.register({
-        owns: (deviceId) => this.ownsScheduledDevice(deviceId),
+        owns: (deviceId, agent) => this.ownsScheduledDevice(deviceId, agent),
         authorize: (session) => this.authorizeScheduledWork(session),
         reserve: (sessionId) => {
           if (
@@ -1276,8 +1315,8 @@ export class WebAccessService {
     }
   }
 
-  private ownsScheduledDevice(deviceId: string) {
-    if (this.disposed || this.options.mode === "lan") return false;
+  private ownsScheduledDevice(deviceId: string, agent?: ClaudeScheduledSession["agent"]) {
+    if (this.disposed || (this.options.mode === "lan" && agent !== "codex")) return false;
     if ([this.localDevice.id, CLAUDE_LOCAL_OWNER].includes(deviceId))
       return this.sharedRuntimePrimary !== false;
     return this.credentials.some((credential) => credential.device.id === deviceId);
@@ -1285,6 +1324,27 @@ export class WebAccessService {
 
   private async authorizeScheduledWork(session: ClaudeScheduledSession) {
     const work = session.next;
+    if (session.agent === "codex") {
+      if (!work || !this.options.verifiedCodex || !this.ownsScheduledDevice(work.deviceId, "codex"))
+        throw new Error("scheduled-control-unavailable");
+      const credential = this.credentials.find((item) => item.device.id === work.deviceId);
+      if (!credential) throw new Error("scheduled-device-unavailable");
+      this.grant(credential.hash, "send");
+      if (this.options.mode !== "lan") this.grant(credential.hash, "advancedControl");
+      if (work.requiresAttachments) this.grant(credential.hash, "attachments");
+      if (
+        (await this.queueScope(session.sessionId, credential.hash, true, true)) !==
+        session.workspaceId
+      )
+        throw new Error("workspace_not_authorized");
+      if (!this.ownsScheduledDevice(work.deviceId, "codex"))
+        throw new Error("scheduled-control-unavailable");
+      const current = this.grant(credential.hash, "send");
+      if (this.options.mode !== "lan") this.grant(credential.hash, "advancedControl");
+      if (work.requiresAttachments) this.grant(credential.hash, "attachments");
+      if (!this.controlsEnabled(session.sessionId, current)) throw new Error("control_unavailable");
+      return { restrictNativePolicy: !this.isFullAccess(current) };
+    }
     const verified =
       session.agent === "devin"
         ? this.options.verifiedDevinManaged
@@ -1682,6 +1742,15 @@ export class WebAccessService {
           // stage to the one-click caller without publishing the uncommitted config.
           break;
         }
+        if (changedBroker) {
+          const revoked = this.credentials;
+          this.credentials = credentials;
+          await Promise.all(
+            revoked.map(({ device }) =>
+              this.invalidateScheduledDevice(device.id, "authorization-revoked"),
+            ),
+          );
+        }
         this.relayEpoch += 1;
         await this.relay?.stop();
         this.config = next;
@@ -1731,6 +1800,7 @@ export class WebAccessService {
         this.code = undefined;
         for (const browser of this.browsers.values()) browser.pending = undefined;
         await this.save();
+        this.error = undefined;
         if (config.enabled) await this.start();
         break;
       }
@@ -1901,7 +1971,12 @@ export class WebAccessService {
     if (this.options.acceptanceSessionId && input.externalOrigin)
       throw new Error("acceptance_is_local_only");
     if (input.externalOrigin) {
-      const url = new URL(input.externalOrigin);
+      let url: URL;
+      try {
+        url = new URL(input.externalOrigin);
+      } catch {
+        throw new Error("invalid_external_origin");
+      }
       if (
         url.protocol !== "https:" ||
         url.username ||
@@ -2201,11 +2276,15 @@ export class WebAccessService {
     credentials = this.credentials,
   ) {
     const contents = JSON.stringify({ config, credentials, remotePairingInitialized });
-    const result = this.persistence.then(async () => {
-      const file = join(this.options.dataDir, "web-access.json");
-      await writeFile(`${file}.tmp`, contents, { mode: 0o600 });
-      await rename(`${file}.tmp`, file);
-    });
+    const result = this.persistence
+      .then(async () => {
+        const file = join(this.options.dataDir, "web-access.json");
+        await writeFile(`${file}.tmp`, contents, { mode: 0o600 });
+        await rename(`${file}.tmp`, file);
+      })
+      .catch((cause) => {
+        throw new Error("web_state_save_failed", { cause });
+      });
     this.persistence = result.catch(() => undefined);
     return result;
   }
@@ -2393,7 +2472,7 @@ export class WebAccessService {
       return validateRegistration(value, DEFAULT_RELAY_BROKER);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
-      throw error;
+      throw new Error("invalid_account_registration", { cause: error });
     }
   }
   async prepareAccountClaim(accountId: string): Promise<void> {
@@ -3631,6 +3710,33 @@ export class WebAccessService {
       return false;
     return (await this.registeredWorkspaces(reserved)).some((row) => row.id === workspaceId);
   }
+  private async queueScope(sessionId: string, hash: string, reserved = false, codexOnly = true) {
+    if (this.options.mode !== "lan") return this.codexScope(sessionId, hash, reserved, codexOnly);
+    // Use the same registered Codex scope as LAN send. LAN has no workspace allowlist.
+    const catalog = (await this.scopeCatalog(reserved)) as {
+      sessions?: { id: string; agent: string; workspace_id: string }[];
+    };
+    const workspaceId = catalog.sessions?.find(
+      (row) => row.id === sessionId && row.agent === "codex",
+    )?.workspace_id;
+    if (
+      !workspaceId ||
+      !(await this.registeredWorkspaces(reserved)).some(({ id }) => id === workspaceId)
+    )
+      throw new HttpError(403, "workspace_not_authorized");
+    this.grant(hash, "send");
+    return workspaceId;
+  }
+
+  private async ownerWaitQueue(sessionId: string, workspaceId: string, reserved = false) {
+    const result = (await this.runtime(
+      { operation: "queue-list", sessionId, ownerWaitOnly: true },
+      undefined,
+      reserved,
+    )) as { data?: QueueEntry[] };
+    return (result.data ?? []).filter((row) => isOwnerWaitQueueEntry(row, workspaceId));
+  }
+
   private async readSessionCapabilities(
     res: ConversationResponse,
     hash: string,
@@ -3681,9 +3787,25 @@ export class WebAccessService {
         : session.agent === "devin"
           ? this.options.verifiedDevinManaged === true
           : session.agent === "antigravity" || this.options.verifiedClaudeManaged === true;
+    let lanOwnerWait: QueueEntry | undefined;
+    if (
+      this.options.mode === "lan" &&
+      session.agent === "codex" &&
+      stillAllowed &&
+      latest.send &&
+      this.controlsEnabled(sessionId, latest) &&
+      snapshotField(result, "ownerWaitQueue") === true
+    ) {
+      lanOwnerWait = (await this.ownerWaitQueue(sessionId, session.workspace_id)).find(
+        (item) => item.ownerWaitDeviceId === latest.id,
+      );
+      if ((await this.queueScope(sessionId, hash)) !== session.workspace_id)
+        throw new HttpError(403, "workspace_not_authorized");
+      if (latest.id !== this.grant(hash, "send").id) throw new HttpError(401, "access_ended");
+    }
     const projected =
       session.agent === "codex"
-        ? this.projectCapabilities(result, latest, stillAllowed, sessionId)
+        ? this.projectCapabilities(result, latest, stillAllowed, sessionId, lanOwnerWait)
         : this.projectClaudeCapabilities(result, latest, sessionId, verified);
     return this.json(res, 200, projected);
   }
@@ -3828,8 +3950,9 @@ export class WebAccessService {
     device: WebDevice,
     workspaceAllowed = true,
     sessionId?: string,
+    lanOwnerWait?: QueueEntry,
   ) {
-    const data = result as {
+    const { ownerWaitQueue: _ownerWaitQueue, ...data } = result as {
       features?: Record<string, { available: boolean; reason?: string }>;
       [key: string]: unknown;
     };
@@ -3838,13 +3961,19 @@ export class WebAccessService {
         const fullOnly =
           ["context", "resources", "settings-state", "usage", "goal"].includes(operation) ||
           operation.startsWith("goal-");
+        const lanWaitFeature =
+          this.options.mode === "lan" &&
+          lanOwnerWait !== undefined &&
+          (operation === "queue-list" ||
+            (operation === "queue-delete" && canDeleteOwnerWait(lanOwnerWait, device.id)));
+        const permission = lanWaitFeature ? "send" : this.codexPermission(operation);
         const allowed =
           isCodexMode(data.executionMode) &&
           (operation === "usage" || this.controlsEnabled(sessionId, device)) &&
-          device[this.codexPermission(operation)] === true &&
+          device[permission] === true &&
           (!fullOnly || this.isFullAccess(device)) &&
           (operation !== "fork" || device.organize === true) &&
-          (this.options.mode !== "lan" || operation === "send") &&
+          (this.options.mode !== "lan" || operation === "send" || lanWaitFeature) &&
           workspaceAllowed;
         return [operation, allowed ? feature : { available: false, reason: "permission_denied" }];
       }),
@@ -3903,13 +4032,16 @@ export class WebAccessService {
       )
     )
       throw new HttpError(400, "invalid_input");
-    if (this.options.mode === "lan") throw new HttpError(403, "capability_unavailable");
-    const permission = this.codexPermission(operation);
+    const lanQueueDelete = this.options.mode === "lan" && !generic && operation === "queue-delete";
+    if (this.options.mode === "lan" && !lanQueueDelete)
+      throw new HttpError(403, "capability_unavailable");
+    const permission = lanQueueDelete ? "send" : this.codexPermission(operation);
     const device = this.grant(hash, permission);
     if (operation.startsWith("goal-")) this.fullAccess(hash);
     if (operation === "fork") this.grant(hash, "organize");
     const sessionId = this.field(body.sessionId);
-    if (!generic || this.isFullAccess(device))
+    if (lanQueueDelete) await this.queueScope(sessionId, hash);
+    else if (!generic || this.isFullAccess(device))
       await this.codexScope(sessionId, hash, false, !generic);
     if (!this.controlsEnabled(sessionId, device))
       throw new HttpError(403, "session_control_not_allowed");
@@ -3931,7 +4063,7 @@ export class WebAccessService {
       opensPicker,
       generic,
     });
-    if ("ack" in replay) return this.json(res, 200, replay.ack);
+    if ("ack" in replay) return this.json(res, 200, projectQueueActionAck(replay.ack));
     if (body.bootId !== this.bootId) throw new HttpError(409, "stale_boot");
     if (
       operation !== "resume" &&
@@ -3943,7 +4075,9 @@ export class WebAccessService {
       throw new HttpError(409, "outcome_unknown");
     }
     if (this.admission || this.active.has(sessionId)) throw new HttpError(409, "operation_busy");
-    const workspaceId = await this.codexScope(sessionId, hash, false, !generic);
+    const workspaceId = lanQueueDelete
+      ? await this.queueScope(sessionId, hash)
+      : await this.codexScope(sessionId, hash, false, !generic);
     if (this.requests.has(requestId) || this.unconfirmed.has(sessionId)) {
       control.priorUncertain = true;
       throw new HttpError(409, "outcome_unknown");
@@ -4143,8 +4277,27 @@ export class WebAccessService {
     )) as {
       features?: Record<string, AttachmentAvailability>;
       executionMode?: string;
+      ownerWaitQueue?: boolean;
     };
-    const policy = await this.validateSessionAction(admission, capabilities.executionMode);
+    // Wait entries belong to AgentKib, independent of the native session's current owner.
+    // Never fall through to a native deletion when a LAN client or a follower cancels one.
+    const onlyWaitCanBeDeleted =
+      this.options.mode === "lan" ||
+      (capabilities.executionMode === "codex-follower" && capabilities.ownerWaitQueue === true);
+    const queuedWait =
+      operation === "queue-delete" &&
+      isCodexMode(capabilities.executionMode) &&
+      (onlyWaitCanBeDeleted || capabilities.ownerWaitQueue === true)
+        ? (await this.ownerWaitQueue(sessionId, admission.workspaceId, true)).find(
+            (item) => item.id === body.queuedSubmissionId,
+          )
+        : undefined;
+    const ownerWaitOnly = operation === "queue-delete" && (onlyWaitCanBeDeleted || !!queuedWait);
+    if (ownerWaitOnly && (!queuedWait || !canDeleteOwnerWait(queuedWait, device.id)))
+      throw new HttpError(409, "queue_item_unavailable");
+    const policy: ProviderValidation = ownerWaitOnly
+      ? { available: true }
+      : await this.validateSessionAction(admission, capabilities.executionMode);
     if (policy.requiresSend) this.grant(hash, "send");
     if (
       policy.textOnlyQueue &&
@@ -4187,6 +4340,7 @@ export class WebAccessService {
       runtimeBootId: snapshot.runtimeBootId,
       experimentalEnabled: true,
       ...(policy.publicReceipt ? { publicInputHash } : {}),
+      ...(ownerWaitOnly ? { ownerWaitOnly: true } : {}),
     };
     // Every operation has an explicit public-field projection. Paths and raw RPC input never pass through.
     if (["steer", "queue-add", "queue-update"].includes(operation)) {
@@ -4376,10 +4530,14 @@ export class WebAccessService {
       opensPicker,
       settingsControl,
     } = admission;
-    this.grant(hash, permission);
-    if (!(await this.workspaceAllowed(workspaceId, this.grant(hash), true)))
-      throw new HttpError(403, "workspace_not_authorized");
-    this.grant(hash, permission);
+    const current = this.grant(hash, permission);
+    const scopeAllowed =
+      params.ownerWaitOnly === true
+        ? (await this.queueScope(sessionId, hash, true)) === workspaceId
+        : await this.workspaceAllowed(workspaceId, current, true);
+    if (!scopeAllowed) throw new HttpError(403, "workspace_not_authorized");
+    if (this.grant(hash, permission).id !== admission.device.id)
+      throw new HttpError(401, "access_ended");
     if (body.bootId !== this.bootId) throw new HttpError(409, "stale_boot");
     if (dispatch.historyScopeKey)
       await this.assertHistoryScope(hash, dispatch.historyScopeKey, true);
@@ -4449,7 +4607,7 @@ export class WebAccessService {
       res.once("finish", () => {
         if (!res.destroyed && res.statusCode === 200) this.clearUnconfirmed(sessionId);
       });
-    return this.json(res, 200, result);
+    return this.json(res, 200, projectQueueActionAck(result));
   }
   /** A deleted conversation takes its uploads with it, sent or not. */
   private async forgetDeletedSession(sessionId: string) {
@@ -6505,6 +6663,13 @@ export class WebAccessService {
         )
           throw new HttpError(403, "workspace_not_authorized");
         const device = this.grant(hash, permission);
+        if (
+          operation === "send" &&
+          this.scheduler &&
+          isCodexMode(snapshotField(snapshot, "executionMode")) &&
+          (lan || device.advancedControl === true)
+        )
+          params.allowOwnerWait = true;
         const restrictCodexNativePolicy = operation === "send" && !this.isFullAccess(device);
         params.runtimeBootId = snapshot.runtimeBootId;
         dispatched = true;
@@ -6717,22 +6882,27 @@ export class WebAccessService {
       if (!legacyCodex && this.options.mode === "lan")
         throw new HttpError(403, "capability_unavailable");
       const sessionId = this.field(url.searchParams.get("sessionId"));
-      const device = this.grant(hash, "advancedControl");
-      await this.codexScope(sessionId, hash, false, legacyCodex);
-      if (this.grant(hash, "advancedControl").id !== device.id)
-        throw new HttpError(401, "access_ended");
-      const result = await this.runtime({ operation: "queue-list", sessionId });
-      await this.codexScope(sessionId, hash, false, legacyCodex);
-      if (this.grant(hash, "advancedControl").id !== device.id)
-        throw new HttpError(401, "access_ended");
-      if ((result as { reason?: string }).reason === "queue-too-large")
-        throw new HttpError(409, "queue_too_large");
-      const entries =
-        (
-          result as {
-            data?: { id: string; status?: string; input?: { type: string; text?: string }[] }[];
+      const permission = lan ? "send" : "advancedControl";
+      const device = this.grant(hash, permission);
+      const workspaceId = await this.queueScope(sessionId, hash, false, legacyCodex);
+      if (this.grant(hash, permission).id !== device.id) throw new HttpError(401, "access_ended");
+      const result = lan
+        ? {
+            data: (await this.ownerWaitQueue(sessionId, workspaceId)).filter(
+              (item) => item.ownerWaitDeviceId === device.id,
+            ),
           }
-        ).data ?? [];
+        : ((await this.runtime({ operation: "queue-list", sessionId })) as {
+            data?: QueueEntry[];
+            reason?: string;
+          });
+      if ((await this.queueScope(sessionId, hash, false, legacyCodex)) !== workspaceId)
+        throw new HttpError(403, "workspace_not_authorized");
+      const current = this.grant(hash, permission);
+      if (current.id !== device.id) throw new HttpError(401, "access_ended");
+      if ("reason" in result && result.reason === "queue-too-large")
+        throw new HttpError(409, "queue_too_large");
+      const entries = result.data ?? [];
       return this.json(res, 200, {
         sessionId,
         ...(!legacyCodex
@@ -6745,6 +6915,15 @@ export class WebAccessService {
           id: item.id,
           ...(item.status && ["pending", "claimed", "dispatched", "unknown"].includes(item.status)
             ? { status: item.status }
+            : {}),
+          ...(isOwnerWaitQueueEntry(item, workspaceId)
+            ? {
+                reason: item.reason,
+                actions: {
+                  update: { available: false, reason: item.reason },
+                  delete: { available: canDeleteOwnerWait(item, current.id) },
+                },
+              }
             : {}),
           hasAttachments: (item.input ?? []).some(
             (input) => input.type !== "text" || input.text?.startsWith("User attached file "),
@@ -6776,6 +6955,7 @@ export class WebAccessService {
         status?: string;
         recovery?: unknown;
         completionObserved?: unknown;
+        ack?: unknown;
       };
       this.grant(hash);
       if (result.recovery !== undefined) {
@@ -6805,8 +6985,14 @@ export class WebAccessService {
       }
       if (result.found) {
         if (result.operation?.startsWith("goal-")) this.fullAccess(hash);
-        const permission =
-          result.operation === "approve"
+        const ownWaitDelete =
+          lan &&
+          result.operation === "queue-delete" &&
+          isCodexMode(result.executionMode) &&
+          snapshotField(result.ack, "ownerWaitOnly") === true;
+        const permission = ownWaitDelete
+          ? "send"
+          : result.operation === "approve"
             ? "approve"
             : ["create", "adopt", "release", "reconcile"].includes(result.operation ?? "")
               ? "manage"
@@ -6891,7 +7077,11 @@ export class WebAccessService {
             return this.json(res, 200, { ...result, sessionId });
         }
       }
-      return this.json(res, 200, result);
+      return this.json(
+        res,
+        200,
+        result.ack === undefined ? result : { ...result, ack: projectQueueActionAck(result.ack) },
+      );
     }
     if (path === "/managed/options") {
       const requestedWorkspace = url.searchParams.get("workspaceId");

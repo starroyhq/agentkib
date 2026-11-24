@@ -9,6 +9,7 @@ import {
 } from "./cursor-native-import";
 import { CursorBridge } from "./cursor-bridge";
 import { ClaudeBridge, type ClaudeBridgeTarget } from "./agents/claude/claude-bridge";
+import { ClaudeBridgePluginUpdater } from "./agents/claude/claude-bridge-plugin-update";
 import { readClaudeTranscriptObservation } from "./agents/claude/claude-context-usage";
 import { ClaudeSessionProvider } from "./agents/claude/session-provider";
 import type { CodexSessionProvider } from "./agents/codex/session-provider";
@@ -862,12 +863,20 @@ export class TypeScriptBackend {
             readers.verifyClaudeBridgeWorktree(target.nativeId, source, target.workspace);
           return observation;
         };
+        const claudePluginDirectory = this.environment.AGENTKIB_CLAUDE_PLUGIN_DIR ?? "";
         this.#claudeBridge = new ClaudeBridge({
           dataDir,
           legacyDataDir: this.environment.AGENTKIB_LEGACY_DEV_DATA_DIR,
           sessionIdForNative: (nativeId) => store.sessions.id("claude-code", nativeId),
           bootId: claudeOwner.bootId,
-          pluginDirectory: this.environment.AGENTKIB_CLAUDE_PLUGIN_DIR ?? "",
+          pluginDirectory: claudePluginDirectory,
+          ...(claudePluginDirectory && {
+            pluginUpdate: new ClaudeBridgePluginUpdater({
+              dataDir,
+              environment: { ...process.env, ...this.environment },
+              pluginDirectory: claudePluginDirectory,
+            }),
+          }),
           // A connected terminal session may be a Project Agent (docs/agents/project-agent.md).
           lead: {
             tools: (sessionId) => this.#orchestration?.leadToolSpecs(sessionId) ?? null,
@@ -2458,6 +2467,21 @@ export class TypeScriptBackend {
     return {
       session,
       live,
+      deferCodexSend: (value, binding, handoff) =>
+        this.#withWebRead((owner) =>
+          (owner.codexSessionProvider() as CodexSessionProvider).deferCodexSend(
+            value,
+            binding,
+            handoff,
+          ),
+        ),
+      cancelDeferredCodexSend: (binding, requestId) =>
+        this.#withWebRead(async (owner) =>
+          (owner.codexSessionProvider() as CodexSessionProvider).cancelDeferredCodexSend(
+            binding,
+            requestId,
+          ),
+        ),
       observe: async (sessionId) => {
         const bridge = dsh(sessionId);
         if (bridge) return bridge.live(sessionId, false);
@@ -3036,6 +3060,12 @@ export class TypeScriptBackend {
         this.#dshSessionProvider,
         (sessionId, operation) => this.#workerObserver.controlled(sessionId, operation),
         async (request) => this.#requestWebSession(request),
+        {
+          checkDeferredCodexSend: (owner) =>
+            this.#orchestration?.checkDeferredCodexSend(owner) ?? "revoked",
+          deferredCodexSendResult: (owner, requestId, result) =>
+            this.#orchestration?.deferredCodexSendResult(owner, requestId, result),
+        },
       );
       this.#webRead.observeLanes({
         turnEnded: this.#workerObserver.turnEnded,
@@ -3077,7 +3107,10 @@ export class TypeScriptBackend {
     try {
       const operation = String(params.operation);
       if (operation === "schedule-list") {
-        const serial = this.#withWebRead((owner) => owner.serialScheduleList());
+        const serial = this.#withWebRead(async (owner) => [
+          ...(await owner.serialScheduleList()),
+          ...(owner.codexSessionProvider() as CodexSessionProvider).ownerWaitScheduleList(),
+        ]);
         if (params.serialOnly === true) return { sessions: await serial };
         const [claude, queued] = await Promise.all([
           this.#claudeManaged!.request(params) as Promise<{ sessions?: unknown[] }>,
@@ -3090,6 +3123,10 @@ export class TypeScriptBackend {
         };
       }
       if (operation.startsWith("schedule-") && typeof params.sessionId === "string") {
+        if (params.agent === "codex")
+          return this.#withWebRead((owner) =>
+            (owner.codexSessionProvider() as CodexSessionProvider).ownerWaitSchedule(params),
+          );
         const agent = this.#store?.sessions.get(params.sessionId)?.agent;
         if (agent === "devin" || agent === "antigravity")
           return this.#withWebRead((owner) => owner.serialSchedule(params));
@@ -3104,14 +3141,18 @@ export class TypeScriptBackend {
         if (deviceId && params.quitting !== true) {
           this.#orchestration?.invalidateDevice(deviceId);
           // Nor does AgentKib continue a Codex session in its name after a usage limit.
-          void this.#withWebRead((owner) => owner.invalidateUsageLimitDevice(deviceId)).catch(
-            () => undefined,
-          );
+          await this.#withWebRead(async (owner) =>
+            owner.invalidateUsageLimitDevice(deviceId),
+          ).catch(() => undefined);
         }
         if (deviceId)
-          await this.#withWebRead((owner) =>
-            owner.invalidateSerialSchedule(deviceId, params.quitting === true),
-          ).catch(() => undefined);
+          await this.#withWebRead((owner) => {
+            if (params.quitting === true)
+              (owner.codexSessionProvider() as CodexSessionProvider).suspendOwnerWaitDevice(
+                deviceId,
+              );
+            return owner.invalidateSerialSchedule(deviceId, params.quitting === true);
+          }).catch(() => undefined);
       }
       if (String(params.operation).startsWith("lead-")) return await this.#requestLead(params);
       // The desktop's local management channel also reports the DeepSeek Harness connection.
@@ -3140,9 +3181,13 @@ export class TypeScriptBackend {
         return { backgroundTasks: await this.#claudeManaged.backgroundTasksStatus() };
       }
       if (
-        ["bridge-status", "bridge-challenge", "bridge-disconnect", "bridge-auto-connect"].includes(
-          operation,
-        )
+        [
+          "bridge-status",
+          "bridge-challenge",
+          "bridge-disconnect",
+          "bridge-auto-connect",
+          "bridge-plugin-retry",
+        ].includes(operation)
       )
         return this.#claudeBridge!.management(params);
       return this.#claudeSessionProvider!.native(params);

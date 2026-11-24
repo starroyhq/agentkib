@@ -5,6 +5,7 @@ import { readFile, writeFile, mkdir, rename } from "node:fs/promises";
 import path from "node:path";
 import { homedir } from "node:os";
 import { WebAccessService, createWebControlState } from "./web/service";
+import { webAdminReply } from "./web/admin-errors";
 import { acceptanceSession } from "./web/acceptance";
 import { ConversationHub } from "./conversation-hub";
 import { registerConversationIpc } from "./ipc/conversation";
@@ -914,14 +915,16 @@ function registerHomeIpc(): void {
   forward("agentkib:remote:request", RUNTIME_METHODS.remoteRequest, (input: unknown) =>
     requireRemoteRequest(input),
   );
-  handle("agentkib:web:request", (_event, input: unknown) => {
-    const request = input as Parameters<WebAccessService["request"]>[0];
-    if (request?.target !== undefined && request.target !== "lan")
-      throw new Error("invalid_web_target");
-    const service = request?.target === "lan" ? lanWebAccess : webAccess;
-    if (!service) throw new Error("web_unavailable");
-    return service.request(request);
-  });
+  handle("agentkib:web:request", (_event, input: unknown) =>
+    webAdminReply(() => {
+      const request = input as Parameters<WebAccessService["request"]>[0];
+      if (request?.target !== undefined && request.target !== "lan")
+        throw new Error("invalid_web_target");
+      const service = request?.target === "lan" ? lanWebAccess : webAccess;
+      if (!service) throw new Error("web_unavailable");
+      return service.request(request);
+    }),
+  );
   handle("agentkib:home:runtime", async () => {
     const runtime = await requireRuntime().request(RUNTIME_METHODS.runtimeInfo, {});
     return withElectronRuntimeCapabilities(runtime);

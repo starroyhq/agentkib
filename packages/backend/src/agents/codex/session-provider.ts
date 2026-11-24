@@ -97,7 +97,21 @@ import { CodexLeadTurns } from "../../lead-turn-origin";
 import { CodexTitleThreads, codexUserMessageText, threadTitleModel } from "./codex-thread-title";
 import { CodexUsageLimits } from "./usage-limits";
 import type { LaneObserver } from "../../sessions/lane-observer";
-import type { WorkerRestartRequest, WorkerRestartResult } from "../../orchestration-service";
+import type {
+  DeferredCodexSendOwner,
+  DeferredCodexSendResult,
+  WorkerRestartRequest,
+  WorkerRestartResult,
+} from "../../orchestration-service";
+import {
+  CodexOwnerWait,
+  codexWriterLockPath,
+  isLocalCodexSender,
+  OWNER_WAIT_PAUSED,
+  OWNER_WAIT_REASON,
+  type OwnerWaitEntry,
+  type CodexOwnerWaitSchedule,
+} from "./owner-wait";
 import { readManagedRecords, type ManagedRecord } from "./managed-records";
 import { sanitizeSessionText } from "../../session-handoff";
 
@@ -132,11 +146,26 @@ const managedResumeSchema = z
   })
   .strict();
 
+const ownerWaitSchedule: z.ZodType<CodexOwnerWaitSchedule> = z.strictObject({
+  agent: z.literal("codex"),
+  operation: z.enum(["schedule-prepare", "schedule-dispatch", "schedule-pause"]),
+  sessionId: z.string().min(1).max(256),
+  deviceId: z.string().min(1).max(256),
+  runtimeBootId: z.string().min(1).max(256),
+  requestId: z.uuid(),
+  itemId: z.uuid().optional(),
+  expectedRevision: z.number().int().nonnegative().optional(),
+  permitId: z.uuid().optional(),
+  restrictNativePolicy: z.boolean().optional(),
+  reason: z.string().optional(),
+});
+
 const managedQueueSchema = z
   .object({
     operation: z.literal("queue-list"),
     sessionId: z.string().min(1).max(256),
     limit: z.number().int().min(1).max(100).optional(),
+    ownerWaitOnly: z.literal(true).optional(),
   })
   .strict();
 
@@ -281,6 +310,12 @@ type CodexSessionHost = {
   controlSession(value: Record<string, unknown>, restrictNativePolicy?: boolean): Promise<unknown>;
   querySession(value: SessionQuery): Promise<unknown>;
   requestSession?(value: Record<string, unknown>): Promise<unknown>;
+  checkDeferredCodexSend?(owner: DeferredCodexSendOwner): "ready" | "paused" | "revoked";
+  deferredCodexSendResult?(
+    owner: DeferredCodexSendOwner,
+    requestId: string,
+    result: DeferredCodexSendResult,
+  ): void;
   normalizeContextUsage(snapshot: { usage?: unknown; reason?: unknown }): ContextUsage;
   compactingRejection(
     request: { requestId: string; sessionId?: string },
@@ -346,6 +381,7 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
   #transientSessions = new Set<CodexAppServerSession>();
   #subagentObservers = new WeakMap<object, { identity: string; id: string }>();
   readonly #desktopFollower: CodexDesktopFollower;
+  readonly #ownerWait: CodexOwnerWait;
 
   constructor(private readonly host: CodexSessionHost) {
     const { environment } = host;
@@ -365,6 +401,21 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
         host.publishConversationEvent?.(sessionId, type, payload, live, item),
       hasLaneObserver: () => host.hasLaneObserver(),
       observeLane: (notify) => host.observeLane(notify),
+    });
+    this.#ownerWait = new CodexOwnerWait({
+      dataDir: host.dataDir,
+      bootId: host.runtimeBootId,
+      deliver: (entry, beforeDispatch) =>
+        host.runOperation(() => this.#deliverOwnerWait(entry, beforeDispatch)),
+      canDeliver: ({ worker }) =>
+        worker ? (host.checkDeferredCodexSend?.(worker) ?? "revoked") : "ready",
+      changed: (sessionId) =>
+        host.publishConversationEvent?.(sessionId, "invalidate", {
+          domains: ["queue", "ownership", "receipts"],
+        }),
+      report: ({ worker, request }, result) => {
+        if (worker) host.deferredCodexSendResult?.(worker, request.requestId, result);
+      },
     });
     this.#usageLimits = new CodexUsageLimits({
       dataDir: host.dataDir,
@@ -398,6 +449,48 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
     return this.host.admitControl(value, (request, fingerprint) =>
       this.#codexControl(request, fingerprint, { restrictNativePolicy }),
     );
+  }
+
+  deferCodexSend(
+    value: Record<string, unknown>,
+    owner: DeferredCodexSendOwner,
+    desktopOwnerHandoff: boolean,
+  ) {
+    if (
+      value.operation !== "send" ||
+      value.sessionId !== owner.sessionId ||
+      value.deviceId !== owner.deviceId
+    )
+      throw new Error("session-unavailable");
+    return this.host.runOperation(() =>
+      this.host.admitControl(value, (request, fingerprint) =>
+        this.#codexControl(request, fingerprint, { desktopOwnerHandoff, workerOwner: owner }),
+      ),
+    );
+  }
+
+  suspendOwnerWaitDevice(deviceId: string): void {
+    this.#ownerWait.suspendDevice(deviceId);
+  }
+
+  ownerWaitScheduleList() {
+    return this.#ownerWait.scheduleList();
+  }
+
+  ownerWaitSchedule(value: unknown) {
+    return this.host.runOperation(() => this.#ownerWait.schedule(ownerWaitSchedule.parse(value)));
+  }
+
+  cancelDeferredCodexSend(owner: DeferredCodexSendOwner, requestId: string): boolean | "dismissed" {
+    const entry = this.#ownerWait.read(owner.sessionId);
+    if (
+      entry?.request.requestId !== requestId ||
+      !entry.worker ||
+      stableJson(entry.worker) !== stableJson(owner)
+    )
+      return false;
+    if (entry.delivering) return this.#ownerWait.dismissInterrupted(entry) ? "dismissed" : false;
+    return this.#ownerWait.cancel(entry);
   }
 
   /** A delegated send was admitted by the lead after discovery found no window owner. */
@@ -469,6 +562,7 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
   stopTimers(): void {
     clearInterval(this.#retirementTimer);
     this.#usageLimits.stopTimers();
+    this.#ownerWait.stop();
   }
 
   closeDiscovery(): void {
@@ -1339,6 +1433,49 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
 
   async queue(value: unknown) {
     const request = managedQueueSchema.parse(value);
+    const waiting = this.#ownerWait.read(request.sessionId);
+    if (waiting && !waiting.worker) {
+      const source = await this.#inactiveRecord(request.sessionId);
+      if (source.native_id !== waiting.nativeId || source.workspace_id !== waiting.workspaceId)
+        throw new Error("session-unavailable");
+      const paused = this.#ownerWait.paused(waiting);
+      const runner = this.#managedRunners.get(request.sessionId);
+      const native =
+        !request.ownerWaitOnly && runner?.session.connected && runner.queueVerified === true
+          ? await readManagedQueue(
+              runner.session,
+              waiting.nativeId,
+              Math.max(1, (request.limit ?? 100) - 1),
+            )
+          : undefined;
+      return {
+        complete: native?.complete ?? true,
+        nextCursor: null,
+        data: [
+          {
+            id: waiting.request.requestId,
+            ownerWait: true,
+            ownerWaitDeviceId: waiting.request.deviceId ?? "desktop-local",
+            ownerWaitWorkspaceId: waiting.workspaceId,
+            status: waiting.delivering ? "unknown" : "pending",
+            reason: waiting.delivering
+              ? "control-outcome-unconfirmed"
+              : paused
+                ? OWNER_WAIT_PAUSED
+                : OWNER_WAIT_REASON,
+            input: waiting.request.input ?? [{ type: "text", text: waiting.request.text ?? "" }],
+            actions: {
+              update: { available: false, reason: OWNER_WAIT_REASON },
+              delete: {
+                available: !waiting.delivering || waiting.bootId !== this.host.runtimeBootId,
+              },
+            },
+          },
+          ...(request.limit === 1 ? [] : (native?.data ?? [])),
+        ],
+      };
+    }
+    if (request.ownerWaitOnly) return { data: [], complete: true, nextCursor: null };
     const record = readManagedRecords(this.host.dataDir, this.host.store).find(
       (item) => item.id === request.sessionId,
     );
@@ -2092,6 +2229,7 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
         const followed = await this.#desktopFollower.live(source, live, controls);
         if (followed) {
           const f = followed;
+          const waiting = this.#ownerWait.read(source.id);
           const unknown = managedSessionHasUnknownCommands(this.host.dataDir, source.id);
           const forkable =
             controls &&
@@ -2200,9 +2338,21 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
             ],
             ["delete", { available: false, reason: deleteReason }],
           ]);
+          if (waiting && !waiting.worker) {
+            features["queue-list"] = { available: true };
+            features["queue-delete"] = {
+              available:
+                controls && (!waiting.delivering || waiting.bootId !== this.host.runtimeBootId),
+            };
+            features.send = {
+              available: controls && this.#ownerWait.paused(waiting) && !waiting.delivering,
+              reason: OWNER_WAIT_REASON,
+            };
+          }
           return {
             sessionId: source.id,
             executionMode: "codex-follower",
+            ...(waiting && !waiting.worker && { ownerWaitQueue: true }),
             runtimeBootId: this.host.runtimeBootId,
             status: f.status,
             reason: f.reason,
@@ -2315,9 +2465,30 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
           features.send = { available: true };
           features.attachments = { available: true };
         }
+        const waiting = this.#ownerWait.read(source.id);
+        if (waiting && !waiting.worker) {
+          features["queue-list"] = { available: true };
+          features["queue-delete"] =
+            controls && (!waiting.delivering || waiting.bootId !== this.host.runtimeBootId)
+              ? { available: true }
+              : { available: false, reason: OWNER_WAIT_REASON };
+        }
+        if (waiting) {
+          features.send =
+            controls &&
+            this.#ownerWait.paused(waiting) &&
+            !waiting.delivering &&
+            (live.reason === null || this.#ownerWaitAvailable(live, controls))
+              ? { available: true }
+              : { available: false, reason: OWNER_WAIT_REASON };
+        } else if (this.#ownerWaitAvailable(live, controls)) {
+          features.send = { available: true };
+          features.attachments = { available: true };
+        }
         return {
           sessionId: source.id,
           executionMode: "codex-managed",
+          ...(waiting && !waiting.worker && { ownerWaitQueue: true }),
           runtimeBootId: this.host.runtimeBootId,
           status: live.status,
           reason: live.reason,
@@ -2695,6 +2866,7 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
   /** A device lost access: AgentKib no longer continues in its name after a usage limit. */
   invalidateUsageLimitDevice(deviceId: string): void {
     this.#usageLimits.invalidateDevice(deviceId);
+    this.#ownerWait.invalidateDevice(deviceId);
   }
 
   /** A short-lived subscription must be recorded even between retirement timer ticks. */
@@ -2734,6 +2906,7 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
     source: ManagedRecord,
     request: SettingsControl,
     restrictNativePolicy: boolean,
+    inheritNativePolicy = false,
   ) {
     const unlock = acquireManagedSessionLease(this.host.dataDir, source.id);
     let ownsLease = true;
@@ -2780,7 +2953,7 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
         release,
         undefined,
         undefined,
-        { onFailure: restore, restrictNativePolicy },
+        { onFailure: restore, restrictNativePolicy, inheritNativePolicy },
       );
       this.#managedRunners.set(source.id, runner);
       return runner;
@@ -2893,11 +3066,15 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
       desktopOwnerHandoff = false,
       workerTurn = false,
       workerRestart,
+      workerOwner,
+      ownerWaitDispatch,
     }: {
       restrictNativePolicy?: boolean;
       desktopOwnerHandoff?: boolean;
       workerTurn?: boolean;
       workerRestart?: { workspaceId: string; beforeDispatch: () => void };
+      workerOwner?: DeferredCodexSendOwner;
+      ownerWaitDispatch?: () => void;
     } = {},
   ) {
     let record = readManagedRecords(this.host.dataDir, this.host.store).find(
@@ -2920,6 +3097,102 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
       (!request.experimentalEnabled || request.runtimeBootId !== this.host.runtimeBootId)
     )
       throw new Error("stale-or-disabled-control");
+    const waiting = this.#ownerWait.read(request.sessionId);
+    if (
+      waiting &&
+      request.operation === "queue-delete" &&
+      !waiting.worker &&
+      request.queuedSubmissionId === waiting.request.requestId
+    ) {
+      const source = record ?? (await this.#inactiveRecord(request.sessionId));
+      if (
+        source.workspace_id !== waiting.workspaceId ||
+        ((restrictNativePolicy || request.ownerWaitOnly) &&
+          (request.deviceId ?? "desktop-local") !== (waiting.request.deviceId ?? "desktop-local") &&
+          !(
+            request.deviceId === "desktop-local" &&
+            waiting.delivering &&
+            waiting.bootId !== this.host.runtimeBootId
+          ))
+      )
+        throw new Error("session-unavailable");
+      const prior = claimManagedCommand(
+        this.host.dataDir,
+        request.requestId,
+        request.sessionId,
+        fingerprint,
+        request.deviceId ?? null,
+        codexCommandEvidence(request, source.workspace_id),
+      );
+      if (prior) return prior;
+      const cancelled = waiting.delivering
+        ? this.#ownerWait.dismissInterrupted(waiting)
+        : this.#ownerWait.cancel(waiting);
+      const result = {
+        accepted: cancelled,
+        ownerWaitOnly: true,
+        completed: cancelled,
+        sessionId: request.sessionId,
+        requestId: request.requestId,
+        runtimeBootId: this.host.runtimeBootId,
+        ...(!cancelled ? { reason: "control-outcome-unconfirmed" } : {}),
+      };
+      finishManagedCommand(this.host.dataDir, request.requestId, result);
+      return result;
+    }
+    if (request.ownerWaitOnly) throw new Error("queue-item-not-found");
+    if (waiting && request.operation === "send" && !ownerWaitDispatch) {
+      if (
+        this.#ownerWait.paused(waiting) &&
+        !waiting.delivering &&
+        request.deviceId === waiting.request.deviceId &&
+        (workerOwner || isLocalCodexSender(request.deviceId) || request.allowOwnerWait === true) &&
+        stableJson(waiting.worker) === stableJson(workerOwner) &&
+        sameWaitingCodexInput(request, waiting.request)
+      ) {
+        const source = record ?? (await this.#inactiveRecord(request.sessionId));
+        if (source.native_id !== waiting.nativeId || source.workspace_id !== waiting.workspaceId)
+          throw new Error("session-unavailable");
+        const current = await this.#managedLive(
+          request.sessionId,
+          true,
+          workerOwner ? "send" : undefined,
+        );
+        if (current.revision !== request.expectedRevision)
+          throw new Error("stale-or-disabled-control");
+        const result = {
+          accepted: true,
+          completed: false,
+          status: "waiting-for-owner",
+          reason: OWNER_WAIT_REASON,
+          sessionId: request.sessionId,
+          requestId: request.requestId,
+          runtimeBootId: this.host.runtimeBootId,
+        };
+        const prior = claimManagedCommand(
+          this.host.dataDir,
+          request.requestId,
+          request.sessionId,
+          fingerprint,
+          request.deviceId ?? null,
+          codexCommandEvidence(request, source.workspace_id),
+        );
+        if (prior) return prior;
+        const resumed = this.#ownerWait.resume(waiting, restrictNativePolicy);
+        const receipt = resumed
+          ? result
+          : {
+              ...result,
+              accepted: false,
+              status: "not-dispatched",
+              controlOutcome: "not-dispatched",
+              reason: "codex-owner-wait-not-authorized",
+            };
+        finishManagedCommand(this.host.dataDir, request.requestId, receipt);
+        return receipt;
+      }
+      throw new Error(OWNER_WAIT_REASON);
+    }
     if (request.operation === "usage-limit-cancel")
       return this.#usageLimits.cancel(request, record, fingerprint);
     if (request.operation === "usage-limit-continue")
@@ -2976,12 +3249,21 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
       const inactive = record ?? (await this.#inactiveRecord(request.sessionId));
       const rejectInactive = (reason: string) => reject(reason, inactive.workspace_id);
       if (workerTurn) return rejectInactive("stale-or-disabled-control");
+      const wait = () =>
+        !ownerWaitDispatch &&
+        request.operation === "send" &&
+        (workerOwner || !desktopOwnerHandoff) &&
+        this.#acceptOwnerWait(inactive, request, fingerprint, restrictNativePolicy, workerOwner);
+      const waitAfterFollower = () =>
+        this.#codexWriterOwnership(inactive, true) === "codex-owner-busy" && wait();
       if (
         runner?.retiring ||
         managedSessionHasUnknownCommands(this.host.dataDir, request.sessionId)
       )
         return rejectInactive("control-outcome-unconfirmed");
-      const observedFollower = this.#desktopFollower.attached(inactive);
+      const observedFollower = ownerWaitDispatch
+        ? undefined
+        : this.#desktopFollower.attached(inactive);
       const owner = observedFollower ? this.#codexWriterOwnership(inactive, true) : null;
       const follower = owner === "codex-owner-busy" ? observedFollower : undefined;
       if (observedFollower && owner && !follower) return rejectInactive(owner);
@@ -2992,7 +3274,14 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
           return rejectInactive("follower-operation-unverified");
         if (request.operation === "send" && inactive.snapshot?.settingsStaged === true)
           return rejectInactive("codex-owner-busy");
-        return this.#codexFollowerControl(request, fingerprint, follower, inactive.workspace_id);
+        return this.#codexFollowerControl(
+          request,
+          fingerprint,
+          follower,
+          inactive.workspace_id,
+          false,
+          waitAfterFollower,
+        );
       }
       if (request.expectedSettingsScope !== undefined)
         return rejectInactive("stale-or-disabled-control");
@@ -3019,18 +3308,51 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
             { ownershipReason: owner, reason: owner },
             true,
           );
-          if (!offered) return rejectInactive("codex-desktop-owner-missing");
+          if (!offered) {
+            if (owner === "codex-owner-busy") {
+              const queued = wait();
+              if (queued) return queued;
+            }
+            return rejectInactive("codex-desktop-owner-missing");
+          }
           const handed = await this.#desktopFollower.handoff(inactive);
-          if ("reason" in handed) return rejectInactive(handed.reason);
+          if ("reason" in handed)
+            return (isDesktopUnavailable(handed.reason) && wait()) || rejectInactive(handed.reason);
           return this.#codexFollowerControl(
             { ...request, expectedRevision: handed.revision },
             fingerprint,
             handed.follower,
             inactive.workspace_id,
             true,
+            waitAfterFollower,
           );
         }
-        runner = await this.#connectCodexForControl(inactive, request, restrictNativePolicy);
+        if (
+          !ownerWaitDispatch &&
+          request.operation === "send" &&
+          this.#codexWriterOwnership(inactive) === "codex-owner-busy" &&
+          inactive.snapshot?.settingsStaged !== true
+        ) {
+          const handed = await this.#desktopFollower.handoff(inactive);
+          if ("follower" in handed)
+            return this.#codexFollowerControl(
+              { ...request, expectedRevision: handed.revision },
+              fingerprint,
+              handed.follower,
+              inactive.workspace_id,
+              true,
+              waitAfterFollower,
+            );
+          const queued = isDesktopUnavailable(handed.reason) && wait();
+          if (queued) return queued;
+          return rejectInactive(handed.reason);
+        }
+        runner = await this.#connectCodexForControl(
+          inactive,
+          request,
+          restrictNativePolicy,
+          ownerWaitDispatch !== undefined,
+        );
         record = { ...(runner.state.record as ManagedRecord) };
         request.expectedRevision = runner.state.revision;
         if (request.operation === "send") resumedControlState = managedControlState(runner.state);
@@ -3041,7 +3363,12 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
             checkedAt: Date.now(),
             reason: "codex-owner-busy",
           });
-        if (busy && request.operation === "send" && inactive.snapshot?.settingsStaged !== true) {
+        if (
+          busy &&
+          !ownerWaitDispatch &&
+          request.operation === "send" &&
+          inactive.snapshot?.settingsStaged !== true
+        ) {
           const handed = await this.#desktopFollower.handoff(inactive).catch(() => undefined);
           if (handed && "follower" in handed)
             return this.#codexFollowerControl(
@@ -3050,7 +3377,11 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
               handed.follower,
               inactive.workspace_id,
               true,
+              waitAfterFollower,
             );
+          const queued =
+            handed && "reason" in handed && isDesktopUnavailable(handed.reason) && wait();
+          if (queued) return queued;
         }
         return rejectInactive(
           busy ? "codex-owner-busy" : error instanceof Error ? error.message : "recovery-required",
@@ -3455,6 +3786,7 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
       const beforeDispatch = () => {
         assertDispatchable();
         workerRestart?.beforeDispatch();
+        ownerWaitDispatch?.();
         dispatchManagedCommand(this.host.dataDir, request.requestId);
       };
       let response: unknown;
@@ -3935,8 +4267,10 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
     follower: CodexFollowerRecord,
     workspaceId: string,
     prepared = false,
+    onUnavailable?: () => false | Record<string, unknown> | undefined,
   ): Promise<Record<string, unknown>> {
     let dispatched = false;
+    let claimedHere = false;
     try {
       if (!request.experimentalEnabled || request.runtimeBootId !== this.host.runtimeBootId)
         throw new Error("stale-or-disabled-control");
@@ -4030,6 +4364,7 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
             evidence,
           );
       if (claimed) return claimed;
+      claimedHere = true;
 
       const release = acquireCodexFollowerOperationLock(
         follower.bridge.connection.endpoint,
@@ -4085,6 +4420,30 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
             runtimeBootId: this.host.runtimeBootId,
           };
       if (!unknown && dispatched === false) {
+        if (
+          request.operation === "send" &&
+          onUnavailable &&
+          (isDesktopUnavailable(result.reason) || result.reason === "Codex IPC disconnected")
+        ) {
+          if (!claimedHere && !prepared) {
+            const prior = claimManagedCommand(
+              this.host.dataDir,
+              request.requestId,
+              request.sessionId,
+              fingerprint,
+              request.deviceId ?? null,
+              codexCommandEvidence(request, workspaceId),
+            );
+            if (prior) return prior;
+          }
+          let queued: ReturnType<typeof onUnavailable> = undefined;
+          try {
+            queued = onUnavailable();
+          } catch {
+            // Preserve the definite transport refusal if the wait cannot be recorded.
+          }
+          if (queued) return queued;
+        }
         try {
           finishManagedCommand(this.host.dataDir, request.requestId, result);
         } catch {
@@ -4506,23 +4865,25 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
     {
       onFailure,
       restrictNativePolicy = false,
+      inheritNativePolicy = false,
       validateModelChoice = false,
     }: {
       onFailure?: (error: unknown, ownsLease: boolean) => void;
       restrictNativePolicy?: boolean;
+      inheritNativePolicy?: boolean;
       validateModelChoice?: boolean;
     } = {},
   ): Promise<ManagedRunner> {
     if (pathIdentity(workspace) !== pathIdentity(canonicalize(record.workspace)))
       throw new Error("session-workspace-mismatch");
     const cwd = this.#managedCwd(record);
-    const nativePolicy = this.#nativeCodexPolicy(record);
+    const nativePolicy = this.#nativeCodexPolicy(record, inheritNativePolicy);
     if (nativePolicy?.policyId === null) throw new Error(nativePolicy.reason);
     if (restrictNativePolicy)
       requireFullAccessForNativePolicy(
         nativePolicy?.policyId ?? (record.adopted ? record.policy_id : undefined),
       );
-    if (nativePolicy && !codexPolicyOverride(record)) {
+    if (nativePolicy && (inheritNativePolicy || !codexPolicyOverride(record))) {
       record = { ...record, policy_id: nativePolicy.policyId, policy_override: false };
     }
     // Resume the verified native policy. An explicit AgentKib selection applies at turn/start.
@@ -4753,7 +5114,7 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
         if (pathIdentity(this.#managedCwd(record)) !== pathIdentity(cwd))
           throw new Error("codex-workspace-mismatch");
         if (nativePolicy || restrictNativePolicy) {
-          const current = this.#nativeCodexPolicy(record);
+          const current = this.#nativeCodexPolicy(record, inheritNativePolicy);
           if (restrictNativePolicy) requireFullAccessForNativePolicy(current?.policyId);
           if (current?.policyId !== nativePolicy?.policyId)
             throw new Error(
@@ -4983,7 +5344,11 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
 
   async live(sessionId: string, enabled: boolean) {
     const live = await this.#managedLive(sessionId, enabled);
-    return this.#usageLimits.projectLive(sessionId, live);
+    return this.#projectOwnerWait(
+      sessionId,
+      this.#usageLimits.projectLive(sessionId, live),
+      enabled,
+    );
   }
 
   /** Worker reads need output evidence and external ownership, even when no page is open. */
@@ -4997,7 +5362,11 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
               ...resident.state.workerObservation(),
             }
           : await this.#managedLive(sessionId, controls, intent ?? "read");
-      return this.#usageLimits.projectLive(sessionId, live);
+      return this.#projectOwnerWait(
+        sessionId,
+        this.#usageLimits.projectLive(sessionId, live),
+        controls,
+      );
     });
   }
 
@@ -5113,8 +5482,9 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
     return { summary, nativeId, workspace, transcript };
   }
 
-  #nativeCodexPolicy(record: ManagedRecord): CodexNativePolicy | undefined {
-    if (!record.adopted || !record.native_id || !this.#isCodexHome(record.home)) return;
+  #nativeCodexPolicy(record: ManagedRecord, inherit = false): CodexNativePolicy | undefined {
+    if ((!inherit && !record.adopted) || !record.native_id || !this.#isCodexHome(record.home))
+      return;
     const read = this.host.sessions.codexHistoricalSettings;
     if (!read) return;
     const history = read.call(this.host.sessions, record.native_id, record.workspace);
@@ -5247,6 +5617,12 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
       ...(workerTurn
         ? { workerProgress: workerTurn.workerProgress, commands: workerTurn.commands }
         : {}),
+      ...(controls &&
+      reason === "codex-owner-busy" &&
+      record.snapshot?.settingsStaged !== true &&
+      this.#ownerLockExists(this.#writerLock(record))
+        ? { ownerWaitAvailable: true }
+        : {}),
       sendEnabled: controls && reason === null && !starting,
       stopEnabled: false,
       approvals: [],
@@ -5257,17 +5633,182 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
     };
   }
 
+  #writerLock(record: ManagedRecord): string {
+    let transcript: string | undefined;
+    try {
+      transcript = this.host.sessions.verifiedCodexSubagentParent(
+        record.id,
+        record.native_id!,
+        record.workspace,
+      ).transcript;
+    } catch {
+      // Older or unpublished sessions can only prove the unaliased key.
+    }
+    return codexWriterLockPath(record.home, record.native_id!, transcript);
+  }
+
+  #acceptOwnerWait(
+    record: ManagedRecord,
+    request: SettingsControl,
+    fingerprint: string,
+    restrictNativePolicy: boolean,
+    worker?: DeferredCodexSendOwner,
+  ) {
+    if (
+      !record.native_id ||
+      record.archived ||
+      record.snapshot?.settingsStaged === true ||
+      (!worker && !isLocalCodexSender(request.deviceId) && request.allowOwnerWait !== true) ||
+      (worker &&
+        (worker.workspaceId !== record.workspace_id ||
+          this.host.checkDeferredCodexSend?.(worker) !== "ready"))
+    )
+      return;
+    const home = this.#assertManagedHome(record);
+    const lock = this.#writerLock(record);
+    // An authoritative busy response may outlive the lock it saw. A known lock path is
+    // required for a wait; leave other definite refusals as normal receipts.
+    if (!this.#ownerLockExists(lock) || request.historyReferences?.length) return;
+    followerInput(request.input, request.text, request.resourceRefs);
+    return this.#ownerWait.accept(
+      {
+        request,
+        nativeId: record.native_id,
+        workspaceId: record.workspace_id,
+        home,
+        lock,
+        acceptedAt: Date.now(),
+        restrictNativePolicy,
+        worker,
+      },
+      fingerprint,
+      codexCommandEvidence(request, record.workspace_id),
+    );
+  }
+
+  #ownerLockExists(lock: string): boolean {
+    try {
+      return lstatSync(lock).isFile();
+    } catch {
+      return false;
+    }
+  }
+
+  #ownerWaitAvailable(live: Record<string, unknown>, controls: boolean): boolean {
+    return (
+      controls &&
+      live.ownerWaitAvailable === true &&
+      (live.reason === "codex-owner-busy" || isDesktopUnavailable(live.reason))
+    );
+  }
+
+  #projectOwnerWait(sessionId: string, live: Record<string, unknown>, controls: boolean) {
+    const entry = this.#ownerWait.read(sessionId);
+    if (entry) {
+      const paused = this.#ownerWait.paused(entry);
+      const canResume =
+        controls &&
+        paused &&
+        !entry.delivering &&
+        (live.reason === null || this.#ownerWaitAvailable(live, controls));
+      return {
+        ...live,
+        sendEnabled: canResume,
+        ownerWaitAvailable: canResume,
+        ownerWait: {
+          requestId: entry.request.requestId,
+          status: paused ? "paused" : "waiting-for-owner",
+          source: entry.worker ? "worker" : "user",
+          ...(!entry.worker &&
+            entry.delivering &&
+            entry.bootId !== this.host.runtimeBootId && {
+              dismissible: true,
+            }),
+          ...(entry.worker && { laneId: entry.worker.laneId }),
+        },
+      };
+    }
+    if (this.#ownerWaitAvailable(live, controls))
+      return {
+        ...live,
+        ownerWaitAvailable: true,
+        // A follower may hold a different revision than the inactive session. The current
+        // send path will either verify that follower or verify the inactive record.
+        sendEnabled: true,
+      };
+    return live;
+  }
+
+  async #deliverOwnerWait(entry: OwnerWaitEntry, dispatch: () => void) {
+    const refused = (reason: string) => ({ status: "refused" as const, reason });
+    try {
+      const record = await this.#inactiveRecord(entry.request.sessionId);
+      if (
+        record.archived ||
+        record.native_id !== entry.nativeId ||
+        record.workspace_id !== entry.workspaceId ||
+        pathIdentity(this.#assertManagedHome(record)) !== pathIdentity(entry.home) ||
+        pathIdentity(this.#writerLock(record)) !== pathIdentity(entry.lock)
+      )
+        return refused("session-unavailable");
+      if (this.#managedRunners.get(record.id)?.session.connected)
+        return { status: "retry" as const };
+
+      let transcript: string | undefined;
+      try {
+        transcript = this.host.sessions.verifiedCodexSubagentParent(
+          record.id,
+          entry.nativeId,
+          record.workspace,
+        ).transcript;
+      } catch {
+        // Observation must not grant or block a send.
+      }
+      const interveningExternalTurns =
+        !!entry.worker &&
+        this.#externalTurns
+          .endedTurns(entry.nativeId, Date.now(), transcript)
+          .some((turn) => Date.parse(turn.startedAt ?? turn.endedAt ?? "") >= entry.acceptedAt);
+      const result = await this.host.admitControl(
+        {
+          ...entry.request,
+          requestId: randomUUID(),
+          runtimeBootId: this.host.runtimeBootId,
+          expectedRevision: record.snapshot?.revision ?? 0,
+        },
+        (request, fingerprint) =>
+          this.#codexControl(request, fingerprint, {
+            restrictNativePolicy: entry.restrictNativePolicy,
+            ownerWaitDispatch: dispatch,
+          }),
+      );
+      if (isObject(result) && result.accepted === true)
+        return { status: "sent" as const, interveningExternalTurns };
+      const reason =
+        isObject(result) && typeof result.reason === "string"
+          ? result.reason
+          : "control-outcome-unconfirmed";
+      if (reason === OWNER_WAIT_PAUSED || reason === "schedule-permit-unavailable")
+        return { status: "paused" as const };
+      if (
+        reason === "codex-owner-busy" &&
+        isObject(result) &&
+        result.controlOutcome === "not-dispatched"
+      )
+        return { status: "retry" as const };
+      return refused(reason);
+    } catch (error) {
+      return refused(error instanceof Error ? error.message : "control-outcome-unconfirmed");
+    }
+  }
+
   #codexWriterOwnership(record: ManagedRecord, force = false): string | null {
     if (!record.native_id) return "native-session-unconfirmed";
     const current = this.#ownership.get(record.id);
     if (!force && current && Date.now() - current.checkedAt < 4000) return current.reason;
     let reason: string | null;
     try {
-      reason = existingFileLeaseBusy(
-        path.join(record.home, "thread-writer-locks", `${record.native_id}.lock`),
-      )
-        ? "codex-owner-busy"
-        : null;
+      reason = existingFileLeaseBusy(this.#writerLock(record)) ? "codex-owner-busy" : null;
     } catch {
       reason = "codex-owner-check-unavailable";
     }
@@ -6514,6 +7055,25 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
     const shown = externalTurn ? { ...session, externalTurn } : session;
     return continuation ? { ...shown, continuation } : shown;
   }
+}
+
+function sameWaitingCodexInput(left: SettingsControl, right: SettingsControl): boolean {
+  const input = (value: SettingsControl) => [value.text, value.input, value.resourceRefs];
+  return stableJson(input(left)) === stableJson(input(right));
+}
+
+function isDesktopUnavailable(reason: unknown): boolean {
+  return (
+    typeof reason === "string" &&
+    [
+      "codex-desktop-owner-missing",
+      "codex-desktop-owner-unavailable",
+      "codex-desktop-ipc-unavailable",
+      "codex-desktop-ipc-incompatible",
+      "codex-desktop-thread-open-failed",
+      "platform-unsupported",
+    ].includes(reason)
+  );
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {

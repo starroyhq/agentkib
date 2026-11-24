@@ -40,7 +40,7 @@ describe("trusted Claude owner boundary", () => {
     expectedRevision: 1,
     text: "hello",
   };
-  it.each(["bridge-status", "bridge-challenge", "bridge-disconnect"])(
+  it.each(["bridge-status", "bridge-challenge", "bridge-disconnect", "bridge-plugin-retry"])(
     "keeps %s on the local owner boundary and ignores caller paths and credentials",
     async (operation) => {
       await localClaudeRequest(deps, {

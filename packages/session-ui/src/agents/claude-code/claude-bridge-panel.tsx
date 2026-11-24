@@ -26,6 +26,14 @@ type ClaudeBridgeStatus = {
   pluginDirectory: string;
   installInstructions: string;
   autoConnect?: { available: boolean; enabled: boolean; declined?: boolean };
+  pluginUpdate?: ClaudeBridgePluginUpdate;
+};
+
+type ClaudeBridgePluginUpdate = {
+  installedVersion: string | null;
+  bundledVersion: string;
+  status: "idle" | "updating" | "updated" | "failed";
+  reason?: string;
 };
 
 type ClaudeBridgeChallenge = { challenge: string; expiresAt: string; instructions: string };
@@ -122,7 +130,7 @@ function statusResponse(value: unknown, sessionId: string): ClaudeBridgeStatus {
     (row.autoConnect !== undefined && !autoConnectResponse(row.autoConnect))
   )
     throw new Error("invalid_bridge_status");
-  return value as ClaudeBridgeStatus;
+  return { ...(value as ClaudeBridgeStatus), pluginUpdate: pluginUpdateResponse(row.pluginUpdate) };
 }
 function autoConnectResponse(value: unknown): ClaudeBridgeStatus["autoConnect"] {
   if (
@@ -140,6 +148,19 @@ function autoConnectResponse(value: unknown): ClaudeBridgeStatus["autoConnect"] 
     enabled: value.enabled,
     declined: "declined" in value && value.declined === true,
   };
+}
+function pluginUpdateResponse(value: unknown): ClaudeBridgePluginUpdate | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const row = value as Record<string, unknown>;
+  if (
+    (row.installedVersion !== null && typeof row.installedVersion !== "string") ||
+    typeof row.bundledVersion !== "string" ||
+    typeof row.status !== "string" ||
+    !["idle", "updating", "updated", "failed"].includes(row.status) ||
+    (row.reason !== undefined && typeof row.reason !== "string")
+  )
+    return undefined;
+  return value as ClaudeBridgePluginUpdate;
 }
 function challengeResponse(value: unknown): ClaudeBridgeChallenge {
   if (!value || typeof value !== "object") throw new Error("invalid_bridge_challenge");
@@ -270,6 +291,8 @@ function ClaudeTerminalBridge({
   const operationRequest = useRef(0);
   const pendingOperation = useRef<"bridge-challenge" | "bridge-disconnect" | undefined>(undefined);
   const pending = useRef(false);
+  const pluginRetryPending = useRef(false);
+  const [retryingPlugin, setRetryingPlugin] = useState(false);
   const lastConnected = useRef(false);
   const canRevoke = !!(
     active &&
@@ -295,6 +318,8 @@ function ClaudeTerminalBridge({
     generation.current++;
     pending.current = false;
     pendingOperation.current = undefined;
+    pluginRetryPending.current = false;
+    setRetryingPlugin(false);
     lastConnected.current = false;
     setChallenge(undefined);
     setStatusObservation(undefined);
@@ -332,6 +357,7 @@ function ClaudeTerminalBridge({
       if (
         (checking !== undefined && checking === statusRequest.current) ||
         pending.current ||
+        pluginRetryPending.current ||
         disposed
       )
         return;
@@ -600,6 +626,39 @@ function ClaudeTerminalBridge({
       setAutoChange(undefined);
     }
   }
+  const pluginUpdate = status?.pluginUpdate;
+  const canRetryPlugin = canManage && !loading && !retryingPlugin;
+  async function retryPlugin() {
+    if (
+      !canRetryPlugin ||
+      pluginUpdate?.status !== "failed" ||
+      pending.current ||
+      pluginRetryPending.current
+    )
+      return;
+    const request = generation.current;
+    statusRequest.current++;
+    pluginRetryPending.current = true;
+    setRetryingPlugin(true);
+    let result: ClaudeBridgePluginUpdate;
+    try {
+      const value = pluginUpdateResponse(
+        await requestBridge({ operation: "bridge-plugin-retry", sessionId: selected }),
+      );
+      if (!value) throw new Error("invalid_bridge_plugin_status");
+      result = value;
+    } catch {
+      result = { ...pluginUpdate, reason: undefined };
+    }
+    if (generation.current !== request) return;
+    setStatusObservation((previous) =>
+      previous?.status.sessionId === selected
+        ? { ...previous, status: { ...previous.status, pluginUpdate: result } }
+        : previous,
+    );
+    pluginRetryPending.current = false;
+    setRetryingPlugin(false);
+  }
   const autoConnect = status?.autoConnect;
   const autoEnabled =
     autoChange?.sessionId === selected ? autoChange.enabled : autoConnect?.enabled === true;
@@ -797,6 +856,45 @@ function ClaudeTerminalBridge({
   ) : (
     <p className="text-sm text-muted-foreground">{loading ? copy.loading : copy.instructions}</p>
   );
+  const pluginInfo = pluginUpdate && (
+    <div className="mt-2 min-w-0 space-y-1 text-xs">
+      <p className="text-muted-foreground">
+        {pluginUpdate.installedVersion === null
+          ? copy.pluginNotInstalled
+          : copy.pluginInstalledVersion.replace("{version}", pluginUpdate.installedVersion)}
+        {" · "}
+        {copy.pluginBundledVersion.replace("{version}", pluginUpdate.bundledVersion)}
+      </p>
+      {retryingPlugin || pluginUpdate.status === "updating" ? (
+        <p role="status" className="text-muted-foreground">
+          {copy.pluginUpdating}
+        </p>
+      ) : pluginUpdate.status === "updated" ? (
+        <p role="status" className="text-muted-foreground">
+          {copy.pluginUpdated}
+        </p>
+      ) : pluginUpdate.status === "failed" ? (
+        <>
+          <div role="alert" className="space-y-1">
+            <p>{copy.pluginUpdateFailed}</p>
+            {pluginUpdate.reason && (
+              <p className="whitespace-pre-wrap break-words text-muted-foreground">
+                {pluginUpdate.reason}
+              </p>
+            )}
+          </div>
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={!canRetryPlugin}
+            onClick={() => void retryPlugin()}
+          >
+            {copy.pluginRetry}
+          </Button>
+        </>
+      ) : null}
+    </div>
+  );
   const caution = !online || uncertain || (!status && hasBinding && !liveDisconnected);
   const StateIcon =
     stateKind === "connected"
@@ -864,6 +962,7 @@ function ClaudeTerminalBridge({
                 {installContent}
               </>
             )}
+            {pluginInfo}
           </li>
           {stateKind === "steps" ? (
             <>

@@ -1,6 +1,15 @@
 # Codex 托管执行
 
-Codex 同 Agent 续接统一使用 AgentKib 自己启动的 `codex app-server`，`executionMode` 为 `codex-managed`，支持 macOS、Linux 和 Windows 的这条链路。会话的写锁被其他进程持有、且 Codex 桌面端的本地 IPC 报告了这条会话的 owner 时，改为跟随该 owner（`codex-follower`，仅 macOS，见下文“跟随 Codex 桌面端”）；无法跟随时保留普通输入框及占用提示，按能力禁用发送，跟随也不作为续接失败后的自动回退。打开页面只观察，空闲会话发送时自动续接，不再勾选交接。创建与管理仍须对应设备授权；发送继续检查实验控制、工作区和未知回执。Web/Electron 负责授权，TypeScript backend 在每次操作前复核 canonical 路径、会话身份和同一 CODEX_HOME。
+Codex 同 Agent 续接统一使用 AgentKib 自己启动的 `codex app-server`，`executionMode` 为 `codex-managed`，支持 macOS、Linux 和 Windows 的这条链路。会话的写锁被其他进程持有、且 Codex 桌面端的本地 IPC 报告了这条会话的 owner 时，改为跟随该 owner（`codex-follower`，仅 macOS，见下文“跟随 Codex 桌面端”）；确认外部写锁且桌面路由不可用时，发送可进入下文的等待队列。打开页面只观察，空闲会话发送时自动续接，不再勾选交接。创建与管理仍须对应设备授权；发送继续检查实验控制、工作区和未知回执。Web/Electron 负责授权，TypeScript backend 在每次操作前复核 canonical 路径、会话身份和同一 CODEX_HOME。
+
+
+## 等待 Codex 写锁
+
+AgentKib 优先经可用的桌面端 owner 发送。确认其他进程持有线程写锁、且能确认消息没有经桌面端派发时，主机可以接受一条待发消息。接收回执为 `waiting-for-owner`，原因码为 `codex-waiting-for-owner`。可从现有队列移除同一设备的等待项。LAN 设备只看到自己的等待项，也只能取消这些项。派发结果待核对的消息不会自动重投。
+
+普通线程的写锁是 `<CODEX_HOME>/thread-writer-locks/<原生线程 ID>.lock`。已核验的 fork rollout 文件名若含父、子两个 UUID，取第一个 UUID 作为锁键。等待按 2 至 30 秒的退避间隔非阻塞试锁。Codex 的 `File::try_lock` 在 macOS 和 Linux 用 `flock(LOCK_EX | LOCK_NB)`，在 Windows 用 `LockFileEx` 的独占、立即失败模式。AgentKib 复用对应平台的探针，试锁成功就立即释放，随后读取最新原生策略并开始正常续接，即使锁文件仍在。远端请求还须由桌面宿主核对原设备、发送权限和工作区，才会获得一次性派发许可。原生 resume 负责最终取得写锁，若再次报告 writer busy，则继续等待。 [Codex 写锁实现](https://github.com/openai/codex/blob/rust-v0.171.0/codex-rs/rollout/src/writer_lock.rs#L41-L91)
+
+每条会话最多保留一条，主机最多保留 32 条。重启后未派发的条目保留并显示暂停。原发送身份以相同内容再次发送可恢复原条目。恢复时仍检查当前会话、设备和授权。上次运行已进入派发且结果未知的条目可从队列移除，原回执仍保留待核对状态。
 
 ## 会话入口与兼容接口
 

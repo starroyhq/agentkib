@@ -15,7 +15,7 @@ export async function replayClaudeAttachments(
 ): Promise<Record<string, unknown> | undefined> {
   if (
     receipt?.found !== true ||
-    receipt.executionMode !== "claude-managed" ||
+    (receipt.executionMode !== "claude-managed" && receipt.executionMode !== "claude-follower") ||
     receipt.sessionId !== input.sessionId ||
     receipt.requestId !== input.requestId
   )
@@ -28,7 +28,7 @@ export async function replayClaudeAttachments(
       input.sessionId,
       input.attachmentIds,
       input.text,
-      "claude",
+      receipt.executionMode === "claude-managed" ? "claude" : "claude-terminal",
       input.requestId,
     ))
   )

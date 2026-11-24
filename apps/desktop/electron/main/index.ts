@@ -61,6 +61,7 @@ import { StartupBenchmark } from "./startup-benchmark";
 import { firstCloseDecision } from "./close-behavior";
 import { createQuitGuard } from "./quit-guard";
 import { normalizeReleaseNotes } from "./release-notes";
+import { configureUpdateChannel } from "./update-channel";
 import { LOCAL_PREVIEW_FRAME_SOURCES, allowLocalPreviewFraming } from "./live-preview-frames";
 import {
   optionalCloseBehavior,
@@ -763,9 +764,7 @@ function sendRendererEvent(channel: string, payload: unknown): void {
 }
 
 function registerUpdateIpc(): void {
-  const updaterChannel =
-    process.platform === "darwin" || process.platform === "win32" ? process.arch : undefined;
-  if (updaterChannel) autoUpdater.channel = updaterChannel;
+  configureUpdateChannel(autoUpdater, process.platform, process.arch);
   nativeAutoUpdater.on("before-quit-for-update", () => {
     quitApproved = true;
   });

@@ -111,8 +111,7 @@ type LocalBridgeRequest =
   | { operation: "bridge-plugin-retry"; sessionId: string }
   | { operation: "bridge-auto-connect"; sessionId: string; enabled: boolean }
   | { operation: "background-tasks"; enabled?: boolean }
-  | { operation: "dsh-bridge-status" }
-  | { operation: "dsh-auto-start"; enabled: boolean };
+  | { operation: "dsh-bridge-status" };
 
 type DesktopSessionOperations = {
   isMacOS: boolean;

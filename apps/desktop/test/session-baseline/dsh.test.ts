@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, mkdtemp, realpath, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -16,11 +16,13 @@ import {
 } from "@agentkib/runtime-protocol";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DshBridge } from "../../../../packages/backend/src/agents/dsh/dsh-bridge";
+import { DshManagedRuntime } from "../../../../packages/backend/src/agents/dsh/dsh-managed-runtime";
 import { DshSessionProvider } from "../../../../packages/backend/src/agents/dsh/session-provider";
 import {
   claimManagedCommand,
   finishManagedCommand,
 } from "../../../../packages/backend/src/managed-ledger";
+import { BackendStore } from "../../../../packages/backend/src/store";
 import { discover, post } from "../../../../packages/dsh-bridge-plugin/client.js";
 import { startBackend, startHost, type Rpc } from "./harness";
 
@@ -31,7 +33,7 @@ const reasoner = "deepseek/deepseek-reasoner";
 const turn = 3;
 const turnId = "dsh-turn-3";
 
-async function startFakePlugin(agentkibHome: string, workspace: string) {
+async function startFakePlugin(agentkibHome: string, workspace: string, pid = process.pid) {
   const discovery = await vi.waitFor(async () => {
     const [entry] = (await discover([agentkibHome])) as DshBridgeDiscovery[];
     if (!entry) throw new Error("DSH bridge is not listening");
@@ -55,7 +57,7 @@ async function startFakePlugin(agentkibHome: string, workspace: string) {
     pluginVersion: DSH_BRIDGE_PLUGIN_VERSION,
     dshVersion: "0.2.1-rc.5",
     runtimeId: randomUUID(),
-    pid: process.pid,
+    pid,
     services,
   })) as { token: string };
   const selection = { provider: "deepseek", model: "deepseek-chat", reasoningEffort: "low" };
@@ -245,6 +247,102 @@ async function startFakePlugin(agentkibHome: string, workspace: string) {
     },
   };
 }
+
+it.skipIf(process.platform !== "darwin")(
+  "starts background DSH on session creation despite the obsolete disabled preference",
+  async () => {
+    const root = await realpath(await mkdtemp(join(tmpdir(), "ak-baseline-dsh-start-")));
+    const workspace = join(root, "workspace");
+    const data = join(root, "data");
+    const agentkibHome = join(root, ".agentkib");
+    const launcher = join(root, "fake-dsh");
+    const preferences = join(data, "preferences.json");
+    const savedPreferences = JSON.stringify({
+      session_index_enabled: false,
+      dsh_auto_start: false,
+    });
+    let plugin: Awaited<ReturnType<typeof startFakePlugin>> | undefined;
+    let backend: Awaited<ReturnType<typeof startBackend>> | undefined;
+    let host: Awaited<ReturnType<typeof startHost>> | undefined;
+    const start = DshManagedRuntime.prototype.start;
+    const launch = vi
+      .spyOn(DshManagedRuntime.prototype, "start")
+      .mockImplementation(async function (this: DshManagedRuntime) {
+        const pid = await start.call(this);
+        plugin = await startFakePlugin(agentkibHome, workspace, pid);
+        return pid;
+      });
+    const desktop = vi
+      .spyOn(DshManagedRuntime.prototype, "desktopRunning")
+      .mockResolvedValue(false);
+    try {
+      await mkdir(data);
+      await mkdir(workspace);
+      await writeFile(preferences, savedPreferences);
+      const store = new BackendStore(join(data, "agentkib.db"));
+      try {
+        store.sql.run(
+          "INSERT INTO workspaces(id,canonical_path,name,status,last_discovered_at) VALUES(?,?,?,?,?)",
+          "workspace",
+          workspace,
+          "Offline workspace",
+          "healthy",
+          "2026-11-20T00:00:00Z",
+        );
+      } finally {
+        store.close();
+      }
+      await writeFile(
+        launcher,
+        '#!/bin/sh\nif [ "$1" = "--version" ]; then echo 0.2.2-rc.5; exit 0; fi\nwhile read -r line; do :; done\n',
+        { mode: 0o700 },
+      );
+      backend = await startBackend({
+        data,
+        workspace,
+        reuseData: true,
+        environment: {
+          HOME: root,
+          AGENTKIB_HOME: agentkibHome,
+          AGENTKIB_DSH_PLUGIN_DIR: join(root, "plugin"),
+          AGENTKIB_DSH_LAUNCHER: launcher,
+          PATH: "/usr/bin:/bin",
+        },
+      });
+      host = await startHost({ root, workspace, rpc: backend.rpc });
+
+      expect(await host.http("/managed/options?agent=" + agent)).toMatchObject({ status: 200 });
+      expect(launch).not.toHaveBeenCalled();
+      expect(
+        await host.http("/managed/create", {
+          agent,
+          bootId: host.bootId,
+          workspaceId: "workspace",
+          requestId: randomUUID(),
+        }),
+      ).toMatchObject({
+        status: 200,
+        body: { accepted: true, completed: true, controlOutcome: "accepted" },
+      });
+      expect(launch).toHaveBeenCalledTimes(1);
+      expect(plugin?.drainCommands()).toContainEqual(
+        expect.objectContaining({ type: "create", cwd: workspace }),
+      );
+      expect(await readFile(preferences, "utf8")).toBe(savedPreferences);
+    } finally {
+      const cleanup = await Promise.allSettled([
+        host?.dispose(),
+        plugin?.close(),
+        backend?.close(),
+      ]);
+      launch.mockRestore();
+      desktop.mockRestore();
+      await rm(root, { recursive: true, force: true });
+      const failed = cleanup.find((result) => result.status === "rejected");
+      if (failed) throw failed.reason;
+    }
+  },
+);
 
 describe.skipIf(process.platform !== "darwin")("DeepSeek Harness HTTP behavior baseline", () => {
   let root: string;

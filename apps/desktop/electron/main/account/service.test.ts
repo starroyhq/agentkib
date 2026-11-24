@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
 import { DesktopAccountService } from "./service";
+import type { DesktopAccountStatus } from "./state";
 
 const storageFailure = vi.hoisted(() => ({ blockedDelete: "" }));
 vi.mock("node:fs/promises", async (importOriginal) => {
@@ -39,6 +40,7 @@ let directory: string;
 let service: DesktopAccountService;
 let opened: string;
 let network: ReturnType<typeof vi.fn>;
+let onStatus: ReturnType<typeof vi.fn<(state: DesktopAccountStatus) => void>>;
 let pause: ReturnType<typeof vi.fn<() => Promise<unknown>>>;
 let identity:
   | {
@@ -75,6 +77,7 @@ async function setup() {
     },
     ...(computer ? { computerName: computer } : {}),
     fetch: network as typeof fetch,
+    onStatus,
   });
   await service.initialize();
 }
@@ -95,6 +98,7 @@ beforeEach(async () => {
   identity = undefined;
   computer = undefined;
   network = vi.fn<typeof fetch>(async () => Response.json(tokens));
+  onStatus = vi.fn();
   pause = vi.fn(async () => undefined);
   await setup();
 });
@@ -105,6 +109,91 @@ afterEach(async () => {
 });
 
 describe("desktop account boundary", () => {
+  it.each([
+    ["failed refresh", null],
+    ["expired refresh token", "invalid_grant"],
+    ["revoked account session", "session_revoked"],
+  ])(
+    "publishes %s once without waiting for a status request, then clears it on login",
+    async (_, code) => {
+      await service.request({ operation: "login" });
+      await callback();
+      await vi.waitFor(() =>
+        expect(onStatus).toHaveBeenCalledWith(expect.objectContaining({ phase: "signed-in" })),
+      );
+      const lostLogin = () =>
+        onStatus.mock.calls.filter(
+          ([state]) => state.phase === "signed-out" && state.error === "account_login_required",
+        );
+      onStatus.mockClear();
+      const clock = vi.spyOn(Date, "now").mockReturnValue(Date.now() + 601_000);
+      network.mockClear();
+      network.mockImplementation(async () => {
+        if (code === null) throw new Error("network unavailable");
+        return Response.json({ error: code }, { status: code === "invalid_grant" ? 400 : 401 });
+      });
+      try {
+        const calls = await Promise.allSettled([service.accessToken(), service.accessToken()]);
+        expect(calls.map((call) => call.status)).toEqual(["rejected", "rejected"]);
+        expect(network).toHaveBeenCalledTimes(1);
+        expect(lostLogin()).toHaveLength(1);
+        expect(lostLogin()[0]?.[0].account).toBeUndefined();
+        if (code === null) {
+          expect(await readFile(join(directory, "refresh.enc"))).toBeDefined();
+        } else {
+          await expect(readFile(join(directory, "refresh.enc"))).rejects.toMatchObject({
+            code: "ENOENT",
+          });
+        }
+        await service.request({ operation: "status" });
+        expect(lostLogin()).toHaveLength(1);
+        expect(pause).not.toHaveBeenCalled();
+        network.mockImplementation(async () => Response.json(tokens));
+        await service.request({ operation: "login" });
+        await callback();
+        await vi.waitFor(() =>
+          expect(onStatus).toHaveBeenLastCalledWith(
+            expect.objectContaining({ phase: "signed-in", account: profile }),
+          ),
+        );
+        expect((await service.status()).error).toBeUndefined();
+      } finally {
+        clock.mockRestore();
+      }
+    },
+  );
+
+  it("checks an idle login at access expiry and refreshes it without reporting an exit", async () => {
+    await service.request({ operation: "login" });
+    await callback();
+    service.shutdown();
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    try {
+      await setup();
+      onStatus.mockClear();
+      network.mockClear();
+      network.mockImplementation(async () =>
+        Response.json({ ...tokens, accessToken: "z".repeat(43) }),
+      );
+      await vi.advanceTimersByTimeAsync(570_000);
+      await vi.waitFor(() => expect(network).toHaveBeenCalled());
+      await expect(service.accessToken()).resolves.toBe("z".repeat(43));
+      expect(onStatus.mock.calls.some(([state]) => state.phase === "signed-out")).toBe(false);
+    } finally {
+      service.shutdown();
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps one browser flow when both desktop surfaces request login", async () => {
+    await service.request({ operation: "login" });
+    const firstLogin = opened;
+    expect(firstLogin).toContain("codeChallenge=");
+    expect((await service.request({ operation: "login" })).phase).toBe("signing-in");
+    expect(opened).toBe(firstLogin);
+    expect((await callback()).status).toBe(200);
+  });
+
   it("reads configured account relay usage without changing the private computer quota", async () => {
     const usage = {
       periodStart: 1,
@@ -243,13 +332,16 @@ describe("desktop account boundary", () => {
       network.mockRejectedValue(new Error("connection reset"));
       await setup();
       expect(network).toHaveBeenCalledTimes(1);
-      expect((await service.status()).phase).toBe("error");
-      expect((await service.status()).account).toEqual(profile);
+      expect(await service.status()).toMatchObject({
+        phase: "signed-out",
+        error: "account_login_required",
+      });
+      expect(await readFile(join(directory, "refresh.enc"))).toBeDefined();
       expect(service.signedIn).toBe(false);
       service.shutdown();
       await setup();
       expect(network).toHaveBeenCalledTimes(1);
-      expect((await service.status()).account).toEqual(profile);
+      expect((await service.status()).error).toBe("account_login_required");
       expect((await service.request({ operation: "login" })).phase).toBe("signing-in");
     } finally {
       clock.mockRestore();
@@ -285,8 +377,10 @@ describe("desktop account boundary", () => {
     });
     try {
       await setup();
-      expect((await service.status()).phase).toBe("error");
-      expect((await service.status()).account).toEqual(profile);
+      expect(await service.status()).toMatchObject({
+        phase: "signed-out",
+        error: "account_login_required",
+      });
       expect(requests).toHaveLength(1);
       expect(requests[0].refreshRequestId).toMatch(/^[A-Za-z0-9_-]{43}$/);
       service.shutdown();
@@ -336,7 +430,7 @@ describe("desktop account boundary", () => {
     });
     try {
       await expect(service.accessToken()).rejects.toBeDefined();
-      expect((await service.status()).account).toEqual(profile);
+      expect((await service.status()).error).toBe("account_login_required");
       await rm(join(directory, "refresh.enc.tmp"), { recursive: true });
       failSave = false;
       expect(await service.accessToken()).toBe("b".repeat(43));
@@ -423,7 +517,7 @@ describe("desktop account boundary", () => {
         : new Response("<html>gateway auth</html>", { status: 401 }),
     );
     await expect(service.liveSessions()).rejects.toBeDefined();
-    expect((await service.status()).account).toEqual(profile);
+    expect((await service.status()).error).toBe("account_login_required");
     expect(await readFile(join(directory, "refresh.enc"))).toBeDefined();
   });
   it("does not let an old 401 refresh or retry as a newly signed-in account", async () => {
@@ -490,7 +584,7 @@ describe("desktop account boundary", () => {
     try {
       network.mockRejectedValue(new Error("response lost"));
       await expect(service.accessToken()).rejects.toBeDefined();
-      expect((await service.status()).account).toEqual(profile);
+      expect((await service.status()).error).toBe("account_login_required");
       const other = { ...profile, id: "account-b", username: "bob" };
       network.mockImplementation(async (url: URL) =>
         Response.json(url.pathname === "/v1/auth/token" ? { ...tokens, account: other } : {}),
@@ -696,6 +790,7 @@ describe("desktop account boundary", () => {
       service.registerDevice({ registrationId: "test", credential: "private" }),
     ).rejects.toThrow("account_device_conflict");
     expect(JSON.stringify(await service.status())).not.toContain("sensitive-debug-data");
+    onStatus.mockClear();
     network.mockImplementation(async () =>
       Response.json({ error: "authentication_required" }, { status: 401 }),
     );
@@ -703,6 +798,9 @@ describe("desktop account boundary", () => {
       service.registerDevice({ registrationId: "test", credential: "private" }),
     ).rejects.toThrow("account_login_required");
     expect((await service.status()).phase).toBe("signed-out");
+    expect(onStatus).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ phase: "signed-out", error: "account_login_required" }),
+    );
   });
   it("does not auto-claim for a different account after an uncertain claim", async () => {
     identity = { deviceId: "device", credential: "private" };

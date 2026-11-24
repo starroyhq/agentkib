@@ -1716,6 +1716,13 @@ describe.skipIf(process.platform !== "darwin")(
         await expect
           .poll(async () => (await live(sessionId)).status)
           .toBe(mode === "approval" ? "waiting-approval" : "waiting-input");
+        const catalog = await http("/catalog?taskSummary=1");
+        expect(catalog.status, catalog.body.error).toBe(200);
+        const group = mode === "approval" ? "pendingApproval" : "pendingAnswer";
+        expect(catalog.body.taskSummary.groups[group]).toMatchObject({
+          count: 1,
+          entries: [{ sessionId, agent: "claude-code", workspaceId: "workspace" }],
+        });
         const state = await live(sessionId);
         const route = mode === "approval" ? "/approve" : "/answer";
         const body = {

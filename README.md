@@ -36,7 +36,7 @@ _Example screen with demo data._
 
 ## What you can do
 
-- **Resume work after quitting.** When you quit AgentKib, you can choose to resume eligible Codex, Claude Code, and DeepSeek Harness tasks the next time you open it. You can also pick up interrupted tasks yourself from Home. Project Agents still receive reports about interrupted and resumed Workers while delegation is paused. [Working with conversations](docs/sessions/conversations.md#退出后继续任务)
+- **Resume work after quitting.** When you quit AgentKib, you can choose to resume eligible Codex, Claude Code, and DeepSeek Harness tasks the next time you open it. You can also pick up interrupted tasks yourself from Home. Status updates for Workers interrupted when you quit go directly to the Project Agent, even while delegation is paused. [Working with conversations](docs/sessions/conversations.md#退出后继续任务)
 - **Paste or drop attachments.** Paste a screenshot or a copied file, drag files into the message box, or choose them with **+** in supported desktop and Web sessions. [Working with conversations](docs/sessions/conversations.md)
 - **Manage follow-ups in one queue.** On desktop and Web, use the same controls to edit, remove, reorder, pause, resume, or send a queued message into the current turn where the agent supports it. [Working with conversations](docs/sessions/conversations.md)
 - **Choose permissions before sending.** When you start a session, choose from the permissions the agent supports. Your choice applies to the first message. [Working with conversations](docs/sessions/conversations.md)

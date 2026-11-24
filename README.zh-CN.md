@@ -36,7 +36,7 @@ _界面示例使用演示数据。_
 
 ## 能做什么
 
-- **退出后接着做。** 退出 AgentKib 时，可选择下次打开后继续符合条件的 Codex、Claude Code 和 DeepSeek Harness 任务，也可在首页手动继续因退出而中断的任务。暂停委派期间，项目 Agent 也会收到 Worker 因退出中断或续跑的汇报。[会话使用指南](docs/sessions/conversations.md#退出后继续任务)
+- **退出后接着做。** 退出 AgentKib 时，可选择下次打开后继续符合条件的 Codex、Claude Code 和 DeepSeek Harness 任务，也可在首页手动继续因退出而中断的任务。退出后被打断的 Worker 状态会直接告诉项目 Agent，委派暂停时也照常送达。[会话使用指南](docs/sessions/conversations.md#退出后继续任务)
 - **粘贴或拖放附件。** 在支持附件的桌面和 Web 会话中，可以粘贴截图或复制的文件，把文件拖进输入框，或用「+」选择文件。[会话使用指南](docs/sessions/conversations.md)
 - **在同一个队列里安排后续消息。** 桌面和 Web 使用相同的待发队列控件。根据 Agent 提供的能力，可以编辑、删除、调序、暂停、恢复，或把待发消息加入本轮。[会话使用指南](docs/sessions/conversations.md)
 - **发送首条消息前选权限。** 新建会话时可选择 Agent 支持的权限，所选权限从首条消息开始生效。[会话使用指南](docs/sessions/conversations.md)

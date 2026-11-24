@@ -38,6 +38,7 @@ import type {
   SessionCommandMenu,
   SessionExecution,
   SessionFeedback,
+  SessionPendingInteraction,
   SessionProjectAgentCapabilities,
   SessionProviderDeclaration,
   SessionQueueItemActions,
@@ -84,6 +85,9 @@ export type {
   SessionCommandMenu,
   SessionExecution,
   SessionFeedback,
+  SessionInteractionDecision,
+  SessionInteractionRisk,
+  SessionPendingInteraction,
   SessionProjectAgentCapabilities,
   SessionProviderDeclaration,
   SessionQueueAction,
@@ -348,6 +352,8 @@ export interface Access {
   };
   /** Additive capability; absent on older hosts. */
   historySearch?: true;
+  /** Additive descriptions and bound decisions for paired clients. */
+  pendingInteractions?: { version: 1 };
   historySearchScope?: string;
   /**
    * Notifications from this computer (`/push/subscribe`): present when this pairing can get
@@ -470,6 +476,7 @@ export interface Live {
   lastOutcome?: "cancelled" | null;
   approvals: Approval[];
   questions?: UserQuestionRequest[];
+  pendingInteractions?: SessionPendingInteraction[];
   reason?: string;
   executionLocation?: "agentkib" | "terminal" | "external" | null;
   ownershipReason?: string | null;

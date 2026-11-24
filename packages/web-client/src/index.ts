@@ -208,6 +208,8 @@ export interface ProjectAgentScope {
 export interface ProjectAgentState {
   sessionId: string;
   paused: boolean;
+  /** The host will resume delegation once recovery completes. */
+  recovering?: true;
   reason: string | null;
   scope: ProjectAgentScope;
   pendingReports: number;
@@ -227,6 +229,8 @@ export type SessionOrchestration =
       role: "lead";
       workers: number;
       paused: boolean;
+      /** The host will resume delegation once recovery completes. */
+      recovering?: true;
       /** Why delegation is paused; absent on older hosts. */
       reason?: string | null;
       /** Reports on their way into its next turn; absent on older hosts. */

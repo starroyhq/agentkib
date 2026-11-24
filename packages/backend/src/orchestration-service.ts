@@ -682,10 +682,18 @@ export type SessionRole =
       /** Reports on their way into the lead's next turn. */
       reports: number;
       requiresUser?: true;
+      recovering?: true;
     }
   | { role: "worker"; leadId: string; name: string; requiresUser?: true };
 
 type AssignmentCandidate = { sessionId: string; reason: string | null; assigned?: boolean };
+type ReportPause = "usage-limit" | "report-undelivered";
+
+function reportPause(lead: Lead): ReportPause | undefined {
+  if (!lead.paused || lead.reportRetryable === false) return;
+  if (lead.reason === "usage-limit") return lead.reason;
+  if (lead.reason === "report-undelivered" && lead.reportRetryable) return lead.reason;
+}
 
 export class OrchestrationService {
   readonly registry: LeadRegistry;
@@ -697,6 +705,8 @@ export class OrchestrationService {
   #workerSamples = new Map<string, { current: boolean }>();
   #completions = new Map<string, { until: number; reports: LaneReport[] }>();
   #sendingQuitReports = new Set<string>();
+  #sendingReports = new Map<string, number>();
+  #recoveringReports = new Map<string, Promise<void>>();
   #workerRestarts = new Set<string>();
   #closed = false;
   #catchUp: ReturnType<typeof setInterval> | undefined;
@@ -727,10 +737,11 @@ export class OrchestrationService {
     /** Reports queued for a lead's next turn (`ClaudeManagedReadOwner.queuedReports`). */
     readonly queuedReports: (leadSessionId: string) => number = () => 0,
     /**
-     * Whether a lead that hears reports as messages is waiting at its usage limit.
-     * DSH has no reset signal, so its held reports wait for a person.
+     * Whether the lead is waiting at its usage limit. Some providers need an
+     * explicit user action before their native queue becomes ready again.
      */
     readonly leadLimited: (leadSessionId: string) => boolean | "manual-resume" = () => false,
+    readonly delegationChanged: () => void = () => undefined,
   ) {
     this.registry = new LeadRegistry(dataDir, bootId);
     this.#catchUp = setInterval(() => void this.catchUp().catch(() => undefined), CATCH_UP_MS);
@@ -1048,6 +1059,7 @@ export class OrchestrationService {
     const held = this.registry.update(sessionId, (lead) => {
       const scope = this.#effectiveScope(lead, workspaceId);
       this.#requireAuthorizedWorkspaces(scope, authorizedWorkspaceIds);
+      if (this.#recoveringReports.has(sessionId)) return null;
       lead.scope = scope;
       lead.paused = false;
       lead.reason = null;
@@ -1055,10 +1067,13 @@ export class OrchestrationService {
       // Whoever resumes now answers for what the lead does.
       lead.deviceId = deviceId;
       addLeadRecord(lead, "resume", null, null, "resumed");
-      const pending = lead.pendingReports;
+      const pending = [...(lead.deliveringReports ?? []), ...lead.pendingReports];
+      delete lead.deliveringReports;
+      delete lead.reportRetryable;
       lead.pendingReports = [];
       return pending;
     });
+    if (held === null) return this.registry.get(sessionId)!;
     this.#leadUsageHolds.delete(sessionId);
     if (held.length) this.#deliver(sessionId, joinReports(held), true);
     this.#deliverQuitReports(sessionId, true);
@@ -1067,43 +1082,61 @@ export class OrchestrationService {
 
   /** The lead's usage limit is over (AgentKib's continue went through): held reports go on. */
   limitEnded(sessionId: string): void {
-    if (!this.registry.get(sessionId)) return;
-    const held = this.registry.update(sessionId, (lead) => {
-      if (!lead.paused || lead.reason !== "usage-limit") return [];
-      lead.paused = false;
-      lead.reason = null;
-      addLeadRecord(lead, "resume", null, null, "usage-limit-reset");
-      const pending = lead.pendingReports;
-      lead.pendingReports = [];
-      return pending;
-    });
-    this.#leadUsageHolds.delete(sessionId);
-    if (held.length) this.#deliver(sessionId, joinReports(held));
     this.#deliverQuitReports(sessionId);
+    void this.#recoverReports(sessionId, "usage-limit").catch(() => undefined);
   }
 
   #leadNeedsUser(sessionId: string): boolean {
-    return this.#leadUsageHolds.get(sessionId)?.needsUser ?? true;
+    return (
+      this.#leadUsageHolds.get(sessionId)?.needsUser ??
+      this.lanes.session(sessionId)?.agent === "codex"
+    );
   }
 
-  async #checkLeadUsageLimit(sessionId: string): Promise<void> {
-    const hold = this.#leadUsageHolds.get(sessionId);
-    // The remembered hold is in memory so a restart cannot count as a Codex limit reset.
-    if (!hold || hold.resumeWhen === "user") return;
-    const live = await this.#state(sessionId);
-    if (this.#closed || this.#leadUsageHolds.get(sessionId) !== hold) return;
-    if (hold.resumeWhen === "native-ready") {
-      if (
-        live?.executionMode === "dsh-follower" &&
-        (live.sendEnabled === true || live.queueEnabled === true)
-      )
-        this.#resumeOnMessage(sessionId, true);
+  async #checkReportRecovery(sessionId: string): Promise<void> {
+    const recovering = this.#recoveringReports.get(sessionId);
+    if (recovering) return recovering;
+    const current = this.registry.get(sessionId);
+    if (!current || current.deliveringReports) return;
+    const reason = reportPause(current);
+    if (reason === "report-undelivered") {
+      await this.#recoverReports(sessionId, reason);
       return;
     }
-    if (live?.executionMode !== "codex-managed") return;
+    if (reason !== "usage-limit") return;
+    const hold = this.#leadUsageHolds.get(sessionId);
+    const live = await this.#state(sessionId);
+    if (this.#closed || this.#leadUsageHolds.get(sessionId) !== hold) return;
+    if (live?.executionMode === "dsh-follower") {
+      const ready = live.sendEnabled === true || live.queueEnabled === true;
+      if (
+        ready &&
+        live.status !== "unsupported" &&
+        live.status !== "outcome-unknown" &&
+        (live.usageLimit === null || hold?.resumeWhen === "native-ready")
+      )
+        await this.#recoverReports(sessionId, reason, hold?.resumeWhen === "native-ready");
+      return;
+    }
+    if (
+      live?.executionMode === "claude-follower" &&
+      live.terminalSend === true &&
+      live.leadReportsPaused === false &&
+      live.status !== "unsupported" &&
+      live.status !== "outcome-unknown"
+    ) {
+      await this.#recoverReports(sessionId, reason);
+      return;
+    }
+    // Codex's in-memory limit projection is empty immediately after restart.
+    if (live?.executionMode !== "codex-managed" || !hold) return;
     const limit = workerLimit(live);
     if (limit) {
-      hold.needsUser = limit.continueAt === null && limit.manual !== null;
+      const needsUser = limit.continueAt === null && limit.manual !== null;
+      if (hold.needsUser !== needsUser) {
+        hold.needsUser = needsUser;
+        this.delegationChanged();
+      }
       return;
     }
     // A disconnect or unavailable projection can omit the limit without clearing it.
@@ -1114,7 +1147,7 @@ export class OrchestrationService {
       this.leadLimited(sessionId)
     )
       return;
-    this.limitEnded(sessionId);
+    await this.#recoverReports(sessionId, reason);
   }
 
   /**
@@ -1123,10 +1156,10 @@ export class OrchestrationService {
    * or that concern device authorization wait for the panel.
    */
   userSpoke(sessionId: string): void {
-    this.#resumeOnMessage(sessionId, false);
+    this.#resumeOnMessage(sessionId);
   }
 
-  #resumeOnMessage(sessionId: string, nativeReady: boolean): void {
+  #resumeOnMessage(sessionId: string): void {
     const hold = this.#leadUsageHolds.get(sessionId);
     const dsh = hold
       ? hold.resumeWhen !== "native-reset"
@@ -1134,10 +1167,10 @@ export class OrchestrationService {
     const held = this.registry.update(sessionId, (lead) => {
       lead.autoTurns = 0;
       if (!lead.paused || !RESUMED_BY_MESSAGE.has(lead.reason ?? "")) return [];
+      if (this.#recoveringReports.has(sessionId)) return [];
       // The DSH provider reports the person's action before dispatch. A held report must wait
       // for a native send or queue slot so it does not race that action's control revision.
-      if (!nativeReady && dsh && lead.reason === "usage-limit" && lead.pendingReports.length)
-        return null;
+      if (lead.reason === "usage-limit") return null;
       lead.paused = false;
       lead.reason = null;
       addLeadRecord(lead, "resume", null, null, "user-message");
@@ -1146,7 +1179,10 @@ export class OrchestrationService {
       return pending;
     });
     if (held === null) {
-      this.#leadUsageHolds.set(sessionId, { resumeWhen: "native-ready", needsUser: false });
+      this.#leadUsageHolds.set(sessionId, {
+        resumeWhen: dsh ? "native-ready" : "native-reset",
+        needsUser: false,
+      });
       return;
     }
     if (held.length) {
@@ -1426,9 +1462,9 @@ export class OrchestrationService {
           reports.filter(({ laneId }) => allowed.has(laneId)),
           now,
         );
-        await this.#checkLeadUsageLimit(lead.sessionId);
         if (lead.pendingQuitReports?.some((report) => !report.attempted))
           this.#deliverQuitReports(lead.sessionId);
+        await this.#checkReportRecovery(lead.sessionId);
       }
     } finally {
       this.#workerSamples.clear();
@@ -1755,15 +1791,35 @@ export class OrchestrationService {
    * new turn counts toward the lead's automatic turns; past the limit delegation pauses.
    */
   #deliver(leadId: string, text: string, retryUsageLimit = false): void {
-    void this.#deliverNow(leadId, text, retryUsageLimit);
+    this.#sendingReports.set(leadId, (this.#sendingReports.get(leadId) ?? 0) + 1);
+    void this.#deliverNow(leadId, text, retryUsageLimit)
+      .finally(() => {
+        const remaining = (this.#sendingReports.get(leadId) ?? 1) - 1;
+        if (remaining) this.#sendingReports.set(leadId, remaining);
+        else this.#sendingReports.delete(leadId);
+      })
+      .catch(() => undefined);
   }
 
   async #deliverNow(leadId: string, text: string, retryUsageLimit: boolean): Promise<void> {
     const lead = this.registry.get(leadId);
     if (!lead) return;
-    const hold = (reason: string | null, manualResume = false) => {
+    const hold = (reason: string | null, manualResume = false, retryable = false) => {
       const paused = this.registry.update(leadId, (current) => {
         current.pendingReports.push(text);
+        if (reason === "report-undelivered") {
+          // An unconfirmed result must block automatic replay even if another report
+          // already caused the pause.
+          if (!retryable) {
+            current.reportRetryable = false;
+            if (current.reason === "usage-limit") current.reason = reason;
+          } else if (
+            current.reportRetryable !== false &&
+            (current.reason !== reason || current.reportRetryable)
+          ) {
+            current.reportRetryable = true;
+          }
+        }
         if (!reason || current.paused) return false;
         current.paused = true;
         current.reason = reason;
@@ -1775,6 +1831,7 @@ export class OrchestrationService {
           resumeWhen: manualResume ? "user" : "native-reset",
           needsUser: manualResume,
         });
+      if (reason) this.delegationChanged();
     };
     // The turn is counted before the report goes, so reports sent at once cannot pass the limit
     // together; one that joins a waiting report, or is not sent, gives it back.
@@ -1794,7 +1851,7 @@ export class OrchestrationService {
       limited = this.leadLimited(leadId);
     } catch {
       giveBack();
-      return hold("report-undelivered");
+      return hold("report-undelivered", false, true);
     }
     // A report at the limit would take the place of a pending automatic continue.
     if (limited && !(limited === "manual-resume" && retryUsageLimit)) {
@@ -1807,9 +1864,117 @@ export class OrchestrationService {
     } catch (error) {
       if (this.registry.get(leadId)?.createdAt !== lead.createdAt) return;
       giveBack();
-      return hold(error instanceof LeadReportUsageLimit ? "usage-limit" : "report-undelivered");
+      return error instanceof LeadReportUsageLimit
+        ? hold("usage-limit")
+        : hold("report-undelivered", false, error instanceof LeadReportNotDispatched);
     }
     if (merged) giveBack();
+  }
+
+  #recoverReports(leadId: string, reason: ReportPause, allowManualUsage = false): Promise<void> {
+    const running = this.#recoveringReports.get(leadId);
+    if (running) return running;
+    const work = Promise.resolve()
+      .then(() => this.#drainReports(leadId, reason, allowManualUsage))
+      .finally(() => this.#recoveringReports.delete(leadId));
+    this.#recoveringReports.set(leadId, work);
+    return work;
+  }
+
+  async #drainReports(
+    leadId: string,
+    reason: ReportPause,
+    allowManualUsage: boolean,
+  ): Promise<void> {
+    const allowedByUsage = () => {
+      try {
+        const limited = this.leadLimited(leadId);
+        return !limited || (allowManualUsage && limited === "manual-resume");
+      } catch {
+        return false;
+      }
+    };
+    while (!this.#closed) {
+      const lead = this.registry.get(leadId);
+      if (
+        !lead ||
+        reportPause(lead) !== reason ||
+        lead.deliveringReports ||
+        lead.pendingQuitReports?.length ||
+        this.#sendingQuitReports.has(leadId) ||
+        this.#sendingReports.has(leadId) ||
+        !allowedByUsage()
+      )
+        return;
+      if (!lead.pendingReports.length) {
+        this.registry.update(leadId, (current) => {
+          current.paused = false;
+          current.reason = null;
+          delete current.reportRetryable;
+          addLeadRecord(
+            current,
+            "resume",
+            null,
+            null,
+            reason === "usage-limit" ? "usage-limit-reset" : "reports-delivered",
+          );
+        });
+        this.#leadUsageHolds.delete(leadId);
+        this.delegationChanged();
+        return;
+      }
+      if (lead.autoTurns >= lead.scope.maxAutoTurns) {
+        this.pause(leadId, "auto-turn-limit");
+        this.delegationChanged();
+        return;
+      }
+      // Keep each report intact and journal the exact batch before dispatch. New
+      // reports are appended to the waiting list while this batch is in flight.
+      let count = 0;
+      let bytes = 0;
+      for (const text of lead.pendingReports) {
+        bytes += Buffer.byteLength(text) + (count ? 2 : 0);
+        if (count && bytes > MAX_REPORT_BYTES) break;
+        count++;
+      }
+      const batch = this.registry.update(leadId, (current) => {
+        current.deliveringReports = current.pendingReports.splice(0, count);
+        return current.deliveringReports;
+      });
+      const canSend = () => {
+        if (this.#closed) return false;
+        const current = this.registry.get(leadId);
+        if (
+          current?.createdAt !== lead.createdAt ||
+          current.deviceId !== lead.deviceId ||
+          reportPause(current) !== reason
+        )
+          return false;
+        if (!allowedByUsage()) throw new LeadReportUsageLimit("usage-limit");
+        return true;
+      };
+      let result: "sent" | "merged" | "retry" | "unknown";
+      try {
+        result = (await this.sendReport(leadId, lead.deviceId, joinReports(batch), canSend))
+          ? "merged"
+          : "sent";
+      } catch (error) {
+        result = error instanceof LeadReportNotDispatched ? "retry" : "unknown";
+      }
+      if (this.registry.get(leadId)?.createdAt !== lead.createdAt) return;
+      this.registry.update(leadId, (current) => {
+        if (result === "unknown") {
+          current.reportRetryable = false;
+          if (current.reason === reason) current.reason = "report-undelivered";
+          return;
+        }
+        delete current.deliveringReports;
+        if (result === "retry") current.pendingReports = [...batch, ...current.pendingReports];
+        if (result === "sent") current.autoTurns++;
+      });
+      if (result === "unknown") this.delegationChanged();
+      if (result === "retry" || result === "unknown") return;
+    }
   }
 
   #deliverQuitReports(leadId: string, retryUnconfirmed = false): void {
@@ -1916,6 +2081,7 @@ export class OrchestrationService {
         paused: lead.paused,
         reason: lead.paused ? lead.reason : null,
         reports: this.queuedReports(lead.sessionId),
+        ...(this.#showsRecovery(lead) ? { recovering: true } : {}),
         ...((lead.paused && lead.reason === "usage-limit" && this.#leadNeedsUser(lead.sessionId)) ||
         this.lanes.managedLeadNeedsUser?.(lead.sessionId)
           ? { requiresUser: true }
@@ -1943,6 +2109,16 @@ export class OrchestrationService {
     return lead ? { ...lead, scope: this.#effectiveScope(lead) } : null;
   }
 
+  #showsRecovery(lead: Lead): boolean {
+    return (
+      reportPause(lead) !== undefined &&
+      (!lead.deliveringReports || this.#recoveringReports.has(lead.sessionId)) &&
+      (!lead.pendingQuitReports?.some((report) => report.attempted) ||
+        this.#sendingQuitReports.has(lead.sessionId)) &&
+      (lead.reason !== "usage-limit" || !this.#leadNeedsUser(lead.sessionId))
+    );
+  }
+
   /**
    * The lead as the desktop shows it: its scope and state, and each worker's live status;
    * no report text leaves the registry.
@@ -1968,9 +2144,13 @@ export class OrchestrationService {
       sessionId,
       paused: lead.paused,
       reason: lead.reason,
+      ...(this.#showsRecovery(lead) ? { recovering: true } : {}),
       scope: this.#effectiveScope(lead, workspaceId),
       autoTurns: lead.autoTurns,
-      pendingReports: lead.pendingReports.length + (lead.pendingQuitReports?.length ?? 0),
+      pendingReports:
+        lead.pendingReports.length +
+        (lead.deliveringReports?.length ?? 0) +
+        (lead.pendingQuitReports?.length ?? 0),
       workers,
     };
   }

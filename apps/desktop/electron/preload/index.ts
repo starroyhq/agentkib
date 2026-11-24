@@ -41,13 +41,14 @@ function subscribe<T>(channel: string, listener: (value: T) => void): () => void
 
 // Only a real paste in this renderer can request native file references.
 let lastPasteAt = -Infinity;
-window.addEventListener(
-  "paste",
-  (event) => {
-    if (event.isTrusted) lastPasteAt = performance.now();
-  },
-  { capture: true },
-);
+if (typeof window !== "undefined")
+  window.addEventListener(
+    "paste",
+    (event) => {
+      if (event.isTrusted) lastPasteAt = performance.now();
+    },
+    { capture: true },
+  );
 
 const desktopApi = Object.freeze({
   platform: process.platform,

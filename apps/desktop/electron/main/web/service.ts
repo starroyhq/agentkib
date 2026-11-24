@@ -5642,7 +5642,12 @@ export class WebAccessService {
       throw new HttpError(400, "invalid_input");
     return value;
   }
-  private async runtime(params: unknown, existing?: Promise<unknown>, reserved = false) {
+  private async runtime(
+    params: unknown,
+    existing?: Promise<unknown>,
+    reserved = false,
+    timeoutError: "outcome_unknown" | "catalog_read_timeout" = "outcome_unknown",
+  ) {
     if (!existing && !reserved && this.admission) throw new HttpError(409, "operation_busy");
     // Timeout does not cancel owner execution. Callers never automatically retry mutations.
     let timer: ReturnType<typeof setTimeout>;
@@ -5650,7 +5655,7 @@ export class WebAccessService {
       return await Promise.race([
         existing ?? this.runtimeCall(params),
         new Promise<never>((_, reject) => {
-          timer = setTimeout(() => reject(new HttpError(504, "outcome_unknown")), 20_000);
+          timer = setTimeout(() => reject(new HttpError(504, timeoutError)), 20_000);
         }),
       ]);
     } finally {
@@ -7635,6 +7640,8 @@ export class WebAccessService {
           await this.codexScope(sessionId!, hash, false, false);
           result = await this.runtime(params);
         }
+      } else if (path === "/catalog") {
+        result = await this.runtime(params, undefined, false, "catalog_read_timeout");
       } else result = await this.runtime(params);
     } catch (error) {
       if (path === "/catalog" || (path === "/events" && params.cursor)) {

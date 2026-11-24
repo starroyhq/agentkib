@@ -443,6 +443,39 @@ describe("SessionDirectory", () => {
     expect(screen.getByRole("alert")).toBeVisible();
   });
 
+  it("combines source, workspace scan, and catalog failures in one directory disclosure", () => {
+    hub.workspaces = [workspaces[0], { ...workspaces[1], name: "Design docs" }];
+    hub.errors = Object.fromEntries(
+      hub.workspaces.map((workspace) => [workspace.id, "Workspace scan unavailable"]),
+    );
+    hub.catalogError = "Reading the session directory timed out.";
+    hub.statuses = [
+      {
+        workspace_id: workspaces[0].id,
+        agent: "antigravity",
+        freshness: "unavailable",
+        session_count: 1,
+        error_key: "errors.conversations.sourceUnavailable",
+        error_detail: JSON.stringify(["antigravity-acp-list"]),
+      },
+    ];
+    const { container } = render(<SessionDirectory />);
+    const tree = within(container.querySelector<HTMLElement>(".session-directory-tree")!);
+    expect(tree.getByText(tr("sessions.partialFailure", { count: 2 }))).toBeVisible();
+    expect(tree.queryByText("Workspace scan unavailable")).toBeNull();
+    const details = tree.getAllByRole("button", { name: tr("common.details") });
+    expect(details).toHaveLength(1);
+    fireEvent.click(details[0]);
+    expect(tree.getAllByText("Workspace scan unavailable")).toHaveLength(1);
+    expect(tree.getByText("Design kit, Design docs")).toBeVisible();
+    expect(tree.getByText("Reading the session directory timed out.")).toBeVisible();
+    expect(tree.getByText("The ACP session list could not be read.")).toBeVisible();
+    const retry = tree.getAllByRole("button", { name: tr("sessions.retry") });
+    expect(retry).toHaveLength(1);
+    fireEvent.click(retry[0]);
+    expect(hub.refresh).toHaveBeenCalledOnce();
+  });
+
   it("keeps empty source notices in the scroll tree and honors installation, host and Agent filters", () => {
     hub.sessions = [];
     hub.workspaces = [

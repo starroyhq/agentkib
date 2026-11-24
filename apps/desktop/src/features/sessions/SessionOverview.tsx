@@ -114,18 +114,22 @@ export function SessionOverview() {
               </Button>
             );
           })}
-          {!hub.filtered.length && !hub.loading && !hub.catalogError && (
-            <div className="session-state-inline p-7 px-5 text-center">
-              <p className="text-muted-foreground">
-                {tr(hub.sessions.length ? "sessions.noMatches" : "sessions.noSessions")}
-              </p>
-              {hub.sessions.length > 0 && (
-                <Button variant="ghost" onClick={resetFilters}>
-                  {tr("sessions.clearFilters")}
-                </Button>
-              )}
-            </div>
-          )}
+          {!hub.filtered.length &&
+            !hub.loading &&
+            !hub.catalogError &&
+            !hub.workspacesError &&
+            !Object.values(hub.errors).some(Boolean) && (
+              <div className="session-state-inline p-7 px-5 text-center">
+                <p className="text-muted-foreground">
+                  {tr(hub.sessions.length ? "sessions.noMatches" : "sessions.noSessions")}
+                </p>
+                {hub.sessions.length > 0 && (
+                  <Button variant="ghost" onClick={resetFilters}>
+                    {tr("sessions.clearFilters")}
+                  </Button>
+                )}
+              </div>
+            )}
         </div>
       </section>
     </>

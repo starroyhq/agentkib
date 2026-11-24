@@ -733,6 +733,29 @@ describe("WebAccessService loopback security boundary", () => {
     },
   );
 
+  it("reports a slow local catalog request as a read timeout", async () => {
+    let begin!: () => void;
+    const started = new Promise<void>((resolve) => {
+      begin = resolve;
+    });
+    let finish!: (value: unknown) => void;
+    runtime.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+          begin();
+        }),
+    );
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const pending = service.localRequest("catalog");
+    await started;
+    await vi.advanceTimersByTimeAsync(20_000);
+    const response = await pending;
+    finish({ sessions: [], workspaces: [] });
+    expect(response).toEqual({ status: 504, body: { error: "catalog_read_timeout" } });
+    expect(runtime).toHaveBeenCalledTimes(1);
+  });
+
   it("keeps revocation authoritative when a pending catalog becomes stale", async () => {
     await bootstrap();
     const id = await pair(false, false);

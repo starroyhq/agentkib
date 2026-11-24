@@ -230,7 +230,7 @@ describe("SessionHubPage", () => {
     expect(api.sessionSourceCapability).not.toHaveBeenCalled();
   });
 
-  it("localizes remote catalog failures without exposing RPC text by default", () => {
+  it("keeps a remote catalog failure out of the session content", () => {
     hub.remoteHosts = [
       {
         id: "remote-host",
@@ -243,10 +243,9 @@ describe("SessionHubPage", () => {
     ];
     hub.remoteErrors = { "remote-host": "RuntimeRequestError: REMOTE_OFFLINE" };
     render(sessionSurface());
-    expect(screen.getByRole("alert")).toHaveTextContent(tr("remote.error.offline"));
-    expect(screen.getByRole("alert")).not.toHaveTextContent("RuntimeRequestError");
-    fireEvent.click(screen.getByRole("button", { name: tr("errors.details") }));
-    expect(screen.getByRole("alert")).toHaveTextContent("RuntimeRequestError: REMOTE_OFFLINE");
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.queryByText(/RuntimeRequestError|REMOTE_OFFLINE/)).toBeNull();
+    expect(screen.getByRole("button", { name: /Review theme switching/ })).toBeVisible();
   });
 
   it("shows unknown statistics as placeholders until the first trustworthy directory arrives", () => {
@@ -514,36 +513,27 @@ describe("SessionHubPage", () => {
     expect(api.sessionEvents).toHaveBeenCalledTimes(2);
   });
 
-  it("keeps cached records usable and surfaces workspace errors separately", () => {
+  it("keeps cached records usable during a workspace scan failure", () => {
     hub = { ...hub, errors: { [workspace.id]: "Index source unavailable" } };
     render(sessionSurface());
-    const alert = within(screen.getByRole("alert"));
-    expect(alert.getByText("Some sessions could not be read in 1 workspace.")).toBeVisible();
-    expect(alert.queryByText("Index source unavailable")).not.toBeInTheDocument();
-    fireEvent.click(alert.getByRole("button", { name: "Details" }));
-    expect(alert.getByText(workspace.name)).toBeVisible();
-    expect(alert.getByText("Index source unavailable")).toBeVisible();
-    fireEvent.click(alert.getByRole("button", { name: "Retry" }));
-    expect(hub.refresh).toHaveBeenCalledOnce();
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.queryByText("Index source unavailable")).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: /Review theme switching/ }));
     expect(hub.select).toHaveBeenCalledWith(readable.id);
   });
 
-  it("offers a workspace retry when the workspace list cannot load", () => {
+  it("keeps workspace discovery errors in the sidebar even without cached workspaces", () => {
     hub = { ...hub, workspaces: [], workspacesError: "Workspaces unavailable" };
     render(sessionSurface());
-    expect(screen.getByRole("alert")).toHaveTextContent("Workspaces unavailable");
-    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
-    expect(hub.retryWorkspaces).toHaveBeenCalledOnce();
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.queryByText("Workspaces unavailable")).toBeNull();
   });
 
-  it("shows a catalog failure with retry instead of claiming there are no sessions", () => {
+  it("avoids claiming there are no sessions during a catalog failure", () => {
     hub = { ...hub, sessions: [], filtered: [], catalogError: "Conversation catalog unavailable" };
     render(sessionSurface());
-    expect(screen.getByRole("alert")).toHaveTextContent("Conversation catalog unavailable");
+    expect(screen.queryByRole("alert")).toBeNull();
     expect(screen.queryByText(tr("sessions.noSessions"))).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
-    expect(hub.refresh).toHaveBeenCalledOnce();
   });
 
   it("does not claim indexing is enabled when saving fails and blocks repeated clicks", async () => {

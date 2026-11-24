@@ -167,6 +167,50 @@ describe("desktop conversation catalog", () => {
     expect(view.result.current.sessions[0]?.id).toBe("recovered");
   });
 
+  it.each(["catalog_read_timeout", "outcome_unknown"])(
+    "silently retries a catalog read timeout reported as %s",
+    async (code) => {
+      const { bridge } = fixture();
+      const errors: unknown[] = [];
+      const view = renderHook(() => {
+        const value = useConversationCatalog(true);
+        errors.push(value.error);
+        return value;
+      });
+      await waitFor(() => expect(view.result.current.ready).toBe(true));
+      const reads = vi.mocked(bridge.request).mock.calls.length;
+      vi.mocked(bridge.request)
+        .mockResolvedValueOnce({ status: 504, body: { error: code } })
+        .mockResolvedValueOnce(catalog("recovered"));
+      await act(async () => {
+        await refreshConversationCatalog();
+      });
+      expect(bridge.request).toHaveBeenCalledTimes(reads + 2);
+      expect(view.result.current.sessions[0]?.id).toBe("recovered");
+      expect(errors.filter(Boolean)).toEqual([]);
+    },
+  );
+
+  it("reports a persistent read timeout after retrying and keeps the previous directory", async () => {
+    const { bridge } = fixture();
+    const view = renderHook(() => useConversationCatalog(true));
+    await waitFor(() => expect(view.result.current.ready).toBe(true));
+    const reads = vi.mocked(bridge.request).mock.calls.length;
+    vi.mocked(bridge.request).mockResolvedValue({
+      status: 504,
+      body: { error: "catalog_read_timeout" },
+    });
+    await act(async () => {
+      await expect(refreshConversationCatalog()).rejects.toMatchObject({
+        code: "catalog_read_timeout",
+      });
+    });
+    expect(bridge.request).toHaveBeenCalledTimes(reads + 2);
+    expect(view.result.current.sessions[0]?.id).toBe("initial");
+    expect(view.result.current.error).toMatchObject({ code: "catalog_read_timeout" });
+    expect(view.result.current.usable).toBe(true);
+  });
+
   it("stops after three busy reads and retains the previous rows", async () => {
     const { bridge } = fixture();
     const view = renderHook(() => useConversationCatalog(true));

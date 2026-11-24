@@ -1715,6 +1715,7 @@ export class WebAccessService {
         this.code = undefined;
         for (const browser of this.browsers.values()) browser.pending = undefined;
         await this.save();
+        this.error = undefined;
         if (config.enabled) await this.start();
         break;
       }
@@ -1885,7 +1886,12 @@ export class WebAccessService {
     if (this.options.acceptanceSessionId && input.externalOrigin)
       throw new Error("acceptance_is_local_only");
     if (input.externalOrigin) {
-      const url = new URL(input.externalOrigin);
+      let url: URL;
+      try {
+        url = new URL(input.externalOrigin);
+      } catch {
+        throw new Error("invalid_external_origin");
+      }
       if (
         url.protocol !== "https:" ||
         url.username ||
@@ -2185,11 +2191,15 @@ export class WebAccessService {
     credentials = this.credentials,
   ) {
     const contents = JSON.stringify({ config, credentials, remotePairingInitialized });
-    const result = this.persistence.then(async () => {
-      const file = join(this.options.dataDir, "web-access.json");
-      await writeFile(`${file}.tmp`, contents, { mode: 0o600 });
-      await rename(`${file}.tmp`, file);
-    });
+    const result = this.persistence
+      .then(async () => {
+        const file = join(this.options.dataDir, "web-access.json");
+        await writeFile(`${file}.tmp`, contents, { mode: 0o600 });
+        await rename(`${file}.tmp`, file);
+      })
+      .catch((cause) => {
+        throw new Error("web_state_save_failed", { cause });
+      });
     this.persistence = result.catch(() => undefined);
     return result;
   }
@@ -2377,7 +2387,7 @@ export class WebAccessService {
       return validateRegistration(value, DEFAULT_RELAY_BROKER);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
-      throw error;
+      throw new Error("invalid_account_registration", { cause: error });
     }
   }
   async prepareAccountClaim(accountId: string): Promise<void> {

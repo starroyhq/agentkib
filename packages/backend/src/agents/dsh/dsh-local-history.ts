@@ -5,7 +5,7 @@ import path from "node:path";
 import { pipeline } from "node:stream/promises";
 import { createZstdDecompress } from "node:zlib";
 import { DSH_HIDDEN_COMMANDS } from "agentkib-dsh-bridge/commands.js";
-import { historyRecord } from "agentkib-dsh-bridge/projection.js";
+import { historyRecord, quitInterruptionId } from "agentkib-dsh-bridge/projection.js";
 import { isReparseOrSymlink } from "../../native-files";
 
 const MAX_COMPRESSED_BYTES = 64 * 1024 * 1024;
@@ -243,6 +243,7 @@ export type DshLocalTurnCheckpoint = {
   seq: number;
   lastEventAt: number | null;
   open: { turn: number; startedAt: number } | null;
+  quitInterruption?: { turn: number; interruptionId: string };
 };
 
 /**
@@ -268,6 +269,7 @@ export async function readLocalDshTurn(
     let seq = checkpoint?.seq ?? -1;
     let lastEventAt = checkpoint?.lastEventAt ?? null;
     let openTurn = checkpoint?.open ?? null;
+    let quitInterruption = checkpoint?.quitInterruption;
 
     await decodeDshLog(
       handle,
@@ -289,6 +291,7 @@ export async function readLocalDshTurn(
         )
           throw new Error("dsh-history-sequence-invalid");
         seq = next;
+        quitInterruption = undefined;
 
         const time = event.time;
         if (typeof time === "number" && Number.isFinite(time)) lastEventAt = time;
@@ -308,6 +311,8 @@ export async function readLocalDshTurn(
         } else {
           if (openTurn?.turn !== turn) throw new Error("dsh-history-unbalanced-turn");
           openTurn = null;
+          const interruptionId = quitInterruptionId(event);
+          if (interruptionId) quitInterruption = { turn, interruptionId };
         }
       },
       true,
@@ -331,6 +336,7 @@ export async function readLocalDshTurn(
       seq,
       lastEventAt,
       open: openTurn,
+      ...(quitInterruption ? { quitInterruption } : {}),
     };
   });
 }

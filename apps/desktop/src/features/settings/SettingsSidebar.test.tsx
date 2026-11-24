@@ -83,6 +83,16 @@ describe("SettingsSidebar v9 navigation", () => {
     expect(onSelect).toHaveBeenLastCalledWith("shortcuts", "shortcuts-actions");
   });
 
+  it("finds the quit continuation setting by an option label", () => {
+    const onSelect = vi.fn();
+    render(<SettingsSidebar active="general" onSelect={onSelect} />);
+    fireEvent.change(screen.getByRole("searchbox", { name: "Search settings…" }), {
+      target: { value: "Continue next time AgentKib opens" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Tasks in progress when quitting" }));
+    expect(onSelect).toHaveBeenCalledWith("sessions", "sessions-quit-resume");
+  });
+
   it("scrolls to an already-active search result every time it is selected", () => {
     const onSelect = vi.fn();
     const view = render(

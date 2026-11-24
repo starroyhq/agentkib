@@ -310,6 +310,7 @@ const MANAGED_CAPABILITIES = {
 const PROVIDERS = {
   codex: {
     ...MANAGED_CAPABILITIES.codex,
+    resumeAfterQuit: true,
     commands: { source: "built-in" },
     projectAgent: { lead: true, worker: true },
     queue: { actions: ["list", "add", "update", "delete", "reorder", "start"] },
@@ -343,6 +344,7 @@ const PROVIDERS = {
   },
   "deepseek-harness": {
     ...MANAGED_CAPABILITIES["deepseek-harness"],
+    resumeAfterQuit: true,
     commands: { source: "reported" },
     projectAgent: { lead: true, worker: true },
     queue: { actions: ["list", "add", "update", "delete", "steer"] },

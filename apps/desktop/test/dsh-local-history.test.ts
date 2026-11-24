@@ -1,5 +1,5 @@
 // @vitest-environment node
-import { randomBytes } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import {
   appendFileSync,
   mkdtempSync,
@@ -139,6 +139,44 @@ describe("DSH persisted turn evidence", () => {
       open: null,
       ino: first.ino,
     });
+  });
+
+  it("reports the exact quit interruption only at the durable end of the native log", async () => {
+    const dir = fixture();
+    const log = path.join(dir, logName);
+    writeFileSync(log, encode(header, started, { seq: 2, time: 110, type: "step/end" }));
+    const before = await readLocalDshTurn(dir, nativeId);
+    expect(before?.quitInterruption).toBeUndefined();
+
+    const interruptionId = randomUUID();
+    appendFileSync(
+      log,
+      encode({
+        ...ended,
+        data: {
+          turn: 3,
+          reason: {
+            kind: "aborted",
+            reason: {
+              kind: "hook",
+              reason: `agentkib-quit:${interruptionId}`,
+            },
+          },
+        },
+      }),
+    );
+    const interrupted = await readLocalDshTurn(dir, nativeId, before!);
+    expect(interrupted).toMatchObject({
+      seq: ended.seq,
+      open: null,
+      quitInterruption: { turn: 3, interruptionId },
+    });
+    expect(await readLocalDshTurn(dir, nativeId)).toEqual(interrupted);
+
+    appendFileSync(log, encode({ seq: 4, time: 121, type: "turn/start", data: { turn: 4 } }));
+    const later = await readLocalDshTurn(dir, nativeId, interrupted!);
+    expect(later).toMatchObject({ seq: 4, open: { turn: 4, startedAt: 121 } });
+    expect(later?.quitInterruption).toBeUndefined();
   });
 
   it("waits for a complete compressed frame before advancing a checkpoint", async () => {

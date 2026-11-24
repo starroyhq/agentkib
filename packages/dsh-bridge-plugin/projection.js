@@ -55,6 +55,19 @@ export function isHumanMessage(message) {
   return message?.source?.kind === "user";
 }
 
+/** An AgentKib quit cause persisted by DSH in the native turn's abort settlement. */
+export function quitInterruptionId(event) {
+  const reason = event?.data?.reason;
+  const cause = reason?.reason;
+  return event?.type === "turn/end" &&
+    reason?.kind === "aborted" &&
+    cause?.kind === "hook" &&
+    typeof cause.reason === "string" &&
+    /^agentkib-quit:[0-9a-f-]{36}$/.test(cause.reason)
+    ? cause.reason.slice("agentkib-quit:".length)
+    : null;
+}
+
 /** One displayable history record, or null for events the conversation view never shows. */
 export function historyRecord(event) {
   const base = { seq: event?.seq, time: typeof event?.time === "number" ? event.time : null };
@@ -69,6 +82,7 @@ export function historyRecord(event) {
         kind: "turn-end",
         turn: data.turn,
         reason: reasonOf(data.reason),
+        ...(quitInterruptionId(event) ? { quitInterruption: true } : {}),
         ...failureOf(data.reason),
       };
     case "user/message": {

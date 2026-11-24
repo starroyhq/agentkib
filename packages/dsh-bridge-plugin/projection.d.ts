@@ -8,7 +8,7 @@ export interface DshBridgeImage {
 /** Displayable history records; everything else in the DSH log stays in DSH. */
 export type DshBridgeHistoryRecord = { seq: number; time: number | null } & (
   | { kind: "turn-start"; turn: number }
-  | { kind: "turn-end"; turn: number; reason: string | null }
+  | { kind: "turn-end"; turn: number; reason: string | null; quitInterruption?: true }
   | {
       kind: "user";
       id: string | null;
@@ -33,4 +33,5 @@ export type DshBridgeHistoryRecord = { seq: number; time: number | null } & (
   | { kind: "command-result"; commandId: string; ok: boolean; text: string | null }
 );
 
+export function quitInterruptionId(event: unknown): string | null;
 export function historyRecord(event: unknown): DshBridgeHistoryRecord | null;

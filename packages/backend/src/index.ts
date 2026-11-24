@@ -731,9 +731,10 @@ export class TypeScriptBackend {
           },
         });
         this.#dshBridge = dshBridge;
-        this.#dshSessionProvider = new DshSessionProvider(dshBridge, (id, operation) =>
+        const dshProvider = new DshSessionProvider(dshBridge, (id, operation) =>
           this.#noteDshControl(id, operation),
         );
+        this.#dshSessionProvider = dshProvider;
         this.#sessions = new SessionReaders(
           store.sessions,
           this.#commands,
@@ -1018,22 +1019,42 @@ export class TypeScriptBackend {
         );
         this.#claudeSessionProvider = claudeProvider;
         const orchestration = this.#orchestration;
+        const withQuitProvider = async <T>(
+          agent: string,
+          run: (provider: ClaudeSessionProvider | CodexSessionProvider | DshSessionProvider) => T,
+        ): Promise<Awaited<T> | undefined> => {
+          if (!sessionProviderDeclaration(agent)?.resumeAfterQuit) return;
+          if (agent === "claude-code") return await run(claudeProvider);
+          if (agent === "deepseek-harness") return await run(dshProvider);
+          if (agent === "codex")
+            return this.#withWebRead((owner) => run(owner.codexSessionProvider()));
+        };
         this.#quitWork = new QuitWork(dataDir, {
           sessions: () => this.#quitWorkSessions(),
           resumeByDefault: () => readPreferences(dataDir).resume_after_quit !== false,
           candidate: ({ sessionId, agent }) =>
-            sessionProviderDeclaration(agent)?.resumeAfterQuit
-              ? claudeProvider.quitCandidate(sessionId)
-              : Promise.resolve(undefined),
+            withQuitProvider(agent, (provider) => provider.quitCandidate(sessionId)),
           assignment: (sessionId) => {
             const owner = orchestration.registry.leadOfLane(sessionId);
             return owner ? { leadId: owner.lead.sessionId, laneId: owner.lane.id } : undefined;
           },
-          interrupt: ({ sessionId }, turnId) => claudeProvider.interruptForQuit(sessionId, turnId),
-          check: ({ sessionId, evidence }) => claudeProvider.checkAfterQuit(sessionId, evidence),
-          dispatch: ({ sessionId, evidence, id }, text) =>
-            claudeProvider.resumeAfterQuit(sessionId, evidence, id, text),
-          receipt: ({ id, sessionId, evidence }) => {
+          interrupt: ({ sessionId, agent }, turnId) =>
+            withQuitProvider(agent, (provider) => provider.interruptForQuit(sessionId, turnId)),
+          check: async ({ sessionId, agent, evidence }) =>
+            (await withQuitProvider(agent, (provider) =>
+              provider.checkAfterQuit(sessionId, evidence),
+            )) ?? false,
+          dispatch: async ({ sessionId, agent, evidence, id }, text) =>
+            (await withQuitProvider(agent, (provider) =>
+              provider.resumeAfterQuit(sessionId, evidence, id, text),
+            )) ?? "skipped",
+          receipt: ({ id, sessionId, agent, evidence }) => {
+            const mode =
+              agent === "codex"
+                ? "codex-managed"
+                : agent === "deepseek-harness"
+                  ? "dsh-follower"
+                  : "claude-managed";
             const receipt = readControlReceipt(dataDir, {
               requestId: id,
               deviceId: "desktop-local",
@@ -1043,11 +1064,11 @@ export class TypeScriptBackend {
               !("sessionId" in receipt) ||
               receipt.sessionId !== sessionId ||
               receipt.operation !== "send" ||
-              receipt.executionMode !== "claude-managed"
+              receipt.executionMode !== mode
             )
               return "unknown";
             if (receipt.status === "accepted") {
-              claudeProvider.restoreQuitQueue(sessionId, evidence);
+              if (agent === "claude-code") claudeProvider.restoreQuitQueue(sessionId, evidence);
               return "continued";
             }
             return receipt.status === "not-dispatched" ? "skipped" : "unknown";

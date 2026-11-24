@@ -61,6 +61,8 @@ export function migrateSharedSchema(database: DatabaseSync): void {
     database.exec(sessionCollections);
     database.exec(quotaCollectionCaches);
     database.exec(nativeMemoryCache);
+    // User organization is independent of the replaceable session-index rows.
+    database.exec("CREATE TABLE IF NOT EXISTS conversation_pins (session_id TEXT PRIMARY KEY)");
     const classification = database
       .prepare("SELECT value FROM schema_meta WHERE key='codex_session_classification_revision'")
       .get()?.value;

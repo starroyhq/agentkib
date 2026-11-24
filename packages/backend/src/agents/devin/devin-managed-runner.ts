@@ -3,11 +3,14 @@ import { createHash, randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { acpObject } from "../../acp-json";
+import type { AcpPromptAttachmentSupport, AcpPromptBlock } from "../../acp-prompt-attachments";
 import type { LeadToolRegistration } from "../../orchestration-endpoint";
 import { sanitizeHandoffExport } from "../../session-handoff";
 import { devinSessionDatabase } from "./devin-sessions";
 import {
+  AcpUndispatchedError,
   AntigravityAcp,
+  initializeAcpProbe,
   type AcpId,
   type AcpMcpServer,
   type AcpPermission,
@@ -32,6 +35,8 @@ const POLL_MS = 1_000;
 const STOP_KILL_MS = 5_000;
 /** Each ACP setup step (initialize, load or new session, an option) must answer by then. */
 const ACP_STEP_MS = 60_000;
+const ACP_PROMPT_PROBE_MS = 3_000;
+const ACP_PROMPT_CAPABILITIES_MS = 60_000;
 const ACP_EVENT_MS = 1_000;
 /** How AgentKib's permission modes map onto Devin's ACP session modes. */
 const DEVIN_ACP_MODES: Record<DevinPermissionMode, string> = {
@@ -580,6 +585,11 @@ export class DevinManagedRunner {
   #usageLimit: UsageLimitView | null = null;
   #acp: AntigravityAcp | null = null;
   #acpSession: string | null = null;
+  #promptAttachments?: { support: AcpPromptAttachmentSupport | undefined; expiresAt: number };
+  #promptProbe?: {
+    client: AntigravityAcp;
+    result: Promise<AcpPromptAttachmentSupport | undefined>;
+  };
   #approvals = new Map<string, DevinApproval>();
   #runningSettings: DevinTurnSettings | undefined;
   #lastSettings: DevinTurnSettings | undefined;
@@ -620,6 +630,53 @@ export class DevinManagedRunner {
     return this.#modelControls;
   }
 
+  /** Devin does not run an idle ACP process. Probe initialize without opening a native session. */
+  async promptAttachmentSupport(): Promise<AcpPromptAttachmentSupport | undefined> {
+    if (this.#closed) return undefined;
+    const previous = this.#promptAttachments;
+    if (previous && Date.now() < previous.expiresAt) return previous.support;
+    if (this.#promptProbe) return this.#promptProbe.result;
+    const executable = this.host.executable();
+    if (!executable) return undefined;
+
+    let client: AntigravityAcp;
+    try {
+      client = AntigravityAcp.spawn(executable, ["acp"], this.workspace, this.host.environment, {
+        timeout: ACP_PROMPT_PROBE_MS,
+      });
+    } catch {
+      return undefined;
+    }
+    const result = initializeAcpProbe(client, ACP_PROMPT_PROBE_MS)
+      .then(
+        () => client.compatibility?.promptAttachments,
+        () => undefined,
+      )
+      .then((support) => {
+        if (this.#closed) return undefined;
+        // A turn may have negotiated fresher capabilities while the probe was running.
+        if (this.#promptAttachments === previous)
+          this.#rememberPromptAttachments(support, client.compatibility !== null);
+        return this.#promptAttachments?.support;
+      })
+      .finally(() => {
+        client.shutdown();
+        this.#promptProbe = undefined;
+      });
+    this.#promptProbe = { client, result };
+    return result;
+  }
+
+  #rememberPromptAttachments(
+    support: AcpPromptAttachmentSupport | undefined,
+    initialized = true,
+  ): void {
+    this.#promptAttachments = {
+      support,
+      expiresAt: Date.now() + (initialized ? ACP_PROMPT_CAPABILITIES_MS : ACP_PROMPT_PROBE_MS),
+    };
+  }
+
   snapshot(): Record<string, unknown> {
     const running = this.#status === "running" || this.#status === "stopping";
     const waiting = this.#status === "running" && this.#approvals.size > 0;
@@ -654,12 +711,13 @@ export class DevinManagedRunner {
     expectedRevision: number,
     beforeDispatch: () => void,
     settings: DevinTurnSettings = {},
+    prepareInput?: (support: AcpPromptAttachmentSupport | undefined) => Promise<AcpPromptBlock[]>,
     options: { confirmPermission?: boolean } = {},
   ): Promise<void> {
     if (this.#closed) throw new Error("session-runner-unavailable");
     if (expectedRevision !== this.#revision) throw new Error("stale-or-disabled-control");
     if (this.#status === "running" || this.#status === "stopping") throw new Error("session-busy");
-    if (!text.trim() || Buffer.byteLength(text, "utf8") > DEVIN_MAX_PROMPT_BYTES)
+    if ((!text.trim() && !prepareInput) || Buffer.byteLength(text, "utf8") > DEVIN_MAX_PROMPT_BYTES)
       throw new Error("invalid-text");
     const executable = this.host.executable();
     if (!executable) throw new Error("devin-cli-unavailable");
@@ -689,8 +747,18 @@ export class DevinManagedRunner {
     let promptId: AcpId;
     let applied: AppliedDevinSettings;
     let startedAt = 0;
+    let inputRejected = false;
     try {
       await this.#step(acp, acp.initialize());
+      const support = acp.compatibility?.promptAttachments;
+      this.#rememberPromptAttachments(support);
+      const prompt =
+        prepareInput === undefined
+          ? text
+          : await prepareInput(support).catch((error: unknown) => {
+              inputRejected = true;
+              throw error;
+            });
       const attached = this.#nativeId
         ? await this.#step(acp, acp.loadSession(this.#nativeId, this.workspace, mcpServers))
         : await this.#step(acp, acp.newSession(this.workspace, mcpServers));
@@ -705,14 +773,14 @@ export class DevinManagedRunner {
       );
       if (this.#closed || expectedRevision !== this.#revision)
         throw new Error("stale-or-disabled-control");
-      promptId = await acp.prompt(session, text, () => {
+      promptId = await acp.prompt(session, prompt, () => {
         beforeDispatch();
         startedAt = Date.now();
       });
     } catch (error) {
       acp.shutdown();
       // Once the prompt went out, what happened to it is not known.
-      if (startedAt) throw error;
+      if (startedAt || inputRejected || error instanceof AcpUndispatchedError) throw error;
       throw new Error(devinAcpFailure(error), { cause: error });
     }
     this.#acp = acp;
@@ -796,6 +864,7 @@ export class DevinManagedRunner {
     this.#closed = true;
     clearInterval(this.#timer);
     this.#acp?.shutdown();
+    this.#promptProbe?.client.shutdown();
   }
 
   async #applySettings(

@@ -11,9 +11,9 @@ import {
   ImageIcon,
   Layers,
   LoaderCircle,
-  Plus,
   Search,
   Shield,
+  SlidersHorizontal,
   TriangleAlert,
   X,
 } from "lucide-react";
@@ -29,6 +29,7 @@ import {
   SessionComposerToolbar,
   DEFAULT_NEW_SESSION_AGENT,
   fillCopy,
+  IconAction,
   NEW_SESSION_AGENTS,
   NewSessionAddDraftChips,
   newSessionCopy,
@@ -70,6 +71,7 @@ import { cn } from "cn";
 import { sessionCopy, sessionReason } from "../conversation/session-copy";
 import { composerLayoutCopy } from "@agentkib/session-ui";
 import { Dialog } from "../conversation/components/dialog";
+import { readDesktopClipboardFiles } from "../conversation/session-platform";
 import { MAX_MESSAGE_LENGTH } from "@agentkib/conversation-state";
 import { failureOf, useNewSession } from "./use-new-session";
 
@@ -193,6 +195,7 @@ export function NewSessionComposer(props: NewSessionComposerProps) {
   }, [text, files, resources, goal]);
   // The create request can carry the first message's text. Attachments use the opened session.
   const acceptsAttachments = (provider?.create.attachments ?? true) && !promptAtCreate;
+  const addActionsScope = JSON.stringify([agent, workspace?.id, session.resourceAuthority]);
   const workspaceCatalog = provider?.create.catalogScope !== "host";
   const fileInput = useRef<HTMLInputElement>(null);
   const [fileLimit, setFileLimit] = useState(false);
@@ -416,10 +419,12 @@ export function NewSessionComposer(props: NewSessionComposerProps) {
             {addError}
           </p>
         )}
-        <Button variant="outline" size="sm" onClick={() => void addWorkspace()}>
+        <IconAction
+          label={copy.addWorkspaceButton}
+          render={<Button variant="outline" size="icon-lg" onClick={() => void addWorkspace()} />}
+        >
           <FolderPlus size={15} aria-hidden />
-          {copy.addWorkspaceButton}
-        </Button>
+        </IconAction>
       </section>
     );
 
@@ -536,8 +541,14 @@ export function NewSessionComposer(props: NewSessionComposerProps) {
           inputRef: fileInput,
           label: copy.attach,
           disabled: locked || !acceptsAttachments,
+          scope: addActionsScope,
           onFiles: addFiles,
         }}
+        readClipboardFiles={
+          globalThis.document?.documentElement.dataset.platform === "macos"
+            ? readDesktopClipboardFiles
+            : undefined
+        }
         afterEditor={slash.menu}
         beforeEditor={
           <>
@@ -590,20 +601,21 @@ export function NewSessionComposer(props: NewSessionComposerProps) {
           <SessionComposerToolbar
             locale={locale}
             add={{
-              scope: JSON.stringify([agent, workspace?.id, session.resourceAuthority]),
+              scope: addActionsScope,
               label: sessionCopy[locale].addContext,
               disabled: locked,
               disabledReason: session.optionsLoading ? copy.loadingOptions : undefined,
               side: side,
               open: addMenuOpen && !locked,
               onOpenChange: setAddMenuOpen,
-              attachment: acceptsAttachments
-                ? {
-                    disabled: files.length >= MAX_FILES,
-                    reason: files.length >= MAX_FILES ? sessionCopy[locale].limit : undefined,
-                    onPick: () => fileInput.current?.click(),
-                  }
-                : undefined,
+              attachment: {
+                disabled: !acceptsAttachments || files.length >= MAX_FILES,
+                reason:
+                  acceptsAttachments && files.length >= MAX_FILES
+                    ? sessionCopy[locale].limit
+                    : undefined,
+                onPick: () => fileInput.current?.click(),
+              },
               resources: add.resourceBrowser,
               goal: goalsOffered
                 ? {
@@ -626,7 +638,7 @@ export function NewSessionComposer(props: NewSessionComposerProps) {
             permission={
               permissions
                 ? {
-                    label: shownPermission?.name ?? permissions.title,
+                    label: shownPermission?.name,
                     title: permissions.title,
                     risky: shownPermission?.risky,
                     disabled: locked,
@@ -651,8 +663,7 @@ export function NewSessionComposer(props: NewSessionComposerProps) {
                   }
                   status={optionsStatus}
                   loading={session.optionsLoading}
-                  className="h-11 min-w-0 rounded-full px-2.5 text-sm font-normal text-muted-foreground"
-                  compact
+                  className="h-11 min-w-11 rounded-full px-2.5 text-sm font-normal text-muted-foreground"
                   icon={<Shield className="size-3.5 shrink-0" aria-hidden />}
                 />
               ) : undefined
@@ -697,7 +708,8 @@ export function NewSessionComposer(props: NewSessionComposerProps) {
                   label={copy.model}
                   status={optionsStatus}
                   loading={session.optionsLoading}
-                  className="h-9 min-w-0 max-w-64 rounded-full px-2 text-sm font-normal"
+                  className="h-9 min-w-9 max-w-64 rounded-full px-2 text-sm font-normal"
+                  icon={<SlidersHorizontal className="size-3.5 shrink-0" aria-hidden />}
                 />
               ) : undefined
             }
@@ -750,33 +762,33 @@ function UnavailableOptionButton({
   loading,
   className,
   icon,
-  compact,
 }: {
   label: string;
   status: string;
   loading: boolean;
   className: string;
-  icon?: ReactNode;
-  compact?: boolean;
+  icon: ReactNode;
 }) {
+  const name = `${label}: ${status}`;
   return (
-    <Button
-      type="button"
-      variant="ghost"
-      className={cn(className, "disabled:pointer-events-auto")}
-      disabled
-      aria-busy={loading || undefined}
-      aria-label={`${label}: ${status}`}
-      title={status}
+    <IconAction
+      label={name}
+      render={
+        <Button
+          type="button"
+          variant="ghost"
+          className={cn(className, "gap-1.5 aria-disabled:opacity-50")}
+          disabled
+          focusableWhenDisabled
+          aria-busy={loading || undefined}
+        />
+      }
     >
       {icon}
-      <span className={cn("truncate", compact && "@max-[28rem]:sr-only")}>{label}</span>
-      {loading ? (
+      {loading && (
         <LoaderCircle className="size-3.5 shrink-0 motion-safe:animate-spin" aria-hidden />
-      ) : (
-        <ChevronDown className="size-3.5 shrink-0" aria-hidden />
       )}
-    </Button>
+    </IconAction>
   );
 }
 
@@ -912,17 +924,21 @@ function WorkspacePicker({
                 </div>
               ))}
             </div>
-            <Button
-              variant="ghost"
-              className="h-auto justify-start gap-2 rounded-none border-t border-border px-2 pt-2 pb-1.5 text-left text-sm font-normal text-muted-foreground"
-              onClick={() => {
-                setOpen(false);
-                onAdd();
-              }}
+            <IconAction
+              label={copy.addWorkspace}
+              render={
+                <Button
+                  variant="ghost"
+                  className="h-9 w-full justify-start rounded-none border-t border-border px-2 text-muted-foreground"
+                  onClick={() => {
+                    setOpen(false);
+                    onAdd();
+                  }}
+                />
+              }
             >
-              <Plus className="size-3.5" aria-hidden />
-              {copy.addWorkspace}
-            </Button>
+              <FolderPlus className="size-3.5" aria-hidden />
+            </IconAction>
           </Popover.Popup>
         </Popover.Positioner>
       </Popover.Portal>

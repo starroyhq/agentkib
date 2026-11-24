@@ -69,7 +69,13 @@ const oversizedMcpInput = {
 };
 
 /** An in-process `agy acp` (1.5.14) that answers as each test scripts it. */
-function fakeCli(modeConfirmation?: "missing" | "mismatch" | "rejected" | "stale" | "confirmed") {
+function fakeCli({
+  modeConfirmation,
+  promptCapabilities,
+}: {
+  modeConfirmation?: "missing" | "mismatch" | "rejected" | "stale" | "confirmed";
+  promptCapabilities?: Record<string, boolean>;
+} = {}) {
   const fromAgent = new PassThrough();
   const toAgent = new PassThrough();
   const frames: Frame[] = [];
@@ -100,7 +106,11 @@ function fakeCli(modeConfirmation?: "missing" | "mismatch" | "rejected" | "stale
           result: {
             protocolVersion: 1,
             agentInfo: { name: "Antigravity ACP Server", version: "1.5.14" },
-            agentCapabilities: { loadSession: true, sessionCapabilities: { resume: {}, load: {} } },
+            agentCapabilities: {
+              loadSession: true,
+              sessionCapabilities: { resume: {}, load: {} },
+              ...(promptCapabilities && { promptCapabilities }),
+            },
           },
         });
       if (frame.method === "session/new") {
@@ -177,7 +187,7 @@ describe("Antigravity CLI control (agy acp 1.5.14)", () => {
     "requires native confirmation before the first Antigravity message (%s)",
     async (confirmation) => {
       const implicit = confirmation === "already-active" || confirmation === "omitted";
-      const cli = fakeCli(implicit ? "missing" : confirmation);
+      const cli = fakeCli({ modeConfirmation: implicit ? "missing" : confirmation });
       const root = await realpath(await mkdtemp(join(tmpdir(), "ak-agy-create-")));
       const store = new BackendStore(join(root, "agentkib.db"));
       const commands = new Commands();
@@ -271,6 +281,32 @@ describe("Antigravity CLI control (agy acp 1.5.14)", () => {
         commands.close();
         store.close();
         await rm(root, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it.each([
+    { support: undefined, length: 8, reason: "attachments-unsupported" },
+    { support: { image: true }, length: 1024 * 1024, reason: "attachments_too_large" },
+  ])(
+    "rejects $reason before acknowledging a native dispatch",
+    async ({ support, length, reason }) => {
+      const cli = fakeCli({ promptCapabilities: support });
+      const runner = await AntigravityManagedRunner.connect("/bin/agy", "/tmp", "known", {});
+      try {
+        const beforeDispatch = vi.fn();
+        await expect(
+          runner.send(
+            [{ type: "image", mimeType: "image/png", data: "A".repeat(length) }],
+            Number(runner.snapshot().revision),
+            beforeDispatch,
+          ),
+        ).rejects.toThrow(reason);
+        expect(beforeDispatch).not.toHaveBeenCalled();
+        expect(runner.snapshot()).toMatchObject({ status: "idle", sendEnabled: true });
+        expect(cli.frames.some(({ method }) => method === "session/prompt")).toBe(false);
+      } finally {
+        runner.close();
       }
     },
   );

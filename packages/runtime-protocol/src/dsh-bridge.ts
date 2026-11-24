@@ -42,6 +42,8 @@ export interface DshBridgeServices {
   questions: boolean;
   /** Archive and unarchive. Plugins older than 0.2.0 do not report it. */
   workspaceController?: boolean;
+  /** Native pin/unpin methods and a current workspace pin feed. */
+  workspacePins?: boolean;
   /** Read the model catalog and the session's selected model. */
   modelCatalog?: boolean;
   /** Record an existing session's model and effort without saving the profile default. */
@@ -150,6 +152,8 @@ export interface DshBridgeSessionSummary {
   origin: "subagent" | null;
   /** In DSH's archive set. Plugins older than 0.2.0 do not report it. */
   archived?: boolean;
+  /** Last observed native pin state. An omitted field is unknown. */
+  pinned?: boolean;
 }
 
 /** One model DSH can run, as `provider` and `model` for `selectModel`. */
@@ -321,6 +325,7 @@ export type DshBridgeCommand = { commandId: string } & (
   | { type: "verify-turn-end"; sessionId: string; turn: number }
   | { type: "rename"; sessionId: string; title: string }
   | { type: "archive"; sessionId: string; archived: boolean }
+  | { type: "pin"; sessionId: string; pinned: boolean }
   | { type: "fork"; sessionId: string }
   /**
    * `sessionId` is the new session's ID, chosen by AgentKib so a lost reply can be settled.

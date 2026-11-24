@@ -2,7 +2,7 @@
 
 import "@testing-library/jest-dom/vitest";
 import { useState, type ReactNode } from "react";
-import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { render } from "@/features/conversation/web-reader-test-utils";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PreferencesDialog } from "@agentkib/session-ui";
@@ -146,6 +146,70 @@ describe("composer sending shortcuts", () => {
     fireEvent.change(input, { target: { value: "Second message" } });
     fireEvent.click(screen.getByRole("button", { name: "Send" }));
     await waitFor(() => expect(doubles.control).toHaveBeenCalledTimes(2));
+  });
+
+  it.each(["codex", "claude-code", "deepseek-harness", "devin", "antigravity"] as const)(
+    "pastes screenshots and copied files and accepts a file drop for an attachment-capable %s session",
+    async (agent) => {
+      doubles.session.current = { id: "session", agent } as SessionController["current"];
+      doubles.upload.mockImplementation(async (_sessionId: string, file: File) => ({
+        id: file.name,
+        name: file.name,
+        mime: file.type,
+        size: file.size,
+        version: "1",
+      }));
+      const { input, form } = renderComposer();
+      const screenshot = new File(["image"], "Screenshot.png", { type: "image/png" });
+      const copied = new File(["content"], "Finder copy.txt", { type: "text/plain" });
+      const dropped = new File(["data"], "Dropped.txt", { type: "text/plain" });
+      const imageItem = { kind: "file", getAsFile: () => screenshot };
+      expect(
+        fireEvent.paste(input, {
+          clipboardData: { files: [], items: [imageItem], types: ["Files"] },
+        }),
+      ).toBe(false);
+      expect(fireEvent.paste(input, { clipboardData: { files: [copied] } })).toBe(false);
+      const dataTransfer = { files: [dropped], types: ["Files"], dropEffect: "none" };
+      expect(fireEvent.dragOver(form, { dataTransfer })).toBe(false);
+      expect(dataTransfer.dropEffect).toBe("copy");
+      expect(fireEvent.drop(input, { dataTransfer })).toBe(false);
+
+      await screen.findByText(dropped.name);
+      expect(doubles.upload.mock.calls.map(([, file]) => file)).toEqual([
+        screenshot,
+        copied,
+        dropped,
+      ]);
+      expect(form).not.toHaveAttribute("data-attachment-rejected");
+    },
+  );
+
+  it("briefly highlights the disabled add button without inserting dropped or pasted files", () => {
+    doubles.session.capabilities!.features.attachments = {
+      available: false,
+      reason: "session-busy",
+    };
+    const { input, form } = renderComposer();
+    const add = screen.getByRole("button", { name: sessionCopy["en-US"].addContext });
+    const file = new File(["attachment"], "file.txt");
+    vi.useFakeTimers();
+    try {
+      expect(add).toBeDisabled();
+      const text = { files: [], types: ["text/plain"], getData: () => "Normal text" };
+      expect(fireEvent.paste(input, { clipboardData: text })).toBe(true);
+      expect(form).not.toHaveAttribute("data-attachment-rejected");
+      expect(fireEvent.paste(input, { clipboardData: { files: [file] } })).toBe(false);
+      expect(form).toHaveAttribute("data-attachment-rejected");
+      act(() => vi.advanceTimersByTime(600));
+      expect(form).not.toHaveAttribute("data-attachment-rejected");
+      expect(fireEvent.drop(form, { dataTransfer: { files: [file] } })).toBe(false);
+      expect(form).toHaveAttribute("data-attachment-rejected");
+      expect(add).toBeDisabled();
+      expect(doubles.upload).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("explains an unavailable attachment button in words, not its reason code", () => {

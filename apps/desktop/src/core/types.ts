@@ -1388,6 +1388,7 @@ export interface ConversationEvent {
   images?: import("@agentkib/web-client").ConversationImage[];
   truncated: boolean;
   tool?: import("@agentkib/runtime-protocol").ConversationToolDetail;
+  questionnaire?: import("@agentkib/runtime-protocol").ConversationQuestionnaire;
   turn_meta?: import("@agentkib/runtime-protocol").ConversationTurnMeta;
   /** Text the CLI wrote itself (a local command's output, an API or failed-turn error). */
   cli_output?: boolean;

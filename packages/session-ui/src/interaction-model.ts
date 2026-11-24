@@ -61,6 +61,7 @@ const copy = {
   "zh-CN": {
     waitingApproval: "等待审批",
     waitingAnswer: "有问题待回答",
+    answeredQuestion: "问题已回答",
     question: "问题",
     details: "详情",
     collapse: "收起",
@@ -132,6 +133,7 @@ const copy = {
   "zh-Hant": {
     waitingApproval: "等待審批",
     waitingAnswer: "有問題待回答",
+    answeredQuestion: "問題已回答",
     question: "問題",
     details: "詳細資料",
     collapse: "收合",
@@ -203,6 +205,7 @@ const copy = {
   "en-US": {
     waitingApproval: "Approval required",
     waitingAnswer: "Question waiting",
+    answeredQuestion: "Question answered",
     question: "Question",
     details: "Details",
     collapse: "Collapse",
@@ -276,6 +279,7 @@ const copy = {
   "ja-JP": {
     waitingApproval: "承認待ち",
     waitingAnswer: "回答待ちの質問",
+    answeredQuestion: "回答済みの質問",
     question: "質問",
     details: "詳細",
     collapse: "折りたたむ",

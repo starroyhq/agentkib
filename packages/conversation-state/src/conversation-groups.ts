@@ -38,6 +38,8 @@ export interface ConversationGroupingOptions<T = ConversationEventWithTurn> {
   incomplete?: boolean;
   /** Keep turn metadata from hidden events, without displaying their content. */
   isHidden?: (event: T) => boolean;
+  /** An item displayed inline, outside process disclosures. */
+  isStandalone?: (event: T) => boolean;
 }
 
 export function reliableTurnId(event: Pick<ConversationItem, "turn_id">): string | undefined {
@@ -123,6 +125,7 @@ function createSegments<T extends ConversationEventWithTurn>(
   events: T[],
   outcome: ConversationTurnOutcome | undefined,
   turnId?: string,
+  isStandalone?: (event: T) => boolean,
 ): ConversationTranscriptSegment<T>[] {
   const segments: ConversationTranscriptSegment<T>[] = [];
   const results = visibleResult(events, outcome, turnId);
@@ -142,15 +145,16 @@ function createSegments<T extends ConversationEventWithTurn>(
     });
   };
 
+  const inline = (event: T) => event.kind === "user-message" || isStandalone?.(event);
   let position = 0;
   while (position < events.length) {
     const first = events[position++];
-    if (first.kind === "user-message") {
+    if (inline(first)) {
       add("event", [first]);
       continue;
     }
     const start = position - 1;
-    while (position < events.length && events[position].kind !== "user-message") position++;
+    while (position < events.length && !inline(events[position])) position++;
     const run = events.slice(start, position);
     if (outcome === "aborted" || outcome === "failed" || results.size > 0) {
       // Fold assistant output within its user-message boundary. Tools recorded
@@ -174,7 +178,7 @@ function createSegments<T extends ConversationEventWithTurn>(
     }
     if (process.length) add("process", process);
   }
-  if (outcome && events.every((event) => event.kind === "user-message")) add("process", []);
+  if (outcome && events.every(inline)) add("process", []);
   return segments;
 }
 
@@ -210,7 +214,7 @@ export function groupConversationEvents<T extends ConversationEventWithTurn>(
       key,
       turnId,
       events: visible,
-      segments: createSegments(key, visible, outcome, turnId),
+      segments: createSegments(key, visible, outcome, turnId, options.isStandalone),
       complete:
         !options.incomplete &&
         !truncated &&

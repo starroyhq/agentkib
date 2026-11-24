@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import type { ConversationTurnMeta } from "@agentkib/runtime-protocol";
+import type { ConversationQuestionnaire, ConversationTurnMeta } from "@agentkib/runtime-protocol";
 import { sessionTitle } from "./agents/codex/codex-sessions";
 import {
   claudeToolDetail,
@@ -21,6 +21,7 @@ import {
   claudeLocalCommandText,
   claudeTaskNotification,
 } from "./agents/claude/claude-command-records";
+import { claudeQuestionnaire } from "./agents/claude/claude-question-history";
 import {
   compatibleEvents,
   hasText,
@@ -49,6 +50,7 @@ interface ToolResult {
   detail?: NormalizedToolCall;
   /** Claude Code's structured result, bounded and redacted. */
   claude?: ClaudeToolResult;
+  questionnaire?: { value: ConversationQuestionnaire; images: ConversationImage[] };
   /** Codex items recorded inside this call, such as code-mode `exec`. */
   children?: number;
   bytes?: number;
@@ -347,6 +349,16 @@ function tool(
   } else if (state.format === "claude-code") {
     const detail = claudeToolDetail(name, input, result?.claude, state.context);
     if (detail) event.tool = detail;
+    if (name === "AskUserQuestion") {
+      const answered = result?.questionnaire;
+      const questionnaire =
+        answered?.value ?? claudeQuestionnaire(input, result ? "closed" : "pending");
+      if (questionnaire) event.questionnaire = questionnaire;
+      if (answered?.images.length) {
+        event.images = answered.images;
+        event.attachment_count = answered.images.length;
+      }
+    }
   }
   if (result?.children)
     event.tool = { ...(event.tool ?? { kind: "other" }), children: result.children };
@@ -668,21 +680,45 @@ function parseRecord(
     const results = Array.isArray(content)
       ? content.filter((block) => block?.type === "tool_result").length
       : 0;
+    // Only a result-only user message can lend its inline images to a question.
+    const answerImages =
+      images.length &&
+      row.type === "user" &&
+      results === 1 &&
+      Array.isArray(content) &&
+      content.every((block) => block?.type === "tool_result" || block?.type === "image")
+        ? images
+        : [];
+    let attachedToAnswer = false;
     if (Array.isArray(content))
       // History is parsed newest-first and reversed before delivery, so queue
       // this message's blocks in reverse to preserve their native order.
       for (let index = content.length - 1; index >= 0; index--) {
         const block = content[index];
-        if (block?.type === "tool_result")
-          result(
+        if (block?.type === "tool_result") {
+          const structured = results === 1 ? row?.toolUseResult : undefined;
+          const questionImages =
+            typeof block.content === "string" && block.content.startsWith("The user answered: ")
+              ? answerImages
+              : [];
+          const questionnaire =
+            row.type !== "user" || block.is_error === true
+              ? undefined
+              : claudeQuestionnaire(structured, "answered", questionImages.length > 0);
+          const entry = result(
             state,
             stringValue(block.tool_use_id) ?? "",
             block.is_error === true ? "failed" : "completed",
             null,
             null,
-            claudeToolResult(results === 1 ? row?.toolUseResult : undefined, block.content),
+            claudeToolResult(structured, block.content),
           );
-        else if (block?.type === "tool_use") {
+          if (entry && questionnaire && !entry.questionnaire) {
+            entry.questionnaire = { value: questionnaire, images: questionImages };
+            entry.bytes = (entry.bytes ?? 0) + jsonBytes(entry.questionnaire);
+            attachedToAnswer = questionImages.length > 0;
+          }
+        } else if (block?.type === "tool_use") {
           const pendingCount = state.pending.length;
           const id = stringValue(block.id) ?? "";
           tool(
@@ -771,7 +807,7 @@ function parseRecord(
         if (output) markCliOutput(state.pending.slice(from));
       } else if (
         output === null &&
-        (hasText(text) || images.length > 0) &&
+        (hasText(text) || (!attachedToAnswer && images.length > 0)) &&
         !hiddenCommand(text ?? "")
       ) {
         const from = state.pending.length;

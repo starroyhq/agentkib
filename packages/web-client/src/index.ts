@@ -12,6 +12,7 @@ import {
 import type {
   ConversationReadState,
   ConversationReadResult,
+  ConversationQuestionnaire,
   ClaudeCommandEntry,
   ConversationToolDetail,
   ConversationTurnMeta,
@@ -37,6 +38,7 @@ export type {
   ClaudeCommandDecision,
   ConversationReadState,
   ConversationReadResult,
+  ConversationQuestionnaire,
   ClaudeCommandEntry,
   ClaudeCommandRefusal,
   ClaudeMenuCommand,
@@ -270,6 +272,8 @@ export interface ConversationEvent {
   truncated: boolean;
   /** Absent on older hosts; clients then show the tool name and status. */
   tool?: ConversationToolDetail;
+  /** Read-only history, independent of any live answer controls. */
+  questionnaire?: ConversationQuestionnaire;
   turn_meta?: ConversationTurnMeta;
   /**
    * Text the CLI wrote itself (a Claude Code local command's output, an API or failed-turn error

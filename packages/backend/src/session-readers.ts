@@ -716,6 +716,9 @@ export class SessionReaders {
       retainCursor !== false,
     );
   }
+  hasImageReferences(ids: readonly string[]): boolean {
+    return this.#paging.hasImageReferences(ids);
+  }
   async image(sessionId: string, imageId: string) {
     try {
       return await this.#image(sessionId, imageId);

@@ -1,4 +1,5 @@
 import { useEffect, useId, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
+import type { ConversationQuestionnaire } from "@agentkib/web-client";
 import {
   answerProblem,
   interactionCardCopy,
@@ -254,7 +255,7 @@ interface FrameProps {
   heading: ReactNode;
   headingTone?: "title" | "kind";
   pager?: { index: number; count: number; go: (index: number) => void };
-  onCollapse: () => void;
+  onCollapse?: () => void;
   hidden: boolean;
   onKeyDown?: (event: KeyboardEvent<HTMLElement>) => void;
   children: ReactNode;
@@ -279,7 +280,7 @@ function Frame({
       hidden={hidden}
       tabIndex={-1}
       onKeyDown={(event) => {
-        if (event.key === "Escape") {
+        if (event.key === "Escape" && onCollapse) {
           event.preventDefault();
           onCollapse();
           return;
@@ -326,9 +327,11 @@ function Frame({
             </button>
           </div>
         )}
-        <button type="button" className={ghostIcon} aria-label={t.collapse} onClick={onCollapse}>
-          <Icon name="x" />
-        </button>
+        {onCollapse && (
+          <button type="button" className={ghostIcon} aria-label={t.collapse} onClick={onCollapse}>
+            <Icon name="x" />
+          </button>
+        )}
       </header>
       {children}
     </section>
@@ -505,6 +508,148 @@ function ApprovalCard({
 
 type Question = InteractionQuestionRequest["questions"][number];
 
+function QuestionPrompt({
+  question,
+  id,
+}: {
+  question: Pick<Question, "header" | "question">;
+  id?: string;
+}) {
+  return (
+    <h3 id={id} className="break-words text-[15px] font-medium leading-6">
+      {question.header && (
+        <>
+          <span className="text-muted-foreground">{question.header} ·</span>{" "}
+        </>
+      )}
+      {question.question}
+    </h3>
+  );
+}
+
+function QuestionOptions({
+  question,
+  selected,
+  disabled,
+  onPick,
+}: {
+  question: Pick<Question, "question" | "multiSelect" | "options">;
+  selected?: readonly string[];
+  disabled: boolean;
+  onPick?: (label: string) => void;
+}) {
+  if (!question.options.length) return null;
+  return (
+    <div role="group" aria-label={question.question} className="-mx-1 space-y-0.5">
+      {question.options.map((option, optionIndex) => {
+        const checked = selected?.includes(option.label) ?? false;
+        return (
+          <button
+            key={option.label}
+            type="button"
+            role={question.multiSelect ? "checkbox" : undefined}
+            aria-checked={question.multiSelect ? checked : undefined}
+            aria-pressed={question.multiSelect ? undefined : checked}
+            aria-label={option.label}
+            disabled={disabled}
+            className={`${optionRow} group ${checked ? "bg-primary/10" : disabled && !onPick ? "text-muted-foreground" : ""}`}
+            onClick={onPick && (() => onPick(option.label))}
+          >
+            {question.multiSelect ? (
+              <Icon
+                name={checked ? "box-check" : "box"}
+                className={`size-[18px] ${checked ? "text-primary-text" : "text-muted-foreground"}`}
+              />
+            ) : (
+              <span
+                aria-hidden="true"
+                className="grid size-5 shrink-0 place-items-center rounded-md border bg-background text-[11px] tabular-nums text-muted-foreground"
+              >
+                {optionIndex + 1}
+              </span>
+            )}
+            <span className="min-w-0 flex-1">
+              <span className={`block text-sm ${checked ? "text-primary-text" : ""}`}>
+                {option.label}
+              </span>
+              {option.description && (
+                <span className="block break-words text-xs text-muted-foreground">
+                  {option.description}
+                </span>
+              )}
+            </span>
+            {checked && !question.multiSelect ? (
+              <Icon name="check" className="size-4 text-primary-text" />
+            ) : (
+              !question.multiSelect &&
+              onPick && (
+                <Icon
+                  name="arrow"
+                  className="size-4 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100"
+                />
+              )
+            )}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+export function HistoryQuestionCard({
+  questionnaire,
+  locale,
+  attachments,
+}: {
+  questionnaire: ConversationQuestionnaire;
+  locale: string;
+  attachments?: ReactNode;
+}) {
+  const t = interactionCardCopy(locale as InteractionLocale);
+  const id = useId();
+  const { status, questions, imageQuestionId } = questionnaire;
+  const label =
+    status === "answered"
+      ? t.answeredQuestion
+      : status === "pending"
+        ? t.waitingAnswer
+        : t.question;
+  return (
+    <Frame t={t} icon="question" label={label} heading={label} headingTone="kind" hidden={false}>
+      {questions.map((question, index) => {
+        const { answer } = question;
+        const previews = answer?.preview
+          ? [answer.preview]
+          : question.options.flatMap((option) =>
+              option.preview && answer?.selected.includes(option.label) ? [option.preview] : [],
+            );
+        const headingId = `${id}-${index}`;
+        return (
+          <section key={question.id} aria-labelledby={headingId} className="min-w-0 space-y-2">
+            <QuestionPrompt question={question} id={headingId} />
+            <QuestionOptions question={question} selected={answer?.selected} disabled />
+            {answer?.custom !== undefined && (
+              <p className="break-words whitespace-pre-wrap rounded-xl bg-muted px-3 py-2 text-sm">
+                {answer.custom}
+              </p>
+            )}
+            {[...new Set(previews)].map((preview) => (
+              <pre
+                key={preview}
+                className="max-h-64 overflow-auto break-words whitespace-pre-wrap rounded-lg border bg-muted/40 p-2.5 font-mono text-xs leading-5"
+              >
+                {preview}
+              </pre>
+            ))}
+            {imageQuestionId === question.id && attachments}
+          </section>
+        );
+      })}
+      {!questions.some((question) => question.id === imageQuestionId) && attachments}
+    </Frame>
+  );
+}
+
 function answersFor(
   questions: Question[],
   choices: Record<string, string[]>,
@@ -670,65 +815,14 @@ function QuestionCard({
         <NoticeLine notice={item.notice ?? { tone: "neutral", text: t.unavailableQuestion }} />
       ) : (
         <>
-          <h3 className="break-words text-[15px] font-medium leading-6">
-            {q.header && <span className="text-muted-foreground">{q.header} · </span>}
-            {q.question}
-          </h3>
+          <QuestionPrompt question={q} />
           {item.notice && <NoticeLine notice={item.notice} />}
-          {q.options.length > 0 && (
-            <div role="group" aria-label={q.question} className="-mx-1 space-y-0.5">
-              {q.options.map((option, optionIndex) => {
-                const selected = (ownValue(choices, q.id) ?? []).includes(option.label);
-                return (
-                  <button
-                    key={option.label}
-                    type="button"
-                    role={q.multiSelect ? "checkbox" : undefined}
-                    aria-checked={q.multiSelect ? selected : undefined}
-                    aria-pressed={q.multiSelect ? undefined : selected}
-                    aria-label={option.label}
-                    disabled={locked}
-                    className={`${optionRow} group ${selected ? "bg-primary/10" : ""}`}
-                    onClick={() => pick(option.label)}
-                  >
-                    {q.multiSelect ? (
-                      <Icon
-                        name={selected ? "box-check" : "box"}
-                        className={`size-[18px] ${selected ? "text-primary-text" : "text-muted-foreground"}`}
-                      />
-                    ) : (
-                      <span
-                        aria-hidden="true"
-                        className="grid size-5 shrink-0 place-items-center rounded-md border bg-background text-[11px] tabular-nums text-muted-foreground"
-                      >
-                        {optionIndex + 1}
-                      </span>
-                    )}
-                    <span className="min-w-0 flex-1">
-                      <span className={`block text-sm ${selected ? "text-primary-text" : ""}`}>
-                        {option.label}
-                      </span>
-                      {option.description && (
-                        <span className="block break-words text-xs text-muted-foreground">
-                          {option.description}
-                        </span>
-                      )}
-                    </span>
-                    {selected && !q.multiSelect ? (
-                      <Icon name="check" className="size-4 text-primary-text" />
-                    ) : (
-                      !q.multiSelect && (
-                        <Icon
-                          name="arrow"
-                          className="size-4 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100"
-                        />
-                      )
-                    )}
-                  </button>
-                );
-              })}
-            </div>
-          )}
+          <QuestionOptions
+            question={q}
+            selected={ownValue(choices, q.id)}
+            disabled={locked}
+            onPick={pick}
+          />
           <div className="flex flex-wrap items-center gap-2">
             {textInput && (
               <div

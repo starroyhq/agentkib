@@ -214,6 +214,7 @@ export function SessionDetail({
               streamText={!nativeReply ? liveStreamText : undefined}
               streamTextTruncated={live?.streamTextTruncated}
               liveTurnId={live?.turnId}
+              liveQuestions={live?.questions}
               activeTurnId={turn?.turnId}
               incomplete={page.warnings.length > 0}
               labels={labels}

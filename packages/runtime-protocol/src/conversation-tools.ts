@@ -82,6 +82,21 @@ export interface ConversationToolDetail {
   truncated?: boolean;
 }
 
+/** A read-only record of a questionnaire in a conversation. */
+export interface ConversationQuestionnaire {
+  status: "pending" | "answered" | "closed";
+  questions: {
+    id: string;
+    question: string;
+    header?: string;
+    multiSelect: boolean;
+    options: { label: string; description?: string; preview?: string }[];
+    answer?: { selected: string[]; custom?: string; preview?: string };
+  }[];
+  /** Which answer received the event's separately loaded images, if known. */
+  imageQuestionId?: string;
+}
+
 /** Carried by the last item of a turn; clients read it from any item of that turn. */
 export interface ConversationTurnMeta {
   duration_ms?: number;

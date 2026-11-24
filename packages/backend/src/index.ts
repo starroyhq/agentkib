@@ -1024,7 +1024,9 @@ export class TypeScriptBackend {
         );
         this.#stopping = false;
         const runtimeBootId = randomUUID();
-        const snapshotHistory = new SessionSnapshotHistory();
+        const snapshotHistory = new SessionSnapshotHistory(
+          (ids) => this.#sessions?.hasImageReferences(ids) === true,
+        );
         this.#snapshotHistory = snapshotHistory;
         this.#sessionStream = new SessionStreamHub(
           runtimeBootId,

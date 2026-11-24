@@ -282,10 +282,10 @@ const titleOf = (projections) => {
 };
 
 /**
- * One row of `sessionController.list`, reduced to what the AgentKib catalog stores. `archived`
- * is DSH's archive set, which lives in its workspace controller, not in the session list.
+ * One row of `sessionController.list`, reduced to what the AgentKib catalog stores.
+ * The workspace controller supplies the archive and pin sets.
  */
-export function sessionSummary(item, archived) {
+export function sessionSummary(item, archived, pinned) {
   if (!item || typeof item.sessionId !== "string" || typeof item.cwd !== "string") return null;
   return {
     sessionId: item.sessionId,
@@ -298,6 +298,7 @@ export function sessionSummary(item, archived) {
     parentSessionId: typeof item.parentSessionId === "string" ? item.parentSessionId : null,
     origin: item.origin === "subagent" ? "subagent" : null,
     archived: archived?.has(item.sessionId) === true,
+    ...(pinned ? { pinned: pinned.has(item.sessionId) } : {}),
   };
 }
 

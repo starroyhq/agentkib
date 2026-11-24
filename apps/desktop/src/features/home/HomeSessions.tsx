@@ -1,6 +1,6 @@
 import { useMemo, useState, type ComponentType, type ReactNode } from "react";
 import { Database } from "lucide-react";
-import { HomeSessionList } from "@agentkib/session-ui";
+import { hasSessionPinning, HomeSessionList } from "@agentkib/session-ui";
 import { SESSION_COLLECTIONS } from "@agentkib/runtime-protocol";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -9,6 +9,7 @@ import { AGENT_LABELS } from "@/core/agents";
 import type { AgentKind, ConversationSessionSummary, WorkspaceSummary } from "@/core/types";
 import { useI18n } from "@/core/useI18n";
 import { AgentIcon } from "@/features/agents/AgentIcon";
+import { SessionRowMenu } from "@/features/sessions/SessionRowMenu";
 import { sessionGroupLabels } from "@/features/sessions/session-catalog";
 import { displaySessionTitle } from "@/features/workspace/session-title";
 import { HomeInteraction } from "./HomeInteraction";
@@ -132,6 +133,11 @@ export function HomeSessions({
         groups={groups}
         describe={describe}
         agentMark={(session) => <AgentIcon agent={session.agent} compact />}
+        rowMenu={(session) =>
+          hasSessionPinning(session) && (
+            <SessionRowMenu session={session} pinOnly onChanged={() => void onRetry()} />
+          )
+        }
         recent={{ limit: 8, label: "viewAll", onShowAll }}
         expanded={expanded}
         onToggle={

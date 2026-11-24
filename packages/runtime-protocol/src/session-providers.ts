@@ -89,6 +89,8 @@ interface SessionProviderIntegrationCapabilities {
   /** The provider's native integration, even when no session is connected to it. */
   connection?: { kind: "native-app" | "terminal-bridge" | "plugin-bridge" | "acp" };
   permissionField?: "policyId" | "permissionMode";
+  /** Catalog organization goes to the provider when native support has been verified. */
+  pinning?: "native" | "native-with-local-fallback";
   activities?: SessionActivityCapabilities & {
     /** Activity kinds a connected terminal can observe independently of the managed runner. */
     terminal?: SessionActivityCapabilities;
@@ -312,6 +314,7 @@ const PROVIDERS = {
     projectAgent: { lead: true, worker: true },
     queue: { actions: ["list", "add", "update", "delete", "reorder", "start"] },
     connection: { kind: "native-app" },
+    pinning: "native-with-local-fallback",
     permissionField: "policyId",
     activities: {
       kinds: ["subagent"],
@@ -344,6 +347,7 @@ const PROVIDERS = {
     projectAgent: { lead: true, worker: true },
     queue: { actions: ["list", "add", "update", "delete", "steer"] },
     connection: { kind: "plugin-bridge" },
+    pinning: "native",
     permissionField: "policyId",
     activities: { kinds: ["subagent"], canStopIndividually: false, canOpenSubagentHistory: true },
   },

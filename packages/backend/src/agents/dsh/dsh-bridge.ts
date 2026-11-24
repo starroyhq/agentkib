@@ -126,6 +126,7 @@ const catalogRowSchema = z
     origin: z.literal("subagent").nullable(),
     // Absent in caches written before archive support.
     archived: z.boolean().optional(),
+    pinned: z.boolean().optional(),
   })
   .strict();
 type CatalogRow = z.infer<typeof catalogRowSchema>;
@@ -142,6 +143,7 @@ const summarySchema = z
     parentSessionId: z.string().max(256).nullable(),
     origin: z.literal("subagent").nullable(),
     archived: z.boolean().optional(),
+    pinned: z.boolean().optional(),
   })
   .strip();
 const modelPartSchema = z.string().min(1).max(128);
@@ -403,6 +405,7 @@ const servicesSchema = z
     approvals: z.boolean(),
     questions: z.boolean(),
     workspaceController: z.boolean().optional(),
+    workspacePins: z.boolean().optional(),
     modelCatalog: z.boolean().optional(),
     sessionModelSelection: z.boolean().optional(),
     createModelSelection: z.boolean().optional(),
@@ -1272,6 +1275,44 @@ export class DshBridge {
   handles(sessionId: string): boolean {
     return this.#ids.has(sessionId);
   }
+  #pinTarget(sessionId: string) {
+    const nativeId = this.#ids.get(sessionId);
+    if (!nativeId) return undefined;
+    const row = this.#catalog.get(nativeId);
+    if (!row || row.origin === "subagent" || !this.options.workspaceFor(row.cwd)) return undefined;
+    const runtime = this.#controlRuntime(nativeId);
+    const current = runtime?.summaries.get(nativeId)?.pinned;
+    return {
+      nativeId,
+      pinned: current ?? row.pinned,
+      runtime:
+        current !== undefined && !row.archived && runtime?.services.workspacePins === true
+          ? runtime
+          : undefined,
+    };
+  }
+  pinState(sessionId: string): { pinned: boolean; available: boolean } | undefined {
+    const target = this.#pinTarget(sessionId);
+    if (target?.pinned === undefined) return undefined;
+    return { pinned: target.pinned, available: !!target.runtime };
+  }
+  async setPinned(sessionId: string, pinned: boolean): Promise<boolean> {
+    const target = this.#pinTarget(sessionId);
+    if (!target) throw new Error("session-not-found");
+    if (!target.runtime) throw new Error("session-pin-unavailable");
+    // Registry metadata does not depend on turn ownership or a live agent.
+    const result = await this.#command(target.runtime, {
+      commandId: randomUUID(),
+      type: "pin",
+      sessionId: target.nativeId,
+      pinned,
+    });
+    if (result.error === "session/not-found") throw new Error("session-not-found");
+    const observed = z.object({ pinned: z.boolean() }).safeParse(result.value);
+    if (!result.ok || !observed.success || observed.data.pinned !== pinned)
+      throw new Error("session-pin-unavailable");
+    return observed.data.pinned;
+  }
   #online(): Runtime[] {
     return [...this.#runtimes.values()].filter(
       (runtime) => Date.now() - runtime.lastSeen <= OFFLINE_MS,
@@ -1943,6 +1984,10 @@ export class DshBridge {
         }
       if (report.services.sessionModelSelection !== runtime.services.sessionModelSelection)
         for (const id of runtime.summaries.keys()) changed.add(id);
+      if (report.services.workspacePins !== runtime.services.workspacePins) {
+        for (const id of runtime.summaries.keys()) changed.add(id);
+        listChanged = true;
+      }
       // A plugin whose tool registry started after it registered: tell it the leads now.
       if (
         report.services.leadTools === true &&
@@ -1982,6 +2027,8 @@ export class DshBridge {
       runtime.summaries = next;
       runtime.listedAt = Date.now();
       for (const row of report.sessions) {
+        const previous = this.#catalog.get(row.sessionId);
+        const pinned = row.pinned ?? previous?.pinned;
         const cached: CatalogRow = {
           id: row.sessionId,
           cwd: row.cwd,
@@ -1990,8 +2037,9 @@ export class DshBridge {
           parentSessionId: row.parentSessionId,
           origin: row.origin,
           ...(row.archived === true ? { archived: true } : {}),
+          ...(pinned !== undefined ? { pinned } : {}),
         };
-        if (stable(this.#catalog.get(row.sessionId)) !== stable(cached)) {
+        if (stable(previous) !== stable(cached)) {
           this.#remember(cached);
           listChanged = true;
         }

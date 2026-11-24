@@ -1,8 +1,8 @@
 import { useRef, useState, type DragEvent, type KeyboardEvent } from "react";
 import { useShallow } from "zustand/react/shallow";
-import type { SessionVisibility } from "@agentkib/session-catalog";
+import { pinnedSessionsFirst, type SessionVisibility } from "@agentkib/session-catalog";
 import type { ConversationSessionSummary, WorkspaceSummary } from "@/core/types";
-import { groupSessions } from "./session-catalog";
+import { groupSessions, sortSessions } from "./session-catalog";
 import {
   normalizeDirectoryOrder,
   normalizeSessionDirectoryOrder,
@@ -33,13 +33,14 @@ function moveRelative<T>(
 
 export function sessionOrder(sessions: ConversationSessionSummary[], ids: string[]) {
   const positions = new Map(ids.map((id, index) => [id, index]));
-  return [...sessions].sort((left, right) => {
+  const ordered = [...sessions].sort((left, right) => {
     const leftPosition = positions.get(left.id);
     const rightPosition = positions.get(right.id);
     if (leftPosition === undefined) return rightPosition === undefined ? 0 : -1;
     if (rightPosition === undefined) return 1;
     return leftPosition - rightPosition;
   });
+  return pinnedSessionsFirst(ordered);
 }
 
 /**
@@ -88,6 +89,8 @@ export function useSessionDirectoryOrder(hub: {
       return leftPosition - rightPosition;
     });
   const orderedGroups = orderGroups(groups);
+  const pins = new Set(hub.sessions.filter(({ pinned }) => pinned === true).map(({ id }) => id));
+  const samePinStatus = (source: string, target: string) => pins.has(source) === pins.has(target);
   const startDrag = (event: DragEvent, entry: DirectoryDragEntry, draggingKey: string) => {
     draggedEntry.current = entry;
     setDraggingId(draggingKey);
@@ -103,7 +106,13 @@ export function useSessionDirectoryOrder(hub: {
   const allowDrop = (event: DragEvent, target: DirectoryDragEntry) => {
     const source = draggedEntry.current;
     if (!source || source.kind !== target.kind) return;
-    if (target.kind === "session" && source.workspaceId !== target.workspaceId) return;
+    if (
+      target.kind === "session" &&
+      source.kind === "session" &&
+      (source.workspaceId !== target.workspaceId ||
+        !samePinStatus(source.sessionId, target.sessionId))
+    )
+      return;
     if (
       target.kind === "workspace" &&
       groupHost(source.workspaceId) !== groupHost(target.workspaceId)
@@ -143,13 +152,14 @@ export function useSessionDirectoryOrder(hub: {
     } else if (
       source.kind === "session" &&
       target.kind === "session" &&
-      source.workspaceId === target.workspaceId
+      source.workspaceId === target.workspaceId &&
+      samePinStatus(source.sessionId, target.sessionId)
     ) {
       const group = allGroups.find((item) => item.id === source.workspaceId);
       if (group) {
         const completeOrder = normalizeSessionDirectoryOrder(
           view.sessionOrder[source.workspaceId] ?? [],
-          group.sessions.map((session) => session.id),
+          sortSessions(group.sessions).map((session) => session.id),
         );
         view.setSessionOrder(
           source.workspaceId,
@@ -187,10 +197,10 @@ export function useSessionDirectoryOrder(hub: {
     ).map((session) => session.id);
     const index = visibleIds.indexOf(target.sessionId);
     const neighbor = visibleIds[index + (after ? 1 : -1)];
-    if (!neighbor) return;
+    if (!neighbor || !samePinStatus(target.sessionId, neighbor)) return;
     const completeOrder = normalizeSessionDirectoryOrder(
       view.sessionOrder[target.workspaceId] ?? [],
-      allGroup.sessions.map((session) => session.id),
+      sortSessions(allGroup.sessions).map((session) => session.id),
     );
     view.setSessionOrder(
       target.workspaceId,

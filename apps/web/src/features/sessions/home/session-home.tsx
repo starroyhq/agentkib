@@ -2,8 +2,9 @@ import { createContext, use, useMemo, useState } from "react";
 import { useNavigate } from "@tanstack/react-router";
 import { AgentMark, agentName } from "@agentkib/agent-identity";
 import { displaySessionTitle, sessionGroupLabels } from "@agentkib/session-catalog";
-import { formatSessionTime, HomeSessionList } from "@agentkib/session-ui";
+import { formatSessionTime, hasSessionPinning, HomeSessionList } from "@agentkib/session-ui";
 import type { Access, ConversationSessionSummary } from "@agentkib/web-client";
+import { SessionRowMenu } from "@/features/conversation/features/catalog/session-row-menu";
 import { useSession } from "@/features/conversation/web-session-context";
 import { NewSessionComposer } from "../new-session/new-session-composer";
 import { useOpenWhenListed } from "../new-session/use-open-when-listed";
@@ -81,6 +82,9 @@ export function SessionHome() {
             groups={attention.groups}
             describe={describe}
             agentMark={(session) => <AgentMark agent={session.agent} />}
+            rowMenu={(session) =>
+              hasSessionPinning(session) && <SessionRowMenu session={session} pinOnly />
+            }
             // The directory beside a wide home already lists every session.
             recent={wide ? undefined : { limit: 3, label: "allSessions", onShowAll: showAll }}
             expanded={expanded}

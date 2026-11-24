@@ -8,6 +8,7 @@ import { checkedRelayUsage, type RelayUsage } from "./relay-usage";
 
 export const ACCOUNT_ORIGIN = "https://account.agentkib.com";
 export const ACCOUNT_API = "https://api.agentkib.com";
+const REFRESH_RETRY_MS = 60_000;
 type Identity = {
   deviceId: string;
   credential: string;
@@ -52,12 +53,15 @@ export class DesktopAccountService {
   private error?: string;
   private server?: Server;
   private timer?: ReturnType<typeof setTimeout>;
+  private refreshTimer?: ReturnType<typeof setTimeout>;
   private generation = 0;
   private queue: Promise<unknown> = Promise.resolve();
   private refreshWork?: Promise<string>;
   private savedSession?: SavedSession;
   private sessionLoaded = false;
   private signedOutLocally = false;
+  private reloginRequired = false;
+  private lastPublishedStatus?: string;
   private credentialGeneration = 0;
   private storageWork: Promise<unknown> = Promise.resolve();
   private profileReadAt = 0;
@@ -89,9 +93,14 @@ export class DesktopAccountService {
   async initialize() {
     try {
       await this.accessToken();
+      if (this.access) this.scheduleRefresh(this.access.until - Date.now());
       this.refreshNameInBackground();
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT" && !this.signedOutLocally) {
+      if (
+        (error as NodeJS.ErrnoException).code !== "ENOENT" &&
+        !this.signedOutLocally &&
+        !this.reloginRequired
+      ) {
         this.phase = this.savedSession ? "error" : "signed-out";
         this.error = error instanceof AccountError ? error.code : "account_connection_failed";
       }
@@ -176,37 +185,46 @@ export class DesktopAccountService {
   }
   async status(): Promise<DesktopAccountStatus> {
     const identity = await this.options.identity();
+    const profile = this.reloginRequired ? undefined : this.profile;
+    const recovery =
+      this.reloginRequired && this.phase === "signed-out" ? "account_login_required" : undefined;
+    const error =
+      this.error ??
+      recovery ??
+      (identity?.accountClaimPending ? "account_claim_pending" : undefined);
     return {
       phase: this.phase,
       secureStorage: this.options.storage.available(),
-      ...(this.profile && this.relayUsage ? { relayUsage: { ...this.relayUsage } } : {}),
-      ...(this.profile && this.usageUnavailable ? { relayUsageUnavailable: true } : {}),
-      ...(this.profile ? { account: { ...this.profile } } : {}),
+      ...(profile && this.relayUsage ? { relayUsage: { ...this.relayUsage } } : {}),
+      ...(profile && this.usageUnavailable ? { relayUsageUnavailable: true } : {}),
+      ...(profile ? { account: { ...profile } } : {}),
       ...(identity
         ? {
             device: {
               deviceId: identity.deviceId,
               ownership: !identity.accountId
                 ? "unclaimed"
-                : identity.accountId === this.profile?.id
+                : identity.accountId === profile?.id
                   ? "owned"
                   : "other",
               ...(identity.accountId &&
-              identity.accountId === this.profile?.id &&
+              identity.accountId === profile?.id &&
               this.knownName?.deviceId === identity.deviceId
                 ? { name: this.knownName.name }
                 : {}),
             } as const,
           }
         : {}),
-      ...(this.error || identity?.accountClaimPending
-        ? { error: this.error ?? "account_claim_pending" }
-        : {}),
+      ...(error ? { error } : {}),
     };
   }
-  private async publish() {
+  private async publish(generation = this.credentialGeneration) {
     const state = await this.status();
-    this.options.onStatus?.(state);
+    const key = JSON.stringify(state);
+    if (generation === this.credentialGeneration && key !== this.lastPublishedStatus) {
+      this.lastPublishedStatus = key;
+      this.options.onStatus?.(state);
+    }
     return state;
   }
   request(input: DesktopAccountRequest): Promise<DesktopAccountStatus> {
@@ -222,13 +240,17 @@ export class DesktopAccountService {
         if (input.operation === "status" && this.phase === "error") await this.accessToken();
         if (
           input.operation === "status" &&
-          this.profile &&
+          this.signedIn &&
           Date.now() - this.profileReadAt > 30_000
         )
           await this.refreshProfile();
-        if (input.operation === "status" && this.profile && Date.now() - this.nameReadAt >= 30_000)
+        if (input.operation === "status" && this.signedIn && Date.now() - this.nameReadAt >= 30_000)
           await this.refreshDeviceName();
-        if (input.operation === "status" && this.profile && Date.now() - this.usageReadAt >= 30_000)
+        if (
+          input.operation === "status" &&
+          this.signedIn &&
+          Date.now() - this.usageReadAt >= 30_000
+        )
           await this.refreshRelayUsage();
         if (input.operation === "login") await this.login();
         if (input.operation === "cancel-login") {
@@ -374,7 +396,7 @@ export class DesktopAccountService {
     return data;
   }
   private restingPhase(): DesktopAccountStatus["phase"] {
-    if (this.signedOutLocally) return "signed-out";
+    if (this.signedOutLocally || this.reloginRequired) return "signed-out";
     return this.profile && this.access && !this.savedSession?.pending
       ? "signed-in"
       : this.savedSession
@@ -431,12 +453,14 @@ export class DesktopAccountService {
       this.usageRevision++;
     }
     this.signedOutLocally = false;
+    this.reloginRequired = false;
     this.sessionLoaded = true;
     this.access = access;
     this.profile = account;
     this.profileReadAt = Date.now();
     this.phase = "signed-in";
     this.error = undefined;
+    this.scheduleRefresh(access.until - Date.now());
     void this.refreshRelayUsage()
       .then(() => this.publish())
       .catch(() => undefined);
@@ -444,6 +468,7 @@ export class DesktopAccountService {
   async accessToken(): Promise<string> {
     if (this.access && this.access.until > Date.now()) return this.access.value;
     if (this.refreshWork) return this.refreshWork;
+    if (this.server) throw new AccountError("account_login_required");
     const work = this.refresh();
     this.refreshWork = work;
     try {
@@ -451,6 +476,30 @@ export class DesktopAccountService {
     } finally {
       if (this.refreshWork === work) this.refreshWork = undefined;
     }
+  }
+  private scheduleRefresh(delay: number) {
+    clearTimeout(this.refreshTimer);
+    this.refreshTimer = setTimeout(
+      () => {
+        this.refreshTimer = undefined;
+        if (!this.loggingOut && !this.server) void this.accessToken().catch(() => undefined);
+      },
+      Math.max(1_000, delay),
+    );
+    this.refreshTimer.unref();
+  }
+  private async requireLogin(generation: number) {
+    if (generation !== this.credentialGeneration || this.loggingOut) return;
+    this.reloginRequired = true;
+    this.access = undefined;
+    this.phase = "signed-out";
+    this.error = "account_login_required";
+    const session = this.savedSession;
+    // Retain the recovery journal on an uncertain failure. A legacy broker cannot
+    // safely replay a possible rotation, so that case waits for an interactive login.
+    if (session && (!session.pending || (session.refreshRecovery && session.pending !== "legacy")))
+      this.scheduleRefresh(REFRESH_RETRY_MS);
+    await this.publish(generation).catch(() => undefined);
   }
   private async refresh() {
     const generation = this.credentialGeneration;
@@ -480,12 +529,17 @@ export class DesktopAccountService {
       if (generation !== this.credentialGeneration)
         throw new AccountError("account_identity_changed");
       if (error instanceof AccountError && error.definite) {
-        await this.clearCredentials();
+        try {
+          await this.clearCredentials();
+        } finally {
+          await this.requireLogin(generation + 1);
+        }
+      } else if (this.savedSession) {
+        await this.requireLogin(generation);
       } else if ((error as NodeJS.ErrnoException).code !== "ENOENT" && !this.signedOutLocally) {
-        this.phase = this.savedSession ? "error" : "signed-out";
-      }
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT" && !this.signedOutLocally)
+        this.phase = "signed-out";
         this.error = error instanceof AccountError ? error.code : "account_connection_failed";
+      }
       throw error;
     }
   }
@@ -497,6 +551,7 @@ export class DesktopAccountService {
     this.server = undefined;
   }
   private async login() {
+    if (this.phase === "signing-in") return;
     if (this.refreshWork) await this.refreshWork.catch(() => undefined);
     if (this.profile && this.phase === "signed-in")
       throw new AccountError("account_already_signed_in");
@@ -584,9 +639,11 @@ export class DesktopAccountService {
     }
   }
   private async clearCredentials() {
+    clearTimeout(this.refreshTimer);
     this.credentialGeneration++;
     this.savedSession = undefined;
     this.signedOutLocally = true;
+    this.reloginRequired = false;
     this.sessionLoaded = true;
     this.access = undefined;
     this.profile = undefined;
@@ -700,14 +757,14 @@ export class DesktopAccountService {
     return this.phase === "signed-in" && !!this.profile && !this.loggingOut;
   }
   get accountId() {
-    return this.profile?.id;
+    return this.reloginRequired ? undefined : this.profile?.id;
   }
   /**
    * The account's live logins, for paired phones bound to one of them. Only their IDs and kinds
    * leave this service; tokens never do. Throws when signed out or when the account cannot be read.
    */
   async liveSessions(): Promise<{ accountId: string; sessions: { id: string; kind: string }[] }> {
-    const accountId = this.profile?.id;
+    const accountId = this.accountId;
     if (!accountId || this.loggingOut) throw new AccountError("account_login_required");
     const data = (await this.api("/v1/account/sessions", undefined, await this.accessToken())) as {
       sessions?: unknown;
@@ -870,6 +927,7 @@ export class DesktopAccountService {
     return this.knownName?.name !== before;
   }
   shutdown() {
+    clearTimeout(this.refreshTimer);
     this.credentialGeneration++;
     this.cancelLogin();
   }

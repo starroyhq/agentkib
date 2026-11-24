@@ -108,6 +108,7 @@ type RetainedSessionWindow = {
 
 type LocalBridgeRequest =
   | { operation: "bridge-status" | "bridge-challenge" | "bridge-disconnect"; sessionId: string }
+  | { operation: "bridge-plugin-retry"; sessionId: string }
   | { operation: "bridge-auto-connect"; sessionId: string; enabled: boolean }
   | { operation: "background-tasks"; enabled?: boolean }
   | { operation: "dsh-bridge-status" }

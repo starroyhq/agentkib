@@ -10,6 +10,11 @@ import { DSH_BRIDGE_COMPATIBILITY } from "./compatibility.js";
 import { BridgeHttpError, discover, discoveryRoots, post } from "./client.js";
 import { DSH_COMMAND_LINE, DSH_HIDDEN_COMMANDS, dshCommandRefusal } from "./commands.js";
 import {
+  historyImportServices,
+  historyImportWorkspace,
+  importDshHistory,
+} from "./history-import.js";
+import {
   MAX_PREVIEW,
   MAX_STREAM,
   bounded,
@@ -1096,6 +1101,24 @@ export function createBridge(ctx, options = {}) {
       }
       case "document":
         return conversation(command);
+      case "history-import-context":
+      case "import-history": {
+        const native = historyImportServices(service, dshVersion);
+        if (!native) throw new Error("dsh-history-import-unavailable");
+        try {
+          if (command.type === "history-import-context") {
+            const workspace = await historyImportWorkspace(native.workspaceRegistry, command.cwd);
+            return { workspaceId: workspace.id };
+          }
+          return await importDshHistory(native, command, lifetime.signal);
+        } catch (error) {
+          if (error instanceof Error && /^dsh-history-import-[a-z-]+$/.test(error.message))
+            throw error;
+          throw new Error("dsh-history-import-unconfirmed");
+        } finally {
+          if (command.type === "import-history") refreshList();
+        }
+      }
       case "presets": {
         const registry = service("agentPresets");
         if (typeof registry?.remoteExportList !== "function")
@@ -1530,6 +1553,7 @@ export function createBridge(ctx, options = {}) {
       subagents: projects,
       documents:
         typeof query?.observeSession === "function" && typeof query?.readSurface === "function",
+      historyImport: historyImportServices(service, dshVersion) !== null,
       agentPresets: typeof service("agentPresets")?.remoteExportList === "function",
       // A session's own agent takes the worker tools of a Project Agent.
       leadTools:

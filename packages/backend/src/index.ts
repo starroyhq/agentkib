@@ -14,6 +14,7 @@ import { readClaudeTranscriptObservation } from "./agents/claude/claude-context-
 import { ClaudeSessionProvider } from "./agents/claude/session-provider";
 import type { CodexSessionProvider } from "./agents/codex/session-provider";
 import { DSH_EXECUTION_MODE, DSH_NATIVE_TURN_OBSERVED, DshBridge } from "./agents/dsh/dsh-bridge";
+import { DshHistoryImport, validateDshImportApplicationData } from "./agents/dsh/history-import";
 import { readLocalDshHistory, readLocalDshTurn } from "./agents/dsh/dsh-local-history";
 import { DshManagedRuntime, dshHome } from "./agents/dsh/dsh-managed-runtime";
 import { dshSessionDirectory, probeDshWriter } from "./agents/dsh/dsh-writer";
@@ -1347,7 +1348,7 @@ export class TypeScriptBackend {
         this.#sessionIndex!.clear(params);
         return this.#historySearch!.clear().then(() => null);
       case RUNTIME_METHODS.applyChanges: {
-        const request = params as { launchRequest?: { mode?: unknown } };
+        const request = params as { launchRequest?: { mode?: unknown; target_agent?: unknown } };
         const environment = { ...process.env, ...this.environment };
         return applyRequest(
           params,
@@ -1356,6 +1357,15 @@ export class TypeScriptBackend {
           environment,
           request.launchRequest?.mode === "native-import"
             ? (plan, applicationId, dataDir) => {
+                if (request.launchRequest?.target_agent === "deepseek-harness")
+                  return [
+                    validateDshImportApplicationData(
+                      plan,
+                      request.launchRequest,
+                      applicationId,
+                      dataDir,
+                    ),
+                  ];
                 const validated = validateNativeImportApplicationData(
                   plan,
                   request.launchRequest,
@@ -1953,6 +1963,12 @@ export class TypeScriptBackend {
     if (
       method === RUNTIME_METHODS.launchSessionHandoff &&
       params.mode === "native-import" &&
+      params.target_agent === "deepseek-harness"
+    )
+      return this.#dshHistoryImport().launch(params);
+    if (
+      method === RUNTIME_METHODS.launchSessionHandoff &&
+      params.mode === "native-import" &&
       params.target_agent === "cursor"
     )
       return reconcileCursorNativeImport(
@@ -1988,12 +2004,19 @@ export class TypeScriptBackend {
     throw new Error("Unknown session handoff method");
   }
 
+  #dshHistoryImport(): DshHistoryImport {
+    return new DshHistoryImport(this.#dataDir!, this.#store!, this.#sessions!, this.#dshBridge, {
+      ...process.env,
+      ...this.environment,
+    });
+  }
+
   async #continueSessionHandoff(value: unknown): Promise<unknown> {
     const environment = { ...process.env, ...this.environment };
     const request = z.object({ launchRequest: z.unknown() }).passthrough().parse(value);
-    const launchRequest = request.launchRequest as { mode?: unknown };
+    const launchRequest = request.launchRequest as { mode?: unknown; target_agent?: unknown };
     if (launchRequest?.mode === "native-import") {
-      if ((launchRequest as { target_agent?: unknown }).target_agent === "cursor") {
+      if (launchRequest.target_agent === "cursor") {
         try {
           return await continueCursorNativeImport(
             value,
@@ -2017,6 +2040,10 @@ export class TypeScriptBackend {
         }
       }
       try {
+        if (launchRequest.target_agent === "deepseek-harness") {
+          const receipt = await this.#dshHistoryImport().continue(value);
+          return { status: "launched", receipt };
+        }
         await continueNativeImport(
           value,
           this.#sessions!,

@@ -122,7 +122,9 @@ export function listNativeImports(
         plan.workspace_id !== workspaceId ||
         typeof plan.source_session_id !== "string" ||
         !plan.source_session_id ||
-        !["opencode", "open-claw", "hermes", "cursor"].includes(String(target)) ||
+        !["opencode", "open-claw", "hermes", "cursor", "deepseek-harness"].includes(
+          String(target),
+        ) ||
         !targetIdentityValid(String(target), String(plan.target_session_id ?? ""))
       )
         continue;

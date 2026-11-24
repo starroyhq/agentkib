@@ -367,7 +367,10 @@ export function useSessionImageLoader({
   scopeKey?: string;
   getScope?: () => { key: string };
 }) {
+  // The authority and visit revision can change while the input objects stay the same.
+  "use no memo";
   const revision = images.sessionImageRevision(client);
+  const version = requestVersion?.();
   const cacheScope = images.sessionImageCacheScope(
     client,
     access,
@@ -375,7 +378,6 @@ export function useSessionImageLoader({
     indexEnabled !== false,
   );
   return useMemo(() => {
-    const version = requestVersion?.();
     return images.createSessionImageLoader(
       client,
       access,
@@ -395,6 +397,7 @@ export function useSessionImageLoader({
     sessionId,
     indexEnabled,
     requestVersion,
+    version,
     getScope,
     scopeKey,
     revision,

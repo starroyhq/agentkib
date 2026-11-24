@@ -1,11 +1,17 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { waitFor } from "@testing-library/react";
+import { cleanup, renderHook, waitFor } from "@testing-library/react";
 import { ApiError, WebClient, type Access } from "@agentkib/web-client";
-import { clearMessageImageCache, messageImageCache, messageImageScope } from "@agentkib/session-ui";
+import {
+  clearMessageImageCache,
+  messageImageCache,
+  messageImageScope,
+  useSessionImageLoader,
+} from "@agentkib/session-ui";
 import {
   acceptSessionImageAccess,
   createSessionImageLoader,
+  desktopSessionImages,
   forgetSessionImages,
   restoreSessionImages,
   invalidateSessionImages,
@@ -75,6 +81,7 @@ beforeEach(() => {
   );
 });
 afterEach(() => {
+  cleanup();
   for (const stop of [...releases]) stop();
   clearMessageImageCache();
   vi.restoreAllMocks();
@@ -82,6 +89,56 @@ afterEach(() => {
 });
 
 describe("session image authority scopes", () => {
+  it("reads fresh image authority after revalidation with the same access object", async () => {
+    const { client, read } = host();
+    enter(client);
+    const view = renderHook(() =>
+      useSessionImageLoader({
+        images: desktopSessionImages,
+        client,
+        access,
+        sessionId: "session",
+      }),
+    );
+    const original = view.result.current;
+    const signal = new AbortController().signal;
+    await expect(original("image", signal)).resolves.toEqual(data);
+    invalidateSessionImages(client);
+    await expect(original("image", signal)).rejects.toMatchObject({ name: "AbortError" });
+    expect(read).toHaveBeenCalledOnce();
+
+    acceptSessionImageAccess(client, access);
+    view.rerender();
+    await expect(view.result.current("image", signal)).resolves.toEqual(data);
+    await expect(original("image", signal)).rejects.toMatchObject({ name: "AbortError" });
+    expect(read).toHaveBeenCalledTimes(2);
+  });
+
+  it("snapshots the current visit on rerender even when the version getter stays stable", async () => {
+    const { client, read } = host();
+    enter(client);
+    let visit = 1;
+    const requestVersion = () => visit;
+    const view = renderHook(() =>
+      useSessionImageLoader({
+        images: desktopSessionImages,
+        client,
+        access,
+        sessionId: "session",
+        requestVersion,
+      }),
+    );
+    const original = view.result.current;
+    const signal = new AbortController().signal;
+    visit++;
+    await expect(original("image", signal)).rejects.toMatchObject({ name: "AbortError" });
+    expect(read).not.toHaveBeenCalled();
+
+    view.rerender();
+    await expect(view.result.current("image", signal)).resolves.toEqual(data);
+    expect(read).toHaveBeenCalledOnce();
+  });
+
   it("rejects an unmounted partial client without inspecting its connection or reading media", async () => {
     const inspect = vi.fn(() => {
       throw new Error("Connection is not ready");

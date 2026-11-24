@@ -755,16 +755,18 @@ export function SessionComposer({
   }
   return (
     <div className="relative w-full max-w-3xl shrink-0 self-center space-y-2">
-      {display.continuation === "busy" && resume && (
+      {display.continuation === "busy" && resume && (surface === "desktop" || !isClaude) && (
         <p role="status" className="px-3 text-xs leading-5 text-muted-foreground">
           {continuation.busyHint(resume.busyActor)}
         </p>
       )}
-      {!terminalInteraction && display.continuation === "terminal-watch" && (
-        <p role="status" className="px-3 text-xs leading-5 text-muted-foreground">
-          {continuation.terminalWatch}
-        </p>
-      )}
+      {!terminalInteraction &&
+        display.continuation === "terminal-watch" &&
+        (surface === "desktop" || !isClaude) && (
+          <p role="status" className="px-3 text-xs leading-5 text-muted-foreground">
+            {continuation.terminalWatch}
+          </p>
+        )}
       {terminalInteraction && (
         <p role="status" className="px-3 text-xs leading-5 text-muted-foreground">
           {terminalInteraction}

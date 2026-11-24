@@ -1623,6 +1623,53 @@ export class WebAccessService {
     return this.relay.pushSend(input);
   }
 
+  /** Native preview data follows the receiving phone's read scope. */
+  async terminalInteractionPushSummary(
+    target: PushTarget,
+    sessionId: string,
+    kind: "approval" | "question",
+  ): Promise<string | undefined> {
+    const credential = this.credentials.find(
+      (entry) =>
+        entry.account?.sessionId === target.session &&
+        entry.push?.updatedAt === target.updatedAt &&
+        entry.push.publicKey === target.publicKey &&
+        entry.push.alerts &&
+        this.pushReady(entry),
+    );
+    if (!credential) return;
+    const device = this.grant(credential.hash);
+    const scope = this.readerScope();
+    const session = await this.sessionScope(sessionId, credential.hash, true, false);
+    if (session.agent !== "claude-code") return;
+    const live = await this.runtime({ operation: "live", sessionId }, undefined, true);
+    if (
+      this.grant(credential.hash) !== device ||
+      this.readerScope() !== scope ||
+      credential.push?.updatedAt !== target.updatedAt ||
+      this.controlGuard(sessionId) ||
+      snapshotField(live, "sessionId") !== sessionId ||
+      snapshotField(live, "workspaceId") !== session.workspace_id ||
+      snapshotField(live, "executionMode") !== "claude-follower"
+    )
+      return;
+    if (kind === "question" && snapshotField(live, "status") === "waiting-input") {
+      const summary = snapshotField(live, "terminalQuestionSummary");
+      return typeof summary === "string" ? summary : undefined;
+    }
+    if (kind !== "approval" || snapshotField(live, "status") !== "awaiting-approval") return;
+    const approvals = snapshotField(live, "approvals");
+    if (!Array.isArray(approvals) || approvals.length !== 1) return;
+    const [approval] = approvals;
+    const description = snapshotField(snapshotField(approval, "input"), "description");
+    const tool = snapshotField(approval, "toolName");
+    return typeof description === "string" && description.trim()
+      ? description
+      : typeof tool === "string"
+        ? tool
+        : undefined;
+  }
+
   /** A phone subscribed to notifications, changed what it gets, or stopped them. */
   onPushChanged(listener: () => void): () => void {
     this.pushEvents.on("changed", listener);
@@ -5946,10 +5993,11 @@ export class WebAccessService {
     }
     const enabled = await this.controlsEnabledForSnapshot(sessionId, snapshot, device, reserved);
     const guarded = !!sessionId && !!this.controlGuard(sessionId);
-    // Paired clients can display the host's risk assessment next to the native choices.
+    // Terminal approval cards also use the host's risk assessment on the local desktop.
     const pendingInteractions =
       device &&
-      device.id !== "desktop-local" &&
+      (device.id !== "desktop-local" ||
+        snapshotField(snapshot, "executionMode") === "claude-follower") &&
       !guarded &&
       (hasPendingRows(snapshot, "approvals") || hasPendingRows(snapshot, "questions"))
         ? await this.pendingInteractionDescriptions(sessionId, snapshot, device, enabled, reserved)
@@ -5999,7 +6047,7 @@ export class WebAccessService {
             ? state.approvals.map((approval) => ({
                 ...approval,
                 supported: false,
-                availableDecisions: [],
+                ...(state.executionMode === "claude-follower" ? {} : { availableDecisions: [] }),
               }))
             : [],
         };
@@ -8302,7 +8350,9 @@ export class WebAccessService {
                 device.approve &&
                 (!approval.requiresExtendedApproval || device.extendedApproval === true),
               decisionOptions: device.extendedApproval ? approval.decisionOptions : undefined,
-              ...(!enabled ? { availableDecisions: [] } : {}),
+              ...(!enabled && controlContext.executionMode !== "claude-follower"
+                ? { availableDecisions: [] }
+                : {}),
             };
           });
         if (!device.send || !enabled) {

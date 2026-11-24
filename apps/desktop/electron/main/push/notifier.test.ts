@@ -4,7 +4,7 @@ import { generateKeyPairSync } from "node:crypto";
 import type { HomeSession } from "@agentkib/session-catalog";
 import type { PushSendInput, PushSendResult } from "../web/relay/manager";
 import { openPushEnvelope } from "./envelope-fixture";
-import { PushNotifier, type PushTarget } from "./notifier";
+import { PushNotifier, type PushNotifierOptions, type PushTarget } from "./notifier";
 
 const DEVICE = "0123456789abcdef0123456789abcdef";
 const MINUTE = 60_000;
@@ -55,7 +55,7 @@ function requiringSupervision(
 
 const settle = () => new Promise((resolve) => setImmediate(resolve));
 
-function harness() {
+function harness(terminalSummary?: PushNotifierOptions["terminalSummary"]) {
   let clock = START;
   const context = {
     present: false,
@@ -72,6 +72,7 @@ function harness() {
     targets: () => context.targets,
     deviceId: () => context.deviceId,
     send,
+    terminalSummary,
     computerName: async () => "Studio",
     present: () => context.present,
     now: () => clock,
@@ -100,6 +101,43 @@ function alertOf(input: PushSendInput) {
 }
 
 describe("push alerts", () => {
+  it("encrypts terminal wait summaries, opens the original session and deduplicates snapshots", async () => {
+    const lookup = vi.fn<NonNullable<PushNotifierOptions["terminalSummary"]>>(
+      async (_target, _id, kind) => (kind === "question" ? "Which output?" : "Edit the test file"),
+    );
+    const test = harness(lookup);
+    const terminal = (state: "running" | "approval" | "question"): HomeSession => {
+      const base = session("terminal-session", state);
+      return {
+        ...base,
+        agent: "claude-code",
+        continuation: { ...base.continuation!, executionLocation: "terminal" },
+      };
+    };
+    test.notifier.update([terminal("running")]);
+    test.notifier.update([terminal("approval")]);
+    test.notifier.update([terminal("approval")]);
+    await settle();
+    expect(lookup).not.toHaveBeenCalled();
+    test.advance(8_000);
+    test.notifier.refresh();
+    await settle();
+    expect(test.take().map(alertOf)).toEqual([
+      expect.objectContaining({
+        kind: "approval",
+        sessionId: "terminal-session",
+        summary: "Edit the test file",
+        readOnly: true,
+      }),
+    ]);
+    expect(lookup).toHaveBeenCalledExactlyOnceWith(target, "terminal-session", "approval");
+    test.notifier.update([terminal("question")]);
+    await settle();
+    expect(test.take().map(alertOf)).toEqual([
+      expect.objectContaining({ kind: "question", summary: "Which output?", readOnly: true }),
+    ]);
+  });
+
   it("uses the existing verification alert for new supervision incidents", async () => {
     const test = harness();
     const worker = session("worker", "failed");

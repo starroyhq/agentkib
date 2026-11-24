@@ -61,7 +61,7 @@ test("the native stream and final result pass through unchanged", async ($, on) 
   expect(final.value.answer).toBe("fixture answer");
 });
 
-test("the native engine bounds a connected register stream without changing native values", async () => {
+async function connectedBridgeFixture(features: string[] = []) {
   type Value = Record<string, any>;
   type Hook = (api: Value, event: Value, next: (event: Value) => any) => any;
   const hooks = new Map<string, Array<{ match: Value; hook: Hook }>>();
@@ -76,6 +76,7 @@ test("the native engine bounds a connected register stream without changing nati
   const nativeId = crypto.randomUUID();
   const connection = {
     protocol: 1,
+    features,
     bindingId: crypto.randomUUID(),
     leaseId: crypto.randomUUID(),
     token: "a".repeat(64),
@@ -147,6 +148,11 @@ test("the native engine bounds a connected register stream without changing nati
     .replaceAll("/", "_")
     .replace(/=+$/, "");
   await run("command.run", { command: "agentkib-connect", args: ticket });
+  return { run, nativeId, snapshots, tick: timers[0] };
+}
+
+test("the native engine bounds a connected register stream without changing native values", async () => {
+  const { run, snapshots, tick } = await connectedBridgeFixture();
   const turnId = crypto.randomUUID();
   await run("turn.start", { turnId, text: "synthetic stream" });
   const chunks = [
@@ -162,10 +168,65 @@ test("the native engine bounds a connected register stream without changing nati
   const final = await stream.next();
   expect(final.done).toBe(true);
   expect(final.value).toBe(result);
-  for (let index = 0; index < 3; index++) await timers[0]();
+  for (let index = 0; index < 3; index++) await tick();
   const text = snapshots.at(-1)!.streamText;
   expect(text).toContain("preview truncated");
   expect(new TextEncoder().encode(text).length <= 96 * 1024).toBe(true);
+});
+
+test("the native notification exposes a single pending human ask through the bridge", async ($, on) => {
+  const { run, nativeId, snapshots, tick } = await connectedBridgeFixture([
+    "terminal-approval-observation",
+  ]);
+  const turnId = crypto.randomUUID();
+  const tool_use_id = crypto.randomUUID();
+  const input = { command: "echo fixture", description: "Print a fixture" };
+  const call = { tool: "Bash", tool_use_id, ...input };
+  const check = { tool: "Bash", input, tool_use_id, approver: "person" };
+  const verdict = { decision: "ask", reason: "fixture rule" };
+  const result = { result: "fixture output" };
+  let finish!: () => void;
+  let checked!: () => void;
+  const toolFinished = new Promise<void>((resolve) => (finish = resolve));
+  const checkFinished = new Promise<void>((resolve) => (checked = resolve));
+  await run("turn.start", { turnId, text: "synthetic terminal prompt" });
+  const running = run("tool.call", call, async (nativeCall) => {
+    expect(nativeCall).toBe(call);
+    expect(
+      await run("tool.check", check, (nativeCheck) => {
+        expect(nativeCheck).toBe(check);
+        return verdict;
+      }),
+    ).toBe(verdict);
+    checked();
+    await toolFinished;
+    return result;
+  });
+  await checkFinished;
+  await tick();
+  expect(snapshots.at(-1)?.pendingApprovalDetails).toBeUndefined();
+  on("classic.Notification", (_$, notification) =>
+    run("classic.Notification", notification, (unchanged) => {
+      expect(unchanged).toBe(notification);
+      return {};
+    }),
+  );
+  await $.classic.Notification({
+    session_id: nativeId,
+    notification_type: "permission_prompt",
+    message: "Synthetic native permission prompt",
+  });
+  await tick();
+  expect(snapshots.at(-1)?.pendingApprovalDetails).toEqual({
+    turnId,
+    toolUseId: tool_use_id,
+    toolName: "Bash",
+    input,
+  });
+  finish();
+  expect(await running).toBe(result);
+  await tick();
+  expect(snapshots.at(-1)?.pendingApprovalDetails).toBeUndefined();
 });
 
 test("the native engine recovers a running terminal on its next prompt after an offline retry", async () => {

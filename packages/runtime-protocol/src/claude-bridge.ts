@@ -47,6 +47,7 @@ export const CLAUDE_BRIDGE_PATHS = {
  * - `terminal-subagents`: a plugin may report a bounded list of observed subagents in snapshots.
  * - `terminal-worker-activity`: a plugin may report the current turn's observed tool calls and
  *   an opaque activity counter in snapshots.
+ * - `terminal-approval-observation`: a plugin may describe a pending native approval for display.
  * - `terminal-attachments`: a plugin may accept text containing links to attachments in its workspace.
  */
 export const CLAUDE_BRIDGE_FEATURES = [
@@ -54,6 +55,7 @@ export const CLAUDE_BRIDGE_FEATURES = [
   "open-model-picker",
   "terminal-subagents",
   "terminal-worker-activity",
+  "terminal-approval-observation",
   "terminal-attachments",
 ] as const;
 
@@ -210,6 +212,15 @@ export interface ClaudeBridgeSnapshot extends ClaudeBridgeIdentity {
     revision: number;
     commands: { id: string; startedAt: number }[];
   };
+  /** Optional observation only. The plugin retains the native permission prompt and its decisions. */
+  pendingApprovalDetails?: {
+    toolUseId: string;
+    turnId: string;
+    toolName: string;
+    input: Record<string, unknown>;
+  };
+  /** Short first question for a notification. The conversation keeps its native question card. */
+  pendingQuestionSummary?: string;
   usage: ClaudeBridgeUsage | null;
   outbox: ClaudeBridgeOutboxItem[];
   capabilities: ClaudeBridgeCapabilities;

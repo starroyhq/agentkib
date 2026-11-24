@@ -42,7 +42,7 @@ describe("session copy identifies the computer and application", () => {
       }
       expect(claudeConnectionCopyForSurface(locale).localOnly).toContain(desktopApp);
       expect(claudeConnectionCopyForSurface(locale, "web").localOnly).toContain(webApp);
-      expect(claudeConnectionCopyForSurface(locale, "web").disconnected).toContain(webApp);
+      expect(claudeConnectionCopyForSurface(locale, "web").disconnected).not.toContain(webApp);
       expect(sessionReason(locale, "permission_denied").text).toContain(desktopApp);
       expect(sessionReason(locale, "permission_denied", "web").text).toContain(webApp);
       expect(sessionReason(locale, "control-disabled").text).toContain(desktopApp);

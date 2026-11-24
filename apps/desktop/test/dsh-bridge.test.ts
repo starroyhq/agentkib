@@ -4332,7 +4332,7 @@ describe("DeepSeek Harness started in the background", () => {
       status: "unavailable",
       reason: "dsh-version-unsupported",
     });
-    expect(await old.send("not sent")).toMatchObject({
+    expect(await old.create()).toMatchObject({
       controlOutcome: "not-dispatched",
       reason: "dsh-version-unsupported",
     });

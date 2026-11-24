@@ -7,33 +7,39 @@ import type {
 
 const copy = {
   "zh-CN": {
-    title: "这一轮的权限（Devin 运行中不能询问你）",
+    title: "工具权限",
     choices: {
-      auto: { name: "只读自动", description: "只自动批准只读工具，其他操作会被拒绝" },
-      "accept-edits": { name: "自动接受编辑", description: "另外自动批准工作区内的文件修改" },
+      auto: { name: "只读", description: "只回答和阅读，不修改代码" },
+      "accept-edits": {
+        name: "自动接受编辑",
+        description: "另外自动批准工作区内的文件修改，其他操作先问你",
+      },
       smart: { name: "智能批准", description: "另外自动执行快速模型判断为安全的操作" },
       dangerous: { name: "全部批准", description: "自动批准所有工具，包括任何命令" },
     },
   },
   "zh-Hant": {
-    title: "這一輪的權限（Devin 執行中無法詢問你）",
+    title: "工具權限",
     choices: {
-      auto: { name: "唯讀自動", description: "只自動核准唯讀工具，其他操作會被拒絕" },
-      "accept-edits": { name: "自動接受編輯", description: "另外自動核准工作區內的檔案修改" },
+      auto: { name: "唯讀", description: "只回答和閱讀，不修改程式碼" },
+      "accept-edits": {
+        name: "自動接受編輯",
+        description: "另外自動核准工作區內的檔案修改，其他操作先詢問你",
+      },
       smart: { name: "智慧核准", description: "另外自動執行快速模型判斷為安全的操作" },
       dangerous: { name: "全部核准", description: "自動核准所有工具，包括任何指令" },
     },
   },
   "en-US": {
-    title: "Permissions for this turn (Devin cannot ask while it runs)",
+    title: "Tool permissions",
     choices: {
       auto: {
-        name: "Read-only auto",
-        description: "Approve only read-only tools; refuse the rest",
+        name: "Read only",
+        description: "Answer and read only; no code changes",
       },
       "accept-edits": {
         name: "Accept edits",
-        description: "Also approve file changes inside the workspace",
+        description: "Also approve file changes inside the workspace; ask you about the rest",
       },
       smart: { name: "Smart", description: "Also run actions a fast model judges safe" },
       dangerous: {
@@ -43,15 +49,15 @@ const copy = {
     },
   },
   "ja-JP": {
-    title: "このターンの権限（Devin は実行中に確認できません）",
+    title: "ツールの権限",
     choices: {
       auto: {
-        name: "読み取りのみ自動",
-        description: "読み取り専用のツールだけを自動承認し、それ以外は拒否します",
+        name: "読み取りのみ",
+        description: "回答と読み取りだけを行い、コードは変更しません",
       },
       "accept-edits": {
         name: "編集を自動承認",
-        description: "ワークスペース内のファイル変更も自動承認します",
+        description: "ワークスペース内のファイル変更も自動承認し、それ以外はあなたに確認します",
       },
       smart: {
         name: "スマート承認",

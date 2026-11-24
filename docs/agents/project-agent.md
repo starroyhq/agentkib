@@ -1,6 +1,6 @@
-# 项目 Agent：Claude Code、Codex 或 DeepSeek Harness 指挥已指派的 Worker
+# 项目 Agent
 
-项目 Agent 是一个由 AgentKib 运行的 Claude Code 或 Codex 会话，在终端里运行、经 AgentKib 插件（0.5.0 起）连接的 Claude Code 会话，或经 AgentKib 插件（0.8.0 起）连接的 DeepSeek Harness 会话。它可以给用户指派的 Worker 派任务、读取状态和回复、停止当前一轮。项目 Agent 无法自行新建或接管会话，也无法移出 Worker。Worker 全部由用户指派和移出。Worker 的一轮结束、开始等用户处理或被用户直接操作时，AgentKib 把汇报作为新的一轮送回项目 Agent。
+Claude Code、Codex、DeepSeek Harness、Devin 和 Antigravity 会话可以担任项目 Agent，具体条件见[设定](#设定)。它可以给用户指派的 Worker 派任务、读取状态和回复、停止当前一轮。项目 Agent 无法自行新建或接管会话，也无法移出 Worker。Worker 全部由用户指派和移出。AgentKib 把轮次结果、等待处理和查活异常汇报给项目 Agent。多个 Worker 正常完成时先合并汇报，等待处理或异常可直接触发汇报。
 
 2026-11-15 用真实登录做了端到端验收（Claude Code 2.1.323 的 Haiku 5.5、Codex 0.167.0 的 gpt-6-luna 分别作项目 Agent，Worker 都是 gpt-6-luna），记录见 [`qa/project-agent-acceptance-2026-11-15.md`](../../qa/project-agent-acceptance-2026-11-15.md)。
 
@@ -18,14 +18,14 @@
 
 旧版本保存或发送的 Worker 工作区列表、Codex 自动审核开关和 Worker 数量上限会被忽略。
 
-能担任项目 Agent 的是由 AgentKib 运行的 Claude Code 或 Codex 会话，已经连接、插件能为它添加工具的终端会话，或所在 DSH 装有 0.8.0 及以上插件的 DSH 会话（没有 DSH 在运行而 AgentKib 能在后台启动时也算，启动的 DSH 用 AgentKib 自带的插件）。同一个会话可以担任一个项目 Agent，或归属一个项目 Agent 的 Worker。
+能担任项目 Agent 的是由 AgentKib 运行的 Claude Code、Codex 或 Devin 会话（Devin 经 ACP 运行，需要 Devin CLI 3000.14 及以上），由 AgentKib 经核验可控制的 [Antigravity ACP 会话](antigravity.md)，已经连接、插件能为它添加工具的终端会话，或所在 DSH 装有 0.8.0 及以上插件的 DSH 会话（没有 DSH 在运行而 AgentKib 能在后台启动时也算，启动的 DSH 用 AgentKib 自带的插件）。同一个会话可以担任一个项目 Agent，或归属一个项目 Agent 的 Worker。
 
 桌面在本机设定。Web 和手机上设定需要完全访问的设备，并有发送、管理会话和高级控制的权限，允许代批时还要有审批权限；Worker 的工作区也必须是这台设备能访问的。修改设定和设定要求相同。暂停、停止某个 Worker 的这一轮需要发送权限，移出 Worker、取消需要管理会话的权限，操作的 Worker 也必须是这台设备能访问的会话；只能读取的设备只看到状态。设定记下是哪台设备做的；这台设备的授权被撤销或变更时，委派暂停，在电脑上改动远程连接的设置（连接服务随之重启）也一样。退出 AgentKib 不算授权变更：下次启动和其他项目 Agent 一样，按重启暂停。经局域网直连时不提供这个面板，电脑上的 AgentKib 较旧时手机提示先更新。
 
 同一个面板列出 Worker（名称、状态、当前任务、最近一次汇报），可以打开 Worker 的会话、暂停和恢复委派、修改设定、取消项目 Agent。取消后 Worker 会话保留为普通会话。
 
 - **每个 Worker**可以由用户停止当前一轮，委派暂停时也可以。AgentKib 以操作设备的名义停止这一轮，项目 Agent 照常收到“用户直接停止了它”的汇报。用户点“移出”后，会话保留为普通会话，正在运行的一轮照常完成，之后不再汇报，也不再占名额。用户删除 Worker 会话时，该会话自动移出。用户删除项目 Agent 会话时，该项目 Agent 随之取消。
-- **修改设定**时，表单带出当前值。新的代批、代答和连续轮次设置保存后，修改设定的设备从此为这个项目 Agent 负责，和恢复委派一样。如果代批、代答的范围发生变化，由 AgentKib 运行的 Claude Code 项目 Agent 在下一次发送、进程空闲时换新进程，Codex 项目 Agent 在线程空闲时重新启动，终端和 DSH 里的项目 Agent 马上换上新工具。
+- **修改设定**时，表单带出当前值。新的代批、代答和连续轮次设置保存后，修改设定的设备从此为这个项目 Agent 负责，和恢复委派一样。如果代批、代答的范围发生变化，由 AgentKib 运行的 Claude Code 项目 Agent 在下一次发送、进程空闲时换新进程，Codex 项目 Agent 在线程空闲时重新启动，Devin 项目 Agent 在下一轮加载工具，Antigravity 项目 Agent 在两轮之间重新连接后加载，终端和 DSH 里的项目 Agent 马上换上新工具。
 
 ## Worker 的会话能力
 
@@ -33,8 +33,8 @@
 | --- | --- | --- |
 | Claude Code 托管 | 可发消息、排队、加入本轮、读取和停止。可按授权回答提问，代批限能明确识别的普通单次审批。 | 完成和等待即时汇报。能核对结束标记的轮次会补报。 |
 | Claude Code 已连接终端 | 发送、排队、加入本轮和停止以已验证插件当时报告的能力为准。终端的审批和提问由用户处理。 | 插件上报结束和观察到的等待。只有原生明确记录终态且身份可核对时才补报。 |
-| Devin | 可发消息、读取、停止和在 AgentKib 中排队。单次 `devin -p` 没有插话、审批或提问接口。 | AgentKib 托管轮次结束时即时汇报。只补报已持久化且在指派后开始的轮次。Devin 原端的历史没有轮次终态。 |
-| Antigravity | 可发消息、读取、停止和在 AgentKib 中排队。ACP 只接受一个在途提示，无插话或自由问答接口。代批限可明确识别且有单次允许和单次拒绝选项的命令或文件审批。 | ACP 已确认结束和等待会汇报。回放只有消息，缺少可核对的历史轮次终态。 |
+| Devin | 可发消息、读取、停止和在 AgentKib 中排队。AgentKib 每次只发送一个待处理的提示，当前轮次不支持插话或自由问答。审批可按授权代批（只有“允许一次”和“拒绝”）。 | AgentKib 托管轮次结束时即时汇报。只补报已持久化且在指派后开始的轮次。Devin 原端的历史没有轮次终态。 |
+| Antigravity | 可发消息、读取、停止和在 AgentKib 中排队。AgentKib 暂未接入插话和自由问答。代批限可明确识别且有单次允许和单次拒绝选项的命令或文件审批。 | ACP 已确认结束和等待会汇报。回放只有消息，缺少可核对的历史轮次终态。 |
 
 Devin 和 Antigravity 的用户消息与 `worker_send` 进入同一个会话队列。用户可在会话里编辑、删除等待的消息。待发消息跨重启保留，重新授权并恢复队列后才继续发送。旧版本忽略这些队列记录，仍可读会话。项目 Agent 存档沿用版本 1。旧版可以读新增 Worker 的项目及原有设置，但新增 Worker 的控制、汇报和显示以新版为准。新版读取未来版本的未知 Worker 时跳过该条，并保留存档里的原始数据。
 
@@ -52,13 +52,17 @@ Devin 和 Antigravity 的用户消息与 `worker_send` 进入同一个会话队�
 
 工具的回执和拒绝原因都是固定的代码，例如 `delegation-paused`、`approval-not-delegated` 和 `codex-owner-busy`（Worker 正被 Codex 应用占用）。项目 Agent 只能操作用户指派给自己的 Worker。旧会话若仍调用 `worker_open` 或 `worker_close`，主机会返回 `tool-not-offered`。
 
-**由 AgentKib 运行的项目 Agent**：AgentKib 为每个项目 Agent 开一个只在本机回环地址上的 MCP 端点，路径是随机生成的能力 URL，只存在于 AgentKib 进程和这个会话的启动参数里，不写入用户的 Claude Code 配置。会话每次启动时带上它（`--mcp-config`，服务名 `agentkib_workers`），与持续目标的汇报端点合并；同时用 `--allowedTools mcp__agentkib_workers` 让这些工具不必逐次审批：设为项目 Agent 本身就是授权，主机在每次调用时按授权范围检查（2.1.263、2.1.299、2.1.323 实测不再发出 `can_use_tool`）。设为项目 Agent 或取消后，下一次发送时如果进程空闲，会换一个带或不带这些工具的新进程。托管的 CLI 进程被结束时不会注销自己的 MCP 会话，端点满 4 个连接时让最久没用的连接让位，所以进程重启多少次都能连上（三个版本各重启 6 次实测）。
+**由 AgentKib 运行的 Claude Code 项目 Agent**使用只在本机回环地址上的 MCP 端点，路径是随机生成的能力 URL，只存在于 AgentKib 进程和这个会话的启动参数里，不写入用户的 Claude Code 配置。会话每次启动时带上它（`--mcp-config`，服务名 `agentkib_workers`），与持续目标的汇报端点合并；同时用 `--allowedTools mcp__agentkib_workers` 让这些工具不必逐次审批：设为项目 Agent 本身就是授权，主机在每次调用时按授权范围检查（2.1.263、2.1.299、2.1.323 实测不再发出 `can_use_tool`）。设为项目 Agent 或取消后，下一次发送时如果进程空闲，会换一个带或不带这些工具的新进程。托管的 CLI 进程被结束时不会注销自己的 MCP 会话，端点满 4 个连接时让最久没用的连接让位，所以进程重启多少次都能连上（三个版本各重启 6 次实测）。
 
 端点的说明（MCP `instructions`）控制在 2,000 字符以内：Claude Code 把它放进第一条用户消息，2.1.263 超过约 2,000 字符、2.1.299 和 2.1.323 超过约 4,000 字符时截断；`/compact` 之后会重新放入（三个版本实测）。具体用法写在各工具的描述里。
 
 **由 AgentKib 运行的 Codex 项目 Agent**：AgentKib 启动这个会话的 Codex 线程时，把同一个回环端点作为这个线程的 `mcp_servers.agentkib_workers` 传给 Codex（`thread/start`、`thread/resume` 的 `config`），不写入用户的 Codex 配置。Codex 0.167.0 把它作为“延迟加载的工具命名空间”交给模型，说明就是端点的 MCP 说明；模型在 `exec` 代码里调用 `tools.mcp__agentkib_workers__worker_*`。在 AgentKib 设定的权限档下调用这些工具不弹审批（实测）。设为项目 Agent 或取消后，Codex 线程空闲时重新启动，带上或去掉这些工具；Codex 还没写入的新会话（一轮都没有）不能重新启动，所以它的第一轮还没有这些工具，这一轮结束后才有。会话在 Codex 应用里打开时用的是 Codex 应用的线程，没有这些工具。
 
 **DeepSeek Harness 项目 Agent**：AgentKib 在 DSH 插件的轮询回复里列出全部 DSH 项目 Agent 和各自的工具，插件把工具注册在那个会话自己的 Agent 上（`agent.ctx.tools`），同一个 DSH 里的其他会话看不到；DSH 再次加载这个会话、换了 Agent 时重新注册。调用经插件的本地连接（`/v1/lead-call`）交给 AgentKib 执行，AgentKib 每次核对这个会话仍是项目 Agent、而且在这个 DSH 里。工具名就是 `worker_list` 等，守则放在 `worker_list` 的描述开头（DSH 没有 MCP 说明可用）。DSH 对插件注册的工具默认放行，不弹审批；用户在 DSH 里设的规则照常生效。设为项目 Agent、取消、暂停或恢复时，正在运行的 DSH 立即收到；AgentKib 刚启动的 DSH 第一次轮询就拿到，所以由汇报唤起的那一轮也带着工具。
+
+**Devin 项目 Agent**：AgentKib 每一轮启动 `devin acp`，新建或加载会话时把同一个回环端点作为 `mcpServers`（`type: http`，服务名 `agentkib_workers`）交给 Devin，不写入 Devin 的配置。AgentKib 仅在工具名与这个端点实际登记的工具完全匹配时自动“允许一次”。汇报经 AgentKib 自己的 Devin 会话控制发出或排队。见 [Devin 接入](devin.md)。
+
+**Antigravity 项目 Agent**通过已核验的 ACP 连接加载 `agentkib_workers`。汇报经 AgentKib 的会话控制送达，运行中排队。审批自动放行的范围见 [Antigravity 接入](antigravity.md)。
 
 **终端里的项目 Agent**：AgentKib 的连接插件用 Claude Code 的 `$.tool.register` 注册这些工具，名称是 `mcp__agentkib-bridge__worker_*`，调用经插件的本地连接交给 AgentKib 执行（2.1.301、2.1.323 实测）。插件没有 MCP 说明可用，守则放在 `worker_list` 的描述开头。设为项目 Agent 本身就是授权：会话当项目 Agent 期间，插件把这些工具默认的“询问”改为允许，和由 AgentKib 运行时一样不逐次审批；用户自己的规则、钩子、设置或组织策略要求询问或拒绝的，照它们办，插件不改这些规则。委派暂停或恢复时，终端里显示一行说明。连接协议见[终端连接](claude-code-terminal.md)。
 
@@ -74,8 +78,9 @@ Devin 和 Antigravity 的用户消息与 `worker_send` 进入同一个会话队�
 ## 汇报
 
 - **什么时候**：Worker 的一轮结束（完成、失败或被停止）；Worker 开始等用户审批或回答；用户直接给 Worker 发消息或停止它（同一个 Worker 一分钟内只报一次）。指派多个 Worker 时，普通完成从第一条起等约 1 分钟，把窗口内完成的 Worker 合成一条汇报。等待审批或回答、失败、被停止、已确认断线和限额照常汇报，也会带上积攒的完成汇报。单个 Worker 的完成照常汇报。Worker 在 Codex 应用里跟随时，AgentKib 连着它就能汇报一轮结束和等待；没连着时（包括 AgentKib 没在运行），一轮结束按 Codex 的会话记录补报，用时按记录里的开始和结束时间算。只补报成为 Worker 之后开始的轮次；等待只在连着时汇报。DeepSeek Harness Worker 由插件报告会话状态，AgentKib 从 DSH 的会话记录读出轮次结局和用时；DSH 再次连上后也会按记录补报。
-- 汇报以 `[AgentKib report] Worker "<名称>" (<Agent 名称>) · <发生了什么>` 开头。能读到用时时，轮次结束的汇报会附上用时，例如 `turn ended: completed after 3m 12s`。Codex 提供自己的计时，DSH 用会话记录里的开始和结束时间计算。汇报带上本轮最后一条回复，按交接和正文搜索的规则脱敏，最多 4,000 字符，并标明内容来自 Worker。没有记录到本轮回复时，汇报显示 `(no reply was recorded)`。每一轮只报一次。
-- **怎么送达**：由 AgentKib 运行的项目 Agent，汇报作为会话的自动待办，与排队消息、持续目标走同一套派发：空闲时才送，用户自己排的消息先送；还没送出的汇报合并成一条；派发前按设定项目 Agent 的设备重新授权。有后台任务在跑但不在一轮当中时照常送达。终端里的项目 Agent，汇报进入插件的发件箱，终端空闲时作为一轮提交；插件取走之前到的汇报合并成一条。由 AgentKib 运行的 Codex 项目 Agent，汇报是 AgentKib 以设定它的设备的名义发给它的消息：空闲时直接发送，正在运行时排进 Codex 的队列；还在队列里没开始的汇报合并成一条（改写队列里那条）。它在 Codex 应用里运行时排不进去，委派因“汇报送达不明”暂停。DeepSeek Harness 项目 Agent 一样，消息经 DSH 插件发送或排进 DSH 的队列，排队的汇报按发送它的请求认出并合并；没有 DSH 在运行时，发送会在后台启动一个（同新建 DSH 会话），启动不了时委派因“汇报送达不明”暂停。
+- 汇报以 `[AgentKib report] Worker "<名称>" (<Agent 名称>) · <发生了什么>` 开头。能读到用时时，轮次结束的汇报会附上用时，例如 `turn ended: completed after 3m 12s`。Codex 提供自己的计时，DSH 用会话记录里的开始和结束时间计算。汇报带上本轮最后一条回复，按交接和正文搜索的规则脱敏，最多 4,000 字符，并标明内容来自 Worker。对 AgentKib 托管的 Codex Worker，即使原生历史尚未显示回复，实时完成汇报也能带上本轮已保存的正文。没有记录到本轮回复时，汇报显示 `(no reply was recorded)`。每一轮只报一次。
+- 从历史补报时，正常完成已超过 35 秒、找不到本轮回复，且记录能确认后来一轮已经开始的，只记为已处理。实时结束、刚结束的补报、带回复的旧轮次以及失败或停止照常汇报。
+- **怎么送达**：由 AgentKib 运行的 Claude Code 项目 Agent，汇报作为会话的自动待办，与排队消息、持续目标走同一套派发：空闲时才送，用户自己排的消息先送；还没送出的汇报合并成一条；派发前按设定项目 Agent 的设备重新授权。有后台任务在跑但不在一轮当中时照常送达。终端里的项目 Agent，汇报进入插件的发件箱，终端空闲时作为一轮提交；插件取走之前到的汇报合并成一条。由 AgentKib 运行的 Codex 项目 Agent，汇报是 AgentKib 以设定它的设备的名义发给它的消息：空闲时直接发送，正在运行时排进 Codex 的队列；还在队列里没开始的汇报合并成一条（改写队列里那条）。它在 Codex 应用里运行时排不进去，委派因“汇报送达不明”暂停。Devin 和 Antigravity 项目 Agent 汇报经各自的会话队列发送，未开始的汇报可合并。DeepSeek Harness 项目 Agent 一样，消息经 DSH 插件发送或排进 DSH 的队列，排队的汇报按发送它的请求认出并合并；没有 DSH 在运行时，发送会在后台启动一个（同新建 DSH 会话），启动不了时委派因“汇报送达不明”暂停。
 - **暂停**：委派暂停时汇报先存着，恢复时合并送出。主机或后端重启后，委派处于暂停，用户在面板里恢复，或在项目 Agent 会话里发一条消息后继续。汇报送不出去时委派暂停。
 - **自动轮次上限**：每送出一条需要新一轮的汇报计一次，合并进已有汇报不计；项目 Agent 自己开始的一轮也计一次：Claude Code 后台任务完成的通知、定时任务，Codex 自动继续进行中的目标，DSH 继续目标的下一轮或在子代理结束后开始一轮。
   - **怎么认出**：终端里的 Claude Code 由插件按 Claude Code 标注的来源区分，不是人输入的都算。AgentKib 发给 Codex 的每条消息都带着请求号，Codex 记在这一轮开头的用户消息上；一轮不是由这样的消息开头（目标自动继续的一轮直接是 Agent 的回复），就是 Codex 自己开始的。DSH 的会话记录写明一轮由什么开头：AgentKib 发的消息带请求号，人在 DSH 窗口里输入的不带，目标的下一轮和子代理结束后的一轮没有人写的消息。
@@ -101,7 +106,7 @@ AgentKib 每 20 秒查看已指派 Worker 的实时状态，同一轮检查里�
 | Devin | AgentKib 启动的单轮进程及其退出结果。缺少命令生命周期，跳过卡住判断 |
 | Antigravity | ACP 的工具状态、正文和思考事件 |
 
-Codex 的写锁被其他进程持有时，Worker 工具会把有 `externalTurn` 证据的轮次显示为运行中。只有占用证据时显示 `busy` 及 `codex-owner-busy`。外部轮次运行期间，派工依据现有能力排队，当前 Codex 桌面端 follower 会返回 `follower-operation-unverified`。
+Codex 的写锁被其他进程持有时，Worker 工具会把有 `externalTurn` 证据的轮次显示为运行中。只有占用证据时显示 `busy` 及 `codex-owner-busy`。外部轮次运行期间，派工按当前已核实的排队或加入本轮能力执行。能力未核实时派工会被拒绝，例如返回 `follower-operation-unverified`。已授权的空闲会话可由 Codex 桌面端接收派工。桌面端正在运行但没有窗口应答时，也可在后台打开同一条会话后再交给它执行。见[跟随 Codex 桌面端](codex-managed.md)。
 
 ### 恢复 Worker
 
@@ -113,7 +118,7 @@ Codex 的写锁被其他进程持有时，Worker 工具会把有 `externalTurn` 
 | --- | --- |
 | Claude Code | 退役 AgentKib 自己的运行器。下次发送时按同一个原生会话续跑，保留宿主队列。原生输入仍在等待、后台任务运行、压缩或启动中时会拒绝 |
 | Codex | 中断同一原生线程的活动轮次，保留历史和原生队列。空闲或失联时无法安全确认可以关闭运行器 |
-| Devin | 停止 AgentKib 为本轮启动的 `devin -p`。进程退出后，下一次发送用 `-r` 打开原生会话，宿主队列照常保留 |
+| Devin | 停止 AgentKib 为本轮启动的 `devin acp`。进程退出后，下一次发送用 `session/load` 打开原生会话，宿主队列照常保留 |
 | DeepSeek Harness | 运行时可能服务多个会话，缺少独立重启该会话的入口 |
 | Antigravity | 关闭 ACP 可能丢失尚未写入的实时历史，现有的取消操作只结束一轮 |
 
@@ -127,3 +132,9 @@ Codex 的写锁被其他进程持有时，Worker 工具会把有 `externalTurn` 
 - 手机 App 在会话的“更多”菜单里提供“项目 Agent…”页面：查看 Worker、暂停和恢复、取消，或按设备权限设定。
 - 手机通知：Worker 一轮结束不单独通知，由项目 Agent 汇总；项目 Agent 一轮结束时，名下还有 Worker 在运行或等你处理、有汇报正在送去、或它自己有后台任务在跑，就先不通知，全部停下来时通知一次。Worker 和项目 Agent 的“等待你”照常通知。
 - 查活确认终端断线、登录或插件问题、限额需要手动继续等情况时，已订阅的手机可收到现有的“需要你处理”提醒。电脑无人使用时才发送，问题已恢复则取消待发提醒。菜单栏仍按现有会话状态统计。
+
+## 源码与验证
+
+[编排服务](../../packages/backend/src/orchestration-service.ts)管理指派、委派、查活和汇报，经会话 Provider 读取和控制 Worker。用户消息与项目 Agent 的派工共用各 Agent 的会话能力及授权检查。
+
+[编排测试](../../apps/desktop/test/orchestration.test.ts)覆盖委派、轮次去重、查活和汇报合并。[Codex 桌面端 Worker 测试](../../apps/desktop/test/project-agent-codex-follower.test.ts)覆盖外部线程的派工和补报。

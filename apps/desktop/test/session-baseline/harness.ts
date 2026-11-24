@@ -252,6 +252,7 @@ export async function startHost({
         const { status, body: response } = await exchange(path, body);
         return { status, body: response };
       },
+      desktop: (path: string, body?: Record<string, unknown>) => service.localRequest(path, body),
       bootId,
       deviceId: device.id,
       calls,

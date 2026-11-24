@@ -24,6 +24,7 @@ import { WebAccessService, createWebControlState } from "../electron/main/web/se
 import { TypeScriptBackend } from "../../../packages/backend/src/index";
 import { ClaudeSessionProvider } from "../../../packages/backend/src/agents/claude/session-provider";
 import { ClaudeHostStateStore } from "../../../packages/backend/src/agents/claude/claude-host-state";
+import { ClaudeManagedRunnerProcess } from "../../../packages/backend/src/agents/claude/claude-managed-runner";
 import { ClaudeSessionOwnerProbe } from "../../../packages/backend/src/agents/claude/claude-session-owner";
 import { Commands } from "../../../packages/backend/src/commands";
 import { BackendStore } from "../../../packages/backend/src/store";
@@ -32,7 +33,7 @@ import { RemoteAgent } from "../../../packages/backend/src/remote-agent";
 import { HistorySearch } from "../../../packages/backend/src/history-search";
 import { claudeRelayEnabled, startClaudeRelay } from "./fixtures/claude-relay-harness";
 
-// The real backend starts this offline executable. No runner/owner/control method is mocked.
+// The real backend starts this offline executable.
 const syntheticCli = String.raw`
 const fs = require('node:fs');
 const path = require('node:path');
@@ -45,11 +46,14 @@ log({ args });
 const send = value => process.stdout.write(JSON.stringify(value) + '\n');
 const nativeId = (args.find(a=>a.startsWith('--session-id=')) || args.find(a=>a.startsWith('--resume='))).split('=')[1];
 const folder = path.join(process.env.CLAUDE_CONFIG_DIR,'projects',process.cwd().replace(/[^a-zA-Z0-9]/g,'-'));
-fs.mkdirSync(folder,{recursive:true});
+const mode = () => fs.readFileSync(process.env.PARITY_MODE,'utf8');
+if (!args.includes('--no-session-persistence') && mode() !== 'no-history') fs.mkdirSync(folder,{recursive:true});
 const transcript = path.join(folder,nativeId+'.jsonl');
 let first, pending;
-const mode = () => fs.readFileSync(process.env.PARITY_MODE,'utf8');
-const append = row => fs.appendFileSync(transcript,JSON.stringify({sessionId:nativeId,cwd:process.cwd(),timestamp:new Date().toISOString(),...row})+'\n');
+const append = row => {
+  if (mode() !== 'no-history')
+    fs.appendFileSync(transcript,JSON.stringify({sessionId:nativeId,cwd:process.cwd(),timestamp:new Date().toISOString(),...row})+'\n');
+};
 const finish = async () => {
   const m = mode();
   const configArg = args[args.indexOf('--mcp-config')+1];
@@ -235,13 +239,14 @@ describe.skipIf(process.platform !== "darwin")(
         allowedWorkspaceIds: ["workspace"],
       });
     }
-    async function create() {
+    async function create(settings?: { model: string; verifyStartupModel: true }) {
       const result = await http("/managed/create", {
         agent: "claude-code",
         bootId,
         workspaceId: "workspace",
         requestId: randomUUID(),
         deviceId: "browser-spoof",
+        ...settings,
       });
       expect(result.status, result.body.error).toBe(200);
       expect(result.body.accepted).toBe(true);
@@ -617,6 +622,123 @@ describe.skipIf(process.platform !== "darwin")(
       expect(frames().filter((row) => row.type === "user")).toHaveLength(1);
     }, 10_000);
 
+    it("acknowledges a dispatched first message before Claude creates its config directory", async () => {
+      const config = environment.CLAUDE_CONFIG_DIR!;
+      rmSync(config, { recursive: true });
+      writeFileSync(modeFile, "no-history");
+      const sessionId = await create({ model: "fixture-model", verifyStartupModel: true });
+      const body = {
+        bootId,
+        sessionId,
+        requestId: randomUUID(),
+        expectedRevision: (await live(sessionId)).revision,
+        text: "Complete this prompt without writing native history",
+      };
+      const first = await http("/send", body);
+      const recordPath = join(data, "claude-managed", `${sessionId}.json`);
+      await expect
+        .poll(() => JSON.parse(readFileSync(recordPath, "utf8")))
+        .toMatchObject({
+          fresh: false,
+          completedRequests: [body.requestId],
+          snapshot: { terminalResult: { success: true, turnId: body.requestId } },
+        });
+      expect(existsSync(config)).toBe(false);
+      expect(frames().filter((row) => row.type === "user")).toHaveLength(1);
+
+      expect(first.body, JSON.stringify(first.body)).toMatchObject({
+        accepted: true,
+        controlOutcome: "accepted",
+        requestId: body.requestId,
+      });
+      expect(first.status).toBe(200);
+      expect(await http(`/requests/${body.requestId}`)).toMatchObject({
+        status: 200,
+        body: { found: true, status: "accepted", completionObserved: true },
+      });
+      expect((await http("/send", body)).body).toMatchObject({ accepted: true });
+      expect(frames().filter((row) => row.type === "user")).toHaveLength(1);
+    });
+
+    it("keeps the send receipt when the live read fails after the native write", async () => {
+      const config = environment.CLAUDE_CONFIG_DIR!;
+      writeFileSync(modeFile, "no-history");
+      const sessionId = await create();
+      const nativeSend = ClaudeManagedRunnerProcess.prototype.send;
+      vi.spyOn(ClaudeManagedRunnerProcess.prototype, "send").mockImplementation(async function (
+        this: ClaudeManagedRunnerProcess,
+        ...args
+      ) {
+        await nativeSend.apply(this, args);
+        // Introduce a dangling link after stdin accepted the message, before the owner's live read.
+        rmSync(config, { recursive: true });
+        symlinkSync(join(directory, "missing-config-target"), config);
+      });
+      const requestId = randomUUID();
+      const first = await send(sessionId, "Complete before live read fails", { requestId });
+      await expect.poll(() => frames().filter((row) => row.type === "user").length).toBe(1);
+      expect(first).toMatchObject({
+        status: 200,
+        body: { accepted: true, controlOutcome: "accepted", requestId },
+      });
+      expect(await http(`/requests/${requestId}`)).toMatchObject({
+        status: 200,
+        body: { found: true, status: "accepted" },
+      });
+      expect((await http(`/live?sessionId=${sessionId}`)).status).not.toBe(200);
+      expect(frames().filter((row) => row.type === "user")).toHaveLength(1);
+    });
+
+    it.each(["missing config", "missing projects", "empty projects", "existing history"] as const)(
+      "lists a new Claude session before its first send with %s",
+      async (history) => {
+        const config = environment.CLAUDE_CONFIG_DIR!;
+        const projects = join(config, "projects");
+        if (history === "missing config") rmSync(config, { recursive: true });
+        if (history === "empty projects") mkdirSync(projects);
+        if (history === "existing history") {
+          const otherWorkspace = join(directory, "other-workspace");
+          const otherProject = join(projects, "other-project");
+          mkdirSync(otherWorkspace);
+          mkdirSync(otherProject, { recursive: true });
+          const sessionId = randomUUID();
+          writeFileSync(
+            join(otherProject, `${sessionId}.jsonl`),
+            JSON.stringify({
+              type: "user",
+              uuid: randomUUID(),
+              sessionId,
+              cwd: otherWorkspace,
+              timestamp: new Date().toISOString(),
+              message: { role: "user", content: "Existing unrelated conversation" },
+            }) + "\n",
+          );
+        }
+
+        const sessionId = await create({ model: "fixture-model", verifyStartupModel: true });
+        expect(frames().filter((row) => row.args)).toMatchObject([
+          { args: expect.arrayContaining(["--no-session-persistence"]) },
+        ]);
+        expect(frames().filter((row) => row.type === "user")).toEqual([]);
+        expect(existsSync(config)).toBe(history !== "missing config");
+        expect(existsSync(projects)).toBe(
+          history === "empty projects" || history === "existing history",
+        );
+        const catalog = await http("/catalog");
+        expect(catalog.status, JSON.stringify(catalog.body)).toBe(200);
+        expect(catalog.body.sessions).toContainEqual(
+          expect.objectContaining({ id: sessionId, executionMode: "claude-managed" }),
+        );
+
+        const first = await send(sessionId, "First message from a clean workspace");
+        expect(first.status, JSON.stringify(first.body)).toBe(200);
+        await idle(sessionId);
+        expect(frames().filter((row) => row.type === "user")).toMatchObject([
+          { message: { content: "First message from a clean workspace" } },
+        ]);
+      },
+    );
+
     it("creates with the true device and routes fresh Claude reads, send and receipts through the actual owner", async () => {
       const claudeRoute = vi.spyOn(ClaudeSessionProvider.prototype, "legacy");
       const sessionId = await create();
@@ -659,6 +781,98 @@ describe.skipIf(process.platform !== "darwin")(
       expect(claudeRoute).toHaveBeenCalledWith(
         expect.objectContaining({ operation: "send", sessionId, deviceId, requestId }),
       );
+    });
+
+    it("keeps the first conversation visible while Claude has not written its transcript", async () => {
+      const project = join(
+        environment.CLAUDE_CONFIG_DIR!,
+        "projects",
+        workspace.replace(/[^a-zA-Z0-9]/g, "-"),
+      );
+      mkdirSync(project, { recursive: true });
+      writeFileSync(modeFile, "no-history");
+      const sessionId = await create();
+      const { sourceSessionId: nativeId } = await live(sessionId);
+      const transcript = join(project, `${nativeId}.jsonl`);
+      const subscription = await rpc("sessions.subscribe", { sessionId });
+      const subscriptions = [subscription.subscriptionId];
+      const items: Array<{ id: string; kind: string; content: string }> = [];
+      sessionNotifications = (event) => {
+        const value = event as {
+          sessionId?: string;
+          type?: string;
+          payload?: (typeof items)[number];
+        };
+        if (value?.sessionId === sessionId && value.type === "item-upsert" && value.payload)
+          items.push(value.payload);
+      };
+      const prompt = "First prompt without native history";
+      try {
+        expect((await send(sessionId, prompt)).status).toBe(200);
+        await idle(sessionId);
+        expect(existsSync(transcript)).toBe(false);
+        const input = frames().filter((row) => row.type === "user");
+        expect(input).toHaveLength(1);
+        const user = { id: input[0].uuid, kind: "user-message", content: prompt };
+        const reply = items.find(
+          (item) => item.kind === "agent-message" && item.content === "Offline response",
+        )!;
+        expect(reply).toBeDefined();
+        expect(items.findIndex((item) => item.id === user.id)).toBeLessThan(items.indexOf(reply));
+        expect(items[0]).toMatchObject(user);
+        const expected = [user, { id: reply.id, kind: reply.kind, content: reply.content }];
+        const history = async (pending: boolean) => {
+          const result = await http(`/events?sessionId=${sessionId}`);
+          expect(result.status, JSON.stringify(result.body)).toBe(200);
+          expect(result.body.events).toMatchObject(expected);
+          if (pending) expect(result.body).not.toHaveProperty("next_cursor");
+          else expect(result.body).toHaveProperty("next_cursor", null);
+        };
+        const reconnect = async (pending: boolean) => {
+          const existing = subscriptions.pop();
+          if (existing) await rpc("sessions.unsubscribe", { subscriptionId: existing });
+          const next = await rpc("sessions.subscribe", { sessionId });
+          subscriptions.push(next.subscriptionId);
+          expect(next.events[0].payload).toMatchObject({
+            items: expected,
+            preserveItemsOutsideCoverage: pending,
+          });
+        };
+        await history(true);
+        await reconnect(true);
+        writeFileSync(transcript, "");
+        await history(true);
+        const row = (value: Record<string, unknown>) =>
+          JSON.stringify({
+            sessionId: nativeId,
+            cwd: workspace,
+            timestamp: new Date().toISOString(),
+            ...value,
+          }) + "\n";
+        const savedPrompt = { type: "user", uuid: user.id, message: input[0].message };
+        writeFileSync(transcript, row({ ...savedPrompt, sessionId: randomUUID() }));
+        expect((await http(`/events?sessionId=${sessionId}`)).status).not.toBe(200);
+        writeFileSync(transcript, row({ ...savedPrompt, cwd: directory }));
+        expect((await http(`/events?sessionId=${sessionId}`)).status).not.toBe(200);
+        writeFileSync(transcript, row(savedPrompt));
+        await history(true);
+        await reconnect(true);
+        appendFileSync(
+          transcript,
+          row({
+            type: "assistant",
+            uuid: reply.id,
+            parentUuid: user.id,
+            message: { role: "assistant", content: [{ type: "text", text: reply.content }] },
+          }),
+        );
+        await history(false);
+        await reconnect(false);
+      } finally {
+        sessionNotifications = undefined;
+        for (const subscriptionId of subscriptions)
+          await rpc("sessions.unsubscribe", { subscriptionId });
+      }
     });
 
     it("uses one Claude provider for workspace options, creation replay and fresh settings and usage", async () => {

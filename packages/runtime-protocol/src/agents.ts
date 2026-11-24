@@ -6,7 +6,13 @@ import type { LiveSessionAgent } from "./session-providers";
  * and maps keyed by `ManagedAgent` stop compiling until they cover an Agent added here. Each
  * Agent still needs its own host adapter; see docs/development/adding-an-agent.md.
  */
-export const MANAGED_AGENTS = ["codex", "claude-code", "deepseek-harness", "devin"] as const;
+export const MANAGED_AGENTS = [
+  "codex",
+  "claude-code",
+  "deepseek-harness",
+  "devin",
+  "antigravity",
+] as const;
 export type ManagedAgent = (typeof MANAGED_AGENTS)[number];
 
 /** The managed Agent named by `agent`, or null for an Agent AgentKib only reads. */
@@ -16,11 +22,8 @@ export function managedAgentOf(agent: unknown): ManagedAgent | null {
     : null;
 }
 
-/**
- * Agents whose sessions AgentKib opens live, following their turns and offering a composer: the
- * managed ones, and Antigravity, which it continues through ACP.
- */
-export const LIVE_SESSION_AGENTS: readonly LiveSessionAgent[] = [...MANAGED_AGENTS, "antigravity"];
+/** Agents whose sessions AgentKib opens live, following their turns and offering a composer. */
+export const LIVE_SESSION_AGENTS: readonly LiveSessionAgent[] = [...MANAGED_AGENTS];
 
 export function isLiveSessionAgent(agent: unknown): agent is LiveSessionAgent {
   return typeof agent === "string" && LIVE_SESSION_AGENTS.some((entry) => entry === agent);

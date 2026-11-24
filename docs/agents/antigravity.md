@@ -1,4 +1,4 @@
-# Antigravity 接入边界与实施计划
+# Antigravity 接入与会话能力
 
 Antigravity 不能直接复用 Gemini CLI 的会话适配器。两者共享 `GEMINI.md`、`.agents/skills` 和 MCP 配置约定，但会话存储、控制协议和可验证能力不同。AgentKib 将配置资产适配与会话协议适配分开实现。
 
@@ -6,11 +6,11 @@ Antigravity 不能直接复用 Gemini CLI 的会话适配器。两者共享 `GEM
 
 | 组件                   | 已验证版本 | 用途                                                                                 |
 | ---------------------- | ---------- | ------------------------------------------------------------------------------------ |
-| Antigravity CLI        | 1.2.7      | 安装检测、版本检测和官方 CLI 入口                                                    |
-| Antigravity ACP server | 1.1.1      | ACP v1 会话列表、加载、续接、发送、停止和逐次审批                                    |
+| Antigravity CLI        | 1.5.14     | 安装检测、版本检测；`agy acp` 提供与 Antigravity App 共用会话的 ACP 服务             |
+| Antigravity ACP server | 1.1.1      | 旧版独立服务：ACP v1 会话列表、加载、续接、发送、停止和逐次审批                      |
 | ACP protocol           | v1         | `session/list`、`session/load`、`session/resume`、`session/prompt`、`session/cancel` |
 
-AgentKib 不自动下载 ACP server，也不读取或复制 Google 登录凭据。运行时从绝对路径环境变量 `AGENTKIB_ANTIGRAVITY_ACP_BIN` 查找服务器；未设置时优先查找 PATH 中的 `agy_acp_server.par` 或 `agy_acp_server.exe`，再查找新版 `agy acp`。只读历史按 ACP v1 能力协商；发送、停止和审批还要求服务端精确报告身份 `antigravity-acp`，版本完整匹配 `agy_acp_server_数字.数字.数字` 且不低于 `1.1.1`。版本范围只决定尝试兼容，实际 ACP v1、加载或续接能力、会话及审批身份仍须确认。
+AgentKib 不自动下载 ACP server，也不读取或复制 Google 登录凭据。运行时从绝对路径环境变量 `AGENTKIB_ANTIGRAVITY_ACP_BIN` 查找服务器；未设置时优先查找 PATH 中的 `agy_acp_server.par` 或 `agy_acp_server.exe`，再查找新版 `agy acp`。只读历史按 ACP v1 能力协商；发送、停止和审批还要求服务端身份及版本符合以下条件。旧版独立服务报告 `antigravity-acp`，版本完整匹配 `agy_acp_server_数字.数字.数字` 且不低于 `1.1.1`。新版 CLI 报告 `Antigravity ACP Server`，版本为三段数字且不低于 `1.5.14`。版本范围只决定尝试兼容，实际 ACP v1、加载或续接能力、会话及审批身份仍须确认。
 
 上下文占用仅接收原生 `usage_update.used` 与 `size`，缺失或无效时保持未知。连接声明可选的 ACP v1 `session.compaction` 扩展；收到压缩通知时按原生 `compactionId` 保存有界生命周期、摘要块及 nullable patch，首次接收位置保持不变，历史允许从终态开始。未知状态不能确认压缩结束；压缩结束也不能确认当前轮次结束。压缩期间禁用新发送，保留停止及有效原生审批；没有这些通知时只依赖原有运行状态锁。扩展处理与离线测试通过不证明已安装服务器实际会上报它们。
 
@@ -28,7 +28,7 @@ AgentKib 不自动下载 ACP server，也不读取或复制 Google 登录凭据�
 
 这些条目使用独立的 `antigravity-local-v1-` 引用，只可浏览。服务端拒绝发送、停止、审批、回答、设置修改、归档、重命名和续接/完整历史导出。现有经过验证的旧 ACP 会话控制链保持原边界。
 
-新版 CLI 自动发现 `agy` 并以参数 `acp` 启动；显式 `AGENTKIB_ANTIGRAVITY_ACP_BIN` 指向绝对路径的 `agy` 时也使用同样参数。新版身份 `Antigravity ACP Server` 仅用于能力协商后的只读浏览，不继承旧服务的控制信任。缺少可选 ACP 返回空来源，不再产生常驻“暂时读不到”的故障提示；已配置路径损坏、协议错误、认证或真实读取失败仍保留诊断。
+新版 CLI 自动发现 `agy` 并以参数 `acp` 启动；显式 `AGENTKIB_ANTIGRAVITY_ACP_BIN` 指向绝对路径的 `agy` 时也使用同样参数。`agy acp` 报告身份 `Antigravity ACP Server`，版本 1.5.14 起也用于控制（见下文“经 Antigravity CLI 控制”），更早的版本只用于浏览。缺少 CLI 时会话页说明需要先安装 Antigravity CLI（Antigravity App 不包含它），并指向“设置 › 工具与更新”里的官方安装命令（`antigravity-cli-unavailable`）；已配置路径损坏、协议错误、认证或真实读取失败仍保留诊断。
 
 验证入口：`antigravity-local-store.test.ts`、`antigravity-local-runtime.test.ts`、`antigravity-history.test.ts`、`antigravity-local-readonly.test.ts`、`antigravity-modern-acp.test.ts`、`antigravity-runtime-scope.test.ts` 和 `antigravity-continuation.test.ts`，位于 `apps/desktop/test`。使用隔离目录、合成 SQLite/Protobuf、只读 HTTP fixture 与合成 ACP 子进程，不依赖用户凭据或模型调用。
 
@@ -42,27 +42,42 @@ AgentKib 不自动下载 ACP server，也不读取或复制 Google 登录凭据�
 - 通过 Google 分发的 ACP server 列出和读取 ACP 原生会话，归一化为 AgentKib `SessionDocument`。
 - 原生 MCP 迁移会保留无法转换的配置：带静态 OAuth 客户端配置或显式 SSE 传输的服务不会标为可自动迁移；未声明传输的远程服务仍需通过迁移前连接探测。
 - AgentKib 运行的 ACP 会话在会话目录里标出进行中的一轮（`continuation`，`executionLocation: agentkib`）：首页的“进行中”、菜单栏、手机的实时活动和退出确认都算它，等待审批的一轮算作等你处理，结果待核实的算作需要核实，和 Devin 会话一样。
-- 在桌面与 Web 中对已核验的 ACP 会话发送消息、停止精确活动轮次，并只提交服务端真实提供的审批 `optionId`。审批仅在命令、文件编辑或单文件读取的操作范围可完整展示时开放；未验证的工具类型（包括移动、删除）保持不可审批。活动轮次断线后保留 outcome-unknown 防线，不自动重连或重发。
+- 在桌面与 Web 中对已核验的 ACP 会话发送消息、停止精确活动轮次，并只提交服务端真实提供的审批 `optionId`。命令、文件编辑和单文件读取只有在操作范围可完整展示时才支持审批。未验证的工具类型（包括移动、删除）保持不可审批。活动轮次断线后保留 outcome-unknown 防线，不自动重连或重发。
 - 将 Antigravity ACP 会话作为来源，导入 Codex 或 Claude Code 的目标原生历史，并沿用预览、脱敏、损失确认和回读验证流程。
+
+## 经 Antigravity CLI 控制（agy acp 1.5.14）
+
+2026-11-23 用真实登录验收（记录见 [`qa/antigravity-cli-2026-11-23.md`](../../qa/antigravity-cli-2026-11-23.md)）。
+
+- **安装引导**：Antigravity App 不包含 CLI。“设置 › 工具与更新”提供官方安装命令供复制（macOS/Linux `curl -fsSL https://antigravity.google/cli/install.sh | bash`，Windows 为对应的 PowerShell 命令），AgentKib 不替用户执行远程脚本。CLI 装在 `~/.local/bin/agy` 也能被发现。
+- **与 App 共用会话**：`agy acp` 的 `session/list` 列出的就是 Antigravity App 的会话。实测 ACP 列出了 App 库里 40 条会话中的 38 条。相同会话只显示一份，ACP 确认可控制时优先使用该来源，只在 App/IDE 本地存储里的条目仍然只读（“请在 Antigravity 中继续”）。
+- **受控 Agent**：Antigravity 加入 `MANAGED_AGENTS`。新建会话时在所选工作区 `session/new`，按选择设置模型、推理档位和模式后发出第一条消息；新建选项取自一个不发消息的临时会话（CLI 不保存没有消息的会话）。
+- **设置**：模型、推理档位（`thought_level`）和模式（`mode`：default、accept-edits、auto、plan）是会话自己的 ACP 选项，在两轮之间用 `session/set_config_option` 设置，下一轮生效。Antigravity 续接会话时推理档位回到默认值，所以 AgentKib 把用户的选择记在数据目录的 `antigravity-session-settings.json`，每次连接时重新设置。`auto` 会自动执行它认为安全的命令，只接受完全访问的设备。
+- **审批**：CLI 的工具参数与旧服务不同（命令为 `CommandLine`，编辑为 `Path`、`Target`、`Replacement` 加上差异），AgentKib 先映射到既有的核对规则：命令显示命令行，编辑以差异显示。对于能完整展示工具名和参数的具名 MCP 请求，也可在会话中审批。参数被脱敏、缺失或无法核对时不可审批。只提供 CLI 给出的“允许一次”和“拒绝”。
+- **项目 Agent**：由 AgentKib 控制的 Antigravity 会话可以担任项目 Agent。连接会话时把 `agentkib_workers` 回环端点作为 `mcpServers` 交给 Antigravity，不写入 Antigravity 的配置。AgentKib 按该端点实际登记的工具生成完整名称（如 `mcp_agentkib_workers_worker_list`），精确匹配时自动允许一次，其余审批照常请求确认。代批、代答范围变化后，在两轮之间重新连接以换上新工具。汇报经 AgentKib 的会话控制发出，忙时排队。
+- **失败原因**：一轮没能运行或完成时，会话保持可用，输入框上方说明原因：额度或速率限制（`antigravity-usage-limited`）、未登录（`antigravity-login-required`，在终端运行一次 `agy` 登录）或其他失败（`antigravity-run-failed`）。
+- **实测但未接入**：`agy acp` 接受图片提示；运行中再发一条提示也会被接受（前一个提示立即以 `end_turn` 返回，内容继续生成）。AgentKib 暂不提供附件和插话，仍按队列在一轮结束后发送。
 
 ## 官方接口尚未提供的能力
 
 ACP v1 的 `session/new` 没有导入外部历史的参数。Antigravity CLI 1.2.7 也没有把任意外部 transcript 创建为目标原生会话的稳定命令。因此 Codex/Claude Code → Antigravity 的原生历史导入保持 `native-history-import-unsupported`，不会降级后仍标记为原生导入。
 
-当前 ACP server 使用自己的会话存储。尚无公开稳定接口证明它可以完整列出或控制 Antigravity Desktop/IDE 与 `agy` CLI 已有的全部会话。因此 AgentKib 只索引 ACP server 返回的会话；只有服务端同时支持 `session/load` 时才标记为可读，否则仅展示元数据。未安装可选 ACP server 时，ACP 来源为空，本机 App/IDE 的只读来源仍可使用；不会把 ACP 能力扩大解释为对现有 Desktop/IDE 或 CLI 会话的控制。
+旧版独立 ACP server 使用自己的会话存储（新版 CLI 的 `agy acp` 与 App 共用会话，见上文）。尚无公开稳定接口证明它可以完整列出或控制 Antigravity Desktop/IDE 与 `agy` CLI 已有的全部会话。ACP 来源只索引服务端返回的会话。服务端还须支持 `session/load` 才能读取正文，否则仅展示元数据。未安装可选 ACP server 时，ACP 来源为空，本机 App/IDE 的只读来源仍可使用；不会把 ACP 能力扩大解释为对现有 Desktop/IDE 或 CLI 会话的控制。
 
 ## 作项目 Agent 的 Worker
 
-用户可以指派能由 AgentKib 控制的 Antigravity ACP 会话。只读 App/IDE 条目和新版 CLI ACP 的浏览记录不能指派。指派保留会话的模型、权限和工作区，首次发送仍须通过 ACP 会话及服务端身份校验。
+用户可以指派能由 AgentKib 控制的 Antigravity ACP 会话，包括 `agy acp` 1.5.14 起列出且通过校验的 App 会话。只读 App/IDE 条目不能指派。指派保留会话的模型、权限和工作区，首次发送仍须通过 ACP 会话及服务端身份校验。
 
-项目 Agent 可以派任务、读取可见回复、停止当前轮，并接收轮次结果与等待审批的汇报。经用户授权可代办符合委派范围的单次命令或文件变更审批，AgentKib 只回传 ACP 给出的对应一次性选项。ACP 目前没有独立的问答协议，也无法把消息加入已在运行的原生轮次。
+项目 Agent 可以派任务、读取可见回复、停止当前轮，并按[汇报规则](project-agent.md#汇报)接收轮次结果与等待审批的消息。经用户授权可代办符合委派范围的单次命令或文件变更审批，AgentKib 只回传 ACP 给出的对应一次性选项。AgentKib 当前没有为 Antigravity 接入自由问答或加入本轮。忙时发来的消息排到后续轮次。
 
 用户和项目 Agent 共用会话的待发队列。AgentKib 保留纯文本任务，在上一轮结束且当前授权仍有效时按顺序发送。桌面和 Web 的会话输入框附近可以查看、编辑、移除任务以及暂停和恢复队列。
 
 执行中的 ACP 连接由 AgentKib 持有。断线后没有确认的轮次保持结果待核实，会话回放提供历史消息，缺少可用于补报的终态和时间关联，因此不能补报宿主关闭期间无法核实的轮次。
 
-## 实施与验收
+## 源码与验收
 
-实施顺序是：冻结官方版本和协议能力；完成资产发现与保留式写入；用 ACP 能力协商接入历史；实现带 session、turn、revision 三重校验的控制；归一化会话；逐方向验证原生导入；最后执行全仓回归。任何缺少官方稳定接口的方向保持不支持，并记录证据。
+[Antigravity 会话 Provider](../../packages/backend/src/agents/antigravity/session-provider.ts)提供已核验 ACP 会话的控制和实时状态。[历史读取](../../packages/backend/src/agents/antigravity/history-reader.ts)同时区分 ACP 与本机 App／IDE 的只读记录。运行中的提示由 ACP 执行，等待的纯文本消息保存在 AgentKib 的[串行会话队列](../../packages/backend/src/sessions/serial-session-queue.ts)。
+
+[会话基线](../../apps/desktop/test/session-baseline/antigravity.test.ts)覆盖 ACP 会话的发送、停止、审批和排队，以及未核实的控制保持不可用。[CLI 控制测试](../../apps/desktop/test/antigravity-cli-control.test.ts)覆盖首轮设置、轮次之间修改选项、项目 Agent 工具审批以及有明确原因的轮次失败。
 
 完整验收定义、八个跨 Agent 方向、A01–A14 场景和证据要求见 [`qa/ANTIGRAVITY-ACCEPTANCE.md`](../../qa/ANTIGRAVITY-ACCEPTANCE.md)。其中 A05 是整体放行条件：只要 Codex/Claude Code → Antigravity 仍不能创建可重启、可继续的 Antigravity 原生历史，完整支持就不能验收通过。

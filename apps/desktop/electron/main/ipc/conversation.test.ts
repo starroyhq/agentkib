@@ -264,6 +264,67 @@ describe("conversation IPC subscription lifetime", () => {
     fixture.completions.forEach((_finish, index) => fixture.finish(index, `sub-${index}`));
     await Promise.all(pending);
   });
+
+  it.each(["navigation", "render-process-gone", "unavailable"] as const)(
+    "does not count old pending subscriptions against the next renderer generation after %s",
+    async (reason) => {
+      const fixture = setup();
+      const stale = Promise.allSettled(Array.from({ length: 4 }, () => fixture.subscribe()));
+      if (reason === "navigation")
+        fixture.sender.emit("did-start-navigation", {}, "app://bundle/index.html", false, true);
+      else if (reason === "unavailable") fixture.hub.emit("unavailable");
+      else fixture.sender.emit(reason);
+
+      const fresh = Promise.allSettled(Array.from({ length: 4 }, () => fixture.subscribe()));
+      expect(fixture.localSubscribe).toHaveBeenCalledTimes(8);
+      for (let index = 0; index < 4; index++) fixture.finish(index, `old-${index}`);
+      expect(await stale).toEqual(
+        Array.from({ length: 4 }, () => ({
+          status: "rejected",
+          reason: new Error("renderer_closed"),
+        })),
+      );
+      expect(fixture.hub.unsubscribe.mock.calls).toEqual(
+        Array.from({ length: 4 }, (_, index) => [`old-${index}`]),
+      );
+
+      const excess = Promise.allSettled([fixture.subscribe()]);
+      expect(fixture.localSubscribe).toHaveBeenCalledTimes(8);
+      expect(await excess).toEqual([{ status: "rejected", reason: new Error("stream_limit") }]);
+      for (let index = 0; index < 4; index++) fixture.finish(index + 4, `new-${index}`);
+      expect((await fresh).map(({ status }) => status)).toEqual(Array(4).fill("fulfilled"));
+    },
+  );
+
+  it("notifies a renderer with only pending subscriptions that the Runtime is unavailable", async () => {
+    const fixture = setup();
+    const pending = fixture.subscribe();
+    fixture.hub.emit("unavailable");
+    fixture.finish(0);
+    await expect(pending).rejects.toThrow("renderer_closed");
+    expect(fixture.sender.send).toHaveBeenCalledExactlyOnceWith(
+      "agentkib:conversation:unavailable",
+    );
+  });
+
+  it("releases subscriptions on destruction without reading destroyed WebContents properties", async () => {
+    const fixture = setup();
+    await fixture.open("active");
+    const pending = Promise.allSettled([fixture.subscribe()]);
+    fixture.sender.isDestroyed.mockReturnValue(true);
+    Object.defineProperty(fixture.sender, "id", {
+      get() {
+        throw new Error("WebContents was destroyed");
+      },
+    });
+    expect(() => fixture.sender.emit("destroyed")).not.toThrow();
+    fixture.finish(1, "pending");
+    expect(await pending).toEqual([{ status: "rejected", reason: new Error("renderer_closed") }]);
+    expect(fixture.hub.unsubscribe.mock.calls).toEqual([["active"], ["pending"]]);
+    await expect(fixture.subscribe()).rejects.toThrow("renderer_closed");
+    expect(fixture.localSubscribe).toHaveBeenCalledTimes(2);
+  });
+
   it("releases a subscription whose renderer navigated before bootstrap returned", async () => {
     const fixture = setup();
     const pending = fixture.subscribe();

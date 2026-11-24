@@ -12,6 +12,7 @@ import {
   replayManagedCommand,
   saveManagedUsageLimit,
 } from "../../managed-ledger";
+import type { LeadToolRegistration } from "../../orchestration-endpoint";
 import type { WorkerRestartRequest, WorkerRestartResult } from "../../orchestration-service";
 import { canonicalize, lexicalPathIdentity, pathIdentity } from "../../paths";
 import { conversationReadKey, ReadStateLedger } from "../../read-state-ledger";
@@ -105,7 +106,9 @@ const DEVIN_SPEED_NAMES = {
   lightning: "Lightning",
 };
 
-function devinModelOptions(catalog: DevinModelCatalog) {
+type DevinModelControls = NonNullable<DevinManagedRunner["modelControls"]>;
+
+function devinModelOptions(catalog: DevinModelCatalog, controls?: DevinModelControls) {
   const exact: Array<{
     id: string;
     name?: string;
@@ -114,9 +117,14 @@ function devinModelOptions(catalog: DevinModelCatalog) {
     maxContextTokens?: number;
     variants: DevinModelVariant[];
   }> = [];
-  const exactLimit = 256 - catalog.families.length;
   const familyIds = new Set(catalog.families.map(({ id }) => id));
-  const families = catalog.families.map((family) => {
+  const activeFamily = controls && (catalog.familyOf.get(controls.model) ?? controls.familyId);
+  const available =
+    controls?.efforts !== undefined && activeFamily && !familyIds.has(activeFamily)
+      ? [...catalog.families, { id: activeFamily }]
+      : catalog.families;
+  const exactLimit = 256 - available.length;
+  const families = available.map((family) => {
     const allVariants = catalog.variantsByFamily.get(family.id) ?? [];
     const variants = allVariants.slice(0, 128);
     const maxContextTokens = variants[0]?.maxContextTokens;
@@ -142,6 +150,14 @@ function devinModelOptions(catalog: DevinModelCatalog) {
           variants: [variant],
         });
     }
+    if (activeFamily === family.id && controls?.efforts !== undefined)
+      return {
+        ...family,
+        efforts: controls.efforts,
+        serviceTierIds: controls.serviceTierIds ?? [],
+        variants: [],
+        ...(sameCapacity ? { maxContextTokens } : {}),
+      };
     return {
       ...family,
       efforts: DEVIN_MODEL_EFFORTS.filter((effort) =>
@@ -177,22 +193,62 @@ function devinSelectedVariant(
   );
 }
 
-function devinSettingsModel(
+function devinSettingsChoice(
   choice: DevinModelSelection,
   catalog: DevinModelCatalog,
-  currentId?: string | null,
+  current?: DevinTurnSettings,
   nativeModel?: string | null,
-) {
+  controls?: DevinModelControls,
+): DevinTurnSettings {
   const { model, effort, serviceTier } = choice;
-  const target = model ?? currentId ?? nativeModel;
+  const target = model ?? current?.model ?? nativeModel ?? controls?.model;
   if (!target) throw new Error("unsupported-model");
-  const current = devinSelectedVariant(catalog, currentId, nativeModel);
+  const previousVariant = devinSelectedVariant(catalog, current?.model, nativeModel);
   const proposed = devinModelVariant(catalog, target);
-  const familyId = proposed?.familyId ?? target;
-  const previous = proposed ?? (current?.familyId === familyId ? current : undefined);
-  const selectedEffort = effort === undefined ? previous?.effort : (effort ?? undefined);
+  const familyId = proposed?.familyId ?? (target === controls?.model ? controls.familyId : target);
+  const sameFamily = model === undefined || previousVariant?.familyId === familyId;
+  const previous = proposed ?? (sameFamily ? previousVariant : undefined);
+  const saved = sameFamily ? current : undefined;
+  const activeFamily = controls && (catalog.familyOf.get(controls.model) ?? controls.familyId);
+  if (activeFamily === familyId && controls?.efforts !== undefined) {
+    const nextEffort =
+      effort !== undefined
+        ? effort
+        : saved?.effort !== undefined
+          ? saved.effort
+          : saved?.model
+            ? previous?.effort
+            : undefined;
+    const nextTier =
+      serviceTier !== undefined
+        ? serviceTier
+        : saved?.serviceTier !== undefined
+          ? saved.serviceTier
+          : saved?.model
+            ? previous?.serviceTierId
+            : undefined;
+    const allowedEffort = controls.efforts.find((value) => value === nextEffort);
+    const allowedTier = controls.serviceTierIds?.find((value) => value === nextTier);
+    if (nextEffort && !allowedEffort) throw new Error("unsupported-effort");
+    if (nextTier && !allowedTier) throw new Error("unsupported-service-tier");
+    return {
+      model: model ?? familyId,
+      ...(nextEffort === null ? { effort: null } : allowedEffort ? { effort: allowedEffort } : {}),
+      ...(nextTier === null && controls.serviceTierIds !== undefined
+        ? { serviceTier: null }
+        : allowedTier
+          ? { serviceTier: allowedTier }
+          : {}),
+    };
+  }
+  const selectedEffort =
+    effort === undefined ? (saved?.effort ?? previous?.effort) : (effort ?? undefined);
   const selectedTier =
-    serviceTier === undefined ? previous?.serviceTierId : (serviceTier ?? undefined);
+    serviceTier !== undefined
+      ? serviceTier
+      : saved?.serviceTier !== undefined
+        ? saved.serviceTier
+        : previous?.serviceTierId;
   const variants = catalog.variantsByFamily.get(familyId);
   if (!variants?.length) throw new Error("unsupported-model");
   if (selectedEffort && !variants.some((variant) => variant.effort === selectedEffort))
@@ -201,7 +257,6 @@ function devinSettingsModel(
   if (serviceTier === null && !selectedEffort) {
     const standard = variants.filter((variant) => !variant.serviceTierId);
     if (standard.length !== 1) throw new Error("unsupported-service-tier");
-    return standard[0]!.id;
   }
   const resolved = resolveDevinModel(catalog, {
     modelId: familyId,
@@ -210,7 +265,14 @@ function devinSettingsModel(
   });
   if (!resolved)
     throw new Error(serviceTier !== undefined ? "unsupported-service-tier" : "unsupported-effort");
-  return resolved;
+  const effortChoice = DEVIN_MODEL_EFFORTS.find((value) => value === selectedEffort);
+  const tierChoice =
+    selectedTier === null ? null : devinModelVariant(catalog, resolved)?.serviceTierId;
+  return {
+    model: model ?? familyId,
+    ...(effort === null ? { effort: null } : effortChoice ? { effort: effortChoice } : {}),
+    ...(tierChoice !== undefined ? { serviceTier: tierChoice } : {}),
+  };
 }
 
 /** A usage limit's notice kept longer than this is not shown after a restart. */
@@ -235,6 +297,8 @@ type DevinSessionHost = {
     live: Record<string, unknown>,
   ) => void;
   catalogChanged?(): void;
+  indexGeneration(): bigint;
+  indexEnabled(): boolean;
   recordResult(
     target: Omit<ReadStateTarget, "transcript">,
     result: ConversationReadResult,
@@ -248,6 +312,8 @@ type DevinSessionHost = {
     historyTurnId: string | undefined,
     replyText: string | null,
   ): void;
+  /** A turn now waits for the person to answer one of Devin's permission requests. */
+  laneWaiting?(sessionId: string, turnId: string): void;
   isShuttingDown(): boolean;
   serialQueueTarget(sessionId: string): SerialQueueTarget | undefined;
   admitControl(value: Record<string, unknown>, execute: ApplyManagedControl): Promise<unknown>;
@@ -279,6 +345,22 @@ export class DevinSessionProvider implements DevinExecutor, TypedSessionProvider
   readonly createOperation = "devin-create";
   readonly typed = this;
   #runners = new Map<string, DevinRunnerRecord>();
+  /** Where a Project Agent's worker tools are served (`OrchestrationService.leadTools`). */
+  #leadEndpoint: ((sessionId: string) => Promise<LeadToolRegistration | null>) | undefined;
+
+  leadEndpoints(
+    source: ((sessionId: string) => Promise<LeadToolRegistration | null>) | undefined,
+  ): void {
+    this.#leadEndpoint = source;
+  }
+
+  /**
+   * Whether a Devin session could be a Project Agent: a Devin session Devin stored, which
+   * AgentKib runs over ACP. Its turns are then offered the worker tools.
+   */
+  leadCapable(sessionId: string): boolean {
+    return this.host.store.sessions.get(sessionId)?.agent === "devin";
+  }
   #savedSettings: DevinSessionSettings | undefined;
   /**
    * The usage limit each Devin session AgentKib runs last met, and the continue armed for it, as
@@ -452,19 +534,23 @@ export class DevinSessionProvider implements DevinExecutor, TypedSessionProvider
     workspace: string,
     workspaceId: string,
     sessionId: () => string | null,
+    refreshCreatedCatalog?: (nativeId: string) => Promise<void>,
   ): DevinRunnerHost {
     const environment = devinChildEnvironment({ ...process.env, ...this.host.environment });
     const page = (nativeId: string, limit: number) =>
       this.host.sessions.eventsForNative("devin", nativeId, workspace, null, limit);
     return {
       executable: () => devinExecutable(environment),
+      modelCatalog: () => this.#readCatalog(),
       environment,
-      latestItems: async (nativeId) =>
-        (await page(nativeId, 100)).events.map((event) => ({
+      latestItems: async (nativeId) => {
+        await refreshCreatedCatalog?.(nativeId).catch(() => undefined);
+        return (await page(nativeId, 100)).events.map((event) => ({
           ...event,
           turn_id: event.turn_id ?? event.id,
           ephemeral: false,
-        })),
+        }));
+      },
       listSessions: async () =>
         (await this.host.sessions.list("devin", workspace)).sessions.map((session) => ({
           nativeId: session.native_ref,
@@ -476,6 +562,15 @@ export class DevinSessionProvider implements DevinExecutor, TypedSessionProvider
       turnEnded: (end) => {
         const id = sessionId();
         if (id) this.#turnEnded(id, workspace, end);
+      },
+      waiting: (turnId) => {
+        const id = sessionId();
+        if (id) this.host.laneWaiting?.(id, turnId);
+      },
+      // A Project Agent's turns are offered its worker tools, read again for every turn.
+      leadTools: async () => {
+        const id = sessionId();
+        return id ? ((await this.#leadEndpoint?.(id)) ?? null) : null;
       },
       publish: (type, payload, live) => {
         const id = sessionId();
@@ -772,7 +867,7 @@ export class DevinSessionProvider implements DevinExecutor, TypedSessionProvider
 
   /**
    * A Devin row of the catalog while AgentKib holds the session's runner. Its turns run in a
-   * `devin -p` AgentKib started, which quitting ends, so the home, menu bar, push and the quit
+   * `devin acp` AgentKib started, which quitting ends, so the home, menu bar, push and the quit
    * confirmation count a running one as they do the other agents' turns.
    */
   continuation<T extends { id: string }>(session: T): T {
@@ -898,8 +993,11 @@ export class DevinSessionProvider implements DevinExecutor, TypedSessionProvider
         experimental && canStageSettings
           ? { available: true }
           : { available: false, reason: reason ?? "session-unavailable" },
-      // Devin runs a turn without asking: there is nothing to approve or answer mid-turn.
-      approve: unsupported,
+      // Devin asks for a permission over ACP while a turn waits; it asks no free-form questions.
+      approve:
+        experimental && live.status === "waiting-approval"
+          ? { available: true }
+          : { available: false, reason: reason ?? "no-pending-approval" },
       answer: unsupported,
       inspect: { available: live.status !== "unsupported" },
       resume: unsupported,
@@ -929,9 +1027,14 @@ export class DevinSessionProvider implements DevinExecutor, TypedSessionProvider
     if (!request.experimentalEnabled || request.runtimeBootId !== runtimeBootId)
       throw new Error("stale-or-disabled-control");
     if (
-      !["send", "stop", "settings", "usage-limit-cancel", "usage-limit-continue"].includes(
-        request.operation,
-      )
+      ![
+        "send",
+        "stop",
+        "approve",
+        "settings",
+        "usage-limit-cancel",
+        "usage-limit-continue",
+      ].includes(request.operation)
     )
       throw new Error("unsupported-operation");
     if (
@@ -957,7 +1060,7 @@ export class DevinSessionProvider implements DevinExecutor, TypedSessionProvider
       !/^[A-Za-z0-9._:@/+-]{1,128}$/.test(request.model)
     )
       throw new Error("unsupported-model");
-    // `devin -p` takes text only; attachments are refused rather than dropped.
+    // AgentKib sends Devin text only; attachments are refused rather than dropped.
     if (request.input?.length || request.historyReferences?.length || request.resourceRefs?.length)
       throw new Error("attachments-unsupported");
     if (managedSessionHasUnknownCommands(this.host.dataDir, request.sessionId))
@@ -1008,7 +1111,7 @@ export class DevinSessionProvider implements DevinExecutor, TypedSessionProvider
         const { runner } = record;
         const nativeId = runner.nativeId;
         if (!nativeId || !runner.canStageSettings) throw new Error("session-unavailable");
-        let model = request.model ?? record.settings.model;
+        let selection: DevinTurnSettings = {};
         if (
           !request.resetDefaults &&
           (request.effort !== undefined || request.serviceTier !== undefined)
@@ -1020,12 +1123,15 @@ export class DevinSessionProvider implements DevinExecutor, TypedSessionProvider
             runner.snapshot().revision !== request.expectedRevision
           )
             throw new Error("stale-or-disabled-control");
-          model = devinSettingsModel(
+          selection = devinSettingsChoice(
             request,
             catalog,
-            record.settings.model,
+            record.settings,
             this.host.sessions.devinSessionModel(nativeId),
+            runner.modelControls,
           );
+        } else if (!request.resetDefaults) {
+          selection = request.model === undefined ? record.settings : { model: request.model };
         }
         beforeDispatch();
         this.#saved().set(
@@ -1033,12 +1139,26 @@ export class DevinSessionProvider implements DevinExecutor, TypedSessionProvider
           request.resetDefaults
             ? {}
             : {
-                ...(model ? { model } : {}),
+                ...selection,
                 permissionMode: request.permissionMode ?? record.settings.permissionMode,
               },
         );
         record.settings = this.#saved().get(nativeId);
         runner.bump();
+      } else if (request.operation === "approve") {
+        if (
+          request.approvalId === undefined ||
+          typeof request.turnId !== "string" ||
+          typeof request.decision !== "string"
+        )
+          throw new Error("missing-approval-decision");
+        await record.runner.approve(
+          String(request.approvalId),
+          request.turnId,
+          request.decision,
+          request.expectedRevision,
+          beforeDispatch,
+        );
       } else {
         if (typeof request.turnId !== "string") throw new Error("missing-turn");
         await record.runner.stop(request.turnId, request.expectedRevision, beforeDispatch);
@@ -1070,10 +1190,7 @@ export class DevinSessionProvider implements DevinExecutor, TypedSessionProvider
     }
   }
 
-  /**
-   * Starts a Devin session with its first message and answers once Devin has stored it, so the
-   * new session opens already running. Its model and permission mode apply to later turns too.
-   */
+  /** Starts a Devin session with its first message and returns its acknowledged native identity. */
   async create(value: Record<string, unknown>): Promise<Record<string, unknown>> {
     const request = devinCreateSchema.parse(value);
     const fingerprint = createHash("sha256").update(stableJson(value)).digest("hex");
@@ -1095,10 +1212,33 @@ export class DevinSessionProvider implements DevinExecutor, TypedSessionProvider
       return result("not-dispatched", { reason: "workspace-unavailable" });
     }
     let created: string | null = null;
+    const indexGeneration = this.host.indexGeneration();
+    const indexCurrent = () =>
+      !this.host.isShuttingDown() &&
+      this.host.indexGeneration() === indexGeneration &&
+      this.host.indexEnabled();
+    // ACP can acknowledge session/new before the first prompt is stored. Retry on the
+    // runner's normal history reads, including its final read, to publish the new row.
+    let published = false;
+    const refreshCreatedCatalog = async (nativeId: string) => {
+      if (published || !indexCurrent()) return;
+      const id = this.host.store.sessions.id("devin", nativeId);
+      if (this.host.store.sessions.get(id)?.availability === "readable") {
+        published = true;
+        return;
+      }
+      const { sessions } = await this.host.sessions.list("devin", workspace);
+      const native = sessions.find((session) => session.native_ref === nativeId);
+      if (!native || published || !indexCurrent()) return;
+      if (this.host.store.sessions.get(id)?.availability === native.availability) return;
+      this.host.store.sessions.sync(request.workspaceId, "devin", [native], false);
+      published = native.availability === "readable";
+      this.host.catalogChanged?.();
+    };
     const runner = new DevinManagedRunner(
       workspace,
       null,
-      this.#runnerHost(workspace, request.workspaceId, () => created),
+      this.#runnerHost(workspace, request.workspaceId, () => created, refreshCreatedCatalog),
     );
     const prior = claimManagedCommand(
       this.host.dataDir,
@@ -1117,12 +1257,14 @@ export class DevinSessionProvider implements DevinExecutor, TypedSessionProvider
     if (prior) return prior;
     let dispatched = false;
     try {
-      const model =
+      const selection =
         request.effort !== undefined || request.serviceTier !== undefined
-          ? devinSettingsModel(request, await this.#readCatalog())
-          : request.model;
+          ? devinSettingsChoice(request, await this.#readCatalog())
+          : request.model
+            ? { model: request.model }
+            : {};
       const settings: DevinTurnSettings = {
-        ...(model ? { model } : {}),
+        ...selection,
         permissionMode: request.permissionMode ?? DEVIN_DEFAULT_PERMISSION_MODE,
       };
       await runner.send(
@@ -1141,23 +1283,15 @@ export class DevinSessionProvider implements DevinExecutor, TypedSessionProvider
           timer = setTimeout(() => reject(new Error("devin-session-unconfirmed")), 120_000);
         }),
       ]).finally(() => clearTimeout(timer));
-      // Index it now so that its ID resolves before the next catalog refresh.
-      this.host.store.sessions.sync(
-        request.workspaceId,
-        "devin",
-        (await this.host.sessions.list("devin", workspace)).sessions,
-        true,
-      );
       created = this.host.store.sessions.id("devin", nativeId);
       // The choices made when it started apply to its later turns too, also after a restart.
-      if (model || request.permissionMode)
+      if (selection.model || request.permissionMode)
         this.#saved().set(nativeId, {
-          ...(model ? { model } : {}),
+          ...selection,
           ...(request.permissionMode ? { permissionMode: request.permissionMode } : {}),
         });
       this.#addRunner(created, runner, settings, request.workspaceId);
-      // Its first turn runs already: the catalog lists it in progress without waiting for it.
-      this.host.catalogChanged?.();
+      await refreshCreatedCatalog(nativeId).catch(() => undefined);
       const outcome = result("accepted", { sessionId: created });
       finishManagedCommand(this.host.dataDir, request.requestId, outcome);
       return outcome;
@@ -1200,31 +1334,52 @@ export class DevinSessionProvider implements DevinExecutor, TypedSessionProvider
       };
     }
     const catalog = await this.#readCatalog();
-    const options = devinModelOptions(catalog);
+    const options = devinModelOptions(catalog, record.runner.modelControls);
     const live = record.runner.snapshot();
     const nativeId = record.runner.nativeId;
     const nativeModel = nativeId ? this.host.sessions.devinSessionModel(nativeId) : null;
     const project = (settings: Readonly<DevinTurnSettings>) => {
       const selectedModel = settings.model ?? nativeModel;
-      const variant = devinSelectedVariant(catalog, selectedModel, nativeModel);
+      const previous = devinSelectedVariant(catalog, selectedModel, nativeModel);
+      const effort = settings.effort === undefined ? previous?.effort : settings.effort;
+      const serviceTier =
+        settings.serviceTier === undefined ? previous?.serviceTierId : settings.serviceTier;
+      const resolved =
+        selectedModel && (effort || serviceTier)
+          ? resolveDevinModel(catalog, {
+              modelId: selectedModel,
+              effort,
+              serviceTierId: serviceTier,
+            })
+          : undefined;
+      const variant =
+        (resolved && devinModelVariant(catalog, resolved)) ||
+        (previous?.effort === (effort ?? undefined) &&
+        previous?.serviceTierId === (serviceTier ?? undefined)
+          ? previous
+          : undefined);
       // An exact variant outside the family controls gets its own catalog row if available.
       const exact = variant && options.models.some((option) => option.id === variant.id);
-      const model = variant ? (exact ? variant.id : variant.familyId) : selectedModel;
+      const model = variant
+        ? exact
+          ? variant.id
+          : variant.familyId
+        : (previous?.familyId ?? selectedModel);
       const capacity =
         variant?.maxContextTokens ??
         options.models.find((option) => option.id === model)?.maxContextTokens;
       return {
         model,
-        effort: variant?.effort ?? null,
-        ...(variant?.serviceTierId ? { serviceTier: variant.serviceTierId } : {}),
+        effort: effort ?? null,
+        ...(serviceTier ? { serviceTier } : {}),
         ...(variant ? { variantId: variant.id } : {}),
         ...(capacity !== undefined ? { maxContextTokens: capacity } : {}),
         permissionMode: settings.permissionMode ?? DEVIN_DEFAULT_PERMISSION_MODE,
       };
     };
     const selected = project(record.settings);
-    const running = record.runner.runningSettings;
-    const current = running ? project(running) : selected;
+    const confirmed = record.runner.runningSettings ?? record.runner.lastSettings;
+    const current = confirmed ? project(confirmed) : selected;
     const capacity = selected.maxContextTokens;
     const historicalUsage =
       nativeId &&

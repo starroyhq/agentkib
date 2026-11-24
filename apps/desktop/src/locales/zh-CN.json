@@ -2343,6 +2343,8 @@
   "conversation.unavailable": "实时控制暂不可用，请在电脑上的 AgentKib 检查连接状态。",
   "conversation.openOriginalClient": "未检测到此会话的执行客户端。请在原客户端（如 Codex 或 Claude Code）打开后刷新。",
   "conversation.unverifiedInstallation": "未能确认这台电脑上的 Agent 安装或版本，控制已禁用。请检查安装。",
+  "conversation.antigravityCliUnavailable": "要在 AgentKib 里控制 Antigravity，需要先安装 Antigravity CLI（Antigravity App 不包含它）。在电脑上的“设置 › 工具与更新”里复制官方安装命令，装好后运行一次 agy 登录。",
+  "conversation.antigravityAppSession": "这是 Antigravity App 或 IDE 里的会话，AgentKib 只能浏览，请在 Antigravity 中继续。",
   "conversation.unsupportedControl": "当前平台或 Agent 尚不支持实时控制，仍可阅读历史。",
   "conversation.process": "执行过程",
   "conversation.tools": "次工具调用",

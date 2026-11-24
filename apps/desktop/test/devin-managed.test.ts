@@ -29,6 +29,7 @@ import {
   type DevinRunnerHost,
 } from "../../../packages/backend/src/agents/devin/devin-managed-runner";
 import { DevinSessionSettings } from "../../../packages/backend/src/agents/devin/devin-session-settings";
+import { fakeDevinAcp } from "./fixtures/fake-devin-acp";
 import { devinUsageLimitHit, holdUsageLimit } from "../../../packages/backend/src/usage-limit";
 import { collectUsage } from "../../../packages/backend/src/usage-providers";
 
@@ -44,61 +45,23 @@ function temp() {
 }
 
 /** A stand-in `devin`: answers `auth status`, and for `-p` records its arguments and prompt. */
+/** A stand-in Devin whose ACP turns end as the options say (see `fakeDevinAcp`). */
 function fakeDevin(root: string, { loggedIn = true, sleep = 0, code = 0, output = "" } = {}) {
-  const file = path.join(root, "devin");
-  const log = path.join(root, "calls.log");
-  writeFileSync(
-    file,
-    `#!/bin/sh
-if [ "$1" = "auth" ]; then
-  ${loggedIn ? 'echo "Logged in as tester"' : 'echo "Not logged in."'}
-  exit 0
-fi
-prompt=""
-while [ $# -gt 0 ]; do
-  if [ "$1" = "--prompt-file" ]; then prompt="$(cat "$2")"; echo "prompt-file $2" >> "${log}"; shift; fi
-  echo "arg $1" >> "${log}"
-  shift
-done
-echo "prompt $prompt" >> "${log}"
-${sleep ? `sleep ${sleep}` : ""}
-${output ? `echo "${output}" >&2` : ""}
-exit ${code}
-`,
-  );
-  chmodSync(file, 0o755);
-  return { file, log };
+  const devin = fakeDevinAcp(root, { loggedIn, sessionId: "new-session" });
+  devin.turn({ sleep, error: code || output ? output || "failed" : null });
+  return devin;
 }
 
 /**
- * A stand-in `devin` whose `-p` turn prints and exits as the files beside it say, so that one
- * runner's turns can end differently.
+ * A stand-in Devin whose turns can each end differently: what it said on stderr, or a failure
+ * code, fails the turn over ACP; what it answered is its reply and never fails it.
  */
 function scriptedDevin(root: string) {
-  const file = path.join(root, "devin");
-  writeFileSync(
-    file,
-    `#!/bin/sh
-dir="$(dirname "$0")"
-if [ "$1" = "auth" ]; then echo "Logged in as tester"; exit 0; fi
-[ -f "$dir/turn-sleep" ] && sleep "$(cat "$dir/turn-sleep")"
-[ -f "$dir/turn-stdout" ] && cat "$dir/turn-stdout"
-[ -f "$dir/turn-stderr" ] && cat "$dir/turn-stderr" >&2
-exit "$(cat "$dir/turn-code" 2>/dev/null || echo 0)"
-`,
-  );
-  chmodSync(file, 0o755);
+  const devin = fakeDevinAcp(root);
   return {
-    file,
-    turn({ stdout = "", stderr = "", code = 0, sleep = 0 } = {}) {
-      for (const [name, value] of Object.entries({ stdout, stderr })) {
-        const target = path.join(root, `turn-${name}`);
-        if (value) writeFileSync(target, value);
-        else rmSync(target, { force: true });
-      }
-      writeFileSync(path.join(root, "turn-code"), String(code));
-      if (sleep) writeFileSync(path.join(root, "turn-sleep"), String(sleep));
-      else rmSync(path.join(root, "turn-sleep"), { force: true });
+    file: devin.file,
+    turn({ stdout: _reply = "", stderr = "", code = 0, sleep = 0 } = {}) {
+      devin.turn({ sleep, error: stderr || (code ? "failed" : null) });
     },
   };
 }
@@ -134,6 +97,49 @@ async function settled(runner: DevinManagedRunner) {
 }
 
 describe.runIf(posix)("Devin managed runner", () => {
+  it("uses the ACP configuration default when creating with only a model family", async () => {
+    const root = temp();
+    const devin = fakeDevinAcp(root, { strictConfig: true });
+    const runner = new DevinManagedRunner(
+      root,
+      null,
+      host(devin.file, () => [], []),
+    );
+    try {
+      await runner.send("First message", 0, () => {}, { model: "swe-2" });
+      await expect(runner.session()).resolves.toBe("fresh-otter");
+      await settled(runner);
+      expect(readFileSync(devin.log, "utf8").trim().split("\n")).toEqual([
+        "new fresh-otter",
+        "prompt First message",
+      ]);
+    } finally {
+      runner.close();
+    }
+  });
+
+  it("sets the separate ACP effort without changing the advertised model", async () => {
+    const root = temp();
+    const devin = fakeDevinAcp(root, { strictConfig: true });
+    const runner = new DevinManagedRunner(
+      root,
+      "known-session",
+      host(devin.file, () => [], []),
+    );
+    const settings = { model: "swe-2-high", effort: "max" } as const;
+    try {
+      await runner.send("Next message", 0, () => {}, settings);
+      await settled(runner);
+      expect(readFileSync(devin.log, "utf8").trim().split("\n")).toEqual([
+        "load known-session",
+        "config thought_level=max",
+        "prompt Next message",
+      ]);
+    } finally {
+      runner.close();
+    }
+  });
+
   it("starts a session with its first message and reports the session Devin stored", async () => {
     const root = temp();
     const devin = fakeDevin(root, { sleep: 1 });
@@ -162,14 +168,12 @@ describe.runIf(posix)("Devin managed runner", () => {
     await settled(runner);
     expect(runner.snapshot()).toMatchObject({ status: "idle", reason: null, revision: 2 });
     const calls = readFileSync(devin.log, "utf8");
-    expect(calls).toContain("arg -p");
+    expect(calls).toContain("new new-session");
     expect(calls).toContain("prompt Fix the build");
-    expect(calls).toMatch(/arg --model\narg opus/);
-    expect(calls).toMatch(/arg --permission-mode\narg accept-edits/);
-    expect(calls).not.toContain("arg -r");
-    // The prompt file is removed once the turn ends.
-    const promptFile = /prompt-file (.+)/.exec(calls)![1]!;
-    expect(existsSync(promptFile)).toBe(false);
+    expect(calls).toContain("config model=opus");
+    // A new session already starts accepting edits; only a different mode is set.
+    expect(calls).not.toContain("config mode=");
+    expect(calls).not.toContain("load ");
     expect(published.some((event) => event.type === "snapshot")).toBe(true);
   });
 
@@ -181,9 +185,12 @@ describe.runIf(posix)("Devin managed runner", () => {
       "known-session",
       host(devin.file, () => [], []),
     );
-    await runner.send("Next step", 0, () => {});
+    await runner.send("Next step", 0, () => {}, { permissionMode: "auto" });
     await settled(runner);
-    expect(readFileSync(devin.log, "utf8")).toMatch(/arg -r\narg known-session/);
+    const calls = readFileSync(devin.log, "utf8");
+    expect(calls).toContain("load known-session");
+    // Read only is Devin's ACP "ask" mode, which answers without changing code.
+    expect(calls).toContain("config mode=ask");
   });
 
   it("refuses before running anything when the CLI has no login", async () => {
@@ -803,5 +810,156 @@ describe.runIf(posix)("Devin model catalog", () => {
     expect(catalog.families).toEqual([]);
     expect(catalog.familyOf.size).toBe(0);
     expect(catalog.variantsByFamily.size).toBe(0);
+  });
+});
+
+describe.runIf(posix)("Devin over ACP", () => {
+  const lead = {
+    serverName: "agentkib_workers",
+    url: "http://127.0.0.1:1/lead/x",
+    toolNames: ["worker_list"],
+  };
+  const permission = (rule: string) => ({
+    toolCall: {
+      toolCallId: "exec:1",
+      title: "Run git push",
+      kind: "execute",
+      rawInput: { command: "git push" },
+      _meta: { "cognition.ai/permissionRule": rule },
+    },
+    options: [
+      { optionId: "allow_once", name: "Allow", kind: "allow_once" },
+      { optionId: "allow_always", name: "Always allow", kind: "allow_always" },
+      { optionId: "switch_bypass", name: "Switch to bypass", kind: "allow_always" },
+      { optionId: "reject_once", name: "Reject", kind: "reject_once" },
+    ],
+  });
+
+  it("passes Devin's permission request to the person, with one-time answers only", async () => {
+    const root = temp();
+    const devin = fakeDevinAcp(root);
+    devin.turn({ permission: permission("Exec(git push)") });
+    const waiting: string[] = [];
+    const runner = new DevinManagedRunner(root, "known-session", {
+      ...host(devin.file, () => [], []),
+      waiting: (turnId) => waiting.push(turnId),
+    });
+    await runner.send("Push it", 0, () => {});
+    for (
+      let attempt = 0;
+      attempt < 100 && runner.snapshot().status !== "waiting-approval";
+      attempt++
+    )
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    const live = runner.snapshot();
+    const approvals = live.approvals as Array<Record<string, unknown>>;
+    expect(live.status).toBe("waiting-approval");
+    expect(waiting).toEqual([live.turnId]);
+    expect(approvals).toEqual([
+      expect.objectContaining({
+        method: "session/request_permission",
+        presentation: "tool",
+        turnId: live.turnId,
+        toolCall: expect.objectContaining({ title: "Run git push", kind: "execute" }),
+        // Devin's "always" choices would change its config; they are not offered.
+        availableDecisions: ["allow_once", "reject_once"],
+      }),
+    ]);
+    const approval = approvals[0]!;
+    await expect(
+      runner.approve(
+        String(approval.requestId),
+        String(live.turnId),
+        "allow_always",
+        Number(live.revision),
+      ),
+    ).rejects.toThrow("approval-option-unavailable");
+    await runner.approve(
+      String(approval.requestId),
+      String(live.turnId),
+      "reject_once",
+      Number(live.revision),
+    );
+    await settled(runner);
+    expect(readFileSync(devin.log, "utf8")).toContain("permission reject_once");
+    expect(runner.snapshot()).toMatchObject({ status: "idle", approvals: [] });
+  });
+
+  it.each([lead.serverName, "session_workers"])(
+    "offers a Project Agent its registered MCP server %s and allows its worker tool once",
+    async (serverName) => {
+      const root = temp();
+      const devin = fakeDevinAcp(root);
+      devin.turn({ permission: permission(`mcp__${serverName}__worker_list`) });
+      const runner = new DevinManagedRunner(root, "known-session", {
+        ...host(devin.file, () => [], []),
+        leadTools: async () => ({ ...lead, serverName }),
+      });
+      try {
+        await runner.send("List the workers", 0, () => {});
+        await expect.poll(() => runner.snapshot().status, { timeout: 3500 }).toBe("idle");
+        const calls = readFileSync(devin.log, "utf8");
+        expect(calls).toContain(`mcp ${serverName} ${lead.url}`);
+        expect(calls).toContain("permission allow_once");
+        expect(runner.snapshot()).toMatchObject({ reason: null, sendEnabled: true });
+      } finally {
+        runner.close();
+      }
+    },
+  );
+
+  it.each([
+    ["without a worker registration", "mcp__agentkib_workers__worker_list", null],
+    ["from a similarly named server", "mcp__agentkib_workers_x__worker_list", lead],
+    ["for an unregistered tool on the same server", "mcp__agentkib_workers__worker_other", lead],
+  ] as const)(
+    "asks the person to approve an MCP request %s",
+    async (_label, rule, registration) => {
+      const root = temp();
+      const devin = fakeDevinAcp(root);
+      devin.turn({ permission: permission(rule) });
+      const runner = new DevinManagedRunner(root, "known-session", {
+        ...host(devin.file, () => [], []),
+        ...(registration && { leadTools: async () => registration }),
+      });
+      try {
+        await runner.send("List the workers", 0, () => {});
+        await expect
+          .poll(() => runner.snapshot().status, { timeout: 3500 })
+          .toBe("waiting-approval");
+        expect(runner.snapshot().approvals).toEqual([
+          expect.objectContaining({
+            presentation: "mcp",
+            availableDecisions: ["allow_once", "reject_once"],
+          }),
+        ]);
+        const calls = readFileSync(devin.log, "utf8");
+        if (registration) expect(calls).toContain(`mcp ${lead.serverName} ${lead.url}`);
+        expect(calls).not.toContain("permission allow_once");
+      } finally {
+        runner.close();
+      }
+    },
+  );
+
+  it("asks for a newer Devin CLI when ACP refuses its own login", async () => {
+    const root = temp();
+    const devin = fakeDevinAcp(root, {
+      authError:
+        "ACP host has not authenticated. Local CLI credentials are intentionally not used in ACP mode",
+    });
+    const runner = new DevinManagedRunner(
+      root,
+      "known-session",
+      host(devin.file, () => [], []),
+    );
+    let dispatched = false;
+    await expect(
+      runner.send("Hello", 0, () => {
+        dispatched = true;
+      }),
+    ).rejects.toThrow("devin-cli-update-required");
+    expect(dispatched).toBe(false);
+    expect(runner.snapshot()).toMatchObject({ status: "idle", sendEnabled: true });
   });
 });

@@ -692,6 +692,7 @@ it("catches up once on a turn of an untouched indexed Worker that began after as
       outcome: "completed",
       startedAt: timestamp(-30_000),
       endedAt: timestamp(1_000),
+      superseded: true,
     },
     {
       turnId: joinedTurn,
@@ -705,6 +706,46 @@ it("catches up once on a turn of an untouched indexed Worker that began after as
   expect(status().pendingReports).toHaveLength(1);
   expect(status().lanes[0]!.reportedTurns).toEqual([joinedTurn]);
   expect(readManagedRecord(f.data, f.workerId)).toBeNull();
+  expect(f.follow).not.toHaveBeenCalled();
+  expect(f.writer).not.toHaveBeenCalled();
+});
+
+it("silently catches up on an old empty Codex turn once a newer turn has started", async () => {
+  const f = await fixture("missing", false, { indexSessions: true });
+  const status = () => f.orchestration.status(leadId)!;
+  const joined = Date.parse(status().lanes[0]!.createdAt);
+  const clock = vi.spyOn(Date, "now");
+  const record = (offset: number, turn: string, type: "task_started" | "task_complete") =>
+    f.append({
+      timestamp: new Date(joined + offset).toISOString(),
+      type: "event_msg",
+      payload: { type, turn_id: turn },
+    });
+  const poll = async (offset: number) => {
+    clock.mockReturnValue(joined + offset);
+    await f.orchestration.catchUp();
+  };
+  // Held reports expose everything that would wake the lead, without starting its runner.
+  f.orchestration.pause(leadId);
+  record(1_000, "old", "task_started");
+  record(2_000, "old", "task_complete");
+  record(65_000, "current", "task_started");
+  await poll(70_000);
+  expect(await f.call("worker_read", worker)).toMatchObject({ status: "running" });
+  expect(status().pendingReports).toEqual([]);
+  expect(status().lanes[0]!.reportedTurns).toEqual(["old"]);
+
+  await poll(75_000);
+  expect(status().pendingReports).toEqual([]);
+  expect(status().lanes[0]!.reportedTurns).toEqual(["old"]);
+
+  record(80_000, "current", "task_complete");
+  record(82_000, "successor", "task_started");
+  await poll(100_000);
+  expect(status().pendingReports).toEqual([
+    expect.stringMatching(/turn ended: completed after 15s[\s\S]*\(no reply was recorded\)/),
+  ]);
+  expect(status().lanes[0]!.reportedTurns).toEqual(["old", "current"]);
   expect(f.follow).not.toHaveBeenCalled();
   expect(f.writer).not.toHaveBeenCalled();
 });

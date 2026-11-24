@@ -1,6 +1,6 @@
 import { agentName } from "@agentkib/agent-identity";
 import { isSessionVisible } from "@agentkib/session-catalog";
-import { createWarmSessionStreamPool, type SessionPlatform } from "@agentkib/session-ui";
+import type { SessionPlatform } from "@agentkib/session-ui";
 import type { WebClient } from "@agentkib/web-client";
 import { useEffect, useMemo, useState, type ComponentProps, type ReactNode } from "react";
 import { createPortal } from "react-dom";
@@ -53,7 +53,10 @@ import { conversationWords, formatDateTime } from "@/core/i18n";
 import { useOptionalAppNavigationContext } from "@/features/app/AppNavigationContext";
 import { useAppStore } from "@/stores/app-store";
 import { ConversationWindowTools } from "../conversation-window-tools";
-import { useDesktopConversationWindow } from "../DesktopConversationWindow";
+import {
+  createDesktopWarmSessionStreamPool,
+  useDesktopConversationWindow,
+} from "../DesktopConversationWindow";
 import { desktopReadScope, subscribeDesktopReadScope } from "../read-state-scope";
 import { Dialog as SessionDialog } from "./components/dialog";
 import { LivePreview } from "./desktop-live-preview";
@@ -123,7 +126,9 @@ const desktopComponents = {
 function useDesktopSessionRetention(client: WebClient) {
   const conversationWindow = useDesktopConversationWindow();
   const window = conversationWindow?.client === client ? conversationWindow : undefined;
-  const [warmStreams] = useState(() => window?.warmStreams ?? createWarmSessionStreamPool(client));
+  const [warmStreams] = useState(
+    () => window?.warmStreams ?? createDesktopWarmSessionStreamPool(client),
+  );
   return { warmStreams, window };
 }
 

@@ -4,7 +4,7 @@ import { plainTerminalText } from "../../conversation-tools";
 import type { UsageLimitHit, UsageLimitKind } from "../../usage-limit";
 
 /**
- * When a Devin usage limit resets, as Devin itself shows it. `devin -p` names no reset time, and
+ * When a Devin usage limit resets, as Devin itself shows it. A failed turn names no reset time, and
  * the account's reset times reach only the interactive CLI's `/usage` (3000.12.59), which reads
  * them with the CLI's own login. So AgentKib starts the interactive `devin` once in a
  * pseudo-terminal, as the person would in a terminal, types `/usage`, reads the panel and closes

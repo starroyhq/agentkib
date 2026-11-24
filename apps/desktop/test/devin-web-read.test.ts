@@ -60,9 +60,10 @@ function usageLine(label: string, used: number, resetsAt: number) {
 }
 
 /**
- * A Devin session in a registered workspace, run by a stand-in `devin` on PATH: its `-p` turn
- * sleeps, prints and exits as the files beside it say and logs its prompt, and its interactive
- * REPL answers `/usage` with the panel in `usage-panel`, or says it has no data.
+ * A Devin session in a registered workspace, run by a stand-in `devin` on PATH: its ACP turn
+ * waits, answers or fails as the files beside it say and logs its prompt, the session it loads
+ * and the model and permission mode set on it (as AgentKib names the mode); its interactive REPL
+ * answers `/usage` with the panel in `usage-panel`, or says it has no data.
  */
 function fixture() {
   const root = realpathSync(mkdtempSync(path.join(tmpdir(), "agentkib-devin-web-")));
@@ -78,6 +79,7 @@ function fixture() {
 dir="$(dirname "$0")"
 if [ "$1" = "auth" ]; then echo "Logged in as tester"; exit 0; fi
 if [ "$1" = "models" ]; then cat "$dir/models.json"; exit; fi
+if [ "$1" = "acp" ]; then exec "${process.execPath}" "$dir/acp.cjs"; fi
 if [ $# -eq 0 ]; then echo start >> "$dir/usage.log"; exec "${process.execPath}" "$dir/repl.mjs"; fi
 while [ $# -gt 0 ]; do
   if [ "$1" = "--prompt-file" ]; then cat "$2" >> "$dir/prompts.log"; echo >> "$dir/prompts.log"; shift; fi
@@ -93,6 +95,64 @@ exit "$(cat "$dir/turn-code" 2>/dev/null || echo 0)"
 `,
   );
   chmodSync(executable, 0o755);
+  writeFileSync(
+    path.join(bin, "acp.cjs"),
+    `const fs = require("node:fs");
+const path = require("node:path");
+const dir = ${JSON.stringify(bin)};
+const file = (name) => path.join(dir, name);
+const read = (name) => (fs.existsSync(file(name)) ? fs.readFileSync(file(name), "utf8") : null);
+const append = (name, line) => fs.appendFileSync(file(name), line + "\\n");
+// Devin keeps a session's options between processes.
+const saved = () => JSON.parse(read("acp-sessions.json") ?? "{}");
+const names = { ask: "auto", bypass: "dangerous" };
+const send = (value) => process.stdout.write(JSON.stringify(value) + "\\n");
+let pending = null;
+const options = (id) => {
+  const declared = JSON.parse(read("declared-options") ?? "null");
+  const value = { mode: "accept-edits", model: "swe-2-high", ...(declared ? { thought_level: "high" } : {}), ...saved()[id] };
+  return Object.entries(value).map(([key, currentValue]) => ({ id: key, type: "select", currentValue, options: (declared?.[key] ?? []).map(value => ({ value, name: value })) }));
+};
+function finish(result) {
+  if (!pending) return;
+  const id = pending; pending = null;
+  send({ jsonrpc: "2.0", id, ...result });
+}
+async function turn() {
+  while (fs.existsSync(file("hold-turn"))) await new Promise((resolve) => setTimeout(resolve, 50));
+  const wait = Number(read("turn-sleep") ?? 0);
+  if (wait) await new Promise((resolve) => setTimeout(resolve, wait * 1000));
+  const stderr = read("turn-stderr") ?? "", code = Number(read("turn-code") ?? 0);
+  if (stderr || code) finish({ error: { code: -32603, message: stderr || "failed" } });
+  else finish({ result: { stopReason: "end_turn" } });
+}
+require("node:readline").createInterface({ input: process.stdin }).on("line", (line) => {
+  const { id, method, params = {} } = JSON.parse(line);
+  if (method === undefined) return;
+  if (method === "initialize") return send({ jsonrpc: "2.0", id, result: { protocolVersion: 1, agentCapabilities: { loadSession: true } } });
+  if (method === "session/new") return send({ jsonrpc: "2.0", id, result: { sessionId: read("new-session-id") ?? "new-otter", configOptions: options("") } });
+  if (method === "session/load") { append("resume.log", params.sessionId); return send({ jsonrpc: "2.0", id, result: { configOptions: options(params.sessionId) } }); }
+  if (method === "session/set_config_option") {
+    const choices = options(params.sessionId).find(option => option.id === params.configId)?.options;
+    if (choices?.length && !choices.some(choice => choice.value === params.value))
+      return send({ jsonrpc: "2.0", id, error: { code: -32602, message: "Invalid params" } });
+    const all = saved(); all[params.sessionId] = { ...all[params.sessionId], [params.configId]: params.value };
+    fs.writeFileSync(file("acp-sessions.json"), JSON.stringify(all));
+    if (params.configId === "model") append("models.log", params.value);
+    if (params.configId === "thought_level") append("efforts.log", params.value);
+    if (params.configId === "mode") append("permissions.log", names[params.value] ?? params.value);
+    return send({ jsonrpc: "2.0", id, result: { configOptions: options(params.sessionId) } });
+  }
+  if (method === "session/cancel") return finish({ result: { stopReason: "cancelled" } });
+  if (method === "session/prompt") {
+    append("prompts.log", (params.prompt ?? []).map((block) => block.text ?? "").join(""));
+    pending = id;
+    return void turn();
+  }
+  send({ jsonrpc: "2.0", id, error: { code: -32601, message: "Method not found" } });
+});
+`,
+  );
   writeFileSync(
     path.join(bin, "repl.mjs"),
     `import { existsSync, readFileSync } from "node:fs";
@@ -267,6 +327,72 @@ process.on("SIGHUP", () => process.exit(0));
 }
 
 describe.runIf(process.platform !== "win32")("Devin sessions run by AgentKib", () => {
+  it("offers a thought level declared by ACP even without a matching CLI variant", async () => {
+    const f = fixture();
+    f.models([{ slug: "swe-2", variants: [{ model_uid: "swe-2-high" }] }]);
+    vi.spyOn(f.readers, "devinSessionModel").mockReturnValue("swe-2-high");
+    writeFileSync(
+      path.join(f.root, "bin", "declared-options"),
+      JSON.stringify({
+        model: ["swe-2-high"],
+        thought_level: ["high", "max"],
+      }),
+    );
+    expect(await f.send("Read native options")).toMatchObject({ accepted: true });
+    await f.ended();
+    expect(
+      await f.web.sessionProviderSettingsState({ operation: "settings-state", sessionId: f.id }),
+    ).toMatchObject({
+      models: expect.arrayContaining([
+        expect.objectContaining({ id: "swe-2", efforts: ["high", "max"] }),
+      ]),
+    });
+    expect(await f.control("settings", { effort: "max" })).toMatchObject({ accepted: true });
+    expect(await f.send("Use native maximum")).toMatchObject({ accepted: true });
+    await f.ended();
+    expect(f.log("models.log")).toBe("");
+    expect(f.log("efforts.log")).toBe("max\n");
+  });
+
+  it.each(["new settings", "legacy file"])(
+    "uses the separate ACP thought level from %s",
+    async (source) => {
+      const f = fixture();
+      f.models([
+        { slug: "swe-2", variants: [{ model_uid: "swe-2-high" }, { model_uid: "swe-2-max" }] },
+      ]);
+      vi.spyOn(f.readers, "devinSessionModel").mockReturnValue("swe-2-high");
+      writeFileSync(
+        path.join(f.root, "bin", "declared-options"),
+        JSON.stringify({
+          model: ["swe-2-high"],
+          thought_level: ["high", "max"],
+        }),
+      );
+      const settingsFile = path.join(f.root, "devin-session-settings.json");
+      if (source === "legacy file") {
+        writeFileSync(settingsFile, JSON.stringify({ "brisk-otter": { model: "swe-2-max" } }));
+      } else {
+        expect(await f.control("settings", { effort: "max" })).toMatchObject({ accepted: true });
+        expect(JSON.parse(readFileSync(settingsFile, "utf8"))["brisk-otter"]).toMatchObject({
+          model: "swe-2",
+          effort: "max",
+        });
+      }
+      await f.restart();
+      expect(
+        await f.web.sessionProviderSettingsState({ operation: "settings-state", sessionId: f.id }),
+      ).toMatchObject({
+        selected: { model: "swe-2", effort: "max" },
+      });
+      expect(await f.send("Use maximum effort")).toMatchObject({ accepted: true });
+      await f.ended();
+      expect(f.log("models.log")).toBe("");
+      expect(f.log("efforts.log")).toBe("max\n");
+      expect(f.log("prompts.log")).toBe("Use maximum effort\n");
+    },
+  );
+
   it("browses its verified workspace without launching Devin or enabling native resource references", async () => {
     const f = fixture();
     const run = vi.spyOn(Commands.prototype, "run");
@@ -1023,8 +1149,9 @@ describe.runIf(process.platform !== "win32")("an assigned Devin Worker", () => {
     expect(reports[1]).toContain("turn ended: cancelled");
     expect(reports[1]).not.toContain("Fixture complete");
     expect(observed[1]).toEqual({ turnId: second.turnId, historyTurnId: undefined });
+    // Nothing waits for an answer; Devin asks no free-form questions over ACP.
     expect(await f.features()).toMatchObject({
-      approve: { available: false, reason: "unsupported-operation" },
+      approve: { available: false },
       answer: { available: false, reason: "unsupported-operation" },
     });
     expect(waiting).not.toHaveBeenCalled();

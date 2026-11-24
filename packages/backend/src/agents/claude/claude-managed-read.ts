@@ -27,7 +27,7 @@ import { validHistoryControl } from "../../history-control-schema";
 import type { Commands } from "../../commands";
 import type { ClaudeControlMetadataShare, SessionReaders } from "../../session-readers";
 import type { BackendStore } from "../../store";
-import { canonicalize, pathIdentity } from "../../paths";
+import { canonicalize, lexicalPathIdentity, pathIdentity } from "../../paths";
 import { within } from "../../files";
 import { restrictRemotePath } from "../../remote-tls";
 import { acquirePortableFileLease } from "../../managed-session-lock";
@@ -1159,6 +1159,11 @@ export class ClaudeManagedReadOwner {
         current.snapshot = snapshot as unknown as Record<string, unknown>;
         if (operation === "send") current.fresh = false;
         this.#save(current);
+        const nextLive = await this.#live(id, true).catch((error: unknown) => {
+          // A completed stdin write is acknowledged even if the following live read fails.
+          if (operation !== "send") throw error;
+          return undefined;
+        });
         const result = {
           accepted: true,
           completed: false,
@@ -1167,7 +1172,7 @@ export class ClaudeManagedReadOwner {
           runtimeBootId: this.bootId,
           controlOutcome: "accepted",
           ...(value.publicInputHash ? { publicInputHash: value.publicInputHash } : {}),
-          live: await this.#live(id, true),
+          ...(nextLive ? { live: nextLive } : {}),
         };
         receipt.finish(result);
         return result;
@@ -1180,9 +1185,9 @@ export class ClaudeManagedReadOwner {
           record.snapshot = previousSnapshot;
         }
         const unknown =
-          !dispatched && error instanceof ClaudeUndispatchedError
-            ? false
-            : current?.snapshot.status === "outcome-unknown";
+          (operation === "send" && dispatched) ||
+          ((dispatched || !(error instanceof ClaudeUndispatchedError)) &&
+            current?.snapshot.status === "outcome-unknown");
         const result = {
           accepted: false,
           completed: false,
@@ -1194,8 +1199,8 @@ export class ClaudeManagedReadOwner {
           ...(value.publicInputHash ? { publicInputHash: value.publicInputHash } : {}),
         };
         if (!unknown) receipt.finish(result);
-        const terminal = this.#streamLive(id, runner.snapshot(), current);
         try {
+          const terminal = this.#streamLive(id, runner.snapshot(), current);
           this.#publishConversationEvent?.(id, "state", terminal, terminal);
         } catch {
           // The durable result is authoritative; a later read can recover this projection.
@@ -4206,7 +4211,7 @@ export class ClaudeManagedReadOwner {
     const config = resolveClaudeConfig(this.environment, this.environment.HOME ?? homedir());
     assertClaudeConfigWritable(config);
     const configured = config.dir;
-    if (existsSync(configured)) return canonicalize(configured);
+    if (lstatSync(configured, { throwIfNoEntry: false })) return canonicalize(configured);
     const parent = path.dirname(configured);
     return path.join(canonicalize(parent), path.basename(configured));
   }
@@ -4328,8 +4333,14 @@ export class ClaudeManagedReadOwner {
     const relative = path.relative(registered, actual);
     if (relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative))
       throw new Error("session-workspace-mismatch");
-    if (pathIdentity(this.#home()) !== pathIdentity(canonicalize(record.home)))
-      throw new Error("claude-home-changed");
+    const home = lexicalPathIdentity(this.#home());
+    // Direct records capture the canonical location, even before Claude creates the directory.
+    // Forks inherit the source record's home. Resolve it only while that entry still exists.
+    const recordedHome =
+      record.forkSourceNativeId && lstatSync(record.home, { throwIfNoEntry: false })
+        ? canonicalize(record.home)
+        : record.home;
+    if (home !== lexicalPathIdentity(recordedHome)) throw new Error("claude-home-changed");
   }
 
   async #installationVersion(): Promise<string | null> {
@@ -5180,7 +5191,9 @@ export class ClaudeManagedReadOwner {
       return value;
     const record = this.#load(value.sessionId);
     if (!record) return value;
-    await this.request({ operation: "live", sessionId: value.sessionId });
+    await this.request({ operation: "live", sessionId: value.sessionId }).catch(() => {
+      // Live refresh can recover more evidence, but the device's durable receipt remains valid.
+    });
     const current = this.#load(value.sessionId);
     const completionObserved = Boolean(
       current?.completedRequests.includes(value.requestId) ||
@@ -5320,12 +5333,12 @@ export class ClaudeManagedReadOwner {
       "goal-clear": writable && !!host?.goal,
     };
     if (!supportsClaudeVersion(this.#version?.value ?? "", "2.1.286")) {
+      // Reading the queue only needs the local ledger.
       for (const feature of [
         "steer",
         "settings",
         "settings-state",
         "queue",
-        "queue-list",
         "queue-add",
         "queue-update",
         "queue-delete",
@@ -5551,22 +5564,48 @@ export class ClaudeManagedReadOwner {
       .slice(-50);
   }
 
+  #mayAwaitFirstTranscript(record: ClaudeRecord): boolean {
+    return !record.adopted && !record.forkSourceNativeId && record.fingerprint === null;
+  }
+
   async events(id: string, cursor: unknown, limit: unknown, retain = true): Promise<unknown> {
     const record = this.#load(id);
     if (record) {
       this.#validate(record);
       if (record.fresh) return { events: [], next_cursor: null, warnings: [] };
       const count = Number.isSafeInteger(limit) ? Math.max(1, Math.min(100, Number(limit))) : 50;
-      const page = await this.sessions.eventsForNative(
-        "claude-code",
-        record.nativeId,
-        record.workspace,
-        typeof cursor === "string" ? cursor : null,
-        count,
-        undefined,
-        retain,
-      );
-      return this.#withTurnEnds(record.nativeId, page);
+      const page =
+        typeof cursor !== "string" && this.#mayAwaitFirstTranscript(record)
+          ? await this.sessions.claudeFirstEvents(record.nativeId, record.workspace, count, retain)
+          : await this.sessions.eventsForNative(
+              "claude-code",
+              record.nativeId,
+              record.workspace,
+              typeof cursor === "string" ? cursor : null,
+              count,
+              undefined,
+              retain,
+            );
+      const runner = typeof cursor !== "string" ? this.#runners.get(id) : undefined;
+      const firstTurn = runner?.firstTurnItems() ?? [];
+      if (!page) return { events: firstTurn.slice(-count), warnings: [] };
+      const history = this.#withTurnEnds(record.nativeId, page);
+      if (firstTurn.length && history.next_cursor === null) {
+        const ids = new Set(history.events.map((item) => item.id));
+        const pending = firstTurn.filter((item) => !ids.has(String(item.id)));
+        if (pending.length)
+          // The verified file may already have the prompt and still be waiting for its reply.
+          return {
+            events: [
+              ...pending.filter((item) => item.kind === "user-message"),
+              ...history.events,
+              ...pending.filter((item) => item.kind === "agent-message"),
+            ].slice(-count),
+            warnings: history.warnings,
+          };
+        runner?.forgetFirstTurnItems();
+      }
+      return history;
     }
     const count = Number.isSafeInteger(limit) ? Math.max(1, Math.min(100, Number(limit))) : 50;
     return this.sessions.claudeEventsForSession(
@@ -5678,7 +5717,7 @@ export class ClaudeManagedReadOwner {
   }
 
   /** Only invalidates observation projections; never proves ownership or control admission. */
-  async historyVersion(id: string): Promise<string> {
+  async historyVersion(id: string): Promise<string | null> {
     const record = this.#load(id);
     const indexed = this.store.sessions.get(id);
     const indexedIdentity = indexed
@@ -5704,7 +5743,12 @@ export class ClaudeManagedReadOwner {
       if (record.fresh) return JSON.stringify([id, indexedIdentity, identity, "empty"]);
       // Stored turn ends are part of what a history read returns.
       identity.push(this.#turnMetaRevisions.get(id) ?? 0);
-      transcript = this.sessions.verifiedClaudeControlTarget(record.nativeId, record.workspace);
+      const verified = this.#mayAwaitFirstTranscript(record)
+        ? this.sessions.claudeFirstTranscript(record.nativeId, record.workspace)
+        : this.sessions.verifiedClaudeControlTarget(record.nativeId, record.workspace);
+      // The first turn's live projection can change independently of the native transcript.
+      if (!verified || this.#runners.get(id)?.firstTurnItems().length) return null;
+      transcript = verified;
     } else {
       const source = this.sessions.verifiedClaudeReadSource(id);
       transcript = source.transcript;

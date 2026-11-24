@@ -2,13 +2,15 @@ import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import {
   DEVIN_PERMISSION_MODES,
+  DEVIN_MODEL_EFFORTS,
+  DEVIN_MODEL_SPEEDS,
   type DevinPermissionMode,
   type DevinTurnSettings,
 } from "./devin-managed-runner";
 
 /**
- * What a Devin turn runs with when nothing was chosen. `devin -p` cannot ask mid-turn, so edits
- * inside the workspace are approved and anything else is refused, as Codex starts in AgentKib.
+ * What a Devin turn runs with when nothing was chosen: edits inside the workspace are approved
+ * and Devin asks the person about anything else, as Codex starts in AgentKib.
  */
 export const DEVIN_DEFAULT_PERMISSION_MODE: DevinPermissionMode = "accept-edits";
 
@@ -16,9 +18,7 @@ const FILE = "devin-session-settings.json";
 const MAX_SESSIONS = 2_000;
 const MODEL = /^[A-Za-z0-9._:@/+-]{1,128}$/;
 
-interface Saved {
-  model?: string;
-  permissionMode?: DevinPermissionMode;
+interface Saved extends DevinTurnSettings {
   updatedAt: number;
 }
 
@@ -27,13 +27,25 @@ function parse(value: unknown): Saved | null {
   const entry = value as Record<string, unknown>;
   const model =
     typeof entry.model === "string" && MODEL.test(entry.model) ? entry.model : undefined;
+  const effort =
+    entry.effort === null ? null : DEVIN_MODEL_EFFORTS.find((value) => value === entry.effort);
+  const serviceTier =
+    entry.serviceTier === null
+      ? null
+      : DEVIN_MODEL_SPEEDS.find((value) => value === entry.serviceTier);
   const permissionMode = (DEVIN_PERMISSION_MODES as readonly unknown[]).includes(
     entry.permissionMode,
   )
     ? (entry.permissionMode as DevinPermissionMode)
     : undefined;
   const updatedAt = typeof entry.updatedAt === "number" ? entry.updatedAt : 0;
-  return { ...(model ? { model } : {}), ...(permissionMode ? { permissionMode } : {}), updatedAt };
+  return {
+    ...(model ? { model } : {}),
+    ...(effort !== undefined ? { effort } : {}),
+    ...(serviceTier !== undefined ? { serviceTier } : {}),
+    ...(permissionMode ? { permissionMode } : {}),
+    updatedAt,
+  };
 }
 
 /**
@@ -68,6 +80,8 @@ export class DevinSessionSettings {
     const saved = this.#readAll()[nativeId];
     return {
       ...(saved?.model ? { model: saved.model } : {}),
+      ...(saved?.effort !== undefined ? { effort: saved.effort } : {}),
+      ...(saved?.serviceTier !== undefined ? { serviceTier: saved.serviceTier } : {}),
       permissionMode: saved?.permissionMode ?? DEVIN_DEFAULT_PERMISSION_MODE,
     };
   }
@@ -77,10 +91,18 @@ export class DevinSessionSettings {
     const entries = this.#readAll();
     const next = {
       ...(settings.model ? { model: settings.model } : {}),
+      ...(settings.effort !== undefined ? { effort: settings.effort } : {}),
+      ...(settings.serviceTier !== undefined ? { serviceTier: settings.serviceTier } : {}),
       ...(settings.permissionMode ? { permissionMode: settings.permissionMode } : {}),
       updatedAt: Date.now(),
     };
-    if (next.model || next.permissionMode) entries[nativeId] = next;
+    if (
+      next.model ||
+      next.effort !== undefined ||
+      next.serviceTier !== undefined ||
+      next.permissionMode
+    )
+      entries[nativeId] = next;
     else delete entries[nativeId];
     // The least recently changed sessions go first once there are too many.
     const kept = Object.entries(entries)

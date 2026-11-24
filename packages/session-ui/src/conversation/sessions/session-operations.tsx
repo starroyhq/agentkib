@@ -103,8 +103,9 @@ export function SessionOperations({
                 unavailableReason={managementUnavailable}
               />
             )}
-            {hasExecutionControls && (kind === "web" || access?.device?.manage) && (
+            {provider?.projectAgent?.lead && (kind === "web" || access?.device?.manage) && (
               <ProjectAgentPanel
+                key={selected}
                 locale={locale}
                 selected={selected}
                 choose={session.choose}

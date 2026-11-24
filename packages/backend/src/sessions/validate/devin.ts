@@ -2,7 +2,7 @@ import { serialQueueAdmission } from "./serial-queue";
 import { validateProviderSettings } from "./settings";
 import type { ProviderControlValidator } from "./types";
 
-/** These settings apply to the entire non-interactive print turn. */
+/** These settings apply to a whole turn. */
 export const DEVIN_PERMISSION_MODES = ["auto", "accept-edits", "smart", "dangerous"] as const;
 
 export const validateDevinControl: ProviderControlValidator = (request, context) => {
@@ -15,6 +15,8 @@ export const validateDevinControl: ProviderControlValidator = (request, context)
   return {
     available:
       operation === "settings" ||
+      // Devin's permission requests over ACP, answered while its turn waits.
+      operation === "approve" ||
       operation === "usage-limit-cancel" ||
       operation === "usage-limit-continue",
     ...(operation === "settings" && settings

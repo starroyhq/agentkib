@@ -2,7 +2,7 @@ import type { CodexAppServerSession } from "./codex-app-server";
 import { isDeepStrictEqual } from "node:util";
 import { createContextUsageGeneration, projectContextUsage } from "../../context-usage";
 import { codexItemTool, type ToolContext } from "../../conversation-tools";
-import { codexErrorText, codexTurnErrorEvent } from "./codex-turn-error";
+import { CODEX_TURN_START_REJECTED, codexErrorText, codexTurnErrorEvent } from "./codex-turn-error";
 import { codexTurnEndEvent, codexTurnMeta } from "./codex-turn-end";
 import type { UsageLimitView } from "../../usage-limit";
 
@@ -26,6 +26,13 @@ const MAX_PENDING = 32;
 export type ServerRequestReply =
   | { id: unknown; result: unknown }
   | { id: unknown; error: { code: number; message: string } };
+
+type AppliedCodexEvent = {
+  changed: boolean;
+  event?: JsonObject;
+  reply?: ServerRequestReply;
+  turnReply?: string;
+};
 
 /**
  * The CLI's latest retry of a failed model request in the running turn, for display only. Same
@@ -65,6 +72,9 @@ export class ManagedCodexState {
   #lastTurn: string | null = null;
   /** Last item projected in the running turn; turn/completed adds the turn duration to it. */
   #lastTurnEvent: JsonObject | null = null;
+  // A tool or error can follow the last reply in the same turn.
+  #lastTurnReply?: JsonObject;
+  #completedReplyIds = new Set<string>();
   readonly #usageGeneration = createContextUsageGeneration();
   #usageReport = 0;
   #usageUpdatedAt: string | undefined;
@@ -72,6 +82,7 @@ export class ManagedCodexState {
   #usageBarrierTurn: string | null | undefined;
   #compactionRecoveryTurn: string | null | undefined;
   #retry: CodexApiRetry | null = null;
+  #turnStartError: string | null = null;
   /** The final `error` of the running turn, for a completion that carries none itself. */
   #turnError: { turnId: string; text: string } | null = null;
   /** The last completed turn met the account's usage limit (`codexErrorInfo` 0.167.0). */
@@ -207,9 +218,18 @@ export class ManagedCodexState {
       ),
       goal: this.#record.goal ?? null,
       apiRetry: this.#retry && this.#turn !== null ? { ...this.#retry } : null,
+      turnStartError:
+        this.#turnStartError === null
+          ? null
+          : { reason: CODEX_TURN_START_REJECTED, message: this.#turnStartError },
       reason: this.#reason,
       usageLimit: this.#usageLimit ? { ...this.#usageLimit } : null,
     };
+  }
+
+  noteTurnStartRejection(message: string): void {
+    this.#turnStartError = message;
+    this.#changed(false, true);
   }
 
   /** The last completed turn met the account's usage limit, with Codex's own message. */
@@ -221,7 +241,8 @@ export class ManagedCodexState {
   showUsageLimit(view: UsageLimitView | null): boolean {
     if (JSON.stringify(view) === JSON.stringify(this.#usageLimit)) return false;
     this.#usageLimit = view ? { ...view } : null;
-    this.#changed(false, true);
+    // A limit gates delegated sends; a token-usage notification only informs them.
+    this.#changed();
     return true;
   }
 
@@ -229,7 +250,7 @@ export class ManagedCodexState {
    * Apply one app-server notification or request; return the ledger event to persist, and the
    * reply a request gets at once when AgentKib does not show it to the user.
    */
-  apply(value: unknown): { changed: boolean; event?: JsonObject; reply?: ServerRequestReply } {
+  apply(value: unknown): AppliedCodexEvent {
     if (!isObject(value)) throw new Error("invalid-codex-notification");
     const method = typeof value.method === "string" ? value.method : "";
     const params = isObject(value.params) ? value.params : {};
@@ -259,6 +280,8 @@ export class ManagedCodexState {
         if (turn.id !== this.#turn) {
           this.#workerCommands = new Map();
           this.#workerProgress = 0;
+          this.#lastTurnReply = undefined;
+          this.#completedReplyIds.clear();
         }
         this.#turn = requiredString(turn.id, "invalid-turn");
         this.#turnsStarted += 1;
@@ -272,6 +295,7 @@ export class ManagedCodexState {
         this.#reason = null;
         this.#lastTurnEvent = null;
         this.#retry = null;
+        this.#turnStartError = null;
         this.#turnError = null;
         this.#limitedTurn = null;
         this.#errorLimit = null;
@@ -311,22 +335,22 @@ export class ManagedCodexState {
         const meta = codexTurnMeta(params.turn);
         const last = this.#lastTurnEvent;
         this.#lastTurnEvent = null;
+        const reply = this.#lastTurnReply;
+        this.#lastTurnReply = undefined;
+        this.#completedReplyIds.clear();
+        const completion: AppliedCodexEvent = {
+          ...this.#changed(runtimeChanged),
+          ...(reply?.turn_id === id && isAgentReply(reply) ? { turnReply: reply.content } : {}),
+        };
         // A failed turn ends with the CLI's own error text, which the rollout keeps as well.
         const failure = turnErrorEvent(params.turn, reported);
-        if (failure)
-          return {
-            ...this.#changed(runtimeChanged),
-            event: meta ? { ...failure, turn_meta: meta } : failure,
-          };
-        if (meta)
-          return {
-            ...this.#changed(runtimeChanged),
-            event:
-              last?.turn_id === id
-                ? { ...last, turn_meta: meta }
-                : codexTurnEndEvent(id, meta, new Date().toISOString()),
-          };
-        break;
+        if (failure) completion.event = meta ? { ...failure, turn_meta: meta } : failure;
+        else if (meta)
+          completion.event =
+            last?.turn_id === id
+              ? { ...last, turn_meta: meta }
+              : codexTurnEndEvent(id, meta, new Date().toISOString());
+        return completion;
       }
       case "error": {
         // The CLI reports each retry of a failed model request, then the final error before the
@@ -362,10 +386,10 @@ export class ManagedCodexState {
         if (previous >= 0xd800 && previous <= 0xdbff && first >= 0xdc00 && first <= 0xdfff)
           deltaBytes -= 2;
         if (deltaBytes === 0 || this.#streamBytes + deltaBytes > MAX_STREAM_BYTES)
-          return hadRetry ? this.#changed() : { changed: false };
+          return hadRetry ? this.#changed(false, true) : { changed: false };
         this.#stream += params.delta;
         this.#streamBytes += deltaBytes;
-        break;
+        return this.#changed(false, true);
       }
       case "item/reasoning/summaryTextDelta":
       case "item/reasoning/textDelta":
@@ -456,7 +480,14 @@ export class ManagedCodexState {
         this.#items.set(id, structuredClone(params.item));
         if (method === "item/completed") {
           const event = projectItem(params.item, this.#turn, this.#toolContext());
-          if (event) this.#lastTurnEvent = event;
+          if (event) {
+            this.#lastTurnEvent = event;
+            // Like the ledger, keep the first version and position of a completed item.
+            if (event.kind === "agent-message" && !this.#completedReplyIds.has(id)) {
+              this.#remember(this.#completedReplyIds, id);
+              if (isAgentReply(event)) this.#lastTurnReply = event;
+            }
+          }
           this.#mutationRevision = ++this.#revision;
           return { changed: true, ...(event ? { event } : {}) };
         }
@@ -643,6 +674,7 @@ export class ManagedCodexState {
     if (active !== this.#turn) {
       this.#workerProgress = 0;
       this.#workerCommands = undefined;
+      this.#completedReplyIds.clear();
     }
     this.#turn = active;
     this.#lastTurn = active ?? (typeof latest?.id === "string" ? latest.id : this.#lastTurn);
@@ -677,10 +709,15 @@ export class ManagedCodexState {
     this.#retry = null;
     if (this.#turnError?.turnId !== active) this.#turnError = null;
     // An attached running turn can still end with a duration; keep its last row.
-    this.#lastTurnEvent =
-      active === null
-        ? null
-        : ([...events].reverse().find((event) => event.turn_id === active) ?? null);
+    const activeEvents = active === null ? [] : events.filter((event) => event.turn_id === active);
+    this.#lastTurnEvent = activeEvents.at(-1) ?? null;
+    for (const event of activeEvents)
+      if (event.kind === "agent-message" && typeof event.id === "string")
+        this.#remember(this.#completedReplyIds, event.id);
+    const observedReply = this.#lastTurnReply?.turn_id === active ? this.#lastTurnReply : undefined;
+    // An older resume page can arrive after a newer item from the same running turn.
+    if (!observedReply || readRevision === undefined || this.#mutationRevision <= readRevision)
+      this.#lastTurnReply = activeEvents.reverse().find(isAgentReply) ?? observedReply;
     if (this.#compactionRecoveryTurn !== undefined) {
       if (
         active !== null &&
@@ -712,6 +749,7 @@ export class ManagedCodexState {
     this.#status = "outcome-unknown";
     this.#reason = reason;
     this.#record.native_settings = null;
+    this.#lastTurnReply = undefined;
     this.#compactions.clear();
     this.#workerCommands = undefined;
     this.#retry = null;
@@ -747,6 +785,7 @@ export class ManagedCodexState {
     this.#lastTurn = turnId;
     this.#status = "running";
     this.#reason = null;
+    this.#turnStartError = null;
     this.#runtimeRevision = this.#mutationRevision = ++this.#revision;
   }
 
@@ -794,6 +833,7 @@ export class ManagedCodexState {
     try {
       this.commitManagedMutation(update);
       persist();
+      this.#turnStartError = null;
     } catch (error) {
       this.#record = record;
       this.#revision = revision;
@@ -836,7 +876,7 @@ export class ManagedCodexEventBridge {
     readonly persist: (state: ManagedCodexState, event?: JsonObject) => Promise<void> | void,
     readonly onApplied?: (
       value: unknown,
-      result: { changed: boolean; event?: JsonObject },
+      result: AppliedCodexEvent,
       state: ManagedCodexState,
     ) => void,
     /**
@@ -1021,6 +1061,15 @@ function policyIdFromSettings(settings: JsonObject, workspace: string): string |
       return id;
   }
   return null;
+}
+
+function isAgentReply(event: JsonObject): event is JsonObject & { content: string } {
+  return (
+    event.kind === "agent-message" &&
+    event.cli_output !== true &&
+    typeof event.content === "string" &&
+    event.content.trim() !== ""
+  );
 }
 
 function projectItem(

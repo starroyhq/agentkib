@@ -2343,6 +2343,8 @@
   "conversation.unavailable": "Live control is unavailable. Check the connection in AgentKib on your computer.",
   "conversation.openOriginalClient": "No execution client was found for this session. Open it in the original client (such as Codex or Claude Code), then refresh.",
   "conversation.unverifiedInstallation": "The Agent installation or version on this computer could not be verified. Control is disabled. Check the installation.",
+  "conversation.antigravityCliUnavailable": "To control Antigravity from AgentKib, install the Antigravity CLI first; the Antigravity App does not include it. Copy the official install command from Settings › Tools & updates on your computer, then run agy once to sign in.",
+  "conversation.antigravityAppSession": "This conversation is from the Antigravity App or IDE. AgentKib can only browse it; continue it in Antigravity.",
   "conversation.unsupportedControl": "Live control is not supported for this platform or Agent. History remains readable.",
   "conversation.process": "Execution process",
   "conversation.tools": "tool calls",

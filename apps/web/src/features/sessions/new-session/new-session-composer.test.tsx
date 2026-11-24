@@ -14,6 +14,7 @@ import {
   composerAddCopy,
   composerGoalCopy,
   composerModelCopy,
+  newSessionCopy,
   planModeCopy,
   takeNewSessionDraft,
 } from "@agentkib/session-ui";
@@ -30,6 +31,19 @@ vi.mock("@/features/conversation/web-session-context", () => ({
 }));
 
 const options: Record<ManagedAgent, ManagedOptions> = {
+  antigravity: {
+    available: true,
+    models: [
+      { id: "gemini-3.8-flash", name: "Gemini 3.8 Flash", efforts: ["low", "medium", "high"] },
+    ],
+    permissionModes: [
+      { id: "default", name: "Default" },
+      { id: "accept-edits", name: "Accept edits" },
+      { id: "auto", name: "Auto" },
+      { id: "plan", name: "Plan" },
+    ],
+    workspaces: [],
+  },
   codex: {
     available: true,
     models: [
@@ -754,6 +768,39 @@ describe("Web NewSessionComposer", () => {
     expect(client.managedAction).not.toHaveBeenCalled();
   });
 
+  it("starts Antigravity with the chosen model, thought level, mode and first message", async () => {
+    const { client, onCreated } = setup({ created: "antigravity-created" });
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Agent: Codex" }));
+    await user.click(await screen.findByRole("menuitem", { name: "Antigravity" }));
+    const defaultModel = `${modelCopy.chooseModel}: ${modelCopy.defaultModel}`;
+    await user.click(await screen.findByRole("button", { name: defaultModel }));
+    const modelSettings = await screen.findByRole("dialog", { name: modelCopy.modelSettings });
+    await user.click(within(modelSettings).getByRole("button", { name: defaultModel }));
+    const models = await screen.findByRole("dialog", { name: modelCopy.model });
+    await user.click(within(models).getByRole("button", { name: "Gemini 3.8 Flash" }));
+    await highestEffort();
+    await user.keyboard("{Escape}");
+    await user.click(await screen.findByRole("button", { name: /^Tool permissions/ }));
+    await user.click(await screen.findByRole("menuitem", { name: /^Accept edits/ }));
+    await write("Update the parser");
+    fireEvent.click(send());
+
+    await waitFor(() => expect(onCreated).toHaveBeenCalledWith("antigravity-created"));
+    expect(client.managedAction).toHaveBeenCalledExactlyOnceWith(
+      "create",
+      expect.objectContaining({
+        agent: "antigravity",
+        workspaceId: "atlas",
+        model: "gemini-3.8-flash",
+        effort: "high",
+        permissionMode: "accept-edits",
+        prompt: "Update the parser",
+      }),
+    );
+    expect(takeNewSessionDraft("antigravity-created")).toBeUndefined();
+  });
+
   it("starts Devin with an offered effort and Fast pair and never hands off its dispatched prompt", async () => {
     const { client, onCreated } = setup();
     client.managedOptions.mockImplementation(async (agent) =>
@@ -852,6 +899,39 @@ describe("Web NewSessionComposer", () => {
     expect(onCreated).not.toHaveBeenCalled();
     expect(sessionStorage.length).toBe(0);
   });
+
+  it.each([
+    { agent: "claude-code", takenInSession: false, keepsDraft: true },
+    { agent: "claude-code", takenInSession: true, keepsDraft: false },
+    { agent: "antigravity", takenInSession: false, keepsDraft: false },
+  ] as const)(
+    "shows the catalog failure for $agent and only keeps unsent draft text (taken: $takenInSession)",
+    async ({ agent, takenInSession, keepsDraft }) => {
+      const sessionId = `missing-${agent}-${takenInSession}`;
+      const prompt = "Update the parser";
+      localStorage.setItem(
+        "agentkib.newSession.target",
+        JSON.stringify({ workspaceId: "atlas", agent }),
+      );
+      const { client, onCreated } = setup({ created: sessionId });
+      onCreated.mockImplementation(async (id: string) => {
+        if (takenInSession) expect(takeNewSessionDraft(id)).toMatchObject({ text: prompt });
+        return "timed-out";
+      });
+      await write(prompt);
+      fireEvent.click(send());
+      expect(await screen.findByText(newSessionCopy("en-US").notListed)).toBeVisible();
+      expect(message()).toHaveValue(keepsDraft ? prompt : "");
+      expect(send()).toHaveProperty("disabled", !keepsDraft);
+      expect(client.managedAction).toHaveBeenCalledExactlyOnceWith(
+        "create",
+        agent === "antigravity"
+          ? expect.objectContaining({ agent, prompt })
+          : expect.not.objectContaining({ prompt }),
+      );
+      expect(takeNewSessionDraft(sessionId)).toBeUndefined();
+    },
+  );
 
   it("never sends again while a create's outcome is unknown, and opens what it made", async () => {
     const { client, onCreated } = setup();

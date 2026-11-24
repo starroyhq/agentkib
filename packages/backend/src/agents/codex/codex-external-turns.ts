@@ -15,6 +15,7 @@ import { CodexSessions } from "./codex-sessions";
 import { within } from "../../files";
 import { existingFileLeaseBusy } from "../../managed-session-lock";
 import { isReparseOrSymlink } from "../../native-files";
+import { sanitizeSessionText } from "../../session-handoff";
 import { Sql } from "../../sql";
 import { timestamp } from "../../timestamps";
 
@@ -27,9 +28,12 @@ export type ExternalTurn = { status: "running"; startedAt: string | null; turnId
 /** A turn whose end a thread's rollout records, whoever ran it. */
 export type EndedTurn = {
   turnId: string;
-  outcome: "completed" | "cancelled";
+  outcome: "completed" | "cancelled" | "failed";
   startedAt: string | null;
   endedAt: string | null;
+  /** A distinct subsequent turn started in the same native rollout. */
+  superseded?: true;
+  replyText?: string;
 };
 
 const LOCK_DIRECTORY = "thread-writer-locks";
@@ -66,8 +70,15 @@ const ENDED_TAIL_BYTES = 2 * 1024 * 1024;
 /** The ended turns kept per thread, and the threads followed for them. */
 const MAX_ENDED = 20;
 const MAX_ENDED_THREADS = 64;
+const MAX_ENDED_REPLY = 4_096;
 
-type TurnEvent = { started: boolean; aborted: boolean; turnId: string | null; at: string | null };
+type TurnEvent = {
+  started: boolean;
+  outcome: EndedTurn["outcome"];
+  turnId: string | null;
+  at: string | null;
+  replyText?: string;
+};
 /** The latest turn to start in a thread. */
 type Turn = { id: string | null; open: boolean; startedAt: string | null };
 type CommandEvidence = {
@@ -270,17 +281,35 @@ export class CodexExternalTurns {
       for (let end = bytes.indexOf(10, start); end >= 0; end = bytes.indexOf(10, start)) {
         const event = turnEvent(bytes.subarray(start, end));
         if (event?.turnId && event.started) {
-          scan.open.delete(event.turnId);
-          scan.open.set(event.turnId, event.at);
-          if (scan.open.size > MAX_ENDED) scan.open.delete(scan.open.keys().next().value!);
+          const id = event.turnId;
+          if (!scan.open.has(id) && !scan.ended.some((turn) => turn.turnId === id)) {
+            scan.open.set(id, event.at);
+            if (scan.open.size > MAX_ENDED) scan.open.delete(scan.open.keys().next().value!);
+            const started = event.at === null ? NaN : Date.parse(event.at);
+            // Require source order and trustworthy timestamps. Old replayed starts do
+            // not supersede a more recent completion.
+            scan.ended = scan.ended.map((turn) =>
+              !turn.superseded && turn.endedAt !== null && started >= Date.parse(turn.endedAt)
+                ? { ...turn, superseded: true }
+                : turn,
+            );
+          }
         } else if (event?.turnId) {
-          scan.ended = scan.ended.filter((turn) => turn.turnId !== event.turnId);
-          scan.ended.push({
+          const index = scan.ended.findIndex((turn) => turn.turnId === event.turnId);
+          const previous = scan.ended[index];
+          const replyText = event.replyText?.trim()
+            ? sanitizeSessionText(event.replyText, { value: 0 }).slice(0, MAX_ENDED_REPLY)
+            : previous?.replyText;
+          const turn: EndedTurn = {
             turnId: event.turnId,
-            outcome: event.aborted ? "cancelled" : "completed",
-            startedAt: scan.open.get(event.turnId) ?? null,
-            endedAt: event.at,
-          });
+            outcome: previous?.outcome === "failed" ? "failed" : event.outcome,
+            startedAt: scan.open.get(event.turnId) ?? previous?.startedAt ?? null,
+            endedAt: previous?.endedAt ?? event.at,
+            ...(previous?.superseded ? { superseded: true } : {}),
+            ...(replyText ? { replyText } : {}),
+          };
+          if (index < 0) scan.ended.push(turn);
+          else scan.ended[index] = turn;
           scan.open.delete(event.turnId);
           if (scan.ended.length > MAX_ENDED) scan.ended.shift();
         }
@@ -620,13 +649,14 @@ function turnEvent(line: Buffer): TurnEvent | undefined {
     return undefined;
   }
   if (!isRecord(row) || row.type !== "event_msg" || !isRecord(row.payload)) return undefined;
-  const { type, turn_id: turnId } = row.payload;
+  const { type, turn_id: turnId, error, last_agent_message: replyText } = row.payload;
   if (typeof type !== "string" || !TURN_EVENTS.includes(type)) return undefined;
   return {
     started: type === "task_started",
-    aborted: type === "turn_aborted",
+    outcome: type === "turn_aborted" ? "cancelled" : error == null ? "completed" : "failed",
     turnId: typeof turnId === "string" && turnId ? turnId : null,
     at: timestamp(row.timestamp),
+    ...(type === "task_complete" && typeof replyText === "string" ? { replyText } : {}),
   };
 }
 

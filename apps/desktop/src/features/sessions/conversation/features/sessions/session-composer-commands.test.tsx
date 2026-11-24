@@ -540,6 +540,7 @@ describe("Codex slash commands in the desktop composer", () => {
     async (action) => {
       doubles.session.access = {
         ...doubles.session.access,
+        status: "approved",
         device: { send: true, advancedControl: true },
       } as SessionController["access"];
       doubles.session.canSend = false;
@@ -548,6 +549,7 @@ describe("Codex slash commands in the desktop composer", () => {
         ...doubles.session.live,
         sendEnabled: false,
         status: "running",
+        executionLocation: "agentkib",
         turnId: "turn",
       } as SessionController["live"];
       doubles.session.capabilities = {
@@ -560,11 +562,11 @@ describe("Codex slash commands in the desktop composer", () => {
       };
       const { input } = renderComposer("/stop");
       fireEvent.click(screen.getByRole("button", { name: sessionCopy["en-US"].advanced }));
-      fireEvent.click(
-        await screen.findByRole("menuitem", {
-          name: action === "steer" ? sessionCopy["en-US"].steer : sessionCopy["en-US"].queueAdd,
-        }),
-      );
+      const runningAction = await screen.findByRole("menuitem", {
+        name: action === "steer" ? sessionCopy["en-US"].steer : sessionCopy["en-US"].queueAdd,
+      });
+      expect(runningAction).not.toHaveAttribute("aria-disabled", "true");
+      fireEvent.click(runningAction);
       expect(
         await screen.findByText(sessionReason("en-US", "codex-command-agentkib").text),
       ).toBeVisible();

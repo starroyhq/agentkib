@@ -5,6 +5,7 @@
  */
 
 type JsonObject = Record<string, unknown>;
+export const CODEX_TURN_START_REJECTED = "codex-turn-start-rejected";
 const isObject = (value: unknown): value is JsonObject =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 

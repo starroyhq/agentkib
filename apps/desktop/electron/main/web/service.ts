@@ -4,6 +4,7 @@ import {
   SESSION_RESOURCE_LIMIT,
   managedAgentOf,
   sessionProviderCapabilities,
+  sessionProviderDeclaration,
   type HistoryReference,
   type ManagedAgent,
   type ResolvedHistoryReference,
@@ -413,6 +414,8 @@ const MAX_AGE = 30 * 24 * 60 * 60 * 1000;
 const PAIRING_CODE_TTL_MS = 300_000;
 /** Devin CLI's permission modes, which apply to a whole `devin -p` turn. */
 const DEVIN_PERMISSION_MODES = ["auto", "accept-edits", "smart", "dangerous"];
+/** Antigravity's own session modes (`agy acp`); `auto` also runs commands it judges safe. */
+const ANTIGRAVITY_PERMISSION_MODES = ["default", "accept-edits", "auto", "plan"];
 
 /** A paired device counts as online this long after its last request, or while it holds a stream. */
 const ONLINE_WINDOW_MS = 60_000;
@@ -645,13 +648,24 @@ function acceptsGzip(header: string | string[] | undefined): boolean {
   }
   return wildcard;
 }
-/** 远程目录从不列出子代理会话（auxiliary），回复里去掉它们，体积约为原来的五分之一。 */
-function withoutAuxiliarySessions(catalog: unknown): unknown {
+/** Remote clients share Provider declarations and never receive auxiliary sessions. */
+function projectRemoteCatalog(catalog: unknown): unknown {
   const sessions = snapshotField(catalog, "sessions");
   if (!Array.isArray(sessions)) return catalog;
   return {
     ...(catalog as Record<string, unknown>),
-    sessions: sessions.filter((session) => snapshotField(session, "origin") !== "auxiliary"),
+    sessions: sessions
+      .filter((session) => snapshotField(session, "origin") !== "auxiliary")
+      .map((session) => {
+        if (!session || typeof session !== "object" || Array.isArray(session)) return session;
+        const agent = snapshotField(session, "agent");
+        if (typeof agent !== "string") return session;
+        const registration = sessionProviderDeclaration(agent);
+        return {
+          ...session,
+          projectAgent: registration?.projectAgent ?? { lead: false, worker: false },
+        };
+      }),
   };
 }
 const isAccessLevel = (value: unknown): value is WebAccessLevel =>
@@ -3079,9 +3093,11 @@ export class WebAccessService {
       ...(value(current, "policyId") ? { policyId: value(current, "policyId") } : {}),
       ...((data.executionMode === "devin-print"
         ? DEVIN_PERMISSION_MODES
-        : data.executionMode === "claude-follower"
-          ? [...CLAUDE_OBSERVED_PERMISSION_MODES]
-          : ["default", "plan", "acceptEdits"]
+        : data.executionMode === "acp-managed"
+          ? ANTIGRAVITY_PERMISSION_MODES
+          : data.executionMode === "claude-follower"
+            ? [...CLAUDE_OBSERVED_PERMISSION_MODES]
+            : ["default", "plan", "acceptEdits"]
       ).includes(value(current, "permissionMode") ?? "")
         ? { permissionMode: value(current, "permissionMode") }
         : {}),
@@ -3158,13 +3174,15 @@ export class WebAccessService {
         serviceTier: this.availability(writable?.serviceTier),
         ...(data.executionMode === "claude-managed" ||
         data.executionMode === "claude-follower" ||
-        data.executionMode === "devin-print"
+        data.executionMode === "devin-print" ||
+        data.executionMode === "acp-managed"
           ? { permissionMode: this.availability(writable?.permissionMode) }
           : {}),
         restoreDefaults:
           data.executionMode === "claude-managed" ||
           data.executionMode === "claude-follower" ||
-          data.executionMode === "devin-print"
+          data.executionMode === "devin-print" ||
+          data.executionMode === "acp-managed"
             ? this.availability(writable?.restoreDefaults)
             : {
                 available:
@@ -3179,7 +3197,8 @@ export class WebAccessService {
         serviceTiers: [...serviceTiers.values()].slice(0, 32),
         ...(data.executionMode === "claude-managed" ||
         data.executionMode === "claude-follower" ||
-        data.executionMode === "devin-print"
+        data.executionMode === "devin-print" ||
+        data.executionMode === "acp-managed"
           ? {
               permissionModes: Array.isArray(data.permissionModes)
                 ? data.permissionModes.slice(0, 4).flatMap((value) => {
@@ -3188,7 +3207,9 @@ export class WebAccessService {
                     const ids =
                       data.executionMode === "devin-print"
                         ? DEVIN_PERMISSION_MODES
-                        : ["default", "plan", "acceptEdits"];
+                        : data.executionMode === "acp-managed"
+                          ? ANTIGRAVITY_PERMISSION_MODES
+                          : ["default", "plan", "acceptEdits"];
                     if (!ids.includes(String(mode.id))) return [];
                     return [{ id: mode.id, name: this.optionalString(mode.name, 128) ?? mode.id }];
                   })
@@ -3579,14 +3600,6 @@ export class WebAccessService {
     )
       throw new HttpError(403, "workspace_not_authorized");
     return session;
-  }
-  /** Whether a session's agent can be a Project Agent without Claude Code on this computer. */
-  private async leadsWithoutClaude(sessionId: string) {
-    const catalog = (await this.scopeCatalog(false)) as {
-      sessions: { id: string; agent: string }[];
-    };
-    const agent = catalog.sessions.find((item) => item.id === sessionId)?.agent;
-    return agent === "codex" || agent === "deepseek-harness";
   }
   private async lanCodexScopeAllowed(sessionId: string, workspaceId: string, reserved = false) {
     // LAN has no workspace allowlist; retain its existing registered-session
@@ -4465,10 +4478,12 @@ export class WebAccessService {
       device = this.fullAccess(hash);
       for (const permission of needs[operation]!) this.grant(hash, permission);
     }
-    await this.codexScope(sessionId, hash, false, false);
-    // A Codex or DeepSeek Harness session can lead without Claude Code on this computer; a
-    // Claude Code one cannot.
-    if (!this.options.verifiedClaudeManaged && !(await this.leadsWithoutClaude(sessionId)))
+    const { agent } = await this.sessionScope(sessionId, hash, false, false);
+    // These integrations supply their own worker tools. The backend still checks lead eligibility
+    // for the specific session.
+    const leadsWithoutClaude =
+      agent !== "claude-code" && sessionProviderDeclaration(agent)?.projectAgent?.lead;
+    if (!this.options.verifiedClaudeManaged && !leadsWithoutClaude)
       throw new HttpError(503, "capability_unavailable");
     const lead = (value: unknown) =>
       value && typeof value === "object" && "lead" in value
@@ -5099,6 +5114,14 @@ export class WebAccessService {
           throw new HttpError(400, "unsupported_permission_mode");
         // Approving more without asking is changing what the session may do: full access only.
         if (mode === "smart" || mode === "dangerous") this.fullAccess(hash);
+        params.permissionMode = mode;
+      }
+      if (agent === "antigravity" && body.permissionMode !== undefined) {
+        const mode = String(body.permissionMode);
+        if (!ANTIGRAVITY_PERMISSION_MODES.includes(mode))
+          throw new HttpError(400, "unsupported_permission_mode");
+        // Auto also runs commands Antigravity judges safe: full access only.
+        if (mode === "auto") this.fullAccess(hash);
         params.permissionMode = mode;
       }
       if (provider?.create.mode === "with-first-message") {
@@ -6824,13 +6847,16 @@ export class WebAccessService {
         }
         if (
           result.operation === "create" &&
-          result.executionMode === "devin-print" &&
           result.status === "accepted" &&
           result.requestId === requestId &&
-          result.sessionId === `devin-create:${requestId}`
+          ((result.executionMode === "devin-print" &&
+            result.sessionId === `devin-create:${requestId}`) ||
+            (result.executionMode === "antigravity-acp-managed" &&
+              result.sessionId === `antigravity-create:${requestId}`))
         ) {
-          // Devin claims the request before a native session exists. Reconciliation uses
-          // the outer session ID, so expose the confirmed ID from the stored acknowledgement.
+          // Devin and Antigravity claim the request before a native session exists.
+          // Reconciliation uses the outer session ID, so expose the confirmed ID from the
+          // stored acknowledgement.
           const ack = snapshotField(result, "ack");
           const sessionId = snapshotField(ack, "sessionId");
           if (
@@ -7382,7 +7408,7 @@ export class WebAccessService {
     // 桌面内嵌会话页走可信本地桥，仍拿完整目录；远程（中继、局域网）客户端从不列出
     // 子代理会话，去掉它们并压缩，目录回复从约 800 KiB 降到几十 KiB。
     const remoteCatalog = path === "/catalog" && !trustedLocal;
-    if (remoteCatalog) result = withoutAuxiliarySessions(result);
+    if (remoteCatalog) result = projectRemoteCatalog(result);
     return this.json(
       res,
       200,

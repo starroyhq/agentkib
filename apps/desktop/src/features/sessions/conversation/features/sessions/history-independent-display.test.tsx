@@ -222,6 +222,19 @@ describe("independent history display", () => {
       "first history",
       "Hello world!",
     ]);
+
+    host.emit(
+      1,
+      "text-delta",
+      { itemId: "second-reply", turnId: "turn", offset: 0, text: "Buffered in the second session" },
+      "second",
+    );
+    await act(async () => host.result.current.choose("second"));
+    expect(host.result.current.page?.events.map((event) => event.content)).toEqual([
+      "second history",
+      "Buffered in the second session",
+    ]);
+    expect(streams).not.toHaveBeenCalled();
   });
 
   it.each(["disconnects", "expires", "receives a gap", "loses its access binding"] as const)(

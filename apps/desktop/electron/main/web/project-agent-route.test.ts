@@ -34,15 +34,19 @@ describe("Project Agent from a paired device", () => {
         workspaces: [],
         sessions: [
           { id: "claude-session", agent: "claude-code", workspace_id: "first" },
+          { id: "devin-session", agent: "devin", workspace_id: "first" },
+          { id: "antigravity-session", agent: "antigravity", workspace_id: "first" },
           { id: "codex-worker", agent: "codex", workspace_id: "first" },
+          { id: "cursor-session", agent: "cursor", workspace_id: "first" },
         ],
       };
     return {};
   });
   const managed = vi.fn(async (input: unknown): Promise<unknown> => {
-    const params = input as { operation: string };
-    if (params.operation === "lead-status") return { lead: currentLead };
-    if (params.operation === "lead-designate") return { lead };
+    const params = input as { operation: string; sessionId: string };
+    if (params.operation === "lead-status") return { lead: currentLead, capable: true };
+    if (params.operation === "lead-designate")
+      return { lead: { ...lead, sessionId: params.sessionId }, capable: true };
     return { lead: currentLead };
   });
   let currentLead: typeof lead | null = null;
@@ -81,10 +85,7 @@ describe("Project Agent from a paired device", () => {
       .map(([value]) => value as Record<string, unknown>)
       .filter((value) => String(value.operation).startsWith("lead-"));
 
-  beforeEach(async () => {
-    runtime.mockClear();
-    managed.mockClear();
-    currentLead = null;
+  async function startService(verifiedClaudeManaged = true) {
     directory = await mkdtemp(join(tmpdir(), "ak-project-agent-route-"));
     const listener = createServer();
     await new Promise<void>((resolve) => listener.listen(0, "127.0.0.1", resolve));
@@ -101,7 +102,9 @@ describe("Project Agent from a paired device", () => {
         { id: "first", name: "First", path: directory },
         { id: "second", name: "Second", path: join(directory, "second") },
       ],
-      verifiedClaudeManaged: true,
+      verifiedClaudeManaged,
+      verifiedDevinManaged: true,
+      verifiedAntigravityManaged: true,
     });
     await service.initialize();
     await service.request({
@@ -112,13 +115,42 @@ describe("Project Agent from a paired device", () => {
       experimentalEnabled: false,
       allowedWorkspaceIds: ["first"],
     });
+  }
+  beforeEach(() => {
+    runtime.mockClear();
+    managed.mockClear();
+    currentLead = null;
   });
   afterEach(async () => {
     await service.shutdown();
     await rm(directory, { recursive: true, force: true });
   });
 
+  it("publishes independent Project Agent and Worker declarations in the paired catalog", async () => {
+    await startService(false);
+    const device = await phone();
+    const result = await device.api("catalog");
+    expect(result.status).toBe(200);
+    expect(result.data.sessions).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "devin-session",
+          projectAgent: { lead: true, worker: true },
+        }),
+        expect.objectContaining({
+          id: "antigravity-session",
+          projectAgent: { lead: true, worker: true },
+        }),
+        expect.objectContaining({
+          id: "cursor-session",
+          projectAgent: { lead: false, worker: false },
+        }),
+      ]),
+    );
+  });
+
   it("sets one up in the device's name and accepts legacy settings without forwarding them", async () => {
+    await startService();
     const device = await phone();
     expect(await device.api("managed/project-agent?sessionId=claude-session")).toMatchObject({
       status: 200,
@@ -168,7 +200,55 @@ describe("Project Agent from a paired device", () => {
     });
   });
 
+  it.each(["devin", "antigravity"])(
+    "reads and designates a %s Project Agent without Claude Code",
+    async (agent) => {
+      await startService(false);
+      const device = await phone();
+      const sessionId = `${agent}-session`;
+      const scope = { maxAutoTurns: 10, approvals: ["command"], answers: true };
+      const designate = { sessionId, operation: "designate", scope };
+      expect([
+        await device.api(`managed/project-agent?sessionId=${sessionId}`),
+        await device.api("managed/project-agent", designate),
+      ]).toMatchObject([
+        { status: 200, data: { lead: null, capable: true } },
+        { status: 200, data: { lead: { sessionId }, capable: true } },
+      ]);
+
+      const restricted = await browser();
+      await approveLegacyBrowser(service, restricted.cookie, {
+        send: true,
+        approve: true,
+        manage: true,
+      });
+      expect((await restricted.api("managed/project-agent", designate)).status).toBe(403);
+      expect(leadCalls()).toEqual([
+        { operation: "lead-status", sessionId, deviceId: device.id },
+        { operation: "lead-designate", sessionId, deviceId: device.id, scope },
+      ]);
+    },
+  );
+
+  it("still requires Claude Code verification for Claude Code Project Agents", async () => {
+    await startService(false);
+    const device = await phone();
+    const unavailable = { status: 503, data: { error: "capability_unavailable" } };
+    expect(await device.api("managed/project-agent?sessionId=claude-session")).toMatchObject(
+      unavailable,
+    );
+    expect(
+      await device.api("managed/project-agent", {
+        sessionId: "claude-session",
+        operation: "designate",
+        scope: { maxAutoTurns: 10 },
+      }),
+    ).toMatchObject(unavailable);
+    expect(leadCalls()).toEqual([]);
+  });
+
   it("changes its settings, and lets one worker go or stops its turn, in the device's name", async () => {
+    await startService();
     const device = await phone();
     currentLead = { ...lead, scope: { ...lead.scope, approvals: ["command"] } };
     const call = (body: Record<string, unknown>) =>
@@ -210,6 +290,7 @@ describe("Project Agent from a paired device", () => {
   });
 
   it("does not let a device take responsibility for workers outside its reach", async () => {
+    await startService();
     const device = await phone();
     currentLead = { ...lead, scope: { ...lead.scope, workspaceIds: ["first", "elsewhere"] } };
     for (const operation of ["update", "resume"]) {
@@ -224,6 +305,7 @@ describe("Project Agent from a paired device", () => {
   });
 
   it("says so when it stops because the app quits, not when its settings change", async () => {
+    await startService();
     service.setSharedRuntimePrimary(false);
     const device = await phone();
     const invalidations = () =>
@@ -249,6 +331,7 @@ describe("Project Agent from a paired device", () => {
   });
 
   it("lets a device without full access see one, and nothing more", async () => {
+    await startService();
     const restricted = await browser();
     await approveLegacyBrowser(service, restricted.cookie, {
       send: true,

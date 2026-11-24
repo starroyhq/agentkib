@@ -96,10 +96,12 @@ export function readCodexNativeTurnPolicy(
     return { policyId: null, reason: "native-policy-approval-policy-mismatch" };
   if (reviewer !== "user" && reviewer !== "auto_review" && reviewer !== "agent")
     return { policyId: null, reason: "native-policy-approvals-reviewer-mismatch" };
-  if (sandbox.network_access !== false)
+  const { network_access: networkAccess = false, writable_roots: writableRoots = [] } = sandbox;
+  if (networkAccess !== false)
     return { policyId: null, reason: "native-policy-sandbox-network-mismatch" };
-  if (!managedWritableRootsMatch(indexedCwd, cwd, sandbox.writable_roots))
+  if (!managedWritableRootsMatch(indexedCwd, cwd, writableRoots))
     return { policyId: null, reason: "native-policy-sandbox-writable-roots-mismatch" };
+  // Codex defaults both exclusions to false, so omission can add writable roots outside cwd.
   if (sandbox.exclude_tmpdir_env_var !== true)
     return { policyId: null, reason: "native-policy-sandbox-tmpdir-mismatch" };
   if (sandbox.exclude_slash_tmp !== true)

@@ -31,6 +31,19 @@ function fakeAcp() {
   const fromAgent = new PassThrough();
   const toAgent = new PassThrough();
   const frames: Frame[] = [];
+  const config: Record<string, string> = { model: "flash", thought_level: "high", mode: "default" };
+  const choices: Record<string, string[]> = {
+    model: ["flash", "sonnet"],
+    thought_level: ["low", "high"],
+    mode: ["default", "accept-edits", "auto", "plan"],
+  };
+  const configOptions = () =>
+    Object.entries(config).map(([id, currentValue]) => ({
+      id,
+      type: "select",
+      currentValue,
+      options: choices[id]!.map((value) => ({ value, name: value })),
+    }));
   const notify = (frame: Omit<Frame, "jsonrpc">) =>
     fromAgent.write(JSON.stringify({ jsonrpc: "2.0", ...frame }) + "\n");
 
@@ -47,7 +60,19 @@ function fakeAcp() {
           agentCapabilities: { loadSession: true },
         },
       });
-    if (frame.method === "session/load") notify({ id: frame.id, result: {} });
+    if (frame.method === "session/load")
+      notify({ id: frame.id, result: { configOptions: configOptions() } });
+    // A session the CLI opens for its options; without a message it is never stored.
+    if (frame.method === "session/new")
+      notify({
+        id: frame.id,
+        result: { sessionId: "options-probe", configOptions: configOptions() },
+      });
+    if (frame.method === "session/set_config_option") {
+      const { configId, value } = frame.params as { configId: string; value: string };
+      config[configId] = value;
+      notify({ id: frame.id, result: { configOptions: configOptions() } });
+    }
   });
 
   const spawn = vi
@@ -66,6 +91,17 @@ describe("Antigravity session baseline through HTTP, backend RPC and ACP frames"
   let acp: ReturnType<typeof fakeAcp>;
   let sessionId: string;
   let localSessionId: string;
+
+  const openBackend = (reuseData = false) => {
+    const home = join(root, "home");
+    return startBackend({
+      data: join(root, "backend"),
+      workspace,
+      environment: { HOME: home, USERPROFILE: home, CODEX_HOME: join(home, ".codex"), PATH: root },
+      indexSessions: true,
+      reuseData,
+    });
+  };
 
   beforeEach(async () => {
     root = await realpath(await mkdtemp(join(tmpdir(), "ak-baseline-acp-")));
@@ -104,12 +140,7 @@ describe("Antigravity session baseline through HTTP, backend RPC and ACP frames"
       warnings: [],
     });
     acp = fakeAcp();
-    backend = await startBackend({
-      data,
-      workspace,
-      environment: { HOME: home, USERPROFILE: home, CODEX_HOME: join(home, ".codex"), PATH: root },
-      indexSessions: true,
-    });
+    backend = await openBackend();
     const store = new BackendStore(join(data, "agentkib.db"));
     try {
       store.sessions.sync("workspace", "antigravity", nativeSessions);
@@ -135,6 +166,97 @@ describe("Antigravity session baseline through HTTP, backend RPC and ACP frames"
   });
 
   const live = (id = sessionId) => host.http(`/live?sessionId=${id}`);
+
+  it("confirms Web permission writes and keeps settings writable on desktop after reopening", async () => {
+    const settingsPath = `/managed/settings?sessionId=${sessionId}`;
+    let settings = await host.http(settingsPath);
+    expect(settings).toMatchObject({
+      status: 200,
+      body: {
+        current: { permissionMode: "default" },
+        writable: { permissionMode: allowed },
+      },
+    });
+    for (const permissionMode of ["plan", "default"]) {
+      const requestId = randomUUID();
+      const revision = settings.body.revision;
+      const before = await live();
+      const acknowledgement = {
+        accepted: true,
+        completed: true,
+        appliesTo: "next-turn",
+        sessionId,
+        requestId,
+        runtimeBootId: before.body.runtimeBootId,
+      };
+      const request = permissionMode === "plan" ? host.http : host.desktop;
+      const response = await request("/managed/action", {
+        operation: "settings",
+        agent: "antigravity",
+        sessionId,
+        bootId: host.bootId,
+        requestId,
+        expectedRevision: revision,
+        permissionMode,
+      });
+      const receipt = await request(`/requests/${requestId}`);
+      expect({ response, receipt, lastFrame: acp.frames.at(-1) }).toMatchObject({
+        response: { status: 200, body: acknowledgement },
+        receipt: {
+          status: 200,
+          body: { status: "accepted", expectedRevision: revision, ack: acknowledgement },
+        },
+        lastFrame: {
+          method: "session/set_config_option",
+          params: { sessionId: nativeId, configId: "mode", value: permissionMode },
+        },
+      });
+      settings = await host.http(settingsPath);
+      expect(settings).toMatchObject({
+        status: 200,
+        body: {
+          applicationStatus: "confirmed",
+          current: { permissionMode },
+          selected: { permissionMode },
+          writable: { permissionMode: allowed },
+        },
+      });
+      expect(Number(settings.body.revision)).toBeGreaterThan(Number(revision));
+      expect(await live()).toMatchObject({
+        status: 200,
+        body: { status: "idle", revision: settings.body.revision, sendEnabled: true, reason: null },
+      });
+      if (permissionMode === "plan") {
+        await host.dispose();
+        await backend.close();
+        acp = fakeAcp();
+        backend = await openBackend(true);
+        host = await startHost({ root, workspace, rpc: backend.rpc, enableClaudeScheduler: true });
+        settings = await host.http(settingsPath);
+        expect(settings).toMatchObject({
+          status: 200,
+          body: {
+            current: { permissionMode: "plan" },
+            selected: { permissionMode: "plan" },
+            writable: { permissionMode: allowed },
+          },
+        });
+        expect(await host.desktop(settingsPath)).toMatchObject({
+          status: 200,
+          body: {
+            current: { permissionMode: "plan" },
+            writable: { permissionMode: allowed },
+          },
+        });
+        expect(acp.frames).toContainEqual(
+          expect.objectContaining({
+            method: "session/set_config_option",
+            params: { sessionId: nativeId, configId: "mode", value: "plan" },
+          }),
+        );
+      }
+    }
+  });
 
   it("assigns an ACP worker, reports approvals and replies, and stops its exact turn", async () => {
     const leadId = "offline-claude-lead";
@@ -602,8 +724,8 @@ describe("Antigravity session baseline through HTTP, backend RPC and ACP frames"
       });
   });
 
-  it.each([{}, { prompt: "First message" }])(
-    "declines creation with %j at HTTP admission",
+  it.each([{}])(
+    "declines creation without a first message (%j) at HTTP admission",
     async (fields) => {
       const requestId = randomUUID();
       expect(
@@ -614,9 +736,9 @@ describe("Antigravity session baseline through HTTP, backend RPC and ACP frames"
           requestId,
           ...fields,
         }),
-      ).toEqual({
+      ).toMatchObject({
         status: 400,
-        body: { error: "invalid_agent", controlOutcome: "not-dispatched" },
+        body: { error: "missing_prompt" },
       });
       expect(await host.http(`/requests/${requestId}`)).toEqual({
         status: 200,
@@ -635,16 +757,6 @@ describe("Antigravity session baseline through HTTP, backend RPC and ACP frames"
     [
       "/managed/action",
       { agent: "antigravity", operation: "queue-steer", queuedSubmissionId: "not-native" },
-      "capability_unavailable",
-    ],
-    [
-      "/managed/action",
-      { agent: "antigravity", operation: "settings", model: "alternate" },
-      "capability_unavailable",
-    ],
-    [
-      "/managed/action",
-      { agent: "antigravity", operation: "settings", permissionMode: "plan" },
       "capability_unavailable",
     ],
     [
@@ -670,13 +782,28 @@ describe("Antigravity session baseline through HTTP, backend RPC and ACP frames"
     expect(acp.frames).toEqual([]);
   });
 
-  it("keeps Antigravity desktop history read only and reports unavailable creation options", async () => {
+  it("keeps Antigravity desktop history read only and offers the CLI's creation options", async () => {
     expect(
       await host.http("/managed/options?agent=antigravity&workspaceId=workspace"),
     ).toMatchObject({
-      status: 400,
-      body: { error: "invalid_agent" },
+      status: 200,
+      body: {
+        available: true,
+        models: [
+          { id: "flash", efforts: ["low", "high"] },
+          { id: "sonnet", efforts: ["low", "high"] },
+        ],
+        permissionModes: [
+          { id: "default" },
+          { id: "accept-edits" },
+          { id: "auto" },
+          { id: "plan" },
+        ],
+      },
     });
+    // The options came from a session without a message, which the CLI never stores.
+    expect(acp.frames.filter((frame) => frame.method === "session/prompt")).toEqual([]);
+    acp.frames.length = 0;
     const state = await live(localSessionId);
     expect(state).toMatchObject({
       status: 200,

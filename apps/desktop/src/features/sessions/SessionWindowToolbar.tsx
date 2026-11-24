@@ -1,4 +1,5 @@
 import { cn } from "cn";
+import { SessionActivityButton } from "@agentkib/session-ui";
 import { isLiveSessionAgent } from "@agentkib/web-client";
 import { navigationStyles } from "@/components/navigationStyles";
 import {
@@ -28,7 +29,7 @@ import { hasDesktopConversation } from "@/core/conversation-bridge";
 import { useSessionViewStore } from "./session-view-store";
 
 export function SessionWindowToolbar() {
-  const { tr } = useI18n();
+  const { locale, tr } = useI18n();
   const hub = useSessionHub();
   const selected = hub.selected;
   const workspace = hub.selectedWorkspace;
@@ -204,6 +205,14 @@ export function SessionWindowToolbar() {
           </DropdownMenuContent>
         </DropdownMenu>
       </div>
+      {interactive ? (
+        <div
+          data-session-window-activity-slot
+          className="flex shrink-0 items-center empty:hidden"
+        />
+      ) : (
+        <SessionActivityButton sessionId={selected.id} locale={locale} Button={Button} />
+      )}
     </div>
   );
 }

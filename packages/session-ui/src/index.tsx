@@ -445,7 +445,7 @@ export {
   SessionDetailComposerNotices,
   SessionDetailReadOnlyFooter,
 } from "./session-detail-composer";
-export { SessionActivities } from "./session-activities";
+export { SessionActivities, SessionActivityButton } from "./session-activities";
 export { sessionQueuePanel, type SessionQueuePanelAgent } from "./agents/session-queue";
 
 export { projectAgentCopy, type ProjectAgentCopy } from "./project-agent-copy";

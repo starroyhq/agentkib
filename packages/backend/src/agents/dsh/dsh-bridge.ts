@@ -48,6 +48,8 @@ import { dshSessionDocument, type DshDocumentImage } from "./dsh-document";
 import type { DshManagedRuntime } from "./dsh-managed-runtime";
 import type { DshLocalTurnCheckpoint } from "./dsh-local-history";
 import type { DshWriterStatus } from "./dsh-writer";
+import type { DshHistoryImportBridge, DshHistoryImportContext } from "./history-import";
+import { pathIdentity } from "../../paths";
 import type { UsageLimitView } from "../../usage-limit";
 import { sanitizeSessionText } from "../../session-handoff";
 import type { DocumentSource } from "../../session-document-providers";
@@ -418,6 +420,7 @@ const servicesSchema = z
     permissions: z.boolean().optional(),
     subagents: z.boolean().optional(),
     documents: z.boolean().optional(),
+    historyImport: z.boolean().optional(),
     agentPresets: z.boolean().optional(),
     leadTools: z.boolean().optional(),
   })
@@ -2814,6 +2817,76 @@ export class DshBridge {
     if (own.length > 1) return "ambiguous";
     return own[0] ?? candidates.find((item) => item.managed) ?? null;
   }
+
+  #historyImportRuntime(): Runtime {
+    if (!this.supported || this.#closed) throw new Error("platform-unsupported");
+    const runtime = this.#creator();
+    if (runtime === "ambiguous") throw new Error("dsh-create-ambiguous");
+    if (!runtime) throw new Error("dsh-runtime-offline");
+    if (runtime.services.historyImport !== true)
+      throw new Error("dsh-native-history-import-unavailable");
+    return runtime;
+  }
+
+  async #readHistoryImportContext(runtime: Runtime, cwd: string): Promise<DshHistoryImportContext> {
+    const result = await this.#command(
+      runtime,
+      { commandId: randomUUID(), type: "history-import-context", cwd },
+      PRESETS_TIMEOUT_MS,
+    );
+    const context = z.object({ workspaceId: z.string().min(1).max(256) }).safeParse(result.value);
+    if (!result.ok || !context.success) throw new Error("dsh-native-import-workspace-unavailable");
+    return { runtimeId: runtime.runtimeId, workspaceId: context.data.workspaceId };
+  }
+
+  async historyImportContext(cwd: string): Promise<DshHistoryImportContext> {
+    return this.#readHistoryImportContext(this.#historyImportRuntime(), cwd);
+  }
+
+  async importHistory(value: Parameters<DshHistoryImportBridge["importHistory"]>[0]) {
+    const registered = this.options.workspaceFor(value.cwd);
+    if (
+      registered?.id !== value.workspaceId ||
+      pathIdentity(registered.path) !== pathIdentity(value.cwd)
+    )
+      throw new Error("session-workspace-unavailable");
+    const runtime = this.#historyImportRuntime();
+    const current = await this.#readHistoryImportContext(runtime, value.cwd);
+    const assertTarget = () => {
+      if (
+        this.#historyImportRuntime() !== runtime ||
+        current.workspaceId !== value.context.workspaceId ||
+        (!value.verifyOnly && current.runtimeId !== value.context.runtimeId)
+      )
+        throw new Error("dsh-native-import-context-changed");
+    };
+    assertTarget();
+    const command: Command = {
+      type: "import-history",
+      commandId: randomUUID(),
+      sessionId: value.nativeId,
+      cwd: value.cwd,
+      workspaceId: current.workspaceId,
+      document: value.document,
+      ...(value.verifyOnly && { verifyOnly: true }),
+    };
+    if (Buffer.byteLength(JSON.stringify(command)) > MAX_BODY - 32 * 1024)
+      throw new Error("dsh-native-import-too-large");
+    const result = await this.#command(runtime, command, 30_000, () => {
+      assertTarget();
+      value.beforeDispatch?.();
+    });
+    const imported = z
+      .object({ sessionId: uuid, imported: z.literal(true) })
+      .safeParse(result.value);
+    if (!result.ok || !imported.success || imported.data.sessionId !== value.nativeId)
+      throw new Error("dsh-native-import-unverified");
+    await this.#listed(value.nativeId);
+    const indexed = this.#catalog.get(value.nativeId);
+    if (!indexed || pathIdentity(indexed.cwd) !== pathIdentity(value.cwd))
+      throw new Error("dsh-native-import-unverified");
+    return { sessionId: this.options.sessionId(value.nativeId) };
+  }
   /**
    * Starts a DSH session in a registered workspace through the one running DSH that can, or one
    * started in the background. With more than one of the user's, it asks them to pick in DSH.
@@ -4528,13 +4601,19 @@ export class DshBridge {
             return;
           }
           if (!this.#runtimes.has(runtime.token)) return;
-          const commands = runtime.queue.splice(0);
-          for (const command of commands) {
+          const commands = runtime.queue.splice(0).filter((command) => {
             const waiter = runtime.commands.get(command.commandId);
-            if (!waiter) continue;
+            if (!waiter) return false;
+            try {
+              waiter.onDelivered?.();
+            } catch {
+              clearTimeout(waiter.timer);
+              waiter.settle({ ok: false, error: "not-dispatched" });
+              return false;
+            }
             waiter.delivered = true;
-            waiter.onDelivered?.();
-          }
+            return true;
+          });
           runtime.lastSeen = Date.now();
           reply(200, { commands, ...this.#leads(runtime) });
           return;

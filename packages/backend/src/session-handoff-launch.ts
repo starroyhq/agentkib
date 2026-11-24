@@ -48,7 +48,7 @@ export const sessionHandoffLaunchRequest = z.discriminatedUnion("mode", [
     mode: z.literal("native-import"),
     operation_id: z.string(),
     workspace_id: z.string(),
-    target_agent: z.enum(["opencode", "open-claw", "hermes", "cursor"]),
+    target_agent: z.enum(["opencode", "open-claw", "hermes", "cursor", "deepseek-harness"]),
     plan_hash: z.string(),
     binding_id: z.string().uuid().optional(),
     capabilities: z.unknown().optional(),

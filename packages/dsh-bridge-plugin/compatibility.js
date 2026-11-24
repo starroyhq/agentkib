@@ -6,7 +6,7 @@
 // changing the protocol are in docs/agents/deepseek-harness.md.
 export const DSH_BRIDGE_COMPATIBILITY = Object.freeze({
   protocol: 1,
-  pluginVersion: "0.8.4",
+  pluginVersion: "0.8.5",
   minimumPluginVersion: "0.5.0",
   // `engines.dsh` in package.json is `>=` this version, with no upper bound: DSH turns a plugin
   // off outside its range, so a cap would cut AgentKib off the day DSH moves on. What a newer

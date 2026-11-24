@@ -62,6 +62,8 @@ export interface DshBridgeServices {
   subagents?: boolean;
   /** Reading a whole session for handoff and search. Plugins older than 0.5.0 do not report it. */
   documents?: boolean;
+  /** Validated storage import of another Agent's reviewed history. */
+  historyImport?: boolean;
   /** DSH's Agent presets, chosen when a session starts. Plugins older than 0.5.0 do not report it. */
   agentPresets?: boolean;
   /**
@@ -325,6 +327,15 @@ export type DshBridgeCommand = { commandId: string } & (
   | { type: "archive"; sessionId: string; archived: boolean }
   | { type: "pin"; sessionId: string; pinned: boolean }
   | { type: "fork"; sessionId: string }
+  | { type: "history-import-context"; cwd: string }
+  | {
+      type: "import-history";
+      sessionId: string;
+      cwd: string;
+      workspaceId: string;
+      document: unknown;
+      verifyOnly?: true;
+    }
   /**
    * `sessionId` is the new session's ID, chosen by AgentKib so a lost reply can be settled.
    * Without `agentPreset` the session runs DSH's default preset.

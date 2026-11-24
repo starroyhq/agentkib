@@ -86,6 +86,7 @@ import {
 import { createRelayCsr } from "./relay-csr";
 import { readControlReceipt } from "./control-receipt";
 import { ConversationReadStates } from "./conversation-read-state";
+import { isSessionPinRow, SessionPins } from "./session-pins";
 import { resolveClaudeConfig } from "./agents/claude/claude-config";
 import { WorkspaceApplications } from "./workspace-applications";
 import { nativeContext } from "./native-context";
@@ -121,6 +122,7 @@ import {
   PROJECT_AGENT_MAX_WORKERS,
   RUNTIME_METHODS,
   SESSION_EVENT_NOTIFICATION,
+  sessionCollection,
   type RuntimeRpcError,
   type SessionStreamEvent,
   type SubagentCatalog,
@@ -213,6 +215,7 @@ export class TypeScriptBackend {
   #catalogContinuation = new Map<string, string>();
   #webRead?: WebReadRequests;
   #readStates?: ConversationReadStates;
+  #sessionPins?: SessionPins;
   #sessionIndex?: SessionIndex;
   #historySearch?: HistorySearch;
   #insightRefresh?: InsightRefresh;
@@ -309,6 +312,7 @@ export class TypeScriptBackend {
     this.#webRead = undefined;
     void this.#readStates?.close();
     this.#readStates = undefined;
+    this.#sessionPins = undefined;
     this.#commands.close();
     this.#git = undefined;
     this.#context = undefined;
@@ -333,6 +337,7 @@ export class TypeScriptBackend {
     const readStates = this.#readStates;
     const orchestration = this.#orchestration;
     this.#readStates = undefined;
+    this.#sessionPins = undefined;
     this.#orchestration = undefined;
     this.#dshLanes?.close();
     this.#dshLanes = undefined;
@@ -833,6 +838,28 @@ export class TypeScriptBackend {
             this.#orchestration?.laneWaiting(sessionId, turnId, status),
         });
         const claudeOwner = this.#claudeManaged;
+        const codexPinProvider = () =>
+          this.#webRead?.codexSessionProvider() as CodexSessionProvider | undefined;
+        this.#sessionPins = new SessionPins(store.sql, {
+          codex: {
+            states: (sessionIds) => codexPinProvider()?.pinStates(sessionIds) ?? new Map(),
+            set: async (sessionId, pinned) => {
+              const provider = codexPinProvider();
+              if (!provider) throw new Error("session-pin-unavailable");
+              return provider.setPinned(sessionId, pinned);
+            },
+          },
+          "deepseek-harness": {
+            states: (sessionIds) =>
+              new Map(
+                sessionIds.flatMap((id) => {
+                  const state = dshBridge.pinState(id);
+                  return state ? [[id, state] as const] : [];
+                }),
+              ),
+            set: (sessionId, pinned) => dshBridge.setPinned(sessionId, pinned),
+          },
+        });
         this.#readStates = new ConversationReadStates(
           store,
           this.#sessions,
@@ -1327,8 +1354,8 @@ export class TypeScriptBackend {
         z.object({ workspaceId: z.string(), readerScope: z.string().min(1).max(512).optional() }),
         params,
       );
-      return this.#sessionIndex!.read(workspaceId).then((rows) => {
-        const projected = this.#withWorktrees(rows);
+      return this.#sessionIndex!.read(workspaceId).then(async (rows) => {
+        const projected = await this.#withIndexedPins(rows);
         return readerScope ? this.#readStates!.project(projected, readerScope) : projected;
       });
     }
@@ -1341,7 +1368,7 @@ export class TypeScriptBackend {
       case NATIVE_CONTEXT:
         return nativeContext({ ...process.env, ...this.environment });
       case RUNTIME_METHODS.refreshWorkspaceSessions:
-        return this.#sessionIndex!.refresh(params).then((rows) => this.#withWorktrees(rows));
+        return this.#sessionIndex!.refresh(params).then((rows) => this.#withIndexedPins(rows));
       case RUNTIME_METHODS.clearSessionIndex:
         this.#snapshotHistory?.invalidate();
         this.#sessionIndex!.clear(params);
@@ -2094,6 +2121,11 @@ export class TypeScriptBackend {
     return catalogCheckouts(this.#store, { ...process.env, ...this.environment }).sessions(rows);
   }
 
+  #withIndexedPins<T>(rows: T[]): Promise<T[]> {
+    const projected = this.#withWorktrees(rows);
+    return this.#withWebRead(() => this.#sessionPins?.project(projected) ?? projected);
+  }
+
   /** Marks catalog rows that are Project Agents or their Workers; the rest pass unchanged. */
   #withOrchestration(): (session: unknown) => unknown {
     let roles: Map<string, SessionRole>;
@@ -2782,6 +2814,18 @@ export class TypeScriptBackend {
   }
 
   #requestWebSession(params: Record<string, unknown>, restrictCodexNativePolicy = false) {
+    if (params.operation === "session-pin") {
+      const input = parameters(
+        z.strictObject({
+          operation: z.literal("session-pin"),
+          sessionId: z.string().min(1).max(256),
+          workspaceId: z.string().min(1).max(256).optional(),
+          pinned: z.boolean(),
+        }),
+        params,
+      );
+      return this.#setSessionPin(input.sessionId, input.workspaceId, input.pinned);
+    }
     if (params.operation === "desktop-events")
       return this.#withWebRead((owner) =>
         owner.indexedCodexEvents({ ...params, operation: "events" }),
@@ -3026,11 +3070,50 @@ export class TypeScriptBackend {
       ]
         .map(continuation)
         .map(this.#withOrchestration());
+      const organized = this.#sessionPins?.project(merged) ?? merged;
       return {
         ...catalog,
-        sessions: readerScope ? this.#readStates!.project(merged, readerScope) : merged,
+        sessions: readerScope ? this.#readStates!.project(organized, readerScope) : organized,
       };
     });
+  }
+
+  async #setSessionPin(sessionId: string, workspaceId: string | undefined, pinned: boolean) {
+    const pins = this.#sessionPins;
+    if (!pins) throw new Error("session-pin-unavailable");
+    const row = workspaceId
+      ? await this.#catalogPinRow(sessionId, workspaceId)
+      : await this.#withWebRead(() => {
+          // Only trusted desktop requests can omit the workspace scope. These virtual
+          // collections aren't visible or addressable by a paired caller.
+          const indexed = this.#store?.sessions.get(sessionId);
+          const enabled = this.#dataDir
+            ? readPreferences(this.#dataDir).session_index_enabled
+            : false;
+          if (
+            !indexed ||
+            indexed.agent !== "codex" ||
+            !sessionCollection(indexed.workspace_id) ||
+            (enabled !== undefined && enabled !== true)
+          )
+            return undefined;
+          return indexed;
+        });
+    if (this.#sessionPins !== pins) throw new Error("session-pin-unavailable");
+    if (!row) throw new Error("session-not-found");
+    const confirmed = await pins.set(row, pinned);
+    if (this.#sessionPins !== pins) throw new Error("session-pin-unavailable");
+    this.#sessionStream?.publish("", "invalidate", { domains: ["catalog"] });
+    return { pinned: confirmed };
+  }
+
+  async #catalogPinRow(sessionId: string, workspaceId: string) {
+    const catalog = (await this.#requestWebSession({ operation: "catalog" })) as {
+      sessions?: unknown[];
+    };
+    return catalog.sessions
+      ?.filter(isSessionPinRow)
+      .find((session) => session.id === sessionId && session.workspace_id === workspaceId);
   }
 
   async #withWebRead<T>(operation: (owner: WebReadRequests) => T): Promise<Awaited<T>> {

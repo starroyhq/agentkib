@@ -2,9 +2,9 @@ import { Languages } from "lucide-react";
 import type { InteractionLocale } from "../../interaction-model";
 import { useSessionPlatform } from "../../session-platform";
 import {
+  alternateFollowUpShortcut,
   setSendWhileRunning,
   useSendWhileRunning,
-  type SendWhileRunning,
 } from "./send-while-running";
 
 type PreferenceLabel =
@@ -21,7 +21,10 @@ type PreferenceLabel =
   | "green"
   | "sendWhileRunning"
   | "sendWhileRunningQueue"
-  | "sendWhileRunningSteer";
+  | "sendWhileRunningSteer"
+  | "sessionPreferences"
+  | "keyboardShortcuts"
+  | "alternateFollowUp";
 
 export function PreferencesDialog({
   labels: t,
@@ -44,6 +47,7 @@ export function PreferencesDialog({
 }) {
   const {
     components: { SessionDialog, NativeSelect },
+    desktop,
   } = useSessionPlatform();
   const sendWhileRunning = useSendWhileRunning();
   return (
@@ -78,16 +82,31 @@ export function PreferencesDialog({
             <option value="green">{t.green}</option>
           </NativeSelect>
         </label>
-        <label>
-          {t.sendWhileRunning}
-          <NativeSelect
-            value={sendWhileRunning}
-            onChange={(e) => setSendWhileRunning(e.target.value as SendWhileRunning)}
-          >
-            <option value="queue">{t.sendWhileRunningQueue}</option>
-            <option value="steer">{t.sendWhileRunningSteer}</option>
-          </NativeSelect>
-        </label>
+        <fieldset className="grid gap-2">
+          <legend className="mb-2 text-sm font-semibold">{t.sessionPreferences}</legend>
+          <label className="flex items-center justify-between gap-3 text-sm">
+            {t.sendWhileRunning}
+            <NativeSelect
+              value={sendWhileRunning}
+              onChange={(event) => {
+                const mode = event.target.value;
+                if (mode === "queue" || mode === "steer") setSendWhileRunning(mode);
+              }}
+            >
+              <option value="steer">{t.sendWhileRunningSteer}</option>
+              <option value="queue">{t.sendWhileRunningQueue}</option>
+            </NativeSelect>
+          </label>
+        </fieldset>
+        <fieldset>
+          <legend className="mb-2 text-sm font-semibold">{t.keyboardShortcuts}</legend>
+          <div className="flex items-center justify-between gap-3 text-sm">
+            <span>{t.alternateFollowUp}</span>
+            <kbd className="shrink-0 rounded border bg-muted px-2 py-0.5 font-mono text-xs text-muted-foreground">
+              {alternateFollowUpShortcut(desktop?.isMacOS)}
+            </kbd>
+          </div>
+        </fieldset>
       </div>
     </SessionDialog>
   );

@@ -1,9 +1,10 @@
 // @vitest-environment node
-import { randomUUID } from "node:crypto";
-import { mkdir, mkdtemp, realpath, rm } from "node:fs/promises";
+import { createHash, randomUUID } from "node:crypto";
+import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
+import { pathToFileURL } from "node:url";
 import { RUNTIME_METHODS } from "@agentkib/runtime-protocol";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AntigravityAcp } from "../../../../packages/backend/src/agents/antigravity/antigravity-acp";
@@ -28,8 +29,8 @@ type Frame = {
 };
 
 function fakeAcp() {
-  const fromAgent = new PassThrough();
-  const toAgent = new PassThrough();
+  let notify: (frame: Omit<Frame, "jsonrpc">) => void;
+  let promptCapabilities: Record<string, boolean> | undefined;
   const frames: Frame[] = [];
   const config: Record<string, string> = { model: "flash", thought_level: "high", mode: "default" };
   const choices: Record<string, string[]> = {
@@ -44,43 +45,55 @@ function fakeAcp() {
       currentValue,
       options: choices[id]!.map((value) => ({ value, name: value })),
     }));
-  const notify = (frame: Omit<Frame, "jsonrpc">) =>
-    fromAgent.write(JSON.stringify({ jsonrpc: "2.0", ...frame }) + "\n");
-
-  toAgent.setEncoding("utf8");
-  toAgent.on("data", (data: string) => {
-    const frame = JSON.parse(data) as Frame;
-    frames.push(frame);
-    if (frame.method === "initialize")
-      notify({
-        id: frame.id,
-        result: {
-          protocolVersion: 1,
-          agentInfo: { name: "antigravity-acp", version: "agy_acp_server_1.2.0" },
-          agentCapabilities: { loadSession: true },
-        },
-      });
-    if (frame.method === "session/load")
-      notify({ id: frame.id, result: { configOptions: configOptions() } });
-    // A session the CLI opens for its options; without a message it is never stored.
-    if (frame.method === "session/new")
-      notify({
-        id: frame.id,
-        result: { sessionId: "options-probe", configOptions: configOptions() },
-      });
-    if (frame.method === "session/set_config_option") {
-      const { configId, value } = frame.params as { configId: string; value: string };
-      config[configId] = value;
-      notify({ id: frame.id, result: { configOptions: configOptions() } });
-    }
-  });
-
   const spawn = vi
     .spyOn(AntigravityAcp, "spawn")
     .mockImplementation((_executable, _args, _cwd, _environment, options) => {
+      const fromAgent = new PassThrough();
+      const toAgent = new PassThrough();
+      const answer = (frame: Omit<Frame, "jsonrpc">) =>
+        fromAgent.write(JSON.stringify({ jsonrpc: "2.0", ...frame }) + "\n");
+      notify = answer;
+
+      toAgent.setEncoding("utf8");
+      toAgent.on("data", (data: string) => {
+        const frame = JSON.parse(data) as Frame;
+        frames.push(frame);
+        if (frame.method === "initialize")
+          answer({
+            id: frame.id,
+            result: {
+              protocolVersion: 1,
+              agentInfo: { name: "antigravity-acp", version: "agy_acp_server_1.2.0" },
+              agentCapabilities: {
+                loadSession: true,
+                ...(promptCapabilities && { promptCapabilities }),
+              },
+            },
+          });
+        if (frame.method === "session/load")
+          answer({ id: frame.id, result: { configOptions: configOptions() } });
+        // A session the CLI opens for its options; without a message it is never stored.
+        if (frame.method === "session/new")
+          answer({
+            id: frame.id,
+            result: { sessionId: "options-probe", configOptions: configOptions() },
+          });
+        if (frame.method === "session/set_config_option") {
+          const { configId, value } = frame.params as { configId: string; value: string };
+          config[configId] = value;
+          answer({ id: frame.id, result: { configOptions: configOptions() } });
+        }
+      });
       return new AntigravityAcp(fromAgent, toAgent, options);
     });
-  return { frames, notify, spawn };
+  return {
+    frames,
+    notify: (frame: Omit<Frame, "jsonrpc">) => notify(frame),
+    setPromptCapabilities: (value: Record<string, boolean> | undefined) => {
+      promptCapabilities = value;
+    },
+    spawn,
+  };
 }
 
 describe("Antigravity session baseline through HTTP, backend RPC and ACP frames", () => {
@@ -97,7 +110,13 @@ describe("Antigravity session baseline through HTTP, backend RPC and ACP frames"
     return startBackend({
       data: join(root, "backend"),
       workspace,
-      environment: { HOME: home, USERPROFILE: home, CODEX_HOME: join(home, ".codex"), PATH: root },
+      environment: {
+        HOME: home,
+        USERPROFILE: home,
+        CODEX_HOME: join(home, ".codex"),
+        PATH: root,
+        AGENTKIB_HOST_ATTACHMENTS_DIRS: JSON.stringify([join(root, "host", "attachments")]),
+      },
       indexSessions: true,
       reuseData,
     });
@@ -493,7 +512,7 @@ describe("Antigravity session baseline through HTTP, backend RPC and ACP frames"
     });
   }
 
-  it("reads capabilities, inspect and live without attaching an ACP transport", async () => {
+  it("negotiates composer capabilities without attaching a session", async () => {
     const capabilities = await host.http(`/managed/capabilities?sessionId=${sessionId}`);
     const runtimeBootId = capabilities.body.runtimeBootId;
     expect(typeof runtimeBootId).toBe("string");
@@ -510,6 +529,10 @@ describe("Antigravity session baseline through HTTP, backend RPC and ACP frames"
           approve: { available: false, reason: "no-supported-approval" },
           answer: { available: false, reason: "unsupported-operation" },
           inspect: allowed,
+          attachments: {
+            available: false,
+            attachmentKinds: { image: false, files: false },
+          },
           "queue-list": allowed,
           "queue-add": allowed,
           "queue-update": allowed,
@@ -552,8 +575,120 @@ describe("Antigravity session baseline through HTTP, backend RPC and ACP frames"
         params: { operation, sessionId, experimentalEnabled: true },
       });
     }
-    expect(acp.spawn).not.toHaveBeenCalled();
+    expect(acp.spawn).toHaveBeenCalledTimes(1);
+    expect(acp.frames.map(({ method }) => method)).toEqual(["initialize"]);
+  });
+
+  it("negotiates idle ACP attachments and sends staged image and resource blocks", async () => {
+    acp.setPromptCapabilities({ image: true, embeddedContext: true });
+    const request = (operation: string, fields: Record<string, unknown> = {}) =>
+      backend.rpc(RUNTIME_METHODS.sessionRequest, {
+        operation,
+        sessionId,
+        deviceId: host.deviceId,
+        experimentalEnabled: true,
+        ...fields,
+      });
+    const initial = (await request("live")) as SessionProviderResponse<"live">;
     expect(acp.frames).toEqual([]);
+    const caps = await Promise.all([request("capabilities"), request("capabilities")]);
+    for (const result of caps) {
+      expect(result).toMatchObject({
+        result: {
+          features: {
+            attachments: {
+              available: true,
+              attachmentKinds: { image: true, files: true },
+            },
+          },
+        },
+      });
+    }
+    expect(acp.frames.map(({ method }) => method)).toEqual(["initialize"]);
+
+    const staged = join(root, "backend", "attachments");
+    await mkdir(staged, { recursive: true });
+    const png = Buffer.from(
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jP1sAAAAASUVORK5CYII=",
+      "base64",
+    );
+    const note = Buffer.from("Antigravity context");
+    const put = async (name: string, mime: string, bytes: Buffer) => {
+      const id = randomUUID();
+      await writeFile(join(staged, id), bytes);
+      return {
+        type: "acpAttachment",
+        id,
+        name,
+        mime,
+        size: bytes.length,
+        version: createHash("sha256").update(bytes).digest("hex"),
+      };
+    };
+    const [image, file] = await Promise.all([
+      put("capture.png", "image/png", png),
+      put("notes.txt", "text/plain", note),
+    ]);
+    const result = await request("send", {
+      requestId: randomUUID(),
+      runtimeBootId: initial.result.runtimeBootId,
+      expectedRevision: initial.result.revision,
+      text: "Check the attachments",
+      input: [{ type: "text", text: "Check the attachments" }, image, file],
+    });
+    expect(result).toMatchObject({ result: { accepted: true } });
+    const uri = pathToFileURL(join(staged, file.id)).href;
+    expect(acp.frames.filter(({ method }) => method === "session/prompt")).toMatchObject([
+      {
+        params: {
+          prompt: [
+            { type: "text", text: "Check the attachments" },
+            { type: "image", mimeType: "image/png", data: png.toString("base64") },
+            {
+              type: "resource",
+              resource: { uri, mimeType: "text/plain", blob: note.toString("base64") },
+            },
+            { type: "text", text: expect.stringContaining("[notes.txt](") },
+          ],
+        },
+      },
+    ]);
+  });
+
+  it("sends a staged Web file from the configured host store outside the backend data directory", async () => {
+    acp.setPromptCapabilities({ embeddedContext: true });
+    const data = { note: "A file uploaded through the host" };
+    const upload = await host.http(
+      `/attachments?sessionId=${sessionId}&name=notes.txt&mime=text%2Fplain`,
+      data,
+    );
+    expect(upload).toMatchObject({ status: 201, body: { id: expect.any(String) } });
+    const before = await live();
+    const response = await host.http("/send", {
+      sessionId,
+      bootId: host.bootId,
+      requestId: randomUUID(),
+      expectedRevision: before.body.revision,
+      text: "",
+      attachmentIds: [upload.body.id],
+    });
+    expect(response).toMatchObject({ status: 200, body: { accepted: true } });
+    const uri = pathToFileURL(join(root, "host", "attachments", String(upload.body.id))).href;
+    expect(acp.frames.find(({ method }) => method === "session/prompt")).toMatchObject({
+      params: {
+        prompt: [
+          {
+            type: "resource",
+            resource: {
+              uri,
+              mimeType: "text/plain",
+              blob: Buffer.from(JSON.stringify(data)).toString("base64"),
+            },
+          },
+          { type: "text", text: expect.stringContaining("[notes.txt](") },
+        ],
+      },
+    });
   });
 
   it("keeps the serial queue on the typed RPC without opening another ACP transport", async () => {
@@ -577,7 +712,7 @@ describe("Antigravity session baseline through HTTP, backend RPC and ACP frames"
         features: { send: allowed, "queue-list": allowed, "queue-add": allowed },
       },
     });
-    expect(acp.spawn).not.toHaveBeenCalled();
+    expect(acp.frames.map(({ method }) => method)).toEqual(["initialize"]);
 
     expect(
       await request("send", {
@@ -619,8 +754,9 @@ describe("Antigravity session baseline through HTTP, backend RPC and ACP frames"
       [sessionId, "send"],
       [sessionId, "queue-add"],
     ]);
-    expect(acp.spawn).toHaveBeenCalledTimes(1);
+    expect(acp.spawn).toHaveBeenCalledTimes(2);
     expect(acp.frames.map(({ method }) => method)).toEqual([
+      "initialize",
       "initialize",
       "session/load",
       "session/prompt",
@@ -779,7 +915,7 @@ describe("Antigravity session baseline through HTTP, backend RPC and ACP frames"
       status: 200,
       body: { found: false, requestId },
     });
-    expect(acp.frames).toEqual([]);
+    expect(acp.frames.filter(({ method }) => method !== "initialize")).toEqual([]);
   });
 
   it("keeps Antigravity desktop history read only and offers the CLI's creation options", async () => {

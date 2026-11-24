@@ -45,6 +45,13 @@ describe("appSearchSchema", () => {
       );
     expect(appSearchSchema.parse({}).handoffPreCompaction).toBeUndefined();
   });
+  it.each(["sessions-messaging", "sessions-continuation"])(
+    "preserves the new Sessions destination %s",
+    (settingsTarget) => {
+      const search = { settingsSection: "sessions", settingsTarget };
+      expect(appSearchSchema.parse(search)).toMatchObject(search);
+    },
+  );
   it("keeps settings Agent selection distinct from a workspace Agent", () => {
     expect(
       appSearchSchema.parse({

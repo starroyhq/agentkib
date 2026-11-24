@@ -26,7 +26,7 @@ describe("SettingsSidebar v9 navigation", () => {
     expect(screen.getByRole("button", { name: "Obsidian" })).toBeTruthy();
   });
 
-  it("shows the nine settings sections and the local search without a back entry", () => {
+  it("shows ten settings sections including Sessions and the local search without a back entry", () => {
     const { container } = render(
       <ShortcutHelpProvider openShortcutHelp={() => undefined}>
         <SettingsSidebar active="general" onSelect={() => undefined} />
@@ -40,7 +40,8 @@ describe("SettingsSidebar v9 navigation", () => {
     expect(screen.getByRole("button", { name: "Theme & appearance" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Tools & updates" })).toBeTruthy();
     expect(screen.getByRole("searchbox", { name: "Search settings…" })).toBeTruthy();
-    expect(screen.getAllByRole("button")).toHaveLength(9);
+    expect(screen.getByRole("button", { name: "Sessions" })).toBeTruthy();
+    expect(screen.getAllByRole("button")).toHaveLength(10);
     expect(screen.getByRole("button", { name: "Remote connections" })).toBeTruthy();
   });
 
@@ -59,6 +60,27 @@ describe("SettingsSidebar v9 navigation", () => {
     expect(screen.queryByRole("button", { name: "General" })).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Obsidian" }));
     expect(onSelect).toHaveBeenCalledWith("integrations", "integrations-obsidian");
+  });
+
+  it("finds moved conversation settings and opens their Sessions groups", () => {
+    const onSelect = vi.fn();
+    render(<SettingsSidebar active="general" onSelect={onSelect} />);
+    fireEvent.click(screen.getByRole("button", { name: "Sessions" }));
+    expect(onSelect).toHaveBeenLastCalledWith("sessions", undefined);
+
+    const search = screen.getByRole("searchbox", { name: "Search settings…" });
+    fireEvent.change(search, { target: { value: tr("conversation.sendWhileRunningSteer") } });
+    fireEvent.click(screen.getByRole("button", { name: tr("conversation.sendWhileRunning") }));
+    expect(onSelect).toHaveBeenLastCalledWith("sessions", "sessions-messaging");
+
+    fireEvent.change(search, { target: { value: "usage limit resets" } });
+    fireEvent.click(screen.getByRole("button", { name: tr("settings.usageLimitAutoContinue") }));
+    expect(onSelect).toHaveBeenLastCalledWith("sessions", "sessions-continuation");
+
+    const alternate = tr("conversation.alternateFollowUp");
+    fireEvent.change(search, { target: { value: alternate } });
+    fireEvent.click(screen.getByRole("button", { name: alternate }));
+    expect(onSelect).toHaveBeenLastCalledWith("shortcuts", "shortcuts-actions");
   });
 
   it("scrolls to an already-active search result every time it is selected", () => {

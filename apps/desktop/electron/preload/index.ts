@@ -1,4 +1,6 @@
 import type { NativeMemoryQuery } from "@agentkib/runtime-protocol";
+import type { WebAdminReply } from "../main/web/admin-errors";
+import type { WebAdminRequest } from "../main/web/service";
 import type { DesktopAccountRequest, DesktopAccountStatus } from "../main/account/state";
 import { contextBridge, ipcRenderer } from "electron";
 import type { DesktopApi, DesktopRuntimeStatus, DesktopConversationApi, QuitRequest } from "../api";
@@ -36,6 +38,17 @@ function subscribe<T>(channel: string, listener: (value: T) => void): () => void
   ipcRenderer.on(channel, ipcListener);
   return () => ipcRenderer.removeListener(channel, ipcListener);
 }
+
+// Only a real paste in this renderer can request native file references.
+let lastPasteAt = -Infinity;
+if (typeof window !== "undefined")
+  window.addEventListener(
+    "paste",
+    (event) => {
+      if (event.isTrusted) lastPasteAt = performance.now();
+    },
+    { capture: true },
+  );
 
 const desktopApi = Object.freeze({
   platform: process.platform,
@@ -352,6 +365,11 @@ const desktopApi = Object.freeze({
       ipcRenderer.invoke("agentkib:workspace:doctor-summaries", workspaceIds),
   }),
   shell: Object.freeze({
+    readClipboardAttachmentFiles: () => {
+      if (performance.now() - lastPasteAt > 1_000) return Promise.resolve(undefined);
+      lastPasteAt = -Infinity;
+      return ipcRenderer.invoke("agentkib:clipboard:attachment-files");
+    },
     openDirectory: (title?: string) => ipcRenderer.invoke("agentkib:shell:open-directory", title),
     openExternal: (url: string) => ipcRenderer.invoke("agentkib:shell:open-external", url),
     openFilesAndFoldersSettings: () =>
@@ -369,7 +387,11 @@ const desktopApi = Object.freeze({
     request: (request: unknown) => ipcRenderer.invoke("agentkib:claude:request", request),
   }),
   web: Object.freeze({
-    request: (request: unknown) => ipcRenderer.invoke("agentkib:web:request", request),
+    request: async (request: WebAdminRequest) => {
+      const result: WebAdminReply = await ipcRenderer.invoke("agentkib:web:request", request);
+      if (!result.ok) throw new Error(result.reason);
+      return result.status;
+    },
   }),
   settings: Object.freeze({
     setCloseBehavior: (value: unknown) =>

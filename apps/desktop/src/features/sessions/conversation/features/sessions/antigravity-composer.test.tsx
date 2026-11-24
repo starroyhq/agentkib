@@ -48,7 +48,7 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 describe("Antigravity composer shortcuts", () => {
-  it("adds the current draft to the queue while the native turn can still be stopped", async () => {
+  it("queues from the primary action and restores Stop when the draft clears", async () => {
     const runSessionAction = vi.fn().mockResolvedValue({ queuedSubmission: { id: "queued" } });
     const sessionQueue = vi.fn().mockResolvedValue({ sessionId: "s", data: [] });
     state.session = {
@@ -65,20 +65,45 @@ describe("Antigravity composer shortcuts", () => {
       },
     } as unknown as SessionController;
     render(<SessionReader />);
-    expect(screen.getByRole("button", { name: "Stop" })).toBeEnabled();
-    // Antigravity has the managed composer: the running send choices sit in its menu.
-    await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: "More actions" }));
-    });
-    const queue = await screen.findByRole("menuitem", { name: "Queue for automatic execution" });
-    expect(queue).not.toHaveAttribute("aria-disabled", "true");
+    expect(screen.queryByRole("button", { name: "More actions" })).toBeNull();
+    const queue = screen.getByRole("button", { name: "Queue for automatic execution" });
+    expect(queue).toBeEnabled();
     await act(async () => {
       fireEvent.click(queue);
     });
+    expect(screen.getByRole("button", { name: "Stop" })).toBeEnabled();
     expect(runSessionAction).toHaveBeenCalledExactlyOnceWith("queue-add", { text: "first line" });
     expect(state.control).not.toHaveBeenCalled();
     expect(screen.getByRole("textbox", { name: "Message" })).toHaveValue("");
     expect(sessionQueue).toHaveBeenCalledWith("s", "antigravity", expect.any(AbortSignal));
+  });
+
+  it("can still explicitly add to a paused queue while the session is idle", async () => {
+    const runSessionAction = vi.fn().mockResolvedValue({ queuedSubmission: { id: "queued" } });
+    const sessionQueue = vi.fn().mockResolvedValue({ sessionId: "s", paused: true, data: [] });
+    state.session = {
+      ...state.session,
+      runSessionAction,
+      client: { sessionQueue },
+      access: { ...state.session.access!, device: { send: true, advancedControl: true } },
+      capabilities: {
+        sessionId: "s",
+        features: { "queue-list": { available: true }, "queue-add": { available: true } },
+      },
+    } as unknown as SessionController;
+    render(<SessionReader />);
+    const input = screen.getByRole("textbox", { name: "Message" });
+    await act(async () => {
+      fireEvent.keyDown(input, { key: "Enter", metaKey: true });
+    });
+    expect(runSessionAction).toHaveBeenCalledExactlyOnceWith("queue-add", { text: "first line" });
+    expect(state.control).not.toHaveBeenCalled();
+
+    fireEvent.change(input, { target: { value: "Send now" } });
+    await act(async () => {
+      fireEvent.keyDown(input, { key: "Enter" });
+    });
+    expect(state.control.mock.calls[0]?.[0]).toBe("send");
   });
 
   it("sends with desktop Enter and keeps Shift+Enter and IME input as text", async () => {

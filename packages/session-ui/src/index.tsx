@@ -102,6 +102,8 @@ export { PendingCenter, type PendingCenterCopy } from "./conversation/sessions/p
 export { SessionDetailsDialog } from "./conversation/catalog/session-details-dialog";
 export {
   SessionManagementRowMenu,
+  SessionPinnedMark,
+  hasSessionPinning,
   type SessionManagementRowMenuProps,
 } from "./conversation/catalog/session-row-menu";
 export {
@@ -154,6 +156,7 @@ export {
 export { PreferencesDialog } from "./conversation/preferences/preferences-dialog";
 export { useAppearance } from "./conversation/preferences/use-appearance";
 export {
+  alternateFollowUpShortcut,
   useSendWhileRunning,
   setSendWhileRunning,
   runningSendAction,
@@ -444,7 +447,7 @@ export {
   SessionDetailComposerNotices,
   SessionDetailReadOnlyFooter,
 } from "./session-detail-composer";
-export { SessionActivities } from "./session-activities";
+export { SessionActivities, SessionActivityButton } from "./session-activities";
 export { sessionQueuePanel, type SessionQueuePanelAgent } from "./agents/session-queue";
 
 export { projectAgentCopy, type ProjectAgentCopy } from "./project-agent-copy";

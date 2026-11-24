@@ -1498,6 +1498,23 @@ describe("SessionDirectory", () => {
     ]);
   });
 
+  it("keeps pinned sessions ahead of manual order and rejects crossing that boundary", () => {
+    const pin = { ...first, id: "pin", title: "Pinned session", pinned: true };
+    const normal = { ...first, id: "normal", title: "Unpinned session" };
+    hub = { ...hub, sessions: [normal, pin, first] };
+    const prior = [normal.id, first.id, pin.id];
+    useSessionViewStore.setState({ sessionOrder: { "workspace-a": prior } });
+    render(<SessionDirectory />);
+    const buttons = screen.getAllByRole("button", {
+      name: /Pinned session|Unpinned session|Check sidebar selection/,
+    });
+    expect(buttons[0]).toHaveTextContent("Pinned session");
+    expect(buttons[1]).toHaveTextContent("Unpinned session");
+    dragEntry(buttons[0]!, buttons[1]!, true);
+    fireEvent.keyDown(buttons[0]!, { altKey: true, key: "ArrowDown" });
+    expect(useSessionViewStore.getState().sessionOrder["workspace-a"]).toEqual(prior);
+  });
+
   it("normalizes saved workspace and session IDs before persisting a drag order", () => {
     expect(
       normalizeDirectoryOrder(

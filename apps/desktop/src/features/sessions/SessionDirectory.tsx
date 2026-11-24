@@ -4,6 +4,7 @@ import {
   sessionGroupActivity,
   sessionContinuationListState,
   SessionContinuationDot,
+  SessionPinnedMark,
   requestReadReview,
 } from "@agentkib/session-ui";
 import { cn } from "cn";
@@ -434,6 +435,7 @@ export function SessionDirectory({
                                 selected={hub.selected?.id === session.id}
                                 hideIndicators
                               />
+                              {session.pinned === true && <SessionPinnedMark locale={locale} />}
                             </Button>
                           </SessionDirectoryHoverCard>
                           {/* A paired host's sessions are managed on that host. */}

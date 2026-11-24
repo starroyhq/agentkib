@@ -184,6 +184,42 @@ describe("relay broker validation", () => {
   });
 });
 
+describe("recovering saved Web settings", () => {
+  it("clears an invalid saved configuration only after a successful disabled save", async () => {
+    await service.shutdown();
+    const configuration = join(dir, "web-access.json");
+    await writeFile(configuration, "unreadable settings");
+    await service.initialize();
+    const initial = await status();
+    expect(initial).toMatchObject({
+      running: false,
+      error: "invalid_saved_configuration",
+      config: { enabled: false },
+    });
+
+    await mkdir(`${configuration}.tmp`);
+    const request = { operation: "configure", ...initial.config } as const;
+    await expect(service.request(request)).rejects.toThrow("web_state_save_failed");
+    expect((await status()).error).toBe("invalid_saved_configuration");
+    await rm(`${configuration}.tmp`, { recursive: true });
+
+    const repaired = await service.request(request);
+    expect(repaired.error).toBeUndefined();
+    expect(repaired.running).toBe(false);
+    expect(JSON.parse(await readFile(configuration, "utf8")).config).toEqual(repaired.config);
+  });
+
+  it("reports an invalid external origin with a fixed reason", async () => {
+    await expect(
+      service.request({
+        operation: "configure",
+        ...(await status()).config,
+        externalOrigin: "not a URL with private details",
+      }),
+    ).rejects.toThrow("invalid_external_origin");
+  });
+});
+
 describe("quitting during remote enable", () => {
   it("waits for an in-flight enable and leaves no listener or relay behind", async () => {
     const paused = pauseNextSave();
@@ -464,6 +500,20 @@ describe("account ownership and durable pause", () => {
     await service.request({ operation: "relay-stop" });
     expect((await status()).devices).toHaveLength(1);
   });
+  it("reports an unreadable saved account registration without exposing its contents", async () => {
+    const directory = join(
+      dir,
+      "relay",
+      createHash("sha256").update(brokerUrl).digest("hex").slice(0, 24),
+    );
+    await mkdir(directory, { recursive: true });
+    await writeFile(join(directory, "registration.json"), "not valid JSON with private contents");
+    await expect(service.request({ operation: "remote-enable", brokerUrl })).rejects.toThrow(
+      "invalid_account_registration",
+    );
+    expect(relays).toHaveLength(0);
+  });
+
   it("requires login for first official registration even with a stale invitation", async () => {
     account.signedIn.mockReturnValue(false);
     await expect(

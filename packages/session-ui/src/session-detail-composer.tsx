@@ -110,7 +110,6 @@ export function SessionDetailComposerNotices({
   agent,
   accessMode,
   banner,
-  background,
   interactions,
   live,
   notice,
@@ -122,7 +121,6 @@ export function SessionDetailComposerNotices({
   agent?: string;
   accessMode?: NonNullable<Access["device"]>["accessMode"];
   banner?: ReactNode;
-  background?: ReactNode;
   interactions: ReactNode;
   live?: Pick<Live, "approvals" | "questions">;
   notice?: string;
@@ -158,7 +156,6 @@ export function SessionDetailComposerNotices({
           {banner}
         </p>
       )}
-      {background}
       {interactions}
       {showNotice && (
         <p

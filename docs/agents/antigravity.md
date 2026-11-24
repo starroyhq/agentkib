@@ -56,7 +56,7 @@ AgentKib 不自动下载 ACP server，也不读取或复制 Google 登录凭据�
 - **审批**：CLI 的工具参数与旧服务不同（命令为 `CommandLine`，编辑为 `Path`、`Target`、`Replacement` 加上差异），AgentKib 先映射到既有的核对规则：命令显示命令行，编辑以差异显示。对于能完整展示工具名和参数的具名 MCP 请求，也可在会话中审批。参数被脱敏、缺失或无法核对时不可审批。只提供 CLI 给出的“允许一次”和“拒绝”。
 - **项目 Agent**：由 AgentKib 控制的 Antigravity 会话可以担任项目 Agent。连接会话时把 `agentkib_workers` 回环端点作为 `mcpServers` 交给 Antigravity，不写入 Antigravity 的配置。AgentKib 按该端点实际登记的工具生成完整名称（如 `mcp_agentkib_workers_worker_list`），精确匹配时自动允许一次，其余审批照常请求确认。代批、代答范围变化后，在两轮之间重新连接以换上新工具。汇报经 AgentKib 的会话控制发出，忙时排队。
 - **失败原因**：一轮没能运行或完成时，会话保持可用，输入框上方说明原因：额度或速率限制（`antigravity-usage-limited`）、未登录（`antigravity-login-required`，在终端运行一次 `agy` 登录）或其他失败（`antigravity-run-failed`）。
-- **实测但未接入**：`agy acp` 接受图片提示；运行中再发一条提示也会被接受（前一个提示立即以 `end_turn` 返回，内容继续生成）。AgentKib 暂不提供附件和插话，仍按队列在一轮结束后发送。
+- **附件与运行中发送**：空闲 ACP 会话按原生协商支持图片和文件。普通文件使用 Markdown 链接，并按协商提供资源内容或链接。内嵌内容合计上限 600 KiB。运行中的消息仍按队列在一轮结束后发送，队列与新建会话的首条消息接收文字。
 
 ## 官方接口尚未提供的能力
 

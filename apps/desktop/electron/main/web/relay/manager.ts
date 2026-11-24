@@ -1,3 +1,4 @@
+import { readWebAdminReason, type WebAdminReason } from "../admin-errors";
 import { spawn, execFile, type ChildProcess } from "node:child_process";
 import {
   generateKeyPairSync,
@@ -112,6 +113,7 @@ export type RelayStatus = {
   previewUrl?: string;
   error?: string;
   reason?: Reason;
+  setupCode?: WebAdminReason;
   channels?: Record<Channel, boolean>;
   retryAt?: number;
   certificateWarning?: boolean;
@@ -611,7 +613,12 @@ export class RelayManager {
       .sort()
       .slice(0, 16);
   }
-  private report(phase: RelayStatus["phase"], reason?: Reason, retryAt?: number) {
+  private report(
+    phase: RelayStatus["phase"],
+    reason?: Reason,
+    retryAt?: number,
+    setupCode?: WebAdminReason,
+  ) {
     if (phase === "ready" || phase === "disabled") {
       this.failure = undefined;
       this.connectorExit = undefined;
@@ -646,6 +653,7 @@ export class RelayManager {
           }
         : {}),
       ...(retryAt ? { retryAt } : {}),
+      ...(setupCode ? { setupCode } : {}),
       ...(this.relayPolicy?.resetsAt !== undefined ? { resetsAt: this.relayPolicy.resetsAt } : {}),
       ...(this.connectorExit && reason === "connector"
         ? { connectorExit: this.connectorExit }
@@ -731,16 +739,19 @@ export class RelayManager {
     this.report("connecting");
     const work = this.initialize(generation).catch((error) => {
       if (generation !== this.generation) return;
-      this.failClosed(
-        error instanceof RelayAuthorizationError
-          ? "revoked"
-          : this.current.phase === "certifying"
-            ? "certificate"
-            : this.failure?.stage === "broker"
-              ? "network"
-              : "setup",
-        !(error instanceof RelayAuthorizationError || error instanceof RelayExecutableError),
-      );
+      const retry = !(error instanceof RelayExecutableError);
+      if (error instanceof RelayAuthorizationError) this.failClosed("revoked", false);
+      else if (this.current.phase === "certifying") this.failClosed("certificate", retry);
+      else if (this.failure?.stage === "broker") this.failClosed("network", retry);
+      else if (this.failure?.stage === "control-connector") this.failClosed("connector", retry);
+      else {
+        const code = readWebAdminReason(error);
+        this.failClosed(
+          code === "account_login_required" ? "account-required" : "setup",
+          retry,
+          code === "web_request_failed" ? "relay_setup_failed" : code,
+        );
+      }
     });
     this.running = work;
     void work.finally(() => {
@@ -795,7 +806,7 @@ export class RelayManager {
       throw new Error("account_registration_pending");
     if (!pending) {
       if (!this.options.inviteCode && !accountRegistration)
-        throw new Error("Relay invitation required");
+        throw new Error("relay_invitation_required");
       pending = {
         ...(accountRegistration ? { accountId: this.options.registrationAccountId } : {}),
         brokerUrl: this.brokerUrl,
@@ -1758,16 +1769,16 @@ export class RelayManager {
     this.retryTimer = undefined;
     this.disconnect();
   }
-  private failClosed(reason: Reason, retry: boolean) {
+  private failClosed(reason: Reason, retry: boolean, setupCode?: WebAdminReason) {
     // 被 broker 拒绝后只能靠新邀请码恢复；不关掉 enabled 的话，每次系统唤醒 resume()
     // 都会拿旧凭据再撞一次 403，并短暂把"需要新邀请"的错误盖成"连接中"。
     if (reason === "revoked") this.enabled = false;
     this.invalidate();
-    this.report(reason === "revoked" ? "error" : "offline", reason);
+    this.report(reason === "revoked" ? "error" : "offline", reason, undefined, setupCode);
     if (!retry || !this.enabled || this.suspended) return;
     const generation = this.generation;
     const delay = this.backoff();
-    this.report("offline", reason, Date.now() + delay);
+    this.report("offline", reason, Date.now() + delay, setupCode);
     this.retryTimer = setTimeout(() => {
       void (async () => {
         await Promise.allSettled(

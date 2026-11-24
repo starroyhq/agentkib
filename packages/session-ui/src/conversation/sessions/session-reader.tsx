@@ -227,6 +227,18 @@ export function SessionReader({
             onOpenChange={(open) => panels?.setActionsOpen(open)}
           />
         }
+        activityPanel={
+          <SessionActivities
+            sessionId={selected}
+            locale={locale}
+            capabilities={
+              sessionProviderDeclaration(current?.id === selected ? current.agent : undefined)
+                ?.activities
+            }
+            live={selectedLive}
+            client={client}
+          />
+        }
         beforeTranscript={
           <SessionDetailHeader
             locale={locale}
@@ -248,15 +260,6 @@ export function SessionReader({
               agent={current?.agent}
               accessMode={access.device?.accessMode}
               banner={composerBanner && !session.pendingSend ? banner?.body : undefined}
-              background={
-                <SessionActivities
-                  sessionId={selected}
-                  locale={locale}
-                  capabilities={sessionProviderDeclaration(current?.agent)?.activities}
-                  live={selectedLive}
-                  client={client}
-                />
-              }
               interactions={
                 <SessionInteractionDock
                   session={session}

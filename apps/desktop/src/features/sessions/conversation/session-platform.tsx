@@ -64,6 +64,13 @@ import { localizedUnavailableReasonText } from "./live-status";
 
 export { desktopSessionImages as sessionImages } from "./desktop-session-images";
 
+export async function readDesktopClipboardFiles(): Promise<File[] | undefined> {
+  const files = await api.readClipboardAttachmentFiles();
+  return files?.map(
+    ({ bytes, mime, name }) => new File([new Uint8Array(bytes)], name, { type: mime }),
+  );
+}
+
 function DesktopDialogContent({
   closeLabel: _closeLabel,
   ...props
@@ -252,6 +259,7 @@ export function useDesktopSessionPlatform(client: WebClient): SessionPlatform {
         ? {
             isMacOS,
             requestBridge: api.claudeRequest,
+            readClipboardFiles: isMacOS ? readDesktopClipboardFiles : undefined,
             openExternal: api.openExternal,
             components: desktopComponents,
           }

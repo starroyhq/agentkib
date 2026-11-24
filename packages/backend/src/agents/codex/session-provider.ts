@@ -3,13 +3,13 @@ import { existsSync, lstatSync, readFileSync, realpathSync, statSync } from "nod
 import { homedir } from "node:os";
 import path from "node:path";
 import { z } from "zod";
-import { SESSION_COLLECTIONS } from "@agentkib/runtime-protocol";
+import { SESSION_COLLECTIONS, sessionCollection } from "@agentkib/runtime-protocol";
 import {
   stableJson,
   type ApplyManagedControl,
   type managedControlSchema,
 } from "../../sessions/control-admission";
-import type { NativeSession } from "../../session-store";
+import { sessionIdentity, type NativeSession } from "../../session-store";
 import type { BackendStore } from "../../store";
 import type { SessionReaders } from "../../session-readers";
 import { enrichLedgerImages } from "../../session-image-matching";
@@ -20,12 +20,13 @@ import {
   managedRecordSchema,
   readManagedCatalog,
 } from "./managed-session-catalog";
-import { canonicalize, pathIdentity } from "../../paths";
+import { canonicalize, lexicalPathIdentity, pathIdentity } from "../../paths";
 import { within } from "../../files";
 import { conversationReadKey, ReadStateLedger } from "../../read-state-ledger";
 import { codexTurnMeta, isCodexTurnEndEvent } from "./codex-turn-end";
 import { CODEX_TURN_START_REJECTED } from "./codex-turn-error";
 import { codexExecutable } from "./codex-executable";
+import { CODEX_PINNED_SECTION, CodexSessions } from "./codex-sessions";
 import {
   CodexAppServerError,
   CodexAppServerReader,
@@ -330,6 +331,15 @@ type CodexEventRead = {
   retainCursor?: boolean;
 };
 
+type CodexPinTarget = {
+  nativeId: string;
+  workspaceId: string;
+  home: string;
+  cwd: string;
+  nativeDirectory: string;
+  collection: boolean;
+};
+
 export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider {
   readonly agent = "codex" as const;
   readonly validateControl = validateCodexControl;
@@ -337,6 +347,12 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
   readonly typed = this;
   #codex: CodexAppServerReader;
   #preflight: CodexRuntimePreflight;
+  #pinSource?: CodexSessions;
+  #pinProjection?: {
+    native: NonNullable<ReturnType<CodexSessions["pinSnapshot"]>>;
+    indexed: NonNullable<ReturnType<CodexSessions["pinSnapshot"]>>;
+  };
+  #pinWrites = new Set<string>();
 
   // New-session options and settings without a runner each start an app-server.
   #optionsCatalog = new CodexCatalogCache<Record<string, unknown>>();
@@ -571,6 +587,8 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
   }
 
   closeReader(): Promise<void> {
+    this.#pinSource?.close();
+    this.#pinProjection = undefined;
     return this.#codex.closeAsync();
   }
 
@@ -788,6 +806,205 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
   /** A Codex CLI for reads: the one the last version check chose, else the first found. */
   #codexReader(): string | null {
     return this.#preflight.preferred() ?? codexExecutable(this.host.environment);
+  }
+
+  #readPinSource() {
+    return (this.#pinSource ??= new CodexSessions(
+      { ...this.host.environment, CODEX_HOME: this.host.sessions.codexHome() },
+      { retainDatabase: true },
+    )).pinSnapshot();
+  }
+
+  pinStates(sessionIds: readonly string[]): Map<string, { pinned: boolean; available: boolean }> {
+    const states = new Map<string, { pinned: boolean; available: boolean }>();
+    if (!sessionIds.length) return states;
+    let available = true;
+    try {
+      const native = this.#readPinSource();
+      if (!native) {
+        if (!this.#pinProjection) return states;
+        available = false;
+      } else if (native !== this.#pinProjection?.native) {
+        const salt = this.host.store.sessions.identitySalt();
+        const indexed = new Map(
+          Array.from(native, ([id, state]) => [sessionIdentity(salt, "codex", id), state]),
+        );
+        this.#pinProjection = { native, indexed };
+      }
+    } catch {
+      available = false;
+    }
+    const projection = this.#pinProjection;
+    if (!projection) {
+      // An unclassified read failure cannot prove that these sessions lack native pin support.
+      for (const id of sessionIds) states.set(id, { pinned: false, available: false });
+      return states;
+    }
+    const managed = new Map(
+      readManagedRecords(this.host.dataDir, this.host.store).map((record) => [record.id, record]),
+    );
+    for (const sessionId of sessionIds) {
+      const record = managed.get(sessionId);
+      const state = record
+        ? record.native_id && this.#isCodexHome(record.home)
+          ? projection.native.get(record.native_id)
+          : undefined
+        : projection.indexed.get(sessionId);
+      states.set(sessionId, {
+        pinned: state?.pinned ?? false,
+        available: available && !!state?.available && !record?.archived,
+      });
+    }
+    return states;
+  }
+
+  async #pinTarget(sessionId: string): Promise<CodexPinTarget> {
+    const row = this.host.store.sessions.get(sessionId);
+    if (row && sessionCollection(row.workspace_id)) {
+      if (row.agent !== "codex" || row.archived || row.sidechain)
+        throw new Error("session-pin-unavailable");
+      const resolved = await this.host.sessions.resolve(sessionId);
+      const nativeId = resolved.native.native_ref;
+      if (
+        resolved.summary.workspace_id !== row.workspace_id ||
+        resolved.native.agent !== "codex" ||
+        this.host.store.sessions.id("codex", nativeId) !== sessionId ||
+        !this.host.sessions.verifiedCodexControlIds([nativeId]).has(nativeId.toLowerCase())
+      )
+        throw new Error("unverified-session-identity");
+      const home = canonicalize(this.host.sessions.codexHome());
+      // A conversation-only record is never an execution directory for AgentKib.
+      // Start the metadata-only app-server in its verified home, not the native cwd.
+      if (!path.isAbsolute(resolved.workspace) || !lstatSync(home).isDirectory())
+        throw new Error("session-pin-unavailable");
+      return {
+        nativeId,
+        workspaceId: row.workspace_id,
+        home,
+        cwd: home,
+        nativeDirectory: lexicalPathIdentity(resolved.workspace),
+        collection: true,
+      };
+    }
+    const record = await this.#inactiveRecord(sessionId);
+    if (!record.native_id || record.archived) throw new Error("session-pin-unavailable");
+    const cwd = this.#managedCwd(record);
+    return {
+      nativeId: record.native_id,
+      workspaceId: record.workspace_id,
+      home: this.#assertManagedHome(record),
+      cwd,
+      nativeDirectory: pathIdentity(cwd),
+      collection: false,
+    };
+  }
+
+  setPinned(sessionId: string, pinned: boolean): Promise<boolean> {
+    return this.host.runOperation(async () => {
+      this.host.assertOpen();
+      const generation = this.host.indexGeneration();
+      const target = await this.#pinTarget(sessionId);
+      const { nativeId, home, cwd } = target;
+      if (!this.pinStates([sessionId]).get(sessionId)?.available)
+        throw new Error("session-pin-unavailable");
+      const executable = this.#codexReader();
+      if (!executable || this.#pinWrites.has(nativeId.toLowerCase()))
+        throw new Error("session-pin-unavailable");
+      this.#pinWrites.add(nativeId.toLowerCase());
+      let session: CodexAppServerSession | undefined;
+      try {
+        const opened = await CodexAppServerSession.start(
+          executable,
+          cwd,
+          home,
+          { ...process.env, ...this.host.environment },
+          undefined,
+          (started) => {
+            session = started;
+            this.#trackTransientSession(started);
+          },
+        );
+        const readPinned = async () => {
+          const response = await opened.request("thread/read", {
+            threadId: nativeId,
+            includeTurns: false,
+          });
+          this.host.assertOpen();
+          if (this.host.indexGeneration() !== generation)
+            throw new Error("session-pin-unavailable");
+          const thread = isObject(response) ? response.thread : null;
+          if (!isObject(thread) || thread.id !== nativeId)
+            throw new Error("thread-identity-mismatch");
+          if (
+            typeof thread.cwd !== "string" ||
+            (target.collection
+              ? lexicalPathIdentity(thread.cwd)
+              : pathIdentity(canonicalize(thread.cwd))) !== target.nativeDirectory
+          )
+            throw new Error("session-workspace-mismatch");
+          if (
+            thread.section !== null &&
+            (!isObject(thread.section) || typeof thread.section.id !== "string")
+          )
+            throw new Error("session-pin-unavailable");
+          return isObject(thread.section) && thread.section.id === CODEX_PINNED_SECTION;
+        };
+        if ((await readPinned()) === pinned) return pinned;
+        const latest = await this.#pinTarget(sessionId);
+        if (
+          latest.nativeId !== nativeId ||
+          latest.workspaceId !== target.workspaceId ||
+          latest.collection !== target.collection ||
+          latest.home !== home ||
+          latest.nativeDirectory !== target.nativeDirectory
+        )
+          throw new Error("session-pin-unavailable");
+        try {
+          await opened.request(
+            "thread/section/move",
+            {
+              threadId: nativeId,
+              sectionId: pinned ? CODEX_PINNED_SECTION : null,
+              beforeThreadId: null,
+            },
+            () => {
+              this.host.assertOpen();
+              if (this.host.indexGeneration() !== generation)
+                throw new Error("session-pin-unavailable");
+              const current = this.#readPinSource()?.get(nativeId);
+              if (!current?.available) throw new Error("session-pin-unavailable");
+              if (target.collection) {
+                const row = this.host.store.sessions.get(sessionId);
+                if (
+                  row?.workspace_id !== target.workspaceId ||
+                  row.agent !== "codex" ||
+                  row.archived ||
+                  row.sidechain ||
+                  !current.cwd ||
+                  lexicalPathIdentity(current.cwd) !== target.nativeDirectory
+                )
+                  throw new Error("session-pin-unavailable");
+              }
+              // Don't clear a custom section if Codex unpinned the thread since our first read.
+              if (current.pinned === pinned) throw new Error("session-pin-already-applied");
+            },
+          );
+        } catch (error) {
+          if (!(error instanceof Error) || error.message !== "session-pin-already-applied")
+            throw error;
+        } finally {
+          this.host.catalogChanged?.();
+        }
+        if ((await readPinned()) !== pinned) throw new Error("session-pin-unconfirmed");
+        return pinned;
+      } finally {
+        try {
+          await session?.close();
+        } finally {
+          this.#pinWrites.delete(nativeId.toLowerCase());
+        }
+      }
+    });
   }
 
   async options() {

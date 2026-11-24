@@ -60,6 +60,9 @@ import type {
   WebAdminStatus,
   WebConfig,
 } from "../../../electron/main/web/service";
+import { readWebAdminReason, type WebAdminReason } from "../../../electron/main/web/admin-errors";
+import { webAdminRecovery } from "./web-admin-recovery";
+import { webRecoveryCopy } from "./web-recovery-copy";
 import { webSettingsCopy } from "./web-settings-copy";
 import { lanSettingsCopy } from "./lan-settings-copy";
 import { remoteEntryCopy } from "./remote-entry-copy";
@@ -222,8 +225,24 @@ export function WebAccessSettings({
     status?.devices.some((device) => device.accessMode !== "full") ||
     Boolean(status?.pending.length);
   const [config, setConfig] = useState<WebConfig>();
-  const [loadFailed, setLoadFailed] = useState(false);
-  const [operationError, setOperationError] = useState<"save" | "request">();
+  const [loadFailed, setLoadFailed] = useState<WebAdminReason>();
+  const [operationError, setOperationError] = useState<{
+    kind: "save" | "request";
+    reason: WebAdminReason;
+  }>();
+  const failureReason =
+    operationError?.reason ??
+    loadFailed ??
+    (status?.error
+      ? readWebAdminReason(status.error)
+      : (status?.relay?.setupCode ??
+        (status?.relay?.reason === "account-required" ? "account_login_required" : undefined)));
+  const recovery = failureReason
+    ? webAdminRecovery(locale, failureReason, operationError?.kind === "save")
+    : status?.relay?.failure?.code === "integrity"
+      ? { message: r.failureCodes.integrity, action: "settings" as const }
+      : undefined;
+  const repairSavedConfig = status?.error === "invalid_saved_configuration";
   const [localSaveFailed, setLocalSaveFailed] = useState(false);
   const [saveState, setSaveState] = useState<"saved" | "failed">();
   const [operationBusy, setBusy] = useState(false);
@@ -293,8 +312,8 @@ export function WebAccessSettings({
             : old,
         );
       },
-      error: () => setLoadFailed(true),
-      success: () => setLoadFailed(false),
+      error: setLoadFailed,
+      success: () => setLoadFailed(undefined),
     });
     return () => {
       mounted.current = false;
@@ -309,25 +328,25 @@ export function WebAccessSettings({
       success: () => setLanUnavailable(false),
     });
   }, [lan]);
-  async function run(input: WebAdminRequest) {
+  async function run(input: WebAdminRequest, restart = false) {
     if (locked.current || getWebAdminState(target).busy || useRemoteStore.getState().busy) return;
     locked.current = true;
     setBusy(true);
     setActiveOperation(input.operation);
     setOperationError(undefined);
-    setLoadFailed(false);
+    setLoadFailed(undefined);
     return await withAsyncCleanup(
       async () => {
         try {
           const next = await requestWebAdmin({ ...input, ...(lan ? { target } : {}) });
           if (mounted.current) {
             setStatus(next);
-            if (input.operation === "configure") {
+            if (input.operation === "configure" && !restart) {
               if (next.error) {
                 saveOutcome.current = "failed";
                 setLocalSaveFailed(true);
                 setSaveState("failed");
-                setOperationError("save");
+                setOperationError({ kind: "save", reason: readWebAdminReason(next.error) });
               } else {
                 setConfig(next.config);
                 setExtraRootsText(undefined);
@@ -343,7 +362,8 @@ export function WebAccessSettings({
                 saveOutcome.current = extraSaved ? "saved" : "failed";
                 if (mounted.current) {
                   setSaveState(extraSaved ? "saved" : "failed");
-                  if (!extraSaved) setOperationError("save");
+                  if (!extraSaved)
+                    setOperationError({ kind: "save", reason: "web_state_save_failed" });
                 }
               }
             }
@@ -351,11 +371,15 @@ export function WebAccessSettings({
               setInviteCode((old) => (old === input.inviteCode ? "" : old));
             return next;
           }
-        } catch {
-          if (input.operation === "configure") saveOutcome.current = "failed";
+        } catch (error) {
+          const saving = input.operation === "configure" && !restart;
+          if (saving) saveOutcome.current = "failed";
           if (mounted.current) {
-            setOperationError(input.operation === "configure" ? "save" : "request");
-            if (input.operation === "configure") {
+            setOperationError({
+              kind: saving ? "save" : "request",
+              reason: readWebAdminReason(error),
+            });
+            if (saving) {
               setLocalSaveFailed(true);
               setSaveState("failed");
             }
@@ -428,7 +452,10 @@ export function WebAccessSettings({
     status &&
     (normalizeBrokerUrl(relayBroker) !==
       normalizeBrokerUrl(status.config.relay?.brokerUrl || OFFICIAL_BROKER_URL) ||
-      frpcPath.trim() !== (status.config.relay?.frpcPath || "").trim()),
+      frpcPath.trim() !== (status.config.relay?.frpcPath || "").trim() ||
+      (customBroker &&
+        status.relay?.setupCode === "relay_invitation_required" &&
+        inviteCode.trim())),
   );
   const brokerChanged = Boolean(
     status?.config.relay &&
@@ -477,14 +504,14 @@ export function WebAccessSettings({
   async function saveSettings() {
     if (busy || locked.current || getWebAdminState(target).busy || useRemoteStore.getState().busy)
       return false;
-    if (!unsaved && !advancedDirty) {
+    if (!unsaved && !advancedDirty && !repairSavedConfig) {
       setOperationError(undefined);
       setSaveState(undefined);
       return true;
     }
-    if (unsaved) {
+    if (configToSave && (unsaved || repairSavedConfig)) {
       saveOutcome.current = undefined;
-      await run({ operation: "configure", ...configToSave! });
+      await run({ operation: "configure", ...configToSave });
       return saveOutcome.current === "saved";
     }
     locked.current = true;
@@ -494,13 +521,13 @@ export function WebAccessSettings({
       const saved = await onSaveAdvanced?.();
       if (mounted.current) {
         setSaveState(saved ? "saved" : "failed");
-        if (!saved) setOperationError("save");
+        if (!saved) setOperationError({ kind: "save", reason: "web_state_save_failed" });
       }
       return Boolean(saved);
     } catch {
       if (mounted.current) {
         setSaveState("failed");
-        setOperationError("save");
+        setOperationError({ kind: "save", reason: "web_state_save_failed" });
       }
       return false;
     } finally {
@@ -973,8 +1000,67 @@ export function WebAccessSettings({
       )}
     </>
   );
-  // Dialogs place notices flush with their content; a step that shows its own result skips "saved".
-  const renderNotices = ({ inset = true, saved = true } = {}) => (
+  function recoveryButton(phone = false) {
+    const labels = webRecoveryCopy[locale].actions;
+    // A saved relay may still report that sign-in is needed until it is retried.
+    let action = recovery?.action ?? "retry";
+    if (phone && signedIn && failureReason === "account_login_required" && !operationError)
+      action = "retry";
+    if (action === "restart" && (lan || !status?.config.enabled)) action = "settings";
+    if (action === "retry" && !phone) action = "reload";
+    let label: string;
+    let invoke: () => void;
+    let disabled = busy;
+    switch (action) {
+      case "account":
+        label = labels.account;
+        invoke = () => {
+          setConnect(undefined);
+          setAdvanced(false);
+          setAccountOpen(true);
+        };
+        break;
+      case "restart":
+        if (!status) return null;
+        label = labels.restart;
+        disabled ||= unsaved || advancedDirty;
+        invoke = () => void run({ ...status.config, operation: "configure" }, true);
+        break;
+      case "settings":
+        if (advancedIsOpen || (lan && !onOpenNetworkSettings)) return null;
+        label = labels.settings;
+        invoke = () => {
+          if (lan) onOpenNetworkSettings?.();
+          else {
+            setConnect(undefined);
+            setAdvanced(true);
+          }
+        };
+        break;
+      case "generate-code":
+        label = labels.generateCode;
+        disabled ||= Boolean(generateHint);
+        invoke = () => void generateCode();
+        break;
+      case "retry":
+        label = pc.retryNow;
+        disabled ||= setupComplete ? resumeDisabled : connectionDisabled;
+        invoke = () => void prepare();
+        break;
+      case "reload":
+        label = c.retryLoad;
+        invoke = () => void run({ operation: "status" });
+        break;
+    }
+    return (
+      <Button variant={phone ? "default" : "outline"} disabled={disabled} onClick={invoke}>
+        {label}
+      </Button>
+    );
+  }
+
+  // Dialogs place notices flush with their content; a step that shows its own result skips it here.
+  const renderNotices = ({ inset = true, saved = true, failure = true } = {}) => (
     <>
       {(unsaved || advancedDirty) && (
         <SettingsNotice tone="warning" inset={inset} role="status">
@@ -991,32 +1077,10 @@ export function WebAccessSettings({
           {c.acceptance} <code>{status.acceptanceSessionId}</code>
         </SettingsNotice>
       )}
-      {(loadFailed || operationError) &&
-        !(operationError === "save" && status?.error === "web_state_save_failed") && (
-          <SettingsNotice tone="error" inset={false} className="text-sm" role="alert">
-            <p>{operationError === "save" ? r.saveFailed : c.unavailable}</p>
-            {!config && (
-              <Button
-                variant="outline"
-                disabled={busy}
-                onClick={() => void run({ operation: "status" })}
-              >
-                {c.retryLoad}
-              </Button>
-            )}
-          </SettingsNotice>
-        )}
-      {status?.error && (
-        <SettingsNotice tone="error" inset={false} className="text-sm" role="alert">
-          {status.error === "port_in_use"
-            ? c.portError
-            : status.error === "web_state_save_failed"
-              ? r.saveFailed
-              : status.error === "web_start_failed"
-                ? r.startFailed
-                : lan && status.error === "lan_address_unavailable"
-                  ? l.addressLost
-                  : c.unavailable}
+      {failure && recovery && (
+        <SettingsNotice tone="error" inset={false} className="space-y-2 text-sm" role="alert">
+          <p>{recovery.message}</p>
+          {recoveryButton()}
         </SettingsNotice>
       )}
     </>
@@ -1026,6 +1090,7 @@ export function WebAccessSettings({
     (!status?.config.relay ||
       (!setupComplete && !relayReady) ||
       brokerChanged ||
+      status?.relay?.setupCode === "relay_invitation_required" ||
       status?.relay?.reason === "revoked") && (
       <div className="space-y-1">
         <label htmlFor={invitationId}>{r.invitation}</label>
@@ -1105,11 +1170,11 @@ export function WebAccessSettings({
   const relayPhase = status?.relay?.phase;
   const enabling =
     activeOperation === "remote-enable" ||
-    ["registering", "certifying", "connecting"].includes(relayPhase ?? "");
+    (!failureReason && ["registering", "certifying", "connecting"].includes(relayPhase ?? ""));
   const relayFailed =
-    (relayActive && !enabling && (relayPhase === "error" || relayPhase === "offline")) ||
-    // An enable request that failed outright leaves remote access off with an error to show.
-    (!relayActive && !enabling && (operationError === "request" || Boolean(status?.error)));
+    !enabling &&
+    ((relayActive && (relayPhase === "error" || relayPhase === "offline")) ||
+      Boolean(failureReason));
   const needsLogin = setupComplete ? resumeNeedsLogin : officialBroker && !signedIn;
   // The window turns remote access on by itself only where nothing is left to choose: the
   // official service as set up, or resuming what was saved. Migration, a self-hosted invitation
@@ -1128,13 +1193,24 @@ export function WebAccessSettings({
     : undefined;
   // A revoked device needs a deliberate re-registration, never an automatic or plain retry.
   const revoked = status?.relay?.reason === "revoked";
+  const showRecoveryLogin = failureReason === "account_login_required" && !signedIn;
+  function onRecoveryAccountStatus(next: DesktopAccountStatus | undefined) {
+    if (!next) return;
+    setAccountStatus(next);
+    if (next.phase === "signed-in" && next.account)
+      setOperationError((error) =>
+        error?.reason === "account_login_required" ? undefined : error,
+      );
+  }
   const phoneStep: PhoneStep = !status
-    ? "loading"
+    ? loadFailed
+      ? "error"
+      : "loading"
     : relayReady
       ? connectedDevice
         ? "connected"
         : "scan"
-      : needsLogin
+      : needsLogin && !failureReason
         ? "login"
         : enabling
           ? "preparing"
@@ -1401,7 +1477,7 @@ export function WebAccessSettings({
           tone="error"
           icon={<CircleX aria-hidden="true" />}
           title={relayPhase === "offline" ? pc.interruptedTitle : pc.failedTitle}
-          info={reasonText}
+          info={recovery?.message || reasonText}
         />
         {status?.relay?.retryAt && status.relay.retryAt > now && (
           <p className="-mt-2 text-sm text-muted-foreground">
@@ -1409,16 +1485,14 @@ export function WebAccessSettings({
           </p>
         )}
         {diagnostics}
+        {showRecoveryLogin && (
+          <RemoteAccountSettings variant="step" primary onStatusChange={onRecoveryAccountStatus} />
+        )}
         <div className="grid grid-cols-2 gap-2">
           <Button variant="outline" onClick={() => setConnect(undefined)}>
             {pc.close}
           </Button>
-          <Button
-            disabled={busy || (setupComplete ? resumeDisabled : connectionDisabled)}
-            onClick={() => void prepare()}
-          >
-            {pc.retryNow}
-          </Button>
+          {!showRecoveryLogin && recoveryButton(true)}
         </div>
       </div>
     ) : phoneStep === "scan" ? (
@@ -2002,7 +2076,7 @@ export function WebAccessSettings({
                 busy ||
                 settingsInvalid ||
                 (connectionDirty && connectionDisabled) ||
-                (!unsaved && !advancedDirty && !connectionDirty)
+                (!unsaved && !advancedDirty && !connectionDirty && !repairSavedConfig)
               }
               onClick={() => void saveAdvancedDialog()}
             >
@@ -2041,7 +2115,7 @@ export function WebAccessSettings({
           ) : (
             <>
               {connectBody}
-              {renderNotices({ inset: false })}
+              {renderNotices({ inset: false, failure: phoneStep !== "error" })}
             </>
           )}
         </DialogContent>
@@ -2102,7 +2176,11 @@ function StepIntro({
       <h3 data-step-heading tabIndex={-1} className="text-base font-semibold outline-none">
         {title}
       </h3>
-      {info && <p className="text-sm text-muted-foreground">{info}</p>}
+      {info && (
+        <p role={tone === "error" ? "alert" : undefined} className="text-sm text-muted-foreground">
+          {info}
+        </p>
+      )}
     </div>
   );
 }

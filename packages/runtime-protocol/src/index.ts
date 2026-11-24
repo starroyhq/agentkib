@@ -12,6 +12,7 @@ export * from "./read-state";
 export * from "./mcp-management";
 export * from "./skill-sync";
 export * from "./native-memory";
+export * from "./quit-work";
 export {
   SESSION_COLLECTIONS,
   sessionCollection,
@@ -111,6 +112,10 @@ export const RUNTIME_METHODS = {
   openObsidian: "obsidian.open",
   openObsidianWorkspace: "obsidian.openWorkspace",
   setCloseBehavior: "settings.setCloseBehavior",
+  setQuitResumePreference: "settings.setQuitResumePreference",
+  quitWorkPrepare: "quitWork.prepare",
+  quitWorkList: "quitWork.list",
+  quitWorkResume: "quitWork.resume",
   setLocale: "settings.setLocale",
   setThemePreference: "settings.setThemePreference",
   setAccentThemePreference: "settings.setAccentThemePreference",

@@ -23,6 +23,7 @@ export function GlobalHome({
   installationsPending = false,
   sessions,
   newSession,
+  interruptedWork,
   side,
   onOpenDoctor,
   onAddWorkspace,
@@ -39,6 +40,7 @@ export function GlobalHome({
   sessions: Omit<ComponentProps<typeof HomeSessions>, "workspaces">;
   /** The new-session composer, above the sessions once a workspace exists. */
   newSession?: ReactNode;
+  interruptedWork?: ReactNode;
   /** Quota, remote and upkeep beside the sessions; below them in a narrow window. */
   side?: HomeSideProps;
   onOpenDoctor: (workspace: WorkspaceSummary) => Promise<void>;
@@ -95,6 +97,8 @@ export function GlobalHome({
           {localizeMessage(addError.reason)}
         </p>
       )}
+
+      {interruptedWork}
 
       {!workspaces.length ? (
         showOnboarding ? (

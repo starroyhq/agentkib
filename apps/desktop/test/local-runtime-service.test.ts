@@ -1,4 +1,5 @@
 // @vitest-environment node
+import { randomUUID } from "node:crypto";
 import { once } from "node:events";
 import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { createConnection, createServer, type Socket } from "node:net";
@@ -17,11 +18,14 @@ import { BACKEND_INITIALIZE } from "@agentkib/backend/migration";
 import {
   PROTOCOL_VERSION,
   RUNTIME_METHODS,
+  type QuitWorkPreview,
   type SessionSubscription,
 } from "@agentkib/runtime-protocol";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { ClaudeManagedReadOwner } from "../../../packages/backend/src/agents/claude/claude-managed-read";
 import { LocalCosts } from "../../../packages/backend/src/local-costs";
 import { acquirePortableFileLease } from "../../../packages/backend/src/managed-session-lock";
+import { QuitWork } from "../../../packages/backend/src/sessions/quit-work";
 
 const cleanups: Array<() => void | Promise<void>> = [];
 afterEach(async () => {
@@ -89,8 +93,8 @@ async function prepare() {
     AGENTKIB_APP_FLAVOR: "ai.agentkib.dev",
     AGENTKIB_LEGACY_DEV_DATA_DIR: legacyDevDataDir,
   };
-  const serve = async () => {
-    const daemon = await serveLocalRuntime(endpoint, dataDir, environment, 250);
+  const serve = async (idleTimeoutMs = 250) => {
+    const daemon = await serveLocalRuntime(endpoint, dataDir, environment, idleTimeoutMs);
     cleanups.push(daemon.close);
     return daemon;
   };
@@ -148,6 +152,109 @@ describe("shared local runtime service", () => {
     dev.socket.destroy();
     await runtime.daemon.closed;
     await expect(connectLocalRuntime(runtime.endpoint)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("applies quit work only when the last desktop explicitly leaves and the runtime stops", async () => {
+    const runtime = await fixture();
+    const stop = vi.spyOn(QuitWork.prototype, "stop");
+    const leaving = await runtime.attach("leaving");
+    const remaining = await runtime.attach("remaining");
+
+    const leavingClosed = leaving.closed();
+    await leaving.request(RUNTIME_METHODS.shutdown, {
+      quitWork: { ticket: randomUUID(), resume: true },
+    });
+    await leavingClosed;
+    expect(stop).not.toHaveBeenCalled();
+
+    const decision = { ticket: randomUUID(), resume: false };
+    const remainingClosed = remaining.closed();
+    await remaining.request(RUNTIME_METHODS.shutdown, { quitWork: decision });
+    await remainingClosed;
+    expect(stop).not.toHaveBeenCalled();
+    await runtime.daemon.closed;
+    expect(stop).toHaveBeenCalledExactlyOnceWith(decision);
+  });
+
+  it("resumes the selected managed session through the same runtime RPCs after restart", async () => {
+    const runtime = await fixture();
+    const sessionId = "managed-claude-session";
+    const turnId = randomUUID();
+    const evidence = { turnId, checkpoint: "native-transcript-verified" };
+    const catalogRow = {
+      id: sessionId,
+      agent: "claude-code",
+      title: "Managed Claude",
+      availability: "readable",
+      continuation: { status: "running", executionLocation: "agentkib" },
+    };
+    vi.spyOn(ClaudeManagedReadOwner.prototype, "catalog").mockReturnValue([
+      catalogRow,
+      {
+        ...catalogRow,
+        id: "terminal-session",
+        continuation: { status: "running", executionLocation: "terminal" },
+      },
+    ]);
+    const candidate = vi
+      .spyOn(ClaudeManagedReadOwner.prototype, "quitCandidate")
+      .mockResolvedValue({ turnId });
+    const interrupt = vi
+      .spyOn(ClaudeManagedReadOwner.prototype, "interruptForQuit")
+      .mockResolvedValue(evidence);
+    const resume = vi
+      .spyOn(ClaudeManagedReadOwner.prototype, "resumeAfterQuit")
+      .mockResolvedValue("continued");
+
+    const quitting = await runtime.attach("quitting");
+    await expect(
+      quitting.request(RUNTIME_METHODS.setQuitResumePreference, { value: false }),
+    ).resolves.toMatchObject({ resume_after_quit: false });
+    const preview = await quitting.request<QuitWorkPreview>(RUNTIME_METHODS.quitWorkPrepare);
+    expect(preview.resumeByDefault).toBe(false);
+    expect(preview.work).toEqual([
+      { id: expect.any(String), title: "Managed Claude", agent: "claude-code", resumable: true },
+    ]);
+    expect(candidate).toHaveBeenCalledExactlyOnceWith(sessionId);
+
+    await quitting.request(RUNTIME_METHODS.shutdown, {
+      quitWork: { ticket: preview.ticket, resume: true },
+    });
+    await runtime.daemon.closed;
+    expect(interrupt).toHaveBeenCalledExactlyOnceWith(sessionId, turnId);
+    expect(resume).not.toHaveBeenCalled();
+
+    await runtime.serve();
+    expect(resume).not.toHaveBeenCalled();
+    const reopened = await runtime.attach("reopened");
+    await expect.poll(() => resume.mock.calls.length).toBe(1);
+    expect(resume).toHaveBeenCalledExactlyOnceWith(
+      sessionId,
+      evidence,
+      preview.work[0]!.id,
+      "The previous turn was interrupted when AgentKib quit. Please continue from where it stopped.",
+    );
+    await reopened.request(BACKEND_INITIALIZE, { dataDir: runtime.dataDir });
+    await expect(reopened.request(RUNTIME_METHODS.quitWorkList)).resolves.toEqual([]);
+    expect(resume).toHaveBeenCalledTimes(1);
+  });
+
+  it("drops the quit decision when another desktop reopens the shared runtime", async () => {
+    const runtime = await prepare();
+    const daemon = await runtime.serve(750);
+    const stop = vi.spyOn(QuitWork.prototype, "stop");
+    const leaving = await runtime.attach("leaving");
+    const leavingClosed = leaving.closed();
+    await leaving.request(RUNTIME_METHODS.shutdown, {
+      quitWork: { ticket: randomUUID(), resume: true },
+    });
+    await leavingClosed;
+    const reopened = await runtime.attach("reopened");
+    expect(stop).not.toHaveBeenCalled();
+
+    reopened.socket.destroy();
+    await daemon.closed;
+    expect(stop).toHaveBeenCalledExactlyOnceWith(undefined);
   });
 
   it("does not let a competing launch or unauthenticated client own the backend", async () => {

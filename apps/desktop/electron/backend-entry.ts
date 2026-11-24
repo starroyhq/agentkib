@@ -1,6 +1,7 @@
 import { createInterface } from "node:readline";
 import { TypeScriptBackend } from "@agentkib/backend";
 import { serveLocalRuntime } from "@agentkib/backend/local-runtime-service";
+import { BACKEND_INITIALIZE } from "@agentkib/backend/migration";
 import { RUNTIME_METHODS } from "./generated/runtime-protocol";
 
 if (process.argv[2] === "--local-runtime") {
@@ -83,6 +84,14 @@ function startAttachedBackend() {
       }
       const response = await backend.handleAsync(request);
       await send(response);
+      if (
+        !response.error &&
+        typeof request === "object" &&
+        request !== null &&
+        "method" in request &&
+        request.method === BACKEND_INITIALIZE
+      )
+        backend.activateQuitWork();
       if (stopping && !response.error) {
         await answerQueuedRequests();
         process.exit(0);

@@ -41,6 +41,7 @@ export const TYPESCRIPT_STORAGE_METHODS = new Set<string>([
 ]);
 export const TYPESCRIPT_PREFERENCE_METHODS = new Set<string>([
   RUNTIME_METHODS.setCloseBehavior,
+  RUNTIME_METHODS.setQuitResumePreference,
   RUNTIME_METHODS.setLocale,
   RUNTIME_METHODS.setThemePreference,
   RUNTIME_METHODS.setAccentThemePreference,

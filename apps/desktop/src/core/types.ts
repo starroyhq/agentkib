@@ -332,6 +332,7 @@ export interface RuntimeInfo {
   openclaw_config?: string;
   hermes_config?: string;
   close_behavior?: CloseBehavior;
+  resume_after_quit?: boolean;
   locale_preference: LocalePreference;
   effective_locale: SupportedLocale;
   theme_preference: ThemePreference;

@@ -66,6 +66,7 @@ import {
   type HostSessionRequest,
   type SessionMethod,
 } from "./sessions/routing";
+import { QuitWork, quitWorkDecisionSchema } from "./sessions/quit-work";
 import { hostControlValidationSchema, runProviderValidation } from "./sessions/validate/control";
 import { RemoteGateways } from "./remote-gateways";
 import { RemoteAgent } from "./remote-agent";
@@ -120,6 +121,8 @@ import {
   PROJECT_AGENT_MAX_WORKERS,
   RUNTIME_METHODS,
   SESSION_EVENT_NOTIFICATION,
+  sessionProviderDeclaration,
+  type QuitWorkDecision,
   type RuntimeRpcError,
   type SessionStreamEvent,
   type SubagentCatalog,
@@ -187,6 +190,7 @@ export class TypeScriptBackend {
   #instructionImports = new InstructionImports();
   #store?: BackendStore;
   #nativeMemory?: NativeMemoryOwner;
+  #quitWork?: QuitWork;
   #dataDir?: string;
   #releaseManagedLedgerReaders?: () => void;
   #commands = new Commands();
@@ -255,11 +259,17 @@ export class TypeScriptBackend {
     this.#mcp?.close();
   }
 
+  /** A desktop has opened this runtime. Recover at most once in its lifetime. */
+  activateQuitWork(): void {
+    if (!this.#stopping) this.#quitWork?.start();
+  }
+
   close(): Promise<void> {
     return this.closeAsync();
   }
 
   #reset(): void {
+    this.#quitWork = undefined;
     this.#instructionImports.clear();
     this.#nativeMemory?.close();
     this.#nativeMemory = undefined;
@@ -319,7 +329,7 @@ export class TypeScriptBackend {
     this.#dataDir = undefined;
   }
 
-  closeAsync(): Promise<void> {
+  closeAsync(quitWorkDecision?: QuitWorkDecision): Promise<void> {
     if (this.#closing) return this.#closing;
     this.cancelPendingOperations();
     const claudeManaged = this.#claudeManaged;
@@ -338,13 +348,16 @@ export class TypeScriptBackend {
     this.#dshLeads?.close();
     this.#dshLeads = undefined;
     this.#claudeManaged = undefined;
-    this.#claudeBridge = undefined;
     this.#claudeSessionProvider = undefined;
     this.#dshBridge = undefined;
     this.#dshSessionProvider = new DshSessionProvider();
     this.#mcpHub = undefined;
     this.#remoteAgent = undefined;
     const closing = (async () => {
+      await this.#quitWork?.stop(quitWorkDecision).catch(() => {
+        console.error("AgentKib could not save the interrupted work journal");
+      });
+      this.#claudeBridge = undefined;
       const results = await Promise.allSettled([
         this.#skills?.close(),
         orchestration?.close(),
@@ -452,6 +465,7 @@ export class TypeScriptBackend {
         capabilities: [
           "shared-schema-15",
           "preferences",
+          "quit-work",
           "cached-workspace-reads",
           "workspace-writes",
           "discovery-persistence",
@@ -479,7 +493,8 @@ export class TypeScriptBackend {
       };
     }
     if (method === RUNTIME_METHODS.shutdown) {
-      return this.closeAsync().then(() => null);
+      const decision = quitWorkDecisionSchema.safeParse(params.quitWork).data;
+      return this.closeAsync(decision).then(() => null);
     }
     if (method === NATIVE_SCAN_ROOT_DISCOVERY)
       return discoverScanRoots(params.roots, this.environment);
@@ -986,12 +1001,51 @@ export class TypeScriptBackend {
               { turnStartedAt: timing.startedAt ? new Date(timing.startedAt).toISOString() : null },
             ),
         });
-        this.#claudeSessionProvider = new ClaudeSessionProvider(
+        const claudeProvider = new ClaudeSessionProvider(
           claudeOwner,
           this.#claudeBridge,
           (params, result) => this.#deleted(params, result),
           this.#workerObserver.controlled,
         );
+        this.#claudeSessionProvider = claudeProvider;
+        const orchestration = this.#orchestration;
+        this.#quitWork = new QuitWork(dataDir, {
+          sessions: () => this.#quitWorkSessions(),
+          resumeByDefault: () => readPreferences(dataDir).resume_after_quit !== false,
+          candidate: ({ sessionId, agent }) =>
+            sessionProviderDeclaration(agent)?.resumeAfterQuit
+              ? claudeProvider.quitCandidate(sessionId)
+              : Promise.resolve(undefined),
+          assignment: (sessionId) => {
+            const owner = orchestration.registry.leadOfLane(sessionId);
+            return owner ? { leadId: owner.lead.sessionId, laneId: owner.lane.id } : undefined;
+          },
+          interrupt: ({ sessionId }, turnId) => claudeProvider.interruptForQuit(sessionId, turnId),
+          check: ({ sessionId, evidence }) => claudeProvider.checkAfterQuit(sessionId, evidence),
+          dispatch: ({ sessionId, evidence, id }, text) =>
+            claudeProvider.resumeAfterQuit(sessionId, evidence, id, text),
+          receipt: ({ id, sessionId, evidence }) => {
+            const receipt = readControlReceipt(dataDir, {
+              requestId: id,
+              deviceId: "desktop-local",
+            });
+            if (
+              !receipt.found ||
+              !("sessionId" in receipt) ||
+              receipt.sessionId !== sessionId ||
+              receipt.operation !== "send" ||
+              receipt.executionMode !== "claude-managed"
+            )
+              return "unknown";
+            if (receipt.status === "accepted") {
+              claudeProvider.restoreQuitQueue(sessionId, evidence);
+              return "continued";
+            }
+            return receipt.status === "not-dispatched" ? "skipped" : "unknown";
+          },
+          report: ({ sessionId, turnId }, assignment, outcome) =>
+            orchestration.workerInterruptedByQuit(sessionId, turnId, outcome, assignment),
+        });
         this.#claudeBridge.observeWorkers(this.#workerObserver);
         this.#claudeBridge.initialize();
         dshBridge.initialize();
@@ -1160,6 +1214,18 @@ export class TypeScriptBackend {
       throw new RpcFault(-32000, "AgentKib command failed", {
         detail: "TypeScript backend has not been initialized",
       });
+    if (method === RUNTIME_METHODS.quitWorkPrepare) {
+      parameters(z.object({}).strict(), params);
+      return this.#quitWork!.prepare();
+    }
+    if (method === RUNTIME_METHODS.quitWorkList) {
+      parameters(z.object({}).strict(), params);
+      return this.#quitWork!.list();
+    }
+    if (method === RUNTIME_METHODS.quitWorkResume) {
+      const { id } = parameters(z.object({ id: z.uuid() }).strict(), params);
+      return this.#quitWork!.resume(id);
+    }
     if (method === RUNTIME_METHODS.nativeMemoryList)
       return this.#nativeMemory!.snapshot(parameters(nativeMemoryQuerySchema, params));
     if (method === RUNTIME_METHODS.nativeMemorySearch)
@@ -1634,6 +1700,11 @@ export class TypeScriptBackend {
         if (value !== null && value !== "minimize-to-tray" && value !== "quit")
           invalid("Invalid close behavior");
         writePreference(this.#dataDir, "close_behavior", value);
+        return this.#preferences();
+      }
+      case RUNTIME_METHODS.setQuitResumePreference: {
+        const { value } = parameters(z.object({ value: z.boolean() }).strict(), params);
+        writePreference(this.#dataDir, "resume_after_quit", value);
         return this.#preferences();
       }
       case RUNTIME_METHODS.setLocale: {
@@ -2986,6 +3057,9 @@ export class TypeScriptBackend {
                 executionLocation: live.executionLocation,
                 ownershipReason: live.ownershipReason,
                 reason: live.reason,
+                ...(typeof live.backgroundTasks === "number" && {
+                  backgroundTasks: live.backgroundTasks,
+                }),
               },
             }
           : observedRow;
@@ -3006,6 +3080,51 @@ export class TypeScriptBackend {
         ...catalog,
         sessions: readerScope ? this.#readStates!.project(merged, readerScope) : merged,
       };
+    });
+  }
+
+  async #quitWorkSessions(): Promise<{ sessionId: string; title: string; agent: string }[]> {
+    const catalog = await this.#request(RUNTIME_METHODS.sessionRequest, {
+      host: { request: { operation: "catalog" } },
+    });
+    if (
+      !catalog ||
+      typeof catalog !== "object" ||
+      !("sessions" in catalog) ||
+      !Array.isArray(catalog.sessions)
+    )
+      return [];
+    const locallyActive = z.object({
+      id: z.string().min(1).max(256),
+      agent: z.string().min(1).max(64),
+      title: z.string().nullish(),
+      archived: z.boolean().optional(),
+      availability: z.literal("readable"),
+      origin: z.string().optional(),
+      remote: z.unknown().optional(),
+      continuation: z.object({
+        executionLocation: z.literal("agentkib"),
+        status: z.string(),
+        backgroundTasks: z.number().optional(),
+      }),
+    });
+    const active = new Set(["starting", "running", "awaiting-approval", "waiting-input"]);
+    return catalog.sessions.flatMap((row) => {
+      const { data: session } = locallyActive.safeParse(row);
+      if (
+        !session ||
+        session.remote ||
+        session.archived ||
+        session.origin === "auxiliary" ||
+        session.origin === "execution" ||
+        !(
+          active.has(session.continuation.status) || (session.continuation.backgroundTasks ?? 0) > 0
+        )
+      )
+        return [];
+      return [
+        { sessionId: session.id, title: session.title?.slice(0, 512) ?? "", agent: session.agent },
+      ];
     });
   }
 

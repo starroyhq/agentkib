@@ -35,7 +35,11 @@ import {
   type DiscoverySnapshot,
   type DiscoveryPlan,
 } from "@agentkib/backend/migration";
-import { RUNTIME_METHODS, type RuntimeHandshakeResult } from "../generated/runtime-protocol";
+import {
+  RUNTIME_METHODS,
+  type RuntimeHandshakeResult,
+  type QuitWorkDecision,
+} from "../generated/runtime-protocol";
 import {
   RuntimeUnavailableError,
   type RuntimeHost,
@@ -158,12 +162,12 @@ export class RuntimeRouter extends EventEmitter implements RuntimeHost {
     return execute();
   }
 
-  async stop(): Promise<void> {
+  async stop(quitWork?: QuitWorkDecision): Promise<void> {
     if (this.#state === "stopping") return;
     this.#generation += 1;
     this.#setState("stopping");
     this.#readiness.reject(new RuntimeUnavailableError(new Error("AgentKib runtime is stopping")));
-    const results = await Promise.allSettled([this.typescript.stop()]);
+    const results = await Promise.allSettled([this.typescript.stop(quitWork)]);
     const failed = results.filter((result) => result.status === "rejected");
     if (failed.length)
       throw new AggregateError(
@@ -183,6 +187,9 @@ export class RuntimeRouter extends EventEmitter implements RuntimeHost {
     if (
       method === RUNTIME_METHODS.sessionsSubscribe ||
       method === RUNTIME_METHODS.sessionsUnsubscribe ||
+      method === RUNTIME_METHODS.quitWorkPrepare ||
+      method === RUNTIME_METHODS.quitWorkList ||
+      method === RUNTIME_METHODS.quitWorkResume ||
       method === LOCAL_RUNTIME_PRESENCE
     )
       return this.typescript.request<TResult>(method, params);

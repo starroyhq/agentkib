@@ -2,6 +2,9 @@ import type {
   NativeMemoryQuery,
   NativeMemorySnapshot,
   NativeMemoryDetail,
+  InterruptedQuitWork,
+  QuitWorkDecision,
+  QuitWorkOutcome,
 } from "@agentkib/runtime-protocol";
 import type { McpMigrationPreview, McpMigrationResult } from "@agentkib/runtime-protocol";
 import type {
@@ -193,7 +196,9 @@ export interface ClaudeBridgeChallenge {
  * started; quitting stops them, so the person confirms first.
  */
 export interface QuitRequest {
-  work: { title: string; agent: string }[];
+  work: { title: string; agent: string; resumable?: boolean }[];
+  ticket?: string;
+  resumeByDefault?: boolean;
 }
 
 export interface DesktopApi {
@@ -442,13 +447,15 @@ export interface DesktopApi {
     /** The menu bar popover's content height; its window follows within the screen. */
     setPopoverHeight(height: number): Promise<void>;
     hideWindow(): Promise<void>;
-    quit(): Promise<void>;
+    quit(decision?: QuitWorkDecision): Promise<void>;
+    cancelQuit(ticket: string): Promise<void>;
   };
   remote: {
     request<T extends RemoteRequest>(request: T): Promise<RemoteResponse<T>>;
   };
   settings: {
     setCloseBehavior(value?: CloseBehavior): Promise<void>;
+    setQuitResumePreference(value: boolean): Promise<void>;
     setLocale(preference: LocalePreference): Promise<RuntimeInfo>;
     setThemePreference(preference: "system" | "light" | "dark"): Promise<RuntimeInfo>;
     setAccentThemePreference(preference: AccentThemeId): Promise<RuntimeInfo>;
@@ -457,6 +464,8 @@ export interface DesktopApi {
   };
   home: {
     runtime(): Promise<RuntimeInfo>;
+    interruptedQuitWork(): Promise<InterruptedQuitWork[]>;
+    resumeInterruptedQuitWork(id: string): Promise<{ outcome: QuitWorkOutcome }>;
     workspaces(): Promise<WorkspaceSummary[]>;
     agentInstallations(): Promise<AgentInstallation[]>;
     agentTools(force?: boolean): Promise<AgentToolSnapshot>;

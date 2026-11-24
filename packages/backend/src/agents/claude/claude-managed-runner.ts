@@ -1896,6 +1896,7 @@ export class ClaudeManagedRunnerProcess {
   #intentional = new WeakSet<ChildProcess>();
   #serializedTail: Promise<void> = Promise.resolve();
   #pendingDispatch?: () => void;
+  #verifyPendingDispatch?: () => Promise<void>;
   #startupFailure?: { code: ClaudeStartupFailureCode; reason: string };
   #startupRecoveryBlocked = false;
   #startupAttempt = false;
@@ -2319,6 +2320,7 @@ export class ClaudeManagedRunnerProcess {
     requestId: string,
     revision: number,
     beforeDispatch?: () => void,
+    verifyDispatch?: () => Promise<void>,
   ): Promise<void> {
     if (this.options.catalogOnly) throw new Error("Claude catalog worker cannot send a turn");
     if (this.#retiring || this.#configuring)
@@ -2335,6 +2337,7 @@ export class ClaudeManagedRunnerProcess {
     // The ledger callback may be absent, or may throw before dispatch. Neither the callback's
     // presence nor its later removal proves whether the user frame reached stdin.
     let dispatched = false;
+    this.#verifyPendingDispatch = verifyDispatch;
     this.#pendingDispatch = () => {
       beforeDispatch?.();
       dispatched = true;
@@ -2347,6 +2350,7 @@ export class ClaudeManagedRunnerProcess {
       } catch (error) {
         if (error instanceof ClaudeUndispatchedError) {
           this.#pendingDispatch = undefined;
+          this.#verifyPendingDispatch = undefined;
           this.state.restoreUndispatched(checkpoint);
           this.#notify();
           throw error;
@@ -2372,6 +2376,7 @@ export class ClaudeManagedRunnerProcess {
     } catch (error) {
       if (error instanceof ClaudeUndispatchedError) {
         this.#pendingDispatch = undefined;
+        this.#verifyPendingDispatch = undefined;
         this.state.restoreUndispatched(checkpoint);
         this.#notify();
         throw error;
@@ -2404,6 +2409,7 @@ export class ClaudeManagedRunnerProcess {
           throw cleanupError;
         }
         this.#pendingDispatch = undefined;
+        this.#verifyPendingDispatch = undefined;
         this.state.restoreStartup(checkpoint, failure.reason);
         this.#notify();
         if (this.state.status === "idle") throw new ClaudeUndispatchedError(failure.reason);
@@ -2453,20 +2459,34 @@ export class ClaudeManagedRunnerProcess {
     return true;
   }
 
+  #restartReady(): boolean {
+    return Boolean(
+      this.#child &&
+      this.state.initialized &&
+      !this.#retiring &&
+      !this.#configuring &&
+      !this.#startupAttempt &&
+      !this.#terminating &&
+      this.state.activity !== "compacting" &&
+      this.state.backgroundTasks.size === 0 &&
+      !this.state.hasScheduledWork(),
+    );
+  }
+
+  canInterruptForQuit(): boolean {
+    return (
+      this.#restartReady() &&
+      this.#steeringIds.size === 0 &&
+      this.state.turnOrigin === "host" &&
+      ["running", "waiting-approval", "waiting-input"].includes(this.state.status) &&
+      this.state.reason === null &&
+      !this.state.terminalResult
+    );
+  }
+
   /** Retire the owned process without losing work that exists only in its memory. */
   async restartForDelegation(revision: number, dispatch: () => void): Promise<void> {
-    if (
-      !this.#child ||
-      !this.state.initialized ||
-      this.#retiring ||
-      this.#configuring ||
-      this.#startupAttempt ||
-      this.#terminating ||
-      this.state.activity === "compacting" ||
-      this.state.backgroundTasks.size > 0 ||
-      this.state.hasScheduledWork()
-    )
-      throw new Error("worker-restart-not-ready");
+    if (!this.#restartReady()) throw new Error("worker-restart-not-ready");
     if (revision !== this.state.revision) throw new Error("stale-Claude-revision");
     if (this.state.status === "idle") {
       dispatch();
@@ -3206,6 +3226,11 @@ export class ClaudeManagedRunnerProcess {
     this.#serializedTail = new Promise<void>((resolve) => (release = resolve));
     await previous;
     try {
+      if (frame.type === "user" && this.#verifyPendingDispatch) {
+        const verify = this.#verifyPendingDispatch;
+        this.#verifyPendingDispatch = undefined;
+        await verify();
+      }
       if (child !== this.#child || this.#closed)
         throw new Error("Claude worker changed before write");
       if (frame.type === "user" && this.state.activity === "compacting")

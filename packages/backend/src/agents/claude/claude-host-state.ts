@@ -190,11 +190,13 @@ export class ClaudeHostStateStore {
           if (item.status === "dispatched") item.status = "unknown";
         }
         if (unfinished) {
-          state.paused = true;
-          state.reason = "restart-confirmation-required";
+          if (!state.paused) {
+            state.paused = true;
+            state.reason = "restart-confirmation-required";
+          }
           if (state.goal?.status === "active") {
             state.goal.status = "paused";
-            state.goal.reason = state.reason;
+            state.goal.reason = "restart-confirmation-required";
           }
         }
         state.bootId = this.bootId;
@@ -495,6 +497,35 @@ export class ClaudeHostStateStore {
         state.goal.status = "paused";
         state.goal.reason = reason;
       }
+    });
+  }
+
+  /** Prevent the scheduler from using the gap between interrupting the turn and closing the host. */
+  pauseQueueForQuit(sessionId: string): boolean {
+    return this.#transaction(sessionId, (state) => {
+      if (state.paused) return false;
+      if (state.work.some(active) || state.goal?.status === "active") {
+        state.paused = true;
+        state.reason = "restart-confirmation-required";
+        for (const item of state.work) if (item.status === "claimed") item.status = "pending";
+        state.revision++;
+      }
+      return true;
+    });
+  }
+
+  /** A confirmed quit continuation may lift the boot's pause, keeping other holds intact. */
+  resumeQueueAfterQuit(sessionId: string): void {
+    this.#transaction(sessionId, (state) => {
+      if (
+        !state.paused ||
+        state.reason !== "restart-confirmation-required" ||
+        state.work.some((item) => ["claimed", "dispatched", "unknown"].includes(item.status))
+      )
+        return;
+      state.paused = false;
+      state.reason = null;
+      state.revision++;
     });
   }
 

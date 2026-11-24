@@ -46,7 +46,12 @@ import { workStoppedByQuit, type HomeSession } from "@agentkib/session-catalog";
 import { ElectronRefreshCoordinator } from "./refresh-coordinator";
 import { CostObservation, requireLocalCostProvider } from "./cost-observation";
 import { NativeMemoryObservation } from "./native-memory-observation";
-import { NATIVE_MEMORY_CHANGED } from "@agentkib/runtime-protocol";
+import {
+  NATIVE_MEMORY_CHANGED,
+  type QuitWorkDecision,
+  type QuitWorkPreview,
+} from "@agentkib/runtime-protocol";
+import type { QuitRequest } from "../api";
 import { SkillSyncCoordinator } from "./skill-sync-coordinator";
 import { StartupBenchmark } from "./startup-benchmark";
 import { firstCloseDecision } from "./close-behavior";
@@ -110,6 +115,9 @@ let usesSharedRuntime = false;
 let runtimePresence: LocalRuntimePresence | undefined;
 let shutdownStarted = false;
 let quitApproved = false;
+let quitWorkPreparing = false;
+let pendingQuitTicket: string | undefined;
+let quitWorkDecision: QuitWorkDecision | undefined;
 let closeBehavior: "minimize-to-tray" | "quit" | undefined;
 let appIconPreference: "white" | "black" = "white";
 let pendingUpdateVersion: string | undefined;
@@ -127,6 +135,7 @@ const nativeMemoryObservation = new NativeMemoryObservation(requireRuntime);
 
 const quitGuard = createQuitGuard({
   approveQuit: () => {
+    pendingQuitTicket = undefined;
     quitApproved = true;
     app.quit();
   },
@@ -198,7 +207,7 @@ app.on("before-quit", (event) => {
       await pushNotifier?.stop();
       await Promise.allSettled([webAccess?.dispose(), lanWebAccess?.dispose()]);
     } finally {
-      await runtimeHost?.stop();
+      await runtimeHost?.stop(quitWorkDecision);
     }
   })().finally(() => app.quit());
 });
@@ -620,44 +629,73 @@ function approveQuit(): void {
 }
 
 function requestRendererQuitGuard(): void {
-  void quitWork().then((work) => {
-    const window = mainWindow && !mainWindow.isDestroyed() ? mainWindow : undefined;
-    quitGuard.request(
-      window && {
-        isAlive: () => !window.isDestroyed() && !window.webContents.isCrashed(),
-        isUnresponsive: () => rendererUnresponsive,
-        show: showMainWindow,
-        sendQuitRequest: () => window.webContents.send("agentkib:quit-requested", { work }),
-      },
-    );
-  });
+  if (quitWorkPreparing || pendingQuitTicket) {
+    showMainWindow();
+    return;
+  }
+  quitWorkPreparing = true;
+  void quitWork()
+    .then((request) => {
+      if (quitApproved || shutdownStarted) return;
+      const window = mainWindow && !mainWindow.isDestroyed() ? mainWindow : undefined;
+      quitGuard.request(
+        window && {
+          isAlive: () => !window.isDestroyed() && !window.webContents.isCrashed(),
+          isUnresponsive: () => rendererUnresponsive,
+          show: showMainWindow,
+          sendQuitRequest: () => {
+            pendingQuitTicket = request.ticket;
+            window.webContents.send("agentkib:quit-requested", request);
+          },
+        },
+      );
+    })
+    .finally(() => {
+      quitWorkPreparing = false;
+    });
 }
 
-/**
- * Work that stops with AgentKib, named in the quit confirmation: turns running or waiting in a
- * process AgentKib started. Read with a short bound, so quitting never waits on a busy runtime.
- */
-async function quitWork(): Promise<{ title: string; agent: string }[]> {
-  const source = sessionSource;
-  if (!source) return [];
-  const readWork = async () => {
-    if (usesSharedRuntime && runtimeHandshake) {
-      const presence = await requireRuntime()
+/** Read a bounded snapshot. Older runtimes can still warn about work without scheduling any. */
+async function quitWork(): Promise<QuitRequest> {
+  const readWork = async (): Promise<QuitRequest> => {
+    if (!runtimeHandshake) return { work: [] };
+    const runtime = requireRuntime();
+    if (usesSharedRuntime) {
+      const presence = await runtime
         .request<LocalRuntimePresence>(LOCAL_RUNTIME_PRESENCE, {})
         .catch(() => undefined);
-      if (presence && presence.peers > 0) return [];
+      if (presence && presence.peers > 0) return { work: [] };
     }
-    return source.readSessions().catch(() => undefined);
+    const preview = await runtime
+      .request<QuitWorkPreview>(RUNTIME_METHODS.quitWorkPrepare, {})
+      .catch(() => undefined);
+    if (preview) {
+      const work = preview.work.map(({ title, agent, resumable }) => ({ title, agent, resumable }));
+      return work.length
+        ? { work, ticket: preview.ticket, resumeByDefault: preview.resumeByDefault }
+        : { work };
+    }
+    const sessions = await sessionSource?.readSessions().catch(() => undefined);
+    return {
+      work: sessions
+        ? workStoppedByQuit(sessions)
+            .filter((session) => session.continuation?.executionLocation === "agentkib")
+            .slice(0, 50)
+            .map((session) => ({ title: session.title ?? "", agent: session.agent }))
+        : [],
+    };
   };
-  const sessions = await Promise.race([
-    readWork(),
-    new Promise<undefined>((resolve) => setTimeout(resolve, 2_000)),
-  ]);
-  return sessions
-    ? workStoppedByQuit(sessions)
-        .slice(0, 50)
-        .map((session) => ({ title: session.title ?? "", agent: session.agent }))
-    : [];
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      readWork().catch(() => ({ work: [] })),
+      new Promise<QuitRequest>((resolve) => {
+        timer = setTimeout(() => resolve({ work: [] }), 2_000);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 function isRuntimePresence(value: unknown): value is LocalRuntimePresence {
@@ -815,8 +853,28 @@ function registerShellIpc(): void {
     if (typeof height !== "number") throw new TypeError("height must be a number");
     nativeShell?.resizePopover(event.sender, height);
   });
-  handle("agentkib:shell:quit", () => {
+  handle("agentkib:shell:quit", (event, input: unknown) => {
+    if (input !== undefined || pendingQuitTicket) {
+      const decision = input as Partial<QuitWorkDecision> | undefined;
+      if (
+        event.sender !== mainWindow?.webContents ||
+        event.senderFrame !== event.sender.mainFrame ||
+        !pendingQuitTicket ||
+        decision?.ticket !== pendingQuitTicket ||
+        typeof decision.resume !== "boolean"
+      )
+        throw new Error("Quit work confirmation no longer matches");
+      quitWorkDecision = { ticket: pendingQuitTicket, resume: decision.resume };
+    }
     approveQuit();
+  });
+  handle("agentkib:shell:cancel-quit", (event, ticket: unknown) => {
+    if (
+      event.sender === mainWindow?.webContents &&
+      event.senderFrame === event.sender.mainFrame &&
+      ticket === pendingQuitTicket
+    )
+      pendingQuitTicket = undefined;
   });
   // 单向消息：这里抛错会变成主进程未捕获异常，所以只做判断不抛错。
   ipcMain.on("agentkib:quit-acknowledged", (event) => {
@@ -828,6 +886,11 @@ function registerShellIpc(): void {
     closeBehavior = next;
     return requireRuntime().request(RUNTIME_METHODS.setCloseBehavior, { value: next ?? null });
   });
+  forward(
+    "agentkib:settings:set-quit-resume-preference",
+    RUNTIME_METHODS.setQuitResumePreference,
+    (value: unknown) => ({ value: requireBoolean(value, "value") }),
+  );
   handle("agentkib:settings:set-locale", (_event, preference: unknown) => {
     return requireRuntime()
       .request<ElectronRuntimeInfo>(RUNTIME_METHODS.setLocale, {
@@ -905,6 +968,12 @@ function registerHomeIpc(): void {
     const runtime = await requireRuntime().request(RUNTIME_METHODS.runtimeInfo, {});
     return withElectronRuntimeCapabilities(runtime);
   });
+  forward("agentkib:home:interrupted-quit-work", RUNTIME_METHODS.quitWorkList);
+  forward(
+    "agentkib:home:resume-interrupted-quit-work",
+    RUNTIME_METHODS.quitWorkResume,
+    (value: unknown) => ({ id: requireString(value, "id") }),
+  );
   forward("agentkib:home:workspaces", RUNTIME_METHODS.listWorkspaces);
   forward("agentkib:home:agent-installations", RUNTIME_METHODS.listAgentInstallations);
   forward("agentkib:home:agent-tools", RUNTIME_METHODS.agentToolsStatus, (force: unknown) => ({
@@ -1267,6 +1336,7 @@ async function createMainWindow(): Promise<void> {
     rendererUnresponsive = false;
   });
   window.webContents.on("render-process-gone", () => {
+    if (mainWindow === window) pendingQuitTicket = undefined;
     costObservation.forget(window.webContents.id);
     nativeMemoryObservation.forget(window.webContents.id);
     quitGuard.rendererUnavailable();
@@ -1299,7 +1369,10 @@ async function createMainWindow(): Promise<void> {
     void completeStartupBenchmarkWhenReady();
   });
   window.once("closed", () => {
-    if (mainWindow === window) mainWindow = undefined;
+    if (mainWindow === window) {
+      mainWindow = undefined;
+      pendingQuitTicket = undefined;
+    }
   });
 
   await window.loadURL(rendererUrl());

@@ -86,6 +86,8 @@ interface SessionProviderIntegrationCapabilities {
   commands?: { source: "built-in" | "reported" | "none" };
   queue?: { actions: readonly SessionQueueAction[] };
   projectAgent?: SessionProjectAgentCapabilities;
+  /** A locally managed turn may be resumed after an explicit desktop quit. */
+  resumeAfterQuit?: boolean;
   /** The provider's native integration, even when no session is connected to it. */
   connection?: { kind: "native-app" | "terminal-bridge" | "plugin-bridge" | "acp" };
   permissionField?: "policyId" | "permissionMode";
@@ -321,6 +323,7 @@ const PROVIDERS = {
   },
   "claude-code": {
     ...MANAGED_CAPABILITIES["claude-code"],
+    resumeAfterQuit: true,
     commands: { source: "reported" },
     projectAgent: { lead: true, worker: true },
     queue: { actions: ["list", "add", "update", "delete", "reorder", "pause", "resume"] },

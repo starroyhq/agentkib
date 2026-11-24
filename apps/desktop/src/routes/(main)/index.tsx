@@ -3,6 +3,7 @@ import { useEffect, useMemo, useRef } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useI18n } from "@/core/useI18n";
 import { GlobalHome } from "@/features/home/GlobalHome";
+import { InterruptedQuitWork } from "@/features/home/InterruptedQuitWork";
 import { HomeSkeleton } from "@/features/home/HomeSkeleton";
 import type { HomeSessionsState } from "@/features/home/HomeSessions";
 import { api } from "@/core/api";
@@ -184,6 +185,9 @@ function HomeRoute() {
           await settle();
         },
       }}
+      interruptedWork={
+        runtime?.resume_after_quit !== undefined ? <InterruptedQuitWork /> : undefined
+      }
       newSession={
         // A session opens on the sessions page, which needs the session index.
         indexEnabled && hasDesktopConversation() ? (

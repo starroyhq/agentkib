@@ -339,6 +339,7 @@ type LaneReport = {
   text: string | null;
   reply: string | null;
   coalesceUntil?: number;
+  interruptedTurnId?: string;
 };
 
 const OFFLINE_REASONS = new Set([
@@ -1162,6 +1163,36 @@ export class OrchestrationService {
     if (report) this.#reportBatch(owner.lead.sessionId, [report]);
   }
 
+  /** Report a verified quit interruption to the same Project Agent assignment. */
+  workerInterruptedByQuit(
+    sessionId: string,
+    turnId: string,
+    outcome: "continued" | "not-continued" | "unknown",
+    assignment: { leadId: string; laneId: string },
+  ): void {
+    if (this.#closed) return;
+    const owner = this.registry.leadOfLane(sessionId);
+    if (!owner || owner.lead.sessionId !== assignment.leadId || owner.lane.id !== assignment.laneId)
+      return;
+    const continuation = {
+      continued: "AgentKib has started a continuation in the same session.",
+      "not-continued": "AgentKib did not start a continuation.",
+      unknown: "AgentKib could not confirm whether a continuation started.",
+    }[outcome];
+    this.#reportBatch(assignment.leadId, [
+      {
+        laneId: assignment.laneId,
+        key: `quit:${turnId}`,
+        interruptedTurnId: turnId,
+        text: workerReport(
+          owner.lane,
+          `its turn was interrupted when AgentKib quit. ${continuation}`,
+        ),
+        reply: null,
+      },
+    ]);
+  }
+
   async #turnReport(
     lane: Lane,
     turnId: string,
@@ -1599,6 +1630,18 @@ export class OrchestrationService {
           if (key !== null) {
             if (lane.reportedTurns.includes(key)) continue;
             lane.reportedTurns.push(key);
+          }
+          if (report.interruptedTurnId) {
+            // This report supersedes the generic cancelled-turn report.
+            if (!lane.reportedTurns.includes(report.interruptedTurnId))
+              lane.reportedTurns.push(report.interruptedTurnId);
+            if (lead.paused && lead.reason === "restart-confirmation-required") {
+              lead.paused = false;
+              lead.reason = null;
+              addLeadRecord(lead, "resume", null, null, "quit-interruption-report");
+              messages.push(...lead.pendingReports);
+              lead.pendingReports = [];
+            }
           }
           if (text === null) continue;
           if (primary.has(report) || !previews.has(laneId)) {

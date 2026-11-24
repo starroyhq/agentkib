@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { AlertTriangle, RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { api } from "@/core/api";
 import { desktopApi } from "@/core/desktop";
 import { cacheEffectiveLocale, changeLocale } from "@/core/i18n";
@@ -192,45 +193,82 @@ export function AppRuntimeBridge() {
     const handleQuitRequest = async (request: QuitRequest) => {
       if (quitPromptOpen.current) return;
       quitPromptOpen.current = true;
-      await withAsyncCleanup(
-        async () => {
-          // 只在退出时读取一次草稿状态：之前每次渲染都序列化整个 manifest 做比较。
-          const workspace = useWorkspaceStore.getState();
-          if (workspace.applyingChanges) {
-            await dialogs.notify(tr("dialog.quit.changesApplying"));
-            return;
-          }
-          // Turns in processes AgentKib started stop with it, for every Agent alike.
-          if (
-            request.work.length &&
-            !(await dialogs.confirm({
-              title: tr("dialog.quit.workTitle"),
-              description: tr("dialog.quit.workRunning", {
-                count: request.work.length,
-                names: quitWorkNames(request.work, locale),
-              }),
-              tone: "destructive",
-              confirmLabel: tr("dialog.quit.quitAnyway"),
-            }))
-          )
-            return;
-          if (
-            hasUnsavedWorkspaceDraft(workspace) &&
-            !(await dialogs.confirm({
-              description: tr("dialog.quit.discardDraft"),
-              tone: "destructive",
-            }))
-          )
-            return;
-          await api.quitApp();
-        },
-        () => {
-          quitPromptOpen.current = false;
-        },
-      );
+      const ticket = request.ticket;
+      let quitting = false;
+      try {
+        // Read drafts only when a quit is requested.
+        const workspace = useWorkspaceStore.getState();
+        if (workspace.applyingChanges) {
+          await dialogs.notify(tr("dialog.quit.changesApplying"));
+          return;
+        }
+        const canResume = Boolean(ticket && request.work.some((item) => item.resumable));
+        let resume = canResume && request.resumeByDefault !== false;
+        if (request.work.length) {
+          const confirm = await dialogs.confirm({
+            title: tr("dialog.quit.workTitle"),
+            description: ticket
+              ? tr("dialog.quit.workCount", { count: request.work.length })
+              : tr("dialog.quit.workRunning", {
+                  count: request.work.length,
+                  names: quitWorkNames(request.work, locale),
+                }),
+            body: ticket ? (
+              <div className="grid gap-2 text-sm">
+                <label className="flex items-center gap-2">
+                  <Checkbox
+                    defaultChecked={resume}
+                    disabled={!canResume}
+                    onCheckedChange={(value) => {
+                      resume = value;
+                    }}
+                  />
+                  {tr("dialog.quit.resumeWork")}
+                </label>
+                <ul className="grid max-h-36 gap-1 overflow-y-auto pl-6">
+                  {request.work.map((item, index) => {
+                    const title = item.title.trim() || agentName(item.agent);
+                    return (
+                      <li key={index}>
+                        {item.resumable ? (
+                          title
+                        ) : (
+                          <label className="flex items-center gap-2 text-muted-foreground">
+                            <Checkbox checked={false} disabled />
+                            <span>{title}</span>
+                          </label>
+                        )}
+                      </li>
+                    );
+                  })}
+                </ul>
+              </div>
+            ) : undefined,
+            tone: "destructive",
+            confirmLabel: tr("dialog.quit.quitAnyway"),
+          });
+          if (!confirm) return;
+        }
+        if (
+          hasUnsavedWorkspaceDraft(workspace) &&
+          !(await dialogs.confirm({
+            description: tr("dialog.quit.discardDraft"),
+            tone: "destructive",
+          }))
+        )
+          return;
+        if (ticket) await api.quitApp({ ticket, resume });
+        else await api.quitApp();
+        quitting = true;
+      } catch (error) {
+        setMessage(localizeMessage(error));
+      } finally {
+        if (ticket && !quitting) await api.cancelQuit(ticket).catch(() => undefined);
+        quitPromptOpen.current = false;
+      }
     };
     return desktopApi().events.onQuitRequested((request) => void handleQuitRequest(request));
-  }, [dialogs, locale, tr]);
+  }, [dialogs, locale, localizeMessage, setMessage, tr]);
 
   if (runtimeStatus?.state !== "failed") return null;
 

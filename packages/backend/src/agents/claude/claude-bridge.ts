@@ -39,6 +39,7 @@ import {
   bridgeResultSchema,
 } from "./claude-bridge-schema";
 import { acquirePortableFileLease } from "../../managed-session-lock";
+import type { ClaudeBridgePluginUpdater } from "./claude-bridge-plugin-update";
 import {
   acknowledgeDispatchedManagedCommand,
   finishManagedCommand,
@@ -259,6 +260,7 @@ interface BridgeOptions {
   sessionIdForNative?(nativeId: string): string;
   bootId: string;
   pluginDirectory: string;
+  pluginUpdate?: ClaudeBridgePluginUpdater;
   /** A bounded native identity read. No model, transcript rewrite or managed adopt. */
   target(
     sessionId: string,
@@ -786,6 +788,7 @@ export class ClaudeBridge {
     }
   }
   initialize(): void {
+    if (this.supported) void this.options.pluginUpdate?.start();
     if (
       this.supported &&
       !this.#registryInvalid &&
@@ -804,6 +807,7 @@ export class ClaudeBridge {
           "bridge-challenge",
           "bridge-disconnect",
           "bridge-auto-connect",
+          "bridge-plugin-retry",
         ]),
         sessionId: z.string().min(1).max(256),
         deviceId: z.literal(LOCAL_OWNER),
@@ -871,6 +875,11 @@ export class ClaudeBridge {
       };
     }
     this.options.validate(target, false);
+    if (input.operation === "bridge-plugin-retry") {
+      if (!this.supported || !this.options.pluginUpdate)
+        throw new Error("claude-bridge-plugin-update-unavailable");
+      return this.options.pluginUpdate.retry();
+    }
     if (input.operation === "bridge-auto-connect") {
       // Default on: only workspaces the user switched off are recorded.
       this.#disabledWorkspaces.delete(target.workspaceId);
@@ -912,6 +921,7 @@ export class ClaudeBridge {
               : "claude-bridge-not-connected"
           : "platform-unsupported",
         pluginDirectory: this.options.pluginDirectory,
+        pluginUpdate: this.options.pluginUpdate?.status(),
         installInstructions: [
           `claude plugin marketplace add '${this.options.pluginDirectory.replaceAll("'", "'\\''")}'`,
           "claude plugin install agentkib-bridge@agentkib-local",
@@ -2905,6 +2915,7 @@ export class ClaudeBridge {
   async close(): Promise<void> {
     if (this.#closed) return;
     this.#closed = true;
+    this.options.pluginUpdate?.close();
     clearInterval(this.#timer);
     this.#challenges.clear();
     await this.#listening?.catch(() => undefined);

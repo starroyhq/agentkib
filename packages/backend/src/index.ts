@@ -9,6 +9,7 @@ import {
 } from "./cursor-native-import";
 import { CursorBridge } from "./cursor-bridge";
 import { ClaudeBridge, type ClaudeBridgeTarget } from "./agents/claude/claude-bridge";
+import { ClaudeBridgePluginUpdater } from "./agents/claude/claude-bridge-plugin-update";
 import { readClaudeTranscriptObservation } from "./agents/claude/claude-context-usage";
 import { ClaudeSessionProvider } from "./agents/claude/session-provider";
 import type { CodexSessionProvider } from "./agents/codex/session-provider";
@@ -862,12 +863,20 @@ export class TypeScriptBackend {
             readers.verifyClaudeBridgeWorktree(target.nativeId, source, target.workspace);
           return observation;
         };
+        const claudePluginDirectory = this.environment.AGENTKIB_CLAUDE_PLUGIN_DIR ?? "";
         this.#claudeBridge = new ClaudeBridge({
           dataDir,
           legacyDataDir: this.environment.AGENTKIB_LEGACY_DEV_DATA_DIR,
           sessionIdForNative: (nativeId) => store.sessions.id("claude-code", nativeId),
           bootId: claudeOwner.bootId,
-          pluginDirectory: this.environment.AGENTKIB_CLAUDE_PLUGIN_DIR ?? "",
+          pluginDirectory: claudePluginDirectory,
+          ...(claudePluginDirectory && {
+            pluginUpdate: new ClaudeBridgePluginUpdater({
+              dataDir,
+              environment: { ...process.env, ...this.environment },
+              pluginDirectory: claudePluginDirectory,
+            }),
+          }),
           // A connected terminal session may be a Project Agent (docs/agents/project-agent.md).
           lead: {
             tools: (sessionId) => this.#orchestration?.leadToolSpecs(sessionId) ?? null,
@@ -3172,9 +3181,13 @@ export class TypeScriptBackend {
         return { backgroundTasks: await this.#claudeManaged.backgroundTasksStatus() };
       }
       if (
-        ["bridge-status", "bridge-challenge", "bridge-disconnect", "bridge-auto-connect"].includes(
-          operation,
-        )
+        [
+          "bridge-status",
+          "bridge-challenge",
+          "bridge-disconnect",
+          "bridge-auto-connect",
+          "bridge-plugin-retry",
+        ].includes(operation)
       )
         return this.#claudeBridge!.management(params);
       return this.#claudeSessionProvider!.native(params);

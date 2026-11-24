@@ -23,19 +23,24 @@ loads the plugin for that invocation without installing it.
 
 ### Update the plugin
 
-AgentKib bundles the plugin with the app and shows the Claude Code install and
-update commands. Claude Code manages installation and updates. The bundled
-marketplace uses a relative plugin source, so a local registration loads the
-files directly from the directory you added. Once those files have been replaced,
-start a new terminal session or run `/reload-plugins`, even when the version is
-the same. Run `claude plugin update agentkib-bridge@agentkib-local` to refresh the
-installed version shown by `claude plugin list`. Rebuilding elsewhere leaves the
-registered directory alone. [Local marketplace loading](https://code.claude.com/docs/en/plugin-marketplaces#test-an-edit-to-a-plugin)
+At startup, AgentKib checks the installed user-scope bridge against the version
+bundled with the running app. If the installed version is older and the
+`agentkib-local` marketplace points to this app's bundled directory, AgentKib
+runs `claude plugin update agentkib-bridge@agentkib-local` in the background.
+AgentKib makes at most one automatic attempt per bundled version. Claude Code
+manages the update and its configuration. Use the commands in the connection
+panel for first-time installation.
 
-If Claude Code installed a cached copy from another source, it keeps that copy
-when the computed version stays the same, even on `claude plugin update`.
-A version bump lets those installs pick up the new files when their registered
-source offers the release. [Cached plugin updates](https://code.claude.com/docs/en/plugins/loading#versions-and-updates)
+The connection panel shows both versions. If an update fails, the panel shows
+the reason and offers a retry. After a successful update, open a new session or
+run `/reload-plugins` in an open session to load the new version.
+
+You can also turn on Claude Code's own auto-update for `agentkib-local` from
+the Marketplaces tab in `/plugin`. [Claude Code plugin updates](https://code.claude.com/docs/en/plugins/install#keep-plugins-updated)
+
+Claude Code may load a cached copy, which it keeps when the version stays the
+same. Rebuilding in another directory leaves the registered source unchanged.
+[Cached plugin updates](https://code.claude.com/docs/en/plugins/loading#versions-and-updates)
 
 ### Automatic connection
 

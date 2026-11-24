@@ -1,5 +1,6 @@
 import { lstatSync } from "node:fs";
 import path from "node:path";
+import { isNetworkOrDevicePath } from "../../context-claude-sources";
 
 /**
  * Where Claude Code keeps its files. Every Claude module takes its paths from here instead of
@@ -161,6 +162,24 @@ export function claudeConfigFiles(
     outputStyles: p.join(config.dir, "output-styles"),
     workflows: p.join(config.dir, "workflows"),
   };
+}
+
+/** Claude Code can keep plugin metadata and cache outside its configuration directory. */
+export function claudePluginsRoot(
+  config: ClaudeConfig,
+  environment: NodeJS.ProcessEnv,
+  platform: NodeJS.Platform = process.platform,
+): string {
+  const configured = environment.CLAUDE_CODE_PLUGIN_CACHE_DIR;
+  if (
+    configured &&
+    configured.trim() === configured &&
+    flavor(platform).isAbsolute(configured) &&
+    !configured.split(/[\\/]+/).includes("..") &&
+    !isNetworkOrDevicePath(configured, platform)
+  )
+    return configured;
+  return claudeConfigFiles(config, platform).plugins;
 }
 
 /** `<dir>/.claude.json` while the variable is usable, otherwise `<home>/.claude.json`. */

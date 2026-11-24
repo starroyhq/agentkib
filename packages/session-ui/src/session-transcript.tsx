@@ -1,4 +1,4 @@
-import type { ConversationEvent } from "@agentkib/web-client";
+import type { ConversationEvent, UserQuestionRequest } from "@agentkib/web-client";
 import { groupConversationEvents, turnFileActivity } from "@agentkib/conversation-state";
 import { ChevronRight, CircleAlert, Wrench } from "lucide-react";
 import { Fragment, useId, useMemo, useState, type ComponentProps, type ReactNode } from "react";
@@ -20,6 +20,7 @@ import {
 import { transcriptProcessCopy, transcriptProcessLabel } from "./transcript-process-copy";
 import { toolStatusLabel } from "./tool-status";
 import { SessionImagePreview } from "./session-image-preview";
+import { HistoryQuestionCard } from "./interaction-card";
 
 interface ReaderLabels {
   process: string;
@@ -60,6 +61,7 @@ function splitSegments(
 function projectMessages(events: ConversationEvent[], incomplete: boolean): TranscriptMessage[] {
   const groups = groupConversationEvents(events, {
     incomplete,
+    isStandalone: (event) => !!event.questionnaire,
     isHidden: (event) =>
       isHiddenWrapperTool(event) ||
       (event.kind === "user-message" &&
@@ -186,6 +188,7 @@ function projectTranscript(
 }
 
 function messageBody(event: ConversationEvent): string {
+  if (event.questionnaire) return "";
   return event.kind === "user-message"
     ? displayUserMessageText(event.content ?? "", event.images ?? [])
     : (event.content ?? "");
@@ -206,11 +209,46 @@ function EventRow({
 }) {
   const isTool = event.kind === "tool-summary";
   const isUser = event.kind === "user-message";
-  const images = !isTool && imageLoader ? (event.images ?? []) : [];
+  const images = (!isTool || event.questionnaire) && imageLoader ? (event.images ?? []) : [];
   const content = messageBody(event);
   const hasText = !!content.trim();
   const attachmentCount =
     Math.max(0, event.attachment_count, event.images?.length ?? 0) - images.length;
+  const gallery = images.length > 0 && imageLoader && (
+    <ConversationImages
+      images={images}
+      load={imageLoader}
+      locale={locale}
+      align={isUser ? "end" : "start"}
+      renderPreview={({ src, name, onClose }) => (
+        <SessionImagePreview
+          src={src}
+          name={name}
+          closeLabel={conversationImageCopy(locale).close}
+          onClose={onClose}
+        />
+      )}
+    />
+  );
+  if (event.questionnaire)
+    return (
+      <div data-event-id={event.id}>
+        <HistoryQuestionCard
+          questionnaire={event.questionnaire}
+          locale={locale}
+          attachments={
+            <>
+              {gallery}
+              {attachmentCount > 0 && (
+                <p className="text-xs text-muted-foreground">
+                  {labels.attachments}: {attachmentCount}
+                </p>
+              )}
+            </>
+          }
+        />
+      </div>
+    );
   const hasBubble = hasText || attachmentCount > 0 || event.truncated;
   if (isTool && event.tool && onTool)
     return (
@@ -233,22 +271,7 @@ function EventRow({
             : "aui-markdown min-w-0 break-words"
       }
     >
-      {images.length > 0 && imageLoader && (
-        <ConversationImages
-          images={images}
-          load={imageLoader}
-          locale={locale}
-          align={isUser ? "end" : "start"}
-          renderPreview={({ src, name, onClose }) => (
-            <SessionImagePreview
-              src={src}
-              name={name}
-              closeLabel={conversationImageCopy(locale).close}
-              onClose={onClose}
-            />
-          )}
-        />
-      )}
+      {gallery}
       {(!isUser || hasBubble) && (
         <div
           data-user-message-bubble={isUser ? "true" : undefined}
@@ -379,7 +402,9 @@ function MessageBlock({
   const turnDuration = isUser ? undefined : (message.durationMs ?? turnDurationOf(message.events));
   const firstProcess = message.segments.find((segment) => segment.kind === "process")?.key;
   const copy = transcriptProcessCopy(locale);
-  const hasVisibleReply = message.segments.some((segment) => segment.kind === "event");
+  const hasVisibleReply = message.segments.some(
+    (segment) => segment.kind === "event" && segment.events.some((event) => !event.questionnaire),
+  );
   const blocks = messageActionGroups(message.segments);
   const fileActivity = message.fileActivity && (
     <TurnFileChanges
@@ -553,6 +578,7 @@ export interface SessionTranscriptProps {
   streamText?: string;
   streamTextTruncated?: boolean;
   liveTurnId?: string;
+  liveQuestions?: readonly UserQuestionRequest[];
   activeTurnId?: string | null;
   resultMarker?: { id: string; eventId: string; turnId?: string | null; label: string };
   incomplete?: boolean;
@@ -573,6 +599,7 @@ export function SessionTranscript({
   streamText,
   streamTextTruncated = false,
   liveTurnId,
+  liveQuestions,
   activeTurnId,
   resultMarker,
   incomplete = false,
@@ -587,8 +614,30 @@ export function SessionTranscript({
   historyDetailTurnId,
 }: SessionTranscriptProps) {
   const projectedEvents = useMemo(() => {
+    // The live dock owns live questions. Native history can omit the turn ID, so in that case
+    // match only the latest pending record with the same questions.
+    const docked = new Set<string>();
+    for (const request of liveQuestions ?? []) {
+      if (!request.supported || !Array.isArray(request.questions)) continue;
+      for (let index = events.length - 1; index >= 0; index--) {
+        const event = events[index];
+        const questionnaire = event.questionnaire;
+        if (
+          questionnaire?.status === "pending" &&
+          (!event.turn_id || event.turn_id === request.turnId) &&
+          request.questions.length === questionnaire.questions.length &&
+          request.questions.every(
+            (question, index) => question?.question === questionnaire.questions[index].question,
+          )
+        ) {
+          docked.add(event.id);
+          break;
+        }
+      }
+    }
     const projected: ConversationEvent[] = [];
     for (const event of events) {
+      if (docked.has(event.id)) continue;
       if (
         !activeTurnId ||
         event.turn_id !== activeTurnId ||
@@ -645,7 +694,15 @@ export function SessionTranscript({
       });
     }
     return projected;
-  }, [activeTurnId, events, liveTurnId, pendingMessage, streamText, streamTextTruncated]);
+  }, [
+    activeTurnId,
+    events,
+    liveQuestions,
+    liveTurnId,
+    pendingMessage,
+    streamText,
+    streamTextTruncated,
+  ]);
   const [projection, setProjection] = useState(() =>
     projectTranscript(projectedEvents, incomplete),
   );

@@ -1236,6 +1236,10 @@ export function compactClaudeInput(input: unknown): unknown {
 }
 
 /** Bytes an item contributes to page and cache budgets beyond its message text. */
-export function toolEventBytes(event: { tool?: unknown; turn_meta?: unknown }): number {
-  return jsonBytes(event.tool) + jsonBytes(event.turn_meta);
+export function toolEventBytes(event: {
+  tool?: unknown;
+  questionnaire?: unknown;
+  turn_meta?: unknown;
+}): number {
+  return jsonBytes(event.tool) + jsonBytes(event.questionnaire) + jsonBytes(event.turn_meta);
 }

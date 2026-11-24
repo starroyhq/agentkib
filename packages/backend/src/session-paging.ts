@@ -196,6 +196,10 @@ export class SessionPaging {
   image(file: string, imageId: string, scope = file) {
     return this.#images.read(scope, file, imageId);
   }
+
+  hasImageReferences(ids: readonly string[]): boolean {
+    return this.#images.hasReferences(ids);
+  }
   /**
    * `context` only changes how tool paths are shown; cursors keep the first read's.
    * `retain` false is for readers that only need this page and whether older history exists,

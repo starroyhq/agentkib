@@ -1,4 +1,8 @@
-import type { ConversationToolDetail, ConversationTurnMeta } from "@agentkib/runtime-protocol";
+import type {
+  ConversationQuestionnaire,
+  ConversationToolDetail,
+  ConversationTurnMeta,
+} from "@agentkib/runtime-protocol";
 import { sessionTitle } from "./agents/codex/codex-sessions";
 import { MAX_MESSAGE_BYTES, toolStatus, truncateUtf8 } from "./session-event-values";
 import { jsonTimestamp } from "./session-history";
@@ -27,6 +31,7 @@ export interface ConversationEvent {
   truncated: boolean;
   /** Bounded, redacted detail for `tool-summary` items. */
   tool?: ConversationToolDetail;
+  questionnaire?: ConversationQuestionnaire;
   turn_meta?: ConversationTurnMeta;
   /**
    * Text the CLI wrote itself rather than the model: a Claude Code local command's output, or

@@ -143,6 +143,43 @@ const catalog = z.object({
     )
     .max(20_000),
 });
+const label = z.string().min(1).max(1025);
+const questionDetail = z.string().max(8193);
+const questionnaire = z
+  .object({
+    status: z.enum(["pending", "answered", "closed"]),
+    questions: z
+      .array(
+        z.object({
+          id: id.max(256),
+          question: z.string().min(1).max(4097),
+          header: questionDetail.optional(),
+          multiSelect: z.boolean(),
+          options: z
+            .array(
+              z.object({
+                label,
+                description: questionDetail.optional(),
+                preview: questionDetail.optional(),
+              }),
+            )
+            .min(1)
+            .max(4),
+          answer: z
+            .object({
+              selected: z.array(label).max(4),
+              custom: questionDetail.optional(),
+              preview: questionDetail.optional(),
+            })
+            .optional(),
+        }),
+      )
+      .min(1)
+      .max(4),
+    imageQuestionId: id.max(256).optional(),
+  })
+  .optional()
+  .catch(undefined);
 const events = z.object({
   events: z
     .array(
@@ -171,6 +208,7 @@ const events = z.object({
         duration_ms: z.number().nonnegative().nullish(),
         attachment_count: count,
         truncated: z.boolean(),
+        questionnaire,
       }),
     )
     .max(100),

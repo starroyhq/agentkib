@@ -1,5 +1,9 @@
 import { createHash } from "node:crypto";
-import type { ConversationQuestionnaire, ConversationTurnMeta } from "@agentkib/runtime-protocol";
+import {
+  sessionProviderDeclaration,
+  type ConversationQuestionnaire,
+  type ConversationTurnMeta,
+} from "@agentkib/runtime-protocol";
 import { sessionTitle } from "./agents/codex/codex-sessions";
 import {
   claudeToolDetail,
@@ -21,7 +25,16 @@ import {
   claudeLocalCommandText,
   claudeTaskNotification,
 } from "./agents/claude/claude-command-records";
-import { claudeQuestionnaire } from "./agents/claude/claude-question-history";
+import {
+  claudeQuestionHistory,
+  claudeQuestionHistoryResult,
+} from "./agents/claude/claude-question-history";
+import {
+  codexQuestionnaire,
+  codexQuestionnaireInput,
+  codexQuestionnaireOutput,
+  type CodexQuestionnaireOutput,
+} from "./agents/codex/codex-question-history";
 import {
   compatibleEvents,
   hasText,
@@ -51,10 +64,27 @@ interface ToolResult {
   /** Claude Code's structured result, bounded and redacted. */
   claude?: ClaudeToolResult;
   questionnaire?: { value: ConversationQuestionnaire; images: ConversationImage[] };
+  codexAnswers?: CodexQuestionnaireOutput;
   /** Codex items recorded inside this call, such as code-mode `exec`. */
   children?: number;
   bytes?: number;
 }
+
+type ToolQuestionHistory = (
+  name: string,
+  input: unknown,
+  result: ToolResult | undefined,
+) => { value: ConversationQuestionnaire; images?: ConversationImage[] } | undefined;
+
+const questionHistory: Partial<Record<HistoryFormat, ToolQuestionHistory>> = {
+  "claude-code": (name, input, result) =>
+    claudeQuestionHistory(name, input, result !== undefined, result?.questionnaire),
+  codex: (_name, input, result) => {
+    const value = codexQuestionnaire(input, result?.codexAnswers, result !== undefined);
+    return value && { value };
+  },
+};
+
 export interface EventState {
   format: HistoryFormat;
   pending: ConversationEvent[];
@@ -349,14 +379,14 @@ function tool(
   } else if (state.format === "claude-code") {
     const detail = claudeToolDetail(name, input, result?.claude, state.context);
     if (detail) event.tool = detail;
-    if (name === "AskUserQuestion") {
-      const answered = result?.questionnaire;
-      const questionnaire =
-        answered?.value ?? claudeQuestionnaire(input, result ? "closed" : "pending");
-      if (questionnaire) event.questionnaire = questionnaire;
-      if (answered?.images.length) {
-        event.images = answered.images;
-        event.attachment_count = answered.images.length;
+  }
+  if (sessionProviderDeclaration(state.format)?.history.questionnaire) {
+    const history = questionHistory[state.format]?.(name, input, result);
+    if (history) {
+      event.questionnaire = history.value;
+      if (history.images?.length) {
+        event.images = history.images;
+        event.attachment_count = history.images.length;
       }
     }
   }
@@ -697,14 +727,10 @@ function parseRecord(
         const block = content[index];
         if (block?.type === "tool_result") {
           const structured = results === 1 ? row?.toolUseResult : undefined;
-          const questionImages =
-            typeof block.content === "string" && block.content.startsWith("The user answered: ")
-              ? answerImages
-              : [];
           const questionnaire =
             row.type !== "user" || block.is_error === true
               ? undefined
-              : claudeQuestionnaire(structured, "answered", questionImages.length > 0);
+              : claudeQuestionHistoryResult(structured, block.content, answerImages);
           const entry = result(
             state,
             stringValue(block.tool_use_id) ?? "",
@@ -714,9 +740,9 @@ function parseRecord(
             claudeToolResult(structured, block.content),
           );
           if (entry && questionnaire && !entry.questionnaire) {
-            entry.questionnaire = { value: questionnaire, images: questionImages };
-            entry.bytes = (entry.bytes ?? 0) + jsonBytes(entry.questionnaire);
-            attachedToAnswer = questionImages.length > 0;
+            entry.questionnaire = questionnaire;
+            entry.bytes = (entry.bytes ?? 0) + jsonBytes(questionnaire);
+            attachedToAnswer = questionnaire.images.length > 0;
           }
         } else if (block?.type === "tool_use") {
           const pendingCount = state.pending.length;
@@ -956,12 +982,27 @@ function parseRecord(
       timestamp,
       stringValue(payload.status),
       turn,
+      undefined,
+      payload.type === "function_call"
+        ? codexQuestionnaireInput(
+            stringValue(payload.name) ?? "",
+            payload.arguments,
+            payload.namespace,
+          )
+        : undefined,
     );
   } else if (
     row?.type === "response_item" &&
     ["function_call_output", "custom_tool_call_output"].includes(payload?.type)
   ) {
-    result(state, id, "completed", null, turn);
+    const entry = result(state, id, "completed", null, turn);
+    if (entry && !entry.codexAnswers && payload.type === "function_call_output") {
+      const answers = codexQuestionnaireOutput(payload.output);
+      if (answers) {
+        entry.codexAnswers = answers;
+        entry.bytes = (entry.bytes ?? 0) + jsonBytes(answers);
+      }
+    }
     if (id) openCall(state, hash(id), turn);
   } else if (
     row?.type === "event_msg" &&

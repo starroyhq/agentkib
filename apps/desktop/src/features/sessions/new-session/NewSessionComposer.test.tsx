@@ -546,15 +546,12 @@ describe("NewSessionComposer", () => {
     const props = renderComposer({ initial: { agent: "codex" } });
 
     await write("Review the routes");
-    expect(addContext()).toBeEnabled();
-    const user = userEvent.setup();
-    await user.click(addContext());
-    const menu = await screen.findByRole("dialog", { name: "Add context" });
-    expect(within(menu).queryByRole("button", { name: addCopy.attachment })).toBeNull();
-    for (const name of [addCopy.filesAndFolders, goalCopy.title, planLabel()])
-      expect(within(menu).getByRole("button", { name })).toBeDisabled();
+    expect(addContext()).toBeDisabled();
+    const file = new File(["draft"], "draft.txt", { type: "text/plain" });
+    expect(fireEvent.paste(message(), { clipboardData: { files: [file] } })).toBe(false);
+    expect(message().closest("form")).toHaveAttribute("data-attachment-rejected");
+    expect(screen.queryByText(file.name)).not.toBeInTheDocument();
     expect(doubles.client.newSessionResources).not.toHaveBeenCalled();
-    await user.keyboard("{Escape}");
     fireEvent.click(send());
     await waitFor(() => expect(props.onCreated).toHaveBeenCalledWith("created"));
     expect(doubles.client.managedAction).toHaveBeenCalledExactlyOnceWith("create", {

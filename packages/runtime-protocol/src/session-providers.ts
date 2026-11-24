@@ -89,6 +89,8 @@ interface SessionProviderIntegrationCapabilities {
   /** The provider's native integration, even when no session is connected to it. */
   connection?: { kind: "native-app" | "terminal-bridge" | "plugin-bridge" | "acp" };
   permissionField?: "policyId" | "permissionMode";
+  /** Catalog organization goes to the provider when native support has been verified. */
+  pinning?: "native" | "native-with-local-fallback";
   activities?: SessionActivityCapabilities & {
     /** Activity kinds a connected terminal can observe independently of the managed runner. */
     terminal?: SessionActivityCapabilities;
@@ -101,7 +103,11 @@ interface SessionProviderIntegrationCapabilities {
  * runtime response.
  */
 export interface SessionProviderCapabilities extends SessionProviderIntegrationCapabilities {
-  history: { readState: boolean };
+  history: {
+    readState: boolean;
+    /** Native history can supply read-only question cards. */
+    questionnaire?: true;
+  };
   operations: { execution: boolean };
   /** Stable session toolbar slots; live grants determine whether each action can run. */
   composer?: {
@@ -141,7 +147,7 @@ export interface SessionProviderCapabilities extends SessionProviderIntegrationC
 
 export interface BasicSessionProviderCapabilities extends SessionProviderIntegrationCapabilities {
   composer: { surface: "basic" };
-  history: { readState: false };
+  history: SessionProviderCapabilities["history"] & { readState: false };
   operations: { execution: false };
   contextUsage: SessionProviderCapabilities["contextUsage"];
   controls: readonly ("send" | "stop" | "approve")[];
@@ -251,7 +257,7 @@ const MANAGED_CAPABILITIES = {
     composer: {
       modelPicker: true,
       permissionPicker: true,
-      attachments: false,
+      attachments: true,
       workspaceResources: true,
       plan: false,
       goal: false,
@@ -281,7 +287,7 @@ const MANAGED_CAPABILITIES = {
     composer: {
       modelPicker: true,
       permissionPicker: true,
-      attachments: false,
+      attachments: true,
       workspaceResources: false,
       plan: false,
       goal: false,
@@ -308,10 +314,12 @@ const MANAGED_CAPABILITIES = {
 const PROVIDERS = {
   codex: {
     ...MANAGED_CAPABILITIES.codex,
+    history: { ...MANAGED_CAPABILITIES.codex.history, questionnaire: true },
     commands: { source: "built-in" },
     projectAgent: { lead: true, worker: true },
     queue: { actions: ["list", "add", "update", "delete", "reorder", "start"] },
     connection: { kind: "native-app" },
+    pinning: "native-with-local-fallback",
     permissionField: "policyId",
     activities: {
       kinds: ["subagent"],
@@ -321,6 +329,7 @@ const PROVIDERS = {
   },
   "claude-code": {
     ...MANAGED_CAPABILITIES["claude-code"],
+    history: { ...MANAGED_CAPABILITIES["claude-code"].history, questionnaire: true },
     commands: { source: "reported" },
     projectAgent: { lead: true, worker: true },
     queue: { actions: ["list", "add", "update", "delete", "reorder", "pause", "resume", "steer"] },
@@ -340,10 +349,12 @@ const PROVIDERS = {
   },
   "deepseek-harness": {
     ...MANAGED_CAPABILITIES["deepseek-harness"],
+    history: { ...MANAGED_CAPABILITIES["deepseek-harness"].history, questionnaire: true },
     commands: { source: "reported" },
     projectAgent: { lead: true, worker: true },
     queue: { actions: ["list", "add", "update", "delete", "steer"] },
     connection: { kind: "plugin-bridge" },
+    pinning: "native",
     permissionField: "policyId",
     activities: { kinds: ["subagent"], canStopIndividually: false, canOpenSubagentHistory: true },
   },

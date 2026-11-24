@@ -9,6 +9,7 @@ import {
   type ManagedAgent,
   type ResolvedHistoryReference,
   type SessionProviderCapabilities,
+  type SessionAttachmentKinds,
   type SessionQueueItemActions,
 } from "@agentkib/runtime-protocol";
 import {
@@ -85,7 +86,22 @@ const ATTACHMENT_FORMATS: Readonly<Record<string, AttachmentFormat>> = {
   "codex-follower": "codex",
   "claude-managed": "claude",
   "dsh-follower": "dsh",
+  "devin-print": "acp",
+  "acp-managed": "acp",
 };
+type AttachmentAvailability = {
+  available: boolean;
+  reason?: string;
+  attachmentKinds?: SessionAttachmentKinds;
+};
+
+function attachmentInputFormat(
+  format: AttachmentFormat | undefined,
+  feature: AttachmentAvailability | undefined,
+): AttachmentFormat | undefined {
+  return format === "dsh" && feature?.attachmentKinds?.image === false ? "link" : format;
+}
+
 /** Freeze browser-visible inputs so durable replay never needs to reopen resources. */
 function managedActionInputHash(operation: string, body: Record<string, unknown>): string {
   const fields = [
@@ -558,6 +574,7 @@ const API_ROUTES: Record<"GET" | "POST", Record<string, RouteSpec>> = {
   },
   POST: {
     "/read-state": { lan: true },
+    "/session-pin": { lan: true },
     "/history/search": { lan: true },
     "/history/locate": { lan: true },
     "/history/references": { lan: true },
@@ -4273,7 +4290,7 @@ export class WebAccessService {
       undefined,
       true,
     )) as {
-      features?: Record<string, { available: boolean; reason?: string }>;
+      features?: Record<string, AttachmentAvailability>;
       executionMode?: string;
       ownerWaitQueue?: boolean;
     };
@@ -4370,7 +4387,10 @@ export class WebAccessService {
         params.commandAccess = this.dshCommandAccess(this.grant(hash, permission));
       if (hasAttachments) {
         this.grant(hash, "attachments");
-        const format = policy.inputFormat;
+        const format = attachmentInputFormat(
+          policy.inputFormat,
+          capabilities.features?.attachments,
+        );
         if (capabilities.features?.attachments?.available !== true || !format)
           throw new HttpError(409, "attachments_unavailable");
         params.input =
@@ -5743,6 +5763,52 @@ export class WebAccessService {
     check();
     return this.json(res, 200, result);
   }
+  private async sessionPin(
+    res: ConversationResponse,
+    hash: string,
+    sessionId: string,
+    pinned: boolean,
+    trustedLocal: boolean,
+  ) {
+    const device = this.grant(hash, "organize");
+    const boot = this.bootId;
+    const check = () => {
+      if (this.grant(hash, "organize").id !== device.id) throw new HttpError(401, "access_ended");
+      if (this.bootId !== boot) throw new HttpError(409, "stale_boot");
+    };
+    const workspaceId = await this.codexScope(sessionId, hash, true, false).catch((error) => {
+      if (
+        trustedLocal &&
+        error instanceof HttpError &&
+        error.message === "workspace_not_authorized"
+      )
+        return undefined;
+      throw error;
+    });
+    check();
+    let result: unknown;
+    try {
+      result = await this.runtime(
+        { operation: "session-pin", sessionId, ...(workspaceId ? { workspaceId } : {}), pinned },
+        undefined,
+        true,
+      );
+    } catch (error) {
+      const detail =
+        error instanceof RuntimeRequestError ? snapshotField(error.data, "detail") : undefined;
+      const code = detail ?? (error instanceof Error ? error.message : undefined);
+      if (code === "session-not-found") throw new HttpError(404, "session_not_found");
+      if (code === "session-pin-busy") throw new HttpError(409, "session_pin_busy");
+      if (code === "session-pin-unavailable") throw new HttpError(409, "session_pin_unavailable");
+      throw error;
+    }
+    check();
+    if (workspaceId && (await this.codexScope(sessionId, hash, true, false)) !== workspaceId)
+      throw new HttpError(409, "access_changed");
+    check();
+    if (snapshotField(result, "pinned") !== pinned) throw new HttpError(504, "outcome_unknown");
+    return this.json(res, 200, { pinned });
+  }
   private async conversationSessionImage(
     res: ConversationResponse,
     hash: string,
@@ -6090,6 +6156,21 @@ export class WebAccessService {
         return this.json(res, 201, result);
       }
       const body = await this.body(req);
+      if (path === "/session-pin") {
+        if (
+          url.search ||
+          Object.keys(body).some((key) => !["sessionId", "pinned"].includes(key)) ||
+          typeof body.pinned !== "boolean"
+        )
+          throw new HttpError(400, "invalid_session_pin_request");
+        return this.sessionPin(
+          res,
+          hash,
+          this.field(body.sessionId, 256),
+          body.pinned,
+          trustedLocal,
+        );
+      }
       if (path === "/read-state") {
         if (
           url.search ||
@@ -6561,7 +6642,7 @@ export class WebAccessService {
             operation: "capabilities",
             sessionId,
             experimentalEnabled: true,
-          })) as { features?: Record<string, { available: boolean }> };
+          })) as { features?: Record<string, AttachmentAvailability> };
           if (!claudeReplay && capabilities.features?.attachments?.available !== true)
             throw new HttpError(409, "attachments_unavailable");
           const mode = (snapshot as { executionMode?: string }).executionMode;
@@ -6587,7 +6668,10 @@ export class WebAccessService {
               return this.json(res, 200, previous);
             }
           }
-          const format = ATTACHMENT_FORMATS[mode ?? ""];
+          const format = attachmentInputFormat(
+            ATTACHMENT_FORMATS[mode ?? ""],
+            capabilities.features?.attachments,
+          );
           if (!format) throw new HttpError(409, "attachments_unavailable");
           const alreadyPinned =
             mode === "claude-managed" &&

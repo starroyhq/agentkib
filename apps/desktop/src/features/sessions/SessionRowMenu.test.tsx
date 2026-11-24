@@ -18,6 +18,7 @@ const { client, claudeRequest } = vi.hoisted(() => ({
     access: vi.fn(),
     live: vi.fn(),
     sessionAction: vi.fn(),
+    setSessionPinned: vi.fn(),
   },
   claudeRequest: vi.fn(),
 }));
@@ -63,6 +64,70 @@ function open(session: ConversationSessionSummary, handlers = {}) {
 }
 
 describe("a session row's menu on the desktop", () => {
+  it("pins sessions without requesting provider management capabilities for a pin-only row", async () => {
+    const onChanged = vi.fn();
+    client.setSessionPinned.mockResolvedValue({ pinned: true });
+    open(
+      { ...summary("opencode"), pinned: false, pinningAvailable: true },
+      { onChanged, pinOnly: true },
+    );
+    fireEvent.click(screen.getByRole("menuitem", { name: "Pin session" }));
+    expect(client.setSessionPinned).toHaveBeenCalledExactlyOnceWith("session", true);
+    await waitFor(() => expect(onChanged).toHaveBeenCalledOnce());
+    expect(client.sessionCapabilities).not.toHaveBeenCalled();
+  });
+
+  it("unpins an existing pin and refreshes the same catalog", async () => {
+    const onChanged = vi.fn();
+    client.setSessionPinned.mockResolvedValue({ pinned: false });
+    open(
+      { ...summary("codex"), pinned: true, pinningAvailable: true },
+      { onChanged, pinOnly: true },
+    );
+    fireEvent.click(screen.getByRole("menuitem", { name: "Unpin session" }));
+    expect(client.setSessionPinned).toHaveBeenCalledExactlyOnceWith("session", false);
+    await waitFor(() => expect(onChanged).toHaveBeenCalledOnce());
+  });
+
+  it("keeps old-host menus unchanged and cannot mutate a paired host's cached pin", () => {
+    features({});
+    open(summary("codex"));
+    expect(screen.getByRole("menuitem", { name: copy.rename })).toBeInTheDocument();
+    expect(screen.queryByRole("menuitem", { name: /pin session/i })).not.toBeInTheDocument();
+    cleanup();
+    open(
+      { ...summary("codex"), pinned: false, pinningAvailable: true },
+      { canPin: false, pinOnly: true },
+    );
+    const pin = screen.getByRole("menuitem", { name: "Pin session" });
+    expect(pin).toHaveAttribute("aria-disabled", "true");
+    fireEvent.click(pin);
+    expect(client.setSessionPinned).not.toHaveBeenCalled();
+  });
+
+  it("reports a failed pin and leaves the catalog unchanged", async () => {
+    const onChanged = vi.fn();
+    client.setSessionPinned.mockRejectedValue(new Error("provider unavailable"));
+    open(
+      { ...summary("codex"), pinned: false, pinningAvailable: true },
+      { onChanged, pinOnly: true },
+    );
+    fireEvent.click(screen.getByRole("menuitem", { name: "Pin session" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Couldn't change the session's pin status.",
+    );
+    expect(onChanged).not.toHaveBeenCalled();
+  });
+
+  it("keeps an unavailable pin action disabled on a host that advertises it", () => {
+    features({});
+    open({ ...summary("codex"), pinned: true, pinningAvailable: false });
+    const unpin = screen.getByRole("menuitem", { name: "Unpin session" });
+    expect(unpin).toHaveAttribute("aria-disabled", "true");
+    fireEvent.click(unpin);
+    expect(client.setSessionPinned).not.toHaveBeenCalled();
+  });
+
   it.each([
     ["devin", "antigravity"],
     ["antigravity", "devin"],

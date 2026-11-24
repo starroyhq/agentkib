@@ -1,5 +1,6 @@
 import type { ConversationQuestionnaire } from "@agentkib/runtime-protocol";
 import { truncateUtf8 } from "../../session-event-values";
+import type { ConversationImage } from "../../session-events";
 import { sanitizeSessionText } from "../../session-handoff";
 
 type Question = ConversationQuestionnaire["questions"][number];
@@ -105,4 +106,27 @@ export function claudeQuestionnaire(
         ? answered[0]!.id
         : undefined;
   return { status, questions, ...(imageQuestionId ? { imageQuestionId } : {}) };
+}
+
+export function claudeQuestionHistoryResult(
+  structured: unknown,
+  content: unknown,
+  rowImages: ConversationImage[],
+) {
+  const images =
+    typeof content === "string" && content.startsWith("The user answered: ") ? rowImages : [];
+  const value = claudeQuestionnaire(structured, "answered", images.length > 0);
+  return value && { value, images };
+}
+
+export function claudeQuestionHistory(
+  name: string,
+  input: unknown,
+  completed: boolean,
+  answer: ReturnType<typeof claudeQuestionHistoryResult>,
+) {
+  if (name !== "AskUserQuestion") return;
+  if (answer) return answer;
+  const value = claudeQuestionnaire(input, completed ? "closed" : "pending");
+  return value && { value };
 }

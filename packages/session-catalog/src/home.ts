@@ -30,22 +30,35 @@ export interface HomeSession extends CatalogSession {
   };
   readState?: {
     status: string;
+    freshness?: string;
     firstUnread?: { type: string } | null;
     latestResult?: { outcome?: string | null } | null;
   };
 }
 
+interface HomeRunningSession {
+  place: HomePlace;
+  startedAt?: string;
+}
+
 export interface HomeSessionGroups<S extends HomeSession = HomeSession> {
   needsYou: { session: S; need: HomeNeed }[];
   review: { session: S; result: HomeResult }[];
-  running: { session: S; place: HomePlace; startedAt?: string }[];
+  running: ({ session: S } & HomeRunningSession)[];
   recent: S[];
 }
 
-const WAITING: Record<string, HomeNeed> = {
-  "awaiting-approval": "approval",
-  "waiting-input": "question",
-};
+export type HomeTaskOutcome = "completed" | "failed";
+
+export interface HomeTaskGroups<S extends HomeSession = HomeSession> {
+  pendingApproval: { session: S }[];
+  pendingAnswer: { session: S }[];
+  running: ({ session: S } & HomeRunningSession)[];
+  needsReview: { session: S; outcome: HomeTaskOutcome }[];
+  failed: { session: S; outcome: "failed" }[];
+  completed: { session: S; outcome: "completed" }[];
+}
+
 const RESULTS = new Set<string>(["completed", "failed", "cancelled", "ended"]);
 /**
  * Why a Project Agent's delegation pauses until the person looks: its automatic turns ran out, a
@@ -56,6 +69,48 @@ const DELEGATION_NEEDS = new Set([
   "report-undelivered",
   "restart-confirmation-required",
 ]);
+
+function visibleHomeSessions<S extends HomeSession>(sessions: readonly S[]): S[] {
+  return sortSessions(
+    sessions.filter(
+      (session) =>
+        !session.remote &&
+        !session.archived &&
+        session.availability === "readable" &&
+        isSessionVisible(session),
+    ),
+  );
+}
+
+function homeActivity(
+  session: HomeSession,
+  unconfirmed?: boolean,
+): { need: HomeNeed } | HomeRunningSession | undefined {
+  const state = session.continuation;
+  if (
+    unconfirmed ||
+    state?.status === "outcome-unknown" ||
+    state?.reason === "control-outcome-unconfirmed"
+  )
+    return { need: "verify" };
+  if (state?.status === "awaiting-approval") return { need: "approval" };
+  if (state?.status === "waiting-input") return { need: "question" };
+  if (state?.status === "running" || state?.status === "starting")
+    return {
+      place:
+        state.executionLocation === "terminal" || state.executionLocation === "external"
+          ? state.executionLocation
+          : "agentkib",
+    };
+  if (session.externalTurn?.status === "running")
+    return { place: "external", startedAt: session.externalTurn.startedAt ?? undefined };
+  if (
+    session.orchestration?.role === "lead" &&
+    session.orchestration.paused &&
+    DELEGATION_NEEDS.has(session.orchestration.reason ?? "")
+  )
+    return { need: "delegation" };
+}
 
 /**
  * Sorts this computer's sessions into the home's groups, pinned first then newest first, as the phone's first tab
@@ -75,44 +130,11 @@ export function homeSessionGroups<S extends HomeSession>(
   }: { recent?: number; unconfirmed?: ReadonlySet<string>; pinnedFirst?: boolean } = {},
 ): HomeSessionGroups<S> {
   const groups: HomeSessionGroups<S> = { needsYou: [], review: [], running: [], recent: [] };
-  const sorted = sortSessions(sessions);
+  const sorted = visibleHomeSessions(sessions);
   for (const session of pinnedFirst ? pinnedSessionsFirst(sorted) : sorted) {
-    if (
-      session.remote ||
-      session.archived ||
-      session.availability !== "readable" ||
-      !isSessionVisible(session)
-    )
-      continue;
-    const state = session.continuation;
-    const need = state ? WAITING[state.status] : undefined;
-    if (
-      unconfirmed?.has(session.id) ||
-      state?.status === "outcome-unknown" ||
-      state?.reason === "control-outcome-unconfirmed"
-    )
-      groups.needsYou.push({ session, need: "verify" });
-    else if (need) groups.needsYou.push({ session, need });
-    else if (state?.status === "running" || state?.status === "starting")
-      groups.running.push({
-        session,
-        place:
-          state.executionLocation === "terminal" || state.executionLocation === "external"
-            ? state.executionLocation
-            : "agentkib",
-      });
-    else if (session.externalTurn?.status === "running")
-      groups.running.push({
-        session,
-        place: "external",
-        startedAt: session.externalTurn.startedAt ?? undefined,
-      });
-    else if (
-      session.orchestration?.role === "lead" &&
-      session.orchestration.paused &&
-      DELEGATION_NEEDS.has(session.orchestration.reason ?? "")
-    )
-      groups.needsYou.push({ session, need: "delegation" });
+    const activity = homeActivity(session, unconfirmed?.has(session.id));
+    if (activity && "need" in activity) groups.needsYou.push({ session, ...activity });
+    else if (activity) groups.running.push({ session, ...activity });
     else if (session.readState?.status === "unread") {
       const outcome = session.readState.latestResult?.outcome;
       groups.review.push({
@@ -123,6 +145,39 @@ export function homeSessionGroups<S extends HomeSession>(
             : "unread",
       });
     } else if (groups.recent.length < recent) groups.recent.push(session);
+  }
+  return groups;
+}
+
+/** Groups the host's current tasks and last observed results for its task summary. */
+export function homeTaskGroups<S extends HomeSession>(sessions: readonly S[]): HomeTaskGroups<S> {
+  const groups: HomeTaskGroups<S> = {
+    pendingApproval: [],
+    pendingAnswer: [],
+    running: [],
+    needsReview: [],
+    failed: [],
+    completed: [],
+  };
+  for (const session of visibleHomeSessions(sessions)) {
+    const activity = homeActivity(session);
+    if (activity) {
+      if ("place" in activity) groups.running.push({ session, ...activity });
+      else if (activity.need === "approval") groups.pendingApproval.push({ session });
+      else if (activity.need === "question") groups.pendingAnswer.push({ session });
+      continue;
+    }
+    const read = session.readState;
+    const outcome = read?.latestResult?.outcome;
+    if (outcome !== "failed" && outcome !== "completed") continue;
+    if (outcome === "failed") groups.failed.push({ session, outcome });
+    else groups.completed.push({ session, outcome });
+    if (
+      read?.status === "unread" &&
+      read.freshness === "current" &&
+      read.firstUnread?.type === "result"
+    )
+      groups.needsReview.push({ session, outcome });
   }
   return groups;
 }

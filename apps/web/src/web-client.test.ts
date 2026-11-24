@@ -25,6 +25,26 @@ afterEach(() => {
 });
 
 describe("WebClient transport boundaries", () => {
+  it("opts into a task summary without changing catalog reads on old hosts", async () => {
+    const legacyCatalog = { indexEnabled: true, sessions: [] };
+    const snapshot = { version: "scoped-version", groups: {}, coverage: { complete: true } };
+    const transport = vi
+      .fn()
+      .mockResolvedValueOnce(json(legacyCatalog))
+      .mockResolvedValueOnce(json(legacyCatalog))
+      .mockResolvedValueOnce(json({ taskSummary: snapshot }));
+    const client = new WebClient(transport);
+    const signal = new AbortController().signal;
+    await expect(client.catalog(signal)).resolves.toEqual(legacyCatalog);
+    await expect(client.taskSummary(signal)).resolves.toBeUndefined();
+    await expect(client.taskSummary(signal)).resolves.toEqual(snapshot);
+    expect(transport.mock.calls.map(([path]) => path)).toEqual([
+      "/api/web/v1/catalog",
+      "/api/web/v1/catalog?taskSummary=1",
+      "/api/web/v1/catalog?taskSummary=1",
+    ]);
+    expect(transport.mock.calls[2][1]).toMatchObject({ method: "GET", signal });
+  });
   it("reads only the selected session image using its opaque ID and cancellation", async () => {
     const image = { mimeType: "image/png", base64: "aW1hZ2U=" };
     const transport = vi.fn().mockResolvedValue(json(image));
@@ -336,6 +356,31 @@ describe("WebClient transport boundaries", () => {
 });
 
 describe("hosted SSE", () => {
+  it("requests task summaries only on opted-in global streams", async () => {
+    const eventSource = vi.fn();
+    class FakeEventSource {
+      addEventListener = vi.fn();
+      close = vi.fn();
+      constructor(path: string) {
+        eventSource(path);
+      }
+    }
+    vi.stubGlobal("EventSource", FakeEventSource);
+    const client = new WebClient(
+      vi.fn().mockResolvedValue(json({ ...access, taskSummaryVersion: 1 })),
+    );
+    expect((await client.access()).taskSummaryVersion).toBe(1);
+    const handlers = { event: vi.fn(), open: vi.fn(), error: vi.fn() };
+    client.stream("", handlers)();
+    client.stream("", handlers, { taskSummary: true })();
+    client.stream("session", handlers, { taskSummary: true })();
+    expect(eventSource.mock.calls.map(([path]) => path)).toEqual([
+      "/api/web/v1/stream?protocolVersion=2",
+      "/api/web/v1/stream?protocolVersion=2&taskSummary=1",
+      "/api/web/v1/stream?protocolVersion=2&sessionId=session",
+    ]);
+  });
+
   it("parses CRLF, multiline data and arbitrary network chunks", () => {
     const emit = vi.fn();
     const parser = new SseParser(emit);

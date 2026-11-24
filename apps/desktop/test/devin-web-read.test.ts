@@ -14,7 +14,12 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { homeSessionGroups, workStoppedByQuit, type HomeSession } from "@agentkib/session-catalog";
+import {
+  homeSessionGroups,
+  homeTaskGroups,
+  workStoppedByQuit,
+  type HomeSession,
+} from "@agentkib/session-catalog";
 import { DevinManagedRunner } from "../../../packages/backend/src/agents/devin/devin-managed-runner";
 import type { DevinSessionProvider } from "../../../packages/backend/src/agents/devin/session-provider";
 import { ACP_INLINE_ATTACHMENT_LIMIT } from "../../../packages/backend/src/acp-prompt-attachments";
@@ -129,7 +134,7 @@ async function turn() {
 }
 require("node:readline").createInterface({ input: process.stdin }).on("line", (line) => {
   const { id, method, params = {} } = JSON.parse(line);
-  if (method === undefined) return;
+  if (method === undefined) return id === "devin-approval" ? void turn() : undefined;
   if (method === "initialize") {
     append("initialize.log", "initialize");
     const promptCapabilities = JSON.parse(read("prompt-capabilities") ?? "null");
@@ -156,6 +161,11 @@ require("node:readline").createInterface({ input: process.stdin }).on("line", (l
     append("prompt-blocks.log", JSON.stringify(params.prompt));
     append("prompts.log", (params.prompt ?? []).map((block) => block.text ?? "").join(""));
     pending = id;
+    if (read("turn-approval")) return send({ jsonrpc: "2.0", id: "devin-approval", method: "session/request_permission", params: {
+      sessionId: params.sessionId,
+      toolCall: { toolCallId: "read-notes", title: "Read notes", kind: "read" },
+      options: [{ optionId: "allow-once", name: "Allow once", kind: "allow_once" }],
+    } });
     return void turn();
   }
   send({ jsonrpc: "2.0", id, error: { code: -32601, message: "Method not found" } });
@@ -280,6 +290,7 @@ process.on("SIGHUP", () => process.exit(0));
     history,
     events,
     turn,
+    requireApproval: () => writeFileSync(path.join(bin, "turn-approval"), "1"),
     usage,
     models,
     log,
@@ -839,6 +850,27 @@ describe.runIf(process.platform !== "win32")("Devin sessions run by AgentKib", (
     const idle = await f.row();
     expect(idle.continuation).toMatchObject({ status: "idle", reason: null });
     expect(workStoppedByQuit([idle])).toEqual([]);
+  });
+
+  it("lists a live ACP permission request as pending approval until it is answered", async () => {
+    const f = fixture();
+    f.requireApproval();
+    expect(await f.send("Read the notes")).toMatchObject({ accepted: true });
+    await expect.poll(async () => (await f.live()).status).toBe("waiting-approval");
+    const waiting = await f.row();
+    expect(waiting.continuation).toMatchObject({ status: "awaiting-approval" });
+    expect(homeTaskGroups([waiting]).pendingApproval.map(({ session }) => session.id)).toEqual([
+      f.id,
+    ]);
+    expect(
+      await f.control("approve", {
+        approvalId: "devin-approval",
+        decision: "allow-once",
+        turnId: (await f.live()).turnId,
+      }),
+    ).toMatchObject({ accepted: true });
+    await f.ended();
+    expect(homeTaskGroups([await f.row()]).pendingApproval).toEqual([]);
   });
 
   it("explains a usage limit whose reset Devin's /usage does not tell, with no continue", async () => {

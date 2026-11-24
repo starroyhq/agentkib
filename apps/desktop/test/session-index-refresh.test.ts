@@ -154,9 +154,25 @@ describe("cached directory refresh", () => {
     const partial = f.index.incompleteSources(["workspace"]);
     expect(partial).not.toContainEqual({ workspaceId: "workspace", agent: "codex" });
     expect(partial).toContainEqual({ workspaceId: "workspace", agent: "claude-code" });
+    expect(f.index.catalogSources(["workspace"])).toEqual(
+      expect.arrayContaining([
+        { workspaceId: "workspace", agent: "codex", complete: true },
+        {
+          workspaceId: "workspace",
+          agent: "claude-code",
+          complete: false,
+          reasons: ["not-scanned", "refreshing"],
+        },
+      ]),
+    );
     waiting.resolve({ sessions: [], incomplete: false });
     await refresh;
     expect(f.index.complete(["workspace"])).toBe(true);
+    expect(f.index.catalogSources(["workspace"])).toContainEqual({
+      workspaceId: "workspace",
+      agent: "claude-code",
+      complete: true,
+    });
   });
   it("coalesces concurrent full/force requests instead of queueing repeated scans", async () => {
     const list = vi.fn(async () => ({ sessions: [], incomplete: false }));
@@ -211,6 +227,22 @@ describe("cached directory refresh", () => {
     expect(
       f.store.status("workspace").find((row) => row.agent === "antigravity")?.error_key,
     ).toBeTruthy();
+    expect(f.index.catalogSources(["workspace"])).toEqual(
+      expect.arrayContaining([
+        {
+          workspaceId: "workspace",
+          agent: "claude-code",
+          complete: false,
+          reasons: ["source-partial"],
+        },
+        {
+          workspaceId: "workspace",
+          agent: "antigravity",
+          complete: false,
+          reasons: ["source-unavailable"],
+        },
+      ]),
+    );
   });
   it("records actionable Antigravity reasons separately from unattributed records", async () => {
     const f = fixture(async (agent) =>
@@ -237,6 +269,27 @@ describe("cached directory refresh", () => {
       "antigravity-acp-list",
       "antigravity-database-record",
     ]);
+    expect(f.index.catalogSources(["workspace"])).toContainEqual({
+      workspaceId: "workspace",
+      agent: "antigravity",
+      complete: false,
+      reasons: ["antigravity-acp-list", "antigravity-database-record"],
+    });
+  });
+  it("reports disabled inventory without starting scans or changing legacy completeness", () => {
+    const list = vi.fn(async () => ({ sessions: [], incomplete: false }));
+    const f = fixture(list);
+    f.disable();
+    expect(f.index.incompleteSources(["workspace"])).toEqual([]);
+    expect(f.index.catalogSources(["workspace"])).toEqual(
+      SESSION_AGENTS.map((agent) => ({
+        workspaceId: "workspace",
+        agent,
+        complete: false,
+        reasons: ["index-disabled"],
+      })),
+    );
+    expect(list).not.toHaveBeenCalled();
   });
   it("logs an unattributed record ID once without failing any refresh", async () => {
     const id = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";

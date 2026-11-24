@@ -739,14 +739,6 @@ export class WebReadRequests {
       const managed = catalog.records.filter((record) =>
         hasManagedCatalogWorkspace(this.store, record),
       );
-      if (!enabled && managed.length === 0)
-        return {
-          workspaces: [],
-          sessions: [],
-          indexEnabled: false,
-          complete: catalog.complete,
-          ...(catalog.complete ? { incompleteSources: [] } : {}),
-        };
       const allWorkspaces = this.store.listWorkspaces() as Array<{
         id: string;
         name: string;
@@ -757,6 +749,20 @@ export class WebReadRequests {
         last_active_at: string | null;
         last_scanned_at: string | null;
       }>;
+      const sourceCoverage = () => ({
+        indexEnabled: enabled,
+        managedComplete: catalog.complete,
+        sources: this.sessionIndex?.catalogSources(allWorkspaces.map(({ id }) => id)) ?? [],
+      });
+      if (!enabled && managed.length === 0)
+        return {
+          workspaces: [],
+          sessions: [],
+          indexEnabled: false,
+          complete: catalog.complete,
+          ...(catalog.complete ? { incompleteSources: [] } : {}),
+          taskSummarySourceCoverage: sourceCoverage(),
+        };
       const sessionRows: unknown[] = [];
       if (enabled)
         for (const workspace of allWorkspaces) {
@@ -790,9 +796,11 @@ export class WebReadRequests {
       const runtime = this.#codex.catalogRuntime(sessions, enabled);
       if (this.indexGeneration() !== generation || indexEnabled(this.dataDir) !== enabled)
         throw new Error("catalog-stale");
+      const taskSummarySourceCoverage = sourceCoverage();
       const incompleteSources = enabled
-        ? (this.sessionIndex?.incompleteSources(allWorkspaces.map((workspace) => workspace.id)) ??
-          [])
+        ? taskSummarySourceCoverage.sources.flatMap(({ complete, workspaceId, agent }) =>
+            complete ? [] : [{ workspaceId, agent }],
+          )
         : [];
       const checkouts = catalogCheckouts(this.store, this.environment);
       const externalTurns = this.#codex.externalTurnsBySession(managed, aliasesByOwner, enabled);
@@ -807,6 +815,7 @@ export class WebReadRequests {
         codexRuntimeReason: runtime?.reason === "codex-cli-version-too-old" ? runtime.reason : null,
         complete: catalog.complete && incompleteSources.length === 0,
         ...(catalog.complete ? { incompleteSources } : {}),
+        taskSummarySourceCoverage,
         workspaces: checkouts.workspaces(
           workspaces
             .filter((workspace) => registered.has(workspace.id))

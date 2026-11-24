@@ -19,6 +19,7 @@ import {
   RUNTIME_METHODS,
   SESSION_EVENT_NOTIFICATION,
   sessionProviderCapabilities,
+  type DshBridgeHistoryRecord,
   type SessionSubscription,
   type SubagentCatalog,
 } from "@agentkib/runtime-protocol";
@@ -1204,6 +1205,104 @@ describe("DeepSeek Harness bridge", () => {
     await expect(f.bridge.events("session-a", "codex-native-v1:1", 10)).rejects.toThrow(
       "TRANSCRIPT_CURSOR_STALE",
     );
+  });
+
+  it("restores answered DSH questionnaires across separate call and result pages", async () => {
+    const f = await fixture();
+    const label = "优".repeat(400);
+    const questions = [
+      {
+        id: "areas",
+        header: "选择范围",
+        question: "要覆盖哪些区域？",
+        multi_select: true,
+        options: [{ label, description: "选项说明" }, { label: "历史" }],
+      },
+      { id: "notes", question: "还有什么要说明？" },
+    ];
+    const answers = [
+      { id: "notes", selected: [], custom: "只读即可" },
+      { id: "areas", selected: [label, "历史"] },
+    ];
+    f.dsh.append("session-a", "tool/call", {
+      turn: 1,
+      callId: "questions",
+      name: "ask_user_question",
+      arguments: JSON.stringify({ questions }),
+    });
+    f.dsh.append("session-a", "tool/result", {
+      turn: 1,
+      message: {
+        toolCallId: "questions",
+        content: [{ type: "text", text: JSON.stringify({ answers }) }],
+      },
+    });
+
+    const latest = await f.bridge.events("session-a", null, 1);
+    const selectedLabel = "优".repeat(341) + "…";
+    const questionnaire = {
+      status: "answered",
+      questions: [
+        {
+          id: "areas",
+          header: "选择范围",
+          question: "要覆盖哪些区域？",
+          multiSelect: true,
+          options: [{ label: selectedLabel, description: "选项说明" }, { label: "历史" }],
+          answer: { selected: [selectedLabel, "历史"] },
+        },
+        {
+          id: "notes",
+          question: "还有什么要说明？",
+          multiSelect: false,
+          options: [],
+          answer: { selected: [], custom: "只读即可" },
+        },
+      ],
+    };
+    expect(latest.events).toMatchObject([
+      { id: "dsh-tool:questions", content: null, questionnaire },
+    ]);
+    expect(latest.next_cursor).toBeTruthy();
+    const older = await f.bridge.events("session-a", latest.next_cursor, 1);
+    expect(older.events).toMatchObject([
+      { id: "dsh-tool:questions", content: null, questionnaire },
+    ]);
+    const together = await f.bridge.events("session-a", null, 10);
+    expect(together.events).toMatchObject([
+      { id: "dsh-tool:questions", content: null, questionnaire },
+    ]);
+  });
+
+  it("keeps tool output readable when a plugin provides no valid questionnaire projection", () => {
+    const preview = JSON.stringify({ answers: [{ id: "scope", selected: ["Docs"] }] });
+    for (const questionnaire of [undefined, [{ id: "wrong shape" }]]) {
+      const events = dshConversationEvents([
+        {
+          seq: 1,
+          time: null,
+          kind: "tool-call",
+          turn: 1,
+          callId: "questions",
+          name: "ask_user_question",
+        },
+        {
+          seq: 2,
+          time: null,
+          kind: "tool-result",
+          turn: 1,
+          callId: "questions",
+          isError: false,
+          preview,
+          truncated: false,
+          questionnaire,
+        } as DshBridgeHistoryRecord,
+      ]);
+      expect(events).toMatchObject([
+        { kind: "tool-summary", tool_name: "ask_user_question", content: preview },
+      ]);
+      expect(events[0]).not.toHaveProperty("questionnaire");
+    }
   });
 
   it("sends through DSH's session service once per request and records a receipt", async () => {

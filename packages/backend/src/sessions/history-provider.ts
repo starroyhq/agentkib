@@ -15,6 +15,14 @@ export type DshSessionSource = Pick<DshBridge, "list" | "events" | "image" | "do
 export interface NativeListing {
   sessions: NativeSession[];
   incomplete: boolean;
+  issues?: SessionListingIssue[];
+}
+
+export interface SessionListingIssue {
+  code: string;
+  scope: "workspace" | "source" | "unattributed";
+  id?: string;
+  surface?: "app" | "ide";
 }
 
 type Awaitable<T> = T | Promise<T>;

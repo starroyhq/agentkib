@@ -14,6 +14,7 @@ import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import type { ConversationEvent, ConversationEventPage } from "../../session-events";
 import { MAX_MESSAGE_BYTES, MAX_PAGE_BYTES, truncateUtf8 } from "../../session-events";
+import type { SessionListingIssue } from "../../sessions/history-provider";
 import { pathIdentity } from "../../paths";
 import { timestamp } from "../../timestamps";
 
@@ -38,6 +39,7 @@ type Metadata = Omit<AntigravityLocalRecord, "surface" | "workspace" | "availabi
   workspaces: string[];
 };
 type Row = Record<string, unknown>;
+type RecordScope = { id?: string; workspaces: string[] };
 const directory = (surface: AntigravityLocalSurface) =>
   surface === "app" ? "antigravity" : "antigravity-ide";
 function absent(error: unknown) {
@@ -108,6 +110,13 @@ function filePath(value: unknown): string | null {
     return null;
   }
 }
+function protoWorkspaces(values: Field[]): string[] {
+  return values
+    .filter((field) => field.number === 9 && Buffer.isBuffer(field.value))
+    .map((field) => first(fields(field.value as Buffer), 1))
+    .map((value) => (value ? filePath(decoder.decode(value)) : null))
+    .filter((value): value is string => value !== null);
+}
 function protoMetadata(data: Buffer, expectedId?: string): Metadata {
   const values = fields(data);
   // The summary's field 4 is another UUID, not the conversation identity.
@@ -115,11 +124,7 @@ function protoMetadata(data: Buffer, expectedId?: string): Metadata {
   const id = expectedId;
   if (!id || !UUID.test(id)) throw new Error("Invalid Antigravity summary identity");
   const title = first(values, 1);
-  const workspaces = values
-    .filter((field) => field.number === 9 && Buffer.isBuffer(field.value))
-    .map((field) => first(fields(field.value as Buffer), 1))
-    .map((value) => (value ? filePath(decoder.decode(value)) : null))
-    .filter((value): value is string => value !== null);
+  const workspaces = protoWorkspaces(values);
   let updated: string | null = null;
   // Field 3 is the last-modified Timestamp, verified against the native summary database.
   const modified = first(values, 3);
@@ -244,17 +249,44 @@ function openDatabase(root: string) {
     throw error;
   }
 }
-function databaseMetadata(row: Row): Metadata {
-  const id = String(row.conversation_id ?? "").toLowerCase();
-  if (!UUID.test(id)) throw new Error("Invalid Antigravity summary identity");
-  const proto =
-    row.raw_summary instanceof Uint8Array && row.raw_summary.length
-      ? protoMetadata(blob(row.raw_summary), id)
-      : null;
+function databaseWorkspaces(row: Row): string[] {
   const uriValue: unknown = JSON.parse(text(row.workspace_uris));
   if (!Array.isArray(uriValue) || uriValue.length > 128)
     throw new Error("Invalid Antigravity workspace metadata");
-  const workspaces = uriValue.map(filePath).filter((value): value is string => value !== null);
+  return uriValue.map(filePath).filter((value): value is string => value !== null);
+}
+
+function nativeId(value: unknown): string | undefined {
+  return typeof value === "string" && UUID.test(value) ? value.toLowerCase() : undefined;
+}
+
+function workspaceProof(read: () => string[]): string[] {
+  try {
+    return read();
+  } catch {
+    return [];
+  }
+}
+
+function databaseRecordScope(row: Row): RecordScope {
+  const workspaces = workspaceProof(() => databaseWorkspaces(row));
+  const raw = row.raw_summary;
+  return {
+    id: nativeId(row.conversation_id),
+    workspaces:
+      workspaces.length || !(raw instanceof Uint8Array)
+        ? workspaces
+        : workspaceProof(() => protoWorkspaces(fields(blob(raw)))),
+  };
+}
+
+function databaseMetadata(row: Row): Metadata {
+  const id = nativeId(row.conversation_id);
+  if (!id) throw new Error("Invalid Antigravity summary identity");
+  const raw = row.raw_summary == null ? null : blob(row.raw_summary);
+  const proto =
+    row.raw_summary instanceof Uint8Array && raw?.length ? protoMetadata(raw, id) : null;
+  const workspaces = databaseWorkspaces(row);
   const title =
     typeof row.title === "string" && row.title ? row.title.slice(0, 512) : (proto?.title ?? null);
   return {
@@ -267,26 +299,62 @@ function databaseMetadata(row: Row): Metadata {
   };
 }
 
+function storageBytes(value: unknown): number {
+  if (typeof value === "string") return Buffer.byteLength(value);
+  return value instanceof Uint8Array ? value.byteLength : 0;
+}
+
 /** Offline search projections are partial history, never a writable/resumable native session. */
 export class AntigravityLocalStore {
   constructor(readonly env: NodeJS.ProcessEnv = process.env) {}
   #home() {
     return this.env.HOME ?? this.env.USERPROFILE ?? homedir();
   }
-  list(workspace?: string): { records: AntigravityLocalRecord[]; incomplete: boolean } {
+  list(workspace?: string): {
+    records: AntigravityLocalRecord[];
+    incomplete: boolean;
+    issues?: SessionListingIssue[];
+  } {
     const result: AntigravityLocalRecord[] = [];
     const summaries = new Map<
       AntigravityLocalSurface,
       { records: Metadata[]; databaseIds: Set<string> }
     >();
     const roots = new Map<AntigravityLocalSurface, string>();
+    const issues: SessionListingIssue[] = [];
+    const reportedSources = new Set<string>();
+    const workspaceKey = workspace ? pathIdentity(workspace) : null;
+    const matchingWorkspaces = (values: string[]) =>
+      workspaceKey === null
+        ? values
+        : values.filter((value) => pathIdentity(value) === workspaceKey);
     let incomplete = false;
+    const report = (surface: AntigravityLocalSurface, code: string, record?: RecordScope) => {
+      if (!record) {
+        const key = `${surface}:${code}`;
+        if (reportedSources.has(key)) return;
+        reportedSources.add(key);
+        issues.push({ surface, code, scope: "source" });
+        incomplete = true;
+        return;
+      }
+      if (record.workspaces.length && !matchingWorkspaces(record.workspaces).length) return;
+      const scope = record.workspaces.length ? "workspace" : "unattributed";
+      issues.push({ surface, code, scope, ...(record.id ? { id: record.id } : {}) });
+      incomplete ||= scope === "workspace";
+    };
     for (const surface of ["app", "ide"] as const) {
+      let root: string | null;
       try {
-        const root = safeRoot(this.#home(), surface);
-        if (!root) continue;
-        roots.set(surface, root);
-        const metadata = new Map<string, Metadata>();
+        root = safeRoot(this.#home(), surface);
+      } catch {
+        report(surface, "antigravity-database-source");
+        continue;
+      }
+      if (!root) continue;
+      roots.set(surface, root);
+      const metadata = new Map<string, Metadata>();
+      try {
         const source = openDatabase(root);
         if (source)
           try {
@@ -295,49 +363,63 @@ export class AntigravityLocalStore {
                 `SELECT conversation_id,substr(title,1,512) AS title,substr(workspace_uris,1,${MAX_METADATA + 1}) AS workspace_uris,last_modified_time,substr(raw_summary,1,${MAX_METADATA + 1}) AS raw_summary FROM conversation_summaries LIMIT ${MAX_RECORDS + 1}`,
               )
               .iterate();
-            let bytes = 0;
+            const verified: Metadata[] = [];
+            let bytes = 0,
+              seen = 0;
             for (const row of rows) {
-              if (metadata.size >= MAX_RECORDS)
-                throw new Error("Antigravity history exceeds record limit");
-              bytes +=
-                blob(row.workspace_uris).length +
-                (row.raw_summary ? blob(row.raw_summary).length : 0);
-              if (bytes > MAX_TOTAL) throw new Error("Antigravity metadata exceeds total limit");
+              bytes += storageBytes(row.workspace_uris) + storageBytes(row.raw_summary);
+              if (++seen > MAX_RECORDS || bytes > MAX_TOTAL) {
+                report(surface, "antigravity-local-limit");
+                break;
+              }
               try {
-                const value = databaseMetadata(row);
-                metadata.set(value.id, value);
+                verified.push(databaseMetadata(row));
               } catch {
-                incomplete = true;
+                report(surface, "antigravity-database-record", databaseRecordScope(row));
               }
             }
             source.verify();
+            for (const value of verified) metadata.set(value.id, value);
           } finally {
             source.db.close();
           }
-        const databaseIds = new Set(metadata.keys());
+      } catch {
+        report(surface, "antigravity-database-source");
+      }
+      const databaseIds = new Set(metadata.keys());
+      try {
         const summaryFile = boundedRead(root, "agyhub_summaries_proto.pb");
         if (summaryFile) {
           // The map envelope may contain many individually bounded summary messages.
           for (const entry of fields(summaryFile)) {
             if (entry.number !== 1 || !Buffer.isBuffer(entry.value)) continue;
-            if (metadata.size >= MAX_RECORDS)
-              throw new Error("Antigravity history exceeds record limit");
+            if (metadata.size >= MAX_RECORDS) {
+              report(surface, "antigravity-local-limit");
+              break;
+            }
+            let id: string | undefined;
+            let data: Buffer | undefined;
             try {
               const parts = fields(entry.value),
-                key = first(parts, 1),
-                data = first(parts, 2);
+                key = first(parts, 1);
+              data = first(parts, 2);
               if (!key || !data) throw new Error("Invalid Antigravity summary map");
-              const value = protoMetadata(data, decoder.decode(key));
+              id = nativeId(decoder.decode(key));
+              const value = protoMetadata(data, id);
               if (!metadata.has(value.id)) metadata.set(value.id, value);
             } catch {
-              incomplete = true;
+              const summary = data;
+              report(surface, "antigravity-summary-record", {
+                id,
+                workspaces: summary ? workspaceProof(() => protoWorkspaces(fields(summary))) : [],
+              });
             }
           }
         }
-        summaries.set(surface, { records: [...metadata.values()], databaseIds });
       } catch {
-        incomplete = true;
+        report(surface, "antigravity-summary-source");
       }
+      summaries.set(surface, { records: [...metadata.values()], databaseIds });
     }
     for (const [surface, root] of roots) {
       const own = summaries.get(surface);
@@ -349,6 +431,7 @@ export class AntigravityLocalStore {
           for (const record of records)
             if (!candidates.has(record.id)) candidates.set(record.id, record);
       let source: ReturnType<typeof openDatabase> = null;
+      let readableEntry: ReturnType<DatabaseSync["prepare"]> | undefined;
       try {
         source = openDatabase(root);
         const db = source?.db;
@@ -357,17 +440,36 @@ export class AntigravityLocalStore {
             "SELECT name FROM sqlite_master WHERE type='table' AND name='conversations_fts'",
           )
           .get();
+        if (fts)
+          readableEntry = db?.prepare(
+            "SELECT 1 FROM conversations_fts WHERE conversation_id=? LIMIT 1",
+          );
+      } catch {
+        report(surface, "antigravity-database-source");
+      }
+      try {
         const records: AntigravityLocalRecord[] = [];
         for (const candidate of candidates.values()) {
-          if (!safeFile(root, `conversations/${candidate.id}.pb`, 512 * 1024 * 1024)) continue;
-          const readable =
-            own?.databaseIds.has(candidate.id) &&
-            !!fts &&
-            !!db
-              ?.prepare("SELECT 1 FROM conversations_fts WHERE conversation_id=? LIMIT 1")
-              .get(candidate.id);
-          for (const directory of candidate.workspaces) {
-            if (workspace && pathIdentity(directory) !== pathIdentity(workspace)) continue;
+          const directories = matchingWorkspaces(candidate.workspaces);
+          if (!directories.length) continue;
+          let readable = false;
+          try {
+            if (!safeFile(root, `conversations/${candidate.id}.pb`, 512 * 1024 * 1024)) continue;
+          } catch {
+            report(surface, "antigravity-trajectory-record", candidate);
+            continue;
+          }
+          try {
+            readable =
+              own?.databaseIds.has(candidate.id) === true && !!readableEntry?.get(candidate.id);
+          } catch {
+            report(surface, "antigravity-database-record", candidate);
+          }
+          if (result.length + records.length + directories.length > MAX_RECORDS) {
+            report(surface, "antigravity-local-limit");
+            break;
+          }
+          for (const directory of directories) {
             const { workspaces: _workspaces, ...metadata } = candidate;
             records.push({
               ...metadata,
@@ -375,19 +477,17 @@ export class AntigravityLocalStore {
               workspace: directory,
               availability: readable ? "readable" : "metadata-only",
             });
-            if (result.length + records.length > MAX_RECORDS)
-              throw new Error("Antigravity history exceeds record limit");
           }
         }
         source?.verify();
         result.push(...records);
       } catch {
-        incomplete = true;
+        report(surface, "antigravity-database-source");
       } finally {
         source?.db.close();
       }
     }
-    return { records: result, incomplete };
+    return { records: result, incomplete, ...(issues.length ? { issues } : {}) };
   }
   events(
     surface: AntigravityLocalSurface,

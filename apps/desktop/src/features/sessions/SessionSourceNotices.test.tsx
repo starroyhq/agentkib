@@ -184,3 +184,33 @@ it("keeps scan errors compact and reveals only the affected sources when expande
   fireEvent.click(screen.getByRole("button", { name: tr("sessions.retry") }));
   expect(retry).toHaveBeenCalledOnce();
 });
+
+it("lists each Antigravity failure category once across affected workspaces", () => {
+  const acp = "antigravity-acp-list";
+  render(
+    <SessionSourceNotices
+      statuses={[
+        {
+          ...status,
+          error_detail: JSON.stringify([acp, "antigravity-database-record"]),
+        },
+        { ...status, workspace_id: "other", error_detail: JSON.stringify([acp]) },
+      ]}
+      sessions={[]}
+      workspaces={[
+        { id: "project", name: "App" },
+        { id: "other", name: "Docs" },
+      ]}
+      refreshing={false}
+      onRetry={vi.fn()}
+    />,
+  );
+
+  fireEvent.click(screen.getByRole("button", { name: tr("common.details") }));
+  expect(screen.getAllByRole("listitem")).toHaveLength(2);
+  expect(screen.getByText("App, Docs · Antigravity")).toBeVisible();
+  expect(screen.getByText("App · Antigravity")).toBeVisible();
+  expect(screen.getByText("The ACP session list could not be read.")).toBeVisible();
+  expect(screen.getByText("Some local database records could not be read.")).toBeVisible();
+  expect(screen.queryByText(acp)).toBeNull();
+});

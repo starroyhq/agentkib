@@ -20,6 +20,8 @@ import {
   DSH_BRIDGE_PROTOCOL,
   dshBridgeCompatibility,
   dshBridgePluginCompatibility,
+  sessionProviderDeclaration,
+  type ConversationQuestionnaire,
   type DshBridgeAgentPreset,
   type DshBridgeCommand,
   type DshBridgeCommandEntry,
@@ -50,6 +52,7 @@ import type { UsageLimitView } from "../../usage-limit";
 import { sanitizeSessionText } from "../../session-handoff";
 import type { DocumentSource } from "../../session-document-providers";
 import type { ConversationEvent, ConversationEventPage } from "../../session-events";
+import { truncateUtf8 } from "../../session-event-values";
 import { decodedSessionImage, sessionImageResult } from "../../session-images";
 import type { DocumentOptions, SessionDocument } from "../../session-model";
 import type { NativeSession } from "../../session-store";
@@ -513,6 +516,66 @@ const historyImageSchema = z
     name: z.string().max(255).nullable(),
   })
   .strip();
+const historyQuestionText = z.string().max(16 * 1024);
+const historyQuestionsSchema = z
+  .array(
+    z.object({
+      id: z.string().min(1).max(128),
+      question: historyQuestionText,
+      header: historyQuestionText.optional(),
+      multiSelect: z.boolean(),
+      options: z
+        .array(
+          z.object({
+            label: historyQuestionText,
+            description: historyQuestionText.optional(),
+          }),
+        )
+        .max(20),
+      answer: z.object({
+        selected: z.array(historyQuestionText).max(20),
+        custom: historyQuestionText.optional(),
+      }),
+    }),
+  )
+  .min(1)
+  .max(8);
+
+function displayQuestionText(value: string, maxBytes: number): string {
+  const { content, truncated } = truncateUtf8(sanitizeSessionText(value, { value: 0 }), maxBytes);
+  return truncated ? `${content}…` : content;
+}
+
+/** Old plugins omit this projection. A malformed projection cannot hide the ordinary tool row. */
+function historyQuestionnaire(value: unknown): ConversationQuestionnaire | undefined {
+  if (value === undefined || !sessionProviderDeclaration("deepseek-harness")?.history.questionnaire)
+    return;
+  const result = historyQuestionsSchema.safeParse(value);
+  if (!result.success) return;
+  return {
+    status: "answered",
+    questions: result.data.map((question) => ({
+      id: question.id,
+      question: displayQuestionText(question.question, 4096),
+      ...(question.header !== undefined
+        ? { header: displayQuestionText(question.header, 8192) }
+        : {}),
+      multiSelect: question.multiSelect,
+      options: question.options.map((option) => ({
+        label: displayQuestionText(option.label, 1024),
+        ...(option.description !== undefined
+          ? { description: displayQuestionText(option.description, 8192) }
+          : {}),
+      })),
+      answer: {
+        selected: question.answer.selected.map((label) => displayQuestionText(label, 1024)),
+        ...(question.answer.custom !== undefined
+          ? { custom: displayQuestionText(question.answer.custom, 8192) }
+          : {}),
+      },
+    })),
+  };
+}
 const documentBase = {
   seq: z.number().int().nonnegative(),
   time: z.number().int().nonnegative().nullable(),
@@ -932,6 +995,10 @@ export function dshConversationEvents(
         });
         break;
       case "tool-call": {
+        const questionnaire =
+          record.name === "ask_user_question"
+            ? historyQuestionnaire(record.questionnaire)
+            : undefined;
         calls.set(record.callId, { name: record.name, index: events.length });
         events.push({
           ...base(record),
@@ -940,20 +1007,29 @@ export function dshConversationEvents(
           ...(turnIdOf(record.turn) ? { turn_id: turnIdOf(record.turn)! } : {}),
           content: null,
           tool_name: sanitizeSessionText(record.name, { value: 0 }),
-          tool_status: "running",
+          tool_status: questionnaire ? "completed" : "running",
+          ...(questionnaire ? { questionnaire } : {}),
         });
         break;
       }
       case "tool-result": {
         const call = calls.get(record.callId);
+        const questionnaire =
+          (!call || call.name === "ask_user_question") &&
+          (historyQuestionnaire(record.questionnaire) ||
+            (call ? events[call.index]?.questionnaire : undefined));
         const item: ConversationEvent = {
           ...base(record),
           id: `dsh-tool:${record.callId}`,
           kind: "tool-summary",
           ...(turnIdOf(record.turn) ? { turn_id: turnIdOf(record.turn)! } : {}),
-          content: record.preview ? sanitizeSessionText(record.preview, { value: 0 }) : null,
+          content:
+            !questionnaire && record.preview
+              ? sanitizeSessionText(record.preview, { value: 0 })
+              : null,
           tool_name: call ? sanitizeSessionText(call.name, { value: 0 }) : null,
-          tool_status: record.isError ? "failed" : "completed",
+          tool_status: record.isError && !questionnaire ? "failed" : "completed",
+          ...(questionnaire ? { questionnaire } : {}),
           truncated: record.truncated,
         };
         if (call) events[call.index] = { ...item, timestamp: events[call.index]!.timestamp };

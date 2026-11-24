@@ -14,11 +14,13 @@ import {
   MAX_STREAM,
   bounded,
   commandEntries,
+  createQuestionHistoryProjector,
   documentRecord,
   goalFromProjection,
   goalView,
   historyRecord,
   isHumanMessage,
+  isQuestionHistoryReply,
   modelsProjection,
   permissionOptions,
   presetEntry,
@@ -441,7 +443,7 @@ export function createBridge(ctx, options = {}) {
       }
       touch(state);
     }
-    if (historyRecord(event)) {
+    if (historyRecord(event) || isQuestionHistoryReply(event)) {
       historyVersions.set(sessionId, bump());
       schedule();
     }
@@ -886,6 +888,19 @@ export function createBridge(ctx, options = {}) {
           older = true;
           break;
         }
+      const projectQuestions = createQuestionHistoryProjector();
+      const bySequence = new Map(records.map((record) => [record.seq, record]));
+      for (const event of events) projectQuestions(event, bySequence.get(event?.seq));
+      // Question batches count toward the existing wire page budget too.
+      bytes = 0;
+      let length = 0;
+      for (const record of records) {
+        bytes += JSON.stringify(record).length;
+        if (length && bytes > HISTORY_PAGE_BYTES) break;
+        length++;
+      }
+      older ||= length < records.length;
+      records.length = length;
       records.reverse();
       return {
         sessionId: String(observation.header?.id ?? sessionId),

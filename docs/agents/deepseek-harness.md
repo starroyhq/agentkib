@@ -204,6 +204,8 @@ Host 账本、跨进程投递和原生入队之间不是一个原子事务。已
 
 ### 5.4 审批与问答
 
+会话历史把已回答的 `ask_user_question` 显示为只读问题卡，保留题目、选项和作答。插件 0.8.4 与本地历史读取都按工具调用 ID 和题目 ID 配对，包含 DSH 0.2.2-rc.5 记录的超时后补答。该版本问答记录的答案字段只包括选项标签和文字。仍在运行的旧版插件继续返回普通工具记录。
+
 DSH 的审批和问答经 `approval/request`、`user-questions/request` waterfall 派发。DSH 自身的 Web／Desktop 界面也通过 web-app 组合包中的 `api-remotes` 挂在这两条 waterfall 上，核对结果如下：
 
 - 没有在线客户端时，转发的请求不会交给下一个监听器，而是挂起，等客户端连上后再投递。AgentKib 的监听器若注册在它之后，永远收不到请求，必须 `prepend` 到外层。这也意味着 DSH 界面没打开时，只有 AgentKib 作答才能让会话继续。

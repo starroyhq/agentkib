@@ -203,6 +203,7 @@ export function ComposerModelPicker({
   settingsAuthority,
   readOnly,
   terminalModel,
+  terminalPickerVisible = true,
   terminalPickerOpen = false,
   terminalPickerDisabledReason,
   onOpenTerminalPicker,
@@ -243,6 +244,7 @@ export function ComposerModelPicker({
   settingsAuthority?: object;
   readOnly?: boolean;
   terminalModel?: boolean;
+  terminalPickerVisible?: boolean;
   terminalPickerOpen?: boolean;
   terminalPickerDisabledReason?: string;
   onOpenTerminalPicker?: () => Promise<boolean>;
@@ -630,40 +632,42 @@ export function ComposerModelPicker({
                     <Popover.Title className="break-words text-sm font-medium">
                       {displayModelName}
                     </Popover.Title>
-                    <Button
-                      type="button"
-                      variant="outline"
-                      className="h-8 rounded-lg px-2 text-sm disabled:pointer-events-auto"
-                      disabled={
-                        !onOpenTerminalPicker || terminalPickerOpen || terminalPickerPending
-                      }
-                      title={
-                        !onOpenTerminalPicker || terminalPickerOpen || terminalPickerPending
-                          ? terminalPickerDisabledReason
-                          : undefined
-                      }
-                      onClick={async () => {
-                        if (
-                          !onOpenTerminalPicker ||
-                          terminalPickerOpen ||
-                          terminalPickerFlight.current
-                        )
-                          return;
-                        terminalPickerFlight.current = true;
-                        setTerminalPickerPending(true);
-                        try {
-                          await onOpenTerminalPicker();
-                        } catch {
-                          // The session action reports the dispatch failure.
-                        } finally {
-                          terminalPickerFlight.current = false;
-                          setTerminalPickerPending(false);
+                    {terminalPickerVisible && (
+                      <Button
+                        type="button"
+                        variant="outline"
+                        className="h-8 rounded-lg px-2 text-sm disabled:pointer-events-auto"
+                        disabled={
+                          !onOpenTerminalPicker || terminalPickerOpen || terminalPickerPending
                         }
-                      }}
-                    >
-                      {copy.openTerminalModel}
-                    </Button>
-                    {terminalPickerOpen && (
+                        title={
+                          !onOpenTerminalPicker || terminalPickerOpen || terminalPickerPending
+                            ? terminalPickerDisabledReason
+                            : undefined
+                        }
+                        onClick={async () => {
+                          if (
+                            !onOpenTerminalPicker ||
+                            terminalPickerOpen ||
+                            terminalPickerFlight.current
+                          )
+                            return;
+                          terminalPickerFlight.current = true;
+                          setTerminalPickerPending(true);
+                          try {
+                            await onOpenTerminalPicker();
+                          } catch {
+                            // The session action reports the dispatch failure.
+                          } finally {
+                            terminalPickerFlight.current = false;
+                            setTerminalPickerPending(false);
+                          }
+                        }}
+                      >
+                        {copy.openTerminalModel}
+                      </Button>
+                    )}
+                    {terminalPickerVisible && terminalPickerOpen && (
                       <p className="text-xs leading-5 text-muted-foreground">
                         {copy.chooseInTerminal}
                       </p>

@@ -35,6 +35,9 @@ export interface PushAlertMessage {
   agent: string;
   title?: string;
   computer?: string;
+  summary?: string;
+  /** Open the session to view a terminal interaction. The notification offers no decisions. */
+  readOnly?: true;
   /** Milliseconds since the epoch. */
   at: number;
 }
@@ -59,6 +62,11 @@ export interface PushNotifierOptions {
   /** This computer's relay device id; undefined while nothing can be sent. */
   deviceId(): string | undefined;
   send(input: PushSendInput): Promise<PushSendResult>;
+  terminalSummary?(
+    target: PushTarget,
+    sessionId: string,
+    kind: "approval" | "question",
+  ): Promise<string | undefined>;
   computerName?(): Promise<string | undefined>;
   /** Whether someone uses this computer now. Alerts wait until they leave. */
   present?(): boolean;
@@ -401,6 +409,12 @@ export class PushNotifier {
     });
     if (!recipients.length) return;
     const alertTitle = title(alert.session);
+    const terminalKind =
+      alert.session.agent === "claude-code" &&
+      alert.session.continuation?.executionLocation === "terminal" &&
+      (alert.kind === "approval" || alert.kind === "question")
+        ? alert.kind
+        : undefined;
     this.#track(async () => {
       const computer = clip(
         await (this.#options.computerName?.() ?? Promise.resolve(undefined)).catch(() => undefined),
@@ -408,6 +422,15 @@ export class PushNotifier {
       );
       await Promise.all(
         recipients.map(async (target) => {
+          const summary = terminalKind
+            ? clip(
+                await this.#options
+                  .terminalSummary?.(target, alert.session.id, terminalKind)
+                  .catch(() => undefined),
+                256,
+              )
+            : undefined;
+          if (terminalKind && this.#states.get(alert.session.id) !== alert.state) return;
           const message: PushAlertMessage = {
             v: 1,
             ref: target.ref,
@@ -416,6 +439,8 @@ export class PushNotifier {
             agent: alert.session.agent,
             ...(alertTitle ? { title: alertTitle } : {}),
             ...(computer ? { computer } : {}),
+            ...(terminalKind ? { readOnly: true } : {}),
+            ...(summary ? { summary } : {}),
             at: alert.at,
           };
           let envelope: string;

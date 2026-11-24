@@ -569,7 +569,7 @@ it("prepares an external owner's draft without enabling native sends or reusing 
   ).not.toBeInTheDocument();
 });
 
-it("opens the connected terminal's model picker only on explicit request and keeps the reported model", async () => {
+it("shows the terminal model to a remote device without offering the native picker", async () => {
   state.controlReady = true;
   state.access = {
     ...state.access!,
@@ -598,11 +598,10 @@ it("opens the connected terminal's model picker only on explicit request and kee
   const model = await screen.findByRole("button", { name: /^Model: Claude session/ });
   fireEvent.click(model);
   const dialog = within(await screen.findByRole("dialog"));
-  const open = dialog.getByRole("button", { name: composerModelCopy["en-US"].openTerminalModel });
+  expect(
+    dialog.queryByRole("button", { name: composerModelCopy["en-US"].openTerminalModel }),
+  ).not.toBeInTheDocument();
   expect(state.runSessionAction).not.toHaveBeenCalled();
-  fireEvent.click(open);
-  await waitFor(() => expect(open).toBeDisabled());
-  expect(state.runSessionAction).toHaveBeenCalledExactlyOnceWith("open-model-picker");
   expect(model).toHaveTextContent("Claude session");
   expect(state.client.prepareSessionSettings).not.toHaveBeenCalled();
   expect(state.control).not.toHaveBeenCalled();
@@ -683,8 +682,8 @@ it("keeps cached controls visible across an executor change and browses without 
   const picker = await screen.findByRole("dialog");
   const modelCopy = composerModelCopy["en-US"];
   expect(
-    await within(picker).findByRole("button", { name: modelCopy.openTerminalModel }),
-  ).toBeDisabled();
+    within(picker).queryByRole("button", { name: modelCopy.openTerminalModel }),
+  ).not.toBeInTheDocument();
   expect(within(picker).queryByText(modelCopy.chooseInTerminal)).not.toBeInTheDocument();
   expect(within(picker).queryByRole("button", { name: modelCopy.reset })).toBeNull();
   fireEvent.keyDown(picker, { key: "Escape" });

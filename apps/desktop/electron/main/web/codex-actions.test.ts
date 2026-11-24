@@ -1,14 +1,16 @@
 // @vitest-environment node
 import { beforeEach, afterEach, describe, it, expect, vi } from "vitest";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, realpath, rm } from "node:fs/promises";
 import { createServer, request } from "node:http";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, isAbsolute, join, relative, sep } from "node:path";
+import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
 import { WebAccessService, type WebAdminRequest } from "./service";
 import { approveLegacyBrowser } from "./legacy-pairing-fixture";
 let service: WebAccessService;
 let dir: string;
+let workspacePath: string;
 let port: number;
 let cookie = "";
 let csrf = "";
@@ -97,7 +99,8 @@ async function http(path: string, data?: unknown, raw = false) {
       },
     );
     req.on("error", reject);
-    req.end(data === undefined ? undefined : raw ? String(data) : JSON.stringify(data));
+    if (raw && Buffer.isBuffer(data)) req.end(data);
+    else req.end(data === undefined ? undefined : raw ? String(data) : JSON.stringify(data));
   });
 }
 async function pair(flags: Partial<Extract<WebAdminRequest, { operation: "approve" }>> = {}) {
@@ -110,6 +113,7 @@ beforeEach(async () => {
   status = "running";
   cookie = "";
   dir = await mkdtemp(join(tmpdir(), "ak-actions-"));
+  workspacePath = dir;
   const listener = createServer();
   await new Promise<void>((r) => listener.listen(0, "127.0.0.1", r));
   port = (listener.address() as { port: number }).port;
@@ -119,9 +123,11 @@ beforeEach(async () => {
     staticDir: dir,
     runtimeRequest: runtime,
     managedRequest: async () => ({ available: true, models: [{ id: "model", efforts: ["high"] }] }),
+    claudeManagedRequest: runtime,
     verifiedCodex: true,
+    verifiedClaudeManaged: true,
     verifiedExperimental: true,
-    workspaceRequest: async () => [{ id: "workspace", name: "Workspace", path: dir }],
+    workspaceRequest: async () => [{ id: "workspace", name: "Workspace", path: workspacePath }],
   });
   await service.initialize();
   await service.request({
@@ -245,6 +251,200 @@ it("uploads bounded input, converts only trusted IDs and keeps native dispatch i
   expect(JSON.stringify(native)).toContain(upload.data.id);
   expect((await http("/codex/steer", body)).status).toBe(409);
 });
+
+describe("followed Claude terminal attachments", () => {
+  let terminalCwd: string;
+  let terminalAttachments: boolean;
+  let terminalContextAvailable: boolean;
+  const upload = (name: string, bytes: string | Buffer, mime = "text/plain") =>
+    http(
+      `/attachments?sessionId=session&name=${encodeURIComponent(name)}&mime=${encodeURIComponent(mime)}`,
+      bytes,
+      true,
+    );
+  const dispatches = (operation: string) =>
+    runtime.mock.calls.filter(
+      ([entry]) => (entry as { operation: string }).operation === operation,
+    );
+
+  beforeEach(async () => {
+    executionMode = "claude-follower";
+    status = "idle";
+    terminalAttachments = true;
+    terminalContextAvailable = true;
+    await mkdir(join(dir, "worktree with spaces", "terminal cwd"), { recursive: true });
+    workspacePath = await realpath(join(dir, "worktree with spaces"));
+    terminalCwd = await realpath(join(workspacePath, "terminal cwd"));
+    runtime.mockImplementation(async (input) => {
+      const operation = (input as { operation: string }).operation;
+      if (operation === "catalog")
+        return { sessions: [{ id: "session", agent: "claude-code", workspace_id: "workspace" }] };
+      if (operation === "context")
+        return { available: terminalContextAvailable, executionMode, cwd: terminalCwd };
+      const result = await runtimeHandler(input);
+      if (operation === "capabilities") {
+        const capabilities = result as { features: Record<string, { available: boolean }> };
+        return {
+          ...capabilities,
+          features: {
+            ...capabilities.features,
+            attachments: { available: terminalAttachments },
+          },
+        };
+      }
+      return operation === "live" ? { ...(result as object), turnId: "turn" } : result;
+    });
+  });
+
+  async function expectLinkedFile(line: string, name: string, bytes: Buffer | string) {
+    const marker = `User attached file [${name}](`;
+    expect(line.startsWith(marker)).toBe(true);
+    expect(line.endsWith(")")).toBe(true);
+    const file = fileURLToPath(line.slice(marker.length, -1));
+    const fromTerminal = relative(terminalCwd, await realpath(file));
+    expect(
+      fromTerminal === ".." || fromTerminal.startsWith(`..${sep}`) || isAbsolute(fromTerminal),
+    ).toBe(false);
+    expect(await readFile(file)).toEqual(Buffer.from(bytes));
+    expect(await readFile(join(dirname(file), ".gitignore"), "utf8")).toBe("*\n");
+  }
+
+  it("submits both files and screenshots as readable Markdown links under the terminal cwd", async () => {
+    await pair({ attachments: true });
+    expect(await http("/managed/capabilities?sessionId=session")).toMatchObject({
+      status: 200,
+      data: { features: { attachments: { available: true } } },
+    });
+    const png = Buffer.from(
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/0uoAAAAASUVORK5CYII=",
+      "base64",
+    );
+    const note = await upload("note.txt", "appended notes");
+    const screenshot = await upload("screenshot.png", png, "image/png");
+    expect(note.status).toBe(201);
+    expect(screenshot.status).toBe(201);
+    for (const item of [note.data, screenshot.data]) expect(item).not.toHaveProperty("path");
+    const body = {
+      ...action("Review these"),
+      attachmentIds: [note.data.id, screenshot.data.id],
+      cwd: dir,
+      input: [{ type: "claude-terminal-attachments", cwd: dir, text: "spoofed path" }],
+    };
+    expect((await http("/send", body)).status).toBe(200);
+    expect(dispatches("send")).toHaveLength(1);
+    const native = dispatches("send")[0][0] as {
+      input: { type: string; cwd: string; text: string }[];
+    };
+    expect(native).not.toHaveProperty("text");
+    expect(native.input).toEqual([
+      { type: "claude-terminal-attachments", cwd: terminalCwd, text: expect.any(String) },
+    ]);
+    expect(native.input[0].text.startsWith("Review these\n\n")).toBe(true);
+    const [, first, second, ...extra] = native.input[0].text.split("\n").filter(Boolean);
+    expect(extra).toEqual([]);
+    await expectLinkedFile(first, "note.txt", "appended notes");
+    await expectLinkedFile(second, "screenshot.png", png);
+    expect((await http("/send", body)).status).toBe(409);
+    expect(dispatches("send")).toHaveLength(1);
+  });
+
+  it.each(["steer", "queue-add"])(
+    "uses a workspace link for %s through the generic managed route",
+    async (operation) => {
+      status = "running";
+      await pair({ advancedControl: true, attachments: true });
+      const note = await upload("note.txt", "queued contents");
+      expect(note.status).toBe(201);
+      const response = await http("/managed/action", {
+        ...action("Read this"),
+        operation,
+        attachmentIds: [note.data.id],
+      });
+      expect(response.status).toBe(200);
+      expect(dispatches(operation)).toHaveLength(1);
+      const dispatched = dispatches(operation)[0][0] as {
+        input: { type: string; cwd: string; text: string }[];
+      };
+      expect(dispatched).not.toHaveProperty("text");
+      expect(dispatched.input).toEqual([
+        {
+          type: "claude-terminal-attachments",
+          cwd: terminalCwd,
+          text: expect.stringMatching(/^Read this\n\nUser attached file /),
+        },
+      ]);
+      await expectLinkedFile(
+        dispatched.input[0].text.split("\n")[2],
+        "note.txt",
+        "queued contents",
+      );
+    },
+  );
+
+  it("refuses attachment upload and submission after the terminal reconnects without support", async () => {
+    await pair({ attachments: true });
+    const note = await upload("note.txt", "not staged");
+    expect(note.status).toBe(201);
+    const before = await readdir(terminalCwd);
+    terminalAttachments = false;
+    expect(await http("/managed/capabilities?sessionId=session")).toMatchObject({
+      status: 200,
+      data: { features: { attachments: { available: false } } },
+    });
+    expect(await upload("other.txt", "blocked")).toMatchObject({
+      status: 409,
+      data: { error: "attachments_unavailable" },
+    });
+    expect(await http("/send", { ...action(), attachmentIds: [note.data.id] })).toMatchObject({
+      status: 409,
+      data: { error: "attachments_unavailable", controlOutcome: "not-dispatched" },
+    });
+    expect(dispatches("send")).toHaveLength(0);
+    expect(await readdir(terminalCwd)).toEqual(before);
+  });
+
+  it("keeps a paired device from staging another device's upload", async () => {
+    await pair({ attachments: true });
+    const note = await upload("private.txt", "bound to first device");
+    expect(note.status).toBe(201);
+    const before = await readdir(terminalCwd);
+    cookie = "";
+    const access = await http("/access");
+    cookie = access.cookie!;
+    csrf = access.data.csrfToken;
+    await pair({ attachments: true });
+    expect(await http("/send", { ...action(), attachmentIds: [note.data.id] })).toMatchObject({
+      status: 404,
+      data: { error: "attachment_not_found", controlOutcome: "not-dispatched" },
+    });
+    expect(dispatches("send")).toHaveLength(0);
+    expect(await readdir(terminalCwd)).toEqual(before);
+  });
+
+  it.each([
+    { scenario: "outside", status: 403, error: "workspace_not_authorized" },
+    { scenario: "unavailable", status: 409, error: "attachments_unavailable" },
+  ])(
+    "refuses a changed $scenario terminal context before writing or dispatching",
+    async ({ scenario, status, error }) => {
+      await pair({ attachments: true });
+      const note = await upload("note.txt", "must stay in upload storage");
+      expect(note.status).toBe(201);
+      const before = await readdir(terminalCwd);
+      const originalCwd = terminalCwd;
+      await mkdir(join(dir, "outside"));
+      const outside = await realpath(join(dir, "outside"));
+      if (scenario === "outside") terminalCwd = outside;
+      else terminalContextAvailable = false;
+      const response = await http("/send", { ...action(), attachmentIds: [note.data.id] });
+      expect(response).toMatchObject({ status, data: { error, controlOutcome: "not-dispatched" } });
+      expect(dispatches("send")).toHaveLength(0);
+      expect(await readdir(originalCwd)).toEqual(before);
+      expect(await readdir(outside)).toEqual([]);
+    },
+  );
+});
+
 it("requires active native turn before queueing an automatically consumed item", async () => {
   await pair({ advancedControl: true });
   status = "idle";

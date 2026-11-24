@@ -131,6 +131,10 @@ command and does not call a model.
   fabricated current permission mode, capacity or writable choice. Compaction
   temporarily withholds previous context counts. The workspace browser uses the
   host's existing file grants and cannot attach references to terminal messages.
+- On a writable connection that negotiates `terminal-attachments`, take desktop
+  and Web attachments as Markdown links to copies in the native session's
+  workspace. The Mods prompt API submits text, so images use the same links.
+  Claude Code reads the linked file under its own permission rules.
 - Take user messages sent from AgentKib, in three modes. Each needs a verified,
   writable lease. After any outcome the plugin cannot confirm, that message is
   marked unknown and never sent again, and the plugin takes no more messages
@@ -161,6 +165,13 @@ command and does not call a model.
 - Keep approvals and questions in the original terminal. Apart from a Project
   Agent's own worker tools above, no permission override, synthetic question response,
   or remote approval capability is provided.
+- With the Runtime's optional `terminal-approval-observation` feature, include a
+  bounded preview of an identifiable terminal approval and a short question summary.
+  The plugin correlates a main-thread tool call and its unchanged human `ask` verdict
+  with the native permission-prompt notification. Claude Code emits this notification
+  after roughly six seconds of waiting. Ambiguous calls omit the approval preview.
+  Inputs with recognized credentials are redacted, and no new approval action is exposed.
+  [Claude Code notification hooks](https://code.claude.com/docs/en/hooks#notification)
 
 Snapshots are previews of the latest 80 text rows and 100 tool records, subject to
 a byte budget. Clipped text has an explicit marker. Complete history continues to

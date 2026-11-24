@@ -5,6 +5,7 @@ import {
   missingClaudeBridgeCapabilities,
 } from "@agentkib/runtime-protocol";
 import { safeTerminalSubagentTitle } from "../../../../claude-bridge-plugin/hooks/terminal-subagents.js";
+import { sanitizeHandoffExport, sanitizeSessionText } from "../../session-handoff";
 
 // What the terminal plugin sends. A plugin of another AgentKib release connects too, so a field
 // this Runtime does not know is dropped rather than failing the message; values it reads stay exact.
@@ -83,6 +84,37 @@ export const bridgeSnapshotSchema = bridgeIdentitySchema.extend({
         .max(64),
     })
     .optional(),
+  pendingApprovalDetails: z
+    .object({
+      toolUseId: z.string().min(1).max(256),
+      turnId: id,
+      toolName: z.string().min(1).max(256),
+      input: z.record(z.string(), z.unknown()),
+    })
+    .refine(({ input }) => Buffer.byteLength(JSON.stringify(input)) <= 16 * 1024)
+    .optional()
+    .catch(undefined)
+    .transform((details) => {
+      if (!details) return;
+      try {
+        const input = JSON.parse(
+          sanitizeHandoffExport(JSON.stringify(details.input), "json"),
+        ) as Record<string, unknown>;
+        return {
+          ...details,
+          toolName: sanitizeSessionText(details.toolName, { value: 0 }),
+          input,
+        };
+      } catch {
+        // A malformed optional preview must not interrupt the native permission prompt.
+      }
+    }),
+  pendingQuestionSummary: z
+    .string()
+    .max(256)
+    .optional()
+    .catch(undefined)
+    .transform((value) => value && sanitizeSessionText(value, { value: 0 })),
   usage: z
     .object({
       tokens: revision.nullable(),
@@ -99,6 +131,7 @@ export const bridgeSnapshotSchema = bridgeIdentitySchema.extend({
     queue: z.boolean(),
     stop: z.boolean(),
     modelPicker: z.boolean().optional(),
+    attachments: z.literal(true).optional(),
     handover: z.literal(true).optional(),
     approve: z.literal(false),
     answer: z.literal(false),

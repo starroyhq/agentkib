@@ -8,6 +8,7 @@ import {
   type HistoryReference,
   type ManagedAgent,
   type ResolvedHistoryReference,
+  type SessionPendingInteraction,
   type SessionProviderCapabilities,
   type SessionAttachmentKinds,
   type SessionQueueItemActions,
@@ -43,6 +44,10 @@ import { CLAUDE_LOCAL_OWNER, localClaudeRequest } from "./local-claude";
 import { continuationPreflightReason } from "./continuation-reason";
 import { replayClaudeAttachments, settleClaudeAttachments } from "./claude-attachment-receipts";
 import { fileReferencePath, fileReferenceTargets } from "./markdown-links";
+import {
+  describePendingInteractions,
+  resolvePendingInteractionDecision,
+} from "./pending-interactions";
 import {
   LocalConversationResponse,
   isConversationPath,
@@ -87,6 +92,7 @@ const ATTACHMENT_FORMATS: Readonly<Record<string, AttachmentFormat>> = {
   "codex-managed": "codex",
   "codex-follower": "codex",
   "claude-managed": "claude",
+  "claude-follower": "claude-terminal",
   "dsh-follower": "dsh",
   "devin-print": "acp",
   "acp-managed": "acp",
@@ -468,6 +474,7 @@ function canDeleteOwnerWait(item: QueueEntry, deviceId: string) {
 
 type ActionDispatch = {
   dispatched: boolean;
+  terminalAttachments?: true;
   newlyPinnedDevice?: string;
   historyScopeKey?: string;
 };
@@ -665,6 +672,50 @@ function snapshotField(snapshot: unknown, key: string): unknown {
     ? (snapshot as Record<string, unknown>)[key]
     : undefined;
 }
+
+function interactionFor(
+  interactions: readonly SessionPendingInteraction[] | undefined,
+  kind: SessionPendingInteraction["kind"],
+  requestId: unknown,
+  turnId: unknown,
+) {
+  return interactions?.find(
+    (item) =>
+      item.kind === kind && item.binding.requestId === requestId && item.binding.turnId === turnId,
+  );
+}
+
+function hasPendingRows(snapshot: unknown, field: "approvals" | "questions"): boolean {
+  const rows = snapshotField(snapshot, field);
+  return (
+    Array.isArray(rows) && rows.some((item) => typeof snapshotField(item, "turnId") === "string")
+  );
+}
+
+function expiredInteractionRefusal(result: unknown): boolean {
+  const reason = snapshotField(result, "reason") ?? snapshotField(result, "error");
+  return (
+    typeof reason === "string" &&
+    new Set([
+      "stale-runtime-boot",
+      "stale-or-disabled-control",
+      "stale-turn",
+      "stale-Claude-revision",
+      "stale Claude revision",
+      "stale Claude turn",
+      "stale Claude question",
+      "stale-dsh-revision",
+      "stale Antigravity revision",
+      "stale Antigravity turn",
+      "missing-approval",
+      "missing-question",
+      "approval-unavailable",
+      "question-unavailable",
+      "interaction-answered-elsewhere",
+    ]).has(reason)
+  );
+}
+
 /** The owner-wait receipt marker is host routing metadata. */
 function projectQueueActionAck(ack: unknown): unknown {
   if (snapshotField(ack, "ownerWaitOnly") !== true) return ack;
@@ -1545,6 +1596,53 @@ export class WebAccessService {
     if (this.options.mode === "lan" || !this.relay)
       return Promise.resolve({ delivered: false, error: "relay_unavailable" });
     return this.relay.pushSend(input);
+  }
+
+  /** Native preview data follows the receiving phone's read scope. */
+  async terminalInteractionPushSummary(
+    target: PushTarget,
+    sessionId: string,
+    kind: "approval" | "question",
+  ): Promise<string | undefined> {
+    const credential = this.credentials.find(
+      (entry) =>
+        entry.account?.sessionId === target.session &&
+        entry.push?.updatedAt === target.updatedAt &&
+        entry.push.publicKey === target.publicKey &&
+        entry.push.alerts &&
+        this.pushReady(entry),
+    );
+    if (!credential) return;
+    const device = this.grant(credential.hash);
+    const scope = this.readerScope();
+    const session = await this.sessionScope(sessionId, credential.hash, true, false);
+    if (session.agent !== "claude-code") return;
+    const live = await this.runtime({ operation: "live", sessionId }, undefined, true);
+    if (
+      this.grant(credential.hash) !== device ||
+      this.readerScope() !== scope ||
+      credential.push?.updatedAt !== target.updatedAt ||
+      this.controlGuard(sessionId) ||
+      snapshotField(live, "sessionId") !== sessionId ||
+      snapshotField(live, "workspaceId") !== session.workspace_id ||
+      snapshotField(live, "executionMode") !== "claude-follower"
+    )
+      return;
+    if (kind === "question" && snapshotField(live, "status") === "waiting-input") {
+      const summary = snapshotField(live, "terminalQuestionSummary");
+      return typeof summary === "string" ? summary : undefined;
+    }
+    if (kind !== "approval" || snapshotField(live, "status") !== "awaiting-approval") return;
+    const approvals = snapshotField(live, "approvals");
+    if (!Array.isArray(approvals) || approvals.length !== 1) return;
+    const [approval] = approvals;
+    const description = snapshotField(snapshotField(approval, "input"), "description");
+    const tool = snapshotField(approval, "toolName");
+    return typeof description === "string" && description.trim()
+      ? description
+      : typeof tool === "string"
+        ? tool
+        : undefined;
   }
 
   /** A phone subscribed to notifications, changed what it gets, or stopped them. */
@@ -2946,7 +3044,7 @@ export class WebAccessService {
   }
   private projectSessionProvider(value: unknown): SessionProviderCapabilities | undefined {
     if (!value || typeof value !== "object") return;
-    const { create, models, contextUsage, composer, history, operations } =
+    const { create, models, contextUsage, composer, history, operations, pendingInteractions } =
       value as Partial<SessionProviderCapabilities>;
     if (
       (create?.mode !== "empty" && create?.mode !== "with-first-message") ||
@@ -3007,6 +3105,14 @@ export class WebAccessService {
               workspaceResources: composer.workspaceResources,
               plan: composer.plan,
               goal: composer.goal,
+            },
+          }
+        : {}),
+      ...(pendingInteractions?.approval === true || pendingInteractions?.question === true
+        ? {
+            pendingInteractions: {
+              ...(pendingInteractions.approval === true ? { approval: true as const } : {}),
+              ...(pendingInteractions.question === true ? { question: true as const } : {}),
             },
           }
         : {}),
@@ -4310,6 +4416,59 @@ export class WebAccessService {
     return result.result;
   }
 
+  private async terminalAttachmentInput(
+    hash: string,
+    workspaceId: string,
+    input: {
+      deviceId: string;
+      sessionId: string;
+      ids: unknown;
+      text: string;
+      requestId: string;
+    },
+  ) {
+    // Resolve the bound session's own root, which can be below the registered workspace.
+    const context = (await this.runtime(
+      { operation: "context", sessionId: input.sessionId, experimentalEnabled: true },
+      undefined,
+      true,
+    )) as { available?: boolean; cwd?: string; executionMode?: string };
+    if (
+      context?.available !== true ||
+      context.executionMode !== "claude-follower" ||
+      typeof context.cwd !== "string" ||
+      !isAbsolute(context.cwd)
+    )
+      throw new HttpError(409, "attachments_unavailable");
+    const workspace = (await this.registeredWorkspaces(true)).find(({ id }) => id === workspaceId);
+    if (!workspace) throw new HttpError(403, "workspace_not_authorized");
+    const [root, cwd] = await Promise.all([
+      realpath(workspace.path).catch(() => undefined),
+      realpath(context.cwd).catch(() => undefined),
+    ]);
+    if (!root || !cwd || cwd !== context.cwd) throw new HttpError(409, "attachments_unavailable");
+    const within = relative(root, cwd);
+    if (within === ".." || within.startsWith(`..${sep}`) || isAbsolute(within))
+      throw new HttpError(403, "workspace_not_authorized");
+    const device = this.grant(hash, "attachments");
+    if (
+      device.id !== input.deviceId ||
+      !(await this.workspaceAllowed(workspaceId, device, true)) ||
+      device !== this.grant(hash, "attachments")
+    )
+      throw new HttpError(403, "workspace_not_authorized");
+    return [
+      await this.attachmentStore.inputForTerminal(
+        input.deviceId,
+        input.sessionId,
+        input.ids,
+        input.text,
+        cwd,
+        input.requestId,
+      ),
+    ];
+  }
+
   private async prepareSessionAction(admission: ActionAdmission, dispatch: ActionDispatch) {
     const {
       hash,
@@ -4435,24 +4594,39 @@ export class WebAccessService {
         );
         if (capabilities.features?.attachments?.available !== true || !format)
           throw new HttpError(409, "attachments_unavailable");
-        params.input =
-          format === "claude"
-            ? await this.attachmentStore.inputForAgent(
-                device.id,
-                sessionId,
-                body.attachmentIds,
-                text,
-                format,
-                requestId,
-              )
-            : await this.attachmentStore.input(
-                device.id,
-                sessionId,
-                body.attachmentIds,
-                text,
-                format,
-              );
-        if (format === "claude" && prior?.found !== true) dispatch.newlyPinnedDevice = device.id;
+        if (format === "claude-terminal") {
+          if (snapshot.executionMode !== "claude-follower") throw new HttpError(409, "stale_state");
+          const alreadyPinned = (await this.attachmentStore.pendingRequests(sessionId)).some(
+            (item) => item.deviceId === device.id && item.requestId === requestId,
+          );
+          params.input = await this.terminalAttachmentInput(hash, admission.workspaceId, {
+            deviceId: device.id,
+            sessionId,
+            ids: body.attachmentIds,
+            text,
+            requestId,
+          });
+          dispatch.terminalAttachments = true;
+          if (!alreadyPinned) dispatch.newlyPinnedDevice = device.id;
+        } else if (format === "claude") {
+          params.input = await this.attachmentStore.inputForAgent(
+            device.id,
+            sessionId,
+            body.attachmentIds,
+            text,
+            format,
+            requestId,
+          );
+          if (prior?.found !== true) dispatch.newlyPinnedDevice = device.id;
+        } else {
+          params.input = await this.attachmentStore.input(
+            device.id,
+            sessionId,
+            body.attachmentIds,
+            text,
+            format,
+          );
+        }
         delete params.text;
       }
     }
@@ -4605,6 +4779,7 @@ export class WebAccessService {
       await this.assertHistoryScope(hash, dispatch.historyScopeKey, true);
     const restrictCodexNativePolicy = !this.isFullAccess(this.grant(hash, permission));
     if (requiresSend) this.grant(hash, "send");
+    if (dispatch.terminalAttachments) this.grant(hash, "attachments");
     if (this.requests.has(requestId)) {
       control.priorUncertain = true;
       throw new HttpError(409, "outcome_unknown");
@@ -4616,8 +4791,13 @@ export class WebAccessService {
     dispatch.dispatched = true;
     control.dispatched = true;
     let settingsConfirmed = false;
+    const invoke = () => this.requestSession(params, undefined, restrictCodexNativePolicy);
     const pending = Promise.resolve()
-      .then(() => this.requestSession(params, undefined, restrictCodexNativePolicy))
+      .then(() =>
+        dispatch.terminalAttachments && this.options.receiptRequest
+          ? dispatchClaude(invoke, this.options.receiptRequest, params)
+          : invoke(),
+      )
       .then((result) => {
         if (!settingsControl) return result;
         settingsConfirmed =
@@ -5527,6 +5707,27 @@ export class WebAccessService {
       this.clearUnconfirmed(String(params.sessionId));
     return this.json(res, 200, result);
   }
+  private async pendingInteractionDescriptions(
+    sessionId: string | undefined,
+    snapshot: unknown,
+    device: WebDevice,
+    enabled: boolean,
+    reserved: boolean,
+  ) {
+    const workspaceId = snapshotField(snapshot, "workspaceId");
+    const workspaceRoot =
+      hasPendingRows(snapshot, "approvals") && typeof workspaceId === "string"
+        ? (await this.registeredWorkspaces(reserved)).find((item) => item.id === workspaceId)?.path
+        : undefined;
+    return describePendingInteractions(snapshot, {
+      sessionId,
+      workspaceRoot,
+      approve: device.approve,
+      send: device.send,
+      extendedApproval: device.extendedApproval === true,
+      enabled,
+    });
+  }
   private async projectLive(
     sessionId: string | undefined,
     snapshot: unknown,
@@ -5543,10 +5744,21 @@ export class WebAccessService {
       snapshot &&
       typeof snapshot === "object" &&
       "executionMode" in snapshot &&
-      snapshot.executionMode === "claude-managed"
+      (snapshot.executionMode === "claude-managed" || snapshot.executionMode === "claude-follower")
     ) {
       await settleClaudeAttachments(this.attachmentStore, this.options.receiptRequest, sessionId);
     }
+    const enabled = await this.controlsEnabledForSnapshot(sessionId, snapshot, device, reserved);
+    const guarded = !!sessionId && !!this.controlGuard(sessionId);
+    // Terminal approval cards also use the host's risk assessment on the local desktop.
+    const pendingInteractions =
+      device &&
+      (device.id !== "desktop-local" ||
+        snapshotField(snapshot, "executionMode") === "claude-follower") &&
+      !guarded &&
+      (hasPendingRows(snapshot, "approvals") || hasPendingRows(snapshot, "questions"))
+        ? await this.pendingInteractionDescriptions(sessionId, snapshot, device, enabled, reserved)
+        : undefined;
     if (device && snapshot && typeof snapshot === "object") {
       const state = snapshot as {
         approvals?: {
@@ -5554,6 +5766,7 @@ export class WebAccessService {
           supported?: boolean;
           decisionOptions?: { scope: string }[];
         }[];
+        questions?: { supported?: boolean }[];
         [key: string]: unknown;
       };
       const handover = state.terminalHandover;
@@ -5581,14 +5794,16 @@ export class WebAccessService {
             (!approval.requiresExtendedApproval || device.extendedApproval === true),
           decisionOptions: device.extendedApproval === true ? approval.decisionOptions : undefined,
         })),
+        ...(state.questions && !device.send
+          ? {
+              questions: state.questions.map((question) => ({ ...question, supported: false })),
+            }
+          : {}),
+        ...(pendingInteractions?.length ? { pendingInteractions } : {}),
       };
     }
     if (!sessionId || !this.controlGuard(sessionId)) {
-      if (
-        snapshot &&
-        typeof snapshot === "object" &&
-        !(await this.controlsEnabledForSnapshot(sessionId, snapshot, device, reserved))
-      ) {
+      if (snapshot && typeof snapshot === "object" && !enabled) {
         const state = snapshot as Record<string, unknown>;
         return {
           ...state,
@@ -5601,7 +5816,7 @@ export class WebAccessService {
             ? state.approvals.map((approval) => ({
                 ...approval,
                 supported: false,
-                availableDecisions: [],
+                ...(state.executionMode === "claude-follower" ? {} : { availableDecisions: [] }),
               }))
             : [],
         };
@@ -5618,6 +5833,7 @@ export class WebAccessService {
       terminalHandover: null,
       approvals: [],
       questions: [],
+      ...(pendingInteractions !== undefined ? { pendingInteractions: [] } : {}),
       reason: "control-outcome-unconfirmed",
     };
   }
@@ -6181,6 +6397,9 @@ export class WebAccessService {
               : "unpaired",
         protocolVersion: 2,
         readStateVersion: 1,
+        ...(device && !trustedLocal && !browser.ended
+          ? { pendingInteractions: { version: 1 } }
+          : {}),
         ...(device && !browser.ended && this.options.conversationHub
           ? { taskSummaryVersion: 1 }
           : {}),
@@ -6499,7 +6718,26 @@ export class WebAccessService {
       const operation = path.slice(1);
       const permission = operation === "approve" ? "approve" : "send";
       this.grant(hash, permission);
+      const interactionDecisionId =
+        body.interactionDecisionId === undefined
+          ? undefined
+          : this.field(body.interactionDecisionId, 512);
+      if (
+        interactionDecisionId &&
+        ((operation !== "approve" && operation !== "answer") ||
+          body.decision !== undefined ||
+          body.nativeDecision !== undefined)
+      )
+        throw new HttpError(400, "invalid_decision");
+      const interactionRuntimeBootId = interactionDecisionId
+        ? this.field(body.interactionRuntimeBootId)
+        : undefined;
       const requestId = this.field(body.requestId, 128);
+      if (
+        interactionDecisionId &&
+        !/^[a-f\d]{8}-[a-f\d]{4}-[a-f\d]{4}-[a-f\d]{4}-[a-f\d]{12}$/i.test(requestId)
+      )
+        throw new HttpError(400, "invalid_input");
       const prior = await this.controlReceipt(requestId, this.grant(hash, permission).id, control);
       const sessionId = this.field(body.sessionId);
       if (this.isFullAccess(this.grant(hash)))
@@ -6511,9 +6749,21 @@ export class WebAccessService {
       if (body.historyReferences !== undefined && operation !== "send")
         throw new HttpError(400, "history_references_not_supported");
       this.grant(hash, permission);
+      if (interactionDecisionId && prior?.found === true) {
+        // The acknowledged payload stays on the device-bound receipt endpoint.
+        // Never dispatch a second native decision to verify an already used ID.
+        const conflict = prior.sessionId !== sessionId || prior.operation !== operation;
+        control.priorUncertain = !["accepted", "not-dispatched"].includes(String(prior.status));
+        if (conflict) throw new HttpError(409, "request_id_conflict");
+        if (control.priorUncertain) throw new HttpError(409, "outcome_unknown");
+        if (prior.status === "not-dispatched" && expiredInteractionRefusal(prior.ack))
+          throw new HttpError(409, "interaction_expired");
+        throw new HttpError(409, "duplicate_request");
+      }
       const historyReplay = this.historyReplay(prior, body, operation, control);
       if (historyReplay !== undefined) return this.json(res, 200, historyReplay);
-      if (body.bootId !== this.bootId) throw new HttpError(409, "stale_boot");
+      if (body.bootId !== this.bootId)
+        throw new HttpError(409, interactionDecisionId ? "interaction_expired" : "stale_boot");
       // Bridged and managed providers replay a receipted request from their own ledger.
       const claudeReplay =
         prior?.found === true &&
@@ -6600,11 +6850,11 @@ export class WebAccessService {
             throw new HttpError(400, "invalid_decision");
           params.nativeDecision = body.nativeDecision;
           params.decision = typeof body.decision === "string" ? body.decision : "native";
-        } else params.decision = this.field(body.decision);
+        } else if (!interactionDecisionId) params.decision = this.field(body.decision);
       }
       if (this.admission) throw new HttpError(409, "operation_busy");
       this.rate(`control:${hash}`, 30);
-      rememberRequest(this.requests, requestId);
+      if (!interactionDecisionId) rememberRequest(this.requests, requestId);
       this.active.add(sessionId);
       this.admission = true;
       const boot = this.bootId;
@@ -6648,14 +6898,16 @@ export class WebAccessService {
           }[];
         };
         this.grant(hash, permission);
-        if (boot !== this.bootId) throw new HttpError(409, "stale_boot");
+        if (boot !== this.bootId)
+          throw new HttpError(409, interactionDecisionId ? "interaction_expired" : "stale_boot");
         if (!(await this.controlsEnabledForSnapshot(sessionId, snapshot, this.grant(hash), true)))
           throw new HttpError(403, "provider_control_not_allowed");
         if (
           !snapshot?.runtimeBootId ||
+          (interactionRuntimeBootId && snapshot.runtimeBootId !== interactionRuntimeBootId) ||
           (!claudeReplay && snapshot.revision !== body.expectedRevision)
         )
-          throw new HttpError(409, "stale_state");
+          throw new HttpError(409, interactionDecisionId ? "interaction_expired" : "stale_state");
         if (
           !claudeReplay &&
           operation === "send" &&
@@ -6684,7 +6936,10 @@ export class WebAccessService {
               item.supported === true,
           );
           if (!question || !Array.isArray(question.questions) || !question.questions.length)
-            throw new HttpError(409, "question_unavailable");
+            throw new HttpError(
+              409,
+              interactionDecisionId ? "interaction_expired" : "question_unavailable",
+            );
           const answers = body.answers as Record<string, string[]>;
           if (
             Object.keys(answers).length !== question.questions.length ||
@@ -6708,23 +6963,62 @@ export class WebAccessService {
             ?.requiresExtendedApproval === true
         )
           this.grant(hash, "extendedApproval");
-        if (
-          !claudeReplay &&
-          permission === "approve" &&
-          !snapshot.approvals?.some(
-            (approval) =>
-              approval.requestId === params.approvalId &&
-              approval.turnId === params.turnId &&
-              approval.supported === true &&
-              (params.nativeDecision !== undefined
-                ? approval.decisionOptions?.some(
-                    (option) =>
-                      JSON.stringify(option.decision) === JSON.stringify(params.nativeDecision),
-                  )
-                : Array.isArray(approval.availableDecisions) &&
-                  approval.availableDecisions.includes(String(params.decision))),
+        const approval =
+          operation === "approve"
+            ? snapshot.approvals?.find(
+                (item) =>
+                  item.requestId === params.approvalId &&
+                  item.turnId === params.turnId &&
+                  item.supported === true,
+              )
+            : undefined;
+        const nativeApprovalOffered = () =>
+          approval &&
+          (params.nativeDecision !== undefined
+            ? approval.decisionOptions?.some(
+                (option) =>
+                  JSON.stringify(option.decision) === JSON.stringify(params.nativeDecision),
+              )
+            : Array.isArray(approval.availableDecisions) &&
+              approval.availableDecisions.includes(String(params.decision)));
+        if (!claudeReplay && interactionDecisionId) {
+          const device = this.grant(hash, permission);
+          const descriptions = await this.pendingInteractionDescriptions(
+            sessionId,
+            snapshot,
+            device,
+            true,
+            true,
+          );
+          if (
+            !(await this.controlsEnabledForSnapshot(sessionId, snapshot, device, true)) ||
+            device !== this.grant(hash, permission)
           )
-        ) {
+            throw new HttpError(403, "access_changed");
+          if (boot !== this.bootId) throw new HttpError(409, "interaction_expired");
+          const interaction = interactionFor(
+            descriptions,
+            operation === "approve" ? "approval" : "question",
+            operation === "approve" ? params.approvalId : params.questionId,
+            params.turnId,
+          );
+          if (!interaction) throw new HttpError(409, "interaction_expired");
+          const selected = resolvePendingInteractionDecision(
+            interaction,
+            approval,
+            interactionDecisionId,
+          );
+          if (!selected?.decision.available)
+            throw new HttpError(409, "interaction_decision_unavailable");
+          if (selected.nativeDecision !== undefined) {
+            this.grant(hash, "extendedApproval");
+            params.nativeDecision = selected.nativeDecision;
+            params.decision = "native";
+          } else if (selected.nativeChoice !== undefined) {
+            params.decision = selected.nativeChoice;
+          }
+        }
+        if (!claudeReplay && operation === "approve" && !nativeApprovalOffered()) {
           throw new HttpError(409, "approval_unavailable");
         }
         if (operation === "send" && body.historyReferences !== undefined) {
@@ -6744,7 +7038,7 @@ export class WebAccessService {
           params.commandAccess = this.dshCommandAccess(this.grant(hash, permission));
         if (operation === "send" && body.attachmentIds !== undefined) {
           const device = this.grant(hash, "attachments");
-          await this.codexScope(sessionId, hash, true, false);
+          const workspaceId = await this.codexScope(sessionId, hash, true, false);
           const capabilities = (await this.requestSession({
             operation: "capabilities",
             sessionId,
@@ -6774,35 +7068,51 @@ export class WebAccessService {
               if (previous.accepted !== true) throw new HttpError(502, "outcome_unknown");
               return this.json(res, 200, previous);
             }
+            if (prior?.executionMode === "claude-follower")
+              throw new HttpError(409, "request_conflict");
           }
           const format = attachmentInputFormat(
             ATTACHMENT_FORMATS[mode ?? ""],
             capabilities.features?.attachments,
           );
           if (!format) throw new HttpError(409, "attachments_unavailable");
+          const pinnedFormat = format === "claude" || format === "claude-terminal";
           const alreadyPinned =
-            mode === "claude-managed" &&
+            pinnedFormat &&
             (await this.attachmentStore.pendingRequests(sessionId)).some(
               (item) => item.deviceId === device.id && item.requestId === requestId,
             );
-          params.input =
-            format === "claude"
-              ? await this.attachmentStore.inputForAgent(
-                  device.id,
-                  sessionId,
-                  body.attachmentIds,
-                  String(frozenText ?? ""),
-                  format,
-                  requestId,
-                )
-              : await this.attachmentStore.input(
-                  device.id,
-                  sessionId,
-                  body.attachmentIds,
-                  String(frozenText ?? ""),
-                  format,
-                );
-          if (mode === "claude-managed" && !alreadyPinned) newlyPinnedDevice = device.id;
+          const text = String(frozenText ?? "");
+          if (format === "claude-terminal") {
+            if (snapshotField(snapshot, "workspaceId") !== workspaceId)
+              throw new HttpError(403, "workspace_not_authorized");
+            params.input = await this.terminalAttachmentInput(hash, workspaceId, {
+              deviceId: device.id,
+              sessionId,
+              ids: body.attachmentIds,
+              text,
+              requestId,
+            });
+          } else {
+            params.input =
+              format === "claude"
+                ? await this.attachmentStore.inputForAgent(
+                    device.id,
+                    sessionId,
+                    body.attachmentIds,
+                    text,
+                    format,
+                    requestId,
+                  )
+                : await this.attachmentStore.input(
+                    device.id,
+                    sessionId,
+                    body.attachmentIds,
+                    text,
+                    format,
+                  );
+          }
+          if (pinnedFormat && !alreadyPinned) newlyPinnedDevice = device.id;
           delete params.text;
           this.grant(hash, "attachments");
         }
@@ -6860,6 +7170,7 @@ export class WebAccessService {
           params.allowOwnerWait = true;
         const restrictCodexNativePolicy = operation === "send" && !this.isFullAccess(device);
         params.runtimeBootId = snapshot.runtimeBootId;
+        if (interactionDecisionId) rememberRequest(this.requests, requestId);
         dispatched = true;
         control.dispatched = true;
         this.unconfirmed.add(sessionId);
@@ -6896,10 +7207,14 @@ export class WebAccessService {
           this.clearUnconfirmed(sessionId);
           control.dispatched = false;
           control.priorUncertain = false;
-          if ((snapshot as { executionMode?: string }).executionMode === "claude-managed")
+          if (newlyPinnedDevice || snapshot.executionMode === "claude-managed")
             await this.attachmentStore.settle(String(params.deviceId), sessionId, requestId);
           this.grant(hash, permission);
           if (boot !== this.bootId) throw new HttpError(409, "stale_boot");
+          if (interactionDecisionId && expiredInteractionRefusal(result)) {
+            this.requests.delete(requestId);
+            throw new HttpError(409, "interaction_expired");
+          }
           throw new HttpError(
             409,
             continuationPreflightReason(
@@ -7507,6 +7822,15 @@ export class WebAccessService {
       let queuedBytes = 0;
       let cancelDrain: (() => void) | undefined;
       let controlContext: { executionMode?: unknown; workspaceId?: unknown } = {};
+      const pendingContext: Record<string, unknown> = {};
+      const pendingFields = [
+        "approvals",
+        "questions",
+        "revision",
+        "turnId",
+        "runtimeBootId",
+      ] as const;
+      let hasPendingProjection = false;
       const controlMetadata = (live: unknown) => {
         if (!live || typeof live !== "object") return {};
         return {
@@ -7622,11 +7946,16 @@ export class WebAccessService {
         let device = authorized();
         if (event.type === "snapshot") {
           controlContext = controlMetadata(event.payload.live);
+          for (const key of pendingFields)
+            pendingContext[key] = snapshotField(event.payload.live, key);
+          const live = await this.projectLive(sessionId, event.payload.live, device, true);
+          if (device !== authorized()) throw new HttpError(403, "access_changed");
+          hasPendingProjection = snapshotField(live, "pendingInteractions") !== undefined;
           return {
             ...event,
             payload: {
               ...event.payload,
-              live: await this.projectLive(sessionId, event.payload.live, device, true),
+              live,
             },
           };
         }
@@ -7634,6 +7963,14 @@ export class WebAccessService {
         // Keep only authorization metadata, never manufacture absent patch fields
         // or refresh chat state while projecting a native notification.
         const patch = this.projectPermissionField(this.projectUsageFields(event.payload, device));
+        const changedSource =
+          (pendingContext.runtimeBootId !== undefined &&
+            pendingContext.runtimeBootId !== event.runtimeBootId) ||
+          ("executionMode" in patch && controlContext.executionMode !== patch.executionMode) ||
+          ("workspaceId" in patch && controlContext.workspaceId !== patch.workspaceId);
+        if (changedSource) {
+          for (const key of pendingFields) delete pendingContext[key];
+        }
         if ("executionMode" in patch) controlContext.executionMode = patch.executionMode;
         if ("workspaceId" in patch) controlContext.workspaceId = patch.workspaceId;
         const permitted =
@@ -7648,6 +7985,36 @@ export class WebAccessService {
         let enabled = typeof permitted === "boolean" ? permitted : await permitted;
         device = authorized();
         enabled = enabled && this.controlsEnabledForProvider(sessionId, controlContext, device);
+        let guard = sessionId ? this.controlGuard(sessionId) : undefined;
+        let pendingInteractions: SessionPendingInteraction[] | undefined;
+        if (
+          changedSource ||
+          pendingFields.some((key) => key in patch) ||
+          (guard && hasPendingProjection)
+        ) {
+          for (const key of pendingFields) if (key in patch) pendingContext[key] = patch[key];
+          pendingContext.runtimeBootId = event.runtimeBootId;
+          const projectedDevice = device;
+          if (
+            !guard &&
+            (hasPendingRows(pendingContext, "approvals") ||
+              hasPendingRows(pendingContext, "questions"))
+          )
+            pendingInteractions = await this.pendingInteractionDescriptions(
+              sessionId,
+              { ...controlContext, ...pendingContext },
+              device,
+              enabled,
+              true,
+            );
+          device = authorized();
+          if (device !== projectedDevice) throw new HttpError(403, "access_changed");
+          guard = sessionId ? this.controlGuard(sessionId) : undefined;
+          if (guard) pendingInteractions = undefined;
+          if (pendingInteractions?.length || hasPendingProjection)
+            patch.pendingInteractions = pendingInteractions ?? [];
+          hasPendingProjection = !!pendingInteractions?.length;
+        }
         if (Array.isArray(patch.approvals))
           patch.approvals = patch.approvals.map((value) => {
             const approval = value as Record<string, unknown>;
@@ -7659,7 +8026,9 @@ export class WebAccessService {
                 device.approve &&
                 (!approval.requiresExtendedApproval || device.extendedApproval === true),
               decisionOptions: device.extendedApproval ? approval.decisionOptions : undefined,
-              ...(!enabled ? { availableDecisions: [] } : {}),
+              ...(!enabled && controlContext.executionMode !== "claude-follower"
+                ? { availableDecisions: [] }
+                : {}),
             };
           });
         if (!device.send || !enabled) {
@@ -7671,7 +8040,7 @@ export class WebAccessService {
               supported: false,
             }));
         }
-        if (sessionId) Object.assign(patch, this.controlGuard(sessionId));
+        if (guard) Object.assign(patch, guard);
         return { ...event, payload: patch };
       };
       const flush = async () => {
@@ -7883,7 +8252,11 @@ export class WebAccessService {
       };
       this.grant(hash);
     }
-    if (path === "/live") result = await this.projectLive(sessionId, result, device);
+    if (path === "/live") {
+      result = await this.projectLive(sessionId, result, device);
+      if (device !== this.grant(hash) || readerScope !== this.readerScope())
+        throw new HttpError(403, "access_changed");
+    }
     const taskSummary = wantsTaskSummary ? await this.taskSummary(hash, result) : undefined;
     this.grant(hash);
     if (boot !== this.bootId) throw new HttpError(409, "stale_boot");

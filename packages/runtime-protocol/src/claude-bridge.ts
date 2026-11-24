@@ -47,12 +47,17 @@ export const CLAUDE_BRIDGE_PATHS = {
  * - `terminal-subagents`: a plugin may report a bounded list of observed subagents in snapshots.
  * - `terminal-worker-activity`: a plugin may report the current turn's observed tool calls and
  *   an opaque activity counter in snapshots.
+ * - `terminal-approval-observation`: a plugin may describe a pending native approval for display.
+ * - `terminal-attachments`: a plugin may accept text containing links to attachments in its workspace.
+ * - `terminal-handover`: a foreground plugin may invoke the native exit command when requested.
  */
 export const CLAUDE_BRIDGE_FEATURES = [
   "lead-tools",
   "open-model-picker",
   "terminal-subagents",
   "terminal-worker-activity",
+  "terminal-approval-observation",
+  "terminal-attachments",
   "terminal-handover",
 ] as const;
 
@@ -135,10 +140,19 @@ export interface ClaudeBridgeCapabilities {
   stop: boolean;
   /** Absent from snapshots of plugins without the native model picker. */
   modelPicker?: boolean;
+  /** Present only after the Runtime and plugin agree on workspace attachment links. */
+  attachments?: true;
   /** Whether this foreground terminal can invoke Claude Code's native exit command. */
   handover?: true;
   approve: false;
   answer: false;
+}
+
+/** Runtime control input prepared by the host. The plugin receives only the resulting text. */
+export interface ClaudeTerminalAttachmentInput {
+  type: "claude-terminal-attachments";
+  cwd: string;
+  text: string;
 }
 
 /** A message AgentKib sent that the terminal has not taken into a turn yet. */
@@ -202,6 +216,15 @@ export interface ClaudeBridgeSnapshot extends ClaudeBridgeIdentity {
     revision: number;
     commands: { id: string; startedAt: number }[];
   };
+  /** Optional observation only. The plugin retains the native permission prompt and its decisions. */
+  pendingApprovalDetails?: {
+    toolUseId: string;
+    turnId: string;
+    toolName: string;
+    input: Record<string, unknown>;
+  };
+  /** Short first question for a notification. The conversation keeps its native question card. */
+  pendingQuestionSummary?: string;
   usage: ClaudeBridgeUsage | null;
   outbox: ClaudeBridgeOutboxItem[];
   capabilities: ClaudeBridgeCapabilities;

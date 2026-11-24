@@ -1,5 +1,6 @@
 // @vitest-environment node
 import { randomUUID } from "node:crypto";
+import { CLAUDE_BRIDGE_PLUGIN_VERSION } from "@agentkib/runtime-protocol";
 import { describe, expect, it, vi } from "vitest";
 import {
   discoverAgentKib,
@@ -528,7 +529,7 @@ describe("Claude bridge plugin automatic pairing", () => {
     const f = await fixture({ packageVersion: "0.9.0" });
     await f.completeTurn();
     expect(f.autoPairs()).toHaveLength(1);
-    expect(f.autoPairs()[0].body).toMatchObject({ pluginVersion: "0.5.8" });
+    expect(f.autoPairs()[0].body).toMatchObject({ pluginVersion: CLAUDE_BRIDGE_PLUGIN_VERSION });
     expect(await f.status()).toContain("is connected");
   });
 

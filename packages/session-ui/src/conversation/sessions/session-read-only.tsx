@@ -43,6 +43,12 @@ export function SessionReadOnly({
     [selected, currentId, resume, client, accessStatus, deviceId],
   );
   if (!resume) return null;
+  if (!local && current?.agent === "claude-code")
+    return reason ? (
+      <p role="status" className="text-sm text-muted-foreground">
+        {reason}
+      </p>
+    ) : null;
 
   return (
     <div className="w-full max-w-3xl self-center">

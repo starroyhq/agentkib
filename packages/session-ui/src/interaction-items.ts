@@ -1,5 +1,6 @@
 import type { Live, SessionProviderDeclaration } from "@agentkib/web-client";
 import { sessionApprovalRuntime } from "./agents/session-approvals";
+import { interactionRiskCopy } from "./interaction-risk-copy";
 import type { InteractionDockItem, InteractionNotice } from "./interaction-card";
 import {
   approvalCardModel,
@@ -27,6 +28,7 @@ export interface InteractionItemsLive<
   questions?: Q[];
   executionMode?: string | null;
   execution?: Live["execution"];
+  pendingInteractions?: Live["pendingInteractions"];
 }
 
 export interface InteractionItemsContext {
@@ -73,13 +75,30 @@ export function sessionInteractionItems<
   const items: InteractionDockItem[] = [
     ...live.approvals.map((approval): InteractionDockItem => {
       const key = interactionKey(approval);
-      approvals.set(key, approval);
       const model = approvalCardModel(approval, {
         locale,
         agent,
         workspacePath: context.workspacePath,
         canStop: context.canStop,
       });
+      if (native?.owner === "terminal" && approval.method === "claude/can_use_tool") {
+        const description = live.pendingInteractions?.find(
+          ({ kind, binding }) =>
+            kind === "approval" &&
+            binding.sessionId === context.sessionId &&
+            binding.turnId === approval.turnId &&
+            binding.requestId === approval.requestId &&
+            binding.revision === live.revision,
+        );
+        return {
+          kind: "approval",
+          key,
+          model,
+          enabled: false,
+          ...(description ? { risk: interactionRiskCopy(locale, description.risk) } : {}),
+        };
+      }
+      approvals.set(key, approval);
       const permitted =
         !!access.experimentalEnabled &&
         !!access.device?.approve &&

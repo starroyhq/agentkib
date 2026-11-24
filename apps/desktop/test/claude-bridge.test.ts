@@ -66,6 +66,55 @@ describe.skipIf(process.platform === "win32")("native Claude borrowed-host broke
     expect(() => f.bridge.confirmRemoteTerminalExit(source)).toThrow("native-identity-changed");
   });
 
+  it("projects the current native approval as observation only and clears it with the turn", async () => {
+    const f = await fixture();
+    const turnId = randomUUID();
+    const waiting = {
+      ...f.snapshot,
+      revision: 2,
+      currentTurnId: turnId,
+      status: "waiting",
+      waiting: "permission",
+    };
+    expect(f.connection.features).toContain("terminal-approval-observation");
+    await f.events({ type: "snapshot", snapshot: waiting });
+    expect(f.live()).toMatchObject({ status: "awaiting-approval", approvals: [] });
+    const pending = {
+      turnId,
+      toolUseId: "native-tool-1",
+      toolName: "Bash",
+      input: { command: "pwd", description: "Show the working directory", password: "synthetic" },
+    };
+    await f.events({
+      type: "snapshot",
+      snapshot: {
+        ...waiting,
+        revision: 3,
+        pendingApprovalDetails: { ...pending, turnId: randomUUID() },
+      },
+    });
+    expect(f.live().approvals).toEqual([]);
+    await f.events({
+      type: "snapshot",
+      snapshot: { ...waiting, revision: 4, pendingApprovalDetails: pending },
+    });
+    expect(f.live()).toMatchObject({
+      status: "awaiting-approval",
+      approvals: [
+        {
+          requestId: pending.toolUseId,
+          turnId,
+          supported: false,
+          method: "claude/can_use_tool",
+          input: { command: "pwd", password: "[REDACTED]" },
+          availableDecisions: ["allow", "deny"],
+        },
+      ],
+    });
+    await f.events({ type: "turn-complete", turnId, revision: 5, text: "", aborted: true });
+    expect(f.live()).toMatchObject({ status: "idle", approvals: [] });
+  });
+
   it("runs a terminal Worker through the native send, queue, steer and stop gates", async () => {
     const f = await fixture(5_000);
     const leadId = "fixture-project-agent";
@@ -203,6 +252,96 @@ describe.skipIf(process.platform === "win32")("native Claude borrowed-host broke
       "browser-a",
       expect.stringContaining("turn ended: cancelled"),
     );
+  });
+
+  it("requires negotiated attachment support and an unchanged workspace and lease", async () => {
+    const f = await fixture();
+    const capabilities = (controls = true) => f.bridge.capabilities(f.target.sessionId, controls);
+    const input = {
+      type: "claude-terminal-attachments",
+      cwd: f.target.workspace,
+      text: "Read [notes.txt](/workspace/notes.txt)",
+    };
+    expect(f.connection.features).toContain("terminal-attachments");
+    expect(capabilities()).toMatchObject({
+      features: { attachments: { available: false }, send: { available: true } },
+    });
+    await expect(
+      f.bridge.request(f.control("send", { text: undefined, input: [input] })),
+    ).rejects.toThrow("claude-follower-attachments-unavailable");
+    const enabled = {
+      ...f.snapshot,
+      capabilities: { ...f.snapshot.capabilities, attachments: true },
+    };
+    expect((await f.events({ type: "snapshot", snapshot: enabled })).status).toBe(200);
+    expect(capabilities()).toMatchObject({ features: { attachments: { available: true } } });
+    expect(capabilities(false)).toMatchObject({ features: { attachments: { available: false } } });
+    await expect(
+      f.bridge.request(
+        f.control("send", {
+          text: undefined,
+          input: [{ ...input, cwd: path.join(f.target.workspace, "different") }],
+        }),
+      ),
+    ).rejects.toThrow("claude-follower-attachments-unavailable");
+    await expect(f.bridge.request(f.control("send", { input: [input] }))).rejects.toThrow(
+      "invalid-text-input",
+    );
+    await expect(
+      f.bridge.request(f.control("send", { text: undefined, input: [input, input] })),
+    ).rejects.toThrow("invalid-text-input");
+
+    const stale = f.control("send", { text: undefined, input: [input] });
+    await f.reconnect();
+    expect(f.connection.features).toContain("terminal-attachments");
+    expect(capabilities()).toMatchObject({ features: { attachments: { available: false } } });
+    expect((await f.events({ type: "snapshot", snapshot: enabled })).status).toBe(200);
+    await expect(f.bridge.request(stale)).rejects.toThrow("stale-Claude-revision");
+    expect((await f.poll()).body.commands).toEqual([]);
+  });
+
+  it.each([
+    ["send", "send"],
+    ["steer", "steer"],
+    ["queue-add", "queue"],
+  ])("dispatches linked %s input as ordinary %s text, exactly once", async (operation, kind) => {
+    const f = await fixture();
+    const turnId = randomUUID();
+    const steer = operation === "steer";
+    const snapshot = {
+      ...f.snapshot,
+      currentTurnId: steer ? turnId : null,
+      status: steer ? "running" : "idle",
+      capabilities: { ...f.snapshot.capabilities, attachments: true, send: !steer },
+    };
+    expect((await f.events({ type: "snapshot", snapshot })).status).toBe(200);
+    const text = "[notes.txt](/workspace/notes.txt)";
+    const request = f.control(operation, {
+      text: undefined,
+      input: [{ type: "claude-terminal-attachments", cwd: f.target.workspace, text }],
+    });
+    const sent = f.bridge.request(request);
+    const [command] = (await f.poll()).body.commands;
+    expect(command).toEqual({
+      commandId: expect.any(String),
+      requestId: request.requestId,
+      kind,
+      expectedRevision: snapshot.revision,
+      text,
+      ...(steer ? { turnId } : {}),
+    });
+    if (operation === "send")
+      await f.events({ type: "turn-start", turnId, revision: 1, origin: "agentkib" });
+    await f.post("/v1/results", {
+      commandId: command.commandId,
+      status: "accepted",
+      revision: operation === "send" ? 1 : 0,
+      ...(operation === "queue-add" ? {} : { turnId }),
+    });
+    const receipt = await sent;
+    expect(receipt).toMatchObject({ controlOutcome: "accepted" });
+    expect(await f.bridge.request(request)).toEqual(receipt);
+    expect((await f.poll()).body.commands).toEqual([]);
   });
 
   it("projects read-only terminal subagents with stable per-lease IDs and clears stale observations", async () => {
@@ -2401,6 +2540,8 @@ describe.skipIf(process.platform === "win32")(
         "open-model-picker",
         "terminal-subagents",
         "terminal-worker-activity",
+        "terminal-approval-observation",
+        "terminal-attachments",
         "terminal-handover",
         "lead-rate-limit-pause",
       ]);
@@ -2538,6 +2679,8 @@ describe.skipIf(process.platform === "win32")(
         "open-model-picker",
         "terminal-subagents",
         "terminal-worker-activity",
+        "terminal-approval-observation",
+        "terminal-attachments",
         "terminal-handover",
       ]);
       expect((await leadPoll(plain)).body).toEqual({ commands: [] });

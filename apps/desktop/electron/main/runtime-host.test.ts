@@ -1,5 +1,5 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -45,6 +45,7 @@ lines.on("line", (line) => {
   }
   if (request.method === "agentkib.shutdown") {
     if (mode === "ignore-shutdown" || mode === "ignore-sigterm") return;
+    if (mode === "record-quit-work") fs.writeFileSync(process.env.FAKE_RUNTIME_MARKER, JSON.stringify(request.params));
     respond(request, null);
     process.exit(0);
   }
@@ -257,6 +258,15 @@ describe("DesktopRuntimeHost", () => {
     await requestResult;
     expect(host.status.state).toBe("stopping");
     await expect(host.request("echo", {})).rejects.toBeInstanceOf(RuntimeUnavailableError);
+  });
+
+  it("includes the approved work ticket and choice in graceful shutdown", async () => {
+    const host = createHost(() => "record-quit-work");
+    await host.start();
+    const quitWork = { ticket: "ticket", resume: false };
+    await host.stop(quitWork);
+    const saved = await readFile(path.join(directory, "restart.marker"), "utf8");
+    expect(JSON.parse(saved)).toEqual({ quitWork });
   });
 
   it("bounds shutdown when the runtime ignores the shutdown request", async () => {

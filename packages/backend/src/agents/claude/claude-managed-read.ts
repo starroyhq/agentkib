@@ -24,7 +24,7 @@ import { conversationReadKey, ReadStateLedger } from "../../read-state-ledger";
 import type { ReadStateTarget } from "../../conversation-read-state";
 import { ClaudeSessionOwnerProbe, type ClaudeOwnerObservationShare } from "./claude-session-owner";
 import { validHistoryControl } from "../../history-control-schema";
-import type { Commands } from "../../commands";
+import { Commands } from "../../commands";
 import type { ClaudeControlMetadataShare, SessionReaders } from "../../session-readers";
 import type { BackendStore } from "../../store";
 import { canonicalize, lexicalPathIdentity, pathIdentity } from "../../paths";
@@ -61,7 +61,11 @@ import {
   removeClaudeSessionFiles,
 } from "./claude-session-files";
 import { ClaudeTurnMetaStore } from "./claude-turn-meta";
-import { claudeWorkerHistoryTurns, claudeWorkerUnobservedTurns } from "./claude-worker-turns";
+import {
+  claudeWorkerHistoryHasOpenTurn,
+  claudeWorkerHistoryTurns,
+  claudeWorkerUnobservedTurns,
+} from "./claude-worker-turns";
 import type { ConversationEventPage } from "../../session-events";
 import {
   assertClaudeConfigWritable,
@@ -181,6 +185,66 @@ const isObject = (value: unknown): value is Record<string, any> =>
   value !== null && typeof value === "object" && !Array.isArray(value);
 const sessionIdPattern = /^[A-Za-z0-9-]{1,128}$/;
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+type QuitEvidence = {
+  turnId: string;
+  nativeId: string;
+  workspaceId: string;
+  createdAt: string;
+  fingerprint: string;
+  settingsKey: string;
+  resumeQueue: boolean;
+  launch: ClaudeSettings & {
+    model: string;
+    permissionMode: NonNullable<ClaudeSettings["permissionMode"]>;
+  };
+};
+
+function quitEvidence(value: Record<string, unknown>): QuitEvidence | undefined {
+  const {
+    turnId,
+    nativeId,
+    workspaceId,
+    createdAt,
+    fingerprint,
+    settingsKey,
+    resumeQueue,
+    launch,
+  } = value;
+  if (
+    typeof turnId !== "string" ||
+    !uuidPattern.test(turnId) ||
+    typeof nativeId !== "string" ||
+    !uuidPattern.test(nativeId) ||
+    typeof workspaceId !== "string" ||
+    typeof createdAt !== "string" ||
+    typeof fingerprint !== "string" ||
+    !/^[0-9a-f]{64}$/.test(fingerprint) ||
+    typeof settingsKey !== "string" ||
+    typeof resumeQueue !== "boolean" ||
+    !isObject(launch) ||
+    typeof launch.model !== "string" ||
+    !launch.model ||
+    Buffer.byteLength(launch.model) > 256 ||
+    !["default", "plan", "acceptEdits"].includes(launch.permissionMode) ||
+    (launch.effort !== undefined &&
+      !["low", "medium", "high", "xhigh", "max"].includes(launch.effort))
+  )
+    return;
+  return {
+    turnId,
+    nativeId,
+    workspaceId,
+    createdAt,
+    fingerprint,
+    settingsKey,
+    resumeQueue,
+    launch: {
+      model: launch.model,
+      permissionMode: launch.permissionMode,
+      ...(launch.effort ? { effort: launch.effort } : {}),
+    },
+  };
+}
 /** A stored snapshot of a turn the CLI started by itself that had not ended when it was stored. */
 const interruptedSelfTurn = (snapshot: Record<string, unknown>): boolean =>
   snapshot.turnOrigin === "self" &&
@@ -235,6 +299,8 @@ const toolKey = (tools: Record<string, unknown> | null | undefined): string | un
 export type ClaudeContinuationOptions = {
   idleTimeoutMs?: number;
   maintenanceIntervalMs?: number;
+  /** Ownership checks still need to run after the backend's ordinary commands are stopped. */
+  quitCommands?: () => Commands;
   /** Whether the person lets managed sessions do background work; read when a worker starts. */
   backgroundTasks?: () => boolean;
   /**
@@ -338,6 +404,7 @@ export class ClaudeManagedReadOwner {
   #idleSince = new Map<string, number>();
   #observed = new Set<string>();
   #starting = new Set<string>();
+  #quitInterruptions = new Map<string, string>();
   #activeHostClaims = new Map<string, string>();
   #continuationNotices = new Map<string, string>();
   #continuationNoticeIds = new Map<string, string>();
@@ -787,10 +854,14 @@ export class ClaudeManagedReadOwner {
     }
   }
 
-  async #control(value: Record<string, any>, id: string): Promise<Record<string, unknown>> {
+  async #control(
+    value: Record<string, any>,
+    id: string,
+    quit?: QuitEvidence,
+  ): Promise<Record<string, unknown>> {
     const owned = this.#ownerLocks.has(id);
     try {
-      return await this.#controlImpl(value, id);
+      return await this.#controlImpl(value, id, quit);
     } catch (error) {
       const reason = error instanceof Error ? error.message : "";
       if (
@@ -840,7 +911,11 @@ export class ClaudeManagedReadOwner {
     }
   }
 
-  async #controlImpl(value: Record<string, any>, id: string): Promise<Record<string, unknown>> {
+  async #controlImpl(
+    value: Record<string, any>,
+    id: string,
+    quit?: QuitEvidence,
+  ): Promise<Record<string, unknown>> {
     const operation = value.operation as string;
     const allowed = new Set([
       "operation",
@@ -951,7 +1026,7 @@ export class ClaudeManagedReadOwner {
       live = await this.#live(id, true);
     }
 
-    if (operation === "send" && !value.schedulePermitId) {
+    if (operation === "send" && !value.schedulePermitId && !quit) {
       try {
         this.continuation.userSent?.(id);
       } catch {
@@ -1058,7 +1133,8 @@ export class ClaudeManagedReadOwner {
       }
       let runner = existingRunner;
       if (!runner) {
-        runner = this.#newRunner(record, { leadTools });
+        runner = this.#newRunner(record, { leadTools }, quit?.launch);
+        if (quit) this.#runnerSelections.set(runner, this.#hostState.read(id).settings);
       }
 
       try {
@@ -1070,6 +1146,7 @@ export class ClaudeManagedReadOwner {
               requestId,
               runner.snapshot().revision,
               () => {
+                if (quit) this.#assertQuitDispatch(id, runner, quit);
                 if (runner.snapshot().activity === "compacting")
                   throw new ClaudeUndispatchedError();
                 // A new worker has just reported its catalog at initialize. A command it marks
@@ -1096,6 +1173,15 @@ export class ClaudeManagedReadOwner {
                 dispatched = true;
                 this.#senders.set(id, value.deviceId);
               },
+              quit
+                ? async () => {
+                    try {
+                      await this.#ensureNoExternalOwner(quit.nativeId, runner.processId);
+                    } catch {
+                      throw new ClaudeUndispatchedError("quit-continuation-stale");
+                    }
+                  }
+                : undefined,
             );
             try {
               await dispatch;
@@ -1179,9 +1265,16 @@ export class ClaudeManagedReadOwner {
         receipt.finish(result);
         return result;
       } catch (error) {
+        if (quit && !dispatched && error instanceof ClaudeUndispatchedError) {
+          // An idle CLI opened solely to verify this continuation must release its native lease.
+          await this.#retireGoalRunner(id).catch(() => undefined);
+        }
         const current = this.#load(id);
         if (current) {
-          current.snapshot = runner.snapshot() as unknown as Record<string, unknown>;
+          current.snapshot =
+            quit && !dispatched && !runner.hasWorker
+              ? previousSnapshot
+              : (runner.snapshot() as unknown as Record<string, unknown>);
           this.#save(current);
         } else {
           record.snapshot = previousSnapshot;
@@ -1477,6 +1570,7 @@ export class ClaudeManagedReadOwner {
           this.#idleSince.set(id, this.#idleSince.get(id) ?? Date.now());
         else this.#idleSince.delete(id);
         const turnId = snapshot.turnId;
+        const quitting = this.#quitInterruptions.get(id) === turnId;
         let completed = false;
         if (
           snapshot.status === "idle" &&
@@ -1487,7 +1581,7 @@ export class ClaudeManagedReadOwner {
           try {
             current.fingerprint = this.#targetFingerprint(current.nativeId, current.workspace);
             const title = this.#hostState.read(id).title;
-            if (title && title !== current.nativeTitle) {
+            if (!quitting && title && title !== current.nativeTitle) {
               // Keep completion publication synchronous; native title updates await the same
               // ownership proof as explicit renames, after the current control releases its queue.
               void this.#serializeSession(id, async () => {
@@ -1530,7 +1624,12 @@ export class ClaudeManagedReadOwner {
             }
           }
         }
-        if (completed && snapshot.lastOutcome === "cancelled" && !snapshot.terminalResult)
+        if (
+          completed &&
+          snapshot.lastOutcome === "cancelled" &&
+          !snapshot.terminalResult &&
+          !quitting
+        )
           this.#reportWorkerTurn(id, turnId, "cancelled", null);
         const streamLive = this.#streamLive(id, snapshot, current);
         this.#publishConversationEvent?.(id, "state", streamLive, streamLive);
@@ -3610,8 +3709,12 @@ export class ClaudeManagedReadOwner {
     return createHash("sha256").update(serialized).update(first).digest("hex");
   }
 
-  async #ensureNoExternalOwner(nativeId: string, ownedPid: number | null = null): Promise<void> {
-    const owner = await this.#ownership.check(nativeId, ownedPid, this.#freshObservation());
+  async #ensureNoExternalOwner(
+    nativeId: string,
+    ownedPid: number | null = null,
+    probe = this.#ownership,
+  ): Promise<void> {
+    const owner = await probe.check(nativeId, ownedPid, this.#freshObservation());
     if (owner.kind !== "idle")
       throw new Error(
         owner.kind === "background" ? "claude-background-session-running" : "claude-owner-busy",
@@ -4939,6 +5042,264 @@ export class ClaudeManagedReadOwner {
 
   async live(id: string, controls = false) {
     return this.#live(id, controls);
+  }
+
+  #runningForQuit(id: string) {
+    const record = this.#load(id);
+    const runner = this.#runners.get(id);
+    const pid = runner?.processId;
+    if (
+      this.#shuttingDown ||
+      !record ||
+      record.released ||
+      record.fresh ||
+      !runner?.canInterruptForQuit() ||
+      pid == null ||
+      !this.#ownerLocks.has(id) ||
+      this.#starting.has(id) ||
+      this.#isSessionBridged(record) ||
+      managedSessionHasUnknownCommands(this.dataDir, id)
+    )
+      return;
+    this.#validate(record);
+    const host = this.#hostState.peek(id);
+    const settings = host?.settings ?? {};
+    if (host?.reason === "usage-limit" || this.#runnerSelectionPending(runner, settings)) return;
+    const snapshot = runner.snapshot();
+    const { settings: effective, settingsAcknowledged } = runner.optionsSnapshot;
+    const model = snapshot.model ?? effective.model;
+    if (
+      !uuidPattern.test(snapshot.turnId) ||
+      !settingsAcknowledged ||
+      !model ||
+      !effective.permissionMode
+    )
+      return;
+    return {
+      record,
+      runner,
+      pid,
+      snapshot,
+      settingsKey: stableJson(settings),
+      launch: {
+        model,
+        permissionMode: effective.permissionMode,
+        ...(effective.effort ? { effort: effective.effort } : {}),
+      },
+    };
+  }
+
+  #quitHistoryOpen(record: ClaudeRecord, turnId: string): boolean {
+    const transcript = this.sessions.verifiedClaudeControlTarget(record.nativeId, record.workspace);
+    return claudeWorkerHistoryHasOpenTurn(transcript, record.nativeId, turnId);
+  }
+
+  async quitCandidate(sessionId: string): Promise<{ turnId: string } | undefined> {
+    try {
+      const candidate = this.#runningForQuit(sessionId);
+      if (!candidate) return;
+      await this.#ensureNoExternalOwner(candidate.record.nativeId, candidate.pid);
+      const current = this.#runningForQuit(sessionId);
+      if (
+        !current ||
+        current.runner !== candidate.runner ||
+        current.pid !== candidate.pid ||
+        current.snapshot.turnId !== candidate.snapshot.turnId ||
+        !this.#quitHistoryOpen(current.record, current.snapshot.turnId)
+      )
+        return;
+      return { turnId: current.snapshot.turnId };
+    } catch {
+      // A missing native transcript or ownership proof makes this task ineligible.
+      return undefined;
+    }
+  }
+
+  interruptForQuit(
+    sessionId: string,
+    turnId: string,
+  ): Promise<Record<string, unknown> | undefined> {
+    return this.#serializeSession(sessionId, async () => {
+      try {
+        const candidate = this.#runningForQuit(sessionId);
+        if (!candidate || candidate.snapshot.turnId !== turnId) return;
+        // Shutdown already closed the shared command supervisor as it drained pending RPCs.
+        const commands = this.continuation.quitCommands?.() ?? new Commands();
+        try {
+          const probe = new ClaudeSessionOwnerProbe(commands, this.environment);
+          await this.#ensureNoExternalOwner(candidate.record.nativeId, candidate.pid, probe);
+        } finally {
+          commands.close();
+        }
+        const current = this.#runningForQuit(sessionId);
+        if (
+          !current ||
+          current.runner !== candidate.runner ||
+          current.pid !== candidate.pid ||
+          current.snapshot.turnId !== turnId
+        )
+          return;
+        const { record, runner, snapshot, launch, settingsKey } = current;
+        if (!this.#quitHistoryOpen(record, turnId)) return;
+        // Reuse the owned-process retirement, including its guards against native-only work.
+        // The quit journal will report this interruption once, with the continuation outcome.
+        let resumeQueue = false;
+        await runner.restartForDelegation(snapshot.revision, () => {
+          resumeQueue = this.#hostState.pauseQueueForQuit(sessionId);
+          this.#quitInterruptions.set(sessionId, turnId);
+        });
+        if (runner.hasWorker) return;
+        const stopped = runner.snapshot();
+        if (stopped.turnId !== turnId || stopped.lastOutcome !== "cancelled") return;
+        this.#hostState.complete(sessionId, turnId, {
+          success: false,
+          usage: null,
+          cancelled: true,
+        });
+        this.invalidateSchedulePermits(sessionId);
+        await this.#goalEndpoints.get(sessionId)?.close();
+        this.#goalEndpoints.delete(sessionId);
+        await this.#retireGoalRunner(sessionId);
+        // Claude can flush progress while stopping. The post-stop transcript must still prove
+        // the same open turn, and its final fingerprint anchors the next boot's revalidation.
+        const fingerprint = this.#targetFingerprint(record.nativeId, record.workspace);
+        if (!this.#quitHistoryOpen(record, turnId)) return;
+        return {
+          turnId,
+          nativeId: record.nativeId,
+          workspaceId: record.workspaceId,
+          createdAt: record.createdAt,
+          fingerprint,
+          settingsKey,
+          resumeQueue,
+          launch,
+        } satisfies QuitEvidence;
+      } catch {
+        // Ambiguous retirement, completion or identity can never authorize a new prompt.
+        return undefined;
+      } finally {
+        this.#quitInterruptions.delete(sessionId);
+      }
+    });
+  }
+
+  #matchingQuitRecord(id: string, evidence: QuitEvidence): ClaudeRecord | undefined {
+    const record = this.#load(id);
+    const host = this.#hostState.peek(id);
+    if (
+      this.#shuttingDown ||
+      !record ||
+      record.released ||
+      record.fresh ||
+      record.nativeId !== evidence.nativeId ||
+      record.workspaceId !== evidence.workspaceId ||
+      record.createdAt !== evidence.createdAt ||
+      this.#isSessionBridged(record) ||
+      host?.reason === "usage-limit" ||
+      stableJson(host?.settings ?? {}) !== evidence.settingsKey
+    )
+      return;
+    this.#validate(record);
+    return record;
+  }
+
+  async #canResumeQuit(id: string, evidence: QuitEvidence): Promise<boolean> {
+    try {
+      const record = this.#matchingQuitRecord(id, evidence);
+      if (!record) return false;
+      await this.#ensureNoExternalOwner(record.nativeId);
+      const current = this.#matchingQuitRecord(id, evidence);
+      return (
+        !!current &&
+        !this.#runners.has(id) &&
+        !managedSessionHasUnknownCommands(this.dataDir, id) &&
+        current.snapshot.status === "idle" &&
+        current.snapshot.lastOutcome === "cancelled" &&
+        current.snapshot.turnId === evidence.turnId &&
+        this.#targetFingerprint(current.nativeId, current.workspace) === evidence.fingerprint
+      );
+    } catch {
+      return false;
+    }
+  }
+
+  async checkAfterQuit(id: string, value: Record<string, unknown>): Promise<boolean> {
+    const evidence = quitEvidence(value);
+    return evidence ? this.#canResumeQuit(id, evidence) : false;
+  }
+
+  /** Called once there is a durable receipt proving the continuation prompt reached Claude. */
+  restoreQuitQueue(id: string, value: Record<string, unknown>): void {
+    try {
+      const evidence = quitEvidence(value);
+      if (evidence?.resumeQueue && this.#matchingQuitRecord(id, evidence))
+        this.#hostState.resumeQueueAfterQuit(id);
+    } catch {
+      // The prompt was accepted. If this write fails, the queue stays paused for the user.
+    }
+  }
+
+  #assertQuitDispatch(
+    id: string,
+    runner: ClaudeManagedRunnerProcess,
+    evidence: QuitEvidence,
+  ): void {
+    try {
+      const current = this.#matchingQuitRecord(id, evidence);
+      const options = runner.optionsSnapshot;
+      if (
+        current &&
+        this.#runners.get(id) === runner &&
+        this.#ownerLocks.has(id) &&
+        options.settingsAcknowledged &&
+        options.settings.model === evidence.launch.model &&
+        options.settings.permissionMode === evidence.launch.permissionMode &&
+        (options.settings.effort ?? undefined) === evidence.launch.effort &&
+        this.#targetFingerprint(current.nativeId, current.workspace) === evidence.fingerprint
+      )
+        return;
+    } catch {
+      // The normal send path records that the continuation did not reach the worker.
+    }
+    throw new ClaudeUndispatchedError("quit-continuation-stale");
+  }
+
+  resumeAfterQuit(
+    sessionId: string,
+    value: Record<string, unknown>,
+    requestId: string,
+    text: string,
+  ): Promise<"continued" | "skipped" | "unknown"> {
+    return this.#serializeSession(sessionId, async () => {
+      const evidence = quitEvidence(value);
+      if (!evidence || !(await this.#canResumeQuit(sessionId, evidence))) return "skipped";
+      try {
+        const live = await this.#live(sessionId, true);
+        const result = await this.#control(
+          {
+            operation: "send",
+            sessionId,
+            requestId,
+            deviceId: "desktop-local",
+            runtimeBootId: this.bootId,
+            expectedRevision: live.revision,
+            experimentalEnabled: true,
+            text,
+          },
+          sessionId,
+          evidence,
+        );
+        if (result.accepted === true) {
+          // Regular scheduler sends still require idle; pending messages stay behind this turn.
+          this.restoreQuitQueue(sessionId, evidence);
+          return "continued";
+        }
+        return result.controlOutcome === "unknown" ? "unknown" : "skipped";
+      } catch {
+        // Once a receipt is unresolved, never replay the prompt.
+        return managedSessionHasUnknownCommands(this.dataDir, sessionId) ? "unknown" : "skipped";
+      }
+    });
   }
 
   /** Host-internal control. End only this session's owned process, keeping its queue and history. */

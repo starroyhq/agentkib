@@ -36,6 +36,8 @@ export interface DshBridgeServices {
   sessionQuery: boolean;
   /** Cancels only a checked native turn and can look up native evidence for its end. */
   turnScopedCancel?: boolean;
+  /** Managed rc.5 runtimes can record a quit interruption for recovery on reopen. */
+  quitWork?: boolean;
   /** Reads the native context-pressure projection without resuming the session. */
   contextUsage?: boolean;
   approvals: boolean;
@@ -327,6 +329,21 @@ export type DshBridgeCommand = { commandId: string } & (
     }
   | { type: "cancel-turn"; sessionId: string; turn: number }
   | { type: "verify-turn-end"; sessionId: string; turn: number }
+  | { type: "quit-candidate"; sessionId: string }
+  | { type: "quit-interrupt"; sessionId: string; turn: number; interruptionId: string }
+  | {
+      type: "quit-continue";
+      sessionId: string;
+      requestId: string;
+      text: string;
+      evidence: {
+        turn: number;
+        interruptionId: string;
+        endSeq: number;
+        settings: string;
+        cwd: string;
+      };
+    }
   | { type: "rename"; sessionId: string; title: string }
   | { type: "archive"; sessionId: string; archived: boolean }
   | { type: "pin"; sessionId: string; pinned: boolean }

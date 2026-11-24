@@ -40,6 +40,7 @@ interface DialogOptions {
   tone?: DialogTone;
   confirmLabel?: string;
   cancelLabel?: string;
+  body?: ReactNode;
 }
 
 interface DialogRequest extends DialogOptions {
@@ -163,6 +164,7 @@ export function AppDialogProvider({ children }: { children: ReactNode }) {
               </AlertDialogTitle>
               <AlertDialogDescription>{active.description}</AlertDialogDescription>
             </AlertDialogHeader>
+            {active.body}
             <AlertDialogFooter>
               {active.kind === "confirm" && (
                 <AlertDialogCancel onClick={() => finish(false, active.id)}>

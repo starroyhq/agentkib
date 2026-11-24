@@ -140,6 +140,30 @@ export class DshSessionProvider implements SessionProvider, TypedSessionProvider
     return this.#invoke("usage", { operation: "usage", sessionId });
   }
 
+  async quitCandidate(sessionId: string) {
+    return this.bridge?.quitCandidate(sessionId);
+  }
+
+  async interruptForQuit(sessionId: string, turnId: string) {
+    return this.bridge?.interruptForQuit(sessionId, turnId);
+  }
+
+  async checkAfterQuit(sessionId: string, evidence: Record<string, unknown>) {
+    return (await this.bridge?.checkAfterQuit(sessionId, evidence)) ?? false;
+  }
+
+  async resumeAfterQuit(
+    sessionId: string,
+    evidence: Record<string, unknown>,
+    requestId: string,
+    text: string,
+  ) {
+    return (
+      (await this.bridge?.resumeAfterQuit(sessionId, evidence, requestId, text)) ??
+      ("skipped" as const)
+    );
+  }
+
   queue(value: Extract<SessionProviderRequest, { operation: "queue-list" }>) {
     return this.#invoke("queue-list", value);
   }

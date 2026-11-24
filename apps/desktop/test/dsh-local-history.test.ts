@@ -1,5 +1,5 @@
 // @vitest-environment node
-import { randomBytes } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import {
   appendFileSync,
   mkdtempSync,
@@ -201,6 +201,60 @@ describe("DSH persisted turn evidence", () => {
       open: null,
       ino: first.ino,
     });
+  });
+
+  it("reports the exact quit interruption only at the durable end of the native log", async () => {
+    const dir = fixture();
+    const log = path.join(dir, logName);
+    writeFileSync(log, encode(header, started, { seq: 2, time: 110, type: "step/end" }));
+    const before = await readLocalDshTurn(dir, nativeId);
+    expect(before?.quitInterruption).toBeUndefined();
+
+    const interruptionId = randomUUID();
+    appendFileSync(
+      log,
+      encode({
+        ...ended,
+        data: {
+          turn: 3,
+          reason: {
+            kind: "aborted",
+            reason: {
+              kind: "hook",
+              reason: `agentkib-quit:${interruptionId}`,
+            },
+          },
+        },
+      }),
+    );
+    const interrupted = await readLocalDshTurn(dir, nativeId, before!);
+    expect(interrupted).toMatchObject({
+      seq: ended.seq,
+      open: null,
+      quitInterruption: { turn: 3, interruptionId, endSeq: 3 },
+    });
+    expect(await readLocalDshTurn(dir, nativeId)).toEqual(interrupted);
+
+    const clear = (seq: number, target: string) => ({
+      seq,
+      time: 120 + seq,
+      type: "agent/inbox/spliced",
+      data: { target, inserted: [], start: 0, removedCount: 1, outcome: "canceled" },
+    });
+    appendFileSync(log, encode(clear(4, "next-step"), clear(5, "next-turn")));
+    const afterCleanup = await readLocalDshTurn(dir, nativeId, interrupted!);
+    expect(afterCleanup).toMatchObject({
+      seq: 5,
+      open: null,
+      quitInterruption: { turn: 3, interruptionId, endSeq: 3, cleanup: "next-turn" },
+    });
+    expect(await readLocalDshTurn(dir, nativeId)).toEqual(afterCleanup);
+
+    const resumed = { seq: 6, time: 128, type: "turn/start", data: { turn: 4 } };
+    appendFileSync(log, encode(resumed));
+    const later = await readLocalDshTurn(dir, nativeId, afterCleanup!);
+    expect(later).toMatchObject({ seq: 6, open: { turn: 4, startedAt: 128 } });
+    expect(later?.quitInterruption).toBeUndefined();
   });
 
   it("waits for a complete compressed frame before advancing a checkpoint", async () => {

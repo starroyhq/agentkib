@@ -1,3 +1,4 @@
+import type { QuitWorkDecision } from "@agentkib/runtime-protocol";
 import { EventEmitter } from "node:events";
 import {
   createStdioTransport,
@@ -14,6 +15,7 @@ import {
 
 const HEALTHY_RUNTIME_RESET_MS = 30_000;
 const FORCE_KILL_GRACE_MS = 500;
+const QUIT_WORK_SHUTDOWN_TIMEOUT_MS = 8_000;
 
 export type RuntimeHostState = "starting" | "ready" | "restarting" | "failed" | "stopping";
 
@@ -160,7 +162,7 @@ export class DesktopRuntimeHost extends EventEmitter {
     return result;
   }
 
-  async stop(): Promise<void> {
+  async stop(quitWork?: QuitWorkDecision): Promise<void> {
     if (this.#state === "stopping") return;
     this.#setState("stopping");
     if (this.#restartTimer) {
@@ -179,13 +181,16 @@ export class DesktopRuntimeHost extends EventEmitter {
     const exited = new Promise<void>((resolve) => child.once("exit", () => resolve()));
     const gracefulShutdown = (async () => {
       try {
-        await this.#requestNow(RUNTIME_METHODS.shutdown, {});
+        await this.#requestNow(RUNTIME_METHODS.shutdown, quitWork ? { quitWork } : {});
       } catch {
         // An already-failed runtime still needs the bounded termination path below.
       }
       await exited;
     })();
-    await Promise.race([gracefulShutdown, delay(this.#options.shutdownTimeoutMs)]);
+    const shutdownTimeoutMs = quitWork
+      ? Math.max(this.#options.shutdownTimeoutMs, QUIT_WORK_SHUTDOWN_TIMEOUT_MS)
+      : this.#options.shutdownTimeoutMs;
+    await Promise.race([gracefulShutdown, delay(shutdownTimeoutMs)]);
     if (!hasExited(child)) {
       child.terminate();
       await Promise.race([exited, delay(FORCE_KILL_GRACE_MS)]);
@@ -458,5 +463,5 @@ export interface RuntimeHost extends EventEmitter {
   start(): Promise<RuntimeHandshakeResult>;
   retry(): Promise<RuntimeHandshakeResult>;
   request<TResult>(method: string, params: unknown): Promise<TResult>;
-  stop(): Promise<void>;
+  stop(quitWork?: QuitWorkDecision): Promise<void>;
 }

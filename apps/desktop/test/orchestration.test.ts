@@ -904,6 +904,61 @@ describe("Project Agent supervision", () => {
   });
 });
 
+describe("Worker interruptions during app quit", () => {
+  it.each([
+    ["continued", "AgentKib has started a continuation in the same session"],
+    ["not-continued", "AgentKib did not start a continuation"],
+    ["unknown", "AgentKib could not confirm whether a continuation started"],
+  ] as const)(
+    "reports %s once and resumes delegation paused only by the restart",
+    async (outcome, text) => {
+      const root = directory();
+      const { lanes } = host();
+      const before = service(lanes, root, "before-quit");
+      before.designate(OWNER);
+      await assignWorker(before);
+      const assignment = before.registry.leadOfLane(WORKER)!;
+      const deliver = vi.fn((_lead: string, _device: string, _report: string) => false);
+      const after = service(lanes, root, "after-quit", deliver);
+      const captured = { leadId: assignment.lead.sessionId, laneId: assignment.lane.id };
+      expect(after.status(LEAD)).toMatchObject({
+        paused: true,
+        reason: "restart-confirmation-required",
+      });
+      after.workerInterruptedByQuit(WORKER, "t1", outcome, captured);
+      after.workerInterruptedByQuit(WORKER, "t1", outcome, captured);
+      await after.laneTurnEnded(WORKER, "t1", "cancelled");
+      expect(deliver).toHaveBeenCalledExactlyOnceWith(LEAD, DEVICE, expect.stringContaining(text));
+      expect(deliver.mock.calls[0]?.[2]).toContain("interrupted when AgentKib quit");
+      expect(after.status(LEAD)).toMatchObject({ paused: false, reason: null, autoTurns: 1 });
+    },
+  );
+
+  it("keeps an explicit pause and ignores an assignment no longer matching the capture", async () => {
+    const { lanes } = host();
+    const root = directory();
+    const before = service(lanes, root);
+    before.designate(OWNER);
+    await assignWorker(before);
+    const assignment = before.registry.leadOfLane(WORKER)!;
+    before.pause(LEAD);
+    const deliver = vi.fn((_lead: string, _device: string, _report: string) => false);
+    const after = service(lanes, root, "after-quit", deliver);
+    after.workerInterruptedByQuit(WORKER, "t1", "continued", { leadId: LEAD, laneId: "other" });
+    expect(after.status(LEAD)?.pendingReports).toEqual([]);
+    after.workerInterruptedByQuit(WORKER, "t1", "continued", {
+      leadId: LEAD,
+      laneId: assignment.lane.id,
+    });
+    expect(after.status(LEAD)).toMatchObject({
+      paused: true,
+      reason: "user-paused",
+      pendingReports: [expect.stringContaining("interrupted when AgentKib quit")],
+    });
+    expect(deliver).not.toHaveBeenCalled();
+  });
+});
+
 describe("lead registry", () => {
   it("keeps a lead across processes and pauses it after a restart", () => {
     const root = directory();

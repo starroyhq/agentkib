@@ -80,7 +80,12 @@ type TurnEvent = {
   replyText?: string;
 };
 /** The latest turn to start in a thread. */
-type Turn = { id: string | null; open: boolean; startedAt: string | null };
+type Turn = {
+  id: string | null;
+  open: boolean;
+  startedAt: string | null;
+  interrupted?: true;
+};
 type CommandEvidence = {
   call?: { startedAt?: number } | null;
   execution?: { startedAt?: number } | null;
@@ -691,7 +696,7 @@ function latestTurn(
   let offset: number | undefined;
   let outputOffset: number | null = null;
   /** The turns that ended after the latest start found so far. */
-  const ended = new Set<string | null>();
+  const ended = new Map<string | null, EndedTurn["outcome"]>();
   /** Later parts of the line that ends at the first newline of the chunk read last. */
   let tail: Buffer[] = [];
   const read = (line: Buffer, position: number): Turn | undefined => {
@@ -704,13 +709,18 @@ function latestTurn(
       return undefined;
     }
     if (!event.started) {
-      ended.add(event.turnId);
+      if (!ended.has(event.turnId)) ended.set(event.turnId, event.outcome);
       return undefined;
     }
     // A start or an end without a turn ID is matched by order alone.
     const byOrder = event.turnId === null || ended.has(null);
     const open = byOrder ? ended.size === 0 : !ended.has(event.turnId);
-    return { id: event.turnId, open, startedAt: open ? event.at : null };
+    return {
+      id: event.turnId,
+      open,
+      startedAt: open ? event.at : null,
+      ...(!byOrder && ended.get(event.turnId) === "cancelled" && { interrupted: true }),
+    };
   };
   let position = size;
   let lineEnd = size;
@@ -745,6 +755,31 @@ function latestTurn(
     turn: ended.size ? { id: null, open: false, startedAt: null } : null,
     outputOffset,
   };
+}
+
+/** Bounded proof that the latest durable turn was interrupted, with no later start. */
+export function codexQuitHistoryProof(file: string | null, turnId: string): string | undefined {
+  if (!file || isCompressedRollout(file)) return;
+  const entry = lstatSync(file);
+  if (!entry.isFile() || isReparseOrSymlink(file, entry)) return;
+  const fd = openSync(file, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+  try {
+    const stat = fstatSync(fd);
+    if (!stat.isFile() || stat.dev !== entry.dev || stat.ino !== entry.ino) return;
+    const scan = latestTurn(fd, stat.size, Math.max(0, stat.size - MAX_SCAN_BYTES));
+    const after = fstatSync(fd);
+    if (
+      scan.offset !== stat.size ||
+      scan.turn?.id !== turnId ||
+      scan.turn.interrupted !== true ||
+      after.size !== stat.size ||
+      after.mtimeMs !== stat.mtimeMs
+    )
+      return;
+    return `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}`;
+  } finally {
+    closeSync(fd);
+  }
 }
 
 /** Codex's turn history databases beside its thread databases, newest schema first. */

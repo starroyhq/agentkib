@@ -5,7 +5,11 @@ import path from "node:path";
 import { pipeline } from "node:stream/promises";
 import { createZstdDecompress } from "node:zlib";
 import { DSH_HIDDEN_COMMANDS } from "agentkib-dsh-bridge/commands.js";
-import { createQuestionHistoryProjector, historyRecord } from "agentkib-dsh-bridge/projection.js";
+import {
+  createQuestionHistoryProjector,
+  historyRecord,
+  quitInterruptionId,
+} from "agentkib-dsh-bridge/projection.js";
 import { isReparseOrSymlink } from "../../native-files";
 
 const MAX_COMPRESSED_BYTES = 64 * 1024 * 1024;
@@ -244,7 +248,30 @@ export type DshLocalTurnCheckpoint = {
   seq: number;
   lastEventAt: number | null;
   open: { turn: number; startedAt: number } | null;
+  quitInterruption?: {
+    turn: number;
+    interruptionId: string;
+    endSeq: number;
+    cleanup?: "next-step" | "next-turn";
+  };
 };
+
+/** The only native writes rc.5 performs after its quit-abort closes are its two inbox clears. */
+function quitInboxCleanup(event: Record<string, unknown>) {
+  const { data } = event;
+  if (event.type !== "agent/inbox/spliced" || !data || typeof data !== "object") return null;
+  const { target, start, removedCount, inserted, outcome } = data as Record<string, unknown>;
+  return (target === "next-step" || target === "next-turn") &&
+    start === 0 &&
+    typeof removedCount === "number" &&
+    Number.isSafeInteger(removedCount) &&
+    removedCount > 0 &&
+    Array.isArray(inserted) &&
+    inserted.length === 0 &&
+    outcome === "canceled"
+    ? target
+    : null;
+}
 
 /**
  * Reads only turn evidence from persisted events. A validated end offset can
@@ -269,6 +296,7 @@ export async function readLocalDshTurn(
     let seq = checkpoint?.seq ?? -1;
     let lastEventAt = checkpoint?.lastEventAt ?? null;
     let openTurn = checkpoint?.open ?? null;
+    let quitInterruption = checkpoint?.quitInterruption;
 
     await decodeDshLog(
       handle,
@@ -290,6 +318,16 @@ export async function readLocalDshTurn(
         )
           throw new Error("dsh-history-sequence-invalid");
         seq = next;
+        if (quitInterruption) {
+          const cleanup = quitInboxCleanup(event);
+          // Native clear() writes next-step before next-turn and skips either empty list.
+          quitInterruption =
+            cleanup &&
+            (!quitInterruption.cleanup ||
+              (quitInterruption.cleanup === "next-step" && cleanup === "next-turn"))
+              ? { ...quitInterruption, cleanup }
+              : undefined;
+        }
 
         const time = event.time;
         if (typeof time === "number" && Number.isFinite(time)) lastEventAt = time;
@@ -309,6 +347,8 @@ export async function readLocalDshTurn(
         } else {
           if (openTurn?.turn !== turn) throw new Error("dsh-history-unbalanced-turn");
           openTurn = null;
+          const interruptionId = quitInterruptionId(event);
+          if (interruptionId) quitInterruption = { turn, interruptionId, endSeq: next };
         }
       },
       true,
@@ -332,6 +372,7 @@ export async function readLocalDshTurn(
       seq,
       lastEventAt,
       open: openTurn,
+      ...(quitInterruption ? { quitInterruption } : {}),
     };
   });
 }

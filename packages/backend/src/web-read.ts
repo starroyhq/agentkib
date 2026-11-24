@@ -135,7 +135,7 @@ export class WebReadRequests {
   readonly #codex: CodexSessionProvider;
   readonly sessionProviders: SessionProviderRegistry;
 
-  codexSessionProvider(): SessionProviders["codex"] {
+  codexSessionProvider(): CodexSessionProvider {
     return this.#codex;
   }
 

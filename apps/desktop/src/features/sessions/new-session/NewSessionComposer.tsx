@@ -154,7 +154,11 @@ export function NewSessionComposer(props: NewSessionComposerProps) {
   const provider = newSessionProvider(agent, options);
   const showModel = provider?.create.modelPicker === true;
   const showPresets = provider?.create.agentPresets === true;
-  const optionsStatus = session.optionsLoading ? copy.loadingOptions : copy.optionsUnavailable;
+  const optionsStatus = session.providerDisabled
+    ? ""
+    : session.optionsLoading
+      ? copy.loadingOptions
+      : copy.optionsUnavailable;
   const promptAtCreate = provider?.create.mode === "with-first-message";
   const locked = sending || session.busy;
   const {
@@ -268,7 +272,7 @@ export function NewSessionComposer(props: NewSessionComposerProps) {
   const preset = presets.find((item) => item.id === (agentPreset ?? defaultPreset));
 
   const unavailableReason =
-    session.options.isError && !options
+    !session.providerDisabled && session.options.isError && !options
       ? failureOf(session.options.error, locale).reason
       : options && !options.available
         ? sessionReason(locale, options.reason).text
@@ -456,8 +460,12 @@ export function NewSessionComposer(props: NewSessionComposerProps) {
             {NEW_SESSION_AGENTS.map((item) => (
               <DropdownMenuItem
                 key={item}
-                disabled={notInstalled?.has(item)}
-                title={notInstalled?.has(item) ? copy.notInstalled : undefined}
+                disabled={notInstalled?.has(item) || !!session.disabledSessionProviders?.[item]}
+                title={
+                  notInstalled?.has(item) && !session.disabledSessionProviders?.[item]
+                    ? copy.notInstalled
+                    : undefined
+                }
                 className="data-disabled:pointer-events-auto"
                 onClick={() => {
                   if (item === agent) return;
@@ -530,7 +538,7 @@ export function NewSessionComposer(props: NewSessionComposerProps) {
           value: text,
           maxLength: MAX_MESSAGE_LENGTH,
           placeholder: planning ? sessionCopy[locale].planPlaceholder : copy.placeholder,
-          disabled: locked,
+          disabled: locked || session.providerDisabled,
           onChange: (event) => setText(event.target.value),
           ...slash.inputProps,
         }}
@@ -769,7 +777,7 @@ function UnavailableOptionButton({
   className: string;
   icon: ReactNode;
 }) {
-  const name = `${label}: ${status}`;
+  const name = status ? `${label}: ${status}` : label;
   return (
     <IconAction
       label={name}

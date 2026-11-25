@@ -79,13 +79,15 @@ export function useNewSession({
 }) {
   const { client, access, origin, locale } = useSession();
   const controls = !!access?.device?.manage && !!access.experimentalEnabled;
+  const providerDisabled = !!access?.disabledSessionProviders?.[agent];
   const scope =
     access?.status === "approved" && access.device?.id
       ? pendingScope(origin, access.device.id)
       : undefined;
   const workspaceCatalog = newSessionProvider(agent)?.create.catalogScope === "workspace";
   const catalogWorkspaceId = workspaceCatalog ? workspaceId : undefined;
-  const canReadOptions = !!scope && controls && (!workspaceCatalog || !!catalogWorkspaceId);
+  const canReadOptions =
+    !!scope && controls && !providerDisabled && (!workspaceCatalog || !!catalogWorkspaceId);
   const cacheKey = JSON.stringify([
     origin,
     access?.bootId,
@@ -242,6 +244,7 @@ export function useNewSession({
         flight.current ||
         savedRequest ||
         !controls ||
+        providerDisabled ||
         !access ||
         !scope ||
         currentVisit.current !== visit ||
@@ -303,12 +306,23 @@ export function useNewSession({
         setBusy(false);
       }
     },
-    [access, agent, client, controls, locale, savedRequest, scope, visit, workspaceId],
+    [
+      access,
+      agent,
+      client,
+      controls,
+      locale,
+      providerDisabled,
+      savedRequest,
+      scope,
+      visit,
+      workspaceId,
+    ],
   );
 
   return {
-    /** False while access is read, and on a device that cannot start sessions. */
-    ready: controls,
+    ready: controls && !providerDisabled,
+    providerDisabled,
     options,
     optionsError,
     optionsLoading: canReadOptions && !options && !optionsError,

@@ -52,6 +52,7 @@ function fixture(nativeRef: string) {
     HOME: root,
     USERPROFILE: root,
     CODEX_HOME: path.join(root, "codex"),
+    AGENTKIB_ENABLE_ANTIGRAVITY_ACP: "1",
     PATH: root,
   };
   const commands = new Commands();

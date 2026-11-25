@@ -1434,6 +1434,7 @@ describe("complete history search source extraction", () => {
 
   it("replays ACP updates with full merged messages and tools without resource attachments", async () => {
     const f = fixture("antigravity");
+    f.input.environment.AGENTKIB_ENABLE_ANTIGRAVITY_ACP = "1";
     f.resolve();
     vi.spyOn(AntigravitySessions.prototype, "readReplay").mockResolvedValue({
       session: {
@@ -1498,6 +1499,7 @@ describe("complete history search source extraction", () => {
     "reports unknown Antigravity %s content as partial body coverage through the search store",
     async (sessionUpdate) => {
       const f = fixture("antigravity");
+      f.input.environment.AGENTKIB_ENABLE_ANTIGRAVITY_ACP = "1";
       f.resolve();
       vi.spyOn(AntigravitySessions.prototype, "readReplay").mockResolvedValue({
         session: {
@@ -1575,6 +1577,7 @@ describe("complete history search source extraction", () => {
     "excludes known Antigravity %s attachments and hidden reasoning without reducing coverage",
     async (sessionUpdate) => {
       const f = fixture("antigravity");
+      f.input.environment.AGENTKIB_ENABLE_ANTIGRAVITY_ACP = "1";
       f.resolve();
       vi.spyOn(AntigravitySessions.prototype, "readReplay").mockResolvedValue({
         session: {

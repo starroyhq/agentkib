@@ -107,6 +107,8 @@ export function useNewSession({
   }, [client]);
   const controls =
     access?.status === "approved" && !!access.device?.manage && !!access.experimentalEnabled;
+  const disabledSessionProviders = access?.disabledSessionProviders;
+  const providerDisabled = !!disabledSessionProviders?.[agent];
   const scope =
     access?.status === "approved" && access.device?.id
       ? pendingScope(client.origin, access.device.id)
@@ -115,7 +117,8 @@ export function useNewSession({
   // app-server once, later ones answer at once.
   const workspaceCatalog = sessionProviderCapabilities(agent)?.create.catalogScope === "workspace";
   const catalogWorkspace = workspaceCatalog ? workspaceId : undefined;
-  const canReadOptions = controls && readOptions && (!workspaceCatalog || !!catalogWorkspace);
+  const canReadOptions =
+    controls && !providerDisabled && readOptions && (!workspaceCatalog || !!catalogWorkspace);
   const options = useQuery({
     queryKey: [
       ...newSessionOptionsKey(agent, catalogWorkspace),
@@ -255,6 +258,7 @@ export function useNewSession({
         flight.current ||
         savedRequest ||
         !controls ||
+        providerDisabled ||
         !access ||
         !scope ||
         currentVisit.current !== visit ||
@@ -316,19 +320,31 @@ export function useNewSession({
         setBusy(false);
       }
     },
-    [access, agent, client, controls, locale, savedRequest, scope, visit, workspaceId],
+    [
+      access,
+      agent,
+      client,
+      controls,
+      locale,
+      providerDisabled,
+      savedRequest,
+      scope,
+      visit,
+      workspaceId,
+    ],
   );
 
   return {
-    /** False while access is read, and on a device that cannot start sessions. */
-    ready: controls,
+    ready: controls && !providerDisabled,
+    disabledSessionProviders,
+    providerDisabled,
     client,
     resourceAuthority: JSON.stringify([access?.bootId, access?.device?.id]),
     fullAccess: controls && access.device?.accessMode === "full",
     advancedAccess:
       controls && access.device?.accessMode === "full" && access.device.advancedControl === true,
     options,
-    optionsData: controls ? options.data : undefined,
+    optionsData: controls && !providerDisabled ? options.data : undefined,
     optionsAccessDenied: options.data?.accessDenied === true,
     optionsLoading: access === undefined || (canReadOptions && options.isPending),
     busy,

@@ -5,6 +5,10 @@ import { readFile, writeFile, mkdir, rename } from "node:fs/promises";
 import path from "node:path";
 import { homedir } from "node:os";
 import { WebAccessService, createWebControlState } from "./web/service";
+import {
+  ANTIGRAVITY_ACP_DISABLED,
+  antigravityAcpEnabled,
+} from "@agentkib/backend/antigravity-acp-enabled";
 import { nativeApprovalRules } from "@agentkib/backend/approval-rule-providers";
 import { webAdminReply } from "./web/admin-errors";
 import { acceptanceSession } from "./web/acceptance";
@@ -373,6 +377,9 @@ async function startApplication(): Promise<void> {
     enableClaudeScheduler: process.platform === "darwin",
     enableSerialSessionScheduler: true,
     verifiedAntigravityManaged: true,
+    disabledSessionProviders: antigravityAcpEnabled(process.env)
+      ? undefined
+      : { antigravity: ANTIGRAVITY_ACP_DISABLED },
     verifiedDshFollower: process.platform === "darwin",
     verifiedDevinManaged: true,
     accountSessions: () => {

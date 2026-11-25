@@ -306,7 +306,15 @@ export class SessionIndex {
         // Explicit refreshes bypass this automatic-read interval.
         this.#classificationRetryAfter.set(workspaceId, Date.now() + 5_000);
       try {
-        listing = await this.readers.list(agent, workspace);
+        listing =
+          agent === "antigravity"
+            ? await this.readers.list(agent, workspace, {
+                indexedSessionIds: this.store
+                  .list(workspaceId)
+                  .filter((session) => session.agent === agent)
+                  .map(({ id }) => id),
+              })
+            : await this.readers.list(agent, workspace);
       } catch {
         this.#assertCurrent(epoch);
         this.store.failure(workspaceId, agent, "Conversation source could not be read");

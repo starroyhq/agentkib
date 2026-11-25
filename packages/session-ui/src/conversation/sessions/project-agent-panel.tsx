@@ -67,6 +67,7 @@ export function ProjectAgentPanel({
   formatCatalogTime,
   client,
   device,
+  providerDisabled = false,
 }: {
   locale: string;
   selected: string;
@@ -74,6 +75,7 @@ export function ProjectAgentPanel({
   formatCatalogTime(value: string): string;
   client: ProjectAgentPanelClient;
   device?: Access["device"];
+  providerDisabled?: boolean;
 }) {
   const {
     kind,
@@ -176,7 +178,8 @@ export function ProjectAgentPanel({
   });
 
   if (form) {
-    const mayEdit = form.mode === "designate" ? !designateBlocked : mayTakeOver;
+    const mayEdit =
+      !providerDisabled && (form.mode === "designate" ? !designateBlocked : mayTakeOver);
     return (
       <OperationGroup title={text.title}>
         <OperationRow className="block">
@@ -266,13 +269,15 @@ export function ProjectAgentPanel({
     return (
       <OperationGroup title={text.title}>
         <OperationRow className="flex-wrap">
-          {!designateBlocked && <OperationCopy className="basis-64">{text.hint}</OperationCopy>}
+          {!providerDisabled && !designateBlocked && (
+            <OperationCopy className="basis-64">{text.hint}</OperationCopy>
+          )}
           <Button
             variant="outline"
             className={`${touchTarget ?? ""} disabled:pointer-events-auto`}
-            disabled={!!designateBlocked}
-            title={designateBlocked}
-            onClick={() => !designateBlocked && setForm(formOf("designate"))}
+            disabled={providerDisabled || !!designateBlocked}
+            title={providerDisabled ? undefined : designateBlocked}
+            onClick={() => !providerDisabled && !designateBlocked && setForm(formOf("designate"))}
           >
             {text.designate}
           </Button>
@@ -363,7 +368,7 @@ export function ProjectAgentPanel({
                   variant="outline"
                   size="sm"
                   className={touchTarget}
-                  disabled={busy}
+                  disabled={busy || providerDisabled}
                   onClick={() => void run({ operation: "stop-worker", worker: worker.sessionId })}
                 >
                   {text.stopWorker}
@@ -416,7 +421,7 @@ export function ProjectAgentPanel({
                 <Button
                   variant="outline"
                   className={touchTarget}
-                  disabled={busy}
+                  disabled={busy || providerDisabled}
                   onClick={() => void run({ operation: agent.paused ? "resume" : "pause" })}
                 >
                   {agent.paused ? text.resume : text.pause}
@@ -426,6 +431,7 @@ export function ProjectAgentPanel({
                 <Button
                   variant="outline"
                   className={touchTarget}
+                  disabled={providerDisabled}
                   onClick={() => {
                     setRemoving(null);
                     setForm(formOf("update", agent.scope));

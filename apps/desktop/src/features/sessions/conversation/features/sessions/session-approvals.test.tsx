@@ -233,6 +233,43 @@ function acp() {
   };
 }
 describe("ACP disconnected draft", () => {
+  it("retains Antigravity approval choices and settings controls while disabling them", () => {
+    acp();
+    const request = approval({
+      method: "session/request_permission",
+      availableDecisions: ["allow", "deny"],
+      options: [
+        { optionId: "allow", name: "Allow once", kind: "allow_once" },
+        { optionId: "deny", name: "Reject", kind: "reject_once" },
+      ],
+    });
+    state = {
+      ...state,
+      access: {
+        ...state.access!,
+        disabledSessionProviders: { antigravity: "antigravity-acp-disabled" },
+        device: { ...state.access!.device!, approve: true },
+      },
+      live: {
+        ...state.live!,
+        executionMode: "acp-managed",
+        reason: "antigravity-acp-disabled",
+        approvals: [request],
+      },
+    };
+    render(<SessionReader />);
+    for (const name of ["Allow once", "Reject"]) {
+      const choice = within(card()).getByRole("button", { name });
+      expect(choice).toBeVisible();
+      expect(choice).toBeDisabled();
+      expect(within(card()).queryByText(choice.title)).toBeNull();
+      fireEvent.click(choice);
+    }
+    expect(screen.getByRole("button", { name: "Select model: Default" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Tool permissions" })).toBeDisabled();
+    expect(state.control).not.toHaveBeenCalled();
+  });
+
   it.each(locales)(
     "keeps editing and focus while offline, with no send or automatic replay in %s",
     (locale) => {

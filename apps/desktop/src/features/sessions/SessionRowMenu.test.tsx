@@ -210,7 +210,9 @@ describe("a session row's menu on the desktop", () => {
       ],
     });
     open(session, { sessions });
-    fireEvent.click(await screen.findByRole("menuitem", { name: "Assign Workers" }));
+    const assignWorkers = await screen.findByRole("menuitem", { name: "Assign Workers" });
+    await waitFor(() => expect(assignWorkers).not.toHaveAttribute("aria-disabled"));
+    fireEvent.click(assignWorkers);
     const worker = await screen.findByRole("button", { name: "ACP Worker" });
     expect(worker).toBeEnabled();
     expect(screen.getByRole("button", { name: "Assigned Worker" })).toBeDisabled();
@@ -238,6 +240,37 @@ describe("a session row's menu on the desktop", () => {
     expect(assign).toHaveAttribute("title", "This session cannot coordinate Workers right now.");
     fireEvent.click(assign);
     expect(claudeRequest).not.toHaveBeenCalled();
+  });
+
+  it("keeps assignment unavailable for a disabled Antigravity lead or Worker", async () => {
+    client.sessionCapabilities.mockResolvedValue({
+      sessionId: "session",
+      reason: "antigravity-acp-disabled",
+      features: {},
+    });
+    open(summary("antigravity"));
+    const assignWorkers = screen.getByRole("menuitem", { name: "Assign Workers" });
+    await act(async () => {});
+    expect(assignWorkers).toHaveAttribute("aria-disabled", "true");
+    expect(assignWorkers).not.toHaveAttribute("title");
+    fireEvent.click(assignWorkers);
+    expect(claudeRequest).not.toHaveBeenCalled();
+
+    cleanup();
+    features({});
+    const lead = { ...summary("devin"), id: "lead" };
+    claudeRequest.mockResolvedValue({
+      capable: true,
+      remaining: 1,
+      candidates: [{ sessionId: "session", reason: "worker-agent-unsupported" }],
+    });
+    open(lead, { sessions: [lead, summary("antigravity")] });
+    fireEvent.click(screen.getByRole("menuitem", { name: "Assign Workers" }));
+    const worker = await screen.findByRole("button", { name: "Synthetic session" });
+    expect(worker).toBeDisabled();
+    fireEvent.click(worker);
+    expect(screen.getByRole("button", { name: "Assign" })).toBeDisabled();
+    expect(claudeRequest).toHaveBeenCalledTimes(1);
   });
 
   it("names an untitled session as its row does", () => {

@@ -46,6 +46,7 @@ const ID = "12345678-1234-1234-1234-123456789abc";
 const OTHER_ID = "12345678-1234-1234-1234-123456789abd";
 const workspace = "/synthetic/antigravity/workspace";
 const otherWorkspace = "/synthetic/antigravity/other-workspace";
+const acpOptIn = { AGENTKIB_ENABLE_ANTIGRAVITY_ACP: "1" };
 const record = (
   surface: "app" | "ide",
   id = ID,
@@ -143,22 +144,24 @@ describe("Antigravity read-only history aggregation", () => {
     expect(second.sessions[0]?.native_ref).toBe(antigravityLocalRef("ide", ID));
     expect(first.sessions[0]?.cwd).not.toBe(second.sessions[0]?.cwd);
   });
-  it("does not report a missing optional ACP server as a failed local source", async () => {
+  it("reads local history without consulting ACP even if an executable is configured", async () => {
+    const history = new AntigravityHistory({ AGENTKIB_ANTIGRAVITY_ACP_BIN: "/synthetic/bin/agy" });
     localRecords([record("app")]);
-    expect(await new AntigravityHistory({}).list(workspace)).toMatchObject({
+    expect(await history.list(workspace)).toMatchObject({
       incomplete: false,
       sessions: [{ native_ref: antigravityLocalRef("app", ID) }],
     });
     localRecords([]);
-    expect(await new AntigravityHistory({}).list(workspace)).toEqual({
+    expect(await history.list(workspace)).toEqual({
       incomplete: false,
       sessions: [],
     });
+    expect(sources.acp.list).not.toHaveBeenCalled();
   });
   it("preserves local sessions and records incompleteness when configured ACP fails", async () => {
     localRecords([record("app")]);
     sources.acp.list.mockRejectedValue(new Error("configured server failed"));
-    expect(await new AntigravityHistory({}).list(workspace)).toMatchObject({
+    expect(await new AntigravityHistory(acpOptIn).list(workspace)).toMatchObject({
       incomplete: true,
       sessions: [{ native_ref: antigravityLocalRef("app", ID) }],
       issues: [{ code: "antigravity-acp-list", scope: "source" }],
@@ -166,7 +169,7 @@ describe("Antigravity read-only history aggregation", () => {
   });
   it("keeps source failure visible if no local history can be retained", async () => {
     sources.acp.list.mockRejectedValue(new Error("configured server failed"));
-    expect(await new AntigravityHistory({}).list(workspace)).toEqual({
+    expect(await new AntigravityHistory(acpOptIn).list(workspace)).toEqual({
       incomplete: true,
       sessions: [],
       issues: [{ code: "antigravity-acp-list", scope: "source" }],
@@ -183,7 +186,7 @@ describe("Antigravity read-only history aggregation", () => {
       incomplete: false,
       issues: [{ code: "antigravity-acp-record", scope: "unattributed", id: "no-workspace" }],
     });
-    expect(await new AntigravityHistory({}).list(workspace)).toMatchObject({
+    expect(await new AntigravityHistory(acpOptIn).list(workspace)).toMatchObject({
       incomplete: true,
       sessions: [{ native_ref: antigravityLocalRef("app", ID) }],
       issues: [
@@ -196,12 +199,12 @@ describe("Antigravity read-only history aggregation", () => {
     sources.local.list.mockReturnValue({ records: [record("app")], incomplete: true });
     expect((await new AntigravityHistory({}).list(workspace)).incomplete).toBe(true);
   });
-  it("never sends local history to writable ACP document or handoff paths", () => {
-    const history = new AntigravityHistory({});
+  it("never sends local history to writable ACP document or handoff paths", async () => {
+    const history = new AntigravityHistory(acpOptIn);
     for (const surface of ["app", "ide"] as const) {
       const ref = antigravityLocalRef(surface, ID);
       expect(() => history.readHandoff(ref)).toThrow("read-only");
-      expect(() =>
+      await expect(
         history.readDocument(ref, {
           agent: "antigravity",
           workspace_id: "workspace",
@@ -210,7 +213,7 @@ describe("Antigravity read-only history aggregation", () => {
           updated_at: null,
           git_branch: null,
         }),
-      ).toThrow("complete history");
+      ).rejects.toThrow("complete history");
     }
     expect(sources.acp.readHandoff).not.toHaveBeenCalled();
     expect(sources.acp.readDocument).not.toHaveBeenCalled();
@@ -221,6 +224,9 @@ describe("Antigravity read-only history aggregation", () => {
     await expect(
       history.readEvents(antigravityLocalRef("app", ID), null, 20, otherWorkspace),
     ).rejects.toThrow("workspace");
+    await expect(history.readEvents(ID, null, 20, otherWorkspace)).rejects.toThrow(
+      "antigravity-acp-disabled",
+    );
     await expect(history.readEvents(antigravityLocalRef("app", ID), null, 20)).rejects.toThrow(
       "workspace",
     );
@@ -229,6 +235,7 @@ describe("Antigravity read-only history aggregation", () => {
     ).rejects.toThrow("reference");
     expect(sources.runtime.events).not.toHaveBeenCalled();
     expect(sources.local.events).not.toHaveBeenCalled();
+    expect(sources.acp.readEvents).not.toHaveBeenCalled();
   });
   it("prefers verified native body over offline search text", async () => {
     const source = record("app");
@@ -372,7 +379,7 @@ describe("Antigravity read-only history aggregation", () => {
   });
   it("leaves ACP identity routing intact and closes its subprocess provider", async () => {
     sources.acp.readEvents.mockResolvedValue(page("ACP body"));
-    const history = new AntigravityHistory({});
+    const history = new AntigravityHistory(acpOptIn);
     expect(await history.readEvents("opaque-acp-session", null, 20, workspace)).toEqual(
       page("ACP body"),
     );

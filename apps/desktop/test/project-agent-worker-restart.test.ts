@@ -49,6 +49,7 @@ function fixture(agent = "codex") {
   });
   const sent = vi.fn(() => false);
   const host: LaneHost = {
+    antigravityAcpEnabled: agent === "antigravity",
     restart,
     live: async () => live,
     control: async () => {

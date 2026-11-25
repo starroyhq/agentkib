@@ -125,18 +125,24 @@ export function SessionRowMenu({
         triggerClassName="session-row-menu size-8 shrink-0 rounded-lg p-0 text-muted-foreground opacity-0 transition-opacity group-hover/session:opacity-100 group-focus-within/session:opacity-100 hover:text-foreground data-[popup-open]:opacity-100 [@media(hover:none)]:opacity-100"
         triggerSize="sm"
         iconSize={15}
-        extraMenuItems={
-          offersAssignment && (
-            <DropdownMenuItem
-              className="data-disabled:pointer-events-auto"
-              disabled={!!assignmentDisabledReason}
-              title={assignmentDisabledReason}
-              onClick={() => !assignmentDisabledReason && setAssigningWorkers(true)}
-            >
-              {assignment.menu}
-            </DropdownMenuItem>
-          )
-        }
+        extraMenuItems={(features) => {
+          const providerDisabled =
+            session.agent === "antigravity" &&
+            (!features || features.sessionReason === "antigravity-acp-disabled");
+          const disabled = !!assignmentDisabledReason || providerDisabled;
+          return (
+            offersAssignment && (
+              <DropdownMenuItem
+                className="data-disabled:pointer-events-auto"
+                disabled={disabled}
+                title={assignmentDisabledReason}
+                onClick={() => !disabled && setAssigningWorkers(true)}
+              >
+                {assignment.menu}
+              </DropdownMenuItem>
+            )
+          );
+        }}
         RenameDialog={RenameDialog}
         RenameFooter={DialogFooter}
         DeleteDialog={DeleteDialog}

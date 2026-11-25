@@ -46,7 +46,7 @@ import { SessionComposerToolbar } from "../../session-composer-toolbar";
 import { SessionContextUsageGauge } from "../../session-context-usage-gauge";
 import { sessionContinuationCopy } from "../../session-continuation";
 import type { createSessionControl } from "../../session-control";
-import { resolveSessionProvider } from "../../session-provider";
+import { resolveSessionProvider, sessionProviderControlsDisabled } from "../../session-provider";
 import { useSessionPlatform } from "../../session-platform";
 import { slashPlanQuery, stripSlashPlan, useSlashCommandMenu } from "../../slash-commands";
 import { useComposerAttachments } from "../../use-composer-attachments";
@@ -167,13 +167,24 @@ export function SessionComposer({
     runSessionAction,
     controlReady,
     capabilities,
-    canSend,
-    canStop,
+    canSend: sessionCanSend,
+    canStop: sessionCanStop,
     busy,
     online,
     notice,
     settingsOnlyBlocked,
   } = session;
+  const providerDisabled = sessionProviderControlsDisabled(
+    access,
+    current?.id === selected ? current.agent : undefined,
+    live?.sessionId === selected && live.reason
+      ? live.reason
+      : capabilities?.sessionId === selected
+        ? capabilities.reason
+        : undefined,
+  );
+  const canSend = sessionCanSend && !providerDisabled;
+  const canStop = sessionCanStop && !providerDisabled;
   const reason = (code?: string | null) =>
     sessionReason(locale, code ?? undefined, surface, platformCopy.unavailableReason).text;
   const isClaude = current?.agent === "claude-code";
@@ -226,6 +237,7 @@ export function SessionComposer({
   const firstMessage = useRef<{ sessionId: string; text: string; shown?: boolean }>(undefined);
   const generation = useRef(0);
   const uploadPermission = !!(
+    !providerDisabled &&
     access?.device?.attachments &&
     capabilities?.sessionId === selected &&
     capabilities.features.attachments?.available
@@ -552,6 +564,7 @@ export function SessionComposer({
   const panelShortcut = composerPanelShortcut(draft, localSettings, localGoal);
   const decision = commands.parse(draft);
   const localCommandReady =
+    !providerDisabled &&
     draftReady &&
     !attachmentIds.length &&
     !resourceIds.length &&
@@ -570,6 +583,7 @@ export function SessionComposer({
                 composerCapabilities.feature("goal-set")?.available !== true))))));
   async function send(action: "send" | "steer" | "queue-add") {
     if (
+      providerDisabled ||
       !valid ||
       readOnlyTerminalWait ||
       (action === "queue-add" && !queueAddReady) ||
@@ -703,6 +717,7 @@ export function SessionComposer({
     void send("send");
   });
   const canAdvanced = !!(
+    !providerDisabled &&
     access?.device?.advancedControl &&
     controlReady &&
     online &&
@@ -863,7 +878,7 @@ export function SessionComposer({
           onFocus: () => {
             if (resume?.refreshOccupancy) void session.checkContinuation?.();
           },
-          disabled: (busy && !settingsOnlyBlocked) || submitted,
+          disabled: providerDisabled || (busy && !settingsOnlyBlocked) || submitted,
           ...slash.inputProps,
         }}
         onEditorKeyDown={(event, composing) => {
@@ -974,7 +989,7 @@ export function SessionComposer({
                 resources={resources}
                 setResources={setResources}
                 openPhoneFiles={() => fileInput.current?.click()}
-                disabled={busy || submitted || !online}
+                disabled={providerDisabled || busy || submitted || !online}
                 action={primaryAction}
                 startupGoal={startupGoal}
                 onStageGoal={stageGoal}

@@ -2,6 +2,7 @@ import { LeadReportUsageLimit } from "./message-lead-reports";
 import { createHash, randomUUID } from "node:crypto";
 import { PROJECT_AGENT_MAX_WORKERS, parseClaudeSlashCommand } from "@agentkib/runtime-protocol";
 import { readControlReceipt } from "./control-receipt";
+import { ANTIGRAVITY_ACP_DISABLED } from "./agents/antigravity/acp-enabled";
 import {
   reportFailure,
   reportRetryDelay,
@@ -90,6 +91,7 @@ export type DeferredCodexSendResult =
  * The existing session controls and reads. Calls about a Worker go to its assigned provider.
  */
 export type LaneHost = {
+  antigravityAcpEnabled?: boolean;
   /** `send`, `steer`, `queue-add`, `stop`, `approve` and `answer` on a lane's session. */
   control(
     value: Record<string, unknown>,
@@ -745,13 +747,22 @@ export class OrchestrationService {
 
   // ---- leads -----------------------------------------------------------------------------
 
+  #enabledProvider(agent: string | undefined): boolean {
+    return agent !== "antigravity" || this.lanes.antigravityAcpEnabled === true;
+  }
+
+  #enabledLead(sessionId: string): boolean {
+    return this.#enabledProvider(this.lanes.session(sessionId)?.agent);
+  }
+
   designate(input: {
     sessionId: string;
     deviceId: string;
     scope?: Partial<LeadScope>;
     workspaceId: string;
   }): Lead {
-    if (!this.isLeadCapable(input.sessionId)) throw new Error("lead-requires-managed-claude");
+    if (!this.#enabledLead(input.sessionId) || !this.isLeadCapable(input.sessionId))
+      throw new Error("lead-requires-managed-claude");
     if (!this.lanes.workspaces().some(({ id }) => id === input.workspaceId))
       throw new Error("invalid-lead-workspaces");
     return this.registry.create({
@@ -780,7 +791,11 @@ export class OrchestrationService {
     const workerOwners = new Map(
       leads.flatMap((item) => item.lanes.map((lane) => [lane.sessionId, item.sessionId] as const)),
     );
-    const capable = !!workspaceId && !workerOwners.has(sessionId) && this.isLeadCapable(sessionId);
+    const capable =
+      !!workspaceId &&
+      !workerOwners.has(sessionId) &&
+      this.#enabledLead(sessionId) &&
+      this.isLeadCapable(sessionId);
     return {
       capable,
       remaining:
@@ -830,6 +845,7 @@ export class OrchestrationService {
       throw new Error("invalid-lead-request");
     if (workers.length > PROJECT_AGENT_MAX_WORKERS) throw new Error("worker-limit-reached");
     if (workers.includes(sessionId)) throw new Error("session-is-a-project-agent");
+    if (!this.#enabledLead(sessionId)) throw new Error("lead-requires-managed-claude");
     const candidates = await Promise.all(
       workers.map(async (id) => {
         const summary = this.#workerSession(id);
@@ -896,6 +912,7 @@ export class OrchestrationService {
     authorizedWorkspaceIds?: readonly string[];
     workspaceId?: string;
   }): Promise<boolean> {
+    if (!this.#enabledLead(input.sessionId)) throw new Error("lead-requires-managed-claude");
     const toolsChanged = this.registry.update(input.sessionId, (lead) => {
       const current = this.#effectiveScope(lead, input.workspaceId);
       this.#requireAuthorizedWorkspaces(current, input.authorizedWorkspaceIds);
@@ -1012,10 +1029,12 @@ export class OrchestrationService {
     worker: string,
     deviceId: string,
   ): Promise<{ accepted: boolean; requestId?: string; reason?: string }> {
+    if (!this.#enabledLead(sessionId)) throw new Error("lead-unavailable");
     const lead = this.registry.get(sessionId);
     if (!lead) throw new Error("lead-unavailable");
     const lane = lead.lanes.find((item) => item.sessionId === worker);
     if (!lane) throw new Error("worker-unavailable");
+    if (!this.#enabledProvider(lane.agent)) throw new Error("worker-agent-unsupported");
     const result = await this.#stopLane(lead, lane, deviceId);
     if (result.accepted && !result.cancelled) this.laneControlled(lane.sessionId, "stop");
     return result;
@@ -1055,6 +1074,7 @@ export class OrchestrationService {
     authorizedWorkspaceIds?: readonly string[],
     workspaceId?: string,
   ): Lead {
+    if (!this.#enabledLead(sessionId)) throw new Error("lead-requires-managed-claude");
     this.registry.update(sessionId, (lead) => {
       const scope = this.#effectiveScope(lead, workspaceId);
       this.#requireAuthorizedWorkspaces(scope, authorizedWorkspaceIds);
@@ -1144,6 +1164,7 @@ export class OrchestrationService {
   }
 
   #resumeOnMessage(sessionId: string): void {
+    if (!this.#enabledLead(sessionId)) return;
     const hold = this.#leadUsageHolds.get(sessionId);
     const dsh = hold
       ? hold.resumeWhen !== "native-reset"
@@ -1175,6 +1196,7 @@ export class OrchestrationService {
    * not let run (false).
    */
   leadSelfTurn(sessionId: string): boolean {
+    if (!this.#enabledLead(sessionId)) return false;
     if (!this.registry.get(sessionId)) return true;
     return this.registry.update(sessionId, (lead) => {
       if (
@@ -1196,7 +1218,7 @@ export class OrchestrationService {
   // ---- reports -----------------------------------------------------------------------------
 
   #deferredCodexAssignment(owner: DeferredCodexSendOwner): { lead: Lead; lane: Lane } | null {
-    if (this.#closed) return null;
+    if (this.#closed || !this.#enabledLead(owner.leadId)) return null;
     const lead = this.registry.get(owner.leadId);
     const lane = lead?.lanes.find(
       (item) =>
@@ -1252,7 +1274,13 @@ export class OrchestrationService {
     replyText?: string | null,
   ): Promise<void> {
     const owner = this.registry.leadOfLane(sessionId);
-    if (!owner || owner.lane.reportedTurns.includes(turnId)) return;
+    if (
+      !owner ||
+      !this.#enabledLead(owner.lead.sessionId) ||
+      !this.#enabledProvider(owner.lane.agent) ||
+      owner.lane.reportedTurns.includes(turnId)
+    )
+      return;
     const endedAt = Date.now();
     this.#clearStall(owner.lane.id, turnId, historyTurnId);
     const report = await this.#turnReport(
@@ -1274,7 +1302,7 @@ export class OrchestrationService {
     outcome: "continued" | "not-continued" | "unknown",
     assignment: { leadId: string; laneId: string },
   ): void {
-    if (this.#closed) return;
+    if (this.#closed || !this.#enabledLead(assignment.leadId)) return;
     const owner = this.registry.leadOfLane(sessionId);
     if (!owner || owner.lead.sessionId !== assignment.leadId || owner.lane.id !== assignment.laneId)
       return;
@@ -1366,6 +1394,7 @@ export class OrchestrationService {
       for (const id of this.#workerWatch.keys())
         if (!assigned.has(id)) this.#workerWatch.delete(id);
       for (const lead of leads) {
+        if (!this.#enabledLead(lead.sessionId)) continue;
         const reports: LaneReport[] = [];
         const observations: Array<{
           lane: Lane;
@@ -1454,6 +1483,7 @@ export class OrchestrationService {
   }
 
   #inAssignedWorkspace(lane: Lane, live?: Record<string, unknown> | null): boolean {
+    if (!this.#enabledProvider(lane.agent)) return false;
     if (typeof live?.workspaceId === "string" && live.workspaceId !== lane.workspaceId)
       return false;
     const session = this.lanes.session(lane.sessionId);
@@ -1639,7 +1669,13 @@ export class OrchestrationService {
   async laneWaiting(sessionId: string, turnId: string | null, status: string): Promise<void> {
     const owner = this.registry.leadOfLane(sessionId);
     const key = `${turnId ?? "?"}:${status === "waiting-approval" ? "awaiting-approval" : status}`;
-    if (!owner || owner.lane.reportedTurns.includes(key)) return;
+    if (
+      !owner ||
+      !this.#enabledLead(owner.lead.sessionId) ||
+      !this.#enabledProvider(owner.lane.agent) ||
+      owner.lane.reportedTurns.includes(key)
+    )
+      return;
     this.#clearStall(owner.lane.id, turnId);
     const live = await this.#state(sessionId);
     const pending = live ? waitingItems(live, owner.lead.scope) : [];
@@ -1695,7 +1731,12 @@ export class OrchestrationService {
 
   #reportBatch(leadId: string, reports: LaneReport[], now = Date.now(), hold = false): void {
     const waiting = this.#completions.get(leadId);
-    if (this.#closed || (!reports.length && (!waiting || (!hold && now < waiting.until)))) return;
+    if (
+      this.#closed ||
+      !this.#enabledLead(leadId) ||
+      (!reports.length && (!waiting || (!hold && now < waiting.until)))
+    )
+      return;
     let fresh: string[];
     try {
       const batch = this.registry.update(leadId, (lead) => {
@@ -1784,23 +1825,33 @@ export class OrchestrationService {
     if (!lead.pendingReports.length) return;
     const deliveries = (lead.reportDeliveries ??= []);
     let waiting = deliveries.at(-1);
-    if (waiting?.quitLaneId || waiting?.attempted || waiting?.failure?.code !== "usage-limit")
+    if (
+      !waiting ||
+      waiting.quitLaneId ||
+      waiting.attempted ||
+      waiting.failure?.code !== "usage-limit" ||
+      !this.#enabledReport(lead, waiting)
+    )
       waiting = undefined;
     for (const text of lead.pendingReports) {
+      const enabled = this.#enabledReport(lead, { text });
       if (
+        enabled &&
         waiting &&
         Buffer.byteLength(waiting.text) + Buffer.byteLength(text) + 2 <= MAX_REPORT_BYTES
       )
         waiting.text += "\n\n" + text;
       else {
-        waiting = { reportId: randomUUID(), text };
-        deliveries.push(waiting);
+        const delivery = { reportId: randomUUID(), text };
+        deliveries.push(delivery);
+        waiting = enabled ? delivery : undefined;
       }
     }
     lead.pendingReports = [];
   }
 
   #releaseUsageHold(leadId: string, now: number, allowManualUsage = false): void {
+    if (!this.#enabledLead(leadId)) return;
     if (this.registry.get(leadId)?.reason === "usage-limit") {
       this.registry.update(leadId, (lead) => this.#queueHeldReports(lead));
       this.#readyUsageHolds.set(leadId, allowManualUsage);
@@ -1824,16 +1875,39 @@ export class OrchestrationService {
     this.delegationChanged();
   }
 
+  #enabledReport(
+    lead: Lead,
+    {
+      text,
+      quitLaneId,
+      sourceLaneIds,
+    }: Pick<ReportDelivery, "text" | "quitLaneId" | "sourceLaneIds">,
+  ): boolean {
+    if (this.lanes.antigravityAcpEnabled === true) return true;
+    if (
+      lead.lanes.some(
+        (lane) =>
+          !this.#enabledProvider(lane.agent) &&
+          (quitLaneId === lane.id || sourceLaneIds?.includes(lane.id)),
+      )
+    )
+      return false;
+    // Older held reports kept only their text. The generated envelope names the provider
+    // even when the worker has been removed or the report was combined with others.
+    return !/^\[AgentKib report\] Worker ".*" \(Antigravity\) ·/m.test(text);
+  }
+
   #kickReports(
     leadId: string,
     now = Date.now(),
     allowManualUsage = false,
     usageReady = false,
   ): void {
-    if (this.#closed || this.#reportPumps.has(leadId)) return;
+    if (this.#closed || this.#reportPumps.has(leadId) || !this.#enabledLead(leadId)) return;
     const lead = this.registry.get(leadId);
     if (!lead || lead.reason === "authorization-changed") return;
-    if (!lead.reportDeliveries?.length) return this.#finishUsageHold(leadId);
+    if (!lead.reportDeliveries?.some((report) => this.#enabledReport(lead, report)))
+      return this.#finishUsageHold(leadId);
     this.#reportPumps.add(leadId);
     void this.#drainReports(leadId, now, allowManualUsage, usageReady).catch(() => undefined);
   }
@@ -1846,15 +1920,17 @@ export class OrchestrationService {
   ): Promise<void> {
     try {
       while (!this.#closed) {
+        if (!this.#enabledLead(leadId)) return;
         const lead = this.registry.get(leadId);
         if (!lead || lead.reason === "authorization-changed") return;
         const canUseHeldReport = (current: Lead) =>
           !current.paused ||
           (current.reason === "usage-limit" && this.#readyUsageHolds.has(leadId));
         const due = (entry: ReportDelivery) =>
-          (entry.retryAt ?? 0) <= Math.max(now, Date.now()) ||
-          ((usageReady || this.#readyUsageHolds.has(leadId)) &&
-            entry.failure?.code === "usage-limit");
+          this.#enabledReport(lead, entry) &&
+          ((entry.retryAt ?? 0) <= Math.max(now, Date.now()) ||
+            ((usageReady || this.#readyUsageHolds.has(leadId)) &&
+              entry.failure?.code === "usage-limit"));
         const report =
           lead.reportDeliveries?.find((entry) => entry.quitLaneId && due(entry)) ??
           (canUseHeldReport(lead) ? lead.reportDeliveries?.find(due) : undefined);
@@ -1893,10 +1969,12 @@ export class OrchestrationService {
           const current = this.registry.get(leadId);
           if (
             this.#closed ||
+            !this.#enabledLead(leadId) ||
             current?.createdAt !== lead.createdAt ||
             current.deviceId !== lead.deviceId ||
             current.reason === "authorization-changed" ||
-            !allowed(current)
+            !allowed(current) ||
+            !this.#enabledReport(current, report)
           )
             return false;
           const limited = this.leadLimited(leadId);
@@ -2016,6 +2094,7 @@ export class OrchestrationService {
   roles(): Map<string, SessionRole> {
     const roles = new Map<string, SessionRole>();
     for (const lead of this.registry.list()) {
+      if (!this.#enabledLead(lead.sessionId)) continue;
       roles.set(lead.sessionId, {
         role: "lead",
         workers: lead.lanes.length,
@@ -2029,6 +2108,7 @@ export class OrchestrationService {
           : {}),
       });
       for (const lane of lead.lanes) {
+        if (!this.#enabledProvider(lane.agent)) continue;
         const watch = this.#workerWatch.get(lane.id);
         const requiresUser =
           this.#inAssignedWorkspace(lane) &&
@@ -2046,6 +2126,7 @@ export class OrchestrationService {
   }
 
   status(sessionId: string): Lead | null {
+    if (!this.#enabledLead(sessionId)) return null;
     const lead = this.registry.get(sessionId);
     return lead
       ? {
@@ -2074,9 +2155,11 @@ export class OrchestrationService {
   async overview(sessionId: string, workspaceId?: string): Promise<Record<string, unknown> | null> {
     const lead = this.registry.get(sessionId);
     if (!lead) return null;
+    const enabled = this.#enabledLead(sessionId);
     const workers = await Promise.all(
       lead.lanes.map(async (lane) => {
-        const live = await this.#state(lane.sessionId);
+        const live =
+          enabled && this.#enabledProvider(lane.agent) ? await this.#state(lane.sessionId) : null;
         return {
           name: lane.name,
           sessionId: lane.sessionId,
@@ -2090,9 +2173,10 @@ export class OrchestrationService {
     );
     return {
       sessionId,
-      paused: lead.paused,
-      reason: lead.reason,
-      ...(this.#showsRecovery(lead) ? { recovering: true } : {}),
+      // Keep dormant assignments accessible for removal from the project panel.
+      paused: !enabled || lead.paused,
+      reason: enabled ? lead.reason : ANTIGRAVITY_ACP_DISABLED,
+      ...(enabled && this.#showsRecovery(lead) ? { recovering: true } : {}),
       scope: this.#effectiveScope(lead, workspaceId),
       autoTurns: lead.autoTurns,
       pendingReports: lead.pendingReports.length + (lead.reportDeliveries?.length ?? 0),
@@ -2107,6 +2191,7 @@ export class OrchestrationService {
   leadToolSpecs(
     sessionId: string,
   ): Array<{ name: string; description: string; inputSchema: Record<string, unknown> }> | null {
+    if (!this.#enabledLead(sessionId)) return null;
     const lead = this.registry.get(sessionId);
     if (!lead) return null;
     return this.tools(lead.scope).map(({ name, description, inputSchema }) => ({
@@ -2127,7 +2212,7 @@ export class OrchestrationService {
 
   /** Opens or reuses the endpoint with the tool registration for the current lead scope. */
   async leadEndpoint(sessionId: string): Promise<LeadEndpoint | null> {
-    if (this.#closed || !this.registry.get(sessionId)) return null;
+    if (this.#closed || !this.#enabledLead(sessionId) || !this.registry.get(sessionId)) return null;
     let endpoint = this.#endpoints.get(sessionId);
     if (!endpoint) {
       // A CLI that asks starts with these tools; the one an older endpoint served is retired.
@@ -2298,6 +2383,7 @@ export class OrchestrationService {
   ): Promise<EndpointResult> {
     // Older CLI contexts can call names that are no longer offered.
     if (name === "worker_open" || name === "worker_close") return refuse("tool-not-offered");
+    if (!this.#enabledLead(leadId)) return refuse("not-a-project-agent");
     const lead = this.registry.get(leadId);
     if (!lead) return refuse("not-a-project-agent");
     const mutating = !["worker_list", "worker_read"].includes(name);
@@ -2332,6 +2418,7 @@ export class OrchestrationService {
     const name = stringField(input, "worker", 48);
     const lane = lead.lanes.find((item) => item.name === name);
     if (!lane) throw new Error("worker-unavailable");
+    if (!this.#enabledProvider(lane.agent)) throw new Error("worker-agent-unsupported");
     this.#checkAssignedWorkspace(lane);
     return lane;
   }
@@ -2347,6 +2434,8 @@ export class OrchestrationService {
     const current = this.registry.get(lead.sessionId);
     if (!current?.lanes.some((worker) => worker.id === lane.id))
       throw new Error("worker-unavailable");
+    if (!this.#enabledLead(lead.sessionId) || !this.#enabledProvider(lane.agent))
+      throw new Error("worker-agent-unsupported");
     this.#checkAssignedWorkspace(lane);
     if (delegated && (current.paused || current.deviceId !== lead.deviceId))
       throw new Error("delegation-paused");
@@ -2357,6 +2446,7 @@ export class OrchestrationService {
     sessionId: string,
     intent?: "supervision" | "send",
   ): Promise<Record<string, unknown> | null> {
+    if (!this.#enabledLead(sessionId)) return null;
     try {
       const live = await (intent === "supervision"
         ? (this.lanes.observe?.(sessionId) ?? this.lanes.live(sessionId))
@@ -2401,9 +2491,14 @@ export class OrchestrationService {
   async #list(lead: Lead): Promise<EndpointResult> {
     const lanes = await Promise.all(
       lead.lanes.map(async (lane) => {
-        const live = await this.#state(lane.sessionId);
+        const enabled = this.#enabledProvider(lane.agent);
+        const live = enabled ? await this.#state(lane.sessionId) : null;
         const wait = deferredCodexSend(lane, live);
-        const reason = wait ? CODEX_OWNER_WAIT_REASON : workerReason(live);
+        const reason = !enabled
+          ? "worker-agent-unsupported"
+          : wait
+            ? CODEX_OWNER_WAIT_REASON
+            : workerReason(live);
         return {
           id: lane.id,
           view: {
@@ -2432,7 +2527,8 @@ export class OrchestrationService {
   #workerSession(sessionId: string): { agent: LaneAgent; workspaceId: string } {
     const summary = this.lanes.session(sessionId);
     const agent = summary?.agent;
-    if (!summary || !isLaneAgent(agent)) throw new Error("worker-agent-unsupported");
+    if (!summary || !isLaneAgent(agent) || !this.#enabledProvider(agent))
+      throw new Error("worker-agent-unsupported");
     return { agent, workspaceId: summary.workspaceId };
   }
 

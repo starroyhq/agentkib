@@ -145,6 +145,7 @@ export function SessionDetailComposerNotices({
   const showNotice =
     notice &&
     notice !== "accepted" &&
+    noticeReason !== "antigravity-acp-disabled" &&
     !handledByInteraction &&
     !handledBySettings &&
     !handledByBanner;

@@ -131,7 +131,7 @@ export type Lead = {
   records: LeadRecord[];
   /** Reports held while delegation is paused, sent together when it resumes. */
   pendingReports: string[];
-  /** Whether the provider confirmed non-delivery of a failed report. */
+  /** Whether a held report may be retried, including an attempt interrupted by restart. */
   reportRetryable?: boolean;
   /** A recovery batch may have reached the provider if the host stopped before its reply. */
   deliveringReports?: string[];
@@ -171,8 +171,7 @@ export class LeadRegistry {
   }
 
   /**
-   * Reads and writes one lead atomically. A lead first read after a restart is paused until
-   * the user resumes it, as automatic Claude turns are.
+   * Reads and writes one lead atomically, including any migration from the previous boot.
    */
   #transaction<T>(
     sessionId: string,
@@ -237,6 +236,7 @@ export class LeadRegistry {
         ...stored.scope,
         stallMinutes: stored.scope.stallMinutes ?? LEAD_DEFAULTS.stallMinutes,
       },
+      pendingReports: stored.pendingReports ?? [],
       lanes: [],
     };
     const unsupportedLanes: unknown[] = [];
@@ -257,17 +257,27 @@ export class LeadRegistry {
   #restarted(lead: Lead): Lead {
     if (lead.bootId === this.bootId) return lead;
     lead.bootId = this.bootId;
+    if (lead.paused && lead.reason === "restart-confirmation-required") {
+      lead.paused = false;
+      lead.reason = null;
+      addLeadRecord(lead, "resume", null, null, "restart-confirmation-removed");
+    }
     if (
       lead.deliveringReports?.length &&
-      (lead.reason === "usage-limit" || lead.reason === "report-undelivered")
+      (lead.reason === "usage-limit" || lead.reason === "report-undelivered" || !lead.paused)
     ) {
-      lead.reason = "report-undelivered";
-      lead.reportRetryable = false;
+      lead.pendingReports = [...lead.deliveringReports, ...lead.pendingReports];
+      delete lead.deliveringReports;
+      lead.reportRetryable = true;
+      addLeadRecord(lead, "report", null, null, "restart-requeued-report");
     }
-    if (!lead.paused) {
-      lead.paused = true;
-      lead.reason = "restart-confirmation-required";
+    const interruptedQuitReports = lead.pendingQuitReports?.filter(({ attempted }) => attempted);
+    if (interruptedQuitReports?.length) {
+      for (const report of interruptedQuitReports) delete report.attempted;
+      if (lead.reason === "report-undelivered") lead.reportRetryable = true;
+      addLeadRecord(lead, "report", null, null, "restart-requeued-quit-report");
     }
+    if (!lead.paused && lead.pendingReports.length) lead.reportRetryable = true;
     lead.revision++;
     return lead;
   }
@@ -276,7 +286,7 @@ export class LeadRegistry {
     return this.#transaction(sessionId, (lead) => ({ lead, value: lead && structuredClone(lead) }));
   }
 
-  /** Every lead, read without the restart pause being written back. */
+  /** Every lead, with any restart migration projected without writing it back. */
   list(): Lead[] {
     const database = this.#open();
     try {

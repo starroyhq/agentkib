@@ -2805,8 +2805,7 @@ export class WebAccessService {
   async shutdown() {
     this.managedSocket?.close();
     this.managedSocket = undefined;
-    // 随应用退出而停止时一并告诉 Runtime：这不是设备授权的变更，项目 Agent 不因此暂停，
-    // 下次启动时和其他项目 Agent 一样按“重启后需确认”暂停。
+    // 随应用退出而停止时一并告诉 Runtime：这不是设备授权变更，委派状态不受影响。
     await Promise.all(
       this.credentials.map((c) =>
         this.invalidateScheduledDevice(c.device.id, "host-stopped", this.disposed),

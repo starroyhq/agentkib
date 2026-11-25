@@ -276,7 +276,8 @@ Claude Code 自动结束仅在用户停留期间真实回收进程时显示一�
 | 设定入口 | 设为项目 Agent… | 設為專案 Agent… | プロジェクト Agent にする… | Make Project Agent… |
 | 以后指挥项目 Agent 的个人助理（尚未提供） | 个人 Agent | 個人 Agent | パーソナル Agent | Personal Agent |
 | Worker 的来源（列表与会话页） | Worker api · 委派自 〈项目 Agent〉 | Worker api · 委派自 〈專案 Agent〉 | ワーカー api · 委任元 〈プロジェクト Agent〉 | Worker api · Delegated by 〈Project Agent〉 |
-| 委派因上限、送达不明或重启暂停（“需要你”里的一项） | 委派已暂停 | 委派已暫停 | 委任を一時停止中 | Delegation paused |
+| 需要用户处理的委派暂停（“需要你”里的一项） | 委派已暂停 | 委派已暫停 | 委任を一時停止中 | Delegation paused |
+| 自动恢复委派期间 | 正在恢复委派 | 正在恢復委派 | 委任を再開中 | Resuming delegation… |
 | 允许项目 Agent 替用户处理的事 | 项目 Agent 可以替你决定 | 專案 Agent 可以替你決定 | プロジェクト Agent に任せること | The Project Agent may decide |
 | 让一个 Worker 不再归这个项目 Agent（会话保留） | 移出 | 移出 | 外す | Remove |
 | 改动已设定的项目 Agent | 修改设定… | 修改設定… | 設定を変更… | Change settings… |

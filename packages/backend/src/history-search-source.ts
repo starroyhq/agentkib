@@ -20,6 +20,7 @@ import { CursorSessions } from "./cursor-sessions";
 import { CursorIdeSessions } from "./cursor-ide-sessions";
 import { DevinSessions } from "./agents/devin/devin-sessions";
 import { AntigravitySessions } from "./agents/antigravity/antigravity-sessions";
+import { antigravityAcpEnabled } from "./agents/antigravity/acp-enabled";
 import { parseAntigravityReplay } from "./agents/antigravity/antigravity-replay";
 import { stringifyAcpJson } from "./acp-json";
 import { canonicalize, pathIdentity } from "./paths";
@@ -444,6 +445,13 @@ export async function readHistorySearchSource(
         break;
       }
       case "antigravity": {
+        if (!antigravityAcpEnabled(input.environment)) {
+          const document = await readSourceSnapshot(sink, () => readers.document(input.sessionId));
+          sink.limit("unsupported-text-content");
+          sink.limit("unsupported-tool-content");
+          await emitTurns(document.turns, sink);
+          break;
+        }
         const provider = new AntigravitySessions(input.environment);
         const cancel = () => provider.close();
         options.signal?.addEventListener("abort", cancel, { once: true });

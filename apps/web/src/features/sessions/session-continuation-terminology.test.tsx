@@ -307,6 +307,24 @@ describe("visible session continuation terminology", () => {
     expect(screen.queryByRole("button", { name: "Make Project Agent…" })).toBeNull();
   });
 
+  it("shows an inactive Antigravity Project Agent entry without an explanation", async () => {
+    setLocale("en-US");
+    session.current = { ...session.current!, agent: "antigravity" };
+    session.access = {
+      ...session.access!,
+      device: { ...session.access!.device!, accessMode: "full", advancedControl: true },
+      disabledSessionProviders: { antigravity: "antigravity-acp-disabled" },
+    };
+    vi.mocked(session.client.projectAgent).mockResolvedValue({ lead: null, capable: true });
+    render(<View snapshot={session} />);
+    fireEvent.click(screen.getByRole("button", { name: "Inspect session actions" }));
+    const designate = await screen.findByRole("button", { name: "Make Project Agent…" });
+    expect(designate).toBeDisabled();
+    expect(designate).not.toHaveAttribute("title");
+    fireEvent.click(designate);
+    expect(screen.queryByRole("button", { name: "Make Project Agent" })).toBeNull();
+  });
+
   it.each(wording)(
     "hides instructions for an unavailable terminal stop and preserves managed stop in $locale",
     (expected) => {

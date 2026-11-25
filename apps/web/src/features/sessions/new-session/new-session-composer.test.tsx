@@ -95,6 +95,7 @@ function setup({
   disabled = false,
   onRender,
   codexOptions = options.codex,
+  disabledSessionProviders,
 }: {
   full?: boolean;
   attachments?: boolean;
@@ -103,6 +104,7 @@ function setup({
   disabled?: boolean;
   onRender?: () => void;
   codexOptions?: ManagedOptions;
+  disabledSessionProviders?: Access["disabledSessionProviders"];
 } = {}) {
   const client = {
     managedOptions: vi.fn(
@@ -127,6 +129,7 @@ function setup({
       bootId: "boot",
       protocolVersion: 2,
       experimentalEnabled: true,
+      disabledSessionProviders,
       device: {
         id: "browser",
         name: "Browser",
@@ -815,6 +818,32 @@ describe("Web NewSessionComposer", () => {
       }),
     );
     expect(takeNewSessionDraft("antigravity-created")).toBeUndefined();
+  });
+
+  it("keeps default-disabled Antigravity visible without probing it or starting a session", async () => {
+    localStorage.setItem("agentkib.newSession.target", JSON.stringify({ agent: "antigravity" }));
+    const { client } = setup({
+      disabledSessionProviders: { antigravity: "antigravity-acp-disabled" },
+    });
+    const copy = newSessionCopy("en-US");
+
+    expect(message()).toBeDisabled();
+    expect(send()).toBeDisabled();
+    expect(screen.getByRole("button", { name: copy.model })).toHaveAttribute(
+      "aria-disabled",
+      "true",
+    );
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.queryByText(copy.optionsUnavailable)).toBeNull();
+    fireEvent.submit(message().closest("form")!);
+    await userEvent.setup().click(screen.getByRole("button", { name: "Agent: Antigravity" }));
+    expect(await screen.findByRole("menuitem", { name: "Antigravity" })).toHaveAttribute(
+      "aria-disabled",
+      "true",
+    );
+    expect(screen.getByRole("menuitem", { name: "Codex" })).not.toHaveAttribute("aria-disabled");
+    expect(client.managedOptions).not.toHaveBeenCalled();
+    expect(client.managedAction).not.toHaveBeenCalled();
   });
 
   it("starts Devin with an offered effort and Fast pair and never hands off its dispatched prompt", async () => {

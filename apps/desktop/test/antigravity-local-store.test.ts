@@ -14,8 +14,20 @@ import {
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { AntigravityAcp } from "../../../packages/backend/src/agents/antigravity/antigravity-acp";
+import { antigravityLocalRef } from "../../../packages/backend/src/agents/antigravity/antigravity-history";
 import { AntigravityLocalStore } from "../../../packages/backend/src/agents/antigravity/antigravity-local-store";
+import * as resolution from "../../../packages/backend/src/command-resolution";
+import { Commands } from "../../../packages/backend/src/commands";
+import { readHistorySearchSource } from "../../../packages/backend/src/history-search-source";
+import { prepareSessionHandoff } from "../../../packages/backend/src/session-continuation";
+import { planSessionHandoff } from "../../../packages/backend/src/session-handoff-plan";
+import { SessionIndex } from "../../../packages/backend/src/session-index";
+import { continueNativeImport } from "../../../packages/backend/src/session-native-import-owner";
+import { SessionReaders } from "../../../packages/backend/src/session-readers";
+import type { NativeSession } from "../../../packages/backend/src/session-store";
+import { BackendStore } from "../../../packages/backend/src/store";
 const cleanup: (() => void)[] = [];
 afterEach(() => {
   for (const fn of cleanup.splice(0).reverse()) fn();
@@ -96,6 +108,194 @@ function fixture() {
   return { home, workspace, app, ide, file, db, store, add, chunk };
 }
 describe("offline Antigravity histories", () => {
+  it("preserves indexed session identities and imports and indexes local text without ACP", async () => {
+    const f = fixture();
+    for (const nativeId of [ID, SECOND]) {
+      f.add(nativeId);
+      f.chunk(nativeId);
+    }
+    const executable = path.join(f.home, "agy");
+    writeFileSync(executable, "#!/bin/sh\nexit 1\n", { mode: 0o700 });
+    const environment = { HOME: f.home, PATH: f.home, AGENTKIB_ANTIGRAVITY_ACP_BIN: executable };
+    const spawn = vi.spyOn(AntigravityAcp, "spawn");
+    cleanup.push(() => spawn.mockRestore());
+    const data = path.join(f.home, "data");
+    const backend = new BackendStore(path.join(data, "agentkib.db"));
+    cleanup.push(() => backend.close());
+    backend.sql.run(
+      "INSERT INTO workspaces(id,canonical_path,name,status,last_discovered_at) VALUES(?,?,?,?,?)",
+      "workspace",
+      f.workspace,
+      "Offline workspace",
+      "healthy",
+      "2026-11-20T00:00:00Z",
+    );
+    const cached = (native_ref: string): NativeSession => ({
+      native_ref,
+      agent: "antigravity",
+      title: native_ref,
+      created_at: null,
+      updated_at: null,
+      message_count: null,
+      git_branch: null,
+      archived: false,
+      sidechain: false,
+      availability: "readable",
+      origin: "interactive",
+    });
+    const nativeRefs = [ID, antigravityLocalRef("ide", SECOND), "acp-only-session"];
+    const ids = nativeRefs.map((ref) => backend.sessions.id("antigravity", ref));
+    backend.sessions.sync("workspace", "antigravity", nativeRefs.map(cached));
+    const commands = new Commands();
+    const readers = new SessionReaders(backend.sessions, commands, environment, {
+      profiles: () => [],
+    });
+    cleanup.push(() => {
+      readers.close();
+      commands.close();
+    });
+    const index = new SessionIndex(
+      backend.sessions,
+      {
+        list: (provider, workspace, selection) =>
+          provider === "antigravity"
+            ? readers.list(provider, workspace, selection)
+            : Promise.resolve({ sessions: [], incomplete: false }),
+      },
+      () => true,
+    );
+    cleanup.push(() => index.close());
+    const refresh = async () =>
+      (await index.refresh({ workspaceId: "workspace", force: true })).map(({ id }) => id);
+    expect(await refresh()).toEqual(expect.arrayContaining(ids));
+    expect(await refresh()).toHaveLength(ids.length);
+    expect(index.catalogSources(["workspace"])).toContainEqual({
+      workspaceId: "workspace",
+      agent: "antigravity",
+      complete: false,
+      reasons: ["antigravity-acp-disabled"],
+    });
+    for (const sessionId of [ids[0]!, ids[1]!])
+      await expect(readers.events({ sessionId })).resolves.toMatchObject({
+        events: expect.arrayContaining([expect.objectContaining({ content: "Reply\n" })]),
+        warnings: ["history.warning.partial"],
+      });
+    await expect(readers.events({ sessionId: ids[2] })).rejects.toThrow("antigravity-acp-disabled");
+    const texts = ["你好\n", "Reply\n", "Second", "Done"];
+    const target = path.join(f.home, "opencode");
+    const exported = path.join(f.home, "opencode-export.json");
+    writeFileSync(target, "fixture", { mode: 0o755 });
+    const resolve = resolution.resolveCommand;
+    const resolveTarget = vi
+      .spyOn(resolution, "resolveCommand")
+      .mockImplementation((name, env) => (name === "opencode" ? target : resolve(name, env)));
+    const run = vi.spyOn(commands, "run").mockImplementation(async (program, args) => {
+      expect(program).toBe(target);
+      let output = "";
+      if (args[0] === "--version") output = "1.18.32";
+      else if (args[0] === "debug") output = JSON.stringify({ model: "fixture/model" });
+      else if (args[0] === "import") writeFileSync(exported, readFileSync(args[1]!));
+      else if (args[0] === "export") output = readFileSync(exported, "utf8");
+      else throw new Error("Unexpected OpenCode fixture command");
+      return {
+        bytes: Buffer.from(output),
+        success: true,
+        error: "",
+        truncated: false,
+        exitCode: 0,
+      };
+    });
+    cleanup.push(() => {
+      run.mockRestore();
+      resolveTarget.mockRestore();
+    });
+    const sessionId = ids[0]!;
+    const mcpHubStatus = { running: false, port: 4010 };
+    const prepared = (await prepareSessionHandoff(
+      {
+        request: {
+          session_id: sessionId,
+          target_agent: "opencode",
+          format: "markdown",
+          history_budget_tokens: 64000,
+        },
+        mcpHubStatus,
+      },
+      readers,
+      backend.sessions,
+      backend,
+      commands,
+      environment,
+    )) as { draft: { filename: string; source_fingerprint: string; target_fingerprint: string } };
+    expect(prepared.draft).toMatchObject({
+      mode: "native-session",
+      losses: [{ code: "source-content-truncated", count: 1 }],
+    });
+    const plan = (acceptLosses: boolean) =>
+      planSessionHandoff(
+        {
+          sessionId,
+          workspaceId: "workspace",
+          targetAgent: "opencode",
+          mode: "native-session",
+          format: "markdown",
+          filename: prepared.draft.filename,
+          sourceFingerprint: prepared.draft.source_fingerprint,
+          targetFingerprint: prepared.draft.target_fingerprint,
+          acceptLosses,
+          historyBudgetTokens: 64000,
+          mcpHubStatus,
+        },
+        readers,
+        backend.sessions,
+        backend,
+        data,
+        environment,
+        commands,
+      );
+    await expect(plan(false)).rejects.toThrow("Continuation losses must be acknowledged");
+    const approved = await plan(true);
+    await expect(
+      continueNativeImport(
+        {
+          changeSet: approved.change_set,
+          launchRequest: approved.launch_request,
+          approveHome: true,
+        },
+        readers,
+        backend.sessions,
+        backend,
+        data,
+        environment,
+        commands,
+      ),
+    ).resolves.toMatchObject({
+      status: "verified",
+      targetSessionId: expect.stringMatching(/^ses_/),
+    });
+    const written = JSON.parse(readFileSync(exported, "utf8")) as {
+      messages: Array<{ parts: Array<{ text: string }> }>;
+    };
+    expect(written.messages.slice(1).map(({ parts }) => parts[0]?.text)).toEqual(texts);
+
+    const records: string[] = [];
+    const search = await readHistorySearchSource(
+      {
+        sessionId: ids[0]!,
+        summary: backend.sessions.get(ids[0]!)!,
+        workspacePath: f.workspace,
+        environment,
+        identitySalt: backend.sessions.identitySalt(),
+        profiles: [],
+      },
+      ({ content }) => {
+        records.push(content);
+      },
+    );
+    expect(search.status).toBe("partial");
+    expect(records).toEqual(texts);
+    expect(spawn).not.toHaveBeenCalled();
+  });
   it("lists native metadata and keeps the database unchanged", () => {
     const f = fixture();
     f.add();

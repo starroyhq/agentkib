@@ -243,7 +243,11 @@ export function NewSessionComposer({
     provider?.create,
   );
   const preset = presets.find((item) => item.id === (agentPreset ?? defaultPreset));
-  const optionStatus = session.optionsLoading ? copy.loadingOptions : copy.optionsUnavailable;
+  const optionStatus = session.providerDisabled
+    ? ""
+    : session.optionsLoading
+      ? copy.loadingOptions
+      : copy.optionsUnavailable;
 
   const unavailableReason = session.optionsError
     ? failureOf(session.optionsError, locale).reason
@@ -397,6 +401,7 @@ export function NewSessionComposer({
             {NEW_SESSION_AGENTS.map((item) => (
               <DropdownMenuItem
                 key={item}
+                disabled={!!access?.disabledSessionProviders?.[item]}
                 onClick={() => {
                   if (item === agent) return;
                   setAgent(item);
@@ -477,7 +482,7 @@ export function NewSessionComposer({
           value: text,
           maxLength: MAX_MESSAGE_LENGTH,
           placeholder: planning ? conversationCopy.planPlaceholder : copy.placeholder,
-          disabled: locked,
+          disabled: locked || session.providerDisabled,
           onChange: (event) => setText(event.currentTarget.value),
           ...slash.inputProps,
         }}
@@ -701,7 +706,7 @@ function OptionPlaceholder({
 }) {
   return (
     <IconAction
-      label={`${label}: ${status}`}
+      label={status ? `${label}: ${status}` : label}
       render={
         <ButtonPrimitive
           type="button"

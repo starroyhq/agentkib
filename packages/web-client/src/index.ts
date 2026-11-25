@@ -369,6 +369,8 @@ export interface Access {
   approvalRulesVersion?: 1;
   readStateVersion?: 1;
   taskSummaryVersion?: 1;
+  /** Host-wide write restrictions. Session reads and provider declarations remain available. */
+  disabledSessionProviders?: Partial<Record<ManagedAgent, string>>;
   accountLogin?: {
     required: true;
     proofVersion: 1;
@@ -1913,7 +1915,7 @@ export class SseParser {
 export type SessionManagementAction = "rename" | "archive" | "unarchive" | "delete";
 export type SessionManagementFeatures = Partial<
   Record<SessionManagementAction, { available: boolean; reason?: string }>
->;
+> & { sessionReason?: string };
 const SESSION_MANAGEMENT_ACTIONS: readonly SessionManagementAction[] = [
   "rename",
   "archive",
@@ -1933,7 +1935,9 @@ export async function sessionManagementFeatures(
   const agent = managedAgentOf(session.agent);
   if (!agent) return {};
   const capabilities = await client.sessionCapabilities(session.id, agent, signal);
-  const features: SessionManagementFeatures = {};
+  const features: SessionManagementFeatures = capabilities.reason
+    ? { sessionReason: capabilities.reason }
+    : {};
   for (const action of SESSION_MANAGEMENT_ACTIONS) {
     const feature = capabilities.features[action];
     if (feature) features[action] = feature;

@@ -41,6 +41,7 @@ import {
   validateAntigravityControl,
 } from "../../sessions/validate/antigravity";
 import type { BackendStore } from "../../store";
+import { ANTIGRAVITY_ACP_DISABLED, antigravityAcpEnabled } from "./acp-enabled";
 import {
   AcpUndispatchedError,
   AntigravityAcp,
@@ -158,8 +159,10 @@ type AntigravityRunnerRecord = {
 export class AntigravitySessionProvider implements AntigravityExecutor, TypedSessionProvider {
   readonly agent = "antigravity" as const;
   readonly createOperation = "antigravity-create";
-  readonly validateControl = validateAntigravityControl;
+  readonly validateControl: typeof validateAntigravityControl = (request, context) =>
+    this.acpEnabled ? validateAntigravityControl(request, context) : { available: false };
   readonly typed = this;
+  readonly acpEnabled: boolean;
   #runners = new Map<string, AntigravityRunnerRecord>();
   #retiredRevisions = new Map<string, number>();
   #runnerFlights = new Map<string, Promise<AntigravityRunnerRecord>>();
@@ -184,6 +187,7 @@ export class AntigravitySessionProvider implements AntigravityExecutor, TypedSes
   /** Whether an Antigravity session could be a Project Agent: one AgentKib controls over ACP. */
   leadCapable(sessionId: string): boolean {
     return (
+      this.acpEnabled &&
       this.#controllable.has(sessionId) &&
       this.host.store.sessions.get(sessionId)?.agent === "antigravity"
     );
@@ -235,7 +239,9 @@ export class AntigravitySessionProvider implements AntigravityExecutor, TypedSes
     return path.join(this.host.dataDir, "antigravity-session-settings.json");
   }
 
-  constructor(private readonly host: AntigravitySessionHost) {}
+  constructor(private readonly host: AntigravitySessionHost) {
+    this.acpEnabled = antigravityAcpEnabled(host.environment);
+  }
 
   close(): void {
     this.#attachmentProbe?.client.shutdown();
@@ -314,6 +320,7 @@ export class AntigravitySessionProvider implements AntigravityExecutor, TypedSes
    * stores (it has no message), in a private temporary directory.
    */
   async options(): Promise<Record<string, unknown>> {
+    if (!this.acpEnabled) return { available: false, reason: ANTIGRAVITY_ACP_DISABLED };
     let executable: string;
     try {
       executable = this.host.sessions.antigravityControlExecutable();
@@ -384,6 +391,7 @@ export class AntigravitySessionProvider implements AntigravityExecutor, TypedSes
       controlOutcome: outcome,
       ...extra,
     });
+    if (!this.acpEnabled) return result("not-dispatched", { reason: ANTIGRAVITY_ACP_DISABLED });
     let workspace: string;
     let executable: string;
     try {
@@ -529,13 +537,41 @@ export class AntigravitySessionProvider implements AntigravityExecutor, TypedSes
     );
     if (live.status === "unsupported") {
       if (request.operation !== "capabilities") return live;
+      const operations = [
+        "send",
+        "stop",
+        "approve",
+        "answer",
+        "inspect",
+        "resume",
+        "usage",
+        "attachments",
+      ];
+      if (!this.acpEnabled)
+        operations.push(
+          "settings-state",
+          "settings",
+          "fork",
+          "queue",
+          "queue-list",
+          "queue-add",
+          "queue-update",
+          "queue-delete",
+          "queue-reorder",
+          "queue-pause",
+          "queue-resume",
+          "queue-steer",
+        );
       return {
         ...live,
-        features: Object.fromEntries(
-          ["send", "stop", "approve", "answer", "inspect", "resume", "usage", "attachments"].map(
-            (operation) => [operation, { available: false, reason: live.reason }],
+        features: {
+          ...Object.fromEntries(
+            operations.map((operation) => [operation, { available: false, reason: live.reason }]),
           ),
-        ),
+          ...(!this.acpEnabled && typeof live.workspaceId === "string"
+            ? { inspect: { available: true }, "queue-list": { available: true } }
+            : {}),
+        },
       };
     }
     const approvals = Array.isArray(live.approvals) ? live.approvals : [];
@@ -701,6 +737,7 @@ export class AntigravitySessionProvider implements AntigravityExecutor, TypedSes
   }
 
   async #target(sessionId: string) {
+    if (!this.acpEnabled) throw new Error(ANTIGRAVITY_ACP_DISABLED);
     if (
       process.platform !== "darwin" &&
       process.platform !== "win32" &&
@@ -883,6 +920,7 @@ export class AntigravitySessionProvider implements AntigravityExecutor, TypedSes
     fingerprint: string,
     beforeNativeDispatch?: () => void,
   ) {
+    if (!this.acpEnabled) throw new Error(ANTIGRAVITY_ACP_DISABLED);
     if (request.effort === null || request.serviceTier === null)
       throw new Error("unsupported-setting-clear");
     const runtimeBootId = this.host.runtimeBootId;

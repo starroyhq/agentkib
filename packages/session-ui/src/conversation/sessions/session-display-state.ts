@@ -6,6 +6,7 @@ import {
   sessionContinuationCopy,
 } from "../../session-continuation";
 import type { SessionSurface } from "../../session-surface-copy";
+import { sessionProviderControlsDisabled } from "../../session-provider";
 import {
   claudeConnectionCopyForSurface,
   claudeConnectionReason,
@@ -72,6 +73,16 @@ export function sessionDisplayState(
     capabilities.reason !== "handoff-required"
       ? capabilities.reason
       : live?.reason || capabilities?.features.send?.reason || capabilities?.reason;
+  if (
+    sessionProviderControlsDisabled(
+      access,
+      state.current?.id === state.selected ? state.current?.agent : undefined,
+      live?.sessionId === state.selected || capabilities?.sessionId === state.selected
+        ? reason
+        : undefined,
+    )
+  )
+    return { label: "", reason: "", tone: "muted" };
   // An explicit fence classification excludes pending message outcomes. Only controllers without
   // that signal infer a settings-only receipt from the current session's idle host projection.
   const settingsReceiptOnly =

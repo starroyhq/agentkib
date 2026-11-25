@@ -15,6 +15,7 @@ import {
   leadInstructions,
   mergeMcpConfigs,
   OrchestrationService,
+  workerReport,
   type LaneHost,
 } from "../../../packages/backend/src/orchestration-service";
 
@@ -1267,6 +1268,136 @@ describe("orchestration service", () => {
     });
   });
 
+  it("rejects Antigravity assignments before checking whether the Worker is reachable", async () => {
+    const { lanes } = host();
+    const managed = vi.fn(async () => true);
+    const session: LaneHost["session"] = (id) =>
+      id === "agy-session"
+        ? { agent: "antigravity", workspaceId: "w1", title: null }
+        : lanes.session(id);
+    const orchestration = service(
+      { ...lanes, session, managed },
+      directory(),
+      "boot",
+      undefined,
+      () => true,
+    );
+    expect(await orchestration.assignmentOptions(LEAD, "w1", ["agy-session"])).toMatchObject({
+      capable: true,
+      candidates: [{ sessionId: "agy-session", reason: "worker-agent-unsupported" }],
+    });
+    expect(await orchestration.assignmentOptions("agy-session", "w1", [])).toMatchObject({
+      capable: false,
+      remaining: 0,
+    });
+    await expect(assignWorker(orchestration, "agy-session")).rejects.toThrow(
+      "worker-agent-unsupported",
+    );
+    expect(() => orchestration.designate({ ...OWNER, sessionId: "agy-session" })).toThrow(
+      "lead-requires-managed-claude",
+    );
+    await expect(
+      orchestration.assignWorkers({ ...OWNER, sessionId: "agy-session", workers: [WORKER] }),
+    ).rejects.toThrow("lead-requires-managed-claude");
+    expect(managed).not.toHaveBeenCalled();
+    expect(orchestration.registry.list()).toEqual([]);
+  });
+
+  it("keeps Antigravity assignments dormant and does not dispatch their saved reports after restart", async () => {
+    const root = directory();
+    const agyLead = "agy-lead";
+    const agyWorker = "agy-worker";
+    const { lanes, calls } = host();
+    const session: LaneHost["session"] = (id) =>
+      id === agyLead || id === agyWorker
+        ? { agent: "antigravity", workspaceId: "w1", title: null }
+        : lanes.session(id);
+    const observe = vi.fn(lanes.live);
+    const events = vi.fn(lanes.events);
+    const hostWithAntigravity = { ...lanes, session, observe, events, managed: async () => true };
+    const before = service(
+      { ...hostWithAntigravity, antigravityAcpEnabled: true },
+      root,
+      "old",
+      undefined,
+      () => true,
+    );
+    await before.assignWorkers({ ...OWNER, workers: [agyWorker, WORKER] });
+    await before.assignWorkers({ ...OWNER, sessionId: agyLead, workers: ["codex-branch"] });
+    const activeLane = before.registry.get(LEAD)!.lanes[1]!;
+    const agyLane = before.registry.get(LEAD)!.lanes[0]!;
+    const delegatedLane = before.registry.get(agyLead)!.lanes[0]!;
+    const activeReport = workerReport(activeLane, "active report");
+    const oldAgyReport = workerReport(agyLane, "old Antigravity report");
+    before.registry.update(LEAD, (lead) => {
+      lead.reason = "usage-limit";
+      lead.paused = true;
+      lead.pendingReports = [oldAgyReport, activeReport];
+      lead.reportDeliveries = [
+        { reportId: "worker-report", sourceLaneIds: [agyLane.id], text: "dormant source" },
+        { reportId: "quit-report", quitLaneId: agyLane.id, text: "dormant quit report" },
+      ];
+    });
+    before.registry.update(agyLead, (lead) => {
+      lead.pendingReports = ["report to dormant Project Agent"];
+    });
+    await before.close();
+
+    const sendReport = vi.fn<OrchestrationService["sendReport"]>(() => false);
+    const after = service(hostWithAntigravity, root, "new", sendReport, () => true);
+    expect(after.roles().has(agyLead)).toBe(false);
+    expect(after.roles().has(agyWorker)).toBe(false);
+    expect(await after.overview(agyLead)).toMatchObject({
+      paused: true,
+      reason: "antigravity-acp-disabled",
+      workers: [{ sessionId: "codex-branch", status: "unavailable", stopEnabled: false }],
+    });
+    expect(await after.leadEndpoint(agyLead)).toBeNull();
+    expect(() => after.resume(agyLead, DEVICE)).toThrow("lead-requires-managed-claude");
+    expect(
+      parse(await after.call(agyLead, "worker_send", { worker: "worker-1", text: "old" })),
+    ).toMatchObject({ reason: "not-a-project-agent" });
+    expect(
+      after.checkDeferredCodexSend({
+        leadId: agyLead,
+        laneId: delegatedLane.id,
+        sessionId: delegatedLane.sessionId,
+        workspaceId: delegatedLane.workspaceId,
+        deviceId: DEVICE,
+      }),
+    ).toBe("revoked");
+    await after.laneTurnEnded(agyWorker, "turn", "completed");
+    await after.laneWaiting(agyWorker, "turn", "waiting-approval");
+    after.workerInterruptedByQuit(agyWorker, "turn", "not-continued", {
+      leadId: LEAD,
+      laneId: agyLane.id,
+    });
+    after.limitEnded(agyLead);
+    after.limitEnded(LEAD);
+    await after.catchUp();
+    expect(
+      parse(await after.call(LEAD, "worker_send", { worker: "worker-1", text: "old" })),
+    ).toMatchObject({ reason: "worker-agent-unsupported" });
+    expect(sendReport.mock.calls.map(([id, , message]) => [id, message])).toEqual([
+      [LEAD, activeReport],
+    ]);
+    expect(after.registry.get(LEAD)?.reportDeliveries?.map(({ text }) => text)).toEqual([
+      "dormant source",
+      "dormant quit report",
+      oldAgyReport,
+    ]);
+    expect(after.registry.get(agyLead)?.reportDeliveries).toMatchObject([
+      { text: "report to dormant Project Agent" },
+    ]);
+    expect(calls).toEqual([]);
+    expect(observe.mock.calls.map(([id]) => id)).toEqual([WORKER]);
+    expect(events).not.toHaveBeenCalled();
+    expect(await after.release(agyLead)).toBe(true);
+    expect(await after.assignmentOptions(LEAD, "w1", ["codex-branch"])).toMatchObject({
+      candidates: [{ sessionId: "codex-branch", reason: null }],
+    });
+  });
+
   it("keeps legacy and new assignments, without exposing or losing a future Worker type", async () => {
     const root = directory();
     const agents = new Map([
@@ -1277,6 +1408,7 @@ describe("orchestration service", () => {
       ["existing-antigravity", "antigravity"],
     ]);
     const { lanes } = host({
+      antigravityAcpEnabled: true,
       session: (sessionId) => {
         const agent = agents.get(sessionId);
         return agent ? { agent, workspaceId: "w1", title: null } : null;
@@ -1337,6 +1469,7 @@ describe("orchestration service", () => {
     "queues work without attempting a native steer for %s",
     async (agent) => {
       const { lanes, lives, calls } = host({
+        antigravityAcpEnabled: agent === "antigravity",
         session: (sessionId) =>
           sessionId === WORKER ? { agent, workspaceId: "w1", title: null } : null,
         managed: async () => true,

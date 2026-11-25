@@ -123,6 +123,7 @@ import { z } from "zod";
 import os from "node:os";
 import { devinExecutable } from "./agents/devin/devin-executable";
 import type { DevinSessionProvider } from "./agents/devin/session-provider";
+import { antigravityAcpEnabled } from "./agents/antigravity/acp-enabled";
 import type { AntigravitySessionProvider } from "./agents/antigravity/session-provider";
 import { DEVIN_EXECUTION_MODE, devinChildEnvironment } from "./agents/devin/devin-managed-runner";
 import { BACKEND_INSPECT } from "./migration";
@@ -2319,7 +2320,8 @@ export class TypeScriptBackend {
     if (agent === undefined || agent === "codex" || agent === "devin" || agent === "antigravity")
       await this.#withWebRead(() => undefined);
     // App and IDE history read from disk cannot lead; only a session controlled over ACP can.
-    if (agent === "antigravity") await this.#webRead?.prepareAntigravityLead(sessionId);
+    if (agent === "antigravity" && antigravityAcpEnabled(this.environment))
+      await this.#webRead?.prepareAntigravityLead(sessionId);
     const codex = this.#webRead?.codexLeadCapable(sessionId) === true;
     const dsh = this.#dshBridge?.leadCapable(sessionId) === true;
     const devin = this.#webRead?.devinLeadCapable(sessionId) === true;
@@ -2668,6 +2670,7 @@ export class TypeScriptBackend {
     const claudeLimit = (sessionId: string) =>
       usageLimitView(claudeHostState.peek(sessionId)?.usageLimit, claudeBootId);
     return {
+      antigravityAcpEnabled: antigravityAcpEnabled(this.environment),
       session,
       live,
       deferCodexSend: (value, binding, handoff) =>

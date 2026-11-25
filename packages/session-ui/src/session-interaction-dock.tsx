@@ -1,7 +1,7 @@
 import { useCallback } from "react";
 import type { Access, Approval, Decision, Live, UserQuestionRequest } from "@agentkib/web-client";
 import { sessionApprovalRuntime } from "./agents/session-approvals";
-import { resolveSessionProvider } from "./session-provider";
+import { resolveSessionProvider, sessionProviderControlsDisabled } from "./session-provider";
 import { InteractionDock, type InteractionNotice } from "./interaction-card";
 import { interactionKey, sessionInteractionItems } from "./interaction-items";
 import { interactionCardCopy, type InteractionLocale } from "./interaction-model";
@@ -76,6 +76,11 @@ export function SessionInteractionDock({
   const focused = useCallback(() => setModal(undefined), [setModal]);
   if (!live || live.sessionId !== selected || !access) return null;
   const t = interactionCardCopy(locale);
+  const providerDisabled = sessionProviderControlsDisabled(
+    access,
+    session.current?.id === selected ? session.current.agent : undefined,
+    live.reason,
+  );
   const fromCard = noticeSource === "approve" || noticeSource === "answer";
   const uncertain =
     (fromCard && notice === "uncertain") ||
@@ -100,8 +105,8 @@ export function SessionInteractionDock({
     agent,
     workspacePath: currentWorkspace?.path,
     connection,
-    canStop,
-    ready: online && controlReady,
+    canStop: canStop && !providerDisabled,
+    ready: online && controlReady && !providerDisabled,
     uncertain,
   });
   return (

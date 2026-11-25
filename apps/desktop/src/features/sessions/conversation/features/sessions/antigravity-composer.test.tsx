@@ -48,6 +48,30 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 describe("Antigravity composer shortcuts", () => {
+  it("disables the composer while keeping the draft and its send control visible", async () => {
+    state.session = {
+      ...state.session,
+      access: {
+        ...state.session.access!,
+        disabledSessionProviders: { antigravity: "antigravity-acp-disabled" },
+      },
+      live: { ...state.session.live!, reason: "antigravity-acp-disabled" },
+    };
+    render(<SessionReader />);
+    const input = screen.getByRole("textbox", { name: "Message" });
+    expect(input).toHaveValue("first line");
+    expect(input).toBeDisabled();
+    const send = screen.getByRole("button", { name: "Send" });
+    expect(send).toBeVisible();
+    expect(send).toBeDisabled();
+    expect(screen.queryByText("antigravity-acp-disabled")).toBeNull();
+    await act(async () => {
+      fireEvent.click(send);
+      fireEvent.submit(input.closest("form")!);
+    });
+    expect(state.control).not.toHaveBeenCalled();
+  });
+
   it("queues from the primary action and restores Stop when the draft clears", async () => {
     const runSessionAction = vi.fn().mockResolvedValue({ queuedSubmission: { id: "queued" } });
     const sessionQueue = vi.fn().mockResolvedValue({ sessionId: "s", data: [] });

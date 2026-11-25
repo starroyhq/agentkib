@@ -323,6 +323,42 @@ describe("NewSessionComposer", () => {
     expect(doubles.client.managedAction).not.toHaveBeenCalled();
   });
 
+  it("keeps default-disabled Antigravity visible without probing it or starting a session", async () => {
+    doubles.client.access.mockResolvedValue({
+      status: "approved",
+      bootId: "boot",
+      protocolVersion: 2,
+      experimentalEnabled: true,
+      disabledSessionProviders: { antigravity: "antigravity-acp-disabled" },
+      device: {
+        id: "desktop",
+        accessMode: "full",
+        send: true,
+        manage: true,
+        advancedControl: true,
+      },
+    });
+    renderComposer({ initial: { agent: "antigravity" } });
+
+    await waitFor(() => expect(message()).toBeDisabled());
+    expect(send()).toBeDisabled();
+    expect(screen.getByRole("button", { name: copy.model })).toHaveAttribute(
+      "aria-disabled",
+      "true",
+    );
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.queryByText(copy.optionsUnavailable)).toBeNull();
+    fireEvent.submit(message().closest("form")!);
+    fireEvent.click(screen.getByRole("button", { name: "Agent: Antigravity" }));
+    expect(screen.getByRole("menuitem", { name: "Antigravity" })).toHaveAttribute(
+      "aria-disabled",
+      "true",
+    );
+    expect(screen.getByRole("menuitem", { name: "Codex" })).not.toHaveAttribute("aria-disabled");
+    expect(doubles.client.managedOptions).not.toHaveBeenCalled();
+    expect(doubles.client.managedAction).not.toHaveBeenCalled();
+  });
+
   it("shows no selectable permissions or model when this device cannot create sessions", async () => {
     doubles.client.access.mockResolvedValue({
       status: "approved",

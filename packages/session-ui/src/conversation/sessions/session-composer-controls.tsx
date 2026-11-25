@@ -54,7 +54,7 @@ import { SessionContextUsageGauge } from "../../session-context-usage-gauge";
 import { settingsNoticeGroup } from "../../session-control-receipts";
 import { useSessionPlatform } from "../../session-platform";
 import { sessionModelSettings } from "../../agents/session-model-settings";
-import { resolveSessionProvider } from "../../session-provider";
+import { resolveSessionProvider, sessionProviderControlsDisabled } from "../../session-provider";
 import { useComposerModelPanel } from "../../use-composer-model-panel";
 import { useComposerModelDisplay } from "../../use-composer-model-display";
 import { composerLayoutCopy, composerSettingsStatus, composerTerm } from "./composer-layout-copy";
@@ -176,6 +176,15 @@ export function SessionComposerControls({
   const registeredSettings = declaration && "models" in declaration ? declaration : undefined;
   const nativeAppSettings = declaration?.connection?.kind === "native-app";
   const settingsAgent = managedAgentOf(current?.agent);
+  const providerDisabled = sessionProviderControlsDisabled(
+    access,
+    current?.id === selected ? current.agent : undefined,
+    live?.sessionId === selected && live.reason
+      ? live.reason
+      : capabilities?.sessionId === selected
+        ? capabilities.reason
+        : undefined,
+  );
   const managedAgent = nativeAppSettings ? null : settingsAgent;
   const modelPanel = useComposerModelPanel();
   const usageGauge = useRef<ContextUsageHandle>(null);
@@ -1262,6 +1271,7 @@ export function SessionComposerControls({
     !permissionItems.length &&
     !permissionHint;
   const permissionTriggerLocked =
+    providerDisabled ||
     disabled ||
     permissionCatalogEmpty ||
     !!nativePolicyReadOnlyReason ||
@@ -1269,18 +1279,21 @@ export function SessionComposerControls({
     settingsAccessDenied ||
     (!settingsReadable && !reservesPermissionSlot && !permissionHint) ||
     permissionReadOnlyWithoutMenu;
-  const permissionDisabledReason = nativePolicyReadOnlyReason
-    ? `${copy.nativePolicyReadOnly} ${reason(nativePolicyReadOnlyReason)}`
-    : permissionTriggerLocked
-      ? (reasonTitle(settingsReadReason || settingsError || permissionField?.reason) ??
+  const permissionDisabledReason = providerDisabled
+    ? undefined
+    : nativePolicyReadOnlyReason
+      ? `${copy.nativePolicyReadOnly} ${reason(nativePolicyReadOnlyReason)}`
+      : permissionTriggerLocked
+        ? (reasonTitle(settingsReadReason || settingsError || permissionField?.reason) ??
+          copy.settingUnavailable)
+        : undefined;
+  const modelTriggerLocked =
+    providerDisabled || settingsAccessDenied || (!canBrowseModelSettings && !canOpenTerminalModel);
+  const modelDisabledReason =
+    modelTriggerLocked && !providerDisabled
+      ? (reasonTitle(settingsReadReason || settingsError || feature("settings")?.reason) ??
         copy.settingUnavailable)
       : undefined;
-  const modelTriggerLocked =
-    settingsAccessDenied || (!canBrowseModelSettings && !canOpenTerminalModel);
-  const modelDisabledReason = modelTriggerLocked
-    ? (reasonTitle(settingsReadReason || settingsError || feature("settings")?.reason) ??
-      copy.settingUnavailable)
-    : undefined;
   useEffect(() => {
     onPlan?.({ on: planOn, available: planAvailable });
   }, [onPlan, planOn, planAvailable]);

@@ -21,6 +21,7 @@ import { OpenClawSessions } from "./openclaw-sessions";
 import { HermesSessions } from "./hermes-sessions";
 import { OpenCodeSessions } from "./opencode-sessions";
 import { AntigravityHistory } from "./agents/antigravity/antigravity-history";
+import { ANTIGRAVITY_ACP_DISABLED, antigravityAcpEnabled } from "./agents/antigravity/acp-enabled";
 import { CursorSessions } from "./cursor-sessions";
 import { CursorIdeSessions } from "./cursor-ide-sessions";
 import { DevinSessions } from "./agents/devin/devin-sessions";
@@ -35,7 +36,7 @@ import {
 } from "./session-subagents";
 import { readHermesEvents } from "./hermes-events";
 import { readGrokDocument, readHermesDocument } from "./native-chat-documents";
-import { SessionStore, type NativeSession } from "./session-store";
+import { SessionStore, sessionIdentity, type NativeSession } from "./session-store";
 import { Commands } from "./commands";
 import { parameters, optionalString, unsigned } from "./rpc";
 import type { ConversationEventPage } from "./session-events";
@@ -621,11 +622,14 @@ export class SessionReaders {
         .sessions.find((source) => source.session.native_ref === nativeId)?.transcript ?? null
     );
   }
-  /** `matches` narrows a Codex listing by native ID before any thread is classified. */
+  /** `matches` narrows Codex classification and resolves previously indexed Antigravity aliases. */
   async list(
     agent: SessionAgent,
     workspace: string,
-    selection: { matches?: (nativeRef: string) => boolean } = {},
+    selection: {
+      matches?: (nativeRef: string) => boolean;
+      indexedSessionIds?: readonly string[];
+    } = {},
   ): Promise<NativeListing> {
     const collection = sessionCollection(workspace);
     const reader = this.#history.get(agent);
@@ -636,7 +640,26 @@ export class SessionReaders {
           incomplete: false,
         }
       );
-    if (reader) return reader.list(workspace, selection.matches);
+    if (reader) {
+      if (
+        agent !== "antigravity" ||
+        !selection.indexedSessionIds?.length ||
+        antigravityAcpEnabled(this.env)
+      )
+        return reader.list(workspace, selection.matches);
+      const previous = new Set(selection.indexedSessionIds);
+      const salt = this.store.identitySalt();
+      const idOf = (nativeRef: string) => sessionIdentity(salt, agent, nativeRef);
+      const listing = await reader.list(workspace, (nativeRef) => previous.has(idOf(nativeRef)));
+      for (const { native_ref } of listing.sessions) previous.delete(idOf(native_ref));
+      if (!previous.size) return listing;
+      // The disabled source cannot check old ACP-only entries. Retain their directory metadata.
+      return {
+        ...listing,
+        incomplete: true,
+        issues: [...(listing.issues ?? []), { code: ANTIGRAVITY_ACP_DISABLED, scope: "source" }],
+      };
+    }
     switch (agent) {
       case "opencode":
         return { sessions: await this.#opencode.list(workspace), incomplete: false };
@@ -688,11 +711,19 @@ export class SessionReaders {
       if (!source) throw new Error("Conversation transcript is no longer available");
       return { summary, ...source };
     }
-    const listing = await this.list(agent as SessionAgent, workspace);
-    const native = listing.sessions.find(
-      (candidate) => this.store.id(agent, candidate.native_ref) === id,
+    const matches = (nativeRef: string) => this.store.id(agent, nativeRef) === id;
+    const listing = await this.list(
+      agent as SessionAgent,
+      workspace,
+      agent === "antigravity" ? { matches } : undefined,
     );
-    if (!native) throw new Error("Conversation transcript is no longer available");
+    const native = listing.sessions.find((candidate) => matches(candidate.native_ref));
+    if (!native)
+      throw new Error(
+        agent === "antigravity" && !antigravityAcpEnabled(this.env)
+          ? ANTIGRAVITY_ACP_DISABLED
+          : "Conversation transcript is no longer available",
+      );
     return { summary, native, workspace };
   }
   /** `retainCursor` false keeps no cursor; see [SessionPaging.read]. */

@@ -7,6 +7,7 @@ import {
   sessionProviderCapabilities,
   type ConversationReadResult,
 } from "@agentkib/runtime-protocol";
+import { ANTIGRAVITY_ACP_DISABLED } from "./agents/antigravity/acp-enabled";
 import { AntigravitySessionProvider } from "./agents/antigravity/session-provider";
 import { readManagedRecords, type ManagedRecord } from "./agents/codex/managed-records";
 import {
@@ -537,13 +538,19 @@ export class WebReadRequests {
   }
 
   async #managedQueueList(value: unknown) {
-    if (
-      isObject(value) &&
-      typeof value.sessionId === "string" &&
-      this.#serialQueueTarget(value.sessionId)
-    )
-      return this.#serialQueue.list(value.sessionId);
-    return this.#codex.queue(value);
+    if (!isObject(value) || typeof value.sessionId !== "string") return this.#codex.queue(value);
+    const target = this.#serialQueueTarget(value.sessionId);
+    if (!target) return this.#codex.queue(value);
+    const queue = this.#serialQueue.list(value.sessionId);
+    if (target.agent !== "antigravity" || this.#antigravity.acpEnabled) return queue;
+    const disabled = { available: false, reason: ANTIGRAVITY_ACP_DISABLED };
+    return {
+      ...queue,
+      data: queue.data.map((item) => ({
+        ...item,
+        actions: { update: disabled, delete: disabled },
+      })),
+    };
   }
 
   managedUnarchive(value: unknown) {
@@ -614,6 +621,8 @@ export class WebReadRequests {
         throw new Error("invalid-request");
       const provider = this.#sessionProviderForSession(value.sessionId);
       if (!provider) throw new Error("unsupported-session-provider");
+      if (provider === this.#antigravity && !this.#antigravity.acpEnabled)
+        throw new Error(ANTIGRAVITY_ACP_DISABLED);
       if (
         this.#serialQueueTarget(value.sessionId) &&
         [

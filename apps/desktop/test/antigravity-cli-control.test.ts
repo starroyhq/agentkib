@@ -255,6 +255,7 @@ describe("Antigravity CLI control (agy acp 1.5.14)", () => {
         USERPROFILE: root,
         CODEX_HOME: join(root, ".codex"),
         PATH: root,
+        AGENTKIB_ENABLE_ANTIGRAVITY_ACP: "1",
       };
       const readers = new SessionReaders(store.sessions, commands, environment, {
         profiles: () => [],

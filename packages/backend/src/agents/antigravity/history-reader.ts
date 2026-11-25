@@ -7,10 +7,10 @@ export function createAntigravityHistoryReader({
   antigravity,
 }: SessionHistoryContext): SessionHistoryProvider {
   return {
-    list: (workspace) => antigravity.list(workspace),
+    list: (workspace, matches) => antigravity.list(workspace, matches),
     events: ({ native, workspace, offset, count }) =>
       antigravity.readEvents(native.native_ref, offset, count, workspace),
-    document: ({ native, summary }) =>
-      antigravity.readDocument(native.native_ref, { ...summary, agent: native.agent }),
+    document: ({ native, summary, workspace }) =>
+      antigravity.readDocument(native.native_ref, { ...summary, agent: native.agent }, workspace),
   };
 }

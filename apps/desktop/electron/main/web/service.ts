@@ -961,6 +961,7 @@ export class WebAccessService {
       enableClaudeScheduler?: boolean;
       enableSerialSessionScheduler?: boolean;
       verifiedAntigravityManaged?: boolean;
+      disabledSessionProviders?: Partial<Record<ManagedAgent, string>>;
       /** DeepSeek Harness sessions connected through the AgentKib plugin (macOS only for now). */
       verifiedDshFollower?: boolean;
       /** Devin sessions run by AgentKib, one `devin -p` turn at a time. */
@@ -1459,7 +1460,8 @@ export class WebAccessService {
       session.agent === "devin"
         ? this.options.verifiedDevinManaged
         : session.agent === "antigravity"
-          ? this.options.verifiedAntigravityManaged
+          ? this.options.verifiedAntigravityManaged &&
+            !this.options.disabledSessionProviders?.antigravity
           : this.options.verifiedClaudeManaged;
     if (!work || !verified || !this.ownsScheduledDevice(work.deviceId))
       throw new Error("scheduled-control-unavailable");
@@ -4238,7 +4240,13 @@ export class WebAccessService {
     return this.json(res, 200, {
       ...projected,
       ...(stillAllowed && typeof mode === "string" && planModes?.includes(mode)
-        ? { planProgress: { live: true } }
+        ? {
+            planProgress: {
+              live:
+                session.agent !== "antigravity" ||
+                !this.options.disabledSessionProviders?.antigravity,
+            },
+          }
         : {}),
     });
   }
@@ -7042,6 +7050,9 @@ export class WebAccessService {
         pending: browser.pending,
         pairingMode: lan ? "confirmation" : "code",
         experimentalEnabled: this.controlsEnabled(undefined, device),
+        ...(device && !browser.ended && this.options.disabledSessionProviders
+          ? { disabledSessionProviders: this.options.disabledSessionProviders }
+          : {}),
         ...(computerName ? { computerName } : {}),
         ...(historyAccess ? { historySearch: true, historySearchScope: historyAccess.token } : {}),
         ...(directConnection &&

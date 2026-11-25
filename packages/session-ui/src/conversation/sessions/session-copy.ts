@@ -1212,6 +1212,7 @@ export function sessionReason(
   surface: SessionSurface,
   unavailableReason: (reason: string, locale: Locale) => string,
 ): { text: string; technical?: string } {
+  if (reason === "antigravity-acp-disabled") return { text: "" };
   const continuation = sessionContinuationCopy(locale);
   if (reason === "codex-owner-busy") return { text: continuation.busy("Codex") };
   if (reason === "codex-cli-version-too-old") return { text: continuation.codexVersionTooOld };

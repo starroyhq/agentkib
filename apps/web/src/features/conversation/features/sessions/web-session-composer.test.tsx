@@ -148,6 +148,29 @@ describe("composer sending shortcuts", () => {
     await waitFor(() => expect(doubles.control).toHaveBeenCalledTimes(2));
   });
 
+  it("keeps the send control visible and disables writing to Antigravity", async () => {
+    doubles.session.current = {
+      ...doubles.session.current!,
+      agent: "antigravity",
+    } as SessionController["current"];
+    doubles.session.access = {
+      ...doubles.session.access!,
+      disabledSessionProviders: { antigravity: "antigravity-acp-disabled" },
+    };
+    doubles.session.live = { ...doubles.session.live!, reason: "antigravity-acp-disabled" };
+    const { form, input } = renderComposer();
+    expect(input).toBeDisabled();
+    const send = screen.getByRole("button", { name: "Send" });
+    expect(send).toBeVisible();
+    expect(send).toBeDisabled();
+    expect(screen.queryByText("antigravity-acp-disabled")).toBeNull();
+    await act(async () => {
+      fireEvent.click(send);
+      fireEvent.submit(form);
+    });
+    expect(doubles.control).not.toHaveBeenCalled();
+  });
+
   it.each(["codex", "claude-code", "deepseek-harness", "devin", "antigravity"] as const)(
     "pastes screenshots and copied files and accepts a file drop for an attachment-capable %s session",
     async (agent) => {

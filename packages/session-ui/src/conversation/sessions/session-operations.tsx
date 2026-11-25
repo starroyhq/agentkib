@@ -13,7 +13,7 @@ import {
 import { requestReadStateRefresh } from "../../read-state";
 import { SessionDetailOperations } from "../../session-detail-operations";
 import { useSessionPlatform } from "../../session-platform";
-import { resolveSessionProvider } from "../../session-provider";
+import { resolveSessionProvider, sessionProviderControlsDisabled } from "../../session-provider";
 import { ProjectAgentPanel, type ProjectAgentPanelClient } from "./project-agent-panel";
 import {
   SessionReceiptRecovery,
@@ -67,6 +67,11 @@ export function SessionOperations({
     capabilities,
   );
   const hasExecutionControls = provider?.operations.execution === true;
+  const providerDisabled = sessionProviderControlsDisabled(
+    access,
+    current?.id === selected ? current.agent : undefined,
+    capabilities?.sessionId === selected ? capabilities.reason : undefined,
+  );
   const connection = sessionConnectionPanels(provider?.connection?.kind, platform);
   const Settings = connection?.Settings;
   const Terminal = connection?.terminal?.Panel;
@@ -112,6 +117,7 @@ export function SessionOperations({
                 formatCatalogTime={session.formatCatalogTime}
                 client={projectAgentClient}
                 device={access?.device}
+                providerDisabled={providerDisabled}
               />
             )}
           </>

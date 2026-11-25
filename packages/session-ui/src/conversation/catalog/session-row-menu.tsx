@@ -92,7 +92,7 @@ export type SessionManagementRowMenuProps = {
   triggerClassName: string;
   triggerSize?: "sm";
   iconSize: number;
-  extraMenuItems?: ReactNode;
+  extraMenuItems?: (features: SessionManagementFeatures | undefined) => ReactNode;
   RenameDialog?: SessionPlatform["components"]["SessionDialog"];
   RenameFooter?: ComponentType<{ children: ReactNode }>;
   DeleteDialog?: SessionPlatform["components"]["SessionDialog"];
@@ -156,7 +156,7 @@ export function SessionManagementRowMenu({
         if (!abort.signal.aborted) setFeatures(value);
       })
       .catch(() => {
-        if (!abort.signal.aborted) setFeatures({});
+        if (!abort.signal.aborted) setFeatures(undefined);
       });
     return () => abort.abort();
   }, [open, canManage, client, id, agent]);
@@ -263,7 +263,7 @@ export function SessionManagementRowMenu({
               {pinLabel}
             </DropdownMenuItem>
           )}
-          {canManage && extraMenuItems}
+          {canManage && extraMenuItems?.(features)}
           {canManage && (features?.archive ?? features?.unarchive) && (
             <DropdownMenuItem
               disabled={unavailable(archiveAction)}

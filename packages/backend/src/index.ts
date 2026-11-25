@@ -151,7 +151,7 @@ import { SessionStreamHub } from "./session-stream";
 import { mergeCodexFollowerSnapshot } from "./agents/codex/codex-follower-stream";
 import { SessionSnapshotHistory } from "./session-snapshot-history";
 import { readManagedUsageLimit, retainManagedLedgerReaders } from "./managed-ledger";
-import { MessageLeadReports } from "./message-lead-reports";
+import { LeadReportNotDispatched, MessageLeadReports } from "./message-lead-reports";
 import { parseUsageLimit, usageLimitAutoContinue, usageLimitView } from "./usage-limit";
 import { BackendStore } from "./store";
 import { canonicalize } from "./paths";
@@ -821,23 +821,35 @@ export class TypeScriptBackend {
             devin(sessionId) ||
             antigravity(sessionId),
           async (sessionId, deviceId, text, ...admission) => {
+            const checkAdmission = () => {
+              const [canSend] = admission;
+              if (canSend && !canSend())
+                throw new LeadReportNotDispatched("report-authorization-changed");
+            };
             if (
               !leadOwner.managedWorkspace(sessionId) &&
               this.#claudeBridge?.canQueueLeadReport(sessionId) === true
-            )
+            ) {
+              checkAdmission();
               return this.#claudeBridge.queueReport(sessionId, text);
+            }
             // A quit report can arrive before the session catalog initializes the providers.
             if (
               !this.#webRead &&
               !leadOwner.hasManagedSession(sessionId) &&
               !dshBridge.handles(sessionId)
             )
-              await this.#withWebRead(() => undefined);
+              await this.#withWebRead(() => undefined).catch((error: unknown) => {
+                throw new LeadReportNotDispatched("session-unavailable", { cause: error });
+              });
             if (codex(sessionId) || devin(sessionId) || antigravity(sessionId))
               return this.#codexLeadReport(sessionId, deviceId, text, ...admission);
             // A DSH lead hears through the bridge, whether or not its DSH runs right now.
             if (dshBridge.handles(sessionId))
               return this.#dshLeadReports.send(sessionId, deviceId, text, ...admission);
+            if (!leadOwner.hasManagedSession(sessionId))
+              throw new LeadReportNotDispatched("session-unavailable");
+            checkAdmission();
             return leadOwner.queueReport(sessionId, deviceId, text);
           },
           (sessionId) =>
@@ -849,6 +861,7 @@ export class TypeScriptBackend {
               return dshBridge.live(sessionId, false).usageLimit != null ? "manual-resume" : false;
             return this.#webRead?.usageLimited(sessionId) === true;
           },
+          () => this.#sessionStream?.publish("", "invalidate", { domains: ["catalog"] }),
         );
         leadOwner.observeWorkers(this.#workerObserver);
         this.#dshLeads?.close();

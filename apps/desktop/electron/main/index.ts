@@ -62,6 +62,7 @@ import { StartupBenchmark } from "./startup-benchmark";
 import { firstCloseDecision } from "./close-behavior";
 import { createQuitGuard } from "./quit-guard";
 import { normalizeReleaseNotes } from "./release-notes";
+import { configureUpdateChannel } from "./update-channel";
 import { LOCAL_PREVIEW_FRAME_SOURCES, allowLocalPreviewFraming } from "./live-preview-frames";
 import {
   optionalCloseBehavior,
@@ -429,6 +430,10 @@ async function startApplication(): Promise<void> {
       if (mainWindow && !mainWindow.isDestroyed())
         mainWindow.webContents.send("agentkib:account:status", status);
       nativeShell?.sendToPopover("agentkib:account:status", status);
+      if (status.phase === "signed-in")
+        void webAccess?.updateOfficialRelayAccount(true).catch(() => undefined);
+      if (status.phase === "signed-out" && status.error === "account_login_required")
+        void webAccess?.updateOfficialRelayAccount(false).catch(() => undefined);
       // Signing in to another account ends the phones bound to the previous one.
       const accountId = status.account?.id;
       if (accountId && accountId !== checkedAccountId) {
@@ -777,9 +782,7 @@ function sendRendererEvent(channel: string, payload: unknown): void {
 }
 
 function registerUpdateIpc(): void {
-  const updaterChannel =
-    process.platform === "darwin" || process.platform === "win32" ? process.arch : undefined;
-  if (updaterChannel) autoUpdater.channel = updaterChannel;
+  configureUpdateChannel(autoUpdater, process.platform, process.arch);
   nativeAutoUpdater.on("before-quit-for-update", () => {
     quitApproved = true;
   });

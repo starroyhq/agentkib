@@ -285,7 +285,9 @@ export function ProjectAgentPanel({
     ...(agent.scope.approvals?.includes("command") ? [text.approveCommands] : []),
     ...(agent.scope.answers ? [text.answers] : []),
   ];
-  const mayToggle = agent.paused ? mayTakeOver : desktop || (full && !!device?.send);
+  const recovering = agent.paused && agent.recovering === true;
+  const mayToggle =
+    !recovering && (agent.paused ? mayTakeOver : desktop || (full && !!device?.send));
   const mayRelease = desktop || (full && !!device?.manage);
   const mayStop = desktop || (full && !!device?.send);
   return (
@@ -293,12 +295,14 @@ export function ProjectAgentPanel({
       <OperationRow>
         <OperationCopy title={text.summary(agent.workers.length, agent.pendingReports)}>
           {decided.length > 0 && <p>{text.decided(decided)}</p>}
-          {agent.paused && (
+          {recovering ? (
+            <p>{text.recovering}</p>
+          ) : agent.paused ? (
             <p className="text-amber-700 dark:text-amber-300">
               {text.paused[agent.reason ?? "user-paused"] ?? text.paused["user-paused"]}
             </p>
-          )}
-          {!agent.workers.length && <p>{text.none}</p>}
+          ) : null}
+          {!recovering && !agent.workers.length && <p>{text.none}</p>}
         </OperationCopy>
       </OperationRow>
       {!mayTakeOver && (

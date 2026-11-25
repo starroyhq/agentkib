@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { Button } from "@/components/ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Input } from "@/components/ui/input";
@@ -68,6 +68,12 @@ import { lanSettingsCopy } from "./lan-settings-copy";
 import { remoteEntryCopy } from "./remote-entry-copy";
 import { ConnectionQr } from "./ConnectionQr";
 import { RemoteAccountSettings } from "./RemoteAccountSettings";
+import {
+  needsRemoteAccountRelogin,
+  OFFICIAL_BROKER_URL,
+  RemoteAccountRelogin,
+} from "./RemoteAccountRelogin";
+import { remoteAccountCopy } from "./remote-account-copy";
 import { useRemoteStore } from "./remote-store";
 import { remotePageCopy } from "./remote-page-copy";
 import { CardIcon, clockTime } from "./RemoteCard";
@@ -83,7 +89,6 @@ import {
 
 // setTimeout 的最大延迟约 24.8 天，超过会立即触发。
 const MAX_TIMEOUT_MS = 2 ** 31 - 1;
-const OFFICIAL_BROKER_URL = "https://api.agentkib.com";
 function normalizeBrokerUrl(value: string) {
   const trimmed = value.trim();
   try {
@@ -462,6 +467,15 @@ export function WebAccessSettings({
     normalizeBrokerUrl(relayBroker) !== normalizeBrokerUrl(status.config.relay.brokerUrl),
   );
   const signedIn = accountStatus?.phase === "signed-in" && Boolean(accountStatus.account);
+  const showAccountRelogin =
+    !lan &&
+    connect === undefined &&
+    needsRemoteAccountRelogin(accountStatus) &&
+    normalizeBrokerUrl(status?.config.relay?.brokerUrl ?? relayBroker) === OFFICIAL_BROKER_URL;
+  const staleAccountFailure =
+    connect === undefined &&
+    failureReason === "account_login_required" &&
+    (accountStatus?.phase === "signing-in" || (signedIn && !operationError));
   const relayReady = status?.running && status.relay?.phase === "ready";
   const relayActive = Boolean(status?.config.relay?.enabled);
   const connectionDisabled =
@@ -1077,7 +1091,15 @@ export function WebAccessSettings({
           {c.acceptance} <code>{status.acceptanceSessionId}</code>
         </SettingsNotice>
       )}
-      {failure && recovery && (
+      {failure && showAccountRelogin && (
+        <SettingsNotice tone="warning" inset={false} role="alert">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <span>{remoteAccountCopy[locale].accountSignedOut}</span>
+            <RemoteAccountRelogin disabled={busy || !accountStatus?.secureStorage} />
+          </div>
+        </SettingsNotice>
+      )}
+      {failure && recovery && !showAccountRelogin && !staleAccountFailure && (
         <SettingsNotice tone="error" inset={false} className="space-y-2 text-sm" role="alert">
           <p>{recovery.message}</p>
           {recoveryButton()}
@@ -1148,7 +1170,10 @@ export function WebAccessSettings({
           : status?.relay?.phase === "offline"
             ? p.offline
             : r.phases[status?.relay?.phase ?? "disabled"]}
-      {status?.relay?.reason ? ` · ${r.reasons[status.relay.reason]}` : ""}
+      {status?.relay?.reason &&
+      !(status.relay.reason === "account-required" && (showAccountRelogin || staleAccountFailure))
+        ? ` · ${r.reasons[status.relay.reason]}`
+        : ""}
     </p>
   );
   const connectionDetails = (
@@ -1194,14 +1219,14 @@ export function WebAccessSettings({
   // A revoked device needs a deliberate re-registration, never an automatic or plain retry.
   const revoked = status?.relay?.reason === "revoked";
   const showRecoveryLogin = failureReason === "account_login_required" && !signedIn;
-  function onRecoveryAccountStatus(next: DesktopAccountStatus | undefined) {
+  const onRecoveryAccountStatus = useCallback((next: DesktopAccountStatus | undefined) => {
     if (!next) return;
     setAccountStatus(next);
     if (next.phase === "signed-in" && next.account)
       setOperationError((error) =>
         error?.reason === "account_login_required" ? undefined : error,
       );
-  }
+  }, []);
   const phoneStep: PhoneStep = !status
     ? loadFailed
       ? "error"
@@ -2142,7 +2167,7 @@ export function WebAccessSettings({
         variant="dialog"
         manageOpen={accountOpen}
         onManageOpenChange={setAccountOpen}
-        onStatusChange={setAccountStatus}
+        onStatusChange={onRecoveryAccountStatus}
       />
       {confirmations}
     </div>

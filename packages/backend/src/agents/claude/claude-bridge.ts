@@ -47,6 +47,7 @@ import {
   readUnknownManagedCommands,
 } from "../../managed-ledger";
 import { admitControlReceipt } from "../../sessions/control-receipts";
+import { LeadReportNotDispatched } from "../../message-lead-reports";
 import { validHistoryControl } from "../../history-control-schema";
 import { sanitizeSessionText } from "../../session-handoff";
 import { terminalSubagentActivities } from "../../session-activities";
@@ -1447,6 +1448,9 @@ export class ClaudeBridge {
       executionMode: "claude-follower",
       executionLocation: online ? "terminal" : null,
       ownershipReason: null,
+      ...(online && typeof connection?.leadReportsPaused === "boolean"
+        ? { leadReportsPaused: connection.leadReportsPaused }
+        : {}),
       // The plugin takes messages from here. Which mode can go now is in the *Enabled flags:
       // a send needs an idle terminal, a steer a running turn, a queued message neither.
       terminalSend:
@@ -2136,7 +2140,7 @@ export class ClaudeBridge {
    */
   queueReport(sessionId: string, text: string): boolean {
     const row = this.#bindings.get(sessionId);
-    if (!row || row.revoked) throw new Error("session-unavailable");
+    if (!row || row.revoked) throw new LeadReportNotDispatched("session-unavailable");
     if (text.length > MAX_REPORT_TEXT) throw new Error("report-too-long");
     const queued = [...this.#reportQueue(sessionId)];
     const last = queued.at(-1);
@@ -2145,7 +2149,7 @@ export class ClaudeBridge {
       this.#saveReports(row, queued);
       return true;
     }
-    if (queued.length >= MAX_QUEUED_REPORTS) throw new Error("report-queue-full");
+    if (queued.length >= MAX_QUEUED_REPORTS) throw new LeadReportNotDispatched("report-queue-full");
     queued.push({ id: randomUUID(), text });
     this.#saveReports(row, queued);
     const connection = this.#connections.get(sessionId);

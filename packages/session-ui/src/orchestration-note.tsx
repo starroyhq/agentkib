@@ -2,6 +2,7 @@ import { CornerDownRight, Network } from "lucide-react";
 import type { SessionOrchestration } from "@agentkib/web-client";
 import type { ComposerModelLocale as Locale } from "./composer-model-copy";
 import { catalogCopy } from "./catalog-copy";
+import { projectAgentCopy } from "./project-agent-copy";
 
 /**
  * "Project Agent · Delegation paused", or "Worker api · Delegated by <its Project Agent>";
@@ -13,11 +14,13 @@ export function orchestrationText(
   locale: Locale,
 ) {
   const copy = catalogCopy[locale];
-  return orchestration.role === "lead"
-    ? [copy.projectAgent, orchestration.paused ? copy.delegationPaused : ""]
-        .filter(Boolean)
-        .join(" · ")
-    : `${copy.worker} ${orchestration.name} · ${copy.delegatedBy} ${leadTitle ?? copy.projectAgent}`;
+  if (orchestration.role === "worker")
+    return `${copy.worker} ${orchestration.name} · ${copy.delegatedBy} ${leadTitle ?? copy.projectAgent}`;
+  if (!orchestration.paused) return copy.projectAgent;
+  const status = orchestration.recovering
+    ? projectAgentCopy(locale).recovering
+    : copy.delegationPaused;
+  return `${copy.projectAgent} · ${status}`;
 }
 
 export function OrchestrationIcon({ role }: { role: SessionOrchestration["role"] }) {

@@ -7,20 +7,23 @@ import { changeLocale, initializeI18n } from "@/core/i18n";
 import { WebAccessSettings } from "./WebAccessSettings";
 import { remotePhoneCopy } from "./remote-phone-copy";
 import { remotePageCopy } from "./remote-page-copy";
+import type { DesktopAccountStatus } from "../../../electron/main/account/state";
 const request = vi.fn();
 const accountRequest = vi.fn();
+const accountListeners = new Set<(status: DesktopAccountStatus) => void>();
 const signedInAccount = {
   phase: "signed-in",
   secureStorage: true,
   account: {
     id: "test",
     username: "demo@example.com",
+    status: "active",
     deviceLimit: 3,
     deviceCount: 1,
     totpEnabled: false,
   },
-  device: { ownership: "owned" },
-};
+  device: { deviceId: "test-device", ownership: "owned" },
+} satisfies DesktopAccountStatus;
 let lanTest = false;
 vi.mock("@/core/desktop", () => ({
   desktopApi: () => ({
@@ -31,7 +34,10 @@ vi.mock("@/core/desktop", () => ({
           : request(input),
     },
     account: {
-      onStatus: () => () => {},
+      onStatus: (listener: (status: DesktopAccountStatus) => void) => {
+        accountListeners.add(listener);
+        return () => accountListeners.delete(listener);
+      },
       request: accountRequest,
     },
   }),
@@ -200,6 +206,36 @@ const officialRelay = {
   },
   running: true,
 };
+
+it("offers one direct sign-in from remote settings after the desktop account is lost", async () => {
+  request.mockResolvedValue({
+    ...officialRelay,
+    relay: { phase: "offline", reason: "account-required", setupCode: "account_login_required" },
+  });
+  const publish = (next: DesktopAccountStatus) =>
+    act(() => accountListeners.forEach((listener) => listener(next)));
+  render(<WebAccessSettings />);
+  await waitFor(() => expect(accountRequest).toHaveBeenCalledWith({ operation: "status" }));
+  expect(screen.queryByRole("button", { name: "Sign in again" })).not.toBeInTheDocument();
+  publish({ phase: "signed-out", secureStorage: true, error: "account_login_required" });
+
+  const notices = await screen.findAllByRole("button", { name: "Sign in again" });
+  expect(notices).toHaveLength(1);
+  expect(screen.getByText("Account signed out")).toBeVisible();
+  expect(screen.queryByRole("button", { name: "Account settings" })).not.toBeInTheDocument();
+  fireEvent.click(notices[0]!);
+  await waitFor(() => expect(accountRequest).toHaveBeenCalledWith({ operation: "login" }));
+  expect(accountRequest.mock.calls.filter(([input]) => input.operation === "login")).toHaveLength(
+    1,
+  );
+  expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+
+  publish({ phase: "signing-in", secureStorage: true });
+  expect(screen.queryByRole("button", { name: "Account settings" })).not.toBeInTheDocument();
+  publish(signedInAccount);
+  expect(screen.queryByRole("button", { name: "Sign in again" })).not.toBeInTheDocument();
+  expect(screen.queryByText("Account signed out")).not.toBeInTheDocument();
+});
 
 it("offers direct sign-in and then retries the saved official relay", async () => {
   let signedIn = false;

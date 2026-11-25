@@ -901,6 +901,9 @@ export class WebAccessService {
   /** Remote browsers' web preview, on the same isolated origin as artifact previews. */
   private livePreview?: LivePreviewService;
   private relay?: RelayManager;
+  private relayAccountPaused = false;
+  private relayAccountChange = 0;
+  private relayOwnerAccountId?: string;
   private relayEpoch = 0;
   private disposed = false;
   private remotePairingInitialized = false;
@@ -1932,6 +1935,55 @@ export class WebAccessService {
     this.adminQueue = result.catch(() => undefined);
     return result;
   }
+  /** Account recovery suspends the official transport without clearing Web configuration or grants. */
+  updateOfficialRelayAccount(available: boolean): Promise<void> {
+    const change = ++this.relayAccountChange;
+    if (!available || this.officialRelayOwnerChanged()) this.relayAccountPaused = true;
+    const work = this.adminQueue.then(async () => {
+      if (this.disposed || !this.officialRelayConfigured()) return;
+      if (!available) {
+        await this.pauseOfficialRelay();
+        return;
+      }
+      const account = this.options.account;
+      const accountId = account?.accountId();
+      if (change !== this.relayAccountChange || !account?.signedIn() || !accountId) return;
+      if (
+        this.relay &&
+        this.relay.status.phase !== "disabled" &&
+        !this.relayAccountPaused &&
+        !this.officialRelayOwnerChanged()
+      )
+        return;
+      if (this.relay) await this.pauseOfficialRelay();
+      const identity = await this.accountIdentity();
+      if (
+        change !== this.relayAccountChange ||
+        !account.signedIn() ||
+        accountId !== account.accountId()
+      )
+        return;
+      if (
+        identity?.accountClaimPending ||
+        (identity?.accountId && identity.accountId !== accountId)
+      ) {
+        this.relayAccountPaused = true;
+        return;
+      }
+      this.relayAccountPaused = false;
+      if (this.server?.listening) this.startRelay();
+    });
+    this.adminQueue = work.catch(() => undefined);
+    return work;
+  }
+  private async pauseOfficialRelay() {
+    this.relayAccountPaused = true;
+    this.relayEpoch += 1;
+    const relay = this.relay;
+    this.relay = undefined;
+    this.relayOwnerAccountId = undefined;
+    await relay?.stop();
+  }
   /**
    * 应用退出时调用。排在正在执行的桌面操作之后：否则进行到一半的 remote-enable 会在
    * shutdown 之后重新监听端口、再建一个 RelayManager（连带一个 frpc）。之后的操作一律拒绝。
@@ -1976,6 +2028,8 @@ export class WebAccessService {
           if (identity?.accountClaimPending) throw new Error("account_claim_pending");
           if (!this.options.account?.signedIn()) throw new Error("account_login_required");
           await this.options.account.ensureDeviceOwner(identity?.accountId);
+          if (!this.options.account.signedIn()) throw new Error("account_login_required");
+          this.relayAccountPaused = false;
         } else if (
           input.reenroll &&
           (typeof input.inviteCode !== "string" || !input.inviteCode.trim())
@@ -2320,7 +2374,9 @@ export class WebAccessService {
           online: this.isOnline(c.hash),
         };
       }),
-      relay: this.relay?.status,
+      relay: this.officialRelayNeedsAccount()
+        ? { phase: "offline", reason: "account-required" }
+        : this.relay?.status,
     };
   }
   /** Online: the device follows a stream from this computer now, or made a request lately. */
@@ -2381,6 +2437,40 @@ export class WebAccessService {
       (!!this.relay?.accountLoginContext || this.config.relay.brokerUrl === DEFAULT_RELAY_BROKER)
     );
   }
+  private officialRelayConfigured() {
+    return (
+      this.options.mode !== "lan" &&
+      this.config.relay?.enabled === true &&
+      this.config.relay.brokerUrl === DEFAULT_RELAY_BROKER
+    );
+  }
+  private officialRelayNeedsAccount() {
+    return (
+      this.officialRelayConfigured() &&
+      (this.relayAccountPaused ||
+        !this.options.account?.accountId() ||
+        this.officialRelayOwnerChanged())
+    );
+  }
+  private officialRelayOwnerChanged() {
+    return (
+      this.officialRelayConfigured() &&
+      !!this.relay &&
+      this.relay.status.phase !== "disabled" &&
+      this.relayOwnerAccountId !== undefined &&
+      this.relayOwnerAccountId !== this.options.account?.accountId()
+    );
+  }
+  private requireCloudLoginContext() {
+    const context = this.relay?.accountLoginContext;
+    if (
+      !context ||
+      this.officialRelayNeedsAccount() ||
+      (this.officialRelayConfigured() && context.accountId !== this.options.account?.accountId())
+    )
+      throw new HttpError(503, "account_login_unavailable");
+    return context;
+  }
   /** Supplemental receipts belong to the computer's owner, never the paired browser. */
   private readerScope(): string {
     const accountId =
@@ -2411,16 +2501,17 @@ export class WebAccessService {
       body.hostChallenge !== browser.accountChallenge
     )
       throw new HttpError(400, "invalid_account_proof");
-    if (!this.relay?.accountLoginContext) throw new HttpError(503, "account_login_unavailable");
+    this.requireCloudLoginContext();
     this.rate(`account-binding:${hash}`, 6);
     let proof: RemoteAccountBinding;
     try {
-      proof = await this.relay.redeemAccountLogin(body as AccountLoginProof);
+      proof = await this.relay!.redeemAccountLogin(body as AccountLoginProof);
     } catch {
       throw new HttpError(503, "account_login_unavailable");
     }
     const bound: AccountBinding = { ...proof, hostChallenge: browser.accountChallenge };
     const work = this.adminQueue.then(async () => {
+      this.requireCloudLoginContext();
       if (
         this.browsers.get(hash) !== browser ||
         browser.ended ||
@@ -2452,7 +2543,12 @@ export class WebAccessService {
    * or offline, nothing changes: no pairing ends, none is renewed.
    */
   async checkAccountBindings() {
-    if (this.disposed) return;
+    const relay = this.relay;
+    const official = this.officialRelayConfigured();
+    const isCurrent = () =>
+      official === this.officialRelayConfigured() &&
+      (!official || (!!relay && relay === this.relay && !this.officialRelayNeedsAccount()));
+    if (this.disposed || !isCurrent()) return;
     const proofCredentials = this.credentials.filter((c) => c.account?.id);
     if (proofCredentials.length && this.relay?.accountLoginContext) {
       let results: { id: string; active: boolean; expiresAt?: number }[];
@@ -2462,7 +2558,7 @@ export class WebAccessService {
         return;
       }
       const check = this.adminQueue.then(async () => {
-        if (this.disposed) return;
+        if (this.disposed || !isCurrent()) return;
         const ended = this.credentials.filter(
           (c) =>
             proofCredentials.includes(c) &&
@@ -2503,7 +2599,7 @@ export class WebAccessService {
       live.sessions.flatMap((session) => (session.kind === "mobile" ? [session.id] : [])),
     );
     const check = this.adminQueue.then(async () => {
-      if (this.disposed) return;
+      if (this.disposed || !isCurrent()) return;
       const ended = this.credentials.filter(
         (c) =>
           c.account &&
@@ -2788,7 +2884,12 @@ export class WebAccessService {
   private startRelay(inviteCode?: string, reenroll?: boolean) {
     if (this.disposed) return;
     const config = this.config.relay;
-    if (!config?.enabled) return;
+    if (
+      !config?.enabled ||
+      this.officialRelayNeedsAccount() ||
+      (this.officialRelayConfigured() && !this.options.account?.signedIn())
+    )
+      return;
     const targets = this.relayTargets();
     const epoch = ++this.relayEpoch;
     this.relay = new RelayManager({
@@ -2856,6 +2957,8 @@ export class WebAccessService {
         });
       },
     });
+    this.relayOwnerAccountId =
+      config.brokerUrl === DEFAULT_RELAY_BROKER ? this.options.account?.accountId() : undefined;
     // Status polling reports certificate/connection progress; it must not block desktop settings.
     void this.relay.start().catch(() => undefined);
   }
@@ -6348,9 +6451,12 @@ export class WebAccessService {
       this.endStreams(hash);
       throw new HttpError(401, "access_ended");
     }
-    if (this.accountLoginRequired() && !this.validCloudBinding(credential.account)) {
-      this.endStreams(hash);
-      throw new HttpError(401, "account_login_required");
+    if (this.accountLoginRequired()) {
+      this.requireCloudLoginContext();
+      if (!this.validCloudBinding(credential.account)) {
+        this.endStreams(hash);
+        throw new HttpError(401, "account_login_required");
+      }
     }
     if (
       permission &&
@@ -6820,8 +6926,7 @@ export class WebAccessService {
       }
       const credential = trustedLocal ? undefined : this.credentials.find((c) => c.hash === hash);
       const loginRequired = !trustedLocal && this.accountLoginRequired();
-      const loginContext = loginRequired ? this.relay?.accountLoginContext : undefined;
-      if (loginRequired && !loginContext) throw new HttpError(503, "account_login_unavailable");
+      const loginContext = loginRequired ? this.requireCloudLoginContext() : undefined;
       const binding = credential ? credential.account : browser.account;
       const bound = this.validCloudBinding(binding);
       browser.accountChallenge ??= binding?.hostChallenge ?? token();
@@ -7062,6 +7167,7 @@ export class WebAccessService {
           if (this.browsers.get(hash) !== pairingBrowser || !this.server)
             throw new HttpError(401, "access_ended");
           if (this.accountLoginRequired()) {
+            this.requireCloudLoginContext();
             if (!this.validCloudBinding(pairingBrowser.account))
               throw new HttpError(401, "account_login_required");
             let verified;

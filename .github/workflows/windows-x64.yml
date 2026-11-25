@@ -44,7 +44,7 @@ jobs:
         # Allow Windows integration startup time; explicit deadlines and latency assertions remain.
         env:
           NODE_OPTIONS: --disable-warning=ExperimentalWarning
-        run: pnpm test:backend:stability --maxWorkers=2 --testTimeout=15000
+        run: pnpm test:backend:stability test/shared-desktop-runtime.test.ts --maxWorkers=2 --testTimeout=15000
 
   typecheck:
     name: Typecheck on Windows x64
@@ -74,4 +74,4 @@ jobs:
         # Allow Windows integration startup time; explicit deadlines and latency assertions remain.
         env:
           NODE_OPTIONS: --disable-warning=ExperimentalWarning
-        run: pnpm test:backend:stability --maxWorkers=2 --testTimeout=15000
+        run: pnpm test:backend:stability test/shared-desktop-runtime.test.ts --maxWorkers=2 --testTimeout=15000

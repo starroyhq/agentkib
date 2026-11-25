@@ -1,0 +1,139 @@
+// @vitest-environment node
+import { describe, expect, it } from "vitest";
+import { projectNotificationActivity, type NotificationActivitySession } from "./activity";
+
+const NOW = 1_795_516_200_000;
+const EARLIER = "2026-11-24T07:00:00.000Z";
+const LATER = "2026-11-24T08:00:00.000Z";
+const scope = { workspaceIds: ["visible"], versionScope: "scoped-host" };
+
+function session(
+  id: string,
+  status: string,
+  overrides: Partial<NotificationActivitySession> = {},
+): NotificationActivitySession {
+  return {
+    id,
+    workspace_id: "visible",
+    agent: "codex",
+    availability: "readable",
+    continuation: { status },
+    updated_at: EARLIER,
+    ...overrides,
+  };
+}
+
+describe("notification activity snapshot", () => {
+  it("chooses the newest approval ahead of a later question and counts each active session once", () => {
+    const snapshot = projectNotificationActivity(
+      [
+        session("old-approval", "awaiting-approval", { pinned: true }),
+        session("recent-approval", "awaiting-approval", {
+          title: "   Check\n the new file   ",
+          agent: "claude-code",
+          updated_at: LATER,
+          externalTurn: { status: "running" },
+        }),
+        session("question", "waiting-input", { updated_at: "2026-11-24T09:00:00.000Z" }),
+        session("running", "running"),
+        session("starting", "starting"),
+        session("external", "idle", { externalTurn: { status: "running" } }),
+        session("finished", "idle", { readState: { status: "unread" } }),
+      ],
+      scope,
+      NOW,
+    );
+    expect(snapshot).toMatchObject({
+      observedAt: NOW,
+      waiting: 3,
+      running: 3,
+      priority: {
+        sessionId: "recent-approval",
+        agent: "claude-code",
+        title: "Check the new file",
+        time: LATER,
+        category: "approval",
+        count: 2,
+      },
+    });
+    expect(snapshot.version).toMatch(/^[A-Za-z0-9_-]{43}$/);
+  });
+
+  it("does not expose or count any out-of-scope, unreadable, auxiliary, child, archived or remote session", () => {
+    const sessions = [
+      session("private-approval", "awaiting-approval", { workspace_id: "private" }),
+      session("private-running", "running", { workspace_id: "private" }),
+      session("sidechain", "running", { sidechain: true }),
+      session("archived", "awaiting-approval", { archived: true }),
+      session("auxiliary", "awaiting-approval", { origin: "auxiliary" }),
+      session("execution", "awaiting-approval", { origin: "execution" }),
+      session("unreadable", "running", { availability: "unreadable" }),
+      session("remote", "awaiting-approval", { remote: { host: "another host" } }),
+      session("visible-running", "running"),
+    ];
+    const scoped = projectNotificationActivity(sessions, scope, NOW);
+    expect(scoped).toEqual(projectNotificationActivity([sessions[8]!], scope, NOW));
+    expect(scoped).toMatchObject({ observedAt: NOW, waiting: 0, running: 1 });
+    expect(scoped).not.toHaveProperty("priority");
+    expect(
+      projectNotificationActivity(sessions, { ...scope, workspaceIds: [] }, NOW),
+    ).toMatchObject({ waiting: 0, running: 0 });
+  });
+
+  it("keeps unknown outcomes in the waiting group without offering them as approvals", () => {
+    const awaiting = session("same-decision", "awaiting-approval");
+    const paused = session("lead", "idle", {
+      orchestration: { role: "lead", paused: true, reason: "report-undelivered" },
+    });
+    const unconfirmed = new Set([awaiting.id]);
+    expect(
+      projectNotificationActivity([awaiting, paused], { ...scope, unconfirmed }, NOW),
+    ).toMatchObject({
+      waiting: 2,
+      running: 0,
+      priority: { sessionId: awaiting.id, category: "verify", count: 1 },
+    });
+    expect(projectNotificationActivity([paused], scope, NOW)).toMatchObject({
+      waiting: 1,
+      priority: { sessionId: paused.id, category: "delegation", count: 1 },
+    });
+  });
+
+  it("keeps a stable version across order and read times, while scope and task state changes update it", () => {
+    const first = session("a", "waiting-input");
+    const second = session("b", "waiting-input");
+    const hidden = session("hidden", "awaiting-approval", { workspace_id: "private" });
+    const initial = projectNotificationActivity([second, first], scope, NOW);
+    const later = projectNotificationActivity([first, hidden, second], scope, NOW + 60_000);
+    expect(initial.priority?.sessionId).toBe("a");
+    expect(later).toEqual({ ...initial, observedAt: NOW + 60_000 });
+    expect(projectNotificationActivity([first], scope, NOW).version).not.toBe(initial.version);
+    expect(
+      projectNotificationActivity(
+        [first, second],
+        { ...scope, versionScope: "new-connection" },
+        NOW,
+      ).version,
+    ).not.toBe(initial.version);
+    expect(
+      projectNotificationActivity(
+        [first, second],
+        { ...scope, workspaceIds: ["visible", "new"] },
+        NOW,
+      ).version,
+    ).not.toBe(initial.version);
+  });
+
+  it("bounds the display title without splitting a Unicode character and omits unknown times", () => {
+    const first = session("long", "waiting-input", {
+      title: "🧪".repeat(140),
+      updated_at: "unknown",
+    });
+    const projected = projectNotificationActivity([first], scope, NOW);
+    expect(projected.priority?.title).toBe("🧪".repeat(99) + "…");
+    expect(projected.priority).not.toHaveProperty("time");
+    expect(
+      projectNotificationActivity([{ ...first, created_at: EARLIER }], scope, NOW).priority?.time,
+    ).toBe(EARLIER);
+  });
+});

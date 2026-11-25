@@ -46,6 +46,7 @@ import { createIpcRegistrar } from "./ipc/registrar";
 import { ElectronNativeShell, resolveNativeShellTrayIcon } from "./native-shell";
 import { TraySessionWatcher, type TraySessionSource } from "./tray-sessions";
 import { PushNotifier } from "./push/notifier";
+import { NotificationPolicyStore } from "./push/policy";
 import { workStoppedByQuit, type HomeSession } from "@agentkib/session-catalog";
 import { ElectronRefreshCoordinator } from "./refresh-coordinator";
 import { CostObservation, requireLocalCostProvider } from "./cost-observation";
@@ -240,6 +241,8 @@ async function startApplication(): Promise<void> {
   const shared = profile.shared;
   usesSharedRuntime = shared !== undefined;
   const webDataDir = path.join(electronDataPath, "web");
+  const notificationPolicy = new NotificationPolicyStore(webDataDir);
+  await notificationPolicy.initialize();
   const hostAttachmentDirs = new Set([path.join(webDataDir, "attachments")]);
   if (shared)
     // Stable and Dev can attach to the same runtime while keeping their web data separate.
@@ -351,6 +354,7 @@ async function startApplication(): Promise<void> {
     return computerNameRead.name;
   };
   const sharedWebOptions = {
+    notificationPolicy,
     approvalRules: nativeApprovalRules,
     historyRequest: (method: string, params: unknown) => requestWhenRuntimeReady(method, params),
     computerName,
@@ -457,13 +461,24 @@ async function startApplication(): Promise<void> {
   const remoteAccess = webAccess;
   pushNotifier = new PushNotifier({
     targets: () => remoteAccess.pushTargets(),
+    recoveringTargets: () => remoteAccess.pushRecoveringTargets(),
     deviceId: () => remoteAccess.pushDeviceId(),
     send: (input) => remoteAccess.pushSend(input),
     terminalSummary: (target, sessionId, kind) =>
       remoteAccess.terminalInteractionPushSummary(target, sessionId, kind),
+    alertContext: (target, session, kind) =>
+      remoteAccess.notificationAlertContext(target, session, kind),
+    activitySnapshot: (target, sessions) =>
+      remoteAccess.notificationActivityForTarget(target, sessions),
+    delivery: (kind, present, now) => notificationPolicy.delivery(kind, present, now),
+    enabled: () => notificationPolicy.read().enabled,
+    activityStartAllowed: (now) => notificationPolicy.allowsActivityStart(now),
     computerName,
     // Input in the last two minutes on an unlocked screen: the person sees this computer.
-    present: () => powerMonitor.getSystemIdleState(120) === "active",
+    present: () => {
+      const state = powerMonitor.getSystemIdleState(120);
+      return state !== "idle" && state !== "locked";
+    },
   });
   remoteAccess.onPushChanged(() => pushNotifier?.refresh());
   traySessions = new TraySessionWatcher(

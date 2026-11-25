@@ -1,10 +1,16 @@
 // @vitest-environment node
 import { describe, expect, it, vi } from "vitest";
 import { generateKeyPairSync } from "node:crypto";
+import type { NotificationActivitySnapshot } from "@agentkib/runtime-protocol";
 import type { HomeSession } from "@agentkib/session-catalog";
 import type { PushSendInput, PushSendResult } from "../web/relay/manager";
 import { openPushEnvelope } from "./envelope-fixture";
-import { PushNotifier, type PushNotifierOptions, type PushTarget } from "./notifier";
+import {
+  PushNotifier,
+  type PushAlertContext,
+  type PushNotifierOptions,
+  type PushTarget,
+} from "./notifier";
 
 const DEVICE = "0123456789abcdef0123456789abcdef";
 const MINUTE = 60_000;
@@ -55,7 +61,10 @@ function requiringSupervision(
 
 const settle = () => new Promise((resolve) => setImmediate(resolve));
 
-function harness(terminalSummary?: PushNotifierOptions["terminalSummary"]) {
+function harness(
+  terminalSummary?: PushNotifierOptions["terminalSummary"],
+  options: Partial<PushNotifierOptions> = {},
+) {
   let clock = START;
   const context = {
     present: false,
@@ -78,6 +87,7 @@ function harness(terminalSummary?: PushNotifierOptions["terminalSummary"]) {
     now: () => clock,
     // Tests drive every check through update and refresh.
     tickMs: 24 * 60 * MINUTE,
+    ...options,
   });
   return {
     ...context,
@@ -100,7 +110,267 @@ function alertOf(input: PushSendInput) {
   return openPushEnvelope(input.envelope, phone.privateKey, target.publicKey, DEVICE);
 }
 
+const approval: PushAlertContext = {
+  interaction: {
+    version: 1,
+    kind: "approval",
+    binding: {
+      sessionId: "a",
+      runtimeBootId: "runtime-boot",
+      turnId: "turn-a",
+      requestId: 8,
+      revision: 3,
+    },
+    summary: "Runs the requested check",
+    risk: { level: "high", reason: "unknown-operation" },
+    decisions: [
+      { id: "choice:allow", kind: "allow", scope: "once", available: true, lockScreen: true },
+    ],
+  },
+  action: {
+    requestId: "receipt-a",
+    bootId: "host-boot",
+    expiresAt: START + 10 * MINUTE,
+    choices: { "choice:allow": "token-a" },
+  },
+};
+
 describe("push alerts", () => {
+  it.each(["device", "targets"])(
+    "delivers a held alert once after recovering the relay %s",
+    async (missing) => {
+      let recovering = true;
+      const test = harness(undefined, { recoveringTargets: () => (recovering ? [target] : []) });
+      test.context.deviceId = missing === "device" ? undefined : DEVICE;
+      test.context.targets = missing === "targets" ? [] : [target];
+      test.notifier.update([session("a", "running")]);
+      test.notifier.update([session("a", "approval")]);
+      await settle();
+      expect(test.take()).toEqual([]);
+
+      recovering = false;
+      test.context.deviceId = DEVICE;
+      test.context.targets = [target, { ...target, session: "d".repeat(36) }];
+      test.notifier.refresh();
+      test.notifier.refresh();
+      await settle();
+      expect(test.take().map((input) => input.session)).toEqual([target.session]);
+      test.notifier.update([session("a", "approval")]);
+      await settle();
+      expect(test.take()).toEqual([]);
+    },
+  );
+
+  it("does not forward a held alert to a replaced subscription", async () => {
+    let recovering = true;
+    const test = harness(undefined, { recoveringTargets: () => (recovering ? [target] : []) });
+    test.context.targets = [];
+    test.notifier.update([session("a", "running")]);
+    test.notifier.update([session("a", "approval")]);
+
+    recovering = false;
+    test.context.targets = [{ ...target, updatedAt: target.updatedAt + 1 }];
+    test.notifier.refresh();
+    await settle();
+    expect(test.take()).toEqual([]);
+  });
+
+  it("reauthorizes only unsent recipients when the relay recovers during an authorization read", async () => {
+    const second = { ...target, session: "d".repeat(36) };
+    let finish: (value: PushAlertContext | undefined) => void = () => {};
+    const reading = new Promise<PushAlertContext | undefined>((resolve) => (finish = resolve));
+    let recovering = false;
+    const authorize = vi.fn<NonNullable<PushNotifierOptions["alertContext"]>>(async () => ({}));
+    authorize.mockImplementationOnce(async () => ({})).mockImplementationOnce(() => reading);
+    const test = harness(undefined, {
+      recoveringTargets: () => (recovering ? [target, second] : []),
+      alertContext: authorize,
+    });
+    test.context.targets = [target, second];
+    test.notifier.update([session("a", "running")]);
+    test.notifier.update([session("a", "approval")]);
+    await settle();
+    expect(test.take().map((input) => input.session)).toEqual([target.session]);
+
+    recovering = true;
+    test.context.deviceId = undefined;
+    test.context.targets = [];
+    test.notifier.refresh();
+    recovering = false;
+    test.context.deviceId = DEVICE;
+    test.context.targets = [target, second];
+    test.notifier.refresh();
+    finish(undefined);
+    await settle();
+    test.notifier.refresh();
+    await settle();
+    expect(authorize).toHaveBeenCalledTimes(3);
+    expect(test.take().map((input) => input.session)).toEqual([second.session]);
+    test.notifier.refresh();
+    await settle();
+    expect(test.take()).toEqual([]);
+  });
+
+  it("seals the R25 interaction and direct decision only for an opted-in phone", async () => {
+    const context = vi.fn(async () => approval);
+    const test = harness(undefined, { alertContext: context });
+    test.context.targets = [
+      { ...target, approvalActions: 1, liveActivity: false },
+      { ...target, session: "d".repeat(36), ref: "legacy-phone", liveActivity: false },
+    ];
+    test.notifier.update([session("a", "running")]);
+    test.notifier.update([session("a", "approval")]);
+    await settle();
+    const sent = test.take();
+    expect(sent).toHaveLength(2);
+    expect(alertOf(sent[0]!)).toMatchObject({
+      kind: "approval",
+      interaction: approval.interaction,
+      action: approval.action,
+    });
+    expect(alertOf(sent[1]!)).toEqual({
+      v: 1,
+      kind: "approval",
+      ref: "legacy-phone",
+      sessionId: "a",
+      agent: "codex",
+      title: "Task a",
+      computer: "Studio",
+      at: START,
+    });
+    expect(JSON.stringify(sent)).not.toContain("token-a");
+  });
+
+  it("rechecks changed delivery policy, then sends held work without repeating a sent notification", async () => {
+    let delivery: "send" | "hold" | "drop" = "send";
+    let finish: (value: PushAlertContext) => void = () => {};
+    const secondRead = new Promise<PushAlertContext>((resolve) => (finish = resolve));
+    const second = { ...target, session: "d".repeat(36), ref: "another-phone" };
+    const context = vi.fn(async (recipient: PushTarget) =>
+      recipient.session === second.session ? secondRead : approval,
+    );
+    const test = harness(undefined, { alertContext: context, delivery: () => delivery });
+    test.context.targets = [target, second];
+    test.context.present = true;
+    test.notifier.update([session("a", "running")]);
+    test.notifier.update([session("a", "approval")]);
+    await settle();
+    expect(test.take().map(({ session }) => session)).toEqual([target.session]);
+    delivery = "hold";
+    finish(approval);
+    await settle();
+    expect(test.take()).toEqual([]);
+    delivery = "send";
+    test.notifier.refresh();
+    await settle();
+    expect(test.take().map(({ session }) => session)).toEqual([second.session]);
+    test.notifier.update([session("a", "running")]);
+    delivery = "drop";
+    test.notifier.update([session("a", "question")]);
+    delivery = "send";
+    test.notifier.refresh();
+    await settle();
+    expect(test.take()).toEqual([]);
+  });
+
+  it("suppresses the entire notification if access fails or the subscription changes during its read", async () => {
+    let finish: (value: PushAlertContext | undefined) => void = () => {};
+    const pending = new Promise<PushAlertContext | undefined>((resolve) => (finish = resolve));
+    const removed = { ...target, session: "d".repeat(36), ref: "removed-device" };
+    const test = harness(undefined, {
+      alertContext: async (recipient) =>
+        recipient.session === removed.session ? pending : undefined,
+    });
+    test.context.targets = [target, removed];
+    test.notifier.update([session("a", "running")]);
+    test.notifier.update([session("a", "approval")]);
+    await settle();
+    test.context.targets = [target];
+    test.notifier.refresh();
+    finish(approval);
+    await settle();
+    expect(test.take()).toEqual([]);
+  });
+
+  it("uses a bounded legacy alert if optional interaction data exceeds the APNs envelope budget", async () => {
+    const test = harness(undefined, {
+      alertContext: async () => ({
+        ...approval,
+        interaction: { ...approval.interaction!, summary: "🧪".repeat(2_000) },
+      }),
+    });
+    test.context.targets = [{ ...target, approvalActions: 1 }];
+    test.notifier.update([session("a", "running")]);
+    test.notifier.update([session("a", "approval")]);
+    await settle();
+    const sent = test.take();
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toMatchObject({ kind: "alert" });
+    expect(sent[0]?.kind === "alert" && sent[0].envelope.length).toBeLessThanOrEqual(3_000);
+    expect(alertOf(sent[0]!)).toMatchObject({ kind: "approval", title: "Task a" });
+    expect(alertOf(sent[0]!)).not.toHaveProperty("action");
+  });
+
+  it("falls back to the terminal summary for authorized legacy alerts and skips revoked subscriptions", async () => {
+    const denied = { ...target, session: "d".repeat(36), ref: "denied-phone" };
+    const revoked = { ...target, session: "e".repeat(36), ref: "revoked-phone" };
+    let finish: (summary: string) => void = () => {};
+    const pending = new Promise<string>((resolve) => (finish = resolve));
+    const summary = vi.fn<NonNullable<PushNotifierOptions["terminalSummary"]>>(async (recipient) =>
+      recipient === revoked ? pending : "Which output?",
+    );
+    const test = harness(summary, {
+      alertContext: async (recipient) => (recipient === denied ? undefined : {}),
+    });
+    test.context.targets = [target, denied, revoked];
+    const terminal = (state: "running" | "question") => {
+      const base = session("terminal", state);
+      return {
+        ...base,
+        agent: "claude-code",
+        continuation: { ...base.continuation!, executionLocation: "terminal" },
+      };
+    };
+    test.notifier.update([terminal("running")]);
+    test.notifier.update([terminal("question")]);
+    await settle();
+    expect(summary.mock.calls).toEqual([
+      [target, "terminal", "question"],
+      [revoked, "terminal", "question"],
+    ]);
+    const encrypted = test.take();
+    expect(encrypted.map(({ session }) => session)).toEqual([target.session]);
+    expect(encrypted.map(alertOf)).toEqual([
+      expect.objectContaining({ kind: "question", readOnly: true, summary: "Which output?" }),
+    ]);
+    test.context.targets = [target, denied];
+    test.notifier.refresh();
+    finish("Must not be sent");
+    await settle();
+    expect(test.take()).toEqual([]);
+  });
+
+  it("distinguishes a missing terminal preview from access lost during the fallback read", async () => {
+    let allowed = true;
+    let finish: (summary: undefined) => void = () => {};
+    const pending = new Promise<undefined>((resolve) => (finish = resolve));
+    const test = harness(async () => pending, {
+      alertContext: async () => (allowed ? {} : undefined),
+    });
+    const terminal = {
+      ...session("terminal", "question"),
+      agent: "claude-code",
+      continuation: { status: "waiting-input", executionLocation: "terminal" },
+    };
+    test.notifier.update([session("terminal", "running")]);
+    test.notifier.update([terminal]);
+    await settle();
+    allowed = false;
+    finish(undefined);
+    await settle();
+    expect(test.take()).toEqual([]);
+  });
+
   it("encrypts terminal wait summaries, opens the original session and deduplicates snapshots", async () => {
     const lookup = vi.fn<NonNullable<PushNotifierOptions["terminalSummary"]>>(
       async (_target, _id, kind) => (kind === "question" ? "Which output?" : "Edit the test file"),
@@ -405,9 +675,147 @@ describe("push alerts", () => {
 });
 
 describe("push Live Activity", () => {
+  it("keeps the same Live Activity if the relay pauses while its start is in flight", async () => {
+    let recovering = false;
+    let finish: () => void = () => {};
+    const started = new Promise<PushSendResult>((resolve) => {
+      finish = () => resolve({ delivered: true });
+    });
+    const send = vi.fn(async (): Promise<PushSendResult> => ({ delivered: true }));
+    send.mockImplementationOnce(() => started);
+    const test = harness(undefined, {
+      send,
+      recoveringTargets: () => (recovering ? [target] : []),
+      activityDelayMs: 0,
+    });
+    test.notifier.update([session("a", "running")]);
+    expect(send).toHaveBeenCalledOnce();
+
+    recovering = true;
+    test.context.targets = [];
+    test.context.deviceId = undefined;
+    test.notifier.refresh();
+    finish();
+    await settle();
+    expect(send).toHaveBeenCalledOnce();
+
+    recovering = false;
+    test.context.targets = [target];
+    test.context.deviceId = DEVICE;
+    test.notifier.refresh();
+    await settle();
+    expect(send).toHaveBeenCalledOnce();
+  });
+
   function activities(sent: PushSendInput[]) {
     return sent.filter((input) => input.kind === "activity");
   }
+
+  it("seals scoped ActivityKit details and uses a stable version to suppress unchanged updates", async () => {
+    let scope: "allowed" | "busy" | "revoked" = "allowed";
+    let snapshot: NotificationActivitySnapshot = {
+      version: "scoped-one",
+      observedAt: START,
+      running: 1,
+      waiting: 1,
+      priority: {
+        sessionId: "authorized-private-session",
+        title: "Visible only inside encryption",
+        agent: "codex",
+        category: "approval",
+        count: 1,
+      },
+    };
+    const test = harness(undefined, {
+      activitySnapshot: async () => {
+        if (scope === "busy") throw new Error("operation_busy");
+        return scope === "allowed" ? snapshot : undefined;
+      },
+    });
+    test.context.targets = [{ ...target, activityDetails: 1, alerts: false }];
+    test.notifier.update([session("a", "running"), session("global-only", "running")]);
+    await settle();
+    test.advance(61_000);
+    test.notifier.refresh();
+    await settle();
+    const [start] = activities(test.take());
+    expect(start).toMatchObject({
+      event: "start",
+      contentState: { running: 1, waiting: 1, need: "approval", version: snapshot.version },
+    });
+    expect(JSON.stringify(start)).not.toContain("authorized-private-session");
+    expect(JSON.stringify(start)).not.toContain("Visible only inside encryption");
+    const bytes = start?.kind === "activity" ? start.contentState.activityEnvelope : undefined;
+    expect(typeof bytes).toBe("string");
+    expect(openPushEnvelope(String(bytes), phone.privateKey, target.publicKey, DEVICE)).toEqual({
+      v: 1,
+      activity: snapshot,
+    });
+
+    snapshot = { ...snapshot, observedAt: START + MINUTE };
+    test.advance(31_000);
+    test.notifier.refresh();
+    await settle();
+    expect(test.take()).toEqual([]);
+    scope = "busy";
+    snapshot = { ...snapshot, version: "scoped-two", running: 2 };
+    test.notifier.refresh();
+    await settle();
+    expect(test.take()).toEqual([]);
+    scope = "allowed";
+    test.notifier.refresh();
+    await settle();
+    expect(test.take()).toEqual([
+      expect.objectContaining({
+        event: "update",
+        contentState: expect.objectContaining({ running: 2, version: "scoped-two" }),
+      }),
+    ]);
+    scope = "revoked";
+    test.notifier.refresh();
+    await settle();
+    expect(test.take()).toEqual([
+      expect.objectContaining({
+        event: "end",
+        dismissalDate: seconds(test.now()),
+        contentState: {
+          running: 0,
+          waiting: 0,
+          startedAt: seconds(START),
+          endedAt: seconds(test.now()),
+        },
+      }),
+    ]);
+  });
+
+  it("defers an alerting ActivityKit start in quiet hours and ends on policy disable", async () => {
+    let quiet = true;
+    let enabled = true;
+    const test = harness(undefined, {
+      activityStartAllowed: () => !quiet,
+      enabled: () => enabled,
+    });
+    test.notifier.update([session("a", "running")]);
+    test.advance(61_000);
+    test.notifier.refresh();
+    await settle();
+    expect(test.take()).toEqual([]);
+    quiet = false;
+    test.notifier.refresh();
+    await settle();
+    expect(test.take()).toEqual([expect.objectContaining({ event: "start" })]);
+    quiet = true;
+    test.advance(31_000);
+    test.notifier.update([session("a", "running"), session("b", "running")]);
+    await settle();
+    expect(test.take()).toEqual([expect.objectContaining({ event: "update" })]);
+    enabled = false;
+    test.notifier.refresh();
+    await settle();
+    expect(test.take()).toEqual([
+      expect.objectContaining({ event: "end", dismissalDate: seconds(test.now()) }),
+    ]);
+  });
 
   it("starts once work lasts, follows it, and ends after it stops", async () => {
     const test = harness();

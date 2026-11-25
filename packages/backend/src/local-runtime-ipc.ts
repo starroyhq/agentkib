@@ -1,11 +1,22 @@
 import { createHash } from "node:crypto";
-import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync } from "node:fs";
+import {
+  closeSync,
+  constants,
+  fstatSync,
+  lstatSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+} from "node:fs";
 import path from "node:path";
 import { connect, createServer, type TLSSocket } from "node:tls";
+import { acquirePortableFileLease, existingFileLeaseBusy } from "./managed-session-lock";
 import { isReparseOrSymlink } from "./native-files";
 
+export const LOCAL_RUNTIME_IDENTITY = "localRuntime.identity";
 export const LOCAL_RUNTIME_PRESENCE = "localRuntime.presence";
 export const LOCAL_RUNTIME_PRESENCE_CHANGED = "localRuntime.presenceChanged";
+export type LocalRuntimeIdentity = { version: string };
 export type LocalRuntimePresence = { peers: number; primary: boolean };
 
 const AUTH_TIMEOUT_MS = 3000;
@@ -31,6 +42,24 @@ export function localRuntimePaths(root: string) {
   };
 }
 
+export function localRuntimeLeaseBusy(root: string): boolean {
+  return existingFileLeaseBusy(localRuntimePaths(root).lock);
+}
+
+/** Serializes desktop launches separately from the lease owned by the service itself. */
+export function tryAcquireLocalRuntimeLaunchLease(root: string): (() => void) | undefined {
+  const directory = localRuntimePaths(root).root;
+  mkdirSync(directory, { recursive: true, mode: 0o700 });
+  assertPrivateRuntimePath(directory, "directory");
+  try {
+    return acquirePortableFileLease(path.join(directory, "runtime-v1-launch.lock"));
+  } catch (error) {
+    if (error instanceof Error && error.message === "session-managed-by-another-runtime")
+      return undefined;
+    throw error;
+  }
+}
+
 export function assertPrivateRuntimePath(
   file: string,
   kind: "directory" | "file" | "socket",
@@ -49,6 +78,19 @@ export function assertPrivateRuntimePath(
   return stat;
 }
 
+function keyGeneration(stat: ReturnType<typeof assertPrivateRuntimePath>): string {
+  return `${stat.dev}:${stat.ino}:${stat.birthtimeMs}:${stat.mtimeMs}`;
+}
+
+export function localRuntimeKeyGeneration(root: string): string | undefined {
+  try {
+    return keyGeneration(assertPrivateRuntimePath(localRuntimePaths(root).key, "file"));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw error;
+  }
+}
+
 function readKey(root: string, file: string) {
   assertPrivateRuntimePath(root, "directory");
   const stat = assertPrivateRuntimePath(file, "file");
@@ -64,16 +106,19 @@ function readKey(root: string, file: string) {
       throw new Error("Invalid local runtime key");
     const key = readFileSync(fd);
     if (key.length !== 32) throw new Error("Invalid local runtime key");
-    return key;
+    return { key, generation: keyGeneration(opened) };
   } finally {
     closeSync(fd);
   }
 }
 
 /** Private PSK authentication also protects the channel against named-pipe impersonation. */
-export async function connectLocalRuntime(root: string): Promise<TLSSocket> {
+export async function openLocalRuntime(root: string): Promise<{
+  socket: TLSSocket;
+  generation: string;
+}> {
   const paths = localRuntimePaths(root);
-  const key = readKey(paths.root, paths.key);
+  const { key, generation } = readKey(paths.root, paths.key);
   if (process.platform !== "win32") assertPrivateRuntimePath(paths.endpoint, "socket");
   const socket = connect({
     ...TLS_OPTIONS,
@@ -100,11 +145,15 @@ export async function connectLocalRuntime(root: string): Promise<TLSSocket> {
       socket.once("secureConnect", ready).once("error", finish).once("close", closed);
     });
     if (!socket.getCipher()?.name.includes("PSK")) throw new Error("Unverified local runtime host");
-    return socket;
+    return { socket, generation };
   } catch (error) {
     socket.destroy();
     throw error;
   }
+}
+
+export async function connectLocalRuntime(root: string): Promise<TLSSocket> {
+  return (await openLocalRuntime(root)).socket;
 }
 
 export function createLocalRuntimeServer(key: Buffer, accept: (socket: TLSSocket) => void) {

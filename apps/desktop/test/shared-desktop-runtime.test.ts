@@ -1,16 +1,29 @@
 // @vitest-environment node
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { spawn, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { request } from "node:http";
 import { createRequire } from "node:module";
-import { createServer } from "node:net";
+import { createServer, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { createInterface } from "node:readline";
+import { setTimeout as delay } from "node:timers/promises";
 import {
+  createLocalRuntimeServer,
+  LOCAL_RUNTIME_IDENTITY,
   LOCAL_RUNTIME_PRESENCE,
   LOCAL_RUNTIME_PRESENCE_CHANGED,
+  localRuntimePaths,
   type LocalRuntimePresence,
 } from "@agentkib/backend/local-runtime-ipc";
 import {
@@ -20,6 +33,10 @@ import {
   type SessionSubscription,
 } from "@agentkib/runtime-protocol";
 import { afterEach, expect, it } from "vitest";
+import {
+  acquirePortableFileLease,
+  existingFileLeaseBusy,
+} from "../../../packages/backend/src/managed-session-lock";
 import { BackendStore } from "../../../packages/backend/src/store";
 import { resolveDesktopRuntimeProfile } from "../electron/main/application-data-dir";
 import { createLocalRuntimeTransport } from "../electron/main/local-runtime-transport";
@@ -74,6 +91,7 @@ async function runtimeFixture() {
   );
 
   const children: ChildProcess[] = [];
+  const previousOwnerAtLaunch: boolean[] = [];
   cleanups.push(async () => {
     await Promise.all(
       children.map(async (child) => {
@@ -91,11 +109,12 @@ async function runtimeFixture() {
   });
 
   const spawnDaemon: typeof spawn = (...args: Parameters<typeof spawn>) => {
+    previousOwnerAtLaunch.push(existingFileLeaseBusy(localRuntimePaths(shared.root).lock));
     const child = spawn(...args);
     children.push(child);
     return child;
   };
-  async function attach(flavor: "dev" | "formal") {
+  async function attach(flavor: "dev" | "formal", version = "0.34.0") {
     const profile = flavor === "dev" ? dev : formal;
     const { shared } = profile;
     if (!shared) throw new Error("Fixture requires the shared runtime");
@@ -103,10 +122,11 @@ async function runtimeFixture() {
       executablePath:
         process.env.AGENTKIB_TEST_BACKEND_BUNDLE ?? path.resolve("dist-electron/backend.cjs"),
       maxRestarts: 0,
-      clientVersion: flavor,
+      clientVersion: version,
       environment: {
         ...environment,
         AGENTKIB_APP_FLAVOR: "ai.agentkib",
+        AGENTKIB_APP_VERSION: version,
         AGENTKIB_LEGACY_DEV_DATA_DIR: shared.legacyDevDataDir,
       },
       createTransport: (options) =>
@@ -136,7 +156,7 @@ async function runtimeFixture() {
       router,
     };
   }
-  return { attach, children, dataDir, dev, directory, formal, shared };
+  return { attach, children, dataDir, dev, directory, formal, previousOwnerAtLaunch, shared };
 }
 
 it.each([
@@ -151,6 +171,7 @@ it.each([
 
     const first = await runtime.attach(firstFlavor);
     expect(first.handshake.pid).toBe(runtime.children[0]?.pid);
+    expect(first.handshake.runtime.version).toBe("0.34.0");
     await expect(first.currentPresence()).resolves.toEqual({ peers: 0, primary: true });
     const firstCatalog = await first.subscribe();
 
@@ -176,9 +197,99 @@ it.each([
     expect((await reopened.subscribe()).events[0]?.runtimeBootId).toBe(
       firstCatalog.events[0]?.runtimeBootId,
     );
+
+    await second.router.stop();
+    await reopened.router.stop();
+    const reopenedDuringIdle = await runtime.attach(secondFlavor);
+    expect(reopenedDuringIdle.handshake.pid).toBe(first.handshake.pid);
+    expect(runtime.children).toHaveLength(1);
   },
   30_000,
 );
+
+it("retires the previous version and starts a single replacement for concurrent desktops", async () => {
+  const runtime = await runtimeFixture();
+  const first = await runtime.attach("formal", "0.34.0");
+  const firstBoot = (await first.subscribe()).events[0]?.runtimeBootId;
+  const oldProcess = runtime.children[0]!;
+  const exited = once(oldProcess, "exit");
+  await first.router.stop();
+  expect(oldProcess.exitCode).toBeNull();
+  expect(existingFileLeaseBusy(localRuntimePaths(runtime.shared.root).lock)).toBe(true);
+
+  const [formal, dev] = await Promise.all([
+    runtime.attach("formal", "0.35.0"),
+    runtime.attach("dev", "0.35.0"),
+  ]);
+
+  await expect(exited).resolves.toEqual([0, null]);
+  expect(runtime.previousOwnerAtLaunch).toEqual([false, false]);
+  expect(runtime.children).toHaveLength(2);
+  expect(formal.handshake.runtime.version).toBe("0.35.0");
+  expect(formal.handshake.pid).not.toBe(first.handshake.pid);
+  expect(formal.handshake.pid).toBe(runtime.children[1]?.pid);
+  expect(dev.handshake.pid).toBe(formal.handshake.pid);
+  const replacementBoot = (await formal.subscribe()).events[0]?.runtimeBootId;
+  expect(replacementBoot).not.toBe(firstBoot);
+  expect((await dev.subscribe()).events[0]?.runtimeBootId).toBe(replacementBoot);
+}, 60_000);
+
+it("leaves a legacy runtime unjoined and waits for its lease after the endpoint closes", async () => {
+  const runtime = await runtimeFixture();
+  const paths = localRuntimePaths(runtime.shared.root);
+  mkdirSync(paths.root, { mode: 0o700 });
+  const releaseLease = acquirePortableFileLease(paths.lock);
+  cleanups.push(releaseLease);
+  const key = randomBytes(32);
+  const methods: string[] = [];
+  const clients = new Set<Socket>();
+  const legacy = createLocalRuntimeServer(key, (socket) => {
+    clients.add(socket);
+    socket.on("error", () => socket.destroy());
+    socket.once("close", () => clients.delete(socket));
+    createInterface({ input: socket, crlfDelay: Infinity }).on("line", (line) => {
+      const { id, method } = JSON.parse(line) as { id: number; method: string };
+      methods.push(method);
+      socket.write(
+        `${JSON.stringify({
+          jsonrpc: "2.0",
+          id,
+          error: { code: -32001, message: "Local runtime is unavailable for this client" },
+        })}\n`,
+      );
+    });
+  });
+  const closeLegacyEndpoint = async () => {
+    if (!legacy.listening) return;
+    const closed = new Promise<void>((resolve) => legacy.close(() => resolve()));
+    for (const client of clients) client.destroy();
+    await closed;
+    rmSync(paths.key, { force: true });
+  };
+  cleanups.push(closeLegacyEndpoint);
+  const listening = once(legacy, "listening");
+  legacy.listen(paths.endpoint);
+  await listening;
+  if (process.platform !== "win32") chmodSync(paths.endpoint, 0o600);
+  writeFileSync(paths.key, key, { mode: 0o600 });
+
+  const opening = runtime.attach("formal", "0.35.0");
+  void opening.catch(() => undefined);
+  await expect.poll(() => methods).toEqual([LOCAL_RUNTIME_IDENTITY]);
+  await expect.poll(() => clients.size).toBe(0);
+  await closeLegacyEndpoint();
+  // The pipe or socket disappearing precedes final cleanup and release of the lease.
+  await delay(350);
+  expect(runtime.children).toHaveLength(0);
+  expect(methods).toEqual([LOCAL_RUNTIME_IDENTITY]);
+
+  releaseLease();
+  const reopened = await opening;
+  expect(runtime.previousOwnerAtLaunch).toEqual([false]);
+  expect(runtime.children).toHaveLength(1);
+  expect(reopened.handshake.runtime.version).toBe("0.35.0");
+  expect(reopened.handshake.pid).toBe(runtime.children[0]?.pid);
+}, 30_000);
 
 it("retains the benchmark data override as an isolated worker", async () => {
   const directory = path.join(tmpdir(), "unused-agentkib-benchmark-override");

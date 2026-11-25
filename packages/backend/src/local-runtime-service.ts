@@ -14,9 +14,11 @@ import { TypeScriptBackend } from "./index";
 import {
   assertPrivateRuntimePath,
   createLocalRuntimeServer,
+  LOCAL_RUNTIME_IDENTITY,
   LOCAL_RUNTIME_PRESENCE,
   LOCAL_RUNTIME_PRESENCE_CHANGED,
   localRuntimePaths,
+  type LocalRuntimeIdentity,
   type LocalRuntimePresence,
 } from "./local-runtime-ipc";
 import { acquirePortableFileLease, existingFileLeaseBusy } from "./managed-session-lock";
@@ -155,6 +157,7 @@ export async function serveLocalRuntime(
 ) {
   if (!path.isAbsolute(dataDir)) throw new Error("Local runtime data directory must be absolute");
   const paths = localRuntimePaths(root);
+  const identity: LocalRuntimeIdentity = { version: environment.AGENTKIB_APP_VERSION ?? "0.13.0" };
   privateRoot(paths.root);
   const release = acquirePortableFileLease(paths.lock);
   const key = randomBytes(32);
@@ -227,8 +230,10 @@ export async function serveLocalRuntime(
       );
     for (const [id, subscriber] of subscriptions)
       if (subscriber === client) void removeSubscription(id);
-    if (changed) publishPresence();
-    scheduleIdleCheck();
+    if (changed) {
+      publishPresence();
+      scheduleIdleCheck();
+    }
   }
 
   async function dispatch(client: Client, value: unknown) {
@@ -240,10 +245,23 @@ export async function serveLocalRuntime(
       writeFrame(client, failure(id, -32600, "Invalid JSON-RPC request"));
       return;
     }
+    if (method === LOCAL_RUNTIME_IDENTITY) {
+      // An authenticated version probe is not a desktop joining the runtime.
+      writeFrame(client, { jsonrpc: "2.0", id, result: identity });
+      return;
+    }
     if (method === RUNTIME_METHODS.handshake) {
       const reply = await backend.handleAsync(value);
+      if (!reply.error && record(params?.client)?.version !== identity.version) {
+        writeFrame(client, failure(id, -32001, "Local runtime version does not match"));
+        return;
+      }
       const joined =
-        !reply.error && clients.has(client) && !client.ending && !compatibleClients.has(client);
+        !reply.error &&
+        !closing &&
+        clients.has(client) &&
+        !client.ending &&
+        !compatibleClients.has(client);
       if (joined) {
         compatibleClients.add(client);
         lastQuitDecision = undefined;

@@ -2362,6 +2362,35 @@ describe("WebAccessService loopback security boundary", () => {
     }
   });
 
+  it("lets paired clients reconnect both streams after the runtime is replaced", async () => {
+    await bootstrap();
+    const device = await pair();
+    const streams: ReturnType<typeof openStream>[] = [];
+    try {
+      streams.push(await openReadyStream(cookie, ""));
+      streams.push(await openReadyStream());
+      service.runtimeUnavailable();
+      for (const stream of streams) {
+        await vi.waitFor(() => expect(stream.chunks.join("")).toContain("event: unavailable"));
+        expect(stream.chunks.join("")).not.toContain("event: access-ended");
+      }
+
+      const access = await http("/api/web/v1/access");
+      expect(access.json()).toMatchObject({ status: "approved", device: { id: device } });
+      expect(access.json().bootId).not.toBe(bootId);
+      runtime.mockResolvedValue({ runtimeBootId: "runtime-two", revision: 5 });
+      streams.push(await openReadyStream(cookie, ""));
+      const detail = await openReadyStream();
+      streams.push(detail);
+      expect(streamEvents(detail.chunks)[0].payload.live).toMatchObject({
+        runtimeBootId: "runtime-two",
+        revision: 5,
+      });
+    } finally {
+      streams.forEach((stream) => stream.close());
+    }
+  });
+
   it("replaces a device's half-open detail stream when the same session reconnects", async () => {
     await bootstrap();
     await pair();
@@ -2764,11 +2793,19 @@ describe("WebAccessService loopback security boundary", () => {
         .status,
     ).toBe(403);
   });
-  it("preserves approved credentials across restart but invalidates control boot", async () => {
+  it("allows a paired browser to reconnect after the desktop exits with a new control boot", async () => {
     await bootstrap();
-    await pair(true);
+    const device = await pair(true);
     const oldBoot = bootId;
-    await service.shutdown();
+    const stream = await openReadyStream();
+    try {
+      await service.dispose();
+      await vi.waitFor(() => expect(stream.chunks.join("")).toContain("event: unavailable"));
+      expect(stream.chunks.join("")).not.toContain("event: access-ended");
+    } finally {
+      stream.close();
+    }
+    runtime.mockClear();
     service = new WebAccessService({
       dataDir: dir,
       staticDir: dir,
@@ -2777,7 +2814,7 @@ describe("WebAccessService loopback security boundary", () => {
     });
     await service.initialize();
     const access = await http("/api/web/v1/access");
-    expect(access.json().status).toBe("approved");
+    expect(access.json()).toMatchObject({ status: "approved", device: { id: device } });
     expect(access.json().bootId).not.toBe(oldBoot);
     csrf = access.json().csrfToken;
     expect(
@@ -2795,6 +2832,10 @@ describe("WebAccessService loopback security boundary", () => {
       ).status,
     ).toBe(409);
     expect(runtime).not.toHaveBeenCalled();
+    runtime.mockResolvedValue({ runtimeBootId: "runtime-two", revision: 5 });
+    const live = await http("/api/web/v1/live?sessionId=s");
+    expect(live.status).toBe(200);
+    expect(live.json()).toMatchObject({ runtimeBootId: "runtime-two", revision: 5 });
   });
   it("closes SSE immediately on revoke and never forwards subsequent snapshots", async () => {
     await bootstrap();

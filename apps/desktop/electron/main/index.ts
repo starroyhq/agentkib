@@ -784,7 +784,10 @@ function sendRendererEvent(channel: string, payload: unknown): void {
 
 function registerUpdateIpc(): void {
   configureUpdateChannel(autoUpdater, process.platform, process.arch);
+  let updateQuitWork: QuitWorkDecision | undefined;
   nativeAutoUpdater.on("before-quit-for-update", () => {
+    quitWorkDecision ??= updateQuitWork;
+    updateQuitWork = undefined;
     quitApproved = true;
   });
   autoUpdater.autoDownload = false;
@@ -834,9 +837,16 @@ function registerUpdateIpc(): void {
     try {
       event.sender.send(progressChannel, { event: "started", data: {} });
       await autoUpdater.downloadUpdate();
+      // The native updater closes the renderer before the ordinary quit confirmation.
+      // Use the same prepared work and the user's saved choice for this exit.
+      const { ticket, resumeByDefault } = await quitWork();
+      updateQuitWork = ticket ? { ticket, resume: resumeByDefault === true } : undefined;
       event.sender.send(progressChannel, { event: "finished" });
       pendingUpdateVersion = undefined;
       autoUpdater.quitAndInstall();
+    } catch (error) {
+      updateQuitWork = undefined;
+      throw error;
     } finally {
       autoUpdater.removeListener("download-progress", onProgress);
     }

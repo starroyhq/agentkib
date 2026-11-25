@@ -2023,7 +2023,7 @@ export class WebAccessService {
     this.accountTimer = undefined;
     this.unregisterScheduler?.();
     this.unregisterScheduler = undefined;
-    const result = this.adminQueue.then(() => this.shutdown());
+    const result = this.adminQueue.then(() => this.shutdown("unavailable"));
     this.adminQueue = result.catch(() => undefined);
     return result;
   }
@@ -2802,7 +2802,7 @@ export class WebAccessService {
     this.error = "lan_address_unavailable";
     await this.shutdown();
   }
-  async shutdown() {
+  async shutdown(streamCloseEvent: "access-ended" | "unavailable" = "access-ended") {
     this.managedSocket?.close();
     this.managedSocket = undefined;
     // 随应用退出而停止时一并告诉 Runtime：这不是设备授权变更，委派状态不受影响。
@@ -2821,7 +2821,7 @@ export class WebAccessService {
     this.artifacts?.clear();
     this.desktopArtifacts?.clear();
     this.livePreview?.close();
-    this.endStreams();
+    this.endStreams(undefined, streamCloseEvent);
     const previews = [this.previewServer, this.desktopPreviewServer];
     this.previewServer = undefined;
     this.desktopPreviewServer = undefined;
@@ -2844,7 +2844,7 @@ export class WebAccessService {
   runtimeUnavailable() {
     this.bootId = token();
     this.contextArtifactRefs.clear();
-    this.endStreams(undefined, this.options.mode === "lan" ? "unavailable" : "access-ended");
+    this.endStreams(undefined, "unavailable");
   }
   async suspendRelay() {
     await this.relay?.suspend();

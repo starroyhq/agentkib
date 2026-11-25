@@ -45,6 +45,10 @@ jobs:
         env:
           NODE_OPTIONS: --disable-warning=ExperimentalWarning
         run: pnpm test:backend:stability --maxWorkers=2 --testTimeout=15000
+      - name: Test local runtime version handoff
+        env:
+          NODE_OPTIONS: --disable-warning=ExperimentalWarning
+        run: pnpm --filter @agentkib/desktop exec vitest run test/shared-desktop-runtime.test.ts --maxWorkers=1 --testTimeout=15000
 
   typecheck:
     name: Typecheck on Windows x64
@@ -75,3 +79,7 @@ jobs:
         env:
           NODE_OPTIONS: --disable-warning=ExperimentalWarning
         run: pnpm test:backend:stability --maxWorkers=2 --testTimeout=15000
+      - name: Test local runtime version handoff
+        env:
+          NODE_OPTIONS: --disable-warning=ExperimentalWarning
+        run: pnpm --filter @agentkib/desktop exec vitest run test/shared-desktop-runtime.test.ts --maxWorkers=1 --testTimeout=15000

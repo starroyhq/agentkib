@@ -1,4 +1,12 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+
+type LeadMessageReceipt = {
+  found: boolean;
+  sessionId?: string;
+  status?: string;
+  operation?: unknown;
+  ack?: unknown;
+};
 
 /**
  * What a Project Agent's reports go through when they are messages to it: AgentKib's own controls
@@ -8,6 +16,7 @@ export type LeadMessageControls = {
   live(sessionId: string): Promise<Record<string, unknown>>;
   control(value: Record<string, unknown>): Promise<Record<string, unknown>>;
   queue(sessionId: string): Promise<{ data?: Array<Record<string, unknown>> } | null>;
+  receipt?(requestId: string, deviceId: string): LeadMessageReceipt | Promise<LeadMessageReceipt>;
 };
 
 /** The provider has not applied a report, so it can be retried safely. */
@@ -15,6 +24,18 @@ export class LeadReportNotDispatched extends Error {}
 
 /** A native usage hold was observed before sending any controls. */
 export class LeadReportUsageLimit extends LeadReportNotDispatched {}
+
+function attemptId(reportId: string, attempt: number): string {
+  if (attempt === 0) return reportId;
+  const bytes = createHash("sha256")
+    .update(`agentkib-lead-report\0${reportId}\0${attempt}`)
+    .digest()
+    .subarray(0, 16);
+  bytes[6] = (bytes[6]! & 0x0f) | 0x40;
+  bytes[8] = (bytes[8]! & 0x3f) | 0x80;
+  const hex = bytes.toString("hex");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
 
 /**
  * The reports for Codex and DeepSeek Harness Project Agents (docs/agents/project-agent.md). A
@@ -36,11 +57,12 @@ export class MessageLeadReports {
     deviceId: string,
     text: string,
     canSend?: () => boolean,
+    reportId?: string,
   ): Promise<boolean> {
     // Normal and quit reports can both become deliverable at once. Read the next
     // control revision only after the previous report's send or update settles.
     const previous = this.#sending.get(sessionId);
-    const send = () => this.#send(sessionId, deviceId, text, canSend);
+    const send = () => this.#send(sessionId, deviceId, text, canSend, reportId);
     const pending = previous ? previous.then(send, send) : send();
     this.#sending.set(sessionId, pending);
     try {
@@ -50,12 +72,50 @@ export class MessageLeadReports {
     }
   }
 
+  async #delivery(sessionId: string, deviceId: string, reportId: string) {
+    for (let attempt = 0; ; attempt++) {
+      const requestId = attemptId(reportId, attempt);
+      let receipt: LeadMessageReceipt | undefined;
+      try {
+        receipt = await this.controls.receipt?.(requestId, deviceId);
+      } catch {
+        throw new Error("report-receipt-unavailable");
+      }
+      if (!receipt) throw new Error("report-receipt-unavailable");
+      if (!receipt.found) return { requestId };
+      const operation = receipt.operation;
+      if (
+        receipt.sessionId !== sessionId ||
+        (operation !== "send" && operation !== "queue-add" && operation !== "queue-update")
+      )
+        throw new Error("report-receipt-mismatch");
+      if (receipt.status === "accepted") return { requestId, operation };
+      if (
+        receipt.status !== "not-dispatched" ||
+        !receipt.ack ||
+        (receipt.ack as Record<string, unknown>).controlOutcome !== "not-dispatched"
+      )
+        throw new Error("control-outcome-unconfirmed");
+      // A resolved refusal is cached under the old command ID. Advance only when
+      // there is a durable receipt proving that command could not have sent the report.
+    }
+  }
+
   async #send(
     sessionId: string,
     deviceId: string,
     text: string,
     canSend: (() => boolean) | undefined,
+    reportId: string | undefined,
   ): Promise<boolean> {
+    const delivery = reportId ? await this.#delivery(sessionId, deviceId, reportId) : undefined;
+    if (delivery?.operation !== undefined) {
+      if (delivery.operation === "queue-update") {
+        // If the queue update's response was lost, our in-memory text could predate it.
+        this.#waiting.delete(sessionId);
+      }
+      return delivery.operation === "queue-update";
+    }
     const live = await this.controls.live(sessionId).catch((error: unknown) => {
       throw new LeadReportNotDispatched(String(error), { cause: error });
     });
@@ -82,7 +142,7 @@ export class MessageLeadReports {
         const joined = `${waiting.text}\n\n${text}`;
         const updated = await control({
           operation: "queue-update",
-          requestId: randomUUID(),
+          requestId: delivery?.requestId ?? randomUUID(),
           queuedSubmissionId: row.id,
           text: joined,
         });
@@ -92,9 +152,14 @@ export class MessageLeadReports {
         }
         if (updated?.accepted !== false || updated.controlOutcome === "unknown")
           throw new Error(String(updated?.reason ?? updated?.error ?? "report-undelivered"));
+        if (delivery) {
+          if (updated.controlOutcome === "not-dispatched")
+            throw new LeadReportNotDispatched("report-queue-update-refused");
+          throw new Error("control-outcome-unconfirmed");
+        }
       }
     }
-    const requestId = randomUUID();
+    const requestId = delivery?.requestId ?? randomUUID();
     const result = await control({ operation: running ? "queue-add" : "send", requestId, text });
     if (result?.accepted !== true) {
       const reason = String(result?.reason ?? result?.error ?? "report-undelivered");

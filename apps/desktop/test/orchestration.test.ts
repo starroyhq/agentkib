@@ -101,7 +101,7 @@ function service(
   lanes: LaneHost,
   root = directory(),
   bootId = "boot-1",
-  sendReport: (lead: string, device: string, text: string) => boolean = () => false,
+  sendReport: OrchestrationService["sendReport"] = () => false,
   isLeadCapable = (id: string) => id === LEAD,
 ) {
   const created = new OrchestrationService(root, bootId, lanes, isLeadCapable, sendReport);
@@ -258,7 +258,7 @@ describe("Codex Worker sends waiting for the desktop owner", () => {
       },
     });
     const worker = { worker: "worker-1" };
-    orchestration.pause(LEAD, "restart-confirmation-required");
+    orchestration.pause(LEAD);
     expect(parse(await orchestration.call(LEAD, "worker_read", worker))).toMatchObject({
       status: "paused",
       reason: "codex-waiting-for-owner",
@@ -598,12 +598,14 @@ describe("Project Agent supervision", () => {
     );
     expect(resumed.status(LEAD)).toMatchObject({
       paused: false,
-      pendingReports: [expect.stringContaining("turn ended: completed")],
+      reportDeliveries: [
+        { reportId: expect.any(String), text: expect.stringContaining("turn ended: completed") },
+      ],
     });
-    expect(await resumed.overview(LEAD)).toMatchObject({ paused: true, recovering: true });
+    expect(await resumed.overview(LEAD)).toMatchObject({ paused: false, pendingReports: 1 });
     expect(
       parse(await resumed.call(LEAD, "worker_send", { worker: "worker-1", text: "next" })),
-    ).toMatchObject({ reason: "delegation-paused" });
+    ).toMatchObject({ accepted: true });
     await resumed.catchUp();
     expect(delivered).toHaveLength(1);
     expect(await resumed.overview(LEAD)).toMatchObject({ paused: false, pendingReports: 0 });
@@ -941,6 +943,7 @@ describe("Worker interruptions during app quit", () => {
         DEVICE,
         expect.stringContaining(text),
         expect.any(Function),
+        expect.any(String),
       ),
     );
     expect(deliver.mock.calls[0]?.[2]).toContain("interrupted when AgentKib quit");
@@ -949,9 +952,12 @@ describe("Worker interruptions during app quit", () => {
       reason: null,
       autoTurns: 1,
     });
+    expect(
+      parse(await after.call(LEAD, "worker_send", { worker: "worker-1", text: "new" })),
+    ).toMatchObject({ accepted: true });
   });
 
-  it.each(["user-paused", "report-undelivered", "auto-turn-limit"])(
+  it.each(["user-paused", "auto-turn-limit"])(
     "delivers while %s, then resumes without repeating the report",
     async (reason) => {
       const { lanes } = host();
@@ -975,6 +981,7 @@ describe("Worker interruptions during app quit", () => {
           DEVICE,
           expect.stringContaining("interrupted when AgentKib quit"),
           expect.any(Function),
+          expect.any(String),
         ),
       );
       expect(after.status(LEAD)).toMatchObject({
@@ -1028,7 +1035,7 @@ describe("Worker interruptions during app quit", () => {
     deliver.mockImplementationOnce(() => {
       throw new LeadReportUsageLimit("usage-limit");
     });
-    await reopened.catchUp();
+    reopened.limitEnded(LEAD);
     await vi.waitFor(() => expect(deliver).toHaveBeenCalledTimes(1));
     reopened.limitEnded(LEAD);
     await vi.waitFor(() => expect(deliver).toHaveBeenCalledTimes(2));
@@ -1063,12 +1070,13 @@ describe("Worker interruptions during app quit", () => {
         "re-authorized",
         expect.stringContaining("did not start a continuation"),
         expect.any(Function),
+        expect.any(String),
       ),
     );
   });
 
   it.each(["in-flight", "unknown"])(
-    "automatically retries a %s quit report after restart",
+    "automatically retries a %s quit report after restart with its original ID",
     async (mode) => {
       const root = directory();
       const { lanes } = host();
@@ -1076,22 +1084,28 @@ describe("Worker interruptions during app quit", () => {
       before.designate(OWNER);
       await assignWorker(before);
       const { lane } = before.registry.leadOfLane(WORKER)!;
-      const uncertain = vi.fn(() => {
+      const uncertain = vi.fn<OrchestrationService["sendReport"]>(() => {
         if (mode === "in-flight") return new Promise<boolean>(() => {});
         throw new Error("outcome_unknown");
       });
       const after = service(lanes, root, "after", uncertain);
       after.workerInterruptedByQuit(WORKER, "t1", "unknown", { leadId: LEAD, laneId: lane.id });
       await vi.waitFor(() => expect(uncertain).toHaveBeenCalledTimes(1));
+      const [pending] = after.status(LEAD)!.reportDeliveries!;
+      expect(pending!.reportId).toBe(uncertain.mock.calls[0]?.[4]);
       await after.close();
-      const deliver = vi.fn((_lead: string, _device: string, _report: string) => false);
+      const deliver = vi.fn<OrchestrationService["sendReport"]>(() => false);
       const reopened = service(lanes, root, "again", deliver);
       expect(parse(await reopened.call(LEAD, "worker_list", {}))).toMatchObject({
-        paused: true,
-        recovering: true,
+        paused: false,
       });
-      await reopened.catchUp();
+      if (pending!.retryAt !== undefined) {
+        await reopened.catchUp(pending!.retryAt - 1);
+        expect(deliver).not.toHaveBeenCalled();
+      }
+      await reopened.catchUp(pending!.retryAt);
       await vi.waitFor(() => expect(deliver).toHaveBeenCalledTimes(1));
+      expect(deliver.mock.calls[0]?.[4]).toBe(pending!.reportId);
       await reopened.catchUp();
       expect(deliver).toHaveBeenCalledTimes(1);
       expect(reopened.status(LEAD)).toMatchObject({ paused: false, reason: null });
@@ -1114,7 +1128,7 @@ describe("Worker interruptions during app quit", () => {
     const after = service(lanes, root, "after", deliver);
     after.workerInterruptedByQuit(WORKER, "t1", "unknown", { leadId: LEAD, laneId: lane.id });
     expect(deliver).toHaveBeenCalledTimes(1);
-    await after.catchUp();
+    await after.catchUp(after.status(LEAD)!.reportDeliveries![0]!.retryAt!);
     await vi.waitFor(() => expect(deliver).toHaveBeenCalledTimes(2));
     expect(after.status(LEAD)).toMatchObject({
       paused: false,
@@ -1168,33 +1182,71 @@ describe("lead registry", () => {
     expect(second.get(LEAD)).toBeNull();
   });
 
-  it("lifts a legacy restart pause and records the migration once", async () => {
-    const root = directory();
-    const { lanes } = host();
-    const before = service(lanes, root, "old");
-    before.designate(OWNER);
-    before.registry.update(LEAD, (lead) => {
-      lead.paused = true;
-      lead.reason = "restart-confirmation-required";
-      lead.pendingReports = ["held during the old pause"];
-    });
+  it.each(["old", "new"])(
+    "lifts a legacy restart pause once, reading it in boot %s",
+    async (bootId) => {
+      const root = directory();
+      const { lanes } = host();
+      const before = service(lanes, root, "old");
+      before.designate(OWNER);
+      before.registry.update(LEAD, (lead) => {
+        lead.paused = true;
+        lead.reason = "restart-confirmation-required";
+        lead.pendingReports = ["held during the old pause"];
+      });
 
-    const deliver = vi.fn(() => false);
-    const after = service(lanes, root, "new", deliver);
-    expect(after.status(LEAD)).toMatchObject({ paused: false, reason: null });
-    expect(after.roles().get(LEAD)).toMatchObject({ recovering: true });
-    await after.catchUp();
-    expect(deliver).toHaveBeenCalledOnce();
-    expect(deliver.mock.calls[0]).toContain("held during the old pause");
-    const reopened = service(lanes, root, "another-boot", deliver);
-    await reopened.catchUp();
-    expect(deliver).toHaveBeenCalledOnce();
-    expect(
-      reopened
-        .status(LEAD)
-        ?.records.filter((record) => record.outcome === "restart-confirmation-removed"),
-    ).toEqual([expect.objectContaining({ kind: "resume" })]);
-  });
+      const deliver = vi.fn<OrchestrationService["sendReport"]>(() => false);
+      const after = service(lanes, root, bootId, deliver);
+      expect(after.status(LEAD)).toMatchObject({ paused: false, reason: null });
+      await after.catchUp();
+      expect(deliver).toHaveBeenCalledOnce();
+      expect(deliver.mock.calls[0]?.[2]).toBe("held during the old pause");
+      expect(deliver.mock.calls[0]?.[4]).toEqual(expect.any(String));
+      const reopened = service(lanes, root, "another-boot", deliver);
+      await reopened.catchUp();
+      expect(deliver).toHaveBeenCalledOnce();
+      expect(
+        reopened
+          .status(LEAD)
+          ?.records.filter((record) => record.outcome === "restart-confirmation-removed"),
+      ).toEqual([expect.objectContaining({ kind: "resume" })]);
+    },
+  );
+
+  it.each([true, false])(
+    "lifts an old delivery pause and retries only confirmed unsent reports (confirmed %s)",
+    async (confirmed) => {
+      const root = directory();
+      const { lanes } = host();
+      const before = service(lanes, root, "old");
+      before.designate(OWNER);
+      await assignWorker(before);
+      before.registry.update(LEAD, (lead) => {
+        lead.paused = true;
+        lead.reason = "report-undelivered";
+        lead.pendingReports = ["previous pending report"];
+        lead.deliveringReports = ["previous in-flight report"];
+        if (confirmed) lead.reportRetryable = true;
+      });
+
+      const deliver = vi.fn<OrchestrationService["sendReport"]>(() => false);
+      const after = service(lanes, root, "new", deliver);
+      expect(after.status(LEAD)).toMatchObject({
+        paused: false,
+        reason: null,
+        legacyUnconfirmedReports: confirmed
+          ? ["previous in-flight report"]
+          : ["previous in-flight report", "previous pending report"],
+      });
+      expect(
+        parse(await after.call(LEAD, "worker_send", { worker: "worker-1", text: "new" })),
+      ).toMatchObject({ accepted: true });
+      await after.catchUp();
+      expect(deliver.mock.calls.map((call) => call[2])).toEqual(
+        confirmed ? ["previous pending report"] : [],
+      );
+    },
+  );
 });
 
 describe("orchestration service", () => {
@@ -2369,14 +2421,16 @@ describe("orchestration service", () => {
       ]);
       expect(delivered).toHaveLength(1);
       expect(orchestration.status(LEAD)).toMatchObject({
-        paused: true,
-        reason: "auto-turn-limit",
-        autoTurns: 1,
-        pendingReports: [expect.stringContaining("turn ended")],
+        paused: false,
+        autoTurns: 0,
+        reportDeliveries: [expect.any(Object), expect.any(Object)],
       });
-      // One that joined a report still waiting gives its turn back.
+      // A merged delivery frees the reservation; the next waits for the real receipt.
       answers[0]!(true);
-      await expect.poll(() => orchestration.status(LEAD)!.autoTurns).toBe(0);
+      await vi.waitFor(() => expect(delivered).toHaveLength(2));
+      expect(orchestration.status(LEAD)!.autoTurns).toBe(0);
+      answers[1]!(false);
+      await expect.poll(() => orchestration.status(LEAD)!.autoTurns).toBe(1);
     });
 
     it("reports late the turns a worker ended while AgentKib did not watch it", async () => {
@@ -2556,7 +2610,7 @@ describe("a lead that waits for its usage limit to reset", () => {
       reason: "usage-limit",
       autoTurns: 0,
     });
-    expect(orchestration.registry.get(LEAD)!.pendingReports).toHaveLength(1);
+    expect(orchestration.registry.get(LEAD)!.reportDeliveries).toHaveLength(1);
     limited = false;
     orchestration.limitEnded(LEAD);
     await vi.waitFor(() => expect(delivered).toHaveLength(1));

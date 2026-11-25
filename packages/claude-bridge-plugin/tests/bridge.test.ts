@@ -61,7 +61,14 @@ test("the native stream and final result pass through unchanged", async ($, on) 
   expect(final.value.answer).toBe("fixture answer");
 });
 
-async function connectedBridgeFixture(features: string[] = []) {
+async function connectedBridgeFixture(
+  features: string[] = [],
+  previous?: {
+    nativeId: string;
+    receipts: Map<string, unknown>;
+    messages: Array<{ role: string; text: string }>;
+  },
+) {
   type Value = Record<string, any>;
   type Hook = (api: Value, event: Value, next: (event: Value) => any) => any;
   const hooks = new Map<string, Array<{ match: Value; hook: Hook }>>();
@@ -73,7 +80,7 @@ async function connectedBridgeFixture(features: string[] = []) {
     hooks.set(name, [...(hooks.get(name) ?? []), { match, hook }]);
     return { catch: () => undefined };
   });
-  const nativeId = crypto.randomUUID();
+  const nativeId = previous?.nativeId ?? crypto.randomUUID();
   const connection = {
     protocol: 1,
     features,
@@ -85,41 +92,94 @@ async function connectedBridgeFixture(features: string[] = []) {
   // The API is local synthetic data; this exercises the production observer in
   // Claude's actual plugin JS engine without opening a socket or calling a model.
   const stored = new Map<string, unknown>();
+  const receipts = previous?.receipts ?? new Map<string, unknown>();
+  const messages = previous?.messages ?? [];
+  const polls: Value[] = [];
+  let failPoll = false;
+  let reconnects = 0;
+  let reports: Array<{ id: string; text: string }> = [];
+  let submit = async (_text: string): Promise<Value> => ({});
   const api = {
     session: {
       id: async () => nativeId,
       cwd: async () => "/synthetic/workspace",
       root: async () => "/synthetic/workspace",
       version: async () => ({ version: "2.1.301" }),
-      messages: async () => [],
+      messages: async () => messages,
       usage: async () => null,
     },
     command: { register: async () => undefined },
+    tool: { register: async () => undefined },
+    ui: { log: async () => undefined },
+    prompt: { submit: ({ text }: Value) => submit(text) },
     store: {
-      get: async (key: string) => stored.get(key),
+      get: async (key: string) => (key.startsWith("lead-report:1:") ? receipts : stored).get(key),
       set: async (key: string, value: unknown) => {
-        stored.set(key, value);
+        (key.startsWith("lead-report:1:") ? receipts : stored).set(key, value);
       },
     },
     plugin: { root: "/synthetic/plugin" },
-    fs: { read: async () => JSON.stringify({ version: "0.4.0" }) },
-    clock: { every: (_ms: number, callback: () => Promise<void>) => timers.push(callback) },
+    fs: {
+      read: async (path: string) =>
+        JSON.stringify(
+          path === connection.credentialPath
+            ? {
+                ...connection,
+                nativeId,
+                cwd: "/synthetic/workspace",
+                cliVersion: "2.1.301",
+                pluginVersion: "0.5.9",
+                socketPath: "/private/synthetic.sock",
+              }
+            : { version: "0.4.0" },
+        ),
+    },
+    clock: {
+      every: (_ms: number, callback: () => Promise<void>) => timers.push(callback),
+      sleep: async () => undefined,
+    },
     http: {
       fetch: async (url: string, init: Value) => {
         // A liveness check; the Runtime refuses anything but POST.
         if (init.method === "GET") return { ok: false, status: 403, text: "{}" };
         const body = JSON.parse(init.body);
+        if (url.endsWith("/commands")) {
+          polls.push(body);
+          if (failPoll) {
+            failPoll = false;
+            throw new Error("synthetic connection lost");
+          }
+          reports = reports.filter((report) => !body.takenReports?.includes(report.id));
+          return {
+            ok: true,
+            status: 200,
+            text: JSON.stringify({
+              commands: [],
+              lead: {
+                tools: [
+                  {
+                    name: "worker_list",
+                    description: "List workers.",
+                    inputSchema: { type: "object" },
+                  },
+                ],
+                reports,
+              },
+            }),
+          };
+        }
         if (url.endsWith("/events"))
           snapshots.push(
             ...body.events
               .filter((entry: Value) => entry.event.type === "snapshot")
               .map((entry: Value) => entry.event.snapshot),
           );
+        if (url.endsWith("/reconnect")) reconnects += 1;
         return {
           ok: true,
           status: 200,
           text: JSON.stringify(
-            url.endsWith("/pair")
+            url.endsWith("/pair") || url.endsWith("/reconnect")
               ? connection
               : url.endsWith("/events")
                 ? { ackSeq: body.events.at(-1).seq }
@@ -148,8 +208,194 @@ async function connectedBridgeFixture(features: string[] = []) {
     .replaceAll("/", "_")
     .replace(/=+$/, "");
   await run("command.run", { command: "agentkib-connect", args: ticket });
-  return { run, nativeId, snapshots, tick: timers[0] };
+  return {
+    run,
+    nativeId,
+    snapshots,
+    tick: timers[0],
+    poll: timers[1],
+    dispatch: timers[2],
+    polls,
+    receipts,
+    messages,
+    disconnectNextPoll() {
+      failPoll = true;
+    },
+    reconnectCount() {
+      return reconnects;
+    },
+    offer(values: typeof reports) {
+      reports = values;
+    },
+    submit(fn: typeof submit) {
+      submit = fn;
+    },
+  };
 }
+
+const RECEIPT_FEATURES = ["lead-tools", "lead-report-acks"];
+
+async function nativeReportAppended(
+  fixture: Awaited<ReturnType<typeof connectedBridgeFixture>>,
+  text: string,
+) {
+  await fixture.run("session.append", {
+    door: "prompt",
+    origin: { kind: "plugin", name: "agentkib-bridge", asUser: true },
+    message: { type: "user", content: [{ type: "text", text }] },
+  });
+}
+
+test("project report receipt follows native turn evidence even when submit loses its result", async () => {
+  const fixture = await connectedBridgeFixture(RECEIPT_FEATURES);
+  const report = { id: crypto.randomUUID(), text: "A worker completed the fixture" };
+  const submitted: string[] = [];
+  fixture.offer([report]);
+  fixture.submit(async (text) => {
+    submitted.push(text);
+    await nativeReportAppended(fixture, text);
+    throw new Error("synthetic lost submit result");
+  });
+
+  await fixture.poll();
+  expect(fixture.polls.at(-1)?.reportAckIds).toEqual([]);
+  expect(fixture.polls.at(-1)?.takenReports).toBeUndefined();
+  await fixture.dispatch();
+  await fixture.poll();
+  await fixture.dispatch();
+  expect(submitted.length).toBe(1);
+  expect(fixture.polls.at(-1)?.reportAckIds).toEqual([]);
+
+  const turnId = crypto.randomUUID();
+  await fixture.run("turn.start", { turnId, text: submitted[0] });
+  // The first native receipt is lost with the connection. Its retry carries
+  // exactly the same ID after the next lease.
+  fixture.disconnectNextPoll();
+  await fixture.poll();
+  expect(fixture.polls.at(-1)?.reportAckIds).toEqual([report.id]);
+  await fixture.poll();
+  expect(fixture.reconnectCount()).toBe(1);
+  expect(fixture.polls.at(-1)?.reportAckIds).toEqual([report.id]);
+  expect([...fixture.receipts.values()]).toEqual(["delivered"]);
+
+  // The host can offer an old ID again even after the plugin receives its own ACK.
+  await fixture.run("turn.complete", { turnId, answer: "Fixture reply", reason: "answer" });
+  await fixture.poll();
+  await fixture.dispatch();
+  expect(fixture.polls.at(-1)?.reportAckIds).toEqual([report.id]);
+  expect(submitted.length).toBe(1);
+});
+
+test("reloading the terminal plugin reconciles a claimed report without submitting it twice", async () => {
+  const original = await connectedBridgeFixture(RECEIPT_FEATURES);
+  const report = { id: crypto.randomUUID(), text: "A report with reusable wording" };
+  let nativeText = "";
+  original.offer([report]);
+  original.submit(async (text) => {
+    nativeText = text;
+    throw new Error("synthetic crash after native dispatch");
+  });
+  await original.poll();
+  await original.dispatch();
+  expect([...original.receipts.values()]).toEqual(["submitting"]);
+
+  // A new instance shares native history and the existing plugin store only.
+  // An assistant response to identical wording without the marker proves nothing.
+  original.messages.push({ role: "user", text: report.text }, { role: "assistant", text: "Other" });
+  const reloaded = await connectedBridgeFixture(RECEIPT_FEATURES, original);
+  reloaded.offer([report]);
+  const furtherSubmissions: string[] = [];
+  reloaded.submit(async (text) => {
+    furtherSubmissions.push(text);
+    const turnId = crypto.randomUUID();
+    await nativeReportAppended(reloaded, text);
+    await reloaded.run("turn.start", { turnId, text });
+    await reloaded.run("turn.complete", { turnId, answer: "Fixture reply", reason: "answer" });
+    return { text };
+  });
+  await reloaded.poll();
+  await reloaded.dispatch();
+  expect(furtherSubmissions).toEqual([]);
+  expect(reloaded.polls.at(-1)?.reportAckIds).toEqual([]);
+
+  const following = { ...report, id: crypto.randomUUID() };
+  reloaded.offer([report, following]);
+  await reloaded.poll();
+  await reloaded.dispatch();
+  await reloaded.poll();
+  expect(reloaded.polls.at(-1)?.reportAckIds).toEqual([following.id]);
+  expect(furtherSubmissions.length).toBe(1);
+  expect(furtherSubmissions[0]).toContain(following.id);
+
+  // Recover a receipt after Claude has recorded the report's own response.
+  original.messages.push({ role: "user", text: nativeText });
+  const appended = await connectedBridgeFixture(RECEIPT_FEATURES, original);
+  appended.offer([report]);
+  await appended.poll();
+  await appended.poll();
+  expect(appended.polls.at(-1)?.reportAckIds).toEqual([]);
+
+  original.messages.push({ role: "assistant", text: "Fixture reply" });
+  const reconciled = await connectedBridgeFixture(RECEIPT_FEATURES, original);
+  reconciled.offer([report]);
+  await reconciled.poll();
+  await reconciled.poll();
+  expect(reconciled.polls.at(-1)?.reportAckIds).toEqual([report.id]);
+  expect([...original.receipts.values()]).toEqual(["delivered", "delivered"]);
+});
+
+test("compaction delays a report and a legacy Runtime keeps the old intake acknowledgment", async () => {
+  const fixture = await connectedBridgeFixture(RECEIPT_FEATURES);
+  const report = { id: crypto.randomUUID(), text: "Fixture report during compaction" };
+  const submitted: string[] = [];
+  fixture.submit(async (text) => {
+    submitted.push(text);
+    return { drop: "Fixture refusal" };
+  });
+  let finish!: () => void;
+  const compacted = new Promise<void>((resolve) => (finish = resolve));
+  const compact = fixture.run("session.compact", {}, () => compacted);
+  fixture.offer([report]);
+  await fixture.poll();
+  await fixture.dispatch();
+  expect(submitted).toEqual([]);
+  finish();
+  await compact;
+  await fixture.poll();
+  await fixture.dispatch();
+  expect(submitted.length).toBe(1);
+  expect(submitted[0]).toContain(report.id);
+
+  const legacy = await connectedBridgeFixture(["lead-tools"]);
+  legacy.offer([report]);
+  legacy.submit(async (text) => {
+    expect(text).toBe(report.text);
+    submitted.push(text);
+    return { drop: "Fixture refusal" };
+  });
+  await legacy.poll();
+  await legacy.dispatch();
+  expect(submitted.length).toBe(1);
+  await legacy.poll();
+  await legacy.dispatch();
+  expect(submitted.length).toBe(2);
+  expect(legacy.polls.at(-1)?.takenReports).toEqual([report.id]);
+  expect(legacy.polls.at(-1)?.reportAckIds).toBeUndefined();
+});
+
+test("native receipt mode keeps existing long reports intact", async () => {
+  const fixture = await connectedBridgeFixture(RECEIPT_FEATURES);
+  const report = { id: crypto.randomUUID(), text: "A full report\n" + "件".repeat(18_000) };
+  fixture.offer([report]);
+  const submitted: string[] = [];
+  fixture.submit(async (text) => {
+    submitted.push(text);
+    return { drop: "Synthetic refusal" };
+  });
+  await fixture.poll();
+  await fixture.dispatch();
+  expect(submitted).toEqual([`${report.text}\n\n[AgentKib report ID: ${report.id}]`]);
+});
 
 test("the native engine bounds a connected register stream without changing native values", async () => {
   const { run, snapshots, tick } = await connectedBridgeFixture();

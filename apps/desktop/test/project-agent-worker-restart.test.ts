@@ -115,6 +115,8 @@ describe("Project Agent Worker restart", () => {
         owner.sessionId,
         owner.deviceId,
         expect.stringContaining("restart action accepted"),
+        expect.any(Function),
+        expect.stringMatching(/^[a-f0-9-]{36}$/),
       );
     },
   );
@@ -152,6 +154,8 @@ describe("Project Agent Worker restart", () => {
       owner.sessionId,
       owner.deviceId,
       expect.stringContaining("requires user action"),
+      expect.any(Function),
+      expect.stringMatching(/^[a-f0-9-]{36}$/),
     );
   });
 
@@ -245,6 +249,8 @@ describe("Project Agent Worker restart", () => {
       owner.sessionId,
       owner.deviceId,
       expect.stringContaining("Requires user action"),
+      expect.any(Function),
+      expect.stringMatching(/^[a-f0-9-]{36}$/),
     );
     vi.setSystemTime(now + hour);
     expect(await restart(restored)).toMatchObject({ accepted: true });

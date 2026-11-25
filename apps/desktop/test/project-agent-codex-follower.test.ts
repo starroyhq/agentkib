@@ -1084,6 +1084,8 @@ it("sends after the lock clears with fresh policy and reports intervening deskto
         leadId,
         deviceId,
         expect.stringContaining("ChatGPT ran other turns while it waited"),
+        expect.any(Function),
+        expect.any(String),
       );
     },
     { timeout: 4_000 },
@@ -1106,6 +1108,8 @@ it("sends after the lock clears with fresh policy and reports intervening deskto
       expect.stringMatching(
         /turn ended: completed[\s\S]*The worker finished the task after the lock cleared\./,
       ),
+      expect.any(Function),
+      expect.any(String),
     );
   });
   expect(f.nativeCalls.filter(({ method }) => method === "turn/start")).toHaveLength(1);
@@ -1138,6 +1142,8 @@ it("reports native policy refusal at delivery without starting a writer", async 
         leadId,
         deviceId,
         expect.stringContaining("native-policy-approval-policy-mismatch"),
+        expect.any(Function),
+        expect.any(String),
       ),
     { timeout: 4_000 },
   );

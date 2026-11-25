@@ -376,7 +376,13 @@ describe("a Project Agent at its own usage limit", () => {
 
   it("preserves the usage-limit reason while retrying a batch interrupted by restart", async () => {
     let limited = true;
-    const runtime = harness("codex", armed, () => limited);
+    const accepted = Promise.withResolvers<boolean>();
+    const runtime = harness(
+      "codex",
+      armed,
+      () => limited,
+      () => accepted.promise,
+    );
     const before = runtime.open("boot");
     await prepare(before);
     before.registry.update(owner.sessionId, (lead) => {
@@ -400,8 +406,12 @@ describe("a Project Agent at its own usage limit", () => {
     });
     limited = false;
     runtime.read(async () => cleared);
-    await restored.catchUp();
-    expect(runtime.delivered).toHaveBeenCalledTimes(1);
+    const recovery = restored.catchUp();
+    await vi.waitFor(() => expect(runtime.delivered).toHaveBeenCalledTimes(1));
+    expect(restored.roles().get(owner.sessionId)).toHaveProperty("recovering", true);
+    expect(restored.roles().get(owner.sessionId)).not.toHaveProperty("requiresUser");
+    accepted.resolve(false);
+    await recovery;
     expect(runtime.delivered.mock.calls[0]?.[2]).toBe("in-flight batch\n\nnewer batch");
     expect(restored.status(owner.sessionId)).toMatchObject({ paused: false, reason: null });
   });

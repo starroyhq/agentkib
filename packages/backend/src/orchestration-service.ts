@@ -1150,6 +1150,10 @@ export class OrchestrationService {
       this.leadLimited(sessionId)
     )
       return;
+    if (!hold) {
+      this.#leadUsageHolds.set(sessionId, { resumeWhen: "native-reset", needsUser: false });
+      this.delegationChanged();
+    }
     await this.#recoverReports(sessionId, reason);
   }
 
@@ -2490,8 +2494,10 @@ export class OrchestrationService {
     const current = this.registry.get(lead.sessionId);
     if (!current) return refuse("not-a-project-agent");
     const assigned = new Set(current.lanes.map((lane) => lane.id));
+    const recovering = this.#showsRecovery(current);
     return text({
-      paused: current.paused,
+      paused: current.paused || recovering,
+      ...(recovering ? { recovering: true } : {}),
       ...(current.reason ? { reason: current.reason } : {}),
       workers: lanes.filter(({ id }) => assigned.has(id)).map(({ view }) => view),
     });

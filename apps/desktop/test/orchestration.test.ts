@@ -1067,28 +1067,37 @@ describe("Worker interruptions during app quit", () => {
     );
   });
 
-  it("automatically retries a quit report left unconfirmed by the old boot", async () => {
-    const root = directory();
-    const { lanes } = host();
-    const before = service(lanes, root);
-    before.designate(OWNER);
-    await assignWorker(before);
-    const { lane } = before.registry.leadOfLane(WORKER)!;
-    const uncertain = vi.fn(() => {
-      throw new Error("outcome_unknown");
-    });
-    const after = service(lanes, root, "after", uncertain);
-    after.workerInterruptedByQuit(WORKER, "t1", "unknown", { leadId: LEAD, laneId: lane.id });
-    await vi.waitFor(() => expect(uncertain).toHaveBeenCalledTimes(1));
-    await after.close();
-    const deliver = vi.fn((_lead: string, _device: string, _report: string) => false);
-    const reopened = service(lanes, root, "again", deliver);
-    await reopened.catchUp();
-    await vi.waitFor(() => expect(deliver).toHaveBeenCalledTimes(1));
-    await reopened.catchUp();
-    expect(deliver).toHaveBeenCalledTimes(1);
-    expect(reopened.status(LEAD)).toMatchObject({ paused: false, reason: null });
-  });
+  it.each(["in-flight", "unknown"])(
+    "automatically retries a %s quit report after restart",
+    async (mode) => {
+      const root = directory();
+      const { lanes } = host();
+      const before = service(lanes, root);
+      before.designate(OWNER);
+      await assignWorker(before);
+      const { lane } = before.registry.leadOfLane(WORKER)!;
+      const uncertain = vi.fn(() => {
+        if (mode === "in-flight") return new Promise<boolean>(() => {});
+        throw new Error("outcome_unknown");
+      });
+      const after = service(lanes, root, "after", uncertain);
+      after.workerInterruptedByQuit(WORKER, "t1", "unknown", { leadId: LEAD, laneId: lane.id });
+      await vi.waitFor(() => expect(uncertain).toHaveBeenCalledTimes(1));
+      await after.close();
+      const deliver = vi.fn((_lead: string, _device: string, _report: string) => false);
+      const reopened = service(lanes, root, "again", deliver);
+      expect(parse(await reopened.call(LEAD, "worker_list", {}))).toMatchObject({
+        paused: true,
+        recovering: true,
+      });
+      await reopened.catchUp();
+      await vi.waitFor(() => expect(deliver).toHaveBeenCalledTimes(1));
+      await reopened.catchUp();
+      expect(deliver).toHaveBeenCalledTimes(1);
+      expect(reopened.status(LEAD)).toMatchObject({ paused: false, reason: null });
+      expect(reopened.roles().get(LEAD)).not.toHaveProperty("recovering");
+    },
+  );
 
   it("retries a quit report that was definitely not dispatched", async () => {
     const root = directory();

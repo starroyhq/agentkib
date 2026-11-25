@@ -277,7 +277,8 @@ export class LeadRegistry {
       if (lead.reason === "report-undelivered") lead.reportRetryable = true;
       addLeadRecord(lead, "report", null, null, "restart-requeued-quit-report");
     }
-    if (!lead.paused && lead.pendingReports.length) lead.reportRetryable = true;
+    if (!lead.paused && (lead.pendingReports.length || lead.pendingQuitReports?.length))
+      lead.reportRetryable = true;
     lead.revision++;
     return lead;
   }

@@ -1607,13 +1607,34 @@ export class WebAccessService {
    * latest subscription wins when a phone paired more than once.
    */
   pushTargets(): PushTarget[] {
+    const context = this.cloudLoginContext();
+    return context && this.accountLoginRequired()
+      ? this.subscribedPushTargets(context.accountId)
+      : [];
+  }
+
+  /** Subscriptions to retain during automatic recovery, never targets to send to. */
+  pushRecoveringTargets(): PushTarget[] {
+    if (!this.officialRelayConfigured() || this.cloudLoginContext()) return [];
+    return this.subscribedPushTargets();
+  }
+
+  private subscribedPushTargets(accountId?: string): PushTarget[] {
     if (this.disposed || !this.server) return [];
     const now = Date.now();
     const targets = new Map<string, PushTarget>();
     for (const credential of this.credentials) {
-      const push = credential.push;
-      if (!push || credential.expiresAt <= now || !this.pushReady(credential)) continue;
-      const session = credential.account!.sessionId;
+      const { account, push } = credential;
+      if (
+        !push ||
+        !account?.id ||
+        credential.expiresAt <= now ||
+        typeof account.expiresAt !== "number" ||
+        account.expiresAt <= now ||
+        (accountId !== undefined && account.accountId !== accountId)
+      )
+        continue;
+      const session = account.sessionId;
       const earlier = targets.get(session);
       if (!earlier || earlier.updatedAt < push.updatedAt)
         targets.set(session, {
@@ -1632,11 +1653,15 @@ export class WebAccessService {
 
   /** This computer's relay device id while it can send notifications. */
   pushDeviceId(): string | undefined {
-    return this.options.mode === "lan" ? undefined : this.relay?.accountLoginContext?.deviceId;
+    return this.options.mode === "lan" ? undefined : this.cloudLoginContext()?.deviceId;
   }
 
   pushSend(input: PushSendInput): Promise<PushSendResult> {
-    if (this.options.mode === "lan" || !this.relay)
+    if (
+      this.options.mode === "lan" ||
+      !this.relay ||
+      (this.officialRelayConfigured() && !this.cloudLoginContext())
+    )
       return Promise.resolve({ delivered: false, error: "relay_unavailable" });
     return this.relay.pushSend(input);
   }
@@ -1783,7 +1808,7 @@ export class WebAccessService {
         : undefined;
   }
 
-  /** A phone subscribed to notifications, changed what it gets, or stopped them. */
+  /** A subscription or its transport availability changed. */
   onPushChanged(listener: () => void): () => void {
     this.pushEvents.on("changed", listener);
     return () => this.pushEvents.off("changed", listener);
@@ -1794,6 +1819,7 @@ export class WebAccessService {
     return (
       this.options.mode !== "lan" &&
       this.accountLoginRequired() &&
+      !!this.cloudLoginContext() &&
       this.validCloudBinding(credential.account)
     );
   }
@@ -1938,7 +1964,10 @@ export class WebAccessService {
   /** Account recovery suspends the official transport without clearing Web configuration or grants. */
   updateOfficialRelayAccount(available: boolean): Promise<void> {
     const change = ++this.relayAccountChange;
-    if (!available || this.officialRelayOwnerChanged()) this.relayAccountPaused = true;
+    if (!available || this.officialRelayOwnerChanged()) {
+      this.relayAccountPaused = true;
+      if (this.officialRelayConfigured()) this.pushEvents.emit("changed");
+    }
     const work = this.adminQueue.then(async () => {
       if (this.disposed || !this.officialRelayConfigured()) return;
       if (!available) {
@@ -2461,14 +2490,19 @@ export class WebAccessService {
       this.relayOwnerAccountId !== this.options.account?.accountId()
     );
   }
-  private requireCloudLoginContext() {
+  private cloudLoginContext() {
     const context = this.relay?.accountLoginContext;
     if (
       !context ||
       this.officialRelayNeedsAccount() ||
       (this.officialRelayConfigured() && context.accountId !== this.options.account?.accountId())
     )
-      throw new HttpError(503, "account_login_unavailable");
+      return;
+    return context;
+  }
+  private requireCloudLoginContext() {
+    const context = this.cloudLoginContext();
+    if (!context) throw new HttpError(503, "account_login_unavailable");
     return context;
   }
   /** Supplemental receipts belong to the computer's owner, never the paired browser. */
@@ -2928,7 +2962,8 @@ export class WebAccessService {
         return update;
       },
       onStatus: (status) => {
-        if (status.phase !== "ready") return;
+        if (status.phase !== "ready" || epoch !== this.relayEpoch) return;
+        this.pushEvents.emit("changed");
         const update = this.adminQueue.then(async () => {
           if (
             epoch !== this.relayEpoch ||

@@ -461,6 +461,7 @@ async function startApplication(): Promise<void> {
   const remoteAccess = webAccess;
   pushNotifier = new PushNotifier({
     targets: () => remoteAccess.pushTargets(),
+    recoveringTargets: () => remoteAccess.pushRecoveringTargets(),
     deviceId: () => remoteAccess.pushDeviceId(),
     send: (input) => remoteAccess.pushSend(input),
     terminalSummary: (target, sessionId, kind) =>

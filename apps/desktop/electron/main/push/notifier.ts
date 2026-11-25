@@ -77,6 +77,8 @@ export interface PushActivityContent {
 export interface PushNotifierOptions {
   /** The phones that asked for notifications, one entry per login. */
   targets(): readonly PushTarget[];
+  /** Existing subscriptions whose official relay is temporarily unavailable. */
+  recoveringTargets?(): readonly PushTarget[];
   /** This computer's relay device id; undefined while nothing can be sent. */
   deviceId(): string | undefined;
   send(input: PushSendInput): Promise<PushSendResult>;
@@ -157,6 +159,7 @@ interface PendingAlert {
   held?: boolean;
   sending?: boolean;
   processed?: Set<string>;
+  relayHold?: ReadonlyMap<string, PushTarget>;
 }
 function terminalWaitKind(alert: PendingAlert): "approval" | "question" | undefined {
   if (
@@ -203,6 +206,19 @@ const retryable = (error: string) =>
   error === "relay_unavailable" ||
   error === "relay_unreachable" ||
   /^http_(5\d\d|403)$/.test(error);
+
+function sameSubscription(current: PushTarget | undefined, target: PushTarget): boolean {
+  return (
+    current?.session === target.session &&
+    current.updatedAt === target.updatedAt &&
+    current.publicKey === target.publicKey &&
+    current.ref === target.ref &&
+    current.activityDetails === target.activityDetails &&
+    current.approvalActions === target.approvalActions &&
+    current.alerts === target.alerts &&
+    current.liveActivity === target.liveActivity
+  );
+}
 
 function sealAlert(
   target: PushTarget,
@@ -378,9 +394,14 @@ export class PushNotifier {
   #evaluate(): void {
     const now = this.#now();
     const targets = new Map(this.#options.targets().map((target) => [target.session, target]));
+    const recovering = this.#options.recoveringTargets?.() ?? [];
+    const recoveringBySession = new Map(recovering.map((target) => [target.session, target]));
     // A phone that stopped asking, or whose pairing ended, keeps no Live Activity of this computer.
     for (const [session, state] of this.#targets)
-      if (!targets.has(session)) {
+      if (
+        !targets.has(session) &&
+        recoveringBySession.get(session)?.updatedAt !== state.updatedAt
+      ) {
         if (state.activity && !state.busy) this.#end(session, state, now, true);
         if (!state.activity && !state.busy) this.#targets.delete(session);
       }
@@ -397,7 +418,7 @@ export class PushNotifier {
           scopedIdleSince: undefined,
         });
     }
-    this.#flushAlerts(now, targets);
+    this.#flushAlerts(now, targets, recoveringBySession);
     this.#updateActivities(now, targets);
     const busy =
       !!this.#episode ||
@@ -430,19 +451,7 @@ export class PushNotifier {
   }
 
   #currentTarget(target: PushTarget): boolean {
-    return this.#options
-      .targets()
-      .some(
-        (current) =>
-          current.session === target.session &&
-          current.updatedAt === target.updatedAt &&
-          current.publicKey === target.publicKey &&
-          current.ref === target.ref &&
-          current.activityDetails === target.activityDetails &&
-          current.approvalActions === target.approvalActions &&
-          current.alerts === target.alerts &&
-          current.liveActivity === target.liveActivity,
-      );
+    return this.#options.targets().some((current) => sameSubscription(current, target));
   }
 
   #currentAlert(alert: PendingAlert): boolean {
@@ -455,7 +464,11 @@ export class PushNotifier {
     );
   }
 
-  #flushAlerts(now: number, targets: Map<string, PushTarget>): void {
+  #flushAlerts(
+    now: number,
+    targets: Map<string, PushTarget>,
+    recovering: ReadonlyMap<string, PushTarget>,
+  ): void {
     for (const [id, alert] of this.#pending) {
       const result = alert.kind === "completed" || alert.kind === "failed";
       const current = this.#currentAlert(alert);
@@ -478,7 +491,17 @@ export class PushNotifier {
       }
       const expired = now - alert.at > (result ? RESULT_HOLD_MS : NEED_HOLD_MS);
       if (expired) this.#pending.delete(id);
-      else if (delivery === "send" && !alert.sending) {
+      else if (recovering.size) {
+        // Keep the original subscriptions across reconnects. Changing the map also invalidates
+        // any authorization read that was already in flight when the relay paused.
+        alert.relayHold = alert.relayHold
+          ? new Map(
+              [...alert.relayHold].filter(([session, target]) =>
+                sameSubscription(recovering.get(session), target),
+              ),
+            )
+          : recovering;
+      } else if (delivery === "send" && !alert.sending) {
         if (
           (this.#options.alertContext || this.#options.terminalSummary) &&
           terminalWaitKind(alert) === "approval" &&
@@ -510,9 +533,10 @@ export class PushNotifier {
   #sendAlert(alert: PendingAlert, now: number, targets: Map<string, PushTarget>): void {
     const deviceId = this.#options.deviceId();
     if (!deviceId || this.#blockedUntil > now) {
-      this.#pending.delete(alert.session.id);
+      if (!deviceId || !alert.relayHold) this.#pending.delete(alert.session.id);
       return;
     }
+    const relayHold = alert.relayHold;
     const recipients = [...targets.values()].filter((target) => {
       const state = this.#targets.get(target.session);
       if (
@@ -520,6 +544,7 @@ export class PushNotifier {
         !state ||
         state.alertsOffUntil > now ||
         state.blockedUntil > now ||
+        (relayHold !== undefined && !sameSubscription(relayHold.get(target.session), target)) ||
         alert.processed?.has(target.session)
       )
         return false;
@@ -573,6 +598,7 @@ export class PushNotifier {
             if (
               this.#stopped ||
               !state ||
+              alert.relayHold !== relayHold ||
               !this.#currentAlert(alert) ||
               !this.#currentTarget(target) ||
               deviceId !== this.#options.deviceId() ||
@@ -628,7 +654,7 @@ export class PushNotifier {
         );
       } finally {
         alert.sending = false;
-        if (!held && this.#pending.get(alert.session.id) === alert)
+        if (!held && alert.relayHold === relayHold && this.#pending.get(alert.session.id) === alert)
           this.#pending.delete(alert.session.id);
       }
     });
@@ -808,7 +834,10 @@ export class PushNotifier {
       }
       if (
         state.activity &&
-        (this.#stopped || !this.#currentTarget(target) || !(this.#options.enabled?.() ?? true))
+        (this.#stopped ||
+          !(this.#options.enabled?.() ?? true) ||
+          (!this.#currentTarget(target) &&
+            !this.#options.recoveringTargets?.().some((entry) => sameSubscription(entry, target))))
       )
         this.#end(target.session, state, this.#now(), true);
     });

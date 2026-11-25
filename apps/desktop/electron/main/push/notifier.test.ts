@@ -136,6 +136,81 @@ const approval: PushAlertContext = {
 };
 
 describe("push alerts", () => {
+  it.each(["device", "targets"])(
+    "delivers a held alert once after recovering the relay %s",
+    async (missing) => {
+      let recovering = true;
+      const test = harness(undefined, { recoveringTargets: () => (recovering ? [target] : []) });
+      test.context.deviceId = missing === "device" ? undefined : DEVICE;
+      test.context.targets = missing === "targets" ? [] : [target];
+      test.notifier.update([session("a", "running")]);
+      test.notifier.update([session("a", "approval")]);
+      await settle();
+      expect(test.take()).toEqual([]);
+
+      recovering = false;
+      test.context.deviceId = DEVICE;
+      test.context.targets = [target, { ...target, session: "d".repeat(36) }];
+      test.notifier.refresh();
+      test.notifier.refresh();
+      await settle();
+      expect(test.take().map((input) => input.session)).toEqual([target.session]);
+      test.notifier.update([session("a", "approval")]);
+      await settle();
+      expect(test.take()).toEqual([]);
+    },
+  );
+
+  it("does not forward a held alert to a replaced subscription", async () => {
+    let recovering = true;
+    const test = harness(undefined, { recoveringTargets: () => (recovering ? [target] : []) });
+    test.context.targets = [];
+    test.notifier.update([session("a", "running")]);
+    test.notifier.update([session("a", "approval")]);
+
+    recovering = false;
+    test.context.targets = [{ ...target, updatedAt: target.updatedAt + 1 }];
+    test.notifier.refresh();
+    await settle();
+    expect(test.take()).toEqual([]);
+  });
+
+  it("reauthorizes only unsent recipients when the relay recovers during an authorization read", async () => {
+    const second = { ...target, session: "d".repeat(36) };
+    let finish: (value: PushAlertContext | undefined) => void = () => {};
+    const reading = new Promise<PushAlertContext | undefined>((resolve) => (finish = resolve));
+    let recovering = false;
+    const authorize = vi.fn<NonNullable<PushNotifierOptions["alertContext"]>>(async () => ({}));
+    authorize.mockImplementationOnce(async () => ({})).mockImplementationOnce(() => reading);
+    const test = harness(undefined, {
+      recoveringTargets: () => (recovering ? [target, second] : []),
+      alertContext: authorize,
+    });
+    test.context.targets = [target, second];
+    test.notifier.update([session("a", "running")]);
+    test.notifier.update([session("a", "approval")]);
+    await settle();
+    expect(test.take().map((input) => input.session)).toEqual([target.session]);
+
+    recovering = true;
+    test.context.deviceId = undefined;
+    test.context.targets = [];
+    test.notifier.refresh();
+    recovering = false;
+    test.context.deviceId = DEVICE;
+    test.context.targets = [target, second];
+    test.notifier.refresh();
+    finish(undefined);
+    await settle();
+    test.notifier.refresh();
+    await settle();
+    expect(authorize).toHaveBeenCalledTimes(3);
+    expect(test.take().map((input) => input.session)).toEqual([second.session]);
+    test.notifier.refresh();
+    await settle();
+    expect(test.take()).toEqual([]);
+  });
+
   it("seals the R25 interaction and direct decision only for an opted-in phone", async () => {
     const context = vi.fn(async () => approval);
     const test = harness(undefined, { alertContext: context });
@@ -600,6 +675,38 @@ describe("push alerts", () => {
 });
 
 describe("push Live Activity", () => {
+  it("keeps the same Live Activity if the relay pauses while its start is in flight", async () => {
+    let recovering = false;
+    let finish: () => void = () => {};
+    const started = new Promise<PushSendResult>((resolve) => {
+      finish = () => resolve({ delivered: true });
+    });
+    const send = vi.fn(async (): Promise<PushSendResult> => ({ delivered: true }));
+    send.mockImplementationOnce(() => started);
+    const test = harness(undefined, {
+      send,
+      recoveringTargets: () => (recovering ? [target] : []),
+      activityDelayMs: 0,
+    });
+    test.notifier.update([session("a", "running")]);
+    expect(send).toHaveBeenCalledOnce();
+
+    recovering = true;
+    test.context.targets = [];
+    test.context.deviceId = undefined;
+    test.notifier.refresh();
+    finish();
+    await settle();
+    expect(send).toHaveBeenCalledOnce();
+
+    recovering = false;
+    test.context.targets = [target];
+    test.context.deviceId = DEVICE;
+    test.notifier.refresh();
+    await settle();
+    expect(send).toHaveBeenCalledOnce();
+  });
+
   function activities(sent: PushSendInput[]) {
     return sent.filter((input) => input.kind === "activity");
   }

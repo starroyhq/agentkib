@@ -4,8 +4,13 @@ import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer } from "node:http";
-import { createHash } from "node:crypto";
-import type { RelayOptions, RelayStatus } from "./relay/manager";
+import { createHash, generateKeyPairSync } from "node:crypto";
+import type { HomeSession } from "@agentkib/session-catalog";
+import type { Access } from "@agentkib/web-client";
+import { openPushEnvelope } from "../push/envelope-fixture";
+import { PushNotifier } from "../push/notifier";
+import { NotificationPolicyStore } from "../push/policy";
+import type { PushSendInput, RelayOptions, RelayStatus } from "./relay/manager";
 
 const { relays } = vi.hoisted(() => ({
   relays: [] as {
@@ -16,6 +21,7 @@ const { relays } = vi.hoisted(() => ({
     accountLoginContext: { deviceId: string; accountId: string };
     redeemAccountLogin: ReturnType<typeof vi.fn>;
     verifyAccountLogins: ReturnType<typeof vi.fn>;
+    pushSend: ReturnType<typeof vi.fn<(input: PushSendInput) => Promise<{ delivered: true }>>>;
     report(status: RelayStatus): void;
   }[],
 }));
@@ -33,6 +39,7 @@ vi.mock("./relay/manager", async (importOriginal) => ({
     verifyAccountLogins = vi.fn(async (ids: string[]) =>
       ids.map((id) => ({ id, active: true, expiresAt: Date.now() + 86_400_000 })),
     );
+    pushSend = vi.fn(async (_input: PushSendInput) => ({ delivered: true as const }));
     constructor(readonly options: RelayOptions) {
       relays.push(this);
     }
@@ -494,6 +501,123 @@ describe("account ownership and durable pause", () => {
     await service.request({ operation: "relay-stop" });
     await service.updateOfficialRelayAccount(true);
     expect(relays).toHaveLength(2);
+  });
+  it("holds an approval alert during account loss and resumes notifications for the same pairing", async () => {
+    await service.shutdown();
+    const policy = new NotificationPolicyStore(dir);
+    const savedPolicy = await policy.update(
+      { onlyAway: false, categories: { question: false } },
+      () => {},
+    );
+    const waiting: HomeSession = {
+      id: "waiting-session",
+      agent: "codex",
+      title: "Synthetic approval",
+      availability: "readable",
+      workspace_id: "workspace",
+      updated_at: "2026-11-25T00:00:00.000Z",
+      continuation: { status: "awaiting-approval" },
+    };
+    let sessions: HomeSession[] = [];
+    service = new WebAccessService({
+      dataDir: dir,
+      staticDir: dir,
+      runtimeRequest: async () => ({
+        workspaces: [{ id: "workspace", name: "Test workspace", path: dir }],
+        sessions,
+      }),
+      account,
+      notificationPolicy: policy,
+    });
+    await service.initialize();
+    await configured();
+    await saveIdentity({ accountId: "owner" });
+    await service.request({ operation: "remote-enable", brokerUrl });
+    relays[0].report(ready);
+    const headers = await pairBrowser();
+    const request = (route: string, body?: object) =>
+      fetch(`http://127.0.0.1:${port}/api/web/v1/${route}`, {
+        headers,
+        ...(body === undefined ? {} : { method: "POST", body: JSON.stringify(body) }),
+      });
+    const phone = generateKeyPairSync("x25519");
+    const publicKey = phone.publicKey.export({ format: "jwk" }).x!;
+    const subscription = { publicKey, ref: "test-phone", alerts: true, liveActivity: false };
+    expect((await request("push/subscribe", subscription)).status).toBe(200);
+    const before = (await (await request("access")).json()) as Access;
+    expect(before.device?.id).toBeTruthy();
+    const targets = service.pushTargets();
+    expect(targets).toHaveLength(1);
+    const notifier = new PushNotifier({
+      targets: () => service.pushTargets(),
+      recoveringTargets: () => service.pushRecoveringTargets(),
+      deviceId: () => service.pushDeviceId(),
+      send: (input) => service.pushSend(input),
+      alertContext: (target, session, kind) =>
+        service.notificationAlertContext(target, session, kind),
+      delivery: (kind, present, now) => policy.delivery(kind, present, now),
+    });
+    const unsubscribe = service.onPushChanged(() => notifier.refresh());
+    try {
+      notifier.update(sessions);
+      account.signedIn.mockReturnValue(false);
+      account.accountId.mockReturnValue(undefined);
+      const paused = service.updateOfficialRelayAccount(false);
+      expect(service.pushDeviceId()).toBeUndefined();
+      expect(service.pushTargets()).toEqual([]);
+      await paused;
+      sessions = [waiting];
+      notifier.update(sessions);
+      expect(service.pushTargets()).toEqual([]);
+      expect((await request("push/activity")).status).toBe(503);
+
+      account.signedIn.mockReturnValue(true);
+      account.accountId.mockReturnValue("other");
+      await service.updateOfficialRelayAccount(true);
+      expect(relays).toHaveLength(1);
+      expect((await request("push/policy")).status).toBe(503);
+      expect(relays[0].pushSend).not.toHaveBeenCalled();
+
+      account.accountId.mockReturnValue("owner");
+      await service.updateOfficialRelayAccount(true);
+      expect(relays).toHaveLength(2);
+      relays[1].report(ready);
+      await vi.waitFor(() => expect(relays[1].pushSend).toHaveBeenCalledOnce());
+      const sent = relays[1].pushSend.mock.calls[0][0];
+      expect(sent).toMatchObject({ session: targets[0].session, kind: "alert" });
+      if (sent.kind !== "alert") throw new Error("fixture_missing_alert");
+      expect(
+        openPushEnvelope(
+          sent.envelope,
+          phone.privateKey,
+          publicKey,
+          relays[1].accountLoginContext.deviceId,
+        ),
+      ).toMatchObject({ kind: "approval", sessionId: waiting.id });
+      expect(await (await request("access")).json()).toMatchObject({
+        device: before.device,
+        push: { subscribed: true, alerts: true, liveActivity: false },
+      });
+      expect((await request("push/subscribe", subscription)).status).toBe(200);
+      expect(service.pushTargets()).toEqual(targets);
+      expect(await (await request("push/policy")).json()).toEqual({ policy: savedPolicy });
+      expect(await (await request("push/activity")).json()).toMatchObject({
+        activity: {
+          version: expect.any(String),
+          waiting: 1,
+          running: 0,
+          priority: { category: "approval", sessionId: waiting.id },
+        },
+      });
+      await service.updateOfficialRelayAccount(true);
+      relays[1].report(ready);
+      notifier.update(sessions);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(relays[1].pushSend).toHaveBeenCalledOnce();
+    } finally {
+      unsubscribe();
+      await notifier.stop();
+    }
   });
   it("waits for an account at host startup with saved official enablement", async () => {
     await saveIdentity({ accountId: "owner" });

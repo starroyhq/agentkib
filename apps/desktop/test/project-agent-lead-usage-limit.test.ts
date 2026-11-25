@@ -212,7 +212,7 @@ describe("a Project Agent at its own usage limit", () => {
     },
   );
 
-  it("keeps an unconfirmed delivery held across restart without sending it again", async () => {
+  it("retries an unconfirmed recovery batch before newer reports after restart", async () => {
     let attempt = 0;
     const runtime = harness(
       "codex",
@@ -220,7 +220,8 @@ describe("a Project Agent at its own usage limit", () => {
       () => false,
       () => {
         if (++attempt === 1) throw new LeadReportNotDispatched("session-unavailable");
-        throw new Error("control-outcome-unconfirmed");
+        if (attempt === 2) throw new Error("control-outcome-unconfirmed");
+        return false;
       },
     );
     const service = runtime.open("boot");
@@ -230,11 +231,25 @@ describe("a Project Agent at its own usage limit", () => {
     expect(service.status(owner.sessionId)?.deliveringReports).toEqual([
       expect.stringContaining("Check the outcome."),
     ]);
+    await report(service, "second", "Newer report.");
     await service.close();
     const restored = runtime.open("new-boot");
+    expect(restored.status(owner.sessionId)).toMatchObject({
+      reportRetryable: true,
+      pendingReports: [
+        expect.stringContaining("Check the outcome."),
+        expect.stringContaining("Newer report."),
+      ],
+    });
+    expect(restored.roles().get(owner.sessionId)).toHaveProperty("recovering", true);
     await restored.catchUp();
-    expect(runtime.delivered).toHaveBeenCalledTimes(2);
-    expect(restored.status(owner.sessionId)?.paused).toBe(true);
+    expect(runtime.delivered).toHaveBeenCalledTimes(3);
+    const replayed = runtime.delivered.mock.calls[2]![2];
+    expect(replayed.indexOf("Check the outcome.")).toBeGreaterThanOrEqual(0);
+    expect(replayed.indexOf("Newer report.")).toBeGreaterThan(
+      replayed.indexOf("Check the outcome."),
+    );
+    expect(restored.status(owner.sessionId)?.paused).toBe(false);
     expect(restored.roles().get(owner.sessionId)).not.toHaveProperty("recovering");
   });
 
@@ -357,6 +372,48 @@ describe("a Project Agent at its own usage limit", () => {
     restored.userSpoke(owner.sessionId);
     await restored.catchUp();
     expect(runtime.delivered).toHaveBeenCalledTimes(1);
+  });
+
+  it("preserves the usage-limit reason while retrying a batch interrupted by restart", async () => {
+    let limited = true;
+    const accepted = Promise.withResolvers<boolean>();
+    const runtime = harness(
+      "codex",
+      armed,
+      () => limited,
+      () => accepted.promise,
+    );
+    const before = runtime.open("boot");
+    await prepare(before);
+    before.registry.update(owner.sessionId, (lead) => {
+      lead.paused = true;
+      lead.reason = "usage-limit";
+      lead.deliveringReports = ["in-flight batch"];
+      lead.pendingReports = ["newer batch"];
+    });
+
+    const restored = runtime.open("after-crash");
+    await restored.catchUp();
+    expect(runtime.delivered).not.toHaveBeenCalled();
+    expect(restored.status(owner.sessionId)).toMatchObject({
+      paused: true,
+      reason: "usage-limit",
+      reportRetryable: true,
+      pendingReports: ["in-flight batch", "newer batch"],
+      records: expect.arrayContaining([
+        expect.objectContaining({ kind: "report", outcome: "restart-requeued-report" }),
+      ]),
+    });
+    limited = false;
+    runtime.read(async () => cleared);
+    const recovery = restored.catchUp();
+    await vi.waitFor(() => expect(runtime.delivered).toHaveBeenCalledTimes(1));
+    expect(restored.roles().get(owner.sessionId)).toHaveProperty("recovering", true);
+    expect(restored.roles().get(owner.sessionId)).not.toHaveProperty("requiresUser");
+    accepted.resolve(false);
+    await recovery;
+    expect(runtime.delivered.mock.calls[0]?.[2]).toBe("in-flight batch\n\nnewer batch");
+    expect(restored.status(owner.sessionId)).toMatchObject({ paused: false, reason: null });
   });
 
   it("keeps held reports out of a device that lost access", async () => {

@@ -148,11 +148,7 @@ const COMPLETION_WINDOW_MS = 60_000;
 /** The default 10-minute silence threshold gives commands one hour before a note. */
 const LONG_COMMAND_FACTOR = 6;
 /** Pauses that end when the person sends the lead a message (`userSpoke`). */
-const RESUMED_BY_MESSAGE = new Set([
-  "auto-turn-limit",
-  "restart-confirmation-required",
-  "usage-limit",
-]);
+const RESUMED_BY_MESSAGE = new Set(["auto-turn-limit", "usage-limit"]);
 
 /** "42s", "3m 12s", "1h 05m". */
 function elapsed(milliseconds: number): string {
@@ -687,12 +683,17 @@ export type SessionRole =
   | { role: "worker"; leadId: string; name: string; requiresUser?: true };
 
 type AssignmentCandidate = { sessionId: string; reason: string | null; assigned?: boolean };
-type ReportPause = "usage-limit" | "report-undelivered";
+type ReportPause = "usage-limit" | "report-undelivered" | "restart";
 
 function reportPause(lead: Lead): ReportPause | undefined {
-  if (!lead.paused || lead.reportRetryable === false) return;
+  if (!lead.paused) return lead.reportRetryable ? "restart" : undefined;
+  if (lead.reportRetryable === false) return;
   if (lead.reason === "usage-limit") return lead.reason;
   if (lead.reason === "report-undelivered" && lead.reportRetryable) return lead.reason;
+}
+
+function delegationBlocked(lead: Lead): boolean {
+  return lead.paused || reportPause(lead) === "restart";
 }
 
 export class OrchestrationService {
@@ -786,13 +787,14 @@ export class OrchestrationService {
       leads.flatMap((item) => item.lanes.map((lane) => [lane.sessionId, item.sessionId] as const)),
     );
     const capable = !!workspaceId && !workerOwners.has(sessionId) && this.isLeadCapable(sessionId);
+    const blocked = lead && delegationBlocked(lead);
     return {
       capable,
       remaining:
-        capable && !lead?.paused
+        capable && !blocked
           ? Math.max(0, PROJECT_AGENT_MAX_WORKERS - (lead?.lanes.length ?? 0))
           : 0,
-      ...(lead?.paused ? { reason: "delegation-paused" } : {}),
+      ...(blocked ? { reason: "delegation-paused" } : {}),
       candidates: await Promise.all(
         candidateIds.map(async (id): Promise<AssignmentCandidate> => {
           if (id === sessionId || leadIds.has(id))
@@ -852,7 +854,7 @@ export class OrchestrationService {
     return this.registry.registerWorkers(
       sessionId,
       (lead, names) => {
-        if (lead.paused) throw new Error("delegation-paused");
+        if (delegationBlocked(lead)) throw new Error("delegation-paused");
         if (lead.lanes.length + candidates.length > PROJECT_AGENT_MAX_WORKERS)
           throw new Error("worker-limit-reached");
         let number = 1;
@@ -1059,7 +1061,7 @@ export class OrchestrationService {
     const held = this.registry.update(sessionId, (lead) => {
       const scope = this.#effectiveScope(lead, workspaceId);
       this.#requireAuthorizedWorkspaces(scope, authorizedWorkspaceIds);
-      if (this.#recoveringReports.has(sessionId)) return null;
+      if (this.#recoveringReports.has(sessionId) || reportPause(lead) === "restart") return null;
       lead.scope = scope;
       lead.paused = false;
       lead.reason = null;
@@ -1099,7 +1101,7 @@ export class OrchestrationService {
     const current = this.registry.get(sessionId);
     if (!current || current.deliveringReports) return;
     const reason = reportPause(current);
-    if (reason === "report-undelivered") {
+    if (reason === "report-undelivered" || reason === "restart") {
       await this.#recoverReports(sessionId, reason);
       return;
     }
@@ -1128,12 +1130,13 @@ export class OrchestrationService {
       await this.#recoverReports(sessionId, reason);
       return;
     }
-    // Codex's in-memory limit projection is empty immediately after restart.
-    if (live?.executionMode !== "codex-managed" || !hold) return;
+    // A journaled delivery already passed the limit check before the last boot ended.
+    // Otherwise Codex's in-memory limit projection is empty immediately after restart.
+    if (live?.executionMode !== "codex-managed" || (!hold && !current.reportRetryable)) return;
     const limit = workerLimit(live);
     if (limit) {
       const needsUser = limit.continueAt === null && limit.manual !== null;
-      if (hold.needsUser !== needsUser) {
+      if (hold && hold.needsUser !== needsUser) {
         hold.needsUser = needsUser;
         this.delegationChanged();
       }
@@ -1147,12 +1150,16 @@ export class OrchestrationService {
       this.leadLimited(sessionId)
     )
       return;
+    if (!hold) {
+      this.#leadUsageHolds.set(sessionId, { resumeWhen: "native-reset", needsUser: false });
+      this.delegationChanged();
+    }
     await this.#recoverReports(sessionId, reason);
   }
 
   /**
    * The person spoke to the lead: its count of turns started without them restarts, and
-   * reports held at a turn or usage limit or by a restart can go on. Pauses the person chose
+   * reports held at a turn or usage limit can go on. Pauses the person chose
    * or that concern device authorization wait for the panel.
    */
   userSpoke(sessionId: string): void {
@@ -1175,6 +1182,7 @@ export class OrchestrationService {
       lead.reason = null;
       addLeadRecord(lead, "resume", null, null, "user-message");
       const pending = lead.pendingReports;
+      delete lead.reportRetryable;
       lead.pendingReports = [];
       return pending;
     });
@@ -1231,7 +1239,7 @@ export class OrchestrationService {
 
   checkDeferredCodexSend(owner: DeferredCodexSendOwner): "ready" | "paused" | "revoked" {
     const current = this.#deferredCodexAssignment(owner);
-    return !current ? "revoked" : current.lead.paused ? "paused" : "ready";
+    return !current ? "revoked" : delegationBlocked(current.lead) ? "paused" : "ready";
   }
 
   deferredCodexSendResult(
@@ -1836,7 +1844,7 @@ export class OrchestrationService {
     // The turn is counted before the report goes, so reports sent at once cannot pass the limit
     // together; one that joins a waiting report, or is not sent, gives it back.
     const verdict = this.registry.update(leadId, (current) => {
-      if (current.paused) return "paused";
+      if (delegationBlocked(current)) return "paused";
       if (current.autoTurns >= current.scope.maxAutoTurns) return "limit";
       current.autoTurns++;
       return "send";
@@ -1964,6 +1972,11 @@ export class OrchestrationService {
       if (this.registry.get(leadId)?.createdAt !== lead.createdAt) return;
       this.registry.update(leadId, (current) => {
         if (result === "unknown") {
+          if (reportPause(current) === "restart") {
+            current.paused = true;
+            current.reason = "report-undelivered";
+            addLeadRecord(current, "pause", null, null, current.reason);
+          }
           current.reportRetryable = false;
           if (current.reason === reason) current.reason = "report-undelivered";
           return;
@@ -2075,13 +2088,14 @@ export class OrchestrationService {
   roles(): Map<string, SessionRole> {
     const roles = new Map<string, SessionRole>();
     for (const lead of this.registry.list()) {
+      const recovering = this.#showsRecovery(lead);
       roles.set(lead.sessionId, {
         role: "lead",
         workers: lead.lanes.length,
-        paused: lead.paused,
+        paused: lead.paused || recovering,
         reason: lead.paused ? lead.reason : null,
         reports: this.queuedReports(lead.sessionId),
-        ...(this.#showsRecovery(lead) ? { recovering: true } : {}),
+        ...(recovering ? { recovering: true } : {}),
         ...((lead.paused && lead.reason === "usage-limit" && this.#leadNeedsUser(lead.sessionId)) ||
         this.lanes.managedLeadNeedsUser?.(lead.sessionId)
           ? { requiresUser: true }
@@ -2110,6 +2124,7 @@ export class OrchestrationService {
   }
 
   #showsRecovery(lead: Lead): boolean {
+    if (reportPause(lead) === "restart") return true;
     return (
       reportPause(lead) !== undefined &&
       (!lead.deliveringReports || this.#recoveringReports.has(lead.sessionId)) &&
@@ -2140,11 +2155,12 @@ export class OrchestrationService {
         };
       }),
     );
+    const recovering = this.#showsRecovery(lead);
     return {
       sessionId,
-      paused: lead.paused,
+      paused: lead.paused || recovering,
       reason: lead.reason,
-      ...(this.#showsRecovery(lead) ? { recovering: true } : {}),
+      ...(recovering ? { recovering: true } : {}),
       scope: this.#effectiveScope(lead, workspaceId),
       autoTurns: lead.autoTurns,
       pendingReports:
@@ -2209,7 +2225,7 @@ export class OrchestrationService {
   }
 
   async close(): Promise<void> {
-    // Preserve an open completion window in the existing restart-pause queue.
+    // Preserve an open completion window so the next boot can deliver it.
     try {
       for (const leadId of this.#completions.keys())
         this.#reportBatch(leadId, [], Date.now(), true);
@@ -2356,7 +2372,8 @@ export class OrchestrationService {
     const lead = this.registry.get(leadId);
     if (!lead) return refuse("not-a-project-agent");
     const mutating = !["worker_list", "worker_read"].includes(name);
-    if (mutating && lead.paused) return refuse("delegation-paused", { why: lead.reason });
+    if (mutating && delegationBlocked(lead))
+      return refuse("delegation-paused", { why: lead.reason });
     try {
       switch (name) {
         case "worker_list":
@@ -2403,7 +2420,7 @@ export class OrchestrationService {
     if (!current?.lanes.some((worker) => worker.id === lane.id))
       throw new Error("worker-unavailable");
     this.#checkAssignedWorkspace(lane);
-    if (delegated && (current.paused || current.deviceId !== lead.deviceId))
+    if (delegated && (delegationBlocked(current) || current.deviceId !== lead.deviceId))
       throw new Error("delegation-paused");
     return current;
   }
@@ -2477,8 +2494,10 @@ export class OrchestrationService {
     const current = this.registry.get(lead.sessionId);
     if (!current) return refuse("not-a-project-agent");
     const assigned = new Set(current.lanes.map((lane) => lane.id));
+    const recovering = this.#showsRecovery(current);
     return text({
-      paused: current.paused,
+      paused: current.paused || recovering,
+      ...(recovering ? { recovering: true } : {}),
       ...(current.reason ? { reason: current.reason } : {}),
       workers: lanes.filter(({ id }) => assigned.has(id)).map(({ view }) => view),
     });

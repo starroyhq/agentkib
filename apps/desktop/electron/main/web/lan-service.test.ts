@@ -24,6 +24,7 @@ describe("hosted LAN transport", () => {
     method = "GET",
     body?: unknown,
     legacy = false,
+    targetPort = port,
   ) {
     return new Promise<{
       status: number;
@@ -33,7 +34,7 @@ describe("hosted LAN transport", () => {
       const req = request(
         {
           hostname: "127.0.0.1",
-          port,
+          port: targetPort,
           path: `/api/web/v1${path}`,
           method,
           headers: {
@@ -156,6 +157,89 @@ describe("hosted LAN transport", () => {
     await service.shutdown();
     vi.restoreAllMocks();
     await rm(dir, { recursive: true, force: true });
+  });
+
+  it("exposes the remaining anonymous window to an allowed LAN origin", async () => {
+    const startedAt = Date.now();
+    const clock = vi.spyOn(Date, "now").mockReturnValue(startedAt);
+    const rates = (service as unknown as { rates: Map<string, { count: number; until: number }> })
+      .rates;
+    rates.set("anonymous", { count: 598, until: startedAt + 2_001 });
+
+    expect((await http("/stream?protocolVersion=2")).status).toBe(401);
+    expect((await http("/info")).status).toBe(200);
+    const blocked = await http("/access");
+    expect(blocked.status).toBe(429);
+    expect(blocked.data).toEqual({ error: "rate_limited" });
+    expect(blocked.headers["retry-after"]).toBe("3");
+    expect(blocked.headers["access-control-allow-origin"]).toBe(HOSTED_ORIGIN);
+    expect(
+      String(blocked.headers["access-control-expose-headers"]).toLowerCase().split(/,\s*/),
+    ).toContain("retry-after");
+
+    expect((await http("/info", { Authorization: `Bearer ${"a".repeat(43)}` })).status).toBe(429);
+    const wrongOrigin = await http("/info", { Origin: "https://invalid.example" });
+    expect(wrongOrigin.status).toBe(403);
+    expect(wrongOrigin.headers["access-control-allow-origin"]).toBeUndefined();
+    expect(wrongOrigin.headers["access-control-expose-headers"]).toBeUndefined();
+    clock.mockReturnValue(startedAt + 2_000);
+    expect((await http("/info")).headers["retry-after"]).toBe("1");
+    clock.mockReturnValue(startedAt + 2_001);
+    expect((await http("/info")).status).toBe(200);
+  });
+
+  it("keeps an independent LAN pairing outside the remote service's probe budget", async () => {
+    const reservation = createServer();
+    await new Promise<void>((resolve) => reservation.listen(0, "127.0.0.1", resolve));
+    const remotePort = (reservation.address() as { port: number }).port;
+    await new Promise<void>((resolve) => reservation.close(() => resolve()));
+    const remote = new WebAccessService({
+      dataDir: join(dir, "remote"),
+      staticDir: dir,
+      runtimeRequest: runtime,
+      sharedControl: shared,
+    });
+    const remoteOrigin = "https://control.example.test";
+    let remoteCookie = "";
+    const remoteHttp = (path: string) =>
+      http(
+        path,
+        { Host: new URL(remoteOrigin).host, Cookie: remoteCookie, Origin: remoteOrigin },
+        "GET",
+        undefined,
+        false,
+        remotePort,
+      );
+    try {
+      await remote.initialize();
+      await remote.request({
+        operation: "configure",
+        enabled: true,
+        port: remotePort,
+        externalOrigin: "",
+        experimentalEnabled: false,
+      });
+      await remote.setRelayOrigins(remoteOrigin, "https://preview.example.net");
+      const access = await remoteHttp("/access");
+      expect(access.status).toBe(200);
+      remoteCookie = access.headers["set-cookie"]![0].split(";")[0];
+      await approveLegacyBrowser(remote, remoteCookie);
+      await bootstrap();
+      await pair();
+
+      for (let i = 0; i < 30; i++) expect((await remoteHttp("/info")).status).toBe(200);
+      expect((await remoteHttp("/access")).status).toBe(429);
+      for (let i = 0; i < 30; i++) expect((await http("/info")).status).toBe(200);
+      const limited = await http("/access");
+      expect(limited.status).toBe(429);
+      expect(limited.headers["access-control-allow-origin"]).toBe(HOSTED_ORIGIN);
+      expect(
+        String(limited.headers["access-control-expose-headers"]).toLowerCase().split(/,\s*/),
+      ).toContain("retry-after");
+      expect(Number(limited.headers["retry-after"])).toBeGreaterThan(0);
+    } finally {
+      await remote.shutdown();
+    }
   });
 
   it("validates RFC1918 and exact host/origin, rejecting absent and null origins", async () => {

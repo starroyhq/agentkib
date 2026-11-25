@@ -153,11 +153,11 @@ Plan／Goal 后续修正与分项验收见 [原生 Plan／Goal 接入验收](../
 经官方中继配对、并绑定到这台电脑所登录账号的手机 App 可以订阅这台电脑的通知（目前只有 iOS）。中继要配置 APNs 才会转发；未配置时手机登记推送会得到 `push_unavailable`。
 
 - **提醒**：会话开始等待批准、回答或核对结果时提醒。电脑观察到运行中的一轮完成或失败时也提醒。默认只在电脑闲置两分钟或锁定后发送。暂缓的提醒在条件恢复时仍须有效，等待处理的最多保留 8 小时，完成或失败最多保留 15 分钟。同一会话的新提醒会替换旧提醒，每部手机每小时最多 30 条。
-- **实时活动**（锁屏和灵动岛）：会话持续工作 1 分钟后开始，显示运行中和等你处理的会话数、开始时间，只有一个会话时显示它的标题，只有一个会话在等待时显示它在等什么。全部停下 30 秒后结束，结束状态在锁屏保留 5 分钟。内容变化时更新，两次至少间隔 30 秒，有会话开始等待的那次以高优先级发送，没有变化时每 15 分钟刷新一次；超过 20 分钟没有更新（电脑休眠、断网或无法读取会话目录）时手机把它标为过时。iOS 限制一个实时活动 8 小时，电脑会在此之前换一个新的。在手机上移除后，这一轮工作不再重新出现；退出 AgentKib 时结束。
+- **实时活动**（锁屏和灵动岛）：会话持续工作 1 分钟后开始，显示运行中和等你处理的会话数、开始时间，只有一个会话在等待时显示它在等什么。全部停下 30 秒后结束，结束状态在锁屏保留 5 分钟。内容变化时更新，两次至少间隔 30 秒，有会话开始等待的那次以高优先级发送，没有变化时每 15 分钟刷新一次；超过 20 分钟没有更新（电脑休眠、断网或无法读取会话目录）时手机把它标为过时。iOS 限制一个实时活动 8 小时，电脑会在此之前换一个新的。在手机上移除后，这一轮工作不再重新出现；退出 AgentKib 时结束。
 
 电脑的账号登录失效时，尚未发送的提醒会在原有时限内等待。同一账号重新登录并恢复官方中继后，电脑会重新核对原订阅、会话权限和通知策略，再发送仍有效的提醒。
 
-提醒在电脑上加密，中继和 Apple 只转发密文；手机的通知扩展解密后显示，解不开时显示通用文字。每条提醒用新的 X25519 临时密钥与手机公钥协商，经 HKDF-SHA256（salt 为临时公钥接手机公钥，info 为 `agentkib-push-v1`）派生 AES-256-GCM 密钥，电脑的中继设备 ID 作为附加数据，中继无法把一台电脑的提醒冒充成另一台的。密文格式为 base64url：版本 `1`（1 字节）、临时公钥（32）、nonce（12）、密文、tag（16）；明文是 `{v: 1, ref, kind, sessionId, agent, title?, computer?, summary?, readOnly?, at}`，`kind` 为 `approval`、`question`、`verify`、`completed` 或 `failed`，`at` 为毫秒时间戳。原有实时活动的明文内容只有 `{running, waiting, need?, title?, startedAt, endedAt?}`（时间为秒）。手机公钥经已配对的 HTTPS 连接交给电脑，不经过账号服务。 终端 Claude 的审批和提问通知带 `readOnly: true`，有核实内容时在加密载荷附带 `summary`，点按后打开原会话。
+提醒在电脑上加密，中继和 Apple 只转发密文；手机的通知扩展解密后显示，解不开时显示通用文字。每条提醒用新的 X25519 临时密钥与手机公钥协商，经 HKDF-SHA256（salt 为临时公钥接手机公钥，info 为 `agentkib-push-v1`）派生 AES-256-GCM 密钥，电脑的中继设备 ID 作为附加数据，中继无法把一台电脑的提醒冒充成另一台的。密文格式为 base64url：版本 `1`（1 字节）、临时公钥（32）、nonce（12）、密文、tag（16）；明文是 `{v: 1, ref, kind, sessionId, agent, title?, computer?, summary?, readOnly?, at}`，`kind` 为 `approval`、`question`、`verify`、`completed` 或 `failed`，`at` 为毫秒时间戳。实时活动的基础明文内容为 `{running, waiting, need?, startedAt, endedAt?}`（时间为秒）。手机公钥经已配对的 HTTPS 连接交给电脑，不经过账号服务。 终端 Claude 的审批和提问通知带 `readOnly: true`，有核实内容时在加密载荷附带 `summary`，点按后打开原会话。
 
 `POST push/subscribe` 的正文为 `{publicKey, ref, alerts, liveActivity}`：`publicKey` 是 32 字节 X25519 公钥的 base64url，`ref` 是手机给这台电脑起的标识（8–64 位字母、数字、`_` 或 `-`），原样放进每条提醒，手机用它打开对应的电脑。选择不变时重复订阅不产生变化，App 每次启动都可以订阅。`POST push/unsubscribe` 取消。`GET access` 只对可以接收通知的配对返回 `push: {version: 1, subscribed, alerts?, liveActivity?}`；局域网连接、未绑定账号或自建中继没有这个字段，订阅返回 `409 push_unavailable`。订阅随配对保存，配对撤销、退出登录或账号登录结束时一起失效，同一登录配对了多次时以最近的订阅为准。
 
@@ -184,4 +184,4 @@ Plan／Goal 后续修正与分项验收见 [原生 Plan／Goal 接入验收](../
 
 - `GET /api/web/v1/push/policy` 返回 `{policy}`。完全访问且有设置授权的设备可通过同路径 `POST` 局部更新 `enabled`、`categories`（审批、提问、完成、失败）、`onlyAway` 或 `quietHours`。桌面和手机使用同一台电脑保存的策略。勿扰以主机本地 `HH:mm` 表示，支持跨午夜，设为 `null` 关闭。勿扰期间暂缓普通提醒和会发出可见提醒的实时活动启动，已启动活动可静默更新。
 - `GET /api/web/v1/push/activity` 返回 `{activity: {version, observedAt, running, waiting, priority?}}`，按设备的当前工作区授权计算。最优先的一项附会话 ID、Agent、类别和同类别计数，审批优先于提问。小组件重连时可读取快照，使用版本判断变化。
-- 新手机也可在订阅中加 `activityDetails: 1`。实时活动保留计数与时间，附可选 `version` 与 `activityEnvelope`。后者使用同一加密方案封装 `{v: 1, activity}`，会话详情不出现在明文 `contentState`。原有客户端仍使用原有提醒和实时活动字段。
+- 手机可在订阅中加 `activityDetails: 1`，接收可选的 `version` 和 `activityEnvelope`。后者使用同一加密方案封装 `{v: 1, activity}`，可包含优先项及其会话标题。旧客户端仍可解码提醒和实时活动的基础字段。

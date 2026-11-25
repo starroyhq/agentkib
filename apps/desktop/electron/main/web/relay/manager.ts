@@ -89,8 +89,8 @@ export type AccountLoginProof = {
 };
 /**
  * A notification for a phone login of this computer's account. An alert carries an envelope only
- * the phone can open; Live Activity content travels as plain JSON (Apple's rule), so it holds
- * counts, times and at most one session title. Dates are UNIX seconds.
+ * the phone can open. Live Activity counters and metadata travel as plain JSON, with any session
+ * details sealed for the phone. Dates are UNIX seconds.
  */
 export type PushSendInput = { session: string; collapseId?: string } & (
   | { kind: "alert"; envelope: string }

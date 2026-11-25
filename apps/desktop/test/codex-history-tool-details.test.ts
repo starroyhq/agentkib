@@ -176,7 +176,14 @@ describe("Codex history tool details", () => {
       mcp: { server: "docs", tool: "lookup" },
     });
     expect(mcp!.duration_ms).toBe(300);
-    expect(final!.turn_meta).toEqual({ outcome: "completed", duration_ms: 127_000 });
+    expect(final!.turn_meta).toEqual({
+      outcome: "completed",
+      duration_ms: 127_000,
+      summary: {
+        files: [{ path: "src/app.ts", added: 2, removed: 1 }],
+        checks: [{ name: "pnpm test", status: "failed", exit_code: 1 }],
+      },
+    });
     expect(page.events.filter((event) => event.turn_meta)).toHaveLength(1);
     expect(JSON.stringify(page)).not.toContain("hidden");
   });
@@ -223,6 +230,19 @@ describe("Codex history tool details", () => {
       children: 2,
     });
     expect(events.filter((event) => event.kind === "tool-summary")).toHaveLength(4);
+  });
+
+  it("marks evidence from a clipped completed turn as partial on a fresh read and on reconnect", () => {
+    const file = rollout(turnRows("t3-partial"));
+    const first = read(file, 4);
+    expect(first.next_cursor).not.toBeNull();
+    const summary = first.events.at(-1)?.turn_meta?.summary;
+    expect(summary).toEqual({
+      files: [{ path: "src/app.ts", added: 2, removed: 1 }],
+      checks: [{ name: "pnpm test", status: "failed", exit_code: 1 }],
+      partial: true,
+    });
+    expect(read(file, 4).events.at(-1)?.turn_meta?.summary).toEqual(summary);
   });
 
   it("ends a failed turn with Codex's own error text, as the live view does", () => {

@@ -1,5 +1,10 @@
 export { mergeCatalogSessions, isStaleCatalogRead, retryStaleCatalogRead } from "./catalog";
 export type { IncompleteSessionSource } from "./catalog";
+export type {
+  WorkspaceDiff,
+  WorkspaceDiffContext,
+  WorkspaceDiffContextLine,
+} from "@agentkib/runtime-protocol";
 export { PROJECT_AGENT_MAX_WORKERS, SESSION_RESOURCE_LIMIT } from "@agentkib/runtime-protocol";
 import type { ConversationTaskSummary } from "./task-summary";
 export type {
@@ -41,6 +46,7 @@ import type {
   SessionExecution,
   SessionFeedback,
   SessionPendingInteraction,
+  SessionPlanProgress,
   SessionProjectAgentCapabilities,
   SessionProviderDeclaration,
   SessionQueueItemActions,
@@ -71,6 +77,10 @@ export type {
   ConversationToolDetail,
   ConversationToolKind,
   ConversationTurnMeta,
+  ConversationTurnSummary,
+  SessionPlanProgress,
+  SessionPlanStep,
+  SessionPlanStepStatus,
   ClaudeBridgeCompatibilityStatus,
   ClaudeBridgeConnectionFailure,
   HistorySearchQuery,
@@ -471,6 +481,8 @@ export interface UsageLimitNotice {
 }
 export interface Live {
   sessionId: string;
+  /** Latest observed plan. A state patch replaces this field; null clears the preceding turn. */
+  planProgress?: SessionPlanProgress | null;
   /** Execution evidence from the provider. It does not authorize controls. */
   execution?: SessionExecution;
   feedback?: readonly SessionFeedback[];
@@ -708,6 +720,8 @@ export interface LivePermission {
 }
 export interface SessionCapabilities {
   sessionId: string;
+  /** The current provider mode can report a native turn plan. */
+  planProgress?: { live: true };
   provider?: SessionProviderDeclaration;
   execution?: SessionExecution;
   commandMenu?: SessionCommandMenu;

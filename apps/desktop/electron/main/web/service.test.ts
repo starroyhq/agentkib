@@ -312,6 +312,49 @@ describe("WebAccessService loopback security boundary", () => {
     expect((await http("/api/web/v1/managed/context?sessionId=unknown")).status).toBe(403);
   });
 
+  it.each(["revoke", "expire"])(
+    "rechecks file access before returning diff context on %s",
+    async (action) => {
+      let resolve!: (value: unknown) => void;
+      const reply = new Promise((onResolve) => (resolve = onResolve));
+      runtime.mockImplementation(async (params) => {
+        const operation = (params as { operation: string }).operation;
+        if (operation === "catalog")
+          return { workspaces: [{ id: "workspace", name: "Visible", path: dir }], sessions: [] };
+        if (operation === "diff") return reply;
+        return {};
+      });
+      await service.request({
+        operation: "configure",
+        enabled: true,
+        port,
+        externalOrigin: "",
+        experimentalEnabled: true,
+        allowedWorkspaceIds: ["workspace"],
+      });
+      await bootstrap();
+      const deviceId = await approveLegacyBrowser(service, cookie, { files: true });
+      const reading = http("/api/web/v1/diff?workspaceId=workspace&context=1");
+      const result = { patch: "", context: { lines: [{ text: "private context" }] } };
+      try {
+        await vi.waitFor(() =>
+          expect(runtime).toHaveBeenCalledWith(
+            expect.objectContaining({ operation: "diff", context: true }),
+          ),
+        );
+        if (action === "revoke") await service.request({ operation: "revoke", id: deviceId });
+        else vi.spyOn(Date, "now").mockReturnValue(Date.now() + 31 * 24 * 60 * 60 * 1000);
+        resolve(result);
+        const response = await reading;
+        expect(response.status).toBe(401);
+        expect(response.body).not.toContain("private context");
+      } finally {
+        resolve(result);
+        await reading.catch(() => undefined);
+      }
+    },
+  );
+
   describe("session pinning", () => {
     const endpoint = "/api/web/v1/session-pin";
     const pin = { sessionId: "session-visible", pinned: true };

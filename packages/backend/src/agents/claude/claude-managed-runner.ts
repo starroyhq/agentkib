@@ -9,6 +9,7 @@ import { acquirePortableFileLease } from "../../managed-session-lock";
 import { truncateUtf8 } from "../../session-events";
 import { sanitizeSessionText } from "../../session-handoff";
 import { claudeToolDetail, claudeToolResult, compactClaudeInput } from "../../conversation-tools";
+import { TurnSummaryProjection } from "../../session-turn-summary";
 import { claudeCommandInvocation, claudeCommandOutput } from "./claude-command-records";
 import {
   boundedUnknownFields,
@@ -19,6 +20,7 @@ import {
   controlError,
   formatTermination,
   frameOrigin,
+  isClaudeToolItemId,
   MAX_UNKNOWN_REQUESTS_PER_TURN,
   type ClaudeTerminationCode,
   type FrameOrigin,
@@ -29,7 +31,12 @@ import {
   projectContextUsage,
   type ContextUsage,
 } from "../../context-usage";
-import { parseClaudeSlashCommand, type ClaudeCommandEntry } from "@agentkib/runtime-protocol";
+import {
+  parseClaudeSlashCommand,
+  type ClaudeCommandEntry,
+  type SessionPlanProgress,
+} from "@agentkib/runtime-protocol";
+import { projectSessionPlanProgress } from "../../session-plan-progress";
 import { ClaudeSubagentState, type ClaudeSubagentSnapshot } from "./claude-subagent-state";
 import type { ConversationEvent } from "../../session-events";
 import { claudeUsageLimitHit, type UsageLimitHit } from "../../usage-limit";
@@ -82,6 +89,13 @@ const PERMISSION_KEYS: ReadonlySet<string> = new Set([
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 type JsonObject = Record<string, any>;
+
+function* todoWriteSteps(todos: unknown[]) {
+  for (const todo of todos) {
+    const record = todo && typeof todo === "object" ? (todo as Record<string, unknown>) : undefined;
+    yield { text: record?.content, status: record?.status };
+  }
+}
 export type ClaudeEffort = "low" | "medium" | "high" | "xhigh" | "max";
 export type ClaudePermissionMode = "default" | "plan" | "acceptEdits";
 /**
@@ -237,6 +251,7 @@ export type ClaudeRunnerSnapshot = {
   stopEnabled: boolean;
   revision: number;
   turnId: string;
+  planProgress?: SessionPlanProgress | null;
   approvals: JsonObject[];
   questions: JsonObject[];
   streamText: string;
@@ -249,6 +264,7 @@ export class ClaudeRunnerState {
   readonly subagentObservation = new ClaudeSubagentState();
   revision = 0;
   turnId = "";
+  planProgress: SessionPlanProgress | null = null;
   status = "idle";
   approvals: JsonObject[] = [];
   questions: JsonObject[] = [];
@@ -353,6 +369,7 @@ export class ClaudeRunnerState {
       subagentCheckpoint: this.subagentObservation.checkpoint(),
       revision: this.revision,
       turnId: this.turnId,
+      planProgress: this.planProgress,
       status: this.status,
       approvals: structuredClone(this.approvals),
       questions: structuredClone(this.questions),
@@ -466,6 +483,7 @@ export class ClaudeRunnerState {
       stopEnabled: this.status !== "idle" && this.turnId.length > 0 && this.reason === null,
       revision: this.revision,
       turnId: this.turnId,
+      planProgress: this.planProgress,
       approvals: structuredClone(this.approvals),
       questions: structuredClone(this.questions),
       streamText: this.streamText.slice(0, end),
@@ -492,6 +510,7 @@ export class ClaudeRunnerState {
   /** The state every turn starts from, whoever started it. */
   #startTurn(turnId: string, origin: "host" | "self"): void {
     this.turnId = turnId;
+    this.planProgress = null;
     this.turnOrigin = origin;
     this.hostTurnPhase = null;
     this.turnContent = false;
@@ -1909,8 +1928,8 @@ export class ClaudeManagedRunnerProcess {
    * keep every finished tool here and stopped showing new ones after the 1,024th.
    */
   #toolItems = new Map<string, Record<string, unknown>>();
-  /** Compact tool_use inputs kept until their result arrives. */
-  #toolInputs = new Map<string, unknown>();
+  /** Compact tool inputs and candidate plans kept until their result arrives. */
+  #toolInputs = new Map<string, { input: unknown; plan?: SessionPlanProgress }>();
   #controls = new Map<
     string,
     {
@@ -1940,6 +1959,8 @@ export class ClaudeManagedRunnerProcess {
   #reportedResult?: ClaudeRunnerTerminalResult;
   /** The current turn's last native agent message, which carries the turn end when it comes. */
   #lastAgentItem: Record<string, unknown> | null = null;
+  #lastCompletedToolItem?: Record<string, unknown>;
+  #turnSummary?: TurnSummaryProjection;
   // A new session can have a live reply before Claude writes any native history.
   #firstTurnId?: string;
   #firstUserItem?: Record<string, unknown>;
@@ -2337,6 +2358,8 @@ export class ClaudeManagedRunnerProcess {
     const user = this.state.begin(content, requestId);
     this.#steeringIds.clear();
     this.#lastAgentItem = null;
+    this.#lastCompletedToolItem = undefined;
+    this.#turnSummary = undefined;
     // The ledger callback may be absent, or may throw before dispatch. Neither the callback's
     // presence nor its later removal proves whether the user frame reached stdin.
     let dispatched = false;
@@ -2893,10 +2916,10 @@ export class ClaudeManagedRunnerProcess {
         }
         if (frame.type === "system" && frame.subtype === "commands_changed")
           this.#commands = projectCommands(frame.commands);
+        const conversationItems = this.#conversationItems(frame);
         const live = this.state.snapshot();
         const itemId = this.state.streamItemId;
         const itemText = this.state.streamItemText;
-        const conversationItems = this.#conversationItems(frame);
         const hasFinalizedText = this.state.finalizedTextBlocks.length > 0;
         // Kept on every copy of the item, including the one re-sent after a later frame.
         const cliOutput = this.state.streamItemCliOutput ? { cli_output: true as const } : {};
@@ -3023,7 +3046,7 @@ export class ClaudeManagedRunnerProcess {
       });
   }
 
-  /** Every frame-path conversation event; the last native agent message is remembered. */
+  /** Every frame-path conversation event; remembers native anchors for the current turn. */
   #emit(
     type: "text-delta" | "item-upsert" | "item-alias" | "snapshot",
     payload: Record<string, unknown>,
@@ -3035,6 +3058,20 @@ export class ClaudeManagedRunnerProcess {
         : type === "item-upsert"
           ? [payload]
           : [];
+    if (live.turnId && items.some((item) => item.kind === "tool-summary")) {
+      if (this.#turnSummary?.turnId !== live.turnId)
+        this.#turnSummary = new TurnSummaryProjection(live.turnId);
+      for (const item of items) {
+        this.#turnSummary.add(item);
+        if (
+          item.kind === "tool-summary" &&
+          item.turn_id === live.turnId &&
+          (item.tool_status === "completed" || item.tool_status === "failed") &&
+          isClaudeToolItemId(item.id)
+        )
+          this.#lastCompletedToolItem = { ...item };
+      }
+    }
     for (const item of items)
       if (
         item.kind === "agent-message" &&
@@ -3050,13 +3087,21 @@ export class ClaudeManagedRunnerProcess {
   }
 
   /**
-   * Re-sends the turn's last agent message with the turn end, which history readers attach to the
-   * same item (`turn_meta`). Only `result` carries the duration in print mode. Display only: a
-   * turn without a native agent message gets none, and a failed delivery never changes the turn.
+   * Re-sends a native item with the turn end. History readers attach the same metadata by ID.
+   * A tool-only turn can use its last confirmed tool result when there is a summary to carry.
    */
   #emitTurnEnd(frame: JsonObject, result: ClaudeRunnerTerminalResult): void {
-    const item = this.#lastAgentItem;
-    if (frame.type !== "result" || !item || item.turn_id !== result.turnId) return;
+    const reply = this.#lastAgentItem?.turn_id === result.turnId ? this.#lastAgentItem : null;
+    const summary =
+      this.#turnSummary?.turnId === result.turnId ? this.#turnSummary.summary() : undefined;
+    const item =
+      reply ??
+      (summary && this.#lastCompletedToolItem?.turn_id === result.turnId
+        ? this.#lastCompletedToolItem
+        : undefined);
+    this.#turnSummary = undefined;
+    this.#lastCompletedToolItem = undefined;
+    if (frame.type !== "result" || !item) return;
     const meta: Record<string, unknown> = {
       outcome:
         result.terminalReason === "cancelled"
@@ -3069,8 +3114,9 @@ export class ClaudeManagedRunnerProcess {
     };
     if (Number.isSafeInteger(frame.duration_ms) && frame.duration_ms >= 0)
       meta.duration_ms = frame.duration_ms;
+    if (summary) meta.summary = summary;
     const ended = { ...item, turn_meta: meta };
-    if (item.turn_id === this.#firstTurnId) this.#firstReplyItem = ended;
+    if (reply && reply.turn_id === this.#firstTurnId) this.#firstReplyItem = ended;
     this.#lastAgentItem = null;
     try {
       this.onConversationEvent?.("item-upsert", ended, this.state.snapshot());
@@ -3156,13 +3202,27 @@ export class ClaudeManagedRunnerProcess {
         const item = toolId ? this.#toolItems.get(toolId) : undefined;
         if (block?.type === "tool_result" && item) {
           item.tool_status = block.is_error === true ? "failed" : "completed";
+          const toolInput = this.#toolInputs.get(toolId);
+          const plan = toolInput?.plan;
+          // A failed, sub-agent or late result cannot replace this turn's progress.
+          if (
+            plan &&
+            mainThread &&
+            this.state.status !== "idle" &&
+            plan.turnId === this.state.turnId &&
+            block.is_error !== true &&
+            JSON.stringify(plan) !== JSON.stringify(this.state.planProgress)
+          ) {
+            this.state.planProgress = plan;
+            this.state.revision++;
+          }
           // The structured result is unverified on this stream; it is used
           // only when present and only for a frame's sole tool result.
           const structured =
             results === 1 ? (frame.tool_use_result ?? frame.toolUseResult) : undefined;
           const detail = claudeToolDetail(
             typeof item.tool_name === "string" ? item.tool_name : "",
-            this.#toolInputs.get(toolId),
+            toolInput?.input,
             claudeToolResult(structured, block.content),
             { workspace: this.workspace },
           );
@@ -3206,7 +3266,14 @@ export class ClaudeManagedRunnerProcess {
             if (this.#toolInputs.size < 256) break;
             this.#toolInputs.delete(oldest);
           }
-        this.#toolInputs.set(id, compactClaudeInput(block.input));
+        const plan =
+          origin.kind === "main" &&
+          block.name === "TodoWrite" &&
+          this.state.status !== "idle" &&
+          Array.isArray(block.input?.todos)
+            ? projectSessionPlanProgress(this.state.turnId, todoWriteSteps(block.input.todos))
+            : undefined;
+        this.#toolInputs.set(id, { input: compactClaudeInput(block.input), plan });
         items.push({ index: blocks.indexOf(block), item });
       }
     }

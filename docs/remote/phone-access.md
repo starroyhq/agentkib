@@ -84,7 +84,7 @@ HTML 以入口所在目录生成明确清单和固定版本快照，默认限制
 | `GET files/text` | 文件 ID 与版本读取 |
 | `GET artifacts` | 指定会话、工作区和可选 cursor 的文件引用 |
 | `GET artifacts/resolve` | 按同样规则解析会话回复里的一个文件引用（`reference`），返回文件条目；找不到或不允许读取时为 null |
-| `GET diff` | 授权项目的只读 Git diff |
+| `GET diff` | 授权项目的只读 Git diff，可用 `context=1` 请求补行 |
 | `POST artifact-tickets` | 文件或 HTML 包的预览/下载票据 |
 | `POST account-binding` | 官方中继验证 PKCE 云登录证明；独立旧主机仍可核对 `sessionId`。返回 `{bound}`，同账号的已验证新登录可续接有效配对，跨账号拒绝；登录证明不授予配对权限 |
 | `POST live-preview-tickets` | 电脑上某个回环端口的网页预览票据；只给完整控制 |
@@ -96,6 +96,8 @@ HTML 以入口所在目录生成明确清单和固定版本快照，默认限制
 | `POST codex/goal-*` | 设置、暂停、恢复或清除原生目标；`goal-set.intent` 为 `start`／`update`，预算省略保留、null 清除 |
 
 预览 origin 的 `/p/...` 只处理票据内容，`/live/...` 与 `/live-sw.js` 只处理网页预览，都拒绝控制 API；主 API 继续校验设备、Origin 和 CSRF。`GET access` 的 `pairingMode=code` 表示支持授权码直接连接；缺少字段或为 `confirmation` 时保留旧确认流程。新授权凭证含 `device.accessMode=full`；旧凭证不自动增加此标记或扩大授权。已批准的设备还会拿到 `computerName`，即系统设置里的电脑名称（macOS 读 `scutil --get ComputerName`，Linux 读 PRETTY_HOSTNAME，其他平台用主机名，每 10 分钟重读一次），手机在名称还是连接地址时用它称呼这台电脑，账号里的名称仍然优先；未批准、配对中和已结束的请求都不带这个字段。执行账本与可重建会话索引分开保存。
+
+差异响应的可选字段 `context.lines` 给出原补丁未包含的未改行。每行提供新侧的 `path`、从 1 开始的 `oldLine` 和 `newLine`、`text` 及 `source: "host"`。补行和原补丁来自同一版本，刷新差异时应一并替换。返回范围受限时带 `context.truncated: true`。旧主机或无法核实原始内容时可能缺少 `context`，仍可查看原补丁。补行沿用文件路径保护，只读取 Git 为普通文件记录的旧对象。
 
 ## 首页任务汇总
 
@@ -112,6 +114,13 @@ HTML 以入口所在目录生成明确清单和固定版本快照，默认限制
 通过全局 `GET /api/web/v1/stream?protocolVersion=2&taskSummary=1` 订阅。在每次连接和重连的 `session-ready` 中接收快照，随后将 `catalog-invalidated` 中带 `taskSummary` 的快照整份替换到首页。没有汇总变化的普通目录通知仍可出现。如果快照超过 SSE 的 4 MiB 上限，通知仅包含可选的 `taskSummaryVersion`，客户端重新读取带汇总的目录。汇总目录的响应上限为 32 MiB。
 
 快照 `version` 是当前授权范围内的相等性标记。客户端可以忽略同版本的重复快照，按当前连接的事件顺序应用变化，并在重连接受新的基线。切换主机或授权结束时丢弃旧快照。若在流更新期间另行请求目录，应丢弃发起后已经被流快照覆盖的读取结果。
+
+## 计划进度与本轮摘要
+
+- `GET /api/web/v1/managed/capabilities?sessionId=…` 在该执行模式能报告原生计划步骤时带有 `planProgress.live: true`。Codex 托管和桌面跟随、Claude 托管、Devin ACP 与 Antigravity ACP 支持该投影。客户端在字段缺失或当前没有可验证的计划时将计划入口置灰。
+- `GET /api/web/v1/live` 与会话流的 `snapshot.payload.live` 可带 `planProgress`。其 `turnId` 关联原生轮次，`steps` 按来源顺序给出 `id`、`text` 和 `status`，状态为 `pending`、`in_progress` 或 `completed`。仅能确认一项正在进行时，`currentStepId` 标记该项。步骤文本或列表不全时带 `truncated: true`。
+- 会话流 `state.payload.planProgress` 是对整个计划字段的替换。增量沿用现有会话流的 epoch、序号和 cursor。重连时应用可重放的增量或新的快照，`null` 清除先前计划。同一轮的重复上报可忽略。计划读取沿用现有会话授权。
+- 本轮结束元数据 `turn_meta` 可带 `summary`。 `files` 中每项提供工作区相对路径及有证据的 `added`／`removed`，`checks` 中每项提供检查名、`status` 与可用的 `exit_code`。摘要来自该轮已有的工具证据，`partial: true` 表示当前证据可能不全。旧主机缺少摘要时继续显示原有结束状态。
 
 ## 验证边界
 

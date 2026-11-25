@@ -1,11 +1,13 @@
 import type { ConversationTurnMeta } from "@agentkib/runtime-protocol";
 import { openManagedLedger } from "../../managed-ledger";
+import { cleanTurnSummary } from "../../session-turn-summary";
+import { isClaudeToolItemId } from "./claude-frame-policy";
 
 /**
  * Turn ends of managed Claude sessions. A print-mode transcript records no `system/turn_duration`
  * (checked against 2.1.311), so the `result` frame's `duration_ms` would be lost once history
- * replaces the live rows. It is kept here, keyed by the native session and the turn's last agent
- * message, and history reads add it back. Display only: nothing here gates control.
+ * replaces the live rows. It is kept here, keyed by the native session and the turn's last
+ * native agent message or confirmed tool item, and history reads add it back.
  */
 const MAX_PER_SESSION = 1000;
 const nativeIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -29,6 +31,10 @@ export function cleanTurnMeta(value: unknown): ConversationTurnMeta | null {
     source.duration_ms >= 0
   )
     meta.duration_ms = source.duration_ms;
+  if (meta.outcome !== undefined) {
+    const summary = cleanTurnSummary(source.summary);
+    if (summary) meta.summary = summary;
+  }
   return meta.outcome !== undefined || meta.duration_ms !== undefined ? meta : null;
 }
 
@@ -41,7 +47,12 @@ export class ClaudeTurnMetaStore {
   /** Keeps the newest entries of each session; a repeated item replaces its value. */
   record(nativeId: string, itemId: string, value: unknown): boolean {
     const meta = cleanTurnMeta(value);
-    if (!meta || !nativeIdPattern.test(nativeId) || !itemIdPattern.test(itemId)) return false;
+    if (
+      !meta ||
+      !nativeIdPattern.test(nativeId) ||
+      (!itemIdPattern.test(itemId) && !(meta.summary && isClaudeToolItemId(itemId)))
+    )
+      return false;
     const database = openManagedLedger(this.dataDir, true)!;
     try {
       database.exec(TABLE);
@@ -85,7 +96,9 @@ export class ClaudeTurnMetaStore {
   /** The stored turn ends for these items; rows that no longer validate are skipped. */
   read(nativeId: string, itemIds: readonly string[]): Map<string, ConversationTurnMeta> {
     const found = new Map<string, ConversationTurnMeta>();
-    const wanted = [...new Set(itemIds.filter((id) => itemIdPattern.test(id)))];
+    const wanted = [
+      ...new Set(itemIds.filter((id) => itemIdPattern.test(id) || isClaudeToolItemId(id))),
+    ];
     if (!wanted.length || !nativeIdPattern.test(nativeId)) return found;
     const database = openManagedLedger(this.dataDir);
     if (!database) return found;
@@ -109,7 +122,7 @@ export class ClaudeTurnMetaStore {
           continue;
         }
         const meta = cleanTurnMeta(parsed);
-        if (meta) found.set(row.item_id, meta);
+        if (meta && (itemIdPattern.test(row.item_id) || meta.summary)) found.set(row.item_id, meta);
       }
       return found;
     } finally {

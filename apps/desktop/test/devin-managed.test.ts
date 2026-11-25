@@ -97,6 +97,45 @@ async function settled(runner: DevinManagedRunner) {
 }
 
 describe.runIf(posix)("Devin managed runner", () => {
+  it("retains the native ACP plan through completion and clears it on the next prompt", async () => {
+    const root = temp();
+    const devin = fakeDevinAcp(root);
+    const update = {
+      sessionUpdate: "plan",
+      entries: [{ content: "Inspect the test results", priority: "medium", status: "in_progress" }],
+    };
+    const published: Array<{ type: string; payload: Record<string, unknown> }> = [];
+    const runner = new DevinManagedRunner(
+      root,
+      "known-session",
+      host(devin.file, () => [], published),
+    );
+    try {
+      devin.turn({ updates: [update, update] });
+      await runner.send("First message", 0, () => {});
+      const turnId = runner.snapshot().turnId;
+      expect(turnId).toBeTruthy();
+      await settled(runner);
+      const plan = runner.snapshot().planProgress;
+      expect(plan).toMatchObject({
+        turnId,
+        steps: [{ text: "Inspect the test results", status: "in_progress" }],
+        currentStepId: expect.any(String),
+      });
+      expect(
+        published.filter(({ type, payload }) => type === "state" && payload.planProgress),
+      ).toHaveLength(2); // one changed plan and the completion state
+
+      devin.turn();
+      await runner.send("Second message", Number(runner.snapshot().revision), () => {});
+      expect(runner.snapshot().planProgress).toBeNull();
+      await settled(runner);
+      expect(runner.snapshot().planProgress).toBeNull();
+    } finally {
+      runner.close();
+    }
+  });
+
   it("uses the ACP configuration default when creating with only a model family", async () => {
     const root = temp();
     const devin = fakeDevinAcp(root, { strictConfig: true });

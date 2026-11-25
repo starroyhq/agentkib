@@ -13,6 +13,7 @@ import {
   resolve,
   sep,
 } from "node:path";
+import { privateFilePathPart } from "@agentkib/runtime-protocol";
 
 export interface ArtifactScope {
   deviceId: string;
@@ -199,17 +200,7 @@ function validateRelative(path: string, allowRoot = false) {
     path.split("/").some((part) => !part || part === "." || part === "..")
   )
     reject(403, "artifact_path_denied");
-  for (const part of path.split("/")) {
-    if (
-      part.startsWith(".") ||
-      /^(?:node_modules|vendor|target|credentials?|secrets?|id_rsa|id_ed25519)$/i.test(part) ||
-      /(?:^|[._-])(?:secret|credentials?|private[-_]?key)(?:[._-]|$)/i.test(part) ||
-      /^(?:auth|oauth|tokens?|access[_-]?token|refresh[_-]?token)(?:\.[^.]+)?$/i.test(part) ||
-      /\.(?:pem|key|p12|pfx|jks|keystore|kdbx)$/i.test(part) ||
-      part.includes(":")
-    )
-      reject(403, "artifact_sensitive_path");
-  }
+  if (path.split("/").some(privateFilePathPart)) reject(403, "artifact_sensitive_path");
 }
 function servable(path: string) {
   try {

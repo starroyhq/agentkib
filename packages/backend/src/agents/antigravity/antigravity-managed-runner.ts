@@ -1,5 +1,6 @@
 import { performance } from "node:perf_hooks";
 import path from "node:path";
+import type { SessionPlanProgress } from "@agentkib/runtime-protocol";
 import type {
   AcpEvent,
   AcpId,
@@ -14,6 +15,7 @@ import {
   verifyAcpControlIdentity,
 } from "./antigravity-acp";
 import { stringifyAcpJson } from "../../acp-json";
+import { acpPlanUpdate } from "../../acp-plan-progress";
 import type { AcpPromptBlock } from "../../acp-prompt-attachments";
 import { sanitizeHandoffExport } from "../../session-handoff";
 import { antigravityAcpArgs } from "./antigravity-sessions";
@@ -117,6 +119,7 @@ export class AntigravityManagedRunner {
   #revision = 0;
   #turnId: string | null = null;
   #completedTurn: string | null = null;
+  #planProgress: SessionPlanProgress | null = null;
   #reportableTurn?: ReportableSend & { startedAt: number };
   #streamText = "";
   #messageText = new Map<string, string>();
@@ -328,6 +331,10 @@ export class AntigravityManagedRunner {
       revision: this.#revision,
       turnId: this.#turnId,
       completedTurnId: this.#completedTurn,
+      planProgress:
+        this.#planProgress?.turnId === (this.#turnId ?? this.#completedTurn)
+          ? this.#planProgress
+          : null,
       activity: this.#liveCompactionIds.size ? "compacting" : null,
       usage: projectContextUsage(
         { ...this.#usage, reportGeneration: this.#usageGeneration },
@@ -404,6 +411,7 @@ export class AntigravityManagedRunner {
       this.#turnId = acpIdText(id);
       this.#reportableTurn = reporting && { ...reporting, startedAt };
       this.#completedTurn = null;
+      this.#planProgress = null;
       this.#streamText = "";
       this.#messageText.clear();
       this.#toolCalls.clear();
@@ -547,6 +555,27 @@ export class AntigravityManagedRunner {
       if (!this.sessionId && replay) return;
       if (event.sessionId !== this.sessionId) throw new Error("ACP session identity changed");
       this.#applyUpdate(event.update, replay);
+      if (event.update.sessionUpdate === "plan") {
+        // Load/replay does not identify the prompt a plan belongs to.
+        if (
+          replay ||
+          !this.#turnId ||
+          this.#turnId === DISPATCHING_TURN_ID ||
+          this.#cancellingAt !== null
+        )
+          return;
+        const plan = acpPlanUpdate(event.update, this.#turnId, this.#planProgress);
+        if (plan) {
+          this.#planProgress = plan;
+          this.#revision += 1;
+          this.publish?.(
+            "state",
+            { planProgress: plan, revision: this.#revision },
+            this.snapshot(),
+          );
+        }
+        return;
+      }
       changed = true;
     } else if (event.type === "permission") {
       if (event.request.sessionId !== this.sessionId)

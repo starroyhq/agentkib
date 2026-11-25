@@ -111,6 +111,71 @@ describe("Codex settings recovery on desktop", () => {
     expect(screen.queryByRole("button", { name: "Change model" })).not.toBeInTheDocument();
   });
 
+  it("requires an explicit permission choice when the native policy is unconfirmed", async () => {
+    state.notice = undefined;
+    const unconfirmed: SessionSettings = {
+      ...settings,
+      writable: {
+        ...settings.writable,
+        policy: { available: true, reason: "native-policy-unconfirmed" },
+      },
+      options: {
+        ...settings.options,
+        policies: [
+          { id: "workspace-write-on-request", name: "Workspace write" },
+          { id: "full-access-on-request", name: "Full access" },
+        ],
+      },
+    };
+    const read = vi.mocked(state.client.sessionSettings).mockResolvedValue(unconfirmed);
+    const action = vi.mocked(state.runSessionAction).mockResolvedValue({ accepted: false });
+    render(
+      <SessionComposerControls
+        session={state}
+        resources={[]}
+        setResources={vi.fn()}
+        openPhoneFiles={vi.fn()}
+        disabled={false}
+      />,
+    );
+    const choose = () =>
+      screen.findByRole("button", { name: "Execution policy: Choose for next turn" });
+    const opening = await choose();
+    expect(opening).toBeEnabled();
+    fireEvent.click(opening);
+    const items = await screen.findAllByRole("menuitem");
+    expect(items).toHaveLength(2);
+    for (const item of items) expect(item).not.toHaveAttribute("aria-current");
+    expect(action).not.toHaveBeenCalled();
+
+    const option = () => screen.findByRole("menuitem", { name: /^Ask for approval/ });
+    fireEvent.click(await option());
+    await waitFor(() =>
+      expect(action).toHaveBeenCalledExactlyOnceWith("settings", {
+        policyId: "workspace-write-on-request",
+      }),
+    );
+    fireEvent.click(await choose());
+    const confirmed = {
+      ...unconfirmed,
+      selected: { policyId: "workspace-write-on-request" },
+      applicationStatus: "pending" as const,
+      writable: { ...unconfirmed.writable, policy: { available: true } },
+    };
+    action.mockImplementationOnce(async () => {
+      read.mockResolvedValue(confirmed);
+      return { accepted: true };
+    });
+    fireEvent.click(await option());
+    expect(
+      await screen.findByRole("button", { name: "Execution policy: Ask for approval" }),
+    ).toBeVisible();
+    expect(action.mock.calls).toEqual([
+      ["settings", { policyId: "workspace-write-on-request" }],
+      ["settings", { policyId: "workspace-write-on-request" }],
+    ]);
+  });
+
   it("displays the saved model and usage until the current settings are known", async () => {
     state.notice = undefined;
     const emptySettings = { ...settings, current: {}, selected: {} };

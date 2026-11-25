@@ -1,4 +1,5 @@
 import {
+  appendFileSync,
   existsSync,
   lstatSync,
   mkdirSync,
@@ -6,6 +7,7 @@ import {
   readdirSync,
   rmSync,
   symlinkSync,
+  truncateSync,
   utimesSync,
   writeFileSync,
 } from "node:fs";
@@ -391,21 +393,58 @@ describe("Codex native rollout policy", () => {
     expect(f.reader.historicalSettings(nativeId, f.codex)).toBeUndefined();
   });
 
+  it.each(["plain", "compressed"] as const)(
+    "skips a large trailing response when reading the latest policy from a %s rollout",
+    (stored) => {
+      const f = codexHome({ stored: [stored] });
+      const response = JSON.stringify({
+        type: "response_item",
+        payload: { value: "x".repeat(9 * 1024 * 1024) },
+      });
+      const data =
+        f.body +
+        turnContext({ approval_policy: "on-request", sandbox_policy: { type: "read-only" } }) +
+        turnContext(fullAccess) +
+        response +
+        "\n";
+      if (stored === "compressed") writeFileSync(`${f.plain}.zst`, zstdCompressSync(data));
+      else writeFileSync(f.plain, data);
+      expect(f.reader.historicalSettings(nativeId, f.workspace)?.nativePolicy).toEqual({
+        policyId: "full-access-on-request",
+      });
+    },
+  );
+
+  it.each(["plain", "compressed"] as const)(
+    "does not fall back past a newer policy-less context outside the %s display tail",
+    (stored) => {
+      const f = codexHome({ stored: [stored] });
+      const response = JSON.stringify({
+        type: "response_item",
+        payload: { value: "x".repeat(832_000) },
+      });
+      const data =
+        f.body + turnContext(fullAccess) + turnContext({ model: "latest-model" }) + response + "\n";
+      if (stored === "compressed") writeFileSync(`${f.plain}.zst`, zstdCompressSync(data));
+      else writeFileSync(f.plain, data);
+      expect(f.reader.historicalSettings(nativeId, f.workspace)?.nativePolicy).toEqual({
+        policyId: null,
+        reason: "native-policy-unconfirmed",
+      });
+    },
+  );
+
   it("distinguishes a complete legacy rollout from unverified policy evidence", () => {
     const f = codexHome({ stored: ["plain"] });
     expect(f.reader.historicalSettings(nativeId, f.workspace)).toEqual({});
 
-    const largeEntry = JSON.stringify({
-      type: "response_item",
-      payload: { value: "x".repeat(8 * 1024 * 1024) },
-    });
-    const data = f.body + turnContext(fullAccess) + largeEntry + "\n";
-    writeFileSync(f.plain, data);
+    writeFileSync(f.plain, f.body + turnContext(fullAccess));
+    truncateSync(f.plain, lstatSync(f.plain).size + 64 * 1024 * 1024);
     expect(f.reader.historicalSettings(nativeId, f.workspace)?.nativePolicy).toEqual({
       policyId: null,
       reason: "native-policy-unconfirmed",
     });
-    writeFileSync(f.plain, data + turnContext(fullAccess));
+    appendFileSync(f.plain, "\n" + turnContext(fullAccess));
     expect(f.reader.historicalSettings(nativeId, f.workspace)?.nativePolicy).toEqual({
       policyId: "full-access-on-request",
     });

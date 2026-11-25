@@ -292,7 +292,10 @@ type ManagedRunner = {
    * it has not written cannot be resumed, so it is not restarted before.
    */
   written?: boolean;
+  confirmedTurnPolicy?: { turnId: string; policyId: CodexPolicyId };
 };
+
+type CodexPolicyId = NonNullable<CodexNativePolicy["policyId"]>;
 
 type ManagedModelOption = {
   id: string;
@@ -2632,6 +2635,7 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
       ...projection,
       ...nativePolicySettings(record, projection, nativePolicy),
     };
+    const reselectPolicy = canReselectNativePolicy(nativePolicy);
     if (!runner?.session.connected) {
       const history =
         request.includeHistorical &&
@@ -2693,7 +2697,7 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
         available: true,
         executionMode: "codex-managed",
         models,
-        policies: nativePolicy?.policyId === null ? [] : managedPolicyCatalog(),
+        policies: nativePolicy?.policyId === null && !reselectPolicy ? [] : managedPolicyCatalog(),
         collaborationModes,
         revision: record.snapshot?.revision ?? 0,
         runtimeBootId: this.host.runtimeBootId,
@@ -2708,7 +2712,11 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
                 ? { available: true }
                 : { available: false, reason: "native-collaboration-modes-unavailable" },
             serviceTier: modelAccess,
-            policy: nativePolicyWriteAccess(nativePolicy),
+            policy: reselectPolicy
+              ? record.snapshot?.policyReselected === true
+                ? true
+                : { available: true, reason: nativePolicy.reason }
+              : nativePolicyWriteAccess(nativePolicy),
           },
         },
       };
@@ -3040,15 +3048,18 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
           "terminals-clean",
         ])
           features[operation] = { available: false, reason: unavailableReason };
-        features.send = allowed
-          ? { available: true }
-          : {
-              available: false,
-              reason:
-                unavailableReason === "session-not-running"
-                  ? "control-disabled"
-                  : unavailableReason,
-            };
+        features.send =
+          allowed && typeof live.sendDisabledReason !== "string"
+            ? { available: true }
+            : {
+                available: false,
+                reason:
+                  allowed && typeof live.sendDisabledReason === "string"
+                    ? live.sendDisabledReason
+                    : unavailableReason === "session-not-running"
+                      ? "control-disabled"
+                      : unavailableReason,
+              };
         features.fork = forkAllowed
           ? { available: true }
           : {
@@ -3592,6 +3603,7 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
           onFailure: restore,
           restrictNativePolicy,
           inheritNativePolicy,
+          allowReselectedPolicy: request.operation === "send" && !quitResume,
           quitResume: quitResume?.evidence,
         },
       );
@@ -3616,9 +3628,12 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
       const cwd = this.#managedCwd(record);
       const home = this.#assertManagedHome(record);
       const policyOnly = codexPolicyOnly(request);
+      let reselectPolicy = false;
       if (request.policyId !== undefined) {
         const nativePolicy = this.#nativeCodexPolicy(record);
-        if (nativePolicy?.policyId === null) throw new Error(nativePolicy.reason);
+        reselectPolicy = canReselectNativePolicy(nativePolicy);
+        if (nativePolicy?.policyId === null && !reselectPolicy)
+          throw new Error(nativePolicy.reason);
       }
       const modeOnly = request.mode !== undefined && !changesCodexModel(request);
       let settings: Partial<ManagedRecord>;
@@ -3664,6 +3679,8 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
         settingsStaged: true,
         revision: request.expectedRevision + 1,
       };
+      if (reselectPolicy) snapshot.policyReselected = true;
+      else if (request.policyId !== undefined) delete snapshot.policyReselected;
       // This flag also covers mode-only writes so resume keeps the inherited model settings.
       if ((policyOnly || modeOnly) && !hasStagedCodexModelSettings(record))
         snapshot.policyOnlyStaged = true;
@@ -4612,6 +4629,9 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
           throw new Error("unconfirmed-turn");
         if (runner.state.turnId === null && runner.state.revision === request.expectedRevision)
           runner.state.acceptStartedTurn(response.turn.id, request.expectedRevision);
+        const selectedPolicy = record.policy_id ?? "workspace-write-on-request";
+        if (runner.state.lastTurnId === response.turn.id && isCodexPolicyId(selectedPolicy))
+          runner.confirmedTurnPolicy = { turnId: response.turn.id, policyId: selectedPolicy };
         runner.written = true;
         runner.persist(runner.state);
       }
@@ -5546,12 +5566,14 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
       onFailure,
       restrictNativePolicy = false,
       inheritNativePolicy = false,
+      allowReselectedPolicy = false,
       validateModelChoice = false,
       quitResume,
     }: {
       onFailure?: (error: unknown, ownsLease: boolean) => void;
       restrictNativePolicy?: boolean;
       inheritNativePolicy?: boolean;
+      allowReselectedPolicy?: boolean;
       validateModelChoice?: boolean;
       quitResume?: CodexQuitEvidence;
     } = {},
@@ -5560,16 +5582,28 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
       throw new Error("session-workspace-mismatch");
     const cwd = this.#managedCwd(record);
     const nativePolicy = this.#nativeCodexPolicy(record, inheritNativePolicy);
-    if (nativePolicy?.policyId === null) throw new Error(nativePolicy.reason);
+    const selectedForRecovery =
+      allowReselectedPolicy &&
+      !inheritNativePolicy &&
+      canReselectNativePolicy(nativePolicy) &&
+      reselectedCodexPolicy(record);
+    if (nativePolicy?.policyId === null && !selectedForRecovery)
+      throw new Error(nativePolicy.reason);
     if (restrictNativePolicy)
       requireFullAccessForNativePolicy(
-        nativePolicy?.policyId ?? (record.adopted ? record.policy_id : undefined),
+        selectedForRecovery ||
+          nativePolicy?.policyId ||
+          (record.adopted ? record.policy_id : undefined),
       );
-    if (nativePolicy && (inheritNativePolicy || !codexPolicyOverride(record))) {
+    if (nativePolicy?.policyId && (inheritNativePolicy || !codexPolicyOverride(record))) {
       record = { ...record, policy_id: nativePolicy.policyId, policy_override: false };
     }
     // Resume the verified native policy. An explicit AgentKib selection applies at turn/start.
-    const resumePolicy = nativePolicy ? { ...record, policy_id: nativePolicy.policyId } : record;
+    const resumePolicy = selectedForRecovery
+      ? { ...record, policy_id: "workspace-write-on-request" }
+      : nativePolicy?.policyId
+        ? { ...record, policy_id: nativePolicy.policyId }
+        : record;
     // Startup can outlive the last subscriber; retain the observation before any await.
     const observedAtStart =
       this.host.controlSessions.get(record.id)?.observed === true ||
@@ -5581,9 +5615,43 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
     const nativeId = record.native_id ?? null;
     const state = new ManagedCodexState(record, record.snapshot?.revision ?? 0);
     state.showUsageLimit(this.#usageLimits.view(record.id));
-    const persist = createManagedSnapshotWriter(this.host.dataDir, record);
     let previousStreamText = "";
     let startingRunner: ManagedRunner | undefined;
+    const writeSnapshot = createManagedSnapshotWriter(this.host.dataDir, record);
+    const persist: ManagedRunner["persist"] = (current, event, receipt) => {
+      const active = startingRunner;
+      const confirmed = active?.confirmedTurnPolicy;
+      const managed = state.record as ManagedRecord;
+      const previous = managed.snapshot?.confirmedTurnPolicy;
+      if (
+        isObject(previous) &&
+        managed.snapshot &&
+        ((state.lastTurnId && previous.turnId !== state.lastTurnId) ||
+          (isObject(managed.native_settings) &&
+            isCodexPolicyId(previous.policyId) &&
+            !matchesConfirmedTurnPolicy(managed, previous.policyId)))
+      )
+        delete managed.snapshot.confirmedTurnPolicy;
+      let stamped = false;
+      if (
+        confirmed &&
+        active.session.connected &&
+        state.status === "idle" &&
+        state.lastTurnId === confirmed.turnId &&
+        matchesConfirmedTurnPolicy(managed, confirmed.policyId)
+      ) {
+        const version = this.#codexRolloutVersion(managed);
+        if (version) {
+          managed.snapshot = {
+            ...managed.snapshot,
+            confirmedTurnPolicy: { version, ...confirmed },
+          };
+          stamped = true;
+        }
+      }
+      writeSnapshot(current, event, receipt);
+      if (active && stamped) active.confirmedTurnPolicy = undefined;
+    };
     const captureRunner = (session: CodexAppServerSession) => {
       if (startingRunner) return;
       // A Project Agent's turns without the person count toward its limit, and one that leads
@@ -5798,6 +5866,7 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
         params.excludeTurns = true;
         // Hydrate the active/latest turn, including its items for errors and compaction state.
         params.initialTurnsPage = { limit: 1, sortDirection: "desc", itemsView: "full" };
+        if (selectedForRecovery) params.deferGoalContinuation = true;
       }
       const beforeDispatch = () => {
         this.host.assertOpen();
@@ -5806,7 +5875,10 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
         if (nativePolicy || restrictNativePolicy) {
           const current = this.#nativeCodexPolicy(record, inheritNativePolicy);
           if (restrictNativePolicy) requireFullAccessForNativePolicy(current?.policyId);
-          if (current?.policyId !== nativePolicy?.policyId)
+          if (
+            current?.policyId !== nativePolicy?.policyId ||
+            (selectedForRecovery && !canReselectNativePolicy(current))
+          )
             throw new Error(
               current?.policyId === null ? current.reason : unconfirmedCodexNativePolicy.reason,
             );
@@ -6191,10 +6263,47 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
   #nativeCodexPolicy(record: ManagedRecord, inherit = false): CodexNativePolicy | undefined {
     if ((!inherit && !record.adopted) || !record.native_id || !this.#isCodexHome(record.home))
       return;
+    const confirmed = record.snapshot?.confirmedTurnPolicy;
+    if (
+      isObject(confirmed) &&
+      isCodexPolicyId(confirmed.policyId) &&
+      typeof confirmed.version === "string" &&
+      confirmed.version === this.#codexRolloutVersion(record)
+    )
+      return { policyId: confirmed.policyId };
     const read = this.host.sessions.codexHistoricalSettings;
     if (!read) return;
     const history = read.call(this.host.sessions, record.native_id, record.workspace);
     return history ? history.nativePolicy : unconfirmedCodexNativePolicy;
+  }
+
+  /** Confirmations belong to one version of the native thread, including its workspace identity. */
+  #codexRolloutVersion(record: ManagedRecord): string | undefined {
+    if (!record.native_id || !this.#isCodexHome(record.home)) return;
+    try {
+      const { transcript } = this.host.sessions.verifiedCodexSubagentParent(
+        record.id,
+        record.native_id,
+        record.workspace,
+      );
+      const info = lstatSync(transcript, { bigint: true });
+      if (!info.isFile()) return;
+      return createHash("sha256")
+        .update(
+          [
+            record.native_id,
+            record.cwd,
+            info.dev,
+            info.ino,
+            info.size,
+            info.mtimeNs,
+            info.ctimeNs,
+          ].join("\0"),
+        )
+        .digest("hex");
+    } catch {
+      return;
+    }
   }
 
   /**
@@ -6292,6 +6401,11 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
       ownershipReason && record.native_id && this.#isCodexHome(record.home)
         ? record.native_id
         : null;
+    const policy =
+      !worker && controls && !reason && !starting ? this.#nativeCodexPolicy(record) : undefined;
+    const policyBlocked =
+      policy?.policyId === null &&
+      !(canReselectNativePolicy(policy) && reselectedCodexPolicy(record));
     const workerTurn = worker && externalId ? this.#externalTurns.workerTurnOf(externalId) : null;
     return {
       ...state,
@@ -6329,7 +6443,8 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
       this.#ownerLockExists(this.#writerLock(record))
         ? { ownerWaitAvailable: true }
         : {}),
-      sendEnabled: controls && reason === null && !starting,
+      sendEnabled: controls && reason === null && !starting && !policyBlocked,
+      ...(policyBlocked ? { sendDisabledReason: policy.reason } : {}),
       stopEnabled: false,
       approvals: [],
       questions: [],
@@ -7880,11 +7995,37 @@ function nativePolicySettings(
     selected: {
       ...selected,
       policyId:
-        policy.policyId && !following && codexPolicyOverride(record)
-          ? (record.policy_id ?? policy.policyId)
-          : policy.policyId,
+        !following && canReselectNativePolicy(policy) && reselectedCodexPolicy(record)
+          ? record.policy_id
+          : policy.policyId && !following && codexPolicyOverride(record)
+            ? (record.policy_id ?? policy.policyId)
+            : policy.policyId,
     },
   };
+}
+
+function canReselectNativePolicy(
+  policy: CodexNativePolicy | undefined,
+): policy is { policyId: null; reason: typeof unconfirmedCodexNativePolicy.reason } {
+  return policy?.policyId === null && policy.reason === unconfirmedCodexNativePolicy.reason;
+}
+
+function reselectedCodexPolicy(record: ManagedRecord): CodexPolicyId | false {
+  return (
+    record.snapshot?.policyReselected === true &&
+    record.snapshot?.settingsStaged === true &&
+    record.policy_override === true &&
+    isCodexPolicyId(record.policy_id) &&
+    record.policy_id
+  );
+}
+
+function isCodexPolicyId(value: unknown): value is CodexPolicyId {
+  return (
+    value === "workspace-write-on-request" ||
+    value === "workspace-write-auto-review" ||
+    value === "full-access-on-request"
+  );
 }
 
 function nativePolicyWriteAccess(policy: CodexNativePolicy | undefined, blocked?: unknown) {
@@ -8269,6 +8410,20 @@ function verifyManagedPolicy(record: ManagedRecord, response: Record<string, unk
     throw new Error("codex-sandbox-mismatch");
   if (record.service_tier && response.serviceTier !== record.service_tier)
     throw new Error("codex-service-tier-mismatch");
+}
+
+function matchesConfirmedTurnPolicy(record: ManagedRecord, policyId: CodexPolicyId): boolean {
+  const native = record.native_settings;
+  if (!isObject(native)) return false;
+  try {
+    verifyManagedPolicy(
+      { ...record, policy_id: policyId, service_tier: null },
+      { ...native, cwd: record.cwd, sandbox: native.sandboxPolicy },
+    );
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function normalizeManagedTier(value: unknown): string | null {

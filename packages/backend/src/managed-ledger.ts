@@ -921,6 +921,8 @@ export function createManagedSnapshotWriter(
   ) => {
     const current = state.record;
     const snapshot = state.snapshot("", false);
+    if (isObject(current.snapshot) && isObject(current.snapshot.confirmedTurnPolicy))
+      snapshot.confirmedTurnPolicy = current.snapshot.confirmedTurnPolicy;
     if (isObject(current.snapshot) && current.snapshot.settingsStaged === true) {
       snapshot.settingsStaged = true;
       if (current.snapshot.policyOnlyStaged === true) snapshot.policyOnlyStaged = true;

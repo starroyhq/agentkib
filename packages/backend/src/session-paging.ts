@@ -26,6 +26,7 @@ import {
   type EventState,
 } from "./session-event-parser";
 import { toolEventBytes, type ToolContext } from "./conversation-tools";
+import { TurnSummaryProjection } from "./session-turn-summary";
 import { MAX_IMAGE_RECORD_BYTES, SessionImages } from "./session-images";
 const SCAN_BYTES = 16 * 1024 * 1024,
   SCAN_LINES = 20_000,
@@ -133,6 +134,37 @@ function eventPageBytes(event: ConversationEvent): number {
     toolEventBytes(event) +
     (event.images ? Buffer.byteLength(JSON.stringify(event.images)) : 0)
   );
+}
+
+/** Associate only rows the native reader assigned to exactly the same turn. */
+function attachTurnSummaries(events: ConversationEvent[], older: boolean, damaged: boolean) {
+  const turns = new Map<string, { end: ConversationEvent; evidence: TurnSummaryProjection }>();
+  for (const event of events) {
+    if (!event.turn_id || !event.turn_meta?.outcome || turns.has(event.turn_id)) continue;
+    turns.set(event.turn_id, {
+      end: event,
+      evidence: new TurnSummaryProjection(event.turn_id),
+    });
+  }
+  if (!turns.size) return;
+  // Reverse scan order is newest-first. Supply evidence in transcript order.
+  let oldestTurn: string | undefined;
+  for (let index = events.length - 1; index >= 0; index--) {
+    const event = events[index]!;
+    if (event.turn_id) {
+      oldestTurn ??= event.turn_id;
+      turns.get(event.turn_id)?.evidence.add(event);
+    }
+  }
+  let budget = MAX_PAGE_BYTES - events.reduce((bytes, event) => bytes + eventPageBytes(event), 0);
+  for (const [turnId, { end, evidence }] of turns) {
+    const summary = evidence.summary(damaged || (older && oldestTurn === turnId));
+    if (!summary) continue;
+    const bytes = 16 + Buffer.byteLength(JSON.stringify(summary));
+    if (bytes > budget) continue;
+    budget -= bytes;
+    end.turn_meta = { ...end.turn_meta, summary };
+  }
 }
 function estimatedBytes(state: State): number {
   return (
@@ -363,6 +395,7 @@ export class SessionPaging {
       if (state.associationWarning) warnings.add("TRANSCRIPT_ASSOCIATION_WINDOW");
       let next: string | null = null;
       const older = state.position > 0 || state.pending.length > 0 || state.fragmentBytes > 0;
+      attachTurnSummaries(events, older, warnings.size > 0);
       if (older && !retain) next = UNRETAINED_CURSOR;
       else if (older) {
         const now = performance.now(),

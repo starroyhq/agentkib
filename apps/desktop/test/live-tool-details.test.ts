@@ -61,6 +61,11 @@ const fileItem = {
   ],
   status: "completed",
 };
+const codexCheck = { name: "pnpm test", status: "failed", exit_code: 1 };
+const codexSummary = {
+  files: [{ path: "src/app.ts", added: 1, removed: 1 }],
+  checks: [codexCheck],
+};
 
 describe("live Codex projection", () => {
   it("projects completed app-server items with the shared detail shape", () => {
@@ -135,6 +140,22 @@ describe("live Codex projection", () => {
       method: "item/completed",
       params: { threadId, turnId: "turn-a", item: commandItem, completedAtMs: 1 },
     });
+    // Replaying the same item must not count a second check.
+    state.apply({
+      method: "item/completed",
+      params: { threadId, turnId: "turn-a", item: commandItem, completedAtMs: 1 },
+    });
+    state.apply({
+      method: "item/completed",
+      params: { threadId, turnId: "turn-a", item: fileItem },
+    });
+    // A late edit from another turn cannot enter the current summary.
+    expect(
+      state.apply({
+        method: "item/completed",
+        params: { threadId, turnId: "expired", item: { ...fileItem, id: "old-edit" } },
+      }).changed,
+    ).toBe(false);
     const reply = state.apply({
       method: "item/completed",
       params: {
@@ -159,7 +180,7 @@ describe("live Codex projection", () => {
       id: "msg-final",
       kind: "agent-message",
       content: "Fixed.",
-      turn_meta: { outcome: "completed", duration_ms: 38_584 },
+      turn_meta: { outcome: "completed", duration_ms: 38_584, summary: codexSummary },
     });
     expect(state.status).toBe("idle");
 
@@ -173,7 +194,10 @@ describe("live Codex projection", () => {
         method: "turn/completed",
         params: { threadId, turn: { id: "turn-a", status: "interrupted", durationMs: 900 } },
       }).event,
-    ).toMatchObject({ id: "item-cmd", turn_meta: { outcome: "aborted", duration_ms: 900 } });
+    ).toMatchObject({
+      id: "item-cmd",
+      turn_meta: { outcome: "aborted", duration_ms: 900, summary: { checks: [codexCheck] } },
+    });
 
     const empty = codex();
     expect(
@@ -213,7 +237,10 @@ describe("live Codex projection", () => {
       ],
     );
     // Like the rollout reader: a finished turn without a duration still records its outcome.
-    expect(events.map((event) => event.turn_meta)).toEqual([undefined, { outcome: "completed" }]);
+    expect(events.map((event) => event.turn_meta)).toEqual([
+      undefined,
+      { outcome: "completed", summary: codexSummary },
+    ]);
     expect(
       state.hydrate({ id: threadId, turns: [{ id: "empty", status: "interrupted", items: [] }] })
         .events,
@@ -249,7 +276,7 @@ describe("live Codex projection", () => {
     });
     expect(events.map((event) => [event.id, event.turn_meta ?? null])).toEqual([
       ["item-cmd", null],
-      ["item-patch", { outcome: "completed", duration_ms: 1200 }],
+      ["item-patch", { outcome: "completed", duration_ms: 1200, summary: codexSummary }],
       ["c2", null],
     ]);
     // The running turn it attached to can still finish with a duration.
@@ -258,7 +285,10 @@ describe("live Codex projection", () => {
         method: "turn/completed",
         params: { threadId, turn: { id: "turn-2", status: "completed", durationMs: 40 } },
       }).event,
-    ).toMatchObject({ id: "c2", turn_meta: { outcome: "completed", duration_ms: 40 } });
+    ).toMatchObject({
+      id: "c2",
+      turn_meta: { outcome: "completed", duration_ms: 40, summary: { checks: [codexCheck] } },
+    });
   });
 });
 
@@ -348,6 +378,16 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))("live Claude pr
           },
           tool_use_result: { filePath: `${f.workspace}/src/a.ts`, originalFile: "SECRET-ORIGINAL" },
         },
+        {
+          type: "assistant",
+          uuid: randomUUID(),
+          parent_tool_use_id: null,
+          message: {
+            id: "fixture-reply",
+            model: "fixture-model",
+            content: [{ type: "text", text: "Finished." }],
+          },
+        },
       ],
     });
     const events: Array<{ type: string; payload: Record<string, any> }> = [];
@@ -388,6 +428,12 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))("live Claude pr
       kind: "edit",
       title: "src/a.ts",
       content: [{ type: "diff", path: "src/a.ts", added: 1, removed: 1 }],
+    });
+    expect(items.find((item) => item.turn_meta)?.turn_meta).toMatchObject({
+      summary: {
+        files: [{ path: "src/a.ts", added: 1, removed: 1 }],
+        checks: [{ name: "npm test", status: "passed" }],
+      },
     });
     expect(JSON.stringify(events)).not.toContain("SECRET-ORIGINAL");
   }, 30_000);

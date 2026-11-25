@@ -86,6 +86,8 @@ export interface SessionProjectAgentCapabilities {
 interface SessionProviderIntegrationCapabilities {
   approvalRules?: ApprovalRuleCapability;
   commands?: { source: "built-in" | "reported" | "none" };
+  /** Structured steps from observed native turns. A live snapshot may have no plan yet. */
+  planProgress?: { executionModes: readonly string[] };
   /** Native pending interactions the provider can describe. Live grants still determine availability. */
   pendingInteractions?: { approval?: true; question?: true };
   queue?: { actions: readonly SessionQueueAction[] };
@@ -325,6 +327,7 @@ const MANAGED_CAPABILITIES = {
 const PROVIDERS = {
   codex: {
     ...MANAGED_CAPABILITIES.codex,
+    planProgress: { executionModes: ["codex-managed", "codex-follower"] },
     approvalRules: { list: true, revoke: false },
     resumeAfterQuit: true,
     history: { ...MANAGED_CAPABILITIES.codex.history, questionnaire: true },
@@ -342,6 +345,7 @@ const PROVIDERS = {
   },
   "claude-code": {
     ...MANAGED_CAPABILITIES["claude-code"],
+    planProgress: { executionModes: ["claude-managed"] },
     approvalRules: { list: true, revoke: true },
     resumeAfterQuit: true,
     history: { ...MANAGED_CAPABILITIES["claude-code"].history, questionnaire: true },
@@ -377,6 +381,7 @@ const PROVIDERS = {
   },
   devin: {
     ...MANAGED_CAPABILITIES.devin,
+    planProgress: { executionModes: ["devin-print"] },
     approvalRules: { list: true, revoke: false },
     commands: { source: "none" },
     projectAgent: { lead: true, worker: true },
@@ -386,6 +391,7 @@ const PROVIDERS = {
   },
   antigravity: {
     ...MANAGED_CAPABILITIES.antigravity,
+    planProgress: { executionModes: ["acp-managed"] },
     approvalRules: { list: true, revoke: false },
     commands: { source: "none" },
     projectAgent: { lead: true, worker: true },

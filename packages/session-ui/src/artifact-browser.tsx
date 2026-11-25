@@ -31,6 +31,7 @@ import {
   type WebClient,
   type ArtifactListing,
   type ArtifactTicket,
+  type WorkspaceDiff,
 } from "@agentkib/web-client";
 import { ArtifactPreview } from "./artifact-viewers";
 import type { Dialog } from "@base-ui/react/dialog";
@@ -110,13 +111,6 @@ export function SessionArtifactBrowser({ session, ...controls }: SessionArtifact
 
 type Root = { id: string; name: string };
 const VIEWS = ["artifacts", "files", "diff", "preview"] as const;
-type Diff = {
-  patch: string;
-  binary: boolean;
-  submodule: boolean;
-  encoding_lossy: boolean;
-  truncated: boolean;
-};
 
 function formatFileSize(size: number, locale: string) {
   const units = ["B", "KB", "MB", "GB"];
@@ -191,7 +185,7 @@ export function ArtifactBrowser({
   const [ticket, setTicket] = useState<ArtifactTicket>();
   const [download, setDownload] = useState<ArtifactTicket>();
   const [text, setText] = useState<string>();
-  const [diff, setDiff] = useState<Diff | null>();
+  const [diff, setDiff] = useState<WorkspaceDiff | null>();
   const [kind, setKind] = useState("worktree");
   const [oid, setOid] = useState("");
   const [error, setError] = useState("");
@@ -308,7 +302,7 @@ export function ArtifactBrowser({
             }
             query.set("oid", oid);
           }
-          const result = await client.request<Diff | null>(
+          const result = await client.request<WorkspaceDiff | null>(
             `diff?${query}`,
             undefined,
             abort.signal,

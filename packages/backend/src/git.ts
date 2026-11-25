@@ -332,6 +332,37 @@ export class Git {
       truncated: result.truncated,
     };
   }
+  /** Read a bounded Git blob referenced by the patch, without touching a checked-out file. */
+  async diffContextBlob(root: string, prefix: string, limit: number): Promise<string | null> {
+    if (!/^[a-f0-9]{4,64}$/.test(prefix)) return null;
+    const match = await this.run(root, ["rev-parse", `--disambiguate=${prefix}`], 256, true);
+    const oid = match.bytes.toString("ascii").trim();
+    if (
+      !match.success ||
+      match.truncated ||
+      !oid.startsWith(prefix) ||
+      !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(oid)
+    )
+      return null;
+    const blob = await this.commands.run("git", ["--no-replace-objects", "cat-file", "blob", oid], {
+      cwd: root,
+      env: {
+        ...this.environment,
+        GIT_OPTIONAL_LOCKS: "0",
+        GIT_NO_LAZY_FETCH: "1",
+        GIT_ALLOW_PROTOCOL: "",
+      },
+      limit,
+      allowFailure: true,
+    });
+    if (!blob.success || blob.truncated || blob.bytes.includes(0) || !isUtf8(blob.bytes))
+      return null;
+    const hash = createHash(oid.length === 64 ? "sha256" : "sha1")
+      .update(`blob ${blob.bytes.length}\0`)
+      .update(blob.bytes)
+      .digest("hex");
+    return hash === oid ? blob.bytes.toString("utf8") : null;
+  }
 }
 function text(value: string): string {
   return value.replace(/[\r\n]+$/, "");

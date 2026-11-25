@@ -10,6 +10,8 @@ import {
   cleanTurnMeta,
 } from "../../../packages/backend/src/agents/claude/claude-turn-meta";
 import type { BackendStore } from "../../../packages/backend/src/store";
+import type { ConversationEvent } from "../../../packages/backend/src/session-events";
+import { SessionPaging } from "../../../packages/backend/src/session-paging";
 import type { SessionReaders } from "../../../packages/backend/src/session-readers";
 import type { Commands } from "../../../packages/backend/src/commands";
 import { OrchestrationService } from "../../../packages/backend/src/orchestration-service";
@@ -50,6 +52,19 @@ const result = (extra: Record<string, unknown> = {}) => ({
   modelUsage: { "fixture-model": { contextWindow: 100 } },
   ...extra,
 });
+const checkOnly = (id: string) => [
+  {
+    type: "assistant",
+    parent_tool_use_id: null,
+    uuid: randomUUID(),
+    message: { content: [{ type: "tool_use", id, name: "Bash", input: { command: "npm test" } }] },
+  },
+  {
+    type: "user",
+    message: { content: [{ type: "tool_result", tool_use_id: id, content: "ok" }] },
+  },
+];
+const summary = { checks: [{ name: "npm test", status: "passed" }] };
 
 async function runTurn(plan: FakeClaudePlan) {
   const f = fake({ ...plan, noResult: true });
@@ -126,7 +141,7 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))(
       );
     }, 30_000);
 
-    it("adds nothing to a turn without an agent message", async () => {
+    it("adds no metadata when a tool-only turn has no completion summary", async () => {
       const { events } = await runTurn({
         onUser: [
           {
@@ -149,6 +164,21 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))(
         ],
       });
       expect(events.some(({ payload }) => payload.turn_meta)).toBe(false);
+    }, 30_000);
+
+    it("uses a confirmed same-turn tool ID when a completed turn has no agent reply", async () => {
+      const toolId = "toolu_live_check";
+      const { events, turnId } = await runTurn({ onUser: [...checkOnly(toolId), result()] });
+      expect(upserts(events).filter((item) => item.turn_meta)).toMatchObject([
+        {
+          id: toolId,
+          kind: "tool-summary",
+          turn_id: turnId,
+          tool_status: "completed",
+          turn_meta: { outcome: "completed", duration_ms: 4321, summary },
+        },
+      ]);
+      expect(upserts(events).some(({ kind }) => kind === "agent-message")).toBe(false);
     }, 30_000);
   },
 );
@@ -181,6 +211,10 @@ describe("stored Claude turn ends", () => {
     const meta = store();
     expect(meta.record("not-a-uuid", item, { duration_ms: 1 })).toBe(false);
     expect(meta.record(native, "live:turn:assistant:1", { duration_ms: 1 })).toBe(false);
+    expect(meta.record(native, "toolu_unproven", { outcome: "completed", duration_ms: 1 })).toBe(
+      false,
+    );
+    expect(meta.record(native, "toolu_bad/path", { outcome: "completed", summary })).toBe(false);
     expect(meta.record(native, item, { duration_ms: 1.5, outcome: "maybe" })).toBe(false);
     expect(meta.read(native, [item]).size).toBe(0);
     expect(cleanTurnMeta({ outcome: "aborted", duration_ms: 3, extra: "x" })).toEqual({
@@ -230,6 +264,7 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))(
       const transcript = (id: string) => path.join(f.config, `${id}.jsonl`);
       const firstTranscript = (id: string) => (existsSync(transcript(id)) ? transcript(id) : null);
       const firstUserId = () => f.frames().find((frame) => frame.type === "user")!.uuid as string;
+      let furtherHistory: ConversationEvent[] = [];
       // History as the transcript reader returns it: the reply without a duration.
       const readHistory = async (nativeId: string) => {
         pages.push({ nativeId });
@@ -243,6 +278,7 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))(
               content: "Kept as read.",
               turn_meta: { outcome: "completed", duration_ms: 1 },
             },
+            ...furtherHistory,
           ],
           next_cursor: null,
           warnings: [],
@@ -355,8 +391,10 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))(
       const before = await owner.historyVersion(id);
       expect(await owner.historyVersion(id)).toBe(before);
       const next = (await owner.live(id, true)) as Record<string, any>;
+      const toolId = "toolu_only_history";
+      const toolFrames = checkOnly(toolId);
       f.setPlan({
-        onUser: [assistant(randomUUID(), ["Again."]), result({ duration_ms: 10 })],
+        onUser: [...toolFrames, result({ duration_ms: 10 })],
         noResult: true,
       });
       await owner.request({
@@ -375,6 +413,22 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))(
         })
         .toBe(2);
       expect(await owner.historyVersion(id)).not.toBe(before);
+      const toolTranscript = path.join(f.config, "tool-only-history.jsonl");
+      writeFileSync(
+        toolTranscript,
+        toolFrames.map((frame) => JSON.stringify(frame) + "\n").join(""),
+      );
+      furtherHistory = new SessionPaging().read(toolTranscript, null, 50, "claude-code").events;
+      expect(furtherHistory).toMatchObject([
+        { id: toolId, kind: "tool-summary", tool_status: "completed" },
+      ]);
+      expect(furtherHistory[0]?.turn_meta).toBeUndefined();
+      const restored = (await owner.events(id, null, 50)) as { events: ConversationEvent[] };
+      expect(restored.events.find((event) => event.id === toolId)?.turn_meta).toEqual({
+        outcome: "completed",
+        duration_ms: 10,
+        summary,
+      });
 
       const onUser = [
         {

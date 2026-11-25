@@ -88,6 +88,8 @@ require("node:readline").createInterface({ input: process.stdin }).on("line", (l
     const text = (params.prompt ?? []).map((block) => block.text ?? "").join("");
     log("prompt " + text);
     prompt = { id };
+    for (const update of JSON.parse(read("turn-updates") ?? "[]"))
+      send({ jsonrpc: "2.0", method: "session/update", params: { sessionId: params.sessionId, update } });
     const ask = read("turn-permission");
     if (ask !== null) {
       permission = { id: nextId++, session: params.sessionId, text };
@@ -114,6 +116,7 @@ require("node:readline").createInterface({ input: process.stdin }).on("line", (l
       stopReason = null as string | null,
       permission = null as Record<string, unknown> | null,
       hook = null as string | null,
+      updates = [] as Array<Record<string, unknown>>,
     } = {}) {
       for (const [name, value] of Object.entries({
         "turn-sleep": sleep ? String(sleep) : null,
@@ -122,6 +125,7 @@ require("node:readline").createInterface({ input: process.stdin }).on("line", (l
         "turn-stop-reason": stopReason,
         "turn-permission": permission ? JSON.stringify(permission) : null,
         "turn-hook": hook,
+        "turn-updates": updates.length ? JSON.stringify(updates) : null,
       })) {
         const target = path.join(root, name);
         if (value === null) rmSync(target, { force: true });

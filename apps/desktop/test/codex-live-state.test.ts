@@ -119,6 +119,81 @@ describe("Codex Desktop application minimums", () => {
   });
 });
 
+describe("Codex turn plan progress", () => {
+  const steps = [
+    { step: "Read the fixture", status: "completed" },
+    { step: "Run the checks", status: "inProgress" },
+  ];
+  const expectedPlan = {
+    turnId: "turn-a",
+    steps: [
+      { id: "step:1", text: "Read the fixture", status: "completed" },
+      { id: "step:2", text: "Run the checks", status: "in_progress" },
+    ],
+    currentStepId: "step:2",
+  };
+
+  it("projects only the current managed turn and deduplicates plans without changing mutation state", () => {
+    const state = managed();
+    start(state);
+    const mutationRevision = state.mutationRevision;
+    const params = { turnId: "turn-a", plan: steps };
+    expect(state.apply({ method: "turn/plan/updated", params })).toEqual({ changed: false });
+    expect(notify(state, "turn/plan/updated", { ...params, threadId: "another" })).toEqual({
+      changed: false,
+    });
+    expect(notify(state, "turn/plan/updated", params)).toEqual({ changed: true });
+    expect(state.snapshot("boot", false).planProgress).toEqual(expectedPlan);
+    expect(state.mutationRevision).toBe(mutationRevision);
+    expect(notify(state, "turn/plan/updated", params)).toEqual({ changed: false });
+    expect(
+      notify(state, "turn/plan/updated", { ...params, plan: [{ step: "bad", status: "unknown" }] }),
+    ).toEqual({ changed: false });
+    notify(state, "turn/completed", { turn: { id: "turn-a", status: "completed" } });
+    expect(state.snapshot("boot", false).planProgress).toEqual(expectedPlan);
+    start(state, "turn-b");
+    expect(notify(state, "turn/plan/updated", params)).toEqual({ changed: false });
+    expect(state.snapshot("boot", false).planProgress).toBeNull();
+  });
+
+  it("takes the latest todo list for the native follower's turn and drops ambiguous turn evidence", () => {
+    const state = new CodexFollowerState(threadId, "owner");
+    const items = [
+      { id: "todo-old", type: "todo-list", plan: [{ step: "Old", status: "pending" }] },
+      { id: "todo-new", type: "todo-list", plan: steps },
+    ];
+    full(state, 0, snapshot([turn("turn-a", items)]));
+    expect(state.live(false).planProgress).toEqual(expectedPlan);
+    full(state, 1, snapshot([turn("turn-a", items, "completed"), turn("turn-b")]));
+    expect(state.live(false).planProgress).toBeNull();
+    full(state, 2, snapshot([turn("turn-b", items), turn("turn-b", items)]));
+    expect(state.live(false).planProgress).toBeNull();
+    state.invalidate("disconnected");
+    expect(state.live(false).planProgress).toBeNull();
+  });
+
+  it("bounds the native step list and does not claim a current step with incomplete evidence", () => {
+    const state = managed();
+    start(state);
+    notify(state, "turn/plan/updated", {
+      turnId: "turn-a",
+      plan: Array.from({ length: 65 }, (_, i) => ({
+        step: "x".repeat(520),
+        status: i === 0 || i === 64 ? "inProgress" : "pending",
+      })),
+    });
+    const plan = state.snapshot("boot", false).planProgress;
+    expect(plan).toMatchObject({
+      turnId: "turn-a",
+      currentStepId: null,
+      truncated: true,
+      steps: expect.any(Array),
+    });
+    expect((plan as { steps: { text: string }[] }).steps).toHaveLength(64);
+    expect((plan as { steps: { text: string }[] }).steps[0]?.text).toHaveLength(512);
+  });
+});
+
 describe("managed Codex activity and context usage", () => {
   it("enters and leaves command execution without treating terminal heartbeats as model progress", () => {
     const state = managed();

@@ -175,6 +175,65 @@ const settle = async (check: () => boolean) => {
 afterEach(() => vi.restoreAllMocks());
 
 describe("Antigravity CLI control (agy acp 1.5.14)", () => {
+  it("projects ACP plans only during their active prompt and deduplicates repeat updates", async () => {
+    const cli = fakeCli();
+    const publish = vi.fn();
+    cli.prompt(() => {});
+    const runner = await AntigravityManagedRunner.connect("/bin/agy", "/tmp", "known", {}, publish);
+    const update = (entries: unknown) =>
+      cli.send({
+        method: "session/update",
+        params: { sessionId: "known", update: { sessionUpdate: "plan", entries } },
+      });
+    const step = { content: "Check the workspace", priority: "high", status: "in_progress" };
+    const updates = () => publish.mock.calls.filter(([kind]) => kind === "state");
+    const barrier = async () => {
+      const count = publish.mock.calls.length;
+      cli.send({
+        method: "session/update",
+        params: { sessionId: "known", update: { sessionUpdate: "session_info_update" } },
+      });
+      await settle(() => publish.mock.calls.length > count);
+    };
+    try {
+      update([{ ...step, content: "Replay from a prior turn" }]);
+      await barrier();
+      expect(runner.snapshot().planProgress).toBeNull();
+      await runner.send("First prompt", Number(runner.snapshot().revision));
+      const turnId = runner.snapshot().turnId;
+      expect(runner.snapshot().planProgress).toBeNull();
+      update([step]);
+      update([step]);
+      update([{ ...step, status: "completed" }]);
+      await settle(() => updates().length >= 2);
+      expect(updates()).toHaveLength(2);
+      const [, first] = updates()[0]!;
+      expect(first.planProgress).toMatchObject({
+        turnId,
+        steps: [{ text: step.content, status: step.status }],
+        currentStepId: first.planProgress.steps[0].id,
+      });
+      const plan = runner.snapshot().planProgress;
+      expect(plan).toMatchObject({
+        turnId,
+        steps: [{ text: step.content, status: "completed" }],
+        currentStepId: null,
+      });
+      const prompt = cli.frames.find(({ method }) => method === "session/prompt")!;
+      cli.send({ id: prompt.id, result: { stopReason: "end_turn" } });
+      await settle(() => runner.snapshot().status === "idle");
+      update([{ ...step, content: "Late update for the finished prompt" }]);
+      await barrier();
+      expect(runner.snapshot().planProgress).toEqual(plan);
+      await runner.send("Second prompt", Number(runner.snapshot().revision));
+      expect(runner.snapshot().turnId).not.toBe(turnId);
+      expect(runner.snapshot().planProgress).toBeNull();
+      expect(updates()).toHaveLength(2);
+    } finally {
+      runner.close();
+    }
+  });
+
   it.each([
     "missing",
     "mismatch",

@@ -3014,7 +3014,13 @@ export class WebAccessService {
     // 拿不到任何数据，中间步骤无需反复重查。
     const device = this.grant(hash, "files");
     const result = await this.readFiles(device, path, url);
-    this.grant(hash, "files");
+    const current = this.grant(hash, "files");
+    if (path === "/diff" && url.searchParams.get("context") === "1") {
+      const workspaceId = this.field(url.searchParams.get("workspaceId"));
+      if (!(await this.workspaceAllowed(workspaceId, current, this.admission)))
+        throw new HttpError(403, "workspace_not_authorized");
+      if (this.grant(hash, "files") !== current) throw new HttpError(401, "access_ended");
+    }
     return this.json(res, 200, result);
   }
   private async readFiles(device: WebDevice, path: string, url: URL): Promise<unknown> {
@@ -3037,6 +3043,7 @@ export class WebAccessService {
         kind,
         path: url.searchParams.get("path") ?? undefined,
         oid: url.searchParams.get("oid") ?? undefined,
+        ...(url.searchParams.get("context") === "1" ? { context: true } : {}),
       });
     } else {
       const artifacts = this.artifactsFor(scope.deviceId);
@@ -4059,7 +4066,14 @@ export class WebAccessService {
       session.agent === "codex"
         ? this.projectCapabilities(result, latest, stillAllowed, sessionId, lanOwnerWait)
         : this.projectClaudeCapabilities(result, latest, sessionId, verified);
-    return this.json(res, 200, projected);
+    const planModes = sessionProviderDeclaration(session.agent)?.planProgress?.executionModes;
+    const mode = snapshotField(result, "executionMode");
+    return this.json(res, 200, {
+      ...projected,
+      ...(stillAllowed && typeof mode === "string" && planModes?.includes(mode)
+        ? { planProgress: { live: true } }
+        : {}),
+    });
   }
 
   private codexPermission(

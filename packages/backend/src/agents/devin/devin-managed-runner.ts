@@ -2,7 +2,9 @@ import { execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
+import type { SessionPlanProgress } from "@agentkib/runtime-protocol";
 import { acpObject } from "../../acp-json";
+import { acpPlanUpdate } from "../../acp-plan-progress";
 import type { AcpPromptAttachmentSupport, AcpPromptBlock } from "../../acp-prompt-attachments";
 import type { LeadToolRegistration } from "../../orchestration-endpoint";
 import { sanitizeHandoffExport } from "../../session-handoff";
@@ -581,6 +583,7 @@ export class DevinManagedRunner {
   #revision = 0;
   #turnId: string | null = null;
   #completedTurnId: string | null = null;
+  #planProgress: SessionPlanProgress | null = null;
   #reason: string | null = null;
   /** The usage limit the last turn met, until the next turn starts. */
   #usageLimit: UsageLimitView | null = null;
@@ -687,6 +690,7 @@ export class DevinManagedRunner {
       revision: this.#revision,
       turnId: this.#turnId,
       completedTurnId: this.#completedTurnId,
+      planProgress: this.#planProgress,
       sendEnabled: !running && !this.#closed,
       stopEnabled: this.#status === "running",
       cancelling: this.#status === "stopping",
@@ -799,6 +803,7 @@ export class DevinManagedRunner {
     this.#usageLimit = null;
     this.#approvals.clear();
     this.#turnId = randomUUID();
+    this.#planProgress = null;
     this.#revision++;
     this.#publishState();
     this.#timer = setInterval(() => void this.#publishItems().catch(() => undefined), POLL_MS);
@@ -996,6 +1001,19 @@ export class DevinManagedRunner {
           continue;
         }
         if (event.type === "permission-cancelled") continue;
+        if (
+          event.type === "session-update" &&
+          event.sessionId === this.#acpSession &&
+          this.#status === "running" &&
+          this.#turnId
+        ) {
+          const plan = acpPlanUpdate(event.update, this.#turnId, this.#planProgress);
+          if (plan) {
+            this.#planProgress = plan;
+            this.#revision++;
+            this.#publishState();
+          }
+        }
         if (event.type === "response" && event.id === promptId) {
           outcome = event.error
             ? { error: event.error.message, code: event.error.code }

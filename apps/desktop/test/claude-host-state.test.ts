@@ -236,6 +236,26 @@ describe("Claude host orchestration persistence", () => {
     expect(() => store.addReport(sessionId, "device a", "x")).toThrow("invalid-report");
   });
 
+  it("replays a report ID without requeueing or remerging even after its turn completed", async () => {
+    const { store, sessionId, directory } = await fixture();
+    const first = randomUUID();
+    const merged = randomUUID();
+    expect(store.addReport(sessionId, "device-a", "one", first)).toBe(false);
+    expect(store.addReport(sessionId, "device-a", "two", merged)).toBe(true);
+    expect(store.addReport(sessionId, "device-a", "two", merged)).toBe(true);
+    const report = dispatch(store, sessionId);
+    expect(report.input).toBe("one\n\ntwo");
+    store.complete(sessionId, report.requestId, { success: true, usage: null });
+
+    const restarted = new ClaudeHostStateStore(directory, "new-boot");
+    expect(restarted.addReport(sessionId, "device-a", "one", first)).toBe(false);
+    expect(restarted.addReport(sessionId, "device-a", "two", merged)).toBe(true);
+    expect(() => restarted.addReport(sessionId, "device-a", "other", merged)).toThrow(
+      "request-id-reused-with-different-input",
+    );
+    expect(restarted.next(sessionId)).toBeNull();
+  });
+
   it("returns pre-dispatch claims to pending but requires confirmation after restart", async () => {
     const { store, sessionId, directory } = await fixture();
     const item = queued();

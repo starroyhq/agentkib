@@ -1,6 +1,8 @@
+import { randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import { PROJECT_AGENT_MAX_WORKERS } from "@agentkib/runtime-protocol";
 import { openManagedLedger } from "./managed-ledger";
+import type { ReportDelivery, ReportFailure } from "./report-delivery";
 
 /**
  * Which managed sessions direct which (the "lead" and its "lanes"), and what the lead may do.
@@ -95,6 +97,7 @@ export type LeadRecord = {
     | "approve"
     | "answer"
     | "report"
+    | "report-delivery"
     | "pause"
     | "resume"
     /** A worker removed by the user or when its session is deleted. */
@@ -104,6 +107,7 @@ export type LeadRecord = {
   laneId: string | null;
   requestId: string | null;
   outcome: string;
+  reportFailure?: ReportFailure;
 };
 
 export type QuitReport = {
@@ -135,6 +139,9 @@ export type Lead = {
   reportRetryable?: boolean;
   /** A recovery batch may have reached the provider if the host stopped before its reply. */
   deliveringReports?: string[];
+  reportDeliveries?: ReportDelivery[];
+  /** Unconfirmed pre-ID deliveries, retained without replaying unkeyed native sends. */
+  legacyUnconfirmedReports?: string[];
   /** Quit status survives a restart and has its own delivery rules. */
   pendingQuitReports?: QuitReport[];
 };
@@ -251,6 +258,7 @@ export class LeadRegistry {
       // Keep future Workers on disk so reading or updating a project cannot discard them.
       unsupportedLanes.push(lane);
     }
+    migrateReportDelivery(lead);
     return { lead: this.#restarted(lead), unsupportedLanes };
   }
 
@@ -488,6 +496,49 @@ export function addLeadRecord(
   laneId: string | null,
   requestId: string | null,
   outcome: string,
+  reportFailure?: ReportFailure,
 ): void {
-  lead.records.push({ at: new Date().toISOString(), kind, laneId, requestId, outcome });
+  lead.records.push({
+    at: new Date().toISOString(),
+    kind,
+    laneId,
+    requestId,
+    outcome,
+    ...(reportFailure ? { reportFailure } : {}),
+  });
+}
+
+function migrateReportDelivery(lead: Lead): void {
+  lead.pendingReports ??= [];
+  const uncertain = lead.deliveringReports ?? [];
+  delete lead.deliveringReports;
+  if (lead.reason === "report-undelivered" && !lead.reportRetryable)
+    uncertain.push(...lead.pendingReports.splice(0));
+  for (const report of lead.pendingQuitReports ?? []) {
+    if (report.attempted) uncertain.push(report.text);
+    else
+      (lead.reportDeliveries ??= []).push({
+        reportId: randomUUID(),
+        text: report.text,
+        quitLaneId: report.laneId,
+      });
+  }
+  delete lead.pendingQuitReports;
+  if (uncertain.length) {
+    (lead.legacyUnconfirmedReports ??= []).push(...uncertain);
+    addLeadRecord(lead, "report-delivery", null, null, "retained", {
+      phase: "confirmation",
+      code: "legacy-outcome-unknown",
+    });
+  }
+  if (lead.reason === "report-undelivered") {
+    lead.paused = false;
+    lead.reason = null;
+    addLeadRecord(lead, "resume", null, null, "report-retry-enabled");
+  }
+  if (!lead.paused && lead.pendingReports.length) {
+    for (const text of lead.pendingReports.splice(0))
+      (lead.reportDeliveries ??= []).push({ reportId: randomUUID(), text });
+  }
+  delete lead.reportRetryable;
 }

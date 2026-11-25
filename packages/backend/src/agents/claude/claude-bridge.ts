@@ -238,9 +238,17 @@ type Connection = {
   /** The plugin can register a Project Agent's tools (feature `lead-tools`). */
   leadTools?: boolean;
   leadReportsPaused?: boolean;
+  nativeReportOffers?: Map<string, number>;
 };
 /** A report on its way into a terminal Project Agent's outbox. */
-type QueuedReport = { id: string; text: string; offered?: true };
+type QueuedReport = {
+  id: string;
+  text: string;
+  offered?: true;
+  nativeReceipt?: true;
+  mergedIds?: string[];
+};
+type ReportReceipt = { id: string; merged: boolean };
 export type ClaudeTerminalHandoverSource = {
   bindingId: string;
   target: ClaudeBridgeTarget;
@@ -327,8 +335,17 @@ interface BridgeOptions {
 
 /** Reports a terminal holds at most before it takes them, as its outbox holds 20 messages. */
 const MAX_QUEUED_REPORTS = 16;
-/** A report that joins one still waiting stays under this, as merged Claude host reports do. */
+const MAX_MERGED_REPORT_IDS = 128;
+// Keep more receipts than can be acknowledged by removing the entire queue at once.
+const MAX_REPORT_RECEIPTS = 4096;
+const NATIVE_REPORT_RETRY_MS = 4_000;
+/** The legacy on-disk format can contain reports larger than a plugin can submit. */
 const MAX_REPORT_TEXT = 32_000;
+const MAX_REPORT_CODE_POINTS = 16_000;
+const MAX_REPORT_BYTES = 16_384;
+function fitsTerminalReport(text: string): boolean {
+  return Buffer.byteLength(text) <= MAX_REPORT_BYTES && [...text].length <= MAX_REPORT_CODE_POINTS;
+}
 const LEAD_RATE_LIMIT_PAUSE = "lead-rate-limit-pause";
 const reportQueueSchema = z
   .array(
@@ -336,9 +353,14 @@ const reportQueueSchema = z
       id: uuid,
       text: z.string().max(MAX_REPORT_TEXT),
       offered: z.literal(true).optional(),
+      nativeReceipt: z.literal(true).optional(),
+      mergedIds: z.array(uuid).max(MAX_MERGED_REPORT_IDS).optional(),
     }),
   )
   .max(MAX_QUEUED_REPORTS);
+const reportReceiptsSchema = z
+  .array(z.object({ id: uuid, merged: z.boolean() }))
+  .max(MAX_REPORT_RECEIPTS);
 
 function privatePath(value: string, directory = false): void {
   if (!path.isAbsolute(value) || path.normalize(value) !== value)
@@ -363,8 +385,13 @@ function privateJson(file: string, value: unknown): void {
   try {
     writeFileSync(temporary, JSON.stringify(value), { flag: "wx", mode: 0o600 });
     renameSync(temporary, file);
-  } finally {
-    rmSync(temporary, { force: true });
+  } catch (error) {
+    try {
+      rmSync(temporary, { force: true });
+    } catch {
+      // Retain the write error. No cleanup runs after a successful atomic replacement.
+    }
+    throw error;
   }
 }
 function readLegacyJson(file: string, maxBytes = MAX_BODY): unknown {
@@ -452,6 +479,7 @@ export class ClaudeBridge {
   #releaseLegacyLock?: () => void;
   /** Reports for terminal Project Agents, by session, until their plugin takes them. */
   #reports = new Map<string, QueuedReport[]>();
+  #reportReceipts = new Map<string, Map<string, boolean>>();
   #workerObserver?: WorkerObserver;
 
   constructor(readonly options: BridgeOptions) {
@@ -760,10 +788,7 @@ export class ClaudeBridge {
     const row = this.#bindings.get(source.target.sessionId);
     if (!row || row.bindingId !== source.bindingId || source.reports.length === 0) return;
     const imported = new Set(source.reports.map((report) => report.id));
-    this.#saveReports(
-      row,
-      this.#reportQueue(source.target.sessionId).filter((report) => !imported.has(report.id)),
-    );
+    this.#retireReports(row, (report) => imported.has(report.id));
   }
   #save(): void {
     privateJson(path.join(this.root, "bindings-v1.json"), {
@@ -785,20 +810,42 @@ export class ClaudeBridge {
     return path.join(this.root, "lead-reports", `${bindingId}.json`);
   }
 
-  #reportQueue(sessionId: string): QueuedReport[] {
-    const cached = this.#reports.get(sessionId);
+  #reportReceiptFile(bindingId: string): string {
+    return path.join(this.root, "lead-report-receipts", `${bindingId}.json`);
+  }
+
+  #reportReceiptIndex(row: Binding): Map<string, boolean> {
+    const sessionId = row.target.sessionId;
+    const cached = this.#reportReceipts.get(sessionId);
     if (cached) return cached;
+    const file = this.#reportReceiptFile(row.bindingId);
+    const rows = existsSync(file)
+      ? reportReceiptsSchema.parse(readLegacyJson(file, MAX_REPORT_RECEIPTS * 64 + 2))
+      : [];
+    const receipts = new Map(rows.map(({ id, merged }) => [id, merged]));
+    this.#reportReceipts.set(sessionId, receipts);
+    return receipts;
+  }
+
+  #reportQueue(sessionId: string): QueuedReport[] {
     const row = this.#bindings.get(sessionId);
     if (!row || row.revoked) return [];
-    const file = this.#reportFile(row.bindingId);
-    // JSON uses up to six bytes for each escaped UTF-16 code unit.
-    const queued = existsSync(file)
-      ? reportQueueSchema.parse(
-          readLegacyJson(file, MAX_QUEUED_REPORTS * (MAX_REPORT_TEXT * 6 + 100)),
-        )
-      : [];
-    this.#reports.set(sessionId, queued);
-    return queued;
+    let queued = this.#reports.get(sessionId);
+    if (!queued) {
+      const file = this.#reportFile(row.bindingId);
+      // JSON uses up to six bytes for each escaped UTF-16 code unit.
+      queued = existsSync(file)
+        ? reportQueueSchema.parse(
+            readLegacyJson(
+              file,
+              MAX_QUEUED_REPORTS * (MAX_REPORT_TEXT * 6 + MAX_MERGED_REPORT_IDS * 39 + 128),
+            ),
+          )
+        : [];
+      this.#reports.set(sessionId, queued);
+    }
+    const receipts = this.#reportReceiptIndex(row);
+    return queued.filter(({ id }) => !receipts.has(id));
   }
 
   #saveReports(row: Binding, reports: QueuedReport[]): void {
@@ -806,11 +853,37 @@ export class ClaudeBridge {
     this.#reports.set(row.target.sessionId, reports);
   }
 
+  #retireReports(row: Binding, retire: (report: QueuedReport) => boolean): void {
+    const sessionId = row.target.sessionId;
+    const queued = this.#reportQueue(sessionId);
+    const acknowledged = queued.filter(retire);
+    if (!acknowledged.length) return;
+    const receipts = new Map(this.#reportReceiptIndex(row));
+    for (const report of acknowledged) {
+      for (const id of report.mergedIds ?? []) receipts.set(id, true);
+      receipts.set(report.id, false);
+    }
+    const entries: ReportReceipt[] = [...receipts]
+      .slice(-MAX_REPORT_RECEIPTS)
+      .map(([id, merged]) => ({ id, merged }));
+    // Commit receipts before removing payloads. A crash between the two writes
+    // leaves the existing outbox readable, with the receipt taking precedence.
+    privateJson(this.#reportReceiptFile(row.bindingId), entries);
+    this.#reportReceipts.set(sessionId, new Map(entries.map(({ id, merged }) => [id, merged])));
+    const removed = new Set(acknowledged.map(({ id }) => id));
+    this.#saveReports(
+      row,
+      queued.filter(({ id }) => !removed.has(id)),
+    );
+  }
+
   #forgetReports(row: Binding): void {
     this.#reports.delete(row.target.sessionId);
-    const file = this.#reportFile(row.bindingId);
-    privatePath(file);
-    rmSync(file, { force: true });
+    this.#reportReceipts.delete(row.target.sessionId);
+    for (const file of [this.#reportFile(row.bindingId), this.#reportReceiptFile(row.bindingId)]) {
+      privatePath(file);
+      rmSync(file, { force: true });
+    }
   }
 
   #saveContextWindows(): void {
@@ -2098,7 +2171,9 @@ export class ClaudeBridge {
     const lead = this.options.lead;
     return {
       features: [
-        ...CLAUDE_BRIDGE_FEATURES.filter((feature) => feature !== "lead-tools" || !!lead),
+        ...CLAUDE_BRIDGE_FEATURES.filter(
+          (feature) => !["lead-tools", "lead-report-acks"].includes(feature) || !!lead,
+        ),
         ...(lead ? [LEAD_RATE_LIMIT_PAUSE] : []),
       ],
     };
@@ -2138,23 +2213,51 @@ export class ClaudeBridge {
    * Queues a report for a terminal Project Agent; its plugin takes it on its next poll and
    * submits it as a turn once the terminal is idle. True when it joined one still waiting.
    */
-  queueReport(sessionId: string, text: string): boolean {
+  queueReport(sessionId: string, text: string, reportId?: string): boolean {
     const row = this.#bindings.get(sessionId);
     if (!row || row.revoked) throw new LeadReportNotDispatched("session-unavailable");
-    if (text.length > MAX_REPORT_TEXT) throw new Error("report-too-long");
-    const queued = [...this.#reportQueue(sessionId)];
-    const last = queued.at(-1);
-    if (last && !last.offered && last.text.length + text.length + 2 <= MAX_REPORT_TEXT) {
-      queued[queued.length - 1] = { id: last.id, text: `${last.text}\n\n${text}` };
+    if (!fitsTerminalReport(text)) throw new LeadReportNotDispatched("report-too-long");
+    if (reportId !== undefined && !uuid.safeParse(reportId).success)
+      throw new Error("invalid-report-id");
+    let merged = false;
+    try {
+      if (reportId) {
+        const prior = this.#reportReceiptIndex(row).get(reportId);
+        if (prior !== undefined) return prior;
+      }
+      const queued = this.#reportQueue(sessionId);
+      if (reportId) {
+        const prior = queued.find(
+          ({ id, mergedIds }) => id === reportId || mergedIds?.includes(reportId),
+        );
+        if (prior) return prior.id !== reportId;
+      }
+      const last = queued.at(-1);
+      const combined = last ? `${last.text}\n\n${text}` : "";
+      merged =
+        !!last &&
+        !last.offered &&
+        (!reportId || (last.mergedIds?.length ?? 0) < MAX_MERGED_REPORT_IDS) &&
+        fitsTerminalReport(combined);
+      if (merged && last) {
+        queued[queued.length - 1] = {
+          ...last,
+          text: combined,
+          ...(reportId ? { mergedIds: [...(last.mergedIds ?? []), reportId] } : {}),
+        };
+      } else {
+        if (queued.length >= MAX_QUEUED_REPORTS)
+          throw new LeadReportNotDispatched("report-queue-full");
+        queued.push({ id: reportId ?? randomUUID(), text });
+      }
       this.#saveReports(row, queued);
-      return true;
+    } catch (error) {
+      if (error instanceof LeadReportNotDispatched) throw error;
+      throw new LeadReportNotDispatched("report-storage-unavailable", { cause: error });
     }
-    if (queued.length >= MAX_QUEUED_REPORTS) throw new LeadReportNotDispatched("report-queue-full");
-    queued.push({ id: randomUUID(), text });
-    this.#saveReports(row, queued);
     const connection = this.#connections.get(sessionId);
     if (!connection?.leadReportsPaused) connection?.wake?.();
-    return false;
+    return merged;
   }
   /** Frees room for a new automatic binding by dropping the oldest idle automatic one. */
   #evictAutoBinding(): void {
@@ -2163,6 +2266,7 @@ export class ClaudeBridge {
         !this.#autoBindings.has(row.bindingId) ||
         row.inflight ||
         this.#connections.has(id) ||
+        this.#reportQueue(id).length > 0 ||
         readUnknownManagedCommands(this.options.dataDir, id).length > 0
       )
         continue;
@@ -2533,12 +2637,24 @@ export class ClaudeBridge {
             throw error;
           }
         }
-        if (input.takenReports?.length) {
-          const taken = new Set(input.takenReports);
-          const queued = this.#reportQueue(sessionId);
-          const left = queued.filter((item) => !taken.has(item.id));
-          if (left.length !== queued.length) this.#saveReports(row, left);
+        const nativeReceipts = this.options.lead !== undefined && input.reportAckIds !== undefined;
+        const nativeOffers = nativeReceipts
+          ? (connection.nativeReportOffers ??= new Map())
+          : undefined;
+        const nativeTaken = new Set(nativeReceipts ? input.reportAckIds : undefined);
+        const legacyTaken = new Set(input.takenReports);
+        if (nativeTaken.size || legacyTaken.size) {
+          this.#retireReports(
+            row,
+            (report) =>
+              !!report.offered && (report.nativeReceipt ? nativeTaken : legacyTaken).has(report.id),
+          );
+          for (const id of nativeTaken) nativeOffers?.delete(id);
         }
+        const reportCandidates = () =>
+          this.#reportQueue(sessionId).filter(
+            (report) => !report.offered || (report.nativeReceipt === true) === nativeReceipts,
+          );
         // What a terminal Project Agent needs: its tools, and the reports for it to queue.
         const lead = () => {
           if (!connection.leadTools || !this.options.lead) return {};
@@ -2559,26 +2675,44 @@ export class ClaudeBridge {
             readUnknownManagedCommands(this.options.dataDir, sessionId).some(
               ({ evidence }) => evidence?.operation === "handover-terminal",
             );
-          const queued =
-            connection.leadReportsPaused || handover ? [] : this.#reportQueue(sessionId);
-          const offered = queued.slice(0, 4);
-          if (offered.some((report) => !report.offered))
-            this.#saveReports(row, [
-              ...offered.map((report) => ({ ...report, offered: true as const })),
-              ...queued.slice(offered.length),
-            ]);
+          const now = Date.now();
+          const offered =
+            connection.leadReportsPaused || handover
+              ? []
+              : reportCandidates()
+                  .filter(({ id }) => (nativeOffers?.get(id) ?? 0) <= now)
+                  .slice(0, 4);
+          if (offered.some((report) => !report.offered)) {
+            const offeredIds = new Set(offered.map(({ id }) => id));
+            this.#saveReports(
+              row,
+              this.#reportQueue(sessionId).map((report) =>
+                offeredIds.has(report.id)
+                  ? {
+                      ...report,
+                      offered: true as const,
+                      ...(nativeReceipts ? { nativeReceipt: true as const } : {}),
+                    }
+                  : report,
+              ),
+            );
+          }
+          for (const { id } of offered) nativeOffers?.set(id, now + NATIVE_REPORT_RETRY_MS);
           const reports = offered.map(({ id, text }) => ({ id, text }));
           return { lead: { tools: orderedTools, reports, paused } };
         };
         connection.pollActive = true;
         try {
-          if (
-            !connection.pending &&
-            (connection.leadReportsPaused ||
-              !connection.leadTools ||
-              !this.#reportQueue(sessionId).length) &&
-            input.waitMs
-          )
+          const now = Date.now();
+          const nextReport =
+            connection.leadReportsPaused || !connection.leadTools
+              ? undefined
+              : reportCandidates().reduce(
+                  (earliest, { id }) => Math.min(earliest, nativeOffers?.get(id) ?? now),
+                  Infinity,
+                );
+          const waitMs = Math.min(input.waitMs, Math.max(0, (nextReport ?? Infinity) - now));
+          if (!connection.pending && waitMs)
             await new Promise<void>((resolve) => {
               const done = () => {
                 clearTimeout(timer);
@@ -2586,7 +2720,7 @@ export class ClaudeBridge {
                 response.off("close", done);
                 resolve();
               };
-              const timer = setTimeout(done, input.waitMs);
+              const timer = setTimeout(done, waitMs);
               timer.unref();
               connection.wake = done;
               response.once("close", done);

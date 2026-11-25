@@ -178,6 +178,8 @@ export const bridgePollSchema = bridgeLeaseSchema.extend({
   leadReportsPaused: z.boolean().optional(),
   /** Feature `lead-tools`: reports it has put in its outbox since the last poll. */
   takenReports: z.array(id).max(32).optional(),
+  /** Feature `lead-report-acks`: IDs with confirmed native submission. Empty enables the mode. */
+  reportAckIds: z.array(id).max(32).optional(),
 });
 /** A Project Agent's tool call from its terminal (feature `lead-tools`). */
 export const bridgeLeadCallSchema = bridgeLeaseSchema.extend({

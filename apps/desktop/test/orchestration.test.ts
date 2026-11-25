@@ -938,6 +938,7 @@ describe("Worker interruptions during app quit", () => {
           DEVICE,
           expect.stringContaining(text),
           expect.any(Function),
+          expect.any(String),
         ),
       );
       expect(deliver.mock.calls[0]?.[2]).toContain("interrupted when AgentKib quit");
@@ -954,7 +955,7 @@ describe("Worker interruptions during app quit", () => {
     },
   );
 
-  it.each(["user-paused", "report-undelivered", "auto-turn-limit"])(
+  it.each(["user-paused", "auto-turn-limit"])(
     "delivers while %s, then resumes without repeating the report",
     async (reason) => {
       const { lanes } = host();
@@ -978,6 +979,7 @@ describe("Worker interruptions during app quit", () => {
           DEVICE,
           expect.stringContaining("interrupted when AgentKib quit"),
           expect.any(Function),
+          expect.any(String),
         ),
       );
       expect(after.status(LEAD)).toMatchObject({
@@ -1031,7 +1033,7 @@ describe("Worker interruptions during app quit", () => {
     deliver.mockImplementationOnce(() => {
       throw new LeadReportUsageLimit("usage-limit");
     });
-    await reopened.catchUp();
+    reopened.limitEnded(LEAD);
     await vi.waitFor(() => expect(deliver).toHaveBeenCalledTimes(1));
     reopened.limitEnded(LEAD);
     await vi.waitFor(() => expect(deliver).toHaveBeenCalledTimes(2));
@@ -1066,30 +1068,34 @@ describe("Worker interruptions during app quit", () => {
         "re-authorized",
         expect.stringContaining("did not start a continuation"),
         expect.any(Function),
+        expect.any(String),
       ),
     );
   });
 
-  it("does not automatically replay a quit report when the provider result is unknown", async () => {
+  it("automatically replays a quit report with its original ID when the result is unknown", async () => {
     const root = directory();
     const { lanes } = host();
     const before = service(lanes, root);
     before.designate(OWNER);
     await assignWorker(before);
     const { lane } = before.registry.leadOfLane(WORKER)!;
-    const uncertain = vi.fn(() => {
+    const uncertain = vi.fn<OrchestrationService["sendReport"]>(() => {
       throw new Error("outcome_unknown");
     });
     const after = service(lanes, root, "after", uncertain);
     after.workerInterruptedByQuit(WORKER, "t1", "unknown", { leadId: LEAD, laneId: lane.id });
     await vi.waitFor(() => expect(uncertain).toHaveBeenCalledTimes(1));
+    const [pending] = after.status(LEAD)!.reportDeliveries!;
+    expect(pending!.reportId).toBe(uncertain.mock.calls[0]?.[4]);
     await after.close();
-    const deliver = vi.fn((_lead: string, _device: string, _report: string) => false);
+    const deliver = vi.fn<OrchestrationService["sendReport"]>(() => false);
     const reopened = service(lanes, root, "again", deliver);
-    await reopened.catchUp();
+    await reopened.catchUp(pending!.retryAt! - 1);
     expect(deliver).not.toHaveBeenCalled();
-    reopened.resume(LEAD, DEVICE);
-    await vi.waitFor(() => expect(deliver).toHaveBeenCalledTimes(1));
+    await reopened.catchUp(pending!.retryAt!);
+    expect(deliver).toHaveBeenCalledTimes(1);
+    expect(deliver.mock.calls[0]?.[4]).toBe(pending!.reportId);
   });
 
   it("retries a report that was definitely not dispatched without lifting the pause", async () => {
@@ -1107,7 +1113,7 @@ describe("Worker interruptions during app quit", () => {
     const after = service(lanes, root, "after", deliver);
     after.workerInterruptedByQuit(WORKER, "t1", "unknown", { leadId: LEAD, laneId: lane.id });
     expect(deliver).toHaveBeenCalledTimes(1);
-    await after.catchUp();
+    await after.catchUp(after.status(LEAD)!.reportDeliveries![0]!.retryAt!);
     await vi.waitFor(() => expect(deliver).toHaveBeenCalledTimes(2));
     expect(after.status(LEAD)).toMatchObject({
       paused: true,
@@ -2334,14 +2340,16 @@ describe("orchestration service", () => {
       ]);
       expect(delivered).toHaveLength(1);
       expect(orchestration.status(LEAD)).toMatchObject({
-        paused: true,
-        reason: "auto-turn-limit",
-        autoTurns: 1,
-        pendingReports: [expect.stringContaining("turn ended")],
+        paused: false,
+        autoTurns: 0,
+        reportDeliveries: [expect.any(Object), expect.any(Object)],
       });
-      // One that joined a report still waiting gives its turn back.
+      // A merged delivery frees the reservation; the next waits for the real receipt.
       answers[0]!(true);
-      await expect.poll(() => orchestration.status(LEAD)!.autoTurns).toBe(0);
+      await vi.waitFor(() => expect(delivered).toHaveLength(2));
+      expect(orchestration.status(LEAD)!.autoTurns).toBe(0);
+      answers[1]!(false);
+      await expect.poll(() => orchestration.status(LEAD)!.autoTurns).toBe(1);
     });
 
     it("reports late the turns a worker ended while AgentKib did not watch it", async () => {
@@ -2519,7 +2527,7 @@ describe("a lead that waits for its usage limit to reset", () => {
       reason: "usage-limit",
       autoTurns: 0,
     });
-    expect(orchestration.registry.get(LEAD)!.pendingReports).toHaveLength(1);
+    expect(orchestration.registry.get(LEAD)!.reportDeliveries).toHaveLength(1);
     limited = false;
     orchestration.limitEnded(LEAD);
     await vi.waitFor(() => expect(delivered).toHaveLength(1));

@@ -118,11 +118,15 @@ export async function startHost({
   workspace,
   rpc,
   enableClaudeScheduler = false,
+  disabledSessionProviders,
 }: {
   root: string;
   workspace: string;
   rpc: Rpc;
   enableClaudeScheduler?: boolean;
+  disabledSessionProviders?: ConstructorParameters<
+    typeof WebAccessService
+  >[0]["disabledSessionProviders"];
 }) {
   const calls: {
     method: string;
@@ -149,6 +153,7 @@ export async function startHost({
     verifiedCodex: true,
     verifiedClaudeManaged: true,
     verifiedAntigravityManaged: true,
+    disabledSessionProviders,
     verifiedDshFollower: true,
     verifiedDevinManaged: true,
     enableClaudeScheduler,

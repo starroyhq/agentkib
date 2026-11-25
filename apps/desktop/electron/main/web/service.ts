@@ -43,6 +43,11 @@ import { LivePreviewError, LivePreviewService } from "./live-preview";
 import { dispatchClaude } from "./claude-dispatch";
 import { ClaudeHostScheduler, type ClaudeScheduledSession } from "./claude-scheduler";
 import { attachManagedWebSocket, type ConversationDispatchControl } from "./managed-websocket";
+import {
+  RemoteRateDiagnostics,
+  remoteRateCategory,
+  type RemoteRateCategory,
+} from "./rate-diagnostics";
 import { CLAUDE_LOCAL_OWNER, localClaudeRequest } from "./local-claude";
 import { continuationPreflightReason } from "./continuation-reason";
 import { replayClaudeAttachments, settleClaudeAttachments } from "./claude-attachment-receipts";
@@ -417,11 +422,44 @@ class HttpError extends Error {
   constructor(
     readonly status: number,
     message: string,
+    readonly retryAfter?: number,
   ) {
     super(message);
   }
 }
-type ActionOutcome = { request: boolean; dispatched: boolean; priorUncertain: boolean };
+type ActionOutcome = ConversationDispatchControl & {
+  rateDiagnostic?: { deviceId?: string; category: RemoteRateCategory; at: number };
+};
+type PairedRateClass = "api" | "stream" | "probe" | "other";
+type RequestRateWindow = {
+  count: number;
+  until: number;
+  paired?: Record<Exclude<PairedRateClass, "other">, number>;
+};
+const REQUEST_RATE_WINDOW_MS = 60_000;
+const MAX_REQUEST_RATE_KEYS = 4096;
+const PAIRED_REQUEST_LIMIT = 600;
+const PAIRED_STREAM_LIMIT = 30;
+const PAIRED_PROBE_LIMIT = 30;
+const API_REQUEST_LIMIT = 180;
+const PAIRED_REST_LIMIT = PAIRED_REQUEST_LIMIT - PAIRED_STREAM_LIMIT - PAIRED_PROBE_LIMIT;
+
+function pairedRateClass(
+  method: string | undefined,
+  pathname: string,
+  lan: boolean,
+): PairedRateClass {
+  if (!pathname.startsWith("/api/web/v1/") || (lan && method === "OPTIONS")) return "other";
+  if (method === "GET") {
+    if (pathname === "/api/web/v1/stream") return "stream";
+    if (pathname === "/api/web/v1/info" || pathname === "/api/web/v1/access") return "probe";
+  }
+  return "api";
+}
+
+function requestRateError(until: number, now: number): HttpError {
+  return new HttpError(429, "rate_limited", Math.max(1, Math.ceil((until - now) / 1000)));
+}
 type ActionAdmission = {
   hash: string;
   operation: string;
@@ -885,7 +923,8 @@ export class WebAccessService {
   // 正在进行的目录读取（按 runtime 启动区分）；同时到达的权限检查共用它。
   private catalogFlight?: { boot: string; readerScope: string; read: Promise<unknown> };
   private pendingControlNotifications = new Set<string>();
-  private rates = new Map<string, { count: number; until: number }>();
+  private rates = new Map<string, RequestRateWindow>();
+  private readonly rateDiagnostics = new RemoteRateDiagnostics();
   private adminQueue: Promise<unknown> = Promise.resolve();
   private persistence: Promise<void> = Promise.resolve();
   private bootId = token();
@@ -961,6 +1000,7 @@ export class WebAccessService {
       enableClaudeScheduler?: boolean;
       enableSerialSessionScheduler?: boolean;
       verifiedAntigravityManaged?: boolean;
+      disabledSessionProviders?: Partial<Record<ManagedAgent, string>>;
       /** DeepSeek Harness sessions connected through the AgentKib plugin (macOS only for now). */
       verifiedDshFollower?: boolean;
       /** Devin sessions run by AgentKib, one `devin -p` turn at a time. */
@@ -1459,7 +1499,8 @@ export class WebAccessService {
       session.agent === "devin"
         ? this.options.verifiedDevinManaged
         : session.agent === "antigravity"
-          ? this.options.verifiedAntigravityManaged
+          ? this.options.verifiedAntigravityManaged &&
+            !this.options.disabledSessionProviders?.antigravity
           : this.options.verifiedClaudeManaged;
     if (!work || !verified || !this.ownsScheduledDevice(work.deviceId))
       throw new Error("scheduled-control-unavailable");
@@ -2712,16 +2753,22 @@ export class WebAccessService {
       authorize: async (request) => {
         if (this.options.mode === "lan" || this.disposed) return false;
         const response = new LocalConversationResponse();
-        await this.handle(
-          {
-            headers: request.headers,
-            method: "GET",
-            url: "/api/web/v1/catalog",
-            async *[Symbol.asyncIterator]() {},
-          },
-          response,
-          { request: false, dispatched: false, priorUncertain: false },
-        );
+        const control: ActionOutcome = { request: false, dispatched: false, priorUncertain: false };
+        try {
+          await this.handle(
+            {
+              headers: request.headers,
+              method: "GET",
+              url: "/api/web/v1/catalog",
+              async *[Symbol.asyncIterator]() {},
+            },
+            response,
+            control,
+          );
+        } catch (error) {
+          if (error instanceof HttpError && error.status === 429) this.recordRateRejection(control);
+          throw error;
+        }
         return response.statusCode === 200;
       },
       dispatch: async (request, response, control) => {
@@ -2767,11 +2814,7 @@ export class WebAccessService {
         (error as NodeJS.ErrnoException).code === "EADDRINUSE" ? "port_in_use" : "web_start_failed";
     }
   }
-  private respondControlError(
-    res: ConversationResponse,
-    control: ConversationDispatchControl,
-    error: unknown,
-  ) {
+  private respondControlError(res: ConversationResponse, control: ActionOutcome, error: unknown) {
     if (res.headersSent) {
       res.end();
       return;
@@ -2780,6 +2823,9 @@ export class WebAccessService {
       error instanceof HttpError ||
       error instanceof ArtifactError ||
       error instanceof AttachmentError;
+    if (known && error.status === 429) this.recordRateRejection(control);
+    if (error instanceof HttpError && error.retryAfter !== undefined)
+      res.setHeader("Retry-After", String(error.retryAfter));
     this.json(res, known ? error.status : 500, {
       error: known ? error.message : "request_failed",
       ...(control.request
@@ -2789,6 +2835,11 @@ export class WebAccessService {
           }
         : {}),
     });
+  }
+  private recordRateRejection(control: ActionOutcome) {
+    const diagnostic = control.rateDiagnostic;
+    if (diagnostic)
+      this.rateDiagnostics.reject(diagnostic.deviceId, diagnostic.category, diagnostic.at);
   }
   /** Also called on OS resume and when settings request their current status. */
   async checkLanAddress(): Promise<void> {
@@ -4238,7 +4289,13 @@ export class WebAccessService {
     return this.json(res, 200, {
       ...projected,
       ...(stillAllowed && typeof mode === "string" && planModes?.includes(mode)
-        ? { planProgress: { live: true } }
+        ? {
+            planProgress: {
+              live:
+                session.agent !== "antigravity" ||
+                !this.options.disabledSessionProviders?.antigravity,
+            },
+          }
         : {}),
     });
   }
@@ -6415,13 +6472,33 @@ export class WebAccessService {
     this.credentials = this.credentials.filter((c) => c.expiresAt > now);
     for (const [key, rate] of this.rates) if (rate.until <= now) this.rates.delete(key);
   }
-  private rate(key: string, limit: number) {
+  private rate(key: string, limit: number, traffic?: PairedRateClass) {
+    const now = Date.now();
     const previous = this.rates.get(key);
     // 表满时只拒绝新建 key；已有额度的客户端不能因为别人把表撑满而被 429。
-    if (!previous && this.rates.size >= 4096) throw new HttpError(429, "rate_limited");
+    if (!previous && this.rates.size >= MAX_REQUEST_RATE_KEYS) {
+      let earliest = now + REQUEST_RATE_WINDOW_MS;
+      for (const entry of this.rates.values()) earliest = Math.min(earliest, entry.until);
+      throw requestRateError(earliest, now);
+    }
     const rate =
-      previous && previous.until > Date.now() ? previous : { count: 0, until: Date.now() + 60_000 };
-    if (++rate.count > limit) throw new HttpError(429, "rate_limited");
+      previous && previous.until > now
+        ? previous
+        : { count: 0, until: now + REQUEST_RATE_WINDOW_MS };
+    if (rate.count >= limit) throw requestRateError(rate.until, now);
+    if (traffic) {
+      const classified = (rate.paired ??= { api: 0, stream: 0, probe: 0 });
+      const exhausted =
+        traffic === "stream"
+          ? classified.stream >= PAIRED_STREAM_LIMIT
+          : traffic === "probe"
+            ? classified.probe >= PAIRED_PROBE_LIMIT
+            : rate.count - classified.stream - classified.probe >= PAIRED_REST_LIMIT ||
+              (traffic === "api" && classified.api >= API_REQUEST_LIMIT);
+      if (exhausted) throw requestRateError(rate.until, now);
+      if (traffic !== "other") classified[traffic]++;
+    }
+    rate.count++;
     this.rates.set(key, rate);
   }
   /**
@@ -6819,7 +6896,7 @@ export class WebAccessService {
   private async handle(
     req: ConversationRequest,
     res: ConversationResponse,
-    control: { request: boolean; dispatched: boolean; priorUncertain: boolean },
+    control: ActionOutcome,
     trustedLocal = false,
   ) {
     res.setHeader("X-Content-Type-Options", "nosniff");
@@ -6866,19 +6943,35 @@ export class WebAccessService {
         : "";
     // 已配对设备各自一份额度；未认证流量（含静态资源、预检、配对）共享一个池。
     // 经 relay 进来的请求都来自本机 frpc，拿不到真实客户端地址，无法再按 IP 细分。
-    const paired = !!hash && this.credentials.some((c) => c.hash === hash);
+    const pairedCredential =
+      !trustedLocal && hash ? this.credentials.find((c) => c.hash === hash) : undefined;
+    const paired = pairedCredential !== undefined;
     const url = new URL(req.url || "/", origin);
     // Classified before the first limit, so a control it turns away still says it was never
     // dispatched; without an outcome the client has to treat the request as unknown.
     control.request =
       url.pathname.startsWith("/api/web/v1/") &&
       isControlRequest(req.method, url.pathname.replace(/^\/api\/web\/v1/, ""));
-    if (!trustedLocal) this.rate(paired ? `paired:${hash}` : "anonymous", 600);
-    if (paired && url.pathname.startsWith("/api/")) this.seen.set(hash, Date.now());
     if (lan) {
       res.setHeader("Access-Control-Allow-Origin", origin);
+      res.setHeader("Access-Control-Expose-Headers", "Retry-After");
       res.setHeader("Vary", "Origin");
     }
+    if (!trustedLocal) {
+      const category = remoteRateCategory(req.method, url.pathname);
+      const at = Date.now();
+      const deviceId = pairedCredential?.device.id;
+      control.rateDiagnostic = { deviceId, category, at };
+      this.rateDiagnostics.observe(deviceId, category, false, at);
+      if (paired)
+        this.rate(
+          `paired:${hash}`,
+          PAIRED_REQUEST_LIMIT,
+          pairedRateClass(req.method, url.pathname, lan),
+        );
+      else this.rate("anonymous", 600);
+    }
+    if (paired && url.pathname.startsWith("/api/")) this.seen.set(hash, Date.now());
     if (!url.pathname.startsWith("/api/")) {
       if (lan) throw new HttpError(404, "not_found");
       return this.static(req, res);
@@ -7042,6 +7135,9 @@ export class WebAccessService {
         pending: browser.pending,
         pairingMode: lan ? "confirmation" : "code",
         experimentalEnabled: this.controlsEnabled(undefined, device),
+        ...(device && !browser.ended && this.options.disabledSessionProviders
+          ? { disabledSessionProviders: this.options.disabledSessionProviders }
+          : {}),
         ...(computerName ? { computerName } : {}),
         ...(historyAccess ? { historySearch: true, historySearchScope: historyAccess.token } : {}),
         ...(directConnection &&
@@ -7050,6 +7146,12 @@ export class WebAccessService {
           ? { directConnection }
           : {}),
         ...(bearerToken ? { bearerToken } : {}),
+        ...(url.searchParams.get("rateDiagnostics") === "1" &&
+        device &&
+        credential &&
+        !browser.ended
+          ? { rateDiagnostics: this.rateDiagnostics.snapshot(this.grant(hash).id) }
+          : {}),
         // Additive: only a pairing that can be notified learns that it can subscribe.
         ...(device && credential && !browser.ended && this.pushReady(credential)
           ? {
@@ -7082,7 +7184,7 @@ export class WebAccessService {
     if (!browser) throw new HttpError(401, "unpaired");
     // Trusted IPC GETs still use the underlying read admission and route-specific limits.
     // Catalog and transcript refreshes must not exhaust the desktop's write budget.
-    if (!trustedLocal || req.method !== "GET") this.rate(hash, 180);
+    if (!paired && (!trustedLocal || req.method !== "GET")) this.rate(hash, API_REQUEST_LIMIT);
     if (req.method === "POST") {
       if (req.headers.origin !== origin || req.headers["x-csrf-token"] !== browser.csrf)
         throw new HttpError(403, "csrf_rejected");

@@ -105,7 +105,7 @@ describe("Antigravity session baseline through HTTP, backend RPC and ACP frames"
   let sessionId: string;
   let localSessionId: string;
 
-  const openBackend = (reuseData = false) => {
+  const openBackend = (reuseData = false, enableAcp = true) => {
     const home = join(root, "home");
     return startBackend({
       data: join(root, "backend"),
@@ -115,6 +115,7 @@ describe("Antigravity session baseline through HTTP, backend RPC and ACP frames"
         USERPROFILE: home,
         CODEX_HOME: join(home, ".codex"),
         PATH: root,
+        ...(enableAcp ? { AGENTKIB_ENABLE_ANTIGRAVITY_ACP: "1" } : {}),
         AGENTKIB_HOST_ATTACHMENTS_DIRS: JSON.stringify([join(root, "host", "attachments")]),
       },
       indexSessions: true,
@@ -185,6 +186,99 @@ describe("Antigravity session baseline through HTTP, backend RPC and ACP frames"
   });
 
   const live = (id = sessionId) => host.http(`/live?sessionId=${id}`);
+
+  it("keeps control capabilities disabled for desktop and paired clients without opening ACP", async () => {
+    const initial = await live();
+    const queuedText = "Pending before ACP was disabled";
+    expect(
+      await backend.rpc(RUNTIME_METHODS.sessionRequest, {
+        operation: "queue-add",
+        sessionId,
+        deviceId: host.deviceId,
+        requestId: randomUUID(),
+        runtimeBootId: initial.body.runtimeBootId,
+        expectedRevision: initial.body.revision,
+        experimentalEnabled: true,
+        text: queuedText,
+      }),
+    ).toMatchObject({ result: { accepted: true } });
+    await host.dispose();
+    await backend.close();
+    backend = await openBackend(true, false);
+    const reason = "antigravity-acp-disabled";
+    host = await startHost({
+      root,
+      workspace,
+      rpc: backend.rpc,
+      enableClaudeScheduler: true,
+      disabledSessionProviders: { antigravity: reason },
+    });
+    const unavailable = { available: false, reason };
+    for (const read of [host.desktop, host.http]) {
+      expect(await read("/access")).toMatchObject({
+        status: 200,
+        body: { disabledSessionProviders: { antigravity: reason } },
+      });
+      expect(await read("/managed/options?agent=antigravity&workspaceId=workspace")).toMatchObject({
+        status: 200,
+        body: { ...unavailable, provider: { create: { mode: "with-first-message" } } },
+      });
+      expect(await read(`/live?sessionId=${sessionId}`)).toMatchObject({
+        status: 200,
+        body: { executionMode: "acp-managed", sendEnabled: false, stopEnabled: false, reason },
+      });
+      expect(await read(`/managed/settings?sessionId=${sessionId}`)).toMatchObject({
+        status: 200,
+        body: unavailable,
+      });
+      expect(await read(`/managed/capabilities?sessionId=${sessionId}`)).toMatchObject({
+        status: 200,
+        body: {
+          features: {
+            send: unavailable,
+            stop: unavailable,
+            approve: unavailable,
+            answer: unavailable,
+            settings: unavailable,
+            fork: unavailable,
+            "queue-add": unavailable,
+            "queue-resume": unavailable,
+            "queue-list": allowed,
+          },
+        },
+      });
+      expect(await read(`/managed/queue?sessionId=${sessionId}`)).toMatchObject({
+        status: 200,
+        body: {
+          data: [{ text: queuedText, actions: { update: unavailable, delete: unavailable } }],
+        },
+      });
+    }
+
+    const create = await host.http("/managed/create", {
+      agent: "antigravity",
+      bootId: host.bootId,
+      workspaceId: "workspace",
+      requestId: randomUUID(),
+      prompt: "Must not reach the CLI",
+    });
+    expect(create).toMatchObject({ status: 409, body: { controlOutcome: "not-dispatched" } });
+    const disabledLive = await live();
+    await expect(
+      backend.rpc(RUNTIME_METHODS.sessionRequest, {
+        operation: "send",
+        sessionId,
+        deviceId: host.deviceId,
+        requestId: randomUUID(),
+        runtimeBootId: disabledLive.body.runtimeBootId,
+        expectedRevision: disabledLive.body.revision,
+        experimentalEnabled: true,
+        text: "Must not reach the CLI",
+      }),
+    ).rejects.toThrow(reason);
+    await host.tickClaudeQueue();
+    expect(acp.spawn).not.toHaveBeenCalled();
+  });
 
   it("confirms Web permission writes and keeps settings writable on desktop after reopening", async () => {
     const settingsPath = `/managed/settings?sessionId=${sessionId}`;

@@ -240,10 +240,13 @@ export function SessionWorkerAssignmentDialog({
                         ? (options.reason ??
                           (!checked && remaining === 0 ? "worker-limit-reached" : null))
                         : "lead-requires-managed-claude"));
-                  const disabledReason = unavailable
-                    ? (copy.reasons[unavailable] ??
-                      (options.capable ? copy.unavailable : copy.cannotLead))
-                    : null;
+                  const disabledReason =
+                    unavailable &&
+                    unavailable !== "antigravity-acp-disabled" &&
+                    !(row.agent === "antigravity" && unavailable === "worker-agent-unsupported")
+                      ? (copy.reasons[unavailable] ??
+                        (options.capable ? copy.unavailable : copy.cannotLead))
+                      : null;
                   const detail = row.worktree ? worktreeLabel(row.worktree, tr) : null;
                   const rowButton = (
                     <Button
@@ -253,7 +256,7 @@ export function SessionWorkerAssignmentDialog({
                       aria-label={title}
                       aria-description={candidate.assigned ? copy.assigned : undefined}
                       aria-pressed={checked}
-                      disabled={busy || !!disabledReason}
+                      disabled={busy || !!unavailable}
                       onClick={() => {
                         if (candidate.assigned) {
                           void remove(candidate, title);

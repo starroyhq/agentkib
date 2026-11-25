@@ -1,8 +1,22 @@
 import {
+  managedAgentOf,
   sessionProviderDeclaration,
+  type Access,
   type SessionCapabilities,
   type SessionProviderDeclaration,
 } from "@agentkib/web-client";
+
+export function sessionProviderControlsDisabled(
+  access: Pick<Access, "disabledSessionProviders"> | null | undefined,
+  agent: string | undefined,
+  reason?: string | null,
+): boolean {
+  const managed = managedAgentOf(agent);
+  return (
+    reason === "antigravity-acp-disabled" ||
+    !!(managed && access?.disabledSessionProviders?.[managed])
+  );
+}
 
 export function resolveSessionProvider(
   session?: { id: string; agent?: string },

@@ -137,6 +137,29 @@ describe("WebAccessService loopback security boundary", () => {
     await vi.waitFor(() => expect(stream.chunks.join("")).toContain("event: session-ready"));
     return stream;
   }
+  async function streamAttempt(afterCursor?: string) {
+    const query = new URLSearchParams({ protocolVersion: "2" });
+    if (afterCursor) query.set("afterCursor", afterCursor);
+    return new Promise<{
+      status: number;
+      headers: import("node:http").IncomingHttpHeaders;
+    }>((resolve, reject) => {
+      const req = request(
+        {
+          hostname: "127.0.0.1",
+          port,
+          path: `/api/web/v1/stream?${query}`,
+          headers: { Cookie: cookie },
+        },
+        (res) => {
+          resolve({ status: res.statusCode!, headers: res.headers });
+          res.destroy();
+        },
+      );
+      req.on("error", reject);
+      req.end();
+    });
+  }
   function streamEvents(chunks: string[]): SessionStreamEvent[] {
     return chunks
       .join("")
@@ -987,6 +1010,93 @@ describe("WebAccessService loopback security boundary", () => {
     expect(rejected.json()).toEqual({ error: "rate_limited", controlOutcome: "not-dispatched" });
     // Reads keep their plain error.
     expect((await http("/api/web/v1/catalog")).json()).toEqual({ error: "rate_limited" });
+  });
+  it("reserves stream and probe slots after the API and remaining general budgets are spent", async () => {
+    const startedAt = Date.now();
+    const clock = vi.spyOn(Date, "now").mockReturnValue(startedAt);
+    await bootstrap();
+    await pair();
+    expect((await streamAttempt()).status).toBe(200);
+
+    for (let i = 0; i < 180; i++) expect((await http("/api/web/v1/catalog")).status).toBe(200);
+    expect((await http("/api/web/v1/catalog")).status).toBe(429);
+    for (let i = 0; i < 360; i++) expect((await http("/index.html")).status).toBe(200);
+    expect((await http("/index.html")).status).toBe(429);
+
+    for (let i = 0; i < 30; i++)
+      expect((await http(`/api/web/v1/${i % 2 ? "info" : "access"}`)).status).toBe(200);
+    for (let i = 0; i < 29; i++) expect((await streamAttempt("epoch-one:0")).status).toBe(200);
+
+    const control = await http("/api/web/v1/send", {
+      method: "POST",
+      body: { sessionId: "s", text: "hello", requestId: randomUUID() },
+    });
+    expect(control.status).toBe(429);
+    expect(control.json()).toEqual({ error: "rate_limited", controlOutcome: "not-dispatched" });
+    expect(control.headers["retry-after"]).toBe("60");
+    expect((await http("/index.html")).status).toBe(429);
+    expect((await http("/api/web/v1/info")).status).toBe(429);
+    expect((await streamAttempt("epoch-one:0")).status).toBe(429);
+
+    clock.mockReturnValue(startedAt + 58_501);
+    expect((await http("/api/web/v1/info")).headers["retry-after"]).toBe("2");
+    clock.mockReturnValue(startedAt + 59_999);
+    const limited = await streamAttempt("epoch-one:0");
+    expect(limited.status).toBe(429);
+    expect(limited.headers["retry-after"]).toBe("1");
+    clock.mockReturnValue(startedAt + 60_000);
+    expect((await streamAttempt("epoch-one:0")).status).toBe(200);
+    expect((await http("/api/web/v1/info")).status).toBe(200);
+    expect((await http("/api/web/v1/catalog")).status).toBe(200);
+  }, 15_000);
+  it("only exports rate counters for the authenticated device that opts in", async () => {
+    await bootstrap();
+    const firstDevice = await pair();
+    const firstCredential = cookie;
+    expect((await http("/api/web/v1/access")).json()).not.toHaveProperty("rateDiagnostics");
+    for (let i = 0; i < 180; i++)
+      expect((await http("/api/web/v1/catalog?marker=private-query")).status).toBe(200);
+    expect((await http("/api/web/v1/catalog?marker=private-query")).status).toBe(429);
+    expect(
+      (
+        await http("/api/web/v1/send", {
+          method: "POST",
+          body: { sessionId: "s", text: "private-body", requestId: randomUUID() },
+        })
+      ).status,
+    ).toBe(429);
+    const first = (await http("/api/web/v1/access?rateDiagnostics=1")).json().rateDiagnostics;
+    const alias = first[0].deviceId;
+    expect(alias).toMatch(/^device-/);
+    expect(alias).not.toBe(firstDevice);
+    expect(first).toEqual(
+      expect.arrayContaining([
+        { deviceId: alias, category: "probe", requests: 2, rejected: 0 },
+        { deviceId: alias, category: "catalog", requests: 181, rejected: 1 },
+        { deviceId: alias, category: "control", requests: 1, rejected: 1 },
+      ]),
+    );
+    const encoded = JSON.stringify(first);
+    for (const sensitive of [
+      firstDevice,
+      firstCredential,
+      "private-query",
+      "private-body",
+      "127.0.0.1",
+    ])
+      expect(encoded).not.toContain(sensitive);
+
+    cookie = "";
+    expect((await http("/api/web/v1/access?rateDiagnostics=1")).json()).not.toHaveProperty(
+      "rateDiagnostics",
+    );
+    await bootstrap();
+    await pair();
+    const second = (await http("/api/web/v1/access?rateDiagnostics=1")).json().rateDiagnostics;
+    expect(second).toEqual([
+      { deviceId: expect.stringMatching(/^device-/), category: "probe", requests: 1, rejected: 0 },
+    ]);
+    expect(second[0].deviceId).not.toBe(alias);
   });
   it("does not let one browser's wrong guesses invalidate the code for another browser", async () => {
     await bootstrap();

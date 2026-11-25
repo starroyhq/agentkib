@@ -78,13 +78,13 @@ export function MenuBarNewSession({
   const { permissions, selected: selectedPermission, shown: shownPermission } = permission;
   const permissionTitle =
     permissions?.title ?? newSessionPermissionFallbackTitle(agent, locale) ?? copy.permission;
+  const optionsReason =
+    options && !options.available ? sessionReason(locale, options.reason).text : undefined;
   const unavailable =
-    session.options.isError && !options
+    !session.providerDisabled && session.options.isError && !options
       ? failureOf(session.options.error, locale).reason
-      : options && !options.available
-        ? fillCopy(copy.agentUnavailableHere, {
-            reason: sessionReason(locale, options.reason).text,
-          })
+      : optionsReason
+        ? fillCopy(copy.agentUnavailableHere, { reason: optionsReason })
         : undefined;
   const busy = session.busy || (engaged && !!text.trim() && session.options.isFetching && !options);
   const canSend =
@@ -153,7 +153,9 @@ export function MenuBarNewSession({
           value={text}
           aria-label={copy.newSession}
           placeholder={tr("menubar.newSession")}
-          disabled={session.busy || session.unknown || !workspaces.length}
+          disabled={
+            session.providerDisabled || session.busy || session.unknown || !workspaces.length
+          }
           className="h-full min-w-0 flex-1 truncate rounded-none border-0 bg-transparent px-0 py-0 text-sm shadow-none focus-visible:border-0 focus-visible:ring-0 disabled:bg-transparent dark:bg-transparent dark:disabled:bg-transparent"
           onFocus={() => setEngaged(true)}
           onChange={(event) => {
@@ -187,7 +189,7 @@ export function MenuBarNewSession({
             risky={shownPermission?.risky}
             disabled={!permissions || session.busy || session.unknown}
             disabledReason={
-              !permissions
+              !permissions && !session.providerDisabled
                 ? session.optionsLoading
                   ? copy.loadingOptions
                   : copy.optionsUnavailable
@@ -242,10 +244,14 @@ export function MenuBarNewSession({
                 }}
               >
                 {NEW_SESSION_AGENTS.map((item) => (
-                  <DropdownMenuRadioItem key={item} value={item} disabled={notInstalled.has(item)}>
+                  <DropdownMenuRadioItem
+                    key={item}
+                    value={item}
+                    disabled={notInstalled.has(item) || !!session.disabledSessionProviders?.[item]}
+                  >
                     <AgentMark agent={item} size={14} />
                     <span className="truncate">{agentName(item)}</span>
-                    {notInstalled.has(item) && (
+                    {notInstalled.has(item) && !session.disabledSessionProviders?.[item] && (
                       <span className="ml-auto text-xs text-muted-foreground">
                         {copy.notInstalled}
                       </span>

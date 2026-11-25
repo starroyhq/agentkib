@@ -433,17 +433,6 @@ describe.skipIf(process.platform === "win32")("Devin session HTTP baseline", () 
         },
       },
     ]);
-    expect(f.runtimeCalls()).toEqual([
-      auth,
-      modelQuery,
-      {
-        cwd: "<workspace>",
-        acp: ["session/new"],
-        // Read only is Devin's ACP "ask" mode, which answers without changing code.
-        config: { model: alternateModel, mode: "ask" },
-        prompt,
-      },
-    ]);
     expect(await f.runtimeReceipt(requestId)).toEqual(
       acceptedReceipt(ack, "create", requestId, `devin-create:${requestId}`, runtimeBootId, null)
         .body,
@@ -470,6 +459,18 @@ describe.skipIf(process.platform === "win32")("Devin session HTTP baseline", () 
         status: 200,
         body: liveBody(f.createdId, runtimeBootId, 2, { completed: turnId }),
       });
+    // The receipt confirms dispatch. The fixture writes its prompt log before completing the turn.
+    expect(f.runtimeCalls()).toEqual([
+      auth,
+      modelQuery,
+      {
+        cwd: "<workspace>",
+        acp: ["session/new"],
+        // Read only is Devin's ACP "ask" mode, which answers without changing code.
+        config: { model: alternateModel, mode: "ask" },
+        prompt,
+      },
+    ]);
   });
 
   it("lists the session and its reply for a paired Web client when Devin persists after create acknowledges", async () => {
@@ -678,7 +679,12 @@ describe.skipIf(process.platform === "win32")("Devin session HTTP baseline", () 
       result: { accepted: true, completed: true, sessionId },
     });
     const { body } = await f.live(sessionId);
-    expect(body).toMatchObject({ status: "running", revision: 1, sendEnabled: false });
+    expect(body).toMatchObject({
+      status: "running",
+      revision: 1,
+      sendEnabled: false,
+      turnId: expect.any(String),
+    });
     const scope = { sessionId, experimentalEnabled: true };
     expect(await rpc("capabilities", scope)).toMatchObject({
       operation: "capabilities",
@@ -722,6 +728,13 @@ describe.skipIf(process.platform === "win32")("Devin session HTTP baseline", () 
     expect(interventions.mock.calls.filter(([id]) => id === sessionId)).toEqual([
       [sessionId, "queue-add"],
     ]);
+    f.release();
+    await expect
+      .poll(() => f.live(sessionId))
+      .toMatchObject({
+        status: 200,
+        body: { status: "idle", completedTurnId: body.turnId },
+      });
     expect(f.runtimeCalls().filter((call) => typeof call.prompt === "string")).toMatchObject([
       { prompt },
     ]);

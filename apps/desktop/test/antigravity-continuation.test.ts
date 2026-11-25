@@ -53,7 +53,12 @@ function fixture() {
   };
   store.sessions.sync("workspace", "antigravity", [native]);
   const id = store.sessions.id("antigravity", native.native_ref);
-  const environment = { HOME: root, USERPROFILE: root, CODEX_HOME: path.join(root, "codex") };
+  const environment = {
+    HOME: root,
+    USERPROFILE: root,
+    CODEX_HOME: path.join(root, "codex"),
+    AGENTKIB_ENABLE_ANTIGRAVITY_ACP: "1",
+  };
   const commands = new Commands();
   cleanups.push(() => commands.close());
   const readers = new SessionReaders(store.sessions, commands, environment, { profiles: () => [] });

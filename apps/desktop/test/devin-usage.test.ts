@@ -1,8 +1,11 @@
 // @vitest-environment node
+import childProcesses from "node:child_process";
 import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { PassThrough } from "node:stream";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   devinLimitReset,
   devinUsageWindows,
@@ -166,6 +169,31 @@ describe.runIf(["darwin", "linux"].includes(process.platform))(
       // Enter apart from the text, as a key press; the terminal has a size.
       expect(devin.keys()).toContain('start true 120\nkeys "/usage"\nkeys "\\r"\n');
       expect(await ended(devin.alive)).toBe(true);
+    });
+
+    it("reads the final panel when the child exits before stdout drains", async () => {
+      const terminal = new childProcesses.ChildProcess();
+      const stdin = new PassThrough();
+      const stdout = new PassThrough();
+      Object.assign(terminal, { stdin, stdout });
+      const spawn = vi.spyOn(childProcesses, "spawn").mockReturnValue(terminal);
+      syncBuiltinESMExports();
+      try {
+        stdin.on("data", (chunk) => {
+          if (chunk.toString("utf8") !== "\r") return;
+          terminal.emit("exit", 0, null);
+          stdout.end(PANEL);
+        });
+        stdout.once("end", () => terminal.emit("close", 0, null));
+        const read = readDevinUsage("fixture-devin", tmpdir(), {});
+        stdout.write("\u001b]7501;state=idle:app=devin\u001b\\");
+        await expect(read).resolves.toEqual([
+          expect.objectContaining({ label: "Weekly", usedPercent: 66 }),
+        ]);
+      } finally {
+        spawn.mockRestore();
+        syncBuiltinESMExports();
+      }
     });
 
     it("never answers a question Devin asks first, such as trusting the folder", async () => {

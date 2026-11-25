@@ -238,7 +238,8 @@ export function readDevinUsage(
     signal?.addEventListener("abort", abort, { once: true });
     terminal.stdin?.on("error", () => undefined);
     terminal.once("error", () => finish(null, true));
-    terminal.once("exit", () => finish(panel()));
+    // A child can exit before the last panel bytes on stdout reach the reader.
+    terminal.once("close", () => finish(panel()));
     terminal.stdout?.on("data", (chunk: Buffer) => {
       if (finished) return;
       const text = chunk.toString("utf8");

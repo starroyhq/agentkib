@@ -1,7 +1,7 @@
 # AgentKib Claude Code session bridge
 
 First-party local Mods plugin for Claude Code **2.1.301 or later**, using AgentKib
-bridge plugin **0.5.8**. It connects AgentKib's existing chat interface to the
+bridge plugin **0.5.9**. It connects AgentKib's existing chat interface to the
 terminal's original execution process. It never starts a replacement Claude
 process, resumes another UUID, calls a model itself, or changes the user's
 permission rules.
@@ -92,11 +92,13 @@ command and does not call a model.
 - When the Runtime names the `lead-tools` feature and AgentKib makes the session a
   Project Agent, register its worker tools (`mcp__agentkib-bridge__worker_*`) with
   `$.tool.register` and run their calls through AgentKib. Submit each report once the
-  terminal is idle and the Runtime acknowledges that the plugin took it. A native
-  prompt from the bridge and its matching turn confirm delivery. An unconfirmed
-  report is never submitted again. A subsequent native turn lets the next report
-  proceed. Reconnect also does so if Claude Code had not yet recorded the prompt
-  in the conversation. While the session leads,
+  terminal is idle. With `lead-report-acks`, the plugin stores each report's
+  ID before submitting it. A bridge prompt and its matching native turn confirm
+  delivery, even if the call to submit the prompt lost its result. After a
+  reload, the report's ID in the native user message and its following assistant
+  message can recover the receipt. An unconfirmed native submission remains
+  available for reconciliation, and later reports can proceed. Older Runtimes
+  still use the intake acknowledgment before submitting a report. While the session leads,
   the tools run without asking: the plugin answers the engine's default ask for them
   with allow, and leaves any rule, hook, setting, other plugin's or organization's ask
   or deny as it is. Turns no one typed (a background task's notice, a schedule) carry

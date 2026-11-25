@@ -48,6 +48,9 @@ const AUTO_RETRY_REASONS = [
 // it makes one gets its worker tools here, under this plugin's name, and its reports as queued
 // messages. A Runtime that does not name it hears nothing of it.
 const LEAD_FEATURE = "lead-tools";
+const LEAD_REPORT_ACKS_FEATURE = "lead-report-acks";
+// Host releases before native receipts merged reports up to this size.
+const MAX_LEGACY_REPORT_TEXT = 32_000;
 const LEAD_RATE_LIMIT_FEATURE = "lead-rate-limit-pause";
 const RATE_LIMIT_RETRY_MS = 5 * 60_000;
 const QUOTA_RESUME_NOTIFICATIONS = new Set([
@@ -332,6 +335,7 @@ export function initialState() {
     lastCompletedMainTurnId: null,
     // Reports put in the outbox, said to the Runtime on the next poll that succeeds.
     takenReports: new Set(),
+    reportAckIds: new Set(),
     // The texts of the last prompts no one typed, until their turn starts.
     unattended: [],
   };
@@ -369,6 +373,10 @@ function leadOffered(state) {
 /** Whether this session can be a Project Agent now: offered, and its tools could be added. */
 function leadFeature(state) {
   return leadOffered(state) && !state.leadUnavailable;
+}
+
+function leadReportAcks(state) {
+  return leadFeature(state) && state.connection.features.includes(LEAD_REPORT_ACKS_FEATURE);
 }
 
 function currentLead(state) {
@@ -520,19 +528,52 @@ async function applyLead($, state, lead, connection) {
     await note($, leadPauseNote(paused));
   if (state.connection !== connection) return;
   state.leadPaused = paused;
-  if (leadReportsPaused(state)) return;
+  const durable = leadReportAcks(state);
   for (const report of Array.isArray(lead.reports) ? lead.reports : []) {
-    if (
-      typeof report?.id !== "string" ||
-      state.takenReports.has(report.id) ||
-      state.outbox.some((item) => item.id === report.id)
-    )
-      continue;
-    if (!validSend({ text: report.text, requestId: report.id })) {
-      state.takenReports.add(report.id);
+    if (typeof report?.id !== "string" || state.takenReports.has(report.id)) continue;
+    const existing = state.outbox.find((item) => item.id === report.id);
+    if (existing) {
+      if (existing.reportReceiptKey && existing.status === "unknown")
+        await recoverReportReceipt($, state, existing);
       continue;
     }
-    if (!writable(state)) break;
+    const valid = durable
+      ? /^[A-Za-z0-9_-]{1,128}$/.test(report.id) &&
+        typeof report.text === "string" &&
+        report.text.length <= MAX_LEGACY_REPORT_TEXT &&
+        report.text.trim() &&
+        !report.text.trimStart().startsWith("/")
+      : validSend({ text: report.text, requestId: report.id });
+    if (!valid) {
+      if (!durable && !leadReportsPaused(state)) state.takenReports.add(report.id);
+      continue;
+    }
+    const item = {
+      ...outboxItem({ commandId: report.id, text: report.text }, "queue", null),
+      leadReport: true,
+    };
+    if (durable) {
+      const nativeId = state.identity?.nativeId;
+      if (!nativeId) break;
+      item.reportSessionId = nativeId;
+      item.reportReceiptKey = `lead-report:1:${nativeId}:${report.id}`;
+      item.nativeReportText = `${report.text}\n\n[AgentKib report ID: ${report.id}]`;
+      const receipt = await $.store.get(item.reportReceiptKey);
+      if (state.connection !== connection) return;
+      if (receipt === "delivered") {
+        state.reportAckIds.add(report.id);
+        continue;
+      }
+      if (receipt != null && receipt !== "ready") {
+        item.status = "unknown";
+        if (await recoverReportReceipt($, state, item)) continue;
+      }
+    }
+    if (state.connection !== connection) return;
+    if (!writable(state) || leadReportsPaused(state)) {
+      if (!durable) break;
+      continue;
+    }
     if (state.outbox.length >= MAX_OUTBOX) {
       // Keep an old uncertain report visible until its space is needed by a new report.
       const old = state.outbox.find(
@@ -542,11 +583,8 @@ async function applyLead($, state, lead, connection) {
       if (!old) break;
       state.outbox = state.outbox.filter((item) => item !== old);
     }
-    state.outbox.push({
-      ...outboxItem({ commandId: report.id, text: report.text }, "queue", null),
-      leadReport: true,
-    });
-    state.takenReports.add(report.id);
+    state.outbox.push(item);
+    if (!durable) state.takenReports.add(report.id);
     state.dirty = true;
   }
 }
@@ -977,6 +1015,7 @@ function invalidate(state, reason, terminalModel) {
   // A revoked or ended connection sends nothing more. A prompt already waiting
   // in the native submit is dropped at dispatch, because the state is closed.
   state.outbox = [];
+  state.reportAckIds.clear();
   state.unconfirmedReport = null;
   state.handoverExit = null;
   state.handoverSupported = undefined;
@@ -1799,11 +1838,61 @@ function markOutboxUnknown(state, item, pending) {
   item.status = "unknown";
   if (!pending.report) {
     state.sendDisabled = true;
-  } else if (!pending.competing && state.revision === pending.expectedRevision) {
+  } else if (
+    !item.reportReceiptKey &&
+    !pending.competing &&
+    state.revision === pending.expectedRevision
+  ) {
     // Wait for this prompt's native start, another main turn, or a verified reconnect.
     // The row stays unknown unless there is positive evidence, so it is never selected again.
     state.unconfirmedReport = pending;
   }
+}
+
+function acknowledgeReport(state, item) {
+  if (state.closed || state.identity?.nativeId !== item.reportSessionId) return;
+  state.outbox = state.outbox.filter((entry) => entry !== item);
+  state.reportAckIds.add(item.id);
+  state.dirty = true;
+}
+
+async function confirmReportReceipt($, state, item) {
+  // The native turn is already verified. If persistence temporarily fails,
+  // retain that evidence in memory and never submit this ID again.
+  item.reportTurnVerified = true;
+  try {
+    await $.store.set(item.reportReceiptKey, "delivered");
+  } catch {
+    item.status = "unknown";
+    return false;
+  }
+  acknowledgeReport(state, item);
+  return true;
+}
+
+async function recoverReportReceipt($, state, item) {
+  if (item.reportTurnVerified) return confirmReportReceipt($, state, item);
+  // Reloading may miss both native hooks. The unique marker in a native user
+  // row followed by a native assistant row establishes that it opened a turn.
+  // A missing row can be compaction or a submit still in progress. It is not
+  // permission to submit an already claimed report again.
+  if (state.compacting || (item.nextReportReceiptCheck ?? 0) > Date.now()) return false;
+  item.nextReportReceiptCheck = Date.now() + 5_000;
+  try {
+    const rows = await $.session.messages();
+    for (let index = rows.length - 1; index >= 0; index--) {
+      if (rows[index]?.role !== "user" || rows[index].text !== item.nativeReportText) continue;
+      for (let later = index + 1; later < rows.length; later++) {
+        const row = rows[later];
+        if (row?.role === "assistant") return confirmReportReceipt($, state, item);
+        if (row?.role === "user") return false;
+      }
+      return false;
+    }
+  } catch {
+    // An unavailable history never authorizes another native prompt.
+  }
+  return false;
 }
 
 function reportDispatchPaused(state, pending) {
@@ -1830,12 +1919,13 @@ async function dispatchOutbox($, state) {
   const ready = (item) =>
     item.status === "pending" &&
     item.retryRevision !== state.revision &&
-    (!item.leadReport || !reportsPaused);
+    (!item.leadReport || !reportsPaused) &&
+    (!item.reportReceiptKey || (!waitingState(state) && (item.retryReportAt ?? 0) <= Date.now()));
   const item =
     state.outbox.find((entry) => entry.kind === "steer" && entry.turnId === null && ready(entry)) ??
     state.outbox.find((entry) => entry.kind === "queue" && ready(entry));
-  // Let the Runtime remove the report ID before submitting it, so a reloaded
-  // plugin cannot be offered the same report after it executed here.
+  // Older Runtimes keep the intake acknowledgment protocol. New ones keep the
+  // report until the plugin sends a durable, verified native-turn receipt.
   if (!item || (item.leadReport && state.takenReports.has(item.id))) return;
   const connection = state.connection;
   try {
@@ -1858,7 +1948,7 @@ async function dispatchOutbox($, state) {
   )
     return;
   const pending = {
-    text: item.text,
+    text: item.nativeReportText ?? item.text,
     expectedRevision: state.revision,
     observed: false,
     competing: false,
@@ -1870,13 +1960,55 @@ async function dispatchOutbox($, state) {
   state.dispatching = item;
   item.status = "dispatching";
   state.dirty = true;
+  let nativeInvoked = false;
   try {
-    const submitted = await $.prompt.submit({ text: item.text, asUser: true });
+    if (item.reportReceiptKey) {
+      const receipt = await $.store.get(item.reportReceiptKey);
+      if (receipt === "delivered") {
+        acknowledgeReport(state, item);
+        return;
+      }
+      if (
+        receipt != null &&
+        receipt !== "ready" &&
+        !(receipt === "submitting" && item.reportNotSubmitted)
+      ) {
+        markOutboxUnknown(state, item, pending);
+        return;
+      }
+      item.reportNotSubmitted = true;
+      await $.store.set(item.reportReceiptKey, "submitting");
+      if (
+        state.connection !== connection ||
+        state.revision !== pending.expectedRevision ||
+        pending.competing ||
+        !writable(state) ||
+        waitingState(state) ||
+        leadReportsPaused(state)
+      ) {
+        await $.store.set(item.reportReceiptKey, "ready");
+        item.status = "pending";
+        return;
+      }
+      item.reportNotSubmitted = false;
+    }
+    nativeInvoked = true;
+    const submitted = await $.prompt.submit({ text: pending.text, asUser: true });
     if (!state.outbox.includes(item)) return;
-    if (submitted?.drop && !pending.reportAppended && (!pending.report || !pending.turnId)) {
+    if (
+      submitted?.drop &&
+      !item.reportTurnVerified &&
+      !item.nativeReportAppended &&
+      !pending.reportAppended &&
+      (!pending.report || !pending.turnId)
+    ) {
       // A terminal prompt entered first or a hook refused it. Try again once the
       // session has changed since this attempt, never in a loop against the same
       // state. A terminal turn that ran first has already changed it.
+      if (item.reportReceiptKey) {
+        item.reportNotSubmitted = true;
+        await $.store.set(item.reportReceiptKey, "ready");
+      }
       item.status = "pending";
       item.retryRevision = pending.reportHeld ? null : pending.expectedRevision;
     } else if (
@@ -1886,12 +2018,20 @@ async function dispatchOutbox($, state) {
       pending.turnId &&
       submitted?.text === pending.text
     ) {
-      state.outbox = state.outbox.filter((entry) => entry !== item);
+      if (item.reportReceiptKey) {
+        // The new protocol needs native row attribution as well as turn start.
+        markOutboxUnknown(state, item, pending);
+      } else state.outbox = state.outbox.filter((entry) => entry !== item);
     } else {
       markOutboxUnknown(state, item, pending);
     }
   } catch {
-    if (state.outbox.includes(item)) markOutboxUnknown(state, item, pending);
+    if (state.outbox.includes(item)) {
+      if (item.reportReceiptKey && (!nativeInvoked || item.reportNotSubmitted)) {
+        item.status = "pending";
+        item.retryReportAt = Date.now() + 5_000;
+      } else markOutboxUnknown(state, item, pending);
+    }
   } finally {
     if (state.pendingSend === pending) state.pendingSend = null;
     if (state.dispatching === item) state.dispatching = null;
@@ -2055,19 +2195,22 @@ async function pump($, state, nativeEvent = false) {
     if (state.generation !== generation || !state.connection || state.closed) return;
     const connection = state.connection;
     const lead = leadFeature(state);
+    const durableReports = leadReportAcks(state);
     const reportsPaused = leadReportsPaused(state);
     const rateLimitOffered = lead && connection.features.includes(LEAD_RATE_LIMIT_FEATURE);
     const rateLimitChanged = rateLimitOffered && reportsPaused !== state.leadRateLimitReported;
     const taken = leadOffered(state) && !reportsPaused ? [...state.takenReports] : [];
+    const reportAckIds = durableReports ? [...state.reportAckIds].slice(0, MAX_OUTBOX) : [];
     const response = await request($, state, "/v1/commands", {
       ...lease(state),
       afterCommandId: state.afterCommandId,
       // Report ACKs and pause transitions do not need a long poll.
-      waitMs: taken.length || rateLimitChanged ? 0 : 20_000,
+      waitMs: taken.length || reportAckIds.length || rateLimitChanged ? 0 : 20_000,
       ...(leadOffered(state)
         ? { leadTools: lead, ...(taken.length ? { takenReports: taken } : {}) }
         : {}),
       ...(rateLimitOffered ? { leadReportsPaused: reportsPaused } : {}),
+      ...(durableReports ? { reportAckIds } : {}),
     });
     if (state.closed || state.connection !== connection) return;
     if (!Array.isArray(response?.commands) || response.commands.length > 1) {
@@ -2078,6 +2221,7 @@ async function pump($, state, nativeEvent = false) {
     // The Runtime has dropped them; a report still listed again is taken only once.
     for (const id of taken)
       if (!response.lead?.reports?.some?.((r) => r?.id === id)) state.takenReports.delete(id);
+    for (const id of reportAckIds) state.reportAckIds.delete(id);
     for (const command of response.commands) await execute($, state, command);
     if (lead && state.connection === connection && !state.handoverExit)
       await applyLead($, state, response.lead, connection);
@@ -2804,10 +2948,14 @@ export function register(on) {
     state.activityVerified = true;
     state.revision += 1;
     const pending = state.pendingSend ?? state.unconfirmedReport;
-    const fromAgentKib = pending?.observed && !pending.competing && pending.text === e.text;
-    if (fromAgentKib) {
+    const verifiedReport = state.outbox.find(
+      (item) => item.nativeReportAppended && item.nativeReportText === e.text,
+    );
+    const matchedPending = pending?.observed && !pending.competing && pending.text === e.text;
+    const fromAgentKib = verifiedReport || matchedPending;
+    if (matchedPending) {
       pending.turnId = e.turnId;
-      if (pending.report && pending.reportAppended) {
+      if (pending.report && !pending.report.reportReceiptKey && pending.reportAppended) {
         // The engine attributed the prompt row to this plugin and opened its
         // turn. A missing or late submit response cannot undo that delivery.
         state.outbox = state.outbox.filter((item) => item !== pending.report);
@@ -2832,6 +2980,7 @@ export function register(on) {
         : {}),
     });
     state.dirty = true;
+    if (verifiedReport) await confirmReportReceipt($, state, verifiedReport);
     if (state.needsReconnect) void pump($, state, true);
     return next(e);
   });
@@ -3110,24 +3259,27 @@ export function register(on) {
   });
   on("session.append", async ($, e, next) => {
     const pending = state.pendingSend ?? state.unconfirmedReport;
-    if (e.agentId === undefined && pending && (e.door === "prompt" || e.door === "queue")) {
+    if (e.agentId === undefined && (e.door === "prompt" || e.door === "queue")) {
       const text = Array.isArray(e.message?.content)
         ? e.message.content
             .filter((block) => block?.type === "text" && typeof block.text === "string")
             .map((block) => block.text)
             .join("\n")
         : "";
-      if (
-        e.origin?.kind === "plugin" &&
-        e.origin.name === "agentkib-bridge" &&
-        e.door === "prompt" &&
-        text === pending.text
-      ) {
+      const fromPlugin =
+        e.origin?.kind === "plugin" && e.origin.name === "agentkib-bridge" && e.door === "prompt";
+      if (fromPlugin && e.message?.type === "user") {
+        const report = state.outbox.find(
+          (item) => item.nativeReportText === text && item.status !== "pending",
+        );
+        if (report) report.nativeReportAppended = true;
+      }
+      if (pending && fromPlugin && text === pending.text) {
         // Self-raised prompt.submit hooks are skipped by Claude's re-entry
         // guard. This engine-stamped row proves which prompt actually entered.
         pending.observed = true;
         if (pending.report && e.message?.type === "user") pending.reportAppended = true;
-      } else {
+      } else if (pending) {
         pending.competing = true;
       }
     }

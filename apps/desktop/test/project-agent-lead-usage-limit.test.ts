@@ -40,8 +40,18 @@ function harness(
   let readLead = async () => initialLive;
   const delivered = vi.fn(sendReport);
   const lanes: LaneHost = {
-    control: async () => ({}),
-    live: async (id) => (id === owner.sessionId ? readLead() : { status: "idle" }),
+    control: async () => ({ accepted: true }),
+    live: async (id) =>
+      id === owner.sessionId
+        ? readLead()
+        : {
+            status: "idle",
+            executionMode: "codex-managed",
+            sendEnabled: true,
+            runtimeBootId: "worker-boot",
+            revision: 1,
+            workspaceId: owner.workspaceId,
+          },
     events: async () => [],
     session: (id) => ({
       agent: id === owner.sessionId ? agent : "codex",
@@ -152,40 +162,77 @@ describe("a Project Agent at its own usage limit", () => {
     expect(service.status(owner.sessionId)?.paused).toBe(false);
   });
 
-  it("retries a confirmed unsent report and waits for reports added during recovery", async () => {
-    const first = Promise.withResolvers<boolean>();
-    const second = Promise.withResolvers<boolean>();
-    let dispatch = 0;
-    const runtime = harness(
-      "codex",
-      cleared,
-      () => false,
-      () => {
-        dispatch++;
-        if (dispatch === 1) throw new LeadReportNotDispatched("session-unavailable");
-        return dispatch === 2 ? first.promise : second.promise;
-      },
-    );
+  it.each([
+    [new LeadReportNotDispatched("session-unavailable"), "route", "session-unavailable"],
+    [new Error("private fixture error"), "confirmation", "outcome-unknown"],
+  ])(
+    "backs off and retries the same report without pausing delegation",
+    async (error, phase, code) => {
+      let attempt = 0;
+      const runtime = harness(
+        "codex",
+        cleared,
+        () => false,
+        () => {
+          if (++attempt === 1) throw error;
+          return false;
+        },
+      );
+      const service = runtime.open("boot");
+      await prepare(service);
+      await report(service, "first", "Private report body.");
+      const pending = service.status(owner.sessionId)!;
+      expect(pending).toMatchObject({ paused: false, reason: null });
+      const [entry] = pending.reportDeliveries!;
+      const diagnostic = pending.records.find((item) => item.kind === "report-delivery");
+      expect(diagnostic).toMatchObject({
+        requestId: entry!.reportId,
+        outcome: "retrying",
+        reportFailure: { phase, code },
+      });
+      expect(JSON.stringify(diagnostic)).not.toContain("private");
+      expect(JSON.stringify(diagnostic)).not.toContain("Private");
+      expect(
+        JSON.parse(
+          (
+            await service.call(owner.sessionId, "worker_send", {
+              worker: "worker-1",
+              text: "Continue the work",
+            })
+          ).text,
+        ),
+      ).toMatchObject({ accepted: true });
+      await report(service, "second", "The next report can pass.");
+      expect(runtime.delivered.mock.calls[1]?.[2]).toContain("The next report can pass.");
+      await service.catchUp(entry!.retryAt! - 1);
+      expect(runtime.delivered).toHaveBeenCalledTimes(2);
+      await service.catchUp(entry!.retryAt!);
+      expect(runtime.delivered.mock.calls.map((call) => call[4])).toEqual([
+        entry!.reportId,
+        expect.not.stringMatching(entry!.reportId),
+        entry!.reportId,
+      ]);
+      expect(service.status(owner.sessionId)).toMatchObject({
+        paused: false,
+        reason: null,
+        autoTurns: 2,
+        reportDeliveries: [],
+      });
+    },
+  );
+
+  it("delivers large held reports in complete batches", async () => {
+    const runtime = harness("codex", cleared);
     const service = runtime.open("boot");
     await prepare(service);
-    await report(service, "first", "First reply.");
-    expect(service.status(owner.sessionId)).toMatchObject({
-      paused: true,
-      reason: "report-undelivered",
+    service.pause(owner.sessionId);
+    const reports = ["a", "b", "c"].map((letter) => letter.repeat(9_000));
+    service.registry.update(owner.sessionId, (lead) => {
+      lead.pendingReports = reports;
     });
-    const recovery = service.catchUp();
-    await vi.waitFor(() => expect(runtime.delivered).toHaveBeenCalledTimes(2));
-    await report(service, "second", "Second reply.");
-    expect(service.status(owner.sessionId)?.paused).toBe(true);
-    first.resolve(false);
-    await vi.waitFor(() => expect(runtime.delivered).toHaveBeenCalledTimes(3));
-    expect(service.status(owner.sessionId)?.paused).toBe(true);
-    second.resolve(false);
-    await recovery;
-    await vi.waitFor(() => expect(service.status(owner.sessionId)?.paused).toBe(false));
-    expect(runtime.delivered.mock.calls[1]?.[2]).toContain("First reply.");
-    expect(runtime.delivered.mock.calls[2]?.[2]).toContain("Second reply.");
-    expect(service.status(owner.sessionId)?.pendingReports).toEqual([]);
+    service.resume(owner.sessionId, owner.deviceId);
+    expect(runtime.delivered.mock.calls.map((call) => call[2])).toEqual(reports);
+    expect(new Set(runtime.delivered.mock.calls.map((call) => call[4])).size).toBe(reports.length);
   });
 
   it.each(["user-paused", "authorization-changed"])(
@@ -212,7 +259,7 @@ describe("a Project Agent at its own usage limit", () => {
     },
   );
 
-  it("retries an unconfirmed recovery batch before newer reports after restart", async () => {
+  it("retries an unconfirmed batch with its original ID after restart without blocking newer reports", async () => {
     let attempt = 0;
     const runtime = harness(
       "codex",
@@ -227,30 +274,28 @@ describe("a Project Agent at its own usage limit", () => {
     const service = runtime.open("boot");
     await prepare(service);
     await report(service, "first", "Check the outcome.");
-    await service.catchUp();
-    expect(service.status(owner.sessionId)?.deliveringReports).toEqual([
-      expect.stringContaining("Check the outcome."),
-    ]);
+    const [unsent] = service.status(owner.sessionId)!.reportDeliveries!;
+    await service.catchUp(unsent!.retryAt!);
+    const [waiting] = service.status(owner.sessionId)!.reportDeliveries!;
     await report(service, "second", "Newer report.");
+    expect(runtime.delivered.mock.calls.slice(0, 2).map((call) => call[4])).toEqual([
+      waiting!.reportId,
+      waiting!.reportId,
+    ]);
+    expect(runtime.delivered.mock.calls[2]?.[4]).not.toBe(waiting!.reportId);
+    expect(runtime.delivered.mock.calls[2]?.[2]).toContain("Newer report.");
     await service.close();
     const restored = runtime.open("new-boot");
+    expect(restored.status(owner.sessionId)).toMatchObject({ paused: false, reason: null });
+    await restored.catchUp(waiting!.retryAt!);
+    expect(runtime.delivered).toHaveBeenCalledTimes(4);
+    expect(runtime.delivered.mock.calls[3]?.[4]).toBe(waiting!.reportId);
+    expect(runtime.delivered.mock.calls[3]?.[2]).toContain("Check the outcome.");
     expect(restored.status(owner.sessionId)).toMatchObject({
-      reportRetryable: true,
-      pendingReports: [
-        expect.stringContaining("Check the outcome."),
-        expect.stringContaining("Newer report."),
-      ],
+      paused: false,
+      reason: null,
+      reportDeliveries: [],
     });
-    expect(restored.roles().get(owner.sessionId)).toHaveProperty("recovering", true);
-    await restored.catchUp();
-    expect(runtime.delivered).toHaveBeenCalledTimes(3);
-    const replayed = runtime.delivered.mock.calls[2]![2];
-    expect(replayed.indexOf("Check the outcome.")).toBeGreaterThanOrEqual(0);
-    expect(replayed.indexOf("Newer report.")).toBeGreaterThan(
-      replayed.indexOf("Check the outcome."),
-    );
-    expect(restored.status(owner.sessionId)?.paused).toBe(false);
-    expect(restored.roles().get(owner.sessionId)).not.toHaveProperty("recovering");
   });
 
   it("holds all Codex reports and releases them once when polling confirms the reset", async () => {
@@ -297,6 +342,7 @@ describe("a Project Agent at its own usage limit", () => {
       owner.deviceId,
       expect.stringMatching(/First worker reply\.[\s\S]*Second worker reply\./),
       expect.any(Function),
+      expect.any(String),
     );
     expect(service.status(owner.sessionId)).toMatchObject({
       paused: false,
@@ -337,6 +383,7 @@ describe("a Project Agent at its own usage limit", () => {
       live: async () => live,
       control,
       queue: async () => null,
+      receipt: () => ({ found: false }),
     });
     // The fast quota callback is false while the native continue is in flight.
     const runtime = harness("codex", continuing, () => false, transport.send.bind(transport));
@@ -374,7 +421,7 @@ describe("a Project Agent at its own usage limit", () => {
     expect(runtime.delivered).toHaveBeenCalledTimes(1);
   });
 
-  it("preserves the usage-limit reason while retrying a batch interrupted by restart", async () => {
+  it("preserves the usage-limit reason and retains an unkeyed in-flight batch without replaying it", async () => {
     let limited = true;
     const accepted = Promise.withResolvers<boolean>();
     const runtime = harness(
@@ -398,22 +445,29 @@ describe("a Project Agent at its own usage limit", () => {
     expect(restored.status(owner.sessionId)).toMatchObject({
       paused: true,
       reason: "usage-limit",
-      reportRetryable: true,
-      pendingReports: ["in-flight batch", "newer batch"],
+      legacyUnconfirmedReports: ["in-flight batch"],
+      pendingReports: ["newer batch"],
       records: expect.arrayContaining([
-        expect.objectContaining({ kind: "report", outcome: "restart-requeued-report" }),
+        expect.objectContaining({
+          kind: "report-delivery",
+          outcome: "retained",
+          reportFailure: { phase: "confirmation", code: "legacy-outcome-unknown" },
+        }),
       ]),
     });
     limited = false;
     runtime.read(async () => cleared);
+    restored.userSpoke(owner.sessionId);
     const recovery = restored.catchUp();
     await vi.waitFor(() => expect(runtime.delivered).toHaveBeenCalledTimes(1));
     expect(restored.roles().get(owner.sessionId)).toHaveProperty("recovering", true);
     expect(restored.roles().get(owner.sessionId)).not.toHaveProperty("requiresUser");
     accepted.resolve(false);
     await recovery;
-    expect(runtime.delivered.mock.calls[0]?.[2]).toBe("in-flight batch\n\nnewer batch");
-    expect(restored.status(owner.sessionId)).toMatchObject({ paused: false, reason: null });
+    expect(runtime.delivered.mock.calls[0]?.[2]).toBe("newer batch");
+    await vi.waitFor(() =>
+      expect(restored.status(owner.sessionId)).toMatchObject({ paused: false, reason: null }),
+    );
   });
 
   it("keeps held reports out of a device that lost access", async () => {
@@ -483,7 +537,8 @@ describe("a Project Agent at its own usage limit", () => {
       owner.sessionId,
       action === "message" ? owner.deviceId : "phone-1",
       expect.stringMatching(/First worker reply\.[\s\S]*Second worker reply\./),
-      ...(action === "message" ? [expect.any(Function)] : []),
+      expect.any(Function),
+      expect.any(String),
     );
     expect(service.status(owner.sessionId)).toMatchObject({
       paused: false,

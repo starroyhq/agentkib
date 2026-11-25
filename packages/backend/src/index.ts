@@ -831,7 +831,7 @@ export class TypeScriptBackend {
               this.#claudeBridge?.canQueueLeadReport(sessionId) === true
             ) {
               checkAdmission();
-              return this.#claudeBridge.queueReport(sessionId, text);
+              return this.#claudeBridge.queueReport(sessionId, text, admission[1]);
             }
             // A quit report can arrive before the session catalog initializes the providers.
             if (
@@ -850,7 +850,7 @@ export class TypeScriptBackend {
             if (!leadOwner.hasManagedSession(sessionId))
               throw new LeadReportNotDispatched("session-unavailable");
             checkAdmission();
-            return leadOwner.queueReport(sessionId, deviceId, text);
+            return leadOwner.queueReport(sessionId, deviceId, text, admission[1]);
           },
           (sessionId) =>
             leadOwner.queuedReports(sessionId) +
@@ -2511,6 +2511,10 @@ export class TypeScriptBackend {
 
   /** Reports for Codex Project Agents, sent through AgentKib's own Codex controls. */
   #codexLeadReports = new MessageLeadReports({
+    receipt: (requestId, deviceId) => {
+      if (!this.#dataDir) throw new LeadReportNotDispatched("report-receipt-unavailable");
+      return readControlReceipt(this.#dataDir, { requestId, deviceId });
+    },
     live: (sessionId) =>
       this.#withWebRead((owner) =>
         owner.request({ operation: "live", sessionId, experimentalEnabled: true }),
@@ -2529,13 +2533,17 @@ export class TypeScriptBackend {
     sessionId: string,
     deviceId: string,
     text: string,
-    ...admission: [canSend?: () => boolean]
+    ...admission: [canSend?: () => boolean, reportId?: string]
   ): Promise<boolean> {
     return this.#codexLeadReports.send(sessionId, deviceId, text, ...admission);
   }
 
   /** Reports for DeepSeek Harness Project Agents, sent through the DSH bridge's own controls. */
   #dshLeadReports = new MessageLeadReports({
+    receipt: (requestId, deviceId) => {
+      if (!this.#dataDir) throw new LeadReportNotDispatched("report-receipt-unavailable");
+      return readControlReceipt(this.#dataDir, { requestId, deviceId });
+    },
     live: async (sessionId) => {
       if (!this.#dshBridge) throw new Error("dsh-bridge-unavailable");
       return this.#dshBridge.live(sessionId, true);

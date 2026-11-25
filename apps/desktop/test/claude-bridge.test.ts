@@ -7,6 +7,7 @@ import {
   ClaudeBridge,
   type BridgeLead,
 } from "../../../packages/backend/src/agents/claude/claude-bridge";
+import { LeadReportNotDispatched } from "../../../packages/backend/src/message-lead-reports";
 import { readControlReceipt } from "../../../packages/backend/src/control-receipt";
 import { openManagedLedger } from "../../../packages/backend/src/managed-ledger";
 import { CLAUDE_BRIDGE_COMPATIBILITY } from "@agentkib/runtime-protocol";
@@ -240,6 +241,8 @@ describe.skipIf(process.platform === "win32")("native Claude borrowed-host broke
       leadId,
       "browser-a",
       expect.stringContaining("Synthetic terminal reply"),
+      expect.any(Function),
+      expect.stringMatching(/^[0-9a-f-]{36}$/),
     );
     expect(await call("worker_read")).toMatchObject({
       status: "idle",
@@ -259,6 +262,8 @@ describe.skipIf(process.platform === "win32")("native Claude borrowed-host broke
       leadId,
       "browser-a",
       expect.stringContaining("sent it a message directly"),
+      expect.any(Function),
+      expect.stringMatching(/^[0-9a-f-]{36}$/),
     );
     await expect
       .poll(() =>
@@ -290,6 +295,8 @@ describe.skipIf(process.platform === "win32")("native Claude borrowed-host broke
       leadId,
       "browser-a",
       expect.stringContaining("turn ended: cancelled"),
+      expect.any(Function),
+      expect.stringMatching(/^[0-9a-f-]{36}$/),
     );
   });
 
@@ -2576,6 +2583,7 @@ describe.skipIf(process.platform === "win32")(
       const f = await fixture(1000, l.lead);
       expect(f.connection.features).toEqual([
         "lead-tools",
+        "lead-report-acks",
         "open-model-picker",
         "terminal-subagents",
         "terminal-worker-activity",
@@ -2673,6 +2681,109 @@ describe.skipIf(process.platform === "win32")(
       expect((await leadPoll(f, { takenReports: [released[0].id] })).body.lead.reports).toEqual([]);
       await f.restart();
       expect((await leadPoll(f, { leadReportsPaused: false })).body.lead.reports).toEqual([]);
+    });
+
+    it("retains a native report until native receipt and deduplicates its ID across restarts", async () => {
+      const l = terminalLead();
+      const f = await fixture(1000, l.lead);
+      l.setLeading(true);
+      const sessionId = f.target.sessionId;
+      const first = randomUUID();
+      const merged = randomUUID();
+      expect(f.bridge.queueReport(sessionId, "first", first)).toBe(false);
+      expect(f.bridge.queueReport(sessionId, "second", merged)).toBe(true);
+      const expected = [{ id: first, text: "first\n\nsecond" }];
+      expect((await leadPoll(f, { reportAckIds: [] })).body.lead.reports).toEqual(expected);
+
+      await f.restart();
+      expect(f.bridge.queueReport(sessionId, "first", first)).toBe(false);
+      expect(f.bridge.queueReport(sessionId, "second", merged)).toBe(true);
+      // A legacy client can neither take nor see a native-only offered report.
+      expect((await leadPoll(f, { takenReports: [first] })).body.lead.reports).toEqual([]);
+      expect(f.bridge.queuedReports(sessionId)).toBe(1);
+      expect((await leadPoll(f, { reportAckIds: [] })).body.lead.reports).toEqual(expected);
+      expect((await leadPoll(f, { reportAckIds: [first] })).body.lead.reports).toEqual([]);
+
+      await f.restart();
+      expect(f.bridge.queueReport(sessionId, "first", first)).toBe(false);
+      expect(f.bridge.queueReport(sessionId, "second", merged)).toBe(true);
+      expect((await leadPoll(f, { reportAckIds: [first] })).body.lead.reports).toEqual([]);
+      expect(f.bridge.queuedReports(sessionId)).toBe(0);
+    });
+
+    it("accepts a legacy intake acknowledgment carried into a native-receipt poll", async () => {
+      const l = terminalLead();
+      const f = await fixture(1000, l.lead);
+      l.setLeading(true);
+      const reportId = randomUUID();
+      f.bridge.queueReport(f.target.sessionId, "already offered", reportId);
+      expect((await leadPoll(f)).body.lead.reports).toMatchObject([{ id: reportId }]);
+      expect(
+        (await leadPoll(f, { reportAckIds: [], takenReports: [reportId] })).body.lead.reports,
+      ).toEqual([]);
+      expect(f.bridge.queuedReports(f.target.sessionId)).toBe(0);
+    });
+
+    it("does not retire a report before it was offered for native receipt", async () => {
+      const l = terminalLead();
+      const f = await fixture(1000, l.lead);
+      l.setLeading(true);
+      const reportId = randomUUID();
+      f.bridge.queueReport(f.target.sessionId, "waiting", reportId);
+      expect((await leadPoll(f, { reportAckIds: [reportId] })).body.lead.reports).toEqual([
+        { id: reportId, text: "waiting" },
+      ]);
+      expect(f.bridge.queuedReports(f.target.sessionId)).toBe(1);
+    });
+
+    it("backs off outstanding native receipt offers without hiding later reports", async () => {
+      const l = terminalLead();
+      const f = await fixture(1000, l.lead);
+      l.setLeading(true);
+      const ids = Array.from({ length: 5 }, () => randomUUID());
+      for (const id of ids) f.bridge.queueReport(f.target.sessionId, "x".repeat(12_000), id);
+      const pollIds = async () =>
+        (await leadPoll(f, { reportAckIds: [] })).body.lead.reports.map(
+          ({ id }: { id: string }) => id,
+        );
+      expect(await pollIds()).toEqual(ids.slice(0, 4));
+      expect(await pollIds()).toEqual(ids.slice(4));
+      expect(await pollIds()).toEqual([]);
+      expect(f.bridge.queuedReports(f.target.sessionId)).toBe(5);
+    });
+
+    it("does not merge reports beyond the terminal's native submission budget", async () => {
+      const l = terminalLead();
+      const f = await fixture(1000, l.lead);
+      l.setLeading(true);
+      const reportId = randomUUID(),
+        nextId = randomUUID();
+      const text = "汉".repeat(4_000);
+      expect(f.bridge.queueReport(f.target.sessionId, text, reportId)).toBe(false);
+      expect(f.bridge.queueReport(f.target.sessionId, text, nextId)).toBe(false);
+      expect(() => f.bridge.queueReport(f.target.sessionId, text + text, randomUUID())).toThrow(
+        "report-too-long",
+      );
+      const offered = (await leadPoll(f)).body.lead.reports;
+      expect(offered.map(({ id }: { id: string }) => id)).toEqual([reportId, nextId]);
+    });
+
+    it("can retry the same report after a definite outbox write failure", async () => {
+      const l = terminalLead();
+      const f = await fixture(1000, l.lead);
+      l.setLeading(true);
+      const outbox = path.join(f.bridge.root, "lead-reports");
+      writeFileSync(outbox, "synthetic obstruction");
+      const reportId = randomUUID();
+      const send = () => f.bridge.queueReport(f.target.sessionId, "waiting", reportId);
+      expect(send).toThrow(LeadReportNotDispatched);
+      expect(send).toThrow("report-storage-unavailable");
+      rmSync(outbox);
+      expect(send()).toBe(false);
+      expect(send()).toBe(false);
+      expect((await leadPoll(f, { reportAckIds: [] })).body.lead.reports).toEqual([
+        { id: reportId, text: "waiting" },
+      ]);
     });
 
     it("counts the turns its CLI begins by itself, and stops one past the limit", async () => {

@@ -118,6 +118,7 @@ import {
   openManagedLedger,
 } from "../../managed-ledger";
 import { admitControlReceipt, bindControlReceipt } from "../../sessions/control-receipts";
+import { LeadReportNotDispatched } from "../../message-lead-reports";
 import type {
   ClaudeBridge,
   ClaudeTerminalExitSource,
@@ -4603,9 +4604,9 @@ export class ClaudeManagedReadOwner {
    * idle, after the person's own queued messages (`ClaudeHostStateStore.addReport`).
    */
   /** Returns whether it joined a report still waiting, so that no new turn is needed. */
-  queueReport(id: string, deviceId: string, text: string): boolean {
-    if (!this.hasManagedSession(id)) throw new Error("session-unavailable");
-    return this.#hostState.addReport(id, deviceId, text);
+  queueReport(id: string, deviceId: string, text: string, reportId?: string): boolean {
+    if (!this.hasManagedSession(id)) throw new LeadReportNotDispatched("session-unavailable");
+    return this.#hostState.addReport(id, deviceId, text, reportId);
   }
 
   /** Reports waiting to start a turn of this session, or starting it now (read only). */

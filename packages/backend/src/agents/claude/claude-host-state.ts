@@ -427,9 +427,18 @@ export class ClaudeHostStateStore {
    * Queues a report for a lead, sent as its own turn once the lead is idle, on behalf of the
    * device that made it a lead. Reports not yet picked up are sent as one message.
    */
-  addReport(sessionId: string, deviceId: string, text: string): boolean {
+  addReport(sessionId: string, deviceId: string, text: string, reportId?: string): boolean {
     if (!validClaudeDeviceId(deviceId) || !text.trim()) throw new Error("invalid-report");
-    return this.#transaction(sessionId, (state) => {
+    const fingerprint = reportId
+      ? controlReceiptFingerprint(
+          JSON.stringify(["orchestration-report", sessionId, deviceId, text]),
+        )
+      : undefined;
+    return this.#transaction(sessionId, (state, database) => {
+      if (reportId && fingerprint) {
+        const previous = replayControlReceiptInTransaction(database, reportId, fingerprint, false);
+        if (previous) return previous.merged === true;
+      }
       const waiting = state.work.find(
         (work) =>
           work.kind === "report" &&
@@ -441,22 +450,32 @@ export class ClaudeHostStateStore {
       state.revision++;
       if (waiting) {
         waiting.input = `${String(waiting.input)}\n\n${text}`;
-        return true;
+      } else {
+        state.work.push({
+          id: randomUUID(),
+          requestId: randomUUID(),
+          deviceId,
+          originDeviceId: deviceId,
+          kind: "report",
+          status: "pending",
+          input: text,
+          requiresAttachments: false,
+          createdAt: new Date().toISOString(),
+          report: null,
+          usage: null,
+        });
       }
-      state.work.push({
-        id: randomUUID(),
-        requestId: randomUUID(),
-        deviceId,
-        originDeviceId: deviceId,
-        kind: "report",
-        status: "pending",
-        input: text,
-        requiresAttachments: false,
-        createdAt: new Date().toISOString(),
-        report: null,
-        usage: null,
-      });
-      return false;
+      const merged = waiting !== undefined;
+      if (reportId && fingerprint)
+        finishControlReceiptInTransaction(database, {
+          requestId: reportId,
+          sessionId,
+          deviceId,
+          fingerprint,
+          evidence: { operation: "orchestration-report", executionMode: "claude-managed" },
+          result: { accepted: true, controlOutcome: "accepted", merged },
+        });
+      return merged;
     });
   }
 

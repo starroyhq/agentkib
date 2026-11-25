@@ -743,14 +743,14 @@ describe("push Live Activity", () => {
       event: "start",
       contentState: { running: 1, waiting: 1, need: "approval", version: snapshot.version },
     });
+    expect(start?.contentState).not.toHaveProperty("title");
     expect(JSON.stringify(start)).not.toContain("authorized-private-session");
     expect(JSON.stringify(start)).not.toContain("Visible only inside encryption");
     const bytes = start?.kind === "activity" ? start.contentState.activityEnvelope : undefined;
     expect(typeof bytes).toBe("string");
-    expect(openPushEnvelope(String(bytes), phone.privateKey, target.publicKey, DEVICE)).toEqual({
-      v: 1,
-      activity: snapshot,
-    });
+    const envelope = openPushEnvelope(String(bytes), phone.privateKey, target.publicKey, DEVICE);
+    expect(envelope).toEqual({ v: 1, activity: snapshot });
+    expect(envelope).toHaveProperty("activity.priority.title", "Visible only inside encryption");
 
     snapshot = { ...snapshot, observedAt: START + MINUTE };
     test.advance(31_000);
@@ -817,7 +817,7 @@ describe("push Live Activity", () => {
     ]);
   });
 
-  it("starts once work lasts, follows it, and ends after it stops", async () => {
+  it("starts without sharing the session title, follows work, and ends after it stops", async () => {
     const test = harness();
     const startedAt = seconds(START);
     test.notifier.update([session("a", "running")]);
@@ -831,13 +831,13 @@ describe("push Live Activity", () => {
         session: target.session,
         kind: "activity",
         event: "start",
-        contentState: { running: 1, waiting: 0, title: "Task a", startedAt },
+        contentState: { running: 1, waiting: 0, startedAt },
         priority: 10,
         staleDate: seconds(test.now() + 20 * MINUTE),
       },
     ]);
 
-    // Two sessions: counts only, and no sooner than 30 seconds after the last send.
+    // Report the new count no sooner than 30 seconds after the last send.
     test.advance(10_000);
     test.notifier.update([session("a", "running"), session("b", "running")]);
     await settle();

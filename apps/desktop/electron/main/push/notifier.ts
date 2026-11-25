@@ -58,15 +58,14 @@ export interface PushAlertMessage {
 }
 
 /**
- * The Live Activity's content. Apple delivers it as plain JSON, so it keeps to counts and times,
- * plus the session title when exactly one session works. Times are UNIX seconds.
+ * Live Activity content carries counts, times, the waiting category and an optional version
+ * in plain JSON. Session details are sealed for the phone. Times are UNIX seconds.
  */
 export interface PushActivityContent {
   running: number;
   waiting: number;
   /** What the only waiting session waits for. */
   need?: HomeNeed;
-  title?: string;
   startedAt: number;
   endedAt?: number;
   version?: string;
@@ -354,17 +353,13 @@ export class PushNotifier {
     this.#supervision = supervision;
     this.#states = next;
     this.#known = true;
-    const working = [...groups.needsYou, ...groups.running];
-    if (working.length) {
+    if (groups.needsYou.length || groups.running.length) {
       this.#episode ??= { since: now };
       this.#episode.idleSince = undefined;
-      const only = working.length === 1 ? working[0]!.session : undefined;
-      const onlyTitle = only ? title(only) : undefined;
       this.#content = {
         running: groups.running.length,
         waiting: groups.needsYou.length,
         ...(groups.needsYou.length === 1 ? { need: groups.needsYou[0]!.need } : {}),
-        ...(onlyTitle ? { title: onlyTitle } : {}),
         startedAt: seconds(this.#episode.since),
       };
     } else if (this.#episode) this.#episode.idleSince ??= now;

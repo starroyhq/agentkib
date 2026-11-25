@@ -135,7 +135,7 @@ export type Lead = {
   records: LeadRecord[];
   /** Reports held while delegation is paused, sent together when it resumes. */
   pendingReports: string[];
-  /** Whether the provider confirmed non-delivery of a failed report. */
+  /** Legacy same-version flag used to recognize a confirmed unattempted delivery. */
   reportRetryable?: boolean;
   /** A recovery batch may have reached the provider if the host stopped before its reply. */
   deliveringReports?: string[];
@@ -178,8 +178,7 @@ export class LeadRegistry {
   }
 
   /**
-   * Reads and writes one lead atomically. A lead first read after a restart is paused until
-   * the user resumes it, as automatic Claude turns are.
+   * Reads and writes one lead atomically, including any migration from the previous boot.
    */
   #transaction<T>(
     sessionId: string,
@@ -244,6 +243,7 @@ export class LeadRegistry {
         ...stored.scope,
         stallMinutes: stored.scope.stallMinutes ?? LEAD_DEFAULTS.stallMinutes,
       },
+      pendingReports: stored.pendingReports ?? [],
       lanes: [],
     };
     const unsupportedLanes: unknown[] = [];
@@ -258,33 +258,29 @@ export class LeadRegistry {
       // Keep future Workers on disk so reading or updating a project cannot discard them.
       unsupportedLanes.push(lane);
     }
+    this.#restarted(lead);
     migrateReportDelivery(lead);
-    return { lead: this.#restarted(lead), unsupportedLanes };
+    return { lead, unsupportedLanes };
   }
 
-  #restarted(lead: Lead): Lead {
-    if (lead.bootId === this.bootId) return lead;
+  #restarted(lead: Lead): void {
+    const oldBoot = lead.bootId !== this.bootId;
+    const oldRestartPause = lead.paused && lead.reason === "restart-confirmation-required";
+    if (!oldBoot && !oldRestartPause) return;
     lead.bootId = this.bootId;
-    if (
-      lead.deliveringReports?.length &&
-      (lead.reason === "usage-limit" || lead.reason === "report-undelivered")
-    ) {
-      lead.reason = "report-undelivered";
-      lead.reportRetryable = false;
-    }
-    if (!lead.paused) {
-      lead.paused = true;
-      lead.reason = "restart-confirmation-required";
+    if (oldRestartPause) {
+      lead.paused = false;
+      lead.reason = null;
+      addLeadRecord(lead, "resume", null, null, "restart-confirmation-removed");
     }
     lead.revision++;
-    return lead;
   }
 
   get(sessionId: string): Lead | null {
     return this.#transaction(sessionId, (lead) => ({ lead, value: lead && structuredClone(lead) }));
   }
 
-  /** Every lead, read without the restart pause being written back. */
+  /** Every lead, with any restart migration projected without writing it back. */
   list(): Lead[] {
     const database = this.#open();
     try {

@@ -367,6 +367,8 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))(
         expect.stringMatching(
           /Claude Code.*turn ended: completed after 3s[\s\S]*Synthetic reply\./,
         ),
+        expect.any(Function),
+        expect.stringMatching(/^[a-f0-9-]{36}$/),
       );
       expect(published.filter(({ payload }) => payload.turn_meta)).toMatchObject([
         { type: "item-upsert", payload: { id: reply, turn_meta: { duration_ms: 2750 } } },

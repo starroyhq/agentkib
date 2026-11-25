@@ -154,11 +154,7 @@ const COMPLETION_WINDOW_MS = 60_000;
 /** The default 10-minute silence threshold gives commands one hour before a note. */
 const LONG_COMMAND_FACTOR = 6;
 /** Pauses that end when the person sends the lead a message (`userSpoke`). */
-const RESUMED_BY_MESSAGE = new Set([
-  "auto-turn-limit",
-  "restart-confirmation-required",
-  "usage-limit",
-]);
+const RESUMED_BY_MESSAGE = new Set(["auto-turn-limit", "usage-limit"]);
 
 /** "42s", "3m 12s", "1h 05m". */
 function elapsed(milliseconds: number): string {
@@ -1140,7 +1136,7 @@ export class OrchestrationService {
 
   /**
    * The person spoke to the lead: its count of turns started without them restarts, and
-   * reports held at a turn or usage limit or by a restart can go on. Pauses the person chose
+   * reports held at a turn or usage limit can go on. Pauses the person chose
    * or that concern device authorization wait for the panel.
    */
   userSpoke(sessionId: string): void {

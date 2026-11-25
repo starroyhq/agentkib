@@ -528,6 +528,7 @@ describe("Codex quit continuation through the backend runtime", () => {
         lead.leadDevice,
         expect.stringContaining("did not start a continuation"),
         expect.any(Function),
+        expect.stringMatching(/^[a-f0-9-]{36}$/),
       ),
     );
     expect(
@@ -613,6 +614,7 @@ describe("Codex quit continuation through the backend runtime", () => {
           /\[AgentKib report\][\s\S]*interrupted when AgentKib quit[\s\S]*continuation/,
         ),
         expect.any(Function),
+        expect.stringMatching(/^[a-f0-9-]{36}$/),
       ),
     );
     const continuation = f.nativeRuns[1];

@@ -259,28 +259,38 @@ describe("a Project Agent at its own usage limit", () => {
     },
   );
 
-  it("persists the report ID across service restart after an ambiguous outcome", async () => {
+  it("retries an unconfirmed batch with its original ID after restart without blocking newer reports", async () => {
     let attempt = 0;
     const runtime = harness(
       "codex",
       cleared,
       () => false,
       () => {
-        if (++attempt === 1) throw new Error("control-outcome-unconfirmed");
+        if (++attempt === 1) throw new LeadReportNotDispatched("session-unavailable");
+        if (attempt === 2) throw new Error("control-outcome-unconfirmed");
         return false;
       },
     );
     const service = runtime.open("boot");
     await prepare(service);
     await report(service, "first", "Check the outcome.");
+    const [unsent] = service.status(owner.sessionId)!.reportDeliveries!;
+    await service.catchUp(unsent!.retryAt!);
     const [waiting] = service.status(owner.sessionId)!.reportDeliveries!;
-    await service.close();
-    const restored = runtime.open("boot");
-    await restored.catchUp(waiting!.retryAt!);
-    expect(runtime.delivered.mock.calls.map((call) => call[4])).toEqual([
+    await report(service, "second", "Newer report.");
+    expect(runtime.delivered.mock.calls.slice(0, 2).map((call) => call[4])).toEqual([
       waiting!.reportId,
       waiting!.reportId,
     ]);
+    expect(runtime.delivered.mock.calls[2]?.[4]).not.toBe(waiting!.reportId);
+    expect(runtime.delivered.mock.calls[2]?.[2]).toContain("Newer report.");
+    await service.close();
+    const restored = runtime.open("new-boot");
+    expect(restored.status(owner.sessionId)).toMatchObject({ paused: false, reason: null });
+    await restored.catchUp(waiting!.retryAt!);
+    expect(runtime.delivered).toHaveBeenCalledTimes(4);
+    expect(runtime.delivered.mock.calls[3]?.[4]).toBe(waiting!.reportId);
+    expect(runtime.delivered.mock.calls[3]?.[2]).toContain("Check the outcome.");
     expect(restored.status(owner.sessionId)).toMatchObject({
       paused: false,
       reason: null,
@@ -409,6 +419,55 @@ describe("a Project Agent at its own usage limit", () => {
     restored.userSpoke(owner.sessionId);
     await restored.catchUp();
     expect(runtime.delivered).toHaveBeenCalledTimes(1);
+  });
+
+  it("preserves the usage-limit reason and retains an unkeyed in-flight batch without replaying it", async () => {
+    let limited = true;
+    const accepted = Promise.withResolvers<boolean>();
+    const runtime = harness(
+      "codex",
+      armed,
+      () => limited,
+      () => accepted.promise,
+    );
+    const before = runtime.open("boot");
+    await prepare(before);
+    before.registry.update(owner.sessionId, (lead) => {
+      lead.paused = true;
+      lead.reason = "usage-limit";
+      lead.deliveringReports = ["in-flight batch"];
+      lead.pendingReports = ["newer batch"];
+    });
+
+    const restored = runtime.open("after-crash");
+    await restored.catchUp();
+    expect(runtime.delivered).not.toHaveBeenCalled();
+    expect(restored.status(owner.sessionId)).toMatchObject({
+      paused: true,
+      reason: "usage-limit",
+      legacyUnconfirmedReports: ["in-flight batch"],
+      pendingReports: ["newer batch"],
+      records: expect.arrayContaining([
+        expect.objectContaining({
+          kind: "report-delivery",
+          outcome: "retained",
+          reportFailure: { phase: "confirmation", code: "legacy-outcome-unknown" },
+        }),
+      ]),
+    });
+    limited = false;
+    runtime.read(async () => cleared);
+    restored.userSpoke(owner.sessionId);
+    const recovery = restored.catchUp();
+    await vi.waitFor(() => expect(runtime.delivered).toHaveBeenCalledTimes(1));
+    expect(restored.roles().get(owner.sessionId)).toHaveProperty("recovering", true);
+    expect(restored.roles().get(owner.sessionId)).not.toHaveProperty("requiresUser");
+    accepted.resolve(false);
+    await recovery;
+    expect(runtime.delivered.mock.calls[0]?.[2]).toBe("newer batch");
+    await vi.waitFor(() =>
+      expect(restored.status(owner.sessionId)).toMatchObject({ paused: false, reason: null }),
+    );
   });
 
   it("keeps held reports out of a device that lost access", async () => {

@@ -101,7 +101,7 @@ function service(
   lanes: LaneHost,
   root = directory(),
   bootId = "boot-1",
-  sendReport: (lead: string, device: string, text: string) => boolean = () => false,
+  sendReport: OrchestrationService["sendReport"] = () => false,
   isLeadCapable = (id: string) => id === LEAD,
 ) {
   const created = new OrchestrationService(root, bootId, lanes, isLeadCapable, sendReport);
@@ -258,7 +258,7 @@ describe("Codex Worker sends waiting for the desktop owner", () => {
       },
     });
     const worker = { worker: "worker-1" };
-    orchestration.pause(LEAD, "restart-confirmation-required");
+    orchestration.pause(LEAD);
     expect(parse(await orchestration.call(LEAD, "worker_read", worker))).toMatchObject({
       status: "paused",
       reason: "codex-waiting-for-owner",
@@ -580,7 +580,7 @@ describe("Project Agent supervision", () => {
     expect(delivered).toHaveLength(3);
   });
 
-  it("preserves an unsent completion across shutdown in the restart-pause queue", async () => {
+  it("automatically delivers an unsent completion preserved across shutdown", async () => {
     const { orchestration, delivered } = await supervised();
     await assignWorker(orchestration, "codex-branch");
     await orchestration.laneTurnEnded(WORKER, "completed-at-shutdown", "completed");
@@ -597,11 +597,18 @@ describe("Project Agent supervision", () => {
       },
     );
     expect(resumed.status(LEAD)).toMatchObject({
-      paused: true,
-      pendingReports: [expect.stringContaining("turn ended: completed")],
+      paused: false,
+      reportDeliveries: [
+        { reportId: expect.any(String), text: expect.stringContaining("turn ended: completed") },
+      ],
     });
-    resumed.resume(LEAD, DEVICE);
+    expect(await resumed.overview(LEAD)).toMatchObject({ paused: false, pendingReports: 1 });
+    expect(
+      parse(await resumed.call(LEAD, "worker_send", { worker: "worker-1", text: "next" })),
+    ).toMatchObject({ accepted: true });
+    await resumed.catchUp();
     expect(delivered).toHaveLength(1);
+    expect(await resumed.overview(LEAD)).toMatchObject({ paused: false, pendingReports: 0 });
   });
 
   it("keeps an actionable approval in an oversized batch of completions", async () => {
@@ -913,47 +920,42 @@ describe("Worker interruptions during app quit", () => {
     ["continued", "AgentKib has started a continuation in the same session"],
     ["not-continued", "AgentKib did not start a continuation"],
     ["unknown", "AgentKib could not confirm whether a continuation started"],
-  ] as const)(
-    "reports %s once and leaves the restart's delegation pause in place",
-    async (outcome, text) => {
-      const root = directory();
-      const { lanes } = host();
-      const before = service(lanes, root, "before-quit");
-      before.designate(OWNER);
-      await assignWorker(before);
-      const assignment = before.registry.leadOfLane(WORKER)!;
-      const deliver = vi.fn((_lead: string, _device: string, _report: string) => false);
-      const after = service(lanes, root, "after-quit", deliver);
-      const captured = { leadId: assignment.lead.sessionId, laneId: assignment.lane.id };
-      expect(after.status(LEAD)).toMatchObject({
-        paused: true,
-        reason: "restart-confirmation-required",
-      });
-      after.workerInterruptedByQuit(WORKER, "t1", outcome, captured);
-      after.workerInterruptedByQuit(WORKER, "t1", outcome, captured);
-      await after.laneTurnEnded(WORKER, "t1", "cancelled");
-      await vi.waitFor(() =>
-        expect(deliver).toHaveBeenCalledExactlyOnceWith(
-          LEAD,
-          DEVICE,
-          expect.stringContaining(text),
-          expect.any(Function),
-          expect.any(String),
-        ),
-      );
-      expect(deliver.mock.calls[0]?.[2]).toContain("interrupted when AgentKib quit");
-      expect(after.status(LEAD)).toMatchObject({
-        paused: true,
-        reason: "restart-confirmation-required",
-        autoTurns: 1,
-      });
-      expect(
-        parse(await after.call(LEAD, "worker_send", { worker: "worker-1", text: "new" })),
-      ).toMatchObject({
-        reason: "delegation-paused",
-      });
-    },
-  );
+  ] as const)("reports %s once without pausing delegation after restart", async (outcome, text) => {
+    const root = directory();
+    const { lanes } = host();
+    const before = service(lanes, root, "before-quit");
+    before.designate(OWNER);
+    await assignWorker(before);
+    const assignment = before.registry.leadOfLane(WORKER)!;
+    const deliver = vi.fn((_lead: string, _device: string, _report: string) => false);
+    const after = service(lanes, root, "after-quit", deliver);
+    const captured = { leadId: assignment.lead.sessionId, laneId: assignment.lane.id };
+    expect(after.status(LEAD)).toMatchObject({
+      paused: false,
+      reason: null,
+    });
+    after.workerInterruptedByQuit(WORKER, "t1", outcome, captured);
+    after.workerInterruptedByQuit(WORKER, "t1", outcome, captured);
+    await after.laneTurnEnded(WORKER, "t1", "cancelled");
+    await vi.waitFor(() =>
+      expect(deliver).toHaveBeenCalledExactlyOnceWith(
+        LEAD,
+        DEVICE,
+        expect.stringContaining(text),
+        expect.any(Function),
+        expect.any(String),
+      ),
+    );
+    expect(deliver.mock.calls[0]?.[2]).toContain("interrupted when AgentKib quit");
+    expect(after.status(LEAD)).toMatchObject({
+      paused: false,
+      reason: null,
+      autoTurns: 1,
+    });
+    expect(
+      parse(await after.call(LEAD, "worker_send", { worker: "worker-1", text: "new" })),
+    ).toMatchObject({ accepted: true });
+  });
 
   it.each(["user-paused", "auto-turn-limit"])(
     "delivers while %s, then resumes without repeating the report",
@@ -1073,32 +1075,45 @@ describe("Worker interruptions during app quit", () => {
     );
   });
 
-  it("automatically replays a quit report with its original ID when the result is unknown", async () => {
-    const root = directory();
-    const { lanes } = host();
-    const before = service(lanes, root);
-    before.designate(OWNER);
-    await assignWorker(before);
-    const { lane } = before.registry.leadOfLane(WORKER)!;
-    const uncertain = vi.fn<OrchestrationService["sendReport"]>(() => {
-      throw new Error("outcome_unknown");
-    });
-    const after = service(lanes, root, "after", uncertain);
-    after.workerInterruptedByQuit(WORKER, "t1", "unknown", { leadId: LEAD, laneId: lane.id });
-    await vi.waitFor(() => expect(uncertain).toHaveBeenCalledTimes(1));
-    const [pending] = after.status(LEAD)!.reportDeliveries!;
-    expect(pending!.reportId).toBe(uncertain.mock.calls[0]?.[4]);
-    await after.close();
-    const deliver = vi.fn<OrchestrationService["sendReport"]>(() => false);
-    const reopened = service(lanes, root, "again", deliver);
-    await reopened.catchUp(pending!.retryAt! - 1);
-    expect(deliver).not.toHaveBeenCalled();
-    await reopened.catchUp(pending!.retryAt!);
-    expect(deliver).toHaveBeenCalledTimes(1);
-    expect(deliver.mock.calls[0]?.[4]).toBe(pending!.reportId);
-  });
+  it.each(["in-flight", "unknown"])(
+    "automatically retries a %s quit report after restart with its original ID",
+    async (mode) => {
+      const root = directory();
+      const { lanes } = host();
+      const before = service(lanes, root);
+      before.designate(OWNER);
+      await assignWorker(before);
+      const { lane } = before.registry.leadOfLane(WORKER)!;
+      const uncertain = vi.fn<OrchestrationService["sendReport"]>(() => {
+        if (mode === "in-flight") return new Promise<boolean>(() => {});
+        throw new Error("outcome_unknown");
+      });
+      const after = service(lanes, root, "after", uncertain);
+      after.workerInterruptedByQuit(WORKER, "t1", "unknown", { leadId: LEAD, laneId: lane.id });
+      await vi.waitFor(() => expect(uncertain).toHaveBeenCalledTimes(1));
+      const [pending] = after.status(LEAD)!.reportDeliveries!;
+      expect(pending!.reportId).toBe(uncertain.mock.calls[0]?.[4]);
+      await after.close();
+      const deliver = vi.fn<OrchestrationService["sendReport"]>(() => false);
+      const reopened = service(lanes, root, "again", deliver);
+      expect(parse(await reopened.call(LEAD, "worker_list", {}))).toMatchObject({
+        paused: false,
+      });
+      if (pending!.retryAt !== undefined) {
+        await reopened.catchUp(pending!.retryAt - 1);
+        expect(deliver).not.toHaveBeenCalled();
+      }
+      await reopened.catchUp(pending!.retryAt);
+      await vi.waitFor(() => expect(deliver).toHaveBeenCalledTimes(1));
+      expect(deliver.mock.calls[0]?.[4]).toBe(pending!.reportId);
+      await reopened.catchUp();
+      expect(deliver).toHaveBeenCalledTimes(1);
+      expect(reopened.status(LEAD)).toMatchObject({ paused: false, reason: null });
+      expect(reopened.roles().get(LEAD)).not.toHaveProperty("recovering");
+    },
+  );
 
-  it("retries a report that was definitely not dispatched without lifting the pause", async () => {
+  it("retries a quit report that was definitely not dispatched", async () => {
     const root = directory();
     const { lanes } = host();
     const before = service(lanes, root);
@@ -1116,15 +1131,15 @@ describe("Worker interruptions during app quit", () => {
     await after.catchUp(after.status(LEAD)!.reportDeliveries![0]!.retryAt!);
     await vi.waitFor(() => expect(deliver).toHaveBeenCalledTimes(2));
     expect(after.status(LEAD)).toMatchObject({
-      paused: true,
-      reason: "restart-confirmation-required",
+      paused: false,
+      reason: null,
       autoTurns: 1,
     });
   });
 });
 
 describe("lead registry", () => {
-  it("keeps a lead across processes and pauses it after a restart", () => {
+  it("keeps active delegation across processes after a restart", () => {
     const root = directory();
     const first = new LeadRegistry(root, "boot-1");
     first.create({
@@ -1143,8 +1158,8 @@ describe("lead registry", () => {
     expect(first.get(LEAD)).toMatchObject({ paused: false, revision: 1 });
     const second = new LeadRegistry(root, "boot-2");
     expect(second.get(LEAD)).toMatchObject({
-      paused: true,
-      reason: "restart-confirmation-required",
+      paused: false,
+      reason: null,
       bootId: "boot-2",
       scope: { maxLanes: 4 },
     });
@@ -1166,6 +1181,72 @@ describe("lead registry", () => {
     expect(second.remove(LEAD)).toBe(true);
     expect(second.get(LEAD)).toBeNull();
   });
+
+  it.each(["old", "new"])(
+    "lifts a legacy restart pause once, reading it in boot %s",
+    async (bootId) => {
+      const root = directory();
+      const { lanes } = host();
+      const before = service(lanes, root, "old");
+      before.designate(OWNER);
+      before.registry.update(LEAD, (lead) => {
+        lead.paused = true;
+        lead.reason = "restart-confirmation-required";
+        lead.pendingReports = ["held during the old pause"];
+      });
+
+      const deliver = vi.fn<OrchestrationService["sendReport"]>(() => false);
+      const after = service(lanes, root, bootId, deliver);
+      expect(after.status(LEAD)).toMatchObject({ paused: false, reason: null });
+      await after.catchUp();
+      expect(deliver).toHaveBeenCalledOnce();
+      expect(deliver.mock.calls[0]?.[2]).toBe("held during the old pause");
+      expect(deliver.mock.calls[0]?.[4]).toEqual(expect.any(String));
+      const reopened = service(lanes, root, "another-boot", deliver);
+      await reopened.catchUp();
+      expect(deliver).toHaveBeenCalledOnce();
+      expect(
+        reopened
+          .status(LEAD)
+          ?.records.filter((record) => record.outcome === "restart-confirmation-removed"),
+      ).toEqual([expect.objectContaining({ kind: "resume" })]);
+    },
+  );
+
+  it.each([true, false])(
+    "lifts an old delivery pause and retries only confirmed unsent reports (confirmed %s)",
+    async (confirmed) => {
+      const root = directory();
+      const { lanes } = host();
+      const before = service(lanes, root, "old");
+      before.designate(OWNER);
+      await assignWorker(before);
+      before.registry.update(LEAD, (lead) => {
+        lead.paused = true;
+        lead.reason = "report-undelivered";
+        lead.pendingReports = ["previous pending report"];
+        lead.deliveringReports = ["previous in-flight report"];
+        if (confirmed) lead.reportRetryable = true;
+      });
+
+      const deliver = vi.fn<OrchestrationService["sendReport"]>(() => false);
+      const after = service(lanes, root, "new", deliver);
+      expect(after.status(LEAD)).toMatchObject({
+        paused: false,
+        reason: null,
+        legacyUnconfirmedReports: confirmed
+          ? ["previous in-flight report"]
+          : ["previous in-flight report", "previous pending report"],
+      });
+      expect(
+        parse(await after.call(LEAD, "worker_send", { worker: "worker-1", text: "new" })),
+      ).toMatchObject({ accepted: true });
+      await after.catchUp();
+      expect(deliver.mock.calls.map((call) => call[2])).toEqual(
+        confirmed ? ["previous pending report"] : [],
+      );
+    },
+  );
 });
 
 describe("orchestration service", () => {
@@ -1304,7 +1385,7 @@ describe("orchestration service", () => {
 
     const restored = service(lanes, root, "boot-2");
     expect(await restored.overview(LEAD)).toMatchObject({
-      paused: true,
+      paused: false,
       scope: {
         workspaceIds: ["w1", "w2"],
         policies: [],
@@ -1326,7 +1407,7 @@ describe("orchestration service", () => {
       }),
     ).rejects.toThrow("workspace_not_authorized");
     expect(restored.status(LEAD)).toMatchObject({
-      paused: true,
+      paused: false,
       deviceId: DEVICE,
       scope: { maxAutoTurns: 14 },
     });
@@ -2456,7 +2537,7 @@ describe("orchestration service", () => {
       expect(orchestration.status(LEAD)).toMatchObject({ autoTurns: 2, paused: false });
     });
 
-    it("goes on after a restart once the user speaks to the lead; not after a pause they chose", async () => {
+    it("goes on after a restart and preserves manual and authorization pauses across another boot", async () => {
       const root = directory();
       const delivered: string[] = [];
       const deliver = (_lead: string, _device: string, text: string) => {
@@ -2470,19 +2551,21 @@ describe("orchestration service", () => {
       const after = service(lanes, root, "boot-2", deliver);
       await after.laneTurnEnded(session, "t1", "completed");
       expect(after.status(LEAD)).toMatchObject({
-        paused: true,
-        reason: "restart-confirmation-required",
+        paused: false,
+        reason: null,
       });
-      expect(delivered).toEqual([]);
-      after.userSpoke(LEAD);
-      expect(after.status(LEAD)).toMatchObject({ paused: false, reason: null, pendingReports: [] });
       expect(delivered).toHaveLength(1);
-      for (const pause of [() => after.pause(LEAD), () => after.invalidateDevice(DEVICE)]) {
-        pause();
-        after.userSpoke(LEAD);
-        expect(after.status(LEAD)!.paused).toBe(true);
-        after.resume(LEAD, DEVICE);
-      }
+      after.pause(LEAD);
+      const manual = service(lanes, root, "boot-3", deliver);
+      manual.userSpoke(LEAD);
+      expect(manual.status(LEAD)).toMatchObject({ paused: true, reason: "user-paused" });
+      manual.invalidateDevice(DEVICE);
+      const unauthorized = service(lanes, root, "boot-4", deliver);
+      unauthorized.userSpoke(LEAD);
+      expect(unauthorized.status(LEAD)).toMatchObject({
+        paused: true,
+        reason: "authorization-changed",
+      });
     });
   });
 

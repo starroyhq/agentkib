@@ -82,8 +82,8 @@ function fixture() {
   writeFileSync(
     executable,
     `#!/bin/sh
-dir="$(dirname "$0")"
 if [ "$1" = "auth" ]; then echo "Logged in as tester"; exit 0; fi
+dir="\${0%/*}"
 if [ "$1" = "models" ]; then cat "$dir/models.json"; exit; fi
 if [ "$1" = "acp" ]; then exec "${process.execPath}" "$dir/acp.cjs"; fi
 if [ $# -eq 0 ]; then echo start >> "$dir/usage.log"; exec "${process.execPath}" "$dir/repl.mjs"; fi
@@ -190,16 +190,13 @@ require("node:readline").createInterface({ input: process.stdin }).on("line", (l
   writeFileSync(
     path.join(bin, "repl.mjs"),
     `import { existsSync, readFileSync } from "node:fs";
+import { createInterface } from "node:readline";
 const panel = ${JSON.stringify(path.join(bin, "usage-panel"))};
 if (process.stdin.isTTY) process.stdin.setRawMode(true);
 process.stdout.write("\\u001b]7501;state=idle:app=devin\\u001b\\\\");
-let typed = "";
-process.stdin.on("data", (chunk) => {
-  const text = chunk.toString("utf8");
-  if (text !== "\\r") return void (typed += text);
-  if (typed === "/usage")
+createInterface({ input: process.stdin, crlfDelay: Infinity }).on("line", (command) => {
+  if (command === "/usage")
     process.stdout.write(existsSync(panel) ? readFileSync(panel, "utf8") : " No quota data available.\\n");
-  typed = "";
 });
 process.on("SIGHUP", () => process.exit(0));
 `,
@@ -988,9 +985,15 @@ describe.runIf(["darwin", "linux"].includes(process.platform))(
       const resetsAt = minuteAfter(60 * 60_000);
       f.usage(usageLine("Daily", 100, resetsAt), usageLine("Weekly", 64, resetsAt + 86_400_000));
       f.turn({ stderr: `Error: ${DAILY_QUOTA}\n`, code: 1 });
-      await f.send("Hello");
-      // The notice says so at once, and when it resets once /usage has answered.
-      expect((await f.ended()).usageLimit).toMatchObject({ manual: "reset-unknown" });
+      expect(await f.send("Hello")).toMatchObject({ accepted: true });
+      const { completedTurnId } = await f.ended();
+      expect(completedTurnId).toEqual(expect.any(String));
+      // Read the first completed state for this turn even if /usage has already updated the live view.
+      const firstCompleted = f.events.find(
+        ({ sessionId, type, payload }) =>
+          sessionId === f.id && type === "state" && payload.completedTurnId === completedTurnId,
+      );
+      expect(firstCompleted?.payload.usageLimit).toMatchObject({ manual: "reset-unknown" });
       await vi.waitFor(
         async () =>
           expect((await f.live()).usageLimit).toEqual({

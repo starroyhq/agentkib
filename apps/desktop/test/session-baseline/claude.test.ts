@@ -1,9 +1,9 @@
 // @vitest-environment node
 import { createHash, randomUUID } from "node:crypto";
-import { rmSync } from "node:fs";
+import { rmSync, watch } from "node:fs";
 import { join } from "node:path";
 import { RUNTIME_METHODS } from "@agentkib/runtime-protocol";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { ClaudeManagedRunnerProcess } from "../../../../packages/backend/src/agents/claude/claude-managed-runner";
 import { Commands } from "../../../../packages/backend/src/commands";
 import { readControlReceipt } from "../../../../packages/backend/src/control-receipt";
@@ -196,6 +196,31 @@ describe.skipIf(process.platform === "win32")(
     }
 
     const userFrames = () => cli.frames().filter((frame) => frame.type === "user");
+    async function waitForUserFrames(count: number) {
+      const { promise, resolve, reject } = Promise.withResolvers<ReturnType<typeof userFrames>>();
+      const read = () => {
+        try {
+          const frames = userFrames();
+          if (frames.length >= count) resolve(frames);
+        } catch (error) {
+          reject(error);
+        }
+      };
+      // Watch the directory before reading, since the CLI creates its log on startup.
+      const watcher = watch(cli.root, { persistent: false }, read);
+      watcher.once("error", reject);
+      watcher.once("close", () =>
+        reject(new Error("Claude fixture closed before logging user frames")),
+      );
+      onTestFinished(() => watcher.close());
+      try {
+        read();
+        return await promise;
+      } finally {
+        watcher.close();
+      }
+    }
+
     const commands = () =>
       cli
         .frames()
@@ -278,11 +303,9 @@ describe.skipIf(process.platform === "win32")(
           ack,
         },
       });
-      await expect
-        .poll(userFrames)
-        .toMatchObject([
-          { uuid: request.requestId, message: { role: "user", content: request.text } },
-        ]);
+      expect(await waitForUserFrames(1)).toMatchObject([
+        { uuid: request.requestId, message: { role: "user", content: request.text } },
+      ]);
     });
 
     it("serializes duplicate sends while the first native dispatch is pending", async () => {
@@ -290,6 +313,7 @@ describe.skipIf(process.platform === "win32")(
       const sessionId = await create();
       const request = await receiptRequest(sessionId);
       const { promise: release, resolve } = Promise.withResolvers<void>();
+      onTestFinished(() => resolve());
       const send = ClaudeManagedRunnerProcess.prototype.send;
       const recorded = vi
         .spyOn(ClaudeManagedRunnerProcess.prototype, "send")
@@ -301,11 +325,9 @@ describe.skipIf(process.platform === "win32")(
       void first.catch(() => undefined);
       let duplicate: Promise<unknown> | undefined;
       try {
-        await expect
-          .poll(userFrames)
-          .toMatchObject([
-            { uuid: request.requestId, message: { role: "user", content: request.text } },
-          ]);
+        expect(await waitForUserFrames(1)).toMatchObject([
+          { uuid: request.requestId, message: { role: "user", content: request.text } },
+        ]);
         expect(
           readControlReceipt(dataDir(), {
             requestId: request.requestId,
@@ -327,6 +349,7 @@ describe.skipIf(process.platform === "win32")(
         ack,
       });
       expect(recorded).toHaveBeenCalledTimes(1);
+      expect(userFrames()).toHaveLength(1);
     });
 
     it("replays send and host queue acknowledgments after reboot with a fresh boot ID", async () => {
@@ -469,7 +492,7 @@ describe.skipIf(process.platform === "win32")(
           status: "pending",
         },
       });
-      await expect.poll(userFrames).toMatchObject([
+      expect(await waitForUserFrames(2)).toMatchObject([
         { type: "user", uuid: running.turnId, message: { role: "user", content: "Initial text" } },
         { type: "user", priority: "next", message: { role: "user", content: "Steering text" } },
       ]);

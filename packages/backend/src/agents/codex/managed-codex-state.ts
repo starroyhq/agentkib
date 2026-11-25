@@ -131,6 +131,10 @@ export class ManagedCodexState {
     return this.#turn;
   }
 
+  get lastTurnId(): string | null {
+    return this.#lastTurn;
+  }
+
   /** Native turns seen starting, for an operation whose reply precedes its turn. */
   get turnsStarted(): number {
     return this.#turnsStarted;

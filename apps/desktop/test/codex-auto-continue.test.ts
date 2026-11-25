@@ -1878,6 +1878,174 @@ describe("Codex indexed native execution policy", () => {
     expect(f.methods).not.toContain("turn/start");
   });
 
+  it("requires an explicit next-turn policy when history cannot confirm it", async () => {
+    const f = fixture(true);
+    writeFileSync(
+      f.compressedTranscript,
+      zstdCompressSync(
+        f.history +
+          JSON.stringify({ type: "turn_context", payload: { ...full, cwd: f.workspace } }) +
+          "\n" +
+          JSON.stringify({ type: "turn_context", payload: { model: "previous-model" } }) +
+          "\n",
+      ),
+    );
+    const reason = "native-policy-unconfirmed";
+    expect(await settings(f)).toMatchObject({
+      policies: expect.arrayContaining([expect.objectContaining({ id: "full-access-on-request" })]),
+      settings: {
+        current: { policyId: null },
+        selected: { policyId: null },
+        writable: { policy: { available: true, reason } },
+      },
+    });
+    const state = await f.live();
+    expect(state.sendEnabled).toBe(false);
+    expect(await f.sendWithState(state)).toMatchObject({ accepted: false, reason });
+    expect(f.methods).not.toContain("thread/resume");
+    expect(
+      await f.web.managedControl({
+        operation: "settings",
+        sessionId: f.summary.id,
+        requestId: randomUUID(),
+        deviceId: "fixture",
+        runtimeBootId: state.runtimeBootId,
+        expectedRevision: state.revision,
+        experimentalEnabled: true,
+        policyId: "full-access-on-request",
+      }),
+    ).toMatchObject({ accepted: true, appliesTo: "next-turn" });
+    expect(f.methods).not.toContain("thread/resume");
+    expect(await settings(f)).toMatchObject({
+      settings: { current: { policyId: null }, selected: { policyId: "full-access-on-request" } },
+    });
+    expect(await f.sendWithState(await f.live(), {}, true)).toMatchObject({
+      accepted: false,
+      reason: "native-policy-full-access-required",
+    });
+    expect(f.methods).not.toContain("thread/resume");
+    expect(await f.send()).toMatchObject({ accepted: true });
+    expect(f.requests.find(({ method }) => method === "thread/resume")?.params).toMatchObject({
+      sandbox: "workspace-write",
+    });
+    expect(f.requests.find(({ method }) => method === "turn/start")?.params).toMatchObject({
+      sandboxPolicy: { type: "dangerFullAccess" },
+    });
+  });
+
+  it.each(["unchanged", "changed rollout", "different effective policy"] as const)(
+    "only uses verified Worker policy after restart (%s)",
+    async (scenario) => {
+      const f = fixture(true);
+      setNativePolicy(f, full);
+      f.setPolicyReply({
+        approvalPolicy: "never",
+        approvalsReviewer: "user",
+        sandbox: { type: "dangerFullAccess" },
+      });
+      expect(await f.send()).toMatchObject({ accepted: true });
+      expect(readManagedRecord(f.root, f.summary.id)).toMatchObject({
+        native_settings: { approvalPolicy: "never" },
+      });
+      const rollout =
+        f.history +
+        JSON.stringify({ type: "turn_context", payload: { ...full, cwd: f.workspace } }) +
+        "\n" +
+        JSON.stringify({ type: "turn_context", payload: { model: "missing-policy" } }) +
+        "\n";
+      writeFileSync(f.compressedTranscript, zstdCompressSync(rollout));
+      expect(f.readers.codexHistoricalSettings(nativeId, f.workspace)?.nativePolicy).toEqual({
+        policyId: null,
+        reason: "native-policy-unconfirmed",
+      });
+      const server = f.servers.at(-1)!;
+      if (scenario === "different effective policy") {
+        server.emit("notification", {
+          method: "thread/settings/updated",
+          params: {
+            threadId: nativeId,
+            threadSettings: {
+              approvalPolicy: "on-request",
+              approvalsReviewer: "user",
+              sandboxPolicy: { type: "readOnly" },
+            },
+          },
+        });
+      }
+      server.emit("notification", {
+        method: "turn/completed",
+        params: { threadId: nativeId, turn: { id: "new-turn", status: "completed" } },
+      });
+      await vi.waitFor(async () => expect(await f.live()).toMatchObject({ status: "idle" }));
+      await f.web.closeAsync();
+      const stored = readManagedRecord(f.root, f.summary.id);
+      if (scenario === "different effective policy")
+        expect(stored?.snapshot).not.toHaveProperty("confirmedTurnPolicy");
+      else
+        expect(stored).toMatchObject({
+          snapshot: {
+            confirmedTurnPolicy: {
+              policyId: "full-access-on-request",
+              version: expect.any(String),
+            },
+          },
+        });
+      if (scenario === "changed rollout")
+        writeFileSync(f.compressedTranscript, zstdCompressSync(rollout + "\n"));
+      const web = new WebReadRequests(f.store, f.readers, f.root, () => 0n, {
+        HOME: f.root,
+        CODEX_HOME: f.home,
+        PATH: f.bin,
+      });
+      cleanups.push(() => web.closeAsync());
+      const lead = new OrchestrationService(
+        f.root,
+        "fixture-restarted",
+        {
+          live: (sessionId) =>
+            web.request({ operation: "live", sessionId, experimentalEnabled: true }),
+          control: (request) => web.managedControl(request),
+          events: async () => [],
+          session: (sessionId) =>
+            sessionId === f.summary.id
+              ? { agent: "codex", workspaceId: "workspace", title: null }
+              : null,
+          managed: async () => true,
+          workspaces: () => [{ id: "workspace", name: "Fixture" }],
+        },
+        (id) => id === "project-agent",
+        () => false,
+      );
+      cleanups.push(() => lead.close());
+      await lead.assignWorkers({
+        sessionId: "project-agent",
+        deviceId: "fixture",
+        workspaceId: "workspace",
+        workers: [f.summary.id],
+      });
+      if (scenario !== "unchanged") {
+        expect(
+          await web.managedSettingsState({
+            operation: "settings-state",
+            sessionId: f.summary.id,
+          }),
+        ).toMatchObject({ settings: { current: { policyId: null } } });
+      }
+      const sent = await lead.call("project-agent", "worker_send", {
+        worker: "worker-1",
+        text: "Continue",
+      });
+      expect(JSON.parse(sent.text), sent.text).toMatchObject({
+        accepted: scenario === "unchanged",
+      });
+      const starts = f.requests.filter(({ method }) => method === "turn/start");
+      expect(starts).toHaveLength(scenario === "unchanged" ? 2 : 1);
+      expect(starts.at(-1)?.params).toMatchObject({
+        sandboxPolicy: { type: "dangerFullAccess" },
+      });
+    },
+  );
+
   it("offers execution policy without waiting for the cold model catalog", async () => {
     const invalidated = vi.fn();
     const f = fixture(true, undefined, {}, invalidated);

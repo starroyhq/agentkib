@@ -17,9 +17,12 @@ export interface CodexHistoricalSettings {
 }
 
 const tailBytes = 512 * 1024;
-const maxPolicyTailBytes = 8 * 1024 * 1024;
+const policyBlockBytes = 256 * 1024;
+const maxPolicyTailBytes = 64 * 1024 * 1024;
+const maxPolicyRowBytes = 8 * 1024 * 1024;
 const maxCompressedBytes = 512 * 1024;
 const maxDecompressedBytes = 4 * 1024 * 1024;
+const maxCompressedPolicyBytes = 16 * 1024 * 1024;
 
 function bytesAt(fd: number, offset: number, length: number) {
   const bytes = Buffer.allocUnsafe(length);
@@ -58,29 +61,22 @@ function startsTurnContext(line: Buffer): boolean {
   );
 }
 
-function readRows(
-  bytes: Buffer,
-  cwd: string,
-  startsMidRow: boolean,
-  policyOnly = false,
-): CodexHistoricalSettings {
+function readRows(bytes: Buffer, cwd: string, startsMidRow: boolean): CodexHistoricalSettings {
   const result: CodexHistoricalSettings = {};
-  let hasSettings = policyOnly;
+  let hasSettings = false;
   let newerContext = false;
   // Only newline-terminated records are committed. Skip the partial record
   // where a bounded tail starts in the middle of a line.
   let end = bytes.lastIndexOf(10);
   if (startsTurnContext(bytes.subarray(end + 1)))
     result.nativePolicy = unconfirmedCodexNativePolicy;
-  while (end >= 0 && (!hasSettings || (!policyOnly && !result.usage) || !result.nativePolicy)) {
+  while (end >= 0 && (!hasSettings || !result.usage || !result.nativePolicy)) {
     const start = end > 0 ? bytes.lastIndexOf(10, end - 1) : -1;
     if (start < 0 && startsMidRow) break;
     const line = bytes.subarray(start + 1, end);
     end = start;
-    const settings =
-      (!hasSettings || !result.nativePolicy) &&
-      (policyOnly ? startsTurnContext(line) : line.includes('"turn_context"'));
-    const usage = !policyOnly && !result.usage && line.includes('"token_count"');
+    const settings = (!hasSettings || !result.nativePolicy) && line.includes('"turn_context"');
+    const usage = !result.usage && line.includes('"token_count"');
     if (!settings && !usage) continue;
     let row: Record<string, unknown> | undefined;
     try {
@@ -127,14 +123,78 @@ function readRows(
   return result;
 }
 
-function readPlainTail(fd: number, size: number, cwd: string, limit: number, policyOnly = false) {
-  const offset = Math.max(0, size - limit);
+function readPlainTail(fd: number, size: number, cwd: string) {
+  const offset = Math.max(0, size - tailBytes);
   const start = Math.max(0, offset - 1);
   const bytes = bytesAt(fd, start, size - start);
   if (bytes.length !== size - start) return { nativePolicy: unconfirmedCodexNativePolicy };
-  return offset
-    ? readRows(bytes.subarray(1), cwd, bytes[0] !== 10, policyOnly)
-    : readRows(bytes, cwd, false, policyOnly);
+  return offset ? readRows(bytes.subarray(1), cwd, bytes[0] !== 10) : readRows(bytes, cwd, false);
+}
+
+// The native serializer puts these header fields before the payload. This lets
+// us skip a large non-context record without buffering or decoding its payload.
+const nativeRowType =
+  /^\s*\{\s*(?:"timestamp"\s*:\s*"[^"\\]*"\s*,\s*)?"type"\s*:\s*"([a-z_]+)"\s*[,}]/u;
+
+function scanNativePolicy(
+  read: (offset: number, length: number) => Buffer,
+  size: number,
+  cwd: string,
+): CodexNativePolicy {
+  const earliest = Math.max(0, size - maxPolicyTailBytes);
+  let rowEnd = size;
+  let terminated = false;
+  let newerContext = false;
+
+  const inspect = (block: Buffer, offset: number, rowStart: number) => {
+    const length = rowEnd - rowStart;
+    if (!length) return;
+    let line = block.subarray(rowStart - offset, rowEnd - offset);
+    if (line.length !== length) {
+      const prefixLength = Math.min(1024, length);
+      const prefix = line.length >= prefixLength ? line : read(rowStart, prefixLength);
+      if (prefix.length < prefixLength) return unconfirmedCodexNativePolicy;
+      const type = nativeRowType.exec(prefix.subarray(0, prefixLength).toString("utf8"))?.[1];
+      if (type && type !== "turn_context") return;
+      if (length > maxPolicyRowBytes) return unconfirmedCodexNativePolicy;
+      line = read(rowStart, length);
+      if (line.length !== length) return unconfirmedCodexNativePolicy;
+    }
+    if (!line.includes('"turn_context"')) return;
+
+    let row: Record<string, unknown> | undefined;
+    try {
+      row = record(JSON.parse(line.toString("utf8")));
+    } catch {
+      if (startsTurnContext(line)) return unconfirmedCodexNativePolicy;
+      return;
+    }
+    if (row?.type !== "turn_context") return;
+    const payload = record(row.payload);
+    if (!terminated || !payload) return unconfirmedCodexNativePolicy;
+    const policy = readCodexNativeTurnPolicy(payload, cwd);
+    if (policy) return newerContext ? unconfirmedCodexNativePolicy : policy;
+    newerContext = true;
+  };
+
+  for (let next = size; next > earliest;) {
+    const offset = Math.max(earliest, next - policyBlockBytes);
+    const block = read(offset, next - offset);
+    if (block.length !== next - offset) return unconfirmedCodexNativePolicy;
+    for (
+      let separator = block.lastIndexOf(10);
+      separator >= 0;
+      separator = separator ? block.lastIndexOf(10, separator - 1) : -1
+    ) {
+      const policy = inspect(block, offset, offset + separator + 1);
+      if (policy) return policy;
+      rowEnd = offset + separator;
+      terminated = true;
+    }
+    if (!offset) return inspect(block, 0, 0) ?? unconfirmedCodexNativePolicy;
+    next = offset;
+  }
+  return unconfirmedCodexNativePolicy;
 }
 
 /** Read the latest retained display evidence from an already verified descriptor. */
@@ -146,28 +206,32 @@ export function readCodexHistoricalFields(
 ): CodexHistoricalSettings {
   try {
     if (!isCompressedRollout(file)) {
-      const fields = readPlainTail(fd, size, cwd, tailBytes);
-      if (fields.nativePolicy || size <= tailBytes) return fields;
-      // Long turns can leave the policy behind many large response records. Expand
-      // only the policy window, keeping the newest-context ordering across cuts.
-      for (let limit = tailBytes * 2; limit <= maxPolicyTailBytes; limit *= 2) {
-        fields.nativePolicy = readPlainTail(fd, size, cwd, limit, true).nativePolicy;
-        if (fields.nativePolicy || size <= limit) break;
-      }
-      fields.nativePolicy ??= unconfirmedCodexNativePolicy;
+      const fields = readPlainTail(fd, size, cwd);
+      if (!fields.nativePolicy && size > tailBytes)
+        fields.nativePolicy = scanNativePolicy(
+          (offset, length) => bytesAt(fd, offset, length),
+          size,
+          cwd,
+        );
       return fields;
     }
-    // Zstandard rollouts are sequential. Only decode small frames for this
-    // metadata read. The history reader owns any decompressed copy.
-    if (size > maxCompressedBytes) return { nativePolicy: unconfirmedCodexNativePolicy };
+    // Zstandard rollouts are sequential. Keep a hard input and output budget,
+    // and use the larger budget only for policy, leaving display fallbacks alone.
+    if (size > maxCompressedPolicyBytes) return { nativePolicy: unconfirmedCodexNativePolicy };
     const compressed = bytesAt(fd, 0, size);
     if (compressed.length !== size) return { nativePolicy: unconfirmedCodexNativePolicy };
-    const bytes = zstdDecompressSync(compressed, {
-      maxOutputLength: maxDecompressedBytes,
-    });
+    const bytes = zstdDecompressSync(compressed, { maxOutputLength: maxPolicyTailBytes });
     const offset = Math.max(0, bytes.length - tailBytes);
-    const fields = readRows(bytes.subarray(offset), cwd, offset > 0 && bytes[offset - 1] !== 10);
-    if (offset > 0) fields.nativePolicy ??= unconfirmedCodexNativePolicy;
+    const showDisplay = size <= maxCompressedBytes && bytes.length <= maxDecompressedBytes;
+    const fields: CodexHistoricalSettings = showDisplay
+      ? readRows(bytes.subarray(offset), cwd, offset > 0 && bytes[offset - 1] !== 10)
+      : {};
+    if (!fields.nativePolicy && (offset > 0 || !showDisplay))
+      fields.nativePolicy = scanNativePolicy(
+        (start, length) => bytes.subarray(start, start + length),
+        bytes.length,
+        cwd,
+      );
     return fields;
   } catch {
     return { nativePolicy: unconfirmedCodexNativePolicy };

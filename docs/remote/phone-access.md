@@ -73,6 +73,10 @@ HTML 以入口所在目录生成明确清单和固定版本快照，默认限制
 
 请求已到达主机时，官方中继的主机账号不可用返回 HTTP 503 `account_login_unavailable`。主机账号可用而手机绑定失效时，受保护的操作返回 HTTP 401 `account_login_required`。
 
+每个配对凭据在 60 秒内最多发起 180 次普通 API 请求、30 次 SSE 建连或重连，以及 30 次 `GET /info` 或 `GET /access` 探测。普通 API 与其余流量合计最多 540 次，整个窗口最多 600 次。远程配对的 HTTPS 局域网直连和中继共用额度，独立的局域网配对另计。HTTP 429 `rate_limited` 的 `Retry-After` 是本窗口剩余的秒数，向上取整且至少为 1。已校验来源的 LAN 客户端也可以读取该响应头。
+
+已配对设备可用 `GET /api/web/v1/access?rateDiagnostics=1` 读取本设备近 15 个分钟桶的汇总。可选的 `rateDiagnostics` 只含脱敏设备 ID、固定接口类别、请求数和拒绝数。主机在内存中最多保存 128 个配对设备的统计。旧主机可省略此字段。
+
 现有 `/api/web/v1` 路径保持兼容，增加：
 
 | 接口 | 用途 |

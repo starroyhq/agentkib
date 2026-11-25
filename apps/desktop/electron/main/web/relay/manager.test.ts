@@ -9,6 +9,8 @@ import { request, Server as TlsServer, type Server } from "node:https";
 import { Transform, type Duplex } from "node:stream";
 import { createServer as createTcpServer, connect, type Socket } from "node:net";
 import { connect as connectTls } from "node:tls";
+import { approveLegacyBrowser } from "../legacy-pairing-fixture";
+import { WebAccessService } from "../service";
 import {
   DEFAULT_RELAY_BROKER,
   RelayManager,
@@ -1017,8 +1019,18 @@ describe("authenticated direct TLS routes", () => {
     );
     return { host: "127.0.0.1" as const, port: (server.address() as { port: number }).port };
   }
-  function get(port: number, cert: string, host = registration.controlHost, sni = host) {
-    return new Promise<{ status: number; body: string }>((done, fail) => {
+  function get(
+    port: number,
+    cert: string,
+    host = registration.controlHost,
+    sni = host,
+    options: { path?: string; cookie?: string } = {},
+  ) {
+    return new Promise<{
+      status: number;
+      body: string;
+      headers: import("node:http").IncomingHttpHeaders;
+    }>((done, fail) => {
       const req = request(
         {
           hostname: "127.0.0.1",
@@ -1026,14 +1038,19 @@ describe("authenticated direct TLS routes", () => {
           servername: sni,
           ca: cert,
           agent: false,
-          headers: { Host: host, Cookie: "ak_web_secure=paired", Origin: `https://${host}` },
+          path: options.path,
+          headers: {
+            Host: host,
+            Cookie: options.cookie ?? "ak_web_secure=paired",
+            Origin: `https://${host}`,
+          },
         },
         (res) => {
           let body = "";
           res.on("data", (data) => {
             body += data;
           });
-          res.on("end", () => done({ status: res.statusCode!, body }));
+          res.on("end", () => done({ status: res.statusCode!, body, headers: res.headers }));
           res.on("error", fail);
         },
       );
@@ -1074,10 +1091,10 @@ describe("authenticated direct TLS routes", () => {
       status: 200,
       body: JSON.stringify({ cookie: "ak_web_secure=paired", origin: direct.controlOrigin }),
     };
-    expect(await get(candidate.controlPort, cert)).toEqual(expected);
+    expect(await get(candidate.controlPort, cert)).toMatchObject(expected);
     expect(
       await get((internal.servers.get("control")!.address() as { port: number }).port, cert),
-    ).toEqual(expected);
+    ).toMatchObject(expected);
     expect((await get(candidate.previewPort, cert, registration.previewHost)).status).toBe(200);
     expect((await get(candidate.controlPort, cert, registration.previewHost)).status).toBe(421);
     expect(
@@ -1089,6 +1106,57 @@ describe("authenticated direct TLS routes", () => {
     expect(internal.directListeners.size).toBe(0);
     expect(internal.sockets.size).toBe(0);
     await expect(get(candidate.controlPort, cert)).rejects.toThrow();
+  });
+
+  it("charges the same paired probe budget through direct TLS and the public control route", async () => {
+    isolatedPrivateListeners();
+    const { path, key, cert } = await certificate();
+    const reservation = createHttpServer();
+    await new Promise<void>((done) => reservation.listen(0, "127.0.0.1", done));
+    const port = (reservation.address() as { port: number }).port;
+    await new Promise<void>((done) => reservation.close(() => done()));
+    const service = new WebAccessService({ dataDir: path, staticDir: path });
+    stops.push(() => service.shutdown());
+    await service.initialize();
+    await service.request({
+      operation: "configure",
+      enabled: true,
+      port,
+      externalOrigin: "",
+      experimentalEnabled: false,
+    });
+    const host = registration.controlHost;
+    await service.setRelayOrigins(`https://${host}`, `https://${registration.previewHost}`);
+    const target = { host: "127.0.0.1" as const, port };
+    const { manager, internal } = setup(path, {
+      target,
+      preview: target,
+      directAddresses: () => ["192.168.20.10"],
+    });
+    internal.key = key;
+    internal.certificate = cert;
+    await internal.startTls("control", 1);
+    await internal.checkDirectAddresses(1);
+    const publicPort = (internal.servers.get("control")!.address() as { port: number }).port;
+    const directPort = manager.directConnection!.candidates[0]!.controlPort;
+
+    const access = await get(publicPort, cert, host, host, {
+      path: "/api/web/v1/access",
+      cookie: "",
+    });
+    expect(access.status).toBe(200);
+    const cookie = access.headers["set-cookie"]![0].split(";")[0];
+    await approveLegacyBrowser(service, cookie);
+    const info = (listener: number) =>
+      get(listener, cert, host, host, { path: "/api/web/v1/info", cookie });
+    for (let i = 0; i < 15; i++) expect((await info(directPort)).status).toBe(200);
+    for (let i = 0; i < 15; i++) expect((await info(publicPort)).status).toBe(200);
+    for (const listener of [directPort, publicPort]) {
+      const limited = await info(listener);
+      expect(limited.status).toBe(429);
+      expect(JSON.parse(limited.body)).toEqual({ error: "rate_limited" });
+      expect(Number(limited.headers["retry-after"])).toBeGreaterThan(0);
+    }
   });
   it("removes disappeared addresses and their active stream without closing the public route", async () => {
     isolatedPrivateListeners();

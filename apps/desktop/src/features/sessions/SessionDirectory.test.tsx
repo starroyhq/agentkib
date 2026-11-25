@@ -798,6 +798,22 @@ describe("SessionDirectory", () => {
     ).toBeInTheDocument();
   });
 
+  it("marks a Project Agent whose delegation is recovering", () => {
+    hub.sessions = [
+      {
+        ...first,
+        orchestration: { role: "lead", workers: 1, paused: true, recovering: true },
+      },
+    ];
+    render(<SessionDirectory />);
+    expect(
+      screen.getByRole("img", { name: tr("sessions.projectAgentRecovering") }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("img", { name: tr("sessions.projectAgentPaused") }),
+    ).not.toBeInTheDocument();
+  });
+
   it("shows program-started sessions only after the directory option is turned on", async () => {
     const user = userEvent.setup();
     const pen = { ...second, id: "pen", title: "Pen design run", origin: "execution" as const };

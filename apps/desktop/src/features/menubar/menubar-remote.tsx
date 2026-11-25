@@ -1,10 +1,17 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Smartphone } from "lucide-react";
 import { cn } from "cn";
 import { Switch } from "@/components/ui/switch";
 import { desktopApi } from "@/core/desktop";
 import { useI18n } from "@/core/useI18n";
 import { remotePageCopy } from "@/features/remote/remote-page-copy";
+import { remoteAccountCopy } from "@/features/remote/remote-account-copy";
+import {
+  needsRemoteAccountRelogin,
+  OFFICIAL_BROKER_URL,
+  RemoteAccountRelogin,
+} from "@/features/remote/RemoteAccountRelogin";
+import type { DesktopAccountStatus } from "../../../electron/main/account/state";
 import type { WebAdminStatus } from "../../../electron/main/web/service";
 
 /**
@@ -25,12 +32,44 @@ export function MenuBarRemote({
   const [busy, setBusy] = useState(false);
   const [failed, setFailed] = useState(false);
   const relay = status.config.relay;
+  const official = relay?.brokerUrl?.replace(/\/$/, "") === OFFICIAL_BROKER_URL;
+  const [accountStatus, setAccountStatus] = useState<DesktopAccountStatus>();
+  useEffect(() => {
+    if (!official) return;
+    const account = desktopApi().account;
+    if (!account) return;
+    let current = true;
+    let observed = false;
+    const release = account.onStatus((value) => {
+      observed = true;
+      if (current) setAccountStatus(value);
+    });
+    void account
+      .request({ operation: "status" })
+      .then((value) => {
+        if (current && !observed) setAccountStatus(value);
+      })
+      .catch(() => undefined);
+    return () => {
+      current = false;
+      release();
+    };
+  }, [official]);
   if (!relay?.brokerUrl) return null;
+  const relogin = official && needsRemoteAccountRelogin(accountStatus);
   const active = Boolean(relay.enabled);
   const phase = status.relay?.phase;
-  const ready = active && status.running && phase === "ready";
-  const interrupted = active && (phase === "error" || phase === "offline");
-  const state = !active ? pc.paused : ready ? pc.on : interrupted ? pc.interrupted : pc.connecting;
+  const ready = !relogin && active && status.running && phase === "ready";
+  const interrupted = relogin || (active && (phase === "error" || phase === "offline"));
+  const state = relogin
+    ? remoteAccountCopy[locale].accountSignedOut
+    : !active
+      ? pc.paused
+      : ready
+        ? pc.on
+        : interrupted
+          ? pc.interrupted
+          : pc.connecting;
   // Who is connected says more than how many are paired.
   const online = status.devices.filter((device) => device.online);
   const presence = !ready
@@ -88,6 +127,11 @@ export function MenuBarRemote({
           onCheckedChange={(checked) => void toggle(checked)}
         />
       </div>
+      {relogin && (
+        <div className="flex flex-wrap items-center gap-2 pl-[26px]">
+          <RemoteAccountRelogin compact disabled={busy || !accountStatus?.secureStorage} />
+        </div>
+      )}
       {failed && (
         <p role="alert" className="pl-[26px] text-xs text-destructive-text">
           {tr("menubar.remoteFailed")}

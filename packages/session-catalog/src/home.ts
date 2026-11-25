@@ -24,6 +24,7 @@ export interface HomeSession extends CatalogSession {
   orchestration?: {
     role: string;
     paused?: boolean;
+    recovering?: true;
     reason?: string | null;
     reports?: number;
     leadId?: string;
@@ -107,6 +108,7 @@ function homeActivity(
   if (
     session.orchestration?.role === "lead" &&
     session.orchestration.paused &&
+    !session.orchestration.recovering &&
     DELEGATION_NEEDS.has(session.orchestration.reason ?? "")
   )
     return { need: "delegation" };

@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import "@testing-library/jest-dom/vitest";
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Approval, Live } from "@agentkib/web-client";
 import { homeSessionCopy, interactionCardCopy, readStateCopy } from "@agentkib/session-ui";
@@ -12,6 +12,10 @@ import { homeSessionGroups } from "@/features/home/home-sessions";
 import { formatElapsed, MenuBarSessions } from "./menubar-sessions";
 import { MenuBarRemote } from "./menubar-remote";
 import type { WebAdminStatus } from "../../../electron/main/web/service";
+import type {
+  DesktopAccountRequest,
+  DesktopAccountStatus,
+} from "../../../electron/main/account/state";
 
 const workspace = {
   id: "workspace",
@@ -319,6 +323,51 @@ describe("menu bar remote access", () => {
     ];
     render(<MenuBarRemote status={status} onChanged={vi.fn()} onOpenSettings={vi.fn()} />);
     expect(screen.getByText("iPhone and 1 more online")).toBeInTheDocument();
+  });
+
+  it("updates its account status and opens browser sign-in from one action", async () => {
+    let publish: ((next: DesktopAccountStatus) => void) | undefined;
+    const onOpenSettings = vi.fn();
+    const accountRequest = vi.fn(async (_request: DesktopAccountRequest) => ({
+      phase: "signed-out" as const,
+      secureStorage: true,
+    }));
+    const release = vi.fn();
+    Object.assign(window.agentkibDesktop as object, {
+      account: {
+        request: accountRequest,
+        onStatus: (listener: (next: DesktopAccountStatus) => void) => {
+          publish = listener;
+          return release;
+        },
+      },
+    });
+    const { unmount } = render(
+      <MenuBarRemote
+        status={remoteStatus({ brokerUrl: "https://api.agentkib.com" }, "ready")}
+        onChanged={vi.fn()}
+        onOpenSettings={onOpenSettings}
+      />,
+    );
+    await waitFor(() => expect(accountRequest).toHaveBeenCalledWith({ operation: "status" }));
+    expect(screen.queryByRole("button", { name: "Sign in again" })).not.toBeInTheDocument();
+
+    act(() =>
+      publish?.({ phase: "signed-out", secureStorage: true, error: "account_login_required" }),
+    );
+    expect(screen.getByText("Account signed out")).toBeVisible();
+    expect(screen.queryByText(/1 device/)).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Sign in again" }));
+    await waitFor(() => expect(accountRequest).toHaveBeenCalledWith({ operation: "login" }));
+    expect(accountRequest.mock.calls.filter(([input]) => input.operation === "login")).toHaveLength(
+      1,
+    );
+    expect(onOpenSettings).not.toHaveBeenCalled();
+    act(() => publish?.({ phase: "signed-in", secureStorage: true }));
+    expect(screen.queryByRole("button", { name: "Sign in again" })).not.toBeInTheDocument();
+    expect(screen.queryByText("Account signed out")).not.toBeInTheDocument();
+    unmount();
+    expect(release).toHaveBeenCalledOnce();
   });
 
   it("resumes with the saved connection, and sends the person to the remote page when it cannot", async () => {

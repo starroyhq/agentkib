@@ -114,8 +114,12 @@ export function orchestrationLabel(
   sessions: ConversationSessionSummary[],
   tr = defaultTranslate,
 ) {
-  if (orchestration.role === "lead")
-    return tr(orchestration.paused ? "sessions.projectAgentPaused" : "sessions.projectAgent");
+  if (orchestration.role === "lead") {
+    if (!orchestration.paused) return tr("sessions.projectAgent");
+    return tr(
+      orchestration.recovering ? "sessions.projectAgentRecovering" : "sessions.projectAgentPaused",
+    );
+  }
   const lead = sessions.find((candidate) => candidate.id === orchestration.leadId);
   return tr("sessions.workerOf", {
     name: orchestration.name,

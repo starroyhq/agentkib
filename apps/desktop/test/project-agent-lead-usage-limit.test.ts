@@ -2,7 +2,10 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { MessageLeadReports } from "../../../packages/backend/src/message-lead-reports";
+import {
+  LeadReportNotDispatched,
+  MessageLeadReports,
+} from "../../../packages/backend/src/message-lead-reports";
 import {
   OrchestrationService,
   type LaneHost,
@@ -92,6 +95,149 @@ const armed = {
 const cleared = { ...codexIdle, usageLimit: null };
 
 describe("a Project Agent at its own usage limit", () => {
+  it("keeps delegation paused until a terminal lead accepts the held reports", async () => {
+    let limited = true;
+    const accepted = Promise.withResolvers<boolean>();
+    const runtime = harness(
+      "claude-code",
+      {
+        status: "idle",
+        executionMode: "claude-follower",
+        executionLocation: "terminal",
+        terminalSend: true,
+      },
+      () => limited,
+      () => accepted.promise,
+    );
+    const service = runtime.open("boot");
+    await prepare(service);
+    await report(service, "first", "Done.");
+    limited = false;
+    service.limitEnded(owner.sessionId);
+    await vi.waitFor(() => expect(runtime.delivered).toHaveBeenCalledTimes(1));
+    expect(service.status(owner.sessionId)).toMatchObject({ paused: true, reason: "usage-limit" });
+    expect(service.roles().get(owner.sessionId)).toHaveProperty("recovering", true);
+    expect(
+      JSON.parse(
+        (
+          await service.call(owner.sessionId, "worker_send", {
+            worker: "worker-1",
+            text: "New work",
+          })
+        ).text,
+      ),
+    ).toMatchObject({ accepted: false, reason: "delegation-paused" });
+    accepted.resolve(false);
+    await vi.waitFor(() => expect(service.status(owner.sessionId)?.paused).toBe(false));
+  });
+
+  it("rechecks a terminal that reconnects without an explicit limit-ended callback", async () => {
+    let limited = true;
+    const terminal = {
+      status: "idle",
+      executionMode: "claude-follower",
+      executionLocation: "terminal",
+      terminalSend: true,
+    };
+    const runtime = harness("claude-code", terminal, () => limited);
+    const service = runtime.open("boot");
+    await prepare(service);
+    await report(service, "first", "Done.");
+    limited = false;
+    await service.catchUp();
+    expect(runtime.delivered).not.toHaveBeenCalled();
+    runtime.read(async () => ({ ...terminal, leadReportsPaused: false }));
+    await service.catchUp();
+    expect(runtime.delivered).toHaveBeenCalledTimes(1);
+    expect(service.status(owner.sessionId)?.paused).toBe(false);
+  });
+
+  it("retries a confirmed unsent report and waits for reports added during recovery", async () => {
+    const first = Promise.withResolvers<boolean>();
+    const second = Promise.withResolvers<boolean>();
+    let dispatch = 0;
+    const runtime = harness(
+      "codex",
+      cleared,
+      () => false,
+      () => {
+        dispatch++;
+        if (dispatch === 1) throw new LeadReportNotDispatched("session-unavailable");
+        return dispatch === 2 ? first.promise : second.promise;
+      },
+    );
+    const service = runtime.open("boot");
+    await prepare(service);
+    await report(service, "first", "First reply.");
+    expect(service.status(owner.sessionId)).toMatchObject({
+      paused: true,
+      reason: "report-undelivered",
+    });
+    const recovery = service.catchUp();
+    await vi.waitFor(() => expect(runtime.delivered).toHaveBeenCalledTimes(2));
+    await report(service, "second", "Second reply.");
+    expect(service.status(owner.sessionId)?.paused).toBe(true);
+    first.resolve(false);
+    await vi.waitFor(() => expect(runtime.delivered).toHaveBeenCalledTimes(3));
+    expect(service.status(owner.sessionId)?.paused).toBe(true);
+    second.resolve(false);
+    await recovery;
+    await vi.waitFor(() => expect(service.status(owner.sessionId)?.paused).toBe(false));
+    expect(runtime.delivered.mock.calls[1]?.[2]).toContain("First reply.");
+    expect(runtime.delivered.mock.calls[2]?.[2]).toContain("Second reply.");
+    expect(service.status(owner.sessionId)?.pendingReports).toEqual([]);
+  });
+
+  it.each(["user-paused", "authorization-changed"])(
+    "leaves %s in place when an in-flight report settles",
+    async (reason) => {
+      let limited = true;
+      const accepted = Promise.withResolvers<boolean>();
+      const runtime = harness(
+        "codex",
+        cleared,
+        () => limited,
+        () => accepted.promise,
+      );
+      const service = runtime.open("boot");
+      await prepare(service);
+      await report(service, "first", "Done.");
+      limited = false;
+      service.limitEnded(owner.sessionId);
+      await vi.waitFor(() => expect(runtime.delivered).toHaveBeenCalledTimes(1));
+      service.pause(owner.sessionId, reason);
+      accepted.resolve(false);
+      await service.catchUp();
+      expect(service.status(owner.sessionId)).toMatchObject({ paused: true, reason });
+    },
+  );
+
+  it("keeps an unconfirmed delivery held across restart without sending it again", async () => {
+    let attempt = 0;
+    const runtime = harness(
+      "codex",
+      cleared,
+      () => false,
+      () => {
+        if (++attempt === 1) throw new LeadReportNotDispatched("session-unavailable");
+        throw new Error("control-outcome-unconfirmed");
+      },
+    );
+    const service = runtime.open("boot");
+    await prepare(service);
+    await report(service, "first", "Check the outcome.");
+    await service.catchUp();
+    expect(service.status(owner.sessionId)?.deliveringReports).toEqual([
+      expect.stringContaining("Check the outcome."),
+    ]);
+    await service.close();
+    const restored = runtime.open("new-boot");
+    await restored.catchUp();
+    expect(runtime.delivered).toHaveBeenCalledTimes(2);
+    expect(restored.status(owner.sessionId)?.paused).toBe(true);
+    expect(restored.roles().get(owner.sessionId)).not.toHaveProperty("recovering");
+  });
+
   it("holds all Codex reports and releases them once when polling confirms the reset", async () => {
     let limited = true;
     const runtime = harness("codex", armed, () => limited);
@@ -135,6 +281,7 @@ describe("a Project Agent at its own usage limit", () => {
       owner.sessionId,
       owner.deviceId,
       expect.stringMatching(/First worker reply\.[\s\S]*Second worker reply\./),
+      expect.any(Function),
     );
     expect(service.status(owner.sessionId)).toMatchObject({
       paused: false,
@@ -279,6 +426,7 @@ describe("a Project Agent at its own usage limit", () => {
       owner.sessionId,
       action === "message" ? owner.deviceId : "phone-1",
       expect.stringMatching(/First worker reply\.[\s\S]*Second worker reply\./),
+      ...(action === "message" ? [expect.any(Function)] : []),
     );
     expect(service.status(owner.sessionId)).toMatchObject({
       paused: false,

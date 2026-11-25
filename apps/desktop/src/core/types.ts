@@ -1361,6 +1361,8 @@ export type SessionOrchestration =
       role: "lead";
       workers: number;
       paused: boolean;
+      /** The host will resume delegation once recovery completes. */
+      recovering?: true;
       /** Why delegation is paused; absent on older hosts. */
       reason?: string | null;
       /** Reports on their way into its next turn; absent on older hosts. */

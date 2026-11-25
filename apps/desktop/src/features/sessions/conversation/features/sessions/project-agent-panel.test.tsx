@@ -283,6 +283,17 @@ describe("Project Agent panel on desktop", () => {
 });
 
 describe("Project Agent panel on Web", () => {
+  it.each(["usage-limit", "report-undelivered"])(
+    "shows automatic %s recovery without asking for a manual resume",
+    async (reason) => {
+      projectAgent.mockResolvedValueOnce(agent({ paused: true, recovering: true, reason }));
+      render(<WebPanel device={full} />);
+      expect(await screen.findByText("Resuming delegation…")).toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: "Resume delegation" })).not.toBeInTheDocument();
+      expect(screen.queryByText(/desktop session directory/)).not.toBeInTheDocument();
+    },
+  );
+
   it("sets one up from a device with full access, in the host's own operation names", async () => {
     projectAgent.mockResolvedValueOnce({ lead: null });
     render(<WebPanel device={full} />);

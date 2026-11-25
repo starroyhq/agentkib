@@ -151,7 +151,7 @@ import { SessionStreamHub } from "./session-stream";
 import { mergeCodexFollowerSnapshot } from "./agents/codex/codex-follower-stream";
 import { SessionSnapshotHistory } from "./session-snapshot-history";
 import { readManagedUsageLimit, retainManagedLedgerReaders } from "./managed-ledger";
-import { MessageLeadReports } from "./message-lead-reports";
+import { LeadReportNotDispatched, MessageLeadReports } from "./message-lead-reports";
 import { parseUsageLimit, usageLimitAutoContinue, usageLimitView } from "./usage-limit";
 import { BackendStore } from "./store";
 import { canonicalize } from "./paths";
@@ -820,17 +820,38 @@ export class TypeScriptBackend {
             dsh(sessionId) ||
             devin(sessionId) ||
             antigravity(sessionId),
-          (sessionId, deviceId, text) =>
-            !leadOwner.managedWorkspace(sessionId) &&
-            this.#claudeBridge?.canQueueLeadReport(sessionId) === true
-              ? this.#claudeBridge!.queueReport(sessionId, text)
-              : codex(sessionId) || devin(sessionId) || antigravity(sessionId)
-                ? // Sent or queued through AgentKib's own controls of the session.
-                  this.#codexLeadReport(sessionId, deviceId, text)
-                : // A DSH lead hears through the bridge, whether or not its DSH runs right now.
-                  dshBridge.handles(sessionId)
-                  ? this.#dshLeadReports.send(sessionId, deviceId, text)
-                  : leadOwner.queueReport(sessionId, deviceId, text),
+          async (sessionId, deviceId, text, ...admission) => {
+            const checkAdmission = () => {
+              const [canSend] = admission;
+              if (canSend && !canSend())
+                throw new LeadReportNotDispatched("report-authorization-changed");
+            };
+            if (
+              !leadOwner.managedWorkspace(sessionId) &&
+              this.#claudeBridge?.canQueueLeadReport(sessionId) === true
+            ) {
+              checkAdmission();
+              return this.#claudeBridge.queueReport(sessionId, text);
+            }
+            // A quit report can arrive before the session catalog initializes the providers.
+            if (
+              !this.#webRead &&
+              !leadOwner.hasManagedSession(sessionId) &&
+              !dshBridge.handles(sessionId)
+            )
+              await this.#withWebRead(() => undefined).catch((error: unknown) => {
+                throw new LeadReportNotDispatched("session-unavailable", { cause: error });
+              });
+            if (codex(sessionId) || devin(sessionId) || antigravity(sessionId))
+              return this.#codexLeadReport(sessionId, deviceId, text, ...admission);
+            // A DSH lead hears through the bridge, whether or not its DSH runs right now.
+            if (dshBridge.handles(sessionId))
+              return this.#dshLeadReports.send(sessionId, deviceId, text, ...admission);
+            if (!leadOwner.hasManagedSession(sessionId))
+              throw new LeadReportNotDispatched("session-unavailable");
+            checkAdmission();
+            return leadOwner.queueReport(sessionId, deviceId, text);
+          },
           (sessionId) =>
             leadOwner.queuedReports(sessionId) +
             (this.#claudeBridge?.queuedReports(sessionId) ?? 0),
@@ -840,6 +861,7 @@ export class TypeScriptBackend {
               return dshBridge.live(sessionId, false).usageLimit != null ? "manual-resume" : false;
             return this.#webRead?.usageLimited(sessionId) === true;
           },
+          () => this.#sessionStream?.publish("", "invalidate", { domains: ["catalog"] }),
         );
         leadOwner.observeWorkers(this.#workerObserver);
         this.#dshLeads?.close();
@@ -2503,8 +2525,13 @@ export class TypeScriptBackend {
       }>,
   });
 
-  #codexLeadReport(sessionId: string, deviceId: string, text: string): Promise<boolean> {
-    return this.#codexLeadReports.send(sessionId, deviceId, text);
+  #codexLeadReport(
+    sessionId: string,
+    deviceId: string,
+    text: string,
+    ...admission: [canSend?: () => boolean]
+  ): Promise<boolean> {
+    return this.#codexLeadReports.send(sessionId, deviceId, text, ...admission);
   }
 
   /** Reports for DeepSeek Harness Project Agents, sent through the DSH bridge's own controls. */

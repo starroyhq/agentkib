@@ -269,6 +269,7 @@
   "sessions.executionSession": "Started by a program",
   "sessions.projectAgent": "Project Agent",
   "sessions.projectAgentPaused": "Project Agent · Delegation paused",
+  "sessions.projectAgentRecovering": "Project Agent · Resuming delegation…",
   "sessions.workerOf": "Worker {{name}} · Delegated by {{lead}}",
   "sessions.showCollections": "Show sessions without a project folder",
   "sessions.hideCollections": "Hide sessions without a project folder",

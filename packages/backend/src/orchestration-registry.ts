@@ -106,6 +106,14 @@ export type LeadRecord = {
   outcome: string;
 };
 
+export type QuitReport = {
+  laneId: string;
+  turnId: string;
+  text: string;
+  /** The provider may have accepted the report. Do not retry automatically. */
+  attempted?: true;
+};
+
 export type Lead = {
   version: 1;
   /** The Claude Code session that directs the lanes. */
@@ -123,6 +131,12 @@ export type Lead = {
   records: LeadRecord[];
   /** Reports held while delegation is paused, sent together when it resumes. */
   pendingReports: string[];
+  /** Whether the provider confirmed non-delivery of a failed report. */
+  reportRetryable?: boolean;
+  /** A recovery batch may have reached the provider if the host stopped before its reply. */
+  deliveringReports?: string[];
+  /** Quit status survives a restart and has its own delivery rules. */
+  pendingQuitReports?: QuitReport[];
 };
 
 type NewLead = Omit<
@@ -181,7 +195,11 @@ export class LeadRegistry {
           database.prepare("DELETE FROM orchestration_leads WHERE session_id=?").run(sessionId);
       } else {
         lead.records = lead.records.slice(-MAX_RECORDS);
-        lead.pendingReports = (lead.pendingReports ?? []).slice(-MAX_PENDING_REPORTS);
+        lead.pendingReports ??= [];
+        if (lead.reason !== "usage-limit" && !lead.reportRetryable && !lead.deliveringReports)
+          lead.pendingReports = lead.pendingReports.slice(-MAX_PENDING_REPORTS);
+        if (lead.pendingQuitReports && lead.pendingQuitReports.length > MAX_PENDING_REPORTS)
+          lead.pendingQuitReports = lead.pendingQuitReports.slice(-MAX_PENDING_REPORTS);
         for (const lane of lead.lanes)
           lane.reportedTurns = lane.reportedTurns.slice(-MAX_REPORTED_TURNS);
         database
@@ -239,6 +257,13 @@ export class LeadRegistry {
   #restarted(lead: Lead): Lead {
     if (lead.bootId === this.bootId) return lead;
     lead.bootId = this.bootId;
+    if (
+      lead.deliveringReports?.length &&
+      (lead.reason === "usage-limit" || lead.reason === "report-undelivered")
+    ) {
+      lead.reason = "report-undelivered";
+      lead.reportRetryable = false;
+    }
     if (!lead.paused) {
       lead.paused = true;
       lead.reason = "restart-confirmation-required";

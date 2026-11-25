@@ -1269,6 +1269,8 @@ describe("orchestration service", () => {
   });
 
   it("rejects Antigravity assignments before checking whether the Worker is reachable", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    cleanups.push(() => vi.useRealTimers());
     const { lanes } = host();
     const managed = vi.fn(async () => true);
     const session: LaneHost["session"] = (id) =>
@@ -1577,6 +1579,43 @@ describe("orchestration service", () => {
   );
 
   describe("assigning existing sessions", () => {
+    it("bounds both the candidate list and assignment when a reachability check stalls", async () => {
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      cleanups.push(() => vi.useRealTimers());
+      const stalled = "claude-other";
+      const probe = Promise.withResolvers<boolean>();
+      const { lanes } = host({ managed: () => probe.promise });
+      const orchestration = service(lanes);
+      const listed = vi.fn();
+      const assigned = vi.fn();
+      const refused = vi.fn();
+      const options = orchestration.assignmentOptions(LEAD, "w1", [stalled, WORKER]).then(listed);
+      const assignment = orchestration
+        .assignWorkers({ ...OWNER, workers: [WORKER, stalled] })
+        .then(assigned, refused);
+
+      await vi.advanceTimersByTimeAsync(2_999);
+      expect(listed).not.toHaveBeenCalled();
+      expect(assigned).not.toHaveBeenCalled();
+      expect(refused).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(listed).toHaveBeenCalledExactlyOnceWith({
+        capable: true,
+        remaining: 10,
+        candidates: [
+          { sessionId: stalled, reason: "worker-unavailable" },
+          { sessionId: WORKER, reason: null },
+        ],
+      });
+      expect(refused).toHaveBeenCalledExactlyOnceWith(new Error("worker-unavailable"));
+      expect(orchestration.registry.list()).toEqual([]);
+
+      probe.resolve(true);
+      await Promise.all([options, assignment]);
+      expect(assigned).not.toHaveBeenCalled();
+      expect(orchestration.registry.list()).toEqual([]);
+    });
+
     it("creates the lead and all selected relationships without starting a session or sending", async () => {
       const sessions: Record<string, NonNullable<ReturnType<LaneHost["session"]>>> = {
         [LEAD]: { agent: "claude-code", workspaceId: "w1", title: null },

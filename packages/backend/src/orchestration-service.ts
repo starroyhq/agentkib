@@ -151,6 +151,7 @@ const CATCH_UP_GRACE_MS = 15_000;
 /** A fresh end keeps its normal report through the first scheduled catch-up that can see it. */
 const FRESH_END_MS = CATCH_UP_GRACE_MS + CATCH_UP_MS;
 const OFFLINE_GRACE_MS = 60_000;
+const WORKER_REACHABILITY_TIMEOUT_MS = 3_000;
 /** One fixed window per Project Agent, starting with the first completion. */
 const COMPLETION_WINDOW_MS = 60_000;
 /** The default 10-minute silence threshold gives commands one hour before a note. */
@@ -2533,8 +2534,20 @@ export class OrchestrationService {
   }
 
   async #checkWorkerReachable(sessionId: string, agent: LaneAgent): Promise<void> {
-    if (WORKER_CAPABILITIES[agent].requiresReachability && !(await this.lanes.managed(sessionId)))
-      throw new Error("worker-unavailable");
+    if (!WORKER_CAPABILITIES[agent].requiresReachability) return;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const reachable = await Promise.race([
+        this.lanes.managed(sessionId),
+        // A probe may already be opening a connection. Only bound the caller's wait.
+        new Promise<false>((resolve) => {
+          timer = setTimeout(() => resolve(false), WORKER_REACHABILITY_TIMEOUT_MS);
+        }),
+      ]);
+      if (!reachable) throw new Error("worker-unavailable");
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   #newLane(name: string, sessionId: string, workspaceId: string, agent: LaneAgent): Lane {

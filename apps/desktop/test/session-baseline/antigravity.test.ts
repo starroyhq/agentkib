@@ -277,6 +277,28 @@ describe("Antigravity session baseline through HTTP, backend RPC and ACP frames"
       }),
     ).rejects.toThrow(reason);
     await host.tickClaudeQueue();
+
+    const leadId = "offline-claude-lead";
+    vi.spyOn(ClaudeManagedReadOwner.prototype, "hasManagedSession").mockImplementation(
+      (id) => id === leadId,
+    );
+    vi.spyOn(ClaudeManagedReadOwner.prototype, "managedWorkspace").mockImplementation((id) =>
+      id === leadId ? "workspace" : null,
+    );
+    expect(
+      await backend.rpc("claude.managed", {
+        operation: "lead-assignment-options",
+        sessionId: leadId,
+        deviceId: "agentkib-local-owner",
+        candidateIds: [sessionId, localSessionId],
+      }),
+    ).toMatchObject({
+      capable: true,
+      candidates: [sessionId, localSessionId].map((id) => ({
+        sessionId: id,
+        reason: "worker-agent-unsupported",
+      })),
+    });
     expect(acp.spawn).not.toHaveBeenCalled();
   });
 

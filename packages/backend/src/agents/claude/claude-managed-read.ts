@@ -55,7 +55,7 @@ import {
   type ClaudeCommandEntry,
   type ConversationTurnMeta,
 } from "@agentkib/runtime-protocol";
-import { terminationCodeOf } from "./claude-frame-policy";
+import { isClaudeToolItemId, terminationCodeOf } from "./claude-frame-policy";
 import {
   claudeDesktopClaims,
   claudeDesktopSessionRecords,
@@ -1780,7 +1780,16 @@ export class ClaudeManagedReadOwner {
 
   /** Keeps a turn end the transcript will not have, so history shows it after the live rows go. */
   #rememberTurnEnd(id: string, nativeId: string, item: Record<string, unknown>): void {
-    if (item.kind !== "agent-message" || typeof item.id !== "string" || !isObject(item.turn_meta))
+    if (typeof item.id !== "string" || !isObject(item.turn_meta)) return;
+    if (
+      item.kind !== "agent-message" &&
+      !(
+        item.kind === "tool-summary" &&
+        (item.tool_status === "completed" || item.tool_status === "failed") &&
+        isClaudeToolItemId(item.id) &&
+        item.turn_meta.summary
+      )
+    )
       return;
     try {
       if (this.#turnMeta.record(nativeId, item.id, item.turn_meta))
@@ -1795,13 +1804,23 @@ export class ClaudeManagedReadOwner {
 
   /** History pages with the stored turn ends added; a duration the transcript has is kept. */
   #withTurnEnds(nativeId: string, page: ConversationEventPage): ConversationEventPage {
-    const ids = page.events.flatMap((event) =>
-      event.kind === "agent-message" && !event.turn_meta ? [event.id] : [],
+    const anchors = new Set(
+      page.events.filter(
+        (event) =>
+          !event.turn_meta &&
+          (event.kind === "agent-message" ||
+            (event.kind === "tool-summary" &&
+              isClaudeToolItemId(event.id) &&
+              (event.tool_status === "completed" || event.tool_status === "failed"))),
+      ),
     );
-    if (!ids.length) return page;
+    if (!anchors.size) return page;
     let stored: Map<string, ConversationTurnMeta>;
     try {
-      stored = this.#turnMeta.read(nativeId, ids);
+      stored = this.#turnMeta.read(
+        nativeId,
+        [...anchors].map((event) => event.id),
+      );
     } catch {
       return page;
     }
@@ -1809,7 +1828,7 @@ export class ClaudeManagedReadOwner {
     return {
       ...page,
       events: page.events.map((event) => {
-        const meta = event.turn_meta ? undefined : stored.get(event.id);
+        const meta = anchors.has(event) ? stored.get(event.id) : undefined;
         return meta ? { ...event, turn_meta: meta } : event;
       }),
     };

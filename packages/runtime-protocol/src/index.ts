@@ -1,6 +1,7 @@
 // Shared runtime protocol source of truth; the Electron compatibility entry is generated.
 export * from "./agents";
 export * from "./session-providers";
+export * from "./session-plan-progress";
 export * from "./session-interactions";
 export * from "./claude-commands";
 export * from "./codex-commands";
@@ -263,3 +264,5 @@ export * from "./claude-bridge";
 export * from "./quota-cost";
 export * from "./dsh-bridge";
 export * from "./session-attachments";
+export * from "./diff-context";
+export * from "./file-read-policy";

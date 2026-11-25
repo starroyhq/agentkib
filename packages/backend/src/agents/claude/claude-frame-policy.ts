@@ -26,6 +26,11 @@ export function frameOrigin(frame: { parent_tool_use_id?: unknown }): FrameOrigi
   return { kind: "unattributed" };
 }
 
+/** A native tool_use ID that both stream-json and the transcript preserve. */
+export function isClaudeToolItemId(value: unknown): value is string {
+  return typeof value === "string" && /^toolu_[a-zA-Z0-9_-]{1,250}$/.test(value);
+}
+
 export type ClaudeTerminationCode =
   | "claude-background-task"
   | "claude-unrequested-turn"

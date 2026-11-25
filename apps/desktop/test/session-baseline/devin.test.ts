@@ -251,6 +251,7 @@ function liveBody(
     revision,
     turnId: turn.running ?? null,
     completedTurnId: turn.completed ?? null,
+    planProgress: null,
     sendEnabled: !turn.running,
     stopEnabled: !!turn.running,
     cancelling: false,
@@ -337,6 +338,7 @@ describe.skipIf(process.platform === "win32")("Devin session HTTP baseline", () 
       status: 200,
       body: {
         ...base,
+        planProgress: { live: true },
         features: {
           send: { available: true },
           stop: { available: false, reason: "session-not-running" },

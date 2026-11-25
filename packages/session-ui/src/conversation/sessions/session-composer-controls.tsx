@@ -1251,6 +1251,10 @@ export function SessionComposerControls({
     nativePolicy?.available === false && nativePolicy.reason?.startsWith("native-policy-")
       ? nativePolicy.reason
       : undefined;
+  const chooseNextPolicy =
+    nativePolicy?.available === true &&
+    nativePolicy.reason === "native-policy-unconfirmed" &&
+    !permissionLabel;
   const permissionCatalogEmpty =
     scopedSettings?.available &&
     permissionField?.available !== true &&
@@ -1485,7 +1489,11 @@ export function SessionComposerControls({
           permissionRegistered
             ? {
                 title: menuTitle,
-                label: nativePolicyReadOnlyReason ? copy.nativePolicy : permissionLabel,
+                label: nativePolicyReadOnlyReason
+                  ? copy.nativePolicy
+                  : chooseNextPolicy
+                    ? copy.chooseNextPolicy
+                    : permissionLabel,
                 description: permissionDescription,
                 hint: permissionHint,
                 risky: permissionRisky,

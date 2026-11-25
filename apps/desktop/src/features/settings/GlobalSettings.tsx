@@ -2,6 +2,7 @@ import { AgentIntegrationsSettings } from "./AgentIntegrationsSettings";
 import { UsageLimitAutoContinueSetting } from "./UsageLimitAutoContinueSetting";
 import { HistorySearchSettings } from "./HistorySearchSettings";
 import { ApprovalOversightSettings } from "./ApprovalOversightSettings";
+import { NotificationPolicySettings } from "./NotificationPolicySettings";
 import { useOptionalAppNavigationContext } from "@/features/app/AppNavigationContext";
 import { useTranslation } from "react-i18next";
 import { useI18n } from "@/core/useI18n";
@@ -216,6 +217,7 @@ export function GlobalSettings({
         <ApprovalOversightSettings
           workspaces={workspaces.filter((workspace) => !workspace.remote)}
         />
+        <NotificationPolicySettings />
       </SettingsPage>
     );
   if (section === "tools")

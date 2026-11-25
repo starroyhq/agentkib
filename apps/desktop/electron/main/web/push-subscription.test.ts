@@ -1,5 +1,5 @@
 // @vitest-environment node
-import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createServer } from "node:http";
 import { generateKeyPairSync } from "node:crypto";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
@@ -8,6 +8,8 @@ import { join } from "node:path";
 import { WebAccessService } from "./service";
 import { RelayManager, type RemoteAccountBinding } from "./relay/manager";
 import type { Access } from "@agentkib/web-client";
+import { NotificationPolicyStore } from "../push/policy";
+import type { PushInteractionProjection } from "../push/actions";
 
 let directory: string, service: WebAccessService, relay: RelayManager, origin: string;
 let cookie = "",
@@ -20,6 +22,18 @@ const binding: RemoteAccountBinding = {
 };
 const publicKey = generateKeyPairSync("x25519").publicKey.export({ format: "jwk" }).x!;
 const subscription = { publicKey, ref: "phone-ref-1", alerts: true, liveActivity: true };
+type NativeRequest = { operation: string; requestId?: string; experimentalEnabled?: boolean };
+const nativeCalls = vi.fn<(value: NativeRequest) => Promise<unknown>>();
+const receipts = vi.fn<(value: { requestId: string; deviceId: string }) => Promise<unknown>>();
+const waitingSession = {
+  id: "fake-session",
+  agent: "codex",
+  workspace_id: "fake-workspace",
+  availability: "readable",
+  title: "Synthetic waiting session",
+  updated_at: "2026-11-24T00:00:00.000Z",
+  continuation: { status: "awaiting-approval" },
+};
 
 async function request<T = Record<string, unknown>>(path: string, body?: unknown) {
   const response = await fetch(origin + "/api/web/v1/" + path, {
@@ -53,12 +67,15 @@ function useRelay(accountContext: boolean) {
   );
 }
 /** A phone paired with a code and bound to its account login, as the phone app does. */
-async function pairBoundPhone() {
+async function pairBoundPhone(
+  level: "read" | "full" = "read",
+  phoneBinding: RemoteAccountBinding = binding,
+) {
   useRelay(true);
   const initial = await access();
-  vi.spyOn(relay, "redeemAccountLogin").mockResolvedValue(binding);
+  vi.spyOn(relay, "redeemAccountLogin").mockResolvedValue(phoneBinding);
   vi.spyOn(relay, "verifyAccountLogins").mockResolvedValue([
-    { id: binding.id, active: true, expiresAt: binding.expiresAt },
+    { id: phoneBinding.id, active: true, expiresAt: phoneBinding.expiresAt },
   ]);
   expect(
     (
@@ -70,7 +87,7 @@ async function pairBoundPhone() {
       })
     ).data,
   ).toEqual({ bound: true });
-  const code = (await service.request({ operation: "generate-code", access: "read" })).code!.value;
+  const code = (await service.request({ operation: "generate-code", access: level })).code!.value;
   expect((await request("pair", { name: "Synthetic phone", code })).status).toBe(200);
   expect((await access()).data.status).toBe("approved");
 }
@@ -84,10 +101,15 @@ beforeEach(async () => {
   const port = address.port;
   await new Promise<void>((resolve) => listener.close(() => resolve()));
   origin = `http://127.0.0.1:${port}`;
+  nativeCalls.mockReset().mockResolvedValue({ workspaces: [], sessions: [] });
+  receipts.mockReset().mockImplementation(async ({ requestId }) => ({ found: false, requestId }));
   service = new WebAccessService({
     dataDir: directory,
     staticDir: directory,
-    runtimeRequest: async () => ({ workspaces: [], sessions: [] }),
+    runtimeRequest: (value) => nativeCalls(value as NativeRequest),
+    receiptRequest: receipts,
+    notificationPolicy: new NotificationPolicyStore(directory),
+    verifiedExperimental: true,
   });
   await service.initialize();
   await service.request({
@@ -115,7 +137,11 @@ afterEach(async () => {
 
 it("lets an account-bound phone subscribe, keeps it with the pairing, and lets it stop", async () => {
   await pairBoundPhone();
-  expect((await access()).data.push).toEqual({ version: 1, subscribed: false });
+  expect((await access()).data.push).toEqual({
+    version: 1,
+    subscribed: false,
+    approvalActionsVersion: 1,
+  });
   expect(service.pushTargets()).toEqual([]);
   const changed = vi.fn();
   service.onPushChanged(changed);
@@ -124,6 +150,7 @@ it("lets an account-bound phone subscribe, keeps it with the pairing, and lets i
     { ...subscription, publicKey: "short" },
     { ...subscription, ref: "bad ref" },
     { ...subscription, alerts: "yes" },
+    { ...subscription, approvalActions: 2 },
     { ...subscription, extra: true },
   ])
     expect((await request("push/subscribe", body)).data).toEqual({
@@ -134,6 +161,7 @@ it("lets an account-bound phone subscribe, keeps it with the pairing, and lets i
   expect((await access()).data.push).toEqual({
     version: 1,
     subscribed: true,
+    approvalActionsVersion: 1,
     alerts: true,
     liveActivity: true,
   });
@@ -159,7 +187,11 @@ it("lets an account-bound phone subscribe, keeps it with the pairing, and lets i
   expect((await request("push/unsubscribe", {})).data).toEqual({ subscribed: false });
   expect(changed).toHaveBeenCalledTimes(3);
   expect(service.pushTargets()).toEqual([]);
-  expect((await access()).data.push).toEqual({ version: 1, subscribed: false });
+  expect((await access()).data.push).toEqual({
+    version: 1,
+    subscribed: false,
+    approvalActionsVersion: 1,
+  });
 });
 
 it("sends through the relay as this computer, and never from the LAN service", async () => {
@@ -201,4 +233,259 @@ it("stops notifying a phone whose account login ended", async () => {
   vi.spyOn(relay, "verifyAccountLogins").mockResolvedValue([{ id: binding.id, active: false }]);
   await service.checkAccountBindings();
   expect(service.pushTargets()).toEqual([]);
+});
+
+function waitingApproval() {
+  const workspace = { id: waitingSession.workspace_id, name: "Fake workspace", path: directory };
+  const snapshot = {
+    sessionId: waitingSession.id,
+    workspaceId: workspace.id,
+    executionMode: "codex-managed",
+    runtimeBootId: "test-runtime",
+    revision: 4,
+    turnId: "test-turn",
+    status: "awaiting-approval",
+    approvals: [
+      {
+        requestId: 7,
+        turnId: "test-turn",
+        supported: true,
+        method: "item/commandExecution/requestApproval",
+        agentDescription: "Publish the sample change",
+        command: "git push",
+        cwd: directory,
+        availableDecisions: ["accept", "decline"],
+        decisionOptions: [
+          {
+            id: "session",
+            label: "acceptForSession",
+            scope: "session",
+            decision: "acceptForSession",
+          },
+        ],
+      },
+    ],
+  };
+  nativeCalls.mockImplementation(async ({ operation, requestId, experimentalEnabled }) => {
+    if (operation === "catalog") return { workspaces: [workspace], sessions: [waitingSession] };
+    if (operation === "live")
+      return {
+        ...snapshot,
+        approvals:
+          experimentalEnabled === true
+            ? snapshot.approvals
+            : snapshot.approvals.map((approval) => ({ ...approval, supported: false })),
+      };
+    return { accepted: true, requestId, runtimeBootId: snapshot.runtimeBootId };
+  });
+  return snapshot;
+}
+
+const optedIn = { ...subscription, approvalActions: 1 as const };
+
+async function subscribedApproval() {
+  expect((await request("push/subscribe", optedIn)).status).toBe(200);
+  const [target] = service.pushTargets().filter((target) => target.session === binding.sessionId);
+  expect(target?.approvalActions).toBe(1);
+  if (!target) throw new Error("fixture_missing_push_target");
+  const notification = (await service.notificationAlertContext(
+    target,
+    waitingSession,
+    "approval",
+  )) as PushInteractionProjection | undefined;
+  expect(notification?.action).toBeDefined();
+  if (!notification?.action) throw new Error("fixture_missing_notification_action");
+  return notification as PushInteractionProjection &
+    Required<Pick<PushInteractionProjection, "action">>;
+}
+
+function actionBody(
+  notification: Awaited<ReturnType<typeof subscribedApproval>>,
+  choice = "choice:accept",
+) {
+  const { binding } = notification.interaction;
+  const { action } = notification;
+  return {
+    bootId: action.bootId,
+    sessionId: binding.sessionId,
+    turnId: binding.turnId,
+    approvalId: binding.requestId,
+    interactionRuntimeBootId: binding.runtimeBootId,
+    expectedRevision: binding.revision,
+    requestId: action.requestId,
+    interactionDecisionId: choice,
+    pushActionToken: action.choices[choice],
+  };
+}
+
+const approvalsSent = () =>
+  nativeCalls.mock.calls.flatMap(([input]) => (input.operation === "approve" ? [input] : []));
+
+describe("notification approval action admission", () => {
+  it("keeps legacy subscriptions and grants distinct from high-risk extended choices", async () => {
+    waitingApproval();
+    await pairBoundPhone("full");
+    const legacy = await request("push/subscribe", subscription);
+    expect(legacy.data).toEqual({ subscribed: true });
+    expect(
+      await service.notificationAlertContext(service.pushTargets()[0]!, waitingSession, "approval"),
+    ).toEqual({});
+
+    const notification = await subscribedApproval();
+    expect(nativeCalls).toHaveBeenCalledWith(
+      expect.objectContaining({ operation: "live", experimentalEnabled: true }),
+    );
+    expect(notification.interaction.risk).toEqual({ level: "high", reason: "git-push" });
+    const body = actionBody(notification, "native:session");
+    expect(body.pushActionToken).toBeTruthy();
+    expect((await request("approve", body)).status).toBe(200);
+    expect(approvalsSent()).toEqual([
+      expect.objectContaining({
+        requestId: body.requestId,
+        nativeDecision: "acceptForSession",
+        operation: "approve",
+      }),
+    ]);
+  });
+
+  it("rejects changed payloads, another paired device, and actions from an ended subscription", async () => {
+    waitingApproval();
+    await pairBoundPhone("full");
+    const original = await subscribedApproval();
+    const firstPhone = { cookie, csrf };
+    const body = actionBody(original);
+    expect((await request("approve", { ...body, expectedRevision: 5 })).data).toMatchObject({
+      error: "push_action_unavailable",
+    });
+    expect(receipts).not.toHaveBeenCalled();
+
+    cookie = "";
+    csrf = "";
+    await pairBoundPhone("full", { ...binding, id: "b".repeat(32), sessionId: "b".repeat(36) });
+    expect((await request("push/subscribe", optedIn)).status).toBe(200);
+    expect((await request("approve", body)).status).toBe(403);
+    expect(receipts).not.toHaveBeenCalled();
+
+    ({ cookie, csrf } = firstPhone);
+    expect((await request("push/subscribe", { ...optedIn, liveActivity: false })).status).toBe(200);
+    expect((await request("approve", body)).status).toBe(403);
+    const current = await subscribedApproval();
+    expect(current.action.requestId).toBe(original.action.requestId);
+    expect((await request("push/unsubscribe", {})).status).toBe(200);
+    expect((await request("approve", actionBody(current))).status).toBe(403);
+    expect(approvalsSent()).toEqual([]);
+  });
+
+  it("retains read-only descriptions and rejects actions after approval access is removed", async () => {
+    waitingApproval();
+    await pairBoundPhone("full");
+    const notification = await subscribedApproval();
+    const device = (await access()).data.device!;
+    await service.request({ operation: "set-access", id: device.id, access: "read" });
+    const readOnly = await service.notificationAlertContext(
+      service.pushTargets()[0]!,
+      waitingSession,
+      "approval",
+    );
+    expect(readOnly).toMatchObject({ interaction: { kind: "approval", decisions: [] } });
+    expect(readOnly).not.toHaveProperty("action");
+    expect((await request("approve", actionBody(notification))).status).toBe(403);
+    expect(approvalsSent()).toEqual([]);
+  });
+
+  it("does not revive old actions after unsubscribe and resubscribe in the same clock tick", async () => {
+    vi.spyOn(Date, "now").mockReturnValue(Date.now());
+    waitingApproval();
+    await pairBoundPhone("full");
+    const first = await subscribedApproval();
+    expect((await request("push/unsubscribe", {})).status).toBe(200);
+    const restarted = await subscribedApproval();
+    expect(restarted.action.requestId).toBe(first.action.requestId);
+    expect((await request("approve", actionBody(first))).data).toMatchObject({
+      error: "push_action_unavailable",
+      controlOutcome: "not-dispatched",
+    });
+    expect((await request("approve", actionBody(restarted))).status).toBe(200);
+    expect(approvalsSent()).toHaveLength(1);
+  });
+
+  it("refuses a stale runtime revision or an expired deadline before dispatch", async () => {
+    const clock = vi.spyOn(Date, "now").mockReturnValue(Date.now());
+    const snapshot = waitingApproval();
+    await pairBoundPhone("full");
+    const notification = await subscribedApproval();
+    const body = actionBody(notification);
+    snapshot.revision++;
+    expect((await request("approve", body)).data).toMatchObject({
+      error: "interaction_expired",
+      controlOutcome: "not-dispatched",
+    });
+    snapshot.revision--;
+    clock.mockReturnValue(notification.action.expiresAt);
+    expect((await request("approve", body)).data).toMatchObject({
+      error: "interaction_expired",
+      controlOutcome: "not-dispatched",
+    });
+    expect(approvalsSent()).toEqual([]);
+  });
+
+  it("rechecks expiry after async state verification and before dispatch", async () => {
+    const clock = vi.spyOn(Date, "now").mockReturnValue(Date.now());
+    waitingApproval();
+    await pairBoundPhone("full");
+    const notification = await subscribedApproval();
+    clock.mockReturnValue(notification.action.expiresAt - 1);
+    const runtime = nativeCalls.getMockImplementation()!;
+    nativeCalls.mockImplementation((input) => {
+      if (input.operation === "live") clock.mockReturnValue(notification.action.expiresAt);
+      return runtime(input);
+    });
+    expect((await request("approve", actionBody(notification))).data).toMatchObject({
+      error: "interaction_expired",
+      controlOutcome: "not-dispatched",
+    });
+    expect(approvalsSent()).toEqual([]);
+  });
+
+  it("keeps an uncertain first choice in its original receipt and never sends a second choice", async () => {
+    waitingApproval();
+    await pairBoundPhone("full");
+    const notification = await subscribedApproval();
+    const accept = actionBody(notification);
+    const decline = actionBody(notification, "choice:decline");
+    expect(decline.requestId).toBe(accept.requestId);
+    const runtime = nativeCalls.getMockImplementation()!;
+    nativeCalls.mockImplementation((input) =>
+      input.operation === "approve" ? Promise.resolve({ accepted: false }) : runtime(input),
+    );
+    expect((await request("approve", accept)).data).toMatchObject({
+      error: "outcome_unknown",
+      controlOutcome: "unknown",
+    });
+    const receipt = {
+      found: true,
+      requestId: accept.requestId,
+      sessionId: waitingSession.id,
+      workspaceId: waitingSession.workspace_id,
+      operation: "approve",
+      executionMode: "codex-managed",
+    };
+    receipts.mockResolvedValue({ ...receipt, status: "unknown" });
+    const repeated = await request("approve", accept);
+    const otherChoice = await request("approve", decline);
+    for (const result of [repeated, otherChoice])
+      expect(result.data).toMatchObject({ error: "outcome_unknown", controlOutcome: "unknown" });
+
+    const device = (await access()).data.device!;
+    const ack = { accepted: true, requestId: accept.requestId, runtimeBootId: "test-runtime" };
+    receipts.mockResolvedValue({ ...receipt, status: "accepted", ack });
+    expect((await request(`requests/${accept.requestId}`)).data).toMatchObject({
+      found: true,
+      status: "accepted",
+      ack,
+    });
+    expect(receipts).toHaveBeenLastCalledWith({ requestId: accept.requestId, deviceId: device.id });
+    expect((await request("approve", decline)).data).toMatchObject({ error: "duplicate_request" });
+    expect(approvalsSent()).toHaveLength(1);
+  });
 });

@@ -25,6 +25,9 @@ import {
   type SessionProviderCapabilities,
 } from "@agentkib/runtime-protocol";
 import type {
+  NotificationActivitySnapshot,
+  NotificationPolicy,
+  NotificationPolicyPatch,
   ApprovalRuleList,
   SessionApprovalAuditPage,
   ConversationReadState,
@@ -360,6 +363,8 @@ export interface LivePreviewTicket {
   expiresAt: number;
 }
 export interface Access {
+  pushPolicyVersion?: 1;
+  pushActivityVersion?: 1;
   approvalAuditVersion?: 1;
   approvalRulesVersion?: 1;
   readStateVersion?: 1;
@@ -381,7 +386,13 @@ export interface Access {
    * Notifications from this computer (`/push/subscribe`): present when this pairing can get
    * them, which needs an account-bound phone on the relay. Additive; absent on older hosts.
    */
-  push?: { version: 1; subscribed: boolean; alerts?: boolean; liveActivity?: boolean };
+  push?: {
+    version: 1;
+    subscribed: boolean;
+    alerts?: boolean;
+    liveActivity?: boolean;
+    approvalActionsVersion?: 1;
+  };
   /** Missing on legacy hosts: history and receipts remain readable. */
   protocolVersion?: number;
   bearerToken?: string;
@@ -1725,6 +1736,15 @@ export class WebClient {
   approvalAudit(before?: string) {
     const query = before === undefined ? "" : `?${new URLSearchParams({ before })}`;
     return this.request<SessionApprovalAuditPage>(`approval-audit${query}`);
+  }
+  notificationPolicy() {
+    return this.request<{ policy: NotificationPolicy }>("push/policy");
+  }
+  updateNotificationPolicy(patch: NotificationPolicyPatch) {
+    return this.request<{ policy: NotificationPolicy }>("push/policy", patch);
+  }
+  notificationActivity() {
+    return this.request<{ activity: NotificationActivitySnapshot }>("push/activity");
   }
   historyConfigure(enabled: boolean) {
     return this.request<HistorySearchStatus>("history/configure", { enabled });

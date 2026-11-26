@@ -804,6 +804,11 @@ export class TypeScriptBackend {
               this.#claudeBridge?.assertRegistryValid();
               return this.#claudeBridge?.blocksManagedResume(sessionId) ?? false;
             },
+            terminalHandover: {
+              source: (sessionId) => this.#claudeBridge?.terminalHandoverSource(sessionId),
+              finish: (source) => this.#claudeBridge?.finishTerminalHandover(source),
+              reportOwner: (sessionId) => this.#orchestration?.status(sessionId)?.deviceId,
+            },
             retainedTerminalUsage: (sessionId, source, observation, readEarlier) =>
               this.#claudeBridge?.retainedUsage(sessionId, source, observation, readEarlier),
             // On unless the person turned it off; a worker reads it when it starts.

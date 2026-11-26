@@ -169,6 +169,7 @@ require('node:readline').createInterface({input:process.stdin}).on('line', line 
   cleanups.push(() => rmSync(root, { recursive: true, force: true }));
   const makeOwner = (
     retainedTerminalUsage?: ClaudeContinuationOptions["retainedTerminalUsage"],
+    terminalHandover?: ClaudeContinuationOptions["terminalHandover"],
   ) => {
     const owner = new ClaudeManagedReadOwner(
       store,
@@ -185,7 +186,7 @@ require('node:readline').createInterface({input:process.stdin}).on('line', line 
             alias: () => {},
           }
         : undefined,
-      { backgroundTasks: () => backgroundTasks, retainedTerminalUsage },
+      { backgroundTasks: () => backgroundTasks, retainedTerminalUsage, terminalHandover },
     );
     cleanups.push(() => owner.shutdown());
     return owner;
@@ -376,6 +377,70 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))(
       };
       return { ...f, id, source, terminal, bridge, take, registerForeground };
     }
+
+    it("hands off on the first detached send, keeping the original request and terminal settings", async () => {
+      const f = handoverFixture();
+      const owner = f.makeOwner(undefined, {
+        source: f.bridge.terminalHandoverSource,
+        finish: f.bridge.finishTerminalHandover,
+        reportOwner: () => "lead-owner",
+      });
+      const before = await owner.live(f.id, true);
+      const request = {
+        operation: "send",
+        sessionId: f.id,
+        deviceId: "desktop-local",
+        requestId: randomUUID(),
+        runtimeBootId: owner.bootId,
+        expectedRevision: before.revision,
+        experimentalEnabled: true,
+        text: "Continue with the message I typed",
+      };
+      const host = new ClaudeHostStateStore(f.root, owner.bootId);
+      const original = host.read(f.id);
+      await expect(
+        owner.request({ ...request, requestId: randomUUID(), text: undefined }),
+      ).rejects.toThrow("missing-input");
+      expect(owner.managedWorkspace(f.id)).toBeNull();
+      expect(host.read(f.id)).toEqual(original);
+      expect(f.bridge.finishTerminalHandover).not.toHaveBeenCalled();
+
+      f.bridge.terminalHandoverSource
+        .mockReturnValueOnce(f.source)
+        .mockReturnValueOnce({ ...f.source, bindingId: randomUUID() });
+      await expect(owner.request({ ...request, requestId: randomUUID() })).resolves.toMatchObject({
+        accepted: false,
+        controlOutcome: "not-dispatched",
+        error: "claude-terminal-handover-unavailable",
+      });
+      expect(owner.managedWorkspace(f.id)).toBeNull();
+      expect(host.read(f.id)).toEqual(original);
+      expect(f.bridge.finishTerminalHandover).not.toHaveBeenCalled();
+
+      f.setExternalOwner(f.id);
+      expect(await owner.request(request)).toMatchObject({
+        accepted: false,
+        controlOutcome: "not-dispatched",
+        error: "claude-owner-busy",
+      });
+      expect(f.frames()).toEqual([]);
+      expect(f.bridge.finishTerminalHandover).not.toHaveBeenCalled();
+
+      f.setExternalOwner(null);
+      const retry = { ...request, requestId: randomUUID() };
+      const sent = await owner.request(retry);
+      expect(sent).toMatchObject({ accepted: true, requestId: retry.requestId });
+      expect(await owner.request(retry)).toEqual(sent);
+      await expect.poll(async () => (await owner.live(f.id, true)).status).toBe("idle");
+      expect(f.frames().filter((frame) => frame.type === "user")).toHaveLength(1);
+      expect(f.bridge.requestTerminalExit).not.toHaveBeenCalled();
+      expect(f.bridge.finishTerminalHandover).toHaveBeenCalledOnce();
+      expect(await owner.live(f.id, true)).toMatchObject({ sourceSessionId: f.id });
+      expect(host.read(f.id)).toMatchObject({
+        settings: { model: "fixture-model", permissionMode: "plan" },
+        work: [{ id: f.source.reports[0]!.id, kind: "report", deviceId: "lead-owner" }],
+      });
+    });
 
     it("adopts only after terminal ownership ends and keeps the same native ID, settings and reports", async () => {
       const f = handoverFixture();

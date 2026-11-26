@@ -1,6 +1,8 @@
 import { readStateCopy, type SessionReadState } from "./read-state";
 import { NEW_SESSION_AGENTS } from "./new-session";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
+import { Check, Copy, LoaderCircle } from "lucide-react";
+import { useDelayedBusy } from "./delayed-busy";
 import { isDshNativeStatusUnknown } from "./agents/deepseek-harness/turn-controls";
 
 export { isDshNativeStatusUnknown };
@@ -94,7 +96,7 @@ const continuationCopy: Record<string, SessionContinuationCopy> = {
     codexHandleThere: "这项请求请在 Codex 中处理",
     dshConnected: "DeepSeek Harness 已连接",
     dshTurnObservation: "来自会话记录",
-    dshStatusUnknown: "实时状态未知",
+    dshStatusUnknown: "DeepSeek Harness 未连接",
     dshStatusUnknownDetail: "DeepSeek Harness 桥接未连接，仍可查看历史和缓存。",
     dshHandleThere: "这项请求请在 DeepSeek Harness 中处理",
     viewOnly: "仅可查看",
@@ -146,7 +148,7 @@ const continuationCopy: Record<string, SessionContinuationCopy> = {
     codexHandleThere: "這項請求請在 Codex 中處理",
     dshConnected: "DeepSeek Harness 已連線",
     dshTurnObservation: "來自對話記錄",
-    dshStatusUnknown: "即時狀態未知",
+    dshStatusUnknown: "DeepSeek Harness 未連線",
     dshStatusUnknownDetail: "DeepSeek Harness 橋接未連線，仍可查看記錄和快取。",
     dshHandleThere: "這項請求請在 DeepSeek Harness 中處理",
     viewOnly: "僅可查看",
@@ -202,7 +204,7 @@ const continuationCopy: Record<string, SessionContinuationCopy> = {
     codexHandleThere: "このリクエストは Codex で対応してください",
     dshConnected: "DeepSeek Harness に接続済み",
     dshTurnObservation: "会話履歴から確認",
-    dshStatusUnknown: "リアルタイムの状態は不明",
+    dshStatusUnknown: "DeepSeek Harness 未接続",
     dshStatusUnknownDetail:
       "DeepSeek Harness ブリッジに接続されていません。履歴とキャッシュは閲覧できます。",
     dshHandleThere: "このリクエストは DeepSeek Harness で対応してください",
@@ -261,7 +263,7 @@ const continuationCopy: Record<string, SessionContinuationCopy> = {
     codexHandleThere: "Handle this request in Codex",
     dshConnected: "Connected to DeepSeek Harness",
     dshTurnObservation: "From session history",
-    dshStatusUnknown: "Live status unknown",
+    dshStatusUnknown: "DeepSeek Harness disconnected",
     dshStatusUnknownDetail:
       "The DeepSeek Harness bridge is disconnected. History and cached data are still available.",
     dshHandleThere: "Handle this request in DeepSeek Harness",
@@ -364,7 +366,6 @@ export type SessionContinuationReadOnlyProps = {
   locale: string;
   reason?: string | null;
   loadCommand: (signal: AbortSignal) => Promise<string>;
-  onCopied?: () => void;
   /** The viewer is on the computer that runs AgentKib, so the help need not name it. */
   local?: boolean;
 };
@@ -380,7 +381,6 @@ export function SessionContinuationReadOnly({
   locale,
   reason,
   loadCommand,
-  onCopied,
   local,
 }: SessionContinuationReadOnlyProps) {
   const copy = sessionContinuationCopy(locale);
@@ -415,7 +415,15 @@ export function SessionContinuationReadOnly({
   const outcome = feedback?.source === source ? feedback.status : undefined;
   const loading = !state;
   const copying = outcome === "copying";
+  const working = useDelayedBusy(loading || copying);
   const copyDisabled = loading || copying || !state?.command;
+  useEffect(() => {
+    if (outcome !== "copied") return;
+    const timer = setTimeout(() => {
+      setFeedback((current) => (current === feedback ? undefined : current));
+    }, 1500);
+    return () => clearTimeout(timer);
+  }, [feedback, outcome]);
   async function copyCommand() {
     const request = active.current;
     if (
@@ -440,29 +448,18 @@ export function SessionContinuationReadOnly({
         return;
       }
       await navigator.clipboard.writeText(command);
-      if (current()) {
-        setFeedback({ source, status: "copied" });
-        onCopied?.();
-      }
+      if (current()) setFeedback({ source, status: "copied" });
     } catch {
       if (current()) setFeedback({ source, status: "manual" });
     } finally {
       if (copyFlight.current === flight) copyFlight.current = null;
     }
   }
-  const status = loading
-    ? copy.commandLoading
-    : state.failed
-      ? copy.commandLoadFailed
-      : copying
-        ? copy.commandCopying
-        : outcome === "copied"
-          ? onCopied
-            ? undefined
-            : copy.commandCopied
-          : outcome === "manual"
-            ? copy.manualCopy
-            : undefined;
+  const error = state?.failed
+    ? copy.commandLoadFailed
+    : outcome === "manual"
+      ? copy.manualCopy
+      : undefined;
   return (
     <div
       role="group"
@@ -479,10 +476,18 @@ export function SessionContinuationReadOnly({
           type="button"
           className={`${continuationButtonClass} border border-border bg-background text-foreground enabled:hover:bg-muted`}
           disabled={copyDisabled}
-          title={copyDisabled ? status : undefined}
+          title={outcome === "copied" ? copy.commandCopied : error}
           aria-busy={loading || copying || undefined}
+          data-copied={outcome === "copied" || undefined}
           onClick={() => void copyCommand()}
         >
+          {working ? (
+            <LoaderCircle className="size-3.5 motion-safe:animate-spin" aria-hidden="true" />
+          ) : outcome === "copied" ? (
+            <Check className="size-3.5 text-emerald-600" aria-hidden="true" />
+          ) : (
+            <Copy className="size-3.5" aria-hidden="true" />
+          )}
           {copy.copyCommand}
         </button>
         {state?.failed ? (
@@ -495,9 +500,9 @@ export function SessionContinuationReadOnly({
           </button>
         ) : null}
       </div>
-      {status ? (
+      {error ? (
         <p role="status" className="text-xs leading-5 text-muted-foreground">
-          {status}
+          {error}
         </p>
       ) : null}
       {outcome === "manual" && state?.command ? (

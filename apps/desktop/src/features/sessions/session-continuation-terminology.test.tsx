@@ -269,7 +269,7 @@ describe("visible session continuation terminology", () => {
         turnId: "terminal-turn",
       });
       const view = render(<View snapshot={session} />);
-      expect(screen.getByText(expected.watch)).toBeVisible();
+      expect(screen.queryByText(expected.watch)).not.toBeInTheDocument();
       expect(screen.queryByRole("button", { name: session.t.stop })).not.toBeInTheDocument();
       expect(session.control).not.toHaveBeenCalled();
       expect(claudeConnectionCopy[expected.locale].sendUnverified).toBe(expected.terminalControls);
@@ -324,7 +324,7 @@ describe("visible session continuation terminology", () => {
       Object.assign(session.live!, { sendEnabled: false, terminalSend: false });
       session.canSend = false;
       redraw(view);
-      expect(screen.getAllByText(expected.watch)).toHaveLength(1);
+      expect(screen.queryByText(expected.watch)).not.toBeInTheDocument();
       expect(screen.queryByText(expected.terminalHint)).not.toBeInTheDocument();
       expect(screen.getByRole("textbox", { name: session.t.message })).toBeEnabled();
       expect(screen.getByRole("textbox", { name: session.t.message })).toHaveValue("Unsent draft");
@@ -342,7 +342,7 @@ describe("visible session continuation terminology", () => {
       const editor = screen.getByRole("textbox", { name: session.t.message });
       expect(editor).toBeEnabled();
       expect(editor).toHaveValue("Unsent draft");
-      expect(screen.getAllByText(expected.busyHint)).toHaveLength(1);
+      expect(screen.queryByText(expected.busyHint)).not.toBeInTheDocument();
       expect(screen.getByRole("button", { name: session.t.send })).toBeDisabled();
       expect(screen.queryByText(expected.choice)).not.toBeInTheDocument();
       expect(screen.queryByRole("button", { name: expected.fork })).not.toBeInTheDocument();
@@ -367,7 +367,7 @@ describe("visible session continuation terminology", () => {
       });
       session.canSend = true;
       redraw(view);
-      expect(screen.getAllByText(expected.ended)).toHaveLength(1);
+      expect(screen.queryByText(expected.ended)).not.toBeInTheDocument();
       expect(screen.getByRole("textbox", { name: session.t.message })).toBe(editor);
       expect(editor).toHaveValue("Edited while occupied");
       expect(screen.getByRole("button", { name: session.t.send })).toBeEnabled();

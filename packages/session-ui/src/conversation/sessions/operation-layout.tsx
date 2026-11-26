@@ -122,7 +122,7 @@ export function CopyField({
   const [copied, setCopied] = useState(false);
   useEffect(() => {
     if (!copied) return;
-    const timer = setTimeout(() => setCopied(false), 3000);
+    const timer = setTimeout(() => setCopied(false), 1500);
     return () => clearTimeout(timer);
   }, [copied]);
   return (
@@ -142,7 +142,7 @@ export function CopyField({
           )
         }
       >
-        {copied ? <Check /> : <Copy />}
+        {copied ? <Check className="text-emerald-600" /> : <Copy />}
       </Button>
     </div>
   );

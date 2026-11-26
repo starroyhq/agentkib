@@ -194,8 +194,8 @@ describe("composer sending shortcuts", () => {
       executionMode: "claude-follower",
       executionLocation: "terminal",
     });
-    const approval = "Waiting for tool approval. Please handle it in the terminal.";
-    const question = "Waiting for an answer. Please respond in the terminal.";
+    const approval = "Terminal awaiting approval";
+    const question = "Terminal awaiting an answer";
     const { rerender, input } = renderComposer();
     expect(screen.queryByText("Handle approvals and questions in the terminal")).toBeNull();
     expect(screen.queryByText(approval)).toBeNull();
@@ -632,20 +632,17 @@ describe("composer sending shortcuts", () => {
     ["zh-Hant", "這段對話正在 Codex 中使用。"],
     ["en-US", "This session is in use in Codex."],
     ["ja-JP", "この会話は Codex で使用中です。"],
-  ] as const)(
-    "keeps an editable composer and a passive ownership hint in %s",
-    (locale, busyHint) => {
-      continuationFixture();
-      externalOwner();
-      doubles.session.locale = locale;
-      const { input } = renderComposer("Keep the draft");
-      expect(input).toBeEnabled();
-      expect(screen.getByText(busyHint)).toBeVisible();
-      expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
-      expect(doubles.control).not.toHaveBeenCalled();
-      expect(doubles.runSessionAction).not.toHaveBeenCalled();
-    },
-  );
+  ] as const)("keeps an editable composer without an ownership line in %s", (locale, busyHint) => {
+    continuationFixture();
+    externalOwner();
+    doubles.session.locale = locale;
+    const { input } = renderComposer("Keep the draft");
+    expect(input).toBeEnabled();
+    expect(screen.queryByText(busyHint)).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
+    expect(doubles.control).not.toHaveBeenCalled();
+    expect(doubles.runSessionAction).not.toHaveBeenCalled();
+  });
 
   it("keeps the Codex follower composer enabled without the explanatory hint or busy bar", () => {
     continuationFixture();
@@ -747,7 +744,7 @@ describe("composer sending shortcuts", () => {
     expect(input).toHaveValue("Claude draft");
     expect(input).toBeEnabled();
     expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
-    expect(screen.getByText("This session is in use in Claude Code.")).toBeVisible();
+    expect(screen.queryByText("This session is in use in Claude Code.")).not.toBeInTheDocument();
     expect(
       screen.queryByRole("button", { name: "Continue in Claude Code" }),
     ).not.toBeInTheDocument();
@@ -911,7 +908,9 @@ describe("composer sending shortcuts", () => {
     });
     const { input, form } = renderComposer("Prepare the next message");
     expect(input).toBeEnabled();
-    expect(screen.getByText(sessionContinuationCopy("en-US").terminalWatch)).toBeVisible();
+    expect(
+      screen.queryByText(sessionContinuationCopy("en-US").terminalWatch),
+    ).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
     fireEvent.keyDown(input, { key: "Enter" });
     fireEvent.submit(form);

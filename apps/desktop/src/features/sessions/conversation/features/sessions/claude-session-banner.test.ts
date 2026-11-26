@@ -204,12 +204,8 @@ describe("Claude execution and terminal connection presentation", () => {
         ...idle,
         live: { ...idle.live!, continuationNotice: "background-ended" as const },
       };
-      expect(claudeSessionBanner(ended)).toEqual({
-        title: "",
-        body: continuation.backgroundEnded,
-        notice: "background-ended",
-      });
-      expect(sessionBannerAtComposer(claudeSessionBanner(ended))).toBe(true);
+      expect(claudeSessionBanner(ended)).toBeNull();
+      expect(sessionBannerAtComposer(claudeSessionBanner(ended))).toBe(false);
       // Stopped after too many turns the CLI started by itself: also a line above the composer.
       const limited = {
         ...idle,

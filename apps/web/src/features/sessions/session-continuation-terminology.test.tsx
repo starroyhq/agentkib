@@ -440,7 +440,7 @@ describe("visible session continuation terminology", () => {
       });
       session.canSend = true;
       redraw(view);
-      expect(screen.getAllByText(expected.ended)).toHaveLength(1);
+      expect(screen.queryByText(expected.ended)).not.toBeInTheDocument();
       expect(screen.getByRole("textbox", { name: session.t.message })).toBe(editor);
       expect(editor).toHaveValue("Edited while occupied");
       expect(screen.getByRole("button", { name: session.t.send })).toBeEnabled();

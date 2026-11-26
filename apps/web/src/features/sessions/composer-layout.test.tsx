@@ -515,7 +515,7 @@ describe("responsive composer behavior", () => {
       },
     };
     render(<SessionComposer />);
-    expect(screen.getByText(/实时状态未知.*DeepSeek Harness 桥接未连接/)).toBeVisible();
+    expect(screen.queryByText(/DeepSeek Harness 桥接未连接/)).not.toBeInTheDocument();
     const draft = screen.getByRole("textbox");
     expect(draft).toBeEnabled();
     expect(draft).toHaveValue("Keep this draft");

@@ -39,6 +39,11 @@ const MarkdownPre: NonNullable<Components["pre"]> = ({ node, children, ...props 
 
 const markdownComponents: Components = {
   pre: MarkdownPre,
+  table: ({ node: _node, children, ...props }) => (
+    <div className="aui-table-scroll" data-markdown-table="" tabIndex={0}>
+      <table {...props}>{children}</table>
+    </div>
+  ),
   img: ({ alt }) => (
     <span
       role="img"

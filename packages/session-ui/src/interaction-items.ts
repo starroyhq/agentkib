@@ -2,6 +2,7 @@ import type { Live, SessionProviderDeclaration } from "@agentkib/web-client";
 import { sessionApprovalRuntime } from "./agents/session-approvals";
 import { interactionRiskCopy } from "./interaction-risk-copy";
 import type { InteractionDockItem, InteractionNotice } from "./interaction-card";
+import type { SessionSurface } from "./session-surface-copy";
 import {
   approvalCardModel,
   fillCopy,
@@ -34,6 +35,7 @@ export interface InteractionItemsLive<
 
 export interface InteractionItemsContext {
   locale: InteractionLocale;
+  surface?: SessionSurface;
   sessionId: string;
   /** Display name of the session's Agent, such as "Codex". */
   agent: string;
@@ -67,7 +69,7 @@ export function sessionInteractionItems<
   context: InteractionItemsContext,
 ): { items: InteractionDockItem[]; approvals: Map<string, A>; questions: Map<string, Q> } {
   const { locale, agent, ready, uncertain } = context;
-  const t = interactionCardCopy(locale);
+  const t = interactionCardCopy(locale, context.surface);
   const native = sessionApprovalRuntime(live, context.connection);
   const handleThere = native?.handleThere?.(locale);
   const elsewhere = (supported: boolean): InteractionNotice | undefined =>
@@ -97,6 +99,8 @@ export function sessionInteractionItems<
           key,
           model,
           enabled: false,
+          terminalOwned: true,
+          notice: { tone: "terminal", text: t.terminalApprovalNotice },
           ...(description ? { risk: interactionRiskCopy(locale, description.risk) } : {}),
         };
       }
@@ -125,7 +129,15 @@ export function sessionInteractionItems<
     ...(live.questions ?? []).map((question): InteractionDockItem => {
       const key = interactionKey(question);
       if (native?.owner === "terminal" && observedQuestionRequest(question))
-        return { kind: "question", key, request: question, enabled: false, readOnly: true };
+        return {
+          kind: "question",
+          key,
+          request: question,
+          enabled: false,
+          readOnly: true,
+          terminalOwned: true,
+          notice: { tone: "terminal", text: t.terminalQuestionNotice },
+        };
       questions.set(key, question);
       const permitted = !!access.experimentalEnabled && !!access.device?.send;
       const notice =

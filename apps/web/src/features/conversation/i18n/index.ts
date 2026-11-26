@@ -50,15 +50,12 @@ const zh = {
     "上次控制结果尚未确认，控制已暂停。请刷新核对已保存请求的处理状态，勿重复提交。",
   idle: "空闲",
   running: "运行中",
-  unavailable: "实时控制暂不可用，请在电脑上的 AgentKib 检查连接状态。",
-  openOriginalClient:
-    "未检测到此会话的执行客户端。请在原客户端（如 Codex 或 Claude Code）打开后刷新。",
-  unverifiedInstallation:
-    "未能确认运行 AgentKib 的电脑上的 Agent 安装或版本，控制已禁用。请在电脑上的 AgentKib 检查安装。",
+  unavailable: "实时控制暂不可用，请检查连接状态。",
+  openOriginalClient: "未检测到此会话的可用执行进程，当前仅可浏览历史。",
+  unverifiedInstallation: "未能确认宿主机的 Agent 安装或版本，控制已禁用。",
   antigravityCliUnavailable:
-    "要在 AgentKib 里控制 Antigravity，需要先安装 Antigravity CLI（Antigravity App 不包含它）。在电脑上的“设置 › 工具与更新”里复制官方安装命令，装好后运行一次 agy 登录。",
-  antigravityAppSession:
-    "这是 Antigravity App 或 IDE 里的会话，AgentKib 只能浏览，请在 Antigravity 中继续。",
+    "宿主机尚未配置 Antigravity CLI（Antigravity App 不包含它），暂时无法远程控制。",
+  antigravityAppSession: "这是 Antigravity App 或 IDE 里的会话，目前仅可浏览历史。",
   unsupportedControl: "当前平台或 Agent 尚不支持实时控制，仍可阅读历史。",
   process: "执行过程",
   tools: "次工具调用",
@@ -85,7 +82,7 @@ const zh = {
   streamingReplyTruncated: "实时预览已截断，仅显示开头部分；请在历史记录中查看已保存的内容。",
   decline: "拒绝",
   cancelTurn: "取消轮次",
-  approvalFallback: "此审批无法安全处理，请回官方客户端查看。",
+  approvalFallback: "当前访问无法安全处理此审批请求。",
   decisionInfo: "取消会中断轮次，不等于拒绝。请检查完整操作后决定。",
   language: "语言",
   theme: "外观",
@@ -176,15 +173,15 @@ const en: Words = {
     "The previous control outcome is unconfirmed, so controls are paused. Refresh to check the saved request; do not resubmit.",
   idle: "Idle",
   running: "Running",
-  unavailable: "Live control is unavailable. Check the connection in AgentKib on your computer.",
+  unavailable: "Live control is unavailable. Check the connection status.",
   openOriginalClient:
-    "No execution client was found for this session. Open it in the original client (such as Codex or Claude Code), then refresh.",
+    "No active execution runtime was found for this session; history remains readable.",
   unverifiedInstallation:
-    "The Agent installation or version on the computer running AgentKib could not be verified. Control is disabled. Check the installation in AgentKib on that computer.",
+    "The host Agent installation or version could not be verified, so control is disabled.",
   antigravityCliUnavailable:
-    "To control Antigravity from AgentKib, install the Antigravity CLI first; the Antigravity App does not include it. Copy the official install command from Settings › Tools & updates on your computer, then run agy once to sign in.",
+    "Antigravity CLI is not configured on the host (the Antigravity App does not include it), so remote control is unavailable.",
   antigravityAppSession:
-    "This conversation is from the Antigravity App or IDE. AgentKib can only browse it; continue it in Antigravity.",
+    "This session belongs to the Antigravity App or IDE; history remains readable here.",
   unsupportedControl:
     "Live control is not supported for this platform or Agent. History remains readable.",
   process: "Execution process",
@@ -217,7 +214,7 @@ const en: Words = {
     "Live preview truncated: only the beginning is shown. Check the history for saved content.",
   decline: "Decline",
   cancelTurn: "Cancel turn",
-  approvalFallback: "This approval cannot be handled safely here. Use the original client.",
+  approvalFallback: "This approval cannot be handled safely from this access.",
   decisionInfo:
     "Cancel interrupts the turn; it is not decline. Review the full operation before deciding.",
   language: "Language",
@@ -302,15 +299,12 @@ const tw: Words = {
     "上次控制結果尚未確認，控制已暫停。請重新整理核對已儲存請求的處理狀態，勿重複提交。",
   idle: "閒置",
   running: "執行中",
-  unavailable: "即時控制暫時無法使用，請在電腦上的 AgentKib 檢查連線狀態。",
-  openOriginalClient:
-    "未偵測到此對話的執行客戶端。請在原客戶端（如 Codex 或 Claude Code）開啟後重新整理。",
-  unverifiedInstallation:
-    "無法確認執行 AgentKib 的電腦上的 Agent 安裝或版本，控制已停用。請在電腦上的 AgentKib 檢查安裝。",
+  unavailable: "即時控制暫時無法使用，請檢查連線狀態。",
+  openOriginalClient: "未偵測到此對話的可用執行程序，目前僅可瀏覽歷史。",
+  unverifiedInstallation: "無法確認主機上的 Agent 安裝或版本，控制已停用。",
   antigravityCliUnavailable:
-    "要在 AgentKib 中控制 Antigravity，需要先安裝 Antigravity CLI（Antigravity App 不包含它）。在電腦上的「設定 › 工具與更新」中複製官方安裝指令，安裝後執行一次 agy 登入。",
-  antigravityAppSession:
-    "這是 Antigravity App 或 IDE 中的對話，AgentKib 只能瀏覽，請在 Antigravity 中繼續。",
+    "主機尚未設定 Antigravity CLI（Antigravity App 不包含它），暫時無法遠端控制。",
+  antigravityAppSession: "這是 Antigravity App 或 IDE 中的對話，目前僅可瀏覽歷史。",
   unsupportedControl: "目前平台或 Agent 尚不支援即時控制，仍可閱讀歷史。",
   process: "執行過程",
   tools: "次工具呼叫",
@@ -337,7 +331,7 @@ const tw: Words = {
   streamingReplyTruncated: "即時預覽已截斷，僅顯示開頭部分；請在歷史記錄中查看已儲存的內容。",
   decline: "拒絕",
   cancelTurn: "取消輪次",
-  approvalFallback: "此審批無法安全處理，請回官方客戶端查看。",
+  approvalFallback: "目前存取無法安全處理此審批請求。",
   decisionInfo: "取消會中斷輪次，不等於拒絕。請檢查完整操作後決定。",
   language: "語言",
   theme: "外觀",
@@ -424,16 +418,14 @@ const ja: Words = {
     "前回の操作結果が未確認のため、操作を一時停止しています。更新して保存済みリクエストの処理状況を確認し、再送しないでください。",
   idle: "待機中",
   running: "実行中",
-  unavailable:
-    "リアルタイム制御は利用できません。コンピューター上の AgentKib で接続状態を確認してください。",
-  openOriginalClient:
-    "この会話の実行クライアントが見つかりません。元のクライアント（Codex や Claude Code など）で開いて更新してください。",
+  unavailable: "リアルタイム制御は現在利用できません。接続状態を確認してください。",
+  openOriginalClient: "この会話の実行ランタイムが見つかりません。履歴は引き続き閲覧できます。",
   unverifiedInstallation:
-    "AgentKib を実行しているコンピューターの Agent のインストールまたはバージョンを確認できないため、制御は無効です。コンピューター上の AgentKib でインストールを確認してください。",
+    "ホスト上の Agent のインストールまたはバージョンを確認できないため、制御は無効です。",
   antigravityCliUnavailable:
-    "AgentKib から Antigravity を操作するには、先に Antigravity CLI をインストールしてください（Antigravity App には含まれていません）。コンピューターの「設定 › ツールと更新」で公式のインストールコマンドをコピーし、インストール後に agy を一度実行してサインインしてください。",
+    "ホストに Antigravity CLI が構成されていないため（Antigravity App には含まれません）、リモート制御は利用できません。",
   antigravityAppSession:
-    "これは Antigravity App または IDE の会話です。AgentKib では閲覧のみできます。続きは Antigravity で行ってください。",
+    "これは Antigravity App または IDE の会話です。ここでは履歴の閲覧のみ可能です。",
   unsupportedControl:
     "このプラットフォームまたは Agent はリアルタイム制御に対応していません。履歴は閲覧できます。",
   process: "実行過程",
@@ -466,7 +458,7 @@ const ja: Words = {
     "リアルタイムプレビューは先頭部分のみ表示しています。保存済みの内容は履歴で確認してください。",
   decline: "拒否",
   cancelTurn: "ターンを取り消す",
-  approvalFallback: "ここでは安全に承認を処理できません。元のクライアントを使用してください。",
+  approvalFallback: "このアクセスからはこの承認を安全に処理できません。",
   decisionInfo: "取り消しはターンを中断します。拒否とは異なります。操作全体を確認してください。",
   language: "言語",
   theme: "外観",

@@ -133,7 +133,8 @@ it("shows the return-to-bottom control on Web before new output arrives", () => 
   fireEvent.scroll(view.viewport);
 
   const jump = screen.getByRole("button", { name: webLayoutCopy["en-US"].jumpToLatest });
-  expect(jump).toHaveTextContent(webLayoutCopy["en-US"].jumpToLatest);
+  expect(jump).toHaveAttribute("aria-label", webLayoutCopy["en-US"].jumpToLatest);
+  expect(jump).toHaveTextContent("");
   fireEvent.click(jump);
   flushFrames();
   expect(view.viewport.scrollTop).toBe(600);

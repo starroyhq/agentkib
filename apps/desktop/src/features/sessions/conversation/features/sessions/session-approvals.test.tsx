@@ -478,3 +478,122 @@ describe("a Claude settings change Claude Code refuses", () => {
     },
   );
 });
+
+describe("terminal-occupied interactions offer handover inside the card", () => {
+  it("shows the terminal handover action and confirmation modal for a terminal-owned Claude approval", () => {
+    const runSessionAction = vi.fn().mockResolvedValue({ accepted: true });
+    state = {
+      ...state,
+      locale: "zh-CN",
+      t: conversationWords("zh-CN"),
+      current: { id: "session", agent: "claude-code" },
+      access: {
+        protocolVersion: 2,
+        experimentalEnabled: false,
+        bootId: "boot-1",
+        device: { id: "device", approve: true, send: true },
+      },
+      capabilities: {
+        sessionId: "session",
+        features: {
+          "handover-terminal": { available: true },
+        },
+      },
+      live: {
+        sessionId: "session",
+        status: "running",
+        revision: 4,
+        turnId: "turn-terminal",
+        sendEnabled: false,
+        executionMode: "claude-follower",
+        execution: { owner: "terminal", observed: true, confidence: "live" },
+        terminalHandover: { available: false, remoteAvailable: true },
+        approvals: [approval({ requestId: "req-term", turnId: "turn-terminal" })],
+        questions: [],
+      },
+      runSessionAction,
+    } as unknown as Session;
+    render(<SessionReader />);
+    const region = card();
+    expect(
+      within(region).getByText(interactionCardCopy("zh-CN").terminalApprovalNotice),
+    ).toBeVisible();
+    const handoverButton = within(region).getByRole("button", { name: "结束终端并接管" });
+    expect(handoverButton).toBeEnabled();
+    fireEvent.click(handoverButton);
+    const dialog = screen.getByRole("dialog");
+    expect(within(dialog).getByText(/结束当前 Claude Code 终端会话/)).toBeVisible();
+    fireEvent.click(within(dialog).getByRole("button", { name: "结束终端并接管" }));
+    expect(runSessionAction).toHaveBeenCalledExactlyOnceWith("handover-terminal", {
+      handoffConfirmed: true,
+      turnId: "turn-terminal",
+    });
+  });
+
+  it("shows the terminal handover action inside a read-only observed terminal question card", () => {
+    const runSessionAction = vi.fn().mockResolvedValue({ accepted: true });
+    const question: UserQuestionRequest = {
+      requestId: "q-term",
+      turnId: "turn-q",
+      supported: false,
+      questions: [
+        {
+          id: "choice",
+          header: "Strategy",
+          question: "Pick a rollout mode",
+          multiSelect: false,
+          allowCustom: false,
+          options: [{ label: "Canary", description: "Gradual release" }],
+        },
+      ],
+    };
+    state = {
+      ...state,
+      locale: "zh-CN",
+      t: conversationWords("zh-CN"),
+      current: { id: "session", agent: "claude-code" },
+      access: {
+        protocolVersion: 2,
+        experimentalEnabled: false,
+        bootId: "boot-1",
+        device: { id: "device", approve: true, send: true },
+      },
+      capabilities: {
+        sessionId: "session",
+        features: {
+          "handover-terminal": { available: true },
+        },
+      },
+      live: {
+        sessionId: "session",
+        status: "running",
+        revision: 5,
+        turnId: "turn-q",
+        sendEnabled: false,
+        executionMode: "claude-follower",
+        execution: { owner: "terminal", observed: true, confidence: "live" },
+        terminalHandover: { available: false, remoteAvailable: true },
+        approvals: [],
+        questions: [question],
+      },
+      runSessionAction,
+    } as unknown as Session;
+    render(<SessionReader />);
+    const questionCard = screen.getByRole("region", {
+      name: interactionCardCopy("zh-CN").waitingAnswer,
+    });
+    expect(
+      within(questionCard).getByText(interactionCardCopy("zh-CN").terminalQuestionNotice),
+    ).toBeVisible();
+    expect(within(questionCard).getByRole("button", { name: "Canary" })).toBeDisabled();
+    const handoverButton = within(questionCard).getByRole("button", { name: "结束终端并接管" });
+    expect(handoverButton).toBeEnabled();
+    fireEvent.click(handoverButton);
+    const dialog = screen.getByRole("dialog");
+    fireEvent.click(within(dialog).getByRole("button", { name: "结束终端并接管" }));
+    expect(runSessionAction).toHaveBeenCalledExactlyOnceWith("handover-terminal", {
+      handoffConfirmed: true,
+      turnId: "turn-q",
+    });
+  });
+});

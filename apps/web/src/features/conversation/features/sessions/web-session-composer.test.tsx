@@ -419,30 +419,21 @@ describe("composer sending shortcuts", () => {
     expect(screen.getByRole("button", { name: "Send" })).toBeEnabled();
   });
 
-  it("offers a verified host command for an unsupported Codex version without dispatching", async () => {
+  it("shows only the objective read-only reason for an unsupported Codex version on Web", () => {
     continuationFixture();
     doubles.session.canSend = false;
     Object.assign(doubles.session.live!, {
       sendEnabled: false,
       reason: "codex-cli-version-too-old",
     });
-    const writeText = vi.fn(async () => {});
-    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
     render(<SessionComposer />);
     expect(screen.queryByRole("textbox", { name: "Message" })).not.toBeInTheDocument();
     expect(
       screen.getAllByText("Your Codex version is too old. Update it to continue here."),
     ).toHaveLength(1);
-    const button = screen.getByRole("button", { name: "Copy resume command" });
-    await waitFor(() => expect(button).toBeEnabled());
-    expect(doubles.resumeCommand).toHaveBeenCalledWith("session", expect.any(AbortSignal));
-    fireEvent.click(button);
-    await waitFor(() =>
-      expect(writeText).toHaveBeenCalledWith(
-        "CODEX_HOME='/host/codex' codex resume '00000000-0000-4000-8000-000000000001'",
-      ),
-    );
-    expect(screen.getByText(/On the computer running AgentKib/)).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Copy resume command" })).not.toBeInTheDocument();
+    expect(screen.queryByText(/On the computer running AgentKib/)).not.toBeInTheDocument();
+    expect(doubles.resumeCommand).not.toHaveBeenCalled();
     expect(doubles.control).not.toHaveBeenCalled();
     expect(doubles.runSessionAction).not.toHaveBeenCalled();
     expect(doubles.navigate).not.toHaveBeenCalled();

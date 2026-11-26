@@ -333,9 +333,32 @@ try {
 
   function Confirm-InstalledVersion($Installed, [version] $Version, [string] $Mode) {
     $process = Start-TestDesktop $Installed
-    Wait-For "the native runtime key and lease files" {
-      (Test-Path -LiteralPath (Join-Path $data "local-runtime\runtime-v1.key") -PathType Leaf) -and
-        (Test-Path -LiteralPath (Join-Path $data "local-runtime\runtime-v1.lock") -PathType Leaf)
+    try {
+      Wait-For "the native runtime key and lease files" {
+        $process.Refresh()
+        if ($process.HasExited -or $process.MainWindowTitle -eq "AgentKib startup error") {
+          throw "The installed desktop failed before the shared runtime became ready."
+        }
+        (Test-Path -LiteralPath (Join-Path $data "local-runtime\runtime-v1.key") -PathType Leaf) -and
+          (Test-Path -LiteralPath (Join-Path $data "local-runtime\runtime-v1.lock") -PathType Leaf)
+      }
+    } catch {
+      $packageData = Join-Path $env:LOCALAPPDATA ("Packages\" + $Installed.PackageFamilyName)
+      foreach ($location in @(
+        @{ name = "native"; directory = $data },
+        @{ name = "LocalCache"; directory = (Join-Path $packageData "LocalCache\Local\ai.agentkib") },
+        @{ name = "LocalState"; directory = (Join-Path $packageData "LocalState\ai.agentkib") }
+      )) {
+        $db = Test-Path -LiteralPath (Join-Path $location.directory "agentkib.db") -PathType Leaf
+        $launch = Test-Path -LiteralPath (Join-Path $location.directory "local-runtime\runtime-v1-launch.lock") -PathType Leaf
+        $lock = Test-Path -LiteralPath (Join-Path $location.directory "local-runtime\runtime-v1.lock") -PathType Leaf
+        $key = Test-Path -LiteralPath (Join-Path $location.directory "local-runtime\runtime-v1.key") -PathType Leaf
+        Write-Host "Runtime files ($($location.name)): database=$db launch=$launch lease=$lock key=$key"
+      }
+      Write-Host "Roaming profile exists: $(Test-Path -LiteralPath (Join-Path $electronProfileRoot 'electron') -PathType Container)"
+      $owned = @(Get-CimInstance Win32_Process -Filter "Name = 'AgentKib.exe'")
+      Write-Host "AgentKib processes: $($owned.Count); shared runtime processes: $(@($owned | Where-Object CommandLine -Match '(?:^|\s)--local-runtime(?:\s|$)').Count)"
+      throw
     }
     $runtimeVersion = "$($Version.Major).$($Version.Minor).$($Version.Build)"
     $runtimeProcessId = & node $probe $data $runtimeVersion $workspace $Mode $protocolVersion

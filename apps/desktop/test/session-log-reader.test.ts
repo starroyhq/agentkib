@@ -4,7 +4,9 @@ import {
   mkdtempSync,
   renameSync,
   rmSync,
+  statSync,
   truncateSync,
+  utimesSync,
   writeFileSync,
 } from "node:fs";
 import type { FileHandle } from "node:fs/promises";
@@ -78,7 +80,11 @@ it("reuses the old bytes after append and discards them after rewrite, truncate 
   expect(await read(file, 0, prefix.length + 4)).toBe(prefix + "next");
   expect(io.bytes).toBeLessThanOrEqual(2048 + 4);
 
+  const oldModified = statSync(file).mtimeMs;
   writeFileSync(file, "b" + prefix.slice(1) + "next");
+  // Linux can give two writes in one filesystem tick the same version stamps.
+  const rewrittenAt = new Date(oldModified - 60_000);
+  utimesSync(file, rewrittenAt, rewrittenAt);
   expect(await read(file, 0, 1)).toBe("b");
   writeFileSync(file, "c");
   expect(await read(file, 0, 4)).toBe("c");

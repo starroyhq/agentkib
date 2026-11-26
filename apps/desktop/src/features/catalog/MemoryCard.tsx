@@ -1,5 +1,6 @@
 import { useI18n } from "@/core/useI18n";
 import { useEffect, useRef, useState } from "react";
+import { DelayedSpinner, useDelayedBusy } from "@agentkib/session-ui";
 import { Check, LoaderCircle, Pencil, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -20,7 +21,9 @@ export function MemoryCard({
   const { tr, formatDateTime, localizeMessage } = useI18n();
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(record.content);
-  const [busy, setBusy] = useState(false);
+  const [action, setAction] = useState<"approved" | "rejected" | "invalidated" | null>(null);
+  const busy = action !== null;
+  const spinning = useDelayedBusy(busy);
   const [error, setError] = useState("");
   const pending = useRef(false);
   const alive = useRef(true);
@@ -33,7 +36,7 @@ export function MemoryCard({
   const review = async (status: "approved" | "rejected" | "invalidated") => {
     if (pending.current) return;
     pending.current = true;
-    setBusy(true);
+    setAction(status);
     setError("");
     try {
       await onReview(record.id, status, status === "approved" && editing ? draft : undefined);
@@ -42,7 +45,7 @@ export function MemoryCard({
       if (alive.current) setError(localizeMessage(reason));
     } finally {
       pending.current = false;
-      if (alive.current) setBusy(false);
+      if (alive.current) setAction(null);
     }
   };
   return (
@@ -81,12 +84,6 @@ export function MemoryCard({
           {error}
         </p>
       )}
-      {busy && (
-        <p role="status" className="flex items-center gap-2 text-sm text-muted-foreground">
-          <LoaderCircle size={14} className="animate-spin" />
-          {tr("common.loading")}
-        </p>
-      )}
       {record.status === "pending" && (
         <footer>
           <Button
@@ -94,7 +91,15 @@ export function MemoryCard({
             disabled={busy}
             onClick={() => void review("approved")}
           >
-            <Check size={15} />
+            {spinning && action === "approved" ? (
+              <LoaderCircle
+                aria-hidden
+                size={15}
+                className="animate-spin motion-reduce:animate-none"
+              />
+            ) : (
+              <Check size={15} />
+            )}
             {editing ? tr("memory.saveApprove") : tr("common.approve")}
           </Button>
           <Button
@@ -110,6 +115,9 @@ export function MemoryCard({
             disabled={busy}
             onClick={() => void review("rejected")}
           >
+            <span aria-hidden className="size-3.5">
+              <DelayedSpinner active={action === "rejected"} />
+            </span>
             {tr("common.reject")}
           </Button>
         </footer>
@@ -121,6 +129,9 @@ export function MemoryCard({
             disabled={busy}
             onClick={() => void review("invalidated")}
           >
+            <span aria-hidden className="size-3.5">
+              <DelayedSpinner active={action === "invalidated"} />
+            </span>
             {tr("memory.invalidate")}
           </Button>
         </footer>

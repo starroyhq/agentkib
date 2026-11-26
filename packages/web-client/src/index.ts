@@ -1,3 +1,9 @@
+import { openWebSessionStream, type SessionStreamHandlers } from "./session-stream";
+export {
+  conversationReconnectDelay,
+  SseParser,
+  type SessionStreamHandlers,
+} from "./session-stream";
 export { mergeCatalogSessions, isStaleCatalogRead, retryStaleCatalogRead } from "./catalog";
 export type { IncompleteSessionSource } from "./catalog";
 export type {
@@ -1175,13 +1181,6 @@ export function matchesSettingsAck(
 
 export type WebConnection = { type: "same-origin" } | { type: "lan-http"; origin: string };
 
-export interface SessionStreamHandlers {
-  /** Return the last cursor actually applied by the consumer; rejected frames never advance it. */
-  event: (type: string, data: string, cursor?: string) => void | false | string;
-  open: () => void;
-  error: (error?: unknown) => void;
-}
-
 /** Trusted desktop transport. It implements the same public request projections. */
 export interface ConversationClientBridge {
   request<T>(path: string, body?: unknown, signal?: AbortSignal): Promise<T>;
@@ -1368,111 +1367,23 @@ export class WebClient {
     if (sessionId) query.set("sessionId", sessionId);
     else if (taskSummary) query.set("taskSummary", "1");
     const path = `${REMOTE_ROUTE_BASE}${REMOTE_ROUTE.stream}?${query}`;
-    if (this.connection.type === "same-origin") {
-      let closed = false;
-      let source: EventSource | undefined;
-      let cursor: string | undefined;
-      let retry: ReturnType<typeof setTimeout> | undefined;
-      const connect = () => {
-        if (closed) return;
-        const current = new EventSource(
-          cursor ? `${path}&afterCursor=${encodeURIComponent(cursor)}` : path,
-        );
-        source = current;
-        for (const type of [
-          "session-event",
-          "session-ready",
-          "control-changed",
-          "catalog-invalidated",
-          "access-changed",
-          "unavailable",
-          "access-ended",
-        ])
-          current.addEventListener(type, (e) => {
-            if (closed || source !== current) return;
-            const event = e as MessageEvent;
-            const applied = handlers.event(type, event.data, event.lastEventId || undefined);
-            if (typeof applied === "string") cursor = applied;
-            if (type === "access-ended") {
-              closed = true;
-              current.close();
-              clearTimeout(retry);
-            }
-          });
-        current.onopen = () => {
-          if (!closed && source === current) handlers.open();
-        };
-        current.onerror = () => {
-          if (closed || source !== current) return;
-          // EventSource's implicit Last-Event-ID includes unaccepted frames. Recreate
-          // the connection ourselves using only the reducer's applied cursor.
-          current.close();
-          source = undefined;
-          handlers.error();
-          if (!closed) retry = setTimeout(connect, 2000);
-        };
-      };
-      connect();
-      return () => {
-        closed = true;
-        source?.close();
-        clearTimeout(retry);
-      };
-    }
-    const abort = new AbortController();
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    let cursor: string | undefined;
-    const run = async () => {
-      try {
-        if (!this.bearerToken || !this.compatible)
-          throw new ApiError(401, REMOTE_ERROR_CODES.accessEnded);
-        const streamPath = cursor ? `${path}&afterCursor=${encodeURIComponent(cursor)}` : path;
-        const response = await (this.transport ?? fetch)(`${this.origin}${streamPath}`, {
-          headers: this.headers(),
-          credentials: "omit",
-          cache: "no-store",
-          redirect: "error",
-          signal: abort.signal,
-        });
-        if (response.status === 401 || response.status === 403) {
-          handlers.event("access-ended", "");
-          return;
-        }
-        if (
-          !response.ok ||
-          !response.body ||
-          !response.headers.get("content-type")?.includes("text/event-stream")
-        )
-          throw new Error(REMOTE_ERROR_CODES.streamUnavailable);
-        handlers.open();
-        const reader = response.body.getReader(),
-          decoder = new TextDecoder();
-        const parser = new SseParser((type, data, id) => {
-          const applied = handlers.event(type, data, id);
-          if (typeof applied === "string") cursor = applied;
-          if (type === "access-ended") abort.abort();
-        });
-        try {
-          while (!abort.signal.aborted) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            parser.push(decoder.decode(value, { stream: true }));
-          }
-        } finally {
-          await reader.cancel().catch(() => {});
-          reader.releaseLock();
-        }
-        if (!abort.signal.aborted) handlers.error();
-      } catch (error) {
-        if (!abort.signal.aborted) handlers.error(error);
-      }
-      if (!abort.signal.aborted) timer = setTimeout(() => void run(), 2000);
-    };
-    void run();
-    return () => {
-      abort.abort();
-      clearTimeout(timer);
-    };
+    return openWebSessionStream(
+      path,
+      handlers,
+      this.connection.type === "same-origin"
+        ? undefined
+        : (streamPath, signal) => {
+            if (!this.bearerToken || !this.compatible)
+              throw new ApiError(401, REMOTE_ERROR_CODES.accessEnded);
+            return (this.transport ?? fetch)(`${this.origin}${streamPath}`, {
+              headers: this.headers(),
+              credentials: "omit",
+              cache: "no-store",
+              redirect: "error",
+              signal,
+            });
+          },
+    );
   }
   managedOptions(agent: ManagedAgent = "codex", signal?: AbortSignal, workspaceId?: string) {
     const query = new URLSearchParams();
@@ -1943,71 +1854,6 @@ export function parseLanOrigin(value: string): string {
   )
     throw new Error(REMOTE_ERROR_CODES.invalidLanAddress);
   return `http://${match[1]}:${port}`;
-}
-
-export class SseParser {
-  private lineParts: string[] = [];
-  private lineBytes = 0;
-  private lastCodeUnit = 0;
-  private event = "message";
-  private id: string | undefined;
-  private data: string[] = [];
-  private dataBytes = 0;
-  private encoder = new TextEncoder();
-  constructor(private readonly emit: (event: string, data: string, cursor?: string) => void) {}
-  push(chunk: string) {
-    let start = 0;
-    while (start < chunk.length) {
-      const end = chunk.indexOf("\n", start);
-      const part = chunk.slice(start, end < 0 ? chunk.length : end);
-      if (part) {
-        this.lineBytes += this.encoder.encode(part).byteLength;
-        // A surrogate pair split between push calls encodes as four bytes, not
-        // two replacement characters (six bytes). TextDecoder normally avoids this.
-        const first = part.charCodeAt(0);
-        if (
-          this.lastCodeUnit >= 0xd800 &&
-          this.lastCodeUnit <= 0xdbff &&
-          first >= 0xdc00 &&
-          first <= 0xdfff
-        )
-          this.lineBytes -= 2;
-        this.lastCodeUnit = part.charCodeAt(part.length - 1);
-        if (this.lineBytes + this.dataBytes > 4 * 1024 * 1024 + 1024)
-          throw new Error(REMOTE_ERROR_CODES.streamTooLarge);
-        this.lineParts.push(part);
-      }
-      if (end < 0) return;
-      // Join only completed lines: neither scanning nor byte accounting revisits
-      // an accumulated near-4 MiB prefix on every network chunk.
-      const line = this.lineParts.join("").replace(/\r$/, "");
-      this.lineParts = [];
-      this.lineBytes = 0;
-      this.lastCodeUnit = 0;
-      start = end + 1;
-      if (!line) {
-        if (this.data.length) {
-          if (this.id) this.emit(this.event, this.data.join("\n"), this.id);
-          else this.emit(this.event, this.data.join("\n"));
-        }
-        this.event = "message";
-        this.data = [];
-        this.dataBytes = 0;
-      } else if (line.startsWith("id:")) {
-        const id = line.slice(3).replace(/^ /, "");
-        if (id.length > 4096) throw new Error(REMOTE_ERROR_CODES.streamCursorTooLarge);
-        if (!id.includes("\0")) this.id = id;
-      } else if (line.startsWith("event:")) {
-        if (line.length > 128) throw new Error(REMOTE_ERROR_CODES.streamTooLarge);
-        this.event = line.slice(6).replace(/^ /, "");
-      } else if (line.startsWith("data:")) {
-        const value = line.slice(5).replace(/^ /, "");
-        this.dataBytes += this.encoder.encode(value).byteLength + (this.data.length ? 1 : 0);
-        if (this.dataBytes > 4 * 1024 * 1024) throw new Error(REMOTE_ERROR_CODES.streamTooLarge);
-        this.data.push(value);
-      }
-    }
-  }
 }
 
 /** What the session list offers for a session without opening it. */

@@ -241,7 +241,8 @@ describe("Skill file read states", () => {
       );
 
       expect(screen.getByText(tr("skills.manager.readOnlyNotice"))).toBeTruthy();
-      expect(within(screen.getByRole("status")).getByText(tr("common.loading"))).toBeTruthy();
+      expect(screen.queryByText(tr("common.loading"))).toBeNull();
+      expect(await screen.findByRole("status", { name: tr("common.loading") })).toBeTruthy();
       expect(screen.queryByRole("alert")).toBeNull();
 
       await act(async () => resolveRead({ path: "SKILL.md", content: "# Reviewed instructions" }));
@@ -272,7 +273,8 @@ describe("Skill file read states", () => {
       );
 
       expect(screen.getByText(tr("skills.manager.readOnlyNotice"))).toBeTruthy();
-      expect(within(screen.getByRole("status")).getByText(tr("common.loading"))).toBeTruthy();
+      expect(screen.queryByText(tr("common.loading"))).toBeNull();
+      expect(await screen.findByRole("status", { name: tr("common.loading") })).toBeTruthy();
       expect(screen.queryByRole("alert")).toBeNull();
 
       await act(async () => resolveRead({ path: "empty.txt", content: "" }));
@@ -297,14 +299,14 @@ describe("Skill file read states", () => {
         />,
       );
 
-      expect(screen.getByText(tr("skills.manager.readOnlyNotice"))).toBeTruthy();
+      expect(screen.queryByText(tr("skills.manager.readOnlyNotice"))).toBeNull();
       expect(screen.getByText(tr("skills.manager.directoriesOnly"))).toBeTruthy();
       expect(screen.queryByRole("status")).toBeNull();
       expect(screen.queryByRole("alert")).toBeNull();
 
       rerender(<SkillFileBrowser files={[]} readFile={readFile} />);
 
-      expect(screen.getByText(tr("skills.manager.readOnlyNotice"))).toBeTruthy();
+      expect(screen.queryByText(tr("skills.manager.readOnlyNotice"))).toBeNull();
       expect(screen.queryByText(tr("skills.manager.directoriesOnly"))).toBeNull();
       expect(screen.queryByRole("status")).toBeNull();
       expect(screen.queryByRole("alert")).toBeNull();

@@ -1,3 +1,4 @@
+import { LoadingSkeleton } from "@agentkib/session-ui";
 import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { desktopApi } from "@/core/desktop";
@@ -148,6 +149,28 @@ export function RemoteAccountSettings({
         } as Record<string, string>
       )[status.error] ?? c.failed)
     : undefined;
+  const accountStatus = (standalone = false) =>
+    !status && !failed && !signingIn ? (
+      <div className="min-h-14 w-full">
+        <LoadingSkeleton label={c.loading} rows={2} layout="code" />
+      </div>
+    ) : (
+      <p role="status">
+        {signingIn
+          ? c.signingIn
+          : signedIn
+            ? standalone
+              ? status!.account!.username
+              : p.loggedIn.replace("{account}", status!.account!.username)
+            : recovering
+              ? recoveringText
+              : !status
+                ? c.unavailable
+                : variant === "step"
+                  ? ""
+                  : c.signedOut}
+      </p>
+    );
   const accountDetails = (
     <>
       {signedIn && (
@@ -272,19 +295,7 @@ export function RemoteAccountSettings({
             <DialogDescription>{c.intro}</DialogDescription>
           </DialogHeader>
           <div className="space-y-3 text-sm">
-            <p role="status">
-              {signingIn
-                ? c.signingIn
-                : signedIn
-                  ? p.loggedIn.replace("{account}", status!.account!.username)
-                  : recovering
-                    ? recoveringText
-                    : status
-                      ? c.signedOut
-                      : failed
-                        ? c.unavailable
-                        : c.loading}
-            </p>
+            {accountStatus()}
             {accountDetails}
             {actions}
             {signedIn && <p className="text-xs text-muted-foreground">{c.logoutHint}</p>}
@@ -296,22 +307,7 @@ export function RemoteAccountSettings({
     return (
       <div className="space-y-3 text-sm">
         <div className="flex flex-wrap items-center justify-between gap-2">
-          <p role="status">
-            {signingIn
-              ? c.signingIn
-              : signedIn
-                ? p.loggedIn.replace("{account}", status!.account!.username)
-                : recovering
-                  ? recoveringText
-                  : status
-                    ? // The sign-in step's own heading already says to sign in first.
-                      variant === "step"
-                      ? ""
-                      : c.signedOut
-                    : failed
-                      ? c.unavailable
-                      : c.loading}
-          </p>
+          {accountStatus()}
           {signedIn && (
             <Button variant="link" onClick={() => setManageOpen(true)}>
               {c.manage}
@@ -349,19 +345,7 @@ export function RemoteAccountSettings({
         {c.title}
       </h3>
       <p className="text-muted-foreground leading-6">{c.intro}</p>
-      <p role="status">
-        {signingIn
-          ? c.signingIn
-          : signedIn
-            ? status!.account!.username
-            : recovering
-              ? recoveringText
-              : status
-                ? c.signedOut
-                : failed
-                  ? c.unavailable
-                  : c.loading}
-      </p>
+      {accountStatus(true)}
       {accountDetails}
       {actions}
       {signedIn && <p className="text-muted-foreground leading-6">{c.logoutHint}</p>}

@@ -125,7 +125,8 @@ describe("remote settings integration", () => {
     const input = screen.getByRole("textbox", { name: "This device name" });
     fireEvent.change(input, { target: { value: "New example name" } });
     fireEvent.blur(input);
-    await waitFor(() => expect(screen.getByText("Name saved.")).toHaveAttribute("role", "status"));
+    expect(await screen.findByText("New example name")).toBeVisible();
+    expect(screen.queryByText("Name saved.")).toBeNull();
     expect(configureCalls()).toEqual([
       [
         {
@@ -261,7 +262,8 @@ describe("remote settings integration", () => {
     expect(nativeStatus.local.enabled).toBe(true);
     expect(configureCalls()).toHaveLength(1);
     expect(within(dialog).getByRole("spinbutton", { name: "Port" })).toHaveValue(1431);
-    expect(within(dialog).getByText("Unsaved changes")).toBeVisible();
+    expect(within(dialog).getByRole("button", { name: "Save" })).toBeEnabled();
+    expect(within(dialog).queryByText("Unsaved changes")).toBeNull();
   });
 
   it.each([

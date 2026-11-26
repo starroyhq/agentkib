@@ -34,7 +34,6 @@ const connectionKeys = [
   "pending",
   "verify",
   "unavailable",
-  "error",
 ] as const;
 
 const wording = [
@@ -178,6 +177,25 @@ describe("remote connection terminology", () => {
     },
   );
 
+  it.each([
+    ["zh-CN", "会话请求失败。", "请求失败，请重试。"],
+    ["zh-Hant", "工作階段請求失敗。", "請求失敗，請重試。"],
+    ["en-US", "The session request failed.", "Request failed. Try again."],
+    [
+      "ja-JP",
+      "セッションのリクエストに失敗しました。",
+      "リクエストに失敗しました。もう一度お試しください。",
+    ],
+  ] as const)(
+    "uses platform-specific session error guidance in %s",
+    async (locale, desktop, remote) => {
+      await initializeI18n(locale);
+      expect(conversationWords(locale).error).toBe(desktop);
+      expect(tr("conversation.error")).toBe(desktop);
+      expect(webWords[locale].error).toBe(remote);
+    },
+  );
+
   it.each(wording)(
     "keeps remote copy keys and interpolation parameters aligned in $locale",
     ({ locale }) => {
@@ -215,6 +233,7 @@ describe("remote connection terminology", () => {
       const connectionCopy = Object.entries(resources).filter(
         ([key]) =>
           key.startsWith("remote.") ||
+          key === "conversation.error" ||
           connectionKeys.some((name) => key === `conversation.${name}`),
       );
       for (const [key, value] of [

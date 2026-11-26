@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { CircleAlert } from "lucide-react";
+import { DelayedSpinner } from "@agentkib/session-ui";
 import { Button } from "@/components/ui/button";
 import { api } from "@/core/api";
 import { useI18n } from "@/core/useI18n";
@@ -54,7 +55,10 @@ export function McpRuntimeProbe({
   return (
     <div className="grid gap-2">
       <Button variant="outline" disabled={busy} onClick={() => void probe()}>
-        {tr(busy ? "mcp.probing" : "mcp.probe")}
+        <span aria-hidden className="size-3.5">
+          <DelayedSpinner active={busy} />
+        </span>
+        {tr("mcp.probe")}
       </Button>
       {tools && (
         <div role="status" className="grid gap-1 text-xs">

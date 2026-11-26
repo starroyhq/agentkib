@@ -366,12 +366,13 @@ describe("MCP inventory empty feedback", () => {
   it("shows loading and an initial error without claiming that the inventory is empty", async () => {
     const read = deferred<McpManagementState>();
     renderPanel(inventory([]), "/workspace/pending", read.promise);
-    expect(screen.getByText(tr("common.loading"))).toBeVisible();
+    expect(screen.queryByRole("status", { name: tr("common.loading") })).not.toBeInTheDocument();
+    expect(await screen.findByRole("status", { name: tr("common.loading") })).toBeVisible();
     search("unmatched-term");
     expect(screen.queryByText(tr("mcp.configuredEmpty"))).toBeNull();
     await act(async () => read.reject(new Error("Inventory failed")));
     expect(await screen.findByRole("alert")).toHaveTextContent("Inventory failed");
-    expect(screen.queryByText(tr("common.loading"))).toBeNull();
+    expect(screen.queryByRole("status", { name: tr("common.loading") })).toBeNull();
     expect(screen.queryByText(tr("mcp.configuredEmpty"))).toBeNull();
     expect(
       screen.queryByText(tr("mcp.manage.searchEmpty", { query: "unmatched-term" })),

@@ -1,3 +1,4 @@
+import { DelayedSpinner, LoadingSkeleton } from "@agentkib/session-ui";
 import { useQuery } from "@tanstack/react-query";
 import { queryDefaults, useOptionalQueryClient } from "@/features/home/home-query";
 import { skillKeys } from "./skills-query";
@@ -8,7 +9,6 @@ import {
   Copy,
   Eye,
   Info,
-  LoaderCircle,
   LockKeyhole,
   MoreHorizontal,
   RefreshCw,
@@ -323,16 +323,14 @@ export function SkillDetailDialog({
       <DialogContent className="top-0 right-0 left-auto h-dvh w-[min(1000px,100vw)] max-w-none translate-x-0 translate-y-0 content-start overflow-y-auto rounded-none sm:max-w-none data-open:slide-in-from-right-8 data-open:zoom-in-100 data-closed:slide-out-to-right-8 data-closed:zoom-out-100">
         <DialogHeader>
           <DialogTitle>{detail?.name ?? tr("skills.manager.details")}</DialogTitle>
-          <DialogDescription>
-            {detail?.description || tr("skills.manager.readOnlyNotice")}
-          </DialogDescription>
+          {detail?.description && <DialogDescription>{detail.description}</DialogDescription>}
         </DialogHeader>
         {error !== undefined ? (
           <p role="alert" className="text-destructive-text">
             {localizeMessage(error)}
           </p>
         ) : !detail ? (
-          <p role="status">{tr("common.loading")}</p>
+          <LoadingSkeleton label={tr("common.loading")} rows={5} className="min-h-40" />
         ) : (
           <>
             <div className="flex flex-wrap gap-2 text-xs">
@@ -364,10 +362,9 @@ export function SkillDetailDialog({
               </p>
             ))}
             <div className="grid gap-2 rounded-xl border p-3">
-              <h3 className="text-sm font-medium">{tr("skills.workspaceUsage")}</h3>
-              <p className="text-xs text-muted-foreground">
-                {tr("skills.manager.visibilityNotice")}
-              </p>
+              <h3>
+                <SkillVisibilityLabel label={tr("skills.workspaceUsage")} name={detail.name} />
+              </h3>
               {usedDeployments.map((item) => (
                 <div key={item.id} className="grid gap-1 text-xs">
                   <code className="break-all">{item.target}</code>
@@ -708,12 +705,7 @@ export function SkillDeploymentDialog({
             {errors.map(localizeMessage).join(" · ")}
           </div>
         )}
-        {busy && !preview && !recovery && (
-          <p role="status" className="flex gap-2">
-            <LoaderCircle size={16} className="animate-spin" />
-            {tr("common.loading")}
-          </p>
-        )}
+        {busy && !preview && !recovery && <LoadingSkeleton label={tr("common.loading")} />}
         {!preview && !recovery && action.operation === "deploy" && (
           <>
             <Select
@@ -971,7 +963,7 @@ export function SkillDeploymentDialog({
               }
               onClick={() => void apply()}
             >
-              {busy && <LoaderCircle size={14} className="animate-spin" />}
+              <DelayedSpinner active={busy} />
               {tr("skills.manager.operation.recover")}
             </Button>
           )}
@@ -1003,7 +995,7 @@ export function SkillDeploymentDialog({
                   }
                   onClick={() => void apply()}
                 >
-                  {busy && <LoaderCircle size={14} className="animate-spin" />}
+                  <DelayedSpinner active={busy} />
                   {tr(
                     action.operation === "undeploy"
                       ? "skills.manager.applyWithdrawal"
@@ -1343,7 +1335,7 @@ export function SkillUsageList({
           )}
         </>
       )}
-      {loading && <p role="status">{tr("common.loading")}</p>}
+      {loading && <LoadingSkeleton label={tr("common.loading")} rows={5} />}
       {filteredNative.length > 0 && (
         <div className="flex items-start gap-2 text-xs text-muted-foreground">
           <LockKeyhole size={14} className="shrink-0" aria-hidden="true" />

@@ -338,6 +338,26 @@ describe("access invalidation", () => {
   });
 });
 
+it("refreshes HTTP access on focus without replacing the current session stream", async () => {
+  const server = createServer();
+  await openSession();
+  const source = FakeEventSource.instances.at(-1)!;
+  expect(source.path).toContain("sessionId=session");
+  const streamCount = FakeEventSource.instances.length;
+  server.fetcher.mockClear();
+  vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
+  fireEvent(window, new Event("focus"));
+  await waitFor(() =>
+    expect(server.fetcher).toHaveBeenCalledWith(
+      expect.stringMatching(/\/access$/),
+      expect.objectContaining({ method: "GET" }),
+    ),
+  );
+  expect(source.close).not.toHaveBeenCalled();
+  expect(FakeEventSource.instances).toHaveLength(streamCount);
+  expect(screen.getByText("Secret history")).toBeVisible();
+});
+
 describe("control outcome recovery", () => {
   it("starts checking an unknown send immediately and recovers on focus without resending", async () => {
     const server = createServer();

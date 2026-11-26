@@ -385,6 +385,70 @@ describe("Codex app-server shutdown completion", () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
+  it("bounds metadata children while their shutdown is unconfirmed", async () => {
+    useWindows();
+    const children = Array.from({ length: 5 }, childFixture);
+    spawn.mockReset();
+    for (const { child } of children) spawn.mockReturnValueOnce(child);
+    const reader = new CodexAppServerReader({});
+    const read = (index: number) =>
+      reader.readThread("/synthetic/codex", `/workspace-${index}`, "/home", "thread");
+    const pending = children
+      .slice(0, 4)
+      .map((_, index) =>
+        expect(read(index)).rejects.toThrow(
+          "Codex app-server process did not close after termination",
+        ),
+      );
+    await vi.advanceTimersByTimeAsync(4000);
+    await Promise.all(pending);
+    await expect(read(4)).rejects.toThrow("Codex app-server reader is busy");
+    expect(spawn).toHaveBeenCalledTimes(4);
+
+    children[0].finish();
+    const next = read(4);
+    await vi.advanceTimersByTimeAsync(0);
+    children[4].finish();
+    await expect(next).resolves.toEqual({ accepted: true });
+    expect(spawn).toHaveBeenCalledTimes(5);
+    for (const child of children.slice(1, 4)) child.finish();
+    await reader.closeAsync();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("reclaims a retiring metadata child before retrying the same workspace", async () => {
+    useWindows();
+    const prior = childFixture();
+    const independent = childFixture();
+    const replacement = childFixture();
+    spawn.mockReset();
+    for (const { child } of [prior, independent, replacement]) spawn.mockReturnValueOnce(child);
+    const reader = new CodexAppServerReader({});
+    const read = (workspace: string) =>
+      reader.readThread("/synthetic/codex", workspace, "/home", "thread");
+    const failed = expect(read("/workspace")).rejects.toThrow(
+      "Codex app-server process did not close after termination",
+    );
+    await vi.advanceTimersByTimeAsync(0);
+    await expect(read("/workspace/.")).rejects.toThrow("Codex app-server reader is busy");
+
+    const healthy = read("/elsewhere");
+    await vi.advanceTimersByTimeAsync(0);
+    independent.finish();
+    await expect(healthy).resolves.toEqual({ accepted: true });
+    await vi.advanceTimersByTimeAsync(4000);
+    await failed;
+    await expect(read("/workspace")).rejects.toThrow("Codex app-server reader is busy");
+    expect(spawn).toHaveBeenCalledTimes(2);
+
+    prior.finish();
+    const retry = read("/workspace");
+    await vi.advanceTimersByTimeAsync(0);
+    replacement.finish();
+    await expect(retry).resolves.toEqual({ accepted: true });
+    expect(spawn).toHaveBeenCalledTimes(3);
+  });
+
   it("includes a reader session whose initialize response is still pending", async () => {
     const f = childFixture();
     f.setRespond(false);

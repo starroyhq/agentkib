@@ -4,6 +4,7 @@ import {
   REMOTE_ERROR_CODES,
   PROJECT_AGENT_MAX_WORKERS,
   parseClaudeSlashCommand,
+  sessionProviderDeclaration,
 } from "@agentkib/runtime-protocol";
 import { readControlReceipt } from "./control-receipt";
 import { ANTIGRAVITY_ACP_DISABLED } from "./agents/antigravity/acp-enabled";
@@ -1508,7 +1509,8 @@ export class OrchestrationService {
 
   async #maybeAutoAdoptTerminalLead(lead: Lead, observations: readonly WorkerObservation[]) {
     const id = lead.sessionId;
-    if (!this.lanes.autoAdoptTerminalLead || this.lanes.session(id)?.agent !== "claude-code")
+    const provider = sessionProviderDeclaration(this.lanes.session(id)?.agent);
+    if (!this.lanes.autoAdoptTerminalLead || provider?.connection?.kind !== "terminal-bridge")
       return;
     const running = observations.filter(({ live }) => workerStatus(live) === "running");
     const canAdopt = () => {

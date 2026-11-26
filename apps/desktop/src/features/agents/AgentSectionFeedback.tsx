@@ -1,9 +1,11 @@
+import { useDelayedBusy } from "@agentkib/session-ui";
+import { SkeletonListRows } from "@/components/ui/skeleton-layouts";
 import { useI18n } from "@/core/useI18n";
 import { Button } from "@/components/ui/button";
-import { RefreshCw } from "lucide-react";
 
 export function AgentSectionFeedback({ error, onRetry }: { error: boolean; onRetry: () => void }) {
   const { tr } = useI18n();
+  const showLoading = useDelayedBusy(!error);
   return error ? (
     <div
       role="alert"
@@ -15,13 +17,8 @@ export function AgentSectionFeedback({ error, onRetry }: { error: boolean; onRet
       </Button>
     </div>
   ) : (
-    <div
-      role="status"
-      aria-live="polite"
-      className="flex min-h-32 items-center justify-center gap-2 p-5 text-sm text-muted-foreground"
-    >
-      <RefreshCw size={15} className="animate-spin" />
-      {tr("common.loading")}
+    <div className="min-h-32" role="status" aria-label={tr("common.loading")}>
+      {showLoading && <SkeletonListRows count={2} compact />}
     </div>
   );
 }

@@ -1,3 +1,4 @@
+import { LoadingSkeleton, useDelayedBusy, useSessionForegroundRefresh } from "@agentkib/session-ui";
 import { useI18n } from "@/core/useI18n";
 import { Input } from "@/components/ui/input";
 import {
@@ -82,6 +83,7 @@ interface HistoryPage {
 }
 
 const historyPageSize = 50;
+const gitFileRefreshMs = 15_000;
 const emptyCommitHistory: GitCommitSummary[] = [];
 const emptyFileChanges: GitFileChange[] = [];
 
@@ -194,6 +196,9 @@ export function WorkspaceGitPage({ workspace, subview, onSubviewChange }: Worksp
       queryKey: workspaceKeys.gitSummary(workspace.id),
       queryFn: () => api.workspaceGitSummary(workspace.id),
       staleTime: 0,
+      refetchInterval: (query) =>
+        query.state.data && !query.state.error ? gitFileRefreshMs : false,
+      refetchIntervalInBackground: false,
     },
     queryClient,
   );
@@ -225,6 +230,7 @@ export function WorkspaceGitPage({ workspace, subview, onSubviewChange }: Worksp
   );
   const loading = summaryQuery.isPending || (!!summary && historyQuery.isPending);
   const loadingPage = historyQuery.isFetchingNextPage;
+  const showLoading = useDelayedBusy(loading);
   const refreshing = summaryQuery.isFetching || (historyQuery.isFetching && !loadingPage);
   const loadError = summaryQuery.error ?? historyQuery.error;
   const error = loadError ? localizeMessage(loadError) : "";
@@ -352,6 +358,11 @@ export function WorkspaceGitPage({ workspace, subview, onSubviewChange }: Worksp
       enabled: !!diffRequest,
       // 工作区 diff 随文件改动变化，每次打开都重新读取，但先显示缓存。
       staleTime: 0,
+      refetchInterval: (query) =>
+        activeSubview?.kind === "worktree" && query.state.data && !query.state.error
+          ? gitFileRefreshMs
+          : false,
+      refetchIntervalInBackground: false,
     },
     queryClient,
   );
@@ -367,8 +378,33 @@ export function WorkspaceGitPage({ workspace, subview, onSubviewChange }: Worksp
           ? { status: "empty" }
           : { status: "ready", value: diffQuery.data };
 
-  // 刷新回到第一页并只重取第一页；否则会按旧游标依次重取所有已加载的页。
-  const refreshGit = () => {
+  useSessionForegroundRefresh(workspace.id, () => {
+    void queryClient.invalidateQueries(
+      {
+        queryKey: workspaceKeys.git(workspace.id),
+        predicate: (query) => query.queryKey[3] !== "history",
+      },
+      { cancelRefetch: false },
+    );
+  });
+
+  // A changed ref can invalidate historical cursors. Keep pagination stable while refs match.
+  const revision = summary ? JSON.stringify([summary.head_oid, summary.refs]) : undefined;
+  const lastRevision = useRef<{ workspace: string; value: string } | undefined>(undefined);
+  useEffect(() => {
+    if (!revision) return;
+    const previous = lastRevision.current;
+    lastRevision.current = { workspace: workspace.id, value: revision };
+    if (previous?.workspace !== workspace.id || previous.value === revision) return;
+    historyGeneration.current += 1;
+    setHistoryPageIndex(0);
+    void queryClient.resetQueries({
+      queryKey: workspaceKeys.gitHistory(workspace.id, appliedFilters),
+    });
+  }, [appliedFilters, queryClient, revision, workspace.id]);
+
+  // Retry starts at the first page rather than reusing stale cursors.
+  const retryGit = () => {
     historyGeneration.current += 1;
     setHistoryPageIndex(0);
     void queryClient.resetQueries({
@@ -451,7 +487,7 @@ export function WorkspaceGitPage({ workspace, subview, onSubviewChange }: Worksp
     setSubview(undefined);
   };
 
-  if (loading && !summary) return <WorkspaceGitSkeleton />;
+  if (loading && !summary) return showLoading ? <WorkspaceGitSkeleton /> : null;
 
   if (summary && activeSubview) {
     const commitDetail = activeSubview.kind === "commit";
@@ -519,8 +555,7 @@ export function WorkspaceGitPage({ workspace, subview, onSubviewChange }: Worksp
                 </Button>
                 {filesLoading && (
                   <div className="flex min-h-9 items-center gap-2 px-2 text-xs text-muted-foreground">
-                    <RefreshCw size={14} className="animate-spin" />
-                    {tr("common.loading")}
+                    <LoadingSkeleton label={tr("common.loading")} className="w-full" />
                   </div>
                 )}
                 {!filesLoading && filesError && (
@@ -658,22 +693,17 @@ export function WorkspaceGitPage({ workspace, subview, onSubviewChange }: Worksp
             )}
           </div>
         )}
-        <Button
-          variant="ghost"
-          size="icon"
-          className="shrink-0"
-          onClick={refreshGit}
-          disabled={refreshing}
-          aria-label={tr("common.refresh")}
-          title={tr("common.refresh")}
-        >
-          <RefreshCw size={15} className={refreshing ? "animate-spin" : ""} />
-        </Button>
       </div>
       {error && (
-        <div className="flex items-center gap-2 rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive-text">
+        <div
+          role="alert"
+          className="flex items-center gap-2 rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive-text"
+        >
           <CircleAlert size={15} />
-          {error}
+          <span className="flex-1">{error}</span>
+          <Button variant="outline" size="sm" onClick={retryGit} disabled={refreshing}>
+            {tr("git.retry")}
+          </Button>
         </div>
       )}
       {!loading && !summary && (
@@ -1031,9 +1061,8 @@ function GitDiffPane({
         </div>
       )}
       {!untracked && diffState.status === "loading" && (
-        <div className="grid min-h-32 place-content-center justify-items-center gap-2 text-sm text-muted-foreground">
-          <RefreshCw size={16} className="animate-spin" />
-          <span>{tr("git.loadingDiff")}</span>
+        <div className="min-h-32 p-3">
+          <LoadingSkeleton label={tr("git.loadingDiff")} layout="code" rows={5} />
         </div>
       )}
       {!untracked && diffState.status === "empty" && (

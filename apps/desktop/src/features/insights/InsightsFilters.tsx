@@ -1,4 +1,4 @@
-import type { Dispatch, SetStateAction } from "react";
+import type { Dispatch, ReactNode, SetStateAction } from "react";
 import { useI18n } from "@/core/useI18n";
 import {
   Select,
@@ -40,6 +40,7 @@ export function InsightsFilters({
   onCustomChange,
   onApplyCustom,
   today,
+  trailing,
 }: {
   section: InsightsSection;
   workspaces: WorkspaceSummary[];
@@ -57,6 +58,7 @@ export function InsightsFilters({
   onCustomChange: (value: InsightsDates) => void;
   onApplyCustom: () => void;
   today: string;
+  trailing?: ReactNode;
 }) {
   const { tr } = useI18n();
   const metricLabels: Record<HeatmapMetric, string> = {
@@ -253,6 +255,7 @@ export function InsightsFilters({
           </div>
         )}
       </div>
+      {trailing}
     </div>
   );
 }

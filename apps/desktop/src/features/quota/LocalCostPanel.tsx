@@ -1,6 +1,8 @@
 import { useState } from "react";
 import { RefreshCw } from "lucide-react";
+import { useDelayedBusy } from "@agentkib/session-ui";
 import { Button } from "@/components/ui/button";
+import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { useI18n } from "@/core/useI18n";
@@ -14,18 +16,14 @@ export function LocalCostPanel({ costs }: { costs: LocalCostsQuery }) {
   const { tr, locale, localizeMessage } = useI18n();
   const [metric, setMetric] = useState<Metric>("cost");
   const snapshot = costs.snapshot;
-  const state = costs.status?.state;
+  const showRefresh = useDelayedBusy(costs.busy);
+  const waitingForData = !snapshot && (costs.loading || costs.busy);
+  const showSkeleton = useDelayedBusy(waitingForData);
   const error = costs.error
     ? localizeMessage(costs.error)
     : costs.status?.error_key
       ? tr(costs.status.error_key)
       : costs.status?.error_detail;
-  const statusLabel =
-    state === "queued" || state === "running"
-      ? tr(`quota.cost.state.${state}`)
-      : costs.loading && !snapshot
-        ? tr("quota.cost.loading")
-        : undefined;
   return (
     <section
       aria-labelledby="local-cost-heading"
@@ -45,28 +43,31 @@ export function LocalCostPanel({ costs }: { costs: LocalCostsQuery }) {
           size="icon"
           className="size-8 shrink-0 rounded-lg"
           disabled={costs.busy}
+          aria-busy={costs.busy}
           aria-label={tr("quota.cost.refresh")}
           onClick={() => void costs.refresh().catch(() => undefined)}
         >
-          <RefreshCw size={14} className={costs.busy ? "animate-spin" : undefined} />
+          <RefreshCw
+            size={14}
+            className={showRefresh ? "animate-spin motion-reduce:animate-none" : undefined}
+          />
         </Button>
       </header>
-      <div
-        role="status"
-        aria-live="polite"
-        className="mt-3 flex flex-wrap items-center gap-2 text-xs text-muted-foreground"
-      >
-        {statusLabel && <span>{statusLabel}</span>}
-        {snapshot && (
-          <>
-            <span>{tr("quota.cost.timezone", { timezone: snapshot.timezone })}</span>
-            <span>·</span>
+      {snapshot && (
+        <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+          <span>{tr("quota.cost.timezone", { timezone: snapshot.timezone })}</span>
+          <span aria-hidden>·</span>
+          {snapshot.range_end !== snapshot.today.date ? (
+            <time dateTime={snapshot.range_end}>
+              {tr("quota.cost.previousPeriod", { date: snapshot.range_end })}
+            </time>
+          ) : (
             <time dateTime={snapshot.updated_at}>
               {tr("quota.updated", { time: formatDateTime(snapshot.updated_at, locale) })}
             </time>
-          </>
-        )}
-      </div>
+          )}
+        </div>
+      )}
       {error && (
         <p role="alert" className="mt-2 text-xs text-amber-600">
           {tr("quota.cost.refreshFailed")} {error}
@@ -74,11 +75,6 @@ export function LocalCostPanel({ costs }: { costs: LocalCostsQuery }) {
       )}
       {snapshot ? (
         <>
-          {snapshot.range_end !== snapshot.today.date && (
-            <p className="mt-3 text-xs text-amber-600">
-              {tr("quota.cost.previousPeriod", { date: snapshot.range_end })}
-            </p>
-          )}
           <div className="mt-4 grid gap-3 sm:grid-cols-3">
             <CostSummary
               label={tr("quota.cost.today")}
@@ -212,9 +208,24 @@ export function LocalCostPanel({ costs }: { costs: LocalCostsQuery }) {
             </CollapsibleContent>
           </Collapsible>
         </>
+      ) : waitingForData ? (
+        <div className="mt-4 min-h-36">
+          {showSkeleton && (
+            <div
+              role="status"
+              aria-label={tr("quota.cost.loading")}
+              className="grid gap-3 sm:grid-cols-3"
+            >
+              <Skeleton className="h-20 rounded-xl" />
+              <Skeleton className="h-20 rounded-xl" />
+              <Skeleton className="h-20 rounded-xl" />
+              <Skeleton className="h-36 rounded-xl sm:col-span-3" />
+            </div>
+          )}
+        </div>
       ) : (
         <div className="grid min-h-36 place-content-center text-center text-sm text-muted-foreground">
-          <p>{tr(costs.loading || costs.busy ? "quota.cost.loading" : "quota.cost.empty")}</p>
+          <p>{tr("quota.cost.empty")}</p>
         </div>
       )}
     </section>

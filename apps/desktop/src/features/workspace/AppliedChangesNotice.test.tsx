@@ -5,6 +5,7 @@ import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { initializeI18n, changeLocale } from "@/core/i18n";
 import type { AppliedWorkspaceChanges } from "./workspace-store";
 import { AppliedChangesNotice } from "./AppliedChangesNotice";
+import { toast } from "sonner";
 import { appliedChangeCopy } from "./applied-change-copy";
 
 const result: AppliedWorkspaceChanges = {
@@ -43,7 +44,10 @@ const result: AppliedWorkspaceChanges = {
 
 describe("applied changes diagnosis", () => {
   beforeAll(() => initializeI18n("en-US"));
-  afterEach(cleanup);
+  afterEach(() => {
+    cleanup();
+    vi.restoreAllMocks();
+  });
   it.each(["zh-CN", "zh-Hant", "en-US", "ja-JP"] as const)(
     "renders the real result and localized warning in %s",
     async (locale) => {
@@ -70,6 +74,7 @@ describe("applied changes diagnosis", () => {
     async (locale) => {
       await changeLocale(locale);
       const copy = appliedChangeCopy(locale);
+      const success = vi.spyOn(toast, "success");
       render(
         <AppliedChangesNotice
           result={{
@@ -79,7 +84,8 @@ describe("applied changes diagnosis", () => {
           onDismiss={() => {}}
         />,
       );
-      expect(screen.getByText(copy.noNewIssues)).toBeVisible();
+      expect(screen.queryByText(copy.noNewIssues)).toBeNull();
+      expect(success).toHaveBeenCalledWith(copy.noNewIssues, { duration: 3000, id: "applied" });
       expect(screen.queryByText(copy.complete(0))).toBeNull();
       expect(screen.queryByText(copy.newIssues(0))).toBeNull();
     },
@@ -135,7 +141,10 @@ describe("applied changes diagnosis", () => {
         />,
       );
       expect(screen.getByText(copy.applied(1))).toBeVisible();
-      expect(screen.getByText(copy[status])).toBeVisible();
+      if (status === "checking") {
+        expect(screen.getByRole("status", { name: copy.checking })).toBeVisible();
+        expect(screen.queryByText(copy.checking)).toBeNull();
+      } else expect(screen.getByText(copy.failed)).toBeVisible();
       expect(screen.queryByText(copy.complete(0))).toBeNull();
     },
   );

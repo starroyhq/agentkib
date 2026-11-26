@@ -1,5 +1,6 @@
+import { subscribeSessionForegroundRefresh, useDelayedBusy } from "@agentkib/session-ui";
 import { useI18n } from "@/core/useI18n";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import { createFileRoute, useNavigate, useSearch } from "@tanstack/react-router";
 import { useQueryClient } from "@tanstack/react-query";
 import { useAppDialogs } from "@/components/AppDialogProvider";
@@ -40,7 +41,22 @@ function WorkspacesRoute() {
   const doctorQuery = useHomeDoctorSummaries(workspaceIds);
   const memoriesQuery = useHomeMemories();
   const { data: refreshJobs = [] } = useHomeRefreshJobs();
-  const [refreshingWorkspaceIds, setRefreshingWorkspaceIds] = useState<string[]>([]);
+  const initiallyLoading = workspacesQuery.isPending && workspacesQuery.data === undefined;
+  const showInitialLoading = useDelayedBusy(initiallyLoading);
+  useEffect(() => {
+    const refresh = () => {
+      const keys = [
+        homeKeys.workspaces(),
+        homeKeys.doctorSummariesRoot(),
+        homeKeys.memories(),
+        homeKeys.discovery(),
+      ];
+      for (const key of keys)
+        void queryClient.invalidateQueries({ queryKey: key }, { cancelRefetch: false });
+    };
+    refresh();
+    return subscribeSessionForegroundRefresh(refresh);
+  }, [queryClient]);
   const openRequest = useRef(0);
   const retryPending = useRef(false);
   const {
@@ -124,18 +140,6 @@ function WorkspacesRoute() {
     }
   };
 
-  const refreshWorkspace = async (id: string) => {
-    setRefreshingWorkspaceIds((current) => (current.includes(id) ? current : [...current, id]));
-    try {
-      await api.refreshWorkspace(id);
-      await queryClient.invalidateQueries({ queryKey: homeKeys.all });
-    } catch (error) {
-      setMessage(localizeMessage(error));
-    } finally {
-      setRefreshingWorkspaceIds((current) => current.filter((workspaceId) => workspaceId !== id));
-    }
-  };
-
   const revealWorkspace = async (id: string) => {
     try {
       await api.openWorkspaceStoragePath(id, "");
@@ -180,8 +184,7 @@ function WorkspacesRoute() {
       />
     );
   }
-  if (workspacesQuery.isPending && workspacesQuery.data === undefined)
-    return <WorkspacesSkeleton view={view} />;
+  if (initiallyLoading) return showInitialLoading ? <WorkspacesSkeleton view={view} /> : null;
 
   return (
     <div className="grid gap-4">
@@ -223,7 +226,6 @@ function WorkspacesRoute() {
         doctorSummaries={doctorQuery.isError ? {} : (doctorQuery.data ?? {})}
         memories={memoriesQuery.data ?? []}
         discoveryRefreshing={discoveryRefreshing}
-        refreshingWorkspaceIds={refreshingWorkspaceIds}
         onAddWorkspace={() => void addWorkspace()}
         onViewChange={setView}
         onOpen={openWorkspace}
@@ -234,7 +236,6 @@ function WorkspacesRoute() {
             search: { settingsSection: "discovery", settingsTarget: "discovery-status" },
           })
         }
-        onRefreshWorkspace={refreshWorkspace}
         onExclude={excludeWorkspace}
         onReveal={revealWorkspace}
       />

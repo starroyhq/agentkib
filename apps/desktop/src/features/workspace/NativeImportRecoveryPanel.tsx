@@ -1,3 +1,5 @@
+import { DelayedSpinner } from "@agentkib/session-ui";
+import { Badge } from "@/components/ui/badge";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { queryDefaults, useOptionalQueryClient } from "@/features/home/home-query";
 import { useEffect, useRef, useState } from "react";
@@ -113,9 +115,9 @@ export function NativeImportRecoveryPanel({
                 ([agent]) => agent === operation.launch_request.target_agent,
               )?.[1] ?? operation.launch_request.target_agent}
             </span>
-            <span className="ml-2 text-xs text-muted-foreground">
+            <Badge variant="outline" className="ml-2">
               {tr(`handoff.recovery.${operation.status}`)}
-            </span>
+            </Badge>
             {operation.target_session_id && (
               <code className="block text-xs">{operation.target_session_id}</code>
             )}
@@ -149,14 +151,15 @@ export function NativeImportRecoveryPanel({
                 operation.status === "prepared" ? onReview?.(operation) : void recover(operation)
               }
             >
+              <span className="size-3.5" aria-hidden>
+                <DelayedSpinner active={busyId === operation.launch_request.operation_id} />
+              </span>
               {tr(
-                busyId === operation.launch_request.operation_id
-                  ? "common.loading"
-                  : operation.status === "prepared"
-                    ? "handoff.recovery.review"
-                    : operation.status === "verified"
-                      ? "handoff.recovery.open"
-                      : "handoff.recovery.check",
+                operation.status === "prepared"
+                  ? "handoff.recovery.review"
+                  : operation.status === "verified"
+                    ? "handoff.recovery.open"
+                    : "handoff.recovery.check",
               )}
             </Button>
           </div>

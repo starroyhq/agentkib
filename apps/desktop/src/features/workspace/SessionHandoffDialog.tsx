@@ -1,5 +1,5 @@
 import { useI18n } from "@/core/useI18n";
-import { LoadingSkeleton } from "@agentkib/session-ui";
+import { DelayedSpinner, LoadingSkeleton, useDelayedBusy } from "@agentkib/session-ui";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import {
@@ -16,7 +16,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { CircleAlert, Copy, FileOutput, PlugZap, ShieldCheck, X } from "lucide-react";
+import { Check, CircleAlert, Copy, FileOutput, PlugZap, ShieldCheck, X } from "lucide-react";
 import { api } from "@/core/api";
 import { isLiveSessionAgent } from "@agentkib/web-client";
 import type {
@@ -113,6 +113,7 @@ export function SessionHandoffDialog({
   const [acceptLosses, setAcceptLosses] = useState(false);
   const [busy, setBusy] = useState(false);
   const [copied, setCopied] = useState(false);
+  const showPreparingSteps = useDelayedBusy(busy && !draft, 3000);
   const [rawError, setError] = useState<unknown>("");
   const error = rawError === "" ? "" : localizeMessage(rawError);
   const activeRef = useRef(true);
@@ -322,7 +323,7 @@ export function SessionHandoffDialog({
           setCopied(true);
           window.setTimeout(() => {
             if (activeRef.current) setCopied(false);
-          }, 1200);
+          }, 1500);
         } catch (reason) {
           if (isCurrent(identity)) setError(reason);
         }
@@ -383,17 +384,15 @@ export function SessionHandoffDialog({
           </div>
         )}
         {busy && !draft ? (
-          <div className="grid min-h-[360px] place-content-center gap-4 px-6 py-8 text-center">
-            <div className="mx-auto size-5 animate-spin rounded-full border-2 border-muted border-t-foreground" />
-            <strong className="text-sm text-foreground">{tr("handoff.preparingLocal")}</strong>
-            <div className="grid gap-2 text-left text-xs text-muted-foreground">
-              {(["read", "sanitize", "window"] as const).map((step) => (
-                <span className="flex items-center gap-2" key={step}>
-                  <span className="size-1.5 rounded-full bg-muted-foreground/50" />
-                  {tr(`handoff.prepareStep.${step}`)}
-                </span>
-              ))}
-            </div>
+          <div className="grid min-h-[360px] content-start gap-4 px-6 py-8">
+            <LoadingSkeleton label={tr("handoff.preparingLocal")} layout="code" rows={5} />
+            {showPreparingSteps && (
+              <div className="flex flex-wrap gap-3 text-xs text-muted-foreground">
+                {(["read", "sanitize", "window"] as const).map((step) => (
+                  <span key={step}>{tr(`handoff.prepareStep.${step}`)}</span>
+                ))}
+              </div>
+            )}
           </div>
         ) : draft ? (
           <div className="flex min-h-0 flex-1 flex-col gap-2.5 overflow-auto px-5 py-4">
@@ -767,8 +766,8 @@ export function SessionHandoffDialog({
                 {tr("common.back")}
               </Button>
               <Button variant="outline" disabled={busy} onClick={() => void copy()}>
-                <Copy size={14} />
-                {tr(copied ? "handoff.copied" : "handoff.copy")}
+                {copied ? <Check size={14} /> : <Copy size={14} />}
+                {tr("handoff.copy")}
               </Button>
               <Button
                 disabled={
@@ -789,8 +788,10 @@ export function SessionHandoffDialog({
               disabled={busy || !sourceCanContinue || !cursorTargetReady}
               onClick={() => void prepare()}
             >
-              <FileOutput size={14} />
-              {tr(busy ? "common.loading" : "handoff.prepare")}
+              <span className="size-3.5" aria-hidden>
+                {busy ? <DelayedSpinner active /> : <FileOutput size={14} />}
+              </span>
+              {tr("handoff.prepare")}
             </Button>
           )}
         </footer>

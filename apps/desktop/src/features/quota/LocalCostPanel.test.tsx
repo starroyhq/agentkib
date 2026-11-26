@@ -23,7 +23,10 @@ describe("local usage estimate panel", () => {
 
   it("keeps cached estimates visible during scans and distinguishes unknown amounts from genuine zero", () => {
     render(<LocalCostPanel costs={costsFixture()} />);
-    expect(screen.getByText(tr("quota.cost.state.running"))).toBeTruthy();
+    expect(screen.queryByText(tr("quota.cost.state.running"))).toBeNull();
+    expect(
+      screen.getByRole("button", { name: tr("quota.cost.refresh") }).getAttribute("aria-busy"),
+    ).toBe("true");
     expect(screen.getAllByText("—").length).toBeGreaterThan(0);
     expect(screen.getAllByText(/USD\s*1\.25/).length).toBeGreaterThan(0);
     expect(screen.getByText(tr("quota.cost.timezone", { timezone: "Asia/Shanghai" }))).toBeTruthy();
@@ -46,6 +49,22 @@ describe("local usage estimate panel", () => {
         .getAttribute("aria-pressed"),
     ).toBe("true");
     expect(within(trend).getAllByRole("img")).toHaveLength(2);
+  });
+
+  it("waits 300 ms before rendering a skeleton when there is no cached estimate", () => {
+    vi.useFakeTimers();
+    try {
+      const costs = { ...costsFixture(), snapshot: undefined, loading: true };
+      render(<LocalCostPanel costs={costs} />);
+      const label = tr("quota.cost.loading");
+      act(() => vi.advanceTimersByTime(299));
+      expect(screen.queryByRole("status", { name: label })).toBeNull();
+      act(() => vi.advanceTimersByTime(1));
+      expect(screen.getByRole("status", { name: label }).textContent).toBe("");
+      expect(screen.queryByText(tr("quota.cost.state.running"))).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("shows failures alongside the last successful aggregates and allows an independent retry", async () => {

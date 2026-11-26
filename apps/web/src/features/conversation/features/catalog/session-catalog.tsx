@@ -24,7 +24,6 @@ import {
   GitBranch,
   Info,
   ListFilter,
-  RefreshCw,
   Search,
   Split,
 } from "lucide-react";
@@ -48,7 +47,7 @@ export function SessionCatalog({
   selected,
   onSelect,
   historySearch,
-  onRefresh,
+  onRetry,
   locale = "zh-CN",
   indexEnabled = true,
   pendingSessions = {},
@@ -67,7 +66,7 @@ export function SessionCatalog({
   selected: string;
   onSelect: (id: string) => void;
   historySearch?: ReactNode;
-  onRefresh?: () => void;
+  onRetry?: () => void;
   locale?: Locale;
   indexEnabled?: boolean;
   pendingSessions?: Record<string, boolean>;
@@ -125,22 +124,6 @@ export function SessionCatalog({
           >
             <ListFilter className="size-4" aria-hidden="true" />
           </IconAction>
-          {onRefresh && (
-            <IconAction
-              label={t.refresh}
-              render={
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="icon"
-                  className="size-11 p-0"
-                  onClick={onRefresh}
-                />
-              }
-            >
-              <RefreshCw className="size-3.5" aria-hidden="true" />
-            </IconAction>
-          )}
         </div>
       </header>
       <label className="relative mx-4 mb-3 flex items-center text-muted-foreground [&>svg]:pointer-events-none [&>svg]:absolute [&>svg]:left-3 [&>input]:bg-background [&>input]:pl-9">
@@ -203,7 +186,13 @@ export function SessionCatalog({
           <p>{t.indexDisabled}</p>
         ) : status === "loading" ? (
           <p role="status">{t.loading}</p>
-        ) : status === "error" ? null : !workspaces ? (
+        ) : status === "error" ? (
+          onRetry && (
+            <Button type="button" variant="outline" size="sm" onClick={onRetry}>
+              {c.retry}
+            </Button>
+          )
+        ) : !workspaces ? (
           <p role="status">{c.missing}</p>
         ) : (
           <>

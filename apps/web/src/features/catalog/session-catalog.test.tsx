@@ -56,6 +56,17 @@ const sessions = [
 afterEach(cleanup);
 
 describe("SessionCatalog", () => {
+  it("offers a retry only when the directory could not be read", () => {
+    const onRetry = vi.fn();
+    const props = { sessions, workspaces, selected: "", onSelect: vi.fn(), onRetry };
+    const view = render(<SessionCatalog {...props} />);
+    expect(screen.queryByRole("button", { name: "刷新" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "重试" })).not.toBeInTheDocument();
+    view.rerender(<SessionCatalog {...props} status="error" />);
+    fireEvent.click(screen.getByRole("button", { name: "重试" }));
+    expect(onRetry).toHaveBeenCalledOnce();
+  });
+
   it.each([
     ["zh-CN", "项目信息不可用，请更新电脑上的 AgentKib。"],
     ["zh-Hant", "專案資訊不可用，請更新電腦上的 AgentKib。"],

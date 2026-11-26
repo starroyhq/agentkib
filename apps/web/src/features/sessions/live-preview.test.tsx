@@ -118,6 +118,8 @@ describe("the web preview in a browser", () => {
     expect(tab).toHaveAttribute("target", "_blank");
     expect(tab).toHaveAttribute("rel", "noreferrer");
     expect(screen.queryByText(/Changes may not show up here on their own/)).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: copy.reload })).not.toBeInTheDocument();
+    fireEvent.error(frame);
     fireEvent.click(screen.getByRole("button", { name: copy.reload }));
     await waitFor(() =>
       expect(screen.getByTitle(copy.frame)).toHaveAttribute(

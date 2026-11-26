@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { ArrowLeft, ExternalLink, RotateCw } from "lucide-react";
+import { ArrowLeft, ExternalLink } from "lucide-react";
 import { localPreviewLabel, type LocalPreviewTarget } from "@agentkib/web-client";
 import { Button } from "@/components/ui/button";
 import { api } from "@/core/api";
@@ -41,16 +41,6 @@ export function LivePreview({ page, live, locale }: LivePreviewProps) {
             variant="ghost"
             size="icon"
             className="size-8 shrink-0 rounded-md text-muted-foreground"
-            aria-label={copy.reload}
-            title={copy.reload}
-            onClick={() => setRevision((value) => value + 1)}
-          >
-            <RotateCw className="size-4" aria-hidden="true" />
-          </Button>
-          <Button
-            variant="ghost"
-            size="icon"
-            className="size-8 shrink-0 rounded-md text-muted-foreground"
             aria-label={copy.external}
             title={copy.external}
             onClick={() => void api.openExternal(target.url).catch(() => {})}
@@ -64,6 +54,8 @@ export function LivePreview({ page, live, locale }: LivePreviewProps) {
           url={target.url}
           openingLabel={copy.opening}
           timeoutHint={copy.blank}
+          retryLabel={copy.reload}
+          onRetry={() => setRevision((value) => value + 1)}
         />
       </div>
     );

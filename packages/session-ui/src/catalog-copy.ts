@@ -4,6 +4,7 @@ import { surfaceCopy, type SessionSurface } from "./session-surface-copy";
 export const catalogCopy = {
   "zh-CN": {
     options: "目录选项",
+    retry: "重试",
     agent: "Agent",
     allAgents: "全部 Agent",
     records: "记录类型",
@@ -42,6 +43,7 @@ export const catalogCopy = {
   },
   "zh-Hant": {
     options: "目錄選項",
+    retry: "重試",
     agent: "Agent",
     allAgents: "全部 Agent",
     records: "記錄類型",
@@ -80,6 +82,7 @@ export const catalogCopy = {
   },
   "en-US": {
     options: "Catalog options",
+    retry: "Retry",
     agent: "Agent",
     allAgents: "All Agents",
     records: "Record type",
@@ -118,6 +121,7 @@ export const catalogCopy = {
   },
   "ja-JP": {
     options: "一覧の設定",
+    retry: "再試行",
     agent: "Agent",
     allAgents: "すべての Agent",
     records: "記録の種類",

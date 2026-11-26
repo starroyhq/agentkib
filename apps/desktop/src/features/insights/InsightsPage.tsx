@@ -4,14 +4,8 @@ import { Badge } from "@/components/ui/badge";
 import { InsightsSkeleton } from "./InsightsSkeleton";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { useEffect, useMemo, useState } from "react";
-import {
-  Award,
-  CalendarDays,
-  CircleAlert,
-  Flame,
-  GitCommitHorizontal,
-  Sparkles,
-} from "lucide-react";
+import { DelayedSpinner, useDelayedBusy } from "@agentkib/session-ui";
+import { CalendarDays, CircleAlert, Flame, GitCommitHorizontal, Sparkles } from "lucide-react";
 import type { AgentKind, HeatmapPoint, InsightsQuery, WorkspaceSummary } from "@/core/types";
 import { agentSupportsInsights } from "@/features/insights/insights";
 import { AgentIcon } from "@/features/agents/AgentIcon";
@@ -23,7 +17,6 @@ import {
   ActivityHeatmap,
   AgentUsageSummary,
   BreakdownPanel,
-  Empty,
   heatmapCellClass,
   RankingLimit,
   TokenTrendCard,
@@ -92,6 +85,11 @@ export function InsightsPage({
   // 换了筛选条件、新数据还没到时，显示的是上一组条件的数据（keepPreviousData）。
   // 必须标出来，否则旧的总数会顶着新的筛选标签显示。
   const stale = viewQuery.isPlaceholderData === true;
+  const preparing = !summary && !viewQuery.isError;
+  const showInitialSkeleton = useDelayedBusy(preparing);
+  const slowPreparation = useDelayedBusy(preparing, 3000);
+  const refreshing =
+    refreshJobQuery.data?.state === "queued" || refreshJobQuery.data?.state === "running";
   // 刷新任务失败由路由顶部统一提示（那里也有手动刷新的错误），这里不再重复一份。
   const error =
     (viewQuery.error ? localizeMessage(viewQuery.error) : "") ||
@@ -140,28 +138,28 @@ export function InsightsPage({
           </div>
         </Card>
       );
-    return <InsightsSkeleton section={section} />;
+    return showInitialSkeleton ? (
+      <>
+        <InsightsSkeleton section={section} />
+        {slowPreparation && (
+          <p className="text-xs text-muted-foreground">{tr("insights.preparingText")}</p>
+        )}
+      </>
+    ) : null;
   }
 
   return (
     <div className="relative grid gap-5" aria-busy={stale || undefined}>
       <section className="grid gap-3">
-        {(stale || error) && (
+        {error && (
           <div className="flex flex-wrap items-center justify-end gap-2">
-            {stale && (
-              <Badge variant="secondary" role="status">
-                {tr("insights.refreshing")}
-              </Badge>
-            )}
-            {error && (
-              <div
-                role="alert"
-                className="flex items-center gap-2 rounded-xl border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive-text"
-              >
-                <CircleAlert size={16} />
-                {error}
-              </div>
-            )}
+            <div
+              role="alert"
+              className="flex items-center gap-2 rounded-xl border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive-text"
+            >
+              <CircleAlert size={16} />
+              {error}
+            </div>
           </div>
         )}
         <InsightsFilters
@@ -184,16 +182,26 @@ export function InsightsPage({
               setSelection({ range: "custom", custom: { ...customDraft } });
           }}
           today={day}
+          trailing={
+            showRange && (
+              <span
+                className="grid size-4 shrink-0 place-items-center text-muted-foreground"
+                aria-label={stale ? tr("insights.refreshing") : undefined}
+                role={stale ? "status" : undefined}
+              >
+                <DelayedSpinner active={stale} />
+              </span>
+            )
+          }
         />
       </section>
-      {!summary && (
-        <Card className="rounded-2xl border-border bg-card shadow-sm">
-          <Empty
-            icon={Award}
-            title={tr("insights.preparing")}
-            text={tr("insights.preparingText")}
-          />
-        </Card>
+      {!summary && section !== "milestones" && showInitialSkeleton && (
+        <>
+          <InsightsSkeleton section={section} />
+          {slowPreparation && (
+            <p className="text-xs text-muted-foreground">{tr("insights.preparingText")}</p>
+          )}
+        </>
       )}
       {summary && section === "overview" && (
         <>
@@ -421,7 +429,14 @@ export function InsightsPage({
           </CardContent>
         </Card>
       )}
-      {section === "milestones" && <AchievementWall achievements={achievements} />}
+      {section === "milestones" && (
+        <>
+          <AchievementWall achievements={achievements} preparing={preparing || refreshing} />
+          {slowPreparation && (
+            <p className="text-xs text-muted-foreground">{tr("insights.preparingText")}</p>
+          )}
+        </>
+      )}
       {section === "sources" && (
         <Card className="overflow-hidden rounded-2xl border-border bg-card shadow-sm">
           <CardHeader className="flex min-h-[58px] items-center justify-between border-b border-border px-5 py-4">

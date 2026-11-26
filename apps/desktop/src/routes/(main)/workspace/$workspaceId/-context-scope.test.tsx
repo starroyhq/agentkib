@@ -97,18 +97,18 @@ describe("Context disk preview scope", () => {
   it("does not ask to apply a draft when the editor matches the saved manifest", async () => {
     useWorkspaceStore.getState().setManifest(baseline);
     renderPage();
-    expect(screen.getByText(tr("context.previewScopeSaved"))).toBeVisible();
-    expect(screen.queryByText(tr("context.previewScope"))).toBeNull();
+    expect(screen.queryByText(/This preview reads instruction files/)).toBeNull();
+    expect(screen.queryByText(tr("context.previewScopeDraft"))).toBeNull();
     await screen.findByText(tr("context.noInstructions"));
   });
   it.each([
-    ["en-US", "disk", "Unapplied", "does not reload"],
-    ["zh-CN", "磁盘", "尚未应用", "不会让 Agent 重新加载"],
-    ["zh-Hant", "磁碟", "尚未套用", "不會讓 Agent 重新載入"],
-    ["ja-JP", "ディスク", "未適用", "再読み込みされません"],
+    ["en-US", "unapplied drafts"],
+    ["zh-CN", "未应用草稿"],
+    ["zh-Hant", "未套用草稿"],
+    ["ja-JP", "未適用の下書き"],
   ] as const)(
-    "explains the disk and Agent reload boundaries during loading, error and empty results in %s",
-    async (locale, diskBoundary, draftBoundary, reloadBoundary) => {
+    "identifies draft exclusion during loading, error and empty results in %s",
+    async (locale, draftBoundary) => {
       await changeLocale(locale);
       let reject!: (reason: Error) => void;
       vi.mocked(api.context).mockReturnValueOnce(
@@ -117,10 +117,9 @@ describe("Context disk preview scope", () => {
         }),
       );
       renderPage();
-      const description = tr("context.previewScope");
-      expect(description).not.toBe("context.previewScope");
-      for (const boundary of [diskBoundary, draftBoundary, reloadBoundary])
-        expect(description).toContain(boundary);
+      const description = tr("context.previewScopeDraft");
+      expect(description).not.toBe("context.previewScopeDraft");
+      expect(description).toContain(draftBoundary);
       expect(screen.getByText(description)).toBeVisible();
       expect(screen.queryByText(tr("context.noInstructions"))).not.toBeInTheDocument();
 
@@ -154,7 +153,7 @@ describe("Context disk preview scope", () => {
       renderPage(true);
     });
     expect(await screen.findByText("disk-skill")).toBeVisible();
-    expect(screen.getByText(tr("context.previewScope"))).toBeVisible();
+    expect(screen.getByText(tr("context.previewScopeDraft"))).toBeVisible();
     fireEvent.click(screen.getByRole("button", { name: tr("context.showContent") }));
     expect(await screen.findByText(baseline.instructions.shared)).toBeVisible();
     expect(screen.queryByText(draft.instructions.shared)).not.toBeInTheDocument();

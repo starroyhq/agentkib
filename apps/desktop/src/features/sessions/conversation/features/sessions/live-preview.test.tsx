@@ -198,11 +198,13 @@ describe("the desktop web preview", () => {
     expect(frame).toHaveAttribute("referrerpolicy", "no-referrer");
     expect(screen.queryByRole("list")).not.toBeInTheDocument();
   });
-  it("reloads, opens in the browser and goes back to the list", async () => {
+  it("retries a failed frame, opens in the browser and goes back to the list", async () => {
     prepare(["http://localhost:3000/"]);
     render(<LivePreview />);
     fireEvent.click(screen.getByRole("button", { name: "localhost:3000/" }));
     const first = screen.getByTitle(copy.frame);
+    expect(screen.queryByRole("button", { name: copy.reload })).not.toBeInTheDocument();
+    fireEvent.error(first);
     fireEvent.click(screen.getByRole("button", { name: copy.reload }));
     expect(screen.getByTitle(copy.frame)).not.toBe(first);
     fireEvent.click(screen.getByRole("button", { name: copy.external }));
@@ -246,7 +248,7 @@ describe("the desktop web preview", () => {
     vi.mocked(state.client.request).mockClear();
     fireEvent.click(screen.getByRole("tab", { name: files.preview }));
     expect(await screen.findByRole("button", { name: "localhost:3000/" })).toBeVisible();
-    expect(screen.queryByRole("button", { name: files.refresh })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: files.retry })).not.toBeInTheDocument();
     expect(screen.queryByText(files.empty)).not.toBeInTheDocument();
     expect(state.client.request).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole("tab", { name: files.artifacts }));

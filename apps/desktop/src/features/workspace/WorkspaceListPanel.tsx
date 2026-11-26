@@ -19,7 +19,6 @@ import {
   FolderGit2,
   FolderOpen,
   MoreHorizontal,
-  RefreshCw,
   Split,
   Star,
   Trash2,
@@ -41,11 +40,9 @@ export function WorkspaceListPanel({
   activePage,
   totalPages,
   favoriteWorkspaceIds,
-  refreshingWorkspaceIds,
   onOpen,
   onToggleFavorite,
   onPageChange,
-  onRefresh,
   onReveal,
   onExclude,
 }: {
@@ -61,11 +58,9 @@ export function WorkspaceListPanel({
   activePage: number;
   totalPages: number;
   favoriteWorkspaceIds: string[];
-  refreshingWorkspaceIds?: string[];
   onOpen: (workspace: WorkspaceSummary) => Promise<void>;
   onToggleFavorite: (workspaceId: string) => void;
   onPageChange: (page: number) => void;
-  onRefresh: (id: string) => Promise<void>;
   onReveal: (id: string) => Promise<void>;
   onExclude: (id: string) => Promise<void>;
 }) {
@@ -130,7 +125,6 @@ export function WorkspaceListPanel({
                           : "workspace.source.manual",
                       );
                   const favorite = favoriteWorkspaceIds.includes(workspace.id);
-                  const refreshing = refreshingWorkspaceIds?.includes(workspace.id) ?? false;
                   const status = statuses.get(workspace.id)!;
                   const statusLabel = tr(`workspace.status.${status.state}`, {
                     count: status.issueCount,
@@ -248,13 +242,6 @@ export function WorkspaceListPanel({
                               <MoreHorizontal size={16} />
                             </DropdownMenuTrigger>
                             <DropdownMenuContent align="end" className="w-auto min-w-44">
-                              <DropdownMenuItem
-                                disabled={refreshing}
-                                onClick={() => void onRefresh(workspace.id)}
-                              >
-                                <RefreshCw className={refreshing ? "animate-spin" : ""} />
-                                {tr(refreshing ? "common.loading" : "workspace.rescan")}
-                              </DropdownMenuItem>
                               <DropdownMenuItem onClick={() => void onReveal(workspace.id)}>
                                 <FolderOpen />
                                 {revealLabel}

@@ -1,3 +1,5 @@
+import { useDelayedBusy } from "@agentkib/session-ui";
+import { SkeletonListRows } from "@/components/ui/skeleton-layouts";
 import { useNavigate } from "@tanstack/react-router";
 import { Button } from "@/components/ui/button";
 import { Card, CardHeader, CardContent } from "@/components/ui/card";
@@ -45,6 +47,8 @@ export function WorkspaceRecentSessions({
     ? tr("conversations.partialIndex")
     : undefined;
   const error = catalog.errors[workspace.id] ?? managedError ?? sourceError;
+  const loading = enabled && (catalog.loading || !catalog.ready || !managed.ready);
+  const showLoading = useDelayedBusy(loading);
   return (
     <Card className="overflow-hidden rounded-xl shadow-none">
       <CardHeader className="flex flex-row items-center justify-between gap-3 border-b border-border px-5 py-4">
@@ -89,15 +93,18 @@ export function WorkspaceRecentSessions({
             <span className="shrink-0 text-xs text-primary-text">{tr("home.openSession")}</span>
           </Button>
         ))}
-        {!recent.length && (
+        {!recent.length && showLoading && (
+          <div role="status" aria-label={tr("common.loading")}>
+            <SkeletonListRows count={3} compact />
+          </div>
+        )}
+        {!recent.length && !loading && (
           <p role="status" className="px-5 py-5 text-sm text-muted-foreground">
             {!enabled
               ? tr("home.continuationsDisabled")
-              : catalog.loading || !catalog.ready || !managed.ready
-                ? tr("common.loading")
-                : error
-                  ? tr("home.continuationsError")
-                  : tr("home.noContinuations")}
+              : error
+                ? tr("home.continuationsError")
+                : tr("home.noContinuations")}
             {error && enabled && catalog.ready && managed.ready && (
               <>
                 {" · "}

@@ -141,9 +141,9 @@ function ContextPageContent({
   const error = contextQuery.error ? localizeMessage(contextQuery.error) : "";
   const run = () => void contextQuery.refetch();
   const empty = preview && !preview.sections.length;
-  const previewScope = (
+  const previewScope = hasDraft && (
     <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
-      {tr(hasDraft ? "context.previewScope" : "context.previewScopeSaved")}
+      {tr("context.previewScopeDraft")}
     </p>
   );
   if (resolving && !preview)

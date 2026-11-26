@@ -98,7 +98,7 @@ describe("E2 change plan view", () => {
     const apply = screen.getByRole("button", { name: `Apply ${count} change${suffix}` });
     if (count === 0) {
       expect(apply).toBeDisabled();
-      expect(screen.getByText("Generating change plan…")).toBeVisible();
+      expect(screen.queryByText("Generating change plan…")).toBeNull();
     } else {
       expect(apply).toBeEnabled();
       const summary = screen.getByText((content) => content.startsWith("You changed:"));
@@ -176,7 +176,7 @@ describe("E2 change plan view", () => {
     expect(screen.getByRole("button", { name: "Include global configuration" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Reject" })).toBeDisabled();
     rerender(<WorkspacePlanView {...values} applying />);
-    expect(screen.getByRole("button", { name: "Applying…" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Apply 3 changes" })).toBeDisabled();
   });
 
   it("keeps ready-empty review distinct from an in-progress plan and offers Back without an apply or approval", () => {
@@ -206,7 +206,7 @@ describe("E2 change plan view", () => {
     rerender(<WorkspacePlanView {...values} disabled />);
     expect(screen.getByRole("button", { name: "Apply 3 changes" })).toBeDisabled();
     rerender(<WorkspacePlanView {...values} busy />);
-    expect(screen.getByRole("button", { name: "Applying…" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Apply 3 changes" })).toBeDisabled();
     rerender(
       <WorkspacePlanView
         {...values}
@@ -214,7 +214,7 @@ describe("E2 change plan view", () => {
         changeSet={{ ...changeSet, id: "generating", changes: [] }}
       />,
     );
-    expect(screen.getByText("Generating change plan…")).toBeVisible();
+    expect(screen.queryByText("Generating change plan…")).toBeNull();
     expect(screen.getByRole("button", { name: "Apply 0 changes" })).toBeDisabled();
     expect(screen.queryByText("No file changes in this plan")).toBeNull();
     expect(screen.queryByText(/will write 0 files/i)).toBeNull();

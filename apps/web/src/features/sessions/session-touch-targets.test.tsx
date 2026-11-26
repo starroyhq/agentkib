@@ -85,19 +85,16 @@ function renderWorkspace() {
 
 describe("Web session touch targets", () => {
   it.each(["zh-CN", "zh-Hant", "en-US", "ja-JP"] as const)(
-    "keeps refresh, workspace toggle and path disclosure independently reachable in %s",
+    "keeps workspace toggle and path disclosure independently reachable in %s",
     (locale) => {
       fixture.locale = locale;
       renderWorkspace();
-      const refresh = screen.getByRole("button", { name: dictionaries[locale].refresh });
-      expect(refresh).toHaveClass("size-11");
+      expect(
+        screen.queryByRole("button", { name: dictionaries[locale].refresh }),
+      ).not.toBeInTheDocument();
       expect(screen.getByRole("button", { name: dictionaries[locale].logout })).toHaveClass(
         "size-11",
       );
-      fireEvent.click(refresh);
-      expect(fixture.refresh).toHaveBeenCalledExactlyOnceWith(true);
-      expect(fixture.choose).not.toHaveBeenCalled();
-
       const toggle = screen.getByRole("button", { name: "Project · 1" });
       expect(toggle).toHaveClass("h-auto", "min-h-11", "min-w-11");
       expect(toggle).toHaveAttribute("aria-expanded", "true");
@@ -144,15 +141,12 @@ describe("Web session touch targets", () => {
     expect(fixture.choose).not.toHaveBeenCalled();
   });
 
-  it("keeps the same refresh and workspace controls when the route changes to a reader", () => {
+  it("keeps the same workspace controls when the route changes to a reader", () => {
     const view = renderWorkspace();
-    const refresh = screen.getByRole("button", { name: dictionaries["zh-CN"].refresh });
     const toggle = screen.getByRole("button", { name: "Project · 1" });
     fixture.pathname = "/sessions/readable";
     view.rerender(<SessionWorkspace />);
-    expect(screen.getByRole("button", { name: dictionaries["zh-CN"].refresh })).toBe(refresh);
     expect(screen.getByRole("button", { name: "Project · 1" })).toBe(toggle);
-    expect(refresh).toHaveClass("size-11");
     expect(toggle).toHaveAttribute("aria-expanded", "true");
     expect(screen.getByRole("button", { name: /Readable session/ })).toHaveAttribute(
       "aria-current",
@@ -160,7 +154,7 @@ describe("Web session touch targets", () => {
     );
   });
 
-  it("aligns history search, directory options and refresh with the directory title", async () => {
+  it("aligns history search and directory options with the directory title", async () => {
     const user = userEvent.setup();
     renderWorkspace();
     const title = screen.getByRole("heading", { name: dictionaries[fixture.locale].sessions });
@@ -170,10 +164,7 @@ describe("Web session touch targets", () => {
     const options = within(header).getByRole("button", {
       name: catalogCopy[fixture.locale].options,
     });
-    const refresh = within(header).getByRole("button", {
-      name: dictionaries[fixture.locale].refresh,
-    });
-    for (const button of [search, options, refresh]) {
+    for (const button of [search, options]) {
       expect(button).toHaveClass("size-11");
       expect(button).not.toHaveClass("w-full");
       expect(button).toHaveTextContent(/^$/);

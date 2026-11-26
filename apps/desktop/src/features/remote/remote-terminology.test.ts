@@ -178,17 +178,21 @@ describe("remote connection terminology", () => {
   );
 
   it.each([
-    ["zh-CN", "会话请求失败。", "在电脑上的 AgentKib"],
-    ["zh-Hant", "工作階段請求失敗。", "在電腦上的 AgentKib"],
-    ["en-US", "The session request failed.", "in AgentKib on your computer"],
-    ["ja-JP", "セッションのリクエストに失敗しました。", "コンピューター上の AgentKib"],
+    ["zh-CN", "会话请求失败。", "请求失败，请重试。"],
+    ["zh-Hant", "工作階段請求失敗。", "請求失敗，請重試。"],
+    ["en-US", "The session request failed.", "Request failed. Try again."],
+    [
+      "ja-JP",
+      "セッションのリクエストに失敗しました。",
+      "リクエストに失敗しました。もう一度お試しください。",
+    ],
   ] as const)(
     "uses platform-specific session error guidance in %s",
     async (locale, desktop, remote) => {
       await initializeI18n(locale);
       expect(conversationWords(locale).error).toBe(desktop);
       expect(tr("conversation.error")).toBe(desktop);
-      expect(webWords[locale].error).toContain(remote);
+      expect(webWords[locale].error).toBe(remote);
     },
   );
 

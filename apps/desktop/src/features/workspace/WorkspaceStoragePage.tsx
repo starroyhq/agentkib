@@ -14,6 +14,8 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
 import { WorkspaceStorageSkeleton } from "./WorkspaceSkeleton";
+import { useDelayedBusy } from "@agentkib/session-ui";
+import { SkeletonListRows } from "@/components/ui/skeleton-layouts";
 import { Progress } from "@/components/ui/progress";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { useEffect, useMemo, useState } from "react";
@@ -112,6 +114,7 @@ export function WorkspaceStoragePage({
     queryClient,
   );
   const expanding = !!expansion && childrenQuery.isPending;
+  const showExpansion = useDelayedBusy(expanding);
   useEffect(() => {
     if (!expansion || !childrenQuery.data) return;
     const next = { workspaceId: expansion.location.workspaceId, node: childrenQuery.data };
@@ -453,15 +456,21 @@ export function WorkspaceStoragePage({
                 ))}
               </nav>
               <span className="shrink-0 text-xs text-muted-foreground">
-                {expanding
-                  ? tr("storage.loadingDirectory")
-                  : overview?.last_scanned_at
-                    ? tr("storage.scannedAt", { time: formatDateTime(overview.last_scanned_at) })
-                    : ""}
+                {overview?.last_scanned_at
+                  ? tr("storage.scannedAt", { time: formatDateTime(overview.last_scanned_at) })
+                  : ""}
               </span>
             </div>
             <StorageLegend />
-            {chartData.length ? (
+            {showExpansion ? (
+              <div
+                role="status"
+                aria-label={tr("storage.loadingDirectory")}
+                className="min-h-[390px]"
+              >
+                <SkeletonListRows count={3} compact />
+              </div>
+            ) : chartData.length ? (
               <StorageTreemapChart
                 data={chartData}
                 metric={metric}

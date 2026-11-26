@@ -18,7 +18,6 @@ import {
   FolderOpen,
   Image,
   Info,
-  RefreshCw,
   X,
 } from "lucide-react";
 import {
@@ -38,7 +37,6 @@ import type { Dialog } from "@base-ui/react/dialog";
 import type { Select as SelectPrimitive } from "@base-ui/react/select";
 import type { Tabs as TabsPrimitive } from "@base-ui/react/tabs";
 import { artifactCopy } from "./artifact-copy";
-import { useDelayedBusy } from "./delayed-busy";
 import { LoadingSkeleton } from "./loading-feedback";
 import { ArtifactPanel, type ArtifactPanelProps } from "./artifact-panel";
 import type { InteractionLocale } from "./interaction-model";
@@ -190,9 +188,9 @@ export function ArtifactBrowser({
   const [diff, setDiff] = useState<WorkspaceDiff | null>();
   const [kind, setKind] = useState("worktree");
   const [oid, setOid] = useState("");
-  const [error, setError] = useState("");
+  const [error, setError] = useState<{ text: string; retry?: () => void }>();
+  const [rootsRevision, setRootsRevision] = useState(0);
   const [loading, setLoading] = useState(false);
-  const showRefresh = useDelayedBusy(loading);
   const generation = useRef(0);
   const media = useRef<HTMLMediaElement | null>(null);
   const playback = useRef({ time: 0, playing: false });
@@ -236,6 +234,7 @@ export function ArtifactBrowser({
       return;
     }
     const abort = new AbortController();
+    setError(undefined);
     void client
       .request<{ workspaces: Root[] }>("files/workspaces", undefined, abort.signal)
       .then((result) => {
@@ -248,17 +247,18 @@ export function ArtifactBrowser({
         );
       })
       .catch((e) => {
-        if (!abort.signal.aborted) setError(message(e));
+        if (!abort.signal.aborted)
+          setError({ text: message(e), retry: () => setRootsRevision((value) => value + 1) });
       });
     return () => abort.abort();
-  }, [open, client, current?.workspace_id, resetPreview, message]);
+  }, [open, client, current?.workspace_id, resetPreview, message, rootsRevision]);
   const load = useCallback(
-    async (directoryId?: string, older?: string) => {
+    async (directoryId?: string, older?: string): Promise<void> => {
       requests.current?.abort();
       const abort = new AbortController();
       requests.current = abort;
       const g = ++generation.current;
-      setError("");
+      setError(undefined);
       resetPreview();
       // The web preview reads nothing from the authorized directories.
       setLoading(tab !== "preview");
@@ -313,7 +313,8 @@ export function ArtifactBrowser({
           if (g === generation.current) setDiff(result);
         }
       } catch (e) {
-        if (g === generation.current && !abort.signal.aborted) setError(message(e));
+        if (g === generation.current && !abort.signal.aborted)
+          setError({ text: message(e), retry: () => void load(directoryId, older) });
       } finally {
         if (g === generation.current) setLoading(false);
       }
@@ -338,7 +339,7 @@ export function ArtifactBrowser({
     requests.current = abort;
     const g = ++generation.current;
     setLoading(true);
-    setError("");
+    setError(undefined);
     resetPreview();
     setEntry(item);
     playback.current = { time: 0, playing: false };
@@ -364,7 +365,8 @@ export function ArtifactBrowser({
         if (g === generation.current) setTicket(result);
       }
     } catch (e) {
-      if (g === generation.current && !abort.signal.aborted) setError(message(e));
+      if (g === generation.current && !abort.signal.aborted)
+        setError({ text: message(e), retry: () => void preview(item) });
     } finally {
       if (g === generation.current) setLoading(false);
     }
@@ -381,7 +383,7 @@ export function ArtifactBrowser({
         abort.abort();
         clearTimeout(timer);
         setTicket(undefined);
-        setError(copy.expired);
+        setError({ text: copy.expired });
       },
       Math.max(0, ticket.expiresAt - Date.now()),
     );
@@ -396,19 +398,19 @@ export function ArtifactBrowser({
           if (g !== generation.current || abort.signal.aborted) return;
           if (result.revision !== ticket.revision) {
             setTicket(undefined);
-            setError(copy.changed);
+            setError({ text: copy.changed });
             return;
           }
           const player = media.current;
           if (player) playback.current = { time: player.currentTime, playing: !player.paused };
-          setError("");
+          setError(undefined);
           setTicket(result);
         })
         .catch((e) => {
           if (!abort.signal.aborted && g === generation.current) {
             if (e instanceof ApiError && [401, 403, 404, 409, 410].includes(e.status)) {
               setTicket(undefined);
-              setError(message(e));
+              setError({ text: message(e) });
             } else if (Date.now() < ticket.expiresAt) {
               // A temporary renewal failure does not invalidate an unexpired URL.
               timer = setTimeout(renew, Math.min(2000, ticket.expiresAt - Date.now()));
@@ -436,9 +438,13 @@ export function ArtifactBrowser({
         },
         requests.current?.signal,
       );
-      if (g === generation.current) setDownload(result);
+      if (g === generation.current) {
+        setDownload(result);
+        setError(undefined);
+      }
     } catch (e) {
-      if (g === generation.current) setError(message(e));
+      if (g === generation.current)
+        setError({ text: message(e), retry: () => void downloadFile() });
     }
   }
   function restorePlayback() {
@@ -452,7 +458,7 @@ export function ArtifactBrowser({
     requests.current?.abort();
     resetPreview();
     setLoading(false);
-    setError("");
+    setError(undefined);
   }
   if (!access?.device?.files) return null;
   return (
@@ -470,22 +476,6 @@ export function ArtifactBrowser({
             <SheetTitle id={titleId} className="min-w-0 flex-1 truncate text-[13px] font-semibold">
               {copy.title}
             </SheetTitle>
-            {!entry && tab !== "preview" && (
-              <Button
-                variant="ghost"
-                size="icon"
-                className="size-8 shrink-0 rounded-md text-muted-foreground"
-                aria-label={copy.refresh}
-                title={copy.refresh}
-                disabled={loading || !workspaceId}
-                onClick={() => void load(tab === "files" ? listing?.directoryId : undefined)}
-              >
-                <RefreshCw
-                  className={`size-4 ${showRefresh ? "animate-spin motion-reduce:animate-none" : ""}`}
-                  aria-hidden="true"
-                />
-              </Button>
-            )}
             <SheetClose
               render={
                 <Button
@@ -628,9 +618,21 @@ export function ArtifactBrowser({
                 </>
               )}
               {error && tab !== "preview" && (
-                <p role="alert" className="break-words text-sm text-destructive-text">
-                  {error}
-                </p>
+                <div className="flex flex-wrap items-center gap-2">
+                  <p role="alert" className="break-words text-sm text-destructive-text">
+                    {error.text}
+                  </p>
+                  {error.retry && (
+                    <Button
+                      variant="outline"
+                      size="content"
+                      disabled={loading}
+                      onClick={error.retry}
+                    >
+                      {copy.retry}
+                    </Button>
+                  )}
+                </div>
               )}
               {loading &&
                 tab !== "preview" &&
@@ -764,7 +766,7 @@ export function ArtifactBrowser({
                     text={text}
                     onMediaRef={setMedia}
                     onLoadedMetadata={restorePlayback}
-                    onMediaError={() => setError(copy.mediaError)}
+                    onMediaError={() => setError({ text: copy.mediaError })}
                     openLabel={copy.open}
                   />
                 </div>

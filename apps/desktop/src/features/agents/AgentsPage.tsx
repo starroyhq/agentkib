@@ -1,3 +1,4 @@
+import { useDelayedBusy } from "@agentkib/session-ui";
 import { useI18n } from "@/core/useI18n";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Input } from "@/components/ui/input";
@@ -71,6 +72,9 @@ export function AgentsPage({
   onRetry?: Partial<Record<"assets" | "workspaces" | "gateways" | "insights", () => void>>;
 }) {
   const { tr } = useI18n();
+  const showWorkspaceCountsLoading = useDelayedBusy(
+    Boolean(loading.workspaces || loading.gateways),
+  );
   const displayPath = usePathDisplay();
   const initialSelectionDone = useRef(Boolean(selectedAgent));
   const [selected, setSelected] = useState<AgentKind>(selectedAgent ?? "codex");
@@ -290,7 +294,13 @@ export function AgentsPage({
                           <small className="mt-1 block text-xs text-muted-foreground">
                             {item?.installed
                               ? loading.workspaces || loading.gateways
-                                ? tr("common.loading")
+                                ? showWorkspaceCountsLoading && (
+                                    <span
+                                      className="block h-3 w-12 animate-pulse rounded bg-muted motion-reduce:animate-none"
+                                      role="status"
+                                      aria-label={tr("common.loading")}
+                                    />
+                                  )
                                 : errors.workspaces || errors.gateways
                                   ? tr("errors.generic")
                                   : count > 0

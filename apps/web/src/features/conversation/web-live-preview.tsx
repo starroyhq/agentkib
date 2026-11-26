@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { ArrowLeft, ExternalLink, RotateCw } from "lucide-react";
+import { ArrowLeft, ExternalLink } from "lucide-react";
 import {
   ApiError,
   localPreviewLabel,
@@ -12,7 +12,6 @@ import {
   LivePreviewPicker,
   LoadingSkeleton,
   livePreviewCopy,
-  useDelayedBusy,
   type LivePreviewProps,
 } from "@agentkib/session-ui";
 
@@ -27,7 +26,6 @@ export function LivePreview({ client, page, live, locale }: LivePreviewProps) {
   const [target, setTarget] = useState<LocalPreviewTarget>();
   const [ticket, setTicket] = useState<LivePreviewTicket>();
   const [opening, setOpening] = useState(false);
-  const slowOpening = useDelayedBusy(opening);
   const [failure, setFailure] = useState("");
   const [address, setAddress] = useState("");
   const [invalid, setInvalid] = useState(false);
@@ -90,20 +88,6 @@ export function LivePreview({ client, page, live, locale }: LivePreviewProps) {
           >
             {localPreviewLabel(target)}
           </span>
-          <Button
-            variant="ghost"
-            size="icon"
-            className={ICON_BUTTON}
-            aria-label={copy.reload}
-            title={copy.reload}
-            disabled={opening}
-            onClick={() => void open(target)}
-          >
-            <RotateCw
-              className={`size-4 ${slowOpening ? "animate-spin motion-reduce:animate-none" : ""}`}
-              aria-hidden="true"
-            />
-          </Button>
           {ticket && (
             <a
               href={ticket.url}
@@ -124,14 +108,21 @@ export function LivePreview({ client, page, live, locale }: LivePreviewProps) {
             url={ticket.url}
             openingLabel={copy.opening}
             timeoutHint={copy.blank}
+            retryLabel={copy.reload}
+            onRetry={() => void open(target)}
           />
         ) : (
           <div className="min-h-0 flex-1 p-4">
             {opening && <LoadingSkeleton label={copy.opening} layout="code" rows={5} />}
             {failure && (
-              <p role="alert" className="break-words text-sm text-destructive-text">
-                {failure}
-              </p>
+              <div className="flex flex-wrap items-center gap-2">
+                <p role="alert" className="break-words text-sm text-destructive-text">
+                  {failure}
+                </p>
+                <Button variant="outline" size="sm" onClick={() => void open(target)}>
+                  {copy.reload}
+                </Button>
+              </div>
             )}
           </div>
         )}

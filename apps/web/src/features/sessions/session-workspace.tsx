@@ -8,6 +8,7 @@ import {
   requestReadStateRefresh,
   SessionActivityButton,
   SessionHeaderStatus,
+  subscribeSessionForegroundRefresh,
 } from "@agentkib/session-ui";
 import { WebHistorySearchTrigger } from "@/features/conversation/features/history/web-history-search";
 import { Outlet, useLocation, useNavigate } from "@tanstack/react-router";
@@ -126,6 +127,10 @@ function WorkspaceShell() {
     setFilesOpen(false);
     setActionsOpen(false);
   }, [selected]);
+  useEffect(() => {
+    if (selected) return;
+    return subscribeSessionForegroundRefresh(() => void refresh(false, true));
+  }, [refresh, selected]);
   useEffect(() => {
     if (!session.modal) return;
     // An incoming approval must not compete with the fullscreen file panel's
@@ -380,7 +385,7 @@ function WorkspaceShell() {
             </div>
             <SessionCatalog
               historySearch={<WebHistorySearchTrigger />}
-              onRefresh={() => {
+              onRetry={() => {
                 requestReadStateRefresh(session.client, selected);
                 void refresh(true);
               }}

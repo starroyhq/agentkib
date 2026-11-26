@@ -16,7 +16,8 @@ const doubles = vi.hoisted(() => ({
   workspaces: vi.fn(),
   doctor: vi.fn(),
   memories: vi.fn(),
-  refresh: vi.fn(),
+  rescanWorkspace: vi.fn(),
+  requestRefresh: vi.fn(),
   reveal: vi.fn(),
   exclude: vi.fn(),
   view: "list",
@@ -32,7 +33,8 @@ vi.mock("@/core/api", () => ({
     workspaces: doubles.workspaces,
     workspaceDoctorSummaries: doubles.doctor,
     globalMemories: doubles.memories,
-    refreshWorkspace: doubles.refresh,
+    refreshWorkspace: doubles.rescanWorkspace,
+    requestRefresh: doubles.requestRefresh,
     openWorkspaceStoragePath: doubles.reveal,
     excludeWorkspace: doubles.exclude,
     discoveryReport: async () => null,
@@ -246,6 +248,7 @@ it("keeps the list visible with an undiagnosed status when diagnostics are unava
 it("retains cached rows but marks diagnostics unchecked when a refresh fails", async () => {
   const { client } = start(true);
   await screen.findByRole("button", { name: workspaceButtonName() });
+  await waitFor(() => expect(client.isFetching()).toBe(0));
   doubles.doctor.mockRejectedValueOnce(new Error("diagnostics refresh failed"));
   await act(async () => {
     await client.invalidateQueries({ queryKey: homeKeys.doctorSummaries([workspace.id]) });
@@ -258,9 +261,35 @@ it("retains cached rows but marks diagnostics unchecked when a refresh fails", a
       name: `${workspace.name}, ${tr("workspace.source.manual")}, ${tr("workspace.status.undiagnosed")}`,
     }),
   ).toBeVisible();
+  const workspaceReads = doubles.workspaces.mock.calls.length;
   fireEvent.click(within(alert).getByRole("button", { name: tr("runtime.retry") }));
   await waitFor(() => expect(screen.queryByRole("alert")).not.toBeInTheDocument());
-  expect(doubles.workspaces).not.toHaveBeenCalled();
+  expect(doubles.workspaces).toHaveBeenCalledTimes(workspaceReads);
+});
+
+it("refreshes cached workspace reads on entry and focus, and only scans on request", async () => {
+  const visibility = vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
+  try {
+    const { client } = start(true);
+    await waitFor(() => expect(doubles.workspaces).toHaveBeenCalled());
+    await waitFor(() => expect(client.isFetching()).toBe(0));
+    const renamed = { ...workspace, name: "Renamed workspace" };
+    doubles.workspaces.mockResolvedValue([renamed]);
+    fireEvent.focus(window);
+    expect(
+      await screen.findByRole("button", {
+        name: `${renamed.name}, ${tr("workspace.source.manual")}, ${tr("workspace.status.healthy")}`,
+      }),
+    ).toBeVisible();
+    expect(doubles.rescanWorkspace).not.toHaveBeenCalled();
+    expect(doubles.requestRefresh).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: tr("workspace.refreshDiscovery") }));
+    await waitFor(() =>
+      expect(doubles.requestRefresh).toHaveBeenCalledExactlyOnceWith("discovery", true),
+    );
+  } finally {
+    visibility.mockRestore();
+  }
 });
 
 it("opens a workspace overview on one click and keeps actions from opening it", async () => {
@@ -285,7 +314,6 @@ it("opens a workspace overview on one click and keeps actions from opening it", 
     screen.getByRole("button", { name: tr("workspace.moreActions", { name: workspace.name }) }),
   );
   expect((await screen.findAllByRole("menuitem")).map((item) => item.textContent)).toEqual([
-    tr("workspace.rescan"),
     tr("storage.openLocation"),
     tr("workspace.ignore"),
   ]);
@@ -294,15 +322,12 @@ it("opens a workspace overview on one click and keeps actions from opening it", 
   expect(doubles.navigate).not.toHaveBeenCalled();
 });
 
-it("keeps rescan and confirmed ignore in the row menu", async () => {
+it("confirms before ignoring a workspace from the row menu", async () => {
   start(true);
   const user = userEvent.setup();
   const more = await screen.findByRole("button", {
     name: tr("workspace.moreActions", { name: workspace.name }),
   });
-  await user.click(more);
-  await user.click(await screen.findByRole("menuitem", { name: tr("workspace.rescan") }));
-  await waitFor(() => expect(doubles.refresh).toHaveBeenCalledExactlyOnceWith(workspace.id));
   await user.click(more);
   await user.click(await screen.findByRole("menuitem", { name: tr("workspace.ignore") }));
   await waitFor(() =>

@@ -97,9 +97,12 @@ describe("WorkspaceGitPage data loading", () => {
     expect(api.workspaceGitHistory).toHaveBeenCalledTimes(2);
   });
 
-  it("returns to the first page and refetches only that page on refresh", async () => {
+  it("returns to the first page when foreground refresh detects a rewritten ref", async () => {
     let rewritten = false;
-    vi.mocked(api.workspaceGitSummary).mockResolvedValue(summary);
+    vi.mocked(api.workspaceGitSummary).mockImplementation(async () => ({
+      ...summary,
+      head_oid: (rewritten ? "d" : "a").repeat(40),
+    }));
     vi.mocked(api.workspaceGitHistory).mockImplementation(async (_id, query) => {
       // 模拟 force-push：刷新后历史只剩一页。
       if (rewritten) return page([commit("d".repeat(40), "Rewritten history")]);
@@ -114,10 +117,24 @@ describe("WorkspaceGitPage data loading", () => {
 
     rewritten = true;
     vi.mocked(api.workspaceGitHistory).mockClear();
-    fireEvent.click(screen.getByRole("button", { name: tr("common.refresh") }));
+    expect(screen.queryByRole("button", { name: tr("common.refresh") })).toBeNull();
+    fireEvent.focus(window);
     expect(await screen.findByText("Rewritten history")).toBeTruthy();
     expect(api.workspaceGitHistory).toHaveBeenCalledTimes(1);
     expect(vi.mocked(api.workspaceGitHistory).mock.calls[0][1]?.cursor).toBeUndefined();
+  });
+
+  it("offers retry only on failure and removes it after a successful read", async () => {
+    vi.mocked(api.workspaceGitSummary)
+      .mockRejectedValueOnce(new Error("Cannot read Git"))
+      .mockResolvedValue(summary);
+    vi.mocked(api.workspaceGitHistory).mockResolvedValue(page([commit("a".repeat(40), "Commit")]));
+    renderPage();
+
+    await screen.findByRole("alert");
+    fireEvent.click(screen.getByRole("button", { name: tr("git.retry") }));
+    expect(await screen.findByText("Commit")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: tr("git.retry") })).toBeNull();
   });
 
   it("loads commit files and the commit diff for a commit subview", async () => {

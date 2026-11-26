@@ -292,7 +292,6 @@ describe("WorkspaceSessionsPage", () => {
     );
     expect(api.nativeImportOperations).toHaveBeenCalledWith(workspace.id);
     await waitFor(() => expect(api.refreshWorkspaceSessions).toHaveBeenCalledTimes(1));
-    await waitFor(() => expect(screen.getByLabelText("Refresh sessions")).toBeEnabled());
     vi.useFakeTimers();
     await act(async () => {
       fireEvent.click(within(dialog).getByRole("button", { name: "Connect a Cursor window" }));
@@ -404,7 +403,9 @@ describe("WorkspaceSessionsPage", () => {
         onMcpConnectionPlanned={vi.fn()}
       />,
     );
-    await screen.findByLabelText("Refresh sessions");
+    await waitFor(() =>
+      expect(api.refreshWorkspaceSessions).toHaveBeenCalledWith(workspace.id, false),
+    );
     expect(screen.queryByRole("button", { name: "Connect a Cursor window" })).toBeNull();
     expect(api.cursorBridge).not.toHaveBeenCalled();
   });
@@ -497,10 +498,8 @@ describe("WorkspaceSessionsPage", () => {
     expect((await screen.findAllByText("Cached continuation")).length).toBeGreaterThan(0);
     expect(api.refreshWorkspaceSessions).toHaveBeenCalledWith(workspace.id, false);
 
-    background.resolve([cachedSession]);
-    await waitFor(() =>
-      expect((screen.getByLabelText("Refresh sessions") as HTMLButtonElement).disabled).toBe(false),
-    );
+    await act(async () => background.resolve([cachedSession]));
+    expect(screen.queryByLabelText("Refresh sessions")).toBeNull();
   });
 
   it.each(["open-claw", "hermes", "grok-build"] as const)(
@@ -739,7 +738,6 @@ describe("WorkspaceSessionsPage", () => {
         />,
       );
       await screen.findByText(`${label} conversation`);
-      await waitFor(() => expect(screen.getByLabelText("Refresh sessions")).not.toBeDisabled());
       fireEvent.click(screen.getByRole("button", { name: "Agent filter" }));
       fireEvent.click(await screen.findByRole("menuitem", { name: label }));
       await waitFor(() => expect(screen.queryByText("Cached continuation")).toBeNull());
@@ -750,7 +748,7 @@ describe("WorkspaceSessionsPage", () => {
     },
   );
 
-  it("only uses a forced scan for manual refresh", async () => {
+  it("uses a non-forced scan on focus and offers no normal-state refresh button", async () => {
     vi.mocked(api.refreshWorkspaceSessions).mockResolvedValue([cachedSession]);
     render(
       <WorkspaceSessionsPage
@@ -762,14 +760,12 @@ describe("WorkspaceSessionsPage", () => {
         onMcpConnectionPlanned={vi.fn()}
       />,
     );
-    const refresh = await screen.findByLabelText("Refresh sessions");
-    await waitFor(() => expect((refresh as HTMLButtonElement).disabled).toBe(false));
-
-    fireEvent.click(refresh);
-
-    await waitFor(() =>
-      expect(api.refreshWorkspaceSessions).toHaveBeenLastCalledWith(workspace.id, true),
-    );
+    await screen.findByText("Cached continuation");
+    await waitFor(() => expect(api.refreshWorkspaceSessions).toHaveBeenCalledTimes(1));
+    expect(screen.queryByLabelText("Refresh sessions")).toBeNull();
+    await act(async () => fireEvent.focus(window));
+    await waitFor(() => expect(api.refreshWorkspaceSessions).toHaveBeenCalledTimes(2));
+    expect(api.refreshWorkspaceSessions).toHaveBeenLastCalledWith(workspace.id, false);
   });
 
   it("preserves interactive fork identity and exposes its source in hover/detail", async () => {

@@ -37,7 +37,11 @@ function canStartAfter(error: unknown): boolean {
   return code === "ENOENT" || code === "ECONNREFUSED";
 }
 
-async function identifyRuntime(socket: Socket, signal: AbortSignal): Promise<string | undefined> {
+async function identifyRuntime(
+  socket: Socket,
+  signal: AbortSignal,
+  requesterVersion: string,
+): Promise<string | undefined> {
   const lines = createInterface({ input: socket, crlfDelay: Infinity });
   const disconnected = new AbortController();
   const onClose = () => disconnected.abort();
@@ -51,7 +55,14 @@ async function identifyRuntime(socket: Socket, signal: AbortSignal): Promise<str
         AbortSignal.timeout(IDENTITY_TIMEOUT_MS),
       ]),
     });
-    socket.write(`${JSON.stringify({ jsonrpc: "2.0", id, method: LOCAL_RUNTIME_IDENTITY })}\n`);
+    socket.write(
+      `${JSON.stringify({
+        jsonrpc: "2.0",
+        id,
+        method: LOCAL_RUNTIME_IDENTITY,
+        params: { requesterVersion },
+      })}\n`,
+    );
     const [line] = await replyLine;
     const reply = JSON.parse(line) as {
       jsonrpc?: unknown;
@@ -124,7 +135,7 @@ class LocalRuntimeTransport extends EventEmitter implements RuntimeTransport {
         }
         const { socket, generation } = connection;
         try {
-          if ((await identifyRuntime(socket, signal)) === version && !signal.aborted) {
+          if ((await identifyRuntime(socket, signal, version)) === version && !signal.aborted) {
             this.#connect(socket);
             return;
           }

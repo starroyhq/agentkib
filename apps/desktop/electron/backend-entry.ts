@@ -1,5 +1,5 @@
 import { createInterface } from "node:readline";
-import { TypeScriptBackend } from "@agentkib/backend";
+import { TypeScriptBackend, quitWorkDecisionSchema } from "@agentkib/backend";
 import { serveLocalRuntime } from "@agentkib/backend/local-runtime-service";
 import { BACKEND_INITIALIZE } from "@agentkib/backend/migration";
 import { RUNTIME_METHODS } from "./generated/runtime-protocol";
@@ -59,6 +59,25 @@ function startAttachedBackend() {
       request.method === RUNTIME_METHODS.shutdown
     );
   }
+  function applicationUpdateShutdown(request: unknown): request is { id?: unknown } {
+    if (
+      typeof request !== "object" ||
+      request === null ||
+      !("jsonrpc" in request) ||
+      request.jsonrpc !== "2.0" ||
+      !("params" in request)
+    )
+      return false;
+    const params = request.params;
+    return (
+      typeof params === "object" &&
+      params !== null &&
+      !Array.isArray(params) &&
+      "reason" in params &&
+      params.reason === "application-update" &&
+      !quitWorkDecisionSchema.safeParse("quitWork" in params ? params.quitWork : undefined).success
+    );
+  }
   function dispatch(request: unknown, send: (response: unknown) => Promise<void>): void {
     if (closing) {
       const id = request && typeof request === "object" && "id" in request ? request.id : null;
@@ -76,13 +95,24 @@ function startAttachedBackend() {
       return;
     }
     const stopping = shutdown(request);
+    const drain = stopping ? [...pending] : [];
     if (stopping) closing = true;
     const task = (async () => {
+      const upgrading = stopping && applicationUpdateShutdown(request);
+      // Prepare while the providers are still live, then keep the normal RPC drain.
+      const decision = upgrading ? await backend.prepareUpgradeQuitWork() : undefined;
       if (stopping) {
         backend.cancelPendingOperations();
-        await Promise.allSettled([...pending]);
+        await Promise.allSettled(drain);
       }
-      const response = await backend.handleAsync(request);
+      const response = upgrading
+        ? await backend.closeAsync(decision, true).then(() => ({
+            jsonrpc: "2.0",
+            id: request.id ?? null,
+            result: null,
+            error: undefined,
+          }))
+        : await backend.handleAsync(request);
       await send(response);
       if (
         !response.error &&

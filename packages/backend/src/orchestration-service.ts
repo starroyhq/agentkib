@@ -740,6 +740,7 @@ export class OrchestrationService {
      */
     readonly leadLimited: (leadSessionId: string) => boolean | "manual-resume" = () => false,
     readonly delegationChanged: () => void = () => undefined,
+    readonly isUpgradeInterruption: (sessionId: string, turnId: string) => boolean = () => false,
   ) {
     this.registry = new LeadRegistry(dataDir, bootId);
     this.#catchUp = setInterval(() => void this.catchUp().catch(() => undefined), CATCH_UP_MS);
@@ -1279,6 +1280,7 @@ export class OrchestrationService {
       !owner ||
       !this.#enabledLead(owner.lead.sessionId) ||
       !this.#enabledProvider(owner.lane.agent) ||
+      this.isUpgradeInterruption(sessionId, turnId) ||
       owner.lane.reportedTurns.includes(turnId)
     )
       return;
@@ -1293,7 +1295,8 @@ export class OrchestrationService {
       replyText,
       endedAt,
     );
-    if (report) this.#reportBatch(owner.lead.sessionId, [report]);
+    if (report && !this.isUpgradeInterruption(sessionId, turnId))
+      this.#reportBatch(owner.lead.sessionId, [report]);
   }
 
   /** Report a verified quit interruption to the same Project Agent assignment. */
@@ -1302,6 +1305,7 @@ export class OrchestrationService {
     turnId: string,
     outcome: "continued" | "not-continued" | "unknown",
     assignment: { leadId: string; laneId: string },
+    upgrade = false,
   ): void {
     if (this.#closed || !this.#enabledLead(assignment.leadId)) return;
     const owner = this.registry.leadOfLane(sessionId);
@@ -1322,7 +1326,7 @@ export class OrchestrationService {
       if (!lane.reportedTurns.includes(turnId)) lane.reportedTurns.push(turnId);
       const text = workerReport(
         lane,
-        `its turn was interrupted when AgentKib quit. ${continuation}`,
+        `its turn was interrupted ${upgrade ? "by an AgentKib upgrade" : "when AgentKib quit"}. ${continuation}`,
       );
       lane.lastReport = { at: new Date().toISOString(), preview: text.slice(0, 200) };
       const reportId = randomUUID();
@@ -1437,6 +1441,7 @@ export class OrchestrationService {
             const since = turn.startedAt === null ? ended : started;
             if (
               lane.reportedTurns.includes(turn.turnId) ||
+              this.isUpgradeInterruption(lane.sessionId, turn.turnId) ||
               (lane.agent === "devin" && turn.startedAt === null) ||
               !(since >= joined) ||
               !(now - ended >= CATCH_UP_GRACE_MS)
@@ -1456,7 +1461,8 @@ export class OrchestrationService {
               ended,
               skipEmpty,
             );
-            if (report) reports.push(report);
+            if (report && !this.isUpgradeInterruption(lane.sessionId, turn.turnId))
+              reports.push(report);
           }
         }
         if (this.#closed) return;

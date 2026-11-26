@@ -14,13 +14,16 @@ afterEach(() => {
 });
 
 describe("session header status", () => {
-  it("shows the reconnect status after two seconds and resets for a new interruption", () => {
+  it("shows a reconnect dot after two seconds and text only for a slow interruption", () => {
     vi.useFakeTimers();
     const view = render(<SessionHeaderStatus locale={locale} status={offline} reconnecting />);
 
     act(() => vi.advanceTimersByTime(1999));
     expect(screen.queryByRole("status")).not.toBeInTheDocument();
     act(() => vi.advanceTimersByTime(1));
+    expect(screen.getByRole("status", { name: copy.streamReconnecting })).toBeVisible();
+    expect(screen.queryByText(copy.streamReconnecting)).not.toBeInTheDocument();
+    act(() => vi.advanceTimersByTime(1000));
     expect(screen.getByRole("status")).toHaveTextContent(copy.streamReconnecting);
 
     view.rerender(<SessionHeaderStatus locale={locale} status={offline} reconnecting={false} />);

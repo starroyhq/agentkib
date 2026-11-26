@@ -14,12 +14,18 @@ export function SessionHeaderStatus({
   reconnecting: boolean;
 }) {
   const showReconnect = useDelayedBusy(reconnecting, 2000);
+  const slowReconnect = useDelayedBusy(reconnecting, 3000);
   const copy = webLayoutCopy[locale];
   if (reconnecting && status.label !== copy.uncertain)
     return showReconnect ? (
-      <span role="status" className="inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap">
+      <span
+        role="status"
+        aria-label={slowReconnect ? undefined : copy.streamReconnecting}
+        title={slowReconnect ? undefined : copy.streamReconnecting}
+        className="inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap"
+      >
         <span aria-hidden className="size-1.5 rounded-full bg-amber-500" />
-        {copy.streamReconnecting}
+        {slowReconnect && copy.streamReconnecting}
       </span>
     ) : null;
   if (!status.label || status.label === copy.ready) return null;

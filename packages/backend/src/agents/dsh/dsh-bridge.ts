@@ -4049,6 +4049,9 @@ export class DshBridge {
         const nativeId = this.#ids.get(String(result.sessionId));
         if (nativeId) this.#autoReconcile(nativeId);
       }
+    } else if (result.status === "unknown" && typeof result.sessionId === "string") {
+      const nativeId = this.#ids.get(result.sessionId);
+      if (nativeId) this.#autoReconcile(nativeId);
     }
     return {
       ...result,

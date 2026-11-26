@@ -70,19 +70,22 @@ import { takeNewSessionDraft } from "./new-session-draft";
 import { PermissionModeNotice } from "./permission-mode-notice";
 import { SessionReadOnly } from "./session-read-only";
 import type { SessionPanels } from "./session-panels";
+import { SessionOutcomeAction, type SessionOutcomeControls } from "./session-outcome-action";
 
-type ComposerSession = SessionComposerControlsProps["session"] & {
-  historyReferences?: ResolvedHistoryReference[];
-  setHistoryReferences?: (references: ResolvedHistoryReference[]) => void;
-  t: Readonly<Record<string, string>>;
-  message: string;
-  setMessage: (message: string) => void;
-  control: ReturnType<typeof createSessionControl>;
-  canSend: boolean;
-  canStop: boolean;
-  checkContinuation?: () => unknown;
-  takeContinuationDraft?: (id: string) => ContinuationComposerDraft | undefined;
-};
+type ComposerSession = SessionComposerControlsProps["session"] &
+  SessionOutcomeControls & {
+    historyReferences?: ResolvedHistoryReference[];
+    setHistoryReferences?: (references: ResolvedHistoryReference[]) => void;
+    t: Readonly<Record<string, string>>;
+    message: string;
+    setMessage: (message: string) => void;
+    control: ReturnType<typeof createSessionControl>;
+    canSend: boolean;
+    canStop: boolean;
+    settledOutcomeDraft?: { sessionId: string; requestId: string };
+    checkContinuation?: () => unknown;
+    takeContinuationDraft?: (id: string) => ContinuationComposerDraft | undefined;
+  };
 
 type ComposerDisplay = {
   label: string;
@@ -184,6 +187,11 @@ export function SessionComposer({
   );
   const canSend = sessionCanSend && !providerDisabled;
   const canStop = sessionCanStop && !providerDisabled;
+  const sendOutcomePending =
+    session.blocksOutcome?.("send") ||
+    session.blocksOutcome?.("steer") ||
+    session.blocksOutcome?.("queue-add") ||
+    (!session.blocksOutcome && notice === "uncertain");
   const reason = (code?: string | null) =>
     sessionReason(locale, code ?? undefined, surface, platformCopy.unavailableReason).text;
   const isClaude = current?.agent === "claude-code";
@@ -333,12 +341,12 @@ export function SessionComposer({
     sessionId: selected,
     authority: draftAuthority,
     granted: access?.device?.attachments === true,
-    canUpload: uploadPermission && !busy && !submitted,
+    canUpload: uploadPermission && !busy && !submitted && !sendOutcomePending,
     copy,
     onError: setError,
   });
   const draftUnknown =
-    notice === "uncertain" ||
+    (!session.blocksOutcome && notice === "uncertain") ||
     live?.status === "outcome-unknown" ||
     live?.reason === "control-outcome-unconfirmed" ||
     capabilities?.reason === "control-outcome-unconfirmed";
@@ -371,6 +379,7 @@ export function SessionComposer({
     nativeDisabledReason: reason(feature("send")?.reason ?? capabilities?.reason),
     canRun: (action) =>
       !settingsOnlyBlocked &&
+      !session.blocksOutcome?.(action) &&
       ((action === "goal-set" && localGoal && composerCapabilities.goalDraftOffered) ||
         (controlReady && (action !== "send" || canSend) && feature(action)?.available === true)),
     actionDisabledReason: (action) => reason(feature(action)?.reason),
@@ -450,14 +459,28 @@ export function SessionComposer({
   }, [access?.device?.id, slotsGranted, discardStartupGoal]);
   useEffect(() => {
     if (!submitted) return;
-    if (notice === "accepted") {
+    if (notice === "accepted" && !session.blocksOutcome) {
       clearUploads();
       setResources([]);
       setHistoryReferences?.([]);
       setMessage("");
       setSubmitted(false);
-    } else if (notice === "notDispatched") setSubmitted(false);
-  }, [notice, submitted, setMessage, setHistoryReferences, clearUploads]);
+    } else if (notice === "notDispatched" || (notice === "uncertain" && session.blocksOutcome))
+      setSubmitted(false);
+  }, [notice, submitted, setMessage, setHistoryReferences, clearUploads, session.blocksOutcome]);
+  const settledDraftId =
+    session.settledOutcomeDraft?.sessionId === selected
+      ? session.settledOutcomeDraft.requestId
+      : undefined;
+  const cleanedDraft = useRef<string | undefined>(undefined);
+  useEffect(() => {
+    if (!settledDraftId || cleanedDraft.current === settledDraftId) return;
+    cleanedDraft.current = settledDraftId;
+    clearUploads();
+    setResources([]);
+    setHistoryReferences?.([]);
+    setSubmitted(false);
+  }, [settledDraftId, clearUploads, setHistoryReferences]);
   useEffect(() => {
     if (!online || !controlReady || busy || submitted || capabilities?.sessionId !== selected)
       return;
@@ -587,6 +610,7 @@ export function SessionComposer({
       readOnlyTerminalWait ||
       (action === "queue-add" && !queueAddReady) ||
       (action === "steer" && !steerReady) ||
+      session.blocksOutcome?.(action) ||
       (startupGoal && action !== "send") ||
       !online ||
       (settingsOnlyBlocked && !(action === "send" && panelShortcut && localCommandReady)) ||
@@ -617,6 +641,7 @@ export function SessionComposer({
     }
     if (plain && panelShortcut) return;
     const mapped = plain ? decision?.action : undefined;
+    if (mapped && session.blocksOutcome?.(mapped.action)) return;
     if (
       mapped?.action === "goal-set" &&
       draftReady &&
@@ -685,7 +710,10 @@ export function SessionComposer({
         setSubmitted(false);
       }
     } finally {
-      if (requestGeneration === generation.current) submitPending.current = false;
+      if (requestGeneration === generation.current) {
+        submitPending.current = false;
+        if (session.blocksOutcome) setSubmitted(false);
+      }
     }
   }
   const running = live?.status === "running" && display.continuation !== "dsh-observed";
@@ -735,11 +763,13 @@ export function SessionComposer({
   const canSendFollowUp =
     canAdvanced && !startupGoal && !draftUnknown && valid && !submitted && !readOnlyTerminalWait;
   const canFollowUp = (action: "queue-add" | "steer") =>
-    canSendFollowUp && (action === "queue-add" ? queueAddReady : !compacting && steerReady);
+    canSendFollowUp &&
+    !session.blocksOutcome?.(action) &&
+    (action === "queue-add" ? queueAddReady : !compacting && steerReady);
   const runningReady = (followUp || (serialQueue && !canSubmit)) && canFollowUp(runningAction);
   const directReady = localCommandReady || (!followUp && canSubmit);
   const runningLabel = runningAction === "steer" ? copy.steer : copy.queueAdd;
-  const primaryAction =
+  const stopping =
     !runningReady &&
     canStop &&
     sessionStopCapabilityAllows(
@@ -747,26 +777,52 @@ export function SessionComposer({
       capabilities,
       selected,
       sessionProviderDeclaration(current?.agent),
-    ) ? (
-      <ComposerPrimaryAction kind="stop" label={t.stop} onStop={() => void control("stop")} />
-    ) : (
-      <ComposerPrimaryAction
-        label={runningReady ? runningLabel : t.send}
-        title={
-          draftReason
-            ? reason(draftReason)
-            : runningReady
-              ? runningLabel
-              : !directReady && ["busy", "terminal-watch"].includes(display.continuation ?? "")
-                ? display.reason || display.label
-                : undefined
-        }
-        disabled={(!directReady && !runningReady) || !valid || submitted}
-        showDisabledTitle={
-          display.continuation === "busy" || display.continuation === "terminal-watch"
+    );
+  const sendTarget = followUp ? runningAction : "send";
+  const sendActions = ["send", "steer", "queue-add"] as const;
+  const standardPrimaryAction = stopping ? (
+    <ComposerPrimaryAction kind="stop" label={t.stop} onStop={() => void control("stop")} />
+  ) : (
+    <ComposerPrimaryAction
+      label={runningReady ? runningLabel : t.send}
+      title={
+        draftReason
+          ? reason(draftReason)
+          : runningReady
+            ? runningLabel
+            : !directReady && ["busy", "terminal-watch"].includes(display.continuation ?? "")
+              ? display.reason || display.label
+              : undefined
+      }
+      disabled={(!directReady && !runningReady) || !valid || submitted}
+      showDisabledTitle={
+        display.continuation === "busy" || display.continuation === "terminal-watch"
+      }
+    />
+  );
+  const primaryAction = (
+    <>
+      <SessionOutcomeAction session={session} actions={["settings", "open-model-picker"]} />
+      <SessionOutcomeAction session={session} actions={["approve", "answer"]} />
+      <SessionOutcomeAction
+        session={session}
+        actions={
+          stopping
+            ? sendActions
+            : ["stop", ...sendActions.filter((action) => action !== sendTarget)]
         }
       />
-    );
+      {stopping ? (
+        standardPrimaryAction
+      ) : (
+        <SessionOutcomeAction
+          session={session}
+          actions={[sendTarget]}
+          fallback={standardPrimaryAction}
+        />
+      )}
+    </>
+  );
   if (
     resume?.loadResumeCommand &&
     display.continuation === "view-only" &&
@@ -841,7 +897,8 @@ export function SessionComposer({
           onFocus: () => {
             if (resume?.refreshOccupancy) void session.checkContinuation?.();
           },
-          disabled: providerDisabled || (busy && !settingsOnlyBlocked) || submitted,
+          disabled:
+            providerDisabled || (busy && !settingsOnlyBlocked) || submitted || sendOutcomePending,
           ...slash.inputProps,
         }}
         onEditorKeyDown={(event, composing) => {
@@ -864,7 +921,7 @@ export function SessionComposer({
         attachments={{
           inputRef: fileInput,
           label: copy.attachment,
-          disabled: !uploadPermission || busy || submitted,
+          disabled: !uploadPermission || busy || submitted || sendOutcomePending,
           scope: addActionsScope,
           onFiles: add,
         }}
@@ -877,7 +934,7 @@ export function SessionComposer({
               locale={locale}
               references={historyReferences}
               message={message}
-              disabled={busy || notice === "uncertain"}
+              disabled={busy}
               onRemove={(item) =>
                 setHistoryReferences?.(historyReferences.filter((entry) => entry !== item))
               }
@@ -916,7 +973,7 @@ export function SessionComposer({
                       size="sm"
                       className="size-11 shrink-0 p-0"
                       aria-label={`${copy.remove}: ${item.name}`}
-                      disabled={busy || submitted}
+                      disabled={busy || submitted || sendOutcomePending}
                       onClick={() => void remove(item)}
                     >
                       <X size={14} />

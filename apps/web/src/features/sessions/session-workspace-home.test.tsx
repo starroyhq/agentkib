@@ -149,6 +149,26 @@ describe("Web home in the workspace", () => {
     expect(screen.getByRole("button", { name: home.home, pressed: true })).toBeInTheDocument();
   });
 
+  it("only lists approvals and questions on the bell when the home has other needs", () => {
+    setup(undefined, {
+      sessions: [
+        session("approval", { status: "awaiting-approval" }),
+        session("uncertain", { status: "outcome-unknown" }),
+        {
+          ...session("paused delegation"),
+          orchestration: { role: "lead", workers: 1, paused: true, reason: "auto-turn-limit" },
+        },
+      ],
+    });
+    const copy = sessionCopyForSurface("en-US", "web");
+    fireEvent.click(screen.getByRole("button", { name: `${copy.pending} (1)` }));
+    const dialog = within(screen.getByRole("dialog", { name: copy.pending }));
+    expect(dialog.getByRole("button", { name: "approval" })).toBeVisible();
+    expect(dialog.queryByRole("button", { name: "uncertain" })).not.toBeInTheDocument();
+    expect(dialog.queryByRole("button", { name: "paused delegation" })).not.toBeInTheDocument();
+    expect(dialog.queryByRole("button", { name: copy.refresh })).not.toBeInTheDocument();
+  });
+
   it("returns home from the AgentKib mark and from Home", () => {
     const { leaveSession } = setup();
     fireEvent.click(screen.getByRole("button", { name: `AgentKib · ${home.home}` }));

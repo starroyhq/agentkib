@@ -36,20 +36,23 @@ class FakeEventSource {
   }
 
   emit(name: string, value: unknown) {
-    if (name === "snapshot") {
-      const live = value as Live;
+    if (name === "snapshot" || name === "invalidate") {
+      const sessionId =
+        name === "snapshot"
+          ? (value as Live).sessionId
+          : (new URL(this.path, "http://localhost").searchParams.get("sessionId") ?? "");
       this.listeners["session-event"]?.(
         new MessageEvent("session-event", {
           data: JSON.stringify({
             protocolVersion: 2,
             subscriptionId: "test-stream",
-            sessionId: live.sessionId,
+            sessionId,
             runtimeBootId: "runtime",
             epoch: "test",
             seq: ++this.sequence,
             cursor: `cursor-${this.sequence}`,
-            type: "snapshot",
-            payload: { live },
+            type: name,
+            payload: name === "snapshot" ? { live: value } : value,
           }),
         }),
       );
@@ -174,6 +177,18 @@ async function openSession() {
   fireEvent.click(await screen.findByRole("button", { name: /Test session/ }));
   await screen.findByText("Secret history");
   await waitFor(() => expect(FakeEventSource.instances.length).toBeGreaterThan(0));
+}
+
+function invalidateReceipts() {
+  const stream = FakeEventSource.instances
+    .filter(
+      (source) =>
+        !source.close.mock.calls.length &&
+        new URL(source.path, "http://localhost").searchParams.get("sessionId") === "session",
+    )
+    .at(-1);
+  expect(stream).toBeDefined();
+  act(() => stream!.emit("invalidate", { domains: ["receipts"] }));
 }
 
 afterEach(() => {
@@ -313,44 +328,42 @@ describe("access invalidation", () => {
 });
 
 describe("control outcome recovery", () => {
-  it("never resends an unknown send outcome and requires a later manual refresh", async () => {
-    const polling: (() => void)[] = [];
-    vi.spyOn(globalThis, "setInterval").mockImplementation(((
-      callback: () => void,
-      delay: number,
-    ) => {
-      if (delay === 4000) polling.push(callback);
-      return 1 as unknown as ReturnType<typeof setInterval>;
-    }) as typeof setInterval);
+  it("starts checking an unknown send immediately and recovers on focus without resending", async () => {
     const server = createServer();
     server.state.mutation = async (path) =>
       path.endsWith("/send")
         ? json({ code: "permission_denied", controlOutcome: "unknown" }, 403)
         : json({});
     await openSession();
-    fireEvent.change(screen.getByLabelText("发送消息"), { target: { value: "draft" } });
-
-    fireEvent.click(screen.getByRole("button", { name: "发送" }));
-    await screen.findByText(
-      "上次控制结果尚未确认，控制已暂停。请刷新核对已保存请求的处理状态，勿重复提交。",
-    );
-    expect(screen.getByRole("button", { name: "发送" })).toBeDisabled();
-    expect(screen.getByLabelText("发送消息")).toHaveValue("draft");
-
-    await act(async () => polling.forEach((poll) => poll()));
-    expect(screen.getByRole("button", { name: "发送" })).toBeDisabled();
-    expect(server.fetcher.mock.calls.filter(([url]) => String(url).endsWith("/send"))).toHaveLength(
-      1,
-    );
-
-    fireEvent.click(screen.getAllByRole("button", { name: "刷新" })[0]);
+    const scope = pendingScope("", "browser");
+    const input = screen.getByLabelText("发送消息");
+    const send = screen.getByRole("button", { name: "发送" });
+    fireEvent.change(input, { target: { value: "first draft" } });
+    fireEvent.click(send);
+    await waitFor(() => expect(readPending(scope)).toHaveLength(1));
+    const [pending] = readPending(scope);
     await waitFor(() =>
-      expect(server.fetcher.mock.calls.some(([url]) => String(url).includes("/requests/"))).toBe(
-        true,
+      expect(server.fetcher).toHaveBeenCalledWith(
+        expect.stringContaining(`/requests/${pending.requestId}`),
+        expect.objectContaining({ method: "GET" }),
       ),
     );
-    expect(screen.getByRole("button", { name: "发送" })).toBeDisabled();
-    expect(readPending(pendingScope("", "browser"))).toHaveLength(1);
+    fireEvent.change(input, { target: { value: "next draft" } });
+    expect(send).toBeDisabled();
+    expect(screen.getByText("Secret history")).toBeVisible();
+
+    server.state.receipt = {
+      ...pending,
+      found: true,
+      operation: "send",
+      status: "accepted",
+      completionObserved: true,
+    };
+    vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
+    fireEvent(window, new Event("focus"));
+    await waitFor(() => expect(send).toBeEnabled());
+    expect(readPending(scope)).toEqual([]);
+    expect(input).toHaveValue("next draft");
     expect(server.fetcher.mock.calls.filter(([url]) => String(url).endsWith("/send"))).toHaveLength(
       1,
     );
@@ -618,12 +631,11 @@ describe("durable Codex control recovery", () => {
       target: { value: "private prompt never persisted" },
     });
     fireEvent.click(screen.getByRole("button", { name: "发送" }));
-    await screen.findByText("结果尚未确认。请刷新核对已保存请求的处理状态，不会自动重发。");
     const scope = pendingScope("", "browser");
+    await waitFor(() => expect(readPending(scope)).toHaveLength(1));
     const pending = readPending(scope)[0];
     expect(pending.kind).toBe("send");
     expect(sessionStorage.getItem(scope)).not.toContain("private prompt");
-    fireEvent.click(screen.getAllByRole("button", { name: "刷新" })[0]);
     await waitFor(() =>
       expect(server.fetcher.mock.calls.some(([url]) => String(url).includes("/requests/"))).toBe(
         true,
@@ -632,9 +644,18 @@ describe("durable Codex control recovery", () => {
     expect(screen.getByRole("button", { name: "发送" })).toBeDisabled();
     cleanup();
     FakeEventSource.instances = [];
+    server.state.receipt = {
+      found: true,
+      requestId: crypto.randomUUID(),
+      sessionId: "session",
+      operation: "send",
+      status: "accepted",
+      completionObserved: true,
+    };
     await openSession();
     fireEvent.change(screen.getByLabelText("发送消息"), { target: { value: "new draft" } });
     expect(screen.getByRole("button", { name: "发送" })).toBeDisabled();
+    expect(readPending(scope)).toEqual([pending]);
     server.state.receipt = {
       found: true,
       requestId: pending.requestId,
@@ -644,7 +665,7 @@ describe("durable Codex control recovery", () => {
       completionObserved: false,
       ack: { accepted: true, completed: false },
     };
-    fireEvent.click(screen.getAllByRole("button", { name: "刷新" })[0]);
+    invalidateReceipts();
     await waitFor(() => expect(screen.getByRole("button", { name: "发送" })).toBeEnabled());
     expect(readPending(scope)).toEqual([]);
     expect(server.fetcher.mock.calls.filter(([url]) => String(url).endsWith("/send"))).toHaveLength(
@@ -704,7 +725,7 @@ describe("durable Codex control recovery", () => {
 });
 
 describe("advanced Codex receipt recovery", () => {
-  it("never replays an uncertain rename after refresh or remount", async () => {
+  it("automatically reconciles an uncertain rename after remount without replaying it", async () => {
     const server = createServer({ ...idleLive, executionMode: "codex-follower" });
     server.state.catalog = { ...catalog, sessions: [{ ...catalog.sessions[0], agent: "codex" }] };
     server.state.access = {
@@ -750,8 +771,9 @@ describe("advanced Codex receipt recovery", () => {
       operation: "rename",
       completionObserved: false,
     };
-    fireEvent.click(screen.getAllByRole("button", { name: "刷新" })[0]!);
+    invalidateReceipts();
     await waitFor(() => expect(readPending(scope)).toHaveLength(0));
+    await waitFor(() => expect(screen.getByRole("button", { name: "重命名" })).toBeEnabled());
     expect(writes()).toHaveLength(1);
   });
 });

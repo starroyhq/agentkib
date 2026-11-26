@@ -3,6 +3,7 @@ import type { ApprovalRuleCapability } from "./approval-oversight";
 import type { SubagentStatus } from "./subagents";
 
 export const SESSION_RESOURCE_LIMIT = 10;
+export const SESSION_OUTCOME_GRACE_MS = 2 * 60_000;
 
 export type SessionQueueAction =
   | "list"

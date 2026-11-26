@@ -20,7 +20,7 @@ describe("session image read boundary", () => {
   let registered: boolean;
   let workspaceId: string;
   let image: { mimeType: string; base64: string };
-  const control = createWebControlState();
+  let control: ReturnType<typeof createWebControlState>;
   const route = "/session-images?sessionId=s&imageId=opaque-image";
   const runtime = vi.fn(async (params: unknown): Promise<unknown> => {
     const input = params as { operation: string };
@@ -87,10 +87,7 @@ describe("session image read boundary", () => {
     workspaceId = "w";
     image = { mimeType: "image/png", base64: Buffer.from("image fixture").toString("base64") };
     runtime.mockReset().mockImplementation(implementation);
-    control.admission = false;
-    control.active.clear();
-    control.requests.clear();
-    control.unconfirmed.clear();
+    control = createWebControlState();
     directory = await mkdtemp(join(tmpdir(), "agentkib-session-image-host-"));
     const reservation = createServer();
     await new Promise<void>((resolve) => reservation.listen(0, "127.0.0.1", resolve));
@@ -151,7 +148,7 @@ describe("session image read boundary", () => {
     });
     expect(control.requests.size).toBe(0);
     expect(control.active.size).toBe(0);
-    expect(control.unconfirmed.size).toBe(0);
+    expect(control.outcomeFences.sessions.size).toBe(0);
     expect(control.admission).toBe(true);
   });
 
@@ -210,7 +207,7 @@ describe("session image read boundary", () => {
       ),
     ).toHaveLength(1);
     expect(control.requests.size).toBe(0);
-    expect(control.unconfirmed.size).toBe(0);
+    expect(control.outcomeFences.sessions.size).toBe(0);
   });
 
   it.each([

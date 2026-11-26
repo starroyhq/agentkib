@@ -13,6 +13,8 @@ import { sessionIdentity, type NativeSession } from "../../session-store";
 import type { BackendStore } from "../../store";
 import type { SessionReaders } from "../../session-readers";
 import { enrichLedgerImages } from "../../session-image-matching";
+import { acceptNativeControlReceipt, isPendingNativeReceipt } from "../../control-receipt";
+import { codexPromptRecorded, codexStopRecorded } from "../../native-control-evidence";
 import type { ConversationImage } from "../../session-events";
 import type { SessionIndex } from "../../session-index";
 import {
@@ -6127,6 +6129,72 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
       this.#usageLimits.projectLive(sessionId, live),
       enabled,
     );
+  }
+
+  async receipt(value: unknown, deviceId: string): Promise<unknown> {
+    if (
+      !isPendingNativeReceipt(value) ||
+      (value.executionMode !== "codex-managed" && value.executionMode !== "codex-follower") ||
+      !["send", "steer", "queue-start", "stop"].includes(value.operation)
+    )
+      return value;
+    const { sessionId } = value;
+    try {
+      const stored = managedRecordSchema.safeParse(readManagedRecord(this.host.dataDir, sessionId));
+      const source = await this.#inactiveRecord(sessionId, stored.success ? stored.data : null);
+      const nativeId = source.native_id;
+      const runner = this.#managedRunners.get(sessionId);
+      if (
+        !nativeId ||
+        value.workspaceId !== source.workspace_id ||
+        source.archived ||
+        this.host.controlSessions.has(sessionId) ||
+        this.#startingRunners.has(sessionId) ||
+        // A resident worker whose native turn is still unknown must first hydrate a
+        // current snapshot through the existing ownership-aware recovery.
+        (runner && (runner.retiring || !runner.state.turnId))
+      )
+        return value;
+      const cwd = this.#managedCwd(source);
+      const native = this.host.sessions.verifiedCodexControlDirectory(nativeId);
+      if (
+        !native ||
+        native.id !== nativeId.toLowerCase() ||
+        pathIdentity(native.cwd) !== pathIdentity(cwd)
+      )
+        return value;
+      const file = this.host.sessions.verifiedCodexReadTranscript(nativeId, source.workspace);
+      if (!file?.endsWith(".jsonl")) return value;
+      const turnId = typeof value.turnId === "string" ? value.turnId : undefined;
+      const stop = value.operation === "stop";
+      if (
+        stop
+          ? !turnId || !codexStopRecorded(file, turnId)
+          : (value.operation === "steer" && !turnId) ||
+            !codexPromptRecorded(
+              file,
+              nativeId,
+              value.requestId,
+              value.operation === "steer" ? turnId : undefined,
+            )
+      )
+        return value;
+      const recovered = acceptNativeControlReceipt(
+        this.host.dataDir,
+        deviceId,
+        value,
+        stop ? turnId : undefined,
+      );
+      if (!isPendingNativeReceipt(recovered)) {
+        if (runner && !managedSessionHasUnknownCommands(this.host.dataDir, sessionId)) {
+          if (runner.state.restoreReconciledTurn()) runner.persist(runner.state);
+        }
+        this.host.publishConversationEvent?.(sessionId, "invalidate", { domains: ["receipts"] });
+      }
+      return recovered;
+    } catch {
+      return value;
+    }
   }
 
   /** Worker reads need output evidence and external ownership, even when no page is open. */

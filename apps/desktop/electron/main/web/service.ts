@@ -1,6 +1,7 @@
 import { createHash, randomBytes, randomInt, randomUUID } from "node:crypto";
 import {
   HISTORY_SEARCH_METHODS,
+  SESSION_OUTCOME_GRACE_MS,
   SESSION_RESOURCE_LIMIT,
   managedAgentOf,
   sessionProviderCapabilities,
@@ -41,6 +42,7 @@ import { ArtifactService, ArtifactError } from "./artifacts";
 import { AttachmentStore, AttachmentError, type AttachmentFormat } from "./attachments";
 import { LivePreviewError, LivePreviewService } from "./live-preview";
 import { dispatchClaude } from "./claude-dispatch";
+import { ControlOutcomeFences } from "./control-outcome-fences";
 import { ClaudeHostScheduler, type ClaudeScheduledSession } from "./claude-scheduler";
 import { attachManagedWebSocket, type ConversationDispatchControl } from "./managed-websocket";
 import {
@@ -207,8 +209,7 @@ export function createWebControlState() {
   return {
     admission: false,
     active: new Set<string>(),
-    unconfirmed: new Set<string>(),
-    unconfirmedRequests: new Map<string, string>(),
+    outcomeFences: new ControlOutcomeFences(),
     requests: new Set<string>(),
     events: new EventEmitter().setMaxListeners(64),
     claudeScheduler: undefined as ClaudeHostScheduler | undefined,
@@ -657,6 +658,7 @@ const API_ROUTES: Record<"GET" | "POST", Record<string, RouteSpec>> = {
     "/stop": { lan: true, control: true },
     "/approve": { lan: true, control: true },
     "/answer": { lan: true, control: true },
+    "/requests/abandon": { lan: true, control: true },
     "/codex/queue-delete": { lan: true, control: true },
     "/codex/goal-set": { lan: true, control: true },
     "/codex/goal-pause": { lan: true, control: true },
@@ -913,8 +915,7 @@ export class WebAccessService {
   private controlAdmission = false;
   // Survives runtime replacement and HTTP listener restarts within this host.
   // An underlying promise settling is not proof that the HTTP reply succeeded.
-  private unconfirmed = new Set<string>();
-  private unconfirmedRequests = new Map<string, string>();
+  private outcomeFences = new ControlOutcomeFences();
   private requests = new Set<string>();
   private controlEvents = new EventEmitter().setMaxListeners(64);
   private pushEvents = new EventEmitter();
@@ -1019,8 +1020,7 @@ export class WebAccessService {
     this.attachmentStore = new AttachmentStore(join(options.dataDir, "attachments"));
     if (options.sharedControl) {
       this.active = options.sharedControl.active;
-      this.unconfirmed = options.sharedControl.unconfirmed;
-      this.unconfirmedRequests = options.sharedControl.unconfirmedRequests;
+      this.outcomeFences = options.sharedControl.outcomeFences;
       this.requests = options.sharedControl.requests;
       this.controlEvents = options.sharedControl.events;
     }
@@ -1162,10 +1162,7 @@ export class WebAccessService {
       mutation &&
       (this.admission ||
         (sessionId && this.active.has(sessionId)) ||
-        (sessionId &&
-          this.unconfirmed.has(sessionId) &&
-          operation !== "reconcile" &&
-          this.unconfirmedRequests.get(sessionId) !== requestId))
+        (sessionId && this.outcomeFences.blocks(sessionId, operation, requestId)))
     ) {
       // A rejected duplicate may already have run through either local surface.
       // Only its authoritative receipt can establish that it was never dispatched.
@@ -1202,8 +1199,12 @@ export class WebAccessService {
         dispatched = true;
         if (requestId) rememberRequest(this.requests, requestId);
         if (sessionId && requestId && operation !== "reconcile") {
-          this.unconfirmed.add(sessionId);
-          this.unconfirmedRequests.set(sessionId, requestId);
+          this.outcomeFences.record({
+            sessionId,
+            requestId,
+            operation,
+            deviceId: CLAUDE_LOCAL_OWNER,
+          });
         }
       } else if (!mutation && this.admission) throw new HttpError(409, "operation_busy");
       return this.requestSession(params, target, false, dispatching ? approvalAudit : undefined);
@@ -1242,8 +1243,8 @@ export class WebAccessService {
           mutation &&
           value.controlOutcome === "not-dispatched" &&
           sessionId &&
-          this.unconfirmed.has(sessionId) &&
-          this.unconfirmedRequests.get(sessionId) === requestId
+          !!requestId &&
+          this.outcomeFences.get(requestId)?.sessionId === sessionId
         )
           return { ...value, controlOutcome: "unknown" };
         const settledSession =
@@ -1256,18 +1257,17 @@ export class WebAccessService {
               value.found === true &&
               ["accepted", "not-dispatched"].includes(String(value.status))));
         if (operation === "reconcile" && settledSession && value.reconciled === true) {
-          this.clearUnconfirmed(settledSession);
-          this.unconfirmedRequests.delete(settledSession);
+          this.settleSessionOutcomes(settledSession);
         } else if (
           settledSession &&
           acknowledged &&
-          this.unconfirmedRequests.get(settledSession) === requestId &&
+          requestId &&
           (mutation || !this.active.has(settledSession))
         ) {
-          this.clearUnconfirmed(settledSession);
-          this.unconfirmedRequests.delete(settledSession);
+          this.settleOutcome(settledSession, requestId);
         }
-        if (operation === "live" && sessionId) return { ...value, ...this.controlGuard(sessionId) };
+        if (operation === "live" && sessionId)
+          return { ...value, ...this.scopedOutcomeFlags(sessionId) };
       }
       return result;
     } finally {
@@ -1441,7 +1441,7 @@ export class WebAccessService {
             this.disposed ||
             this.admission ||
             this.active.has(sessionId) ||
-            this.unconfirmed.has(sessionId)
+            this.outcomeFences.sessions.has(sessionId)
           )
             return false;
           this.admission = true;
@@ -1769,7 +1769,7 @@ export class WebAccessService {
     if (
       snapshotField(live, "sessionId") !== session.id ||
       snapshotField(live, "workspaceId") !== session.workspace_id ||
-      this.controlGuard(session.id)
+      this.interactionOutcomeBlocked(session.id, kind)
     )
       return {};
     const enabled = await this.controlsEnabledForSnapshot(session.id, live, device, true);
@@ -1778,7 +1778,7 @@ export class WebAccessService {
     )?.filter((interaction) => interaction.kind === kind);
     if (!(await this.workspaceAllowed(session.workspace_id, this.grant(hash), true)) || !check())
       return;
-    if (this.controlGuard(session.id) || matching?.length !== 1) return {};
+    if (this.interactionOutcomeBlocked(session.id, kind) || matching?.length !== 1) return {};
     return (
       this.pushApprovalActions.project(
         matching[0]!,
@@ -1826,7 +1826,7 @@ export class WebAccessService {
       this.readerScope() !== scope ||
       this.notificationTarget(target) !== credential ||
       credential.push?.updatedAt !== target.updatedAt ||
-      this.controlGuard(sessionId) ||
+      this.interactionOutcomeBlocked(sessionId, kind) ||
       snapshotField(live, "sessionId") !== sessionId ||
       snapshotField(live, "workspaceId") !== session.workspace_id ||
       snapshotField(live, "executionMode") !== "claude-follower"
@@ -1965,26 +1965,84 @@ export class WebAccessService {
     });
   }
 
-  private clearUnconfirmed(sessionId: string) {
-    if (this.unconfirmed.delete(sessionId)) this.notifyControlChanged(sessionId);
+  private settleOutcome(sessionId: string, requestId: string) {
+    if (this.outcomeFences.settle(sessionId, requestId)) this.notifyControlChanged(sessionId);
   }
 
-  private controlGuard(sessionId: string) {
-    if (!this.unconfirmed.has(sessionId) || this.active.has(sessionId)) return undefined;
+  private settleSessionOutcomes(sessionId: string) {
+    for (const entry of this.outcomeFences.forSession(sessionId) ?? [])
+      this.settleOutcome(sessionId, entry.requestId);
+  }
+
+  private async abandonOutcome(hash: string, body: Record<string, unknown>) {
+    const device = this.grant(hash);
+    const boot = this.bootId;
+    const readerScope = this.readerScope();
+    const requestId = this.field(body.requestId, 128);
+    const sessionId = this.field(body.sessionId);
+    if (
+      !/^[a-f0-9-]{36}$/i.test(requestId) ||
+      Object.keys(body).some((key) => key !== "requestId" && key !== "sessionId")
+    )
+      throw new HttpError(400, "invalid_input");
+    await this.sessionScope(sessionId, hash, true, false);
+    const sameAuthority = () =>
+      this.bootId === boot && this.readerScope() === readerScope && this.grant(hash) === device;
+    if (!sameAuthority()) throw new HttpError(403, "access_changed");
+    const fence = this.outcomeFences.get(requestId);
+    if (
+      fence &&
+      (fence.sessionId !== sessionId ||
+        (fence.deviceId !== device.id &&
+          !(device.id === this.localDevice.id && fence.deviceId === CLAUDE_LOCAL_OWNER)))
+    )
+      throw new HttpError(403, "request_not_authorized");
+    if (this.active.has(sessionId)) throw new HttpError(409, "operation_busy");
+    if (fence && Date.now() - fence.createdAt < SESSION_OUTCOME_GRACE_MS)
+      throw new HttpError(409, "outcome_grace_period");
+    if (this.options.receiptRequest) {
+      const proof = await this.runtime(
+        {},
+        this.options.receiptRequest({
+          requestId,
+          deviceId: fence?.deviceId ?? device.id,
+        }),
+        true,
+      ).catch(() => undefined);
+      if (!sameAuthority()) throw new HttpError(403, "access_changed");
+      if (this.active.has(sessionId)) throw new HttpError(409, "operation_busy");
+      if (
+        snapshotField(proof, "found") === true &&
+        snapshotField(proof, "requestId") === requestId &&
+        snapshotField(proof, "sessionId") === sessionId &&
+        (!fence || snapshotField(proof, "operation") === fence.operation) &&
+        ["accepted", "not-dispatched"].includes(String(snapshotField(proof, "status")))
+      ) {
+        this.settleOutcome(sessionId, requestId);
+        return { abandoned: false };
+      }
+    }
+    // An abandoned command ID remains consumed. Dropping the display fence never
+    // converts it into a new command or changes the Provider's native authority.
+    rememberRequest(this.requests, requestId);
+    this.settleOutcome(sessionId, requestId);
+    return { abandoned: true };
+  }
+
+  private scopedOutcomeFlags(sessionId: string) {
     return {
-      status: "outcome-unknown",
-      revision: null,
-      sendEnabled: false,
-      stopEnabled: false,
-      approvals: [],
-      questions: [],
-      reason: "control-outcome-unconfirmed",
+      ...(this.outcomeFences.blocks(sessionId, "send") ? { sendEnabled: false } : {}),
+      ...(this.outcomeFences.blocks(sessionId, "stop") ? { stopEnabled: false } : {}),
     };
   }
 
+  private interactionOutcomeBlocked(sessionId: string, kind: "approval" | "question") {
+    return this.outcomeFences.blocks(sessionId, kind === "approval" ? "approve" : "answer");
+  }
+
   private projectControlEvent(event: SessionStreamEvent): SessionStreamEvent {
-    const guard = this.controlGuard(event.sessionId);
-    if (!guard) return event;
+    const guard = this.scopedOutcomeFlags(event.sessionId);
+    if (!Object.keys(guard).length) return event;
     if (event.type === "state") return { ...event, payload: { ...event.payload, ...guard } };
     if (event.type !== "snapshot") return event;
     const live = event.payload.live;
@@ -4595,16 +4653,16 @@ export class WebAccessService {
       (!Number.isSafeInteger(body.expectedRevision) || Number(body.expectedRevision) < 0)
     )
       throw new HttpError(400, "invalid_revision");
-    if (this.requests.has(requestId) || this.unconfirmed.has(sessionId)) {
-      control.priorUncertain = true;
+    if (this.requests.has(requestId) || this.outcomeFences.blocks(sessionId, operation)) {
+      control.priorUncertain = this.requests.has(requestId);
       throw new HttpError(409, "outcome_unknown");
     }
     if (this.admission || this.active.has(sessionId)) throw new HttpError(409, "operation_busy");
     const workspaceId = lanQueueDelete
       ? await this.queueScope(sessionId, hash)
       : await this.codexScope(sessionId, hash, false, !generic);
-    if (this.requests.has(requestId) || this.unconfirmed.has(sessionId)) {
-      control.priorUncertain = true;
+    if (this.requests.has(requestId) || this.outcomeFences.blocks(sessionId, operation)) {
+      control.priorUncertain = this.requests.has(requestId);
       throw new HttpError(409, "outcome_unknown");
     }
     if (this.admission || this.active.has(sessionId)) throw new HttpError(409, "operation_busy");
@@ -4653,7 +4711,7 @@ export class WebAccessService {
   ) {
     const operation = "inspect";
     const permission = this.codexPermission(operation);
-    const pendingRequest = this.unconfirmedRequests.get(sessionId);
+    const pendingRequests = [...(this.outcomeFences.forSession(sessionId) ?? [])];
     const result = (await this.runtime({
       operation,
       sessionId,
@@ -4661,14 +4719,8 @@ export class WebAccessService {
       experimentalEnabled: true,
     })) as { reconciled?: boolean; context?: unknown };
     this.grant(hash, permission);
-    if (
-      result.reconciled === true &&
-      !this.active.has(sessionId) &&
-      this.unconfirmedRequests.get(sessionId) === pendingRequest
-    ) {
-      this.clearUnconfirmed(sessionId);
-      this.unconfirmedRequests.delete(sessionId);
-    }
+    if (result.reconciled === true && !this.active.has(sessionId))
+      for (const entry of pendingRequests) this.settleOutcome(sessionId, entry.requestId);
     const catalog = (await this.scopeCatalog()) as {
       sessions: { id: string; workspace_id: string }[];
     };
@@ -4733,10 +4785,7 @@ export class WebAccessService {
       }
       if (prior.status === "accepted" && prior.ack && typeof prior.ack === "object") {
         control.priorUncertain = false;
-        if (serialQueue && this.unconfirmedRequests.get(sessionId) === requestId) {
-          this.unconfirmedRequests.delete(sessionId);
-          this.clearUnconfirmed(sessionId);
-        }
+        if (serialQueue) this.settleOutcome(sessionId, requestId);
         return { ack: prior.ack };
       }
       control.priorUncertain = prior.status !== "not-dispatched";
@@ -5152,8 +5201,7 @@ export class WebAccessService {
     }
     this.rate(`control:${hash}`, 30);
     rememberRequest(this.requests, requestId);
-    this.unconfirmed.add(sessionId);
-    this.unconfirmedRequests.set(sessionId, requestId);
+    this.outcomeFences.record({ sessionId, requestId, operation, deviceId: current.id });
     dispatch.dispatched = true;
     control.dispatched = true;
     let settingsConfirmed = false;
@@ -5170,13 +5218,8 @@ export class WebAccessService {
           settingsControlOutcome(result, requestId, sessionId, params.runtimeBootId) !== undefined;
         // The HTTP request may time out while the backend still owns the control. A matching
         // settings result can settle its fence even if that response has already ended.
-        if (
-          settingsConfirmed &&
-          this.bootId === body.bootId &&
-          this.unconfirmedRequests.get(sessionId) === requestId
-        ) {
-          this.unconfirmedRequests.delete(sessionId);
-          this.clearUnconfirmed(sessionId);
+        if (settingsConfirmed && this.bootId === body.bootId) {
+          this.settleOutcome(sessionId, requestId);
         }
         return result;
       })
@@ -5201,7 +5244,7 @@ export class WebAccessService {
         result.controlOutcome === "not-dispatched" &&
         (!settingsControl || settingsConfirmed)
       ) {
-        if (!settingsControl) this.clearUnconfirmed(sessionId);
+        if (!settingsControl) this.settleOutcome(sessionId, requestId);
         control.dispatched = false;
         if (dispatch.newlyPinnedDevice)
           await this.attachmentStore.settle(dispatch.newlyPinnedDevice, sessionId, requestId);
@@ -5213,7 +5256,7 @@ export class WebAccessService {
     if (opensPicker && !settingsConfirmed) throw new HttpError(502, "outcome_unknown");
     if (!settingsControl)
       res.once("finish", () => {
-        if (!res.destroyed && res.statusCode === 200) this.clearUnconfirmed(sessionId);
+        if (!res.destroyed && res.statusCode === 200) this.settleOutcome(sessionId, requestId);
       });
     return this.json(res, 200, projectQueueActionAck(result));
   }
@@ -5374,7 +5417,11 @@ export class WebAccessService {
     )
       throw new HttpError(403, "session_control_not_allowed");
     const workspaceId = await this.codexScope(sessionId, hash, false, false);
-    if (this.unconfirmed.has(sessionId)) throw new HttpError(409, "outcome_unknown");
+    if (
+      this.outcomeFences.blocks(sessionId, "settings") ||
+      this.outcomeFences.blocks(sessionId, "open-model-picker")
+    )
+      throw new HttpError(409, "outcome_unknown");
     if (this.admission || this.active.has(sessionId)) throw new HttpError(409, "operation_busy");
     this.active.add(sessionId);
     let started = false;
@@ -6327,7 +6374,7 @@ export class WebAccessService {
       throw new HttpError(502, "outcome_unknown");
     }
     if (operation === "reconcile" && result.reconciled === true)
-      this.clearUnconfirmed(String(params.sessionId));
+      this.settleSessionOutcomes(String(params.sessionId));
     return this.json(res, 200, result);
   }
   private async pendingInteractionDescriptions(
@@ -6372,13 +6419,11 @@ export class WebAccessService {
       await settleClaudeAttachments(this.attachmentStore, this.options.receiptRequest, sessionId);
     }
     const enabled = await this.controlsEnabledForSnapshot(sessionId, snapshot, device, reserved);
-    const guarded = !!sessionId && !!this.controlGuard(sessionId);
     // Terminal approval cards also use the host's risk assessment on the local desktop.
     const pendingInteractions =
       device &&
       (device.id !== "desktop-local" ||
         snapshotField(snapshot, "executionMode") === "claude-follower") &&
-      !guarded &&
       (hasPendingRows(snapshot, "approvals") || hasPendingRows(snapshot, "questions"))
         ? await this.pendingInteractionDescriptions(sessionId, snapshot, device, enabled, reserved)
         : undefined;
@@ -6414,10 +6459,12 @@ export class WebAccessService {
           supported:
             approval.supported === true &&
             device.approve === true &&
+            (!sessionId || !this.interactionOutcomeBlocked(sessionId, "approval")) &&
             (!approval.requiresExtendedApproval || device.extendedApproval === true),
           decisionOptions: device.extendedApproval === true ? approval.decisionOptions : undefined,
         })),
-        ...(state.questions && !device.send
+        ...(state.questions &&
+        (!device.send || (!!sessionId && this.interactionOutcomeBlocked(sessionId, "question")))
           ? {
               questions: state.questions.map((question) => ({ ...question, supported: false })),
             }
@@ -6425,8 +6472,8 @@ export class WebAccessService {
         ...(pendingInteractions?.length ? { pendingInteractions } : {}),
       };
     }
-    if (!sessionId || !this.controlGuard(sessionId)) {
-      if (snapshot && typeof snapshot === "object" && !enabled) {
+    if (snapshot && typeof snapshot === "object") {
+      if (!enabled) {
         const state = snapshot as Record<string, unknown>;
         return {
           ...state,
@@ -6444,21 +6491,9 @@ export class WebAccessService {
             : [],
         };
       }
-      return snapshot;
+      if (sessionId) return { ...snapshot, ...this.scopedOutcomeFlags(sessionId) };
     }
-    return {
-      ...(snapshot && typeof snapshot === "object" ? snapshot : {}),
-      sessionId,
-      status: "outcome-unknown",
-      revision: null,
-      turnId: null,
-      sendEnabled: false,
-      terminalHandover: null,
-      approvals: [],
-      questions: [],
-      ...(pendingInteractions !== undefined ? { pendingInteractions: [] } : {}),
-      reason: "control-outcome-unconfirmed",
-    };
+    return snapshot;
   }
   private expire() {
     const now = Date.now();
@@ -6696,7 +6731,7 @@ export class WebAccessService {
     return projectNotificationActivity(source, {
       workspaceIds: access.workspaces,
       versionScope: JSON.stringify([access.token, readerScope]),
-      unconfirmed: this.unconfirmed,
+      unconfirmed: this.outcomeFences.sessions,
     });
   }
   private async notificationPolicy(hash: string, patch?: Record<string, unknown>) {
@@ -7220,6 +7255,8 @@ export class WebAccessService {
         return this.json(res, 201, result);
       }
       const body = await this.body(req);
+      if (path === "/requests/abandon")
+        return this.json(res, 200, await this.abandonOutcome(hash, body));
       if (path === "/approval-rules/revoke") {
         if (
           url.search ||
@@ -7572,8 +7609,8 @@ export class WebAccessService {
         throw new HttpError(409, "duplicate_request");
       }
       if (this.active.has(sessionId)) throw new HttpError(409, "operation_busy");
-      if (!claudeReplay && this.unconfirmed.has(sessionId)) {
-        control.priorUncertain = true;
+      if (!claudeReplay && this.outcomeFences.blocks(sessionId, operation)) {
+        control.priorUncertain = this.requests.has(requestId);
         throw new HttpError(409, "outcome_unknown");
       }
       if (!Number.isSafeInteger(body.expectedRevision) || Number(body.expectedRevision) < 0)
@@ -8001,11 +8038,15 @@ export class WebAccessService {
         )
           this.grant(hash, "extendedApproval");
         params.runtimeBootId = snapshot.runtimeBootId;
-        if (interactionDecisionId) rememberRequest(this.requests, requestId);
+        rememberRequest(this.requests, requestId);
         dispatched = true;
         control.dispatched = true;
-        this.unconfirmed.add(sessionId);
-        this.unconfirmedRequests.set(sessionId, requestId);
+        this.outcomeFences.record({
+          sessionId,
+          requestId,
+          operation,
+          deviceId: String(params.deviceId),
+        });
         const pending = (
           ["claude-managed", "claude-follower"].includes(
             String((snapshot as { executionMode?: string }).executionMode),
@@ -8039,7 +8080,7 @@ export class WebAccessService {
           "runtimeBootId" in result &&
           result.runtimeBootId === snapshot.runtimeBootId
         ) {
-          this.clearUnconfirmed(sessionId);
+          this.settleOutcome(sessionId, requestId);
           control.dispatched = false;
           control.priorUncertain = false;
           if (newlyPinnedDevice || snapshot.executionMode === "claude-managed")
@@ -8090,7 +8131,7 @@ export class WebAccessService {
             "accepted" in result &&
             result.accepted === true
           )
-            this.clearUnconfirmed(sessionId);
+            this.settleOutcome(sessionId, requestId);
         });
         return this.json(res, 200, result);
       } finally {
@@ -8344,12 +8385,9 @@ export class WebAccessService {
           result.completionObserved !== false
         )
           throw new HttpError(503, "receipt_unavailable");
-        for (const [sessionId, pendingRequestId] of this.unconfirmedRequests) {
-          if (pendingRequestId === requestId && !this.active.has(sessionId)) {
-            this.clearUnconfirmed(sessionId);
-            this.unconfirmedRequests.delete(sessionId);
-          }
-        }
+        const fence = this.outcomeFences.get(requestId);
+        if (fence?.deviceId === device.id && !this.active.has(fence.sessionId))
+          this.settleOutcome(fence.sessionId, requestId);
         // Old prepared claims may lack ownership and operation metadata. Expose
         // only the durable non-dispatch proof, never runtime metadata or an ack.
         return this.json(res, 200, {
@@ -8421,14 +8459,16 @@ export class WebAccessService {
             ) !== "accepted")
         )
           throw new HttpError(503, "receipt_unavailable");
+        const fence = this.outcomeFences.get(requestId);
         if (
           result.sessionId &&
           ["accepted", "not-dispatched"].includes(result.status ?? "") &&
-          this.unconfirmedRequests.get(result.sessionId) === requestId &&
+          result.requestId === requestId &&
+          fence?.operation === result.operation &&
+          fence?.deviceId === device.id &&
           !this.active.has(result.sessionId)
         ) {
-          this.clearUnconfirmed(result.sessionId);
-          this.unconfirmedRequests.delete(result.sessionId);
+          this.settleOutcome(result.sessionId, requestId);
         }
         if (
           result.operation === "create" &&
@@ -8843,20 +8883,14 @@ export class WebAccessService {
         let enabled = typeof permitted === "boolean" ? permitted : await permitted;
         device = authorized();
         enabled = enabled && this.controlsEnabledForProvider(sessionId, controlContext, device);
-        let guard = sessionId ? this.controlGuard(sessionId) : undefined;
         let pendingInteractions: SessionPendingInteraction[] | undefined;
-        if (
-          changedSource ||
-          pendingFields.some((key) => key in patch) ||
-          (guard && hasPendingProjection)
-        ) {
+        if (changedSource || pendingFields.some((key) => key in patch)) {
           for (const key of pendingFields) if (key in patch) pendingContext[key] = patch[key];
           pendingContext.runtimeBootId = event.runtimeBootId;
           const projectedDevice = device;
           if (
-            !guard &&
-            (hasPendingRows(pendingContext, "approvals") ||
-              hasPendingRows(pendingContext, "questions"))
+            hasPendingRows(pendingContext, "approvals") ||
+            hasPendingRows(pendingContext, "questions")
           )
             pendingInteractions = await this.pendingInteractionDescriptions(
               sessionId,
@@ -8867,8 +8901,6 @@ export class WebAccessService {
             );
           device = authorized();
           if (device !== projectedDevice) throw new HttpError(403, "access_changed");
-          guard = sessionId ? this.controlGuard(sessionId) : undefined;
-          if (guard) pendingInteractions = undefined;
           if (pendingInteractions?.length || hasPendingProjection)
             patch.pendingInteractions = pendingInteractions ?? [];
           hasPendingProjection = !!pendingInteractions?.length;
@@ -8882,6 +8914,7 @@ export class WebAccessService {
                 approval.supported === true &&
                 enabled &&
                 device.approve &&
+                (!sessionId || !this.interactionOutcomeBlocked(sessionId, "approval")) &&
                 (!approval.requiresExtendedApproval || device.extendedApproval === true),
               decisionOptions: device.extendedApproval ? approval.decisionOptions : undefined,
               ...(!enabled && controlContext.executionMode !== "claude-follower"
@@ -8898,7 +8931,17 @@ export class WebAccessService {
               supported: false,
             }));
         }
-        if (guard) Object.assign(patch, guard);
+        if (sessionId) {
+          Object.assign(patch, this.scopedOutcomeFlags(sessionId));
+          if (
+            Array.isArray(patch.questions) &&
+            this.interactionOutcomeBlocked(sessionId, "question")
+          )
+            patch.questions = patch.questions.map((question) => ({
+              ...question,
+              supported: false,
+            }));
+        }
         return { ...event, payload: patch };
       };
       const flush = async () => {

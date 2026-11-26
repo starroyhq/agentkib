@@ -5,8 +5,9 @@ import { resolveSessionProvider, sessionProviderControlsDisabled } from "./sessi
 import { InteractionDock, type InteractionNotice } from "./interaction-card";
 import { interactionKey, sessionInteractionItems } from "./interaction-items";
 import { interactionCardCopy, type InteractionLocale } from "./interaction-model";
+import type { SessionOutcomeControls } from "./conversation/sessions/session-outcome-action";
 
-interface SessionInteractionState {
+interface SessionInteractionState extends SessionOutcomeControls {
   current?: Parameters<typeof resolveSessionProvider>[0];
   capabilities?: Parameters<typeof resolveSessionProvider>[1];
   live?: Live | null;
@@ -83,7 +84,7 @@ export function SessionInteractionDock({
   );
   const fromCard = noticeSource === "approve" || noticeSource === "answer";
   const uncertain =
-    (fromCard && notice === "uncertain") ||
+    (fromCard && notice === "uncertain" && !session.blocksOutcome) ||
     live.status === "outcome-unknown" ||
     live.reason === "control-outcome-unconfirmed";
   const connection = resolveSessionProvider(session.current, session.capabilities)?.connection
@@ -107,6 +108,7 @@ export function SessionInteractionDock({
     connection,
     canStop: canStop && !providerDisabled,
     ready: online && controlReady && !providerDisabled,
+    blocked: session.blocksOutcome,
     uncertain,
   });
   return (

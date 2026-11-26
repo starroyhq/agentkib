@@ -24,6 +24,66 @@ const legacyPrepared = (requestId: string) => ({
   completionObserved: false,
 });
 
+type PendingNativeReceipt = Record<string, unknown> & {
+  found: true;
+  status: "unknown";
+  requestId: string;
+  sessionId: string;
+  workspaceId: string;
+  operation: string;
+};
+
+export function isPendingNativeReceipt(value: unknown): value is PendingNativeReceipt {
+  return (
+    object(value) &&
+    value.found === true &&
+    value.status === "unknown" &&
+    typeof value.requestId === "string" &&
+    typeof value.sessionId === "string" &&
+    typeof value.workspaceId === "string" &&
+    typeof value.operation === "string"
+  );
+}
+
+/** Settle only the exact device-bound claim, without overwriting a racing acknowledgement. */
+export function acceptNativeControlReceipt(
+  dataDir: string,
+  deviceId: string,
+  receipt: PendingNativeReceipt,
+  completedTurnId?: string,
+) {
+  const { requestId, sessionId, runtimeBootId } = receipt;
+  const database = openManagedLedger(dataDir);
+  if (!database) return receipt;
+  try {
+    database
+      .prepare(
+        "UPDATE managed_commands SET phase='resolved',result=? WHERE request_id=? AND session_id=? AND device_id=? AND " +
+          "((phase='dispatched' AND result IS NULL) OR " +
+          "(phase='resolved' AND json_extract(result,'$.controlOutcome')='unknown' AND json_extract(result,'$.accepted') IS NOT 1))",
+      )
+      .run(
+        JSON.stringify({
+          accepted: true,
+          reconciled: true,
+          completed: completedTurnId !== undefined,
+          completionObserved: completedTurnId !== undefined,
+          ...(completedTurnId === undefined ? {} : { turnId: completedTurnId }),
+          controlOutcome: "accepted",
+          requestId,
+          sessionId,
+          runtimeBootId,
+        }),
+        requestId,
+        sessionId,
+        deviceId,
+      );
+  } finally {
+    database.close();
+  }
+  return readControlReceipt(dataDir, { requestId, deviceId });
+}
+
 /** Resolve a device-bound control receipt from the durable managed-session ledger. */
 export function readControlReceipt(dataDir: string, value: unknown) {
   const { requestId, deviceId } = requestSchema.parse(value);
@@ -77,7 +137,7 @@ export function readControlReceipt(dataDir: string, value: unknown) {
       return { found: false, requestId };
     }
     const status =
-      row.phase === "dispatched"
+      row.phase !== "resolved" || ackRecord.controlOutcome === "unknown"
         ? "unknown"
         : ackRecord.accepted === true
           ? "accepted"

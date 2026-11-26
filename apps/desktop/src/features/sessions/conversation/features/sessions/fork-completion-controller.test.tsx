@@ -28,7 +28,6 @@ vi.mock(
       selected,
       streamReady,
       refreshRequired,
-      hasDurablePending,
       setControlReady,
       readSettingsControls,
       setLive,
@@ -37,15 +36,14 @@ vi.mock(
       selected: string;
       streamReady: { current: boolean };
       refreshRequired: { current: boolean };
-      hasDurablePending: (id: string) => boolean;
       setControlReady: (ready: boolean) => void;
       readSettingsControls: { current: ((sessionId: string) => Promise<void>) | undefined };
       setLive: (live: Live) => void;
     }) => {
       useEffect(() => {
         streamReady.current = !!selected;
-        setControlReady(!!selected && !refreshRequired.current && !hasDurablePending(selected));
-      }, [selected, streamReady, refreshRequired, hasDurablePending, setControlReady]);
+        setControlReady(!!selected && !refreshRequired.current);
+      }, [selected, streamReady, refreshRequired, setControlReady]);
       useEffect(() => {
         let mounted = true;
         readSettingsControls.current = async (sessionId) => {
@@ -54,7 +52,7 @@ vi.mock(
           if (!mounted) return;
           setLive(live);
           setControlReady(
-            streamReady.current && !refreshRequired.current && !hasDurablePending(selected),
+            streamReady.current && !refreshRequired.current && live.status !== "outcome-unknown",
           );
         };
         return () => {
@@ -66,7 +64,6 @@ vi.mock(
         selected,
         streamReady,
         refreshRequired,
-        hasDurablePending,
         setControlReady,
         readSettingsControls,
         setLive,
@@ -501,7 +498,8 @@ describe("settings actions and their receipts", () => {
       });
       const { requestId } = host.request.mock.calls[0]![1] as SessionActionBody;
       expect(host.request).toHaveBeenCalledOnce();
-      expect(host.receipt).toHaveBeenCalledExactlyOnceWith(requestId);
+      expect(host.receipt).toHaveBeenCalledWith(requestId);
+      expect(host.receipt.mock.calls.every(([id]) => id === requestId)).toBe(true);
       expect(host.live).toHaveBeenCalledExactlyOnceWith("original");
       expect(host.events).not.toHaveBeenCalled();
       expect(host.client.catalog).not.toHaveBeenCalled();
@@ -517,12 +515,13 @@ describe("settings actions and their receipts", () => {
         expect(readPending(host.scope)).toMatchObject([
           { requestId, sessionId: "original", kind: "settings" },
         ]);
-        expect(result.current.canSend).toBe(false);
+        expect(result.current.canSend).toBe(true);
+        expect(result.current.blocksOutcome("settings")).toBe(true);
       }
     },
   );
 
-  it("keeps a policy receipt fence local and restores sending when it is resolved", async () => {
+  it("keeps a policy receipt scoped to settings until it settles", async () => {
     const host = fixture("codex");
     const { result } = await open(host);
     act(() => result.current.setMessage("Keep this draft"));
@@ -535,7 +534,8 @@ describe("settings actions and their receipts", () => {
     const { requestId } = host.request.mock.calls[0]![1] as SessionActionBody;
     expect(result.current.notice).toBeUndefined();
     expect(result.current.settingsNotice).toEqual({ group: "permissions", status: "uncertain" });
-    expect(result.current.canSend).toBe(false);
+    expect(result.current.canSend).toBe(true);
+    expect(result.current.blocksOutcome("settings")).toBe(true);
     expect(readPending(host.scope)).toMatchObject([{ requestId, kind: "settings" }]);
 
     host.updated();
@@ -551,7 +551,7 @@ describe("settings actions and their receipts", () => {
       ack: ack(requestId),
     });
     act(() => publishSessionInvalidation(host.client, "original", ["receipts"]));
-    await waitFor(() => expect(result.current.canSend).toBe(true));
+    await waitFor(() => expect(result.current.blocksOutcome("settings")).toBe(false));
     expect(result.current.notice).toBeUndefined();
     expect(result.current.settingsNotice).toBeUndefined();
     expect(result.current.message).toBe("Keep this draft");

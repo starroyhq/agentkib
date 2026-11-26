@@ -564,13 +564,48 @@ describe("SessionHubPage", () => {
     expect(api.sessionEvents).not.toHaveBeenCalled();
   });
 
-  it("keeps refresh disabled while a refresh is pending", async () => {
-    hub = { ...hub, selected: readable, selectedWorkspace: workspace, refreshing: true };
+  it("omits the session refresh button and the refresh item in more actions", async () => {
+    hub = { ...hub, selected: readable, selectedWorkspace: workspace };
     render(sessionSurface());
-    const refresh = screen.getByRole("button", { name: "Refresh history" });
-    expect(refresh).toBeDisabled();
-    fireEvent.click(refresh);
-    await waitFor(() => expect(hub.refresh).not.toHaveBeenCalled());
+    expect(screen.queryByRole("button", { name: "Refresh history" })).not.toBeInTheDocument();
+    const menu = await openActionsMenu();
+    expect(
+      within(menu).queryByRole("menuitem", { name: "Refresh history" }),
+    ).not.toBeInTheDocument();
+    expect(within(menu).getByRole("menuitem", { name: tr("sessions.backOverview") })).toBeVisible();
+  });
+
+  it("rereads the selected native history once when the desktop window returns to the foreground", async () => {
+    hub = { ...hub, selected: readable, selectedWorkspace: workspace };
+    const visibility = vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
+    try {
+      render(sessionSurface());
+      expect(await screen.findByText("Saved theme review")).toBeVisible();
+      vi.mocked(api.sessionEvents).mockResolvedValue({
+        events: [
+          {
+            id: "new-message",
+            kind: "agent-message",
+            content: "Native history changed while the window was unfocused",
+            attachment_count: 0,
+            truncated: false,
+          },
+        ],
+        warnings: [],
+      });
+
+      act(() => {
+        document.dispatchEvent(new Event("visibilitychange"));
+        window.dispatchEvent(new Event("focus"));
+      });
+      expect(
+        await screen.findByText("Native history changed while the window was unfocused"),
+      ).toBeVisible();
+      expect(api.sessionEvents).toHaveBeenCalledTimes(2);
+      expect(hub.refresh).not.toHaveBeenCalled();
+    } finally {
+      visibility.mockRestore();
+    }
   });
 
   it("keeps one title in the window toolbar and details collapsed until requested", async () => {
@@ -590,8 +625,6 @@ describe("SessionHubPage", () => {
     expect(screen.getByText("qa/reader")).toBeVisible();
     fireEvent.click(screen.getByText("Session details"));
     expect(screen.getByText(workspace.path)).not.toBeVisible();
-    fireEvent.click(screen.getByRole("button", { name: "Refresh history" }));
-    expect(hub.refresh).toHaveBeenCalledOnce();
   });
 
   it("names a worktree session after its repository in the overview", () => {

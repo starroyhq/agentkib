@@ -117,7 +117,10 @@ describe("DeepSeek Harness controls", () => {
         ExecutionControls={({ shortcuts }) => <section>{shortcuts}</section>}
       />,
     );
-    expect(screen.getByRole("button", { name: dictionaries["en-US"].refresh })).toBeVisible();
+    expect(screen.getByRole("button", { name: dictionaries["en-US"].details })).toBeVisible();
+    expect(
+      screen.queryByRole("button", { name: dictionaries["en-US"].refresh }),
+    ).not.toBeInTheDocument();
     await waitFor(() => expect(projectAgentClient.projectAgent).toHaveBeenCalledWith("session"));
     expect(
       screen.queryByRole("switch", { name: /start deepseek harness/i }),

@@ -43,7 +43,6 @@ export {
   managedControlCopyForSurface,
   type ManagedControlBlockReason,
 } from "./conversation/sessions/managed-control-copy";
-export { managedText } from "./conversation/sessions/managed-copy";
 export {
   managedErrorCopy,
   managedErrorCopyForSurface,
@@ -73,6 +72,11 @@ export {
   useSessionLive,
   type WarmSessionNavigation,
 } from "./conversation/sessions/use-session-live";
+export {
+  subscribeSessionForegroundRefresh,
+  useSessionForegroundRefresh,
+} from "./conversation/sessions/use-session-foreground-refresh";
+export { startSessionOutcomeRetry } from "./conversation/sessions/use-session-outcome-retry";
 export {
   useSessionController,
   type SessionController,
@@ -193,6 +197,8 @@ export {
   pendingCreateMatches,
   rememberPending,
   forgetPending,
+  abandonPending,
+  ABANDONED_PENDING_TTL_MS,
   type PendingControl,
 } from "./conversation/sessions/pending-controls";
 export { blockedWhileCompacting } from "./conversation/sessions/session-activity";

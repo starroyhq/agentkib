@@ -50,6 +50,7 @@ export type SessionToolsProps = {
 };
 
 type SessionToolsSession = {
+  blocksOutcome?(action: SessionAction): boolean;
   current?: ConversationSessionSummary;
   selected: string;
   client: WebClient;
@@ -264,6 +265,7 @@ export function SessionTools({
       access?.experimentalEnabled &&
       !busy &&
       !operation &&
+      !session.blocksOutcome?.(action) &&
       !(live?.activity === "compacting" && blockedWhileCompacting(action)) &&
       (action === "inspect" || action === "resume" || (online && controlReady)) &&
       capabilities?.sessionId === selected &&

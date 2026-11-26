@@ -1375,13 +1375,22 @@ export class TypeScriptBackend {
     }
     if (method === RUNTIME_METHODS.controlReceipt) {
       const receipt = readControlReceipt(this.#dataDir, params);
-      const dshReceipt = this.#dshBridge?.receipt(receipt) ?? receipt;
-      const nativeReceipt = this.#claudeBridge?.receipt(dshReceipt) ?? dshReceipt;
-      const result = this.#claudeManaged
-        ? this.#claudeManaged.receipt(nativeReceipt)
-        : nativeReceipt;
-      this.#settleApprovalAuditReceipt(result, params.deviceId);
-      return result;
+      const deviceId = string(params, "deviceId");
+      return (async () => {
+        const codexProvider = this.#webRead?.codexSessionProvider() as
+          | CodexSessionProvider
+          | undefined;
+        const codexReceipt = codexProvider
+          ? await codexProvider.receipt(receipt, deviceId)
+          : receipt;
+        const dshReceipt = this.#dshBridge?.receipt(codexReceipt) ?? codexReceipt;
+        const nativeReceipt = this.#claudeBridge?.receipt(dshReceipt) ?? dshReceipt;
+        const result = this.#claudeManaged
+          ? await this.#claudeManaged.receipt(nativeReceipt, deviceId)
+          : nativeReceipt;
+        this.#settleApprovalAuditReceipt(result, deviceId);
+        return result;
+      })();
     }
     if (isSessionMethod(method)) return this.#routeSession(method, params);
     if (method === RUNTIME_METHODS.refreshInsights) return this.#insightRefresh!.refresh();

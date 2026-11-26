@@ -1,192 +1,62 @@
-import { act, cleanup, screen, waitFor } from "@testing-library/react";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { pendingScope, rememberPending, readPending } from "@agentkib/session-ui";
+import { cleanup, fireEvent, screen } from "@testing-library/react";
+import { afterEach, expect, it, vi } from "vitest";
 import { SessionReceiptRecovery, type SessionReceiptRecoveryProps } from "@agentkib/session-ui";
 import { render } from "../conversation/web-reader-test-utils";
-import { publishSessionInvalidation } from "@agentkib/conversation-state";
-import type { WebClient } from "@agentkib/web-client";
 
-const navigate = vi.fn();
-vi.mock("@tanstack/react-router", () => ({ useNavigate: () => navigate }));
-let session: {
-  client: {
-    request: ReturnType<typeof vi.fn>;
-    receipt: ReturnType<typeof vi.fn>;
-    managedInspect: ReturnType<typeof vi.fn>;
-  };
-  origin: string;
-  access: {
-    protocolVersion: number;
-    status: string;
-    bootId: string;
-    experimentalEnabled: boolean;
-    device: { id: string; manage: boolean; send: boolean };
-  };
-  current: { id: string; agent: string };
-  live: {
-    sessionId: string;
-    executionMode: string;
-    status?: string;
-    revision?: number;
-    reason?: string;
-  };
-  capabilities: { sessionId: string; features: { adopt: { available: boolean } } };
-  online: boolean;
-  controlReady: boolean;
-  busy: boolean;
-  selected: string;
-  refresh: ReturnType<typeof vi.fn>;
-  locale: string;
-};
-const options = { available: true, workspaces: [{ id: "workspace", name: "Project" }], models: [] };
-const mutations = () =>
-  session.client.request.mock.calls.filter(([path]) => !path.startsWith("managed/options"));
-describe("SessionReceiptRecovery", () => {
-  beforeEach(() => {
-    navigate.mockReset();
-    sessionStorage.clear();
-    session = {
-      origin: "",
-      client: {
-        receipt: vi.fn(async (requestId: string) => ({ found: false, requestId })),
-        managedInspect: vi.fn(async (sessionId: string) => ({
-          sessionId,
-          handoffFingerprint: "verified-history",
-        })),
-        request: vi.fn(async (path: string) =>
-          path.startsWith("managed/options")
-            ? options
-            : { sessionId: "new-session", reconciled: true },
-        ),
-      },
-      access: {
-        status: "approved",
-        protocolVersion: 2,
-        bootId: "boot",
-        experimentalEnabled: true,
-        device: { id: "browser", manage: true, send: true },
-      },
-      current: { id: "original-session", agent: "codex" },
-      live: {
-        sessionId: "original-session",
-        executionMode: "external",
-        status: "idle",
-        reason: "handoff-required",
-      },
-      capabilities: { sessionId: "original-session", features: { adopt: { available: true } } },
-      online: true,
-      controlReady: true,
-      busy: false,
-      selected: "original-session",
-      refresh: vi.fn().mockResolvedValue(undefined),
+afterEach(cleanup);
+
+function panel(session: SessionReceiptRecoveryProps["session"], open = true) {
+  return (
+    <SessionReceiptRecovery
+      session={session}
+      renderContent={(content) => (open ? <section>{content}</section> : null)}
+    />
+  );
+}
+
+it.each(["adopt", "release", "reconcile"] as const)(
+  "offers Continue for a saved %s only once the grace period ends and the panel is open",
+  (kind) => {
+    const saved = { requestId: crypto.randomUUID(), sessionId: "session", kind };
+    const continueOutcome = vi.fn();
+    const session = {
       locale: "en-US",
-    };
-  });
-  afterEach(cleanup);
-  it.each(["external", "codex-managed", "claude-managed", "claude-follower"])(
-    "hides Codex ownership controls and their obsolete options lookup (%s)",
-    (executionMode) => {
-      session.live.executionMode = executionMode;
-      if (executionMode.startsWith("claude")) session.current.agent = "claude-code";
-      render(
-        <SessionReceiptRecovery
-          session={session as unknown as SessionReceiptRecoveryProps["session"]}
-          renderContent={(content) => content}
-        />,
-      );
-      expect(screen.queryByRole("button")).not.toBeInTheDocument();
-      expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
-      expect(session.client.request).not.toHaveBeenCalled();
-    },
-  );
+      busy: false,
+      selectedOutcomes: [saved],
+      canContinueOutcome: () => false,
+      continueOutcome,
+    } satisfies SessionReceiptRecoveryProps["session"];
+    const view = render(panel(session));
+    expect(screen.queryByRole("button")).not.toBeInTheDocument();
 
-  it.each(["adopt", "release", "reconcile"] as const)(
-    "keeps a saved Codex %s fenced and checks its receipt while the operations panel is hidden",
-    async (kind) => {
-      const requestId = crypto.randomUUID();
-      const scope = pendingScope("", "browser");
-      rememberPending(scope, { requestId, sessionId: "original-session", kind });
-      session.client.receipt.mockResolvedValue({ found: true, requestId, status: "unknown" });
-      const panel = (active: boolean) => (
-        <SessionReceiptRecovery
-          session={session as unknown as SessionReceiptRecoveryProps["session"]}
-          renderContent={(content) => (active ? <div role="group">{content}</div> : null)}
-        />
-      );
-      const view = render(panel(false));
-      await waitFor(() => expect(session.client.receipt).toHaveBeenCalledWith(requestId));
-      expect(readPending(scope)).toHaveLength(1);
-      view.rerender(panel(true));
-      expect(screen.getByText(/The previous outcome is unconfirmed/)).toBeInTheDocument();
-      expect(screen.queryByRole("button")).not.toBeInTheDocument();
-      expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
-      expect(mutations()).toEqual([]);
+    const expired = { ...session, canContinueOutcome: () => true };
+    view.rerender(panel(expired, false));
+    expect(screen.queryByRole("button")).not.toBeInTheDocument();
 
-      view.rerender(panel(false));
-      session.client.receipt.mockResolvedValue({
-        found: true,
-        requestId,
-        sessionId: "original-session",
-        operation: kind,
-        status: "accepted",
-      });
-      act(() =>
-        publishSessionInvalidation(session.client as unknown as WebClient, "original-session", [
-          "receipts",
-        ]),
-      );
-      await waitFor(() => expect(readPending(scope)).toEqual([]));
-      expect(session.refresh).toHaveBeenCalledWith(true);
-      expect(session.client.request).not.toHaveBeenCalled();
-      expect(navigate).not.toHaveBeenCalled();
-    },
-  );
+    view.rerender(panel(expired));
+    const choice = screen.getByRole("button", { name: "Continue" });
+    expect(choice).toHaveAttribute("title", "Previous result unconfirmed");
+    fireEvent.click(choice);
+    expect(continueOutcome).toHaveBeenCalledExactlyOnceWith(saved.requestId);
 
-  it.each(["permission", "experimental", "agent"])(
-    "hides execution management when %s is unavailable",
-    (reason) => {
-      session.current.agent = "claude-code";
-      if (reason === "permission") session.access.device.manage = false;
-      if (reason === "experimental") session.access.experimentalEnabled = false;
-      if (reason === "agent") session.current.agent = "claude";
-      render(
-        <SessionReceiptRecovery
-          session={session as unknown as SessionReceiptRecoveryProps["session"]}
-          renderContent={(content) => content}
-        />,
-      );
-      expect(screen.queryByRole("button")).not.toBeInTheDocument();
-      expect(session.client.request).not.toHaveBeenCalled();
-    },
+    view.rerender(panel({ ...expired, selectedOutcomes: [] }));
+    expect(screen.queryByRole("button")).not.toBeInTheDocument();
+  },
+);
+
+it("leaves composer and interaction recovery in their own controls", () => {
+  const selectedOutcomes = (
+    ["send", "stop", "approve", "answer", "settings", "open-model-picker"] as const
+  ).map((kind) => ({ requestId: crypto.randomUUID(), sessionId: "session", kind }));
+  render(
+    panel({
+      selectedOutcomes,
+      locale: "en-US",
+      busy: false,
+      canContinueOutcome: () => true,
+      continueOutcome: vi.fn(),
+    }),
   );
-  it.each(["adopt", "release", "reconcile"] as const)(
-    "recovers a legacy prepared %s without replaying it",
-    async (kind) => {
-      const requestId = crypto.randomUUID();
-      const scope = pendingScope("", "browser");
-      rememberPending(scope, {
-        requestId,
-        workspaceId: "workspace",
-        sessionId: "original-session",
-        kind,
-      });
-      session.client.receipt.mockResolvedValue({
-        found: true,
-        requestId,
-        status: "not-dispatched",
-        recovery: "legacy-prepared",
-        completionObserved: false,
-      });
-      render(
-        <SessionReceiptRecovery
-          session={session as unknown as SessionReceiptRecoveryProps["session"]}
-          renderContent={() => null}
-        />,
-      );
-      await waitFor(() => expect(readPending(scope)).toEqual([]));
-      expect(mutations()).toHaveLength(0);
-      expect(navigate).not.toHaveBeenCalled();
-      expect(session.refresh).toHaveBeenCalledWith(true);
-    },
-  );
+  expect(screen.queryByRole("button")).not.toBeInTheDocument();
+  expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
 });

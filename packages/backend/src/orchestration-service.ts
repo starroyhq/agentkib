@@ -1083,13 +1083,14 @@ export class OrchestrationService {
       const scope = this.#effectiveScope(lead, workspaceId);
       this.#requireAuthorizedWorkspaces(scope, authorizedWorkspaceIds);
       lead.scope = scope;
+      queueHeldReports(lead, (entry) => this.#enabledReport(lead, entry));
+      if (lead.reason === "usage-limit") this.#sortUsageReports(lead);
       lead.paused = false;
       lead.reason = null;
       lead.autoTurns = 0;
       // Whoever resumes now answers for what the lead does.
       lead.deviceId = deviceId;
       addLeadRecord(lead, "resume", null, null, "resumed");
-      queueHeldReports(lead, (entry) => this.#enabledReport(lead, entry));
     });
     this.#leadUsageHolds.delete(sessionId);
     this.#readyUsageHolds.delete(sessionId);
@@ -1994,20 +1995,10 @@ export class OrchestrationService {
           ((entry.retryAt ?? 0) <= Math.max(now, Date.now()) ||
             ((usageReady || this.#readyUsageHolds.has(leadId)) &&
               entry.failure?.code === "usage-limit"));
-        const first = lead.reportDeliveries?.find(
-          (entry) =>
-            !entry.quitLaneId &&
-            this.#enabledReport(lead, entry) &&
-            (entry.failure?.code !== "report-authorization-changed" ||
-              this.#assignedReport(lead, entry)),
-        );
         const report =
           lead.reportDeliveries?.find((entry) => entry.quitLaneId && due(entry)) ??
-          (canUseHeldReport(lead) && first && due(first) ? first : undefined);
-        if (!report) {
-          if (!first) this.#finishUsageHold(leadId);
-          return;
-        }
+          (canUseHeldReport(lead) ? lead.reportDeliveries?.find(due) : undefined);
+        if (!report) return this.#finishUsageHold(leadId);
         const allowed = (current: Lead) =>
           report.quitLaneId
             ? current.lanes.some(
@@ -2117,7 +2108,7 @@ export class OrchestrationService {
             }
             return;
           }
-          if (!report.quitLaneId) return;
+          this.#finishUsageHold(leadId);
         } finally {
           this.#reservingReportTurn.delete(leadId);
         }

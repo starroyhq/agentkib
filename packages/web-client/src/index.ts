@@ -5,7 +5,13 @@ export type {
   WorkspaceDiffContext,
   WorkspaceDiffContextLine,
 } from "@agentkib/runtime-protocol";
-export { PROJECT_AGENT_MAX_WORKERS, SESSION_RESOURCE_LIMIT } from "@agentkib/runtime-protocol";
+export {
+  PROJECT_AGENT_MAX_WORKERS,
+  REMOTE_CONTROL_OUTCOMES,
+  REMOTE_ERROR_CODES,
+  SESSION_OUTCOME_GRACE_MS,
+  SESSION_RESOURCE_LIMIT,
+} from "@agentkib/runtime-protocol";
 import type { ConversationTaskSummary } from "./task-summary";
 export type {
   ConversationTaskCoverage,
@@ -1777,6 +1783,13 @@ export class WebClient {
       `${REMOTE_ROUTE_PREFIXES.requests.slice(1)}${encodeURIComponent(requestId)}`,
       undefined,
       signal,
+    );
+  }
+  abandonOutcome(requestId: string, sessionId: string) {
+    return this.request<{ abandoned: boolean }>(
+      REMOTE_REQUEST_PATH.abandonRequest,
+      { requestId, sessionId },
+      AbortSignal.timeout(6_000),
     );
   }
   historySearch(query: HistorySearchQuery, signal?: AbortSignal) {

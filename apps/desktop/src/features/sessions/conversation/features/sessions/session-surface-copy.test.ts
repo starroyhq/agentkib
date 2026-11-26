@@ -3,39 +3,18 @@ import { existsSync } from "node:fs";
 import { sessionCopyForSurface, sessionReason } from "../../session-copy";
 import { managedControlCopyForSurface } from "@agentkib/session-ui";
 import { claudeConnectionCopyForSurface, surfaceText, artifactCopy } from "@agentkib/session-ui";
-import { managedText } from "@agentkib/session-ui";
 
 const locales = ["zh-CN", "zh-Hant", "en-US", "ja-JP"] as const;
 
 describe("session copy identifies the computer and application", () => {
   it.each([
-    [
-      "zh-CN",
-      "这台电脑上的 AgentKib",
-      "电脑上的 AgentKib",
-      "请让电脑上的 AgentKib 保持运行。任务使用工作区权限，需要审批时等待你的确认。",
-    ],
-    [
-      "zh-Hant",
-      "這台電腦上的 AgentKib",
-      "電腦上的 AgentKib",
-      "請讓電腦上的 AgentKib 保持執行。任務使用工作區權限，需要審批時等待你的確認。",
-    ],
-    [
-      "en-US",
-      "AgentKib on this computer",
-      "AgentKib on your computer",
-      "Keep AgentKib running on the computer running the Agent. Tasks use workspace access and request approval when needed.",
-    ],
-    [
-      "ja-JP",
-      "このコンピューター上の AgentKib",
-      "コンピューター上の AgentKib",
-      "コンピューター上の AgentKib を起動したままにしてください。タスクはワークスペースの権限を使用し、必要に応じて承認を待ちます。",
-    ],
+    ["zh-CN", "这台电脑上的 AgentKib", "电脑上的 AgentKib"],
+    ["zh-Hant", "這台電腦上的 AgentKib", "電腦上的 AgentKib"],
+    ["en-US", "AgentKib on this computer", "AgentKib on your computer"],
+    ["ja-JP", "このコンピューター上の AgentKib", "コンピューター上の AgentKib"],
   ] as const)(
     "names the application for settings and connection operations without repetitive copy in %s",
-    (locale, desktopApp, webApp, background) => {
+    (locale, desktopApp, webApp) => {
       for (const key of ["access", "experimental", "management"] as const) {
         expect(managedControlCopyForSurface(locale)[key]).toContain(desktopApp);
         expect(managedControlCopyForSurface(locale, "web")[key]).toContain(webApp);
@@ -50,29 +29,6 @@ describe("session copy identifies the computer and application", () => {
       expect(artifactCopy(locale).authorize).toContain(desktopApp);
       expect(artifactCopy(locale, "web").authorize).toContain(webApp);
       expect(artifactCopy(locale, "web")).toBe(artifactCopy(locale, "web"));
-      expect(
-        managedText(
-          locale,
-          "Authorize a workspace in Web settings in AgentKib on this computer first.",
-          "请先在这台电脑上的 AgentKib 的 Web 设置中授权工作区。",
-        ),
-      ).toContain(desktopApp);
-      expect(
-        managedText(
-          locale,
-          "Authorize a workspace in Web settings in AgentKib on this computer first.",
-          "请先在这台电脑上的 AgentKib 的 Web 设置中授权工作区。",
-          "web",
-        ),
-      ).toContain(webApp);
-      expect(
-        managedText(
-          locale,
-          "AgentKib must stay running on this computer (the computer running the Agent). Tasks use workspace access and request approval when needed.",
-          "AgentKib 需要在这台电脑上保持运行。任务使用工作区权限，需要审批时等待你的确认。",
-          "web",
-        ),
-      ).toBe(background);
     },
   );
   it.each(locales)("keeps desktop and browser instructions distinct in %s", (locale) => {
@@ -131,7 +87,7 @@ describe("session copy identifies the computer and application", () => {
       "managed-control-copy.ts": "conversation/sessions/managed-control-copy.ts",
       "session-display-state.ts": "conversation/sessions/session-display-state.ts",
       "claude-session-banner.ts": "agents/claude-code/connection-notice.ts",
-      "managed-copy.ts": "conversation/sessions/managed-copy.ts",
+      "session-outcome-action.tsx": "conversation/sessions/session-outcome-action.tsx",
       "managed-error-copy.ts": "conversation/sessions/managed-error-copy.ts",
     };
     for (const [filename, path] of Object.entries(implementations)) {

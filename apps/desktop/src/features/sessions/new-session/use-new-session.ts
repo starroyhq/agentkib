@@ -28,7 +28,9 @@ import {
   pendingScope,
   readPending,
   rememberPending,
+  startSessionOutcomeRetry,
   subscribePending,
+  subscribeSessionForegroundRefresh,
   type PendingControl,
 } from "@agentkib/session-ui";
 import { createDesktopConversationClient } from "@/core/conversation-bridge";
@@ -195,7 +197,7 @@ export function useNewSession({
         do {
           checkAgain = false;
           const result: ControlReceipt | undefined = await client
-            .receipt(pendingRequest, abort.signal)
+            .receipt(pendingRequest, AbortSignal.any([abort.signal, AbortSignal.timeout(6_000)]))
             .catch(() => undefined);
           if (
             abort.signal.aborted ||
@@ -243,11 +245,14 @@ export function useNewSession({
         checking = false;
       }
     };
-    void check();
+    const stopRetry = startSessionOutcomeRetry(check);
+    const stopForeground = subscribeSessionForegroundRefresh(() => void check());
     // The host wakes receipt checks when a managed request settles, even after its HTTP timeout.
     const unsubscribe = window.desktopConversation?.onControlChanged(() => void check());
     return () => {
       abort.abort();
+      stopRetry();
+      stopForeground();
       unsubscribe?.();
     };
   }, [scope, pendingRequest, client, locale, visit, workspaceId]);

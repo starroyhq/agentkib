@@ -4,6 +4,7 @@ import { once } from "node:events";
 import { createServer, type Server } from "node:http";
 import { connect, type Socket } from "node:net";
 import { WebSocket } from "ws";
+import { REMOTE_ROUTE, REMOTE_ROUTE_BASE } from "@agentkib/runtime-protocol";
 import { attachManagedWebSocket, type ManagedWebSocketOptions } from "./managed-websocket";
 
 const cleanups: (() => Promise<void>)[] = [];
@@ -140,6 +141,19 @@ describe("managed WebSocket HTTP adapter", () => {
     });
     expect(host.authorize).toHaveBeenCalledOnce();
     expect(host.dispatch).toHaveBeenCalledOnce();
+  });
+
+  it("dispatches an outcome-abandon request through the authenticated bridge", async () => {
+    const host = await fixture();
+    const ws = await host.connect();
+    const body = { sessionId: "s", requestId: "00000000-0000-0000-0000-000000000001" };
+    expect(await exchange(ws, request({ path: REMOTE_ROUTE.abandonRequest, body }))).toMatchObject({
+      status: 200,
+    });
+    expect(host.authorize).toHaveBeenCalledOnce();
+    expect(host.dispatch.mock.calls[0]?.[0].url).toBe(
+      `${REMOTE_ROUTE_BASE}${REMOTE_ROUTE.abandonRequest}`,
+    );
   });
 
   it.each([null, "null", ""])("requires a non-opaque Origin (%s)", async (origin) => {

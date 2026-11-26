@@ -28,12 +28,16 @@ import {
   referencesWithinBudget,
 } from "../history/history-reference-model";
 import {
+  abandonPending,
   forgetPending,
   pendingScope,
   readPending,
   rememberPending,
+  subscribePending,
   type PendingControl,
 } from "./pending-controls";
+import { SESSION_OUTCOME_GRACE_MS, useSessionOutcomeRetry } from "./use-session-outcome-retry";
+import { useSessionForegroundRefresh } from "./use-session-foreground-refresh";
 import { blockedWhileCompacting } from "./session-activity";
 import { contextUsageCopyForSurface } from "../../context-usage-copy";
 import { sessionTurnStatus } from "../../session-turn-status";
@@ -76,6 +80,8 @@ import {
 } from "react";
 import {
   ApiError,
+  REMOTE_CONTROL_OUTCOMES,
+  REMOTE_ERROR_CODES,
   isLegacyPreparedReceipt,
   matchesSettingsAck,
   isSessionSettingsAction,
@@ -530,6 +536,51 @@ export function useSessionController<Words extends ControllerWords>(
   useEffect(() => cancelForkNavigation, [cancelForkNavigation]);
   const durableScope = useRef<string | undefined>(undefined);
   const durablePending = useRef<PendingControl[]>([]);
+  const [pendingOutcomes, setPendingOutcomes] = useState<PendingControl[]>([]);
+  const [settledOutcomeDraft, setSettledOutcomeDraft] = useState<{
+    sessionId: string;
+    requestId: string;
+  }>();
+  const outcomeReads = useRef(new Set<string>());
+  const outcomeAbandonments = useRef(new Set<string>());
+  const outcomeDrafts = useRef(new Map<string, { scope: string; text: string }>());
+  const restoredDrafts = useRef(new Map<string, string>());
+  const pendingScopeKey =
+    access?.status === "approved" && access.device?.id
+      ? pendingScope(origin, access.device.id)
+      : undefined;
+  const messageValue = useRef(message);
+  messageValue.current = message;
+  useEffect(() => {
+    const update = () => {
+      if (pendingScopeKey !== durableScope.current) return;
+      try {
+        const pending = pendingScopeKey ? readPending(pendingScopeKey) : [];
+        durablePending.current = pending;
+        setPendingOutcomes(pending.filter((entry) => entry.kind !== "create"));
+        const active = new Set(pending.map((entry) => entry.requestId));
+        for (const [requestId, draft] of outcomeDrafts.current)
+          if (
+            draft.scope !== pendingScopeKey ||
+            (!active.has(requestId) && !outcomeReads.current.has(requestId))
+          )
+            outcomeDrafts.current.delete(requestId);
+      } catch {
+        // A broken store still fails closed when a command attempts to record its identity.
+        setPendingOutcomes([]);
+      }
+    };
+    update();
+    return subscribePending(update);
+  }, [pendingScopeKey]);
+  const blocksOutcome = useCallback((id: string, action: PendingControl["kind"]) => {
+    const kind = action === "open-model-picker" ? "settings" : action;
+    return durablePending.current.some(
+      (entry) =>
+        entry.sessionId === id &&
+        (entry.kind === kind || (kind === "settings" && entry.kind === "open-model-picker")),
+    );
+  }, []);
   const selectedSettingsFeedback =
     settingsFeedback?.scope === durableScope.current &&
     settingsFeedback?.sessionId === selected &&
@@ -576,7 +627,6 @@ export function useSessionController<Words extends ControllerWords>(
     [desktop, pendingForLive],
   );
   const refreshRequired = useRef(false);
-  const manualRefreshRequired = useRef(false);
   const readinessEpoch = useRef(0);
   const refreshWake = useRef(0);
   const readContention = useRef({ version: 0, wake: 0 });
@@ -607,7 +657,6 @@ export function useSessionController<Words extends ControllerWords>(
     refreshWake.current++;
     resumeDeferredRefresh();
   }, [resumeDeferredRefresh]);
-  const uncertainOutcomes = useRef(new Set<string>());
   const accessEpoch = useRef(0);
   const accessFlight = useRef<Promise<Access | undefined> | undefined>(undefined);
   useAppearance(locale, theme, accent, !embedded);
@@ -650,11 +699,12 @@ export function useSessionController<Words extends ControllerWords>(
     streamReady.current = false;
     nativeCoverage.current = { items: [], authoritativeTurnIds: [], removedTurnIds: [] };
     refreshRequired.current = false;
-    manualRefreshRequired.current = false;
     deferredRefresh.current = undefined;
-    uncertainOutcomes.current.clear();
     durableScope.current = undefined;
     durablePending.current = [];
+    restoredDrafts.current.clear();
+    setPendingOutcomes([]);
+    setSettledOutcomeDraft(undefined);
   }, [
     setLive,
     setPage,
@@ -869,6 +919,7 @@ export function useSessionController<Words extends ControllerWords>(
               const pending = readPending(scope);
               durableScope.current = scope;
               durablePending.current = pending;
+              setPendingOutcomes(pending.filter((entry) => entry.kind !== "create"));
             }
           }
           retention?.acceptAccess(next);
@@ -897,7 +948,7 @@ export function useSessionController<Words extends ControllerWords>(
     ],
   );
   const reconcilePending = useCallback(
-    async (sessionId?: string) => {
+    async (sessionId?: string, requestId?: string) => {
       const scope = durableScope.current;
       if (!scope) return;
       const epoch = readinessEpoch.current;
@@ -912,108 +963,155 @@ export function useSessionController<Words extends ControllerWords>(
       durablePending.current = readPending(scope);
       const pending = durablePending.current.filter(
         (entry) =>
-          !["create", "adopt", "release", "reconcile"].includes(entry.kind) &&
-          (!sessionId || entry.sessionId === sessionId),
+          entry.kind !== "create" &&
+          (!sessionId || entry.sessionId === sessionId) &&
+          (!requestId || entry.requestId === requestId),
       );
       let resolvedSelected: string | undefined;
       let resolvedSettings: string | undefined;
       let settingsRefusal: string | undefined;
       let resolvedSettingsRequest: string | undefined;
-      for (const entry of pending) {
-        // An awaited write is still in progress. Reconcile it after its response is lost,
-        // or after its visit/runtime changes, rather than blocking on its own receipt.
-        if (awaitsReceiptResponse(entry.requestId)) continue;
-        const result = await readPendingControlReceipt(client, entry);
-        if (scope !== durableScope.current) return;
-        if (!result) continue;
-        if (result.status !== "accepted" && result.status !== "not-dispatched") continue;
-        const settingsWrite = settingsInFlight.current;
-        const settings = isSessionSettingsAction(entry.kind);
-        if (
-          settings &&
-          settingsWrite?.requestId === entry.requestId &&
-          !isLegacyPreparedReceipt(result, entry.requestId) &&
-          ((result.runtimeBootId &&
-            settingsWrite.runtimeBootId &&
-            result.runtimeBootId !== settingsWrite.runtimeBootId) ||
-            (result.expectedRevision != null &&
-              result.expectedRevision !== settingsWrite.expectedRevision))
-        )
-          continue;
-        if (
-          settings &&
-          result.status === "accepted" &&
-          (!entry.sessionId || !matchesSettingsAck(result.ack, entry.requestId, entry.sessionId))
-        )
-          continue;
-        const intent = forkNavigation.current;
-        if (entry.kind === "fork" && result.status === "accepted") {
-          const childId = completedForkReceipt(
-            result,
-            entry,
-            intent?.requestId === entry.requestId ? intent.runtimeBootId : undefined,
-          );
-          if (!childId) continue;
-          if (intent?.requestId === entry.requestId) {
-            intent.childId = childId;
-            observeForkNavigation();
-          }
-        } else if (entry.kind === "fork" && intent?.requestId === entry.requestId)
-          intent.resolve(undefined);
-        forgetPending(scope, entry.requestId);
-        durablePending.current = readPending(scope);
-        if (!settings) uncertainOutcomes.current.delete(entry.sessionId ?? "");
-        if (entry.sessionId === selection.current) {
-          resolvedSelected = entry.sessionId;
-          const reason =
-            result.status === "not-dispatched" && !isLegacyPreparedReceipt(result, entry.requestId)
-              ? sessionControlRefusalReason(
-                  catalogSessions.current.find((session) => session.id === entry.sessionId)?.agent,
-                  result.ack?.reason,
-                  result.ack?.error,
-                )
-              : undefined;
-          if (settings) {
-            const id = entry.sessionId;
-            resolvedSettings = id;
-            resolvedSettingsRequest = entry.requestId;
-            if (desktop) {
-              const ack = "ack" in result ? result.ack : undefined;
-              settingsRefusal =
-                result.status === "not-dispatched"
-                  ? (reason ?? ack?.reason ?? ack?.error ?? "request_failed")
+      await Promise.all(
+        pending.map(async (entry) => {
+          // An awaited write is still in progress. Reconcile it after its response is lost,
+          // or after its visit/runtime changes, rather than blocking on its own receipt.
+          if (awaitsReceiptResponse(entry.requestId) || outcomeReads.current.has(entry.requestId))
+            return;
+          outcomeReads.current.add(entry.requestId);
+          try {
+            const result = await readPendingControlReceipt(client, entry);
+            if (scope !== durableScope.current || !result) return;
+            if (
+              result.status !== "accepted" &&
+              result.status !== REMOTE_CONTROL_OUTCOMES.notDispatched
+            )
+              return;
+            // Continue or a late original response may have settled the entry during the read.
+            if (!readPending(scope).some((item) => item.requestId === entry.requestId)) return;
+            const settings = isSessionSettingsAction(entry.kind);
+            if (
+              settings &&
+              !isLegacyPreparedReceipt(result, entry.requestId) &&
+              ((result.runtimeBootId &&
+                entry.runtimeBootId &&
+                result.runtimeBootId !== entry.runtimeBootId) ||
+                (result.expectedRevision != null &&
+                  entry.expectedRevision !== undefined &&
+                  result.expectedRevision !== entry.expectedRevision))
+            )
+              return;
+            if (
+              settings &&
+              result.status === "accepted" &&
+              (!entry.sessionId ||
+                !matchesSettingsAck(result.ack, entry.requestId, entry.sessionId))
+            )
+              return;
+            const intent = forkNavigation.current;
+            if (entry.kind === "fork" && result.status === "accepted") {
+              const childId = completedForkReceipt(
+                result,
+                entry,
+                intent?.requestId === entry.requestId ? intent.runtimeBootId : undefined,
+              );
+              if (!childId) return;
+              if (intent?.requestId === entry.requestId) {
+                intent.childId = childId;
+                observeForkNavigation();
+              }
+            } else if (entry.kind === "fork" && intent?.requestId === entry.requestId)
+              intent.resolve(undefined);
+            const draft = outcomeDrafts.current.get(entry.requestId);
+            outcomeDrafts.current.delete(entry.requestId);
+            forgetPending(scope, entry.requestId);
+            durablePending.current = readPending(scope);
+            if (entry.sessionId === selection.current) {
+              resolvedSelected = entry.sessionId;
+              const reason =
+                result.status === REMOTE_CONTROL_OUTCOMES.notDispatched &&
+                !isLegacyPreparedReceipt(result, entry.requestId)
+                  ? sessionControlRefusalReason(
+                      catalogSessions.current.find((session) => session.id === entry.sessionId)
+                        ?.agent,
+                      result.ack?.reason,
+                      result.ack?.error,
+                    )
                   : undefined;
-            } else {
-              setSettingsFeedback((previous) => {
-                if (previous?.requestId && previous.requestId !== entry.requestId) return previous;
-                return result.status === "accepted"
-                  ? undefined
-                  : {
-                      sessionId: id,
-                      scope,
-                      requestId: entry.requestId,
-                      target: previous?.sessionId === id ? previous.target : "settings",
-                      status: "notDispatched",
-                      reason,
-                    };
-              });
+              if (settings) {
+                const id = entry.sessionId;
+                resolvedSettings = id;
+                resolvedSettingsRequest = entry.requestId;
+                if (desktop) {
+                  const ack = "ack" in result ? result.ack : undefined;
+                  settingsRefusal =
+                    result.status === REMOTE_CONTROL_OUTCOMES.notDispatched
+                      ? (reason ?? ack?.reason ?? ack?.error ?? REMOTE_ERROR_CODES.requestFailed)
+                      : undefined;
+                } else {
+                  setSettingsFeedback((previous) => {
+                    if (previous?.requestId && previous.requestId !== entry.requestId)
+                      return previous;
+                    return result.status === "accepted"
+                      ? undefined
+                      : {
+                          sessionId: id,
+                          scope,
+                          requestId: entry.requestId,
+                          target: previous?.sessionId === id ? previous.target : "settings",
+                          status: "notDispatched",
+                          reason,
+                        };
+                  });
+                }
+                return;
+              }
+              const source =
+                entry.kind === "send" ||
+                entry.kind === "stop" ||
+                entry.kind === "approve" ||
+                entry.kind === "answer"
+                  ? entry.kind
+                  : undefined;
+              setNotice(
+                result.status === "accepted" ? "accepted" : "notDispatched",
+                reason,
+                source,
+              );
+              if (result.status === "accepted" && draft && entry.sessionId) {
+                setSettledOutcomeDraft({ sessionId: entry.sessionId, requestId: entry.requestId });
+                if (messageValue.current === draft.text) {
+                  setMessage("");
+                  setHistoryReferences([]);
+                }
+              }
+              if (
+                result.status === REMOTE_CONTROL_OUTCOMES.notDispatched &&
+                draft &&
+                draft.text &&
+                !messageValue.current
+              )
+                setMessage(draft.text);
+              // A receipt confirms admission, never resolves or removes native approvals.
+              if (result.status === "accepted")
+                receipt.current =
+                  entry.kind === "send" && isWaitingForOwnerAcknowledgement(result.ack)
+                    ? undefined
+                    : {
+                        sessionId: result.sessionId,
+                        requestId: entry.requestId,
+                        turnId: result.turnId ?? undefined,
+                        observedActive: entry.kind !== "send",
+                      };
             }
-            continue;
+          } catch (error) {
+            if (error instanceof ApiError && error.code === REMOTE_ERROR_CODES.accessEnded)
+              throw error;
+            // A missing receipt or transient read error never grants permission to replay.
+          } finally {
+            outcomeReads.current.delete(entry.requestId);
           }
-          setNotice(result.status === "accepted" ? "accepted" : "notDispatched", reason);
-          // A receipt confirms admission, never resolves or removes native approvals.
-          if (result.status === "accepted")
-            receipt.current =
-              entry.kind === "send" && isWaitingForOwnerAcknowledgement(result.ack)
-                ? undefined
-                : {
-                    sessionId: result.sessionId,
-                    requestId: entry.requestId,
-                    turnId: result.turnId ?? undefined,
-                    observedActive: entry.kind !== "send",
-                  };
-        }
-      }
+        }),
+      );
       let readSettings = false;
       if (resolvedSettings && resolvedSettings === selection.current && currentReadiness()) {
         publishSessionInvalidation(client, resolvedSettings, ["settings"]);
@@ -1025,7 +1123,6 @@ export function useSessionController<Words extends ControllerWords>(
             (write.requestId === resolvedSettingsRequest &&
               !awaitsReceiptResponse(write.requestId)))
         ) {
-          refreshRequired.current = uncertainOutcomes.current.has(resolvedSettings);
           readSettings = true;
           await readSettingsControls.current(resolvedSettings);
         }
@@ -1068,29 +1165,25 @@ export function useSessionController<Words extends ControllerWords>(
             : undefined;
         });
       }
-      if (pendingOther) setNotice("uncertain");
-      else if (!desktop && pendingSettings) setControlReady(false);
-      else if (
+      if (
         !readSettings &&
         (!resolvedSettings || !refreshOwnsReadiness()) &&
         resolvedSelected === id &&
         epoch === readinessEpoch.current &&
         accessRef.current?.protocolVersion === 2
       ) {
-        refreshRequired.current = uncertainOutcomes.current.has(id);
         setControlReady(
-          streamReady.current &&
-            !controlReconciliationPending.current &&
-            !refreshRequired.current &&
-            (desktop ? !hasDurablePending(id) : liveValue.current?.status !== "outcome-unknown"),
+          streamReady.current && !controlReconciliationPending.current && !refreshRequired.current,
         );
       }
+      return !!resolvedSelected && resolvedSelected === selection.current && !resolvedSettings;
     },
     [
       client,
       desktop,
-      hasDurablePending,
       setNotice,
+      setMessage,
+      setHistoryReferences,
       observeForkNavigation,
       awaitsReceiptResponse,
       setControlReady,
@@ -1118,7 +1211,6 @@ export function useSessionController<Words extends ControllerWords>(
       // Concurrent access notifications share their latest accepted read with
       // this refresh; the full refresh still owns clearing this control fence.
       refreshRequired.current = true;
-      if (manual) manualRefreshRequired.current = true;
       setError(!!nativeCoverage.current.historyRecoveryFailed);
       setControlReady(false);
       let historyScope: { epoch?: string } | undefined;
@@ -1143,7 +1235,10 @@ export function useSessionController<Words extends ControllerWords>(
           desktop && initial && next.protocolVersion === 2 ? initialCatalog.current() : undefined;
         // The selected session reconciles its own receipts. The catalog observer
         // reconciles the rest after refreshing the shared directory.
-        if (!cached) await reconcilePending(selection.current || undefined);
+        if (!cached) {
+          const target = selection.current || undefined;
+          void reconcilePending(target).catch((error) => fail(error, g));
+        }
         if (g !== generation.current) return;
         catalogOrder = ++catalogReadOrder.current;
         const catalog =
@@ -1302,17 +1397,19 @@ export function useSessionController<Words extends ControllerWords>(
         }
         setOnline(true);
         if (epoch === readinessEpoch.current) {
-          if (manualRefreshRequired.current && !hasDurablePending(selection.current))
-            uncertainOutcomes.current.delete(selection.current);
           setControlReady(
             streamReady.current &&
               !controlReconciliationPending.current &&
               next.protocolVersion === 2 &&
-              !uncertainOutcomes.current.has(selection.current) &&
-              !hasDurablePending(selection.current),
+              liveValue.current?.status !== "outcome-unknown",
           );
-          refreshRequired.current = uncertainOutcomes.current.has(selection.current);
-          manualRefreshRequired.current = false;
+          refreshRequired.current = false;
+          if (!durablePending.current.some((entry) => entry.sessionId === selection.current))
+            setConnectionNotice((previous) =>
+              previous.notice === "uncertain"
+                ? { ...previous, notice: undefined, source: undefined }
+                : previous,
+            );
         }
       } catch (e) {
         if (!historyScope || historyScope.epoch === nativeCoverage.current.historyCacheEpoch) {
@@ -1363,7 +1460,6 @@ export function useSessionController<Words extends ControllerWords>(
       client,
       isLan,
       reconcilePending,
-      hasDurablePending,
       readHistory,
       resumeDeferredRefresh,
       setLive,
@@ -1695,19 +1791,108 @@ export function useSessionController<Words extends ControllerWords>(
     desktop,
     sessionImages,
   ]);
+  const checkPendingOutcomes = useCallback(async () => {
+    const visit = generation.current;
+    const resolved = await reconcilePending().catch((error) => {
+      fail(error, visit);
+      return false;
+    });
+    if (
+      visit === generation.current &&
+      selection.current &&
+      (resolved ||
+        (refreshRequired.current &&
+          !deferredRefresh.current &&
+          durablePending.current.some((entry) => entry.sessionId === selection.current))) &&
+      !refreshFlight.current &&
+      !mutating.current
+    )
+      await refresh(false, true);
+  }, [fail, reconcilePending, refresh]);
+  const outcomeClock = useSessionOutcomeRetry(
+    pendingScopeKey,
+    pendingOutcomes,
+    checkPendingOutcomes,
+  );
+  const foregroundRefresh = useCallback(() => {
+    void reconcilePending().catch(fail);
+    if (!refreshFlight.current && !mutating.current) void refresh(false, true);
+  }, [fail, reconcilePending, refresh]);
+  useSessionForegroundRefresh(selected, foregroundRefresh);
+  const selectedOutcomes =
+    pendingScopeKey === durableScope.current
+      ? pendingOutcomes.filter((entry) => entry.sessionId === selected)
+      : [];
+  const canContinueOutcome = (entry: PendingControl) =>
+    entry.createdAt !== undefined &&
+    outcomeClock - entry.createdAt >= SESSION_OUTCOME_GRACE_MS &&
+    !awaitsReceiptResponse(entry.requestId);
+  const continueOutcome = async (requestId: string) => {
+    const scope = durableScope.current;
+    if (
+      !scope ||
+      mutating.current ||
+      selection.current !== selected ||
+      outcomeAbandonments.current.has(requestId)
+    )
+      return;
+    const entry = readPending(scope).find(
+      (candidate) => candidate.requestId === requestId && candidate.sessionId === selected,
+    );
+    if (!entry || !canContinueOutcome(entry)) return;
+    const visit = generation.current;
+    outcomeAbandonments.current.add(requestId);
+    try {
+      await reconcilePending(selected, requestId);
+      if (
+        scope !== durableScope.current ||
+        !readPending(scope).some((item) => item.requestId === requestId)
+      )
+        return;
+      try {
+        const outcome = await client.abandonOutcome(requestId, selected);
+        if (!outcome.abandoned) {
+          await reconcilePending(selected, requestId);
+          return;
+        }
+      } catch (error) {
+        // Older hosts have no transport-fence abandonment endpoint.
+        if (!(error instanceof ApiError && error.status === 404)) throw error;
+      }
+      if (scope !== durableScope.current) return;
+      const draft = outcomeDrafts.current.get(requestId);
+      if (!abandonPending(scope, requestId)) return;
+      durablePending.current = readPending(scope);
+      outcomeDrafts.current.delete(requestId);
+      if (visit !== generation.current || selection.current !== selected) {
+        if (draft?.scope === scope && draft.text) restoredDrafts.current.set(selected, draft.text);
+        return;
+      }
+      if (draft?.scope === scope && draft.text && messageValue.current !== draft.text)
+        setMessage(messageValue.current ? `${messageValue.current}\n\n${draft.text}` : draft.text);
+      setSettingsFeedback((previous) => (previous?.requestId === requestId ? undefined : previous));
+      setNotice(undefined);
+      // Continuing a draft never sends the saved command or reuses its request identity.
+      void refresh(false, true);
+    } catch (error) {
+      if (error instanceof ApiError && error.code === REMOTE_ERROR_CODES.accessEnded)
+        fail(error, visit);
+    } finally {
+      outcomeAbandonments.current.delete(requestId);
+    }
+  };
   useEffect(
     () =>
       subscribeSessionInvalidation(client, (id, domains) => {
         // A native update can name an unselected row. Refresh its catalog
         // metadata without reloading history, rescanning or replaying a control.
         if (id && domains.includes("catalog")) void catalogInvalidationRead.current?.();
+        if (domains.includes("receipts")) void checkPendingOutcomes();
         if (id && id !== selection.current) return;
         if (domains.some((domain) => ["capabilities", "settings", "ownership"].includes(domain)))
           setCapabilitiesEpoch((value) => value + 1);
-        if (domains.includes("receipts"))
-          void reconcilePending(id || undefined).catch((error) => fail(error));
       }),
-    [client, reconcilePending, fail],
+    [client, checkPendingOutcomes],
   );
   const streamReconnecting = useSessionLive({
     surface,
@@ -1764,8 +1949,7 @@ export function useSessionController<Words extends ControllerWords>(
       readinessEpoch.current++;
       // The new selection owns its baseline read. An obsolete refresh cannot
       // keep it fenced, while unknown outcomes remain attached to their session.
-      refreshRequired.current = uncertainOutcomes.current.has(id);
-      manualRefreshRequired.current = false;
+      refreshRequired.current = false;
       selection.current = id;
       setSelectionVisit(generation.current);
       setSelected(id);
@@ -1784,7 +1968,11 @@ export function useSessionController<Words extends ControllerWords>(
       setPage(cachedPage);
       setLive(warm?.state.live, warm ? warmStreams.peekParkedLive(id) : undefined);
       setModal(undefined);
-      setMessage(initialDraft ?? (canRetainPage() ? retention?.getDraft(id) : undefined) ?? "");
+      const restored = restoredDrafts.current.get(id);
+      restoredDrafts.current.delete(id);
+      setMessage(
+        initialDraft ?? restored ?? (canRetainPage() ? retention?.getDraft(id) : undefined) ?? "",
+      );
       setPendingSend(undefined);
       setHistoryReferences([]);
       setHistorySearchOpen(false);
@@ -1846,13 +2034,9 @@ export function useSessionController<Words extends ControllerWords>(
             }
             return historyRead;
           });
-          // History is available independently of native writes and their receipts.
-          // Readiness still waits for reconciliation before enabling controls.
-          const [historyRead, state] = await Promise.all([
-            historyPromise,
-            client.live(id),
-            reconcilePending(id),
-          ]);
+          // Receipt reads continue independently of the selected conversation baseline.
+          void reconcilePending(id).catch((error) => fail(error, g));
+          const [historyRead, state] = await Promise.all([historyPromise, client.live(id)]);
           if (historyRead?.type === "busy") {
             readBusy(wake, g);
             return;
@@ -1875,8 +2059,7 @@ export function useSessionController<Words extends ControllerWords>(
               !controlReconciliationPending.current &&
               accessRef.current?.protocolVersion === 2 &&
               !refreshRequired.current &&
-              !uncertainOutcomes.current.has(id) &&
-              !hasDurablePending(id),
+              liveValue.current?.status !== "outcome-unknown",
           );
         } catch (e) {
           if (!historyScope || historyScope.epoch === nativeCoverage.current.historyCacheEpoch) {
@@ -2136,8 +2319,7 @@ export function useSessionController<Words extends ControllerWords>(
       capabilities?.sessionId !== selected ||
       !capabilities?.features[action]?.available ||
       (live.activity === "compacting" && blockedWhileCompacting(action)) ||
-      (action !== "inspect" &&
-        (uncertainOutcomes.current.has(selected) || hasDurablePending(selected)))
+      blocksOutcome(selected, action)
     )
       return;
     const scope = durableScope.current;
@@ -2207,15 +2389,11 @@ export function useSessionController<Words extends ControllerWords>(
       !checked?.features[action]?.available ||
       (action === "fork" && !accessRef.current?.device?.manage) ||
       (action !== "inspect" &&
-        (refreshRequired.current ||
-          !streamReady.current ||
-          uncertainOutcomes.current.has(id) ||
-          hasDurablePending(id)))
+        (refreshRequired.current || !streamReady.current || blocksOutcome(id, action)))
     ) {
       if (g === generation.current && selection.current === id) {
         const outcomeUnknown =
-          uncertainOutcomes.current.has(id) ||
-          hasDurablePending(id) ||
+          blocksOutcome(id, action) ||
           liveValue.current?.status === "outcome-unknown" ||
           liveValue.current?.reason === "control-outcome-unconfirmed" ||
           checked?.reason === "control-outcome-unconfirmed";
@@ -2247,7 +2425,7 @@ export function useSessionController<Words extends ControllerWords>(
     if (settingsContext) {
       const expectedRevision = live.revision ?? 0;
       const runtimeBootId = live.runtimeBootId;
-      const entry = { requestId, sessionId: id, kind: action };
+      const entry = { requestId, sessionId: id, kind: action, expectedRevision, runtimeBootId };
       const stillCurrent = () =>
         generation.current === g &&
         selection.current === id &&
@@ -2300,7 +2478,6 @@ export function useSessionController<Words extends ControllerWords>(
         if (desktop && outcome.status !== "accepted") throw outcome.error;
         if (outcome.status === "unknown") {
           if (stillCurrent()) {
-            setControlReady(false);
             reportSettings("uncertain");
             await reconcileAfterEarlyChange();
           }
@@ -2335,10 +2512,6 @@ export function useSessionController<Words extends ControllerWords>(
             refusal.code,
           );
         reportSettings(refusal ? "notDispatched" : "uncertain", reason ?? refusal?.code);
-        if (!refusal) {
-          setControlReady(false);
-          refreshRequired.current = true;
-        }
         await readBack();
         if (!refusal) await reconcileAfterEarlyChange();
         return;
@@ -2370,7 +2543,13 @@ export function useSessionController<Words extends ControllerWords>(
     }
     try {
       try {
+        activeReceipts.current.set(requestId, { scope, generation: g, bootId: access.bootId });
         rememberPending(scope, { requestId, sessionId: id, kind: action });
+        if ((action === "steer" || action === "queue-add") && typeof fields.text === "string")
+          outcomeDrafts.current.set(requestId, {
+            scope,
+            text: messageValue.current || fields.text,
+          });
         durablePending.current = readPending(scope);
       } catch {
         throw new ApiError(409, "pending_storage_unavailable", "not-dispatched");
@@ -2392,6 +2571,7 @@ export function useSessionController<Words extends ControllerWords>(
       else await refresh(true);
       return result;
     } catch (error) {
+      activeReceipts.current.delete(requestId);
       const refusal =
         error instanceof ApiError && error.controlOutcome === "not-dispatched" ? error : undefined;
       if (refusal) {
@@ -2408,12 +2588,18 @@ export function useSessionController<Words extends ControllerWords>(
         setNotice(refusal ? "notDispatched" : "uncertain", reason);
         setControlReady(false);
         refreshRequired.current = true;
-        if (!refusal) uncertainOutcomes.current.add(id);
-        if (action === "fork") void refresh(true);
-        else await refresh(true);
+        if (
+          !refusal &&
+          (action === "steer" || action === "queue-add") &&
+          outcomeDrafts.current.has(requestId)
+        )
+          setMessage("");
+        if (action === "fork") void refresh(false, true);
+        else await refresh(false, true);
       }
       return undefined;
     } finally {
+      activeReceipts.current.delete(requestId);
       mutating.current = false;
       setBusy(false);
     }
@@ -2436,18 +2622,18 @@ export function useSessionController<Words extends ControllerWords>(
     selection,
     readinessEpoch,
     refreshRequired,
-    manualRefreshRequired,
     streamReady,
     catalogSessions,
     excludedIds,
-    uncertainOutcomes,
     mutating,
     activeReceipts,
     durableScope,
     durablePending,
     receipt,
     verifyCapabilities,
-    hasDurablePending,
+    blocksOutcome,
+    keepOutcomeDraft: (requestId, scope, text) =>
+      outcomeDrafts.current.set(requestId, { scope, text }),
     setBusy,
     setNotice,
     setControlReady,
@@ -2455,7 +2641,6 @@ export function useSessionController<Words extends ControllerWords>(
     setMessage,
     setHistoryReferences,
     setModal,
-    setOnline,
     refresh,
     fail,
     historyMessageText,
@@ -2471,8 +2656,6 @@ export function useSessionController<Words extends ControllerWords>(
       (prior.pending && prior.sessionId === id && prior.generation === generation.current) ||
       mutating.current ||
       excludedIds.current.has(id) ||
-      uncertainOutcomes.current.has(id) ||
-      hasDurablePending(id) ||
       accessRef.current?.status !== "approved" ||
       accessRef.current.protocolVersion !== 2 ||
       !sessionContinuationRegistration(
@@ -2497,7 +2680,7 @@ export function useSessionController<Words extends ControllerWords>(
     } finally {
       check.pending = false;
     }
-  }, [refresh, hasDurablePending]);
+  }, [refresh]);
   useEffect(() => {
     if (
       !online ||
@@ -2605,6 +2788,7 @@ export function useSessionController<Words extends ControllerWords>(
     : selectedSettingsNotice?.status === "writing";
   const canSend =
     controlReady &&
+    !blocksOutcome(selected, "send") &&
     online &&
     !busy &&
     !settingsWriteActive &&
@@ -2617,6 +2801,7 @@ export function useSessionController<Words extends ControllerWords>(
     live.activity !== "compacting";
   const canStop =
     controlReady &&
+    !blocksOutcome(selected, "stop") &&
     online &&
     !busy &&
     !settingsWriteActive &&
@@ -2690,22 +2875,22 @@ export function useSessionController<Words extends ControllerWords>(
       capabilities?.reason !== "control-outcome-unconfirmed" &&
       capabilities?.sessionId === selected &&
       capabilities.features.fork?.available &&
-      notice !== "uncertain" &&
+      !blocksOutcome(selected, "fork") &&
       !excludedSessionIds.has(selected)
     ),
     settingsChangedHere,
     settingsNotice: selectedSettingsNotice,
     settingsOnlyBlocked: !!(
-      (settingsWriteActive || selectedSettingsNotice?.status === "uncertain") &&
+      settingsWriteActive &&
       online &&
       streamReady.current &&
-      !refreshRequired.current &&
-      !manualRefreshRequired.current &&
-      !uncertainOutcomes.current.has(selected) &&
-      !durablePending.current.some(
-        (entry) => entry.sessionId === selected && !isSessionSettingsAction(entry.kind),
-      )
+      !refreshRequired.current
     ),
+    selectedOutcomes,
+    settledOutcomeDraft,
+    canContinueOutcome,
+    continueOutcome,
+    blocksOutcome: (action: PendingControl["kind"]) => blocksOutcome(selected, action),
     actionUnavailableReason,
     runSessionAction,
     dropDeletedSession,

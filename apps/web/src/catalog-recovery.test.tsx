@@ -250,11 +250,10 @@ describe("catalog recovery across native command admission", () => {
         );
         if (fence === "host-unknown")
           expect(host.view.result.current.live).toMatchObject({
-            status: "outcome-unknown",
-            reason: "control-outcome-unconfirmed",
+            status: "idle",
             sendEnabled: false,
           });
-        else expect(readPending(scope)).toEqual([pending]);
+        else expect(readPending(scope)).toEqual([{ ...pending, createdAt: expect.any(Number) }]);
         expect(host.view.result.current.canSend).toBe(false);
         expect(host.commandStarted).toHaveBeenCalledOnce();
       } finally {
@@ -339,8 +338,7 @@ describe("full refresh recovery across native command admission", () => {
         expect(host.view.result.current.error).toBe(false);
         if (fence === "host-unknown")
           expect(host.view.result.current.live).toMatchObject({
-            status: "outcome-unknown",
-            reason: "control-outcome-unconfirmed",
+            status: "idle",
             sendEnabled: false,
           });
         else {
@@ -348,7 +346,7 @@ describe("full refresh recovery across native command admission", () => {
             status: "idle",
             sendEnabled: true,
           });
-          expect(readPending(scope)).toEqual([pending]);
+          expect(readPending(scope)).toEqual([{ ...pending, createdAt: expect.any(Number) }]);
         }
         expect(host.view.result.current.canSend).toBe(false);
         expect(host.commandStarted).toHaveBeenCalledOnce();

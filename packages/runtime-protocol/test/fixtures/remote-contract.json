@@ -3011,6 +3011,14 @@
       }
     },
     "operationUnavailable": {},
+    "outcomeGracePeriod": {
+      "http": {
+        "status": 409,
+        "body": {
+          "error": "outcome_grace_period"
+        }
+      }
+    },
     "outcomeUnknown": {
       "http": {
         "status": 409,
@@ -3323,6 +3331,14 @@
     "relayUnavailable": {
       "ipc": {
         "error": "relay_unavailable"
+      }
+    },
+    "requestNotAuthorized": {
+      "http": {
+        "status": 403,
+        "body": {
+          "error": "request_not_authorized"
+        }
       }
     },
     "remoteEnableUnavailable": {

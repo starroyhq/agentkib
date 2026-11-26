@@ -321,7 +321,6 @@ describe("desktop window conversation tools", () => {
       ).toEqual([
         tr("sessions.newConversation"),
         tr("handoff.create"),
-        tr("sessions.refresh"),
         terminalName,
         `${tr("sessions.conversationActions")}…`,
         tr("sessions.backOverview"),

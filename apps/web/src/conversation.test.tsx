@@ -337,7 +337,8 @@ describe("active control receipt ownership", () => {
         ),
       );
       const own = write.mock.calls[0][1];
-      expect(receipt).toHaveBeenCalledExactlyOnceWith(own.requestId);
+      expect(receipt).toHaveBeenCalledWith(own.requestId);
+      expect(receipt.mock.calls.every(([requestId]) => requestId === own.requestId)).toBe(true);
       expect(write).toHaveBeenCalledExactlyOnceWith("settings", own, "codex");
       expect(events).not.toHaveBeenCalled();
       expect(view.result.current.notice).toBeUndefined();
@@ -347,7 +348,8 @@ describe("active control receipt ownership", () => {
           status: unconfirmed ? "uncertain" : "notDispatched",
         });
       else expect(view.result.current.settingsNotice).toBeUndefined();
-      expect(view.result.current.controlReady).toBe(!unconfirmed);
+      expect(view.result.current.controlReady).toBe(true);
+      expect(view.result.current.blocksOutcome("settings")).toBe(unconfirmed);
       expect(readPending(pendingScope("", "local")).map((entry) => entry.requestId)).toEqual(
         unconfirmed ? [own.requestId] : [],
       );
@@ -358,7 +360,7 @@ describe("active control receipt ownership", () => {
         });
         const invalidation = vi.fn();
         const unsubscribe = subscribeSessionInvalidation(client, invalidation);
-        expect(view.result.current.canSend).toBe(false);
+        expect(view.result.current.canSend).toBe(true);
         receipt.mockResolvedValue({
           found: true,
           requestId: own.requestId,
@@ -371,7 +373,7 @@ describe("active control receipt ownership", () => {
         });
         await act(async () => publishSessionInvalidation(client, "first", ["receipts"]));
         unsubscribe();
-        expect(view.result.current.settingsNotice).toBeUndefined();
+        await waitFor(() => expect(view.result.current.settingsNotice).toBeUndefined());
         expect(live).toHaveBeenCalledExactlyOnceWith("first");
         expect(view.result.current.live?.revision).toBe(2);
         expect(invalidation).toHaveBeenCalledWith("first", ["settings"]);
@@ -559,7 +561,7 @@ describe("ordinary conversation directory", () => {
       expect(request.mock.calls.some(([path]) => /^(send|stop|codex\/release)/.test(path))).toBe(
         false,
       );
-      expect(readPending(scope)).toContainEqual(pending);
+      expect(readPending(scope)).toContainEqual({ ...pending, createdAt: expect.any(Number) });
     },
   );
 
@@ -1951,7 +1953,7 @@ describe("busy full-refresh recovery", () => {
   );
 
   it.each([false, true])(
-    "does not acknowledge a new unknown outcome through an old manual retry (durable: %s)",
+    "only releases the read fence after a complete automatic read (durable: %s)",
     async (durable) => {
       const { client, streams, sessions } = fixture();
       sessions[0].agent = durable ? "codex" : "cursor";
@@ -1999,7 +2001,8 @@ describe("busy full-refresh recovery", () => {
         streams.get("")!.event("catalog-invalidated", "{}");
       });
       emitSession(streams.get("first")!, 1, "state", { revision: 2 });
-      expect(view.result.current.canSend).toBe(false);
+      await waitFor(() => expect(view.result.current.canSend).toBe(!durable));
+      expect(view.result.current.blocksOutcome("send")).toBe(durable);
       expect(readPending(pendingScope("", "local"))).toEqual(pending);
       expect(requests.mock.calls.filter(([path]) => path === "send")).toHaveLength(1);
     },
@@ -2301,13 +2304,14 @@ describe("event-driven refresh completion", () => {
       await sent;
     });
     expect(view.result.current.notice).toBe("uncertain");
+    const readsAfterAutomaticRecovery = events.mock.calls.length;
     await act(async () => {
       old.reject(new Error("old cache history failure"));
       await refreshing;
     });
     emitSession(streams.get("first")!, 2, "state", { revision: 2 });
     expect(view.result.current.canSend).toBe(false);
-    expect(events).toHaveBeenCalledTimes(2);
+    expect(events).toHaveBeenCalledTimes(readsAfterAutomaticRecovery);
     expect(requests.mock.calls.filter(([path]) => path === "send")).toHaveLength(1);
   });
 
@@ -2488,7 +2492,7 @@ describe("session refresh ownership", () => {
   });
 
   it.each([false, true])(
-    "retains session-specific unknown outcomes across navigation (durable %s)",
+    "retains only a durable action fence across navigation (durable %s)",
     async (durable) => {
       const { client, sessions } = fixture();
       sessions[0].agent = durable ? "codex" : "cursor";
@@ -2510,22 +2514,43 @@ describe("session refresh ownership", () => {
       await act(async () => view.result.current.choose("first"));
       act(() => view.result.current.setMessage("Send exactly once"));
       await act(async () => view.result.current.control("send"));
-      expect(view.result.current.notice).toBe("uncertain");
+      expect(view.result.current.notice).toBe(durable ? "uncertain" : undefined);
       const scope = pendingScope("", "local");
       const pending = readPending(scope);
       expect(pending).toHaveLength(durable ? 1 : 0);
       await act(async () => view.result.current.choose("second"));
       expect(view.result.current.canSend).toBe(true);
       await act(async () => view.result.current.choose("first"));
-      expect(view.result.current.canSend).toBe(false);
+      expect(view.result.current.canSend).toBe(!durable);
       await act(async () => view.result.current.refresh());
-      expect(view.result.current.canSend).toBe(false);
+      expect(view.result.current.canSend).toBe(!durable);
       await act(async () => view.result.current.refresh(true));
       expect(view.result.current.canSend).toBe(!durable);
       expect(readPending(scope)).toEqual(pending);
       expect(requests.mock.calls.filter(([path]) => path === "send")).toHaveLength(1);
     },
   );
+
+  it("reloads the same device's unresolved actions after the host restarts", async () => {
+    const { client, sessions } = fixture();
+    sessions[0].agent = "codex";
+    const access = await client.access();
+    const requestId = crypto.randomUUID();
+    rememberPending(pendingScope("", "local"), { requestId, sessionId: "first", kind: "send" });
+    vi.spyOn(client, "receipt").mockResolvedValue({ found: false, requestId });
+    const view = renderHook(() => useSessionController({ client, embedded: true }));
+    await waitFor(() => expect(view.result.current.sessions).toHaveLength(2));
+    await act(async () => view.result.current.choose("first"));
+    expect(view.result.current.selectedOutcomes).toMatchObject([{ requestId }]);
+
+    vi.spyOn(client, "access").mockResolvedValue({ ...access, bootId: "restarted" });
+    await act(async () => view.result.current.refresh());
+    await act(async () => view.result.current.choose("first"));
+    expect(view.result.current.access?.bootId).toBe("restarted");
+    expect(view.result.current.selectedOutcomes).toMatchObject([{ requestId }]);
+    expect(view.result.current.blocksOutcome("send")).toBe(true);
+    expect(view.result.current.blocksOutcome("stop")).toBe(false);
+  });
 
   it("restores index availability when a scope reconnect returns an enabled catalog", async () => {
     const { client, streams, sessions } = fixture();
@@ -2798,7 +2823,9 @@ describe("shared embedded conversation", () => {
     view.rerender(<EmbeddedConversation {...props} refreshRevision={1} />);
     await waitFor(() => expect(events).toHaveBeenCalledTimes(2));
     await act(async () => {});
-    expect(readPending(scope)).toEqual([{ requestId, sessionId: "first", kind: "send" }]);
+    expect(readPending(scope)).toEqual([
+      { requestId, sessionId: "first", kind: "send", createdAt: expect.any(Number) },
+    ]);
     expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
     expect(request.mock.calls.some(([path, body]) => path === "send" && body !== undefined)).toBe(
       false,
@@ -2855,7 +2882,7 @@ describe("shared embedded conversation", () => {
   );
 
   it.each(["removed", "metadata-only", "cleared"] as const)(
-    "retains an unknown receipt reminder when its catalog interaction is %s",
+    "only lists the real interaction when an unknown receipt exists and the catalog interaction is %s",
     async (change) => {
       const { client, sessions, streams, bridge } = fixture();
       sessions[1].title = "Unconfirmed second task";
@@ -2885,7 +2912,10 @@ describe("shared embedded conversation", () => {
           onCatalogChange={onCatalogChange}
         />,
       );
-      await screen.findByRole("button", { name: "Pending actions (1)" });
+      fireEvent.click(await screen.findByRole("button", { name: "Pending actions (1)" }));
+      const dialog = within(await screen.findByRole("dialog", { name: "Pending actions" }));
+      expect(dialog.getByRole("button", { name: "Unconfirmed second task" })).toBeVisible();
+      expect(dialog.queryByRole("button", { name: "Refresh" })).not.toBeInTheDocument();
       await waitFor(() => expect(receipt).toHaveBeenCalledWith(pending.requestId));
       onCatalogChange.mockClear();
 
@@ -2895,13 +2925,13 @@ describe("shared embedded conversation", () => {
       act(() => streams.get("")!.event("catalog-invalidated", "{}"));
       await waitFor(() => expect(onCatalogChange).toHaveBeenCalled());
 
-      fireEvent.click(screen.getByRole("button", { name: "Pending actions (1)" }));
+      expect(await dialog.findByText("No pending actions")).toBeVisible();
       expect(
-        await screen.findByText(
+        dialog.queryByText(
           "The last outcome is unconfirmed. Checking the request status without sending it again.",
         ),
-      ).toBeVisible();
-      expect(readPending(scope)).toEqual([pending]);
+      ).not.toBeInTheDocument();
+      expect(readPending(scope)).toMatchObject([pending]);
       expect(request.mock.calls.some(([path, body]) => path === "send" && body !== undefined)).toBe(
         false,
       );

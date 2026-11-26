@@ -16,7 +16,7 @@ describe("hosted LAN transport", () => {
   let csrf = "";
   let addresses = [{ name: "fixture", address: "192.168.20.10" }];
   const runtime = vi.fn(async () => ({ events: [] }));
-  const shared = createWebControlState();
+  let shared: ReturnType<typeof createWebControlState>;
   let bootId = "";
   async function http(
     path: string,
@@ -90,10 +90,7 @@ describe("hosted LAN transport", () => {
     bearer = "";
     csrf = "";
     addresses = [{ name: "fixture", address: "192.168.20.10" }];
-    shared.admission = false;
-    shared.requests.clear();
-    shared.active.clear();
-    shared.unconfirmed.clear();
+    shared = createWebControlState();
     runtime.mockClear();
     dir = await mkdtemp(join(tmpdir(), "agentkib-lan-test-"));
     const reservation = createServer();
@@ -603,7 +600,12 @@ describe("hosted LAN transport", () => {
       text: "hello",
     });
     expect(duplicate.data.error).toBe("duplicate_request");
-    shared.unconfirmed.add("session");
+    shared.outcomeFences.record({
+      requestId: "request-from-loopback",
+      sessionId: "session",
+      deviceId: paired.data.pending.id,
+      operation: "send",
+    });
     const uncertain = await http("/send", {}, "POST", {
       bootId,
       sessionId: "session",
@@ -634,7 +636,12 @@ describe("hosted LAN transport", () => {
             enterPreflight();
             await preflight;
           }
-          return { runtimeBootId: "fixture-runtime", revision: 1, sendEnabled: true };
+          return {
+            runtimeBootId: "fixture-runtime",
+            revision: 1,
+            status: "idle",
+            sendEnabled: true,
+          };
         }
         // An ambiguous reply must leave the shared unknown-outcome fence in place.
         return { accepted: false };
@@ -753,7 +760,7 @@ describe("hosted LAN transport", () => {
             await localHttp("/live?sessionId=shared-session"),
             await http("/live?sessionId=shared-session"),
           ]) {
-            expect(live.data.status).toBe("outcome-unknown");
+            expect(live.data.status).toBe("idle");
             expect(live.data.sendEnabled).toBe(false);
           }
           for (const reply of [

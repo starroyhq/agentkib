@@ -27,6 +27,7 @@ import type { SessionTranscriptProps } from "../../session-transcript";
 import { HistoryReferenceChips } from "../history/history-search-controls";
 import { validHistoryMessage } from "../history/history-reference-model";
 import { webLayoutCopy } from "./web-layout-copy";
+import { SessionOutcomeAction, type SessionOutcomeControls } from "./session-outcome-action";
 
 const codexTurnStartRejected = {
   "en-US": "Codex could not start the turn.",
@@ -40,6 +41,7 @@ type InteractionState = ComponentProps<typeof SessionInteractionDock>["session"]
 type History = SessionDetailProps["history"];
 type ReaderSession = ReadState["session"] &
   InteractionState &
+  SessionOutcomeControls &
   SessionArtifactBrowserProps["session"] & {
     t: SessionDetailProps["labels"] &
       Omit<ComponentProps<typeof BasicSessionComposer>["labels"], "addContext"> &
@@ -262,7 +264,13 @@ export function SessionReader({
                 />
               }
               live={selectedLive}
-              notice={turnStartError ? "notDispatched" : notice}
+              notice={
+                turnStartError
+                  ? "notDispatched"
+                  : notice === "uncertain" && session.selectedOutcomes?.length
+                    ? undefined
+                    : notice
+              }
               noticeSource={session.noticeSource}
               noticeReason={turnStartError?.reason ?? noticeReason}
               noticeText={
@@ -304,6 +312,25 @@ export function SessionReader({
                 onChange={setMessage}
                 onSend={async () => control("send")}
                 onStop={() => void control("stop")}
+                primaryAction={(action) => (
+                  <>
+                    <SessionOutcomeAction
+                      session={session}
+                      actions={
+                        canStop ? ["send", "approve", "answer"] : ["stop", "approve", "answer"]
+                      }
+                    />
+                    {canStop ? (
+                      action
+                    ) : (
+                      <SessionOutcomeAction
+                        session={session}
+                        actions={["send"]}
+                        fallback={action}
+                      />
+                    )}
+                  </>
+                )}
                 beforeComposer={queue.list}
                 actions={queue.action}
                 references={
@@ -312,7 +339,7 @@ export function SessionReader({
                     locale={locale}
                     references={historyReferences}
                     message={message}
-                    disabled={busy || notice === "uncertain"}
+                    disabled={busy}
                     onRemove={(item) =>
                       session.setHistoryReferences(
                         historyReferences.filter((entry) => entry !== item),

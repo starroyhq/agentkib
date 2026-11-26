@@ -1,7 +1,18 @@
-import { beforeEach, describe, expect, it } from "vitest";
-import { forgetPending, pendingScope, readPending, rememberPending } from "@agentkib/session-ui";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  ABANDONED_PENDING_TTL_MS,
+  abandonPending,
+  forgetPending,
+  pendingScope,
+  readPending,
+  rememberPending,
+  subscribePending,
+} from "@agentkib/session-ui";
 
 beforeEach(() => sessionStorage.clear());
+afterEach(() => {
+  vi.useRealTimers();
+});
 describe("pending Codex identities", () => {
   it.each(["goal-set", "goal-pause", "goal-resume", "goal-clear"] as const)(
     "round trips %s and clears it after receipt reconciliation",
@@ -9,7 +20,7 @@ describe("pending Codex identities", () => {
       const scope = pendingScope("", "device");
       const identity = { requestId: crypto.randomUUID(), sessionId: "session", kind };
       rememberPending(scope, identity);
-      expect(readPending(scope)).toEqual([identity]);
+      expect(readPending(scope)).toEqual([{ ...identity, createdAt: expect.any(Number) }]);
       expect(() => rememberPending(scope, { ...identity, requestId: crypto.randomUUID() })).toThrow(
         "control_outcome_unconfirmed",
       );
@@ -19,11 +30,15 @@ describe("pending Codex identities", () => {
       expect(readPending(scope)[0].kind).toBe("send");
     },
   );
-  it("recovers an existing Goal identity without migration and rejects unknown actions", () => {
+  it("timestamps an existing Goal identity once and rejects unknown actions", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1_000);
     const scope = pendingScope("", "device");
     const identity = { requestId: crypto.randomUUID(), sessionId: "session", kind: "goal-set" };
     sessionStorage.setItem(scope, JSON.stringify([identity]));
-    expect(readPending(scope)).toEqual([identity]);
+    expect(readPending(scope)).toEqual([{ ...identity, createdAt: 1_000 }]);
+    vi.setSystemTime(2_000);
+    expect(readPending(scope)).toEqual([{ ...identity, createdAt: 1_000 }]);
     for (const kind of ["unknown-action", "toString", "__proto__"]) {
       sessionStorage.setItem(scope, JSON.stringify([{ ...identity, kind }]));
       expect(() => readPending(scope)).toThrow("pending_control_storage_invalid");
@@ -55,6 +70,67 @@ describe("pending Codex identities", () => {
     });
     expect(readPending(scope)).toHaveLength(2);
   });
+  it("fences only the same operation in the same session", () => {
+    const scope = pendingScope("", "device");
+    const send = { requestId: crypto.randomUUID(), sessionId: "session", kind: "send" as const };
+    rememberPending(scope, send);
+    rememberPending(scope, { ...send, requestId: crypto.randomUUID(), kind: "stop" });
+    rememberPending(scope, {
+      ...send,
+      requestId: crypto.randomUUID(),
+      sessionId: "other-session",
+    });
+    expect(readPending(scope)).toHaveLength(3);
+    expect(() => rememberPending(scope, { ...send, requestId: crypto.randomUUID() })).toThrow(
+      "control_outcome_unconfirmed",
+    );
+    expect(() => rememberPending(scope, { ...send, kind: "approve" })).toThrow(
+      "control_outcome_unconfirmed",
+    );
+  });
+  it("removes orphaned identities but still recovers workspace-scoped creations", () => {
+    const scope = pendingScope("", "device");
+    const orphan = { requestId: crypto.randomUUID(), kind: "send", workspaceId: "workspace" };
+    const creation = { requestId: crypto.randomUUID(), kind: "create", workspaceId: "workspace" };
+    sessionStorage.setItem(scope, JSON.stringify([orphan, creation]));
+    expect(readPending(scope)).toMatchObject([creation]);
+    expect(sessionStorage.getItem(scope)).not.toContain(orphan.requestId);
+  });
+  it("expires abandoned markers without unlocking unresolved operations", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1_000);
+    const scope = pendingScope("", "device");
+    const discarded = {
+      requestId: crypto.randomUUID(),
+      sessionId: "session",
+      kind: "send" as const,
+    };
+    const retained = { requestId: crypto.randomUUID(), sessionId: "other", kind: "stop" as const };
+    rememberPending(scope, discarded);
+    rememberPending(scope, retained);
+    const changed = vi.fn();
+    const unsubscribe = subscribePending(changed);
+    try {
+      expect(abandonPending(scope, discarded.requestId)).toBe(true);
+      expect(abandonPending(scope, discarded.requestId)).toBe(false);
+      forgetPending(scope, discarded.requestId);
+      expect(changed).toHaveBeenCalledOnce();
+      expect(readPending(scope)).toMatchObject([retained]);
+      expect(() => rememberPending(scope, discarded)).toThrow("control_outcome_unconfirmed");
+      const next = { ...discarded, requestId: crypto.randomUUID() };
+      rememberPending(scope, next);
+      expect(readPending(scope)).toMatchObject([retained, next]);
+
+      vi.setSystemTime(1_000 + ABANDONED_PENDING_TTL_MS);
+      expect(readPending(scope)).toMatchObject([retained, next]);
+      expect(sessionStorage.getItem(scope)).not.toContain(discarded.requestId);
+      expect(() => rememberPending(scope, { ...retained, requestId: crypto.randomUUID() })).toThrow(
+        "control_outcome_unconfirmed",
+      );
+    } finally {
+      unsubscribe();
+    }
+  });
   it("fails closed on malformed storage instead of silently erasing pending state", () => {
     const scope = pendingScope("", "device");
     sessionStorage.setItem(scope, "broken json");
@@ -80,7 +156,7 @@ describe("pending Codex identities", () => {
         agent,
       };
       rememberPending(scope, identity);
-      expect(readPending(scope)).toEqual([identity]);
+      expect(readPending(scope)).toEqual([{ ...identity, createdAt: expect.any(Number) }]);
       forgetPending(scope, identity.requestId);
       expect(readPending(scope)).toEqual([]);
     },
@@ -105,7 +181,7 @@ describe("pending Codex identities", () => {
       "control_outcome_unconfirmed",
     );
     forgetPending(scope, otherAgent.requestId);
-    expect(readPending(scope)).toEqual([legacy, otherWorkspace]);
+    expect(readPending(scope)).toMatchObject([legacy, otherWorkspace]);
   });
   it("rejects an agent no control can name", () => {
     const scope = pendingScope("", "device");

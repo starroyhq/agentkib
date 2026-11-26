@@ -24,6 +24,7 @@ const POST_PATHS = new Set<string>([
   REMOTE_ROUTE.stop,
   REMOTE_ROUTE.approve,
   REMOTE_ROUTE.answer,
+  REMOTE_ROUTE.abandonRequest,
   REMOTE_ROUTE.managedCreate,
   REMOTE_ROUTE.managedRelease,
   REMOTE_ROUTE.managedReconcile,

@@ -1,4 +1,4 @@
-import { Info, RefreshCw, SlidersHorizontal } from "lucide-react";
+import { Info, SlidersHorizontal } from "lucide-react";
 import type { ReactNode } from "react";
 import { IconAction } from "./icon-action";
 import type { SessionPlatform } from "./session-platform";
@@ -9,8 +9,6 @@ export function SessionDetailOperations({
   labels,
   onOpenChange,
   onShowModal,
-  onRefresh,
-  busy,
   embedded,
   controls,
   extra,
@@ -20,11 +18,9 @@ export function SessionDetailOperations({
 }: {
   open: boolean;
   title: string;
-  labels: { details: string; refresh: string; preferences: string; close: string };
+  labels: { details: string; preferences: string; close: string };
   onOpenChange: (open: boolean) => void;
   onShowModal: (modal: "metadata" | "preferences") => void;
-  onRefresh: () => void;
-  busy: boolean;
   embedded?: boolean;
   controls?: (shortcuts: ReactNode) => ReactNode;
   extra?: ReactNode;
@@ -51,19 +47,6 @@ export function SessionDetailOperations({
           }
         >
           <Info aria-hidden="true" />
-        </IconAction>
-        <IconAction
-          label={labels.refresh}
-          render={
-            <Button
-              variant="outline"
-              className={shortcutClassName}
-              disabled={busy}
-              onClick={onRefresh}
-            />
-          }
-        >
-          <RefreshCw aria-hidden="true" />
         </IconAction>
         {!embedded && (
           <IconAction

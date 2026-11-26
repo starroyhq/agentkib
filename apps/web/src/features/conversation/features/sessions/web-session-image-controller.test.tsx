@@ -310,14 +310,19 @@ describe("controller image-cache boundaries", () => {
     },
   );
 
-  it("invalidates a changed workspace grant without depending on a selected-session change", async () => {
+  it("invalidates a changed workspace grant when the selected Web session becomes visible", async () => {
     const host = await start();
     const image = await warm(host);
     host.state.access = { ...host.state.access, historySearchScope: "new-workspace-grant" };
-    await act(async () => {
-      await host.result.current.refresh(false, true);
+    vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
+    act(() => {
+      document.dispatchEvent(new Event("visibilitychange"));
+      window.dispatchEvent(new Event("focus"));
     });
-    expect(messageImageCache.snapshot(image.scope, "image").phase).toBe("idle");
+    await waitFor(() =>
+      expect(messageImageCache.snapshot(image.scope, "image").phase).toBe("idle"),
+    );
+    expect(host.result.current.selected).toBe("session");
     const next = createSessionImageLoader(
       host.client,
       host.result.current.access,

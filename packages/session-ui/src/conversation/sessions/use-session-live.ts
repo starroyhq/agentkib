@@ -418,7 +418,9 @@ export function useSessionLive({
               if (!nativeCoverage.current.historyRecoveryFailed) setError(false);
             }
             setControlReady(
-              streamReady.current && !refreshRequired.current && !hasDurablePending(id),
+              streamReady.current &&
+                !refreshRequired.current &&
+                reconciled.live?.status !== "outcome-unknown",
             );
           })
           .catch((error) => {
@@ -515,6 +517,7 @@ export function useSessionLive({
                     "goal",
                     "usage",
                     "capabilities",
+                    "receipts",
                   ]);
                 needsDomainRecovery = false;
                 if (!desktop || !selectedSettingsWrite()) wakeSettingsHistory();
@@ -532,7 +535,7 @@ export function useSessionLive({
                   setControlReady(
                     !controlReconciliationPending.current &&
                       !refreshRequired.current &&
-                      !hasDurablePending(id),
+                      state.live.status !== "outcome-unknown",
                   );
                 return state.cursor;
               }
@@ -627,7 +630,7 @@ export function useSessionLive({
                 streamReady.current &&
                   !controlReconciliationPending.current &&
                   !refreshRequired.current &&
-                  !hasDurablePending(id),
+                  next.live.status !== "outcome-unknown",
               );
             }
             if (next.items !== previous.items) {

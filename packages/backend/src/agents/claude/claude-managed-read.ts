@@ -119,6 +119,8 @@ import {
   openManagedLedger,
 } from "../../managed-ledger";
 import { admitControlReceipt, bindControlReceipt } from "../../sessions/control-receipts";
+import { acceptNativeControlReceipt, isPendingNativeReceipt } from "../../control-receipt";
+import { claudePromptRecorded } from "../../native-control-evidence";
 import { LeadReportNotDispatched } from "../../message-lead-reports";
 import type {
   ClaudeBridge,
@@ -6104,7 +6106,7 @@ export class ClaudeManagedReadOwner {
     }
   }
 
-  async receipt(value: unknown): Promise<unknown> {
+  async receipt(value: unknown, deviceId: string): Promise<unknown> {
     if (
       !isObject(value) ||
       value.found !== true ||
@@ -6115,6 +6117,28 @@ export class ClaudeManagedReadOwner {
       return value;
     const record = this.#load(value.sessionId);
     if (!record) return value;
+    if (
+      isPendingNativeReceipt(value) &&
+      value.workspaceId === record.workspaceId &&
+      ["send", "steer", "queue-steer"].includes(value.operation)
+    ) {
+      try {
+        this.#validate(record);
+        const file = this.sessions.verifiedClaudeControlTarget(record.nativeId, record.workspace);
+        if (claudePromptRecorded(file, record.nativeId, value.requestId)) {
+          const recovered = acceptNativeControlReceipt(this.dataDir, deviceId, value);
+          if (!isPendingNativeReceipt(recovered)) {
+            this.#setCatalogUnconfirmed(
+              record.id,
+              managedSessionHasUnknownCommands(this.dataDir, record.id),
+            );
+            return recovered;
+          }
+        }
+      } catch {
+        // An unavailable or still unwritten transcript supplies no evidence.
+      }
+    }
     await this.request({ operation: "live", sessionId: value.sessionId }).catch(() => {
       // Live refresh can recover more evidence, but the device's durable receipt remains valid.
     });

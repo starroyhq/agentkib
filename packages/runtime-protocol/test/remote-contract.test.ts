@@ -128,6 +128,10 @@ test("route declarations preserve LAN preflight and legacy Codex boundaries", ()
     lan: true,
     control: true,
   });
+  assert.deepEqual(REMOTE_ROUTE_SPECS.POST[REMOTE_ROUTE.abandonRequest], {
+    lan: true,
+    control: true,
+  });
   assert.equal(REMOTE_RECEIPT_ROUTE.lan, true);
   assert.equal(REMOTE_LEGACY_CODEX.nonControlPath, REMOTE_ROUTE.codexInspect);
   assert.equal(REMOTE_LEGACY_CODEX.postTarget, REMOTE_ROUTE.managedAction);

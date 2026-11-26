@@ -662,7 +662,7 @@ describe("history search host authorization and frozen input", () => {
       ).toHaveLength(1);
       expect(sent).toHaveLength(0);
       expect(control.active.size).toBe(0);
-      expect(control.unconfirmed.size).toBe(0);
+      expect(control.outcomeFences.sessions.size).toBe(0);
       runtime.mockImplementation(defaultRuntime);
       expect(await http("/history/search", { query: "needle", workspaceIds: ["w"] })).toMatchObject(
         { status: 200 },

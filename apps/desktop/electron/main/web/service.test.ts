@@ -9,6 +9,12 @@ import { WebAccessService, createWebControlState } from "./service";
 import { ConversationHub } from "../conversation-hub";
 import { RuntimeRequestError } from "../runtime-host";
 import { RUNTIME_METHODS, type SessionStreamEvent } from "../../generated/runtime-protocol";
+import {
+  REMOTE_ERROR_CODES,
+  REMOTE_ROUTE,
+  REMOTE_ROUTE_BASE,
+  SESSION_OUTCOME_GRACE_MS,
+} from "@agentkib/runtime-protocol";
 import { approveLegacyBrowser, seedLegacyPending } from "./legacy-pairing-fixture";
 import { RelayManager } from "./relay/manager";
 
@@ -1435,7 +1441,7 @@ describe("WebAccessService loopback security boundary", () => {
           body: { ...dispatched, requestId: "new" },
         })
       ).json(),
-    ).toMatchObject({ error: "outcome_unknown", controlOutcome: "unknown" });
+    ).toMatchObject({ error: "outcome_unknown", controlOutcome: "not-dispatched" });
   });
   it.each(["send", "approve"])(
     "releases the fence for a correlated bridge %s preflight rejection",
@@ -1534,7 +1540,11 @@ describe("WebAccessService loopback security boundary", () => {
       const result = await http(`/api/web/v1/${operation}`, { method: "POST", body });
       expect(result.status).toBe(502);
       expect(result.json()).toMatchObject({ error: "outcome_unknown", controlOutcome: "unknown" });
-      expect((await http("/api/web/v1/live?sessionId=s")).json().sendEnabled).toBe(false);
+      const live = (await http("/api/web/v1/live?sessionId=s")).json();
+      expect(live.sendEnabled).toBe(operation !== "send");
+      expect(live.approvals).toMatchObject([
+        { requestId: "a", supported: operation !== "approve" },
+      ]);
       expect(
         (
           await http(`/api/web/v1/${operation}`, {
@@ -1542,7 +1552,7 @@ describe("WebAccessService loopback security boundary", () => {
             body: { ...body, requestId: "fresh" },
           })
         ).json(),
-      ).toMatchObject({ controlOutcome: "unknown" });
+      ).toMatchObject({ error: "outcome_unknown", controlOutcome: "not-dispatched" });
     },
   );
   it("streams native deltas without periodic live reads, including a large baseline", async () => {
@@ -3936,7 +3946,7 @@ describe("WebAccessService loopback security boundary", () => {
               finish = resolve;
               notifySendStarted();
             })
-          : { runtimeBootId: "r", revision: 4, sendEnabled: true },
+          : { runtimeBootId: "r", revision: 4, status: "idle", sendEnabled: true, approvals: [] },
       );
       const body = { sessionId: "s", text: "x", requestId: "r", bootId, expectedRevision: 4 };
       vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
@@ -3962,7 +3972,7 @@ describe("WebAccessService loopback security boundary", () => {
       expect(next.json().error).toBe("outcome_unknown");
       const live = await http("/api/web/v1/live?sessionId=s");
       expect(live.json()).toMatchObject({
-        status: "outcome-unknown",
+        status: "idle",
         sendEnabled: false,
         approvals: [],
       });
@@ -4014,20 +4024,24 @@ describe("WebAccessService loopback security boundary", () => {
     runtime.mockImplementation(async (p) => {
       if ((p as { operation: string }).operation === "send")
         throw new Error("runtime disconnected");
-      return { runtimeBootId: "new-runtime", revision: 4, sendEnabled: true, approvals: [] };
+      return {
+        runtimeBootId: "new-runtime",
+        revision: 4,
+        status: "idle",
+        sendEnabled: true,
+        approvals: [],
+      };
     });
     const body = { sessionId: "s", text: "x", requestId: "first", bootId, expectedRevision: 4 };
     expect((await http("/api/web/v1/send", { method: "POST", body })).status).toBe(500);
     service.runtimeUnavailable();
     const freshBoot = (await http("/api/web/v1/access")).json().bootId;
-    for (const path of ["send", "approve"]) {
-      const result = await http(`/api/web/v1/${path}`, {
-        method: "POST",
-        body: { ...body, bootId: freshBoot, requestId: path },
-      });
-      expect(result.status).toBe(409);
-      expect(result.json().error).toBe("outcome_unknown");
-    }
+    const result = await http("/api/web/v1/send", {
+      method: "POST",
+      body: { ...body, bootId: freshBoot, requestId: "next-send" },
+    });
+    expect(result.status).toBe(409);
+    expect(result.json().error).toBe("outcome_unknown");
     expect((await http("/api/web/v1/live?sessionId=s")).json().sendEnabled).toBe(false);
     expect((await http("/api/web/v1/live?sessionId=other")).json().sendEnabled).toBe(true);
     const stream = await new Promise<string>((resolve, reject) => {
@@ -4048,7 +4062,137 @@ describe("WebAccessService loopback security boundary", () => {
       req.on("error", reject);
       req.end();
     });
-    expect(stream).toContain('"reason":"control-outcome-unconfirmed"');
+    expect(stream).toContain('"status":"idle"');
+    expect(stream).toContain('"sendEnabled":false');
+  });
+  it("routes local abandon requests to the same input validation", async () => {
+    const result = await service.localRequest(REMOTE_ROUTE.abandonRequest, {
+      sessionId: "s",
+      requestId: "invalid-request-id",
+    });
+    expect(result).toMatchObject({ status: 400, body: { error: REMOTE_ERROR_CODES.invalidInput } });
+    expect(receiptQuery).not.toHaveBeenCalled();
+  });
+
+  it("only abandons a sender's own workspace request after grace without replaying it", async () => {
+    await service.request({
+      operation: "configure",
+      enabled: true,
+      port,
+      externalOrigin: "",
+      experimentalEnabled: true,
+      allowedWorkspaceIds: ["allowed"],
+    });
+    await bootstrap();
+    const sender = await pair(true);
+    const senderAccess = { cookie, csrf };
+    const original = randomUUID();
+    const body = { sessionId: "s", requestId: original };
+    const abandon = (requestBody = body) =>
+      http(`${REMOTE_ROUTE_BASE}${REMOTE_ROUTE.abandonRequest}`, {
+        method: "POST",
+        body: requestBody,
+      });
+    const send = (requestId = original) =>
+      http("/api/web/v1/send", {
+        method: "POST",
+        body: { ...body, requestId, text: "Send this once", bootId, expectedRevision: 4 },
+      });
+    const operations = () =>
+      runtime.mock.calls
+        .map(([input]) => input as { operation: string; requestId?: string })
+        .filter(({ operation }) => operation !== "catalog" && operation !== "live")
+        .map(({ operation, requestId }) => ({ operation, requestId }));
+    runtime.mockImplementation(async (input) => {
+      const { operation, requestId } = input as { operation: string; requestId?: string };
+      if (operation === "catalog")
+        return {
+          workspaces: [
+            { id: "allowed", path: dir },
+            { id: "private", path: dir },
+          ],
+          sessions: [
+            { id: "s", workspace_id: "allowed", agent: "codex" },
+            { id: "different-session", workspace_id: "allowed", agent: "codex" },
+            { id: "private-session", workspace_id: "private", agent: "codex" },
+          ],
+        };
+      if (operation === "live")
+        return {
+          workspaceId: "allowed",
+          runtimeBootId: "runtime-one",
+          revision: 4,
+          status: "running",
+          turnId: "turn",
+          sendEnabled: true,
+          stopEnabled: true,
+        };
+      if (operation === "send" && requestId === original) throw new Error("reply lost");
+      return { accepted: true };
+    });
+
+    expect((await send()).status).toBe(500);
+    const fence = control.outcomeFences.get(original)!;
+    expect(fence).toMatchObject({ ...body, deviceId: sender, operation: "send" });
+    const clock = vi
+      .spyOn(Date, "now")
+      .mockReturnValue(fence.createdAt + SESSION_OUTCOME_GRACE_MS - 1);
+    const premature = await abandon();
+    expect(premature.status).toBe(409);
+    expect(premature.json()).toMatchObject({ error: REMOTE_ERROR_CODES.outcomeGracePeriod });
+    expect((await send(randomUUID())).status).toBe(409);
+    expect((await http("/api/web/v1/live?sessionId=s")).json()).toMatchObject({
+      status: "running",
+      sendEnabled: false,
+      stopEnabled: true,
+    });
+    const stopId = randomUUID();
+    const stopped = await http("/api/web/v1/stop", {
+      method: "POST",
+      body: { ...body, requestId: stopId, bootId, expectedRevision: 4, turnId: "turn" },
+    });
+    expect(stopped.status).toBe(200);
+    expect(control.outcomeFences.blocks("s", "send")).toBe(true);
+
+    clock.mockReturnValue(fence.createdAt + SESSION_OUTCOME_GRACE_MS);
+    cookie = "";
+    await bootstrap();
+    const otherDevice = await pair(true);
+    expect(otherDevice).not.toBe(sender);
+    const unauthorized = await abandon();
+    expect(unauthorized.status).toBe(403);
+    expect(unauthorized.json()).toMatchObject({ error: REMOTE_ERROR_CODES.requestNotAuthorized });
+    ({ cookie, csrf } = senderAccess);
+    const differentSession = await abandon({ ...body, sessionId: "different-session" });
+    expect(differentSession.status).toBe(403);
+    expect(differentSession.json()).toMatchObject({
+      error: REMOTE_ERROR_CODES.requestNotAuthorized,
+    });
+    const privateSession = await abandon({ ...body, sessionId: "private-session" });
+    expect(privateSession.status).toBe(403);
+    expect(privateSession.json()).toMatchObject({ error: "workspace_not_authorized" });
+    control.active.add("s");
+    try {
+      const busy = await abandon();
+      expect(busy.status).toBe(409);
+      expect(busy.json()).toMatchObject({ error: "operation_busy" });
+    } finally {
+      control.active.delete("s");
+    }
+
+    const abandoned = await abandon();
+    expect(abandoned.status).toBe(200);
+    expect(abandoned.json()).toEqual({ abandoned: true });
+    expect(control.outcomeFences.get(original)).toBeUndefined();
+    expect((await send()).status).toBe(409);
+    expect(operations()).toEqual([
+      { operation: "send", requestId: original },
+      { operation: "stop", requestId: stopId },
+    ]);
+    expect((await http("/api/web/v1/live?sessionId=s")).json().sendEnabled).toBe(true);
+    const fresh = randomUUID();
+    expect((await send(fresh)).status).toBe(200);
+    expect(operations().at(-1)).toEqual({ operation: "send", requestId: fresh });
   });
   it("clears the dispatch fence only after a successful acknowledgement response", async () => {
     await bootstrap();
@@ -4096,7 +4240,7 @@ describe("WebAccessService loopback security boundary", () => {
         ? new Promise((resolve) => {
             finish = resolve;
           })
-        : { runtimeBootId: "r", revision: 4, sendEnabled: true },
+        : { runtimeBootId: "r", revision: 4, status: "idle", sendEnabled: true },
     );
     const req = request({
       hostname: "127.0.0.1",
@@ -4123,7 +4267,7 @@ describe("WebAccessService loopback security boundary", () => {
     await disconnected;
     finish({ accepted: true });
     const live = await http("/api/web/v1/live?sessionId=s");
-    expect(live.json()).toMatchObject({ status: "outcome-unknown", sendEnabled: false });
+    expect(live.json()).toMatchObject({ status: "idle", sendEnabled: false });
     const next = await http("/api/web/v1/send", {
       method: "POST",
       body: {

@@ -55,7 +55,7 @@ _界面示例使用演示数据。_
 - **达到用量上限后继续。** 在支持的会话中，可以查看额度何时重置、会话是否会自动继续。[用量上限说明](docs/agents/usage-limits.md)
 - **管好 Agent 能用的工具。** 查看项目里的指令和 Skills，整理可复用的 Skills，通过 MCP 管理外部工具连接。应用设置改动前，可以先查看将要更改的内容。[Skills 管理](docs/library/skills.md) · [MCP 管理](docs/library/mcp.md)
 
-终端退出后，有工作或汇报待处理的 Claude Code 项目 Agent 符合条件时，由 AgentKib 自动接管。指派 Worker 时，单个会话检查过慢也能看到其他可用会话。[项目 Agent 指南](docs/agents/project-agent.md)
+终端退出后，有工作或汇报待处理的 Claude Code 项目 Agent 符合条件时，由 AgentKib 自动接管。关掉终端后，历史很长的 Claude Code 会话也可直接在 AgentKib 发消息接着做。指派 Worker 时，单个会话检查过慢也能看到其他可用会话。[项目 Agent 指南](docs/agents/project-agent.md)
 
 大型 Codex 和 Claude Code 会话分段读取，避免后台满载或其他会话的实时更新断开。会话页会自动刷新，结果待确认时由后台核对。会话、工作区、用量、资源库、远程连接和设置精简了状态文字。
 

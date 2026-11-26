@@ -55,7 +55,7 @@ _Example screen with demo data._
 - **Pick up after a usage limit.** In supported sessions, see when the limit resets and whether the session can resume automatically. [Usage limits](docs/agents/usage-limits.md)
 - **Manage the tools your agents use.** Check which instructions and Skills a project sees, organize reusable Skills, and manage connections to external tools through MCP. Review proposed configuration changes before applying them. [Skills guide](docs/library/skills.md) · [MCP guide](docs/library/mcp.md)
 
-When a terminal closes, AgentKib automatically takes over eligible Claude Code Project Agents with work or reports still pending. The Worker picker can show available sessions even when one check is slow. [Project Agent guide](docs/agents/project-agent.md)
+When a terminal closes, AgentKib automatically takes over eligible Claude Code Project Agents with work or reports still pending. You can also continue eligible Claude Code sessions with long histories by sending directly from AgentKib after closing the terminal. The Worker picker can show available sessions even when one check is slow. [Project Agent guide](docs/agents/project-agent.md)
 
 Large Codex and Claude Code histories load in chunks, keeping the backend responsive and live updates in other sessions connected. Conversation pages refresh automatically, and AgentKib checks unconfirmed actions in the background. Session, workspace, usage, library, remote connection, and settings screens use shorter status messages.
 

@@ -101,12 +101,19 @@ export interface NewSessionComposerProps {
  */
 export function NewSessionComposer(props: NewSessionComposerProps) {
   const { workspaces, notInstalled, placement, onCreated, onAddWorkspace, onOpenSettings } = props;
-  const { locale, localizeMessage } = useI18n();
+  const { locale, localizeMessage, tr } = useI18n();
   const copy = newSessionCopy(locale);
   const [target] = useState(() => ({ ...readNewSessionTarget(), ...props.initial }));
-  const [agent, setAgent] = useState<ManagedAgent>(
-    target.agent && !notInstalled?.has(target.agent) ? target.agent : DEFAULT_NEW_SESSION_AGENT,
-  );
+  const [selectedAgent, setSelectedAgent] = useState<ManagedAgent>();
+  const preferredAgent = target.agent ?? DEFAULT_NEW_SESSION_AGENT;
+  const installedAlternative = notInstalled?.has(preferredAgent)
+    ? NEW_SESSION_AGENTS.find((item) => !notInstalled.has(item))
+    : undefined;
+  const agent = selectedAgent ?? installedAlternative ?? preferredAgent;
+  const agentNotInstalled = notInstalled?.has(agent) === true;
+  const missingAgentReason = NEW_SESSION_AGENTS.every((item) => notInstalled?.has(item))
+    ? copy.noInstalledAgent
+    : `${AGENT_LABELS[agent]} · ${copy.notInstalled}`;
   const [workspaceId, setWorkspaceId] = useState(target.workspaceId ?? "");
   const workspace =
     workspaces.find((item) => item.id === workspaceId) ??
@@ -143,6 +150,7 @@ export function NewSessionComposer(props: NewSessionComposerProps) {
     agent,
     workspaceId: workspace?.id,
     locale,
+    readOptions: !agentNotInstalled,
     // A create checked after its outcome was unknown opens the session it made, with this
     // composer's draft, only while that draft is still here.
     onReconciled: (sessionId, own) => {
@@ -291,6 +299,7 @@ export function NewSessionComposer(props: NewSessionComposerProps) {
           : undefined;
   const sendLabel = goal && !hasMessage ? sessionCopy[locale].goalCreate : copy.send;
   const canSend =
+    !agentNotInstalled &&
     session.ready &&
     !!options?.available &&
     !!workspace &&
@@ -391,17 +400,19 @@ export function NewSessionComposer(props: NewSessionComposerProps) {
     <Notice tone="error" icon={<CircleX className="size-3.5" />}>
       {copy.notListed}
     </Notice>
-  ) : unavailableReason ? (
+  ) : agentNotInstalled || unavailableReason ? (
     <Notice
       tone="warning"
       icon={<TriangleAlert className="size-3.5" />}
       action={
         <Button variant="link" size="sm" className="h-auto p-0 text-xs" onClick={onOpenSettings}>
-          {copy.openSettings}
+          {agentNotInstalled ? tr("settings.section.tools") : copy.openSettings}
         </Button>
       }
     >
-      {fillCopy(copy.agentUnavailable, { reason: unavailableReason })}
+      {agentNotInstalled
+        ? missingAgentReason
+        : fillCopy(copy.agentUnavailable, { reason: unavailableReason ?? "" })}
     </Notice>
   ) : addError ? (
     <Notice tone="error" icon={<CircleX className="size-3.5" />}>
@@ -416,7 +427,6 @@ export function NewSessionComposer(props: NewSessionComposerProps) {
       <section className="grid justify-items-start gap-2 rounded-2xl border border-dashed border-border bg-card p-5">
         <FolderPlus className="size-5 text-muted-foreground" aria-hidden />
         <h2 className="text-sm font-semibold">{copy.noWorkspace}</h2>
-        <p className="text-xs text-muted-foreground">{copy.noWorkspaceHint}</p>
         {addError && (
           <p role="alert" className="text-xs text-destructive-text">
             {addError}
@@ -467,8 +477,8 @@ export function NewSessionComposer(props: NewSessionComposerProps) {
                 }
                 className="data-disabled:pointer-events-auto"
                 onClick={() => {
+                  setSelectedAgent(item);
                   if (item === agent) return;
-                  setAgent(item);
                   sessionModel.reset();
                   permission.reset();
                   setStartupPlanning(false);

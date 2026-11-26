@@ -170,6 +170,22 @@ describe("menu bar sessions", () => {
     expect(formatElapsed(2 * 3_600_000 + 5 * 60_000, tr)).toBe("2h 5m");
   });
 
+  it("keeps a fast approval read quiet and shows only a skeleton if the read takes longer", async () => {
+    const { value, live } = replies();
+    live.mockReturnValueOnce(new Promise(() => {}));
+    vi.useFakeTimers();
+    try {
+      renderSessions([approvalSession], { value, expanded: "approval" });
+      act(() => vi.advanceTimersByTime(299));
+      expect(screen.queryByRole("status", { name: home.loadingRequest })).not.toBeInTheDocument();
+      act(() => vi.advanceTimersByTime(1));
+      expect(screen.getByRole("status", { name: home.loadingRequest })).toBeVisible();
+      expect(screen.queryByText(home.loadingRequest)).not.toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("answers the open approval in one click and folds once nothing waits", async () => {
     const { value, live } = replies();
     live.mockResolvedValueOnce(waiting).mockResolvedValueOnce({ ...waiting, approvals: [] });

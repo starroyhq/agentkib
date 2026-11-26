@@ -162,6 +162,7 @@ async function fixture(mebibytes = 0) {
     sessions,
     store,
     owner,
+    commands,
     message,
     head,
   };
@@ -360,6 +361,35 @@ async function legacyNativeObservation(f: Awaited<ReturnType<typeof fixture>>) {
 }
 
 describe("Claude read observation cost and identity boundaries", () => {
+  it.skipIf(process.platform === "win32")(
+    "identifies a resumed terminal separately from idle or background Claude history",
+    async () => {
+      const f = await fixture();
+      const run = vi.mocked(f.commands.run);
+      await expect(f.owner.hasRunningNativeTerminal(f.id)).resolves.toBe(false);
+      await expect(f.owner.hasRunningNativeTerminal("missing")).resolves.toBe(false);
+
+      const response = (output: string) => ({
+        success: true,
+        bytes: Buffer.from(output),
+        error: "",
+        truncated: false,
+        exitCode: 0,
+      });
+      let args = "--resume another-session";
+      run.mockImplementation(async (program) =>
+        response(
+          program === "/bin/ps" ? `123 123 Mon Oct 19 00:00:00 2026 claude ${args}\n` : "[]",
+        ),
+      );
+      await expect(f.owner.hasRunningNativeTerminal(f.id)).resolves.toBe(false);
+      args = `-p --resume ${f.nativeId}`;
+      await expect(f.owner.hasRunningNativeTerminal(f.id)).resolves.toBe(false);
+      args = `--resume ${f.nativeId}`;
+      await expect(f.owner.hasRunningNativeTerminal(f.id)).resolves.toBe(true);
+    },
+  );
+
   it("reads a saved main-session context count while an external terminal owns execution", async () => {
     const f = await fixture();
     appendFileSync(

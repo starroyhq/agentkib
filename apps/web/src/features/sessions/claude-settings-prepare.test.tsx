@@ -719,12 +719,12 @@ it("keeps cached controls visible across an executor change and browses without 
   fireEvent.click(screen.getByRole("button", { name: goalLabels.addContext }));
   fireEvent.click(await screen.findByRole("button", { name: "Files and folders" }));
   await waitFor(() => expect(state.client.sessionResources).toHaveBeenCalled());
-  expect(
-    screen.getAllByText(
-      "You can browse files and folders, but this executor cannot add references to messages.",
-    ),
-  ).toHaveLength(1);
-  expect(screen.getByRole("checkbox")).toBeDisabled();
+  const readOnlyReferences =
+    "You can browse files and folders, but this executor cannot add references to messages.";
+  const reference = await screen.findByRole("checkbox");
+  expect(reference).toBeDisabled();
+  expect(reference).toHaveAttribute("title", readOnlyReferences);
+  expect(screen.queryByText(readOnlyReferences)).not.toBeInTheDocument();
   fireEvent.click(screen.getByRole("button", { name: "Open folder: src" }));
   await waitFor(() => expect(state.client.sessionResources).toHaveBeenCalledTimes(2));
   expect(props.setResources).not.toHaveBeenCalled();

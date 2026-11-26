@@ -35,6 +35,7 @@ Start with the repository [README](../README.md) for the overview and downloads.
 - [手机访问](remote/phone-access.md)：用手机 App 或浏览器访问电脑：开通远程访问、授权档位、Codex 远控与产物查看。
 - [账号与官方中继](remote/account-relay.md)：AgentKib Remote 账号、中继流量额度和隐私。
 - [托管 Web 与局域网直连](remote/hosted-web-lan.md)：同一局域网内由浏览器直连电脑。
+- [远程协议与版本兼容](remote/protocol-compatibility.md)说明主机与客户端使用的契约、能力协商和旧客户端兼容规则。
 - [内置 Web 自部署](remote/self-hosting.md)：不用官方服务，自己配置 HTTPS 访问。
 - [连接另一台电脑](remote/desktop-connections.md)（EN）：桌面之间的原生局域网连接。
 

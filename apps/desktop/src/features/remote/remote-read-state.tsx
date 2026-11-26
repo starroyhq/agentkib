@@ -1,6 +1,5 @@
 import { useMemo, type RefObject } from "react";
 import {
-  ReadStateNotice,
   readStateCopy,
   transcriptRepresentsResult,
   useVisibleReadState,
@@ -86,10 +85,10 @@ export function HistoryReadState({
   const copy = readStateCopy(locale);
   return (
     <>
-      <ReadStateNotice locale={locale} observation={observation} />
       {observation.status === "ready" &&
         observation.events &&
         observation.readState?.freshness === "current" &&
+        observation.readState.status !== "unknown" &&
         !transcriptRepresentsResult(events, observation.readState.latestResult) && (
           <p
             data-read-result={observation.readState.latestResult?.id ?? "threadStart"}

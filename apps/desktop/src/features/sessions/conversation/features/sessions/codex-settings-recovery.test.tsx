@@ -138,8 +138,7 @@ describe("Codex settings recovery on desktop", () => {
         disabled={false}
       />,
     );
-    const choose = () =>
-      screen.findByRole("button", { name: "Execution policy: Choose for next turn" });
+    const choose = () => screen.findByRole("button", { name: "Execution policy" });
     const opening = await choose();
     expect(opening).toBeEnabled();
     fireEvent.click(opening);
@@ -376,7 +375,7 @@ describe("Codex settings recovery on desktop", () => {
     expect(screen.queryByRole("button", { name: /unlisted-model · Low/ })).not.toBeInTheDocument();
   });
 
-  it("shows one writing status below the toolbar and clears it on completion", async () => {
+  it("keeps a settings write from adding a row below the toolbar", async () => {
     state.notice = undefined;
     const props = {
       resources: [],
@@ -390,16 +389,13 @@ describe("Codex settings recovery on desktop", () => {
         {...props}
       />,
     );
-    const model = await screen.findByRole("button", { name: /unlisted-model · Low/ });
-    const status = screen.getByRole("status");
-    expect(status).toHaveTextContent("Saving settings…");
-    expect(status.previousElementSibling).toContainElement(model);
-    expect(screen.getAllByText("Saving settings…")).toHaveLength(1);
+    await screen.findByRole("button", { name: /unlisted-model · Low/ });
+    expect(screen.queryByText("Saving settings…")).not.toBeInTheDocument();
     view.rerender(<SessionComposerControls session={state} {...props} />);
     expect(screen.queryByText("Saving settings…")).not.toBeInTheDocument();
   });
 
-  it("shows a rejected settings action once below the toolbar", async () => {
+  it("floats a rejected setting above the toolbar and can reopen the setting", async () => {
     state.notice = undefined;
     state.settingsNotice = {
       group: "permissions",
@@ -423,11 +419,11 @@ describe("Codex settings recovery on desktop", () => {
     await screen.findByRole("button", { name: /unlisted-model · Low/ });
     const permission = screen.getByRole("button", { name: "Execution policy" });
     expect(permission).toHaveTextContent(/^$/);
-    const feedback = screen.getByRole("status");
+    const feedback = screen.getByRole("alert");
     const message = sessionReason("en-US", state.settingsNotice.reason).text;
     expect(feedback).toHaveTextContent(message);
-    expect(feedback.previousElementSibling).toContainElement(permission);
-    fireEvent.click(permission);
+    expect(feedback).toHaveClass("absolute", "bottom-full");
+    fireEvent.click(within(feedback).getByRole("button", { name: "Session settings" }));
     expect(await screen.findByRole("menu")).toBeVisible();
     expect(screen.getAllByText(message)).toHaveLength(1);
   });
@@ -457,9 +453,9 @@ describe("Codex settings recovery on desktop", () => {
     });
     mounted.rerender(controls("pending"));
     const trigger = screen.getByRole("button", { name: /Listed model · Low/ });
-    const message = "Setting status unconfirmed";
+    const message = "Settings outcome needs checking. Wait before retrying.";
     const feedback = screen.getByText(message);
-    expect(feedback.previousElementSibling).toContainElement(trigger);
+    expect(feedback.closest("[role=alert]")).toHaveClass("absolute", "bottom-full");
     expect(trigger).toBeEnabled();
     fireEvent.click(trigger);
     const overview = await screen.findByRole("dialog", { name: /^Select reasoning effort/ });

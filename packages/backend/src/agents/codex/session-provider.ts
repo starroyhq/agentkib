@@ -3,7 +3,11 @@ import { existsSync, lstatSync, readFileSync, realpathSync, statSync } from "nod
 import { homedir } from "node:os";
 import path from "node:path";
 import { z } from "zod";
-import { SESSION_COLLECTIONS, sessionCollection } from "@agentkib/runtime-protocol";
+import {
+  REMOTE_ERROR_CODES,
+  SESSION_COLLECTIONS,
+  sessionCollection,
+} from "@agentkib/runtime-protocol";
 import {
   stableJson,
   type ApplyManagedControl,
@@ -13,6 +17,8 @@ import { sessionIdentity, type NativeSession } from "../../session-store";
 import type { BackendStore } from "../../store";
 import type { SessionReaders } from "../../session-readers";
 import { enrichLedgerImages } from "../../session-image-matching";
+import { acceptNativeControlReceipt, isPendingNativeReceipt } from "../../control-receipt";
+import { codexPromptRecorded, codexStopRecorded } from "../../native-control-evidence";
 import type { ConversationImage } from "../../session-events";
 import type { SessionIndex } from "../../session-index";
 import {
@@ -6129,6 +6135,72 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
     );
   }
 
+  async receipt(value: unknown, deviceId: string): Promise<unknown> {
+    if (
+      !isPendingNativeReceipt(value) ||
+      (value.executionMode !== "codex-managed" && value.executionMode !== "codex-follower") ||
+      !["send", "steer", "queue-start", "stop"].includes(value.operation)
+    )
+      return value;
+    const { sessionId } = value;
+    try {
+      const stored = managedRecordSchema.safeParse(readManagedRecord(this.host.dataDir, sessionId));
+      const source = await this.#inactiveRecord(sessionId, stored.success ? stored.data : null);
+      const nativeId = source.native_id;
+      const runner = this.#managedRunners.get(sessionId);
+      if (
+        !nativeId ||
+        value.workspaceId !== source.workspace_id ||
+        source.archived ||
+        this.host.controlSessions.has(sessionId) ||
+        this.#startingRunners.has(sessionId) ||
+        // A resident worker whose native turn is still unknown must first hydrate a
+        // current snapshot through the existing ownership-aware recovery.
+        (runner && (runner.retiring || !runner.state.turnId))
+      )
+        return value;
+      const cwd = this.#managedCwd(source);
+      const native = this.host.sessions.verifiedCodexControlDirectory(nativeId);
+      if (
+        !native ||
+        native.id !== nativeId.toLowerCase() ||
+        pathIdentity(native.cwd) !== pathIdentity(cwd)
+      )
+        return value;
+      const file = this.host.sessions.verifiedCodexReadTranscript(nativeId, source.workspace);
+      if (!file?.endsWith(".jsonl")) return value;
+      const turnId = typeof value.turnId === "string" ? value.turnId : undefined;
+      const stop = value.operation === "stop";
+      if (
+        stop
+          ? !turnId || !codexStopRecorded(file, turnId)
+          : (value.operation === "steer" && !turnId) ||
+            !codexPromptRecorded(
+              file,
+              nativeId,
+              value.requestId,
+              value.operation === "steer" ? turnId : undefined,
+            )
+      )
+        return value;
+      const recovered = acceptNativeControlReceipt(
+        this.host.dataDir,
+        deviceId,
+        value,
+        stop ? turnId : undefined,
+      );
+      if (!isPendingNativeReceipt(recovered)) {
+        if (runner && !managedSessionHasUnknownCommands(this.host.dataDir, sessionId)) {
+          if (runner.state.restoreReconciledTurn()) runner.persist(runner.state);
+        }
+        this.host.publishConversationEvent?.(sessionId, "invalidate", { domains: ["receipts"] });
+      }
+      return recovered;
+    } catch {
+      return value;
+    }
+  }
+
   /** Worker reads need output evidence and external ownership, even when no page is open. */
   workerLive(sessionId: string, controls: boolean, intent?: "send") {
     return this.host.runOperation(async () => {
@@ -7568,7 +7640,7 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
 
   async managedImage(managed: ManagedRecord, request: { sessionId: string; imageId: string }) {
     this.#assertManagedHome(managed);
-    if (!managed.native_id) throw new Error("session-image-unavailable");
+    if (!managed.native_id) throw new Error(REMOTE_ERROR_CODES.sessionImageUnavailable);
     const identity = this.host.sessions.verifiedCodexControlDirectory(managed.native_id);
     if (!identity || identity.id !== managed.native_id.toLowerCase())
       throw new Error("unverified-session-identity");
@@ -7590,7 +7662,7 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
       latest.native_id !== managed.native_id ||
       latest.cwd !== managed.cwd
     )
-      throw new Error("session-image-unavailable");
+      throw new Error(REMOTE_ERROR_CODES.sessionImageUnavailable);
     this.#assertManagedHome(latest);
     return result;
   }
@@ -7610,7 +7682,7 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
       !!managed.native_id && (!runner?.session.connected || runner.usesNativeHistory);
     const nativePrefix = "codex-native-v1:";
     if (request.cursor && nativeHistory !== request.cursor.startsWith(nativePrefix))
-      throw new Error("TRANSCRIPT_CURSOR_STALE");
+      throw new Error(REMOTE_ERROR_CODES.transcriptCursorStale);
     let events: {
       events: Array<Record<string, unknown>>;
       next_cursor: string | null;

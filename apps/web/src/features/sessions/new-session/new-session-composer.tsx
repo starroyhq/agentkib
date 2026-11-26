@@ -11,7 +11,6 @@ import {
   Hourglass,
   ImageIcon,
   Layers,
-  LoaderCircle,
   Search,
   Shield,
   TriangleAlert,
@@ -66,7 +65,7 @@ import { Input } from "@/features/conversation/components/ui/input";
 import { cn } from "@/features/conversation/lib/utils";
 import { useSession } from "@/features/conversation/web-session-context";
 import { sessionCopyForSurface, sessionReason } from "@/features/conversation/session-copy";
-import { composerLayoutCopy } from "@agentkib/session-ui";
+import { composerLayoutCopy, DelayedSpinner } from "@agentkib/session-ui";
 import { MAX_MESSAGE_LENGTH } from "@agentkib/conversation-state";
 import type { Locale } from "@/features/conversation/i18n";
 import { failureOf, useNewSession } from "./use-new-session";
@@ -723,7 +722,9 @@ function OptionPlaceholder({
     >
       {icon}
       {loading && (
-        <LoaderCircle className="size-3.5 shrink-0 motion-safe:animate-spin" aria-hidden />
+        <span className="grid size-3.5 shrink-0 place-items-center">
+          <DelayedSpinner active={loading} />
+        </span>
       )}
     </IconAction>
   );

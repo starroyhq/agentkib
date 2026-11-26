@@ -13,6 +13,12 @@
 
 同一用户下，同版本的开发版和正式版通过已认证的本地 socket 或命名管道，以 JSON-RPC 连接单个共享后台 `backend.cjs --local-runtime`。后台持有独占锁，下一版本在旧后台退出后接手。隔离开发模式使用独立数据目录和运行时。
 
+## 协议契约与版本
+
+主机与客户端共用的协议版本、能力键、路由及错误码以 [`packages/runtime-protocol/remote-contract.json`](../../packages/runtime-protocol/remote-contract.json) 为准。改契约后运行 `node packages/runtime-protocol/scripts/generate-remote-contract.mjs`，更新 TypeScript 和 Dart 产物。CI 检查产物与契约一致。
+
+主版本和最低版本的兼容范围、按能力启用功能的方式，以及旧版客户端的处理见[远程协议与版本兼容](../remote/protocol-compatibility.md)。
+
 ## 一条会话请求
 
 1. 以发送消息为例，用户在共享会话界面提交 `/api/web/v1/managed/action` 请求。桌面经 preload 进入会话 IPC，主进程核验发送方，再由 `WebAccessService.localRequest` 用 `desktop-local` 身份调用主机路由。Web 和手机经主机 HTTP API 访问同一个路由。
@@ -49,5 +55,7 @@
 | Agent 名称判断 | 在 TS/TSX 的比较和 `switch` 分支中，统计 Agent 名称字面量。既有文件不得超过各自基线，新文件不得新增；Provider 声明和 `agents/` 目录豁免。 |
 | 产品代码文件行数 | 统计 `apps/` 和 `packages/` 下的产品源文件实际行数。新文件最多 1500 行，已有超限文件只减不增，测试和测试夹具不计。 |
 | 兼容代码登记 | 自动检查 `apps/` 和 `packages/` 中新增含 `legacy`、`compat`、`fallback` 的 TS 和 JS 标识符及注释。登记使用相同文件路径和源码标识符或注释片段。 |
+
+远程契约的生成物 `packages/runtime-protocol/src/generated/remote-contract.ts` 和 `packages/runtime-protocol/generated/remote_protocol.g.dart` 不纳入 Agent 名称判断与产品代码行数检查。生成的 TypeScript 仍参与兼容代码登记检查。
 
 删除存量判断、缩短超限文件或清理兼容代码后，用 `node scripts/check-architecture.mjs --tighten` 更新基线。此命令只能减少既有记录。CI 还对照变更前的基线，防止手工提高限额。

@@ -27,6 +27,7 @@ type ActivityCopy = {
   stopUnavailable: string;
   stopDenied: string;
   stopBusy: string;
+  terminalAutoAdopted: string;
   kinds: Record<SessionActivityKind, string>;
   status: Record<SessionActivity["status"], string>;
   counts: Record<ActivityGroup, string>;
@@ -45,6 +46,7 @@ const activityCopy: Record<InteractionLocale, ActivityCopy> = {
     stopUnavailable: "暂时无法停止此活动",
     stopDenied: "这次访问没有停止权限",
     stopBusy: "请等待当前操作完成",
+    terminalAutoAdopted: "终端退出后由 AgentKib 接管",
     kinds: { "background-task": "后台任务", subagent: "子代理", terminal: "终端" },
     status: {
       starting: "启动中",
@@ -74,6 +76,7 @@ const activityCopy: Record<InteractionLocale, ActivityCopy> = {
     stopUnavailable: "暫時無法停止此活動",
     stopDenied: "這次存取沒有停止權限",
     stopBusy: "請等待目前的操作完成",
+    terminalAutoAdopted: "終端機結束後由 AgentKib 接管",
     kinds: { "background-task": "背景工作", subagent: "子代理", terminal: "終端機" },
     status: {
       starting: "啟動中",
@@ -103,6 +106,7 @@ const activityCopy: Record<InteractionLocale, ActivityCopy> = {
     stopUnavailable: "This activity cannot be stopped right now",
     stopDenied: "This device does not have permission to stop the activity",
     stopBusy: "Wait for the current operation to finish",
+    terminalAutoAdopted: "AgentKib took over after the terminal exited",
     kinds: { "background-task": "Background task", subagent: "Subagent", terminal: "Terminal" },
     status: {
       starting: "Starting",
@@ -138,6 +142,7 @@ const activityCopy: Record<InteractionLocale, ActivityCopy> = {
     stopUnavailable: "今はこのアクティビティを停止できません",
     stopDenied: "このアクティビティを停止する権限がありません",
     stopBusy: "現在の操作が終わるまでお待ちください",
+    terminalAutoAdopted: "ターミナルの終了後に AgentKib が引き継ぎました",
     kinds: {
       "background-task": "バックグラウンドタスク",
       subagent: "サブエージェント",
@@ -372,7 +377,10 @@ function ActivityPanel({
           <ul className="divide-y divide-border">
             {activities.map((activity) => {
               const { childId } = activity;
-              const title = activity.title.trim() || copy.kinds[activity.kind];
+              const title =
+                activity.event === "terminal-auto-adopted"
+                  ? copy.terminalAutoAdopted
+                  : activity.title.trim() || copy.kinds[activity.kind];
               const elapsed = activityDuration(activity, now, locale);
               const stop = activity.actions?.stop;
               const stopEnabled = stop?.available === true && !!onStop;

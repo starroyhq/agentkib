@@ -17,7 +17,7 @@ import { sessionConnectionBanner } from "@agentkib/session-ui";
 import { sessionDisplayState } from "./conversation/desktop-session-display";
 import { webLayoutCopy } from "@agentkib/session-ui";
 import { useSessionViewStore } from "./session-view-store";
-import { useSessionPanels } from "@agentkib/session-ui";
+import { useDelayedBusy, useSessionPanels } from "@agentkib/session-ui";
 
 type ToolbarSlots = {
   files: HTMLElement | null;
@@ -87,9 +87,16 @@ export function ConversationWindowTools({
     return () => observer.disconnect();
   }, [selected]);
   const status = sessionDisplayState(session);
+  const reconnecting = session.streamReconnecting && !session.error;
+  const showReconnect = useDelayedBusy(reconnecting, 2000);
   const banner = sessionConnectionBanner(session);
   const connectionBanner = banner?.connection ? banner : null;
-  const label = (session.online && connectionBanner?.title) || status.label;
+  const label =
+    reconnecting && status.label !== webLayoutCopy[locale].uncertain
+      ? showReconnect
+        ? webLayoutCopy[locale].streamReconnecting
+        : ""
+      : (session.online && connectionBanner?.title) || status.label;
   const requestFailed = !session.online && !session.incompatible && session.error;
   const description = connectionBanner?.body ?? (requestFailed ? session.t.error : status.reason);
   const statusInToolbar = !!(

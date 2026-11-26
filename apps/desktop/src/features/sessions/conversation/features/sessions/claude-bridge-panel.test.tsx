@@ -1,6 +1,5 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
-import { CLAUDE_BRIDGE_CLI_VERSION } from "@agentkib/runtime-protocol";
 import { render } from "../../desktop-reader-test-utils";
 import { act, cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
 import { Profiler } from "react";
@@ -15,13 +14,7 @@ const state = vi.hoisted(() => ({
 }));
 
 function ClaudeBridgePanel(props: { active: boolean; onClose?: () => void }) {
-  return (
-    <SharedClaudeBridgePanel
-      {...props}
-      bridgeVersion={CLAUDE_BRIDGE_CLI_VERSION}
-      session={state.session}
-    />
-  );
+  return <SharedClaudeBridgePanel {...props} session={state.session} />;
 }
 
 const status = (sessionId = "s") => ({
@@ -30,13 +23,24 @@ const status = (sessionId = "s") => ({
   sessionId,
   version: "2.1.301",
   pluginDirectory: "/isolated/plugin",
-  installInstructions: "Install isolated plugin",
+  installInstructions: "Legacy manual installation command",
+  pluginUpdate: {
+    installedVersion: "0.5.4",
+    bundledVersion: "0.5.5",
+    status: "idle",
+    automaticEnabled: true,
+    canChangeAutomatic: true,
+    installations: [{ scope: "user", version: "0.5.4" }],
+  },
 });
 const challenge = {
   challenge: "one-time-code",
   expiresAt: new Date(Date.now() + 120_000).toISOString(),
   instructions: "/agentkib:connect one-time-code",
 };
+function copiedControl(name: string) {
+  return screen.getByRole("button", { name }).getAttribute("data-copied");
+}
 function deferred<T>() {
   let resolve!: (value: T) => void;
   let reject!: (error: Error) => void;
@@ -87,7 +91,7 @@ afterEach(() => {
 });
 
 describe("Claude terminal connection management", () => {
-  it("shows plugin versions and a completed update next to the install commands", async () => {
+  it("shows plugin versions and a completed automatic update", async () => {
     vi.useFakeTimers();
     const installed = { ...status(), hasBinding: true, connected: true };
     state.request.mockResolvedValue({
@@ -96,12 +100,12 @@ describe("Claude terminal connection management", () => {
     });
     render(<ClaudeBridgePanel active />);
     await act(async () => {});
-    expect(screen.getByRole("button", { name: "已安装插件" })).toHaveAttribute(
-      "aria-expanded",
-      "false",
-    );
+    expect(screen.getByRole("heading", { name: "插件安装范围" })).toBeVisible();
     expect(screen.getByText("已安装 0.5.3 · 随包版本 0.5.4")).toBeVisible();
-    expect(screen.getByText("正在更新插件…")).toBeVisible();
+    expect(screen.getByRole("heading", { name: "插件安装范围" })).toHaveAttribute(
+      "aria-busy",
+      "true",
+    );
 
     state.request.mockResolvedValue({
       ...installed,
@@ -109,9 +113,9 @@ describe("Claude terminal connection management", () => {
     });
     await act(async () => vi.advanceTimersByTimeAsync(2_500));
     expect(screen.getByText("已安装 0.5.4 · 随包版本 0.5.4")).toBeVisible();
-    expect(
-      screen.getByText("插件已更新。新开的 Claude Code 会话或执行 /reload-plugins 后生效。"),
-    ).toBeVisible();
+    expect(screen.queryByText(/插件已更新/)).not.toBeInTheDocument();
+    expect(screen.queryByText("插件已就绪。")).not.toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "插件安装范围" })).not.toHaveAttribute("aria-busy");
   });
 
   it("keeps connection actions available with an unsupported plugin update status", async () => {
@@ -120,9 +124,38 @@ describe("Claude terminal connection management", () => {
       pluginUpdate: { installedVersion: "0.5.3", bundledVersion: "0.5.4", status: "unrecognized" },
     });
     render(<ClaudeBridgePanel active />);
-    await screen.findByText("Install isolated plugin");
-    expect(screen.getByRole("button", { name: "生成连接码" })).toBeEnabled();
+    await waitFor(() => expect(screen.getByRole("button", { name: "生成连接码" })).toBeEnabled());
     expect(screen.queryByText(/随包版本/)).not.toBeInTheDocument();
+  });
+
+  it("shows legacy scopes and only reveals manual commands after automatic installation fails", async () => {
+    vi.useFakeTimers();
+    const pluginUpdate = {
+      ...status().pluginUpdate,
+      installedVersion: null,
+      installations: [
+        { scope: "project", version: "0.5.4", projectPath: "/isolated/project" },
+        { scope: "local", version: "0.5.2", projectPath: "/isolated/local" },
+      ],
+      installInstructions: "claude plugin install agentkib-bridge@agentkib-local --scope user",
+    };
+    state.request.mockResolvedValue({ ...status(), pluginUpdate });
+    render(<ClaudeBridgePanel active />);
+    await act(async () => {});
+    expect(screen.getByText("项目 · 0.5.4 · /isolated/project")).toBeVisible();
+    expect(screen.getByText("仅本地项目 · 0.5.2 · /isolated/local")).toBeVisible();
+    expect(screen.queryByText(/\/reload-plugins/)).not.toBeInTheDocument();
+    expect(screen.queryByText("Legacy manual installation command")).not.toBeInTheDocument();
+    expect(screen.queryByText(pluginUpdate.installInstructions)).not.toBeInTheDocument();
+
+    state.request.mockResolvedValue({
+      ...status(),
+      pluginUpdate: { ...pluginUpdate, status: "failed", reason: "Synthetic CLI failure" },
+    });
+    await act(async () => vi.advanceTimersByTimeAsync(2_500));
+    const alert = screen.getByRole("alert");
+    expect(alert).toHaveTextContent("Synthetic CLI failure");
+    expect(alert).toHaveTextContent(pluginUpdate.installInstructions);
   });
 
   it("shows why the CLI could not update and retries through the local bridge entry", async () => {
@@ -149,8 +182,8 @@ describe("Claude terminal connection management", () => {
       operation: "bridge-plugin-retry",
       sessionId: "s",
     });
-    expect(screen.getByText("正在更新插件…")).toBeVisible();
-    expect(screen.queryByRole("button", { name: "重试" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "重试" })).toHaveAttribute("aria-busy", "true");
+    expect(screen.getByRole("button", { name: "重试" })).toBeDisabled();
 
     await act(async () => {
       retry.resolve({ installedVersion: "0.5.4", bundledVersion: "0.5.4", status: "updated" });
@@ -198,8 +231,8 @@ describe("Claude terminal connection management", () => {
     const toggle = await screen.findByRole("switch", { name: "自动连接这个工作区的新对话" });
     expect(toggle).toBeChecked();
     expect(
-      screen.getByText("装好最新插件后，直接在终端里继续这条会话也会自动连接。"),
-    ).toBeVisible();
+      screen.queryByText("装好最新插件后，直接在终端里继续这条会话也会自动连接。"),
+    ).not.toBeInTheDocument();
     fireEvent.click(toggle);
     await waitFor(() =>
       expect(state.request).toHaveBeenCalledWith({
@@ -209,9 +242,6 @@ describe("Claude terminal connection management", () => {
       }),
     );
     await waitFor(() => expect(toggle).not.toBeChecked());
-    expect(
-      screen.queryByText("装好最新插件后，直接在终端里继续这条会话也会自动连接。"),
-    ).not.toBeInTheDocument();
   });
 
   it("hides the automatic connection switch when the runtime cannot offer it", async () => {
@@ -220,7 +250,7 @@ describe("Claude terminal connection management", () => {
       autoConnect: { available: false, enabled: true },
     });
     render(<ClaudeBridgePanel active />);
-    await screen.findByText("Install isolated plugin");
+    await screen.findByText(/ · 0\.5\.4$/);
     expect(screen.queryByRole("switch")).not.toBeInTheDocument();
   });
 
@@ -236,7 +266,7 @@ describe("Claude terminal connection management", () => {
     ).not.toBeInTheDocument();
   });
 
-  it("says an outdated plugin needs no new code when this session connects by itself", async () => {
+  it("explains an outdated terminal plugin and offers one reload instruction", async () => {
     for (const declined of [false, true]) {
       state.request.mockResolvedValue({
         ...status(),
@@ -244,11 +274,8 @@ describe("Claude terminal connection management", () => {
         autoConnect: { available: true, enabled: true, declined },
       });
       const { unmount } = render(<ClaudeBridgePanel active />);
-      expect(await screen.findByRole("alert")).toHaveTextContent(
-        declined
-          ? "终端里的连接插件需要更新。按第 1 步重新安装后，重新生成连接码。"
-          : "终端里的连接插件需要更新。按第 1 步更新后，这条会话会自动连接，不需要新的连接码。",
-      );
+      expect(await screen.findByRole("alert")).toHaveTextContent("终端仍在使用旧版连接插件。");
+      expect(screen.getAllByText(/执行 \/reload-plugins 或重开会话/)).toHaveLength(1);
       unmount();
     }
   });
@@ -257,11 +284,10 @@ describe("Claude terminal connection management", () => {
     state.request.mockResolvedValue({ ...status(), hasBinding: true });
     render(<ClaudeBridgePanel active />);
     expect(await screen.findByText("等待终端重新连接")).toBeVisible();
-    expect(screen.getByText("在终端继续这条会话后会自动连接，不需要新的连接码。")).toBeVisible();
-    expect(screen.getByRole("button", { name: "已安装插件" })).toHaveAttribute(
-      "aria-expanded",
-      "false",
-    );
+    expect(
+      screen.queryByText("在终端继续这条会话后会自动连接，不需要新的连接码。"),
+    ).not.toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "插件安装范围" })).toBeVisible();
     expect(screen.getByRole("button", { name: "复制继续命令" })).toBeEnabled();
     expect(screen.getByRole("button", { name: "重新生成连接码" })).toHaveClass("text-primary-text");
     expect(screen.getByRole("button", { name: "清除连接…" })).toHaveClass("text-primary-text");
@@ -279,7 +305,7 @@ describe("Claude terminal connection management", () => {
     };
     state.request.mockResolvedValue({ ...status(), hasBinding: false });
     render(<ClaudeBridgePanel active />);
-    await screen.findByText("Install isolated plugin");
+    await screen.findByText(/ · 0\.5\.4$/);
     expect(screen.getByRole("button", { name: "生成连接码" })).toBeEnabled();
     expect(screen.queryByRole("button", { name: "清除连接…" })).not.toBeInTheDocument();
     expect(screen.queryByText("等待终端重新连接")).not.toBeInTheDocument();
@@ -296,7 +322,7 @@ describe("Claude terminal connection management", () => {
     await waitFor(() => expect(screen.getByRole("button", { name: "复制继续命令" })).toBeEnabled());
     expect(screen.getByText("等待终端重新连接")).toBeVisible();
     expect(screen.getByRole("button", { name: "重新生成连接码" })).toBeEnabled();
-    expect(screen.queryByText("已连接终端")).not.toBeInTheDocument();
+    expect(screen.queryByText("已连接", { exact: true })).not.toBeInTheDocument();
   });
 
   it("rejects an unvalidated binding flag instead of offering connection actions", async () => {
@@ -341,7 +367,7 @@ describe("Claude terminal connection management", () => {
     state.request.mockResolvedValue({ ...status(), hasBinding: true });
     render(<ClaudeBridgePanel active />);
     fireEvent.click(await screen.findByRole("button", { name: "复制继续命令" }));
-    await screen.findByText("复制继续命令 · 已复制");
+    await waitFor(() => expect(copiedControl("复制继续命令")).toBe("true"));
     expect(state.resumeCommand).toHaveBeenCalledExactlyOnceWith("s", expect.any(AbortSignal));
     expect(writeText).toHaveBeenCalledExactlyOnceWith(
       "cd -- '/synthetic/workspace with spaces' && claude --resume 'synthetic-session'",
@@ -368,10 +394,10 @@ describe("Claude terminal connection management", () => {
     await act(async () => {});
     fireEvent.click(screen.getByRole("button", { name: "复制连接命令" }));
     await act(async () => {});
-    expect(screen.getByText(/· 已复制/)).toBeVisible();
+    expect(copiedControl("复制连接命令")).toBe("true");
     await act(async () => vi.advanceTimersByTimeAsync(1000));
     expect(screen.getByText("连接码已过期")).toBeVisible();
-    expect(screen.queryByText(/· 已复制/)).not.toBeInTheDocument();
+    expect(document.querySelector("[data-copied=true]")).toBeNull();
   });
   it("clears resume copy feedback when connection becomes uncertain", async () => {
     vi.useFakeTimers();
@@ -384,14 +410,14 @@ describe("Claude terminal connection management", () => {
     await act(async () => {});
     fireEvent.click(screen.getByRole("button", { name: "复制继续命令" }));
     await act(async () => {});
-    expect(screen.getByText("复制继续命令 · 已复制")).toBeVisible();
+    expect(copiedControl("复制继续命令")).toBe("true");
     state.session = { ...state.session, notice: "uncertain" };
     view.rerender(<ClaudeBridgePanel active />);
     expect(screen.getByRole("alert")).toBeVisible();
-    expect(screen.queryByText(/· 已复制/)).not.toBeInTheDocument();
+    expect(document.querySelector("[data-copied=true]")).toBeNull();
   });
 
-  it("expires resume copy feedback after three seconds and gives a new copy its own timeout", async () => {
+  it("expires resume copy feedback after 1.5 seconds and gives a new copy its own timeout", async () => {
     vi.useFakeTimers();
     Object.defineProperty(navigator, "clipboard", {
       configurable: true,
@@ -402,14 +428,14 @@ describe("Claude terminal connection management", () => {
     await act(async () => {});
     fireEvent.click(screen.getByRole("button", { name: "复制继续命令" }));
     await act(async () => {});
-    expect(screen.getByText("复制继续命令 · 已复制")).toBeVisible();
-    await act(async () => vi.advanceTimersByTimeAsync(2_000));
+    expect(copiedControl("复制继续命令")).toBe("true");
+    await act(async () => vi.advanceTimersByTimeAsync(1_000));
     fireEvent.click(screen.getByRole("button", { name: "复制继续命令" }));
     await act(async () => {});
+    await act(async () => vi.advanceTimersByTimeAsync(600));
+    expect(copiedControl("复制继续命令")).toBe("true");
     await act(async () => vi.advanceTimersByTimeAsync(1_000));
-    expect(screen.getByText("复制继续命令 · 已复制")).toBeVisible();
-    await act(async () => vi.advanceTimersByTimeAsync(2_000));
-    expect(screen.queryByText("复制继续命令 · 已复制")).not.toBeInTheDocument();
+    expect(copiedControl("复制继续命令")).toBeNull();
   });
 
   it("clears copy feedback when the terminal connects and keeps it cleared after disconnection", async () => {
@@ -423,15 +449,15 @@ describe("Claude terminal connection management", () => {
     await act(async () => {});
     fireEvent.click(screen.getByRole("button", { name: "复制继续命令" }));
     await act(async () => {});
-    expect(screen.getByText("复制继续命令 · 已复制")).toBeVisible();
+    expect(copiedControl("复制继续命令")).toBe("true");
     state.request.mockResolvedValue({ ...status(), hasBinding: true, connected: true });
     await act(async () => vi.advanceTimersByTimeAsync(2_500));
-    expect(screen.getByText("已连接终端")).toBeVisible();
-    expect(screen.queryByText(/· 已复制/)).not.toBeInTheDocument();
+    expect(screen.getByText("已连接", { exact: true })).toBeVisible();
+    expect(document.querySelector("[data-copied=true]")).toBeNull();
     state.request.mockResolvedValue({ ...status(), hasBinding: true });
     await act(async () => vi.advanceTimersByTimeAsync(2_500));
     expect(screen.getByText("等待终端重新连接")).toBeVisible();
-    expect(screen.queryByText(/· 已复制/)).not.toBeInTheDocument();
+    expect(document.querySelector("[data-copied=true]")).toBeNull();
   });
 
   it.each(["session", "inactive"] as const)(
@@ -463,13 +489,13 @@ describe("Claude terminal connection management", () => {
       }
       view.rerender(<ClaudeBridgePanel active />);
       await act(async () => {});
-      expect(screen.queryByText(/· 已复制/)).not.toBeInTheDocument();
+      expect(document.querySelector("[data-copied=true]")).toBeNull();
       fireEvent.click(screen.getByRole("button", { name: "复制继续命令" }));
       await act(async () => {});
-      await act(async () => vi.advanceTimersByTimeAsync(2_000));
-      expect(screen.getByText("复制继续命令 · 已复制")).toBeVisible();
       await act(async () => vi.advanceTimersByTimeAsync(1_000));
-      expect(screen.queryByText(/· 已复制/)).not.toBeInTheDocument();
+      expect(copiedControl("复制继续命令")).toBe("true");
+      await act(async () => vi.advanceTimersByTimeAsync(600));
+      expect(document.querySelector("[data-copied=true]")).toBeNull();
     },
   );
 
@@ -482,12 +508,14 @@ describe("Claude terminal connection management", () => {
       Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
       const view = render(<ClaudeBridgePanel active />);
       await act(async () => {});
-      expect(screen.getByText("Install isolated plugin")).toBeVisible();
-      fireEvent.click(screen.getByRole("button", { name: "复制安装命令" }));
+      expect(screen.getByText(/ · 0\.5\.4$/)).toBeVisible();
+      fireEvent.click(screen.getByRole("button", { name: "生成连接码" }));
+      await act(async () => {});
+      fireEvent.click(screen.getByRole("button", { name: "复制连接命令" }));
       if (change === "connection") {
         state.request.mockResolvedValue({ ...status(), connected: true });
         await act(async () => vi.advanceTimersByTimeAsync(2_500));
-        expect(screen.getByText("已连接终端")).toBeVisible();
+        expect(screen.getByText("已连接", { exact: true })).toBeVisible();
       } else if (change === "generation") {
         state.session = {
           ...state.session,
@@ -497,7 +525,7 @@ describe("Claude terminal connection management", () => {
       view.rerender(<ClaudeBridgePanel active={change !== "inactive"} />);
       await act(async () => clipboard.resolve());
       if (change === "inactive") view.rerender(<ClaudeBridgePanel active />);
-      expect(screen.queryByText(/· 已复制/)).not.toBeInTheDocument();
+      expect(document.querySelector("[data-copied=true]")).toBeNull();
     },
   );
 
@@ -539,7 +567,7 @@ describe("Claude terminal connection management", () => {
       aborted: state.resumeCommand.mock.calls[0][1].aborted,
       clipboardCalls: writeText.mock.calls.length,
     }).toEqual({ aborted: false, clipboardCalls: 1 });
-    await screen.findByText("复制继续命令 · 已复制");
+    await waitFor(() => expect(copiedControl("复制继续命令")).toBe("true"));
     expect(writeText).toHaveBeenCalledOnce();
   });
 
@@ -577,7 +605,7 @@ describe("Claude terminal connection management", () => {
       expect(screen.getByText("等待终端重新连接")).toBeVisible();
       expect(screen.getByRole("button", { name: "清除连接…" })).toBeEnabled();
       expect(screen.getByRole("button", { name: "复制继续命令" })).toBeEnabled();
-      expect(screen.queryByText("已连接终端")).not.toBeInTheDocument();
+      expect(screen.queryByText("已连接", { exact: true })).not.toBeInTheDocument();
       expect(state.session.refresh).toHaveBeenCalledExactlyOnceWith(true);
     },
   );
@@ -656,7 +684,7 @@ describe("Claude terminal connection management", () => {
       view.rerender(<ClaudeBridgePanel active={change !== "inactive"} />);
       await act(async () => result.resolve({ available: true, command: "stale command" }));
       expect(writeText).not.toHaveBeenCalled();
-      expect(screen.queryByText(/· 已复制/)).not.toBeInTheDocument();
+      expect(document.querySelector("[data-copied=true]")).toBeNull();
       expect(state.resumeCommand.mock.calls[0][1].aborted).toBe(true);
     },
   );
@@ -693,7 +721,7 @@ describe("Claude terminal connection management", () => {
     async (locale, label, oldLabel) => {
       state.session.locale = locale;
       render(<ClaudeBridgePanel active />);
-      await screen.findByText("Install isolated plugin");
+      await screen.findByText(/ · 0\.5\.4$/);
       expect(screen.getByText(label)).toBeVisible();
       expect(screen.queryByText(oldLabel)).not.toBeInTheDocument();
       expect(
@@ -709,7 +737,7 @@ describe("Claude terminal connection management", () => {
       reason: "claude-bridge-disconnected",
     };
     render(<ClaudeBridgePanel active />);
-    await screen.findByText("Install isolated plugin");
+    await screen.findByText(/ · 0\.5\.4$/);
     const disconnect = screen.getByRole("button", { name: "清除连接…" });
     expect(disconnect).toBeEnabled();
     fireEvent.click(disconnect);
@@ -724,7 +752,7 @@ describe("Claude terminal connection management", () => {
   });
   it("cannot revoke an unbound session or another session's follower", async () => {
     const view = render(<ClaudeBridgePanel active />);
-    await screen.findByText("Install isolated plugin");
+    await screen.findByText(/ · 0\.5\.4$/);
     expect(screen.queryByRole("button", { name: "清除连接…" })).not.toBeInTheDocument();
     state.session.live = {
       ...state.session.live!,
@@ -780,7 +808,7 @@ describe("Claude terminal connection management", () => {
         : { disconnected: true },
     );
     render(<ClaudeBridgePanel active />);
-    await screen.findByText("Install isolated plugin");
+    await screen.findByText(/ · 0\.5\.4$/);
     expect(screen.getByRole("button", { name: "重新生成" })).toBeDisabled();
     fireEvent.click(screen.getByRole("button", { name: "断开" }));
     expect(
@@ -794,7 +822,7 @@ describe("Claude terminal connection management", () => {
     const view = render(<ClaudeBridgePanel active={false} />);
     expect(state.request).not.toHaveBeenCalled();
     view.rerender(<ClaudeBridgePanel active />);
-    await screen.findByText("Install isolated plugin");
+    await screen.findByText(/ · 0\.5\.4$/);
     fireEvent.click(screen.getByRole("button", { name: "生成连接码" }));
     fireEvent.click(screen.getByRole("button", { name: "生成连接码" }));
     await screen.findByText(challenge.instructions, { selector: "code" });
@@ -806,7 +834,7 @@ describe("Claude terminal connection management", () => {
   });
   it("clears the revoked connection code after a successful disconnect", async () => {
     const view = render(<ClaudeBridgePanel active />);
-    await screen.findByText("Install isolated plugin");
+    await screen.findByText(/ · 0\.5\.4$/);
     fireEvent.click(screen.getByRole("button", { name: "生成连接码" }));
     await screen.findByText(challenge.instructions, { selector: "code" });
     expect(screen.queryByRole("button", { name: "清除连接…" })).not.toBeInTheDocument();
@@ -823,22 +851,20 @@ describe("Claude terminal connection management", () => {
     ).not.toBeInTheDocument();
     expect(state.request).toHaveBeenCalledWith({ operation: "bridge-disconnect", sessionId: "s" });
   });
-  it("copies installation instructions, connection command and code with feedback", async () => {
+  it("copies connection command and code with feedback", async () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
     render(<ClaudeBridgePanel active />);
-    await screen.findByText("Install isolated plugin");
-    fireEvent.click(screen.getByRole("button", { name: "复制安装命令" }));
-    await screen.findByText("复制安装命令 · 已复制");
-    expect(writeText).toHaveBeenLastCalledWith("Install isolated plugin");
+    await screen.findByText(/ · 0\.5\.4$/);
+    expect(screen.queryByRole("button", { name: "复制安装命令" })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "生成连接码" }));
     await screen.findByText(challenge.instructions, { selector: "code" });
     fireEvent.click(screen.getByRole("button", { name: "复制连接命令" }));
-    await screen.findByText("复制连接命令 · 已复制");
+    await waitFor(() => expect(copiedControl("复制连接命令")).toBe("true"));
     expect(writeText).toHaveBeenLastCalledWith(challenge.instructions);
     fireEvent.click(screen.getByText("更多复制选项"));
     fireEvent.click(screen.getByRole("button", { name: "复制连接码" }));
-    await screen.findByText("复制连接码 · 已复制");
+    await waitFor(() => expect(copiedControl("复制连接码")).toBe("true"));
     expect(writeText).toHaveBeenLastCalledWith(challenge.challenge);
     expect(screen.getByText(/前有效 · 只在你自己的终端使用，不要发给别人/)).toBeVisible();
     writeText.mockRejectedValueOnce(new Error("clipboard unavailable"));
@@ -857,8 +883,10 @@ describe("Claude terminal connection management", () => {
       );
       Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
       const view = render(<ClaudeBridgePanel active />);
-      await screen.findByText("Install isolated plugin");
-      fireEvent.click(screen.getByRole("button", { name: "复制安装命令" }));
+      await screen.findByText(/ · 0\.5\.4$/);
+      fireEvent.click(screen.getByRole("button", { name: "生成连接码" }));
+      await act(async () => {});
+      fireEvent.click(screen.getByRole("button", { name: "复制连接命令" }));
       state.session = {
         ...state.session,
         selected: "other",
@@ -867,7 +895,7 @@ describe("Claude terminal connection management", () => {
       };
       view.rerender(<ClaudeBridgePanel active />);
       await act(async () => finish());
-      expect(screen.queryByText(/· 已复制/)).not.toBeInTheDocument();
+      expect(document.querySelector("[data-copied=true]")).toBeNull();
       expect(screen.queryByRole("alert")).not.toBeInTheDocument();
     },
   );
@@ -881,21 +909,21 @@ describe("Claude terminal connection management", () => {
       const writeText = vi.fn().mockReturnValueOnce(previous).mockResolvedValueOnce(undefined);
       Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
       render(<ClaudeBridgePanel active />);
-      await screen.findByText("Install isolated plugin");
+      await screen.findByText(/ · 0\.5\.4$/);
       fireEvent.click(screen.getByRole("button", { name: "生成连接码" }));
       await screen.findByText(challenge.instructions, { selector: "code" });
       fireEvent.click(screen.getByText("更多复制选项"));
       fireEvent.click(screen.getByRole("button", { name: "复制连接码" }));
       fireEvent.click(screen.getByRole("button", { name: "复制连接命令" }));
-      await screen.findByText("复制连接命令 · 已复制");
+      await waitFor(() => expect(copiedControl("复制连接命令")).toBe("true"));
       await act(async () => finish());
-      expect(screen.getByText("复制连接命令 · 已复制")).toBeVisible();
+      expect(copiedControl("复制连接命令")).toBe("true");
       expect(screen.queryByRole("alert")).not.toBeInTheDocument();
     },
   );
   it("keeps a valid code through explicit status refresh, busy and uncertain transitions", async () => {
     const view = render(<ClaudeBridgePanel active />);
-    await screen.findByText("Install isolated plugin");
+    await screen.findByText(/ · 0\.5\.4$/);
     fireEvent.click(screen.getByRole("button", { name: "生成连接码" }));
     await screen.findByText(challenge.instructions, { selector: "code" });
     fireEvent.click(screen.getByRole("button", { name: "检查连接" }));
@@ -948,8 +976,10 @@ describe("Claude terminal connection management", () => {
       }
       if (order === "before") {
         await settlePrevious();
-        expect(screen.getByText("正在检查连接…")).toBeVisible();
-        expect(screen.getByRole("button", { name: "生成连接码" })).toBeDisabled();
+        expect(screen.getByRole("button", { name: "生成连接码" })).toHaveAttribute(
+          "aria-busy",
+          "true",
+        );
         expect(screen.queryByRole("alert")).not.toBeInTheDocument();
       }
       await act(async () =>
@@ -1051,8 +1081,10 @@ describe("Claude terminal connection management", () => {
       });
       expect(screen.queryByRole("alert", { hidden: true })).not.toBeInTheDocument();
       expect(state.session.refresh).not.toHaveBeenCalled();
-      expect(screen.getByText("正在检查连接…")).toBeVisible();
-      expect(screen.getByRole("button", { name: "确认清除连接" })).toBeDisabled();
+      expect(screen.getByRole("button", { name: "确认清除连接" })).toHaveAttribute(
+        "aria-busy",
+        "true",
+      );
       await act(async () => disconnect.resolve({ disconnected: true }));
       expect(screen.queryByRole("group", { name: "清除连接…" })).not.toBeInTheDocument();
       expect(screen.queryByText("正在检查连接…")).not.toBeInTheDocument();
@@ -1061,7 +1093,7 @@ describe("Claude terminal connection management", () => {
   );
   it("retains the code but disables a new challenge after a failed status refresh", async () => {
     render(<ClaudeBridgePanel active />);
-    await screen.findByText("Install isolated plugin");
+    await screen.findByText(/ · 0\.5\.4$/);
     fireEvent.click(screen.getByRole("button", { name: "生成连接码" }));
     await screen.findByText(challenge.instructions, { selector: "code" });
     state.request.mockRejectedValueOnce(new Error("status unavailable"));
@@ -1076,17 +1108,16 @@ describe("Claude terminal connection management", () => {
       "claude-bridge-unavailable",
       "终端连接服务无法启动。请检查这台电脑日志并重新启动 AgentKib 后重试。",
     ],
-  ])("explains %s and the required CLI version", async (reason, explanation) => {
+  ])("explains %s without a standing CLI requirement", async (reason, explanation) => {
     state.request.mockResolvedValue({ ...status(), supported: false, reason });
     render(<ClaudeBridgePanel active />);
     expect(await screen.findByText(explanation)).toBeVisible();
+    expect(
+      screen.queryByText("仅 macOS · 需要 Claude Code 2.1.301 或更高版本"),
+    ).not.toBeInTheDocument();
     if (reason === "platform-unsupported") {
-      expect(
-        screen.queryByText("仅 macOS · 需要 Claude Code 2.1.301 或更高版本"),
-      ).not.toBeInTheDocument();
       expect(screen.queryByRole("button", { name: "重新生成" })).not.toBeInTheDocument();
     } else {
-      expect(screen.getByText("仅 macOS · 需要 Claude Code 2.1.301 或更高版本")).toBeVisible();
       expect(screen.getByRole("button", { name: "重新生成" })).toBeDisabled();
     }
     expect(screen.queryByRole("button", { name: "清除连接…" })).not.toBeInTheDocument();
@@ -1106,16 +1137,14 @@ describe("Claude terminal connection management", () => {
     expect(screen.getByText(challenge.instructions, { selector: "code" })).toBeVisible();
     result = { ...result, connectionError: "bridge-version-mismatch" };
     await act(async () => vi.advanceTimersByTime(2500));
-    expect(screen.getByRole("alert")).toHaveTextContent(
-      "终端里的连接插件需要更新。按第 1 步重新安装后，重新生成连接码。",
-    );
+    expect(screen.getByRole("alert")).toHaveTextContent("终端仍在使用旧版连接插件。");
     expect(
       screen.queryByText(challenge.instructions, { selector: "code" }),
     ).not.toBeInTheDocument();
     result = { ...result, connectionError: "expired-bridge-challenge" };
     await act(async () => vi.advanceTimersByTime(2500));
     expect(screen.getByText("连接码已过期")).toBeVisible();
-    expect(screen.getByText("重新生成后，把新的连接命令粘贴到终端。")).toBeVisible();
+    expect(screen.getByRole("button", { name: "重新生成" })).toBeEnabled();
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
     result = { ...result, connected: true, connectionError: undefined };
     await act(async () => vi.advanceTimersByTime(2500));
@@ -1129,7 +1158,7 @@ describe("Claude terminal connection management", () => {
     await act(async () => {});
     expect(screen.queryByRole("button", { name: "生成连接码" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "重新生成" })).not.toBeInTheDocument();
-    expect(screen.getByText("已连接终端")).toBeVisible();
+    expect(screen.getByText("已连接", { exact: true })).toBeVisible();
     await act(async () => vi.advanceTimersByTime(2500));
     expect(
       state.request.mock.calls.every(([request]) => request.operation === "bridge-status"),
@@ -1147,7 +1176,7 @@ describe("Claude terminal connection management", () => {
           }),
     );
     const view = render(<ClaudeBridgePanel active />);
-    await screen.findByText("Install isolated plugin");
+    await screen.findByText(/ · 0\.5\.4$/);
     fireEvent.click(screen.getByRole("button", { name: "生成连接码" }));
     state.session = {
       ...state.session,
@@ -1183,7 +1212,7 @@ describe("Claude terminal connection management", () => {
   });
   it.each(["offline", "revoked"])("clears a challenge when %s", async (reason) => {
     const view = render(<ClaudeBridgePanel active />);
-    await screen.findByText("Install isolated plugin");
+    await screen.findByText(/ · 0\.5\.4$/);
     fireEvent.click(screen.getByRole("button", { name: "生成连接码" }));
     await screen.findByText(challenge.instructions, { selector: "code" });
     state.session = {
@@ -1210,7 +1239,7 @@ describe("Claude terminal connection management", () => {
   it("disables pairing for an unsupported CLI and rejects mismatched status identities", async () => {
     state.request.mockResolvedValue({ ...status(), supported: false });
     const view = render(<ClaudeBridgePanel active />);
-    await screen.findByText("Install isolated plugin");
+    await screen.findByText(/ · 0\.5\.4$/);
     expect(screen.getByRole("button", { name: "重新生成" })).toBeDisabled();
     state.request.mockResolvedValue(status("wrong"));
     fireEvent.click(screen.getByRole("button", { name: "检查连接" }));

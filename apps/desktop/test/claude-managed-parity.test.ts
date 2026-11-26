@@ -152,7 +152,11 @@ require('node:readline').createInterface({input:process.stdin}).on('line', line 
       return workspace;
     },
     listWorkspaces: () => [{ id: "workspace", name: "Fixture" }],
-    sessions: { id: (_agent: string, id: string) => id, get: (id: string) => indexed.get(id) },
+    sessions: {
+      id: (_agent: string, id: string) => id,
+      get: (id: string) => indexed.get(id),
+      identitySalt: () => "fixture-salt",
+    },
   } as unknown as BackendStore;
   const sessions = {
     verifiedClaudeControlTarget: transcript,
@@ -169,6 +173,7 @@ require('node:readline').createInterface({input:process.stdin}).on('line', line 
   cleanups.push(() => rmSync(root, { recursive: true, force: true }));
   const makeOwner = (
     retainedTerminalUsage?: ClaudeContinuationOptions["retainedTerminalUsage"],
+    terminalHandover?: ClaudeContinuationOptions["terminalHandover"],
   ) => {
     const owner = new ClaudeManagedReadOwner(
       store,
@@ -185,7 +190,7 @@ require('node:readline').createInterface({input:process.stdin}).on('line', line 
             alias: () => {},
           }
         : undefined,
-      { backgroundTasks: () => backgroundTasks, retainedTerminalUsage },
+      { backgroundTasks: () => backgroundTasks, retainedTerminalUsage, terminalHandover },
     );
     cleanups.push(() => owner.shutdown());
     return owner;
@@ -376,6 +381,155 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))(
       };
       return { ...f, id, source, terminal, bridge, take, registerForeground };
     }
+
+    it("rechecks delegation immediately before committing automatic terminal adoption", async () => {
+      const f = handoverFixture();
+      let eligible = true;
+      f.bridge.terminalHandoverSource
+        .mockReturnValueOnce(f.source)
+        .mockReturnValueOnce(f.source)
+        .mockImplementationOnce(() => {
+          eligible = false;
+          return f.source;
+        });
+      const take = () =>
+        f.owner.autoAdoptTerminalLead(
+          f.id,
+          f.bridge,
+          () => "lead-owner",
+          () => eligible,
+        );
+      await expect(take()).resolves.toBe(false);
+      expect(f.owner.managedWorkspace(f.id)).toBeNull();
+      expect(f.owner.queuedReports(f.id)).toBe(0);
+      expect(f.bridge.finishTerminalHandover).not.toHaveBeenCalled();
+
+      eligible = true;
+      await expect(take()).resolves.toBe(true);
+      expect(f.owner.queuedReports(f.id)).toBe(1);
+      expect(f.bridge.finishTerminalHandover).toHaveBeenCalledOnce();
+    });
+
+    it.each(["control-outcome-unconfirmed", "claude-terminal-report-unconfirmed"])(
+      "leaves the terminal queue intact while %s, then retries automatically",
+      async (reason) => {
+        const f = handoverFixture();
+        const take = () =>
+          f.owner.autoAdoptTerminalLead(
+            f.id,
+            f.bridge,
+            () => "lead-owner",
+            () => true,
+          );
+        f.source.reason = reason;
+        await expect(take()).resolves.toBe(false);
+        expect(f.owner.managedWorkspace(f.id)).toBeNull();
+        expect(f.bridge.finishTerminalHandover).not.toHaveBeenCalled();
+        f.source.reason = null;
+        await expect(take()).resolves.toBe(true);
+        expect(f.owner.queuedReports(f.id)).toBe(1);
+      },
+    );
+
+    it("keeps a manual release until a new terminal lease has come and gone", async () => {
+      const f = handoverFixture();
+      f.source.lastLeaseId = randomUUID();
+      const take = () =>
+        f.owner.autoAdoptTerminalLead(
+          f.id,
+          f.bridge,
+          () => "lead-owner",
+          () => true,
+        );
+      await expect(take()).resolves.toBe(true);
+      expect((await f.owner.live(f.id)).activities).toMatchObject([
+        { event: "terminal-auto-adopted", kind: "terminal", status: "completed" },
+      ]);
+
+      await expect(
+        f.owner.request({
+          operation: "release",
+          sessionId: f.id,
+          deviceId: "desktop-local",
+          requestId: randomUUID(),
+          runtimeBootId: f.owner.bootId,
+          expectedRevision: (await f.owner.live(f.id, true)).revision,
+        }),
+      ).resolves.toMatchObject({ accepted: true });
+      await expect(take()).resolves.toBe(false);
+      expect(f.owner.managedWorkspace(f.id)).toBeNull();
+
+      f.source.lastLeaseId = randomUUID();
+      f.source.reason = "claude-owner-busy";
+      await expect(take()).resolves.toBe(false);
+      f.source.reason = null;
+      await expect(take()).resolves.toBe(true);
+      expect(f.owner.managedWorkspace(f.id)).toBe("workspace");
+    });
+
+    it("hands off on the first detached send, keeping the original request and terminal settings", async () => {
+      const f = handoverFixture();
+      const owner = f.makeOwner(undefined, {
+        source: f.bridge.terminalHandoverSource,
+        finish: f.bridge.finishTerminalHandover,
+        reportOwner: () => "lead-owner",
+      });
+      const before = await owner.live(f.id, true);
+      const request = {
+        operation: "send",
+        sessionId: f.id,
+        deviceId: "desktop-local",
+        requestId: randomUUID(),
+        runtimeBootId: owner.bootId,
+        expectedRevision: before.revision,
+        experimentalEnabled: true,
+        text: "Continue with the message I typed",
+      };
+      const host = new ClaudeHostStateStore(f.root, owner.bootId);
+      const original = host.read(f.id);
+      await expect(
+        owner.request({ ...request, requestId: randomUUID(), text: undefined }),
+      ).rejects.toThrow("missing-input");
+      expect(owner.managedWorkspace(f.id)).toBeNull();
+      expect(host.read(f.id)).toEqual(original);
+      expect(f.bridge.finishTerminalHandover).not.toHaveBeenCalled();
+
+      f.bridge.terminalHandoverSource
+        .mockReturnValueOnce(f.source)
+        .mockReturnValueOnce({ ...f.source, bindingId: randomUUID() });
+      await expect(owner.request({ ...request, requestId: randomUUID() })).resolves.toMatchObject({
+        accepted: false,
+        controlOutcome: "not-dispatched",
+        error: "claude-terminal-handover-unavailable",
+      });
+      expect(owner.managedWorkspace(f.id)).toBeNull();
+      expect(host.read(f.id)).toEqual(original);
+      expect(f.bridge.finishTerminalHandover).not.toHaveBeenCalled();
+
+      f.setExternalOwner(f.id);
+      expect(await owner.request(request)).toMatchObject({
+        accepted: false,
+        controlOutcome: "not-dispatched",
+        error: "claude-owner-busy",
+      });
+      expect(f.frames()).toEqual([]);
+      expect(f.bridge.finishTerminalHandover).not.toHaveBeenCalled();
+
+      f.setExternalOwner(null);
+      const retry = { ...request, requestId: randomUUID() };
+      const sent = await owner.request(retry);
+      expect(sent).toMatchObject({ accepted: true, requestId: retry.requestId });
+      expect(await owner.request(retry)).toEqual(sent);
+      await expect.poll(async () => (await owner.live(f.id, true)).status).toBe("idle");
+      expect(f.frames().filter((frame) => frame.type === "user")).toHaveLength(1);
+      expect(f.bridge.requestTerminalExit).not.toHaveBeenCalled();
+      expect(f.bridge.finishTerminalHandover).toHaveBeenCalledOnce();
+      expect(await owner.live(f.id, true)).toMatchObject({ sourceSessionId: f.id });
+      expect(host.read(f.id)).toMatchObject({
+        settings: { model: "fixture-model", permissionMode: "plan" },
+        work: [{ id: f.source.reports[0]!.id, kind: "report", deviceId: "lead-owner" }],
+      });
+    });
 
     it("adopts only after terminal ownership ends and keeps the same native ID, settings and reports", async () => {
       const f = handoverFixture();

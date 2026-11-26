@@ -300,10 +300,12 @@ export function useSessionLive({
       needsDomainRecovery = true;
       if (++resets > 3) {
         closeStream?.();
+        setRetryingSession(undefined);
         setOnline(false);
         setError(true);
         return;
       }
+      if (!desktop) setRetryingSession(id);
       resetPending = true;
       itemGeneration++;
       queueMicrotask(() => {
@@ -416,7 +418,9 @@ export function useSessionLive({
               if (!nativeCoverage.current.historyRecoveryFailed) setError(false);
             }
             setControlReady(
-              streamReady.current && !refreshRequired.current && !hasDurablePending(id),
+              streamReady.current &&
+                !refreshRequired.current &&
+                reconciled.live?.status !== "outcome-unknown",
             );
           })
           .catch((error) => {
@@ -468,7 +472,10 @@ export function useSessionLive({
             warmStreams.discardParked();
             setRetryingSession(id);
           }
-          if (error instanceof ApiError && error.code === "incompatible_protocol") fail(error, g);
+          if (error instanceof ApiError && error.code === "incompatible_protocol") {
+            setRetryingSession(undefined);
+            fail(error, g);
+          } else if (!desktop) setRetryingSession(id);
         },
         event: (type, data) => {
           if (!active() || resetPending) return false;
@@ -510,6 +517,7 @@ export function useSessionLive({
                     "goal",
                     "usage",
                     "capabilities",
+                    "receipts",
                   ]);
                 needsDomainRecovery = false;
                 if (!desktop || !selectedSettingsWrite()) wakeSettingsHistory();
@@ -527,7 +535,7 @@ export function useSessionLive({
                   setControlReady(
                     !controlReconciliationPending.current &&
                       !refreshRequired.current &&
-                      !hasDurablePending(id),
+                      state.live.status !== "outcome-unknown",
                   );
                 return state.cursor;
               }
@@ -622,7 +630,7 @@ export function useSessionLive({
                 streamReady.current &&
                   !controlReconciliationPending.current &&
                   !refreshRequired.current &&
-                  !hasDurablePending(id),
+                  next.live.status !== "outcome-unknown",
               );
             }
             if (next.items !== previous.items) {
@@ -702,6 +710,7 @@ export function useSessionLive({
     connect(resume);
     return () => {
       closed = true;
+      setRetryingSession((retrying) => (retrying === id ? undefined : retrying));
       warmNavigation.current.park = undefined;
       if (readSettingsControls) readSettingsControls.current = undefined;
       window.clearTimeout(historyRetry);

@@ -1,6 +1,7 @@
-import { CircleX, Goal, Lightbulb } from "lucide-react";
+import { CircleX, Goal, Lightbulb, LoaderCircle } from "lucide-react";
 import { composerGoalCopy, planModeCopy } from "./composer-add-menu";
 import type { InteractionLocale } from "./interaction-model";
+import { useDelayedBusy } from "./delayed-busy";
 
 const modeCopy = {
   "zh-CN": { plan: "计划", goal: "目标", exitPlan: "退出计划模式" },
@@ -14,6 +15,8 @@ export function ComposerModeChip({
   locale,
   detail,
   disabled,
+  saving = false,
+  disabledReason,
   onOpen,
   onRemove,
 }: {
@@ -21,6 +24,8 @@ export function ComposerModeChip({
   locale: InteractionLocale;
   detail?: string;
   disabled?: boolean;
+  saving?: boolean;
+  disabledReason?: string;
   onOpen?: () => void;
   onRemove?: () => void;
 }) {
@@ -30,15 +35,20 @@ export function ComposerModeChip({
   const removeLabel = mode === "plan" ? copy.exitPlan : composerGoalCopy(locale).clearDraft;
   const Icon = mode === "plan" ? Lightbulb : Goal;
   const removable = !!onRemove && !disabled;
+  const showSaving = useDelayedBusy(saving);
   const icon = (
     <span className="relative grid size-4 shrink-0 place-items-center" aria-hidden>
-      <Icon
-        className={
-          removable
-            ? "size-4 group-hover/mode:invisible group-focus-within/mode:invisible"
-            : "size-4"
-        }
-      />
+      {showSaving ? (
+        <LoaderCircle className="size-3.5 motion-safe:animate-spin" />
+      ) : (
+        <Icon
+          className={
+            removable
+              ? "size-4 group-hover/mode:invisible group-focus-within/mode:invisible"
+              : "size-4"
+          }
+        />
+      )}
       {removable && (
         <CircleX className="invisible absolute size-4 group-hover/mode:visible group-focus-within/mode:visible" />
       )}
@@ -55,7 +65,8 @@ export function ComposerModeChip({
               type="button"
               className={`${action} pr-0.5`}
               aria-label={removeLabel}
-              title={removeLabel}
+              title={disabledReason ?? removeLabel}
+              aria-busy={saving || undefined}
               disabled={disabled}
               onClick={onRemove}
             >
@@ -77,7 +88,8 @@ export function ComposerModeChip({
             type="button"
             className={action}
             aria-label={onOpen ? name : removeLabel}
-            title={onOpen ? (detail ?? name) : removeLabel}
+            title={disabledReason ?? (onOpen ? (detail ?? name) : removeLabel)}
+            aria-busy={saving || undefined}
             disabled={disabled}
             onClick={onOpen ?? onRemove}
           >

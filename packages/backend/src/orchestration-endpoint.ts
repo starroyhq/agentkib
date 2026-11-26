@@ -1,3 +1,4 @@
+import { REMOTE_ERROR_CODES } from "@agentkib/runtime-protocol";
 import { randomBytes, randomUUID } from "node:crypto";
 import { createServer, type IncomingMessage } from "node:http";
 import type { Server } from "@modelcontextprotocol/sdk/server/index.js";
@@ -156,7 +157,11 @@ export async function openLeadEndpoint(options: {
         })),
       }));
       server.setRequestHandler(CallToolRequestSchema, async (message) => {
-        if (closed) return { isError: true, content: [{ type: "text", text: "lead-unavailable" }] };
+        if (closed)
+          return {
+            isError: true,
+            content: [{ type: "text", text: REMOTE_ERROR_CODES.leadUnavailable }],
+          };
         const input = isObject(message.params.arguments) ? message.params.arguments : {};
         try {
           const result = await options.call(message.params.name, input);

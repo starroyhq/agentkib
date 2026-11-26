@@ -3,7 +3,6 @@ import { useRef } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   PendingReviewLane,
-  ReadStateNotice,
   pendingReviewSessions,
   readSnapshotMatches,
   requestReadReview,
@@ -120,7 +119,6 @@ function Probe({
       {!folded && observed.events && (
         <p data-read-result={observed.readState?.latestResult?.id ?? "threadStart"}>Result</p>
       )}
-      <ReadStateNotice locale="en-US" observation={observed} />
     </div>
   );
 }
@@ -497,7 +495,6 @@ describe("visible result read acknowledgements", () => {
       render(<Probe client={client} />);
       await settle();
       expect(client.acknowledgeReadState).not.toHaveBeenCalled();
-      expect(screen.getByText("Read state may be out of date")).toBeVisible();
     },
   );
   it("rejects a result arriving between the fresh history and the second state read", async () => {
@@ -532,13 +529,12 @@ describe("visible result read acknowledgements", () => {
     await settle();
     expect(scroll).not.toHaveBeenCalled();
   });
-  it("shows old-host upgrade guidance and does not probe unsupported routes", async () => {
+  it("does not probe unsupported routes", async () => {
     const client = fixture();
     render(<Probe client={client} supported={false} />);
     await settle();
     expect(client.events).not.toHaveBeenCalled();
     expect(client.readState).not.toHaveBeenCalled();
-    expect(screen.getByText("Update the host to sync read state")).toBeVisible();
   });
   it("fences delayed observations when host/account/source changes", async () => {
     const first = fixture();
@@ -747,27 +743,9 @@ describe("review lane and shared list semantics", () => {
     expect(status.label).toContain("Unread");
   });
   it.each(["zh-CN", "zh-Hant", "ja-JP", "en-US"])(
-    "shows old-host and stale notices and keeps current AgentKib read state quiet in %s",
+    "shows the manual unread label in %s",
     (locale) => {
-      const view = render(
-        <ReadStateNotice locale={locale} observation={{ status: "unsupported" }} />,
-      );
-      expect(screen.getByRole("status").textContent).toBeTruthy();
-      view.rerender(
-        <ReadStateNotice
-          locale={locale}
-          observation={{ status: "ready", readState: unread({ freshness: "stale" }) }}
-        />,
-      );
-      expect(screen.getByRole("status").textContent).toBeTruthy();
-      view.rerender(
-        <ReadStateNotice
-          locale={locale}
-          observation={{ status: "ready", readState: unread({ source: "agentkib" }) }}
-        />,
-      );
-      expect(screen.queryByRole("status")).not.toBeInTheDocument();
-      view.rerender(
+      render(
         <PendingReviewLane
           locale={locale}
           sessions={[

@@ -1,4 +1,8 @@
-import { sessionContinuationListState, SessionContinuationStatus } from "@agentkib/session-ui";
+import {
+  sessionContinuationListState,
+  SessionContinuationStatus,
+  useDelayedBusy,
+} from "@agentkib/session-ui";
 import { Clock, GitBranch } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { AgentIcon } from "@/features/agents/AgentIcon";
@@ -20,6 +24,7 @@ export function SessionOverview() {
   const { locale, tr, formatDateTime } = useI18n();
   const hub = useSessionHub();
   const statsAvailable = hub.usable ?? (hub.ready || hub.filtered.length > 0);
+  const slowScan = useDelayedBusy(hub.loading && !statsAvailable, 3000);
   const resetFilters = useSessionViewStore((state) => state.resetFilters);
   const stats = [
     ["all", hub.filtered.length],
@@ -45,7 +50,7 @@ export function SessionOverview() {
           </div>
         ))}
       </div>
-      {hub.loading && !statsAvailable && (
+      {slowScan && (
         <p className="mb-4 text-xs text-muted-foreground" role="status">
           {tr("conversations.scanning")}
         </p>

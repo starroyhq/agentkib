@@ -1,4 +1,4 @@
-import { managedAgentOf, sessionProviderDeclaration } from "@agentkib/web-client";
+import { sessionProviderDeclaration } from "@agentkib/web-client";
 import {
   hasSessionPinning,
   homeSessionCopy,
@@ -7,7 +7,7 @@ import {
   PendingCenter,
   requestReadStateRefresh,
   SessionActivityButton,
-  SessionContinuationStatus,
+  SessionHeaderStatus,
 } from "@agentkib/session-ui";
 import { WebHistorySearchTrigger } from "@/features/conversation/features/history/web-history-search";
 import { Outlet, useLocation, useNavigate } from "@tanstack/react-router";
@@ -229,27 +229,11 @@ function WorkspaceShell() {
                   <span className="max-w-[45%] truncate md:max-w-40" title={currentWorkspace?.path}>
                     {currentWorkspace?.name}
                   </span>
-                  {status.label && <span aria-hidden="true">·</span>}
-                  {managedAgentOf(session.current?.agent) ? (
-                    <SessionContinuationStatus
-                      label={status.label}
-                      title={status.continuation === "status-unknown" ? status.reason : undefined}
-                      active={status.tone === "active"}
-                      loading={status.loading}
-                      // The workspace name truncates first; the state stays on one line.
-                      className="shrink-0 whitespace-nowrap"
-                    />
-                  ) : (
-                    <span
-                      role="status"
-                      className={cn(
-                        "truncate",
-                        status.tone === "warning" && "text-amber-700 dark:text-amber-300",
-                      )}
-                    >
-                      {status.label}
-                    </span>
-                  )}
+                  <SessionHeaderStatus
+                    locale={locale}
+                    status={status}
+                    reconnecting={session.streamReconnecting && !session.error}
+                  />
                 </div>
               </div>
             </div>

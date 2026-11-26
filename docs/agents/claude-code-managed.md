@@ -126,7 +126,7 @@ macOS 上、Claude Code `2.1.299` 或更新版本时，托管会话默认允许�
 | --- | --- |
 | 模型、effort、工具权限 | 模型和 effort 来自原生初始化发现，不写死供应商列表。会话级设置分别调用 `set_model`、`apply_flag_settings`、`set_permission_mode`；权限只开放 `default`、`plan`、`acceptEdits`，与 Codex `policyId` 分开。仅提交用户修改的字段；未选择权限时不传 `--permission-mode`，继承 CLI 配置，不假定为 `default`。实际模式取自 CLI 的报告并如实显示，CLI 没有报告时保持未知；观察到不可选择的 `auto`、`dontAsk`、`bypassPermissions` 时，“当前值”里的权限项置空并给出界面提示（见“使用与边界”）。保留已选值、已确认当前值及 pending/unknown 状态，不把“已提交”当成生效。模型能力匹配同时识别原生别名及实际模型 ID。单独选择 effort 默认值会清除该项覆盖并重新继承 CLI 配置，保留模型和权限；切换模型时也会清除不兼容的旧 effort。完整恢复默认清除全部会话覆盖，不写用户全局配置。 |
 | 运行中修改设置 | 关闭原生后台自主回合的托管会话可在运行中保存模型、强度和权限。当前工作进程继续完成正在运行的轮次。下一次 AgentKib 发送或调度时，宿主以已保存的设置恢复同一会话。 |
-| 执行中插入 | 用原生 `priority: "next"` 用户帧绑定当前轮次及 revision；它不等于 Codex 的原生 steering 契约，也不等于 AgentKib 的持久队列。 |
+| 执行中插入 | 用原生 `priority: "next"` 用户帧绑定当前轮次及 revision；它不等于 Codex 的原生 steering 契约，也不等于 AgentKib 的持久队列。Claude 写入历史后，消息显示在本轮插入的位置。 |
 | 重命名 | 更新 AgentKib 标题，并向已验证的原生主会话日志追加 `custom-title`。新建空会话在产生原生日志后再同步标题。 |
 | 分叉 | 从已验证的原生主会话及已结束的 assistant 截止点，使用 `--resume`、`--fork-session`、`--resume-session-at` 准备新 UUID。准备后释放、重新发送或重启仍保留来源及截止点；执行前的原生身份校验绑定这些信息。未产生历史的空会话、无法验证的截止点不开放分叉。 |
 | 删除 | 永久删除，需要整理权限。按 Claude Desktop 2.37337 的删除做法移除会话日志 `<id>.jsonl`、同名目录和旁边的 `<id>.ccr-tip.json`、`<id>.precompact.json`、`<id>.desktop-released.json`，以及配置目录里 `file-history`、`session-env`、`uploads`、`tasks`、`image-cache`、`debug`、`usage-data`、`startup-perf` 下属于这个会话的内容；不跟随也不删除符号链接，先删日志，日志删不掉时什么都不动（`claude-delete-failed`）。macOS 上 Claude Desktop 也有这个会话（`~/Library/Application Support/Claude/claude-code-sessions` 里的记录，含已归档）时拒绝（`claude-desktop-session`），请在 Claude Desktop 里删；读不到这些记录时同样拒绝（`claude-desktop-check-unavailable`）；其他系统不做这项检查。别的进程或终端桥接正在用时不删。删除后主机移除它的上传文件。 |
@@ -190,7 +190,7 @@ capabilities 附带 CLI 在 initialize 时报告的命令目录（含 `builtin`�
 - 图片格式校验和 CLI 原生图片块传输不代表所选上游模型具备视觉能力。自定义渠道需选择支持图片输入的模型；例如 DeepSeek 官方能力表将 `deepseek-v4-pro` 列为仅文本输入、`deepseek-flash` 列为文本及图片输入。AgentKib 不因识图失败自动切换模型，实际验收按所选模型单独记录。见 [DeepSeek 模型能力](https://api-docs.deepseek.com/api/list-models/)。
 - 活动或未知请求引用的附件不能删除；跨重启保留。明确完成或未派发才结算引用。重复请求校验原始输入指纹；即使附件已按保留规则删除，也不会重新派发旧请求。
 - 桌面文件浏览复用注册工作区内的文件与产物服务；HTML/媒体在隔离浏览器预览，不把 HTML 作为 Electron 页面执行。Web 继续按文件权限校验，LAN 上传仍禁用。
-- 操作回执复用现有 ledger；Claude 元数据保存到应用数据目录 `claude-managed/` 的版本化文件。相同请求身份但不同内容会被拒绝。超时、断流及异常重启保留待核对状态。桌面会话的“更多操作 → 对话操作”在后台执行结果不明时提供“核对执行结果”，向宿主查询当前执行状态，无需再次发送原命令。设置原生 ACK 丢失、或改名/分叉已产生副作用而回执尚未提交时也保持 unknown；当前没有将此类状态自动重置为可执行的恢复入口。
+- 操作回执共用会话账本，Claude 元数据保存在应用数据目录 `claude-managed/` 的版本化文件。客户端遇到超时或断流会自动查询原请求回执。只有原生记录中与该请求精确对应的用户消息才能补证已执行。两分钟后仍无法确认时，原控件可通过「继续」放弃这次核对，并恢复尚在本窗口保留的发送草稿。继续不会发送消息或重用原请求 ID。原生进程的所有权和实际轮次仍须通过 Provider 校验。
 - 正常释放仅在本轮已结束且自有进程停止后完成；运行中先取消并等待确认。旧审批/问题不能跨轮次或重启继续使用。最多 8 个执行进程；私有锁不能约束官方客户端，也不承诺跨客户端原子排他。
 - Windows/Linux 尚不开放 Claude 托管控制；保留只读历史及现有独立续接能力。Claude Desktop Chat/Cowork 不在本功能范围。
 

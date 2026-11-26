@@ -736,10 +736,14 @@ export function SessionTranscript({
       {hasEarlier && (
         <Button
           type="button"
-          className="mx-auto mb-1 min-h-9 rounded-lg border border-border/70 bg-background px-3 text-xs text-muted-foreground shadow-sm transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
+          className="mx-auto mb-1 inline-flex min-h-9 items-center gap-1.5 rounded-lg border border-border/70 bg-background px-3 text-xs text-muted-foreground shadow-sm transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
           disabled={loadingEarlier}
+          aria-busy={loadingEarlier}
           onClick={() => void onLoadEarlier?.()}
         >
+          <span className="grid size-3.5 place-items-center" aria-hidden>
+            <DelayedSpinner active={loadingEarlier} />
+          </span>
           {earlierLabel}
         </Button>
       )}
@@ -769,3 +773,4 @@ export function SessionTranscript({
     </div>
   );
 }
+import { DelayedSpinner } from "./loading-feedback";

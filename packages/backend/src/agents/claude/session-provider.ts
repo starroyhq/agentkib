@@ -1,3 +1,4 @@
+import { REMOTE_ERROR_CODES } from "@agentkib/runtime-protocol";
 import {
   sessionResultProjectors,
   type SessionProvider,
@@ -87,6 +88,10 @@ export class ClaudeSessionProvider implements SessionProvider, TypedSessionProvi
     this.#routes.set("handover-terminal", { run: adopt, legacy: adopt });
   }
 
+  autoAdoptTerminalLead(sessionId: string, canAdopt: () => boolean): Promise<boolean> {
+    return this.managed.autoAdoptTerminalLead(sessionId, this.bridge, this.leadDevice, canAdopt);
+  }
+
   #legacyRoute(operation: string, run: NativeRequest): NativeRequest {
     let request = run;
     switch (operation) {
@@ -104,7 +109,8 @@ export class ClaudeSessionProvider implements SessionProvider, TypedSessionProvi
         break;
       case "live":
         request = async ({ sessionId, experimentalEnabled }) => {
-          if (typeof sessionId !== "string") throw new Error("invalid-request");
+          if (typeof sessionId !== "string")
+            throw new Error(REMOTE_ERROR_CODES.invalidRequestDetail);
           return run({ operation, sessionId, experimentalEnabled: experimentalEnabled === true });
         };
         break;

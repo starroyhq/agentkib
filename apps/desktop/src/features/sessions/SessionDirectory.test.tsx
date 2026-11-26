@@ -132,6 +132,7 @@ describe("SessionDirectory", () => {
       workspaceOrder: [],
       sessionOrder: {},
       scrollTop: 0,
+      requestedPanel: undefined,
     });
     hub = {
       remoteHosts: [],
@@ -187,6 +188,22 @@ describe("SessionDirectory", () => {
       .mocked(SessionRowMenu)
       .mock.calls.find(([props]) => props.session === first);
     expect(leadMenu?.[0].sessions?.map((item) => item.id)).toEqual([first.id, sameProject.id]);
+  });
+
+  it("selects the lead and requests its Connect Terminal panel from the row menu", () => {
+    const lead = { ...second, agent: "claude-code" as const };
+    hub.sessions = [first, lead];
+    render(<SessionDirectory />);
+
+    const leadMenu = vi.mocked(SessionRowMenu).mock.calls.find(([props]) => props.session === lead);
+    expect(leadMenu?.[0].onConnectTerminal).toBeDefined();
+    act(() => leadMenu?.[0].onConnectTerminal?.());
+
+    expect(hub.select).toHaveBeenCalledExactlyOnceWith(lead.id);
+    expect(useSessionViewStore.getState().requestedPanel).toEqual({
+      sessionId: lead.id,
+      panel: "terminal",
+    });
   });
 
   it("keeps unread dots on ordinary rows without a duplicate review card", () => {

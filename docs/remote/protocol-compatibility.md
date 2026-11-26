@@ -1,0 +1,29 @@
+# 远程协议与版本兼容
+
+[远程契约](../../packages/runtime-protocol/remote-contract.json)登记主机与客户端共享的协议版本、能力键、错误码及路由。修改协议时先改契约，再从仓库根目录运行以下命令生成 TypeScript 和 Dart。CI 会检查两份生成物，并用[共享响应样例](../../packages/runtime-protocol/test/fixtures/remote-contract.json)验证契约。
+
+```sh
+pnpm install --frozen-lockfile
+node packages/runtime-protocol/scripts/generate-remote-contract.mjs
+node packages/runtime-protocol/scripts/generate-remote-contract.mjs --dart-output /path/to/remote_protocol.g.dart
+```
+
+## 协商规则
+
+- **协议主版本**决定数据形状和操作语义。破坏现有客户端的变更需要新主版本，并为仍受支持的客户端保留旧入口。当前 HTTP 路由使用 `/api/web/v1`，本机运行时握手使用版本 17，会话流及控制请求使用版本 2。
+- **最低版本**记录各协议仍支持的下界。当前本机运行时握手和会话控制都要求双方的版本一致。主机探测分开处理，旧托管 Web 可以从 `GET /info` 读到 `protocolVersion: 1`，会话协商读取 `conversationProtocolVersion`。
+- **能力标志**用来启用单项功能。客户端应先确认主版本，再读取 `/access` 的能力及版本，例如 `readStateVersion`、`pendingInteractions.version` 和 `taskSummaryVersion`。字段缺失时按该能力不可用处理。设备权限仍由主机检查。
+
+路由声明中的 `lan` 表示该方法允许通过局域网跨源预检，实际请求仍受鉴权、授权及传输限制。`control` 表示使用控制协议及回执。IPC 和 WebSocket 各自有更窄的放行规则。
+
+## 错误与回执
+
+HTTP 失败携带固定错误码。控制请求可附带 `controlOutcome`，以区分明确未派发和结果未知。IPC 可能通过 JSON-RPC 错误、结果中的拒绝字段或传输错误传递。客户端按固定码处理，本地化提示独立于错误码。
+
+每个 HTTP 错误在契约里有一个基准状态。已有调用点的状态不同，使用具名例外保留原响应。例如 `capability_unavailable` 的基准是 409，路由拒绝、处理器缺失和服务不可用仍分别返回 403、404 和 503。
+
+## 旧客户端
+
+[现网托管 Web 构建](https://remote.agentkib.com/build-info.json)仍依赖 `/info` 的探测字段、五个 Codex 旧读路径及部分旧控制路径。保留范围和逐条删除条件见[兼容代码登记表](../development/compat-registry.md)。
+
+手机 App 上 TestFlight 前，只要求兼容 0.35.0 及更新主机。五个仅当前手机客户端调用的旧 POST 别名已移除，分别是 `delete`、`compact`、`terminals-clean`、`usage-limit-cancel` 和 `usage-limit-continue`。手机改用 `POST /managed/action`，在原请求体上带 `agent: "codex"` 和对应的 `operation`。仍发送旧路径的手机开发包会收到 404。

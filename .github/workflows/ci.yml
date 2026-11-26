@@ -66,6 +66,11 @@ jobs:
       - name: Test release startup checks
         run: node --test .github/scripts/*.test.mjs
 
+      - name: Verify remote protocol generation and fixtures
+        run: |
+          node packages/runtime-protocol/scripts/generate-remote-contract.mjs --check
+          node --test packages/runtime-protocol/test/remote-contract.test.ts
+
       - name: Verify desktop test partition
         run: node .github/scripts/verify-ci-quality-partition.mjs
 

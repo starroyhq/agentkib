@@ -1,7 +1,6 @@
 export {
   useVisibleReadState,
   readStateCopy,
-  ReadStateNotice,
   PendingReviewLane,
   pendingReviewSessions,
   requestReadReview,
@@ -13,6 +12,8 @@ export {
 } from "./read-state";
 
 export { retryBusyRead, isBusyRead } from "./session-read-retry";
+export { useDelayedBusy } from "./delayed-busy";
+export { DelayedSpinner, LoadingSkeleton } from "./loading-feedback";
 export { unavailableReasonText } from "./conversation/live-status";
 export {
   SessionPlatformProvider,
@@ -42,7 +43,6 @@ export {
   managedControlCopyForSurface,
   type ManagedControlBlockReason,
 } from "./conversation/sessions/managed-control-copy";
-export { managedText } from "./conversation/sessions/managed-copy";
 export {
   managedErrorCopy,
   managedErrorCopyForSurface,
@@ -72,6 +72,11 @@ export {
   useSessionLive,
   type WarmSessionNavigation,
 } from "./conversation/sessions/use-session-live";
+export {
+  subscribeSessionForegroundRefresh,
+  useSessionForegroundRefresh,
+} from "./conversation/sessions/use-session-foreground-refresh";
+export { startSessionOutcomeRetry } from "./conversation/sessions/use-session-outcome-retry";
 export {
   useSessionController,
   type SessionController,
@@ -131,6 +136,7 @@ export {
 } from "./conversation/sessions/session-receipt-recovery";
 export { SessionReadOnly } from "./conversation/sessions/session-read-only";
 export { webLayoutCopy } from "./conversation/sessions/web-layout-copy";
+export { SessionHeaderStatus } from "./conversation/sessions/session-header-status";
 export {
   createSessionImageScope,
   useSessionImageLoader,
@@ -167,6 +173,7 @@ export {
   claudeConnectionReason,
   claudeConnectionCopyForSurface,
 } from "./agents/claude-code/connection-copy";
+export { readClaudeBridgePluginStatus } from "./agents/claude-code/plugin-status";
 export {
   continuationResources,
   type ContinuationComposerDraft,
@@ -191,6 +198,8 @@ export {
   pendingCreateMatches,
   rememberPending,
   forgetPending,
+  abandonPending,
+  ABANDONED_PENDING_TTL_MS,
   type PendingControl,
 } from "./conversation/sessions/pending-controls";
 export { blockedWhileCompacting } from "./conversation/sessions/session-activity";

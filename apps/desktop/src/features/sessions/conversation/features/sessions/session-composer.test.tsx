@@ -85,6 +85,12 @@ const attachment: UploadedAttachment = {
   version: "1",
 };
 
+async function expectUploadedFile(name: string) {
+  const row = (await screen.findByText(name)).closest("li")!;
+  await waitFor(() => expect(row).not.toHaveAttribute("aria-busy"));
+  expect(within(row).queryByText("100%")).not.toBeInTheDocument();
+}
+
 describe("composer sending shortcuts", () => {
   beforeEach(() => {
     localStorage.removeItem("agentkib.send-while-running");
@@ -194,8 +200,8 @@ describe("composer sending shortcuts", () => {
       executionMode: "claude-follower",
       executionLocation: "terminal",
     });
-    const approval = "Waiting for tool approval. Please handle it in the terminal.";
-    const question = "Waiting for an answer. Please respond in the terminal.";
+    const approval = "Terminal awaiting approval";
+    const question = "Terminal awaiting an answer";
     const { rerender, input } = renderComposer();
     expect(screen.queryByText("Handle approvals and questions in the terminal")).toBeNull();
     expect(screen.queryByText(approval)).toBeNull();
@@ -384,18 +390,19 @@ describe("composer sending shortcuts", () => {
     fireEvent.change(screen.getByLabelText(sessionCopy["en-US"].attachment), {
       target: { files: [new File(["abc"], "note.txt")] },
     });
-    await screen.findByRole("alert");
+    const error = await screen.findByText(sessionCopy["en-US"].uploadFailed, {
+      selector: '[role="status"]',
+    });
+    expect(within(error.closest("li")!).getByRole("button", { name: "Retry" })).toBeEnabled();
     fireEvent.keyDown(input, { key: "Enter" });
     expect(doubles.control).not.toHaveBeenCalled();
   });
 
   it("does not send file references without message text or attachments", () => {
-    doubles.session.access = {
-      ...doubles.session.access,
-      device: { ...doubles.session.access?.device, accessMode: "full" },
-    } as SessionController["access"];
+    grantWorkspaceReferences();
     const { input } = renderComposer("");
     fireEvent.click(screen.getByRole("button", { name: "Reference file" }));
+    expect(screen.queryByText(composerLayoutCopy["en-US"].resourceNeedsMessage)).toBeNull();
     fireEvent.keyDown(input, { key: "Enter" });
     expect(screen.getByText(composerLayoutCopy["en-US"].resourceNeedsMessage)).toBeVisible();
     expect(doubles.control).not.toHaveBeenCalled();
@@ -632,20 +639,17 @@ describe("composer sending shortcuts", () => {
     ["zh-Hant", "這段對話正在 Codex 中使用。"],
     ["en-US", "This session is in use in Codex."],
     ["ja-JP", "この会話は Codex で使用中です。"],
-  ] as const)(
-    "keeps an editable composer and a passive ownership hint in %s",
-    (locale, busyHint) => {
-      continuationFixture();
-      externalOwner();
-      doubles.session.locale = locale;
-      const { input } = renderComposer("Keep the draft");
-      expect(input).toBeEnabled();
-      expect(screen.getByText(busyHint)).toBeVisible();
-      expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
-      expect(doubles.control).not.toHaveBeenCalled();
-      expect(doubles.runSessionAction).not.toHaveBeenCalled();
-    },
-  );
+  ] as const)("keeps an editable composer without an ownership line in %s", (locale, busyHint) => {
+    continuationFixture();
+    externalOwner();
+    doubles.session.locale = locale;
+    const { input } = renderComposer("Keep the draft");
+    expect(input).toBeEnabled();
+    expect(screen.queryByText(busyHint)).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
+    expect(doubles.control).not.toHaveBeenCalled();
+    expect(doubles.runSessionAction).not.toHaveBeenCalled();
+  });
 
   it("keeps the Codex follower composer enabled without the explanatory hint or busy bar", () => {
     continuationFixture();
@@ -731,7 +735,7 @@ describe("composer sending shortcuts", () => {
         target: { files: [new File(["abc"], "note.txt", { type: "text/plain" })] },
       },
     );
-    await screen.findByText("100%");
+    await expectUploadedFile("note.txt");
     fireEvent.submit(form);
     await act(async () => {});
     doubles.session.notice = "notDispatched";
@@ -747,7 +751,7 @@ describe("composer sending shortcuts", () => {
     expect(input).toHaveValue("Claude draft");
     expect(input).toBeEnabled();
     expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
-    expect(screen.getByText("This session is in use in Claude Code.")).toBeVisible();
+    expect(screen.queryByText("This session is in use in Claude Code.")).not.toBeInTheDocument();
     expect(
       screen.queryByRole("button", { name: "Continue in Claude Code" }),
     ).not.toBeInTheDocument();
@@ -911,7 +915,9 @@ describe("composer sending shortcuts", () => {
     });
     const { input, form } = renderComposer("Prepare the next message");
     expect(input).toBeEnabled();
-    expect(screen.getByText(sessionContinuationCopy("en-US").terminalWatch)).toBeVisible();
+    expect(
+      screen.queryByText(sessionContinuationCopy("en-US").terminalWatch),
+    ).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
     fireEvent.keyDown(input, { key: "Enter" });
     fireEvent.submit(form);
@@ -1012,7 +1018,7 @@ describe("composer sending shortcuts", () => {
         target: { files: [new File(["abc"], "note.txt", { type: "text/plain" })] },
       },
     );
-    await screen.findByText("100%");
+    await expectUploadedFile("note.txt");
     fireEvent.click(screen.getByRole("button", { name: "Reference file" }));
     Object.assign(doubles.session.live!, {
       executionMode: "claude-follower",
@@ -1061,7 +1067,7 @@ describe("composer sending shortcuts", () => {
         target: { files: [file] },
       },
     );
-    await screen.findByText("100%");
+    await expectUploadedFile("branch.txt");
     fireEvent.click(screen.getByRole("button", { name: "Reference file" }));
     externalOwner();
     rerender(<SessionComposer />);
@@ -1126,7 +1132,9 @@ describe("composer sending shortcuts", () => {
       .fn()
       .mockReturnValueOnce({ files: [file], resources: [], historyReferences: [] });
     const { input } = renderComposer("Keep accompanying text");
-    await screen.findByRole("alert");
+    expect(
+      await screen.findByText(sessionCopy["en-US"].uploadFailed, { selector: '[role="status"]' }),
+    ).toBeVisible();
     expect(screen.getByText("branch.txt")).toBeVisible();
     expect(input).toHaveValue("Keep accompanying text");
     fireEvent.keyDown(input, { key: "Enter" });
@@ -1150,7 +1158,11 @@ describe("composer sending shortcuts", () => {
         .mockReturnValueOnce({ files, resources: [], historyReferences: [] });
       doubles.session.forkContinuation = vi.fn(async () => "next-branch");
       const { input, rerender } = renderComposer("Keep accompanying text");
-      await screen.findByRole("alert");
+      await waitFor(() =>
+        expect(
+          screen.getAllByText(sessionCopy["en-US"].uploadFailed, { selector: '[role="status"]' }),
+        ).toHaveLength(2),
+      );
       expect(screen.getAllByText("branch.txt")).toHaveLength(2);
       expect(input).toHaveValue("Keep accompanying text");
       externalOwner();

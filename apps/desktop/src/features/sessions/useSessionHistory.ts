@@ -1,5 +1,6 @@
 import { useId, useRef, useState } from "react";
 import { loadEarlierHistoryBatch, oldestIncompleteHistoryTurn } from "@agentkib/conversation-state";
+import { useSessionForegroundRefresh } from "@agentkib/session-ui";
 import { useInfiniteQuery, type InfiniteData } from "@tanstack/react-query";
 import { useI18n } from "@/core/useI18n";
 import { api } from "@/core/api";
@@ -54,6 +55,9 @@ export function useSessionHistory(
     },
     client,
   );
+  useSessionForegroundRefresh(sessionId ? scope : undefined, () => {
+    void query.refetch({ cancelRefetch: false });
+  });
   const pages = sessionId ? (query.data?.pages ?? []) : [];
   const seen = new Set<string>();
   const events: ConversationEvent[] = [...pages]

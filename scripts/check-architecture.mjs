@@ -25,6 +25,10 @@ const agentIds = new Set([
   "opencode",
 ]);
 const providerDeclaration = "packages/runtime-protocol/src/session-providers.ts";
+const generatedContracts = new Set([
+  "packages/runtime-protocol/src/generated/remote-contract.ts",
+  "packages/runtime-protocol/generated/remote_protocol.g.dart",
+]);
 const compatibilityMarker = /legacy|compat|fallback/i;
 const typeScriptFile = /\.(?:[cm]?ts|tsx)$/;
 const jsFamilyFile = /\.(?:[cm]?[jt]s|[jt]sx)$/;
@@ -68,6 +72,7 @@ function productFile(file) {
   return (
     workspaceSource.test(file) &&
     productSource.test(file) &&
+    !generatedContracts.has(file) &&
     !/(?:^|\/)(?:test|tests|__tests__|fixtures|__fixtures__|__mocks__)(?:\/|$)/.test(file) &&
     !/\.(?:test|spec)\./.test(file)
   );
@@ -92,6 +97,7 @@ export function scanSource(file, source) {
   const countAgentJudgments =
     typeScriptFile.test(file) &&
     file !== providerDeclaration &&
+    !generatedContracts.has(file) &&
     !file.split("/").includes("agents");
   const countMarkers = workspaceSource.test(file);
   const identifierPositions = new Set();

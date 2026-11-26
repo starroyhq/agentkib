@@ -42,6 +42,7 @@ export interface InteractionItemsContext {
   canStop: boolean;
   /** Connected and ready for controls; otherwise the cards only show the requests. */
   ready: boolean;
+  blocked?: (kind: "approve" | "answer") => boolean;
   /** The last decision's outcome is unknown; nothing is sent again until it is known. */
   uncertain: boolean;
 }
@@ -112,7 +113,13 @@ export function sessionInteractionItems<
             : uncertain
               ? { tone: "pending" as const, text: t.uncertain }
               : undefined);
-      return { kind: "approval", key, model, enabled: !notice && ready, notice };
+      return {
+        kind: "approval",
+        key,
+        model,
+        enabled: !notice && ready && !context.blocked?.("approve"),
+        notice,
+      };
     }),
     ...(live.questions ?? []).map((question): InteractionDockItem => {
       const key = interactionKey(question);
@@ -131,7 +138,7 @@ export function sessionInteractionItems<
         kind: "question",
         key,
         request: question,
-        enabled: !notice && question.supported && ready,
+        enabled: !notice && question.supported && ready && !context.blocked?.("answer"),
         notice,
         answerContext: {
           sessionId: context.sessionId,

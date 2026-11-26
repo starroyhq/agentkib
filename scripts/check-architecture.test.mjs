@@ -109,6 +109,19 @@ test("counts physical lines, enforces caps for old and new product files, and sk
   assert.match(changes[2], /styles\.css/);
 });
 
+test("exempts generated contracts from Agent comparisons and line caps only", () => {
+  const generatedTs = "packages/runtime-protocol/src/generated/remote-contract.ts";
+  const generatedDart = "packages/runtime-protocol/generated/remote_protocol.g.dart";
+  const handwritten = "packages/runtime-protocol/src/remote-contract.ts";
+  const source = 'agent === "codex";\nconst legacyMode = 1;\n' + lines(1501);
+  const baseline = captureBaseline(
+    scan({ [generatedTs]: source, [generatedDart]: lines(1501), [handwritten]: source }),
+  );
+  assert.deepEqual(baseline.agent, { [handwritten]: 1 });
+  assert.deepEqual(baseline.large, { [handwritten]: 1503 });
+  assert.deepEqual(baseline.compatibility[generatedTs], { "identifier: legacyMode": 1 });
+});
+
 test("counts parsed identifiers and comments, including private names and multiline comments", () => {
   const file = "packages/backend/src/native.js";
   const source = [

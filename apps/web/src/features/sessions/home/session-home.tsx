@@ -2,7 +2,12 @@ import { createContext, use, useMemo, useState } from "react";
 import { useNavigate } from "@tanstack/react-router";
 import { AgentMark, agentName } from "@agentkib/agent-identity";
 import { displaySessionTitle, sessionGroupLabels } from "@agentkib/session-catalog";
-import { formatSessionTime, hasSessionPinning, HomeSessionList } from "@agentkib/session-ui";
+import {
+  formatSessionTime,
+  hasSessionPinning,
+  HomeSessionList,
+  useDelayedBusy,
+} from "@agentkib/session-ui";
 import type { Access, ConversationSessionSummary } from "@agentkib/web-client";
 import { SessionRowMenu } from "@/features/conversation/features/catalog/session-row-menu";
 import { useSession } from "@/features/conversation/web-session-context";
@@ -110,6 +115,7 @@ export function SessionHome() {
 
 /** Placeholder rows while the first catalog read has nothing to show yet; never a loading card. */
 function Placeholder({ label }: { label: string }) {
+  if (!useDelayedBusy(true)) return null;
   return (
     <div
       aria-busy="true"

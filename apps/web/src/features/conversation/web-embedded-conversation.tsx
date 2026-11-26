@@ -1,6 +1,7 @@
 import {
   EmbeddedSessionLoading,
   EmbeddedSessionShell,
+  SessionHeaderStatus,
   useEmbeddedEmptySelection,
   useEmbeddedSessionSelection,
   useEmbeddedSessionShell,
@@ -36,6 +37,7 @@ import { Button } from "./components/ui/button";
 import { webLayoutCopy } from "@agentkib/session-ui";
 import { useSessionNavigate } from "./web-session-navigation";
 import { webSessionPlatform } from "./session-platform";
+import { sessionDisplayState } from "./web-session-display";
 
 export type { ConversationClientBridge, WebClient } from "@agentkib/web-client";
 export type ConversationPanel = "files" | "actions" | "search";
@@ -115,6 +117,7 @@ function EmbeddedShell() {
     ],
   );
   const copy = webLayoutCopy[session.locale];
+  const status = sessionDisplayState(session, "web");
   return (
     <EmbeddedSessionShell
       panels={{ ...panels, statusOutsideComposer: session.error && !session.online }}
@@ -134,6 +137,13 @@ function EmbeddedShell() {
         />
         {session.selected && (
           <>
+            {!(session.error && status.offline) && (
+              <SessionHeaderStatus
+                locale={session.locale}
+                status={status}
+                reconnecting={session.streamReconnecting && !session.error}
+              />
+            )}
             {session.access?.device?.files && (
               <Button variant="ghost" onClick={() => setFilesOpen(!filesOpen)}>
                 {copy.files}

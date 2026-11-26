@@ -4,6 +4,7 @@ import { Profiler } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   ApiError,
+  SESSION_OUTCOME_GRACE_MS,
   sessionProviderCapabilities,
   type Access,
   type ManagedAgent,
@@ -251,7 +252,7 @@ describe("Web NewSessionComposer", () => {
     const fastPicker = screen.getByRole("button", {
       name: settingLabel(`gpt-6.1-sol · Medium · ${modelCopy.fast}`),
     });
-    expect(fastPicker.querySelector('svg[fill="currentColor"]')).toBeVisible();
+    expect(fastPicker).toHaveTextContent(/^gpt-6.1-sol$/);
     await user.keyboard("{Escape}");
 
     await write("Review the routes");
@@ -1120,6 +1121,47 @@ describe("Web NewSessionComposer", () => {
     await waitFor(() => expect(onCreated).toHaveBeenCalledWith("made"));
     expect(client.managedAction).toHaveBeenCalledOnce();
     expect(takeNewSessionDraft("made")).toMatchObject({ text: "Add rate limiting", send: true });
+  });
+
+  it("polls an unknown workspace creation without offering Continue or replaying the create", async () => {
+    const { client, onCreated } = setup();
+    client.managedAction.mockRejectedValue(new ApiError(504, "request_timeout"));
+    await write("Keep the message for the new session");
+    vi.useFakeTimers();
+    try {
+      await act(async () => fireEvent.click(send()));
+      const requestId = client.managedAction.mock.calls[0]![1].requestId;
+      expect(client.receipt.mock.calls.map(([id]) => id)).toEqual([requestId]);
+      await act(() => vi.advanceTimersByTimeAsync(999));
+      expect(client.receipt).toHaveBeenCalledTimes(1);
+      await act(() => vi.advanceTimersByTimeAsync(1));
+      expect(client.receipt.mock.calls.map(([id]) => id)).toEqual([requestId, requestId]);
+      await act(() => vi.advanceTimersByTimeAsync(SESSION_OUTCOME_GRACE_MS));
+      expect(send()).toBeDisabled();
+      expect(screen.queryByRole("button", { name: "Continue" })).not.toBeInTheDocument();
+      expect(onCreated).not.toHaveBeenCalled();
+
+      client.receipt.mockResolvedValue({
+        found: true,
+        requestId,
+        operation: "create",
+        status: "accepted",
+        workspaceId: "atlas",
+        sessionId: "created-after-polling",
+      } as never);
+      await act(() => vi.advanceTimersByTimeAsync(30_000));
+      expect(onCreated).toHaveBeenCalledExactlyOnceWith("created-after-polling");
+      expect(client.managedAction).toHaveBeenCalledOnce();
+      expect(takeNewSessionDraft("created-after-polling")).toMatchObject({
+        text: "Keep the message for the new session",
+        send: true,
+      });
+      const settledReads = client.receipt.mock.calls.length;
+      await act(() => vi.advanceTimersByTimeAsync(60_000));
+      expect(client.receipt).toHaveBeenCalledTimes(settledReads);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("leaves Claude creation available while Codex awaits a receipt in the same workspace", async () => {

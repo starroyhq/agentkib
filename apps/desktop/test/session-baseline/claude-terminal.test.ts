@@ -49,7 +49,8 @@ describe.skipIf(process.platform === "win32")(
           controlOutcome: "unknown",
         };
 
-        expect(receipt()).toEqual({ ...row, status: "not-dispatched", ack: null });
+        // A claimed command can still be delivered by the plugin poll below.
+        expect(receipt()).toEqual({ ...row, status: "unknown", ack: null });
         await expect(f.bridge.request(input)).resolves.toEqual({
           ...unknown,
           reason: "request-interrupted",

@@ -108,7 +108,7 @@ afterEach(() => {
   vi.useRealTimers();
 });
 describe("responsive composer behavior", () => {
-  it("uses each field grant when showing model settings during a running turn", async () => {
+  it("locks model and permission controls during a turn, then uses each field grant when idle", async () => {
     state.locale = "en-US";
     state.t = dictionaries["en-US"];
     state.live = { ...state.live!, executionMode: "codex-managed", status: "running" };
@@ -122,7 +122,17 @@ describe("responsive composer behavior", () => {
       serviceTierIds: [],
     });
     vi.mocked(state.client.sessionSettings).mockResolvedValue(native);
-    render(<SessionComposer />);
+    const view = render(<SessionComposer />);
+    const model = await screen.findByRole("button", {
+      name: /Select reasoning effort: Test Model/,
+    });
+    expect(model).toBeDisabled();
+    expect(screen.getByRole("button", { name: /Execution policy/ })).toBeDisabled();
+    fireEvent.click(model);
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(state.runSessionAction).not.toHaveBeenCalled();
+    state = { ...state, live: { ...state.live!, status: "idle" } };
+    view.rerender(<SessionComposer />);
 
     fireEvent.click(
       await screen.findByRole("button", { name: /Select reasoning effort: Test Model/ }),
@@ -379,9 +389,9 @@ describe("responsive composer behavior", () => {
     });
     render(<SessionComposer />);
     const picker = await screen.findByRole("button", { name: /Test Model/ });
+    expect(picker).toBeDisabled();
     fireEvent.click(picker);
-    expect(modelReset()).toBeDisabled();
-    fireEvent.click(picker);
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "持续目标" }));
     expect(
       screen.getByRole("button", { name: sessionCopyForSurface("zh-CN", "web").goalUpdate }),
@@ -403,7 +413,7 @@ describe("responsive composer behavior", () => {
     const details = await screen.findByRole("tooltip");
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     expect(details).not.toHaveAttribute("aria-modal", "true");
-    expect(details).toHaveTextContent(sessionCopyForSurface("zh-CN", "web").contextUnknown);
+    expect(details).toHaveTextContent("暂无用量数据");
     await userEvent.setup().keyboard("{Escape}");
     await waitFor(() => expect(screen.queryByRole("tooltip")).not.toBeInTheDocument());
     expect(usage).toHaveFocus();
@@ -515,7 +525,7 @@ describe("responsive composer behavior", () => {
       },
     };
     render(<SessionComposer />);
-    expect(screen.getByText(/实时状态未知.*DeepSeek Harness 桥接未连接/)).toBeVisible();
+    expect(screen.queryByText(/DeepSeek Harness 桥接未连接/)).not.toBeInTheDocument();
     const draft = screen.getByRole("textbox");
     expect(draft).toBeEnabled();
     expect(draft).toHaveValue("Keep this draft");
@@ -611,7 +621,8 @@ describe("native Plan and Goal projection", () => {
       name: /Next Model.*Fast/,
     });
     expect(modelSettings).not.toHaveAccessibleName(/下一轮/);
-    expect(modelSettings.querySelector('svg[fill="currentColor"]')).toBeInTheDocument();
+    expect(modelSettings).toHaveTextContent(/^Next Model$/);
+    expect(modelSettings).toHaveAccessibleName(/Fast/);
     expect(screen.getByRole("button", { name: "发送" })).toBeEnabled();
     fireEvent.click(screen.getByRole("button", { name: "添加上下文" }));
     const add = await screen.findByRole("dialog", { name: "添加上下文" });
@@ -619,10 +630,8 @@ describe("native Plan and Goal projection", () => {
     const plan = within(add).getByRole("button", { name: "计划模式" });
     expect(plan).toHaveAttribute("aria-pressed", "true");
     expect(plan).toBeEnabled();
-    expect(screen.queryByText(composerLayoutCopy["zh-CN"].settingsPending)).not.toBeInTheDocument();
-    expect(
-      screen.queryByText(sessionCopyForSurface("zh-CN", "web").settingsSaved),
-    ).not.toBeInTheDocument();
+    expect(screen.queryByText("已保存设置，发送后确认生效状态。")).not.toBeInTheDocument();
+    expect(screen.queryByText("设置已由这台电脑确认")).not.toBeInTheDocument();
     state = {
       ...state,
       live: {
@@ -632,9 +641,7 @@ describe("native Plan and Goal projection", () => {
     };
     view.rerender(<SessionComposer />);
     await waitFor(() =>
-      expect(
-        screen.queryByText(composerLayoutCopy["zh-CN"].settingsPending),
-      ).not.toBeInTheDocument(),
+      expect(screen.queryByText("已保存设置，发送后确认生效状态。")).not.toBeInTheDocument(),
     );
     expect(state.runSessionAction).not.toHaveBeenCalled();
     expect(state.control).not.toHaveBeenCalled();
@@ -770,7 +777,7 @@ it("reconciles selected native invalidations and freezes changes until the new r
   });
   expect(state.client.sessionSettings).toHaveBeenCalledTimes(initialReads + 1);
   expect(state.client.codexContextOptions).toHaveBeenCalledTimes(initialResources);
-  expect(screen.queryByText(composerLayoutCopy["zh-CN"].settingsPending)).not.toBeInTheDocument();
+  expect(screen.queryByText("已保存设置，发送后确认生效状态。")).not.toBeInTheDocument();
   expect(screen.queryByRole("button", { name: "持续目标" })).not.toBeInTheDocument();
   expect(screen.getByRole("slider")).toHaveAttribute("aria-valuenow", "1");
   expect(modelReset()).toBeEnabled();

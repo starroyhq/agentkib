@@ -1,3 +1,4 @@
+import { REMOTE_ERROR_CODES } from "@agentkib/runtime-protocol";
 import type { BigIntStats } from "node:fs";
 import type { HistoryRecordKind } from "@agentkib/runtime-protocol";
 import type { CursorBridgeContext } from "./cursor-bridge";
@@ -11,7 +12,7 @@ export const HISTORY_SEARCH_SANITIZER_VERSION = "2";
 /** A whole snapshot failed; it must not replace a previously committed generation. */
 export class HistorySourceSnapshotError extends Error {
   constructor(readonly limitation: "damaged-record" | "source-byte-limit") {
-    super("history-source-unavailable");
+    super(REMOTE_ERROR_CODES.historySourceUnavailable);
   }
 }
 
@@ -19,7 +20,7 @@ export class HistorySourceSnapshotError extends Error {
 export class HistorySourceInvalidatedError extends Error {
   constructor(
     readonly sessionId: string,
-    reason: "history-source-owner-changed" | "history-source-redaction-failed",
+    reason: typeof REMOTE_ERROR_CODES.historySourceOwnerChanged | "history-source-redaction-failed",
   ) {
     super(reason);
   }

@@ -98,7 +98,7 @@ describe("runtime-only session list presentation", () => {
         },
         "zh-CN",
       ),
-    ).toEqual({ label: "实时状态未知" });
+    ).toEqual({ label: "DeepSeek Harness 未连接" });
     // Without a running DSH the session can only be read.
     expect(
       sessionContinuationListState({ ...session, availability: "metadata-only" }, "en-US"),

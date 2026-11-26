@@ -2,13 +2,18 @@
 import "@testing-library/jest-dom/vitest";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { WebClient, type Access } from "@agentkib/web-client";
+import { WebClient, type Access, type ConversationSessionSummary } from "@agentkib/web-client";
 import {
   createDesktopConversationAdapter,
   type DesktopConversationBridge,
 } from "@/core/conversation-bridge";
 import { EmbeddedConversation } from "../../desktop-embedded-conversation";
-import { pendingScope, readPending, rememberPending } from "@agentkib/session-ui";
+import {
+  pendingScope,
+  readPending,
+  rememberPending,
+  sessionCopyForSurface,
+} from "@agentkib/session-ui";
 
 const labels = [
   ["zh-CN", "待处理中心", "汇总本页已查看会话的待处理事项及当前访问尚未确认的请求。"],
@@ -25,7 +30,18 @@ const labels = [
   ],
 ] as const;
 
-function fixture() {
+const waitingSession: ConversationSessionSummary = {
+  id: "waiting-session",
+  title: "Waiting session",
+  workspace_id: "workspace",
+  agent: "codex",
+  availability: "readable",
+  archived: false,
+  sidechain: false,
+  pendingInteraction: true,
+};
+
+function fixture(sessions: ConversationSessionSummary[] = []) {
   const access: Access = {
     status: "approved",
     protocolVersion: 2,
@@ -48,7 +64,7 @@ function fixture() {
     request: vi.fn(async (path) => {
       if (path === "access") return { status: 200, body: access };
       if (path === "catalog")
-        return { status: 200, body: { indexEnabled: true, sessions: [], workspaces: [] } };
+        return { status: 200, body: { indexEnabled: true, sessions, workspaces: [] } };
       if (path.startsWith("requests/"))
         return { status: 200, body: { found: false, requestId: path.slice("requests/".length) } };
       throw new Error(`Unexpected request: ${path}`);
@@ -100,7 +116,7 @@ describe("desktop pending-center copy", () => {
     return { review, directorySlot, windowSlot };
   }
 
-  it("keeps unknown business requests in the window action, separate from the review bell", async () => {
+  it("omits unknown business requests and clears orphans without discarding a bound receipt", async () => {
     const { client, bridge } = fixture();
     const slots = toolbarSlots();
     const pending = {
@@ -109,16 +125,15 @@ describe("desktop pending-center copy", () => {
       kind: "stop" as const,
     };
     const scope = pendingScope(client.origin, "desktop-local");
-    rememberPending(scope, pending);
+    const orphan = { requestId: "22222222-2222-4222-8222-222222222222", kind: "stop" };
+    sessionStorage.setItem(scope, JSON.stringify([pending, orphan]));
     render(<EmbeddedConversation client={client} locale="en-US" onSessionChange={vi.fn()} />);
-    const trigger = await screen.findByRole("button", { name: "Pending actions (1)" });
-    expect(slots.windowSlot).toContainElement(trigger);
-    expect(slots.directorySlot).not.toContainElement(trigger);
-    expect(trigger.querySelector(".lucide-list-todo")).not.toBeNull();
-    fireEvent.click(trigger);
-    expect(await screen.findByRole("dialog", { name: "Pending actions" })).toBeVisible();
+    await waitFor(() => expect(bridge.subscribe).toHaveBeenCalled());
+    await waitFor(() => expect(sessionStorage.getItem(scope)).not.toContain(orphan.requestId));
+    expect(screen.queryByRole("button", { name: /^Pending actions/ })).not.toBeInTheDocument();
+    expect(slots.windowSlot).toBeEmptyDOMElement();
     expect(slots.review).toBeInTheDocument();
-    expect(readPending(scope)).toEqual([pending]);
+    expect(readPending(scope)).toMatchObject([pending]);
     expect(vi.mocked(bridge.request).mock.calls.every(([, body]) => body === undefined)).toBe(true);
   });
 
@@ -135,7 +150,8 @@ describe("desktop pending-center copy", () => {
   it.each(labels)(
     "opens the embedded pending center with access-neutral copy in %s",
     async (locale, title, description) => {
-      const { bridge, client } = fixture();
+      const { bridge, client } = fixture([waitingSession]);
+      const slots = toolbarSlots();
       const scope = pendingScope(client.origin, "desktop-local");
       const pending = {
         requestId: "11111111-1111-4111-8111-111111111111",
@@ -146,12 +162,22 @@ describe("desktop pending-center copy", () => {
       render(<EmbeddedConversation client={client} locale={locale} onSessionChange={vi.fn()} />);
 
       const trigger = await screen.findByRole("button", { name: `${title} (1)` });
+      expect(slots.windowSlot).toContainElement(trigger);
+      expect(slots.directorySlot).not.toContainElement(trigger);
+      expect(trigger.querySelector(".lucide-list-todo")).not.toBeNull();
       expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
       fireEvent.click(trigger);
       const dialog = await screen.findByRole("dialog", { name: title });
-      expect(within(dialog).getByText(description)).toBeVisible();
+      expect(within(dialog).queryByText(description)).not.toBeInTheDocument();
+      expect(within(dialog).getByRole("button", { name: "Waiting session" })).toBeVisible();
+      expect(
+        within(dialog).queryByText(sessionCopyForSurface(locale).unknown),
+      ).not.toBeInTheDocument();
+      expect(
+        within(dialog).queryByRole("button", { name: sessionCopyForSurface(locale).refresh }),
+      ).not.toBeInTheDocument();
       expect(dialog).not.toHaveTextContent(/浏览器|瀏覽器|browser|ブラウザー/i);
-      expect(readPending(scope)).toEqual([pending]);
+      expect(readPending(scope)).toMatchObject([pending]);
       expect(bridge.request).toHaveBeenCalledWith("access", undefined);
       expect(vi.mocked(bridge.request).mock.calls.every(([, body]) => body === undefined)).toBe(
         true,

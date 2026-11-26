@@ -1,13 +1,13 @@
 import { cn } from "cn";
-import { SessionActivityButton } from "@agentkib/session-ui";
+import { SessionActivityButton, useDelayedBusy } from "@agentkib/session-ui";
 import { isLiveSessionAgent } from "@agentkib/web-client";
 import { navigationStyles } from "@/components/navigationStyles";
 import {
   ArrowUpRight,
   LayoutDashboard,
+  LoaderCircle,
   MoreHorizontal,
   Plus,
-  RefreshCw,
   SlidersHorizontal,
   Terminal,
 } from "lucide-react";
@@ -35,6 +35,8 @@ export function SessionWindowToolbar() {
   const workspace = hub.selectedWorkspace;
   const creating = useSessionViewStore((state) => state.creatingConversation);
   const terminalEntry = useSessionViewStore((state) => state.terminalEntry);
+  const desktopConversation = hasDesktopConversation();
+  const canCreate = desktopConversation && hub.localEnabled;
   const createConversation = () => {
     // Started from a session, the new one defaults to that session's workspace and Agent.
     useSessionViewStore
@@ -47,11 +49,12 @@ export function SessionWindowToolbar() {
       );
     hub.select();
   };
-  const { canContinue, continueSession } = useHistoryContinuation(
+  const { canContinue, continueSession, checking } = useHistoryContinuation(
     selected,
     workspace,
     hub.historyRevision,
   );
+  const showContinuationSpinner = useDelayedBusy(checking);
   if (!selected)
     return (
       <div className={navigationStyles.appToolbarContent}>
@@ -59,7 +62,7 @@ export function SessionWindowToolbar() {
           {tr(creating ? "sessions.newConversation" : "sessions.nav")}
         </div>
         <div data-session-window-pending-slot className="flex shrink-0 items-center empty:hidden" />
-        {hasDesktopConversation() && hub.localEnabled && (
+        {canCreate && (
           <Button
             variant="outline"
             size="icon"
@@ -73,12 +76,13 @@ export function SessionWindowToolbar() {
       </div>
     );
   const interactive =
-    hasDesktopConversation() &&
+    desktopConversation &&
     !selected.remote &&
     selected.availability === "readable" &&
     isLiveSessionAgent(selected.agent);
   const terminal =
     interactive && terminalEntry?.sessionId === selected.id ? terminalEntry : undefined;
+  const primaryActions = canCreate || canContinue || checking;
   return (
     <div
       data-session-window-session={interactive ? selected.id : undefined}
@@ -97,8 +101,8 @@ export function SessionWindowToolbar() {
       {interactive && (
         <div data-session-window-status-slot className="flex shrink-0 items-center empty:hidden" />
       )}
-      <div className="session-window-actions flex shrink-0 items-center gap-2">
-        {hasDesktopConversation() && hub.localEnabled && (
+      <div className="session-window-actions flex shrink-0 items-center gap-2 empty:hidden">
+        {canCreate && (
           <Button
             variant="outline"
             size="icon"
@@ -113,17 +117,6 @@ export function SessionWindowToolbar() {
         {interactive && (
           <div data-session-window-files-slot className="flex shrink-0 items-center empty:hidden" />
         )}
-        <Button
-          variant="outline"
-          size="icon"
-          className="max-[1050px]:hidden"
-          disabled={hub.refreshing}
-          aria-label={tr("sessions.refresh")}
-          title={tr("sessions.refresh")}
-          onClick={() => void hub.refresh()}
-        >
-          <RefreshCw size={15} className={hub.refreshing ? "animate-spin" : ""} />
-        </Button>
       </div>
       {interactive && (
         <div data-session-window-pending-slot className="flex shrink-0 items-center empty:hidden" />
@@ -138,27 +131,32 @@ export function SessionWindowToolbar() {
             <MoreHorizontal size={18} />
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end" className="min-w-56">
-            <DropdownMenuGroup>
-              {hasDesktopConversation() && hub.localEnabled && (
-                <DropdownMenuItem onClick={createConversation}>
-                  <Plus size={15} />
-                  {tr("sessions.newConversation")}
-                </DropdownMenuItem>
-              )}
-              {canContinue && (
-                <DropdownMenuItem onClick={continueSession}>
-                  <ArrowUpRight size={15} />
-                  {tr("handoff.create")}
-                </DropdownMenuItem>
-              )}
-              <DropdownMenuItem disabled={hub.refreshing} onClick={() => void hub.refresh()}>
-                <RefreshCw size={15} />
-                {tr("sessions.refresh")}
-              </DropdownMenuItem>
-            </DropdownMenuGroup>
+            {primaryActions && (
+              <DropdownMenuGroup>
+                {canCreate && (
+                  <DropdownMenuItem onClick={createConversation}>
+                    <Plus size={15} />
+                    {tr("sessions.newConversation")}
+                  </DropdownMenuItem>
+                )}
+                {(canContinue || checking) && (
+                  <DropdownMenuItem disabled={checking} onClick={continueSession}>
+                    {showContinuationSpinner ? (
+                      <LoaderCircle
+                        className="size-[15px] animate-spin motion-reduce:animate-none"
+                        aria-hidden
+                      />
+                    ) : (
+                      <ArrowUpRight size={15} aria-hidden />
+                    )}
+                    {tr("handoff.create")}
+                  </DropdownMenuItem>
+                )}
+              </DropdownMenuGroup>
+            )}
             {interactive && (
               <>
-                <DropdownMenuSeparator />
+                {primaryActions && <DropdownMenuSeparator />}
                 <DropdownMenuGroup>
                   {terminal && (
                     <DropdownMenuItem
@@ -190,7 +188,7 @@ export function SessionWindowToolbar() {
                 </DropdownMenuGroup>
               </>
             )}
-            <DropdownMenuSeparator />
+            {(primaryActions || interactive) && <DropdownMenuSeparator />}
             <DropdownMenuGroup>
               <DropdownMenuItem
                 onClick={() => {

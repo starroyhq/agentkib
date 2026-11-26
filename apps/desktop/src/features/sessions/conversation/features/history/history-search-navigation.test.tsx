@@ -228,7 +228,12 @@ async function renderUploadedDraft() {
   expect(uploadInput).toHaveAttribute("type", "file");
   await waitFor(() => expect(uploadInput).toBeEnabled());
   fireEvent.change(uploadInput, { target: { files: [file] } });
-  await waitFor(() => expect(screen.getByText(file.name).closest("li")).toHaveTextContent("100%"));
+  const attachmentRow = await waitFor(() => {
+    const row = screen.getByText(file.name).closest("li")!;
+    expect(row).not.toHaveAttribute("aria-busy", "true");
+    expect(row).not.toHaveTextContent("100%");
+    return row;
+  });
   expect(f.upload).toHaveBeenCalledExactlyOnceWith(
     "first",
     file,
@@ -236,10 +241,11 @@ async function renderUploadedDraft() {
     expect.any(AbortSignal),
   );
   expect(f.upload.mock.calls[0][1]).toBe(file);
-  const attachmentRow = screen.getByText(file.name).closest("li")!;
   await openSource(f.openSearch);
-  fireEvent.click(screen.getByRole("button", { name: c.quote }));
-  await screen.findByText(c.added);
+  const quote = screen.getByRole("button", { name: c.quote });
+  fireEvent.click(quote);
+  await waitFor(() => expect(quote).toHaveAttribute("title", c.added));
+  expect(quote).toHaveTextContent(c.quote);
   fireEvent.click(screen.getByRole("button", { name: c.close }));
   const references = screen.getByRole("region", { name: c.references });
   expect(references).toHaveTextContent("needle source excerpt");
@@ -250,8 +256,10 @@ describe("history search conversation navigation", () => {
   it("references source content while preserving the real selected conversation and composer draft", async () => {
     const f = await renderConversation();
     await openSource(f.openSearch);
-    fireEvent.click(screen.getByRole("button", { name: c.quote }));
-    await screen.findByText(c.added);
+    const quote = screen.getByRole("button", { name: c.quote });
+    fireEvent.click(quote);
+    await waitFor(() => expect(quote).toHaveAttribute("title", c.added));
+    expect(screen.queryByText(c.added)).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: c.close }));
     expect(screen.getByRole("textbox", { name: "Send a message" })).toHaveValue("Keep my draft");
     expect(screen.getByText("first history")).toBeVisible();
@@ -292,7 +300,7 @@ describe("history search conversation navigation", () => {
     expect(screen.getByRole("region", { name: c.references })).toBe(f.references);
     expect(f.references).toHaveTextContent("needle source excerpt");
     expect(screen.getByText(f.file.name).closest("li")).toBe(f.attachmentRow);
-    expect(f.attachmentRow).toHaveTextContent("100%");
+    expect(f.attachmentRow).not.toHaveAttribute("aria-busy", "true");
     expect(screen.getByRole("button", { name: "Send" })).toBeEnabled();
     expect(screen.getByText("first history")).toBeVisible();
     expect(f.changed).not.toHaveBeenCalled();
@@ -308,7 +316,7 @@ describe("history search conversation navigation", () => {
     const confirm = await screen.findByRole("button", { name: c.openDiscard });
     expect(f.changed).not.toHaveBeenCalled();
     expect(f.input).toHaveValue("Keep my draft");
-    expect(f.attachmentRow).toHaveTextContent("100%");
+    expect(f.attachmentRow).not.toHaveAttribute("aria-busy", "true");
     expect(f.references).toHaveTextContent("needle source excerpt");
     fireEvent.click(confirm);
     await screen.findByText("second history");

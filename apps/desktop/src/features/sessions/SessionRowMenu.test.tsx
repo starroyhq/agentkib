@@ -496,6 +496,60 @@ describe("a session row's menu on the desktop", () => {
     await waitFor(() => expect(onChanged).toHaveBeenCalledOnce());
   });
 
+  it.each([
+    [
+      "lead-claude-terminal-disconnected",
+      "This terminal session is disconnected from AgentKib. Open Connect Terminal.",
+    ],
+    ["delegation-paused", "This session cannot coordinate Workers right now."],
+    [undefined, "This session cannot coordinate Workers right now."],
+  ])(
+    "shows the relevant disabled reason for %s and opens the connection panel only when applicable",
+    async (reason, tooltip) => {
+      const user = userEvent.setup();
+      const session = { ...summary("claude-code"), id: "lead" };
+      const sessions = [
+        session,
+        { ...summary("codex"), id: "available", title: "Available Worker" },
+        { ...summary("codex"), id: "coordinator", title: "Project coordinator" },
+      ];
+      claudeRequest.mockResolvedValueOnce({
+        capable: false,
+        remaining: 0,
+        reason,
+        candidates: [
+          { sessionId: "available", reason: null },
+          { sessionId: "coordinator", reason: "session-is-a-project-agent" },
+        ],
+      });
+      const onConnectTerminal = vi.fn();
+      features({});
+      open(session, { sessions, onConnectTerminal });
+      await user.click(await screen.findByRole("menuitem", { name: "Assign Workers" }));
+      const dialog = await screen.findByRole("dialog");
+      const candidate = await within(dialog).findByRole("button", { name: "Available Worker" });
+      expect(candidate).toBeDisabled();
+      expect(within(dialog).getByRole("button", { name: "Assign" })).toBeDisabled();
+      expect(
+        await within(dialog).findByRole("group", { name: "Project coordinator" }),
+      ).toHaveAccessibleDescription("This session is already a Project Agent");
+      await user.hover(within(dialog).getByText("Available Worker"));
+      expect(await screen.findByRole("tooltip")).toHaveTextContent(tooltip);
+      const connect = within(dialog).queryByRole("button", {
+        name: /^Connect terminal$/i,
+      });
+      if (reason === "lead-claude-terminal-disconnected") {
+        expect(connect).toBeEnabled();
+        await user.click(connect!);
+        expect(onConnectTerminal).toHaveBeenCalledOnce();
+        expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+      } else {
+        expect(connect).not.toBeInTheDocument();
+        expect(onConnectTerminal).not.toHaveBeenCalled();
+      }
+    },
+  );
+
   it("requests eligibility once in Strict Mode and uses updated directory titles locally", async () => {
     const user = userEvent.setup();
     const session = { ...summary("codex"), id: "lead" };
@@ -528,6 +582,43 @@ describe("a session row's menu on the desktop", () => {
       sessionId: "lead",
       candidateIds: [],
     });
+  });
+
+  it("shows known candidates and footer before assignment eligibility returns", async () => {
+    const close = vi.fn();
+    type Options = {
+      capable: boolean;
+      remaining: number;
+      candidates: { sessionId: string; reason: null }[];
+    };
+    let resolve!: (options: Options) => void;
+    claudeRequest.mockReturnValue(new Promise<Options>((done) => (resolve = done)));
+    const session = { ...summary("claude-code"), id: "lead" };
+    const worker = { ...summary("codex"), id: "worker", title: "Ready Worker" };
+    render(
+      <AppDialogProvider>
+        <SessionWorkerAssignmentDialog session={session} sessions={[worker]} onClose={close} />
+      </AppDialogProvider>,
+    );
+    const dialog = within(screen.getByRole("dialog"));
+    const row = dialog.getByRole("button", { name: worker.title });
+    const assign = dialog.getByRole("button", { name: "Assign" });
+    const cancel = dialog.getByRole("button", { name: "Cancel" });
+    expect(row).toBeDisabled();
+    expect(assign).toBeDisabled();
+    expect(cancel).toBeEnabled();
+    expect(dialog.queryByText("Loading…")).not.toBeInTheDocument();
+    await act(async () => {
+      resolve({
+        capable: true,
+        remaining: 1,
+        candidates: [{ sessionId: worker.id, reason: null }],
+      });
+    });
+    expect(dialog.getByRole("button", { name: worker.title })).toBe(row);
+    expect(row).toBeEnabled();
+    fireEvent.click(row);
+    expect(assign).toBeEnabled();
   });
 
   it("keeps the assigned alias for removal and offers the canonical Worker after it", async () => {

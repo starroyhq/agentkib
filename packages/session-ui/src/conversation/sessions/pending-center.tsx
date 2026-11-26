@@ -1,5 +1,5 @@
 import { Bell, ListTodo } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import type {
   Access,
   Approval,
@@ -7,27 +7,16 @@ import type {
   Live,
   UserQuestionRequest,
 } from "@agentkib/web-client";
-import { catalogCopy } from "../../catalog-copy";
-import { homeSessionCopy, type HomeListNeed } from "../../home-sessions";
+import type { HomeListNeed } from "../../home-sessions";
 import { interactionCardCopy, type InteractionLocale } from "../../interaction-model";
 import { useSessionPlatform } from "../../session-platform";
 import { interactionCopy } from "../interactions/interaction-copy";
 import { approvalSummary } from "./approval-summary";
-import {
-  pendingScope,
-  readPending,
-  subscribePending,
-  type PendingControl,
-} from "./pending-controls";
 
-export type PendingCenterCopy = Record<
-  "pending" | "close" | "pendingInfo" | "error" | "pendingEmpty" | "unknown" | "refresh",
-  string
->;
+export type PendingCenterCopy = Record<"pending" | "close" | "pendingEmpty", string>;
 
 type PendingCenterSession = {
   access: Access | null | undefined;
-  origin: string;
   sessions: readonly ConversationSessionSummary[];
   excludedSessionIds?: ReadonlySet<string>;
   selected: string;
@@ -36,7 +25,6 @@ type PendingCenterSession = {
   locale: InteractionLocale;
   t: { untitled: string; approval: string; unknownTool: string };
   setModal(request: Approval | UserQuestionRequest): void;
-  refresh(manual: boolean): Promise<unknown>;
 };
 
 /** When supplied, the home's group controls which sessions the center counts and lists. */
@@ -61,7 +49,6 @@ export function PendingCenter({
   } = useSessionPlatform();
   const {
     access,
-    origin,
     sessions,
     excludedSessionIds,
     selected,
@@ -70,58 +57,37 @@ export function PendingCenter({
     locale,
     t,
     setModal,
-    refresh,
   } = session;
   const [open, setOpen] = useState(false);
-  const [saved, setSaved] = useState<PendingControl[]>([]);
-  const [failed, setFailed] = useState(false);
-  useEffect(() => {
-    if (access?.status !== "approved" || !access.device?.id) {
-      setSaved([]);
-      return;
-    }
-    const scope = pendingScope(origin, access.device.id);
-    const read = () => {
-      try {
-        setSaved(readPending(scope));
-        setFailed(false);
-      } catch {
-        setFailed(true);
-      }
-    };
-    read();
-    return subscribePending(read);
-  }, [origin, access?.status, access?.device?.id, open, live?.revision]);
   const approved = access?.status === "approved";
-  const pendingIds = new Set(
-    needsYou
-      ? needsYou.map(({ session }) => session.id)
-      : [
-          ...Object.keys(pendingSessions).filter((id) => pendingSessions[id]),
-          ...saved.flatMap((item) => (item.sessionId ? [item.sessionId] : [])),
-        ],
+  const readable = new Map(
+    sessions
+      .filter(({ id, availability }) => availability === "readable" && !excludedSessionIds?.has(id))
+      .map((item) => [item.id, item]),
   );
-  const interactions = sessions.some(
-    (session) => session.id === selected && session.availability === "readable",
-  )
-    ? [...(live?.approvals ?? []), ...(live?.questions ?? [])]
-    : [];
-  if (!needsYou && interactions.length && selected) pendingIds.add(selected);
-  const unlinkedSaved = saved.filter((item) => !item.sessionId);
-  const showTrigger =
-    approved && (open || failed || pendingIds.size > 0 || unlinkedSaved.length > 0);
+  const interactions =
+    live?.sessionId === selected && readable.has(selected)
+      ? [...(live.approvals ?? []), ...(live.questions ?? [])]
+      : [];
+  const needs = new Map(
+    needsYou
+      ?.filter(({ need }) => need === "approval" || need === "question")
+      .map(({ session, need }) => [session.id, need]),
+  );
+  const candidateIds = needsYou
+    ? [...needs.keys()]
+    : Object.keys(pendingSessions).filter((id) => pendingSessions[id]);
+  const pendingIds = new Set(candidateIds.filter((id) => readable.has(id)));
+  if (!needsYou && interactions.length) pendingIds.add(selected);
+  const showTrigger = approved && (open || pendingIds.size > 0);
   const card = interactionCardCopy(locale);
   const needLabel = (id: string) => {
-    const need = needsYou?.find(({ session }) => session.id === id)?.need;
+    const need = needs.get(id);
     return need === "approval"
       ? card.waitingApproval
       : need === "question"
         ? card.waitingAnswer
-        : need === "verify"
-          ? homeSessionCopy(locale).verifyResult
-          : need === "delegation"
-            ? homeSessionCopy(locale).delegationPaused
-            : undefined;
+        : undefined;
   };
   const trigger = (inWindow: boolean) =>
     showTrigger && (
@@ -158,33 +124,19 @@ export function PendingCenter({
           closeLabel={copy.close}
           onClose={() => setOpen(false)}
         >
-          <p className="text-xs text-muted-foreground">{copy.pendingInfo}</p>
-          {failed && <p role="alert">{copy.error}</p>}
-          {!pendingIds.size && !unlinkedSaved.length && <p>{copy.pendingEmpty}</p>}
+          {!pendingIds.size && <p>{copy.pendingEmpty}</p>}
           {Array.from(pendingIds).map((id) => (
             <section key={id} className="space-y-2 rounded border p-3">
-              {excludedSessionIds?.has(id) ? (
-                <p className="text-xs text-muted-foreground">
-                  {catalogCopy[locale].excludedPending}
-                </p>
-              ) : (
-                <Button
-                  variant="ghost"
-                  onClick={() => {
-                    setOpen(false);
-                    onNavigate(id);
-                  }}
-                >
-                  {sessions.find((item) => item.id === id)?.title || t.untitled}
-                </Button>
-              )}
-              {needLabel(id) ? (
-                <p className="text-xs text-muted-foreground">{needLabel(id)}</p>
-              ) : (
-                saved.some((item) => item.sessionId === id) && (
-                  <p className="text-xs text-muted-foreground">{copy.unknown}</p>
-                )
-              )}
+              <Button
+                variant="ghost"
+                onClick={() => {
+                  setOpen(false);
+                  onNavigate(id);
+                }}
+              >
+                {readable.get(id)?.title || t.untitled}
+              </Button>
+              {needLabel(id) && <p className="text-xs text-muted-foreground">{needLabel(id)}</p>}
               {id === selected &&
                 interactions.map((request) => (
                   <Button
@@ -203,14 +155,6 @@ export function PendingCenter({
                 ))}
             </section>
           ))}
-          {unlinkedSaved.map((item) => (
-            <p key={item.requestId} className="text-xs text-muted-foreground">
-              {copy.unknown} · {item.kind}
-            </p>
-          ))}
-          <Button variant="outline" onClick={() => void refresh(true)}>
-            {copy.refresh}
-          </Button>
         </SessionDialog>
       )}
     </>

@@ -17,7 +17,7 @@ import {
   Folder,
   FolderOpen,
   Image,
-  LoaderCircle,
+  Info,
   RefreshCw,
   X,
 } from "lucide-react";
@@ -38,6 +38,8 @@ import type { Dialog } from "@base-ui/react/dialog";
 import type { Select as SelectPrimitive } from "@base-ui/react/select";
 import type { Tabs as TabsPrimitive } from "@base-ui/react/tabs";
 import { artifactCopy } from "./artifact-copy";
+import { useDelayedBusy } from "./delayed-busy";
+import { LoadingSkeleton } from "./loading-feedback";
 import { ArtifactPanel, type ArtifactPanelProps } from "./artifact-panel";
 import type { InteractionLocale } from "./interaction-model";
 import { useSessionPlatform } from "./session-platform";
@@ -190,6 +192,7 @@ export function ArtifactBrowser({
   const [oid, setOid] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const showRefresh = useDelayedBusy(loading);
   const generation = useRef(0);
   const media = useRef<HTMLMediaElement | null>(null);
   const playback = useRef({ time: 0, playing: false });
@@ -478,7 +481,7 @@ export function ArtifactBrowser({
                 onClick={() => void load(tab === "files" ? listing?.directoryId : undefined)}
               >
                 <RefreshCw
-                  className={`size-4 ${loading ? "animate-spin motion-reduce:animate-none" : ""}`}
+                  className={`size-4 ${showRefresh ? "animate-spin motion-reduce:animate-none" : ""}`}
                   aria-hidden="true"
                 />
               </Button>
@@ -563,28 +566,37 @@ export function ArtifactBrowser({
               {tab === "preview" && livePreview}
               {tab === "diff" && (
                 <>
-                  <p className="text-xs text-muted-foreground">{copy.diffNote}</p>
-                  <Select
-                    items={[
-                      { value: "worktree", label: copy.worktree },
-                      { value: "staged", label: copy.staged },
-                      { value: "commit", label: copy.commit },
-                    ]}
-                    value={kind}
-                    onValueChange={(value) => value !== null && setKind(value)}
-                  >
-                    <SelectTrigger
-                      aria-label={copy.diffKind}
-                      className="h-11 w-full bg-background text-sm sm:h-9"
+                  <div className="flex items-center gap-2">
+                    <Select
+                      items={[
+                        { value: "worktree", label: copy.worktree },
+                        { value: "staged", label: copy.staged },
+                        { value: "commit", label: copy.commit },
+                      ]}
+                      value={kind}
+                      onValueChange={(value) => value !== null && setKind(value)}
                     >
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent alignItemWithTrigger={false}>
-                      <SelectItem value="worktree">{copy.worktree}</SelectItem>
-                      <SelectItem value="staged">{copy.staged}</SelectItem>
-                      <SelectItem value="commit">{copy.commit}</SelectItem>
-                    </SelectContent>
-                  </Select>
+                      <SelectTrigger
+                        aria-label={copy.diffKind}
+                        className="h-11 w-full bg-background text-sm sm:h-9"
+                      >
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent alignItemWithTrigger={false}>
+                        <SelectItem value="worktree">{copy.worktree}</SelectItem>
+                        <SelectItem value="staged">{copy.staged}</SelectItem>
+                        <SelectItem value="commit">{copy.commit}</SelectItem>
+                      </SelectContent>
+                    </Select>
+                    <span
+                      role="img"
+                      aria-label={copy.diffNote}
+                      title={copy.diffNote}
+                      className="shrink-0 text-muted-foreground"
+                    >
+                      <Info className="size-4" aria-hidden />
+                    </span>
+                  </div>
                   {kind === "commit" && (
                     <label className="block space-y-2 text-sm">
                       {copy.commitSha}
@@ -620,15 +632,20 @@ export function ArtifactBrowser({
                   {error}
                 </p>
               )}
-              {loading && tab !== "preview" && (
-                <p role="status" className="flex items-center gap-2 text-xs text-muted-foreground">
-                  <LoaderCircle
-                    className="size-3.5 animate-spin motion-reduce:animate-none"
-                    aria-hidden="true"
+              {loading &&
+                tab !== "preview" &&
+                (entry
+                  ? !ticket
+                  : tab === "diff"
+                    ? !diff
+                    : tab === "files"
+                      ? !listing
+                      : !artifacts.length) && (
+                  <LoadingSkeleton
+                    label={copy.loading}
+                    layout={entry || tab === "diff" ? "code" : "list"}
                   />
-                  {copy.loading}
-                </p>
-              )}
+                )}
               {fileView && !entry && (
                 <div className="min-w-0 space-y-3">
                   {tab === "files" && listing?.parentId && (

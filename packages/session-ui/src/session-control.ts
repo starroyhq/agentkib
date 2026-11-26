@@ -153,18 +153,17 @@ interface SessionControlContext<Pending extends SessionControlPending> {
   selection: RefObject<string>;
   readinessEpoch: RefObject<number>;
   refreshRequired: RefObject<boolean>;
-  manualRefreshRequired: RefObject<boolean>;
   streamReady: RefObject<boolean>;
   catalogSessions: RefObject<ConversationSessionSummary[]>;
   excludedIds: RefObject<ReadonlySet<string>>;
-  uncertainOutcomes: RefObject<Set<string>>;
   mutating: RefObject<boolean>;
   activeReceipts: RefObject<Map<string, ActiveControlReceipt>>;
   durableScope: RefObject<string | undefined>;
   durablePending: RefObject<Pending[]>;
   receipt: RefObject<LastControlReceipt | undefined>;
   verifyCapabilities: () => Promise<SessionCapabilities | undefined>;
-  hasDurablePending: (sessionId: string) => boolean;
+  blocksOutcome: (sessionId: string, kind: ControlKind) => boolean;
+  keepOutcomeDraft: (requestId: string, scope: string, text: string) => void;
   setBusy: (busy: boolean) => void;
   setNotice: (notice?: ControlNotice, reason?: NotDispatchedReason, source?: ControlKind) => void;
   setControlReady: (ready: boolean) => void;
@@ -172,7 +171,6 @@ interface SessionControlContext<Pending extends SessionControlPending> {
   setMessage: (message: string) => void;
   setHistoryReferences: (references: ResolvedHistoryReference[]) => void;
   setModal: (modal: undefined) => void;
-  setOnline: (online: boolean) => void;
   refresh: () => Promise<void>;
   fail: (error: unknown, generation?: number) => void;
   historyMessageText: (message: string, references: readonly ResolvedHistoryReference[]) => string;
@@ -202,18 +200,17 @@ export function createSessionControl<Pending extends SessionControlPending>({
   selection,
   readinessEpoch,
   refreshRequired,
-  manualRefreshRequired,
   streamReady,
   catalogSessions,
   excludedIds,
-  uncertainOutcomes,
   mutating,
   activeReceipts,
   durableScope,
   durablePending,
   receipt,
   verifyCapabilities,
-  hasDurablePending,
+  blocksOutcome,
+  keepOutcomeDraft,
   setBusy,
   setNotice,
   setControlReady,
@@ -221,7 +218,6 @@ export function createSessionControl<Pending extends SessionControlPending>({
   setMessage,
   setHistoryReferences,
   setModal,
-  setOnline,
   refresh,
   fail,
   historyMessageText,
@@ -260,7 +256,7 @@ export function createSessionControl<Pending extends SessionControlPending>({
       !controlReady ||
       excludedIds.current.has(selected) ||
       selection.current !== selected ||
-      hasDurablePending(selected)
+      blocksOutcome(selected, kind)
     )
       return;
     const command = kind === "send" ? extra?.command : undefined;
@@ -342,7 +338,6 @@ export function createSessionControl<Pending extends SessionControlPending>({
     setBusy(true);
     setNotice(undefined);
     readinessEpoch.current++;
-    manualRefreshRequired.current = false;
     const g = generation.current,
       id = selected;
     const requestId = crypto.randomUUID();
@@ -366,15 +361,13 @@ export function createSessionControl<Pending extends SessionControlPending>({
           capabilityAccessBinding(accessRef.current) !== accessBinding ||
           refreshRequired.current ||
           !streamReady.current ||
-          hasDurablePending(id) ||
-          uncertainOutcomes.current.has(id) ||
+          blocksOutcome(id, kind) ||
           (extra.attachmentIds?.length && !checked?.features.attachments?.available) ||
           (extra.resourceIds?.length && !checked?.features.context?.available) ||
           (extra.requiresGoal && !canSubmitGoalDraft(checked))
         ) {
           if (
-            hasDurablePending(id) ||
-            uncertainOutcomes.current.has(id) ||
+            blocksOutcome(id, kind) ||
             liveValue.current?.status === "outcome-unknown" ||
             liveValue.current?.reason === "control-outcome-unconfirmed" ||
             checked?.reason === "control-outcome-unconfirmed"
@@ -392,9 +385,9 @@ export function createSessionControl<Pending extends SessionControlPending>({
       if (durableReceipt) {
         try {
           if (!scope) throw new Error("missing_device_scope");
-          if (kind === "send")
-            activeReceipts.current.set(requestId, { scope, generation: g, bootId: access.bootId });
+          activeReceipts.current.set(requestId, { scope, generation: g, bootId: access.bootId });
           rememberPending(scope, { requestId, sessionId: id, kind });
+          if (kind === "send") keepOutcomeDraft(requestId, scope, command ?? (message || text));
           durablePending.current = readPending(scope);
         } catch {
           throw new ApiError(409, "pending_storage_unavailable", "not-dispatched");
@@ -468,6 +461,7 @@ export function createSessionControl<Pending extends SessionControlPending>({
       await refresh();
       return true;
     } catch (e) {
+      activeReceipts.current.delete(requestId);
       if (scope && e instanceof ApiError && e.controlOutcome === "not-dispatched") {
         try {
           forgetPending(scope, requestId);
@@ -493,13 +487,9 @@ export function createSessionControl<Pending extends SessionControlPending>({
             );
             await refresh();
           } else {
-            // A refresh clicked while this request was pending cannot acknowledge
-            // an uncertain outcome that has only just arrived.
-            manualRefreshRequired.current = false;
-            uncertainOutcomes.current.add(id);
             setNotice("uncertain", undefined, kind);
-            setOnline(false);
-            fail(e, g);
+            if (scope && kind === "send" && command === undefined) setMessage("");
+            await refresh();
           }
         }
       }

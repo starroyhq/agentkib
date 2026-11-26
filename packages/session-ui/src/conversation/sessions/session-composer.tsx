@@ -17,7 +17,6 @@ import {
   type ReactNode,
 } from "react";
 import { sessionApprovalRuntime } from "../../agents/session-approvals";
-import { ClaudeTerminalHandover } from "../../agents/claude-code/terminal-handover";
 import {
   composerPanelShortcut,
   planSlashOption,
@@ -35,7 +34,9 @@ import {
 import { sessionStopCapabilityAllows } from "../../agents/session-turn-controls";
 import { sessionTurnNotice } from "../../agents/session-turn-notice";
 import { commandPrompt } from "../../command-prompts";
-import { contextUsageCopyForSurface } from "../../context-usage-copy";
+import { ContextUsageRing } from "../../context-usage-ring";
+import { useDelayedBusy } from "../../delayed-busy";
+import { sessionTurnStatus } from "../../session-turn-status";
 import type { ContextUsageHandle } from "../../context-usage-indicator";
 import type { InteractionLocale } from "../../interaction-model";
 import { parseGoalDraft, useNewSessionGoalDraft } from "../../new-session-draft";
@@ -71,19 +72,22 @@ import { takeNewSessionDraft } from "./new-session-draft";
 import { PermissionModeNotice } from "./permission-mode-notice";
 import { SessionReadOnly } from "./session-read-only";
 import type { SessionPanels } from "./session-panels";
+import { SessionOutcomeAction, type SessionOutcomeControls } from "./session-outcome-action";
 
-type ComposerSession = SessionComposerControlsProps["session"] & {
-  historyReferences?: ResolvedHistoryReference[];
-  setHistoryReferences?: (references: ResolvedHistoryReference[]) => void;
-  t: Readonly<Record<string, string>>;
-  message: string;
-  setMessage: (message: string) => void;
-  control: ReturnType<typeof createSessionControl>;
-  canSend: boolean;
-  canStop: boolean;
-  checkContinuation?: () => unknown;
-  takeContinuationDraft?: (id: string) => ContinuationComposerDraft | undefined;
-};
+type ComposerSession = SessionComposerControlsProps["session"] &
+  SessionOutcomeControls & {
+    historyReferences?: ResolvedHistoryReference[];
+    setHistoryReferences?: (references: ResolvedHistoryReference[]) => void;
+    t: Readonly<Record<string, string>>;
+    message: string;
+    setMessage: (message: string) => void;
+    control: ReturnType<typeof createSessionControl>;
+    canSend: boolean;
+    canStop: boolean;
+    settledOutcomeDraft?: { sessionId: string; requestId: string };
+    checkContinuation?: () => unknown;
+    takeContinuationDraft?: (id: string) => ContinuationComposerDraft | undefined;
+  };
 
 type ComposerDisplay = {
   label: string;
@@ -130,6 +134,21 @@ export type SessionComposerProps = {
 /** A notice floating above the composer. Opaque: the conversation scrolls behind it. */
 const floatingNotice =
   "pointer-events-auto rounded-lg border px-3 py-2 text-xs leading-5 shadow-sm";
+
+function AttachmentProgress({ label, percent }: { label: string; percent: number }) {
+  if (!useDelayedBusy(true)) return null;
+  return (
+    <span
+      role="progressbar"
+      aria-label={label}
+      aria-valuenow={percent}
+      className="text-muted-foreground"
+    >
+      <ContextUsageRing percent={percent} />
+    </span>
+  );
+}
+
 export function SessionComposer({
   session,
   panels,
@@ -148,7 +167,7 @@ export function SessionComposer({
     notifications,
     desktop,
   } = useSessionPlatform();
-  const { Button, Disclosure, DisclosureSummary, SessionDialog } = components;
+  const { Button, SessionDialog } = components;
   const commandOwner = platformControls.commandSurface === "local-owner";
   const restrictedPlan = platformControls.restrictedComposer === "attachments-and-plan";
   const {
@@ -185,6 +204,11 @@ export function SessionComposer({
   );
   const canSend = sessionCanSend && !providerDisabled;
   const canStop = sessionCanStop && !providerDisabled;
+  const sendOutcomePending =
+    session.blocksOutcome?.("send") ||
+    session.blocksOutcome?.("steer") ||
+    session.blocksOutcome?.("queue-add") ||
+    (!session.blocksOutcome && notice === "uncertain");
   const reason = (code?: string | null) =>
     sessionReason(locale, code ?? undefined, surface, platformCopy.unavailableReason).text;
   const isClaude = current?.agent === "claude-code";
@@ -252,6 +276,7 @@ export function SessionComposer({
     live?.connectionGeneration,
   ]);
   const compacting = live?.activity === "compacting";
+  const settingsTurnActive = !!sessionTurnStatus(selected, live, current?.externalTurn);
   const showLimitedPlan =
     restrictedPlan && separatePlan === true && !fullAccess && current?.id === selected;
   const limitedSettings =
@@ -285,22 +310,26 @@ export function SessionComposer({
     controlReady &&
     !busy &&
     !submitted &&
-    !compacting &&
-    notice !== "uncertain" &&
+    !settingsTurnActive &&
+    !session.blocksOutcome?.("settings") &&
+    (session.blocksOutcome || notice !== "uncertain") &&
     live.status !== "outcome-unknown" &&
-    session.settingsNotice?.status !== "uncertain"
+    session.settingsNotice?.status !== "uncertain" &&
+    session.settingsNotice?.status !== "writing"
   );
-  const limitedPlanReason = compacting
-    ? contextUsageCopyForSurface(locale, surface).compactingDetail
+  const limitedPlanReason = settingsTurnActive
+    ? copy.settingsWhileRunning
     : reason(limitedSettings?.reason ?? capabilities?.reason);
   const changeLimitedPlan = () => {
     if (canChangeLimitedPlan) void runSessionAction("settings", { mode: nextMode });
   };
   const settingsNotice =
-    showLimitedPlan && session.settingsNotice?.target === "permissions"
+    showLimitedPlan &&
+    (session.settingsNotice?.target ?? session.settingsNotice?.group) === "permissions"
       ? session.settingsNotice
       : undefined;
   const planWriteStatus = composerSettingsStatus(locale, settingsNotice, reason, t.notDispatched);
+  const planWriting = settingsNotice?.status === "writing";
   const attachmentsReason =
     isClaude && live?.executionMode === "claude-follower"
       ? claudeConnectionCopyForSurface(locale, surface).attachments
@@ -324,6 +353,7 @@ export function SessionComposer({
     uploads,
     add,
     remove,
+    retry: retryAttachment,
     keepUnavailable,
     clear: clearUploads,
     preview,
@@ -334,12 +364,12 @@ export function SessionComposer({
     sessionId: selected,
     authority: draftAuthority,
     granted: access?.device?.attachments === true,
-    canUpload: uploadPermission && !busy && !submitted,
+    canUpload: uploadPermission && !busy && !submitted && !sendOutcomePending,
     copy,
     onError: setError,
   });
   const draftUnknown =
-    notice === "uncertain" ||
+    (!session.blocksOutcome && notice === "uncertain") ||
     live?.status === "outcome-unknown" ||
     live?.reason === "control-outcome-unconfirmed" ||
     capabilities?.reason === "control-outcome-unconfirmed";
@@ -372,6 +402,7 @@ export function SessionComposer({
     nativeDisabledReason: reason(feature("send")?.reason ?? capabilities?.reason),
     canRun: (action) =>
       !settingsOnlyBlocked &&
+      !session.blocksOutcome?.(action) &&
       ((action === "goal-set" && localGoal && composerCapabilities.goalDraftOffered) ||
         (controlReady && (action !== "send" || canSend) && feature(action)?.available === true)),
     actionDisabledReason: (action) => reason(feature(action)?.reason),
@@ -451,14 +482,28 @@ export function SessionComposer({
   }, [access?.device?.id, slotsGranted, discardStartupGoal]);
   useEffect(() => {
     if (!submitted) return;
-    if (notice === "accepted") {
+    if (notice === "accepted" && !session.blocksOutcome) {
       clearUploads();
       setResources([]);
       setHistoryReferences?.([]);
       setMessage("");
       setSubmitted(false);
-    } else if (notice === "notDispatched") setSubmitted(false);
-  }, [notice, submitted, setMessage, setHistoryReferences, clearUploads]);
+    } else if (notice === "notDispatched" || (notice === "uncertain" && session.blocksOutcome))
+      setSubmitted(false);
+  }, [notice, submitted, setMessage, setHistoryReferences, clearUploads, session.blocksOutcome]);
+  const settledDraftId =
+    session.settledOutcomeDraft?.sessionId === selected
+      ? session.settledOutcomeDraft.requestId
+      : undefined;
+  const cleanedDraft = useRef<string | undefined>(undefined);
+  useEffect(() => {
+    if (!settledDraftId || cleanedDraft.current === settledDraftId) return;
+    cleanedDraft.current = settledDraftId;
+    clearUploads();
+    setResources([]);
+    setHistoryReferences?.([]);
+    setSubmitted(false);
+  }, [settledDraftId, clearUploads, setHistoryReferences]);
   useEffect(() => {
     if (!online || !controlReady || busy || submitted || capabilities?.sessionId !== selected)
       return;
@@ -561,6 +606,10 @@ export function SessionComposer({
     queueAdd?.available === true;
   const resourceNeedsMessage =
     resourceIds.length > 0 && !draft.trim() && !attachmentIds.length && !historyReferences.length;
+  const [promptForMessage, setPromptForMessage] = useState(false);
+  useEffect(() => {
+    setPromptForMessage(false);
+  }, [draft, resourceNeedsMessage, selected]);
   const panelShortcut = composerPanelShortcut(draft, localSettings, localGoal);
   const decision = commands.parse(draft);
   const localCommandReady =
@@ -588,6 +637,7 @@ export function SessionComposer({
       readOnlyTerminalWait ||
       (action === "queue-add" && !queueAddReady) ||
       (action === "steer" && !steerReady) ||
+      session.blocksOutcome?.(action) ||
       (startupGoal && action !== "send") ||
       !online ||
       (settingsOnlyBlocked && !(action === "send" && panelShortcut && localCommandReady)) ||
@@ -618,6 +668,7 @@ export function SessionComposer({
     }
     if (plain && panelShortcut) return;
     const mapped = plain ? decision?.action : undefined;
+    if (mapped && session.blocksOutcome?.(mapped.action)) return;
     if (
       mapped?.action === "goal-set" &&
       draftReady &&
@@ -686,7 +737,10 @@ export function SessionComposer({
         setSubmitted(false);
       }
     } finally {
-      if (requestGeneration === generation.current) submitPending.current = false;
+      if (requestGeneration === generation.current) {
+        submitPending.current = false;
+        if (session.blocksOutcome) setSubmitted(false);
+      }
     }
   }
   const running = live?.status === "running" && display.continuation !== "dsh-observed";
@@ -736,11 +790,15 @@ export function SessionComposer({
   const canSendFollowUp =
     canAdvanced && !startupGoal && !draftUnknown && valid && !submitted && !readOnlyTerminalWait;
   const canFollowUp = (action: "queue-add" | "steer") =>
-    canSendFollowUp && (action === "queue-add" ? queueAddReady : !compacting && steerReady);
+    canSendFollowUp &&
+    !session.blocksOutcome?.(action) &&
+    (action === "queue-add" ? queueAddReady : !compacting && steerReady);
   const runningReady = (followUp || (serialQueue && !canSubmit)) && canFollowUp(runningAction);
   const directReady = localCommandReady || (!followUp && canSubmit);
+  const canPromptForMessage =
+    resourceNeedsMessage && ready && directReady && !draftUnknown && !busy && !submitted;
   const runningLabel = runningAction === "steer" ? copy.steer : copy.queueAdd;
-  const primaryAction =
+  const stopping =
     !runningReady &&
     canStop &&
     sessionStopCapabilityAllows(
@@ -748,40 +806,52 @@ export function SessionComposer({
       capabilities,
       selected,
       sessionProviderDeclaration(current?.agent),
-    ) ? (
-      <ComposerPrimaryAction kind="stop" label={t.stop} onStop={() => void control("stop")} />
-    ) : (
-      <ComposerPrimaryAction
-        label={runningReady ? runningLabel : t.send}
-        title={draftReason ? reason(draftReason) : runningReady ? runningLabel : undefined}
-        disabled={(!directReady && !runningReady) || !valid || submitted}
-      />
     );
-  const handover =
-    isClaude &&
-    online &&
-    live?.sessionId === selected &&
-    live.terminalHandover &&
-    (surface === "desktop" || feature("handover-terminal")?.available === true) ? (
-      <div className="flex justify-center">
-        <ClaudeTerminalHandover
-          key={selected}
-          live={live}
-          locale={locale}
-          local={surface === "desktop"}
-          ready={controlReady && !busy}
-          localAvailable={feature("adopt-terminal")?.available === true}
-          remoteAvailable={feature("handover-terminal")?.available === true}
-          onAdopt={() => runSessionAction("adopt-terminal")}
-          onTransfer={(turnId) =>
-            runSessionAction("handover-terminal", {
-              handoffConfirmed: true,
-              ...(turnId ? { turnId } : {}),
-            })
-          }
+  const sendTarget = followUp ? runningAction : "send";
+  const sendActions = ["send", "steer", "queue-add"] as const;
+  const standardPrimaryAction = stopping ? (
+    <ComposerPrimaryAction kind="stop" label={t.stop} onStop={() => void control("stop")} />
+  ) : (
+    <ComposerPrimaryAction
+      label={runningReady ? runningLabel : t.send}
+      title={
+        draftReason
+          ? reason(draftReason)
+          : runningReady
+            ? runningLabel
+            : !directReady && ["busy", "terminal-watch"].includes(display.continuation ?? "")
+              ? display.reason || display.label
+              : undefined
+      }
+      disabled={(!directReady && !runningReady) || !valid || submitted}
+      showDisabledTitle={
+        display.continuation === "busy" || display.continuation === "terminal-watch"
+      }
+    />
+  );
+  const primaryAction = (
+    <>
+      <SessionOutcomeAction session={session} actions={["settings", "open-model-picker"]} />
+      <SessionOutcomeAction session={session} actions={["approve", "answer"]} />
+      <SessionOutcomeAction
+        session={session}
+        actions={
+          stopping
+            ? sendActions
+            : ["stop", ...sendActions.filter((action) => action !== sendTarget)]
+        }
+      />
+      {stopping ? (
+        standardPrimaryAction
+      ) : (
+        <SessionOutcomeAction
+          session={session}
+          actions={[sendTarget]}
+          fallback={standardPrimaryAction}
         />
-      </div>
-    ) : null;
+      )}
+    </>
+  );
   if (
     resume?.loadResumeCommand &&
     display.continuation === "view-only" &&
@@ -793,37 +863,15 @@ export function SessionComposer({
     !startupGoal
   ) {
     return (
-      <>
-        {handover}
-        <SessionReadOnly
-          session={session}
-          reason={connectionReasonShown ? undefined : display.reason}
-          local={surface === "desktop"}
-          notify={notifications.success}
-        />
-      </>
+      <SessionReadOnly
+        session={session}
+        reason={connectionReasonShown ? undefined : display.reason}
+        local={surface === "desktop"}
+      />
     );
   }
   return (
     <div className="relative w-full max-w-3xl shrink-0 self-center space-y-2">
-      {handover}
-      {display.continuation === "busy" && resume && (surface === "desktop" || !isClaude) && (
-        <p role="status" className="px-3 text-xs leading-5 text-muted-foreground">
-          {continuation.busyHint(resume.busyActor)}
-        </p>
-      )}
-      {!terminalInteraction &&
-        display.continuation === "terminal-watch" &&
-        (surface === "desktop" || !isClaude) && (
-          <p role="status" className="px-3 text-xs leading-5 text-muted-foreground">
-            {continuation.terminalWatch}
-          </p>
-        )}
-      {terminalInteraction && (
-        <p role="status" className="px-3 text-xs leading-5 text-muted-foreground">
-          {terminalInteraction}
-        </p>
-      )}
       {permissionObservation &&
         live?.sessionId === selected &&
         (!permissionObservation.isTerminal(live, selected) ||
@@ -861,7 +909,8 @@ export function SessionComposer({
       <SessionComposerInput
         editorContextKey={selected}
         onSubmit={() => {
-          if (directReady) void send("send");
+          if (canPromptForMessage) setPromptForMessage(true);
+          else if (directReady) void send("send");
           else if (runningReady) void send(runningAction);
         }}
         editor={{
@@ -878,7 +927,8 @@ export function SessionComposer({
           onFocus: () => {
             if (resume?.refreshOccupancy) void session.checkContinuation?.();
           },
-          disabled: providerDisabled || (busy && !settingsOnlyBlocked) || submitted,
+          disabled:
+            providerDisabled || (busy && !settingsOnlyBlocked) || submitted || sendOutcomePending,
           ...slash.inputProps,
         }}
         onEditorKeyDown={(event, composing) => {
@@ -896,12 +946,13 @@ export function SessionComposer({
           return true;
         }}
         canSubmitFromKeyboard={() =>
-          (directReady || runningReady) && valid && !submitPending.current
+          (canPromptForMessage || ((directReady || runningReady) && valid)) &&
+          !submitPending.current
         }
         attachments={{
           inputRef: fileInput,
           label: copy.attachment,
-          disabled: !uploadPermission || busy || submitted,
+          disabled: !uploadPermission || busy || submitted || sendOutcomePending,
           scope: addActionsScope,
           onFiles: add,
         }}
@@ -914,7 +965,7 @@ export function SessionComposer({
               locale={locale}
               references={historyReferences}
               message={message}
-              disabled={busy || notice === "uncertain"}
+              disabled={busy}
               onRemove={(item) =>
                 setHistoryReferences?.(historyReferences.filter((entry) => entry !== item))
               }
@@ -922,7 +973,11 @@ export function SessionComposer({
             {uploads.length > 0 && (
               <ul className="space-y-2">
                 {uploads.map((item) => (
-                  <li key={item.key} className="flex items-center gap-2 text-xs">
+                  <li
+                    key={item.key}
+                    aria-busy={(!item.failed && !item.result) || undefined}
+                    className="flex items-center gap-2 text-xs"
+                  >
                     {item.previewUrl && (
                       <Button
                         type="button"
@@ -940,20 +995,35 @@ export function SessionComposer({
                       </Button>
                     )}
                     <span className="min-w-0 flex-1 truncate">{item.name}</span>
-                    <span role="status">
-                      {item.failed
-                        ? copy.uploadFailed
-                        : item.result
-                          ? "100%"
-                          : `${copy.uploading} ${item.percent}%`}
-                    </span>
+                    {item.failed ? (
+                      <>
+                        <span role="status" className="text-destructive-text">
+                          {copy.uploadFailed}
+                        </span>
+                        {item.file && (
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            disabled={!canChooseAttachments}
+                            onClick={() => retryAttachment(item)}
+                          >
+                            {layout.retry}
+                          </Button>
+                        )}
+                      </>
+                    ) : (
+                      !item.result && (
+                        <AttachmentProgress label={copy.uploading} percent={item.percent} />
+                      )
+                    )}
                     <Button
                       type="button"
                       variant="ghost"
                       size="sm"
                       className="size-11 shrink-0 p-0"
                       aria-label={`${copy.remove}: ${item.name}`}
-                      disabled={busy || submitted}
+                      disabled={busy || submitted || sendOutcomePending}
                       onClick={() => void remove(item)}
                     >
                       <X size={14} />
@@ -1003,6 +1073,7 @@ export function SessionComposer({
                 add={{
                   label: copy.addContext,
                   disabled: !canOpenAddMenu,
+                  saving: planWriting && !limitedPlanOn,
                   disabledReason: canOpenAddMenu
                     ? undefined
                     : limitedSettings
@@ -1030,6 +1101,8 @@ export function SessionComposer({
                   showLimitedPlan && limitedPlanOn
                     ? {
                         disabled: !canChangeLimitedPlan,
+                        disabledReason: limitedPlanReason,
+                        saving: planWriting,
                         onRemove: changeLimitedPlan,
                       }
                     : undefined
@@ -1044,33 +1117,46 @@ export function SessionComposer({
                 action={primaryAction}
               />
             )}
-            {planWriteStatus && (
-              <p role="status" className="px-3 text-xs text-muted-foreground">
-                {planWriteStatus}
-              </p>
-            )}
           </ComposerToolbarContents>
         }
       />
-      {!permissionObservation && access?.device?.accessMode !== "full" && (
-        <Disclosure className="px-3 text-xs text-muted-foreground">
-          <DisclosureSummary className="min-h-11 cursor-pointer content-center">
-            {layout.help}
-          </DisclosureSummary>
-          <p className="pb-2 leading-5">{copy.composerHint}</p>
-        </Disclosure>
-      )}
       {/* These come and go. Floating above the composer, they never move it. */}
       <div className="pointer-events-none absolute inset-x-0 bottom-full z-10 mb-2 flex flex-col gap-2">
+        {terminalInteraction && (
+          <p role="status" className={`${floatingNotice} bg-background text-muted-foreground`}>
+            {terminalInteraction}
+          </p>
+        )}
         {resources.some((item) => !item.available) && (
           <p role="status" className={`${floatingNotice} bg-background text-muted-foreground`}>
             {copy.resourceRemoved}
           </p>
         )}
-        {resourceNeedsMessage && (
+        {resourceNeedsMessage && promptForMessage && (
           <p role="status" className={`${floatingNotice} bg-background text-muted-foreground`}>
             {layout.resourceNeedsMessage}
           </p>
+        )}
+        {planWriteStatus && !session.blocksOutcome?.("settings") && (
+          <div
+            role="alert"
+            className={`${floatingNotice} flex items-center justify-between gap-2 bg-background text-destructive-text`}
+          >
+            <span>{planWriteStatus}</span>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              disabled={!online || busy}
+              onClick={
+                settingsNotice?.status === "uncertain"
+                  ? () => void session.refresh?.(true)
+                  : changeLimitedPlan
+              }
+            >
+              {settingsNotice?.status === "uncertain" ? layout.reloadDraft : layout.retry}
+            </Button>
+          </div>
         )}
         {error && (
           <p role="alert" className={`${floatingNotice} bg-background text-destructive-text`}>
@@ -1082,7 +1168,11 @@ export function SessionComposer({
             {reason(commandNotice.reason)}
           </p>
         )}
-        {(!canSend || display.continuation === "status-unknown") &&
+        {!canSend &&
+          display.continuation !== "busy" &&
+          display.continuation !== "terminal-watch" &&
+          display.continuation !== "status-unknown" &&
+          !terminalInteraction &&
           !connectionReasonShown &&
           !(connectionStatusInBanner && isClaude) &&
           (!running || (live?.executionMode === "claude-follower" && display.tone === "warning")) &&
@@ -1101,10 +1191,7 @@ export function SessionComposer({
               {display.tone === "warning" && (
                 <AlertTriangle aria-hidden="true" className="mt-0.5 size-3.5 shrink-0" />
               )}
-              <span className="min-w-0">
-                {display.continuation === "status-unknown" && `${display.label} · `}
-                {display.reason}
-              </span>
+              <span className="min-w-0">{display.reason}</span>
             </div>
           )}
       </div>

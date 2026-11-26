@@ -5,7 +5,13 @@ export type {
   WorkspaceDiffContext,
   WorkspaceDiffContextLine,
 } from "@agentkib/runtime-protocol";
-export { PROJECT_AGENT_MAX_WORKERS, SESSION_RESOURCE_LIMIT } from "@agentkib/runtime-protocol";
+export {
+  PROJECT_AGENT_MAX_WORKERS,
+  REMOTE_CONTROL_OUTCOMES,
+  REMOTE_ERROR_CODES,
+  SESSION_OUTCOME_GRACE_MS,
+  SESSION_RESOURCE_LIMIT,
+} from "@agentkib/runtime-protocol";
 import type { ConversationTaskSummary } from "./task-summary";
 export type {
   ConversationTaskCoverage,
@@ -19,6 +25,18 @@ export type {
 
 import {
   managedAgentOf,
+  CONVERSATION_PROTOCOL_VERSION,
+  REMOTE_CAPABILITIES,
+  REMOTE_CONTROL_OUTCOMES,
+  REMOTE_ERROR_CODES,
+  REMOTE_FEATURE_VERSIONS,
+  REMOTE_HEADERS,
+  REMOTE_LEGACY_CODEX,
+  REMOTE_REQUEST_PATH,
+  REMOTE_ROUTE,
+  REMOTE_ROUTE_BASE,
+  REMOTE_ROUTE_PREFIXES,
+  REMOTE_VERSIONS,
   sessionProviderCapabilities,
   type LiveSessionAgent,
   type ManagedAgent,
@@ -147,9 +165,12 @@ export {
 
 /** These POSTs only read private history; aborting them never discards a command receipt. */
 export function isHistoryReadPath(path: string): boolean {
-  return ["history/search", "history/locate", "history/references"].includes(
-    path.replace(/^\//, "").split("?")[0],
-  );
+  const relativePath = path.replace(/^\//, "").split("?")[0];
+  return [
+    REMOTE_REQUEST_PATH.historySearch,
+    REMOTE_REQUEST_PATH.historyLocate,
+    REMOTE_REQUEST_PATH.historyReferences,
+  ].some((route) => route === relativePath);
 }
 
 export interface ConversationSessionSummary {
@@ -280,7 +301,7 @@ export interface ConversationCatalog {
   incompleteSources?: Array<{ workspaceId: string; agent: string }>;
   sessions: ConversationSessionSummary[];
   /** Global verified CLI floor; absent on older hosts, never a control grant. */
-  codexRuntimeReason?: "codex-cli-version-too-old" | null;
+  codexRuntimeReason?: typeof REMOTE_ERROR_CODES.codexCliVersionTooOld | null;
   // Missing on older desktop hosts; never treat it as an empty known catalog.
   workspaces?: ConversationWorkspaceSummary[];
   indexEnabled: boolean;
@@ -363,17 +384,17 @@ export interface LivePreviewTicket {
   expiresAt: number;
 }
 export interface Access {
-  pushPolicyVersion?: 1;
-  pushActivityVersion?: 1;
-  approvalAuditVersion?: 1;
-  approvalRulesVersion?: 1;
-  readStateVersion?: 1;
-  taskSummaryVersion?: 1;
+  pushPolicyVersion?: typeof REMOTE_FEATURE_VERSIONS.pushPolicyVersion;
+  pushActivityVersion?: typeof REMOTE_FEATURE_VERSIONS.pushActivityVersion;
+  approvalAuditVersion?: typeof REMOTE_FEATURE_VERSIONS.approvalAuditVersion;
+  approvalRulesVersion?: typeof REMOTE_FEATURE_VERSIONS.approvalRulesVersion;
+  readStateVersion?: typeof REMOTE_FEATURE_VERSIONS.readStateVersion;
+  taskSummaryVersion?: typeof REMOTE_FEATURE_VERSIONS.taskSummaryVersion;
   /** Host-wide write restrictions. Session reads and provider declarations remain available. */
   disabledSessionProviders?: Partial<Record<ManagedAgent, string>>;
   accountLogin?: {
     required: true;
-    proofVersion: 1;
+    proofVersion: typeof REMOTE_FEATURE_VERSIONS.accountLoginProofVersion;
     deviceId: string;
     challenge: string;
     bound: boolean;
@@ -382,24 +403,24 @@ export interface Access {
   /** Additive capability; absent on older hosts. */
   historySearch?: true;
   /** Additive descriptions and bound decisions for paired clients. */
-  pendingInteractions?: { version: 1 };
+  pendingInteractions?: { version: typeof REMOTE_FEATURE_VERSIONS.pendingInteractions };
   historySearchScope?: string;
   /**
    * Notifications from this computer (`/push/subscribe`): present when this pairing can get
    * them, which needs an account-bound phone on the relay. Additive; absent on older hosts.
    */
   push?: {
-    version: 1;
+    version: typeof REMOTE_FEATURE_VERSIONS.push;
     subscribed: boolean;
     alerts?: boolean;
     liveActivity?: boolean;
-    approvalActionsVersion?: 1;
+    approvalActionsVersion?: typeof REMOTE_FEATURE_VERSIONS.approvalActionsVersion;
   };
   /** Missing on legacy hosts: history and receipts remain readable. */
   protocolVersion?: number;
   bearerToken?: string;
   pairingMode?: "code" | "confirmation";
-  status: "unpaired" | "pending" | "approved" | "ended";
+  status: typeof REMOTE_ERROR_CODES.unpaired | "pending" | "approved" | "ended";
   csrfToken: string;
   bootId: string;
   device?: {
@@ -521,7 +542,7 @@ export interface Live {
     | "background-ended"
     | "background-limit"
     | "lead-turn-limit"
-    | "owner-opened-elsewhere"
+    | typeof REMOTE_ERROR_CODES.ownerOpenedElsewhere
     | null;
   /** Ephemeral retirement event identity; a newly opened client must not replay an old notice. */
   continuationNoticeId?: string | null;
@@ -611,7 +632,7 @@ export interface Live {
 export type LegacyPreparedReceipt = {
   found: true;
   requestId: string;
-  status: "not-dispatched";
+  status: typeof REMOTE_CONTROL_OUTCOMES.notDispatched;
   recovery: "legacy-prepared";
   completionObserved: false;
   sessionId?: never;
@@ -632,7 +653,7 @@ export type ControlReceipt =
       runtimeBootId?: string | null;
       expectedRevision?: number | null;
       turnId?: string | null;
-      status: "not-dispatched" | "accepted" | "unknown";
+      status: typeof REMOTE_CONTROL_OUTCOMES.notDispatched | "accepted" | "unknown";
       ack?: {
         /** Native permission proof for an explicitly configured empty session. */
         policyId?: string;
@@ -656,7 +677,7 @@ export function isLegacyPreparedReceipt(
   return (
     receipt.found === true &&
     receipt.requestId === requestId &&
-    receipt.status === "not-dispatched" &&
+    receipt.status === REMOTE_CONTROL_OUTCOMES.notDispatched &&
     receipt.recovery === "legacy-prepared" &&
     receipt.completionObserved === false
   );
@@ -665,7 +686,9 @@ export class ApiError extends Error {
   constructor(
     public status: number,
     public code: string,
-    public controlOutcome?: "not-dispatched" | "unknown",
+    public controlOutcome?:
+      | typeof REMOTE_CONTROL_OUTCOMES.notDispatched
+      | typeof REMOTE_CONTROL_OUTCOMES.unknown,
   ) {
     super(code);
   }
@@ -894,7 +917,7 @@ export interface ManagedActionResult {
   feedback?: readonly SessionFeedback[];
   accepted?: boolean;
   completed?: boolean;
-  controlOutcome?: "accepted" | "not-dispatched" | "unknown";
+  controlOutcome?: "accepted" | typeof REMOTE_CONTROL_OUTCOMES.notDispatched | "unknown";
   requestId?: string;
   sessionId?: string;
   sourceSessionId?: string;
@@ -1180,7 +1203,8 @@ export function resolveWebConnection(connection: WebConnection | string = ""): W
         : { type: "same-origin" as const }
       : connection;
   if (value.type === "lan-http") {
-    if (parseLanOrigin(value.origin) !== value.origin) throw new Error("invalid_lan_address");
+    if (parseLanOrigin(value.origin) !== value.origin)
+      throw new Error(REMOTE_ERROR_CODES.invalidLanAddress);
     return { type: "lan-http", origin: value.origin };
   }
   return { type: "same-origin" };
@@ -1214,14 +1238,14 @@ export class WebClient {
       conversationProtocolVersion?: number;
       transport: string;
       capabilities: { read: boolean; send: boolean; approve: boolean };
-    }>("info", undefined, signal);
+    }>(REMOTE_REQUEST_PATH.info, undefined, signal);
     this.compatible =
-      (info.protocolVersion === 1 || info.protocolVersion === 2) &&
+      REMOTE_VERSIONS.hostDiscovery.accepted.some((version) => version === info.protocolVersion) &&
       info.transport === "lan" &&
-      info.capabilities?.read === true &&
-      typeof info.capabilities.send === "boolean" &&
-      typeof info.capabilities.approve === "boolean";
-    if (!this.compatible) throw new ApiError(409, "incompatible_protocol");
+      info.capabilities?.[REMOTE_CAPABILITIES.info.read] === true &&
+      typeof info.capabilities[REMOTE_CAPABILITIES.info.send] === "boolean" &&
+      typeof info.capabilities[REMOTE_CAPABILITIES.info.approve] === "boolean";
+    if (!this.compatible) throw new ApiError(409, REMOTE_ERROR_CODES.incompatibleProtocol);
     this.realtimeVersion = info.conversationProtocolVersion ?? info.protocolVersion;
     return info;
   }
@@ -1234,7 +1258,8 @@ export class WebClient {
       headers["X-CSRF-Token"] = this.csrfToken;
       // Old LAN hosts reject unknown headers during pairing preflight. Mutations
       // still require realtime v2 before reaching this transport boundary.
-      if (this.realtimeVersion === 2) headers["X-AgentKib-Protocol"] = "2";
+      if (this.realtimeVersion === CONVERSATION_PROTOCOL_VERSION)
+        headers[REMOTE_HEADERS.protocol] = String(CONVERSATION_PROTOCOL_VERSION);
     }
     return headers;
   }
@@ -1243,18 +1268,24 @@ export class WebClient {
     if (
       body !== undefined &&
       !isHistoryReadPath(path) &&
-      !["pair", "pair/cancel", "logout"].includes(operation) &&
-      this.realtimeVersion !== 2
+      ![REMOTE_REQUEST_PATH.pair, REMOTE_REQUEST_PATH.pairCancel, REMOTE_REQUEST_PATH.logout].some(
+        (path) => path === operation,
+      ) &&
+      this.realtimeVersion !== CONVERSATION_PROTOCOL_VERSION
     )
-      throw new ApiError(409, "incompatible_protocol", "not-dispatched");
+      throw new ApiError(
+        409,
+        REMOTE_ERROR_CODES.incompatibleProtocol,
+        REMOTE_CONTROL_OUTCOMES.notDispatched,
+      );
     if (this.bridge) return this.bridge.request<T>(path, body, signal);
     if (
       this.connection.type === "lan-http" &&
-      path !== "info" &&
-      (!this.compatible || (path !== "access" && !this.bearerToken))
+      path !== REMOTE_REQUEST_PATH.info &&
+      (!this.compatible || (path !== REMOTE_REQUEST_PATH.access && !this.bearerToken))
     )
-      throw new ApiError(401, "access_ended");
-    const response = await (this.transport ?? fetch)(`${this.origin}/api/web/v1/${path}`, {
+      throw new ApiError(401, REMOTE_ERROR_CODES.accessEnded);
+    const response = await (this.transport ?? fetch)(`${this.origin}${REMOTE_ROUTE_BASE}/${path}`, {
       method: body === undefined ? "GET" : "POST",
       credentials: this.connection.type === "lan-http" ? "omit" : "same-origin",
       redirect: "error",
@@ -1264,19 +1295,22 @@ export class WebClient {
       body: body === undefined ? undefined : JSON.stringify(body),
     });
     if (!response.ok) {
-      let code = "request_failed";
+      let code: unknown = REMOTE_ERROR_CODES.requestFailed;
       let controlOutcome: ApiError["controlOutcome"];
       try {
         const value = await response.json();
         code = value.code ?? value.error ?? code;
-        if (value.controlOutcome === "not-dispatched" || value.controlOutcome === "unknown")
+        if (
+          value.controlOutcome === REMOTE_CONTROL_OUTCOMES.notDispatched ||
+          value.controlOutcome === REMOTE_CONTROL_OUTCOMES.unknown
+        )
           controlOutcome = value.controlOutcome;
       } catch {
         /* Never expose raw HTML/proxy bodies. */
       }
       throw new ApiError(
         response.status,
-        typeof code === "string" ? code : "request_failed",
+        typeof code === "string" ? code : REMOTE_ERROR_CODES.requestFailed,
         controlOutcome,
       );
     }
@@ -1295,22 +1329,22 @@ export class WebClient {
   }
   private async loadAccess(signal?: AbortSignal) {
     if (this.connection.type === "lan-http" && !this.compatible) await this.info(signal);
-    const result = await this.request<Access>("access", undefined, signal);
+    const result = await this.request<Access>(REMOTE_REQUEST_PATH.access, undefined, signal);
     if (result.accountLogin !== undefined) {
       const login = result.accountLogin;
       if (
         !login ||
         login.required !== true ||
-        login.proofVersion !== 1 ||
+        login.proofVersion !== REMOTE_FEATURE_VERSIONS.accountLoginProofVersion ||
         !/^[a-f0-9]{32}$/.test(login.deviceId) ||
         !/^[A-Za-z0-9_-]{43}$/.test(login.challenge) ||
         typeof login.bound !== "boolean" ||
         (login.required && !login.bound && result.status === "approved")
       )
-        throw new ApiError(502, "invalid_account_login");
+        throw new ApiError(502, REMOTE_ERROR_CODES.invalidAccountLogin);
     }
     if (this.connection.type === "lan-http" && !this.bearerToken) {
-      if (!result.bearerToken) throw new ApiError(401, "access_ended");
+      if (!result.bearerToken) throw new ApiError(401, REMOTE_ERROR_CODES.accessEnded);
       this.bearerToken = result.bearerToken;
     }
     this.csrfToken = result.csrfToken;
@@ -1323,15 +1357,17 @@ export class WebClient {
     handlers: SessionStreamHandlers,
     { taskSummary }: { taskSummary?: boolean } = {},
   ) {
-    if (this.realtimeVersion !== 2) {
-      queueMicrotask(() => handlers.error(new ApiError(409, "incompatible_protocol")));
+    if (this.realtimeVersion !== CONVERSATION_PROTOCOL_VERSION) {
+      queueMicrotask(() =>
+        handlers.error(new ApiError(409, REMOTE_ERROR_CODES.incompatibleProtocol)),
+      );
       return () => {};
     }
     if (this.bridge) return this.bridge.stream(sessionId, handlers);
-    const query = new URLSearchParams({ protocolVersion: "2" });
+    const query = new URLSearchParams({ protocolVersion: String(CONVERSATION_PROTOCOL_VERSION) });
     if (sessionId) query.set("sessionId", sessionId);
     else if (taskSummary) query.set("taskSummary", "1");
-    const path = `/api/web/v1/stream?${query}`;
+    const path = `${REMOTE_ROUTE_BASE}${REMOTE_ROUTE.stream}?${query}`;
     if (this.connection.type === "same-origin") {
       let closed = false;
       let source: EventSource | undefined;
@@ -1388,7 +1424,8 @@ export class WebClient {
     let cursor: string | undefined;
     const run = async () => {
       try {
-        if (!this.bearerToken || !this.compatible) throw new ApiError(401, "access_ended");
+        if (!this.bearerToken || !this.compatible)
+          throw new ApiError(401, REMOTE_ERROR_CODES.accessEnded);
         const streamPath = cursor ? `${path}&afterCursor=${encodeURIComponent(cursor)}` : path;
         const response = await (this.transport ?? fetch)(`${this.origin}${streamPath}`, {
           headers: this.headers(),
@@ -1406,7 +1443,7 @@ export class WebClient {
           !response.body ||
           !response.headers.get("content-type")?.includes("text/event-stream")
         )
-          throw new Error("stream_unavailable");
+          throw new Error(REMOTE_ERROR_CODES.streamUnavailable);
         handlers.open();
         const reader = response.body.getReader(),
           decoder = new TextDecoder();
@@ -1442,28 +1479,30 @@ export class WebClient {
     if (agent !== "codex") query.set("agent", agent);
     if (workspaceId) query.set("workspaceId", workspaceId);
     return this.request<ManagedOptions>(
-      query.size ? `managed/options?${query}` : "managed/options",
+      query.size
+        ? `${REMOTE_REQUEST_PATH.managedOptions}?${query}`
+        : REMOTE_REQUEST_PATH.managedOptions,
       undefined,
       signal,
     );
   }
   managedInspect(sessionId: string, agent: ManagedAgent, signal?: AbortSignal) {
     return this.request<ManagedInspection>(
-      `managed/inspect?${new URLSearchParams({ sessionId, agent })}`,
+      `${REMOTE_REQUEST_PATH.managedInspect}?${new URLSearchParams({ sessionId, agent })}`,
       undefined,
       signal,
     );
   }
   codexResumeCommand(sessionId: string, signal?: AbortSignal) {
     return this.request<SessionResumeCommand>(
-      `managed/resume-command?${new URLSearchParams({ sessionId })}`,
+      `${REMOTE_REQUEST_PATH.managedResumeCommand}?${new URLSearchParams({ sessionId })}`,
       undefined,
       signal,
     );
   }
   claudeResumeCommand(sessionId: string, signal?: AbortSignal) {
     return this.request<SessionResumeCommand>(
-      `managed/resume-command?${new URLSearchParams({ sessionId })}`,
+      `${REMOTE_REQUEST_PATH.managedResumeCommand}?${new URLSearchParams({ sessionId })}`,
       undefined,
       signal,
     );
@@ -1473,14 +1512,17 @@ export class WebClient {
    * in a session's or workspace's folder. Other devices are refused.
    */
   devinTerminal(body: { action: "login" | "trust"; sessionId?: string; workspaceId?: string }) {
-    return this.request<{ terminal: string }>("devin/terminal", body);
+    return this.request<{ terminal: string }>(REMOTE_REQUEST_PATH.devinTerminal, body);
   }
   managedAction(operation: "create" | "release" | "reconcile", body: ManagedActionBody) {
-    return this.request<ManagedActionResult>(`managed/${operation}`, body);
+    return this.request<ManagedActionResult>(
+      `${REMOTE_ROUTE_PREFIXES.managed.slice(1)}${operation}`,
+      body,
+    );
   }
   sessionCapabilities(sessionId: string, agent: LiveSessionAgent, signal?: AbortSignal) {
     return this.request<SessionCapabilities>(
-      `managed/capabilities?${new URLSearchParams({ sessionId, agent })}`,
+      `${REMOTE_REQUEST_PATH.managedCapabilities}?${new URLSearchParams({ sessionId, agent })}`,
       undefined,
       signal,
     );
@@ -1491,14 +1533,22 @@ export class WebClient {
     agent: ManagedAgent,
   ): Promise<SessionActionResult> {
     if (body.effort === null && sessionProviderCapabilities(agent)?.models.effortDefault === false)
-      return Promise.reject(new ApiError(400, "invalid_effort", "not-dispatched"));
+      return Promise.reject(
+        new ApiError(400, REMOTE_ERROR_CODES.invalidEffort, REMOTE_CONTROL_OUTCOMES.notDispatched),
+      );
     if (action === "open-model-picker" && !sessionProviderCapabilities(agent)?.models.nativePicker)
-      return Promise.reject(new ApiError(409, "operation_unavailable", "not-dispatched"));
+      return Promise.reject(
+        new ApiError(
+          409,
+          REMOTE_ERROR_CODES.operationUnavailable,
+          REMOTE_CONTROL_OUTCOMES.notDispatched,
+        ),
+      );
     if (action === "inspect" && agent !== "codex")
       return this.managedInspect(body.sessionId, agent).then((context) => ({ context }));
     if (this.connection.type === "lan-http" && agent === "codex" && action === "queue-delete")
       return this.codexAction(action, body);
-    return this.request<SessionActionResult>("managed/action", {
+    return this.request<SessionActionResult>(REMOTE_REQUEST_PATH.managedAction, {
       ...body,
       operation: action,
       agent,
@@ -1506,7 +1556,7 @@ export class WebClient {
   }
   sessionSettings(sessionId: string, agent: ManagedAgent, signal?: AbortSignal) {
     return this.request<SessionSettings>(
-      `managed/settings?${new URLSearchParams({ sessionId, agent })}`,
+      `${REMOTE_REQUEST_PATH.managedSettings}?${new URLSearchParams({ sessionId, agent })}`,
       undefined,
       signal,
     );
@@ -1515,12 +1565,12 @@ export class WebClient {
     body: { sessionId: string; bootId: string; expectedRevision: number },
     signal?: AbortSignal,
   ) {
-    return this.request<SessionSettings>("managed/settings-prepare", body, signal);
+    return this.request<SessionSettings>(REMOTE_REQUEST_PATH.managedSettingsPrepare, body, signal);
   }
   /** Whether the session can coordinate workers, and any current Project Agent state. */
   projectAgent(sessionId: string, signal?: AbortSignal) {
     return this.request<{ lead: ProjectAgentState | null; capable?: boolean }>(
-      `managed/project-agent?${new URLSearchParams({ sessionId })}`,
+      `${REMOTE_REQUEST_PATH.managedProjectAgent}?${new URLSearchParams({ sessionId })}`,
       undefined,
       signal,
     );
@@ -1545,13 +1595,17 @@ export class WebClient {
     },
     signal?: AbortSignal,
   ) {
-    return this.request<{ lead: ProjectAgentState | null }>("managed/project-agent", body, signal);
+    return this.request<{ lead: ProjectAgentState | null }>(
+      REMOTE_REQUEST_PATH.managedProjectAgent,
+      body,
+      signal,
+    );
   }
   sessionQueue(sessionId: string, agent: LiveSessionAgent, signal?: AbortSignal) {
     return agent === "codex"
       ? this.codexQueue(sessionId, signal)
       : this.request<SessionQueue>(
-          `managed/queue?${new URLSearchParams({ sessionId, agent })}`,
+          `${REMOTE_REQUEST_PATH.managedQueue}?${new URLSearchParams({ sessionId, agent })}`,
           undefined,
           signal,
         );
@@ -1560,7 +1614,7 @@ export class WebClient {
     return agent === "codex"
       ? this.codexGoals(sessionId, signal)
       : this.request<SessionGoalState>(
-          `managed/goals?${new URLSearchParams({ sessionId, agent })}`,
+          `${REMOTE_REQUEST_PATH.managedGoals}?${new URLSearchParams({ sessionId, agent })}`,
           undefined,
           signal,
         );
@@ -1574,7 +1628,11 @@ export class WebClient {
     if (agent === "codex") return this.codexContextOptions(sessionId, directoryId, signal);
     const query = new URLSearchParams({ sessionId, agent });
     if (directoryId) query.set("directoryId", directoryId);
-    return this.request<SessionResources>(`managed/resources?${query}`, undefined, signal);
+    return this.request<SessionResources>(
+      `${REMOTE_REQUEST_PATH.managedResources}?${query}`,
+      undefined,
+      signal,
+    );
   }
   newSessionResources(
     workspaceId: string,
@@ -1584,32 +1642,36 @@ export class WebClient {
   ) {
     const query = new URLSearchParams({ workspaceId, agent });
     if (directoryId) query.set("directoryId", directoryId);
-    return this.request<NewSessionResources>(`managed/resources?${query}`, undefined, signal);
+    return this.request<NewSessionResources>(
+      `${REMOTE_REQUEST_PATH.managedResources}?${query}`,
+      undefined,
+      signal,
+    );
   }
   codexCapabilities(sessionId: string, signal?: AbortSignal) {
     return this.request<SessionCapabilities>(
-      `codex/capabilities?${new URLSearchParams({ sessionId })}`,
+      `${REMOTE_REQUEST_PATH.codexCapabilities}?${new URLSearchParams({ sessionId })}`,
       undefined,
       signal,
     );
   }
   codexQueue(sessionId: string, signal?: AbortSignal) {
     return this.request<SessionQueue>(
-      `codex/queue?${new URLSearchParams({ sessionId })}`,
+      `${REMOTE_REQUEST_PATH.codexQueue}?${new URLSearchParams({ sessionId })}`,
       undefined,
       signal,
     );
   }
   codexSessionSettings(sessionId: string, signal?: AbortSignal) {
     return this.request<SessionSettings>(
-      `codex/session-settings?${new URLSearchParams({ sessionId })}`,
+      `${REMOTE_REQUEST_PATH.codexSessionSettings}?${new URLSearchParams({ sessionId })}`,
       undefined,
       signal,
     );
   }
   codexGoals(sessionId: string, signal?: AbortSignal) {
     return this.request<SessionGoalState>(
-      `codex/goals?${new URLSearchParams({ sessionId })}`,
+      `${REMOTE_REQUEST_PATH.codexGoals}?${new URLSearchParams({ sessionId })}`,
       undefined,
       signal,
     );
@@ -1617,16 +1679,25 @@ export class WebClient {
   codexContextOptions(sessionId: string, directoryId?: string, signal?: AbortSignal) {
     const query = new URLSearchParams({ sessionId });
     if (directoryId) query.set("directoryId", directoryId);
-    return this.request<SessionResources>(`codex/context-options?${query}`, undefined, signal);
+    return this.request<SessionResources>(
+      `${REMOTE_REQUEST_PATH.codexContextOptions}?${query}`,
+      undefined,
+      signal,
+    );
   }
   codexAction(action: CodexAction, body: SessionActionBody) {
     if (body.effort === null)
-      return Promise.reject(new ApiError(400, "invalid_effort", "not-dispatched"));
-    return this.request<SessionActionResult>(`codex/${action}`, body);
+      return Promise.reject(
+        new ApiError(400, REMOTE_ERROR_CODES.invalidEffort, REMOTE_CONTROL_OUTCOMES.notDispatched),
+      );
+    return this.request<SessionActionResult>(
+      `${REMOTE_LEGACY_CODEX.prefix.slice(1)}${action}`,
+      body,
+    );
   }
   attachments(sessionId: string, signal?: AbortSignal) {
     return this.request<{ attachments: UploadedAttachment[] }>(
-      `attachments?${new URLSearchParams({ sessionId })}`,
+      `${REMOTE_REQUEST_PATH.attachments}?${new URLSearchParams({ sessionId })}`,
       undefined,
       signal,
     );
@@ -1638,9 +1709,15 @@ export class WebClient {
     signal?: AbortSignal,
   ): Promise<UploadedAttachment> {
     if (this.connection.type === "lan-http" && (!this.compatible || !this.bearerToken))
-      return Promise.reject(new ApiError(401, "access_ended"));
-    if (this.realtimeVersion !== 2)
-      return Promise.reject(new ApiError(409, "incompatible_protocol", "not-dispatched"));
+      return Promise.reject(new ApiError(401, REMOTE_ERROR_CODES.accessEnded));
+    if (this.realtimeVersion !== CONVERSATION_PROTOCOL_VERSION)
+      return Promise.reject(
+        new ApiError(
+          409,
+          REMOTE_ERROR_CODES.incompatibleProtocol,
+          REMOTE_CONTROL_OUTCOMES.notDispatched,
+        ),
+      );
     if (this.bridge) return this.bridge.uploadAttachment(sessionId, file, progress, signal);
     return new Promise((resolve, reject) => {
       const xhr = new XMLHttpRequest();
@@ -1652,7 +1729,7 @@ export class WebClient {
       }
       xhr.open(
         "POST",
-        `${this.origin}/api/web/v1/attachments?${new URLSearchParams({ sessionId, name: file.name, mime: file.type || "application/octet-stream" })}`,
+        `${this.origin}${REMOTE_ROUTE_BASE}${REMOTE_ROUTE.attachments}?${new URLSearchParams({ sessionId, name: file.name, mime: file.type || "application/octet-stream" })}`,
       );
       xhr.timeout = 120000;
       xhr.withCredentials = this.connection.type === "same-origin";
@@ -1670,7 +1747,7 @@ export class WebClient {
             reject(
               new ApiError(
                 xhr.status,
-                typeof value.code === "string" ? value.code : "upload_failed",
+                typeof value.code === "string" ? value.code : REMOTE_ERROR_CODES.uploadFailed,
               ),
             );
             return;
@@ -1683,15 +1760,15 @@ export class WebClient {
             typeof value.size !== "number" ||
             typeof value.version !== "string"
           )
-            throw new Error("invalid_attachment_response");
+            throw new Error(REMOTE_ERROR_CODES.invalidAttachmentResponse);
           resolve(value as UploadedAttachment);
         } catch {
-          reject(new ApiError(xhr.status, "upload_failed"));
+          reject(new ApiError(xhr.status, REMOTE_ERROR_CODES.uploadFailed));
         }
       };
       xhr.onerror = xhr.ontimeout = () => {
         finish();
-        reject(new ApiError(0, "upload_failed"));
+        reject(new ApiError(0, REMOTE_ERROR_CODES.uploadFailed));
       };
       xhr.onabort = () => {
         finish();
@@ -1703,33 +1780,40 @@ export class WebClient {
   }
   receipt(requestId: string, signal?: AbortSignal) {
     return this.request<ControlReceipt>(
-      `requests/${encodeURIComponent(requestId)}`,
+      `${REMOTE_ROUTE_PREFIXES.requests.slice(1)}${encodeURIComponent(requestId)}`,
       undefined,
       signal,
     );
   }
+  abandonOutcome(requestId: string, sessionId: string) {
+    return this.request<{ abandoned: boolean }>(
+      REMOTE_REQUEST_PATH.abandonRequest,
+      { requestId, sessionId },
+      AbortSignal.timeout(6_000),
+    );
+  }
   historySearch(query: HistorySearchQuery, signal?: AbortSignal) {
-    return this.request<HistorySearchResult>("history/search", query, signal);
+    return this.request<HistorySearchResult>(REMOTE_REQUEST_PATH.historySearch, query, signal);
   }
   historyLocate(location: HistoryLocation, signal?: AbortSignal) {
-    return this.request<HistoryLocatedRecord>("history/locate", location, signal);
+    return this.request<HistoryLocatedRecord>(REMOTE_REQUEST_PATH.historyLocate, location, signal);
   }
   historyReferences(references: HistoryReference[], signal?: AbortSignal) {
     return this.request<{ references: ResolvedHistoryReference[]; text: string }>(
-      "history/references",
+      REMOTE_REQUEST_PATH.historyReferences,
       { references },
       signal,
     );
   }
   historyStatus(signal?: AbortSignal) {
-    return this.request<HistorySearchStatus>("history/status", undefined, signal);
+    return this.request<HistorySearchStatus>(REMOTE_REQUEST_PATH.historyStatus, undefined, signal);
   }
   approvalRules(workspaceId?: string) {
     const query = workspaceId === undefined ? "" : `?${new URLSearchParams({ workspaceId })}`;
-    return this.request<ApprovalRuleList>(`approval-rules${query}`);
+    return this.request<ApprovalRuleList>(`${REMOTE_REQUEST_PATH.approvalRules}${query}`);
   }
   revokeApprovalRule(agent: ManagedAgent, ruleId: string, workspaceId?: string) {
-    return this.request<{ revoked: true }>("approval-rules/revoke", {
+    return this.request<{ revoked: true }>(REMOTE_REQUEST_PATH.approvalRulesRevoke, {
       agent,
       ruleId,
       workspaceId,
@@ -1737,32 +1821,34 @@ export class WebClient {
   }
   approvalAudit(before?: string) {
     const query = before === undefined ? "" : `?${new URLSearchParams({ before })}`;
-    return this.request<SessionApprovalAuditPage>(`approval-audit${query}`);
+    return this.request<SessionApprovalAuditPage>(`${REMOTE_REQUEST_PATH.approvalAudit}${query}`);
   }
   notificationPolicy() {
-    return this.request<{ policy: NotificationPolicy }>("push/policy");
+    return this.request<{ policy: NotificationPolicy }>(REMOTE_REQUEST_PATH.pushPolicy);
   }
   updateNotificationPolicy(patch: NotificationPolicyPatch) {
-    return this.request<{ policy: NotificationPolicy }>("push/policy", patch);
+    return this.request<{ policy: NotificationPolicy }>(REMOTE_REQUEST_PATH.pushPolicy, patch);
   }
   notificationActivity() {
-    return this.request<{ activity: NotificationActivitySnapshot }>("push/activity");
+    return this.request<{ activity: NotificationActivitySnapshot }>(
+      REMOTE_REQUEST_PATH.pushActivity,
+    );
   }
   historyConfigure(enabled: boolean) {
-    return this.request<HistorySearchStatus>("history/configure", { enabled });
+    return this.request<HistorySearchStatus>(REMOTE_REQUEST_PATH.historyConfigure, { enabled });
   }
   historyClear() {
-    return this.request<HistorySearchStatus>("history/clear", {});
+    return this.request<HistorySearchStatus>(REMOTE_REQUEST_PATH.historyClear, {});
   }
   historyRebuild() {
-    return this.request<HistorySearchStatus>("history/rebuild", {});
+    return this.request<HistorySearchStatus>(REMOTE_REQUEST_PATH.historyRebuild, {});
   }
   catalog(signal?: AbortSignal) {
-    return this.request<ConversationCatalog>("catalog", undefined, signal);
+    return this.request<ConversationCatalog>(REMOTE_REQUEST_PATH.catalog, undefined, signal);
   }
   async taskSummary(signal?: AbortSignal) {
     const response = await this.request<{ taskSummary?: ConversationTaskSummary }>(
-      "catalog?taskSummary=1",
+      `${REMOTE_REQUEST_PATH.catalog}?taskSummary=1`,
       undefined,
       signal,
     );
@@ -1772,13 +1858,18 @@ export class WebClient {
     // A row can have its own client that has not negotiated the mutation protocol yet.
     if (this.realtimeVersion === 0) {
       const access = await this.access();
-      if (access.status !== "approved") throw new ApiError(401, "access_ended", "not-dispatched");
+      if (access.status !== "approved")
+        throw new ApiError(
+          401,
+          REMOTE_ERROR_CODES.accessEnded,
+          REMOTE_CONTROL_OUTCOMES.notDispatched,
+        );
     }
-    return this.request<{ pinned: boolean }>("session-pin", { sessionId, pinned });
+    return this.request<{ pinned: boolean }>(REMOTE_REQUEST_PATH.sessionPin, { sessionId, pinned });
   }
   readState(sessionId: string, signal?: AbortSignal) {
     return this.request<{ readState: ConversationReadState }>(
-      `read-state?${new URLSearchParams({ sessionId })}`,
+      `${REMOTE_REQUEST_PATH.readState}?${new URLSearchParams({ sessionId })}`,
       undefined,
       signal,
     );
@@ -1792,7 +1883,7 @@ export class WebClient {
   ) {
     try {
       const result = await this.request<{ readState: ConversationReadState }>(
-        "read-state",
+        REMOTE_REQUEST_PATH.readState,
         { sessionId, expectedVersion, seenResultId },
         signal,
       );
@@ -1813,27 +1904,35 @@ export class WebClient {
   events(sessionId: string, cursor?: string, signal?: AbortSignal) {
     const q = new URLSearchParams({ sessionId, limit: "50" });
     if (cursor) q.set("cursor", cursor);
-    return this.request<ConversationEventPage>(`events?${q}`, undefined, signal);
+    return this.request<ConversationEventPage>(
+      `${REMOTE_REQUEST_PATH.events}?${q}`,
+      undefined,
+      signal,
+    );
   }
   sessionImage(sessionId: string, imageId: string, signal?: AbortSignal) {
     return this.request<ConversationImageData>(
-      `session-images?${new URLSearchParams({ sessionId, imageId })}`,
+      `${REMOTE_REQUEST_PATH.sessionImages}?${new URLSearchParams({ sessionId, imageId })}`,
       undefined,
       signal,
     );
   }
   live(sessionId: string, signal?: AbortSignal) {
-    return this.request<Live>(`live?${new URLSearchParams({ sessionId })}`, undefined, signal);
+    return this.request<Live>(
+      `${REMOTE_REQUEST_PATH.live}?${new URLSearchParams({ sessionId })}`,
+      undefined,
+      signal,
+    );
   }
 }
 
 /** Reject alternate numeric spellings before URL normalization can hide them. */
 export function parseLanOrigin(value: string): string {
   const match = /^http:\/\/((?:\d{1,3}\.){3}\d{1,3}):(\d{1,5})$/.exec(value.trim());
-  if (!match) throw new Error("invalid_lan_address");
+  if (!match) throw new Error(REMOTE_ERROR_CODES.invalidLanAddress);
   const octets = match[1].split(".").map(Number);
   if (octets.some((n, i) => n > 255 || String(n) !== match[1].split(".")[i]))
-    throw new Error("invalid_lan_address");
+    throw new Error(REMOTE_ERROR_CODES.invalidLanAddress);
   const [a, b] = octets,
     port = Number(match[2]);
   if (
@@ -1842,7 +1941,7 @@ export function parseLanOrigin(value: string): string {
     port > 65535 ||
     String(port) !== match[2]
   )
-    throw new Error("invalid_lan_address");
+    throw new Error(REMOTE_ERROR_CODES.invalidLanAddress);
   return `http://${match[1]}:${port}`;
 }
 
@@ -1875,7 +1974,7 @@ export class SseParser {
           this.lineBytes -= 2;
         this.lastCodeUnit = part.charCodeAt(part.length - 1);
         if (this.lineBytes + this.dataBytes > 4 * 1024 * 1024 + 1024)
-          throw new Error("stream_too_large");
+          throw new Error(REMOTE_ERROR_CODES.streamTooLarge);
         this.lineParts.push(part);
       }
       if (end < 0) return;
@@ -1896,15 +1995,15 @@ export class SseParser {
         this.dataBytes = 0;
       } else if (line.startsWith("id:")) {
         const id = line.slice(3).replace(/^ /, "");
-        if (id.length > 4096) throw new Error("stream_cursor_too_large");
+        if (id.length > 4096) throw new Error(REMOTE_ERROR_CODES.streamCursorTooLarge);
         if (!id.includes("\0")) this.id = id;
       } else if (line.startsWith("event:")) {
-        if (line.length > 128) throw new Error("stream_too_large");
+        if (line.length > 128) throw new Error(REMOTE_ERROR_CODES.streamTooLarge);
         this.event = line.slice(6).replace(/^ /, "");
       } else if (line.startsWith("data:")) {
         const value = line.slice(5).replace(/^ /, "");
         this.dataBytes += this.encoder.encode(value).byteLength + (this.data.length ? 1 : 0);
-        if (this.dataBytes > 4 * 1024 * 1024) throw new Error("stream_too_large");
+        if (this.dataBytes > 4 * 1024 * 1024) throw new Error(REMOTE_ERROR_CODES.streamTooLarge);
         this.data.push(value);
       }
     }
@@ -1956,9 +2055,15 @@ export async function runSessionManagement(
   fields: { name?: string } = {},
 ): Promise<SessionActionResult> {
   const agent = managedAgentOf(session.agent);
-  if (!agent) throw new ApiError(409, "capability_unavailable", "not-dispatched");
+  if (!agent)
+    throw new ApiError(
+      409,
+      REMOTE_ERROR_CODES.capabilityUnavailable,
+      REMOTE_CONTROL_OUTCOMES.notDispatched,
+    );
   const access = await client.access();
-  if (access.status !== "approved") throw new ApiError(401, "access_ended", "not-dispatched");
+  if (access.status !== "approved")
+    throw new ApiError(401, REMOTE_ERROR_CODES.accessEnded, REMOTE_CONTROL_OUTCOMES.notDispatched);
   const live = await client.live(session.id);
   return client.sessionAction(
     action,
@@ -2026,7 +2131,7 @@ export type InteractionReplyResult =
   /** This device may not decide it, or the Agent cannot take it from here; nothing was sent. */
   | { status: "refused"; reason: string }
   /** Nothing ran: the host refused it, or it could not be sent. `reason` is the code. */
-  | { status: "not-dispatched"; reason: string }
+  | { status: typeof REMOTE_CONTROL_OUTCOMES.notDispatched; reason: string }
   /** It may have run. It is never sent again; a kept identity lets the host's receipt settle it. */
   | { status: "unknown"; requestId: string; durable: boolean }
   | { status: "access-ended" };
@@ -2053,11 +2158,11 @@ async function controlFromOutside(
     if (access.status !== "approved") return { status: "access-ended" };
     live = await client.live(session.id);
   } catch (error) {
-    if (error instanceof ApiError && error.code === "access_ended")
+    if (error instanceof ApiError && error.code === REMOTE_ERROR_CODES.accessEnded)
       return { status: "access-ended" };
     return {
-      status: "not-dispatched",
-      reason: error instanceof ApiError ? error.code : "connection_failed",
+      status: REMOTE_CONTROL_OUTCOMES.notDispatched,
+      reason: error instanceof ApiError ? error.code : REMOTE_ERROR_CODES.connectionFailed,
     };
   }
   const checked = check(access, live);
@@ -2066,23 +2171,29 @@ async function controlFromOutside(
   const requestId = crypto.randomUUID();
   if (durable)
     try {
-      if (!pending) throw new Error("pending_storage_unavailable");
+      if (!pending) throw new Error(REMOTE_ERROR_CODES.pendingStorageUnavailable);
       pending.remember({ requestId, sessionId: session.id, kind: checked.kind });
     } catch {
-      return { status: "not-dispatched", reason: "pending_storage_unavailable" };
+      return {
+        status: REMOTE_CONTROL_OUTCOMES.notDispatched,
+        reason: REMOTE_ERROR_CODES.pendingStorageUnavailable,
+      };
     }
   try {
-    await client.request(checked.kind, checked.body(requestId));
+    await client.request(REMOTE_REQUEST_PATH[checked.kind], checked.body(requestId));
   } catch (error) {
-    if (error instanceof ApiError && error.controlOutcome === "not-dispatched") {
+    if (
+      error instanceof ApiError &&
+      error.controlOutcome === REMOTE_CONTROL_OUTCOMES.notDispatched
+    ) {
       try {
         if (durable) pending?.forget(requestId);
       } catch {
         // Storage that cannot be written keeps the identity; its receipt settles it later.
       }
-      return { status: "not-dispatched", reason: error.code };
+      return { status: REMOTE_CONTROL_OUTCOMES.notDispatched, reason: error.code };
     }
-    if (error instanceof ApiError && error.code === "access_ended")
+    if (error instanceof ApiError && error.code === REMOTE_ERROR_CODES.accessEnded)
       return { status: "access-ended" };
     return { status: "unknown", requestId, durable };
   }
@@ -2132,7 +2243,7 @@ export function replyToInteraction(
               same(option.decision, reply.nativeDecision),
             ))
         )
-          return { status: "refused", reason: "decision_unavailable" };
+          return { status: "refused", reason: REMOTE_ERROR_CODES.decisionUnavailable };
         return {
           status: "ready",
           kind: "approve",
@@ -2204,9 +2315,10 @@ export function stopSessionTurn(
 export function settledReceipt(
   receipt: ControlReceipt,
   entry: { requestId: string; sessionId?: string; kind: string },
-): "accepted" | "not-dispatched" | undefined {
+): "accepted" | typeof REMOTE_CONTROL_OUTCOMES.notDispatched | undefined {
   if (!receipt.found || receipt.requestId !== entry.requestId) return undefined;
-  if (isLegacyPreparedReceipt(receipt, entry.requestId)) return "not-dispatched";
+  if (isLegacyPreparedReceipt(receipt, entry.requestId))
+    return REMOTE_CONTROL_OUTCOMES.notDispatched;
   if (
     receipt.recovery !== undefined ||
     (entry.sessionId && receipt.sessionId !== entry.sessionId) ||

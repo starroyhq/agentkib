@@ -31,7 +31,7 @@ export function ConversationTranscript({
       hasEarlier={hasEarlier}
       historyDetailTurnId={historyDetailTurnId}
       loadingEarlier={loadingEarlier}
-      earlierLabel={tr(loadingEarlier ? "sessions.loadingHistory" : "sessions.loadEarlier")}
+      earlierLabel={tr("sessions.loadEarlier")}
       onLoadEarlier={loadEarlier}
       labels={{
         process: tr("sessions.process"),

@@ -154,11 +154,15 @@ export function CodeBlock({
           </CodeBlockButton>
           <CodeBlockButton
             label={words.copy}
-            hint={feedback === "copied" ? words.copied : words.copy}
+            hint={words.copy}
             onClick={() => void copyText(source)}
           >
             {feedback === "copied" ? (
-              <Check size={16} aria-hidden="true" />
+              <Check
+                size={16}
+                className="text-emerald-600 dark:text-emerald-400"
+                aria-hidden="true"
+              />
             ) : (
               <Copy size={16} aria-hidden="true" />
             )}

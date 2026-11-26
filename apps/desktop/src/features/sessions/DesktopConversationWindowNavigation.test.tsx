@@ -591,19 +591,26 @@ it("reports a full stream budget and restores live controls when a slot is relea
   await waitFor(() => expect(screen.getByRole("button", { name: labels.stop })).toBeEnabled());
   const releaseSlot = host.holdSubscriptionSlot();
 
+  vi.useFakeTimers();
   await act(async () => {
     fireEvent.click(screen.getByRole("button", { name: /^Another desktop conversation/ }));
   });
-  const reconnecting = "Live updates interrupted. Reconnecting…";
-  expect(await screen.findByText(reconnecting)).toBeVisible();
+  const reconnecting = "Reconnecting…";
+  expect(screen.queryByRole("button", { name: reconnecting })).not.toBeInTheDocument();
   expect(host.limitRejections).toContain(target.id);
   expect(screen.queryByRole("button", { name: labels.stop })).not.toBeInTheDocument();
+  // Simulate another connection taking the slot freed when the parked stream is discarded.
+  const releaseReplacementSlot = host.holdSubscriptionSlot();
+  await act(async () => vi.advanceTimersByTimeAsync(2000));
+  expect(screen.getByRole("button", { name: reconnecting })).toBeVisible();
+  expect(screen.queryByText(reconnecting)).not.toBeInTheDocument();
 
   releaseSlot();
-  await waitFor(() => expect(screen.getByRole("button", { name: labels.stop })).toBeEnabled(), {
-    timeout: 2500,
-  });
-  expect(screen.queryByText(reconnecting)).not.toBeInTheDocument();
+  releaseReplacementSlot();
+  await act(async () => vi.advanceTimersByTimeAsync(2500));
+  expect(screen.getByRole("button", { name: labels.stop })).toBeEnabled();
+  expect(screen.queryByRole("button", { name: reconnecting })).not.toBeInTheDocument();
+  vi.useRealTimers();
   act(() =>
     host.emit({
       ...host.envelope(1, target.id),

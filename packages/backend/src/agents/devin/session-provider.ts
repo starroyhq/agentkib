@@ -1,3 +1,4 @@
+import { REMOTE_ERROR_CODES } from "@agentkib/runtime-protocol";
 import { createHash, randomUUID } from "node:crypto";
 import type { ConversationReadResult } from "@agentkib/runtime-protocol";
 import { z } from "zod";
@@ -439,7 +440,11 @@ export class DevinSessionProvider implements DevinExecutor, TypedSessionProvider
           if (!record || !nativeId) return reject("worker-restart-user-only");
           const snapshot = record.runner.snapshot();
           if (snapshot.stopEnabled !== true)
-            return reject(snapshot.cancelling ? "worker-not-running" : "worker-restart-user-only");
+            return reject(
+              snapshot.cancelling
+                ? REMOTE_ERROR_CODES.workerNotRunning
+                : "worker-restart-user-only",
+            );
           const sameTarget = () => {
             const target = this.host.serialQueueTarget(sessionId);
             if (

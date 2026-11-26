@@ -23,6 +23,7 @@ export function BasicSessionComposer({
   actions,
   beforeComposer,
   afterToolbar,
+  primaryAction,
 }: {
   sessionId: string;
   locale: ComposerModelLocale;
@@ -31,8 +32,6 @@ export function BasicSessionComposer({
     addContext: string;
     send: string;
     stop: string;
-    experimental: string;
-    controlInfo: string;
   };
   value: string;
   busy: boolean;
@@ -47,9 +46,18 @@ export function BasicSessionComposer({
   actions?: ReactNode;
   beforeComposer?: ReactNode;
   afterToolbar?: ReactNode;
+  primaryAction?: (action: ReactNode) => ReactNode;
 }) {
   const submitting = useRef(false);
   const addCopy = composerAddCopy(locale);
+  const submit = (
+    <ComposerPrimaryAction
+      label={canStop ? labels.stop : labels.send}
+      kind={canStop ? "stop" : "send"}
+      disabled={!canStop && !canSend}
+      onStop={onStop}
+    />
+  );
   return (
     <div className="w-full max-w-3xl shrink-0 self-center">
       {beforeComposer}
@@ -82,21 +90,9 @@ export function BasicSessionComposer({
                 disabled: true,
                 disabledReason: addCopy.unavailable,
               }}
-              leadingStatus={
-                <small className="max-w-lg text-xs leading-5 text-muted-foreground">
-                  {labels.experimental} · {labels.controlInfo}
-                </small>
-              }
               actions={actions}
               usage={contextUsage}
-              action={
-                <ComposerPrimaryAction
-                  label={canStop ? labels.stop : labels.send}
-                  kind={canStop ? "stop" : "send"}
-                  disabled={!canStop && !canSend}
-                  onStop={onStop}
-                />
-              }
+              action={primaryAction ? primaryAction(submit) : submit}
             />
             {afterToolbar}
           </>

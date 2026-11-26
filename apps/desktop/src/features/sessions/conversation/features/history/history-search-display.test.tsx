@@ -142,11 +142,32 @@ describe("localized history result metadata", () => {
       expect(button).not.toHaveTextContent(indexedAt);
       expect(button).toHaveTextContent("Claude Code");
       expect(button).not.toHaveTextContent("claude-code");
-      expect(screen.getByRole("list", { name: historyCopy[locale].sources })).toHaveTextContent(
-        "Claude Code",
-      );
+      expect(
+        screen.queryByRole("list", { name: historyCopy[locale].sources }),
+      ).not.toBeInTheDocument();
     },
   );
+
+  it("keeps per-source coverage details on the status badge when indexing is incomplete", async () => {
+    const f = fixture();
+    const partial: HistorySearchStatus = {
+      ...status,
+      sources: [{ agent: "claude-code", body: "supported", tools: "unsupported", coverage }],
+    };
+    vi.mocked(f.client.historyStatus).mockResolvedValue(partial);
+    vi.mocked(f.client.historySearch).mockResolvedValue({
+      hits: [f.hit],
+      status: partial,
+      nextCursor: null,
+      limited: false,
+    });
+    render(<HistorySearchPanel {...f.props} locale="en-US" />);
+    await resultButton();
+    const badge = screen.getByText(historyCopy["en-US"].partialShort);
+    expect(badge).toBeVisible();
+    expect(badge).toHaveAttribute("title", expect.stringContaining("Claude Code"));
+    expect(badge).toHaveAttribute("aria-description", expect.stringContaining("Not supported"));
+  });
 
   it("uses existing display names and safe fallback names for multiple agents without changing their identity", async () => {
     const f = fixture();
@@ -220,8 +241,9 @@ describe("localized history result metadata", () => {
     );
     const excerpt = within(source).getByRole("textbox", { name: historyCopy["zh-Hant"].excerpt });
     fireEvent.select(excerpt, { target: { selectionStart: 7, selectionEnd: 13 } });
-    fireEvent.click(within(source).getByRole("button", { name: historyCopy["zh-Hant"].quote }));
-    await screen.findByText(historyCopy["zh-Hant"].added);
+    const quote = within(source).getByRole("button", { name: historyCopy["zh-Hant"].quote });
+    fireEvent.click(quote);
+    await waitFor(() => expect(quote).toHaveAttribute("title", historyCopy["zh-Hant"].added));
     expect(f.client.historyReferences).toHaveBeenCalledExactlyOnceWith(
       [{ ...f.source.location, contentHash: "hash", start: 7, end: 13 }],
       expect.any(AbortSignal),

@@ -787,15 +787,27 @@ describe("desktop embedded conversation", () => {
       return fixture;
     }
 
-    it.each([false, true])(
-      "opens a requested terminal wizard only after matching ready state (leave before ready: %s)",
-      async (leaveBeforeReady) => {
+    it.each([
+      [false, false],
+      [false, true],
+      [true, false],
+    ])(
+      "opens a requested terminal wizard only after matching ready state (leave before ready: %s, terminal owner: %s)",
+      async (leaveBeforeReady, terminalOwner) => {
         const previousPlatform = document.documentElement.dataset.platform;
         document.documentElement.dataset.platform = "macos";
         try {
           vi.spyOn(window, "scrollTo").mockImplementation(() => {});
           sessionStorage.clear();
-          const initial = live();
+          const initial = terminalOwner
+            ? {
+                ...live(),
+                executionLocation: "external" as const,
+                reason: "claude-owner-busy",
+                ownershipReason: "claude-owner-busy",
+                sendEnabled: false,
+              }
+            : live();
           const { bridge, patch } = claudeBridge(initial);
           const original = vi.mocked(bridge.request).getMockImplementation()!;
           let releaseLive!: () => void;
@@ -1110,7 +1122,9 @@ describe("desktop embedded conversation", () => {
         terminalSend: false,
         reason: "claude-follower-send-unverified",
       });
-      expect(await screen.findByText(sessionContinuationCopy("zh-CN").terminalWatch)).toBeVisible();
+      expect(
+        screen.queryByText(sessionContinuationCopy("zh-CN").terminalWatch),
+      ).not.toBeInTheDocument();
       expect(screen.queryByText(claudeConnectionCopy["zh-CN"].sendUnverified)).toBeNull();
       const editor = screen.getByRole("textbox", { name: "发送消息" });
       expect(editor).toBeEnabled();
@@ -1187,8 +1201,8 @@ describe("desktop embedded conversation", () => {
         );
         // No version note anywhere on the session page.
         expect(
-          await screen.findByText(sessionContinuationCopy(locale).terminalWatch),
-        ).toBeVisible();
+          screen.queryByText(sessionContinuationCopy(locale).terminalWatch),
+        ).not.toBeInTheDocument();
         expect(screen.queryByText(/2\.1\.307/)).toBeNull();
         expect(document.querySelector("[data-terminal-compatibility]")).toBeNull();
         expect(
@@ -1248,15 +1262,16 @@ describe("desktop embedded conversation", () => {
     });
 
     it.each(["zh-CN", "zh-Hant", "en-US", "ja-JP"] as const)(
-      "places the automatic background end notice below the transcript in %s",
+      "keeps a normal background end silent in %s",
       async (locale) => {
         const copy = sessionContinuationCopy(locale);
         const { bridge, patch } = await open({ ...live(), executionLocation: "agentkib" }, locale);
         expect(await screen.findByRole("button", { name: copy.running })).toBeVisible();
         patch({ revision: 2, executionLocation: null, continuationNotice: "background-ended" });
-        const ended = await screen.findByText(copy.backgroundEnded);
-        expect(ended).toHaveAttribute("role", "status");
-        expect(ended.closest("aside")).toBeNull();
+        await waitFor(() =>
+          expect(screen.queryByRole("button", { name: copy.running })).toBeNull(),
+        );
+        expect(screen.queryByText(copy.backgroundEnded)).not.toBeInTheDocument();
         expect(screen.queryByRole("button", { name: copy.running })).toBeNull();
         expect(screen.getByPlaceholderText(copy.placeholder)).toBeEnabled();
         expect(

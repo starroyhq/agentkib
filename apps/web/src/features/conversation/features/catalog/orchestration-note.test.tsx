@@ -8,10 +8,10 @@ afterEach(cleanup);
 
 describe("delegation line", () => {
   it.each([
-    ["zh-CN", "项目 Agent · 委派已暂停", "Worker api · 委派自 发布计划"],
-    ["zh-Hant", "專案 Agent · 委派已暫停", "Worker api · 委派自 发布计划"],
-    ["en-US", "Project Agent · Delegation paused", "Worker api · Delegated by 发布计划"],
-    ["ja-JP", "プロジェクト Agent · 委任を一時停止中", "ワーカー api · 委任元 发布计划"],
+    ["zh-CN", "项目 Agent · 已暂停", "Worker api · 委派自 发布计划"],
+    ["zh-Hant", "專案 Agent · 已暫停", "Worker api · 委派自 发布计划"],
+    ["en-US", "Project Agent · Paused", "Worker api · Delegated by 发布计划"],
+    ["ja-JP", "プロジェクト Agent · 一時停止中", "ワーカー api · 委任元 发布计划"],
   ] as const)("names both roles in %s", (locale, lead, worker) => {
     expect(orchestrationText({ role: "lead", workers: 2, paused: true }, null, locale)).toBe(lead);
     expect(
@@ -20,7 +20,7 @@ describe("delegation line", () => {
   });
 
   it.each(["usage-limit", "report-undelivered"])(
-    "shows automatic %s recovery under the title",
+    "shows only the Project Agent role during automatic %s recovery",
     (reason) => {
       render(
         <OrchestrationNote
@@ -29,8 +29,9 @@ describe("delegation line", () => {
           locale="zh-CN"
         />,
       );
-      expect(screen.getByText("项目 Agent · 正在恢复委派")).toBeVisible();
-      expect(screen.queryByText(/委派已暂停/)).not.toBeInTheDocument();
+      expect(screen.getByText("项目 Agent")).toBeVisible();
+      expect(screen.queryByText(/正在恢复委派/)).not.toBeInTheDocument();
+      expect(screen.queryByText(/已暂停/)).not.toBeInTheDocument();
     },
   );
 

@@ -1,3 +1,4 @@
+import { REMOTE_ERROR_CODES } from "@agentkib/runtime-protocol";
 import type { LiveSessionAgent } from "@agentkib/runtime-protocol";
 import { z } from "zod";
 import { validateAntigravityControl } from "./antigravity";
@@ -81,7 +82,8 @@ export function runProviderValidation(
       verifiedClaudeManaged: call.verified["claude-code"] === true,
       verifiedSerialQueue: call.verified[agent as LiveSessionAgent] === true,
       requireFullAccess: () => {
-        if (!call.fullAccess) throw new ControlValidationError(403, "permission_denied");
+        if (!call.fullAccess)
+          throw new ControlValidationError(403, REMOTE_ERROR_CODES.permissionDenied);
         requiresFullAccess = true;
       },
     });

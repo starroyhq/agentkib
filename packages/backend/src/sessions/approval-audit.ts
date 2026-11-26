@@ -3,6 +3,7 @@ import { constants } from "node:fs";
 import { lstat, mkdir, open, rename, rm } from "node:fs/promises";
 import { join } from "node:path";
 import {
+  REMOTE_ERROR_CODES,
   MANAGED_AGENTS,
   type ManagedAgent,
   type SessionApprovalAuditDecision,
@@ -98,7 +99,8 @@ function sortableKey(entry: StoredEntry): string {
 }
 
 function cursorKey(cursor: string): string {
-  if (!/^[a-z\d_-]{1,160}$/i.test(cursor)) throw new Error("invalid_approval_audit_cursor");
+  if (!/^[a-z\d_-]{1,160}$/i.test(cursor))
+    throw new Error(REMOTE_ERROR_CODES.invalidApprovalAuditCursor);
   const key = Buffer.from(cursor, "base64url").toString("utf8");
   const [time, id, extra] = key.split("|");
   if (
@@ -108,7 +110,7 @@ function cursorKey(cursor: string): string {
     !DIGEST.test(id) ||
     Buffer.from(key).toString("base64url") !== cursor
   )
-    throw new Error("invalid_approval_audit_cursor");
+    throw new Error(REMOTE_ERROR_CODES.invalidApprovalAuditCursor);
   return key;
 }
 

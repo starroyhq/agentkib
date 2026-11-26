@@ -8,9 +8,8 @@ import {
 const cases = [
   {
     locale: "zh-CN",
-    install: "安装插件（只需一次）",
+    scopes: "插件安装范围",
     paste: "在终端粘贴并回车",
-    connected: "已连接终端",
     badge: "已连接",
     copyOptions: "更多复制选项",
     expired: "连接码已过期",
@@ -25,9 +24,8 @@ const cases = [
   },
   {
     locale: "zh-Hant",
-    install: "安裝外掛（只需一次）",
+    scopes: "外掛安裝範圍",
     paste: "在終端貼上並按下 Enter",
-    connected: "已連接終端",
     badge: "已連線",
     copyOptions: "更多複製選項",
     expired: "連線碼已過期",
@@ -42,9 +40,8 @@ const cases = [
   },
   {
     locale: "en-US",
-    install: "Install the plugin (once)",
+    scopes: "Plugin installation scopes",
     paste: "Paste into the terminal and press Enter",
-    connected: "Terminal connected",
     badge: "Connected",
     copyOptions: "More copy options",
     expired: "Connection code expired",
@@ -61,9 +58,8 @@ const cases = [
   },
   {
     locale: "ja-JP",
-    install: "プラグインをインストール（初回のみ）",
+    scopes: "プラグインのインストール範囲",
     paste: "ターミナルに貼り付けて Enter を押す",
-    connected: "ターミナルに接続済み",
     badge: "接続済み",
     copyOptions: "その他のコピー操作",
     expired: "接続コードの期限切れ",
@@ -83,9 +79,8 @@ const cases = [
 describe("terminal connection guide copy", () => {
   it.each(cases)("provides the approved steps and state labels in $locale", (expected) => {
     const copy = claudeConnectionCopy[expected.locale];
-    expect(copy.installStep).toBe(expected.install);
+    expect(copy.pluginScopes).toBe(expected.scopes);
     expect(copy.pasteStep).toBe(expected.paste);
-    expect(copy.connectedTitle).toBe(expected.connected);
     expect(copy.connectedBadge).toBe(expected.badge);
     expect(copy.copyOptions).toBe(expected.copyOptions);
     expect(copy.expiredTitle).toBe(expected.expired);
@@ -94,17 +89,14 @@ describe("terminal connection guide copy", () => {
     expect(copy.reconnectingTitle).toBe(expected.reconnecting);
     expect(copy.copyResumeCommand).toBe(expected.resume);
     expect(copy.regenerateConnection).toBe(expected.regenerate);
-    expect(copy.reconnectingInfo).toMatch(/不需要|不要|No new/);
     expect(copy).not.toHaveProperty("disconnectedInfo");
-    expect(copy.platformVersion).toContain("{version}");
-    expect(copy.platformVersion).toMatch(/更高|later|以降|以上/);
     expect(copy.expiresAt.replace("{time}", "10:42")).toContain("10:42");
-    expect(copy.generateStep).toBe(copy.generate);
     expect(copy.generate).not.toMatch(/一次性|one-time|一回限り/);
     expect(copy.clearConnection).toMatch(/…$/);
     expect(copy.disconnectConfirmInfo).toContain("AgentKib");
     expect(copy.codeExpiresSafety).toContain("{time}");
-    expect(copy.installedStep).not.toBe(copy.installStep);
+    expect(copy.pluginReload).toContain("/reload-plugins");
+    expect(copy.pluginUpdated).not.toContain("/reload-plugins");
     expect(copy.clearConnectionInfo).toBe(expected.clearInfo);
     expect(copy.clearConnectionInfo).not.toMatch(/凭据|憑據|credentials|認証情報/);
     expect(copy.disconnectConfirmInfo).toMatch(
@@ -132,7 +124,7 @@ describe("terminal connection guide copy", () => {
     const copy = claudeConnectionCopy[locale];
     expect(copy.cliTooOld).toContain("{version}");
     expect(copy.cliTooOld).toContain("{minimum}");
-    expect(copy.pluginOutdated).toMatch(/第 1|step 1|手順 1/);
+    expect(copy.pluginOutdated).not.toMatch(/第 1|step 1|手順 1/);
     expect(copy.missingCapabilities).toContain("{version}");
   });
 

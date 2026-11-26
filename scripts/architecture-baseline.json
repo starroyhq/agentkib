@@ -52,6 +52,7 @@
     "apps/desktop/test/claude-mcp-global-config.test.ts": 2,
     "apps/desktop/test/claude-session-origin.test.ts": 2,
     "apps/desktop/test/claude-settings-boundary-regressions.test.ts": 1,
+    "apps/desktop/test/claude-web-backend-integration.test.ts": 1,
     "apps/desktop/test/codex-quit-work.test.ts": 4,
     "apps/desktop/test/devin-managed.test.ts": 1,
     "apps/desktop/test/history-search-host.test.ts": 1,
@@ -161,7 +162,6 @@
     "packages/session-ui/src/conversation/sessions/session-display-state.ts": 4,
     "packages/session-ui/src/conversation/sessions/session-read-only.tsx": 1,
     "packages/session-ui/src/conversation/sessions/session-reader.tsx": 1,
-    "packages/session-ui/src/conversation/sessions/session-receipt-recovery.tsx": 2,
     "packages/session-ui/src/conversation/sessions/session-tools.tsx": 1,
     "packages/session-ui/src/conversation/sessions/use-session-controller.ts": 1,
     "packages/session-ui/src/session-context-usage.ts": 1,
@@ -172,31 +172,31 @@
   },
   "large": {
     "apps/desktop/electron/main/index.ts": 1706,
-    "apps/desktop/electron/main/web/relay/manager.ts": 1846,
-    "apps/desktop/electron/main/web/service.ts": 9180,
+    "apps/desktop/electron/main/web/relay/manager.ts": 1851,
+    "apps/desktop/electron/main/web/service.ts": 9494,
     "apps/desktop/scripts/verify-codex-shared-server.mjs": 1589,
     "apps/desktop/src/core/types.ts": 1569,
     "apps/desktop/src/features/remote/WebAccessSettings.tsx": 2211,
     "apps/desktop/src/features/skills/SkillManagerPanels.tsx": 1612,
     "apps/desktop/src/styles.css": 1722,
-    "packages/backend/src/agents/claude/claude-bridge.ts": 3330,
-    "packages/backend/src/agents/claude/claude-managed-read.ts": 6884,
+    "packages/backend/src/agents/claude/claude-bridge.ts": 3349,
+    "packages/backend/src/agents/claude/claude-managed-read.ts": 7102,
     "packages/backend/src/agents/claude/claude-managed-runner.ts": 3789,
     "packages/backend/src/agents/claude/claude-settings.ts": 1517,
     "packages/backend/src/agents/codex/managed-codex-state.ts": 1848,
-    "packages/backend/src/agents/codex/session-provider.ts": 8526,
-    "packages/backend/src/agents/devin/session-provider.ts": 1508,
-    "packages/backend/src/agents/dsh/dsh-bridge.ts": 5016,
-    "packages/backend/src/index.ts": 3860,
+    "packages/backend/src/agents/codex/session-provider.ts": 8598,
+    "packages/backend/src/agents/devin/session-provider.ts": 1513,
+    "packages/backend/src/agents/dsh/dsh-bridge.ts": 5030,
+    "packages/backend/src/index.ts": 3896,
     "packages/backend/src/mcp.ts": 1670,
-    "packages/backend/src/orchestration-service.ts": 3107,
+    "packages/backend/src/orchestration-service.ts": 3170,
     "packages/backend/src/skill-manager.ts": 3048,
     "packages/backend/src/skills.ts": 2668,
     "packages/claude-bridge-plugin/hooks/register.js": 3335,
     "packages/dsh-bridge-plugin/bridge.js": 2170,
-    "packages/session-ui/src/conversation/sessions/session-composer-controls.tsx": 1818,
-    "packages/session-ui/src/conversation/sessions/use-session-controller.ts": 2779,
-    "packages/web-client/src/index.ts": 2298
+    "packages/session-ui/src/conversation/sessions/session-composer-controls.tsx": 1886,
+    "packages/session-ui/src/conversation/sessions/use-session-controller.ts": 2967,
+    "packages/web-client/src/index.ts": 2410
   },
   "compatibility": {
     "apps/desktop/electron/api/index.ts": {
@@ -250,6 +250,10 @@
     "apps/desktop/electron/main/web/conversation-controls.test.ts": {
       "identifier: approveLegacyBrowser": 3
     },
+    "apps/desktop/electron/main/web/conversation-transport.ts": {
+      "identifier: REMOTE_LEGACY_CODEX": 2,
+      "identifier: isLegacyCodexPostPath": 2
+    },
     "apps/desktop/electron/main/web/desktop-conversation.test.ts": {
       "identifier: legacy": 3
     },
@@ -270,6 +274,9 @@
       "comment: A pending request issued by the previous release, retained to exercise legacy grants.": 1,
       "identifier: approveLegacyBrowser": 1,
       "identifier: seedLegacyPending": 2
+    },
+    "apps/desktop/electron/main/web/managed-websocket.ts": {
+      "identifier: isLegacyCodexPostPath": 2
     },
     "apps/desktop/electron/main/web/notification-routes.test.ts": {
       "identifier: approveLegacyBrowser": 2
@@ -300,7 +307,10 @@
     "apps/desktop/electron/main/web/service.ts": {
       "comment: Large task snapshots remain readable independently of the legacy directory size.": 1,
       "comment: Legacy hosted clients check this before authentication or any reads.": 1,
+      "comment: The remaining legacy POSTs are control requests. Inspect is a read-only probe.": 1,
+      "identifier: REMOTE_LEGACY_CODEX": 8,
       "identifier: fallback": 3,
+      "identifier: incompatibleProtocol": 4,
       "identifier: legacyCodex": 17,
       "identifier: legacyOperation": 3
     },
@@ -448,7 +458,8 @@
       "identifier: legacyReads": 3
     },
     "apps/desktop/src/features/sessions/conversation/features/sessions/composer-model-picker.test.tsx": {
-      "identifier: displayFallback": 3
+      "identifier: displayFallback": 4,
+      "identifier: modelNameFallback": 1
     },
     "apps/desktop/src/features/sessions/conversation/features/sessions/context-usage-compact.test.tsx": {
       "identifier: fallback": 8
@@ -595,6 +606,10 @@
     },
     "apps/desktop/test/claude-bridge-plugin-auto.test.ts": {
       "identifier: storedLegacyBinding": 3
+    },
+    "apps/desktop/test/claude-bridge-plugin-update.test.ts": {
+      "identifier: legacy": 9,
+      "identifier: legacyInstalls": 10
     },
     "apps/desktop/test/claude-bridge-plugin.test.ts": {
       "identifier: legacy": 5
@@ -822,6 +837,9 @@
     "apps/web/src/features/sessions/session-reader.test.tsx": {
       "identifier: bridgeCompatibility": 4
     },
+    "apps/web/src/features/sessions/session-receipt-feedback.test.tsx": {
+      "identifier: fallback": 1
+    },
     "apps/web/src/providers/environment.tsx": {
       "identifier: consumeLegacy": 3,
       "identifier: legacy": 5,
@@ -906,6 +924,7 @@
     },
     "packages/backend/src/agents/claude/claude-host-state.ts": {
       "comment: Legacy terminal usage was already included in tokensUsed. Unknown outcomes were not.": 1,
+      "identifier: legacy": 3,
       "identifier: retireLegacyArchive": 3
     },
     "packages/backend/src/agents/claude/claude-managed-read.ts": {
@@ -1040,7 +1059,8 @@
       "identifier: legacy": 5,
       "identifier: legacyDataDir": 1,
       "identifier: legacySessionFields": 2,
-      "identifier: readLegacy": 2
+      "identifier: readLegacy": 2,
+      "identifier: rpcIncompatibleProtocol": 1
     },
     "packages/backend/src/local-runtime-service.ts": {
       "comment: Remember the replacement without disturbing compatible peers or a user's quit choice.": 1,
@@ -1218,6 +1238,10 @@
       "identifier: dshBridgeCompatibility": 1,
       "identifier: dshBridgePluginCompatibility": 1
     },
+    "packages/runtime-protocol/scripts/generate-remote-contract.mjs": {
+      "identifier: REMOTE_LEGACY_CODEX": 2,
+      "identifier: legacyCodex": 8
+    },
     "packages/runtime-protocol/src/claude-bridge.ts": {
       "identifier: CLAUDE_BRIDGE_COMPATIBILITY": 4,
       "identifier: ClaudeBridgeCompatibilityStatus": 1,
@@ -1229,11 +1253,19 @@
       "identifier: dshBridgeCompatibility": 1,
       "identifier: dshBridgePluginCompatibility": 1
     },
+    "packages/runtime-protocol/src/generated/remote-contract.ts": {
+      "identifier: REMOTE_LEGACY_CODEX": 1,
+      "identifier: incompatibleProtocol": 2,
+      "identifier: rpcIncompatibleProtocol": 2
+    },
     "packages/runtime-protocol/src/index.ts": {
       "comment: Shared runtime protocol source of truth; the Electron compatibility entry is generated.": 1
     },
     "packages/runtime-protocol/src/session-providers.ts": {
       "comment: The legacy options and settings responses serialize this declaration verbatim.": 1
+    },
+    "packages/runtime-protocol/test/remote-contract.test.ts": {
+      "identifier: REMOTE_LEGACY_CODEX": 7
     },
     "packages/session-ui/src/agents/antigravity/approvals.ts": {
       "identifier: LegacyApprovals": 2
@@ -1325,7 +1357,8 @@
       "comment: A display fallback must never become the editable selection.": 1,
       "identifier: LEGACY_FAST_TIERS": 2,
       "identifier: displayFallback": 6,
-      "identifier: fallback": 9
+      "identifier: fallback": 9,
+      "identifier: modelNameFallback": 4
     },
     "packages/session-ui/src/context-usage.ts": {
       "identifier: blockedFallback": 4,
@@ -1342,22 +1375,25 @@
       "identifier: fallback": 1,
       "identifier: fallbackDefaults": 2,
       "identifier: legacyReads": 1,
+      "identifier: modelNameFallback": 1,
       "identifier: observedModelFallback": 3,
       "identifier: usageFallback": 2,
       "identifier: webFallbackSettings": 3
     },
     "packages/session-ui/src/conversation/sessions/session-composer.tsx": {
+      "identifier: fallback": 1,
       "identifier: fallbackLabel": 1,
       "identifier: legacyReads": 1
     },
     "packages/session-ui/src/conversation/sessions/session-image-scope.ts": {
       "comment: The Environment may already have consumed and rewritten the legacy link.": 1
     },
-    "packages/session-ui/src/conversation/sessions/session-reader.tsx": {
-      "identifier: lanIncompatible": 1
+    "packages/session-ui/src/conversation/sessions/session-outcome-action.tsx": {
+      "identifier: fallback": 3
     },
-    "packages/session-ui/src/conversation/sessions/session-receipt-recovery.tsx": {
-      "identifier: isLegacyPreparedReceipt": 2
+    "packages/session-ui/src/conversation/sessions/session-reader.tsx": {
+      "identifier: fallback": 1,
+      "identifier: lanIncompatible": 1
     },
     "packages/session-ui/src/conversation/sessions/use-session-controller.ts": {
       "identifier: incompatible": 2,
@@ -1419,10 +1455,12 @@
       "identifier: ClaudeBridgeCompatibilityStatus": 2,
       "identifier: LegacyCodexAction": 3,
       "identifier: LegacyPreparedReceipt": 3,
+      "identifier: REMOTE_LEGACY_CODEX": 2,
       "identifier: bridgeCompatibility": 1,
       "identifier: canDisplayCodexModelFallback": 1,
       "identifier: claudeBridgeCompatibility": 1,
       "identifier: compatible": 8,
+      "identifier: incompatibleProtocol": 4,
       "identifier: isLegacyPreparedReceipt": 2,
       "identifier: legacyPlan": 3,
       "identifier: sessionModelDisplayFallback": 1

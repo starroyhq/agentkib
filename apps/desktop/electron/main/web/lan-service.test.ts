@@ -16,7 +16,7 @@ describe("hosted LAN transport", () => {
   let csrf = "";
   let addresses = [{ name: "fixture", address: "192.168.20.10" }];
   const runtime = vi.fn(async () => ({ events: [] }));
-  const shared = createWebControlState();
+  let shared: ReturnType<typeof createWebControlState>;
   let bootId = "";
   async function http(
     path: string,
@@ -90,10 +90,7 @@ describe("hosted LAN transport", () => {
     bearer = "";
     csrf = "";
     addresses = [{ name: "fixture", address: "192.168.20.10" }];
-    shared.admission = false;
-    shared.requests.clear();
-    shared.active.clear();
-    shared.unconfirmed.clear();
+    shared = createWebControlState();
     runtime.mockClear();
     dir = await mkdtemp(join(tmpdir(), "agentkib-lan-test-"));
     const reservation = createServer();
@@ -260,12 +257,16 @@ describe("hosted LAN transport", () => {
     expect(
       (await http("/info", { Origin: "https://evil.test" })).headers["access-control-allow-origin"],
     ).toBeUndefined();
-    expect((await http("/info")).data).toEqual({
-      protocolVersion: 1,
-      conversationProtocolVersion: 2,
-      transport: "lan",
-      capabilities: { read: true, send: false, approve: false },
-    });
+    const fixture = JSON.parse(
+      await readFile(
+        new URL(
+          "../../../../../packages/runtime-protocol/test/fixtures/remote-contract.json",
+          import.meta.url,
+        ),
+        "utf8",
+      ),
+    );
+    expect((await http("/info")).data).toEqual(fixture.info.lan);
   });
   it("keeps LAN origin, bearer and CSRF checks with top-level navigation metadata", async () => {
     const headers = {
@@ -599,7 +600,12 @@ describe("hosted LAN transport", () => {
       text: "hello",
     });
     expect(duplicate.data.error).toBe("duplicate_request");
-    shared.unconfirmed.add("session");
+    shared.outcomeFences.record({
+      requestId: "request-from-loopback",
+      sessionId: "session",
+      deviceId: paired.data.pending.id,
+      operation: "send",
+    });
     const uncertain = await http("/send", {}, "POST", {
       bootId,
       sessionId: "session",
@@ -630,7 +636,12 @@ describe("hosted LAN transport", () => {
             enterPreflight();
             await preflight;
           }
-          return { runtimeBootId: "fixture-runtime", revision: 1, sendEnabled: true };
+          return {
+            runtimeBootId: "fixture-runtime",
+            revision: 1,
+            status: "idle",
+            sendEnabled: true,
+          };
         }
         // An ambiguous reply must leave the shared unknown-outcome fence in place.
         return { accepted: false };
@@ -749,7 +760,7 @@ describe("hosted LAN transport", () => {
             await localHttp("/live?sessionId=shared-session"),
             await http("/live?sessionId=shared-session"),
           ]) {
-            expect(live.data.status).toBe("outcome-unknown");
+            expect(live.data.status).toBe("idle");
             expect(live.data.sendEnabled).toBe(false);
           }
           for (const reply of [

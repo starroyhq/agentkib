@@ -656,9 +656,9 @@ describe("NewSessionComposer", () => {
     await waitFor(() => expect(fast).toHaveAttribute("aria-pressed", "true"));
     expect(fast.querySelector("svg")).toHaveAttribute("fill", "currentColor");
     await userEvent.setup().keyboard("{Escape}");
-    expect(
-      screen.getByRole("button", { name: /gpt-6\.1-sol.*Fast/ }).querySelector("svg"),
-    ).toHaveAttribute("fill", "currentColor");
+    expect(screen.getByRole("button", { name: /gpt-6\.1-sol.*Fast/ })).toHaveTextContent(
+      /^gpt-6\.1-sol$/,
+    );
 
     await write("Review the routes");
     fireEvent.click(send());
@@ -707,6 +707,41 @@ describe("NewSessionComposer", () => {
     await waitFor(() => expect(props.onCreated).toHaveBeenCalledWith("made"));
     expect(doubles.client.managedAction).toHaveBeenCalledOnce();
     expect(takeNewSessionDraft("made")).toMatchObject({ text: "Add rate limiting", send: true });
+  });
+
+  it("reads the saved create on foregrounding without repeating the mutation", async () => {
+    const visibility = vi.spyOn(document, "visibilityState", "get").mockReturnValue("hidden");
+    doubles.client.managedAction.mockRejectedValue(new ApiError(504, "request_timeout"));
+    const { onCreated } = renderComposer();
+    await write("Keep the message for the new session");
+    fireEvent.click(send());
+    await screen.findByText(/Not sure yet whether the session was created/);
+    expect(send()).toBeDisabled();
+    expect(doubles.client.receipt).toHaveBeenCalledOnce();
+
+    await act(async () => window.dispatchEvent(new Event("focus")));
+    expect(doubles.client.receipt).toHaveBeenCalledOnce();
+    const requestId = doubles.client.managedAction.mock.calls[0]![1].requestId;
+    doubles.client.receipt.mockResolvedValue({
+      found: true,
+      requestId,
+      operation: "create",
+      status: "accepted",
+      workspaceId: "north",
+      sessionId: "created-after-focus",
+    });
+    visibility.mockReturnValue("visible");
+    await act(async () => {
+      document.dispatchEvent(new Event("visibilitychange"));
+      window.dispatchEvent(new Event("focus"));
+    });
+    expect(onCreated).toHaveBeenCalledExactlyOnceWith("created-after-focus");
+    expect(doubles.client.receipt.mock.calls.map(([id]) => id)).toEqual([requestId, requestId]);
+    expect(doubles.client.managedAction).toHaveBeenCalledOnce();
+    expect(takeNewSessionDraft("created-after-focus")).toMatchObject({
+      text: "Keep the message for the new session",
+      send: true,
+    });
   });
 
   it("allows creating in another workspace and ignores an earlier target's late receipt", async () => {
@@ -1309,10 +1344,7 @@ describe("NewSessionComposer", () => {
     fireEvent.click(fast);
     await waitFor(() => expect(fast).toHaveAttribute("aria-pressed", "true"));
     await userEvent.setup().keyboard("{Escape}");
-    expect(screen.getByRole("button", { name: /Opus.*Fast/ }).querySelector("svg")).toHaveAttribute(
-      "fill",
-      "currentColor",
-    );
+    expect(screen.getByRole("button", { name: /Opus.*Fast/ })).toHaveTextContent(/^Opus$/);
 
     await write("Review the routes");
     fireEvent.click(send());

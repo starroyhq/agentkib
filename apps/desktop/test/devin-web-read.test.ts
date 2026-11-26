@@ -94,7 +94,12 @@ while [ $# -gt 0 ]; do
   if [ "$1" = "-r" ]; then echo "$2" >> "$dir/resume.log"; shift; fi
   shift
 done
-while [ -f "$dir/hold-turn" ]; do sleep 0.05; done
+attempt=0
+while [ -f "$dir/hold-turn" ]; do
+  [ "$attempt" -lt 1200 ] && kill -0 "$PPID" 2>/dev/null || exit 124
+  sleep 0.05
+  attempt=$((attempt + 1))
+done
 [ -f "$dir/turn-sleep" ] && sleep "$(cat "$dir/turn-sleep")"
 [ -f "$dir/turn-stderr" ] && cat "$dir/turn-stderr" >&2
 exit "$(cat "$dir/turn-code" 2>/dev/null || echo 0)"
@@ -105,6 +110,7 @@ exit "$(cat "$dir/turn-code" 2>/dev/null || echo 0)"
     path.join(bin, "acp.cjs"),
     `const fs = require("node:fs");
 const path = require("node:path");
+const { setTimeout: delay } = require("node:timers/promises");
 const dir = ${JSON.stringify(bin)};
 const file = (name) => path.join(dir, name);
 const read = (name) => (fs.existsSync(file(name)) ? fs.readFileSync(file(name), "utf8") : null);
@@ -125,9 +131,12 @@ function finish(result) {
   send({ jsonrpc: "2.0", id, ...result });
 }
 async function turn() {
-  while (fs.existsSync(file("hold-turn"))) await new Promise((resolve) => setTimeout(resolve, 50));
+  const requestId = pending;
+  while (pending === requestId && fs.existsSync(file("hold-turn")))
+    await delay(50, undefined, { ref: false });
   const wait = Number(read("turn-sleep") ?? 0);
-  if (wait) await new Promise((resolve) => setTimeout(resolve, wait * 1000));
+  if (wait) await delay(wait * 1000, undefined, { ref: false });
+  if (pending !== requestId) return;
   const stderr = read("turn-stderr") ?? "", code = Number(read("turn-code") ?? 0);
   if (stderr || code) finish({ error: { code: -32603, message: stderr || "failed" } });
   else finish({ result: { stopReason: "end_turn" } });

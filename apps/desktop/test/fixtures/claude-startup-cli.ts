@@ -2,6 +2,51 @@ import childProcesses from "node:child_process";
 import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { createFakeClaude, type FakeClaudePlan } from "./claude-fake-cli";
+import { StartupFixtureProcessGroups } from "./claude-startup-process-groups";
+
+const STARTUP_LIFETIME_MS = 60_000;
+const startupWatchdog = `
+const [cli, owner] = process.argv.slice(2).map(Number);
+const override = Number(process.env.STARTUP_LIFETIME_MS);
+const lifetime = Number.isSafeInteger(override) && override > 0 && override <= ${STARTUP_LIFETIME_MS}
+  ? override : ${STARTUP_LIFETIME_MS};
+function stop() {
+  // If the shell has already exited, do not signal its possibly reused PID.
+  if (process.ppid === cli) {
+    try {
+      process.kill(cli, "SIGKILL");
+    } catch (error) {
+      if (error.code !== "ESRCH") throw error;
+    }
+  }
+  process.exit(0);
+}
+function checkOwner() {
+  if (process.ppid !== cli) process.exit(0);
+  try {
+    process.kill(owner, 0);
+  } catch (error) {
+    if (error.code === "ESRCH") stop();
+  }
+}
+checkOwner();
+setInterval(checkOwner, 250);
+setTimeout(stop, lifetime);
+`;
+
+/** Store the watchdog behind redirected stdio so it cannot mask simulated output EOF. */
+function startupClaudeScript(body: string): string {
+  return `#!/bin/sh
+# The protocol uses shell builtins so starting the watchdog never delays readiness.
+[ "$PPID" -gt 1 ] || exit 0
+"$STARTUP_NODE" - "$$" "$PPID" <<'AGENTKIB_WATCHDOG' >/dev/null 2>&1 &
+${startupWatchdog}
+AGENTKIB_WATCHDOG
+watchdog=$!
+trap 'kill "$watchdog" 2>/dev/null; wait "$watchdog" 2>/dev/null' EXIT
+trap 'exit 143' TERM
+${body}`;
+}
 
 /** The startup deadline tests need protocol faults, rather than a cold Node interpreter. */
 export function createStartupClaude() {
@@ -14,15 +59,14 @@ export function createStartupClaude() {
     STARTUP_MODE: modeFile,
     STARTUP_EVIDENCE: evidenceFile,
     STARTUP_READY: readyFile,
+    STARTUP_NODE: process.execPath,
   };
   writeFileSync(
     f.executable,
-    `#!/bin/sh
-# Deliberately only shell builtins: no child interpreter competes with the 300 ms deadline.
-printf '%s\\n' "$$" > "$STARTUP_READY"
+    startupClaudeScript(`printf '%s\\n' "$$" > "$STARTUP_READY" || exit 90
 while IFS= read -r frame; do
-  printf '%s\\n' "$frame" >> "$FAKE_LOG"
-  IFS= read -r mode < "$STARTUP_MODE"
+  printf '%s\\n' "$frame" >> "$FAKE_LOG" || exit 90
+  IFS= read -r mode < "$STARTUP_MODE" || exit 90
   case "$frame" in
     *'"type":"control_request"'*)
       case "$frame" in *'"subtype":"initialize"'*) ;; *) exit 92 ;; esac
@@ -59,7 +103,7 @@ while IFS= read -r frame; do
       ;;
   esac
 done
-`,
+`),
     { mode: 0o700 },
   );
   return {
@@ -130,30 +174,49 @@ export function createStartupClaudeSpawn(
   },
 ) {
   const failures: string[] = [];
+  const processGroups = new StartupFixtureProcessGroups();
   return {
     failures,
+    processGroups,
     spawn(...args: Parameters<typeof childProcesses.spawn>) {
       const options = Array.isArray(args[1]) ? args[2] : (args[1] ?? args[2]);
       const environment = options && "env" in options ? options.env : undefined;
+      const mode = environment?.STARTUP_MODE;
       const ready = environment?.STARTUP_READY;
-      const root = ready ? path.dirname(ready) : "";
+      const root = mode ? path.dirname(mode) : "";
       if (
-        !ready ||
-        !path.isAbsolute(ready) ||
-        path.basename(root).indexOf("agentkib-claude-startup-") !== 0 ||
-        ready !== path.join(root, "startup-ready") ||
-        environment?.STARTUP_MODE !== path.join(root, "startup-mode") ||
-        environment.STARTUP_EVIDENCE !== path.join(root, "startup-evidence") ||
+        !path.isAbsolute(root) ||
+        !path.basename(root).startsWith("agentkib-claude-startup-") ||
+        mode !== path.join(root, "startup-mode") ||
+        environment?.STARTUP_EVIDENCE !== path.join(root, "startup-evidence") ||
         args[0] !== path.join(root, "bin", "claude")
       )
         return actualSpawn(...args);
+      const spawnFixture = () => {
+        const child = actualSpawn(...args);
+        if (
+          options &&
+          "detached" in options &&
+          options.detached &&
+          child instanceof childProcesses.ChildProcess &&
+          child.pid &&
+          process.platform !== "win32"
+        ) {
+          const pid = child.pid;
+          processGroups.track(pid);
+          child.once("exit", () => processGroups.forgetIfExited(pid));
+        }
+        return child;
+      };
+      // The separate-group test has its own readiness handoff.
+      if (ready !== path.join(root, "startup-ready")) return spawnFixture();
       try {
         rmSync(ready, { force: true });
       } catch {
         failures.push("startup fixture readiness could not be reset");
-        return actualSpawn(...args);
+        return spawnFixture();
       }
-      const child = actualSpawn(...args);
+      const child = spawnFixture();
       if (!child.pid) {
         failures.push("startup fixture has no process identity");
         return child;

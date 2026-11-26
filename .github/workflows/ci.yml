@@ -110,6 +110,19 @@ jobs:
       - name: Test ordinary desktop shard
         run: pnpm --filter @agentkib/desktop exec vitest run --project=desktop --shard=${{ matrix.shard }}/2
 
+      - name: Check for surviving Claude startup fixtures
+        if: ${{ always() }}
+        timeout-minutes: 1
+        run: |
+          fixture='/agentkib-claude-startup-[^/[:space:]]+/bin/claude([[:space:]]|$)'
+          ps -axo pid=,stat=,command= | awk -v fixture="$fixture" '
+            $2 !~ /^Z/ && $0 ~ fixture {
+              print
+              found = 1
+            }
+            END { exit found }
+          '
+
   safety:
     name: Serial filesystem and MCP tests
     needs: changes

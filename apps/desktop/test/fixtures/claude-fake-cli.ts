@@ -72,7 +72,8 @@ const run = () => {
     if (item.__exit) { process.stdout.end(() => process.exit(0)); return; }
     if (item.__closeOutput) { process.stdout.end(); continue; }
     if (item.__spawn) {
-      const started = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'],
+      // Detached children can outlive the fake CLI while ownership is tested.
+      const started = spawn(process.execPath, ['-e', 'setTimeout(() => process.exit(124), 60_000)'],
         {stdio: 'ignore', detached: !!item.detached});
       fs.writeFileSync(process.env.FAKE_CHILDREN + '.' + item.__spawn, String(started.pid));
       continue;
@@ -80,7 +81,7 @@ const run = () => {
     if (item.__huge) { process.stdout.write('x'.repeat(26 * 1024 * 1024)); continue; }
     if (item.__raw !== undefined) { process.stdout.write(item.__raw + '\n'); continue; }
     if (item.__wait) { waiting = item.__wait; return; }
-    if (item.__sleep) { setTimeout(run, item.__sleep); return; }
+    if (item.__sleep) { setTimeout(run, item.__sleep).unref(); return; }
     send(item);
   }
 };

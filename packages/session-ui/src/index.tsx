@@ -169,6 +169,7 @@ export {
   claudeConnectionReason,
   claudeConnectionCopyForSurface,
 } from "./agents/claude-code/connection-copy";
+export { readClaudeBridgePluginStatus } from "./agents/claude-code/plugin-status";
 export {
   continuationResources,
   type ContinuationComposerDraft,

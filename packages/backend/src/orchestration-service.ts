@@ -781,6 +781,7 @@ export class OrchestrationService {
     sessionId: string,
     workspaceId: string,
     candidateIds: string[],
+    readLeadUnavailableReason?: () => Promise<string | undefined>,
   ): Promise<{
     capable: boolean;
     remaining: number;
@@ -793,18 +794,21 @@ export class OrchestrationService {
     const workerOwners = new Map(
       leads.flatMap((item) => item.lanes.map((lane) => [lane.sessionId, item.sessionId] as const)),
     );
-    const capable =
-      !!workspaceId &&
-      !workerOwners.has(sessionId) &&
-      this.#enabledLead(sessionId) &&
-      this.isLeadCapable(sessionId);
+    const eligibleLead =
+      !!workspaceId && !workerOwners.has(sessionId) && this.#enabledLead(sessionId);
+    const capable = eligibleLead && this.isLeadCapable(sessionId);
+    const reason = lead?.paused
+      ? "delegation-paused"
+      : eligibleLead && !capable
+        ? await readLeadUnavailableReason?.()
+        : undefined;
     return {
       capable,
       remaining:
         capable && !lead?.paused
           ? Math.max(0, PROJECT_AGENT_MAX_WORKERS - (lead?.lanes.length ?? 0))
           : 0,
-      ...(lead?.paused ? { reason: "delegation-paused" } : {}),
+      ...(reason ? { reason } : {}),
       candidates: await Promise.all(
         candidateIds.map(async (id): Promise<AssignmentCandidate> => {
           if (id === sessionId || leadIds.has(id))

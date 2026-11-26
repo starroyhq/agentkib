@@ -164,6 +164,11 @@ async function localClaudeRequestInner(
   if (operation === "options") return deps.managed({ operation });
   // The DeepSeek Harness connection status is per computer.
   if (operation === "dsh-bridge-status") return deps.managed({ operation, deviceId: OWNER });
+  if (operation === "bridge-plugin-status") return deps.managed({ operation, deviceId: OWNER });
+  if (operation === "bridge-plugin-auto-update") {
+    if (typeof input.enabled !== "boolean") throw new Error("invalid_request");
+    return deps.managed({ operation, deviceId: OWNER, enabled: input.enabled });
+  }
   // Whether sessions continue after a usage limit resets, for this computer; a read without
   // `enabled`.
   if (operation === "usage-limit-auto-continue")

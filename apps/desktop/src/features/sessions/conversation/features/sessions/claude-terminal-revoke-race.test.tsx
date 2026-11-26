@@ -1,6 +1,5 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
-import { CLAUDE_BRIDGE_CLI_VERSION } from "@agentkib/runtime-protocol";
 import { render } from "../../desktop-reader-test-utils";
 import { act, cleanup, fireEvent, screen } from "@testing-library/react";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -14,13 +13,7 @@ import {
 const state = vi.hoisted(() => ({ session: {} as SessionController, request: vi.fn() }));
 
 function ClaudeBridgePanel(props: { active: boolean; onClose?: () => void }) {
-  return (
-    <SharedClaudeBridgePanel
-      {...props}
-      bridgeVersion={CLAUDE_BRIDGE_CLI_VERSION}
-      session={state.session}
-    />
-  );
+  return <SharedClaudeBridgePanel {...props} session={state.session} />;
 }
 
 const copy = claudeConnectionCopy["zh-CN"];
@@ -67,7 +60,7 @@ async function startDisconnect() {
   });
   const view = render(<ClaudeBridgePanel active />);
   await act(async () => {});
-  expect(screen.getByText(copy.connectedTitle)).toBeVisible();
+  expect(screen.getByText(copy.connectedBadge, { exact: true })).toBeVisible();
   fireEvent.click(screen.getByRole("button", { name: copy.disconnectShort }));
   fireEvent.click(screen.getByRole("button", { name: copy.confirmDisconnect }));
   expect(operations()).toEqual(["bridge-status", "bridge-disconnect"]);
@@ -75,7 +68,7 @@ async function startDisconnect() {
 }
 function expectRevocationSettled() {
   expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
-  expect(screen.queryByText(copy.connectedTitle)).not.toBeInTheDocument();
+  expect(screen.queryByText(copy.connectedBadge, { exact: true })).not.toBeInTheDocument();
   expect(screen.queryByText(copy.connectedBadge, { exact: true })).not.toBeInTheDocument();
   expect(screen.queryByRole("button", { name: copy.clearConnection })).not.toBeInTheDocument();
   expect(screen.queryByRole("button", { name: copy.disconnectShort })).not.toBeInTheDocument();
@@ -168,7 +161,7 @@ describe("terminal revocation acknowledgement ordering", () => {
       if (order === "before") connectNewLease();
       await act(async () => acknowledgement.resolve({ disconnected: true }));
       if (order === "after") connectNewLease();
-      expect(screen.queryByText(copy.connectedTitle)).not.toBeInTheDocument();
+      expect(screen.queryByText(copy.connectedBadge, { exact: true })).not.toBeInTheDocument();
       const clear = screen.getByRole("button", { name: copy.clearConnection });
       expect(clear).toBeEnabled();
       fireEvent.click(clear);
@@ -206,7 +199,7 @@ describe("terminal revocation acknowledgement ordering", () => {
     const previousOperations = operations();
     await act(async () => acknowledgement.resolve({ disconnected: true }));
     expect(screen.getByRole("button", { name: copy.clearConnection })).toBeEnabled();
-    expect(screen.queryByText(copy.connectedTitle)).not.toBeInTheDocument();
+    expect(screen.queryByText(copy.connectedBadge, { exact: true })).not.toBeInTheDocument();
     expect(operations()).toEqual(previousOperations);
     expect(previousRefresh).toHaveBeenCalledTimes(1);
     expect(currentRefresh).not.toHaveBeenCalled();

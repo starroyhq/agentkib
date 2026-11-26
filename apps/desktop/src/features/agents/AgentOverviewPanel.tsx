@@ -17,6 +17,7 @@ import { cn } from "cn";
 import { AgentSectionFeedback } from "./AgentSectionFeedback";
 import { RemoteAgentGatewayDetails } from "./RemoteAgentGatewayDetails";
 import { AgentUsagePanel } from "./AgentUsagePanel";
+import { ClaudeBridgePluginSettings } from "@/features/settings/ClaudeBridgePluginSettings";
 
 export function AgentOverviewPanel({
   agent,
@@ -147,6 +148,7 @@ export function AgentOverviewPanel({
           {installationWarningLabel(warning, tr)}
         </div>
       ))}
+      {agent === "claude-code" && <ClaudeBridgePluginSettings />}
       {workspacesPending || workspacesError ? (
         <AgentSectionFeedback error={workspacesError} onRetry={onRetryWorkspaces} />
       ) : linkedWorkspaces.length > 0 ? (

@@ -143,7 +143,7 @@ function ContextPageContent({
   const empty = preview && !preview.sections.length;
   const previewScope = hasDraft && (
     <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
-      {tr("context.previewScope")}
+      {tr("context.previewScopeDraft")}
     </p>
   );
   if (resolving && !preview)

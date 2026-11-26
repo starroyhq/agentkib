@@ -98,7 +98,7 @@ describe("Context disk preview scope", () => {
     useWorkspaceStore.getState().setManifest(baseline);
     renderPage();
     expect(screen.queryByText(/This preview reads instruction files/)).toBeNull();
-    expect(screen.queryByText(tr("context.previewScope"))).toBeNull();
+    expect(screen.queryByText(tr("context.previewScopeDraft"))).toBeNull();
     await screen.findByText(tr("context.noInstructions"));
   });
   it.each([
@@ -117,8 +117,8 @@ describe("Context disk preview scope", () => {
         }),
       );
       renderPage();
-      const description = tr("context.previewScope");
-      expect(description).not.toBe("context.previewScope");
+      const description = tr("context.previewScopeDraft");
+      expect(description).not.toBe("context.previewScopeDraft");
       expect(description).toContain(draftBoundary);
       expect(screen.getByText(description)).toBeVisible();
       expect(screen.queryByText(tr("context.noInstructions"))).not.toBeInTheDocument();
@@ -153,7 +153,7 @@ describe("Context disk preview scope", () => {
       renderPage(true);
     });
     expect(await screen.findByText("disk-skill")).toBeVisible();
-    expect(screen.getByText(tr("context.previewScope"))).toBeVisible();
+    expect(screen.getByText(tr("context.previewScopeDraft"))).toBeVisible();
     fireEvent.click(screen.getByRole("button", { name: tr("context.showContent") }));
     expect(await screen.findByText(baseline.instructions.shared)).toBeVisible();
     expect(screen.queryByText(draft.instructions.shared)).not.toBeInTheDocument();

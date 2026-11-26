@@ -31,13 +31,17 @@ function Get-TestManifestVersion([string] $File) {
     $reader = [IO.StreamReader]::new($entry.Open())
     try { [xml] $manifest = $reader.ReadToEnd() } finally { $reader.Dispose() }
     $identity = $manifest.Package.Identity
-    $application = $manifest.Package.Applications.Application
+    $application = $manifest.Package.Applications.Application | Where-Object Id -CEQ $applicationId
+    $runtime = $manifest.Package.Applications.Application | Where-Object Id -CEQ "AgentKibRuntime"
     $uap10 = "http://schemas.microsoft.com/appx/manifest/uap/windows10/10"
     if (
       $identity.Name -cne $name -or $identity.Publisher -cne $publisher -or
-      $identity.ProcessorArchitecture -cne "x64" -or $application.Id -cne $applicationId -or
+      $identity.ProcessorArchitecture -cne "x64" -or -not $application -or -not $runtime -or
       $application.GetAttribute("RuntimeBehavior", $uap10) -cne "win32App" -or
-      $application.GetAttribute("TrustLevel", $uap10) -cne "mediumIL"
+      $application.GetAttribute("TrustLevel", $uap10) -cne "mediumIL" -or
+      $runtime.GetAttribute("RuntimeBehavior", $uap10) -cne "win32App" -or
+      $runtime.GetAttribute("TrustLevel", $uap10) -cne "mediumIL" -or
+      $runtime.VisualElements.AppListEntry -cne "none"
     ) { throw "The package lacks the test-only identity or expected full-trust manifest." }
     $nativePrefix = "app/resources/app.asar.unpacked/dist-electron/native/koffi/build/koffi/"
     if (-not ($archive.Entries | Where-Object {
@@ -365,9 +369,7 @@ try {
       }
       Write-Host "Roaming profile exists: $(Test-Path -LiteralPath (Join-Path $electronProfileRoot 'electron') -PathType Container)"
       $owned = @(Get-CimInstance Win32_Process -Filter "Name = 'AgentKib.exe'")
-      Write-Host "AgentKib processes: $($owned.Count); shared runtime processes: $(@($owned | Where-Object CommandLine -Match '(?:^|\s)--local-runtime(?:\s|$)').Count)"
-      $trace = Join-Path $data "msix-runtime-smoke.log"
-      if (Test-Path -LiteralPath $trace) { Get-Content -LiteralPath $trace -TotalCount 24 | Write-Host }
+      Write-Host "AgentKib processes: $($owned.Count); shared runtime processes: $(@($owned | Where-Object CommandLine -Match '(?:^|\s)--agentkib-store-runtime(?:\s|$)').Count)"
       throw
     }
     $runtimeVersion = "$($Version.Major).$($Version.Minor).$($Version.Build)"

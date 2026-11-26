@@ -30,6 +30,15 @@
         ${defaultTile}
       </uap:VisualElements>
     </Application>
+    <Application Id="AgentKibRuntime" Executable="${executable}" uap10:RuntimeBehavior="win32App" uap10:TrustLevel="mediumIL">
+      <uap:VisualElements
+        AppListEntry="none"
+        DisplayName="${displayName}"
+        Description="${description}"
+        BackgroundColor="${backgroundColor}"
+        Square150x150Logo="${square150x150Logo}"
+        Square44x44Logo="${square44x44Logo}" />
+    </Application>
   </Applications>
   <Capabilities>
     <rescap:Capability Name="runFullTrust" />

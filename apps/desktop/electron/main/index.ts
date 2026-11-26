@@ -2,6 +2,7 @@ import { DesktopAccountService } from "./account/service";
 import { detectComputerName } from "./account/computer-name";
 import type { DesktopAccountRequest } from "./account/state";
 import { readFile, writeFile, mkdir, rename } from "node:fs/promises";
+import { createRequire } from "node:module";
 import path from "node:path";
 import { homedir } from "node:os";
 import { WebAccessService, createWebControlState } from "./web/service";
@@ -179,8 +180,15 @@ interface ElectronRuntimeInfo {
   local_auto_refresh_enabled?: boolean;
 }
 
-const hasSingleInstanceLock = app.requestSingleInstanceLock();
-if (!hasSingleInstanceLock) {
+if (updatesManagedByStore && process.argv.includes("--agentkib-store-runtime")) {
+  void app
+    .whenReady()
+    .then(startStoreRuntime)
+    .then(
+      () => app.exit(0),
+      () => app.exit(1),
+    );
+} else if (!app.requestSingleInstanceLock()) {
   app.quit();
 } else {
   app.on("second-instance", () => {
@@ -235,6 +243,57 @@ nativeTheme.on("updated", () => {
   sendRendererEvent("agentkib:theme-changed", nativeTheme.shouldUseDarkColors ? "dark" : "light");
 });
 
+function runtimeEnvironment(
+  shared: Awaited<ReturnType<typeof resolveDesktopRuntimeProfile>>["shared"],
+  webDataDir: string,
+) {
+  const hostAttachmentDirs = new Set([path.join(webDataDir, "attachments")]);
+  if (shared)
+    // Stable and Dev can attach to the same runtime while keeping their web data separate.
+    for (const flavor of ["ai.agentkib", "ai.agentkib.dev"])
+      hostAttachmentDirs.add(
+        path.join(app.getPath("appData"), flavor, "electron", "web", "attachments"),
+      );
+  return {
+    AGENTKIB_APP_FLAVOR: shared ? "ai.agentkib" : appFlavor,
+    AGENTKIB_APP_NAME: shared ? "AgentKib" : appDisplayName,
+    ...(shared ? { AGENTKIB_LEGACY_DEV_DATA_DIR: shared.legacyDevDataDir } : {}),
+    AGENTKIB_APP_VERSION: app.getVersion(),
+    AGENTKIB_HOST_ATTACHMENTS_DIRS: JSON.stringify([...hostAttachmentDirs]),
+    AGENTKIB_LOCALE: normalizeSystemLocale(app.getLocale()),
+    AGENTKIB_SYSTEM_THEME: nativeTheme.shouldUseDarkColors ? "dark" : "light",
+    AGENTKIB_QUOTA_SIDECAR: resolveQuotaSidecar(),
+    AGENTKIB_CLAUDE_PLUGIN_DIR: app.isPackaged
+      ? path.join(process.resourcesPath, "claude-bridge")
+      : path.resolve(__dirname, "../build/claude-bridge"),
+    AGENTKIB_DSH_PLUGIN_DIR: app.isPackaged
+      ? path.join(process.resourcesPath, "dsh-bridge")
+      : path.resolve(__dirname, "../build/dsh-bridge"),
+  };
+}
+
+async function startStoreRuntime(): Promise<void> {
+  const { dataDir, shared } = await resolveDesktopRuntimeProfile(
+    process.env,
+    process.platform,
+    false,
+  );
+  if (!shared) throw new Error("Windows Store runtime requires a shared profile");
+  const backend = createRequire(__filename)(
+    path.join(__dirname, "backend.cjs"),
+  ) as typeof import("../backend-entry");
+  const environment = {
+    ...process.env,
+    ...runtimeEnvironment(shared, path.join(electronDataPath, "web")),
+  };
+  try {
+    await backend.startLocalService(shared.root, dataDir, environment);
+  } catch (error) {
+    if (!(error instanceof Error && error.message === "session-managed-by-another-runtime"))
+      throw error;
+  }
+}
+
 async function startApplication(): Promise<void> {
   startupBenchmark.mark("app-ready");
   await registerRendererProtocol();
@@ -253,29 +312,6 @@ async function startApplication(): Promise<void> {
   const webDataDir = path.join(electronDataPath, "web");
   const notificationPolicy = new NotificationPolicyStore(webDataDir);
   await notificationPolicy.initialize();
-  const hostAttachmentDirs = new Set([path.join(webDataDir, "attachments")]);
-  if (shared)
-    // Stable and Dev can attach to the same runtime while keeping their web data separate.
-    for (const flavor of ["ai.agentkib", "ai.agentkib.dev"])
-      hostAttachmentDirs.add(
-        path.join(app.getPath("appData"), flavor, "electron", "web", "attachments"),
-      );
-  const backendEnvironment = {
-    AGENTKIB_APP_FLAVOR: shared ? "ai.agentkib" : appFlavor,
-    AGENTKIB_APP_NAME: shared ? "AgentKib" : appDisplayName,
-    ...(shared ? { AGENTKIB_LEGACY_DEV_DATA_DIR: shared.legacyDevDataDir } : {}),
-    AGENTKIB_APP_VERSION: app.getVersion(),
-    AGENTKIB_HOST_ATTACHMENTS_DIRS: JSON.stringify([...hostAttachmentDirs]),
-    AGENTKIB_LOCALE: normalizeSystemLocale(app.getLocale()),
-    AGENTKIB_SYSTEM_THEME: nativeTheme.shouldUseDarkColors ? "dark" : "light",
-    AGENTKIB_QUOTA_SIDECAR: resolveQuotaSidecar(),
-    AGENTKIB_CLAUDE_PLUGIN_DIR: app.isPackaged
-      ? path.join(process.resourcesPath, "claude-bridge")
-      : path.resolve(__dirname, "../build/claude-bridge"),
-    AGENTKIB_DSH_PLUGIN_DIR: app.isPackaged
-      ? path.join(process.resourcesPath, "dsh-bridge")
-      : path.resolve(__dirname, "../build/dsh-bridge"),
-  };
   const typescriptHost = new DesktopRuntimeHost({
     executablePath: path.join(__dirname, "backend.cjs"),
     clientVersion: app.getVersion(),
@@ -287,7 +323,7 @@ async function startApplication(): Promise<void> {
             electronPath: process.execPath,
           })
       : createUtilityTransport,
-    environment: backendEnvironment,
+    environment: runtimeEnvironment(shared, webDataDir),
   });
   const selectedRuntimeHost: RuntimeHost = new RuntimeRouter(typescriptHost, profile.dataDir);
   runtimeHost = selectedRuntimeHost;

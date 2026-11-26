@@ -44,27 +44,6 @@ jobs:
           cache-dependency-path: pnpm-lock.yaml
       - run: pnpm install --frozen-lockfile
 
-      - name: Trace package context in the diagnostic package
-        shell: pwsh
-        run: |
-          node --input-type=module -e @'
-          import { readFileSync, writeFileSync } from "node:fs";
-          function insert(file, marker, code) {
-            const source = readFileSync(file, "utf8");
-            if (!source.includes(marker)) throw new Error("Missing diagnostic marker.");
-            writeFileSync(file, source.replace(marker, code + "\n" + marker));
-          }
-          const trace = 'const trace = (status: unknown) => require("node:fs").appendFileSync(require("node:path").join(process.env.LOCALAPPDATA, "ai.agentkib", "msix-runtime-smoke.log"), String(status) + "\\n");';
-          insert("apps/desktop/electron/main/local-runtime-transport.ts", "if (process.windowsStore === true && !config.spawnProcess)", trace + 'trace("Desktop windowsStore=" + process.windowsStore);');
-          insert("packages/backend/src/windows-store-process.ts", "const { hThread, hProcess } = api.processHandles(information);", trace + 'trace("CreateProcessW succeeded");');
-          insert("packages/backend/src/windows-store-process.ts", "api.close(hThread);", 'const pkgLength = Buffer.alloc(4); const packageInfo = nativeBindings().load("kernel32.dll").func("__stdcall", "GetPackageFullName", "int", ["void *", "void *", "void *"]); trace("Child package status: " + packageInfo(hProcess, pkgLength, null));');
-          const host = "apps/desktop/electron/main/local-runtime-transport.ts";
-          const launch = "launchPackagedWindowsProcess(config.electronPath, args, environment);";
-          writeFileSync(host, readFileSync(host, "utf8").replace(launch, "try { " + launch + " } catch (error) { trace(error); throw error; }"));
-          const backend = "apps/desktop/electron/backend-entry.ts";
-          insert(backend, 'if (error instanceof Error && error.message === "session-managed-by-another-runtime") return;', trace + "trace(error instanceof Error ? error.message : error);");
-          '@
-
       - name: Build Electron bundles
         working-directory: apps/desktop
         run: pnpm build:electron

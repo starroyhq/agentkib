@@ -6,7 +6,7 @@ import {
   tryAcquireLocalRuntimeLaunchLease,
   type LocalRuntimeIdentity,
 } from "@agentkib/backend/local-runtime-ipc";
-import { launchPackagedWindowsProcess } from "@agentkib/backend/windows-store-process";
+import { activatePackagedWindowsRuntime } from "@agentkib/backend/windows-store-process";
 import { spawn } from "node:child_process";
 import { EventEmitter, once } from "node:events";
 import type { Socket } from "node:net";
@@ -192,7 +192,7 @@ class LocalRuntimeTransport extends EventEmitter implements RuntimeTransport {
     if (process.windowsStore === true && !config.spawnProcess) {
       // Win32 Store apps normally start children outside the package. The bundled
       // runtime needs package access to load its bundled native libraries.
-      launchPackagedWindowsProcess(config.electronPath, args, environment);
+      activatePackagedWindowsRuntime();
       return;
     }
     const child = (config.spawnProcess ?? spawn)(config.electronPath, args, {

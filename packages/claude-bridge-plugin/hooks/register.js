@@ -5,6 +5,7 @@ import {
   claudeBridgeCompatibility,
   claudeBridgePluginCompatibility,
 } from "./compatibility.js";
+import { acceptsLeadTool, LEAD_TOOLS, validLeadTool, workerSettingsOffered } from "./lead-tools.js";
 import { safeTerminalSubagentTitle } from "./terminal-subagents.js";
 
 const CLI_VERSION = CLAUDE_BRIDGE_COMPATIBILITY.minimumCliVersion;
@@ -99,18 +100,6 @@ const UNATTENDED_ORIGINS = new Set([
   "auto-continuation",
   "plugin",
 ]);
-const LEAD_TOOLS = [
-  "worker_list",
-  "worker_open",
-  "worker_send",
-  "worker_read",
-  "worker_stop",
-  "worker_approve",
-  "worker_answer",
-  // 0.5.1: AgentKib lists it last, after the ones 0.5.0 knows.
-  "worker_close",
-  "worker_restart",
-];
 // $.tool.register is verified on 2.1.301 (the oldest CLI that connects) and 2.1.323.
 function utf8Prefix(value, budget) {
   let read = 0;
@@ -346,6 +335,8 @@ async function leadCall($, state, name, e) {
   if (state.handoverExit) return { deny: "AgentKib is transferring this session." };
   if (!leadFeature(state) || !state.connection || state.connection.leaseId === "reconnecting")
     return { deny: "AgentKib is not connected, so this session cannot direct its workers now." };
+  if (!acceptsLeadTool(name, state.connection.features))
+    return { deny: "This AgentKib connection does not offer the worker tool." };
   const {
     tool: _tool,
     tool_use_id: _id,
@@ -466,20 +457,6 @@ function mainClassicEvent(state, event) {
   );
 }
 
-function validLeadTool(tool) {
-  return (
-    tool &&
-    typeof tool === "object" &&
-    LEAD_TOOLS.includes(tool.name) &&
-    typeof tool.description === "string" &&
-    tool.description.length > 0 &&
-    tool.description.length <= 8192 &&
-    tool.inputSchema &&
-    typeof tool.inputSchema === "object" &&
-    !Array.isArray(tool.inputSchema)
-  );
-}
-
 /**
  * What the Runtime says of this Project Agent on a poll: its worker tools, registered again only
  * when they change (the engine cannot withdraw one, so a session that stops leading keeps the
@@ -495,7 +472,7 @@ async function applyLead($, state, lead, connection) {
   }
   const tools = (Array.isArray(lead.tools) ? lead.tools : [])
     .slice(0, LEAD_TOOLS.length)
-    .filter(validLeadTool);
+    .filter((tool) => validLeadTool(tool, connection.features));
   const key = JSON.stringify(tools);
   if (key !== state.leadToolsKey) {
     try {
@@ -621,7 +598,7 @@ function leadToolAllowed(state, e, verdict) {
     leadFeature(state) &&
     typeof e.tool === "string" &&
     e.tool.startsWith(LEAD_TOOL_PREFIX) &&
-    LEAD_TOOLS.includes(e.tool.slice(LEAD_TOOL_PREFIX.length)) &&
+    acceptsLeadTool(e.tool.slice(LEAD_TOOL_PREFIX.length), state.connection.features) &&
     verdict?.decision === "ask" &&
     verdict.rule === undefined &&
     verdict.hook === undefined &&
@@ -2209,6 +2186,7 @@ async function pump($, state, nativeEvent = false) {
       ...(leadOffered(state)
         ? { leadTools: lead, ...(taken.length ? { takenReports: taken } : {}) }
         : {}),
+      ...(lead && workerSettingsOffered(connection.features) ? { leadWorkerSettings: true } : {}),
       ...(rateLimitOffered ? { leadReportsPaused: reportsPaused } : {}),
       ...(durableReports ? { reportAckIds } : {}),
     });
@@ -3158,6 +3136,9 @@ export function register(on) {
   );
   on("tool.call", { tool: "mcp__agentkib-bridge__worker_restart" }, ($, e) =>
     leadCall($, state, "worker_restart", e),
+  );
+  on("tool.call", { tool: "mcp__agentkib-bridge__worker_settings" }, ($, e) =>
+    leadCall($, state, "worker_settings", e),
   );
   // Managed settings or a Team or Enterprise login load sec-default, which skips classic hooks of
   // user-installed plugins, so the PermissionRequest hook below never runs there. tool.check still

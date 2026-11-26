@@ -44,9 +44,10 @@ Devin 和 Antigravity 的用户消息与 `worker_send` 进入同一个会话队�
 
 | 工具 | 作用 |
 | --- | --- |
-| `worker_list` | 列出用户已指派的 Worker 及其 Agent、状态、当前任务和最近汇报。注明委派是否暂停，以及可观测到的限额、断线和无进展时间 |
+| `worker_list` | 列出用户已指派的 Worker 及其 Agent、模型设置、状态、当前任务和最近汇报。注明委派是否暂停，以及可观测到的限额、断线和无进展时间 |
 | `worker_send` | 给 Worker 派任务或跟进，立即返回回执。Worker 运行中时默认排到这一轮之后，也可以加入这一轮。结果未知时不自动重发。限额尚未重置时返回 `worker-usage-limited`，带上已知的重置和续跑时间 |
 | `worker_read` | 读取与 `worker_list` 相同的状态，以及最近几条回复（每条最多 4,000 字符）和在等用户处理的事，并标出项目 Agent 能否替用户决定 |
+| `worker_settings` | 只传 `worker` 可读取设置及 Provider 提供的选项。附带 `modelId`、`reasoningEffort` 或 `serviceTierId` 可修改空闲 Worker 的设置，会话模型按钮会显示同一份设置 |
 | `worker_stop` | 停止 Worker 当前这一轮 |
 | `worker_restart` | 恢复 AgentKib 自己运行的 Worker，可能中断当前轮次。各家的恢复能力见下文 |
 | `worker_approve` | 只在允许代批时提供：对允许的审批“接受一次”或“拒绝” |

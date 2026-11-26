@@ -1,7 +1,12 @@
-import type { Access, ProjectAgentState as ProjectAgent, WebClient } from "@agentkib/web-client";
+import type {
+  Access,
+  ProjectAgentState as ProjectAgent,
+  WebClient,
+  WorkerModelSettings,
+} from "@agentkib/web-client";
 import { useCallback, useEffect, useState } from "react";
 import { DelayedSpinner } from "../../loading-feedback";
-import { projectAgentCopy } from "../../project-agent-copy";
+import { projectAgentCopy, workerModelSummary } from "../../project-agent-copy";
 import { useSessionPlatform } from "../../session-platform";
 import { OperationCopy, OperationGroup, OperationRow, TOUCH_TARGET } from "./operation-layout";
 
@@ -58,6 +63,21 @@ function StallThreshold({
       </label>
     </OperationRow>
   );
+}
+
+function WorkerSettingsChip({
+  locale,
+  settings,
+}: {
+  locale: string;
+  settings?: WorkerModelSettings;
+}) {
+  const summary = settings && workerModelSummary(locale, settings);
+  return summary ? (
+    <span className="mt-0.5 inline-block max-w-full rounded-md bg-muted px-1.5 [overflow-wrap:anywhere]">
+      {summary}
+    </span>
+  ) : null;
 }
 
 /** Shows a Project Agent and its workers, with the controls offered on this platform. */
@@ -366,6 +386,7 @@ export function ProjectAgentPanel({
                     .join(" · ")}
                 </p>
               )}
+              <WorkerSettingsChip locale={locale} settings={worker.settings} />
             </OperationCopy>
             <div className="flex shrink-0 items-center gap-1.5">
               {mayStop && worker.stopEnabled && (

@@ -86,6 +86,7 @@ export interface SessionActivityCapabilities {
 export interface SessionProjectAgentCapabilities {
   readonly lead: boolean;
   readonly worker: boolean;
+  readonly workerServiceTiers?: true;
 }
 
 interface SessionProviderIntegrationCapabilities {
@@ -337,7 +338,7 @@ const PROVIDERS = {
     resumeAfterQuit: true,
     history: { ...MANAGED_CAPABILITIES.codex.history, questionnaire: true },
     commands: { source: "built-in" },
-    projectAgent: { lead: true, worker: true },
+    projectAgent: { lead: true, worker: true, workerServiceTiers: true },
     queue: { actions: ["list", "add", "update", "delete", "reorder", "start"] },
     connection: { kind: "native-app" },
     pinning: "native-with-local-fallback",

@@ -1,4 +1,5 @@
 import { expect, test } from "claude-code/testing";
+import { CLAUDE_BRIDGE_COMPATIBILITY } from "../hooks/compatibility.js";
 import {
   initialState,
   previewText,
@@ -128,7 +129,7 @@ async function connectedBridgeFixture(
                 nativeId,
                 cwd: "/synthetic/workspace",
                 cliVersion: "2.1.301",
-                pluginVersion: "0.5.9",
+                pluginVersion: CLAUDE_BRIDGE_COMPATIBILITY.pluginVersion,
                 socketPath: "/private/synthetic.sock",
               }
             : { version: "0.4.0" },

@@ -238,8 +238,10 @@ async function renderUploadedDraft() {
   expect(f.upload.mock.calls[0][1]).toBe(file);
   const attachmentRow = screen.getByText(file.name).closest("li")!;
   await openSource(f.openSearch);
-  fireEvent.click(screen.getByRole("button", { name: c.quote }));
-  await screen.findByText(c.added);
+  const quote = screen.getByRole("button", { name: c.quote });
+  fireEvent.click(quote);
+  await waitFor(() => expect(quote).toHaveAttribute("title", c.added));
+  expect(quote).toHaveTextContent(c.quote);
   fireEvent.click(screen.getByRole("button", { name: c.close }));
   const references = screen.getByRole("region", { name: c.references });
   expect(references).toHaveTextContent("needle source excerpt");
@@ -250,8 +252,10 @@ describe("history search conversation navigation", () => {
   it("references source content while preserving the real selected conversation and composer draft", async () => {
     const f = await renderConversation();
     await openSource(f.openSearch);
-    fireEvent.click(screen.getByRole("button", { name: c.quote }));
-    await screen.findByText(c.added);
+    const quote = screen.getByRole("button", { name: c.quote });
+    fireEvent.click(quote);
+    await waitFor(() => expect(quote).toHaveAttribute("title", c.added));
+    expect(screen.queryByText(c.added)).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: c.close }));
     expect(screen.getByRole("textbox", { name: "Send a message" })).toHaveValue("Keep my draft");
     expect(screen.getByText("first history")).toBeVisible();

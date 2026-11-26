@@ -1,4 +1,5 @@
 import { useI18n } from "@/core/useI18n";
+import { DelayedSpinner, EmbeddedSessionLoading, useDelayedBusy } from "@agentkib/session-ui";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -24,6 +25,7 @@ import {
   GitBranch,
   ListFilter,
   ListChecks,
+  LoaderCircle,
   MessageSquareText,
   PlugZap,
   Plus,
@@ -35,7 +37,6 @@ import { useInfiniteQuery } from "@tanstack/react-query";
 import { api } from "@/core/api";
 import { isLiveSessionAgent } from "@agentkib/web-client";
 import { hasDesktopConversation } from "@/core/conversation-bridge";
-import { DEFAULT_SESSION_PAGE_SIZE } from "@/core/session-history";
 import { queryDefaults, useOptionalQueryClient } from "@/features/home/home-query";
 import { AgentIcon } from "@/features/agents/AgentIcon";
 import { useSessionSourceCapability } from "@/features/sessions/useSessionSourceCapability";
@@ -199,7 +200,6 @@ export function WorkspaceSessionsPage({
   const [agent, setAgent] = useState<AgentFilter>("all");
   const [filter, setFilter] = useState<SessionFilter>("current");
   const refreshing = catalog.loading || catalog.refreshing;
-  const [slowLoading, setSlowLoading] = useState(false);
   const [dismissedListErrorAt, setDismissedListErrorAt] = useState(0);
   const listReason = catalog.errors[workspace.id];
   const listError =
@@ -270,18 +270,8 @@ export function WorkspaceSessionsPage({
     setResumedRequest(undefined);
     consumedInitialSession.current = undefined;
     setHiddenSessionNotice(false);
-    setSlowLoading(false);
     setDismissedListErrorAt(0);
   }, [workspace.id, enabled]);
-
-  useEffect(() => {
-    if (!refreshing || sessions.length > 0) {
-      setSlowLoading(false);
-      return;
-    }
-    const timer = window.setTimeout(() => setSlowLoading(true), 3000);
-    return () => window.clearTimeout(timer);
-  }, [refreshing, sessions.length]);
 
   const visibleSessions = useMemo(
     () => indexedSessions.filter(isSessionVisible),
@@ -465,6 +455,10 @@ export function WorkspaceSessionsPage({
     !!transcriptError && (!listError || transcriptQuery.errorUpdatedAt >= listError.at);
   const rawError: unknown = historyError ? transcriptError : (listError?.reason ?? "");
   const error = rawError === "" || rawError == null ? "" : localizeMessage(rawError);
+  const scanning = enabled && !catalog.ready && !error && refreshing;
+  const showScanning = useDelayedBusy(scanning);
+  const slowLoading = useDelayedBusy(scanning, 3000);
+  const checkingSource = useDelayedBusy(!!selected && !sourceCapability);
   // 旧游标失效时从最新窗口重新读取，丢弃已加载的更早页面。
   const reloadTranscript = () => {
     setReadRevision((value) => value + 1);
@@ -519,8 +513,10 @@ export function WorkspaceSessionsPage({
             </p>
           )}
           <Button disabled={enabling} aria-busy={enabling} onClick={() => void enableIndex()}>
-            {enabling && <RefreshCw className="animate-spin" size={16} />}
-            {tr(enabling ? "sessions.enabling" : "conversations.enable")}
+            <span className="grid size-3.5 place-items-center" aria-hidden>
+              <DelayedSpinner active={enabling} />
+            </span>
+            {tr("conversations.enable")}
           </Button>
         </div>
       </div>
@@ -529,10 +525,14 @@ export function WorkspaceSessionsPage({
 
   return (
     <>
-      {!catalog.ready && !error && (
-        <div role="status" className="mb-3 flex items-center gap-2 text-sm text-muted-foreground">
+      {showScanning && (
+        <div
+          role="status"
+          aria-label={!slowLoading ? tr("conversations.scanning") : undefined}
+          className="mb-3 flex items-center gap-2 text-sm text-muted-foreground"
+        >
           <RefreshCw className="animate-spin" size={16} />
-          <span>{tr(slowLoading ? "conversations.scanningSlow" : "conversations.scanning")}</span>
+          {slowLoading && <span>{tr("conversations.scanningSlow")}</span>}
         </div>
       )}
       {hiddenSessionNotice && (
@@ -955,7 +955,14 @@ export function WorkspaceSessionsPage({
                         setHandoffSource({ workspaceId: workspace.id, session: selected })
                       }
                     >
-                      <FileOutput size={14} />
+                      {checkingSource ? (
+                        <LoaderCircle
+                          className="size-3.5 animate-spin motion-reduce:animate-none"
+                          aria-hidden
+                        />
+                      ) : (
+                        <FileOutput size={14} aria-hidden />
+                      )}
                       {tr("handoff.create")}
                     </Button>
                   )}
@@ -1029,25 +1036,24 @@ export function WorkspaceSessionsPage({
               )}
               {selected?.availability === "readable" && (
                 <div className="flex min-h-full flex-col gap-3 p-5">
-                  <p className="text-sm text-muted-foreground">
-                    {tr("history.latestWindow", { count: DEFAULT_SESSION_PAGE_SIZE })}
-                  </p>
+                  <Badge variant="outline" className="self-start">
+                    {tr("sessions.historyReadonly")}
+                  </Badge>
                   {nextCursor && (
                     <Button
                       variant="outline"
                       className="self-center"
                       disabled={loadingEarlier}
+                      aria-busy={loadingEarlier}
                       onClick={() => void loadEarlier()}
                     >
-                      {tr(loadingEarlier ? "common.loading" : "conversations.loadEarlier")}
+                      <span className="grid size-3.5 place-items-center" aria-hidden>
+                        <DelayedSpinner active={loadingEarlier} />
+                      </span>
+                      {tr("conversations.loadEarlier")}
                     </Button>
                   )}
-                  {reading && (
-                    <div className="grid min-h-[180px] place-content-center justify-items-center gap-2 text-sm text-muted-foreground">
-                      <RefreshCw className="animate-spin" size={18} />
-                      <span>{tr("conversations.reading")}</span>
-                    </div>
-                  )}
+                  {reading && <EmbeddedSessionLoading label={tr("conversations.reading")} />}
                   {!reading && !events.length && !error && (
                     <div className="grid min-h-[220px] place-content-center justify-items-center gap-3 text-center text-muted-foreground">
                       <span className="grid size-10 place-items-center rounded-xl bg-background ring-1 ring-border/70">

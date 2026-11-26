@@ -106,7 +106,11 @@ describe("production transcript identity", () => {
         );
       }
       fireEvent.click(actions[0]);
-      await waitFor(() => expect(actions[0]).toHaveAttribute("title", "Copied"));
+      const copyStatus = within(userFooter!).getByRole("status");
+      await waitFor(() => expect(copyStatus).toHaveTextContent("Copied"));
+      expect(copyStatus).toHaveClass("sr-only");
+      expect(actions[0].querySelector("svg")).toHaveClass("text-emerald-600");
+      expect(actions[0]).toHaveAttribute("title", "Copy message");
       expect(writeText).toHaveBeenNthCalledWith(1, prompt.content);
 
       fireEvent.click(actions[2]);

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Check } from "lucide-react";
-import { projectAgentCopy } from "@agentkib/session-ui";
+import { DelayedSpinner, LoadingSkeleton, projectAgentCopy } from "@agentkib/session-ui";
 import { sessionProviderDeclaration } from "@agentkib/web-client";
 import { useAppDialogs } from "@/components/AppDialogProvider";
 import { Button } from "@/components/ui/button";
@@ -118,6 +118,7 @@ export function SessionWorkerAssignmentDialog({
   const result = response?.key === requestKey ? response.value : undefined;
   const options = result ?? undefined;
   const readFailed = result === null;
+  const loading = result === undefined;
 
   useEffect(() => {
     let active = true;
@@ -195,12 +196,18 @@ export function SessionWorkerAssignmentDialog({
       ? selected.filter((id) => eligible.has(id)).slice(0, options.remaining)
       : [];
   const remaining = options ? options.remaining - workers.length : 0;
+  const displayedCandidates = loading
+    ? candidateRows.map(({ row }) => ({ row, candidate: undefined }))
+    : candidates;
   return (
     <Dialog open onOpenChange={(open) => !open && !busy && onClose()}>
       <DialogContent className="sm:max-w-lg" initialFocus={cancel}>
         <DialogHeader className="pr-6">
-          <DialogTitle>{copy.title(displaySessionTitle(session.title, tr))}</DialogTitle>
-          {active && session.orchestration?.role !== "lead" && (
+          <DialogTitle className="flex items-center gap-2">
+            {copy.title(displaySessionTitle(session.title, tr))}
+            <DelayedSpinner active={loading} className="size-3.5 shrink-0 text-muted-foreground" />
+          </DialogTitle>
+          {(loading || active) && session.orchestration?.role !== "lead" && (
             <DialogDescription>{copy.firstAssignment}</DialogDescription>
           )}
         </DialogHeader>
@@ -210,42 +217,42 @@ export function SessionWorkerAssignmentDialog({
           </p>
         )}
         {readFailed ? (
-          <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="flex min-h-40 flex-wrap items-start justify-between gap-2">
             <p role="alert">{management.failed}</p>
             <Button variant="outline" size="sm" onClick={reload}>
               {tr("sessions.retry")}
             </Button>
           </div>
-        ) : !options ? (
-          <p role="status" className="text-muted-foreground">
-            {tr("common.loading")}
-          </p>
         ) : (
-          <>
-            {!options.capable && candidates.length === 0 && (
+          <div className="min-h-40" aria-busy={loading}>
+            {loading && displayedCandidates.length === 0 && (
+              <LoadingSkeleton label={tr("common.loading")} />
+            )}
+            {options && !options.capable && candidates.length === 0 && (
               <p className="text-muted-foreground">{copy.cannotLead}</p>
             )}
-            {options.capable && candidates.length === 0 && (
+            {options?.capable && candidates.length === 0 && (
               <p className="text-muted-foreground">{copy.empty}</p>
             )}
-            {candidates.length > 0 && (
+            {displayedCandidates.length > 0 && (
               <div className="max-h-[50vh] space-y-1 overflow-y-auto">
-                {candidates.map(({ row, candidate }) => {
+                {displayedCandidates.map(({ row, candidate }) => {
                   const title = displaySessionTitle(row.title, tr);
-                  const checked = candidate.assigned === true || workers.includes(row.id);
-                  const unavailable = candidate.assigned
+                  const checked = candidate?.assigned === true || workers.includes(row.id);
+                  const unavailable = candidate?.assigned
                     ? null
-                    : (candidate.reason ??
-                      (options.capable
+                    : (candidate?.reason ??
+                      (options?.capable
                         ? (options.reason ??
                           (!checked && remaining === 0 ? "worker-limit-reached" : null))
                         : "lead-requires-managed-claude"));
                   const disabledReason =
+                    candidate &&
                     unavailable &&
                     unavailable !== "antigravity-acp-disabled" &&
                     !(row.agent === "antigravity" && unavailable === "worker-agent-unsupported")
                       ? (copy.reasons[unavailable] ??
-                        (options.capable ? copy.unavailable : copy.cannotLead))
+                        (options?.capable ? copy.unavailable : copy.cannotLead))
                       : null;
                   const detail = row.worktree ? worktreeLabel(row.worktree, tr) : null;
                   const rowButton = (
@@ -254,10 +261,11 @@ export function SessionWorkerAssignmentDialog({
                       size="content"
                       className="min-w-0 flex-1 justify-start gap-2.5 rounded-md px-2 py-2 text-left font-normal aria-pressed:border-primary"
                       aria-label={title}
-                      aria-description={candidate.assigned ? copy.assigned : undefined}
+                      aria-description={candidate?.assigned ? copy.assigned : undefined}
                       aria-pressed={checked}
-                      disabled={busy || !!unavailable}
+                      disabled={loading || busy || !!unavailable}
                       onClick={() => {
+                        if (!candidate) return;
                         if (candidate.assigned) {
                           void remove(candidate, title);
                           return;
@@ -311,8 +319,12 @@ export function SessionWorkerAssignmentDialog({
                 })}
               </div>
             )}
-            {active && <p className="text-xs text-muted-foreground">{copy.remaining(remaining)}</p>}
-          </>
+            {(loading || active) && (
+              <div className="mt-1 min-h-4 text-xs text-muted-foreground">
+                {active && copy.remaining(remaining)}
+              </div>
+            )}
+          </div>
         )}
         <DialogFooter>
           <Button ref={cancel} variant="outline" onClick={onClose} disabled={busy}>

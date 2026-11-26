@@ -6,6 +6,7 @@ import {
   homeSessionCopy,
   interactionCardCopy,
   InteractionDock,
+  LoadingSkeleton,
   sessionInteractionItems,
 } from "@agentkib/session-ui";
 import { useI18n } from "@/core/useI18n";
@@ -64,11 +65,7 @@ export function HomeInteraction({
   }, [client, session.id]);
 
   if (state === "loading" || (state === "ready" && !access))
-    return (
-      <p role="status" className="text-xs text-muted-foreground">
-        {copy.loadingRequest}
-      </p>
-    );
+    return <LoadingSkeleton label={copy.loadingRequest} />;
   if (state !== "ready" || !live || !access)
     return (
       <p role="status" className="text-xs text-muted-foreground">

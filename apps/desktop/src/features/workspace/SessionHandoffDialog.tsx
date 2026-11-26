@@ -1,4 +1,5 @@
 import { useI18n } from "@/core/useI18n";
+import { LoadingSkeleton } from "@agentkib/session-ui";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import {
@@ -741,16 +742,22 @@ export function SessionHandoffDialog({
             </div>
           </div>
         ) : (
-          <div className="grid min-h-[360px] place-content-center px-6 py-8 text-center">
-            <div
-              role="alert"
-              className="mx-auto max-w-md rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm leading-relaxed text-amber-800 dark:text-amber-200"
-            >
-              {sourceCapability
-                ? sourceCapabilityReason(tr, sourceCapability.reason) ||
-                  tr("handoff.sourceReadOnly")
-                : tr("handoff.checkingSource")}
-            </div>
+          <div className="grid min-h-[360px] place-items-center px-6 py-8 text-center">
+            {sourceCapability ? (
+              <div
+                role="alert"
+                className="mx-auto max-w-md rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm leading-relaxed text-amber-800 dark:text-amber-200"
+              >
+                {sourceCapabilityReason(tr, sourceCapability.reason) ||
+                  tr("handoff.sourceReadOnly")}
+              </div>
+            ) : (
+              <LoadingSkeleton
+                label={tr("handoff.checkingSource")}
+                rows={4}
+                className="w-full max-w-md"
+              />
+            )}
           </div>
         )}
         <footer className="flex min-h-16 items-center justify-end gap-2 border-t border-border px-5 py-3">

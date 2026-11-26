@@ -8,12 +8,8 @@ import {
   type RefObject,
 } from "react";
 import type { ConversationEventPage, Live } from "@agentkib/web-client";
-import {
-  readResultAnchor,
-  ReadStateNotice,
-  readStateCopy,
-  type useVisibleReadState,
-} from "./read-state";
+import { readResultAnchor, readStateCopy, type useVisibleReadState } from "./read-state";
+import { LoadingSkeleton } from "./loading-feedback";
 import { contextUsageCopyForSurface } from "./context-usage-copy";
 import type { ComposerModelLocale } from "./composer-model-copy";
 import { dshNativeStatusDisplay, sessionContinuationCopy } from "./session-continuation";
@@ -172,6 +168,7 @@ export function SessionDetail({
     readObservation?.status === "ready" &&
     readObservation.events &&
     readObservation.readState?.freshness === "current" &&
+    readObservation.readState.status !== "unknown" &&
     readObservation.readState;
   const readCopy = readStateCopy(locale);
   const result = currentReadState ? currentReadState.latestResult : undefined;
@@ -196,16 +193,12 @@ export function SessionDetail({
         ref={viewportRef}
       >
         {!page ? (
-          <div
-            role="status"
-            className="absolute inset-0 flex flex-col items-center justify-center gap-3 p-6 text-center"
-          >
-            <LoaderCircle
-              aria-hidden="true"
-              className="size-6 animate-spin text-muted-foreground motion-reduce:animate-none"
-            />
-            <p className="text-sm text-muted-foreground">{labels.loading}</p>
-          </div>
+          <LoadingSkeleton
+            key={sessionId}
+            label={labels.loading}
+            layout="conversation"
+            className="mx-auto w-full max-w-3xl px-4"
+          />
         ) : (
           <div
             ref={contentRef}
@@ -213,7 +206,6 @@ export function SessionDetail({
               sticky ? "reader-content min-w-0 shrink-0 px-4 pb-2 md:px-8" : "min-w-0 shrink-0"
             }
           >
-            {readObservation && <ReadStateNotice locale={locale} observation={readObservation} />}
             {beforeTranscript}
             {page.warnings.length > 0 && (
               <aside className="mx-auto mb-5 max-w-3xl rounded-lg border border-amber-500/20 bg-amber-500/5 p-3 text-xs leading-6 text-amber-600">

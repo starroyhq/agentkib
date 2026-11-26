@@ -530,6 +530,43 @@ describe("a session row's menu on the desktop", () => {
     });
   });
 
+  it("shows known candidates and footer before assignment eligibility returns", async () => {
+    const close = vi.fn();
+    type Options = {
+      capable: boolean;
+      remaining: number;
+      candidates: { sessionId: string; reason: null }[];
+    };
+    let resolve!: (options: Options) => void;
+    claudeRequest.mockReturnValue(new Promise<Options>((done) => (resolve = done)));
+    const session = { ...summary("claude-code"), id: "lead" };
+    const worker = { ...summary("codex"), id: "worker", title: "Ready Worker" };
+    render(
+      <AppDialogProvider>
+        <SessionWorkerAssignmentDialog session={session} sessions={[worker]} onClose={close} />
+      </AppDialogProvider>,
+    );
+    const dialog = within(screen.getByRole("dialog"));
+    const row = dialog.getByRole("button", { name: worker.title });
+    const assign = dialog.getByRole("button", { name: "Assign" });
+    const cancel = dialog.getByRole("button", { name: "Cancel" });
+    expect(row).toBeDisabled();
+    expect(assign).toBeDisabled();
+    expect(cancel).toBeEnabled();
+    expect(dialog.queryByText("Loading…")).not.toBeInTheDocument();
+    await act(async () => {
+      resolve({
+        capable: true,
+        remaining: 1,
+        candidates: [{ sessionId: worker.id, reason: null }],
+      });
+    });
+    expect(dialog.getByRole("button", { name: worker.title })).toBe(row);
+    expect(row).toBeEnabled();
+    fireEvent.click(row);
+    expect(assign).toBeEnabled();
+  });
+
   it("keeps the assigned alias for removal and offers the canonical Worker after it", async () => {
     const user = userEvent.setup();
     const session = { ...summary("codex"), id: "lead" };

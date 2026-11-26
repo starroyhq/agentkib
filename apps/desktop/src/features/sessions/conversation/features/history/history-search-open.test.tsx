@@ -166,8 +166,10 @@ describe("explicit history session opening", () => {
     const f = fixture("current");
     await renderSource(f);
     expect(screen.getByText(c.quoteOnly)).toBeVisible();
-    fireEvent.click(screen.getByRole("button", { name: c.quote }));
-    await screen.findByText(c.added);
+    const quote = screen.getByRole("button", { name: c.quote });
+    fireEvent.click(quote);
+    await waitFor(() => expect(quote).toHaveAttribute("title", c.added));
+    expect(screen.queryByText(c.added)).not.toBeInTheDocument();
     expect(f.props.onReference).toHaveBeenCalledOnce();
     expect(f.props.currentSessionId).toBe("current");
     expect(f.props.navigationContext).toBe(JSON.stringify(["current", "keep draft"]));
@@ -269,7 +271,7 @@ describe("explicit history session opening", () => {
       }
       await act(async () => pending.resolve(f.resolved));
       expect(f.props.onReference).not.toHaveBeenCalled();
-      expect(screen.queryByText(c.added)).not.toBeInTheDocument();
+      expect(screen.queryByTitle(c.added)).not.toBeInTheDocument();
       if (change === "read scope") expect(f.props.onScopeEnded).toHaveBeenCalledOnce();
     },
   );

@@ -300,10 +300,12 @@ export function useSessionLive({
       needsDomainRecovery = true;
       if (++resets > 3) {
         closeStream?.();
+        setRetryingSession(undefined);
         setOnline(false);
         setError(true);
         return;
       }
+      if (!desktop) setRetryingSession(id);
       resetPending = true;
       itemGeneration++;
       queueMicrotask(() => {
@@ -468,7 +470,10 @@ export function useSessionLive({
             warmStreams.discardParked();
             setRetryingSession(id);
           }
-          if (error instanceof ApiError && error.code === "incompatible_protocol") fail(error, g);
+          if (error instanceof ApiError && error.code === "incompatible_protocol") {
+            setRetryingSession(undefined);
+            fail(error, g);
+          } else if (!desktop) setRetryingSession(id);
         },
         event: (type, data) => {
           if (!active() || resetPending) return false;
@@ -702,6 +707,7 @@ export function useSessionLive({
     connect(resume);
     return () => {
       closed = true;
+      setRetryingSession((retrying) => (retrying === id ? undefined : retrying));
       warmNavigation.current.park = undefined;
       if (readSettingsControls) readSettingsControls.current = undefined;
       window.clearTimeout(historyRetry);

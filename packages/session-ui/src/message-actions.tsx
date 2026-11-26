@@ -158,7 +158,7 @@ export function MessageActions({
           <button
             type="button"
             aria-label={words.copy}
-            title={label}
+            title={words.copy}
             className="grid size-6 place-items-center rounded-md hover:bg-muted hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring pointer-coarse:min-w-8"
             onClick={() => {
               if (text) void copyText(text);
@@ -166,6 +166,9 @@ export function MessageActions({
           >
             <svg
               aria-hidden="true"
+              className={
+                feedback === "copied" ? "text-emerald-600 dark:text-emerald-400" : undefined
+              }
               width="14"
               height="14"
               viewBox="0 0 24 24"

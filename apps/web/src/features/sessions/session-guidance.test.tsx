@@ -1,12 +1,10 @@
-import { act, cleanup, render, renderHook, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { useEffect } from "react";
-import { WebClient, type ConversationEvent } from "@agentkib/web-client";
+import { WebClient } from "@agentkib/web-client";
 import { dictionaries } from "@/features/conversation/i18n";
 import { useSessionController } from "@/features/conversation/web-session-controller";
-import { SessionDialogs } from "@/features/conversation/web-session-dialogs";
 
-const state = vi.hoisted(() => ({ modal: undefined as unknown }));
 vi.mock("../../../../../packages/session-ui/src/conversation/sessions/use-session-live", () => ({
   useSessionLive: ({
     streamReady,
@@ -26,10 +24,6 @@ vi.mock("../../../../../packages/session-ui/src/conversation/sessions/use-sessio
 vi.mock("../../../../../packages/session-ui/src/conversation/preferences/use-appearance", () => ({
   useAppearance: () => {},
 }));
-vi.mock("@/features/conversation/web-session-context", () => ({
-  useSession: () => ({ modal: state.modal, t: dictionaries["zh-CN"], locale: "zh-CN" }),
-}));
-
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
@@ -81,26 +75,6 @@ describe("production session guidance", () => {
     await act(() => result.current.choose("test"));
     expect(result.current.liveText).toBe(expected);
   });
-
-  it.each([undefined, "", "   ", "  saved tool content  "])(
-    "renders tool summary content %s in the dialog",
-    (content) => {
-      state.modal = {
-        id: "tool",
-        kind: "tool-summary",
-        content,
-        truncated: true,
-        attachment_count: 0,
-      } satisfies ConversationEvent;
-      render(<SessionDialogs />);
-      expect(screen.getByRole("dialog")).toHaveTextContent(
-        content?.trim() ? content.trim() : t.toolSummaryUnavailable,
-      );
-      expect(screen.getByText(t.truncated)).toBeVisible();
-      expect(screen.queryByText(t.history)).not.toBeInTheDocument();
-      if (content?.trim()) expect(document.querySelector("pre")?.textContent).toBe(content);
-    },
-  );
 
   it.each([false, true])(
     "shows unknown DSH status and honors the explicit send grant (%s)",

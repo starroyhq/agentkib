@@ -2473,8 +2473,6 @@
   "conversation.sessionId": "Session ID",
   "conversation.status": "Status",
   "conversation.warnings": "Read warnings",
-  "conversation.tool": "Tool summary",
-  "conversation.toolSummaryUnavailable": "This record has no details to show.",
   "conversation.readOnly": "This browser has read-only access",
   "conversation.noSendPermission": "This browser does not have permission to send messages",
   "conversation.device": "Authorized browser",

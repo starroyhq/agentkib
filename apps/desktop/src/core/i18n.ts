@@ -121,8 +121,6 @@ const conversationKeys = [
   "sessionId",
   "status",
   "warnings",
-  "tool",
-  "toolSummaryUnavailable",
   "readOnly",
   "noSendPermission",
   "device",

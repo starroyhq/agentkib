@@ -43,6 +43,6 @@ test("the publisher downloads direct desktop artifacts without the unsigned Stor
     new URL("../workflows/release-desktop.yml", import.meta.url),
     "utf8",
   );
-  assert.match(workflow, /name: agentkib-windows-store-x64\n/);
+  assert.match(workflow, /name: agentkib-windows-store-x64\r?\n/);
   assert.match(workflow, /pattern: agentkib-desktop-\*/);
 });

@@ -48,6 +48,7 @@ import {
   type ClaudeInstallation,
 } from "./claude-version";
 import {
+  REMOTE_ERROR_CODES,
   CLAUDE_COMMAND_REFUSALS,
   claudeInputCommandRefusal,
   claudeModelOption,
@@ -762,14 +763,15 @@ export class ClaudeManagedReadOwner {
           !value.imageId ||
           value.imageId.length > 512
         )
-          throw new Error("session-image-invalid");
+          throw new Error(REMOTE_ERROR_CODES.sessionImageInvalid);
         return this.image(id, value.imageId);
       }),
     ],
   ]);
 
   async request(value: unknown): Promise<unknown> {
-    if (!isObject(value) || typeof value.operation !== "string") throw new Error("invalid-request");
+    if (!isObject(value) || typeof value.operation !== "string")
+      throw new Error(REMOTE_ERROR_CODES.invalidRequestDetail);
     const operation = this.sessionOperations.get(value.operation);
     if (operation) return operation(value);
     return this.#requestOperation(value, () => {
@@ -781,7 +783,8 @@ export class ClaudeManagedReadOwner {
     value: Record<string, unknown>,
     operation: ClaudeManagedOperation,
   ): Promise<unknown> {
-    if (!isObject(value) || typeof value.operation !== "string") throw new Error("invalid-request");
+    if (!isObject(value) || typeof value.operation !== "string")
+      throw new Error(REMOTE_ERROR_CODES.invalidRequestDetail);
     const { operation: name } = value;
     const id = typeof value.sessionId === "string" ? value.sessionId : undefined;
     if (name === "schedule-pause" || name === "schedule-invalidate")
@@ -6331,7 +6334,7 @@ export class ClaudeManagedReadOwner {
   /** `retain` false keeps no cursor for the page, for stream snapshots (see SessionPaging.read). */
   async image(id: string, imageId: string) {
     const record = this.#load(id);
-    if (!record || record.fresh) throw new Error("session-image-unavailable");
+    if (!record || record.fresh) throw new Error(REMOTE_ERROR_CODES.sessionImageUnavailable);
     this.#validate(record);
     const result = await this.sessions.imageForNative(
       "claude-code",
@@ -6347,7 +6350,7 @@ export class ClaudeManagedReadOwner {
       latest.workspaceId !== record.workspaceId ||
       latest.home !== record.home
     )
-      throw new Error("session-image-unavailable");
+      throw new Error(REMOTE_ERROR_CODES.sessionImageUnavailable);
     this.#validate(latest);
     return result;
   }
@@ -6443,18 +6446,18 @@ export class ClaudeManagedReadOwner {
   async subagents(id: string, value: Record<string, unknown>): Promise<unknown> {
     const childId = value.operation === "subagent-events" ? value.subagentId : undefined;
     if (childId !== undefined && (typeof childId !== "string" || !/^[a-f0-9]{64}$/.test(childId)))
-      throw new Error("invalid-request");
+      throw new Error(REMOTE_ERROR_CODES.invalidRequestDetail);
     if (
       value.cursor !== undefined &&
       value.cursor !== null &&
       (typeof value.cursor !== "string" || value.cursor.length > 1024)
     )
-      throw new Error("invalid-request");
+      throw new Error(REMOTE_ERROR_CODES.invalidRequestDetail);
     if (
       value.limit !== undefined &&
       (!Number.isSafeInteger(value.limit) || Number(value.limit) < 1 || Number(value.limit) > 100)
     )
-      throw new Error("invalid-request");
+      throw new Error(REMOTE_ERROR_CODES.invalidRequestDetail);
     const record = this.#load(id);
     const runner = this.#runners.get(id);
     let parent: SubagentParent;
@@ -6500,7 +6503,11 @@ export class ClaudeManagedReadOwner {
       try {
         return await this.sessions.subagentsForNative(parent, childId, cursor, limit, observations);
       } catch (error) {
-        if (!(error instanceof Error) || error.message !== "subagent-unavailable" || !memory)
+        if (
+          !(error instanceof Error) ||
+          error.message !== REMOTE_ERROR_CODES.subagentUnavailableDetail ||
+          !memory
+        )
           throw error;
       }
     }
@@ -6517,14 +6524,15 @@ export class ClaudeManagedReadOwner {
         )
         .digest("hex");
       const prefix = `subagent-memory-v1:${childId}:${epoch}:`;
-      if (cursor && !cursor.startsWith(prefix)) throw new Error("TRANSCRIPT_CURSOR_STALE");
+      if (cursor && !cursor.startsWith(prefix))
+        throw new Error(REMOTE_ERROR_CODES.transcriptCursorStale);
       const encoded = cursor?.slice(prefix.length);
       if (encoded !== undefined && !/^[A-Za-z0-9_-]+$/.test(encoded))
-        throw new Error("TRANSCRIPT_CURSOR_INVALID");
+        throw new Error(REMOTE_ERROR_CODES.transcriptCursorInvalid);
       const anchor = encoded ? Buffer.from(encoded, "base64url").toString("utf8") : null;
       const offset =
         anchor === null ? memory.length : memory.findIndex((item) => item.id === anchor);
-      if (offset < 0) throw new Error("TRANSCRIPT_CURSOR_STALE");
+      if (offset < 0) throw new Error(REMOTE_ERROR_CODES.transcriptCursorStale);
       const start = Math.max(0, offset - limit);
       return {
         version: 1,

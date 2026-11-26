@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
-import { PROJECT_AGENT_MAX_WORKERS } from "@agentkib/runtime-protocol";
+import { REMOTE_ERROR_CODES, PROJECT_AGENT_MAX_WORKERS } from "@agentkib/runtime-protocol";
 import { openManagedLedger } from "./managed-ledger";
 import type { ReportDelivery, ReportFailure } from "./report-delivery";
 
@@ -306,7 +306,7 @@ export class LeadRegistry {
   /** Changes one lead; `fn` may return null to remove it. Throws `lead-unavailable` when absent. */
   update<T>(sessionId: string, fn: (lead: Lead) => T): T {
     return this.#transaction(sessionId, (lead) => {
-      if (!lead) throw new Error("lead-unavailable");
+      if (!lead) throw new Error(REMOTE_ERROR_CODES.leadUnavailable);
       const value = fn(lead);
       lead.revision++;
       return { lead, value };
@@ -362,7 +362,7 @@ export class LeadRegistry {
   ): WorkerRestartWindow {
     return this.#transaction(leadId, (lead, database) => {
       if (!lead?.lanes.some((item) => item.id === lane.id && item.sessionId === lane.sessionId))
-        throw new Error("worker-unavailable");
+        throw new Error(REMOTE_ERROR_CODES.workerUnavailable);
       if (lead.paused || lead.deviceId !== deviceId) throw new Error("delegation-paused");
       database.exec(RESTART_TABLE);
       const window = this.#restartWindow(database, lane.sessionId, now);
@@ -432,8 +432,9 @@ export class LeadRegistry {
 
   create(lead: NewLead) {
     return this.#transaction(lead.sessionId, (current, database) => {
-      if (current) throw new Error("lead-exists");
-      if (this.#hasWorker(database, lead.sessionId)) throw new Error("session-is-a-worker");
+      if (current) throw new Error(REMOTE_ERROR_CODES.leadExists);
+      if (this.#hasWorker(database, lead.sessionId))
+        throw new Error(REMOTE_ERROR_CODES.sessionIsAWorker);
       const created = this.#newLead(lead);
       return { lead: created, value: structuredClone(created) };
     });
@@ -450,10 +451,11 @@ export class LeadRegistry {
     create?: () => NewLead,
   ): { designated: boolean } {
     return this.#transaction(sessionId, (current, database, unsupportedLanes) => {
-      if (this.#hasWorker(database, sessionId)) throw new Error("session-is-a-worker");
+      if (this.#hasWorker(database, sessionId))
+        throw new Error(REMOTE_ERROR_CODES.sessionIsAWorker);
       let lead = current;
       if (!lead) {
-        if (!create) throw new Error("lead-unavailable");
+        if (!create) throw new Error(REMOTE_ERROR_CODES.leadUnavailable);
         lead = this.#newLead(create());
       }
       const names = new Set(lead.lanes.map((lane) => lane.name));
@@ -469,7 +471,7 @@ export class LeadRegistry {
         if (lane.sessionId === sessionId || hasLead.get(lane.sessionId))
           throw new Error("session-is-a-project-agent");
         if (sessions.has(lane.sessionId) || this.#hasWorker(database, lane.sessionId))
-          throw new Error("session-is-a-worker");
+          throw new Error(REMOTE_ERROR_CODES.sessionIsAWorker);
         if (names.has(lane.name)) throw new Error("worker-name-taken");
         sessions.add(lane.sessionId);
         names.add(lane.name);

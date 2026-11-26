@@ -1,3 +1,4 @@
+import { REMOTE_ERROR_CODES } from "@agentkib/runtime-protocol";
 import { ControlValidationError } from "./error";
 
 export type SettingsModel = {
@@ -53,7 +54,7 @@ function settingField(value: unknown, nullable = false): string | null | undefin
   if (value === undefined || (value === null && nullable)) return value;
   const text = optionalString(value);
   if (!text || [...text].some((character) => character.charCodeAt(0) <= 0x1f))
-    throw new ControlValidationError(400, "invalid_input");
+    throw new ControlValidationError(400, REMOTE_ERROR_CODES.invalidInput);
   return text;
 }
 
@@ -74,12 +75,13 @@ export function validateProviderSettings(
 ): Record<string, unknown> {
   const state = value as SettingsState;
   if (state.revision !== body.expectedRevision)
-    throw new ControlValidationError(409, "stale_state");
+    throw new ControlValidationError(409, REMOTE_ERROR_CODES.staleState);
 
   const params: Record<string, unknown> = {};
   if (policy.requireWriteScope) {
     const scope = optionalString(body.expectedSettingsScope);
-    if (!scope || scope !== state.writeScope) throw new ControlValidationError(409, "stale_state");
+    if (!scope || scope !== state.writeScope)
+      throw new ControlValidationError(409, REMOTE_ERROR_CODES.staleState);
     params.expectedSettingsScope = scope;
   }
   const currentModel =
@@ -89,7 +91,8 @@ export function validateProviderSettings(
     state.settings?.current?.model;
   const writable = state.writable ?? state.settings?.writable;
   const ensureWritable = (key: string) => {
-    if (!available(writable?.[key])) throw new ControlValidationError(409, "setting_unavailable");
+    if (!available(writable?.[key]))
+      throw new ControlValidationError(409, REMOTE_ERROR_CODES.settingUnavailable);
   };
   const typedModel = settingField(body.model);
   const model = typedModel
@@ -100,11 +103,11 @@ export function validateProviderSettings(
   const serviceTier = settingField(body.serviceTierId, policy.clearServiceTier);
   const policyId = settingField(body.policyId);
   if (body.restoreDefaults !== undefined && body.restoreDefaults !== true)
-    throw new ControlValidationError(400, "invalid_restore_defaults");
+    throw new ControlValidationError(400, REMOTE_ERROR_CODES.invalidRestoreDefaults);
   if (model) {
     ensureWritable("model");
     if (!state.models?.some((item) => item.id === model))
-      throw new ControlValidationError(400, "unsupported_model");
+      throw new ControlValidationError(400, REMOTE_ERROR_CODES.unsupportedModel);
     params.model = model;
   }
   const effectiveModel = model ?? currentModel;
@@ -116,16 +119,16 @@ export function validateProviderSettings(
   if (effort !== undefined) {
     ensureWritable("effort");
     if (effort !== null && !selectedModel?.efforts?.includes(effort))
-      throw new ControlValidationError(400, "unsupported_effort");
+      throw new ControlValidationError(400, REMOTE_ERROR_CODES.unsupportedEffort);
     params.effort = effort;
   }
   if (body.permissionMode !== undefined) {
     if (!policy.permissionModes)
-      throw new ControlValidationError(400, "unsupported_permission_mode");
+      throw new ControlValidationError(400, REMOTE_ERROR_CODES.unsupportedPermissionMode);
     ensureWritable("permissionMode");
     const permissionMode = String(body.permissionMode);
     if (!policy.permissionModes.includes(permissionMode))
-      throw new ControlValidationError(400, "unsupported_permission_mode");
+      throw new ControlValidationError(400, REMOTE_ERROR_CODES.unsupportedPermissionMode);
     if (policy.fullAccessPermissionModes?.includes(permissionMode)) requireFullAccess();
     params.permissionMode = body.permissionMode;
   }
@@ -136,7 +139,7 @@ export function validateProviderSettings(
       (!["default", "plan"].includes(mode) ||
         !state.collaborationModes?.some((item) => item.id === mode))
     )
-      throw new ControlValidationError(400, "unsupported_mode");
+      throw new ControlValidationError(400, REMOTE_ERROR_CODES.unsupportedMode);
     params.mode = mode;
   }
   if (serviceTier !== undefined) {
@@ -150,18 +153,18 @@ export function validateProviderSettings(
         ...(selectedModel?.serviceTierIds ?? []),
       ].includes(serviceTier)
     )
-      throw new ControlValidationError(400, "unsupported_service_tier");
+      throw new ControlValidationError(400, REMOTE_ERROR_CODES.unsupportedServiceTier);
     params.serviceTier = serviceTier;
   }
   if (policyId) {
     ensureWritable("policy");
     if (!state.policies?.some((item) => item.id === policyId))
-      throw new ControlValidationError(400, "unsupported_policy");
+      throw new ControlValidationError(400, REMOTE_ERROR_CODES.unsupportedPolicy);
     params.policyId = policyId;
   }
   if (body.restoreDefaults === true) {
     if (!canRestoreDefaults(state, writable))
-      throw new ControlValidationError(409, "defaults_unavailable");
+      throw new ControlValidationError(409, REMOTE_ERROR_CODES.defaultsUnavailable);
     params.resetDefaults = true;
   }
   if (
@@ -173,6 +176,6 @@ export function validateProviderSettings(
     body.permissionMode === undefined &&
     body.restoreDefaults !== true
   )
-    throw new ControlValidationError(400, "empty_settings");
+    throw new ControlValidationError(400, REMOTE_ERROR_CODES.emptySettings);
   return params;
 }

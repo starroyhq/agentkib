@@ -1,3 +1,4 @@
+import { REMOTE_ERROR_CODES } from "@agentkib/runtime-protocol";
 import { createHash } from "node:crypto";
 import {
   closeSync,
@@ -497,7 +498,7 @@ export class AntigravityLocalStore {
     limit: number,
   ): ConversationEventPage {
     if (!UUID.test(id) || !Number.isInteger(limit) || limit < 1 || limit > 500)
-      throw new Error("invalid-request");
+      throw new Error(REMOTE_ERROR_CODES.invalidRequestDetail);
     const record = this.list(workspace).records.find(
       (value) => value.surface === surface && value.id === id.toLowerCase(),
     );

@@ -1,3 +1,4 @@
+import { REMOTE_ERROR_CODES } from "@agentkib/runtime-protocol";
 import { createHash } from "node:crypto";
 import { statSync } from "node:fs";
 import type { ConversationReadResult, ConversationReadState } from "@agentkib/runtime-protocol";
@@ -45,7 +46,7 @@ function receipt(value: unknown): NativeRead {
     !value.revision ||
     value.revision.length > 8192
   )
-    throw new Error("read-state-unavailable");
+    throw new Error(REMOTE_ERROR_CODES.readStateUnavailableDetail);
   const unread = value.firstUnread;
   if (
     unread !== null &&
@@ -53,7 +54,7 @@ function receipt(value: unknown): NativeRead {
       (unread.type !== "threadStart" &&
         !(unread.type === "turn" && typeof unread.turnId === "string")))
   )
-    throw new Error("read-state-unavailable");
+    throw new Error(REMOTE_ERROR_CODES.readStateUnavailableDetail);
   return { revision: value.revision, firstUnread: unread as NativeRead["firstUnread"] };
 }
 function nativeResult(value: unknown): (ConversationReadResult & { turnId: string }) | null {
@@ -125,7 +126,7 @@ export class CodexReadStateObserver {
     return JSON.stringify([pathIdentity(target.home), target.executable, identity]);
   }
   #connection(target: CodexReadTarget): Connection {
-    if (this.#closed) throw new Error("read-state-unavailable");
+    if (this.#closed) throw new Error(REMOTE_ERROR_CODES.readStateUnavailableDetail);
     const key = this.#poolKey(target);
     let connection = this.#connections.get(key);
     if (connection) {
@@ -136,7 +137,7 @@ export class CodexReadStateObserver {
       const oldest = [...this.#connections.entries()]
         .filter((entry) => entry[1].queued === 0)
         .sort((a, b) => a[1].used - b[1].used)[0];
-      if (!oldest) throw new Error("read-state-unavailable");
+      if (!oldest) throw new Error(REMOTE_ERROR_CODES.readStateUnavailableDetail);
       this.#connections.delete(oldest[0]);
       void oldest[1].session.then((session) => session.close()).catch(() => undefined);
     }
@@ -191,7 +192,8 @@ export class CodexReadStateObserver {
     operation: (session: CodexAppServerSession) => Promise<T>,
   ): Promise<T> {
     const connection = this.#connection(target);
-    if (connection.queued >= 64) return Promise.reject(new Error("read-state-unavailable"));
+    if (connection.queued >= 64)
+      return Promise.reject(new Error(REMOTE_ERROR_CODES.readStateUnavailableDetail));
     connection.queued++;
     const run = connection.tail
       .catch(() => undefined)
@@ -426,7 +428,7 @@ export class CodexReadStateObserver {
               "unknown",
             ],
           });
-          if (this.#closed) throw new Error("read-state-unavailable");
+          if (this.#closed) throw new Error(REMOTE_ERROR_CODES.readStateUnavailableDetail);
           if (
             this.#directoryEpochs.get(pool) === epoch &&
             object(value) &&
@@ -478,7 +480,7 @@ export class CodexReadStateObserver {
       typeof value.thread.cwd !== "string" ||
       pathIdentity(value.thread.cwd) !== pathIdentity(target.workspace)
     )
-      throw new Error("read-state-unavailable");
+      throw new Error(REMOTE_ERROR_CODES.readStateUnavailableDetail);
     if (!Object.hasOwn(value, "readState") || value.readState === null)
       throw new Error("read-state-thread-unsupported");
     const current = receipt(value.readState);
@@ -490,7 +492,8 @@ export class CodexReadStateObserver {
       sortDirection: "desc",
       itemsView: "notLoaded",
     });
-    if (!object(turns) || !Array.isArray(turns.data)) throw new Error("read-state-unavailable");
+    if (!object(turns) || !Array.isArray(turns.data))
+      throw new Error(REMOTE_ERROR_CODES.readStateUnavailableDetail);
     const firstTurn = turns.data[0];
     const reportedActiveTurnId =
       object(firstTurn) && firstTurn.status === "inProgress" && typeof firstTurn.id === "string"
@@ -520,14 +523,14 @@ export class CodexReadStateObserver {
       includeTurns: false,
     });
     if (!object(checked) || JSON.stringify(receipt(checked.readState)) !== JSON.stringify(current))
-      throw new Error("read-state-unavailable");
+      throw new Error(REMOTE_ERROR_CODES.readStateUnavailableDetail);
     if (this.#closed || ownerTurnId !== this.activeTurn(target))
-      throw new Error("read-state-unavailable");
+      throw new Error(REMOTE_ERROR_CODES.readStateUnavailableDetail);
     if (
       fileVersion &&
       (!object(checked.thread) || this.#fileVersion(target, checked.thread) !== fileVersion)
     )
-      throw new Error("read-state-unavailable");
+      throw new Error(REMOTE_ERROR_CODES.readStateUnavailableDetail);
     // Replace any older batch entry so a concurrent native read/unread change cannot regress
     // to the receipt fetched by thread/list before this coherent read.
     this.#directory.delete(`${this.#poolKey(target)}\0${target.nativeId}`);
@@ -555,7 +558,7 @@ export class CodexReadStateObserver {
       try {
         const fresh =
           (await this.#unchanged(session, target, old)) ?? (await this.#read(session, target));
-        if (this.#closed) throw new Error("read-state-unavailable");
+        if (this.#closed) throw new Error(REMOTE_ERROR_CODES.readStateUnavailableDetail);
         const poolChanged = this.#unsupported.delete(this.#poolKey(target)),
           threadChanged = this.#unsupportedThreads.delete(key);
         if (poolChanged || threadChanged) this.#epochs.set(key, (this.#epochs.get(key) ?? 0) + 1);
@@ -609,17 +612,18 @@ export class CodexReadStateObserver {
       this.#unsupported.has(this.#poolKey(target)) ||
       this.#unsupportedThreads.has(this.#cacheKey(target))
     )
-      throw new Error("read-state-conflict");
+      throw new Error(REMOTE_ERROR_CODES.readStateConflictDetail);
     return this.#serialized(target, async (session) => {
       const fresh = await this.#read(session, target);
       this.#snapshots.set(this.#cacheKey(target), fresh);
       const projected = this.#project(target, scope, fresh);
-      if (projected.freshness !== "current") throw new Error("read-state-unavailable");
+      if (projected.freshness !== "current")
+        throw new Error(REMOTE_ERROR_CODES.readStateUnavailableDetail);
       if (
         projected.version !== expectedVersion ||
         (projected.latestResult?.id ?? null) !== seenResultId
       )
-        throw new Error("read-state-conflict");
+        throw new Error(REMOTE_ERROR_CODES.readStateConflictDetail);
       this.#directory.delete(`${this.#poolKey(target)}\0${target.nativeId}`);
       this.#invalidateDirectory(this.#poolKey(target));
       let value: unknown;
@@ -632,11 +636,12 @@ export class CodexReadStateObserver {
       } catch (error) {
         fresh.stale = true;
         this.changed();
-        if (error instanceof CodexAppServerError) throw new Error("read-state-conflict");
+        if (error instanceof CodexAppServerError)
+          throw new Error(REMOTE_ERROR_CODES.readStateConflictDetail);
         // Losing a write response is unknown. Only a subsequent GET may reconcile it.
-        throw new Error("read-state-unavailable");
+        throw new Error(REMOTE_ERROR_CODES.readStateUnavailableDetail);
       }
-      if (!object(value)) throw new Error("read-state-unavailable");
+      if (!object(value)) throw new Error(REMOTE_ERROR_CODES.readStateUnavailableDetail);
       this.#directory.delete(`${this.#poolKey(target)}\0${target.nativeId}`);
       this.#invalidateDirectory(this.#poolKey(target));
       fresh.receipt = receipt(value.readState);
@@ -647,8 +652,9 @@ export class CodexReadStateObserver {
       const snapshot = this.#snapshots.get(this.#cacheKey(target));
       if (snapshot) snapshot.stale = true;
       this.changed();
-      if (error instanceof Error && error.message === "read-state-conflict") throw error;
-      throw new Error("read-state-unavailable");
+      if (error instanceof Error && error.message === REMOTE_ERROR_CODES.readStateConflictDetail)
+        throw error;
+      throw new Error(REMOTE_ERROR_CODES.readStateUnavailableDetail);
     });
   }
 }

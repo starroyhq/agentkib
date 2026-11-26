@@ -1,3 +1,4 @@
+import { REMOTE_ERROR_CODES } from "@agentkib/runtime-protocol";
 import { createHash } from "node:crypto";
 import { lstatSync } from "node:fs";
 import path from "node:path";
@@ -946,11 +947,12 @@ export class DevinSessions {
     cursor: string | null,
     limit: number,
   ) {
-    if (!/^[a-f0-9]{64}$/.test(subagentId)) throw new Error("invalid-request");
+    if (!/^[a-f0-9]{64}$/.test(subagentId))
+      throw new Error(REMOTE_ERROR_CODES.invalidRequestDetail);
     const head = this.#subagentHeads(ref, workspace).find(
       (value) => DevinSessions.subagentId(sessionId, value.agent) === subagentId,
     );
-    if (!head) throw new Error("subagent-unavailable");
+    if (!head) throw new Error(REMOTE_ERROR_CODES.subagentUnavailableDetail);
     const page = this.events(ref, workspace, cursor, limit, head.head);
     return {
       ...page,
@@ -1104,11 +1106,11 @@ export class DevinSessions {
   /** An image the user attached to a message of this session. */
   image(ref: string, workspace: string, imageId: string): { mimeType: string; base64: string } {
     const match = IMAGE_ID.exec(imageId);
-    if (!match) throw new Error("session-image-unavailable");
+    if (!match) throw new Error(REMOTE_ERROR_CODES.sessionImageUnavailable);
     const node = Number(match[1]),
       index = Number(match[2]);
     const value = this.#read((source) => {
-      if (!source.history) throw new Error("session-image-unavailable");
+      if (!source.history) throw new Error(REMOTE_ERROR_CODES.sessionImageUnavailable);
       const session = ownedSession(source, ref, workspace);
       // Paths are built from the validated integer index; a bound number arrives as a real.
       const row = source.db
@@ -1129,10 +1131,10 @@ export class DevinSessions {
         );
       const mime = typeof row?.mime === "string" ? row.mime.toLowerCase() : null;
       if (!mime || !IMAGE_TYPES.has(mime) || typeof row?.data !== "string")
-        throw new Error("session-image-unavailable");
+        throw new Error(REMOTE_ERROR_CODES.sessionImageUnavailable);
       return sessionImageResult(decodedSessionImage(row.data), mime);
     });
-    if (!value) throw new Error("session-image-unavailable");
+    if (!value) throw new Error(REMOTE_ERROR_CODES.sessionImageUnavailable);
     return value;
   }
 }

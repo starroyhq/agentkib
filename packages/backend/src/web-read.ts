@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
 import {
+  REMOTE_ERROR_CODES,
   sessionProviderCapabilities,
   type ConversationReadResult,
 } from "@agentkib/runtime-protocol";
@@ -564,7 +565,7 @@ export class WebReadRequests {
   managedSettingsState(value: unknown) {
     return this.#runOperation(async () => {
       const provider = this.sessionProviders.require("codex");
-      if (!isObject(value)) throw new Error("invalid-request");
+      if (!isObject(value)) throw new Error(REMOTE_ERROR_CODES.invalidRequestDetail);
       return withProviderCapabilities(provider, await provider.settingsState(value));
     });
   }
@@ -618,7 +619,7 @@ export class WebReadRequests {
   managedControl(value: unknown, restrictNativePolicy = false) {
     return this.#runOperation(() => {
       if (!isObject(value) || typeof value.sessionId !== "string")
-        throw new Error("invalid-request");
+        throw new Error(REMOTE_ERROR_CODES.invalidRequestDetail);
       const provider = this.#sessionProviderForSession(value.sessionId);
       if (!provider) throw new Error("unsupported-session-provider");
       if (provider === this.#antigravity && !this.#antigravity.acpEnabled)
@@ -677,7 +678,7 @@ export class WebReadRequests {
   indexedCodexEvents(value: unknown) {
     return this.#runOperation(async () => {
       const request = requestSchema.parse(value);
-      if (request.operation !== "events") throw new Error("invalid-request");
+      if (request.operation !== "events") throw new Error(REMOTE_ERROR_CODES.invalidRequestDetail);
       return this.#codex.indexedCodexEvents(request);
     });
   }
@@ -727,7 +728,8 @@ export class WebReadRequests {
       if (managed) return this.#codex.managedImage(managed, request);
       const generation = this.indexGeneration();
       const summary = this.store.sessions.get(request.sessionId);
-      if (!indexEnabled(this.dataDir) || !summary) throw new Error("session-image-unavailable");
+      if (!indexEnabled(this.dataDir) || !summary)
+        throw new Error(REMOTE_ERROR_CODES.sessionImageUnavailable);
       const result = await this.sessions.image(request.sessionId, request.imageId);
       const latest = this.store.sessions.get(request.sessionId);
       if (
@@ -737,7 +739,7 @@ export class WebReadRequests {
         latest.workspace_id !== summary.workspace_id ||
         latest.agent !== summary.agent
       )
-        throw new Error("session-image-unavailable");
+        throw new Error(REMOTE_ERROR_CODES.sessionImageUnavailable);
       return result;
     }
     if (request.operation === "events") {
@@ -809,7 +811,7 @@ export class WebReadRequests {
       sessions.push(...this.#codex.catalogRows(managed, aliasesByOwner, nativeByOwner));
       const runtime = this.#codex.catalogRuntime(sessions, enabled);
       if (this.indexGeneration() !== generation || indexEnabled(this.dataDir) !== enabled)
-        throw new Error("catalog-stale");
+        throw new Error(REMOTE_ERROR_CODES.catalogStaleDetail);
       const taskSummarySourceCoverage = sourceCoverage();
       const incompleteSources = enabled
         ? taskSummarySourceCoverage.sources.flatMap(({ complete, workspaceId, agent }) =>
@@ -826,7 +828,8 @@ export class WebReadRequests {
         codexExternalTurns: externalTurns,
       };
       return {
-        codexRuntimeReason: runtime?.reason === "codex-cli-version-too-old" ? runtime.reason : null,
+        codexRuntimeReason:
+          runtime?.reason === REMOTE_ERROR_CODES.codexCliVersionTooOld ? runtime.reason : null,
         complete: catalog.complete && incompleteSources.length === 0,
         ...(catalog.complete ? { incompleteSources } : {}),
         taskSummarySourceCoverage,
@@ -958,7 +961,7 @@ function compactingRejection(
     accepted: false,
     completed: false,
     controlOutcome: "not-dispatched",
-    reason: "session-compacting",
+    reason: REMOTE_ERROR_CODES.sessionCompacting,
     sessionId: request.sessionId,
     requestId: request.requestId,
     runtimeBootId,

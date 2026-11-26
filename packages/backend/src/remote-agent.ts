@@ -1,3 +1,4 @@
+import { REMOTE_ERROR_CODES } from "@agentkib/runtime-protocol";
 import { randomBytes, randomUUID } from "node:crypto";
 import { networkInterfaces } from "node:os";
 import { constants } from "node:fs";
@@ -864,7 +865,7 @@ export class RemoteAgent {
     };
   }
   async #readState(request: Record<string, unknown>, update: boolean, authorized: () => void) {
-    if (!this.readStates) throw new Error("read-state-unsupported");
+    if (!this.readStates) throw new Error(REMOTE_ERROR_CODES.readStateUnsupportedDetail);
     const allowed = update
       ? ["op", "session_id", "expectedVersion", "seenResultId"]
       : ["op", "session_id"];
@@ -874,7 +875,7 @@ export class RemoteAgent {
     const catalog = await this.#catalog();
     authorized();
     if (!catalog.sessions.some((session) => session.id === sessionId))
-      throw new Error("read-state-unsupported");
+      throw new Error(REMOTE_ERROR_CODES.readStateUnsupportedDetail);
     if (update && !(request.seenResultId === null || typeof request.seenResultId === "string"))
       throw new Error("invalid seenResultId");
     const readState = update
@@ -887,7 +888,7 @@ export class RemoteAgent {
       : await this.readStates.get(sessionId, "local");
     authorized();
     if (!(await this.#catalog()).sessions.some((session) => session.id === sessionId))
-      throw new Error("read-state-unsupported");
+      throw new Error(REMOTE_ERROR_CODES.readStateUnsupportedDetail);
     return { readState };
   }
   async #events(request: Record<string, unknown>) {

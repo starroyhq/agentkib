@@ -1,3 +1,4 @@
+import { REMOTE_ERROR_CODES } from "@agentkib/runtime-protocol";
 import { readClaudeDocument } from "../../session-document-providers";
 import {
   withSessionDirectory,
@@ -52,7 +53,7 @@ export function createClaudeHistoryReader({
       );
     },
     image({ native, workspace, imageId, transcript }) {
-      if (!transcript) throw new Error("session-image-unavailable");
+      if (!transcript) throw new Error(REMOTE_ERROR_CODES.sessionImageUnavailable);
       return paging.image(transcript, imageId, imageScope(native, workspace));
     },
     document({ native, summary, transcript, options }) {

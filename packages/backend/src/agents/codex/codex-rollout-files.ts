@@ -1,3 +1,4 @@
+import { REMOTE_ERROR_CODES } from "@agentkib/runtime-protocol";
 import { createHash, randomUUID } from "node:crypto";
 import {
   closeSync,
@@ -148,7 +149,7 @@ export function decompressedChunks(fd: number, size: number, open: () => boolean
       if (!open()) return;
       const chunk = Buffer.allocUnsafe(Math.min(BLOCK_BYTES, size - position));
       const length = readSync(fd, chunk, 0, chunk.length, position);
-      if (!length) throw new Error("history-source-changed");
+      if (!length) throw new Error(REMOTE_ERROR_CODES.historySourceChanged);
       position += length;
       yield chunk.subarray(0, length);
     }
@@ -256,7 +257,7 @@ export class RolloutCache {
       );
       const after = fstatSync(fd, { bigint: true });
       if (after.size !== before.size || after.mtimeNs !== before.mtimeNs)
-        throw new Error("TRANSCRIPT_CURSOR_STALE");
+        throw new Error(REMOTE_ERROR_CODES.transcriptCursorStale);
       try {
         // Several backend processes share this cache. Publish the completed
         // inode once; replacing a winning copy would invalidate its cursors.

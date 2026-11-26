@@ -1,3 +1,4 @@
+import { REMOTE_ERROR_CODES } from "@agentkib/runtime-protocol";
 import {
   createHash,
   createPrivateKey,
@@ -593,15 +594,17 @@ async function readFrame(socket: TLSSocket, limit: number): Promise<unknown> {
 }
 
 function safeRemoteError(value: string): string {
-  if (value === "read-state-conflict") return "REMOTE_READ_STATE_CONFLICT";
-  if (value === "read-state-unavailable") return "REMOTE_READ_STATE_UNAVAILABLE";
-  if (value === "read-state-unsupported") return "REMOTE_READ_STATE_UNSUPPORTED";
+  if (value === REMOTE_ERROR_CODES.readStateConflictDetail) return "REMOTE_READ_STATE_CONFLICT";
+  if (value === REMOTE_ERROR_CODES.readStateUnavailableDetail)
+    return "REMOTE_READ_STATE_UNAVAILABLE";
+  if (value === REMOTE_ERROR_CODES.readStateUnsupportedDetail)
+    return "REMOTE_READ_STATE_UNSUPPORTED";
   if (value === "index-disabled") return "REMOTE_INDEX_DISABLED";
   if (value === "sharing-disabled") return "REMOTE_SHARING_DISABLED";
   if (value === "revoked") return "REMOTE_REVOKED";
   if (value === "pairing-invalid") return "REMOTE_PAIRING_INVALID";
-  if (value === "TRANSCRIPT_CURSOR_INVALID") return value;
-  if (value === "TRANSCRIPT_CURSOR_STALE") return value;
+  if (value === REMOTE_ERROR_CODES.transcriptCursorInvalid) return value;
+  if (value === REMOTE_ERROR_CODES.transcriptCursorStale) return value;
   if (value === "TRANSCRIPT_UNREADABLE") return value;
   if (value === "TRANSCRIPT_SCAN_STATE_LIMIT") return value;
   if (value === "limit") return "REMOTE_LIMIT";
@@ -610,7 +613,13 @@ function safeRemoteError(value: string): string {
 
 function wireError(error: unknown): string {
   const message = error instanceof Error ? error.message : "";
-  if (["read-state-conflict", "read-state-unavailable", "read-state-unsupported"].includes(message))
+  if (
+    [
+      REMOTE_ERROR_CODES.readStateConflictDetail,
+      REMOTE_ERROR_CODES.readStateUnavailableDetail,
+      REMOTE_ERROR_CODES.readStateUnsupportedDetail,
+    ].some((code) => code === message)
+  )
     return message;
   if (message.includes("index-disabled") || message.includes("INDEX_DISABLED"))
     return "index-disabled";
@@ -618,8 +627,8 @@ function wireError(error: unknown): string {
   if (message.includes("revoked")) return "revoked";
   if (message.includes("pairing-invalid")) return "pairing-invalid";
   for (const code of [
-    "TRANSCRIPT_CURSOR_INVALID",
-    "TRANSCRIPT_CURSOR_STALE",
+    REMOTE_ERROR_CODES.transcriptCursorInvalid,
+    REMOTE_ERROR_CODES.transcriptCursorStale,
     "TRANSCRIPT_UNREADABLE",
     "TRANSCRIPT_SCAN_STATE_LIMIT",
   ])

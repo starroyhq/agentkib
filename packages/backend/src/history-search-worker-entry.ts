@@ -1,5 +1,6 @@
 import { parentPort, workerData } from "node:worker_threads";
 import {
+  REMOTE_ERROR_CODES,
   formatHistoryReferences,
   HISTORY_REFERENCE_BYTES,
   HISTORY_REFERENCE_LIMIT,
@@ -41,7 +42,7 @@ async function verify() {
   if (!running) throw new Error("No active history request");
   await new Promise<void>((resolve, reject) => {
     running!.verification = (valid) =>
-      valid ? resolve() : reject(new Error("history-source-stale"));
+      valid ? resolve() : reject(new Error(REMOTE_ERROR_CODES.historySourceStale));
     port.postMessage({ type: "verify", id: running!.id });
   });
 }
@@ -53,7 +54,7 @@ function sourceWithCachedBinding(source: HistorySourceInput, session?: SearchSes
         session.workspaceId !== source.summary.workspace_id ||
         session.agent !== source.summary.agent))
   )
-    throw new Error("history-source-unavailable");
+    throw new Error(REMOTE_ERROR_CODES.historySourceUnavailable);
   // Discovery can no longer find an OpenClaw native ref after its cwd/agent changes.
   // All read paths must verify the binding committed for this owner, never caller data.
   return {
@@ -76,7 +77,7 @@ async function validateSource(
   } catch (error) {
     if (
       error instanceof Error &&
-      (error.message === "history-source-owner-changed" ||
+      (error.message === REMOTE_ERROR_CODES.historySourceOwnerChanged ||
         error.message === "history-source-redaction-failed")
     )
       throw new HistorySourceInvalidatedError(source.sessionId, error.message);
@@ -213,7 +214,7 @@ port.on(
               if (settled) throw error;
               const message = error instanceof Error ? error.message : "";
               const unsafeContent = message === "history-source-redaction-failed",
-                ownerChanged = message === "history-source-owner-changed",
+                ownerChanged = message === REMOTE_ERROR_CODES.historySourceOwnerChanged,
                 budget = message === "history-search-budget-exceeded",
                 sourceFailure =
                   error instanceof HistorySourceSnapshotError ? error.limitation : undefined;
@@ -266,7 +267,7 @@ port.on(
               checkpoint,
             );
             if (snapshot.sourceRevision !== location.sourceRevision)
-              throw new Error("history-source-stale");
+              throw new Error(REMOTE_ERROR_CODES.historySourceStale);
             checkpoint();
             await verify();
             checkpoint();
@@ -285,7 +286,8 @@ port.on(
             for (const reference of refs) {
               checkpoint();
               const record = db.locate(reference, input.allowedSessionIds as string[]);
-              if (!sources[reference.sessionId]) throw new Error("history-source-unavailable");
+              if (!sources[reference.sessionId])
+                throw new Error(REMOTE_ERROR_CODES.historySourceUnavailable);
               if (!snapshots.has(reference.sessionId)) {
                 const source = await validateSource(
                   sources[reference.sessionId]!,
@@ -299,16 +301,17 @@ port.on(
                 snapshots.get(reference.sessionId) !== reference.sourceRevision ||
                 record.contentHash !== reference.contentHash
               )
-                throw new Error("history-source-stale");
+                throw new Error(REMOTE_ERROR_CODES.historySourceStale);
               if (
                 reference.end <= reference.start ||
                 !unicodeBoundary(record.content, reference.start) ||
                 !unicodeBoundary(record.content, reference.end)
               )
-                throw new Error("history-reference-range-invalid");
+                throw new Error(REMOTE_ERROR_CODES.historyReferenceRangeInvalid);
               const content = record.content.slice(reference.start, reference.end);
               bytes += Buffer.byteLength(content);
-              if (bytes > HISTORY_REFERENCE_BYTES) throw new Error("history-references-too-large");
+              if (bytes > HISTORY_REFERENCE_BYTES)
+                throw new Error(REMOTE_ERROR_CODES.historyReferencesTooLarge);
               references.push({
                 reference: reference as HistoryReference,
                 title: record.title,
@@ -334,10 +337,10 @@ port.on(
         const safe = /^history-[a-z-]+$/.test(detail)
           ? detail
           : error instanceof z.ZodError
-            ? "history-search-input-invalid"
+            ? REMOTE_ERROR_CODES.historySearchInputInvalid
             : message.operation === "init"
-              ? "history-search-cache-unavailable"
-              : "history-source-unavailable";
+              ? REMOTE_ERROR_CODES.historySearchCacheUnavailable
+              : REMOTE_ERROR_CODES.historySourceUnavailable;
         port.postMessage({
           type: "error",
           id: message.id,

@@ -1,3 +1,4 @@
+import { REMOTE_ERROR_CONTRACT } from "@agentkib/runtime-protocol";
 import { z } from "zod";
 export class RpcFault extends Error {
   constructor(
@@ -11,7 +12,11 @@ export class RpcFault extends Error {
 export function parameters<T extends z.ZodType>(schema: T, value: unknown): z.infer<T> {
   const parsed = schema.safeParse(value);
   if (!parsed.success)
-    throw new RpcFault(-32602, "Invalid method parameters", { detail: parsed.error.message });
+    throw new RpcFault(
+      REMOTE_ERROR_CONTRACT.rpcInvalidParams.ipc.rpcCode,
+      "Invalid method parameters",
+      { detail: parsed.error.message },
+    );
   return parsed.data;
 }
 export const optionalString = z.string().nullable().optional();

@@ -104,7 +104,8 @@ describe("shared read-only session continuation", () => {
     );
     const button = screen.getByRole("button", { name: copy.copy });
     expect(button).toBeDisabled();
-    expect(button).toHaveAttribute("title", screen.getByRole("status").textContent);
+    expect(button).toHaveAttribute("aria-busy", "true");
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
     expect(button).toHaveClass("min-h-11", "w-full", "sm:w-auto");
     expect(screen.getAllByText("Session restriction")).toHaveLength(1);
     expect(screen.getByRole("group")).toHaveAccessibleDescription(copy.help);
@@ -116,7 +117,8 @@ describe("shared read-only session continuation", () => {
 
     fireEvent.click(button);
     expect(button).toBeDisabled();
-    await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent(copy.copied));
+    await waitFor(() => expect(button).toHaveAttribute("data-copied", "true"));
+    expect(button).toHaveAttribute("title", copy.copied);
 
     expect(writeText).toHaveBeenCalledExactlyOnceWith(command);
     expect(button).toBeEnabled();
@@ -255,7 +257,12 @@ describe("shared read-only session continuation", () => {
         expect(screen.getByRole("button", { name: "Copy resume command" })).toBeEnabled(),
       );
       fireEvent.click(screen.getByRole("button", { name: "Copy resume command" }));
-      await screen.findByText("Resume command copied");
+      await waitFor(() =>
+        expect(screen.getByRole("button", { name: "Copy resume command" })).toHaveAttribute(
+          "data-copied",
+          "true",
+        ),
+      );
       await act(async () => {
         if (outcome === "resolved") resolveOld();
         else rejectOld(new Error("obsolete clipboard denial"));
@@ -263,7 +270,10 @@ describe("shared read-only session continuation", () => {
 
       expect(writeText).toHaveBeenNthCalledWith(1, "old command");
       expect(writeText).toHaveBeenNthCalledWith(2, command);
-      expect(screen.getByRole("status")).toHaveTextContent("Resume command copied");
+      expect(screen.getByRole("button", { name: "Copy resume command" })).toHaveAttribute(
+        "data-copied",
+        "true",
+      );
       expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
     },
   );

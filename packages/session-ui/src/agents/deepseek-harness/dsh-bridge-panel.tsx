@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Copy } from "lucide-react";
 import type { InteractionLocale as Locale } from "../../interaction-model";
 import { useSessionPlatform, type SessionPlatform } from "../../session-platform";
+import { LoadingSkeleton } from "../../loading-feedback";
 import {
   CopyField,
   OperationCopy,
@@ -289,6 +290,9 @@ function DshBridgeStatusPanel({
   const installFirst = canInstall && !runtimes.length && !autoStart?.available;
   return (
     <OperationGroup title={text.title}>
+      {!status && !unavailableReason && (
+        <LoadingSkeleton label={text.loading} layout="list" rows={2} />
+      )}
       {!bridgeReason && (
         <OperationRow>
           {runtimes.length ? (

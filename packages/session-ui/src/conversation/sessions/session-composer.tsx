@@ -17,7 +17,6 @@ import {
   type ReactNode,
 } from "react";
 import { sessionApprovalRuntime } from "../../agents/session-approvals";
-import { ClaudeTerminalHandover } from "../../agents/claude-code/terminal-handover";
 import {
   composerPanelShortcut,
   planSlashOption,
@@ -753,35 +752,21 @@ export function SessionComposer({
     ) : (
       <ComposerPrimaryAction
         label={runningReady ? runningLabel : t.send}
-        title={draftReason ? reason(draftReason) : runningReady ? runningLabel : undefined}
+        title={
+          draftReason
+            ? reason(draftReason)
+            : runningReady
+              ? runningLabel
+              : !directReady && ["busy", "terminal-watch"].includes(display.continuation ?? "")
+                ? display.reason || display.label
+                : undefined
+        }
         disabled={(!directReady && !runningReady) || !valid || submitted}
+        showDisabledTitle={
+          display.continuation === "busy" || display.continuation === "terminal-watch"
+        }
       />
     );
-  const handover =
-    isClaude &&
-    online &&
-    live?.sessionId === selected &&
-    live.terminalHandover &&
-    (surface === "desktop" || feature("handover-terminal")?.available === true) ? (
-      <div className="flex justify-center">
-        <ClaudeTerminalHandover
-          key={selected}
-          live={live}
-          locale={locale}
-          local={surface === "desktop"}
-          ready={controlReady && !busy}
-          localAvailable={feature("adopt-terminal")?.available === true}
-          remoteAvailable={feature("handover-terminal")?.available === true}
-          onAdopt={() => runSessionAction("adopt-terminal")}
-          onTransfer={(turnId) =>
-            runSessionAction("handover-terminal", {
-              handoffConfirmed: true,
-              ...(turnId ? { turnId } : {}),
-            })
-          }
-        />
-      </div>
-    ) : null;
   if (
     resume?.loadResumeCommand &&
     display.continuation === "view-only" &&
@@ -793,37 +778,15 @@ export function SessionComposer({
     !startupGoal
   ) {
     return (
-      <>
-        {handover}
-        <SessionReadOnly
-          session={session}
-          reason={connectionReasonShown ? undefined : display.reason}
-          local={surface === "desktop"}
-          notify={notifications.success}
-        />
-      </>
+      <SessionReadOnly
+        session={session}
+        reason={connectionReasonShown ? undefined : display.reason}
+        local={surface === "desktop"}
+      />
     );
   }
   return (
     <div className="relative w-full max-w-3xl shrink-0 self-center space-y-2">
-      {handover}
-      {display.continuation === "busy" && resume && (surface === "desktop" || !isClaude) && (
-        <p role="status" className="px-3 text-xs leading-5 text-muted-foreground">
-          {continuation.busyHint(resume.busyActor)}
-        </p>
-      )}
-      {!terminalInteraction &&
-        display.continuation === "terminal-watch" &&
-        (surface === "desktop" || !isClaude) && (
-          <p role="status" className="px-3 text-xs leading-5 text-muted-foreground">
-            {continuation.terminalWatch}
-          </p>
-        )}
-      {terminalInteraction && (
-        <p role="status" className="px-3 text-xs leading-5 text-muted-foreground">
-          {terminalInteraction}
-        </p>
-      )}
       {permissionObservation &&
         live?.sessionId === selected &&
         (!permissionObservation.isTerminal(live, selected) ||
@@ -1062,6 +1025,11 @@ export function SessionComposer({
       )}
       {/* These come and go. Floating above the composer, they never move it. */}
       <div className="pointer-events-none absolute inset-x-0 bottom-full z-10 mb-2 flex flex-col gap-2">
+        {terminalInteraction && (
+          <p role="status" className={`${floatingNotice} bg-background text-muted-foreground`}>
+            {terminalInteraction}
+          </p>
+        )}
         {resources.some((item) => !item.available) && (
           <p role="status" className={`${floatingNotice} bg-background text-muted-foreground`}>
             {copy.resourceRemoved}
@@ -1082,7 +1050,11 @@ export function SessionComposer({
             {reason(commandNotice.reason)}
           </p>
         )}
-        {(!canSend || display.continuation === "status-unknown") &&
+        {!canSend &&
+          display.continuation !== "busy" &&
+          display.continuation !== "terminal-watch" &&
+          display.continuation !== "status-unknown" &&
+          !terminalInteraction &&
           !connectionReasonShown &&
           !(connectionStatusInBanner && isClaude) &&
           (!running || (live?.executionMode === "claude-follower" && display.tone === "warning")) &&
@@ -1101,10 +1073,7 @@ export function SessionComposer({
               {display.tone === "warning" && (
                 <AlertTriangle aria-hidden="true" className="mt-0.5 size-3.5 shrink-0" />
               )}
-              <span className="min-w-0">
-                {display.continuation === "status-unknown" && `${display.label} · `}
-                {display.reason}
-              </span>
+              <span className="min-w-0">{display.reason}</span>
             </div>
           )}
       </div>

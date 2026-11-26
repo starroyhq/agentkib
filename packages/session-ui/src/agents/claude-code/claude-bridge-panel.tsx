@@ -5,13 +5,15 @@ import {
   CircleAlert,
   CircleCheck,
   CirclePause,
-  LoaderCircle,
+  Copy,
   TriangleAlert,
 } from "lucide-react";
 import type { InteractionLocale } from "../../interaction-model";
 import { useSessionPlatform, type SessionPlatform } from "../../session-platform";
 import type { SessionTerminalPanelProps } from "../session-connection-panels";
 import { claudeConnectionCopy, claudeConnectionReason } from "./connection-copy";
+import { ClaudeTerminalHandover } from "./terminal-handover";
+import { DelayedSpinner, LoadingSkeleton } from "../../loading-feedback";
 
 type ClaudeBridgeStatus = {
   connectionCliVersion?: string;
@@ -52,12 +54,14 @@ function CommandBlock({
   value,
   copy,
   label,
+  copied,
   onCopy,
   truncate = false,
 }: {
   value: string;
   copy: string;
   label: string;
+  copied: boolean;
   onCopy: () => void;
   truncate?: boolean;
 }) {
@@ -73,8 +77,14 @@ function CommandBlock({
         size="sm"
         className="absolute top-1.5 right-2"
         aria-label={label}
+        data-copied={copied || undefined}
         onClick={onCopy}
       >
+        {copied ? (
+          <Check className="text-emerald-600" aria-hidden="true" />
+        ) : (
+          <Copy aria-hidden="true" />
+        )}
         {copy}
       </Button>
       {truncate ? (
@@ -217,7 +227,10 @@ function ClaudeTerminalBridge({
     loadingEarlier,
     locale,
     notice,
+    capabilities,
+    runSessionAction,
   } = session;
+  const { notifications } = useSessionPlatform();
   const copy = claudeConnectionCopy[locale];
   const [statusObservation, setStatusObservation] = useState<{
     status: ClaudeBridgeStatus;
@@ -286,7 +299,7 @@ function ClaudeTerminalBridge({
       if (copyRequest.current !== request) return;
       copyTimer.current = undefined;
       setCopied("");
-    }, 3_000);
+    }, 1500);
   }
   const operationRequest = useRef(0);
   const pendingOperation = useRef<"bridge-challenge" | "bridge-disconnect" | undefined>(undefined);
@@ -627,6 +640,14 @@ function ClaudeTerminalBridge({
     }
   }
   const pluginUpdate = status?.pluginUpdate;
+  const shownPluginUpdate = useRef<string | undefined>(undefined);
+  useEffect(() => {
+    if (!active || pluginUpdate?.status !== "updated") return;
+    const key = JSON.stringify([selected, pluginUpdate.bundledVersion]);
+    if (shownPluginUpdate.current === key) return;
+    shownPluginUpdate.current = key;
+    notifications.success(copy.pluginUpdated);
+  }, [active, copy.pluginUpdated, notifications, pluginUpdate, selected]);
   const canRetryPlugin = canManage && !loading && !retryingPlugin;
   async function retryPlugin() {
     if (
@@ -735,14 +756,19 @@ function ClaudeTerminalBridge({
   );
   if (!active || current?.agent !== "claude-code" || !access?.device?.manage) return null;
   const canGenerate = canManage && !!status?.supported && !connected && !loading;
+  const generating = loading && pendingOperation.current === "bridge-challenge";
+  const disconnecting = loading && pendingOperation.current === "bridge-disconnect";
+  const checkingConnection = loading && !generating && !disconnecting;
   const checkConnection = (
     <Button
       variant="link"
       size="sm"
       disabled={!canManage || loading}
+      aria-busy={checkingConnection || undefined}
       onClick={() => setRevision((value) => value + 1)}
     >
       {copy.refresh}
+      <DelayedSpinner active={checkingConnection} />
     </Button>
   );
   const revokeButton = hasBinding && (
@@ -776,16 +802,13 @@ function ClaudeTerminalBridge({
         <Button
           variant="destructive"
           disabled={loading || !canRevoke || !hasBinding}
+          aria-busy={disconnecting || undefined}
           onClick={() => void run("bridge-disconnect")}
         >
           {confirmDisconnect === "clear" ? copy.confirmClearConnection : copy.confirmDisconnect}
+          <DelayedSpinner active={disconnecting} />
         </Button>
       </div>
-      {loading && (
-        <p role="status" className="text-xs text-muted-foreground">
-          {copy.loading}
-        </p>
-      )}
     </div>
   ) : (
     revokeButton
@@ -797,6 +820,7 @@ function ClaudeTerminalBridge({
         value={value}
         copy={copy.copy}
         label={label}
+        copied={copied === label}
         truncate={truncate}
         onCopy={() => void copyText(value, label)}
       />
@@ -833,8 +857,14 @@ function ClaudeTerminalBridge({
           <Button
             variant="outline"
             size="sm"
+            data-copied={copied === copy.copyCode || undefined}
             onClick={() => void copyText(displayedChallenge.challenge, copy.copyCode)}
           >
+            {copied === copy.copyCode ? (
+              <Check className="text-emerald-600" aria-hidden="true" />
+            ) : (
+              <Copy aria-hidden="true" />
+            )}
             {copy.copyCode}
           </Button>
         </CollapsibleContent>
@@ -847,14 +877,17 @@ function ClaudeTerminalBridge({
       variant="outline"
       className={`rounded-full border-transparent ${confirmedConnected ? "bg-[color-mix(in_srgb,var(--green)_10%,transparent)] text-[var(--green)]" : "bg-[color-mix(in_srgb,var(--foreground)_6%,transparent)] text-muted-foreground"}`}
     >
+      <DelayedSpinner active={checkingConnection} />
       {confirmedConnected ? copy.connectedBadge : copy.notConnected}
     </Badge>
   );
   const installed = stateKind === "connected" || stateKind === "reconnecting";
   const installContent = status?.installInstructions ? (
     commandBlock(status.installInstructions, copy.copyInstall)
+  ) : checkingConnection || (!status && !error && canManage) ? (
+    <LoadingSkeleton label={copy.loading} layout="code" rows={1} />
   ) : (
-    <p className="text-sm text-muted-foreground">{loading ? copy.loading : copy.instructions}</p>
+    <p className="text-sm text-muted-foreground">{copy.instructions}</p>
   );
   const pluginInfo = pluginUpdate && (
     <div className="mt-2 min-w-0 space-y-1 text-xs">
@@ -865,31 +898,27 @@ function ClaudeTerminalBridge({
         {" · "}
         {copy.pluginBundledVersion.replace("{version}", pluginUpdate.bundledVersion)}
       </p>
-      {retryingPlugin || pluginUpdate.status === "updating" ? (
-        <p role="status" className="text-muted-foreground">
-          {copy.pluginUpdating}
-        </p>
-      ) : pluginUpdate.status === "updated" ? (
-        <p role="status" className="text-muted-foreground">
-          {copy.pluginUpdated}
-        </p>
-      ) : pluginUpdate.status === "failed" ? (
+      {retryingPlugin || pluginUpdate.status === "updating" || pluginUpdate.status === "failed" ? (
         <>
-          <div role="alert" className="space-y-1">
-            <p>{copy.pluginUpdateFailed}</p>
-            {pluginUpdate.reason && (
-              <p className="whitespace-pre-wrap break-words text-muted-foreground">
-                {pluginUpdate.reason}
-              </p>
-            )}
-          </div>
+          {pluginUpdate.status === "failed" && !retryingPlugin && (
+            <div role="alert" className="space-y-1">
+              <p>{copy.pluginUpdateFailed}</p>
+              {pluginUpdate.reason && (
+                <p className="whitespace-pre-wrap break-words text-muted-foreground">
+                  {pluginUpdate.reason}
+                </p>
+              )}
+            </div>
+          )}
           <Button
             variant="outline"
             size="sm"
-            disabled={!canRetryPlugin}
+            disabled={!canRetryPlugin || pluginUpdate.status === "updating"}
+            aria-busy={retryingPlugin || pluginUpdate.status === "updating" || undefined}
             onClick={() => void retryPlugin()}
           >
             {copy.pluginRetry}
+            <DelayedSpinner active={retryingPlugin || pluginUpdate.status === "updating"} />
           </Button>
         </>
       ) : null}
@@ -912,6 +941,28 @@ function ClaudeTerminalBridge({
         : caution
           ? "text-[var(--amber)]"
           : "text-destructive-icon";
+  const handoverFeatures = capabilities?.sessionId === selected ? capabilities.features : undefined;
+  const handoverReason = live?.terminalHandover?.reason;
+  const handover = runSessionAction && live?.sessionId === selected && live.terminalHandover && (
+    <ClaudeTerminalHandover
+      key={selected}
+      locale={locale}
+      live={live}
+      ready={online && controlReady && !busy && !loading && !confirmDisconnect}
+      localAvailable={handoverFeatures?.["adopt-terminal"]?.available === true}
+      forceAvailable={handoverFeatures?.["handover-terminal"]?.available === true}
+      unavailableReason={
+        handoverReason ? claudeConnectionReason(locale, handoverReason) : undefined
+      }
+      onAdopt={() => runSessionAction("adopt-terminal")}
+      onTransfer={(turnId) =>
+        runSessionAction("handover-terminal", {
+          handoffConfirmed: true,
+          ...(turnId ? { turnId } : {}),
+        })
+      }
+    />
+  );
   const content = (
     <section
       className="min-w-0 space-y-4"
@@ -976,8 +1027,13 @@ function ClaudeTerminalBridge({
                 <h3 className="mb-2 text-sm font-medium">{copy.generateStep}</h3>
                 {command ?? (
                   <div className="flex flex-wrap items-center gap-2">
-                    <Button disabled={!canGenerate} onClick={() => void run("bridge-challenge")}>
+                    <Button
+                      disabled={!canGenerate}
+                      aria-busy={generating || undefined}
+                      onClick={() => void run("bridge-challenge")}
+                    >
                       {copy.generate}
+                      <DelayedSpinner active={generating} />
                     </Button>
                     <p className="text-xs text-muted-foreground">{copy.codeSafety}</p>
                   </div>
@@ -998,8 +1054,8 @@ function ClaudeTerminalBridge({
                 {displayedChallenge ? (
                   <div className="flex flex-wrap items-center gap-2">
                     <p className="flex items-center gap-2 text-sm" role="status">
-                      <LoaderCircle
-                        className="size-4 animate-spin text-muted-foreground"
+                      <span
+                        className="size-2 rounded-full bg-primary motion-safe:animate-pulse"
                         aria-hidden="true"
                       />
                       {copy.waiting}
@@ -1065,9 +1121,16 @@ function ClaudeTerminalBridge({
                           variant="outline"
                           disabled={!canCopyResume || copyingResume}
                           aria-busy={copyingResume}
+                          data-copied={copied === copy.copyResumeCommand || undefined}
                           onClick={() => void copyResumeCommand()}
                         >
+                          {copied === copy.copyResumeCommand ? (
+                            <Check className="text-emerald-600" aria-hidden="true" />
+                          ) : (
+                            <Copy aria-hidden="true" />
+                          )}
                           {copy.copyResumeCommand}
+                          <DelayedSpinner active={copyingResume} />
                         </Button>
                       )}
                       {stateKind !== "connected" && (
@@ -1084,11 +1147,13 @@ function ClaudeTerminalBridge({
                                   : "outline"
                             }
                             disabled={!canGenerate}
+                            aria-busy={generating || undefined}
                             onClick={() => void run("bridge-challenge")}
                           >
                             {stateKind === "reconnecting"
                               ? copy.regenerateConnection
                               : copy.regenerate}
+                            <DelayedSpinner active={generating} />
                           </Button>
                         </>
                       )}
@@ -1101,6 +1166,7 @@ function ClaudeTerminalBridge({
           )}
         </ol>
       )}
+      {handover && <div className="flex justify-end gap-2 border-t pt-4">{handover}</div>}
       {!platformUnsupported && autoConnect?.available && (
         <div className="flex items-start justify-between gap-4 border-t pt-4">
           <div className="min-w-0 space-y-1">
@@ -1120,19 +1186,9 @@ function ClaudeTerminalBridge({
           />
         </div>
       )}
-      {copied && (
-        <p role="status" className="text-xs text-muted-foreground">
-          {copied} · {copy.copied}
-        </p>
-      )}
       {copyError && (
         <p role="alert" className="text-sm">
           {copy.copyFailed}
-        </p>
-      )}
-      {loading && status && !confirmDisconnect && (
-        <p role="status" className="text-xs text-muted-foreground">
-          {copy.loading}
         </p>
       )}
     </section>

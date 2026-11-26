@@ -6,6 +6,8 @@ Claude Code、Codex、DeepSeek Harness、Devin 和 Antigravity 会话可以担�
 
 用户继续在 AgentKib 的桌面、Web 或手机上（终端里的项目 Agent 也可以直接在终端里）和项目 Agent 对话。Worker 的审批和提问照常进入“等待你”，默认由用户处理；用户可以允许项目 Agent 替自己决定其中一部分（见“代批和代答”）。
 
+终端 Claude Code 项目 Agent 退出后，如果仍有 Worker 在运行或有汇报待送，且委派没有暂停，AgentKib 在核实没有其他程序占用同一会话、待核对的操作和汇报均已确认后自动接管。会话、委派和待送汇报一并保留，接管可在会话活动中查看。
+
 ## 设定
 
 在桌面会话目录里，打开负责人会话行的“更多操作”，选择“指派 Worker”。候选复用会话目录里同一个项目分组的会话，后端核对是否可指派和剩余名额。每个项目 Agent 最多可指派 10 个已有的 Codex、DeepSeek Harness、Claude Code、Devin 或 Antigravity 会话。列表显示 Agent 图标和工作树，选中项用主题色边框和对号标记。已指派的 Worker 使用相同的选中样式，点击该行即可确认移出。当前不可选的会话会灰显，悬停可查看原因。确认首次指派时，负责人会话获得项目 Agent 身份，使用下列默认设置。首次指派和追加 Worker 都使用本次本机操作的授权。授权范围覆盖项目 Agent 自己和由用户指派的 Worker 所在的工作区，操作时仍检查设备权限。指派保留已有 Worker 的执行设定，任务由项目 Agent 在后续对话中发送。

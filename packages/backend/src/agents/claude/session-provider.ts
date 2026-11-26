@@ -87,6 +87,10 @@ export class ClaudeSessionProvider implements SessionProvider, TypedSessionProvi
     this.#routes.set("handover-terminal", { run: adopt, legacy: adopt });
   }
 
+  autoAdoptTerminalLead(sessionId: string, canAdopt: () => boolean): Promise<boolean> {
+    return this.managed.autoAdoptTerminalLead(sessionId, this.bridge, this.leadDevice, canAdopt);
+  }
+
   #legacyRoute(operation: string, run: NativeRequest): NativeRequest {
     let request = run;
     switch (operation) {

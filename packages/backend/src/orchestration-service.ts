@@ -111,6 +111,8 @@ export type LaneHost = {
   live(sessionId: string, intent?: "send"): Promise<Record<string, unknown>>;
   /** A lightweight live sample for unattended checks when the full read has extra work. */
   observe?(sessionId: string): Promise<Record<string, unknown>>;
+  /** The provider must recheck delegation before committing a verified terminal handover. */
+  autoAdoptTerminalLead?(sessionId: string, canAdopt: () => boolean): Promise<boolean>;
   /** A managed Claude lead's own queue holds its reports. Read its limit only for attention. */
   managedLeadNeedsUser?(sessionId: string): boolean;
   /** The latest events of a session, oldest first. */
@@ -368,6 +370,12 @@ const isObject = (value: unknown): value is Record<string, unknown> =>
 type WorkerLimit = Pick<UsageLimitView, "kind" | "resetsAt" | "continueAt" | "manual">;
 type Offline = { since: number; reason: string; userOnly: boolean; reported: boolean };
 type Progress = { turnId: string; signal: string; since: number; notice?: LaneReport };
+type WorkerObservation = {
+  lane: Lane;
+  live: Record<string, unknown> | null;
+  sample: { current: boolean };
+};
+
 type WorkerWatch = {
   terminal: boolean;
   offline?: Offline;
@@ -1401,11 +1409,7 @@ export class OrchestrationService {
       for (const lead of leads) {
         if (!this.#enabledLead(lead.sessionId)) continue;
         const reports: LaneReport[] = [];
-        const observations: Array<{
-          lane: Lane;
-          live: Record<string, unknown> | null;
-          sample: { current: boolean };
-        }> = [];
+        const observations: WorkerObservation[] = [];
         for (const lane of lead.lanes) {
           if (!this.#inAssignedWorkspace(lane)) {
             this.#workerWatch.delete(lane.id);
@@ -1481,11 +1485,56 @@ export class OrchestrationService {
           now,
         );
         await this.#checkReportRecovery(lead.sessionId);
+        await this.#maybeAutoAdoptTerminalLead(lead, observations);
         this.#kickReports(lead.sessionId, now);
       }
     } finally {
       this.#workerSamples.clear();
       this.#catchingUp = false;
+    }
+  }
+
+  async #maybeAutoAdoptTerminalLead(lead: Lead, observations: readonly WorkerObservation[]) {
+    const id = lead.sessionId;
+    if (!this.lanes.autoAdoptTerminalLead || this.lanes.session(id)?.agent !== "claude-code")
+      return;
+    const running = observations.filter(({ live }) => workerStatus(live) === "running");
+    const canAdopt = () => {
+      if (this.#closed) return false;
+      const current = this.registry.get(id);
+      if (
+        current?.createdAt !== lead.createdAt ||
+        current.deviceId !== lead.deviceId ||
+        current.paused
+      )
+        return false;
+      return (
+        running.some(
+          ({ lane, live, sample }) =>
+            sample.current &&
+            current.lanes.some(
+              (assigned) =>
+                assigned.id === lane.id &&
+                assigned.sessionId === lane.sessionId &&
+                this.#inAssignedWorkspace(assigned, live),
+            ),
+        ) ||
+        current.pendingReports.length > 0 ||
+        current.reportDeliveries?.some((report) => this.#enabledReport(current, report)) === true ||
+        this.#completions
+          .get(id)
+          ?.reports.some(
+            ({ text, laneId }) =>
+              text !== null &&
+              current.lanes.some((lane) => lane.id === laneId && this.#inAssignedWorkspace(lane)),
+          ) === true ||
+        this.queuedReports(id) > 0
+      );
+    };
+    try {
+      if (canAdopt()) await this.lanes.autoAdoptTerminalLead(id, canAdopt);
+    } catch {
+      // A stale or unverified source stays in the terminal queue and is checked next time.
     }
   }
 

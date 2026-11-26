@@ -2698,6 +2698,9 @@ export class TypeScriptBackend {
       antigravityAcpEnabled: antigravityAcpEnabled(this.environment),
       session,
       live,
+      autoAdoptTerminalLead: (sessionId, canAdopt) =>
+        this.#claudeSessionProvider?.autoAdoptTerminalLead(sessionId, canAdopt) ??
+        Promise.resolve(false),
       deferCodexSend: (value, binding, handoff) =>
         this.#withWebRead((owner) =>
           (owner.codexSessionProvider() as CodexSessionProvider).deferCodexSend(

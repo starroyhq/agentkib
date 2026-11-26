@@ -251,6 +251,7 @@ type QueuedReport = {
 type ReportReceipt = { id: string; merged: boolean };
 export type ClaudeTerminalHandoverSource = {
   bindingId: string;
+  lastLeaseId?: string;
   target: ClaudeBridgeTarget;
   reports: readonly QueuedReport[];
   reason: string | null;
@@ -694,8 +695,10 @@ export class ClaudeBridge {
       connection && !connection.gap && this.#online(id)
         ? connection.snapshot?.model
         : this.#terminalExitModels.get(row.bindingId);
+    const lastLeaseId = this.#lastConnectionLease.get(row);
     return {
       bindingId: row.bindingId,
+      ...(lastLeaseId ? { lastLeaseId } : {}),
       target: row.target,
       reports,
       reason,

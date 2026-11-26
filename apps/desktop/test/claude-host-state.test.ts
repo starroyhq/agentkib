@@ -72,6 +72,76 @@ function pendingReport(stepId: string, outcome: "continue" | "complete" | "block
   };
 }
 
+describe("terminal Project Agent report import", () => {
+  it("joins waiting reports and recognizes retries after delivery, restart, and work pruning", async () => {
+    const { directory, sessionId, store } = await fixture();
+    const primary = randomUUID();
+    const merged = randomUUID();
+    const secondBatch = randomUUID();
+    const reports = [
+      { id: primary, text: "one\n\ntwo", mergedIds: [merged] },
+      { id: secondBatch, text: "three" },
+    ];
+    store.addReport(sessionId, "device-a", "already waiting");
+    store.importTerminalHandover(sessionId, {}, reports, "device-a");
+    store.importTerminalHandover(sessionId, {}, reports, "device-a");
+    const work = dispatch(store, sessionId);
+    expect(work.input).toBe("already waiting\n\none\n\ntwo\n\nthree");
+    store.complete(sessionId, work.requestId, { success: true, usage: null });
+    // Like retained-history pruning, remove the settled work, keeping the source receipts.
+    store.update(sessionId, (state) => (state.work = []));
+
+    const restarted = new ClaudeHostStateStore(directory, randomUUID());
+    restarted.importTerminalHandover(sessionId, {}, reports, "device-a");
+    expect(restarted.addReport(sessionId, "device-a", "one", primary)).toBe(false);
+    expect(restarted.addReport(sessionId, "device-a", "two", merged)).toBe(true);
+    expect(restarted.addReport(sessionId, "device-a", "three", secondBatch)).toBe(false);
+    expect(() => restarted.addReport(sessionId, "device-b", "one", primary)).toThrow(
+      "request-id-reused-with-different-input",
+    );
+    expect(restarted.next(sessionId)).toBeNull();
+  });
+
+  it("imports only newly appended text when a prior handover could not acknowledge the bridge", async () => {
+    const { directory, sessionId, store } = await fixture();
+    const id = randomUUID();
+    const appended = randomUUID();
+    store.importTerminalHandover(sessionId, {}, [{ id, text: "first" }], "device-a");
+
+    const restarted = new ClaudeHostStateStore(directory, randomUUID());
+    const reports = [{ id, text: "first\n\nsecond", mergedIds: [appended] }];
+    restarted.importTerminalHandover(sessionId, {}, reports, "device-a");
+    restarted.importTerminalHandover(sessionId, {}, reports, "device-a");
+    expect(restarted.addReport(sessionId, "device-a", "second", appended)).toBe(true);
+    expect(restarted.read(sessionId).work.map(({ input }) => input)).toEqual(["first\n\nsecond"]);
+    expect(() =>
+      restarted.importTerminalHandover(sessionId, {}, [{ id, text: "unrelated" }], "device-a"),
+    ).toThrow("claude-terminal-report-unconfirmed");
+  });
+
+  it("keeps separate batches at the managed merge limit and recognizes previously imported work", async () => {
+    const { sessionId, store } = await fixture();
+    const known = randomUUID();
+    const merged = randomUUID();
+    const prior = "a".repeat(16_000);
+    const next = "b".repeat(16_000);
+    store.update(sessionId, (state) => {
+      state.work.push(queued({ id: known, requestId: known, kind: "report", input: prior }));
+    });
+    store.importTerminalHandover(
+      sessionId,
+      {},
+      [
+        { id: known, text: prior, mergedIds: [merged] },
+        { id: randomUUID(), text: next },
+      ],
+      "device-a",
+    );
+    expect(store.addReport(sessionId, "device-a", "already imported", merged)).toBe(true);
+    expect(store.read(sessionId).work.map(({ input }) => input)).toEqual([prior, next]);
+  });
+});
+
 describe("Claude sessions an earlier release archived in AgentKib", () => {
   function legacy(directory: string, sessionId: string, state: Record<string, unknown>) {
     const database = openManagedLedger(directory, true)!;

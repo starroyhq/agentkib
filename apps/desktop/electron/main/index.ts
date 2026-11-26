@@ -2,6 +2,7 @@ import { DesktopAccountService } from "./account/service";
 import { detectComputerName } from "./account/computer-name";
 import type { DesktopAccountRequest } from "./account/state";
 import { readFile, writeFile, mkdir, rename } from "node:fs/promises";
+import { createRequire } from "node:module";
 import path from "node:path";
 import { homedir } from "node:os";
 import { WebAccessService, createWebControlState } from "./web/service";
@@ -32,7 +33,6 @@ import {
   safeStorage,
   type IpcMainInvokeEvent,
 } from "electron";
-import { autoUpdater } from "electron-updater";
 import type { QuotaSnapshot, RefreshJobStatus, SupportedLocale } from "../../src/core/types";
 import { RUNTIME_METHODS, type RuntimeHandshakeResult } from "../generated/runtime-protocol";
 import {
@@ -70,8 +70,7 @@ import { SkillSyncCoordinator } from "./skill-sync-coordinator";
 import { StartupBenchmark } from "./startup-benchmark";
 import { firstCloseDecision } from "./close-behavior";
 import { createQuitGuard } from "./quit-guard";
-import { normalizeReleaseNotes } from "./release-notes";
-import { configureUpdateChannel } from "./update-channel";
+import { registerUpdateIpc } from "./app-updates";
 import { LOCAL_PREVIEW_FRAME_SOURCES, allowLocalPreviewFraming } from "./live-preview-frames";
 import {
   optionalCloseBehavior,
@@ -97,6 +96,7 @@ protocol.registerSchemesAsPrivileged([
 ]);
 
 const isDevelopmentApp = process.env.AGENTKIB_DEV === "1" || !app.isPackaged;
+const updatesManagedByStore = process.windowsStore === true;
 const devServerUrl = process.env.ELECTRON_RENDERER_URL ?? process.env.VITE_DEV_SERVER_URL;
 const appDisplayName = isDevelopmentApp ? "AgentKib Dev" : "AgentKib";
 const appFlavor = isDevelopmentApp ? "ai.agentkib.dev" : "ai.agentkib";
@@ -136,7 +136,6 @@ let quitWorkDecision: QuitWorkDecision | undefined;
 let shutdownReason: RuntimeStopReason | undefined;
 let closeBehavior: "minimize-to-tray" | "quit" | undefined;
 let appIconPreference: "white" | "black" = "white";
-let pendingUpdateVersion: string | undefined;
 let applicationInitialized = false;
 let applicationInitialization: Promise<void> | undefined;
 let startupFailureWindow: BrowserWindow | undefined;
@@ -181,8 +180,15 @@ interface ElectronRuntimeInfo {
   local_auto_refresh_enabled?: boolean;
 }
 
-const hasSingleInstanceLock = app.requestSingleInstanceLock();
-if (!hasSingleInstanceLock) {
+if (updatesManagedByStore && process.argv.includes("--agentkib-store-runtime")) {
+  void app
+    .whenReady()
+    .then(startStoreRuntime)
+    .then(
+      () => app.exit(0),
+      () => app.exit(1),
+    );
+} else if (!app.requestSingleInstanceLock()) {
   app.quit();
 } else {
   app.on("second-instance", () => {
@@ -237,6 +243,57 @@ nativeTheme.on("updated", () => {
   sendRendererEvent("agentkib:theme-changed", nativeTheme.shouldUseDarkColors ? "dark" : "light");
 });
 
+function runtimeEnvironment(
+  shared: Awaited<ReturnType<typeof resolveDesktopRuntimeProfile>>["shared"],
+  webDataDir: string,
+) {
+  const hostAttachmentDirs = new Set([path.join(webDataDir, "attachments")]);
+  if (shared)
+    // Stable and Dev can attach to the same runtime while keeping their web data separate.
+    for (const flavor of ["ai.agentkib", "ai.agentkib.dev"])
+      hostAttachmentDirs.add(
+        path.join(app.getPath("appData"), flavor, "electron", "web", "attachments"),
+      );
+  return {
+    AGENTKIB_APP_FLAVOR: shared ? "ai.agentkib" : appFlavor,
+    AGENTKIB_APP_NAME: shared ? "AgentKib" : appDisplayName,
+    ...(shared ? { AGENTKIB_LEGACY_DEV_DATA_DIR: shared.legacyDevDataDir } : {}),
+    AGENTKIB_APP_VERSION: app.getVersion(),
+    AGENTKIB_HOST_ATTACHMENTS_DIRS: JSON.stringify([...hostAttachmentDirs]),
+    AGENTKIB_LOCALE: normalizeSystemLocale(app.getLocale()),
+    AGENTKIB_SYSTEM_THEME: nativeTheme.shouldUseDarkColors ? "dark" : "light",
+    AGENTKIB_QUOTA_SIDECAR: resolveQuotaSidecar(),
+    AGENTKIB_CLAUDE_PLUGIN_DIR: app.isPackaged
+      ? path.join(process.resourcesPath, "claude-bridge")
+      : path.resolve(__dirname, "../build/claude-bridge"),
+    AGENTKIB_DSH_PLUGIN_DIR: app.isPackaged
+      ? path.join(process.resourcesPath, "dsh-bridge")
+      : path.resolve(__dirname, "../build/dsh-bridge"),
+  };
+}
+
+async function startStoreRuntime(): Promise<void> {
+  const { dataDir, shared } = await resolveDesktopRuntimeProfile(
+    process.env,
+    process.platform,
+    false,
+  );
+  if (!shared) throw new Error("Windows Store runtime requires a shared profile");
+  const backend = createRequire(__filename)(
+    path.join(__dirname, "backend.cjs"),
+  ) as typeof import("../backend-entry");
+  const environment = {
+    ...process.env,
+    ...runtimeEnvironment(shared, path.join(electronDataPath, "web")),
+  };
+  try {
+    await backend.startLocalService(shared.root, dataDir, environment);
+  } catch (error) {
+    if (!(error instanceof Error && error.message === "session-managed-by-another-runtime"))
+      throw error;
+  }
+}
+
 async function startApplication(): Promise<void> {
   startupBenchmark.mark("app-ready");
   await registerRendererProtocol();
@@ -255,29 +312,6 @@ async function startApplication(): Promise<void> {
   const webDataDir = path.join(electronDataPath, "web");
   const notificationPolicy = new NotificationPolicyStore(webDataDir);
   await notificationPolicy.initialize();
-  const hostAttachmentDirs = new Set([path.join(webDataDir, "attachments")]);
-  if (shared)
-    // Stable and Dev can attach to the same runtime while keeping their web data separate.
-    for (const flavor of ["ai.agentkib", "ai.agentkib.dev"])
-      hostAttachmentDirs.add(
-        path.join(app.getPath("appData"), flavor, "electron", "web", "attachments"),
-      );
-  const backendEnvironment = {
-    AGENTKIB_APP_FLAVOR: shared ? "ai.agentkib" : appFlavor,
-    AGENTKIB_APP_NAME: shared ? "AgentKib" : appDisplayName,
-    ...(shared ? { AGENTKIB_LEGACY_DEV_DATA_DIR: shared.legacyDevDataDir } : {}),
-    AGENTKIB_APP_VERSION: app.getVersion(),
-    AGENTKIB_HOST_ATTACHMENTS_DIRS: JSON.stringify([...hostAttachmentDirs]),
-    AGENTKIB_LOCALE: normalizeSystemLocale(app.getLocale()),
-    AGENTKIB_SYSTEM_THEME: nativeTheme.shouldUseDarkColors ? "dark" : "light",
-    AGENTKIB_QUOTA_SIDECAR: resolveQuotaSidecar(),
-    AGENTKIB_CLAUDE_PLUGIN_DIR: app.isPackaged
-      ? path.join(process.resourcesPath, "claude-bridge")
-      : path.resolve(__dirname, "../build/claude-bridge"),
-    AGENTKIB_DSH_PLUGIN_DIR: app.isPackaged
-      ? path.join(process.resourcesPath, "dsh-bridge")
-      : path.resolve(__dirname, "../build/dsh-bridge"),
-  };
   const typescriptHost = new DesktopRuntimeHost({
     executablePath: path.join(__dirname, "backend.cjs"),
     clientVersion: app.getVersion(),
@@ -289,7 +323,7 @@ async function startApplication(): Promise<void> {
             electronPath: process.execPath,
           })
       : createUtilityTransport,
-    environment: backendEnvironment,
+    environment: runtimeEnvironment(shared, webDataDir),
   });
   const selectedRuntimeHost: RuntimeHost = new RuntimeRouter(typescriptHost, profile.dataDir);
   runtimeHost = selectedRuntimeHost;
@@ -622,7 +656,13 @@ function registerApplicationIpc(dataDir: string): void {
   });
   registerHomeIpc();
   registerShellIpc();
-  registerUpdateIpc();
+  if (!updatesManagedByStore) {
+    nativeAutoUpdater.on("before-quit-for-update", () => {
+      shutdownReason ??= "application-update";
+      quitApproved = true;
+    });
+  }
+  registerUpdateIpc(handle, isDevelopmentApp, updatesManagedByStore);
   ipcHandlersRegistered = true;
 }
 
@@ -780,7 +820,8 @@ function withElectronRuntimeCapabilities(runtime: unknown): unknown {
   enriched.app_name = appDisplayName;
   enriched.app_version = app.getVersion();
   enriched.app_channel = isDevelopmentApp ? "development" : "stable";
-  enriched.updates_enabled = !isDevelopmentApp;
+  enriched.updates_enabled = !isDevelopmentApp && !updatesManagedByStore;
+  enriched.updates_managed_by_store = updatesManagedByStore;
   enriched.tray_available = nativeShell?.trayAvailable ?? false;
   if (enriched.theme_preference === "system") {
     enriched.effective_theme = nativeTheme.shouldUseDarkColors ? "dark" : "light";
@@ -796,68 +837,6 @@ function sendRendererEvent(channel: string, payload: unknown): void {
   for (const window of BrowserWindow.getAllWindows()) {
     if (!window.isDestroyed()) window.webContents.send(channel, payload);
   }
-}
-
-function registerUpdateIpc(): void {
-  configureUpdateChannel(autoUpdater, process.platform, process.arch);
-  nativeAutoUpdater.on("before-quit-for-update", () => {
-    shutdownReason ??= "application-update";
-    quitApproved = true;
-  });
-  autoUpdater.autoDownload = false;
-  autoUpdater.autoInstallOnAppQuit = false;
-  handle("agentkib:updates:check", async () => {
-    if (!app.isPackaged || process.env.AGENTKIB_DEV === "1") return undefined;
-    const result = await autoUpdater.checkForUpdates();
-    const update = result?.updateInfo;
-    // updateInfo 在"没有更新"时也会返回远端最新版本；远端比本地旧（例如本地是
-    // 预发布版）时按字符串比较会误报更新，随后 downloadUpdate 失败。
-    if (!result?.isUpdateAvailable || !update) {
-      pendingUpdateVersion = undefined;
-      return undefined;
-    }
-    pendingUpdateVersion = update.version;
-    return {
-      current_version: app.getVersion(),
-      version: update.version,
-      published_at: update.releaseDate || undefined,
-      notes: normalizeReleaseNotes(update.releaseNotes),
-      release_url: `https://github.com/starroyhq/agentkib/releases/tag/v${update.version}`,
-      install_mode: process.platform === "linux" && !process.env.APPIMAGE ? "manual" : "in-app",
-    };
-  });
-  handle("agentkib:updates:install", async (event, version: unknown) => {
-    if (!app.isPackaged || process.env.AGENTKIB_DEV === "1") {
-      throw new Error("errors.updateUnavailableInDevelopment");
-    }
-    const expectedVersion = requireString(version, "version");
-    if (process.platform === "linux" && !process.env.APPIMAGE) {
-      throw new Error("errors.updateManualInstallRequired");
-    }
-    if (pendingUpdateVersion !== expectedVersion) {
-      throw new Error("errors.updateChanged");
-    }
-    const progressChannel = "agentkib:updates:progress";
-    const onProgress = (progress: { transferred: number; total: number }) => {
-      event.sender.send(progressChannel, {
-        event: "progress",
-        data: {
-          downloaded: progress.transferred,
-          content_length: progress.total || undefined,
-        },
-      });
-    };
-    autoUpdater.on("download-progress", onProgress);
-    try {
-      event.sender.send(progressChannel, { event: "started", data: {} });
-      await autoUpdater.downloadUpdate();
-      event.sender.send(progressChannel, { event: "finished" });
-      pendingUpdateVersion = undefined;
-      autoUpdater.quitAndInstall();
-    } finally {
-      autoUpdater.removeListener("download-progress", onProgress);
-    }
-  });
 }
 
 function registerShellIpc(): void {

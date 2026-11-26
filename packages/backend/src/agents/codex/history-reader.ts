@@ -105,7 +105,7 @@ export function createCodexHistoryReader({
         file = source.transcript;
       }
       // Extract a plain rollout for backwards pages with the original transcript offsets.
-      return paging.read(
+      return paging.readTranscript(
         await codexRollouts.plain(file),
         offset,
         count,

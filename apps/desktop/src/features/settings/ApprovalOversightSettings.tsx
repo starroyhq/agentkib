@@ -1,5 +1,6 @@
 import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { ChevronRight, History, ListChecks } from "lucide-react";
+import { DelayedSpinner, LoadingSkeleton } from "@agentkib/session-ui";
 import { agentName } from "@agentkib/agent-identity";
 import { MANAGED_AGENTS } from "@agentkib/runtime-protocol";
 import type {
@@ -98,10 +99,12 @@ function ReadNotice({ kind, retry }: { kind?: ReadState<never>["kind"]; retry: (
         </Button>
       </SettingsNotice>
     );
-  return (
+  return kind === "unavailable" ? (
     <p className="text-sm text-muted-foreground" role="status">
-      {kind === "unavailable" ? tr("settings.approvalOversight.unsupported") : tr("common.loading")}
+      {tr("settings.approvalOversight.unsupported")}
     </p>
+  ) : (
+    <LoadingSkeleton label={tr("common.loading")} />
   );
 }
 
@@ -383,9 +386,9 @@ function ApprovalAuditSettings({ workspaces }: { workspaces: Workspace[] }) {
     const before = page.nextCursor;
     paging.current = true;
     setLoadingOlder(true);
-    setPageError(false);
     try {
       const next = await client.approvalAudit(before);
+      setPageError(false);
       setRead((current) => {
         if (current?.revision !== revision || current.state.kind !== "ready") return current;
         if (current.state.value.nextCursor !== before) return current;
@@ -415,11 +418,6 @@ function ApprovalAuditSettings({ workspaces }: { workspaces: Workspace[] }) {
       <ReadNotice kind={visibleRead?.kind} retry={reload} />
       {page && (
         <>
-          <div className="flex justify-end">
-            <Button variant="ghost" size="sm" onClick={reload} disabled={loadingOlder}>
-              {tr("common.refresh")}
-            </Button>
-          </div>
           {!page.entries.length && (
             <p className="text-sm text-muted-foreground">
               {tr("settings.approvalOversight.emptyAudit")}
@@ -511,11 +509,10 @@ function ApprovalAuditSettings({ workspaces }: { workspaces: Workspace[] }) {
               disabled={loadingOlder}
               onClick={() => void loadOlder()}
             >
-              {loadingOlder
-                ? tr("common.loading")
-                : pageError
-                  ? tr("sessions.retry")
-                  : tr("settings.approvalOversight.older")}
+              <span className="size-3.5">
+                <DelayedSpinner active={loadingOlder} />
+              </span>
+              {tr(pageError ? "sessions.retry" : "settings.approvalOversight.older")}
             </Button>
           )}
         </>

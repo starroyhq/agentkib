@@ -228,7 +228,7 @@ describe("McpConnectionCard", () => {
         />,
       );
       expect(screen.getByRole("dialog")).toBeVisible();
-      expect(screen.getByRole("button", { name: tr("mcp.connection.applying") })).toBeDisabled();
+      expect(screen.getByRole("button", { name: tr("mcp.connection.apply") })).toBeDisabled();
       expect(api.mcpConnectionInfo).toHaveBeenCalledTimes(requests);
       fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape" });
       expect(screen.getByRole("dialog")).toBeVisible();
@@ -339,7 +339,7 @@ describe("McpConnectionCard", () => {
     );
     await act(async () => oldWriting.resolve());
     expect(screen.getByRole("dialog")).toBeVisible();
-    expect(screen.getByRole("button", { name: tr("mcp.connection.applying") })).toBeDisabled();
+    expect(screen.getByRole("button", { name: tr("mcp.connection.apply") })).toBeDisabled();
     expect(api.mcpConnectionInfo).toHaveBeenCalledTimes(requests);
 
     await act(async () => newWriting.resolve());

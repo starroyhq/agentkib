@@ -29,13 +29,12 @@ import type {
 } from "../generated/runtime-protocol";
 import type { WebAdminRequest, WebAdminStatus } from "../main/web/service";
 import type { RemoteRequest, RemoteResponse } from "../../src/core/remote-types";
+import type { AppUpdateInfo, AppUpdateProgress } from "./app-updates";
 import type {
   AgentKind,
   AccentThemeId,
   AppMenuCommandRequest,
   AppNavigationRequest,
-  AppUpdateInfo,
-  AppUpdateProgress,
   Achievement,
   AgentUsageBreakdown,
   ChangeSet,
@@ -154,7 +153,12 @@ export interface DesktopConversationApi {
     mime: string;
     data: ArrayBuffer;
   }): Promise<{ status: number; body: unknown }>;
-  subscribe(sessionId: string, afterCursor?: string): Promise<SessionSubscription>;
+  subscribe(
+    sessionId: string,
+    afterCursor?: string,
+    requestId?: string,
+  ): Promise<SessionSubscription>;
+  cancelSubscribe(requestId: string): Promise<void>;
   acknowledge(subscriptionId: string, cursor: string): Promise<void>;
   unsubscribe(subscriptionId: string): Promise<void>;
   onEvent(listener: (event: SessionStreamEvent) => void): DesktopEventUnsubscribe;

@@ -1,4 +1,5 @@
 import { useEffect, useId, useRef, useState } from "react";
+import { DelayedSpinner } from "@agentkib/session-ui";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useI18n } from "@/core/useI18n";
@@ -86,7 +87,12 @@ export function McpPortField({
 
   return (
     <div className="grid gap-2" aria-busy={saving}>
-      <Label htmlFor={id}>{tr("mcp.port")}</Label>
+      <Label htmlFor={id} className="flex items-center gap-2">
+        {tr("mcp.port")}
+        <span aria-hidden className="size-3.5">
+          <DelayedSpinner active={saving} />
+        </span>
+      </Label>
       <Input
         id={id}
         className="w-32"

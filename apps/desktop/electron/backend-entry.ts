@@ -12,13 +12,17 @@ if (process.argv[2] === "--local-runtime") {
     console.error("AgentKib local runtime failed:", error instanceof Error ? error.message : error);
     process.exitCode = 1;
   });
-} else {
+} else if (!(process.windowsStore === true && process.argv.includes("--agentkib-store-runtime"))) {
   startAttachedBackend();
 }
 
-async function startLocalService(root?: string, dataDir?: string) {
+export async function startLocalService(
+  root?: string,
+  dataDir?: string,
+  environment = process.env,
+) {
   if (!root || !dataDir || process.parentPort) throw new Error("Invalid local runtime arguments");
-  const service = await serveLocalRuntime(root, dataDir, process.env);
+  const service = await serveLocalRuntime(root, dataDir, environment);
   function stop() {
     void service.close().catch(() => {
       process.exitCode = 1;

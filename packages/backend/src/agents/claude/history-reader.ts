@@ -41,7 +41,7 @@ export function createClaudeHistoryReader({
         if (!source) throw new Error("Claude session is no longer available");
         file = source.transcript;
       }
-      return paging.read(
+      return paging.readTranscript(
         file,
         offset,
         count,

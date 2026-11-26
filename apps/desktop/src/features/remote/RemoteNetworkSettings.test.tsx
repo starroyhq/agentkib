@@ -477,7 +477,8 @@ it("can save a disabled LAN port despite an old address error", async () => {
   fireEvent.change(screen.getByLabelText("Phone LAN port"), { target: { value: "1442" } });
   fireEvent.click(screen.getByRole("button", { name: "Save network" }));
   await waitFor(() => expect(screen.getByLabelText("Dirty")).toHaveTextContent("false"));
-  expect(screen.getByText(/Phone LAN settings saved/)).toBeVisible();
+  expect(screen.getByLabelText("Phone LAN port")).toHaveValue(1442);
+  expect(screen.queryByText(/Phone LAN settings saved/)).toBeNull();
   expect(run).not.toHaveBeenCalled();
 });
 

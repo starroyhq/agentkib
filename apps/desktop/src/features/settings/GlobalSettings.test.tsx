@@ -250,6 +250,19 @@ describe("GlobalSettings diagnostics health", () => {
     expect(screen.getByText("Running normally")).toBeTruthy();
   });
 
+  it("offers a diagnostics retry only after a failed read", async () => {
+    const retry = vi.fn().mockResolvedValue(undefined);
+    const props = { ...baseProps, quotaStatus, insightsStatus, onRefreshDiagnostics: retry };
+    const { rerender } = render(<GlobalSettings {...props} />);
+    expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
+    expect(screen.queryByRole("button", { name: tr("menu.refreshCurrent") })).toBeNull();
+    rerender(<GlobalSettings {...props} diagnosticsFailed />);
+    await userEvent.click(screen.getByRole("button", { name: "Retry" }));
+    expect(retry).toHaveBeenCalledOnce();
+    rerender(<GlobalSettings {...props} />);
+    expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
+  });
+
   it("reports attention when a supported provider is unavailable", () => {
     render(
       <GlobalSettings

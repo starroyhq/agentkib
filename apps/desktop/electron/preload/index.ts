@@ -527,8 +527,12 @@ contextBridge.exposeInMainWorld(
         : ipcRenderer.invoke("agentkib:conversation:request", path, body, requestId),
     cancelRead: (requestId) => ipcRenderer.invoke("agentkib:conversation:cancel-read", requestId),
     upload: (input) => ipcRenderer.invoke("agentkib:conversation:upload", input),
-    subscribe: (sessionId, cursor) =>
-      ipcRenderer.invoke("agentkib:conversation:subscribe", sessionId, cursor),
+    subscribe: (sessionId, cursor, requestId) =>
+      requestId === undefined
+        ? ipcRenderer.invoke("agentkib:conversation:subscribe", sessionId, cursor)
+        : ipcRenderer.invoke("agentkib:conversation:subscribe", sessionId, cursor, requestId),
+    cancelSubscribe: (requestId) =>
+      ipcRenderer.invoke("agentkib:conversation:cancel-subscribe", requestId),
     acknowledge: (id, cursor) =>
       ipcRenderer.invoke("agentkib:conversation:acknowledge", id, cursor),
     unsubscribe: (id) => ipcRenderer.invoke("agentkib:conversation:unsubscribe", id),

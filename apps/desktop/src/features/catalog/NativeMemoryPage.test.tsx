@@ -18,7 +18,6 @@ const mocks = vi.hoisted(() => ({
   list: vi.fn(),
   search: vi.fn(),
   read: vi.fn(),
-  refresh: vi.fn(),
   observe: vi.fn(),
   review: vi.fn(),
   changed: vi.fn(),
@@ -30,7 +29,6 @@ vi.mock("@/core/api", () => ({
     nativeMemoryList: (...args: unknown[]) => mocks.list(...args),
     nativeMemorySearch: (...args: unknown[]) => mocks.search(...args),
     nativeMemoryRead: (...args: unknown[]) => mocks.read(...args),
-    nativeMemoryRefresh: (...args: unknown[]) => mocks.refresh(...args),
     nativeMemoryObserve: (...args: unknown[]) => mocks.observe(...args),
     reviewMemory: (...args: unknown[]) => mocks.review(...args),
   },
@@ -185,7 +183,6 @@ beforeEach(async () => {
   mocks.read.mockImplementation((id: string) =>
     Promise.resolve(detail(id === topic.id ? topic : index)),
   );
-  mocks.refresh.mockResolvedValue(snapshot);
   mocks.observe.mockResolvedValue(undefined);
   mocks.review.mockResolvedValue(undefined);
 });
@@ -445,23 +442,20 @@ describe("native and platform memory", () => {
     expect(await screen.findByText("Updated index")).toBeVisible();
   });
 
-  it("reports a failed native refresh without removing either source or blocking later refreshes", async () => {
-    const onReload = vi.fn().mockResolvedValue(undefined);
-    mount({ onReload });
+  it("refreshes on focus and gives an error-only retry without discarding cached files", async () => {
+    mount();
     await screen.findByRole("button", { name: /MEMORY.md/ });
-    mocks.refresh.mockRejectedValueOnce(new Error("scan failed"));
-    const refresh = screen.getByRole("button", { name: tr("common.refresh") });
-    fireEvent.click(refresh);
-    expect(await screen.findByText(tr("memory.native.refreshError"))).toBeVisible();
-    await waitFor(() => expect(refresh).toBeEnabled());
+    expect(screen.queryByRole("button", { name: tr("common.refresh") })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: tr("common.retry") })).not.toBeInTheDocument();
+    mocks.list.mockRejectedValueOnce(new Error("scan failed"));
+    fireEvent(window, new Event("focus"));
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent(tr("memory.native.loadError"));
     expect(screen.getByText(record.content)).toBeVisible();
     expect(screen.getByRole("button", { name: /MEMORY.md/ })).toBeVisible();
-    fireEvent.click(refresh);
-    await waitFor(() => expect(mocks.refresh).toHaveBeenCalledTimes(2));
-    await waitFor(() =>
-      expect(screen.queryByText(tr("memory.native.refreshError"))).not.toBeInTheDocument(),
-    );
-    expect(onReload).toHaveBeenCalledTimes(2);
+    fireEvent.click(within(alert).getByRole("button", { name: tr("common.retry") }));
+    await waitFor(() => expect(screen.queryByRole("alert")).not.toBeInTheDocument());
+    expect(mocks.list).toHaveBeenCalledTimes(3);
   });
 
   it("does not resurrect a pending native preview after switching to AgentKib", async () => {

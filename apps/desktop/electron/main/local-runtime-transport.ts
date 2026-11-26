@@ -6,6 +6,7 @@ import {
   tryAcquireLocalRuntimeLaunchLease,
   type LocalRuntimeIdentity,
 } from "@agentkib/backend/local-runtime-ipc";
+import { activatePackagedWindowsRuntime } from "@agentkib/backend/windows-store-process";
 import { spawn } from "node:child_process";
 import { EventEmitter, once } from "node:events";
 import type { Socket } from "node:net";
@@ -186,16 +187,20 @@ class LocalRuntimeTransport extends EventEmitter implements RuntimeTransport {
   }
 
   async #launch(options: RuntimeTransportOptions, config: LocalRuntimeTransportConfig) {
-    const child = (config.spawnProcess ?? spawn)(
-      config.electronPath,
-      [options.executablePath, "--local-runtime", config.root, config.dataDir],
-      {
-        detached: true,
-        env: { ...options.environment, ELECTRON_RUN_AS_NODE: "1" },
-        stdio: "ignore",
-        windowsHide: true,
-      },
-    );
+    const args = [options.executablePath, "--local-runtime", config.root, config.dataDir];
+    const environment = { ...options.environment, ELECTRON_RUN_AS_NODE: "1" };
+    if (process.windowsStore === true && !config.spawnProcess) {
+      // Win32 Store apps normally start children outside the package. The bundled
+      // runtime needs package access to load its bundled native libraries.
+      activatePackagedWindowsRuntime();
+      return;
+    }
+    const child = (config.spawnProcess ?? spawn)(config.electronPath, args, {
+      detached: true,
+      env: environment,
+      stdio: "ignore",
+      windowsHide: true,
+    });
     child.unref();
     await new Promise<void>((resolve, reject) => {
       child.once("spawn", resolve);

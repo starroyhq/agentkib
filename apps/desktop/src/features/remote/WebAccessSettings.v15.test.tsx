@@ -1065,10 +1065,11 @@ it("retries an unpersisted local configuration after every settings controller r
   request.mockImplementation(async () => local);
   render(<WebAccessSettings />);
   const dialog = await openAdvanced(user);
-  expect(await within(dialog).findByText(webSettingsCopy["en-US"].unsaved)).toBeVisible();
+  expect(within(dialog).getByRole("button", { name: "Save" })).toBeEnabled();
   expect(within(dialog).getByLabelText("Port")).toHaveValue(1444);
   await user.click(within(dialog).getByRole("button", { name: "Save" }));
-  expect(await screen.findByText(webSettingsCopy["en-US"].saved)).toBeVisible();
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  expect(screen.queryByText(webSettingsCopy["en-US"].saved)).toBeNull();
   expect(request.mock.calls.filter(([input]) => input.operation === "configure")).toHaveLength(2);
   expect(screen.queryByText(webSettingsCopy["en-US"].unsaved)).toBeNull();
 });

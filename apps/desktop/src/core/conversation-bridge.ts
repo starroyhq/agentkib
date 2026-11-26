@@ -4,6 +4,7 @@ import {
 } from "@agentkib/conversation-state";
 import {
   ApiError,
+  conversationReconnectDelay,
   isHistoryReadPath,
   WebClient,
   type ConversationClientBridge,
@@ -26,7 +27,12 @@ export interface DesktopConversationBridge {
     mime: string;
     data: ArrayBuffer;
   }): Promise<DesktopConversationResponse>;
-  subscribe(sessionId: string, afterCursor?: string): Promise<ConversationSubscription<Live>>;
+  subscribe(
+    sessionId: string,
+    afterCursor?: string,
+    requestId?: string,
+  ): Promise<ConversationSubscription<Live>>;
+  cancelSubscribe?(requestId: string): Promise<void>;
   acknowledge(subscriptionId: string, cursor: string): Promise<void>;
   unsubscribe(subscriptionId: string): Promise<void>;
   onEvent(listener: (event: SessionStreamEvent<Live>) => void): () => void;
@@ -106,12 +112,18 @@ export function createDesktopConversationAdapter(
     },
     stream(sessionId, handlers) {
       const bridge = getBridge();
+      const browserDocument = globalThis.document;
       let closed = false;
+      let windowActive = true;
+      let observing = browserDocument?.visibilityState !== "hidden";
+      let pendingSubscribe: string | undefined;
       let subscriptionId: string | undefined;
       let cursor: string | undefined;
       let generation = 0;
       let reconnect: ReturnType<typeof setTimeout> | undefined;
       let failures = 0;
+      let connectedAt: number | undefined;
+      let runtimeReady = true;
       let buffered: SessionStreamEvent<Live>[] = [];
       let bufferedBytes = 0;
       let connecting = false;
@@ -128,6 +140,40 @@ export function createDesktopConversationAdapter(
         subscriptionId = undefined;
         acknowledgement = undefined;
         if (id) void bridge.unsubscribe(id).catch(() => {});
+      };
+      const scheduleReconnect = () => {
+        if (
+          closed ||
+          !observing ||
+          !runtimeReady ||
+          reconnect !== undefined ||
+          connecting ||
+          subscriptionId
+        )
+          return;
+        // A subscription that immediately fails again must keep its backoff.
+        const delay = conversationReconnectDelay(failures++, 500, 10_000);
+        reconnect = setTimeout(() => {
+          reconnect = undefined;
+          void connect();
+        }, delay);
+      };
+      const retireConnection = () => {
+        if (connectedAt !== undefined && Date.now() - connectedAt >= 10_000) failures = 0;
+        connectedAt = undefined;
+        generation++;
+        connecting = false;
+        if (pendingSubscribe) void bridge.cancelSubscribe?.(pendingSubscribe).catch(() => {});
+        pendingSubscribe = undefined;
+        disposeSubscription();
+        buffered = [];
+        bufferedBytes = 0;
+      };
+      const disconnect = (error: unknown) => {
+        retireConnection();
+        handlers.error(error);
+        // Only observation reconnects. Commands are never replayed here.
+        scheduleReconnect();
       };
       const isCurrentAcknowledgement = (state: Acknowledgement) =>
         !closed && acknowledgement === state && generation === state.generation;
@@ -153,15 +199,7 @@ export function createDesktopConversationAdapter(
               await bridge.acknowledge(state.subscriptionId, applied);
             } catch (error) {
               if (!isCurrentAcknowledgement(state)) return;
-              generation++;
-              connecting = false;
-              clearTimeout(reconnect);
-              disposeSubscription();
-              buffered = [];
-              bufferedBytes = 0;
-              handlers.error(error);
-              // ACK failure only recovers observation from its applied cursor.
-              if (!closed) reconnect = setTimeout(() => void connect(), 500);
+              disconnect(error);
             } finally {
               state.inFlight = false;
               scheduleAcknowledgement(state);
@@ -187,17 +225,22 @@ export function createDesktopConversationAdapter(
         return typeof applied === "string" ? applied : event.cursor;
       };
       const connect = async () => {
-        if (closed || connecting || subscriptionId) return;
+        if (closed || !observing || !runtimeReady || connecting || subscriptionId) return;
         connecting = true;
         const attempt = ++generation;
         buffered = [];
         bufferedBytes = 0;
+        const requestId = bridge.cancelSubscribe ? crypto.randomUUID() : undefined;
+        pendingSubscribe = requestId;
         try {
-          const result = await bridge.subscribe(sessionId, cursor);
+          const result = requestId
+            ? await bridge.subscribe(sessionId, cursor, requestId)
+            : await bridge.subscribe(sessionId, cursor);
           if (closed || generation !== attempt) {
             void bridge.unsubscribe(result.subscriptionId).catch(() => {});
             return;
           }
+          pendingSubscribe = undefined;
           subscriptionId = result.subscriptionId;
           acknowledgement = {
             subscriptionId,
@@ -210,21 +253,18 @@ export function createDesktopConversationAdapter(
           for (const event of buffered) readyCursor = deliver(event) ?? readyCursor;
           buffered = [];
           if (closed || generation !== attempt) return;
-          failures = 0;
+          connectedAt = Date.now();
           handlers.event("session-ready", JSON.stringify({ cursor: readyCursor }));
           handlers.open();
         } catch (error) {
           if (closed || generation !== attempt) return;
-          disposeSubscription();
+          pendingSubscribe = undefined;
           // Electron serializes IPC rejections as Error messages.
-          handlers.error(
+          disconnect(
             error instanceof Error && /(?:^|: )stream_limit$/.test(error.message)
               ? new ApiError(429, "stream_limit")
               : error,
           );
-          // This only reconnects observation; commands are never replayed here.
-          if (!closed)
-            reconnect = setTimeout(() => void connect(), Math.min(500 * 2 ** failures++, 10_000));
         } finally {
           if (generation === attempt) connecting = false;
         }
@@ -234,13 +274,8 @@ export function createDesktopConversationAdapter(
         if (!subscriptionId && connecting) {
           bufferedBytes += JSON.stringify(event).length * 2;
           if (buffered.length >= 256 || bufferedBytes > 4 * 1024 * 1024) {
-            buffered = [];
-            generation++;
-            connecting = false;
             cursor = undefined;
-            handlers.error(new ApiError(409, "resync_required"));
-            clearTimeout(reconnect);
-            if (!closed) reconnect = setTimeout(() => void connect(), 500);
+            disconnect(new ApiError(409, "resync_required"));
             return;
           }
           buffered.push(event);
@@ -248,42 +283,59 @@ export function createDesktopConversationAdapter(
         }
         deliver(event);
       });
-      const removeStatus = globalThis.window?.agentkibDesktop?.events.onRuntimeStatus((status) => {
-        if (closed) return;
-        if (status.state !== "ready") {
-          generation++;
-          connecting = false;
+      const syncActivity = () => {
+        const active = windowActive && browserDocument?.visibilityState !== "hidden";
+        if (closed || observing === active) return;
+        observing = active;
+        if (active) scheduleReconnect();
+        else {
           clearTimeout(reconnect);
-          disposeSubscription();
-          buffered = [];
-          handlers.error(new ApiError(503, "runtime_unavailable"));
-        } else void connect();
+          reconnect = undefined;
+          retireConnection();
+          // Closing to the tray keeps the renderer mounted. Invalidate observation
+          // without treating a deliberate pause as a failed catalog read.
+          handlers.event("unavailable", "{}");
+        }
+      };
+      browserDocument?.addEventListener("visibilitychange", syncActivity);
+      const removeActivity = globalThis.window?.agentkibDesktop?.events.onWindowActivity?.(
+        (active) => {
+          windowActive = active;
+          syncActivity();
+        },
+      );
+      const removeStatus = globalThis.window?.agentkibDesktop?.events.onRuntimeStatus((status) => {
+        const ready = status.state === "ready";
+        if (closed || runtimeReady === ready) return;
+        runtimeReady = ready;
+        if (ready) scheduleReconnect();
+        else if (observing) disconnect(new ApiError(503, "runtime_unavailable"));
       });
       const removeUnavailable = bridge.onUnavailable(() => {
-        if (closed) return;
-        generation++;
-        connecting = false;
-        clearTimeout(reconnect);
-        disposeSubscription();
-        buffered = [];
-        handlers.error(new ApiError(503, "runtime_unavailable"));
-        if (!closed) reconnect = setTimeout(() => void connect(), 500);
+        if (
+          closed ||
+          !observing ||
+          !runtimeReady ||
+          (!connecting && !subscriptionId && reconnect !== undefined)
+        )
+          return;
+        disconnect(new ApiError(503, "runtime_unavailable"));
       });
       const removeControls = bridge.onControlChanged((id) => {
-        if (!closed && (!sessionId || !id || id === sessionId))
+        if (!closed && observing && (!sessionId || !id || id === sessionId))
           handlers.event("control-changed", JSON.stringify({ sessionId: id || sessionId }));
       });
       void connect();
       return () => {
         closed = true;
-        generation++;
         clearTimeout(reconnect);
+        browserDocument?.removeEventListener("visibilitychange", syncActivity);
+        removeActivity?.();
         removeEvents();
         removeStatus?.();
         removeUnavailable();
         removeControls();
-        disposeSubscription();
-        buffered = [];
+        retireConnection();
       };
     },
     async uploadAttachment(sessionId, file, progress, signal) {

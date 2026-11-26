@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type { NotificationPolicy, NotificationPolicyPatch } from "@agentkib/runtime-protocol";
@@ -101,7 +101,10 @@ describe("desktop notification policy", () => {
       categories: { approval: true, question: true, completed: false, failed: true },
     });
     await user.click(saveButton());
-    await screen.findByText("Notification settings saved.");
+    await waitFor(() =>
+      expect(saveButton().closest("form")?.getAttribute("aria-busy")).toBe("false"),
+    );
+    expect(screen.queryByText("Notification settings saved.")).toBeNull();
     expect(request).toHaveBeenLastCalledWith("push/policy", {
       categories: { approval: false },
       onlyAway: false,
@@ -124,14 +127,38 @@ describe("desktop notification policy", () => {
     fireEvent.change(start, { target: { value: "21:30" } });
     expect(saveButton().disabled).toBe(false);
     await user.click(saveButton());
-    await screen.findByText("Notification settings saved.");
+    await waitFor(() =>
+      expect(saveButton().closest("form")?.getAttribute("aria-busy")).toBe("false"),
+    );
+    expect(screen.queryByText("Notification settings saved.")).toBeNull();
     expect(request).toHaveBeenLastCalledWith("push/policy", {
       quietHours: { start: "21:30", end: "08:00" },
     });
     await user.click(screen.getByRole("switch", { name: "Quiet hours" }));
     await user.click(saveButton());
-    await screen.findByText("Notification settings saved.");
+    await waitFor(() =>
+      expect(saveButton().closest("form")?.getAttribute("aria-busy")).toBe("false"),
+    );
+    expect(screen.queryByText("Notification settings saved.")).toBeNull();
     expect(request).toHaveBeenLastCalledWith("push/policy", { quietHours: null });
+  });
+
+  it("updates the policy on focus while preserving in-progress edits", async () => {
+    const { request, replacePolicy } = fixture();
+    const approval = await screen.findByRole("switch", { name: "Approvals" });
+    expect(screen.queryByRole("button", { name: "Refresh" })).toBeNull();
+    replacePolicy({
+      categories: { approval: false, question: true, completed: true, failed: true },
+    });
+    fireEvent(window, new Event("focus"));
+    await waitFor(() => expect(approval.getAttribute("aria-checked")).toBe("false"));
+    const user = userEvent.setup();
+    await user.click(approval);
+    expect(saveButton().disabled).toBe(false);
+    request.mockClear();
+    fireEvent(window, new Event("focus"));
+    expect(request).not.toHaveBeenCalled();
+    expect(approval.getAttribute("aria-checked")).toBe("true");
   });
 
   it("shows policy values without enabling writes for a device lacking settings authority", async () => {

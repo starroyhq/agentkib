@@ -10,8 +10,11 @@ export function nativeBindings(): typeof Koffi {
   const directory =
     typeof __dirname === "string" ? __dirname : path.dirname(fileURLToPath(import.meta.url));
   const load = createRequire(path.join(directory, "backend.cjs")),
-    staged = path.join(directory, "native/koffi");
-  bindings = load(existsSync(staged) ? staged : "koffi") as typeof Koffi;
+    staged = path.join(directory, "native/koffi"),
+    unpacked = staged.replace(/([\\/])app\.asar([\\/])/, "$1app.asar.unpacked$2");
+  // The detached Electron Node process must resolve Koffi's native dependency on disk.
+  const entry = [unpacked, staged].find((candidate) => existsSync(candidate)) ?? "koffi";
+  bindings = load(entry) as typeof Koffi;
   return bindings;
 }
 let windows:

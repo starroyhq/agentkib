@@ -37,7 +37,8 @@
     "./local-runtime-activity": "./src/local-runtime-activity.ts",
     "./local-runtime-ipc": "./src/local-runtime-ipc.ts",
     "./local-runtime-service": "./src/local-runtime-service.ts",
-    "./local-runtime-trace": "./src/local-runtime-trace.ts"
+    "./local-runtime-trace": "./src/local-runtime-trace.ts",
+    "./windows-store-process": "./src/windows-store-process.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit"

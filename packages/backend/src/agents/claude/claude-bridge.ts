@@ -38,7 +38,7 @@ import {
   bridgePollSchema,
   bridgeResultSchema,
 } from "./claude-bridge-schema";
-import { claudeBridgeToolItem } from "./claude-bridge-tool-detail";
+import { claudeBridgeToolEvent } from "./claude-bridge-tool-detail";
 import { acquirePortableFileLease } from "../../managed-session-lock";
 import type { ClaudeBridgePluginUpdater } from "./claude-bridge-plugin-update";
 import {
@@ -3278,7 +3278,7 @@ export class ClaudeBridge {
       this.options.publish(
         id,
         "item-upsert",
-        claudeBridgeToolItem(tool, toolId, turnId, binding.target.workspace),
+        claudeBridgeToolEvent(toolId, tool, turnId, binding.target.workspace),
         live,
       );
     }

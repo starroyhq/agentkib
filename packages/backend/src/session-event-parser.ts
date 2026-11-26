@@ -609,6 +609,96 @@ function agentKibTurnMessage(row: any): boolean {
     row.message.content.every((block: any) => block?.type === "text")
   );
 }
+const codexEvents = new Set([
+  "task_started",
+  "task_complete",
+  "turn_aborted",
+  "item_completed",
+  "user_message",
+  "agent_message",
+  "exec_command_end",
+  "patch_apply_end",
+]);
+const codexItems = new Set([
+  "message",
+  "function_call",
+  "custom_tool_call",
+  "function_call_output",
+  "custom_tool_call_output",
+  "web_search_call",
+]);
+
+/** The Codex records that contribute visible history or its turn boundaries. */
+function isCodexHistoryRecord(row: unknown): boolean {
+  if (!row || typeof row !== "object" || !("type" in row)) return false;
+  if (row.type === "turn_context") return true;
+  if (row.type !== "event_msg" && row.type !== "response_item") return false;
+  const payload = "payload" in row ? row.payload : null;
+  return (
+    !!payload &&
+    typeof payload === "object" &&
+    "type" in payload &&
+    typeof payload.type === "string" &&
+    (row.type === "event_msg" ? codexEvents : codexItems).has(payload.type)
+  );
+}
+
+const claudeHistoryTypes = new Set(["user", "assistant", "system", "attachment"]);
+const codexHistoryTypes = new Set(["event_msg", "response_item", "turn_context"]);
+const logRowHeader =
+  /^\{\s*(?:"timestamp"\s*:\s*"[^"\\]*"\s*,\s*)?"type"\s*:\s*"([^"\\]+)"(?:\s*,\s*"payload"\s*:\s*\{\s*"type"\s*:\s*"([^"\\]+)")?/;
+
+type HistoryRules = {
+  types: ReadonlySet<string>;
+  payloadTypes?: ReadonlyMap<string, ReadonlySet<string>>;
+  include(row: any): boolean;
+  turnStart(row: any, offset: number): string | number | undefined;
+};
+
+export const nativeHistoryRules: Partial<Record<HistoryFormat, HistoryRules>> = {
+  codex: {
+    types: codexHistoryTypes,
+    payloadTypes: new Map([
+      ["event_msg", codexEvents],
+      ["response_item", codexItems],
+    ]),
+    include: isCodexHistoryRecord,
+    turnStart: (row, offset) =>
+      row.type === "event_msg" && row.payload?.type === "task_started"
+        ? (recordTurn(row, row.payload) ?? offset)
+        : undefined,
+  },
+  "claude-code": {
+    types: claudeHistoryTypes,
+    include: (row) => claudeHistoryTypes.has(row?.type),
+    turnStart: (row, offset) => {
+      if (
+        row.type !== "user" ||
+        row.isSidechain ||
+        row.isCompactSummary ||
+        (row.isMeta && !agentKibTurnMessage(row))
+      )
+        return undefined;
+      const content = row.message?.content;
+      return typeof content === "string" ||
+        (Array.isArray(content) && content.some((block) => block?.type !== "tool_result"))
+        ? (stringValue(row.uuid) ?? offset)
+        : undefined;
+    },
+  },
+};
+
+/** Only a canonical leading discriminator is conclusive. Other orders use the JSON parser. */
+export function unknownHistoryHeader(bytes: Buffer, rules: HistoryRules): boolean {
+  const match = logRowHeader.exec(bytes.toString("utf8", 0, 256));
+  if (!match) return false;
+  const [, kind, subtype] = match;
+  return (
+    !rules.types.has(kind!) ||
+    (subtype !== undefined && rules.payloadTypes?.get(kind!)?.has(subtype) === false)
+  );
+}
+
 export function parseEventRecord(
   state: EventState,
   offset: number,

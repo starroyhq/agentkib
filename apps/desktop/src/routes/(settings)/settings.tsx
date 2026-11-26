@@ -1,3 +1,5 @@
+import { useEffect } from "react";
+import { subscribeSessionForegroundRefresh } from "@agentkib/session-ui";
 import { ConnectedAgents } from "@/features/agents/ConnectedAgents";
 import type { AppSearch } from "@/features/app/app-route";
 import { useI18n } from "@/core/useI18n";
@@ -47,18 +49,28 @@ function SettingsRoute() {
   const runtime = useAppStore((state) => state.runtime);
   const setRuntime = useAppStore((state) => state.setRuntime);
   const { data: workspaces = [], isPending: workspacesPending } = useHomeWorkspaces();
-  const { data: discovery } = useHomeDiscovery();
-  const { data: insightsStatus } = useHomeInsightsStatus();
-  const { data: quotaStatus } = useQuotaStatus();
+  const { data: discovery, isError: discoveryFailed } = useHomeDiscovery();
+  const { data: insightsStatus, isError: insightsFailed } = useHomeInsightsStatus();
+  const { data: quotaStatus, isError: quotaFailed, refetch: refetchQuota } = useQuotaStatus();
   const { data: remoteGateways = [] } = useHomeRemoteGateways();
   const { data: scanRoots = [] } = useHomeScanRoots();
   const { data: excluded = [] } = useHomeExcluded();
-  const { data: activity = [] } = useHomeActivity();
+  const { data: activity = [], isError: activityFailed } = useHomeActivity();
   const setMessage = useWorkspaceStore((state) => state.setMessage);
   // The diagnostics export is available even before the runtime connects.
   const contentPending = section !== "diagnostics" && !runtime && workspacesPending;
 
   useSettingsTargetFocus(search.settingsTarget, section, contentPending);
+  useEffect(() => {
+    if (section !== "diagnostics") return;
+    const read = () => {
+      void refetchQuota({ cancelRefetch: false });
+      for (const queryKey of [homeKeys.discovery(), homeKeys.insightsStatus(), homeKeys.activity()])
+        void queryClient.invalidateQueries({ queryKey }, { cancelRefetch: false });
+    };
+    read();
+    return subscribeSessionForegroundRefresh(read);
+  }, [queryClient, refetchQuota, section]);
 
   const run = async (operation: () => Promise<void>) => {
     setMessage("");
@@ -126,6 +138,7 @@ function SettingsRoute() {
         queryClient.invalidateQueries({ queryKey: homeKeys.insightsStatus() }),
         queryClient.invalidateQueries({ queryKey: homeKeys.remoteGateways() }),
         queryClient.invalidateQueries({ queryKey: homeKeys.activity() }),
+        refetchQuota(),
       ]);
     });
 
@@ -187,6 +200,7 @@ function SettingsRoute() {
           onOnboardingRestarted={restartOnboarding}
           onRemoteGatewaysChanged={refreshRemoteGateways}
           onRefreshDiagnostics={refreshDiagnostics}
+          diagnosticsFailed={discoveryFailed || insightsFailed || quotaFailed || activityFailed}
         />
       )}
     </>

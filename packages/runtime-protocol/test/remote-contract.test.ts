@@ -6,6 +6,7 @@ import {
   PROTOCOL_VERSION,
   REMOTE_CAPABILITIES,
   REMOTE_CONTRACT_VERSION,
+  REMOTE_CONVERSATION_EVENTS,
   REMOTE_ERROR_CODES,
   REMOTE_ERROR_CONTRACT,
   REMOTE_FEATURE_VERSIONS,
@@ -198,4 +199,38 @@ test("route declarations preserve LAN preflight and legacy Codex boundaries", ()
     assert.ok(REMOTE_MANAGED_ACTION_OPERATIONS.includes(operation));
     assert.ok(!REMOTE_LEGACY_CODEX.postOperations.includes(operation));
   }
+});
+
+test("the compaction boundary examples use the generated timeline contract", () => {
+  const examples = JSON.parse(
+    readFileSync(
+      new URL("./fixtures/conversation-compaction-boundaries.json", import.meta.url),
+      "utf8",
+    ),
+  );
+  const { kind, timestampField, triggerField, triggers } =
+    REMOTE_CONVERSATION_EVENTS.compactionBoundary;
+  const boundaries: unknown[] = [];
+  for (const page of [examples.claudeCode, examples.codex]) {
+    const events = page.events as Record<string, unknown>[];
+    assert.ok(
+      events.every((event) =>
+        Object.values(REMOTE_CONVERSATION_EVENTS).some((declared) => declared.kind === event.kind),
+      ),
+    );
+    for (const [index, event] of events.entries()) {
+      if (event.kind !== kind) {
+        assert.ok(!(triggerField in event));
+        continue;
+      }
+      const at = Date.parse(String(event[timestampField]));
+      assert.ok(Date.parse(String(events[index - 1]?.[timestampField])) < at);
+      assert.ok(at < Date.parse(String(events[index + 1]?.[timestampField])));
+      assert.equal(event.content, null);
+      assert.equal(event.attachment_count, 0);
+      assert.equal(event.truncated, false);
+      boundaries.push(event[triggerField]);
+    }
+  }
+  assert.deepEqual(boundaries, triggers);
 });

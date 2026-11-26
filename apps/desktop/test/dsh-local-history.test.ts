@@ -5,17 +5,40 @@ import {
   mkdtempSync,
   renameSync,
   rmSync,
+  statSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { monitorEventLoopDelay } from "node:perf_hooks";
+import { setTimeout } from "node:timers/promises";
 import { constants as zlib, zstdCompressSync } from "node:zlib";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   readLocalDshHistory,
   readLocalDshTurn,
 } from "../../../packages/backend/src/agents/dsh/dsh-local-history";
+
+const readMeter = vi.hoisted(() => ({ bytes: 0 }));
+vi.mock("node:fs/promises", async (original) => {
+  const fs = await original<typeof import("node:fs/promises")>();
+  return {
+    ...fs,
+    async open(...args: Parameters<typeof fs.open>) {
+      const handle = await fs.open(...args);
+      const read = handle.read.bind(handle);
+      handle.read = (async (...params: unknown[]) => {
+        const result = await (Reflect.apply(read, handle, params) as Promise<{
+          bytesRead: number;
+        }>);
+        readMeter.bytes += result.bytesRead;
+        return result;
+      }) as typeof handle.read;
+      return handle;
+    },
+  };
+});
 
 const nativeId = "session-a";
 const logName = "session.v4.jsonl.zstd";
@@ -37,6 +60,73 @@ function encode(...items: unknown[]) {
 }
 
 describe("DSH local history", () => {
+  it("reads only new frames after a large history's first snapshot and invalidates a rewrite", async () => {
+    const dir = fixture();
+    const log = path.join(dir, logName);
+    const large = process.env.AGENTKIB_READ_BENCHMARK === "large";
+    const frames = large ? 224 : 64;
+    let decodedBytes = 0;
+    writeFileSync(log, encode(header));
+    for (let seq = 1; seq <= frames; seq++) {
+      const content = randomBytes((large ? 128 : 192) * 1024)
+        .toString("base64")
+        .repeat(large ? 6 : 1);
+      decodedBytes += content.length;
+      appendFileSync(
+        log,
+        encode({
+          seq,
+          type: "system/message",
+          data: { content },
+        }),
+      );
+    }
+    const msg = (seq: number, text: string) => ({
+      seq,
+      type: "assistant/message",
+      data: { turn: 1, message: { content: [{ type: "text", text }] } },
+    });
+    appendFileSync(log, encode(msg(frames + 1, "old")));
+    const delay = monitorEventLoopDelay({ resolution: 1 });
+    const baselineRss = process.memoryUsage.rss();
+    delay.enable();
+    await setTimeout(5);
+    readMeter.bytes = 0;
+    const first = await readLocalDshHistory(dir, nativeId, undefined, 20);
+    const coldBytes = readMeter.bytes;
+    expect(first).toMatchObject({ cursor: frames + 1, records: [{ text: "old" }] });
+    expect(coldBytes).toBeGreaterThan(12 * 1024 * 1024);
+    expect(coldBytes).toBeLessThan(statSync(log).size + 64 * 1024);
+    readMeter.bytes = 0;
+    expect(await readLocalDshHistory(dir, nativeId, undefined, 20)).toEqual(first);
+    expect(readMeter.bytes).toBe(0);
+
+    appendFileSync(log, encode(msg(frames + 2, "new")));
+    expect(await readLocalDshHistory(dir, nativeId, undefined, 20)).toMatchObject({
+      cursor: frames + 2,
+      records: [{ text: "old" }, { text: "new" }],
+    });
+    const appendBytes = readMeter.bytes;
+    expect(appendBytes).toBeLessThan(4096);
+    await setTimeout(5);
+    delay.disable();
+    if (process.env.AGENTKIB_READ_BENCHMARK)
+      console.info({
+        dshColdBytes: coldBytes,
+        dshPayloadDecodedBytes: decodedBytes,
+        dshAppendBytes: appendBytes,
+        maxLoopDelayMs: delay.max / 1e6,
+        baselineRss,
+        processPeakRss: process.resourceUsage().maxRSS * 1024,
+      });
+
+    writeFileSync(log, encode(header, msg(1, "rewrite")));
+    expect(await readLocalDshHistory(dir, nativeId, undefined, 20)).toMatchObject({
+      cursor: 1,
+      records: [{ text: "rewrite" }],
+    });
+  });
+
   it("pages projected native records across frames and ignores an unfinished line", async () => {
     const dir = fixture();
     const nativeOnly = {

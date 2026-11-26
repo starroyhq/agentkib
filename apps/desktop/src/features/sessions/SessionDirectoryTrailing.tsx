@@ -1,8 +1,6 @@
 import type { ReactNode } from "react";
 import { Bot, CircleAlert, GitBranch } from "lucide-react";
-import { managedAgentOf } from "@agentkib/web-client";
 import {
-  hasSessionPinning,
   readStateCopy,
   sessionContinuationListState,
   SessionContinuationDot,
@@ -21,6 +19,8 @@ export function SessionDirectoryTrailing({
   onChanged,
   onDeleted,
   onConnectTerminal,
+  onOpenWorkspace,
+  onOpenFork,
 }: {
   session: ConversationSessionSummary;
   sessions: ConversationSessionSummary[];
@@ -29,10 +29,11 @@ export function SessionDirectoryTrailing({
   onChanged: () => void;
   onDeleted: () => void;
   onConnectTerminal: () => void;
+  onOpenWorkspace?: () => Promise<void>;
+  onOpenFork?: () => void;
 }) {
   const { locale, tr, formatDateTime } = useI18n();
   const status = sessionContinuationListState(session, locale);
-  const hasMenu = hasSessionPinning(session) || (local && !!managedAgentOf(session.agent));
   let indicator: ReactNode = null;
   if (session.readState?.status === "unread") {
     const copy = readStateCopy(locale);
@@ -84,27 +85,31 @@ export function SessionDirectoryTrailing({
   return (
     <div
       className="session-directory-trailing relative grid size-8 shrink-0 place-items-center"
-      data-has-menu={hasMenu || undefined}
+      data-has-menu="true"
       data-has-indicator={!!indicator || undefined}
     >
       {/* The selection button retains the full accessible status description. */}
       <span
         aria-hidden="true"
-        className={`session-directory-indicator absolute inset-0 grid place-items-center text-muted-foreground transition-opacity duration-150 motion-reduce:transition-none ${hasMenu ? "pointer-events-none" : ""}`}
+        className="session-directory-indicator pointer-events-none absolute inset-0 grid place-items-center text-muted-foreground transition-opacity duration-150 motion-reduce:transition-none"
       >
         {indicator}
       </span>
-      {hasMenu && (
-        <SessionRowMenu
-          session={session}
-          sessions={workerSessions}
-          canPin={local && !session.remote}
-          pinOnly={!local}
-          onChanged={onChanged}
-          onDeleted={onDeleted}
-          onConnectTerminal={onConnectTerminal}
-        />
-      )}
+      <SessionRowMenu
+        session={session}
+        sessions={workerSessions}
+        canPin={local && !session.remote}
+        pinOnly={!local}
+        sidebar={{
+          local,
+          isMacOS: document.documentElement.dataset.platform === "macos",
+          onOpenWorkspace,
+          onOpenFork,
+        }}
+        onChanged={onChanged}
+        onDeleted={onDeleted}
+        onConnectTerminal={onConnectTerminal}
+      />
     </div>
   );
 }

@@ -266,10 +266,13 @@ describe("HomeSessions", () => {
     expect(props.onRetry).toHaveBeenCalledOnce();
   });
 
-  it("points to the composer above when there is no session yet", () => {
-    renderSessions([]);
-    expect(screen.getByText(tr("home.firstSession"))).toBeVisible();
-    expect(screen.queryByRole("button")).not.toBeInTheDocument();
+  it("keeps source recovery available even when there are no sessions", () => {
+    const props = renderSessions([], "ready", { unavailableAgents: ["antigravity"] });
+
+    const status = screen.getByRole("status");
+    expect(status).toHaveTextContent(tr("sessions.sourceUnavailable", { agent: "Antigravity" }));
+    fireEvent.click(within(status).getByRole("button", { name: "Retry" }));
+    expect(props.onRetrySources).toHaveBeenCalledOnce();
   });
 
   it("notes an installed Agent whose sessions could not be read, with a retry", () => {

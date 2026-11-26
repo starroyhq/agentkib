@@ -108,8 +108,12 @@ import {
   saveManagedSettingsReceipt,
 } from "../../managed-ledger";
 import { CodexLeadTurns } from "../../lead-turn-origin";
-import { CodexTitleThreads, codexUserMessageText, threadTitleModel } from "./codex-thread-title";
-import { CodexUsageLimits } from "./usage-limits";
+import { CodexTitleThreads, codexUserMessageText } from "./codex-thread-title";
+import {
+  CODEX_ACCOUNT_LIMIT_METHOD,
+  CODEX_ACCOUNT_LIMIT_PARAMS,
+  CodexUsageLimits,
+} from "./usage-limits";
 import type { LaneObserver } from "../../sessions/lane-observer";
 import type {
   DeferredCodexSendOwner,
@@ -415,7 +419,6 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
    * The native threads AgentKib tried to name while it runs, at most once each, and whether the
    * person renamed one meanwhile: their name is never replaced.
    */
-  #titleAttempts = new Map<string, { renamed: boolean }>();
   #managedImagePages = new Map<
     string,
     {
@@ -475,12 +478,31 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
         host.controlSession(value, restrictNativePolicy),
       publishLimit: (sessionId, view) => {
         const runner = this.#managedRunners.get(sessionId);
+        if (!runner) host.catalogChanged?.();
         if (runner?.state.showUsageLimit(view)) {
           const live = runner.state.snapshot(host.runtimeBootId, runner.session.connected);
           host.publishConversationEvent?.(sessionId, "state", live, live);
         }
       },
       limitEnded: (sessionId) => host.observeLane((observer) => observer.limitEnded?.(sessionId)),
+      home: () => host.sessions.codexHome(),
+      readAccountLimit: async (id) => {
+        const executable = this.#codexReader();
+        if (!executable) throw new Error("codex-cli-unavailable");
+        const record = await this.#inactiveRecord(id);
+        return this.#codex.request(
+          executable,
+          this.#managedCwd(record),
+          this.#assertManagedHome(record),
+          CODEX_ACCOUNT_LIMIT_METHOD,
+          CODEX_ACCOUNT_LIMIT_PARAMS,
+        );
+      },
+      reloadIdleRunner: async (id) => {
+        await this.restartManagedRunner(id);
+        if (this.#managedRunners.has(id) || this.#startingRunners.has(id))
+          throw new Error("session-busy");
+      },
     });
     this.#retirementTimer = setInterval(() => void this.#retireIdleRunners(), 1000);
     this.#retirementTimer.unref();
@@ -3512,6 +3534,10 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
     return this.#usageLimits.isLimited(sessionId);
   }
 
+  refreshWorkerUsageLimit(sessionId: string): Promise<boolean> {
+    return this.host.runOperation(() => this.#usageLimits.refreshWorker(sessionId));
+  }
+
   /** A device lost access: AgentKib no longer continues in its name after a usage limit. */
   invalidateUsageLimitDevice(deviceId: string): void {
     this.#usageLimits.invalidateDevice(deviceId);
@@ -4237,8 +4263,7 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
         params = { threadId: record.native_id, name: request.name };
         method = "thread/name/set";
         // The person's name wins over a title still being made for the thread.
-        const naming = record.native_id ? this.#titleAttempts.get(record.native_id) : undefined;
-        if (naming) naming.renamed = true;
+        this.#titleThreads.userRenamed(record.native_id);
       } else if (request.operation === "archive") {
         if (snapshot.status !== "idle") throw new Error("session-busy");
         params = { threadId: record.native_id };
@@ -5512,54 +5537,6 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
     saveManagedRecord(this.host.dataDir, current as unknown as Record<string, unknown>);
   }
 
-  /**
-   * Gives a managed Codex thread that has no name the title Codex's terminal client would give
-   * it (`codex-thread-title.ts`), from its first message: at most once per thread while AgentKib
-   * runs, in the background of the turn that started. Any failure leaves Codex's own title.
-   */
-  #nameCodexThread(
-    session: CodexAppServerSession,
-    threadId: string,
-    cwd: string,
-    observedMessage: string,
-  ): void {
-    if (this.host.isShuttingDown() || this.#titleAttempts.has(threadId)) return;
-    const attempt = { renamed: false };
-    this.#titleAttempts.set(threadId, attempt);
-    /** The thread while Codex says it has no name; one it says nothing about is left alone. */
-    const unnamed = async () => {
-      const read = await session.request("thread/read", { threadId, includeTurns: false });
-      const thread = isObject(read) && isObject(read.thread) ? read.thread : null;
-      const nameless =
-        thread?.id === threadId &&
-        (thread.name === null || (typeof thread.name === "string" && !thread.name.trim()));
-      return nameless && !attempt.renamed && !this.host.isShuttingDown() ? thread : null;
-    };
-    void (async () => {
-      const thread = await unnamed();
-      if (!thread) return;
-      // Codex's preview is the thread's first message; a new thread may not show it yet.
-      const message =
-        (typeof thread.preview === "string" ? thread.preview.trim() : "") || observedMessage.trim();
-      if (!message) return;
-      const choice = threadTitleModel(
-        await session.request("model/list", { limit: 100 }),
-        typeof thread.model === "string" ? thread.model : null,
-      );
-      if (!choice || this.host.isShuttingDown()) return;
-      const title = await this.#titleThreads.generate(session, {
-        threadId,
-        cwd,
-        message,
-        ...choice,
-      });
-      // The person, or a Codex client, may have named the thread meanwhile.
-      if (!title || !(await unnamed()) || attempt.renamed) return;
-      await session.request("thread/name/set", { threadId, name: title });
-      if (!this.host.isShuttingDown()) this.host.catalogChanged?.();
-    })().catch(() => undefined);
-  }
-
   async #attachManagedRunner(
     record: ManagedRecord,
     workspace: string,
@@ -5663,13 +5640,23 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
       // only later is followed from now on.
       const ownTurns = new CodexLeadTurns(this.host.dataDir, record.id, () => state.nativeId);
       session.on("notification", (value: unknown) => {
+        if (isObject(value) && value.method === "account/updated")
+          this.#usageLimits.observeAccount(true);
         // The temporary thread that names this one runs no turn of the session's.
         if (this.#titleThreads.owns(value)) return;
         const turnId = ownTurns.observe(value);
         if (turnId) this.host.observeLane((observer) => observer.ownTurn?.(record.id, turnId));
         // A user message in the session's thread: one without a name gets a title once.
         const message = codexUserMessageText(value, state.nativeId);
-        if (message !== null) this.#nameCodexThread(session, state.nativeId!, cwd, message);
+        if (message !== null)
+          this.#titleThreads.nameIfUntitled(
+            session,
+            state.nativeId!,
+            cwd,
+            message,
+            () => this.host.isShuttingDown(),
+            () => this.host.catalogChanged?.(),
+          );
       });
       const bridge = new ManagedCodexEventBridge(
         session,
@@ -5766,9 +5753,8 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
           previousStreamText = typeof live.streamText === "string" ? live.streamText : "";
           if (result.event) {
             this.host.publishConversationEvent?.(record.id, "item-upsert", result.event, live);
-            // turn/completed returns the last row with its duration; subscribers
-            // still need the idle state that the same notification produced.
-            if (method !== "turn/completed") return;
+            // Item upserts do not update the subscriber's activity or live state.
+            if (method !== "turn/completed" && !result.publishState) return;
           }
           this.host.publishConversationEvent?.(record.id, "state", live, live);
         },
@@ -6712,6 +6698,7 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
 
   async #retireIdleRunners(): Promise<void> {
     if (this.host.isClosing() || this.#retiring) return;
+    this.#usageLimits.observeAccount();
     this.#retiring = true;
     try {
       for (const [id, runner] of this.#managedRunners) {
@@ -7195,7 +7182,10 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
         const recovered = await this.#recoverCodexReceipts(managed, resident);
         if (recovered) return recovered;
       }
-      return resident.bridge.snapshot(this.host.runtimeBootId, !unknown);
+      const snapshot = await resident.bridge.snapshot(this.host.runtimeBootId, !unknown);
+      return worker && snapshot.turnId === resident.state.turnId
+        ? { ...snapshot, ...resident.state.workerObservation() }
+        : snapshot;
     }
     if (resident) {
       await this.#closeManagedRunner(sessionId, resident);

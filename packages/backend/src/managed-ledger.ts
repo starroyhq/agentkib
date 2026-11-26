@@ -197,7 +197,7 @@ function openManagedLedgerForRead(dataDir: string): DatabaseSync | null {
   }
 }
 
-export function readManagedLedger<T>(
+export function withManagedLedgerReader<T>(
   dataDir: string,
   read: (database: DatabaseSync) => T,
 ): T | null {

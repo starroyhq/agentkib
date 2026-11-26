@@ -2,6 +2,7 @@ import { parentPort, workerData } from "node:worker_threads";
 import {
   REMOTE_ERROR_CODES,
   formatHistoryReferences,
+  type DshBridgeDocumentPage,
   HISTORY_REFERENCE_BYTES,
   HISTORY_REFERENCE_LIMIT,
   type HistorySearchQuery,
@@ -29,7 +30,14 @@ if (!parentPort) throw new Error("History search requires a worker port");
 const port = parentPort;
 const configuration = workerData as { filename: string; writable: boolean; limitBytes: number };
 let store: HistorySearchStore | undefined;
-let running: { id: string; task: TaskContext; verification?: (valid: boolean) => void } | undefined;
+let running:
+  | {
+      id: string;
+      task: TaskContext;
+      verification?: (valid: boolean) => void;
+      dshPage?: (page?: DshBridgeDocumentPage | null) => void;
+    }
+  | undefined;
 const commands = new Commands();
 function database() {
   return (store ??= new HistorySearchStore(
@@ -44,6 +52,17 @@ async function verify() {
     running!.verification = (valid) =>
       valid ? resolve() : reject(new Error(REMOTE_ERROR_CODES.historySourceStale));
     port.postMessage({ type: "verify", id: running!.id });
+  });
+}
+async function readDshPage(): Promise<DshBridgeDocumentPage | null> {
+  const request = running;
+  if (!request) throw new Error("No active history request");
+  return new Promise((resolve, reject) => {
+    request.dshPage = (page) =>
+      page === undefined
+        ? reject(new Error(REMOTE_ERROR_CODES.historySourceUnavailable))
+        : resolve(page);
+    port.postMessage({ type: "read-dsh-page", id: request.id });
   });
 }
 function sourceWithCachedBinding(source: HistorySourceInput, session?: SearchSession) {
@@ -94,6 +113,8 @@ port.on(
     input?: unknown;
     cancelFlag?: SharedArrayBuffer;
     valid?: boolean;
+    page?: DshBridgeDocumentPage | null;
+    streamDsh?: boolean;
   }) => {
     if (message.type === "verified" && running?.id === message.id) {
       const callback = running.verification;
@@ -104,6 +125,13 @@ port.on(
     if (message.type === "cancel" && running?.id === message.id) {
       running.task.cancel();
       running.verification?.(false);
+      running.dshPage?.();
+      return;
+    }
+    if (message.type === "dsh-page" && running?.id === message.id) {
+      const callback = running.dshPage;
+      running.dshPage = undefined;
+      callback?.(message.page);
       return;
     }
     if (message.type === "close") {
@@ -153,7 +181,7 @@ port.on(
                 : undefined;
               // Files exactly as they were read give the same revision, forced or not. A large
               // transcript is then neither read nor rewritten after every turn.
-              if (previousRevision && stamp && historySourceStampCurrent(stamp)) {
+              if (previousRevision && stamp && (await historySourceStampCurrent(stamp))) {
                 value = {
                   sessionId: session.sessionId,
                   sourceRevision: previousRevision,
@@ -161,15 +189,23 @@ port.on(
                 };
                 break;
               }
-              if (previousRevision && input.force !== true) {
-                // Provider summaries can stay unchanged when a JSONL body or SQLite WAL changes.
-                // Read the complete source in this worker; retain the committed generation only
-                // when both its content snapshot and current ownership still match.
-                const snapshot = await readHistorySearchSource(source, () => {}, {
-                  commands,
-                  signal: task.signal,
-                  checkpoint,
-                });
+              const sourceOptions = {
+                commands,
+                signal: task.signal,
+                checkpoint,
+                readDshPage: message.streamDsh ? readDshPage : undefined,
+              };
+              const hasRoom = !db.budgetExceeded() || db.canMakeRoom(session);
+              if (
+                previousRevision &&
+                !stamp &&
+                (!message.streamDsh || !hasRoom) &&
+                input.force !== true
+              ) {
+                // For sources without a complete file stamp (such as SQLite with a WAL), compare
+                // the actual snapshot before staging a new generation. A changed complete stamp
+                // already changes the revision, so that source can be read directly into staging.
+                const snapshot = await readHistorySearchSource(source, () => {}, sourceOptions);
                 checkpoint();
                 await verify();
                 checkpoint();
@@ -180,7 +216,7 @@ port.on(
                   break;
                 }
               }
-              if (db.budgetExceeded() && !db.canMakeRoom(session)) {
+              if (!hasRoom) {
                 // Refuse before opening a generation, so a full cache is not rewritten per pass.
                 db.markUnindexed(session, "cache-budget-exceeded");
                 settled = true;
@@ -193,7 +229,7 @@ port.on(
                   checkpoint();
                   db.append(session.sessionId, generation!, record, checkpoint);
                 },
-                { commands, signal: task.signal, checkpoint },
+                sourceOptions,
               );
               checkpoint();
               await verify();

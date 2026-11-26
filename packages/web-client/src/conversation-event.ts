@@ -1,4 +1,6 @@
 import type {
+  ConversationCompactionTrigger,
+  ConversationEventKind,
   ConversationQuestionnaire,
   ConversationToolDetail,
   ConversationTurnMeta,
@@ -18,10 +20,12 @@ export interface ConversationEvent {
   id: string;
   /** Native protocols without item identity may expose a temporary live overlay. */
   ephemeral?: boolean;
-  kind: "user-message" | "agent-message" | "tool-summary";
+  kind: ConversationEventKind;
   turn_id?: string | null;
   message_phase?: "commentary" | "final_answer" | null;
   timestamp?: string;
+  /** Present on compaction boundaries. Unknown means the native record did not report a trigger. */
+  compaction_trigger?: ConversationCompactionTrigger;
   content?: string;
   tool_name?: string;
   tool_status?: string;

@@ -1,8 +1,7 @@
 import { REMOTE_ERROR_CODES } from "@agentkib/runtime-protocol";
 import type { BigIntStats } from "node:fs";
-import type { HistoryRecordKind } from "@agentkib/runtime-protocol";
+import type { DshBridgeDocumentPage, HistoryRecordKind } from "@agentkib/runtime-protocol";
 import type { CursorBridgeContext } from "./cursor-bridge";
-import type { DshSearchRecord } from "./agents/dsh/dsh-document";
 import type { SessionStore } from "./session-store";
 
 // Shared by persisted caches and source fingerprints. Bump when common redaction changes,
@@ -41,12 +40,9 @@ export interface HistorySourceInput {
   profiles: CursorBridgeContext["profile"][];
   identitySalt: string;
   openClawBinding?: OpenClawHistorySourceBinding;
-  /**
-   * A DeepSeek Harness session's records, read on the main thread from the running DSH; the
-   * search worker cannot reach it. Absent when DSH could not be read.
-   */
-  dsh?: { revision: string; records: DshSearchRecord[] };
 }
+/** A single page pulled from the running DSH. Null marks the end of the pinned snapshot. */
+export type ReadDshSearchPage = () => Promise<DshBridgeDocumentPage | null>;
 export interface HistorySourceRecord {
   recordId: string;
   ordinal: number;

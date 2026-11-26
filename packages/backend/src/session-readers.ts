@@ -26,6 +26,7 @@ import { ANTIGRAVITY_ACP_DISABLED, antigravityAcpEnabled } from "./agents/antigr
 import { CursorSessions } from "./cursor-sessions";
 import { CursorIdeSessions } from "./cursor-ide-sessions";
 import { DevinSessions } from "./agents/devin/devin-sessions";
+import type { NativeHistoryWork } from "./native-history-work";
 import type { CursorBridge } from "./cursor-bridge";
 import { readOpenClawSqliteDocument, readOpenClawSqliteEvents } from "./openclaw-sqlite-sessions";
 import { SessionPaging } from "./session-paging";
@@ -154,6 +155,7 @@ export class SessionReaders {
     readonly env: NodeJS.ProcessEnv,
     readonly cursorBridge: Pick<CursorBridge, "profiles">,
     readonly dsh?: DshSessionSource,
+    readonly nativeHistory?: NativeHistoryWork,
   ) {
     this.#subagents = new SessionSubagents(store.identitySalt());
     this.#codex = new CodexSessions(env, { retainDatabase: true });
@@ -172,6 +174,7 @@ export class SessionReaders {
       claude: this.#claude,
       antigravity: this.#antigravity,
       devin: this.#devin,
+      nativeHistory,
       dsh,
       paging: this.#paging,
       imageScope: (native, workspace) => this.#imageScope(native, workspace),
@@ -309,11 +312,20 @@ export class SessionReaders {
   antigravityControlExecutable(): string {
     return this.#antigravity.controlExecutable();
   }
-  devinSessionModel(nativeRef: string): string | null {
-    return this.#devin.model(nativeRef);
+  devinSessionModel(nativeRef: string) {
+    return this.nativeHistory
+      ? this.nativeHistory.read("devin-model", [this.#devin.database(), nativeRef])
+      : this.#devin.model(nativeRef);
   }
   devinLastContextInput(nativeRef: string, workspace: string, model: string) {
-    return this.#devin.lastContextInput(nativeRef, workspace, model);
+    return this.nativeHistory
+      ? this.nativeHistory.read("devin-lastContextInput", [
+          this.#devin.database(),
+          nativeRef,
+          workspace,
+          model,
+        ])
+      : this.#devin.lastContextInput(nativeRef, workspace, model);
   }
   antigravityReadHandoff(nativeRef: string) {
     return this.#antigravity.readHandoff(nativeRef);

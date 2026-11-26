@@ -27,6 +27,7 @@ import {
   type DshBridgeAgentPreset,
   type DshBridgeCommand,
   type DshBridgeCommandEntry,
+  type DshBridgeDocumentPage,
   type DshBridgeDocumentRecord,
   type DshBridgeHistoryPage,
   type DshBridgeHistoryRecord,
@@ -49,7 +50,13 @@ import {
   readUnknownManagedCommands,
 } from "../../managed-ledger";
 import { admitControlReceipt } from "../../sessions/control-receipts";
-import { dshSessionDocument, type DshDocumentImage } from "./dsh-document";
+import {
+  DSH_IMAGE_TYPES,
+  documentPageSchema,
+  dshSessionDocument,
+  historyImageSchema,
+  type DshDocumentImage,
+} from "./dsh-document";
 import type { DshManagedRuntime } from "./dsh-managed-runtime";
 import type { DshLocalTurnCheckpoint } from "./dsh-local-history";
 import type { DshWriterStatus } from "./dsh-writer";
@@ -493,7 +500,6 @@ const resultSchema = z
     error: z.string().max(256).optional(),
   })
   .strip();
-const IMAGE_TYPES = ["image/png", "image/jpeg", "image/webp", "image/gif"] as const;
 /** A message with attachments, as the Host's attachment store builds it for DSH. */
 const promptContentSchema = z
   .array(
@@ -513,7 +519,7 @@ const promptContentSchema = z
             .int()
             .positive()
             .max(25 * 1024 * 1024),
-          mediaType: z.enum(IMAGE_TYPES),
+          mediaType: z.enum(DSH_IMAGE_TYPES),
           name: z.string().min(1).max(255),
         })
         .strict(),
@@ -521,14 +527,6 @@ const promptContentSchema = z
   )
   .min(1)
   .max(32);
-/** One image a history record names; anything else is dropped rather than shown. */
-const historyImageSchema = z
-  .object({
-    attachmentId: z.string().regex(/^sha256:[a-f0-9]{64}$/),
-    mediaType: z.enum(IMAGE_TYPES),
-    name: z.string().max(255).nullable(),
-  })
-  .strip();
 const historyQuestionText = z.string().max(16 * 1024);
 const historyQuestionsSchema = z
   .array(
@@ -589,68 +587,6 @@ function historyQuestionnaire(value: unknown): ConversationQuestionnaire | undef
     })),
   };
 }
-const documentBase = {
-  seq: z.number().int().nonnegative(),
-  time: z.number().int().nonnegative().nullable(),
-  current: z.boolean(),
-  position: z.number().int().nonnegative().nullable(),
-  truncated: z.boolean(),
-};
-// The plugin's own bounds (`dsh-bridge-plugin/projection.js`).
-const documentText = z.string().max(256 * 1024);
-const documentPageSchema = z
-  .object({
-    sessionId: nativeIdSchema,
-    revision: z.number().int().nonnegative().nullable(),
-    records: z
-      .array(
-        z.discriminatedUnion("kind", [
-          z
-            .object({
-              ...documentBase,
-              kind: z.literal("user"),
-              text: documentText,
-              images: z.array(historyImageSchema).max(32),
-              files: z.number().int().nonnegative().max(1024),
-            })
-            .strip(),
-          z
-            .object({
-              ...documentBase,
-              kind: z.literal("assistant"),
-              text: documentText,
-              calls: z
-                .array(
-                  z
-                    .object({
-                      id: z.string().max(256),
-                      name: z.string().max(256),
-                      arguments: z.string().max(64 * 1024),
-                      truncated: z.boolean(),
-                    })
-                    .strip(),
-                )
-                .max(64),
-              reasoning: z.boolean(),
-            })
-            .strip(),
-          z
-            .object({
-              ...documentBase,
-              kind: z.literal("tool-result"),
-              callId: z.string().max(256),
-              isError: z.boolean(),
-              text: z.string().max(128 * 1024),
-              images: z.number().int().nonnegative().max(1024),
-            })
-            .strip(),
-          z.object({ ...documentBase, kind: z.literal("summary"), text: documentText }).strip(),
-        ]),
-      )
-      .max(100_000),
-    nextAfter: z.number().int().nonnegative().nullable(),
-  })
-  .strip();
 /** Pages of one conversation read for a handoff or search: at most 64 pages of 3 MiB. */
 const DOCUMENT_PAGE_LIMIT = 64;
 /** Images a handoff document carries inline; the rest are named as left in DSH. */
@@ -1669,10 +1605,11 @@ export class DshBridge {
     if (!page) {
       this.#servedOffline.add(nativeId);
       const cached = this.#pages.get(key);
-      if (cached) return cached.page;
+      if (cached && cursor !== null) return cached.page;
       const row = this.#catalog.get(nativeId);
       if (row) page = (await this.options.localHistory?.(nativeId, row.cwd, before, size)) ?? null;
       if (!page) {
+        if (cached) return cached.page;
         if (failure || cursor !== null) throw new Error(failure ?? "dsh-runtime-offline");
         return { events: [], next_cursor: null, warnings: [] };
       }
@@ -1813,13 +1750,10 @@ export class DshBridge {
    * A session's whole conversation for a handoff or search, from a DSH that can read it. Later
    * pages stop at the event the first one was read up to, so the pages agree with one another.
    */
-  async conversation(
-    nativeId: string,
-  ): Promise<{ revision: number | null; records: DshBridgeDocumentRecord[] }> {
+  async *documentPages(nativeId: string): AsyncGenerator<DshBridgeDocumentPage> {
     const preferred = this.#controlRuntime(nativeId);
     const runtime = preferred?.services.documents === true ? preferred : this.#readers(nativeId)[0];
     if (!runtime) throw new Error(this.documentStatus(nativeId).reason ?? "dsh-runtime-offline");
-    const records: DshBridgeDocumentRecord[] = [];
     let after: number | undefined;
     let through: number | undefined;
     for (let page = 0; page < DOCUMENT_PAGE_LIMIT; page++) {
@@ -1841,14 +1775,26 @@ export class DshBridge {
       const value = documentPageSchema.safeParse(result.value);
       if (!value.success || value.data.sessionId !== nativeId)
         throw new Error("dsh-document-unavailable");
-      records.push(...(value.data.records as DshBridgeDocumentRecord[]));
-      through ??= value.data.revision ?? undefined;
-      if (value.data.nextAfter === null) return { revision: through ?? null, records };
-      if (after !== undefined && value.data.nextAfter <= after)
+      const { nextAfter } = value.data;
+      if (nextAfter !== null && after !== undefined && nextAfter <= after)
         throw new Error("dsh-document-unavailable");
-      after = value.data.nextAfter;
+      through ??= value.data.revision ?? undefined;
+      yield { ...value.data, revision: through ?? null } as DshBridgeDocumentPage;
+      if (nextAfter === null) return;
+      after = nextAfter;
     }
     throw new Error("dsh-document-too-large");
+  }
+  async conversation(
+    nativeId: string,
+  ): Promise<{ revision: number | null; records: DshBridgeDocumentRecord[] }> {
+    let revision: number | null = null;
+    const records: DshBridgeDocumentRecord[] = [];
+    for await (const page of this.documentPages(nativeId)) {
+      revision = page.revision;
+      for (const record of page.records) records.push(record);
+    }
+    return { revision, records };
   }
   /**
    * A session as a handoff document. The images its user messages carried are read from DSH and

@@ -32,6 +32,7 @@ interface SessionExecutor {
   query(request: SessionQuery): Promise<unknown>;
   control(request: Record<string, unknown>): Promise<unknown>;
   contextUsage(sessionId: string): Promise<unknown>;
+  refreshWorkerUsageLimit?(sessionId: string): Promise<boolean>;
   queue?(request: Extract<SessionProviderRequest, { operation: "queue-list" }>): Promise<unknown>;
   readonly validateControl?: ProviderControlValidator;
   readonly typed?: TypedSessionProvider;

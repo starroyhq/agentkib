@@ -1,46 +1,30 @@
 import { AntigravitySessions } from "./antigravity-sessions";
-import { AntigravityLocalStore, type AntigravityLocalRecord } from "./antigravity-local-store";
-import { AntigravityLocalRuntime } from "./antigravity-local-runtime";
+import type { AntigravityLocalRecord } from "./antigravity-local-store";
+import {
+  PREFIX,
+  antigravityLocalRef,
+  parseRef,
+  preferLocalRecord,
+} from "./antigravity-local-history";
+import { AntigravityHistoryWorker } from "./antigravity-history-worker";
 import type { NativeSession } from "../../session-store";
-import type { NativeListing, SessionListingIssue } from "../../sessions/history-provider";
-import { pathIdentity } from "../../paths";
-import { readEventDocument } from "../../session-document-providers";
+import type { NativeListing } from "../../sessions/history-provider";
 import { ANTIGRAVITY_ACP_DISABLED, antigravityAcpEnabled } from "./acp-enabled";
 
-const PREFIX = "antigravity-local-v1-";
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-export function antigravityLocalRef(surface: "app" | "ide", id: string): string {
-  return `${PREFIX}${surface}-${id.toLowerCase()}`;
-}
-function parseRef(ref: string) {
-  const match =
-    /^antigravity-local-v1-(app|ide)-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/.exec(
-      ref,
-    );
-  if (!match) throw new Error("Invalid Antigravity local reference");
-  return { surface: match[1] as "app" | "ide", id: match[2]! };
-}
-/** Prefer more recent local metadata, then App when migration left equivalent copies. */
-function preferLocalRecord(record: AntigravityLocalRecord, previous?: AntigravityLocalRecord) {
-  if (!previous) return true;
-  const at = record.updated_at ? Date.parse(record.updated_at) : 0;
-  const previousAt = previous.updated_at ? Date.parse(previous.updated_at) : 0;
-  return at > previousAt || (at === previousAt && record.surface === "app");
-}
+export { antigravityLocalRef };
 
 export class AntigravityHistory {
   #acp: AntigravitySessions;
   #acpEnabled: boolean;
-  #local: AntigravityLocalStore;
-  #runtime: AntigravityLocalRuntime;
-  constructor(env: NodeJS.ProcessEnv) {
+  #history: AntigravityHistoryWorker;
+  constructor(env: NodeJS.ProcessEnv, options: { workerFilename?: string } = {}) {
     this.#acp = new AntigravitySessions(env);
     this.#acpEnabled = antigravityAcpEnabled(env);
-    this.#local = new AntigravityLocalStore(env);
-    this.#runtime = new AntigravityLocalRuntime(env);
+    this.#history = new AntigravityHistoryWorker(env, options.workerFilename);
   }
   close() {
     this.#acp.close();
+    return this.#history.close();
   }
   controlExecutable() {
     if (!this.#acpEnabled) throw new Error(ANTIGRAVITY_ACP_DISABLED);
@@ -61,58 +45,18 @@ export class AntigravityHistory {
         throw new Error("Antigravity local history cannot be exported as complete history");
       return this.#acp.readDocument(ref, source);
     }
-    const document = await readEventDocument(source, (cursor, count) =>
-      this.readEvents(ref, cursor, count, workspace),
-    );
+    const document = await this.#history.read("readDocument", [ref, source, workspace]);
     // App/IDE history exposes visible text. A source loss requires the ordinary import review.
     if (!document.losses.some(({ code }) => code === "source-content-truncated"))
       document.losses.push({ code: "source-content-truncated", count: 1 });
     return document;
   }
-  async #records(workspace: string) {
-    const listing = this.#local.list(workspace);
-    const issues: SessionListingIssue[] = [...(listing.issues ?? [])];
-    for (const surface of ["app", "ide"] as const) {
-      try {
-        const live = this.#runtime.available(surface);
-        if (!live) continue;
-        const native = await this.#runtime.list(surface);
-        listing.records = listing.records.filter((record) => {
-          if (record.surface !== surface) return true;
-          const current = native.filter((row) => row.id === record.id);
-          if (
-            current.length &&
-            !current.some((row) => pathIdentity(row.workspace) === pathIdentity(record.workspace))
-          )
-            return false;
-          record.availability = "readable";
-          return true;
-        });
-        const keys = new Set(
-          listing.records.map(
-            (record) => `${record.surface}:${record.id}:${pathIdentity(record.workspace)}`,
-          ),
-        );
-        for (const record of native)
-          if (
-            pathIdentity(record.workspace) === pathIdentity(workspace) &&
-            !keys.has(`${record.surface}:${record.id}:${pathIdentity(record.workspace)}`)
-          )
-            listing.records.push(record);
-      } catch {
-        listing.incomplete = true;
-        issues.push({ code: "antigravity-native-list", scope: "source", surface });
-      }
-    }
-    return { ...listing, issues };
-  }
   async list(workspace: string, matches?: (nativeRef: string) => boolean): Promise<NativeListing> {
-    const listing = await this.#records(workspace);
+    const listing = await this.#history.read("records", [workspace]);
     const unique = new Map<string, AntigravityLocalRecord>();
     for (const record of listing.records) {
-      const key = `${record.id}:${pathIdentity(record.workspace)}`;
-      const previous = unique.get(key);
-      if (preferLocalRecord(record, previous)) unique.set(key, record);
+      const previous = unique.get(record.id);
+      if (preferLocalRecord(record, previous)) unique.set(record.id, record);
     }
     const sessions: NativeSession[] = [...unique.values()].map((record) => ({
       native_ref: this.#localReference(record, matches),
@@ -171,50 +115,8 @@ export class AntigravityHistory {
     );
   }
   async readEvents(ref: string, cursor: string | null, limit: number, workspace?: string) {
-    const prefixed = ref.startsWith(PREFIX);
-    if (!prefixed && this.#acpEnabled) return this.#acp.readEvents(ref, cursor, limit);
-    if (!workspace) throw new Error("Antigravity local workspace is required");
-    if (!prefixed && !UUID.test(ref)) throw new Error(ANTIGRAVITY_ACP_DISABLED);
-    const identity = prefixed ? parseRef(ref) : { id: ref.toLowerCase(), surface: undefined };
-    let record: AntigravityLocalRecord | undefined;
-    for (const candidate of (await this.#records(workspace)).records) {
-      if (
-        candidate.id === identity.id &&
-        (!this.#acpEnabled || candidate.surface === identity.surface) &&
-        preferLocalRecord(candidate, record)
-      )
-        record = candidate;
-    }
-    if (!record)
-      throw new Error(
-        prefixed ? "Antigravity local session workspace changed" : ANTIGRAVITY_ACP_DISABLED,
-      );
-    const { surface, id } = record;
-    if (cursor?.startsWith("antigravity-local-v1-"))
-      return this.#local.events(surface, id, workspace, cursor, limit);
-    try {
-      const native = await this.#runtime.events(record, cursor, limit);
-      if (native) {
-        const stillOwned = (await this.#records(workspace)).records.some(
-          (row) => row.surface === surface && row.id === id,
-        );
-        if (!stillOwned) throw new Error("Antigravity local session workspace changed");
-        return native;
-      }
-      if (cursor) throw new Error("Antigravity native history snapshot is unavailable");
-    } catch {
-      // A failed native read never fabricates complete history. An existing cursor cannot change source.
-      if (
-        cursor ||
-        !this.#local
-          .list(workspace)
-          .records.some(
-            (value) =>
-              value.surface === surface && value.id === id && value.availability === "readable",
-          )
-      )
-        throw new Error("Antigravity native history could not be read");
-    }
-    return this.#local.events(surface, id, workspace, cursor, limit);
+    if (!ref.startsWith(PREFIX) && this.#acpEnabled)
+      return this.#acp.readEvents(ref, cursor, limit);
+    return this.#history.read("readEvents", [ref, cursor, limit, workspace, this.#acpEnabled]);
   }
 }

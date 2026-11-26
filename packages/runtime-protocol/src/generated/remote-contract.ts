@@ -112,6 +112,24 @@ export const REMOTE_CAPABILITIES = {
   ],
 } as const;
 
+export const REMOTE_CONVERSATION_EVENTS = {
+  userMessage: {
+    kind: "user-message",
+  },
+  agentMessage: {
+    kind: "agent-message",
+  },
+  toolSummary: {
+    kind: "tool-summary",
+  },
+  compactionBoundary: {
+    kind: "compaction-boundary",
+    timestampField: "timestamp",
+    triggerField: "compaction_trigger",
+    triggers: ["auto", "manual", "unknown"],
+  },
+} as const;
+
 export const REMOTE_HEADERS = {
   protocol: "X-AgentKib-Protocol",
 } as const;

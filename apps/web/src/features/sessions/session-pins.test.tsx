@@ -135,14 +135,19 @@ describe("session pins in the paired Web app", () => {
     expect(fixture.navigate).not.toHaveBeenCalled();
   });
 
-  it("disables pinning in both lists when the browser lacks organize permission", async () => {
+  it("disables pinning and the directory's management actions without organize permission", async () => {
     const { client, refresh } = setup(false);
     const user = userEvent.setup();
-    for (const group of [directory(), running()]) {
+    for (const [group, managementMenu] of [
+      [directory(), true],
+      [running(), false],
+    ] as const) {
       await user.click(rowMenu(group));
       const pin = await screen.findByRole("menuitem", { name: "Pin session" });
       expect(pin).toHaveAttribute("aria-disabled", "true");
-      expect(screen.queryByRole("menuitem", { name: copy.rename })).not.toBeInTheDocument();
+      const rename = screen.queryByRole("menuitem", { name: copy.rename });
+      if (managementMenu) expect(rename).toHaveAttribute("aria-disabled", "true");
+      else expect(rename).not.toBeInTheDocument();
       await user.click(pin);
       await user.keyboard("{Escape}");
     }

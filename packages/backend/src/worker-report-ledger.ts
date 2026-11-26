@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import type { WorkerReportPart, WorkerReportView } from "@agentkib/runtime-protocol";
-import { openManagedLedger, readManagedLedger } from "./managed-ledger";
+import { openManagedLedger, withManagedLedgerReader } from "./managed-ledger";
 import type { ReportDelivery } from "./report-delivery";
 
 type WorkerReportProof = {
@@ -132,7 +132,7 @@ export function anchorWorkerReportMessage(
   proof: WorkerReportProof,
 ): boolean {
   try {
-    const present = readManagedLedger(dataDir, (database) =>
+    const present = withManagedLedgerReader(dataDir, (database) =>
       database
         .prepare(
           "SELECT 1 FROM worker_report_messages WHERE session_id=? AND proof_type='request' AND proof_id=? LIMIT 1",
@@ -200,7 +200,7 @@ function projectItems(
     return cleaned;
   try {
     return (
-      readManagedLedger(dataDir, (database) => {
+      withManagedLedgerReader(dataDir, (database) => {
         if (
           !database
             .prepare("SELECT 1 FROM worker_report_deliveries WHERE session_id=? LIMIT 1")

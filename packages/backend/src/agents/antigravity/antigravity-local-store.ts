@@ -1,5 +1,6 @@
 import { REMOTE_ERROR_CODES } from "@agentkib/runtime-protocol";
 import { createHash } from "node:crypto";
+import { indexedAntigravityEntry, readIndexedAntigravityPage } from "./antigravity-indexed-page";
 import {
   closeSync,
   constants,
@@ -13,8 +14,7 @@ import { homedir } from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import type { ConversationEvent, ConversationEventPage } from "../../session-events";
-import { MAX_MESSAGE_BYTES, MAX_PAGE_BYTES, truncateUtf8 } from "../../session-events";
+import type { ConversationEventPage } from "../../session-events";
 import type { SessionListingIssue } from "../../sessions/history-provider";
 import { pathIdentity } from "../../paths";
 import { timestamp } from "../../timestamps";
@@ -189,12 +189,15 @@ function safeFile(root: string, relative: string, max = MAX_TOTAL): string | nul
   return current;
 }
 function boundedRead(root: string, relative: string): Buffer | null {
-  const file = safeFile(root, relative);
+  const file = safeFile(root, relative, MAX_METADATA);
   if (!file) return null;
-  const fd = openSync(file, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+  const fd = openSync(
+    file,
+    constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0),
+  );
   try {
     const stat = fstatSync(fd);
-    if (!stat.isFile() || stat.size > MAX_TOTAL)
+    if (!stat.isFile() || stat.size > MAX_METADATA)
       throw new Error("Antigravity summary exceeds limit");
     const bytes = Buffer.alloc(stat.size);
     let at = 0;
@@ -220,7 +223,18 @@ function openDatabase(root: string) {
   if (!!wal !== !!shm) throw new Error("Antigravity database sidecars are incomplete");
   // Opening a closed WAL database in ordinary read-only mode can create sidecars.
   // Keep normal locking for active writers so committed WAL entries are visible.
-  const closed = !wal && !journal ? lstatSync(file, { bigint: true }) : null;
+  const closed = !wal && !journal;
+  const version = () =>
+    [file, sidecar("-wal"), sidecar("-journal")]
+      .map((entry) => {
+        if (!entry) return "";
+        const info = lstatSync(entry, { bigint: true });
+        if (!info.isFile() || info.isSymbolicLink())
+          throw new Error("Unsafe Antigravity history file");
+        return [info.dev, info.ino, info.size, info.mtimeNs, info.ctimeNs].join(":");
+      })
+      .join("|");
+  const initial = version();
   const db = new DatabaseSync(closed ? `${pathToFileURL(file).href}?immutable=1` : file, {
     readOnly: true,
     timeout: 100,
@@ -229,18 +243,12 @@ function openDatabase(root: string) {
     db.exec("PRAGMA query_only=ON; BEGIN DEFERRED");
     return {
       db,
-      verify() {
-        if (!closed) return;
-        const current = lstatSync(file, { bigint: true });
+      version: initial,
+      verify(checkVersion = closed) {
         if (
-          current.dev !== closed.dev ||
-          current.ino !== closed.ino ||
-          current.size !== closed.size ||
-          current.mtimeNs !== closed.mtimeNs ||
-          current.ctimeNs !== closed.ctimeNs ||
-          sidecar("-wal") ||
-          sidecar("-shm") ||
-          sidecar("-journal")
+          checkVersion &&
+          (version() !== initial ||
+            (closed && (sidecar("-wal") || sidecar("-shm") || sidecar("-journal"))))
         )
           throw new Error("Antigravity database changed during read");
       },
@@ -307,11 +315,17 @@ function storageBytes(value: unknown): number {
 
 /** Offline search projections are partial history, never a writable/resumable native session. */
 export class AntigravityLocalStore {
-  constructor(readonly env: NodeJS.ProcessEnv = process.env) {}
+  constructor(
+    readonly env: NodeJS.ProcessEnv = process.env,
+    readonly observeProjectionBytes?: (bytes: number) => void,
+  ) {}
   #home() {
     return this.env.HOME ?? this.env.USERPROFILE ?? homedir();
   }
-  list(workspace?: string): {
+  list(
+    workspace?: string,
+    onlyId?: string,
+  ): {
     records: AntigravityLocalRecord[];
     incomplete: boolean;
     issues?: SessionListingIssue[];
@@ -361,9 +375,9 @@ export class AntigravityLocalStore {
           try {
             const rows = source.db
               .prepare(
-                `SELECT conversation_id,substr(title,1,512) AS title,substr(workspace_uris,1,${MAX_METADATA + 1}) AS workspace_uris,last_modified_time,substr(raw_summary,1,${MAX_METADATA + 1}) AS raw_summary FROM conversation_summaries LIMIT ${MAX_RECORDS + 1}`,
+                `SELECT conversation_id,substr(title,1,512) AS title,substr(workspace_uris,1,${MAX_METADATA + 1}) AS workspace_uris,last_modified_time,substr(raw_summary,1,${MAX_METADATA + 1}) AS raw_summary FROM conversation_summaries ${onlyId ? "WHERE conversation_id=?" : ""} LIMIT ${MAX_RECORDS + 1}`,
               )
-              .iterate();
+              .iterate(...(onlyId ? [onlyId] : []));
             const verified: Metadata[] = [];
             let bytes = 0,
               seen = 0;
@@ -389,7 +403,8 @@ export class AntigravityLocalStore {
       }
       const databaseIds = new Set(metadata.keys());
       try {
-        const summaryFile = boundedRead(root, "agyhub_summaries_proto.pb");
+        const summaryFile =
+          onlyId && metadata.has(onlyId) ? null : boundedRead(root, "agyhub_summaries_proto.pb");
         if (summaryFile) {
           // The map envelope may contain many individually bounded summary messages.
           for (const entry of fields(summaryFile)) {
@@ -406,6 +421,7 @@ export class AntigravityLocalStore {
               data = first(parts, 2);
               if (!key || !data) throw new Error("Invalid Antigravity summary map");
               id = nativeId(decoder.decode(key));
+              if (onlyId && id !== onlyId) continue;
               const value = protoMetadata(data, id);
               if (!metadata.has(value.id)) metadata.set(value.id, value);
             } catch {
@@ -441,10 +457,7 @@ export class AntigravityLocalStore {
             "SELECT name FROM sqlite_master WHERE type='table' AND name='conversations_fts'",
           )
           .get();
-        if (fts)
-          readableEntry = db?.prepare(
-            "SELECT 1 FROM conversations_fts WHERE conversation_id=? LIMIT 1",
-          );
+        if (db && fts) readableEntry = indexedAntigravityEntry(db);
       } catch {
         report(surface, "antigravity-database-source");
       }
@@ -499,15 +512,11 @@ export class AntigravityLocalStore {
   ): ConversationEventPage {
     if (!UUID.test(id) || !Number.isInteger(limit) || limit < 1 || limit > 500)
       throw new Error(REMOTE_ERROR_CODES.invalidRequestDetail);
-    const record = this.list(workspace).records.find(
-      (value) => value.surface === surface && value.id === id.toLowerCase(),
-    );
-    if (!record || record.availability !== "readable")
-      throw new Error("session-workspace-mismatch");
     const root = safeRoot(this.#home(), surface);
-    if (!root) throw new Error("session-unavailable");
+    if (!root || !safeFile(root, `conversations/${id.toLowerCase()}.pb`, 512 * 1024 * 1024))
+      throw new Error("session-workspace-mismatch");
     const source = openDatabase(root);
-    if (!source) throw new Error("session-unavailable");
+    if (!source) throw new Error("session-workspace-mismatch");
     const { db } = source;
     try {
       const proof = db
@@ -515,111 +524,23 @@ export class AntigravityLocalStore {
           `SELECT conversation_id,substr(title,1,512) AS title,substr(workspace_uris,1,${MAX_METADATA + 1}) AS workspace_uris,last_modified_time,substr(raw_summary,1,${MAX_METADATA + 1}) AS raw_summary FROM conversation_summaries WHERE conversation_id=?`,
         )
         .get(id);
+      const workspaceKey = pathIdentity(workspace);
       if (
         !proof ||
-        !databaseMetadata(proof).workspaces.some(
-          (value) => pathIdentity(value) === pathIdentity(workspace),
-        )
+        !databaseMetadata(proof).workspaces.some((value) => pathIdentity(value) === workspaceKey) ||
+        !indexedAntigravityEntry(db).get(id)
       )
         throw new Error("session-workspace-mismatch");
-      const rows = db
-        .prepare(
-          `SELECT chunk_index,chunk_first_step,chunk_last_step,substr(user_body,1,${MAX_METADATA + 1}) AS user_body,substr(agent_body,1,${MAX_METADATA + 1}) AS agent_body,substr(user_step_byte_offsets,1,${MAX_METADATA + 1}) AS user_step_byte_offsets,substr(agent_step_byte_offsets,1,${MAX_METADATA + 1}) AS agent_step_byte_offsets FROM conversations_fts WHERE conversation_id=? ORDER BY chunk_index LIMIT ${MAX_RECORDS + 1}`,
-        )
-        .iterate(id);
-      const events: Array<{ step: number; event: ConversationEvent }> = [];
-      const seen = new Set<number>(),
-        digest = createHash("sha256").update([surface, id, pathIdentity(workspace)].join("\0"));
-      let bytes = 0,
-        chunks = 0;
-      for (const row of rows) {
-        if (++chunks > MAX_RECORDS) throw new Error("Antigravity search index exceeds chunk limit");
-        digest.update(JSON.stringify(row));
-        for (const role of ["user", "agent"] as const) {
-          const body = blob(row[`${role}_body`]);
-          bytes += body.length;
-          if (bytes > MAX_TOTAL) throw new Error("Antigravity search projection exceeds limit");
-          if (!body.length) continue;
-          const offsets: unknown = JSON.parse(text(row[`${role}_step_byte_offsets`]));
-          if (!Array.isArray(offsets) || offsets.length > MAX_RECORDS)
-            throw new Error("Invalid Antigravity search offsets");
-          let previousStep = -1,
-            previousOffset = -1;
-          for (let index = 0; index < offsets.length; index++) {
-            const pair = offsets[index],
-              next = offsets[index + 1];
-            if (
-              !Array.isArray(pair) ||
-              pair.length !== 2 ||
-              pair.some((value) => !Number.isSafeInteger(value) || value < 0) ||
-              pair[0] <= previousStep ||
-              pair[1] <= previousOffset ||
-              pair[1] >= body.length ||
-              pair[0] < Number(row.chunk_first_step) ||
-              pair[0] > Number(row.chunk_last_step)
-            )
-              throw new Error("Invalid Antigravity search offsets");
-            const end =
-              next === undefined
-                ? body.length
-                : Array.isArray(next) && Number.isSafeInteger(next[1])
-                  ? next[1]
-                  : -1;
-            if (end <= pair[1] || end > body.length || seen.has(pair[0]))
-              throw new Error("Invalid Antigravity search order");
-            const content = decoder.decode(body.subarray(pair[1], end));
-            previousStep = pair[0];
-            previousOffset = pair[1];
-            seen.add(pair[0]);
-            if (!content.trim()) continue;
-            const truncated = truncateUtf8(content, MAX_MESSAGE_BYTES);
-            events.push({
-              step: pair[0],
-              event: {
-                id: `antigravity-local-${surface}-${id}-${pair[0]}`,
-                kind: role === "user" ? "user-message" : "agent-message",
-                timestamp: null,
-                content: truncated.content,
-                tool_name: null,
-                tool_status: null,
-                duration_ms: null,
-                attachment_count: 0,
-                truncated: truncated.truncated,
-              },
-            });
-            if (events.length > MAX_RECORDS)
-              throw new Error("Antigravity search projection exceeds event limit");
-          }
-        }
-      }
-      events.sort((a, b) => a.step - b.step);
-      const version = digest.digest("hex"),
-        prefix = `antigravity-local-v1-${version}-`;
-      let end = events.length;
-      if (cursor !== null) {
-        if (!cursor.startsWith(prefix) || !/^\d+$/.test(cursor.slice(prefix.length)))
-          throw new Error("Invalid Antigravity local cursor");
-        end = Number(cursor.slice(prefix.length));
-        if (!Number.isSafeInteger(end) || end < 0 || end > events.length)
-          throw new Error("Invalid Antigravity local cursor");
-      }
-      const selected: ConversationEvent[] = [];
-      let start = end,
-        size = 0;
-      while (start > 0 && selected.length < limit) {
-        const event = events[start - 1]!.event,
-          cost = Buffer.byteLength(event.content ?? "") + 256;
-        if (selected.length && size + cost > MAX_PAGE_BYTES) break;
-        selected.unshift(event);
-        size += cost;
-        start--;
-      }
-      source.verify();
-      return {
-        events: selected,
-        next_cursor: start ? `${prefix}${start}` : null,
-        warnings: ["history.warning.partial"],
-      };
+      const prefix = `antigravity-local-v1-${createHash("sha256")
+        .update([surface, id, workspaceKey, source.version].join("\0"))
+        .digest("hex")}-`;
+      const page = readIndexedAntigravityPage(
+        db,
+        { id, surface, prefix, cursor, limit },
+        this.observeProjectionBytes,
+      );
+      source.verify(true);
+      return page;
     } finally {
       db.close();
     }

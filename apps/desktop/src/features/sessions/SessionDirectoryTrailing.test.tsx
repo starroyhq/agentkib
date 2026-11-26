@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { readStateCopy, sessionContinuationCopy } from "@agentkib/session-ui";
@@ -15,6 +15,7 @@ import { sessionCopy } from "./conversation/session-copy";
 const { client, select, changed, deleted } = vi.hoisted(() => ({
   client: {
     sessionCapabilities: vi.fn(),
+    codexResumeCommand: vi.fn().mockResolvedValue({ available: false }),
     access: vi.fn(),
     live: vi.fn(),
     sessionAction: vi.fn(),
@@ -64,15 +65,21 @@ function Row({
   session,
   sessions = [session],
   local = true,
+  selected = false,
 }: {
   session: ConversationSessionSummary;
   sessions?: ConversationSessionSummary[];
   local?: boolean;
+  selected?: boolean;
 }) {
   return (
     <AppDialogProvider>
-      <div className="session-directory-row group/session">
-        <button type="button" onClick={() => select(session.id)}>
+      <div className="session-directory-row group/session" data-session-menu-row>
+        <button
+          type="button"
+          aria-current={selected ? "page" : undefined}
+          onClick={() => select(session.id)}
+        >
           <SessionDirectoryEntry session={session} sessions={sessions} hideIndicators />
         </button>
         <SessionDirectoryTrailing
@@ -175,13 +182,13 @@ describe("the desktop directory's shared trailing status slot", () => {
   it.each([
     { agent: "codex", local: false },
     { agent: "opencode", local: true },
-  ] as const)("retains unread without offering a menu for %j", ({ agent, local }) => {
+  ] as const)("retains unread and allows copying the session ID for %j", ({ agent, local }) => {
     const view = render(<Row session={summary({ agent, readState: unread })} local={local} />);
     const slot = view.container.querySelector(".session-directory-trailing")!;
-    expect(slot).not.toHaveAttribute("data-has-menu");
+    expect(slot).toHaveAttribute("data-has-menu", "true");
     expect(slot).toHaveAttribute("data-has-indicator", "true");
     expect(visualIndicator(view.container).querySelector("[data-unread]")).not.toBeNull();
-    expect(screen.queryByRole("button", { name: sessionCopy["en-US"].rowMenu })).toBeNull();
+    expect(screen.getByRole("button", { name: sessionCopy["en-US"].rowMenu })).toBeInTheDocument();
   });
 
   it("falls back to runtime state when there is no unread result or worktree", () => {
@@ -195,6 +202,35 @@ describe("the desktop directory's shared trailing status slot", () => {
       sessionContinuationCopy("en-US").running,
     );
   });
+
+  it("keeps the running indicator and opens the selected row's menu on right click", async () => {
+    const view = render(
+      <Row
+        session={summary({ continuation: { status: "running", executionLocation: "agentkib" } })}
+        selected
+      />,
+    );
+    const entry = screen.getByRole("button", { name: /^Synthetic session/, current: "page" });
+    expect(visualIndicator(view.container).querySelector(".animate-spin")).toBeInTheDocument();
+    expect(fireEvent.contextMenu(entry, { clientX: 91, clientY: 57 })).toBe(false);
+    expect(await screen.findByRole("menu")).toBeVisible();
+    expect(screen.getByRole("menuitem", { name: sessionCopy["en-US"].rename })).toBeVisible();
+    expect(select).not.toHaveBeenCalled();
+  });
+
+  it.each(["{Shift>}{F10}{/Shift}", "{ContextMenu}"])(
+    "opens the focused row's menu with %s without selecting it",
+    async (shortcut) => {
+      const user = userEvent.setup();
+      render(<Row session={summary()} />);
+      await user.tab();
+      const entry = screen.getByRole("button", { name: /^Synthetic session/ });
+      expect(entry).toHaveFocus();
+      await user.keyboard(shortcut);
+      expect(await screen.findByRole("menu")).toBeVisible();
+      expect(select).not.toHaveBeenCalled();
+    },
+  );
 
   it("allows a keyboard user to open an empty slot's menu without selecting the session", async () => {
     const user = userEvent.setup();

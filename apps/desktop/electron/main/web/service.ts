@@ -8898,9 +8898,11 @@ export class WebAccessService {
         ? undefined
         : this.field(url.searchParams.get("sessionId"));
     const localEvents = trustedLocal && path === REMOTE_ROUTE.events;
+    // Live polling and streams read through the write admission without changing access checks.
+    const liveRead = path === REMOTE_ROUTE.live;
     const streamWorkspaceId =
       sessionId && !localEvents && this.isFullAccess(this.grant(hash))
-        ? await this.codexScope(sessionId, hash, path === REMOTE_ROUTE.stream, false)
+        ? await this.codexScope(sessionId, hash, liveRead || path === REMOTE_ROUTE.stream, false)
         : undefined;
     if (path === REMOTE_ROUTE.stream) {
       if (
@@ -9334,7 +9336,7 @@ export class WebAccessService {
       if (cursor && cursor.length > 1024)
         throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.invalidCursor);
       params = { operation: "events", sessionId, cursor, limit };
-    } else if (path === REMOTE_ROUTE.live)
+    } else if (liveRead)
       params = {
         operation: "live",
         sessionId,
@@ -9361,14 +9363,11 @@ export class WebAccessService {
           await this.codexScope(sessionId!, hash, false, false);
           result = await this.runtime(params);
         }
-      } else if (path === REMOTE_ROUTE.catalog) {
-        result = await this.runtime(
-          params,
-          undefined,
-          false,
-          REMOTE_ERROR_CODES.catalogReadTimeout,
-        );
-      } else result = await this.runtime(params);
+      } else {
+        const readTimeout =
+          path === REMOTE_ROUTE.catalog ? REMOTE_ERROR_CODES.catalogReadTimeout : undefined;
+        result = await this.runtime(params, undefined, liveRead, readTimeout);
+      }
     } catch (error) {
       if (path === REMOTE_ROUTE.catalog || (path === REMOTE_ROUTE.events && params.cursor)) {
         this.grant(hash);
@@ -9409,8 +9408,8 @@ export class WebAccessService {
       };
       this.grant(hash);
     }
-    if (path === REMOTE_ROUTE.live) {
-      result = await this.projectLive(sessionId, result, device);
+    if (liveRead) {
+      result = await this.projectLive(sessionId, result, device, true);
       if (device !== this.grant(hash) || readerScope !== this.readerScope())
         throw new HttpError(
           REMOTE_ERROR_CONTRACT.accessChanged.http.overrides.accessRevokedDuringRequest,

@@ -1148,6 +1148,7 @@ export class DevinSessionProvider implements DevinExecutor, TypedSessionProvider
           (request.effort !== undefined || request.serviceTier !== undefined)
         ) {
           const catalog = await this.#readCatalog();
+          const nativeModel = await this.host.sessions.devinSessionModel(nativeId);
           if (
             this.#runners.get(request.sessionId) !== record ||
             !runner.canStageSettings ||
@@ -1158,7 +1159,7 @@ export class DevinSessionProvider implements DevinExecutor, TypedSessionProvider
             request,
             catalog,
             record.settings,
-            this.host.sessions.devinSessionModel(nativeId),
+            nativeModel,
             runner.modelControls,
           );
         } else if (!request.resetDefaults) {
@@ -1368,9 +1369,9 @@ export class DevinSessionProvider implements DevinExecutor, TypedSessionProvider
     }
     const catalog = await this.#readCatalog();
     const options = devinModelOptions(catalog, record.runner.modelControls);
+    const { nativeId, workspace } = record.runner;
+    const nativeModel = nativeId ? await this.host.sessions.devinSessionModel(nativeId) : null;
     const live = record.runner.snapshot();
-    const nativeId = record.runner.nativeId;
-    const nativeModel = nativeId ? this.host.sessions.devinSessionModel(nativeId) : null;
     const project = (settings: Readonly<DevinTurnSettings>) => {
       const selectedModel = settings.model ?? nativeModel;
       const previous = devinSelectedVariant(catalog, selectedModel, nativeModel);
@@ -1412,7 +1413,6 @@ export class DevinSessionProvider implements DevinExecutor, TypedSessionProvider
     };
     const selected = project(record.settings);
     const confirmed = record.runner.runningSettings ?? record.runner.lastSettings;
-    const current = confirmed ? project(confirmed) : selected;
     const capacity = selected.maxContextTokens;
     const historicalUsage =
       nativeId &&
@@ -1420,14 +1420,14 @@ export class DevinSessionProvider implements DevinExecutor, TypedSessionProvider
       selected.variantId === nativeModel &&
       capacity !== undefined &&
       live.status === "idle"
-        ? this.host.sessions.devinLastContextInput(nativeId, record.runner.workspace, nativeModel)
+        ? await this.host.sessions.devinLastContextInput(nativeId, workspace, nativeModel)
         : undefined;
     const mutable = record.runner.canStageSettings;
     return {
       available: true,
       executionMode: DEVIN_EXECUTION_MODE,
       revision: live.revision,
-      current,
+      current: confirmed ? project(confirmed) : selected,
       selected,
       settings: selected,
       defaults: { model: null, effort: null, permissionMode: DEVIN_DEFAULT_PERMISSION_MODE },

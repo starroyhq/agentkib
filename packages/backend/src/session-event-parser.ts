@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import {
+  REMOTE_CONVERSATION_EVENTS,
   sessionProviderDeclaration,
   type ConversationQuestionnaire,
   type ConversationTurnMeta,
@@ -15,6 +16,7 @@ import {
   type NormalizedToolCall,
   type ToolContext,
 } from "./conversation-tools";
+import { compactionBoundaryEvent } from "./session-compaction-boundary";
 import { jsonTimestamp } from "./session-history";
 import { codexErrorText, codexTurnErrorEvent } from "./agents/codex/codex-turn-error";
 import { codexTurnEndEvent } from "./agents/codex/codex-turn-end";
@@ -504,6 +506,14 @@ function openCall(state: EventState, key: string, turn: string | null): void {
   while (state.openCalls.size > MAX_OPEN_CALLS)
     state.openCalls.delete(state.openCalls.keys().next().value!);
 }
+function rememberItemRow(state: EventState, id: string): boolean {
+  const key = hash(id);
+  if (state.itemRows.has(key)) return false;
+  state.itemRows.add(key);
+  while (state.itemRows.size > MAX_ITEM_ROWS)
+    state.itemRows.delete(state.itemRows.keys().next().value!);
+  return true;
+}
 function itemMilliseconds(value: unknown): number | null {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : null;
 }
@@ -537,11 +547,7 @@ function codexItem(
   }
   const rowId =
     itemId && Buffer.byteLength(itemId) <= 200 ? `codex-item:${itemId}` : `tool-${offset}-0`;
-  const rowKey = hash(rowId);
-  if (state.itemRows.has(rowKey)) return;
-  state.itemRows.add(rowKey);
-  while (state.itemRows.size > MAX_ITEM_ROWS)
-    state.itemRows.delete(state.itemRows.values().next().value!);
+  if (!rememberItemRow(state, rowId)) return;
   if (turn !== null) {
     let wrapper: string | undefined;
     let count = 0;
@@ -591,19 +597,14 @@ function turnEnd(payload: any, outcome: ConversationTurnMeta["outcome"]): Conver
   return meta;
 }
 /** Attach a pending turn end to the turn's last item, the first one read after it. */
-function attachTurnMeta(state: EventState, from: number, row: any): void {
+function attachTurnMeta(state: EventState, from: number): void {
   const pending = state.turnMeta;
   if (!pending) return;
   for (let index = from; index < state.pending.length; index++) {
     const event = state.pending[index]!;
+    if (event.kind === REMOTE_CONVERSATION_EVENTS.compactionBoundary.kind) continue;
     if (state.format === "claude-code") {
       // Claude records the duration after the turn's final reply.
-      if (event.kind === "user-message") {
-        // Input inserted into a running turn does not stop the search for its reply.
-        if (row?.type === "attachment" || agentKibTurnMessage(row)) continue;
-        state.turnMeta = null;
-        return;
-      }
       if (event.kind !== "agent-message") continue;
     } else if (pending.turn) {
       if (event.turn_id && event.turn_id !== pending.turn) {
@@ -625,7 +626,8 @@ function applyTurn(state: EventState, page: ConversationEvent[], turn: string): 
     state.associationWarning = true;
     return;
   }
-  for (const event of events) event.turn_id ??= turn;
+  for (const event of events)
+    if (event.kind !== REMOTE_CONVERSATION_EVENTS.compactionBoundary.kind) event.turn_id ??= turn;
 }
 function boundary(
   state: EventState,
@@ -677,7 +679,7 @@ function injected(content: any): boolean {
     )
   );
 }
-/** A user row AgentKib's Claude Code plugin appended into a running turn, as the person's. */
+/** Text-only user row written by bridge versions that set `isMeta`. */
 function agentKibTurnMessage(row: any): boolean {
   return (
     row?.type === "user" &&
@@ -688,10 +690,37 @@ function agentKibTurnMessage(row: any): boolean {
     row.message.content.every((block: any) => block?.type === "text")
   );
 }
+function claudeCommandMarkup(text: string): boolean {
+  return ["<local-command-", "<command-name>", "<command-message>"].some((prefix) =>
+    text.replace(/^\p{White_Space}+/u, "").startsWith(prefix),
+  );
+}
+
+/** User prompts and local commands open turns. Mid-turn inputs and tool results do not. */
+function claudeTurnStart(row: any, offset: number): string | undefined {
+  if (row?.isSidechain || row?.isCompactSummary || (row?.isMeta && !agentKibTurnMessage(row)))
+    return undefined;
+  const id = () => normalizedTurn(row.uuid) ?? normalizedTurn(row.message?.id) ?? `event-${offset}`;
+  if (row.type === "system" && row.subtype === "local_command") {
+    const text = claudeLocalCommandText(row);
+    const command = claudeCommandInvocation(text) ?? text.trim();
+    return command.startsWith("/") ? id() : undefined;
+  }
+  if (row.type !== "user" || (row.message?.role && row.message.role !== "user")) return undefined;
+  const content = row.message?.content;
+  const blocks = Array.isArray(content) ? content : [];
+  if (blocks.some((block) => block?.type === "tool_result")) return undefined;
+  const text = messageText(content);
+  const attachments = blocks.some((block) => block?.type === "image" || block?.type === "document");
+  if (text && claudeCommandOutput(text) !== null) return undefined;
+  if (hasText(text) && (claudeCommandInvocation(text) || !claudeCommandMarkup(text))) return id();
+  return attachments ? id() : undefined;
+}
 const codexEvents = new Set([
   "task_started",
   "task_complete",
   "turn_aborted",
+  "context_compacted",
   "item_completed",
   "user_message",
   "agent_message",
@@ -732,6 +761,8 @@ type HistoryRules = {
   payloadTypes?: ReadonlyMap<string, ReadonlySet<string>>;
   include(row: any): boolean;
   turnStart(row: any, offset: number): string | number | undefined;
+  /** Visible items between anchors inherit the ID of the older, opening record. */
+  groupByOpeningRecord?: true;
 };
 
 export const nativeHistoryRules: Partial<Record<HistoryFormat, HistoryRules>> = {
@@ -750,20 +781,8 @@ export const nativeHistoryRules: Partial<Record<HistoryFormat, HistoryRules>> = 
   "claude-code": {
     types: claudeHistoryTypes,
     include: (row) => claudeHistoryTypes.has(row?.type),
-    turnStart: (row, offset) => {
-      if (
-        row.type !== "user" ||
-        row.isSidechain ||
-        row.isCompactSummary ||
-        (row.isMeta && !agentKibTurnMessage(row))
-      )
-        return undefined;
-      const content = row.message?.content;
-      return typeof content === "string" ||
-        (Array.isArray(content) && content.some((block) => block?.type !== "tool_result"))
-        ? (stringValue(row.uuid) ?? offset)
-        : undefined;
-    },
+    turnStart: claudeTurnStart,
+    groupByOpeningRecord: true,
   },
 };
 
@@ -785,10 +804,35 @@ export function parseEventRecord(
   page: ConversationEvent[],
   images: ConversationImage[] = [],
   endOffset?: number,
-): void {
+): string | number | undefined {
+  const rules = nativeHistoryRules[state.format];
+  const start = rules?.turnStart(row, offset);
   const from = state.pending.length;
   parseRecord(state, offset, row, page, images, endOffset);
-  attachTurnMeta(state, from, row);
+  if (rules?.groupByOpeningRecord && row.isSidechain === true) {
+    // A visible branch in the same file cannot borrow a main-thread opener.
+    if (state.pending.length > from) state.turnRangeStart = page.length + state.pending.length;
+    return start;
+  } else if (rules?.groupByOpeningRecord && typeof start === "string") {
+    // In reverse order the turn is proven only after reaching its opening row.
+    // Index the page and pending queue as one range, so a page cut is not a turn cut.
+    for (let index = state.turnRangeStart; index < page.length; index++) {
+      const event = page[index]!;
+      if (event.kind !== REMOTE_CONVERSATION_EVENTS.compactionBoundary.kind) event.turn_id = start;
+    }
+    for (
+      let index = Math.max(0, state.turnRangeStart - page.length);
+      index < state.pending.length;
+      index++
+    ) {
+      const event = state.pending[index]!;
+      if (event.kind !== REMOTE_CONVERSATION_EVENTS.compactionBoundary.kind) event.turn_id = start;
+    }
+    state.turnRangeStart = page.length + state.pending.length;
+    state.turnMeta = null;
+  }
+  attachTurnMeta(state, from);
+  return start;
 }
 function parseRecord(
   state: EventState,
@@ -824,7 +868,24 @@ function parseRecord(
         );
       return;
     }
+    if (row?.type === "system" && row?.subtype === "compact_boundary") {
+      if (row.isSidechain !== true) {
+        const uuid = stringValue(row.uuid);
+        const id = uuid && claudeMessageIdPattern.test(uuid) ? uuid : offset;
+        state.pending.push(
+          compactionBoundaryEvent(
+            `claude-compaction:${id}`,
+            timestamp,
+            row.compactMetadata?.trigger,
+          ),
+        );
+      }
+      return;
+    }
     if (row?.type === "system" && row?.subtype === "turn_duration") {
+      if (row.isSidechain || row.isCompactSummary || row.isMeta) return;
+      // Unassigned records newer than this end marker cannot belong to its turn.
+      state.turnRangeStart = page.length + state.pending.length;
       state.turnMeta = { turn: null, meta: turnEnd(row, "completed") };
       return;
     }
@@ -979,14 +1040,10 @@ function parseRecord(
     const attachments = Array.isArray(content)
       ? content.filter((block) => ["image", "document"].includes(block?.type)).length
       : 0;
-    const hiddenCommand = (text: string) =>
-      ["<local-command-", "<command-name>", "<command-message>"].some((prefix) =>
-        text.replace(/^\p{White_Space}+/u, "").startsWith(prefix),
-      );
     const text = messageText(content);
     // The CLI's own assistant text, such as an API error, names this model.
     const synthetic = kind === "agent-message" && row?.message?.model === "<synthetic>";
-    if (kind === "agent-message" && Array.isArray(content) && !hiddenCommand(text ?? "")) {
+    if (kind === "agent-message" && Array.isArray(content) && !claudeCommandMarkup(text ?? "")) {
       for (let index = content.length - 1; index >= 0; index--) {
         const block = content[index];
         if (
@@ -994,7 +1051,7 @@ function parseRecord(
           typeof block.text !== "string"
         )
           continue;
-        if (!hasText(block.text) || hiddenCommand(block.text)) continue;
+        if (!hasText(block.text) || claudeCommandMarkup(block.text)) continue;
         const pendingCount = state.pending.length;
         message(
           state,
@@ -1039,7 +1096,7 @@ function parseRecord(
       } else if (
         output === null &&
         (hasText(text) || (!hiddenMeta && !attachedToAnswer && images.length > 0)) &&
-        !hiddenCommand(text ?? "")
+        !claudeCommandMarkup(text ?? "")
       ) {
         const from = state.pending.length;
         message(
@@ -1063,7 +1120,7 @@ function parseRecord(
       images.length &&
       kind === "agent-message" &&
       Array.isArray(content) &&
-      !hiddenCommand(text ?? "")
+      !claudeCommandMarkup(text ?? "")
     ) {
       const first = [...rowEvents]
         .sort((a, b) => a.index - b.index)
@@ -1124,7 +1181,22 @@ function parseRecord(
     boundary(state, "complete", turn, page);
     return;
   }
+  // The two Codex history modes persist different completion markers. Both also
+  // write a separate `compacted` checkpoint containing the replacement history.
+  if (row?.type === "event_msg" && payload?.type === "context_compacted") {
+    state.pending.push(compactionBoundaryEvent(`codex-compaction-at:${offset}`, timestamp));
+    return;
+  }
   if (row?.type === "event_msg" && payload?.type === "item_completed") {
+    if (payload.item?.type === "ContextCompaction") {
+      const nativeId = stringValue(payload.item.id);
+      const id =
+        nativeId && Buffer.byteLength(nativeId) <= 200
+          ? `codex-compaction:${nativeId}`
+          : `codex-compaction-at:${offset}`;
+      if (rememberItemRow(state, id)) state.pending.push(compactionBoundaryEvent(id, timestamp));
+      return;
+    }
     codexItem(state, offset, payload, timestamp, normalizedTurn(payload.turn_id) ?? turn);
     return;
   }

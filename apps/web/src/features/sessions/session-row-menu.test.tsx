@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError, type ConversationSessionSummary } from "@agentkib/web-client";
 import { SessionRowMenu } from "@/features/conversation/features/catalog/session-row-menu";
@@ -51,7 +51,9 @@ describe("a session row's menu in the browser", () => {
   it("deletes after confirming and drops the row at once", async () => {
     features({ delete: { available: true } });
     render(<SessionRowMenu session={summary("codex")} />);
-    openMenu();
+    await act(async () => {
+      openMenu();
+    });
     fireEvent.click(await screen.findByRole("menuitem", { name: copy.delete }));
     expect(await screen.findByRole("dialog", { name: copy.deleteTitle })).toHaveTextContent(
       copy.deleteCodexDetail,
@@ -87,7 +89,9 @@ describe("a session row's menu in the browser", () => {
     features({ [scenario.action]: { available: true } });
     client.sessionAction.mockRejectedValueOnce(new ApiError(409, scenario.code, "not-dispatched"));
     render(<SessionRowMenu session={summary("codex")} />);
-    openMenu();
+    await act(async () => {
+      openMenu();
+    });
     fireEvent.click(await screen.findByRole("menuitem", { name: scenario.menuLabel }));
     const dialog = await screen.findByRole("dialog", { name: scenario.title });
     const submit = within(dialog).getByRole("button", { name: scenario.confirmLabel });
@@ -169,5 +173,34 @@ describe("a session row's menu in the browser", () => {
     // A button inside the row's button would be invalid and unreachable.
     expect(menu.parentElement?.closest("button")).toBeNull();
     expect(menu.parentElement?.querySelectorAll(":scope > button")).toHaveLength(2);
+  });
+
+  it("opens the same read-only menu on right click and from the keyboard", async () => {
+    const onSelect = vi.fn();
+    render(
+      <SessionCatalog
+        sessions={[summary("codex")]}
+        workspaces={[{ id: "workspace", name: "Workspace", path: "/synthetic" }]}
+        selected=""
+        onSelect={onSelect}
+        locale="en-US"
+        rowMenu={(row) => <SessionRowMenu session={row} sidebar />}
+      />,
+    );
+    const row = screen.getByRole("button", { name: /Synthetic session/ });
+    expect(fireEvent.contextMenu(row, { clientX: 91, clientY: 57 })).toBe(false);
+    const menu = screen.getByRole("menu");
+    expect(within(menu).getByRole("menuitem", { name: copy.rename })).toHaveAttribute(
+      "aria-disabled",
+      "true",
+    );
+    expect(
+      within(menu).getByRole("menuitem", { name: /Copy AgentKib session ID/ }),
+    ).toBeInTheDocument();
+    fireEvent.keyDown(menu, { key: "Escape" });
+    fireEvent.keyDown(row, { key: "F10", shiftKey: true });
+    expect(screen.getByRole("menu")).toBeInTheDocument();
+    expect(onSelect).not.toHaveBeenCalled();
+    expect(client.sessionCapabilities).not.toHaveBeenCalled();
   });
 });

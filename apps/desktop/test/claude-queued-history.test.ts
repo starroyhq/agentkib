@@ -5,6 +5,11 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { claudeWorkerHistoryTurns } from "../../../packages/backend/src/agents/claude/claude-worker-turns";
 import { SessionPaging } from "../../../packages/backend/src/session-paging";
+import {
+  bindWorkerReportMessage,
+  projectWorkerReports,
+  rememberWorkerReport,
+} from "../../../packages/backend/src/worker-report-ledger";
 
 const roots: string[] = [];
 afterEach(() => {
@@ -88,11 +93,7 @@ const bridgeNote = {
   renderedRole: "system",
   rendered: `<system-reminder>${body}</system-reminder>`,
 };
-// Claude 2.1.311 recorded the same plugin call as a meta user row.
-const bridgeUser = prompt(4, [{ type: "text", text: body }], {
-  isMeta: true,
-  origin: { kind: "plugin", name: "agentkib-bridge" },
-});
+const bridgeOrigin = { kind: "plugin", name: "agentkib-bridge" };
 
 function transcript(...records: unknown[]) {
   const directory = mkdtempSync(path.join(tmpdir(), "agentkib-claude-queued-history-"));
@@ -107,7 +108,6 @@ describe("Claude queued user messages in persisted history", () => {
     ["terminal input", terminal, [enqueue, remove], []],
     ["managed SDK input", managed, [enqueue], [remove]],
     ["terminal bridge note", bridgeNote, [], []],
-    ["older terminal bridge input", bridgeUser, [], []],
   ])("reads %s once in place across history pages and reopens", (_, interrupt, before, after) => {
     const file = transcript(
       prompt(1, "Run the checks."),
@@ -130,6 +130,9 @@ describe("Claude queued user messages in persisted history", () => {
       { id: id(5), kind: "agent-message", content: "The exit status was zero." },
     ];
     expect([...older.events, ...latest.events]).toMatchObject(expected);
+    expect([...older.events, ...latest.events].map(({ turn_id }) => turn_id)).toEqual(
+      expected.map(() => id(1)),
+    );
     expect(new SessionPaging().read(file, null, 10, "claude-code").events).toMatchObject(expected);
     expect(claudeWorkerHistoryTurns(file, sessionId)).toEqual([
       {
@@ -226,5 +229,81 @@ describe("Claude queued user messages in persisted history", () => {
       kind: "user-message",
       content: body,
     });
+  });
+
+  it.each([
+    ["older", { isMeta: true, origin: bridgeOrigin }],
+    ["current", { origin: { ...bridgeOrigin, asUser: true } }],
+  ])("starts a separate turn for the %s bridge report", (_, metadata) => {
+    const reportId = id(101);
+    const text = "[AgentKib report] Worker finished the checks.";
+    const nativeText = `${text}\n\n[AgentKib report ID: ${reportId}]`;
+    const part = {
+      kind: "turn-ended" as const,
+      workerSessionId: id(102),
+      workerName: "fixture-worker",
+      agent: "codex",
+      occurredAt: row(3).timestamp,
+      outcome: "completed" as const,
+      requiresUser: false,
+      reply: "All checks passed.",
+    };
+    const file = transcript(
+      prompt(1, nativeText),
+      reply(2, "Starting the checks."),
+      prompt(3, [{ type: "text", text: nativeText }], metadata),
+      {
+        ...row(4),
+        type: "system",
+        subtype: "compact_boundary",
+        compactMetadata: { trigger: "auto" },
+      },
+      reply(5, "I received the Worker report."),
+      { ...row(6), type: "system", subtype: "turn_duration", durationMs: 3_000 },
+    );
+    const dataDir = path.dirname(file);
+    rememberWorkerReport(dataDir, sessionId, { reportId, text, parts: [{ text, meta: part }] });
+    bindWorkerReportMessage(
+      dataDir,
+      sessionId,
+      { type: "native-message", id: id(3) },
+      [reportId],
+      nativeText,
+    );
+    const paging = new SessionPaging();
+    const latest = paging.read(file, null, 1, "claude-code");
+    expect(latest.next_cursor).toBeTruthy();
+    const older = paging.read(file, latest.next_cursor, 4, "claude-code");
+    const expected = [
+      { id: id(1), kind: "user-message", content: nativeText, turn_id: id(1) },
+      { id: id(2), kind: "agent-message", turn_id: id(1) },
+      {
+        id: id(3),
+        kind: "user-message",
+        content: nativeText,
+        turn_id: id(3),
+        worker_reports: { reportId, parts: [part] },
+      },
+      { id: `claude-compaction:${id(4)}`, kind: "compaction-boundary", compaction_trigger: "auto" },
+      {
+        id: id(5),
+        kind: "agent-message",
+        content: "I received the Worker report.",
+        turn_id: id(3),
+        turn_meta: { outcome: "completed", duration_ms: 3_000 },
+      },
+    ];
+    for (const events of [
+      [...older.events, ...latest.events],
+      new SessionPaging().read(file, null, 10, "claude-code").events,
+    ]) {
+      const projected = projectWorkerReports(dataDir, sessionId, { events }).events;
+      expect(projected).toMatchObject(expected);
+      expect(projected.filter((event) => event.worker_reports).map(({ id }) => id)).toEqual([
+        id(3),
+      ]);
+      expect(projected[3]).not.toHaveProperty("turn_id");
+      expect(projected[3]).not.toHaveProperty("turn_meta");
+    }
   });
 });

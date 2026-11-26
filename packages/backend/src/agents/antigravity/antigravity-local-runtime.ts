@@ -5,8 +5,8 @@ import {
   fstatSync,
   lstatSync,
   openSync,
-  readFileSync,
-  readdirSync,
+  opendirSync,
+  readSync,
 } from "node:fs";
 import { request } from "node:http";
 import { homedir } from "node:os";
@@ -19,6 +19,7 @@ import type { AntigravityLocalRecord } from "./antigravity-local-store";
 import { timestamp } from "../../timestamps";
 
 const MAX_RESPONSE = 32 * 1024 * 1024;
+const MAX_DAEMON_METADATA = 16_384;
 const ROOTS = { app: "antigravity", ide: "antigravity-ide" } as const;
 type Endpoint = { pid: number; port: number; csrf: string };
 const object = (v: unknown): Record<string, unknown> =>
@@ -40,21 +41,43 @@ export class AntigravityLocalRuntime {
         throw new Error("Antigravity runtime metadata is unavailable");
       }
     }
-    const entries = readdirSync(daemon).filter((name) => /^ls_[a-zA-Z0-9_-]+\.json$/.test(name));
+    const entries: string[] = [];
+    const directory = opendirSync(daemon);
+    try {
+      let scanned = 0;
+      for (let entry = directory.readSync(); entry; entry = directory.readSync()) {
+        if (++scanned > 2_048 || entries.length > 32)
+          throw new Error("Antigravity runtime metadata exceeds limit");
+        if (/^ls_[a-zA-Z0-9_-]+\.json$/.test(entry.name)) entries.push(entry.name);
+      }
+    } finally {
+      directory.closeSync();
+    }
     if (entries.length > 32) throw new Error("Antigravity runtime metadata exceeds limit");
     const live: Endpoint[] = [];
     for (const name of entries) {
       let fd: number | undefined;
       try {
-        fd = openSync(path.join(daemon, name), constants.O_RDONLY | constants.O_NOFOLLOW);
+        fd = openSync(
+          path.join(daemon, name),
+          constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0),
+        );
         const stat = fstatSync(fd);
         if (
           !stat.isFile() ||
-          stat.size > 16_384 ||
+          stat.size > MAX_DAEMON_METADATA ||
           (process.getuid && stat.uid !== process.getuid())
         )
           throw new Error("Invalid Antigravity daemon metadata");
-        const data = object(JSON.parse(readFileSync(fd, "utf8")));
+        const bytes = Buffer.alloc(MAX_DAEMON_METADATA + 1);
+        let size = 0;
+        while (size < bytes.length) {
+          const count = readSync(fd, bytes, size, bytes.length - size, size);
+          if (!count) break;
+          size += count;
+        }
+        if (size !== stat.size) throw new Error("Antigravity daemon metadata changed during read");
+        const data = object(JSON.parse(bytes.toString("utf8", 0, size)));
         if (
           !Number.isSafeInteger(data.pid) ||
           Number(data.pid) <= 0 ||
@@ -163,6 +186,23 @@ export class AntigravityLocalRuntime {
       limit > 100
     )
       throw new Error("Invalid Antigravity history request");
+    const snapshot = await this.#snapshot(record);
+    return snapshot
+      ? antigravityNativePage(snapshot.value, record.id, cursor, limit, snapshot.scope)
+      : null;
+  }
+
+  async documentEvents(record: AntigravityLocalRecord): Promise<ConversationEventPage | null> {
+    const snapshot = await this.#snapshot(record);
+    if (!snapshot) return null;
+    return {
+      events: [...antigravityNativeEvents(snapshot.value, record.id)],
+      next_cursor: null,
+      warnings: ["history.warning.partial"],
+    };
+  }
+
+  async #snapshot(record: AntigravityLocalRecord) {
     const endpoint = this.#endpoint(record.surface);
     if (!endpoint) return null;
     const verifyWorkspace = async () => {
@@ -181,14 +221,14 @@ export class AntigravityLocalRuntime {
     });
     this.#listCache.clear();
     await verifyWorkspace();
-    return antigravityNativePage(
+    return {
       value,
-      record.id,
-      cursor,
-      limit,
-      [record.surface, pathIdentity(record.workspace), endpoint.pid, endpoint.port].join("\0"),
-    );
+      scope: [record.surface, pathIdentity(record.workspace), endpoint.pid, endpoint.port].join(
+        "\0",
+      ),
+    };
   }
+
   async #request(
     surface: "app" | "ide",
     endpoint: Endpoint,
@@ -222,17 +262,35 @@ export class AntigravityLocalRuntime {
               response.destroy(new Error("Antigravity native history is unavailable"));
               return;
             }
-            const chunks: Buffer[] = [];
+            const length = Number(response.headers["content-length"]);
+            if (length > MAX_RESPONSE) {
+              response.destroy(new Error("Antigravity native history exceeds limit"));
+              return;
+            }
+            // Allocate known responses once. Chunked responses grow from a small buffer
+            // so an unframed catalog does not reserve the full history limit.
+            const knownLength = Number.isSafeInteger(length) && length >= 0;
+            const capacity = knownLength ? length : MAX_RESPONSE;
+            let data: Buffer | undefined;
             let bytes = 0;
             response.on("data", (chunk: Buffer) => {
-              bytes += chunk.length;
-              if (bytes > MAX_RESPONSE) {
+              const end = bytes + chunk.length;
+              if (end > capacity) {
                 response.destroy(new Error("Antigravity native history exceeds limit"));
                 return;
               }
-              chunks.push(chunk);
+              if (!data || end > data.length) {
+                const size = data ? data.length * 2 : 64 * 1024;
+                const next = Buffer.allocUnsafe(
+                  knownLength ? capacity : Math.min(capacity, Math.max(size, end)),
+                );
+                data?.copy(next, 0, 0, bytes);
+                data = next;
+              }
+              chunk.copy(data, bytes);
+              bytes = end;
             });
-            response.on("end", () => resolve(Buffer.concat(chunks, bytes)));
+            response.on("end", () => resolve(data?.subarray(0, bytes) ?? Buffer.alloc(0)));
           },
         );
         req.on("error", reject);
@@ -256,21 +314,14 @@ export class AntigravityLocalRuntime {
   }
 }
 
-/** Parse only verified user-visible fields; never expose planner thinking or execute tool records. */
-export function antigravityNativePage(
-  value: unknown,
-  id: string,
-  cursor: string | null,
-  limit: number,
-  scope = id,
-): ConversationEventPage {
+/** Project verified user-visible fields; planner thinking and commands stay native. */
+function* antigravityNativeEvents(value: unknown, id: string): Generator<ConversationEvent> {
   if (value === null || typeof value !== "object" || Array.isArray(value))
     throw new Error("Invalid Antigravity native history");
   const data = object(value);
   if (!Object.keys(data).length) data.steps = [];
   if (!Array.isArray(data.steps) || data.steps.length > 100_000)
     throw new Error("Invalid Antigravity native history");
-  const events: ConversationEvent[] = [];
   for (const [index, raw] of data.steps.entries()) {
     const step = object(raw),
       metadata = object(step.metadata);
@@ -295,7 +346,7 @@ export function antigravityNativePage(
       typeof metadata.createdAt === "string" && timestamp(metadata.createdAt) !== null
         ? metadata.createdAt
         : null;
-    events.push({
+    yield {
       id: `antigravity-native-${id}-${index}`,
       kind,
       timestamp: time,
@@ -304,36 +355,45 @@ export function antigravityNativePage(
       tool_status: null,
       duration_ms: null,
       attachment_count: 0,
-    });
+    };
   }
-  const revision = createHash("sha256")
-    .update(scope)
-    .update("\0")
-    .update(JSON.stringify(events))
-    .digest("hex")
-    .slice(0, 24);
-  let end = events.length;
-  if (cursor !== null) {
-    const match = /^antigravity-local-native-v1-([a-f0-9]{24})-(\d+)$/.exec(cursor);
-    if (
-      !match ||
-      match[1] !== revision ||
-      !Number.isSafeInteger(Number(match[2])) ||
-      Number(match[2]) > end
-    )
-      throw new Error("Invalid Antigravity native history cursor");
-    end = Number(match[2]);
+}
+
+export function antigravityNativePage(
+  value: unknown,
+  id: string,
+  cursor: string | null,
+  limit: number,
+  scope = id,
+): ConversationEventPage {
+  const match =
+    cursor !== null ? /^antigravity-local-native-v1-([a-f0-9]{24})-(\d+)$/.exec(cursor) : null;
+  if (cursor !== null && (!match || !Number.isSafeInteger(Number(match[2]))))
+    throw new Error("Invalid Antigravity native history cursor");
+  const end = match ? Number(match[2]) : Infinity;
+  const digest = createHash("sha256").update(scope).update("\0[");
+  const selected: { event: ConversationEvent; bytes: number }[] = [];
+  let count = 0,
+    retainedBytes = 0,
+    start = 0;
+  for (const event of antigravityNativeEvents(value, id)) {
+    const json = JSON.stringify(event);
+    if (count) digest.update(",");
+    digest.update(json);
+    if (count++ >= end) continue;
+    const bytes = Buffer.byteLength(json);
+    selected.push({ event, bytes });
+    retainedBytes += bytes;
+    while (selected.length > limit || retainedBytes > MAX_PAGE_BYTES) {
+      retainedBytes -= selected.shift()!.bytes;
+      start++;
+    }
   }
-  let start = end,
-    bytes = 0;
-  while (start > 0 && end - start < limit) {
-    const size = Buffer.byteLength(JSON.stringify(events[start - 1]));
-    if (bytes + size > MAX_PAGE_BYTES) break;
-    bytes += size;
-    start--;
-  }
+  const revision = digest.update("]").digest("hex").slice(0, 24);
+  if (match && (match[1] !== revision || end > count))
+    throw new Error("Invalid Antigravity native history cursor");
   return {
-    events: events.slice(start, end),
+    events: selected.map(({ event }) => event),
     next_cursor: start ? `antigravity-local-native-v1-${revision}-${start}` : null,
     warnings: ["history.warning.partial"],
   };

@@ -23,6 +23,8 @@ import {
 import { SessionReaders } from "./session-readers";
 import { sessionIdentity, type NativeSession, type SessionStore } from "./session-store";
 import type { DocumentOptions, SessionDocument } from "./session-model";
+import { DevinSessions } from "./agents/devin/devin-sessions";
+import { readVerifiedDshHistory } from "./agents/dsh/dsh-local-readers";
 
 type Profile = CursorBridgeContext["profile"];
 type Source = {
@@ -42,7 +44,27 @@ type CursorRead = {
   expected?: SessionDocument;
   exact?: boolean;
 };
-type Tasks = {
+type DevinRead =
+  | "list"
+  | "events"
+  | "image"
+  | "document"
+  | "subagents"
+  | "subagentEvents"
+  | "activitySubagents"
+  | "model"
+  | "lastContextInput";
+type DevinTasks = {
+  [K in DevinRead as `devin-${K}`]: [
+    [filename: string, ...args: Parameters<DevinSessions[K]>],
+    ReturnType<DevinSessions[K]>,
+  ];
+};
+type Tasks = DevinTasks & {
+  "dsh-history": [
+    Parameters<typeof readVerifiedDshHistory>,
+    Awaited<ReturnType<typeof readVerifiedDshHistory>>,
+  ];
   "cursor-plan": [Parameters<typeof validateCursorPlan>, ReturnType<typeof validateCursorPlan>];
   "cursor-recovery": [
     Parameters<typeof loadCursorRecoveryPlan>,
@@ -100,6 +122,12 @@ export type HandoffReadKind = keyof Tasks;
 export type HandoffReadInput<K extends HandoffReadKind> = Tasks[K][0];
 export type HandoffReadOutput<K extends HandoffReadKind> = Tasks[K][1];
 
+let devin: DevinSessions | undefined;
+function devinReader(filename: string): DevinSessions {
+  if (devin?.database() !== filename) devin = new DevinSessions({}, filename);
+  return devin!;
+}
+
 export function cursorReader(profiles: Profile[], workspace: string): CursorIdeSessions {
   return new CursorIdeSessions({
     profiles: (requested) => {
@@ -144,6 +172,54 @@ export async function executeHandoffRead<K extends HandoffReadKind>(
 ): Promise<HandoffReadOutput<K>> {
   let value: unknown;
   switch (kind) {
+    case "dsh-history":
+      value = await readVerifiedDshHistory(...(input as Tasks["dsh-history"][0]));
+      break;
+    case "devin-list": {
+      const [filename, ...args] = input as Tasks["devin-list"][0];
+      value = devinReader(filename).list(...args);
+      break;
+    }
+    case "devin-events": {
+      const [filename, ...args] = input as Tasks["devin-events"][0];
+      value = devinReader(filename).events(...args);
+      break;
+    }
+    case "devin-image": {
+      const [filename, ...args] = input as Tasks["devin-image"][0];
+      value = devinReader(filename).image(...args);
+      break;
+    }
+    case "devin-document": {
+      const [filename, ...args] = input as Tasks["devin-document"][0];
+      value = devinReader(filename).document(...args);
+      break;
+    }
+    case "devin-activitySubagents": {
+      const [filename, ...args] = input as Tasks["devin-activitySubagents"][0];
+      value = devinReader(filename).activitySubagents(...args);
+      break;
+    }
+    case "devin-subagents": {
+      const [filename, ...args] = input as Tasks["devin-subagents"][0];
+      value = devinReader(filename).subagents(...args);
+      break;
+    }
+    case "devin-subagentEvents": {
+      const [filename, ...args] = input as Tasks["devin-subagentEvents"][0];
+      value = devinReader(filename).subagentEvents(...args);
+      break;
+    }
+    case "devin-model": {
+      const [filename, ...args] = input as Tasks["devin-model"][0];
+      value = devinReader(filename).model(...args);
+      break;
+    }
+    case "devin-lastContextInput": {
+      const [filename, ...args] = input as Tasks["devin-lastContextInput"][0];
+      value = devinReader(filename).lastContextInput(...args);
+      break;
+    }
     case "cursor-plan":
       value = validateCursorPlan(...(input as Tasks["cursor-plan"][0]));
       break;

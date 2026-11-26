@@ -19,6 +19,7 @@ import {
   readHistorySearchSource,
   sanitizeHistorySourceText,
   type HistorySourceInput,
+  type HistorySourceOptions,
   type HistorySourceRecord,
 } from "../../../packages/backend/src/history-search-source";
 import * as sourceIdentity from "../../../packages/backend/src/history-search-source-identity";
@@ -112,11 +113,15 @@ function fixture(agent: NativeSession["agent"], nativeRef = "synthetic-native") 
     });
   const write = (values: unknown[]) =>
     writeFileSync(file, values.map((value) => JSON.stringify(value)).join("\n") + "\n");
-  const read = async () => {
+  const read = async (options?: HistorySourceOptions) => {
     const records: HistorySourceRecord[] = [];
-    const result = await readHistorySearchSource(input, (record) => {
-      records.push(record);
-    });
+    const result = await readHistorySearchSource(
+      input,
+      (record) => {
+        records.push(record);
+      },
+      options,
+    );
     return { ...result, records };
   };
   return { root, project, native, input, file, resolve, write, read };
@@ -181,41 +186,53 @@ describe("complete history search source extraction", () => {
     },
   );
 
-  it("indexes the DeepSeek Harness records read on the main thread from the running DSH", async () => {
+  it("projects a pinned DSH snapshot across pages in the search worker", async () => {
     const f = fixture("deepseek-harness", "session-dsh");
     // Without them the worker cannot reach DSH, and the indexed generation stays.
     await expect(f.read()).rejects.toThrow("history-source-unavailable");
     const secret = "sk-ant-api03-" + "s".repeat(40);
-    f.input.dsh = {
-      revision: "7",
-      records: [
-        {
-          recordId: "dsh:1:text",
-          kind: "user",
-          toolName: null,
-          timestamp,
-          content: `find ${secret}`,
-          truncated: false,
-        },
-        {
-          recordId: "call:c-1:input",
-          kind: "tool-input",
-          toolName: "bash",
-          timestamp,
-          content: '{"cmd":"ls"}',
-          truncated: false,
-        },
-        {
-          recordId: "call:c-1:output",
-          kind: "tool-output",
-          toolName: "bash",
-          timestamp,
-          content: "listing",
-          truncated: true,
-        },
-      ],
+    const base = { time: Date.parse(timestamp), current: true, position: 0, truncated: false };
+    const call = { id: "c-1", name: "bash", arguments: '{"cmd":"ls"}', truncated: false };
+    const pages = [
+      {
+        sessionId: "session-dsh",
+        revision: 7,
+        nextAfter: 2,
+        records: [
+          { ...base, seq: 1, kind: "user" as const, text: `find ${secret}`, images: [], files: 0 },
+          {
+            ...base,
+            seq: 2,
+            kind: "assistant" as const,
+            text: "",
+            reasoning: false,
+            calls: [call],
+          },
+        ],
+      },
+      {
+        sessionId: "session-dsh",
+        revision: 7,
+        nextAfter: null,
+        records: [
+          {
+            ...base,
+            seq: 3,
+            kind: "tool-result" as const,
+            callId: "c-1",
+            text: "listing",
+            isError: false,
+            truncated: true,
+            images: 0,
+          },
+        ],
+      },
+    ];
+    const read = (available = pages) => {
+      let at = 0;
+      return f.read({ readDshPage: async () => available[at++] ?? null });
     };
-    const result = await f.read();
+    const result = await read();
     expect(result.records.map((record) => [record.kind, record.toolName])).toEqual([
       ["user", null],
       ["tool-input", "bash"],
@@ -224,9 +241,10 @@ describe("complete history search source extraction", () => {
     expect(result.records[0]!.content).not.toContain(secret);
     expect(result).toMatchObject({ limitations: ["source-record-limit"], status: "partial" });
     // The revision follows what was read, not only DSH's own counter.
-    expect((await f.read()).sourceRevision).toBe(result.sourceRevision);
-    f.input.dsh.records[1]!.content = '{"cmd":"pwd"}';
-    expect((await f.read()).sourceRevision).not.toBe(result.sourceRevision);
+    expect((await read()).sourceRevision).toBe(result.sourceRevision);
+    call.arguments = '{"cmd":"pwd"}';
+    expect((await read()).sourceRevision).not.toBe(result.sourceRevision);
+    await expect(read(pages.slice(0, 1))).rejects.toThrow("history-source-unavailable");
   });
 
   it("keeps the native linked-JSONL ownership fallback explicit when SQL metadata has no cwd", async () => {
@@ -954,6 +972,26 @@ describe("complete history search source extraction", () => {
       expect(contents).toEqual(expected);
     },
   );
+
+  it.each([
+    ["hermes", 1],
+    ["grok-build", 1],
+    ["codex", 2],
+    ["claude-code", 2],
+    ["open-claw", 2],
+  ] as const)("walks %s JSONL %i times when building a snapshot", async (format, scans) => {
+    const f = fixture("codex");
+    f.write([{ type: "session" }]);
+    const stamp = vi.fn();
+    await readJsonlSearchSource(f.file, format, {
+      emit: async () => {},
+      checkpoint: () => {},
+      fingerprint: () => {},
+      limit: () => {},
+      stamp,
+    });
+    expect(stamp).toHaveBeenCalledTimes(scans);
+  });
 
   it("retains literal command-like bodies through Hermes native SQL discovery and complete source reading", async () => {
     const f = hermesFixture();

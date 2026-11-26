@@ -11,7 +11,6 @@ import {
 import type { BackendStore } from "./store";
 import type { CursorBridge } from "./cursor-bridge";
 import type { DshBridge } from "./agents/dsh/dsh-bridge";
-import { dshSearchRecords } from "./agents/dsh/dsh-document";
 import { resolveWorkspaceIdentity } from "./workspace-identity";
 import { readPreferences, writePreference } from "./preferences";
 import { HistorySearchWorker } from "./history-search-worker";
@@ -34,7 +33,7 @@ type Entry = { session: SearchSession; source: HistorySourceInput };
 /** The running DSH, which content search reads DSH sessions from. */
 export type DshSearchSource = Pick<
   DshBridge,
-  "nativeId" | "documentStatus" | "conversation" | "running"
+  "nativeId" | "documentStatus" | "documentPages" | "running"
 >;
 const reads = new Set<string>([
   HISTORY_SEARCH_METHODS.query,
@@ -279,19 +278,25 @@ export class HistorySearch {
           continue;
         }
         const dsh =
-          entry.session.agent === "deepseek-harness" ? await this.#dshRecords(entry, forced) : null;
+          entry.session.agent === "deepseek-harness" ? this.#dshPages(entry, forced) : null;
         if (dsh === "unchanged" || !this.#current(entry, epoch)) continue;
         try {
           const result = (await writer.request(
             "index",
             {
               ...entry,
-              source: dsh ? { ...entry.source, dsh: dsh.records } : entry.source,
               force: forced,
             },
             {
               signal: controller.signal,
               verify: () => this.#current(entry, epoch),
+              readDshPage: dsh
+                ? async () => {
+                    if (!this.#current(entry, epoch))
+                      throw new Error(REMOTE_ERROR_CODES.historySourceStale);
+                    return (await dsh.pages.next()).value ?? null;
+                  }
+                : undefined,
             },
           )) as { rebuilt?: boolean } | undefined;
           if (this.#current(entry, epoch)) {
@@ -306,9 +311,12 @@ export class HistorySearch {
           // A full cache answers without reading anything, so only other failures wait.
           if (!(error instanceof Error && error.message === "history-search-budget-exceeded"))
             this.#pace(id);
+        } finally {
+          if (dsh) void dsh.pages.return(undefined).catch(() => {});
         }
       }
       for (const id of this.#paced.keys()) if (!entries.has(id)) this.#paced.delete(id);
+      for (const id of this.#dshIndexed.keys()) if (!entries.has(id)) this.#dshIndexed.delete(id);
       this.#passedAt = Date.now();
       if (this.#wake) clearTimeout(this.#wake);
       this.#wake = undefined;
@@ -347,12 +355,7 @@ export class HistorySearch {
    * change, and the turn's end reports one more. One no DSH can read now is indexed without
    * records, which keeps what was indexed before and reports it unavailable.
    */
-  async #dshRecords(
-    entry: Entry,
-    force: boolean,
-  ): Promise<
-    "unchanged" | { key: string; records: NonNullable<HistorySourceInput["dsh"]> } | null
-  > {
+  #dshPages(entry: Entry, force: boolean) {
     const { summary } = entry.source;
     const key = JSON.stringify([summary.updated_at, summary.title, summary.archived]);
     if (!force && this.#dshIndexed.get(entry.session.sessionId) === key) return "unchanged";
@@ -360,12 +363,7 @@ export class HistorySearch {
     const nativeId = dsh?.nativeId(entry.session.sessionId);
     if (!dsh || !nativeId || dsh.documentStatus(nativeId).status !== "supported") return null;
     if (dsh.running(nativeId)) return "unchanged";
-    try {
-      const { revision, records } = await dsh.conversation(nativeId);
-      return { key, records: { revision: String(revision), records: dshSearchRecords(records) } };
-    } catch {
-      return null;
-    }
+    return { key, pages: dsh.documentPages(nativeId) };
   }
   /** Immediately fences results and in-flight publications; physical deletion is serialized. */
   invalidate(): void {

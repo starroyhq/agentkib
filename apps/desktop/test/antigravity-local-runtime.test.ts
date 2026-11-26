@@ -3,6 +3,11 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync } from "node
 import os from "node:os";
 import path from "node:path";
 import * as http from "node:http";
+import { pathToFileURL } from "node:url";
+import {
+  AntigravityHistory,
+  antigravityLocalRef,
+} from "../../../packages/backend/src/agents/antigravity/antigravity-history";
 import {
   AntigravityLocalRuntime,
   antigravityNativePage,
@@ -141,6 +146,56 @@ describe("Antigravity native read-only history", () => {
     const home = mkdtempSync(path.join(os.tmpdir(), "antigravity-offline-"));
     dispose.push(() => rmSync(home, { recursive: true, force: true }));
     expect(new AntigravityLocalRuntime({ HOME: home }).available("app")).toBe(false);
+  });
+  it("uses one verified daemon snapshot to import more than one page", async () => {
+    let trajectoryReads = 0;
+    const visible = Array.from({ length: 125 }, (_, step) => ({
+      type: step % 2 ? "CORTEX_STEP_TYPE_USER_INPUT" : "CORTEX_STEP_TYPE_PLANNER_RESPONSE",
+      userInput: { userResponse: `prompt ${step}` },
+      plannerResponse: { response: `answer ${step}`, thinking: "PRIVATE THINKING" },
+    }));
+    let workspace: string;
+    const f = await fixture((req, res) => {
+      if (req.url?.endsWith("GetAllCascadeTrajectories")) {
+        res.end(
+          JSON.stringify({
+            trajectorySummaries: {
+              [id]: { workspaces: [{ workspaceFolderAbsoluteUri: pathToFileURL(workspace).href }] },
+            },
+          }),
+        );
+        return;
+      }
+      trajectoryReads++;
+      res.end(JSON.stringify({ steps: visible }));
+    });
+    workspace = path.join(f.home, "workspace");
+    mkdirSync(workspace);
+    const history = new AntigravityHistory(
+      { HOME: f.home },
+      { workerFilename: path.resolve("dist-electron/backend-antigravity-history.cjs") },
+    );
+    try {
+      const result = await history.readDocument(
+        antigravityLocalRef("app", id),
+        {
+          workspace_id: "fixture",
+          agent: "antigravity",
+          title: "Fixture",
+          created_at: null,
+          updated_at: null,
+          git_branch: null,
+        },
+        workspace,
+      );
+      expect(trajectoryReads).toBe(1);
+      expect(result.turns).toHaveLength(125);
+      expect(result.turns[0]?.blocks).toEqual([{ type: "text", text: "answer 0" }]);
+      expect(result.turns.at(-1)?.blocks).toEqual([{ type: "text", text: "answer 124" }]);
+      expect(JSON.stringify(result)).not.toContain("PRIVATE THINKING");
+    } finally {
+      await history.close();
+    }
   });
   it.skipIf(!setGlobalProxyFromEnv)(
     "connects directly to the native daemon even when Node has an HTTP proxy",

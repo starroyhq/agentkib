@@ -1,9 +1,17 @@
 import { createInterface } from "node:readline";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { TypeScriptBackend, quitWorkDecisionSchema } from "@agentkib/backend";
 import { initializeLocalRuntimeDiagnostics } from "@agentkib/backend/local-runtime-activity";
 import { serveLocalRuntime } from "@agentkib/backend/local-runtime-service";
 import { BACKEND_INITIALIZE } from "@agentkib/backend/migration";
+import { NativeHistoryWork } from "@agentkib/backend/native-history-work";
 import { RUNTIME_METHODS } from "./generated/runtime-protocol";
+
+const nativeHistoryWorkerFilename = path.join(
+  path.dirname(fileURLToPath(import.meta.url)),
+  "backend-handoff-read.cjs",
+);
 
 if (process.argv[2] === "--local-runtime") {
   void startLocalService(process.argv[3], process.argv[4]).catch((error: unknown) => {
@@ -22,7 +30,13 @@ export async function startLocalService(
   environment = process.env,
 ) {
   if (!root || !dataDir || process.parentPort) throw new Error("Invalid local runtime arguments");
-  const service = await serveLocalRuntime(root, dataDir, environment);
+  const service = await serveLocalRuntime(
+    root,
+    dataDir,
+    environment,
+    undefined,
+    new NativeHistoryWork(nativeHistoryWorkerFilename),
+  );
   function stop() {
     void service.close().catch(() => {
       process.exitCode = 1;
@@ -41,7 +55,11 @@ function sendNotification(method: string, params: unknown): void {
 }
 
 function startAttachedBackend() {
-  const backend = new TypeScriptBackend(process.env, sendNotification);
+  const backend = new TypeScriptBackend(
+    process.env,
+    sendNotification,
+    new NativeHistoryWork(nativeHistoryWorkerFilename),
+  );
   let diagnostics: ReturnType<typeof initializeLocalRuntimeDiagnostics>;
   const pending = new Set<Promise<void>>();
   /** "Backend is closing" replies still being written. */

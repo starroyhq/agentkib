@@ -1,6 +1,79 @@
+import { z } from "zod";
 import type { DshBridgeDocumentRecord, HistoryRecordKind } from "@agentkib/runtime-protocol";
 import { finishDocument, type DocumentSource } from "../../session-document-providers";
 import type { DocumentOptions, SessionDocument } from "../../session-model";
+
+export const DSH_IMAGE_TYPES = ["image/png", "image/jpeg", "image/webp", "image/gif"] as const;
+/** One image a history record names; anything else is dropped rather than shown. */
+export const historyImageSchema = z
+  .object({
+    attachmentId: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+    mediaType: z.enum(DSH_IMAGE_TYPES),
+    name: z.string().max(255).nullable(),
+  })
+  .strip();
+const documentBase = {
+  seq: z.number().int().nonnegative(),
+  time: z.number().int().nonnegative().nullable(),
+  current: z.boolean(),
+  position: z.number().int().nonnegative().nullable(),
+  truncated: z.boolean(),
+};
+// The plugin's own bounds (`dsh-bridge-plugin/projection.js`).
+const documentText = z.string().max(256 * 1024);
+export const documentPageSchema = z
+  .object({
+    sessionId: z.string().min(1).max(256),
+    revision: z.number().int().nonnegative().nullable(),
+    records: z
+      .array(
+        z.discriminatedUnion("kind", [
+          z
+            .object({
+              ...documentBase,
+              kind: z.literal("user"),
+              text: documentText,
+              images: z.array(historyImageSchema).max(32),
+              files: z.number().int().nonnegative().max(1024),
+            })
+            .strip(),
+          z
+            .object({
+              ...documentBase,
+              kind: z.literal("assistant"),
+              text: documentText,
+              calls: z
+                .array(
+                  z
+                    .object({
+                      id: z.string().max(256),
+                      name: z.string().max(256),
+                      arguments: z.string().max(64 * 1024),
+                      truncated: z.boolean(),
+                    })
+                    .strip(),
+                )
+                .max(64),
+              reasoning: z.boolean(),
+            })
+            .strip(),
+          z
+            .object({
+              ...documentBase,
+              kind: z.literal("tool-result"),
+              callId: z.string().max(256),
+              isError: z.boolean(),
+              text: z.string().max(128 * 1024),
+              images: z.number().int().nonnegative().max(1024),
+            })
+            .strip(),
+          z.object({ ...documentBase, kind: z.literal("summary"), text: documentText }).strip(),
+        ]),
+      )
+      .max(100_000),
+    nextAfter: z.number().int().nonnegative().nullable(),
+  })
+  .strip();
 
 type Turn = SessionDocument["turns"][number];
 type LossCode = SessionDocument["losses"][number]["code"];
@@ -158,8 +231,10 @@ export interface DshSearchRecord {
  * log, as AgentKib's conversation view shows them, including history a compaction replaced.
  * Compaction summaries are DSH's, not the conversation's, and are left out.
  */
-export function dshSearchRecords(records: DshBridgeDocumentRecord[]): DshSearchRecord[] {
-  const names = new Map<string, string>();
+export function dshSearchRecords(
+  records: DshBridgeDocumentRecord[],
+  names = new Map<string, string>(),
+): DshSearchRecord[] {
   const out: DshSearchRecord[] = [];
   const add = (record: Omit<DshSearchRecord, "truncated">, truncated: boolean) => {
     if (record.content.trim()) out.push({ ...record, truncated });
@@ -182,7 +257,7 @@ export function dshSearchRecords(records: DshBridgeDocumentRecord[]): DshSearchR
         if (record.kind === "assistant")
           for (const [index, call] of record.calls.entries()) {
             const callId = call.id || `dsh:${record.seq}:${index}`;
-            names.set(callId, call.name);
+            if (names.size < 100_000 || names.has(callId)) names.set(callId, call.name);
             add(
               {
                 recordId: `call:${callId}:input`,

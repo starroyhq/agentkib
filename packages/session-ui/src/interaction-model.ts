@@ -703,10 +703,8 @@ export function ownValue<T>(values: Record<string, T>, key: string): T | undefin
   return Object.hasOwn(values, key) ? values[key] : undefined;
 }
 
-/** Native requests outside the supported contract stay readable, never answerable. */
-export function supportedQuestionRequest(request: InteractionQuestionRequest): boolean {
-  if (!request.supported || !Array.isArray(request.questions) || !request.questions.length)
-    return false;
+function validQuestionRequest(request: InteractionQuestionRequest): boolean {
+  if (!Array.isArray(request.questions) || !request.questions.length) return false;
   const ids = new Set<string>();
   return request.questions.every((q) => {
     if (
@@ -738,6 +736,16 @@ export function supportedQuestionRequest(request: InteractionQuestionRequest): b
       return true;
     });
   });
+}
+
+/** The terminal can report questions without granting this client permission to answer. */
+export function observedQuestionRequest(request: InteractionQuestionRequest): boolean {
+  return request.supported === false && validQuestionRequest(request);
+}
+
+/** Native requests outside the supported contract stay readable, never answerable. */
+export function supportedQuestionRequest(request: InteractionQuestionRequest): boolean {
+  return request.supported && validQuestionRequest(request);
 }
 
 /**

@@ -64,7 +64,7 @@ interface ToolResult {
   detail?: NormalizedToolCall;
   /** Claude Code's structured result, bounded and redacted. */
   claude?: ClaudeToolResult;
-  questionnaire?: { value: ConversationQuestionnaire; images: ConversationImage[] };
+  questionnaire?: ReturnType<typeof claudeQuestionHistoryResult>;
   codexAnswers?: CodexQuestionnaireOutput;
   /** Codex items recorded inside this call, such as code-mode `exec`. */
   children?: number;
@@ -751,14 +751,14 @@ function parseRecord(
     // The CLI's own context, such as an expanded skill prompt, stays hidden. A
     // result-only row can still supply the output of its matching tool call.
     // Human messages from the terminal bridge retain their existing exception.
+    const hiddenMeta = row?.isMeta === true && !agentKibTurnMessage(row);
     if (
-      row?.isMeta === true &&
-      !agentKibTurnMessage(row) &&
+      hiddenMeta &&
       !(
         row.type === "user" &&
         Array.isArray(content) &&
-        content.length &&
-        content.every((block) => block?.type === "tool_result")
+        content.some((block) => block?.type === "tool_result") &&
+        content.every((block) => block?.type === "tool_result" || block?.type === "image")
       )
     )
       return;
@@ -894,6 +894,7 @@ function parseRecord(
     const nativeId = [row?.uuid, row?.message?.id].find(
       (value) => typeof value === "string" && claudeMessageIdPattern.test(value),
     );
+    const messageId = nativeId ?? `event-${offset}`;
     const attachments = Array.isArray(content)
       ? content.filter((block) => ["image", "document"].includes(block?.type)).length
       : 0;
@@ -904,15 +905,14 @@ function parseRecord(
     const text = messageText(content);
     // The CLI's own assistant text, such as an API error, names this model.
     const synthetic = kind === "agent-message" && row?.message?.model === "<synthetic>";
-    if (
-      kind === "agent-message" &&
-      nativeId &&
-      Array.isArray(content) &&
-      !hiddenCommand(text ?? "")
-    ) {
+    if (kind === "agent-message" && Array.isArray(content) && !hiddenCommand(text ?? "")) {
       for (let index = content.length - 1; index >= 0; index--) {
         const block = content[index];
-        if (block?.type !== "text" || typeof block.text !== "string") continue;
+        if (
+          !["text", "input_text", "output_text"].includes(block?.type) ||
+          typeof block.text !== "string"
+        )
+          continue;
         if (!hasText(block.text) || hiddenCommand(block.text)) continue;
         const pendingCount = state.pending.length;
         message(
@@ -926,7 +926,7 @@ function parseRecord(
           null,
           undefined,
           page,
-          index === 0 ? nativeId : `${nativeId}:text:${index}`,
+          index === 0 ? messageId : `${messageId}:text:${index}`,
         );
         if (state.pending.length > pendingCount) {
           const event = state.pending.pop()!;
@@ -952,12 +952,12 @@ function parseRecord(
           null,
           undefined,
           page,
-          nativeId ?? `event-${offset}`,
+          messageId,
         );
         if (output) markCliOutput(state.pending.slice(from));
       } else if (
         output === null &&
-        (hasText(text) || (!attachedToAnswer && images.length > 0)) &&
+        (hasText(text) || (!hiddenMeta && !attachedToAnswer && images.length > 0)) &&
         !hiddenCommand(text ?? "")
       ) {
         const from = state.pending.length;
@@ -972,13 +972,18 @@ function parseRecord(
           null,
           undefined,
           page,
-          nativeId ?? `event-${offset}`,
+          messageId,
           images,
         );
         if (synthetic) markCliOutput(state.pending.slice(from));
       }
     }
-    if (images.length && kind === "agent-message" && nativeId && !hiddenCommand(text ?? "")) {
+    if (
+      images.length &&
+      kind === "agent-message" &&
+      Array.isArray(content) &&
+      !hiddenCommand(text ?? "")
+    ) {
       const first = [...rowEvents]
         .sort((a, b) => a.index - b.index)
         .find(({ event }) => event.kind === kind);
@@ -997,7 +1002,7 @@ function parseRecord(
           null,
           undefined,
           page,
-          nativeId,
+          messageId,
           images,
         );
     }

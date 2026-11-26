@@ -21,7 +21,9 @@ import {
 import { SessionDetailHeader } from "../../session-detail-header";
 import { useSessionDetailReadState } from "../../session-detail-read-state";
 import { SessionInteractionDock } from "../../session-interaction-dock";
+import { sessionApprovalRuntime } from "../../agents/session-approvals";
 import { useSessionPlatform } from "../../session-platform";
+import { resolveSessionProvider } from "../../session-provider";
 import type { SessionTranscriptProps } from "../../session-transcript";
 import { HistoryReferenceChips } from "../history/history-search-controls";
 import { validHistoryMessage } from "../history/history-reference-model";
@@ -206,6 +208,12 @@ export function SessionReader({
         history={{
           page,
           live: selectedLive,
+          observesTerminalQuestions:
+            !!selectedLive &&
+            sessionApprovalRuntime(
+              selectedLive,
+              resolveSessionProvider(current, session.capabilities)?.connection?.kind,
+            )?.owner === "terminal",
           turnLive: displayLive,
           online,
           externalTurn: current?.id === selected ? current.externalTurn : undefined,
@@ -257,6 +265,7 @@ export function SessionReader({
                   session={session}
                   agent={agent}
                   explainReason={explainReason}
+                  history={page?.events}
                 />
               }
               live={selectedLive}

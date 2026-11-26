@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
-import { cleanup, render, screen, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import { ApiError, WebClient, type Access, type ConversationEvent } from "@agentkib/web-client";
 import {
@@ -83,6 +83,74 @@ it("shows pending history questions and disables every option without adding ans
   expect(screen.queryByRole("button", { name: /process/i })).toBeNull();
 });
 
+it("keeps the assistant paragraphs in order around a standalone question and tool activity", () => {
+  const before: ConversationEvent = {
+    id: "before-question",
+    kind: "agent-message",
+    content: "This choice affects the requirements:",
+    attachment_count: 0,
+    truncated: false,
+  };
+  const after: ConversationEvent = {
+    ...before,
+    id: "after-question",
+    content: "The document is ready.",
+  };
+  const tool: ConversationEvent = {
+    ...before,
+    id: "ordinary-tool",
+    kind: "tool-summary",
+    content: undefined,
+    tool_name: "Bash",
+    tool_status: "completed",
+  };
+  const waiting: ConversationEvent = { ...questionEvent, turn_id: undefined, ephemeral: true };
+  const answered: ConversationEvent = {
+    ...waiting,
+    ephemeral: undefined,
+    questionnaire: {
+      status: "answered",
+      questions: [
+        {
+          ...questionEvent.questionnaire!.questions[0],
+          answer: { selected: ["Compact"] },
+        },
+      ],
+    },
+  };
+  const transcript = (question: ConversationEvent) => (
+    <SessionTranscript {...props} events={[before, tool, question, after]} />
+  );
+  const { rerender } = render(transcript(waiting));
+  const firstParagraph = screen.getByText(before.content!);
+  const lastParagraph = screen.getByText(after.content!);
+  expect(firstParagraph.tagName).toBe("P");
+  expect(lastParagraph.tagName).toBe("P");
+  const process = screen.getByRole("button", { name: "Process · 1 tools" });
+  const pending = screen.getByRole("region", { name: "Question waiting" });
+  expect(
+    firstParagraph.compareDocumentPosition(process) & Node.DOCUMENT_POSITION_FOLLOWING,
+  ).toBeTruthy();
+  expect(process.compareDocumentPosition(pending) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  expect(
+    pending.compareDocumentPosition(lastParagraph) & Node.DOCUMENT_POSITION_FOLLOWING,
+  ).toBeTruthy();
+  fireEvent.click(process);
+  expect(screen.getByText("Bash")).toBeVisible();
+  expect(within(pending).getByRole("button", { name: "Compact" })).toBeDisabled();
+
+  rerender(transcript(answered));
+  expect(screen.getByText(before.content!)).toBe(firstParagraph);
+  expect(screen.getByText(after.content!)).toBe(lastParagraph);
+  const history = screen.getByRole("region", { name: "Question answered" });
+  expect(history).toBe(pending);
+  expect(within(history).getByRole("button", { name: "Compact" })).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+  expect(within(history).getByText("Preview from option")).toBeVisible();
+});
+
 it("leaves only the latest matching pending prompt to the live dock when history has no turn ID", () => {
   const events = [
     { ...questionEvent, turn_id: undefined, id: "earlier-question" },
@@ -108,6 +176,36 @@ it("leaves only the latest matching pending prompt to the live dock when history
   expect(container.querySelector('[data-event-id="earlier-question"]')).toBeInTheDocument();
   expect(container.querySelector('[data-event-id="toolu_question"]')).toBeNull();
   rerender(<SessionTranscript {...props} events={events} />);
+  expect(container.querySelector('[data-event-id="toolu_question"]')).toBeInTheDocument();
+});
+
+it("deduplicates a read-only terminal prompt by its exact tool ID", () => {
+  const earlier = { ...questionEvent, id: "earlier-tool", turn_id: undefined };
+  const active = { ...questionEvent, turn_id: undefined };
+  const liveQuestions = [
+    {
+      requestId: active.id,
+      turnId: "terminal-turn",
+      supported: false,
+      questions: active.questionnaire!.questions.map((question) => ({
+        ...question,
+        allowCustom: false,
+      })),
+    },
+  ];
+  const { container, rerender } = render(
+    <SessionTranscript
+      {...props}
+      events={[earlier, active]}
+      liveQuestions={liveQuestions}
+      observesTerminalQuestions
+    />,
+  );
+  expect(container.querySelector('[data-event-id="earlier-tool"]')).toBeInTheDocument();
+  expect(container.querySelector('[data-event-id="toolu_question"]')).not.toBeInTheDocument();
+  rerender(
+    <SessionTranscript {...props} events={[earlier, active]} liveQuestions={liveQuestions} />,
+  );
   expect(container.querySelector('[data-event-id="toolu_question"]')).toBeInTheDocument();
 });
 

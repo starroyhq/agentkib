@@ -669,6 +669,71 @@ describe("original Claude terminal over Web", () => {
     expect(screen.queryByText(/请在终端处理/)).not.toBeInTheDocument();
     expect(state.mutations).toEqual([]);
   });
+
+  it.each(["pending", "answered"] as const)(
+    "shows one read-only terminal question with %s native history",
+    async (status) => {
+      const question = {
+        id: "mode",
+        header: "显示模式",
+        question: "选哪种布局？",
+        multiSelect: false,
+        options: [{ label: "紧凑", description: "留出更多空间" }, { label: "宽松" }],
+      };
+      const toolId = "toolu_terminal_question";
+      const { state } = createHost({
+        follower: true,
+        events: [
+          ...history,
+          {
+            id: toolId,
+            kind: "tool-summary",
+            attachment_count: 0,
+            truncated: false,
+            questionnaire: {
+              status,
+              questions: [
+                {
+                  ...question,
+                  ...(status === "answered" ? { answer: { selected: ["紧凑"] } } : {}),
+                },
+              ],
+            },
+          },
+        ],
+      });
+      state.live = {
+        ...state.live,
+        turnId: "terminal-turn",
+        status: "waiting-input",
+        reason: "claude-terminal-question",
+        sendEnabled: false,
+        questions: [
+          {
+            requestId: toolId,
+            turnId: "terminal-turn",
+            supported: false,
+            questions: [{ ...question, allowCustom: false }],
+          },
+        ],
+      };
+      await openSession();
+      const card = await screen.findByRole("region", {
+        name: status === "pending" ? "有问题待回答" : "问题已回答",
+      });
+      expect(within(card).getByRole("heading", { name: "显示模式 · 选哪种布局？" })).toBeVisible();
+      expect(within(card).getByText("留出更多空间")).toBeVisible();
+      const choice = within(card).getByRole("button", { name: "紧凑" });
+      expect(choice).toBeDisabled();
+      expect(choice).toHaveAttribute("aria-pressed", status === "answered" ? "true" : "false");
+      expect(within(card).queryByRole("textbox")).not.toBeInTheDocument();
+      expect(within(card).queryByRole("button", { name: "发送" })).not.toBeInTheDocument();
+      expect(screen.queryByText("等待回答")).not.toBeInTheDocument();
+      expect(screen.queryByText(/请(?:在|查看)终端/)).not.toBeInTheDocument();
+      expect(screen.getAllByText("选哪种布局？", { exact: false })).toHaveLength(1);
+      expect(state.mutations).toEqual([]);
+    },
+  );
 });
 
 describe("remote terminal handover", () => {

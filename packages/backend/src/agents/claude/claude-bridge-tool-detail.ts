@@ -111,22 +111,16 @@ export function terminalQuestions(
     sanitizeSessionText(snapshot.pendingQuestionSummary, { value: 0 });
   const tracked = [...(turnTools?.values() ?? [])].filter((tool) => tool.name === QUESTION_TOOL);
   const running = tracked.filter((tool) => tool.status === "running");
-  let tool = running.length === 1 ? running[0] : undefined;
+  const tool = running.length === 1 ? running[0] : undefined;
   let questions = tool && questionsFromInput(tool);
-  if (!questions && summary && running.length === 0) {
-    // Snapshot items also contain older turns. Match the current prompt observed
-    // by the plugin before using the richer native history preview.
-    if (tracked.some((item) => questionsFromInput(item)?.[0]?.question === summary)) return [];
-    const matching = snapshot.toolItems.flatMap((item) => {
-      if (item.status !== "running" || turnTools?.has(item.id)) return [];
-      const questions = questionsFromInput(item);
-      return questions?.[0]?.question === summary ? [{ item, questions }] : [];
-    });
-    if (matching.length === 1) {
-      tool = matching[0]!.item;
-      questions = matching[0]!.questions;
-    }
-  }
+  // Snapshot tool previews may include previous turns with the same wording.
+  // Use the observed prompt alone when there is no tool known to be current.
+  if (
+    running.length === 0 &&
+    summary &&
+    tracked.some((item) => questionsFromInput(item)?.[0]?.question === summary)
+  )
+    return [];
   if (!questions && summary?.trim())
     questions = [{ id: "1", question: summary, multiSelect: false, options: [] }];
   if (!questions) return [];

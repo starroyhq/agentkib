@@ -2490,7 +2490,9 @@ describe.skipIf(process.platform === "win32")("native Claude borrowed-host broke
             name: "AskUserQuestion",
             status: "running",
             input: JSON.stringify({
-              questions: [{ question: "Earlier question?", options: [{ label: "A" }] }],
+              questions: [
+                { question: "Current question?", options: [{ label: "Earlier option" }] },
+              ],
             }),
           },
         ],

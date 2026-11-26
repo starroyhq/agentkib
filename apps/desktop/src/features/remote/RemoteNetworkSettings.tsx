@@ -1,4 +1,6 @@
 import { useEffect, useId, useRef, useState, type ReactNode } from "react";
+import { DelayedSpinner, LoadingSkeleton, useDelayedBusy } from "@agentkib/session-ui";
+import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
   Select,
@@ -52,7 +54,7 @@ export function useRemoteNetworkSettings(): {
   address: string;
   interfaces: { name: string; address: string }[];
 } {
-  const { locale } = useI18n();
+  const { locale, tr } = useI18n();
   const c = remoteNetworkCopy[locale];
   const { snapshot, busy: nativeBusy, run } = useRemoteStore();
   const admin = useWebAdminState("lan");
@@ -61,6 +63,8 @@ export function useRemoteNetworkSettings(): {
   const [addressDraft, setAddressDraft] = useState<string>();
   const [portDraft, setPortDraft] = useState<number>();
   const [loadFailed, setLoadFailed] = useState(false);
+  const [retryingRead, setRetryingRead] = useState(false);
+  const showReadError = useDelayedBusy(loadFailed, 3000);
   const [saving, setSaving] = useState(false);
   const [result, setResult] = useState<SaveResult>();
   const [retryLan, setRetryLan] = useState(false);
@@ -142,7 +146,6 @@ export function useRemoteNetworkSettings(): {
   }
   const { chosenAddress, lanChanged, dirty, valid } = plan(addressDraft);
   const busy = saving || nativeBusy || admin.busy;
-  const failed = result?.lan === "failed" || result?.native === "failed";
   const lost = Boolean(savedAddress && !available(savedAddress));
 
   async function save(address?: string) {
@@ -224,26 +227,27 @@ export function useRemoteNetworkSettings(): {
     }
   }
 
-  const outcomeText =
-    result &&
-    `${
-      result.lan === "saved" ? c.lanSaved : result.lan === "failed" ? c.lanFailed : c.lanUnchanged
-    } ${
-      result.native === "saved"
-        ? c.nativeSaved
-        : result.native === "failed"
-          ? c.nativeFailed
-          : result.native === "not-applied"
-            ? c.nativeNotApplied
-            : c.nativeUnchanged
-    }`;
+  async function retryRead() {
+    if (getWebAdminState("lan").busy) return;
+    setRetryingRead(true);
+    try {
+      await requestWebAdmin({ operation: "status", target: "lan" });
+    } catch {
+      if (mounted.current) setLoadFailed(true);
+    } finally {
+      if (mounted.current) setRetryingRead(false);
+    }
+  }
+
   const warnings = [
-    loadFailed && c.unavailable,
     status && snapshot && !interfaces.length && c.noInterface,
     conflict && c.conflict,
     lost && c.lost,
     dirty && !portValid && c.invalidPort,
-    failed && outcomeText,
+    result?.lan === "failed" && c.lanFailed,
+    result?.native === "failed" && result.lan === "saved" && c.lanSaved,
+    result?.native === "failed" && c.nativeFailed,
+    result?.native === "not-applied" && c.nativeNotApplied,
   ].filter(Boolean);
   return {
     dirty,
@@ -262,52 +266,71 @@ export function useRemoteNetworkSettings(): {
         : "",
     content: (
       <div className="grid gap-3" role="group" aria-label={c.title}>
-        <p className="text-xs text-muted-foreground">{c.explicitChoice}</p>
-        <div className="grid gap-1.5 text-sm">
-          <label htmlFor={`${id}-interface`}>{c.interface}</label>
-          <Select
-            value={chosenAddress || null}
-            disabled={busy || !status || !snapshot}
-            onValueChange={(value) => {
-              if (value !== null) {
-                setAddressDraft(value);
-                setResult(undefined);
-              }
-            }}
-          >
-            <SelectTrigger id={`${id}-interface`} className="w-full min-w-0">
-              <SelectValue placeholder={c.choose}>
-                {chosenAddress
-                  ? `${interfaces.find((entry) => entry.address === chosenAddress)?.name ?? ""} · ${chosenAddress}`
-                  : c.choose}
-              </SelectValue>
-            </SelectTrigger>
-            <SelectContent>
-              <SelectGroup>
-                {interfaces.map(({ name, address }) => (
-                  <SelectItem key={address} value={address}>
-                    {name} · {address}
-                  </SelectItem>
-                ))}
-              </SelectGroup>
-            </SelectContent>
-          </Select>
-        </div>
-        <div className="grid gap-1.5 text-sm">
-          <label htmlFor={`${id}-port`}>{c.port}</label>
-          <Input
-            id={`${id}-port`}
-            type="number"
-            min={1024}
-            max={65535}
-            value={port}
-            disabled={busy || !status}
-            onChange={(event) => {
-              setPortDraft(Number(event.target.value));
-              setResult(undefined);
-            }}
-          />
-        </div>
+        {(showReadError || retryingRead) && (
+          <SettingsNotice inset={false} tone="error" role="alert">
+            <span>{c.unavailable}</span>
+            <Button variant="outline" size="sm" disabled={busy} onClick={() => void retryRead()}>
+              <span className="size-3.5">
+                <DelayedSpinner active={retryingRead} />
+              </span>
+              {tr("sessions.retry")}
+            </Button>
+          </SettingsNotice>
+        )}
+        {!status || !snapshot ? (
+          <div className="min-h-32">
+            <LoadingSkeleton label={tr("common.loading")} rows={2} />
+          </div>
+        ) : (
+          <>
+            <p className="text-xs text-muted-foreground">{c.explicitChoice}</p>
+            <div className="grid gap-1.5 text-sm">
+              <label htmlFor={`${id}-interface`}>{c.interface}</label>
+              <Select
+                value={chosenAddress || null}
+                disabled={busy}
+                onValueChange={(value) => {
+                  if (value !== null) {
+                    setAddressDraft(value);
+                    setResult(undefined);
+                  }
+                }}
+              >
+                <SelectTrigger id={`${id}-interface`} className="w-full min-w-0">
+                  <SelectValue placeholder={c.choose}>
+                    {chosenAddress
+                      ? `${interfaces.find((entry) => entry.address === chosenAddress)?.name ?? ""} · ${chosenAddress}`
+                      : c.choose}
+                  </SelectValue>
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectGroup>
+                    {interfaces.map(({ name, address }) => (
+                      <SelectItem key={address} value={address}>
+                        {name} · {address}
+                      </SelectItem>
+                    ))}
+                  </SelectGroup>
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="grid gap-1.5 text-sm">
+              <label htmlFor={`${id}-port`}>{c.port}</label>
+              <Input
+                id={`${id}-port`}
+                type="number"
+                min={1024}
+                max={65535}
+                value={port}
+                disabled={busy}
+                onChange={(event) => {
+                  setPortDraft(Number(event.target.value));
+                  setResult(undefined);
+                }}
+              />
+            </div>
+          </>
+        )}
         {lanChanged && (
           <SettingsNotice tone="warning" inset={false}>
             {c.revokeWarning}
@@ -318,11 +341,6 @@ export function useRemoteNetworkSettings(): {
             {warnings.map((warning, index) => (
               <p key={index}>{warning}</p>
             ))}
-          </SettingsNotice>
-        )}
-        {result && !failed && (
-          <SettingsNotice inset={false} role="status">
-            {outcomeText}
           </SettingsNotice>
         )}
       </div>

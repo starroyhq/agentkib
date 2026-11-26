@@ -940,9 +940,7 @@ it("shows the experimental-control warning in the selected locale without mixed 
   }
 });
 
-// Re-scoped: unsaved notices render inside the open advanced dialog (outside its "More settings"
-// section); Save closes the dialog and the page then reports the saved state.
-it("keeps unsaved settings visible outside advanced controls and saves once while every editable field is locked", async () => {
+it("signals pending changes through Save and locks editable fields while submitting once", async () => {
   const user = userEvent.setup();
   render(<WebAccessSettings />);
   await openAdvanced();
@@ -957,9 +955,9 @@ it("keeps unsaved settings visible outside advanced controls and saves once whil
   expect(
     screen.queryByText("These settings take effect after choosing “Save settings”."),
   ).toBeNull();
-  expect(screen.getByText("Unsaved changes")).toBeVisible();
+  expect(screen.getByRole("button", { name: "Save" })).toBeEnabled();
   expandMore();
-  expect(screen.getByText("Unsaved changes")).toBeVisible();
+  expect(screen.getByRole("button", { name: "Save" })).toBeEnabled();
   expect(request.mock.calls.every(([input]) => input.operation === "status")).toBe(true);
   expandMore();
 
@@ -974,7 +972,8 @@ it("keeps unsaved settings visible outside advanced controls and saves once whil
   fireEvent.click(save);
   fireEvent.click(save);
   expect(request.mock.calls.filter(([input]) => input.operation === "configure")).toHaveLength(1);
-  expect(screen.getByRole("button", { name: "Saving settings…" })).toBeDisabled();
+  expect(save).toBeDisabled();
+  expect(screen.queryByRole("button", { name: "Saving settings…" })).toBeNull();
   expect(directories).toBeDisabled();
   for (const radio of screen.getAllByRole("radio"))
     expect(radio).toHaveAttribute("aria-disabled", "true");
@@ -994,7 +993,7 @@ it("keeps unsaved settings visible outside advanced controls and saves once whil
   await act(async () => finish(savedStatus));
   await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
   expect(screen.queryByText("Unsaved changes")).not.toBeInTheDocument();
-  expect(screen.getByText("Settings saved.")).toBeVisible();
+  expect(screen.queryByText("Settings saved.")).toBeNull();
   await openAdvanced();
   expandMore();
   const reopened = screen.getByLabelText(
@@ -1025,14 +1024,14 @@ it("preserves save failure and the draft across a recovered poll, then clears th
     await vi.advanceTimersByTimeAsync(2000);
   });
   expect(screen.getByRole("alert")).toHaveTextContent("Settings could not be saved");
-  expect(screen.getByText("Unsaved changes")).toBeVisible();
+  expect(screen.getByRole("button", { name: "Save" })).toBeEnabled();
   fireEvent.click(screen.getByRole("button", { name: "Save" }));
   await act(async () => {
     await vi.advanceTimersByTimeAsync(300);
   });
   expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   expect(screen.queryByText("Unsaved changes")).not.toBeInTheDocument();
-  expect(screen.getByText("Settings saved.")).toBeVisible();
+  expect(screen.queryByText("Settings saved.")).toBeNull();
   expect(request.mock.calls.filter(([input]) => input.operation === "configure")).toHaveLength(2);
 });
 
@@ -1060,7 +1059,7 @@ it("keeps directory edits and a single visible error when saving returns an expl
   fireEvent.click(screen.getByRole("button", { name: "Save" }));
   expect(await screen.findByRole("alert")).toHaveTextContent("Settings could not be saved");
   expect(directories).toHaveValue("/tmp/reports\n");
-  expect(screen.getByText("Unsaved changes")).toBeVisible();
+  expect(screen.getByRole("button", { name: "Save" })).toBeEnabled();
   expect(screen.queryByText("Settings saved.")).not.toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Save" })).toBeEnabled();
 });
@@ -1143,7 +1142,7 @@ it("refreshes untouched fields but preserves edited ports and an intentionally c
   );
   expect(screen.getByLabelText("Service address")).toHaveValue("https://new.example.com");
   expect(screen.getByLabelText("Custom frpc executable (optional)")).toHaveValue("");
-  expect(screen.getByText("Unsaved changes")).toBeVisible();
+  expect(screen.getByRole("button", { name: "Save" })).toBeEnabled();
 });
 
 // Re-scoped: pausing is in the page's "More actions" menu, which is unreachable while the
@@ -1182,7 +1181,7 @@ it("retains an edited port while pausing remote access updates only the saved re
   await waitFor(() => expect(screen.getByLabelText("External HTTPS origin")).toHaveValue(""));
   fireEvent.change(screen.getByLabelText("Port"), { target: { value: "1444" } });
   expect(screen.getByLabelText("Port")).toHaveValue(1444);
-  expect(screen.getByText("Unsaved changes")).toBeVisible();
+  expect(screen.getByRole("button", { name: "Save" })).toBeEnabled();
   expect(request).not.toHaveBeenCalledWith(expect.objectContaining({ operation: "configure" }));
 });
 
@@ -1340,8 +1339,8 @@ it.each([
       expandMore(remotePageCopy[locale].moreSettings);
       expect(screen.queryByLabelText(remoteEntryCopy[locale].invitation)).toBeNull();
       fireEvent.click(await screen.findByRole("checkbox", { name: c.enabled }));
-      expect(screen.getByText(unsaved)).toBeVisible();
-      // The advanced window's own Save is the cue; its "Save settings" hint belongs to LAN.
+      expect(screen.queryByText(unsaved)).toBeNull();
+      // The enabled Save button is the cue for unapplied edits.
       expect(screen.queryByText(c.saveHint)).toBeNull();
       expect(screen.getByRole("button", { name: remotePageCopy[locale].save })).toBeEnabled();
       view.unmount();
@@ -1349,11 +1348,8 @@ it.each([
       lanTest = true;
       render(<WebAccessSettings target="lan" />);
       expect(await screen.findByText(c.pairingCodeHint)).toBeVisible();
-      expect(screen.getAllByText(c.saveHint)).toHaveLength(1);
-      const { lanSettingsCopy } = await import("./lan-settings-copy");
-      expect(
-        screen.getByRole("checkbox", { name: lanSettingsCopy[locale].enabled }),
-      ).toHaveAccessibleDescription(c.saveHint);
+      expect(screen.queryByText(c.saveHint)).toBeNull();
+      expect(screen.getByRole("button", { name: c.save })).toBeDisabled();
       expect(screen.getByRole("button", { name: c.generate })).toHaveAccessibleDescription(
         c.generateNeedsLanService,
       );

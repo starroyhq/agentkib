@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Monitor, Pencil, Plus, ShieldCheck, Wifi } from "lucide-react";
+import { LoadingSkeleton } from "@agentkib/session-ui";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
@@ -53,16 +54,25 @@ function useRemoteStatus() {
 
 function RemoteFeedback() {
   const { tr } = useI18n();
-  const { loading, error: rawError, refresh, clearError, snapshot } = useRemoteStore();
+  const {
+    loading,
+    error: rawError,
+    operationError,
+    refresh,
+    clearError,
+    snapshot,
+  } = useRemoteStore();
   return (
     <>
-      {loading && !snapshot && <p role="status">{tr("remote.loading")}</p>}
+      {loading && !snapshot && <LoadingSkeleton label={tr("remote.loading")} />}
       {rawError !== "" && (
         <SettingsNotice tone="error" inset={false} role="alert">
           <RemoteErrorDetails error={rawError} />
-          <Button variant="outline" onClick={() => void refresh()}>
-            {tr("remote.retry")}
-          </Button>
+          {!operationError && (
+            <Button variant="outline" onClick={() => void refresh()}>
+              {tr("remote.retry")}
+            </Button>
+          )}
           <Button variant="ghost" onClick={clearError}>
             {tr("common.close")}
           </Button>
@@ -186,14 +196,12 @@ export function RemoteConnectionPanel({
 
 function NameEditor({
   name,
-  saved,
   error,
   disabled,
   onChange,
   onSave,
 }: {
   name: string;
-  saved: boolean;
   error: boolean;
   disabled: boolean;
   onChange: (value: string) => void;
@@ -240,11 +248,6 @@ function NameEditor({
           </Button>
         </span>
       )}
-      {saved && (
-        <small role="status" className="text-muted-foreground">
-          {settings.saved}
-        </small>
-      )}
       {error && (
         <Button
           variant="link"
@@ -265,7 +268,6 @@ function ComputerConnectionSettings({
   name,
   onNameChange,
   onNameSave,
-  nameSaved,
   nameError,
   networkBusy,
   onAddComputer,
@@ -278,7 +280,6 @@ function ComputerConnectionSettings({
   name: string;
   onNameChange: (value: string) => void;
   onNameSave: () => Promise<boolean>;
-  nameSaved: boolean;
   nameError: boolean;
   networkBusy: boolean;
   onAddComputer: () => void;
@@ -458,7 +459,6 @@ function ComputerConnectionSettings({
             <p className="min-w-48 flex-1 text-sm text-muted-foreground">{copy.codeInfo}</p>
             <NameEditor
               name={name}
-              saved={nameSaved}
               error={nameError}
               disabled={disabled || !snapshot}
               onChange={onNameChange}
@@ -591,7 +591,6 @@ export function RemoteConnectionSettings() {
   const previousName = useRef(snapshot?.local.name);
   const [nameError, setNameError] = useState(false);
   const [nameSaving, setNameSaving] = useState(false);
-  const [savedName, setSavedName] = useState<string>();
   const nameLocked = useRef(false);
   const nameValue = useRef(name);
   const alive = useRef(true);
@@ -641,11 +640,6 @@ export function RemoteConnectionSettings() {
       return false;
     return network.save();
   }
-  useEffect(() => {
-    if (savedName === undefined) return;
-    const timeout = setTimeout(() => setSavedName(undefined), 2_000);
-    return () => clearTimeout(timeout);
-  }, [savedName]);
   async function saveName() {
     if (
       !alive.current ||
@@ -668,7 +662,6 @@ export function RemoteConnectionSettings() {
     if (current.local.enabled && !current.local.address) return false;
     nameLocked.current = true;
     setNameSaving(true);
-    setSavedName(undefined);
     try {
       const result = await run({
         operation: "configure",
@@ -684,7 +677,6 @@ export function RemoteConnectionSettings() {
         if (saved) {
           nameValue.current = nextName;
           setName(nextName);
-          setSavedName(nextName);
         }
       }
       return saved;
@@ -725,14 +717,8 @@ export function RemoteConnectionSettings() {
               nameValue.current = value;
               setName(value);
               setNameError(false);
-              setSavedName(undefined);
             }}
             onNameSave={saveName}
-            nameSaved={
-              savedName !== undefined &&
-              savedName === snapshot?.local.name &&
-              name.trim() === savedName
-            }
             nameError={nameError}
             onAddComputer={() => setAddOpen(true)}
           />

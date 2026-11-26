@@ -130,6 +130,9 @@ describe("Claude queued user messages in persisted history", () => {
       { id: id(5), kind: "agent-message", content: "The exit status was zero." },
     ];
     expect([...older.events, ...latest.events]).toMatchObject(expected);
+    expect([...older.events, ...latest.events].map(({ turn_id }) => turn_id)).toEqual(
+      expected.map(() => id(1)),
+    );
     expect(new SessionPaging().read(file, null, 10, "claude-code").events).toMatchObject(expected);
     expect(claudeWorkerHistoryTurns(file, sessionId)).toEqual([
       {

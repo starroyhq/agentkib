@@ -42,6 +42,8 @@ const SCAN_BYTES = 16 * 1024 * 1024,
   SCAN_LINES = 20_000,
   FIRST_PAGE_BYTES = 4 * 1024 * 1024,
   FIRST_PAGE_TURNS = 20,
+  TURN_LOOKAHEAD_LINES = 1024,
+  TURN_LOOKAHEAD_ITEMS = 512,
   MAX_STATES = 32,
   MAX_LIVE_PAGES = 2,
   MAX_CACHE_BYTES = 64 * 1024 * 1024,
@@ -507,7 +509,9 @@ export class SessionPaging {
       };
     }
     yield* this.#validate(file, format, state);
-    state.turnRangeStart = 0;
+    const rules = nativeHistoryRules[format];
+    const groupByOpeningRecord = rules?.groupByOpeningRecord;
+    if (!groupByOpeningRecord) state.turnRangeStart = 0;
     const reader = new ReverseReader(
         Math.min(
           firstScreen ? FIRST_PAGE_BYTES - 24 * 1024 : SCAN_BYTES,
@@ -517,17 +521,18 @@ export class SessionPaging {
       events: ConversationEvent[] = [],
       warnings = new Set<string>();
     let lines = 0,
-      eventBytes = 0;
+      eventBytes = 0,
+      pendingBytes = state.pending.reduce((sum, event) => sum + eventPageBytes(event), 0);
     let lookahead: number | undefined;
+    let fullAtLine: number | undefined;
     const turns = new Set<string | number>();
     let yieldAt = performance.now() + 8;
-    const rules = nativeHistoryRules[format];
-    const damaged = () => {
+    const damaged = (oversized = false) => {
       state.candidateTurn = null;
-      state.turnMeta = null;
-      state.turnRangeStart = events.length;
+      if (!oversized || groupByOpeningRecord) state.turnMeta = null;
+      state.turnRangeStart = events.length + (groupByOpeningRecord ? state.pending.length : 0);
       state.associationWarning = true;
-      warnings.add("TRANSCRIPT_DAMAGED_LINES");
+      warnings.add(oversized ? "TRANSCRIPT_OVERSIZED_LINES" : "TRANSCRIPT_DAMAGED_LINES");
     };
     for (;;) {
       const next = state.pending[0];
@@ -539,7 +544,16 @@ export class SessionPaging {
         // immediately older mirror row. Resolve that bounded mirror window
         // before sending the page, keeping other newly parsed items pending.
         lookahead ??= events.at(-1)?.attachment_count ? 64 : 0;
-        if (lookahead <= 0) break;
+        fullAtLine ??= lines;
+        // Keep the opener in the cursor's pending window, even when it falls
+        // on an older page. A damaged or very long turn can stay unidentified.
+        const needOpener =
+          groupByOpeningRecord &&
+          state.turnRangeStart < events.length &&
+          lines - fullAtLine < TURN_LOOKAHEAD_LINES &&
+          state.pending.length < TURN_LOOKAHEAD_ITEMS &&
+          pendingBytes < MAX_PAGE_BYTES;
+        if (lookahead <= 0 && !needOpener) break;
       }
       if (state.pending.length && !full) {
         const next = state.pending[0]!,
@@ -550,6 +564,7 @@ export class SessionPaging {
         )
           break;
         eventBytes += bytes;
+        pendingBytes -= bytes;
         events.push(state.pending.shift()!);
         continue;
       }
@@ -566,10 +581,7 @@ export class SessionPaging {
       if (record.type === "end") break;
       if (record.type === "oversized") {
         state.trailing = false;
-        state.candidateTurn = null;
-        state.turnRangeStart = events.length;
-        state.associationWarning = true;
-        warnings.add("TRANSCRIPT_OVERSIZED_LINES");
+        damaged(true);
         continue;
       }
       if (record.type !== "line") continue;
@@ -606,29 +618,27 @@ export class SessionPaging {
         context.cwd ?? context.workspace ?? "",
       );
       if (record.bytes.length > MAX_LINE_BYTES && !images.length) {
-        state.candidateTurn = null;
-        state.turnRangeStart = events.length;
-        state.associationWarning = true;
-        warnings.add("TRANSCRIPT_OVERSIZED_LINES");
+        damaged(true);
         continue;
       }
       const pending = state.pending.length;
       try {
-        parseEventRecord(state, record.offset, value, events, images);
+        const start = parseEventRecord(state, record.offset, value, events, images);
+        if (firstScreen && start !== undefined) turns.add(start);
       } catch (error) {
         if (!(error instanceof TypeError || error instanceof RangeError)) throw error;
         state.pending.length = pending;
         damaged();
         continue;
       }
-      if (firstScreen && rules) {
-        const start = rules.turnStart(value, record.offset);
-        if (start !== undefined) turns.add(start);
+      if (groupByOpeningRecord) {
+        for (let index = pending; index < state.pending.length; index++)
+          pendingBytes += eventPageBytes(state.pending[index]!);
+      } else {
+        // Mirror rows can update an item already in the queue.
+        pendingBytes = state.pending.reduce((sum, event) => sum + eventPageBytes(event), 0);
       }
-      if (
-        associationCount(state) > 20_000 ||
-        state.pending.reduce((sum, event) => sum + eventPageBytes(event), 0) > 8 * MAX_PAGE_BYTES
-      )
+      if (associationCount(state) > 20_000 || pendingBytes > 8 * MAX_PAGE_BYTES)
         throw new Error("TRANSCRIPT_SCAN_STATE_LIMIT");
     }
     yield* this.#validate(file, format, state);
@@ -638,6 +648,8 @@ export class SessionPaging {
       events.reduce((total, event) => total + eventPageBytes(event), 0) > MAX_PAGE_BYTES
     )
       state.pending.unshift(events.pop()!);
+    if (groupByOpeningRecord)
+      state.turnRangeStart = Math.max(0, state.turnRangeStart - events.length);
     if (state.associationWarning) warnings.add("TRANSCRIPT_ASSOCIATION_WINDOW");
     let next: string | null = null;
     const older = state.position > 0 || state.pending.length > 0 || state.fragmentBytes > 0;

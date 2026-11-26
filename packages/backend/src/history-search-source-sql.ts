@@ -1,3 +1,4 @@
+import { REMOTE_ERROR_CODES } from "@agentkib/runtime-protocol";
 import { DatabaseSync } from "node:sqlite";
 import { existsSync, lstatSync } from "node:fs";
 import { isReparseOrSymlink, nativeFileIdentity } from "./native-files";
@@ -37,7 +38,7 @@ export async function readHermesSearchSource(
         .all()
         .map((row) => String(row.name)),
     );
-    if (!metadataNames.has("id")) throw new Error("history-source-owner-changed");
+    if (!metadataNames.has("id")) throw new Error(REMOTE_ERROR_CODES.historySourceOwnerChanged);
     // Match Hermes discovery's alias precedence and bounds, but read metadata in
     // the very same SQLite snapshot as messages (including WAL-only commits).
     const metadataField = (aliases: string[]) => {
@@ -52,14 +53,15 @@ export async function readHermesSearchSource(
         `SELECT ${metadataField(["id"])} AS id,${metadataField(["cwd", "directory", "project_dir"])} AS cwd,${metadataField(["title", "name", "summary"])} AS title FROM sessions WHERE CAST(id AS TEXT)=? LIMIT 2`,
       )
       .all(source.sessionId);
-    if (owners.length !== 1) throw new Error("history-source-owner-changed");
+    if (owners.length !== 1) throw new Error(REMOTE_ERROR_CODES.historySourceOwnerChanged);
     const decodeMetadata = (value: unknown): string | null => {
       if (value === null) return null;
-      if (!(value instanceof Uint8Array)) throw new Error("history-source-owner-changed");
+      if (!(value instanceof Uint8Array))
+        throw new Error(REMOTE_ERROR_CODES.historySourceOwnerChanged);
       try {
         return new TextDecoder("utf-8", { fatal: true }).decode(value);
       } catch (error) {
-        throw new Error("history-source-owner-changed", { cause: error });
+        throw new Error(REMOTE_ERROR_CODES.historySourceOwnerChanged, { cause: error });
       }
     };
     const owner = {
@@ -71,7 +73,7 @@ export async function readHermesSearchSource(
       owner.id !== source.sessionId ||
       (owner.cwd?.trim() && !belongsToWorkspace(owner.cwd, workspace, home))
     )
-      throw new Error("history-source-owner-changed");
+      throw new Error(REMOTE_ERROR_CODES.historySourceOwnerChanged);
     if (!owner.cwd?.trim()) sink.limit("hermes-workspace-from-linked-history");
     sink.fingerprint(JSON.stringify(owner));
     const names = new Set(
@@ -184,7 +186,7 @@ export async function readHermesSearchSource(
       await emitMessage(value, `hermes-row:${row._rowid}`, sink);
     }
     if (nativeFileIdentity(source.path).some((part, index) => part !== identity[index]))
-      throw new Error("history-source-changed");
+      throw new Error(REMOTE_ERROR_CODES.historySourceChanged);
   } finally {
     db.close();
   }
@@ -199,7 +201,7 @@ export async function readOpenClawSearchSource(
       return readOpenClawSearchSnapshot(source);
     } catch (error) {
       if (error instanceof OpenClawSourceOwnershipError)
-        throw new Error("history-source-owner-changed", { cause: error });
+        throw new Error(REMOTE_ERROR_CODES.historySourceOwnerChanged, { cause: error });
       throw error;
     }
   });

@@ -1,6 +1,10 @@
 import { LeadReportUsageLimit } from "./message-lead-reports";
 import { createHash, randomUUID } from "node:crypto";
-import { PROJECT_AGENT_MAX_WORKERS, parseClaudeSlashCommand } from "@agentkib/runtime-protocol";
+import {
+  REMOTE_ERROR_CODES,
+  PROJECT_AGENT_MAX_WORKERS,
+  parseClaudeSlashCommand,
+} from "@agentkib/runtime-protocol";
 import { readControlReceipt } from "./control-receipt";
 import { ANTIGRAVITY_ACP_DISABLED } from "./agents/antigravity/acp-enabled";
 import {
@@ -772,9 +776,9 @@ export class OrchestrationService {
     workspaceId: string;
   }): Lead {
     if (!this.#enabledLead(input.sessionId) || !this.isLeadCapable(input.sessionId))
-      throw new Error("lead-requires-managed-claude");
+      throw new Error(REMOTE_ERROR_CODES.leadRequiresManagedClaude);
     if (!this.lanes.workspaces().some(({ id }) => id === input.workspaceId))
-      throw new Error("invalid-lead-workspaces");
+      throw new Error(REMOTE_ERROR_CODES.invalidLeadWorkspaces);
     return this.registry.create({
       sessionId: input.sessionId,
       deviceId: input.deviceId,
@@ -825,7 +829,7 @@ export class OrchestrationService {
           if (owner)
             return {
               sessionId: id,
-              reason: "session-is-a-worker",
+              reason: REMOTE_ERROR_CODES.sessionIsAWorker,
               ...(owner === sessionId ? { assigned: true } : {}),
             };
           try {
@@ -835,7 +839,7 @@ export class OrchestrationService {
           } catch (error) {
             return {
               sessionId: id,
-              reason: error instanceof Error ? error.message : "worker-unavailable",
+              reason: error instanceof Error ? error.message : REMOTE_ERROR_CODES.workerUnavailable,
             };
           }
         }),
@@ -859,7 +863,8 @@ export class OrchestrationService {
       throw new Error("invalid-lead-request");
     if (workers.length > PROJECT_AGENT_MAX_WORKERS) throw new Error("worker-limit-reached");
     if (workers.includes(sessionId)) throw new Error("session-is-a-project-agent");
-    if (!this.#enabledLead(sessionId)) throw new Error("lead-requires-managed-claude");
+    if (!this.#enabledLead(sessionId))
+      throw new Error(REMOTE_ERROR_CODES.leadRequiresManagedClaude);
     const candidates = await Promise.all(
       workers.map(async (id) => {
         const summary = this.#workerSession(id);
@@ -867,13 +872,14 @@ export class OrchestrationService {
         return { ...summary, id };
       }),
     );
-    if (!this.isLeadCapable(sessionId)) throw new Error("lead-requires-managed-claude");
+    if (!this.isLeadCapable(sessionId))
+      throw new Error(REMOTE_ERROR_CODES.leadRequiresManagedClaude);
     const registered = new Set(this.lanes.workspaces().map(({ id }) => id));
     if (
       !registered.has(workspaceId) ||
       candidates.some((worker) => !registered.has(worker.workspaceId))
     )
-      throw new Error("invalid-lead-workspaces");
+      throw new Error(REMOTE_ERROR_CODES.invalidLeadWorkspaces);
     return this.registry.registerWorkers(
       sessionId,
       (lead, names) => {
@@ -884,7 +890,7 @@ export class OrchestrationService {
         const assigned = candidates.map((worker) => {
           const current = this.#workerSession(worker.id);
           if (current.agent !== worker.agent || current.workspaceId !== worker.workspaceId)
-            throw new Error("worker-unavailable");
+            throw new Error(REMOTE_ERROR_CODES.workerUnavailable);
           while (names.has(`worker-${number}`)) number++;
           const name = `worker-${number++}`;
           return this.#newLane(name, worker.id, worker.workspaceId, worker.agent);
@@ -926,7 +932,8 @@ export class OrchestrationService {
     authorizedWorkspaceIds?: readonly string[];
     workspaceId?: string;
   }): Promise<boolean> {
-    if (!this.#enabledLead(input.sessionId)) throw new Error("lead-requires-managed-claude");
+    if (!this.#enabledLead(input.sessionId))
+      throw new Error(REMOTE_ERROR_CODES.leadRequiresManagedClaude);
     const toolsChanged = this.registry.update(input.sessionId, (lead) => {
       const current = this.#effectiveScope(lead, input.workspaceId);
       this.#requireAuthorizedWorkspaces(current, input.authorizedWorkspaceIds);
@@ -972,7 +979,7 @@ export class OrchestrationService {
 
   #requireAuthorizedWorkspaces(scope: LeadScope, authorized: readonly string[] | undefined): void {
     if (authorized && scope.workspaceIds.some((id) => !authorized.includes(id)))
-      throw new Error("workspace_not_authorized");
+      throw new Error(REMOTE_ERROR_CODES.workspaceNotAuthorized);
   }
 
   /** Only delegation settings are writable. Older clients may still send the old scope keys. */
@@ -992,9 +999,9 @@ export class OrchestrationService {
       stallMinutes < 3 ||
       stallMinutes > 120
     )
-      throw new Error("invalid-lead-delegation");
+      throw new Error(REMOTE_ERROR_CODES.invalidLeadDelegation);
     if (!Number.isSafeInteger(maxAutoTurns) || maxAutoTurns < 1 || maxAutoTurns > 100)
-      throw new Error("invalid-lead-turn-limit");
+      throw new Error(REMOTE_ERROR_CODES.invalidLeadTurnLimit);
     return {
       ...base,
       maxAutoTurns,
@@ -1027,7 +1034,7 @@ export class OrchestrationService {
   removeWorker(sessionId: string, worker: string, outcome = "removed"): void {
     this.registry.update(sessionId, (lead) => {
       const index = lead.lanes.findIndex((lane) => lane.sessionId === worker);
-      if (index < 0) throw new Error("worker-unavailable");
+      if (index < 0) throw new Error(REMOTE_ERROR_CODES.workerUnavailable);
       const [lane] = lead.lanes.splice(index, 1);
       addLeadRecord(lead, "close", lane!.id, null, outcome);
     });
@@ -1043,11 +1050,11 @@ export class OrchestrationService {
     worker: string,
     deviceId: string,
   ): Promise<{ accepted: boolean; requestId?: string; reason?: string }> {
-    if (!this.#enabledLead(sessionId)) throw new Error("lead-unavailable");
+    if (!this.#enabledLead(sessionId)) throw new Error(REMOTE_ERROR_CODES.leadUnavailable);
     const lead = this.registry.get(sessionId);
-    if (!lead) throw new Error("lead-unavailable");
+    if (!lead) throw new Error(REMOTE_ERROR_CODES.leadUnavailable);
     const lane = lead.lanes.find((item) => item.sessionId === worker);
-    if (!lane) throw new Error("worker-unavailable");
+    if (!lane) throw new Error(REMOTE_ERROR_CODES.workerUnavailable);
     if (!this.#enabledProvider(lane.agent)) throw new Error("worker-agent-unsupported");
     const result = await this.#stopLane(lead, lane, deviceId);
     if (result.accepted && !result.cancelled) this.laneControlled(lane.sessionId, "stop");
@@ -1088,7 +1095,8 @@ export class OrchestrationService {
     authorizedWorkspaceIds?: readonly string[],
     workspaceId?: string,
   ): Lead {
-    if (!this.#enabledLead(sessionId)) throw new Error("lead-requires-managed-claude");
+    if (!this.#enabledLead(sessionId))
+      throw new Error(REMOTE_ERROR_CODES.leadRequiresManagedClaude);
     this.registry.update(sessionId, (lead) => {
       const scope = this.#effectiveScope(lead, workspaceId);
       this.#requireAuthorizedWorkspaces(scope, authorizedWorkspaceIds);
@@ -1875,7 +1883,7 @@ export class OrchestrationService {
       else this.#completions.delete(leadId);
       fresh = batch.messages;
     } catch (error) {
-      if (error instanceof Error && error.message === "lead-unavailable") return;
+      if (error instanceof Error && error.message === REMOTE_ERROR_CODES.leadUnavailable) return;
       throw error;
     }
     if (fresh.length && !hold) this.#kickReports(leadId, now);
@@ -2477,7 +2485,7 @@ export class OrchestrationService {
   #lane(lead: Lead, input: Record<string, unknown>): Lane {
     const name = stringField(input, "worker", 48);
     const lane = lead.lanes.find((item) => item.name === name);
-    if (!lane) throw new Error("worker-unavailable");
+    if (!lane) throw new Error(REMOTE_ERROR_CODES.workerUnavailable);
     if (!this.#enabledProvider(lane.agent)) throw new Error("worker-agent-unsupported");
     this.#checkAssignedWorkspace(lane);
     return lane;
@@ -2493,7 +2501,7 @@ export class OrchestrationService {
   #currentAssignment(lead: Lead, lane: Lane, delegated: boolean): Lead {
     const current = this.registry.get(lead.sessionId);
     if (!current?.lanes.some((worker) => worker.id === lane.id))
-      throw new Error("worker-unavailable");
+      throw new Error(REMOTE_ERROR_CODES.workerUnavailable);
     if (!this.#enabledLead(lead.sessionId) || !this.#enabledProvider(lane.agent))
       throw new Error("worker-agent-unsupported");
     this.#checkAssignedWorkspace(lane);
@@ -2603,7 +2611,7 @@ export class OrchestrationService {
           timer = setTimeout(() => resolve(false), WORKER_REACHABILITY_TIMEOUT_MS);
         }),
       ]);
-      if (!reachable) throw new Error("worker-unavailable");
+      if (!reachable) throw new Error(REMOTE_ERROR_CODES.workerUnavailable);
     } finally {
       clearTimeout(timer);
     }
@@ -2632,7 +2640,7 @@ export class OrchestrationService {
     const mode = input.mode === undefined ? "queue" : input.mode;
     if (mode !== "queue" && mode !== "steer") return refuse("invalid-mode");
     const live = await this.#state(lane.sessionId, "send");
-    if (!live) return refuse("worker-unavailable");
+    if (!live) return refuse(REMOTE_ERROR_CODES.workerUnavailable);
     const limit = workerLimit(live);
     if (limit && (limit.resetsAt === null || limit.resetsAt > Date.now())) {
       this.#currentAssignment(lead, lane, true);
@@ -2800,7 +2808,7 @@ export class OrchestrationService {
     if (!id) return refuse("missing-approval");
     if (decision !== "accept" && decision !== "decline") return refuse("invalid-decision");
     const live = await this.#state(lane.sessionId);
-    if (!live) return refuse("worker-unavailable");
+    if (!live) return refuse(REMOTE_ERROR_CODES.workerUnavailable);
     const current = this.#currentAssignment(lead, lane, true);
     const item = waitingItems(live, current.scope).find(
       (entry) => entry.kind === "approval" && entry.id === id,
@@ -2842,7 +2850,7 @@ export class OrchestrationService {
     )
       return refuse("invalid-answers");
     const live = await this.#state(lane.sessionId);
-    if (!live) return refuse("worker-unavailable");
+    if (!live) return refuse(REMOTE_ERROR_CODES.workerUnavailable);
     const current = this.#currentAssignment(lead, lane, true);
     const item = waitingItems(live, current.scope).find(
       (entry) => entry.kind === "question" && entry.id === id,
@@ -2968,7 +2976,7 @@ export class OrchestrationService {
       !Number.isSafeInteger(live.revision) ||
       live.revision < 0
     )
-      return refuse("worker-unavailable");
+      return refuse(REMOTE_ERROR_CODES.workerUnavailable);
     if (this.#workerRestarts.has(lane.sessionId)) return refuse("worker-restart-in-progress");
 
     const previous = this.registry.workerRestartWindow(lane.sessionId);
@@ -3008,7 +3016,7 @@ export class OrchestrationService {
     let outcome: WorkerRestartResult;
     try {
       outcome = await this.lanes.restart(request, () => {
-        if (this.#closed) throw new Error("worker-unavailable");
+        if (this.#closed) throw new Error(REMOTE_ERROR_CODES.workerUnavailable);
         this.#currentAssignment(lead, lane, true);
         if (!this.#inAssignedWorkspace(lane)) throw new Error("workspace-not-allowed");
         if (reserved) return;
@@ -3116,7 +3124,7 @@ export class OrchestrationService {
       return { accepted: true, requestId: wait.requestId, cancelled: true };
     }
     if (!live || typeof live.turnId !== "string" || live.stopEnabled !== true)
-      return { accepted: false, reason: "worker-not-running" };
+      return { accepted: false, reason: REMOTE_ERROR_CODES.workerNotRunning };
     this.#currentAssignment(lead, lane, delegated);
     const requestId = randomUUID();
     let outcome: Record<string, unknown>;

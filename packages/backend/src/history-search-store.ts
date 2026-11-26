@@ -13,7 +13,11 @@ import type {
   HistorySearchResult,
   HistorySearchStatus,
 } from "@agentkib/runtime-protocol";
-import { literalHistoryMatchRanges, normalizeHistorySearchText } from "@agentkib/runtime-protocol";
+import {
+  REMOTE_ERROR_CODES,
+  literalHistoryMatchRanges,
+  normalizeHistorySearchText,
+} from "@agentkib/runtime-protocol";
 import { isReparseOrSymlink } from "./native-files";
 import {
   HISTORY_SEARCH_SANITIZER_VERSION,
@@ -847,10 +851,10 @@ export class HistorySearchStore {
       try {
         cursor = JSON.parse(Buffer.from(request.cursor, "base64url").toString());
       } catch {
-        throw new Error("history-search-cursor-invalid");
+        throw new Error(REMOTE_ERROR_CODES.historySearchCursorInvalid);
       }
       if (cursor.generation !== status.generation || cursor.scope !== scope)
-        throw new Error("history-search-cursor-stale");
+        throw new Error(REMOTE_ERROR_CODES.historySearchCursorStale);
       const parsed = z
         .tuple([
           z.string(),
@@ -860,7 +864,7 @@ export class HistorySearchStore {
           z.number().int().safe(),
         ])
         .safeParse(cursor.after);
-      if (!parsed.success) throw new Error("history-search-cursor-invalid");
+      if (!parsed.success) throw new Error(REMOTE_ERROR_CODES.historySearchCursorInvalid);
       after = parsed.data;
     }
     const clauses = ["c.generation=s.generation"],
@@ -974,13 +978,13 @@ export class HistorySearchStore {
   locate(input: HistoryLocation, allowedSessionIds: string[]): HistoryLocatedRecord {
     const location = historyLocationSchema.parse(input);
     if (!allowedSessionIds.includes(location.sessionId))
-      throw new Error("history-source-unavailable");
+      throw new Error(REMOTE_ERROR_CODES.historySourceUnavailable);
     const row = this.db
       .prepare(`SELECT c.*,CAST(c.content AS BLOB) AS content_bytes,CAST(c.tool_name AS BLOB) AS tool_name_bytes,
       CAST(s.title AS BLOB) AS title_bytes,s.workspace_id,s.agent,s.source_revision FROM chunks c JOIN sessions s ON s.session_id=c.session_id
       WHERE c.session_id=? AND c.generation=s.generation AND c.record_id=? AND c.chunk_id=? AND s.source_revision=?`)
       .get(location.sessionId, location.recordId, location.chunkId, location.sourceRevision);
-    if (!row) throw new Error("history-source-stale");
+    if (!row) throw new Error(REMOTE_ERROR_CODES.historySourceStale);
     const adjacent = (direction: "<" | ">", order: "ASC" | "DESC") =>
       this.db
         .prepare(`SELECT c.*,s.source_revision FROM chunks c JOIN sessions s ON s.session_id=c.session_id

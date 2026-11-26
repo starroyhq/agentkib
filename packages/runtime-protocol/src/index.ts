@@ -1,4 +1,7 @@
 // Shared runtime protocol source of truth; the Electron compatibility entry is generated.
+import { CONVERSATION_PROTOCOL_VERSION, PROTOCOL_VERSION } from "./generated/remote-contract";
+
+export * from "./generated/remote-contract";
 export * from "./agents";
 export * from "./session-providers";
 export * from "./session-plan-progress";
@@ -25,8 +28,6 @@ export {
   type SessionCollection,
 } from "./session-collections";
 
-export const PROTOCOL_VERSION = 17 as const;
-export const CONVERSATION_PROTOCOL_VERSION = 2 as const;
 export const PROJECT_AGENT_MAX_WORKERS = 10;
 export const SESSION_EVENT_NOTIFICATION = "sessions.event" as const;
 export const RUNTIME_METHODS = {

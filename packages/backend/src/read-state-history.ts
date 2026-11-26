@@ -1,3 +1,4 @@
+import { REMOTE_ERROR_CODES } from "@agentkib/runtime-protocol";
 import { closeSync, constants, fstatSync, lstatSync, openSync, readSync } from "node:fs";
 import type { ConversationReadResult } from "@agentkib/runtime-protocol";
 import { ReadStateLedger, type ReadCheckpoint } from "./read-state-ledger";
@@ -180,12 +181,13 @@ export function observeReadHistory(
   file: string,
 ): { changed: boolean; complete: boolean } {
   const metadata = lstatSync(file);
-  if (!metadata.isFile() || metadata.isSymbolicLink()) throw new Error("read-state-unavailable");
+  if (!metadata.isFile() || metadata.isSymbolicLink())
+    throw new Error(REMOTE_ERROR_CODES.readStateUnavailableDetail);
   const fd = openSync(file, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
   try {
     const stat = fstatSync(fd);
     if (!stat.isFile() || stat.dev !== metadata.dev || stat.ino !== metadata.ino)
-      throw new Error("read-state-unavailable");
+      throw new Error(REMOTE_ERROR_CODES.readStateUnavailableDetail);
     const saved = ledger.checkpoint(key),
       identity = `${stat.dev}:${stat.ino}`;
     const old = saved.checkpoint;
@@ -205,12 +207,13 @@ export function observeReadHistory(
     let length = 0;
     while (length < size) {
       const count = readSync(fd, bytes, length, size - length, checkpoint.offset + length);
-      if (!count) throw new Error("read-state-unavailable");
+      if (!count) throw new Error(REMOTE_ERROR_CODES.readStateUnavailableDetail);
       length += count;
     }
     const newline = bytes.lastIndexOf(10);
     const end = newline + 1;
-    if (end === 0 && size === SLICE_BYTES) throw new Error("read-state-unavailable");
+    if (end === 0 && size === SLICE_BYTES)
+      throw new Error(REMOTE_ERROR_CODES.readStateUnavailableDetail);
     // A partial trailing write is retained for the next observation, never used as a baseline.
     if (end === 0 && size !== 0) return { changed: false, complete: false };
     const start = checkpoint.offset;
@@ -222,7 +225,7 @@ export function observeReadHistory(
       const line = bytes.subarray(offset, next).toString("utf8").trim();
       if (line) {
         const row: unknown = JSON.parse(line);
-        if (!object(row)) throw new Error("read-state-unavailable");
+        if (!object(row)) throw new Error(REMOTE_ERROR_CODES.readStateUnavailableDetail);
         const result = historyReadResult(provider, row, start + offset, checkpoint);
         if (result)
           results.push({
@@ -234,7 +237,8 @@ export function observeReadHistory(
       offset = next + 1;
     }
     const after = fstatSync(fd);
-    if (after.ino !== stat.ino || after.size < stat.size) throw new Error("read-state-unavailable");
+    if (after.ino !== stat.ino || after.size < stat.size)
+      throw new Error(REMOTE_ERROR_CODES.readStateUnavailableDetail);
     checkpoint.offset += end;
     const complete = checkpoint.offset >= stat.size;
     const changed = ledger.observe(

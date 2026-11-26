@@ -1,3 +1,5 @@
+import { REMOTE_FEATURE_VERSIONS } from "./generated/remote-contract";
+
 export type SessionInteractionRiskReason =
   | "deletion"
   | "network"
@@ -40,7 +42,7 @@ export interface SessionInteractionQuestion {
 }
 
 export interface SessionPendingInteraction {
-  version: 1;
+  version: typeof REMOTE_FEATURE_VERSIONS.pendingInteractions;
   kind: "approval" | "question";
   binding: {
     sessionId: string;

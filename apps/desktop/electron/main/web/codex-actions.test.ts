@@ -155,7 +155,9 @@ const action = (text = "append") => ({
   turnId: "turn",
   text,
 });
-const deletion = () => ({
+const deletion = (agent = "codex") => ({
+  operation: "delete",
+  agent,
   sessionId: "session",
   bootId,
   requestId: randomUUID(),
@@ -205,6 +207,21 @@ it("keeps the operation in the legacy path authoritative", async () => {
   );
   expect(runtime).not.toHaveBeenCalledWith(expect.objectContaining({ operation: "delete" }));
 });
+it.each(["delete", "compact", "terminals-clean", "usage-limit-cancel", "usage-limit-continue"])(
+  "rejects the retired Codex %s alias without dispatching",
+  async (operation) => {
+    await pair({ advancedControl: true, manage: true, organize: true });
+    runtime.mockClear();
+    const path = `/codex/${operation}`;
+    const body = { ...action(), agent: "codex", operation };
+    expect(await http(path, body)).toMatchObject({ status: 404, data: { error: "not_found" } });
+    expect(await service.localRequest(path, body)).toMatchObject({
+      status: 404,
+      body: { error: "not_found", controlOutcome: "not-dispatched" },
+    });
+    expect(runtime).not.toHaveBeenCalled();
+  },
+);
 it("keeps Codex read aliases scoped to Codex sessions", async () => {
   runtime.mockImplementation(async (input) => {
     if ((input as { operation: string }).operation === "catalog")
@@ -588,7 +605,7 @@ it("deletes with organize permission and takes the conversation's uploads with i
         }
       : runtimeHandler(input),
   );
-  const result = await http("/codex/delete", deletion());
+  const result = await http("/managed/action", deletion());
   expect(result.status).toBe(200);
   expect(result.data).toMatchObject({ accepted: true, deleted: true });
   const dispatched = runtime.mock.calls.filter(
@@ -620,7 +637,7 @@ it("keeps uploads when the backend did not delete", async () => {
         }
       : runtimeHandler(input),
   );
-  const result = await http("/codex/delete", deletion());
+  const result = await http("/managed/action", deletion());
   expect(result.status).toBe(409);
   expect(result.data).toMatchObject({
     error: "codex-owner-busy",
@@ -642,11 +659,7 @@ it("deletes a Claude session through the generic action with its public input ha
         }
       : runtimeHandler(input),
   );
-  const result = await http("/managed/action", {
-    ...deletion(),
-    operation: "delete",
-    agent: "claude-code",
-  });
+  const result = await http("/managed/action", deletion("claude-code"));
   expect(result.status).toBe(200);
   const dispatched = runtime.mock.calls.find(
     ([p]) => (p as { operation: string }).operation === "delete",
@@ -656,7 +669,7 @@ it("deletes a Claude session through the generic action with its public input ha
 });
 it("keeps delete behind organize permission", async () => {
   await pair({ attachments: true });
-  expect((await http("/codex/delete", deletion())).status).toBe(403);
+  expect((await http("/managed/action", deletion())).status).toBe(403);
   expect(
     runtime.mock.calls.some(([p]) => (p as { operation: string }).operation === "delete"),
   ).toBe(false);

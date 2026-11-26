@@ -207,7 +207,9 @@ describe("trusted desktop conversation routes", () => {
       );
       const access = await service.localRequest("/access");
       expect(
-        await service.localRequest(`/codex/${operation}`, {
+        await service.localRequest("/managed/action", {
+          agent: "codex",
+          operation,
           sessionId: "s",
           bootId: (access.body as { bootId: string }).bootId,
           expectedRevision: 4,

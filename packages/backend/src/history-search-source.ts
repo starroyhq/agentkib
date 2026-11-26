@@ -1,3 +1,4 @@
+import { REMOTE_ERROR_CODES } from "@agentkib/runtime-protocol";
 import { createHash } from "node:crypto";
 import { lstatSync, type BigIntStats } from "node:fs";
 import { performance } from "node:perf_hooks";
@@ -69,7 +70,7 @@ function verifyOpenClawSearchBinding(
       ]),
     ) !== input.sessionId
   )
-    throw new Error("history-source-unavailable");
+    throw new Error(REMOTE_ERROR_CODES.historySourceUnavailable);
   if (new OpenClawSessions(input.environment).home() !== binding.home)
     throw new OpenClawSourceOwnershipError(
       "OpenClaw source directory changed while reading history",
@@ -117,11 +118,12 @@ export async function readHistorySearchSource(
     input.summary.availability !== "readable" ||
     ["auxiliary", "execution"].includes(input.summary.origin)
   )
-    throw new Error("history-source-unavailable");
+    throw new Error(REMOTE_ERROR_CODES.historySourceUnavailable);
   const store = {
     get: (id: string) => (id === input.sessionId ? input.summary : null),
     workspacePath: (id: string) => {
-      if (id !== input.summary.workspace_id) throw new Error("history-source-owner-changed");
+      if (id !== input.summary.workspace_id)
+        throw new Error(REMOTE_ERROR_CODES.historySourceOwnerChanged);
       return input.workspacePath;
     },
     identitySalt: () => input.identitySalt,
@@ -130,7 +132,8 @@ export async function readHistorySearchSource(
   };
   const bridge = {
     profiles: (workspace: string) => {
-      if (workspace !== input.workspacePath) throw new Error("history-source-owner-changed");
+      if (workspace !== input.workspacePath)
+        throw new Error(REMOTE_ERROR_CODES.historySourceOwnerChanged);
       return input.profiles;
     },
   };
@@ -209,7 +212,7 @@ export async function readHistorySearchSource(
     if (input.summary.agent === "deepseek-harness") {
       // Read from the running DSH on the main thread (`HistorySearch`); without its records the
       // indexed generation stays as it was.
-      if (!input.dsh) throw new Error("history-source-unavailable");
+      if (!input.dsh) throw new Error(REMOTE_ERROR_CODES.historySourceUnavailable);
       sink.fingerprint(JSON.stringify(["deepseek-harness", input.sessionId, input.dsh.revision]));
       for (const { truncated, ...record } of input.dsh.records) {
         if (truncated) sink.limit("source-record-limit");
@@ -236,8 +239,9 @@ export async function readHistorySearchSource(
         native.origin === "auxiliary" ||
         (native.origin === "execution" && !managedClaude)
       )
-        throw new Error("history-source-owner-changed");
-      if (native.availability !== "readable") throw new Error("history-source-unavailable");
+        throw new Error(REMOTE_ERROR_CODES.historySourceOwnerChanged);
+      if (native.availability !== "readable")
+        throw new Error(REMOTE_ERROR_CODES.historySourceUnavailable);
     };
     const resolveOwned = async () => {
       check();
@@ -248,7 +252,7 @@ export async function readHistorySearchSource(
           check();
           // Keep confirmed changes outside discovery's best-effort missing-source catch.
           if (error instanceof OpenClawSourceOwnershipError)
-            throw new Error("history-source-owner-changed", { cause: error });
+            throw new Error(REMOTE_ERROR_CODES.historySourceOwnerChanged, { cause: error });
           throw error;
         }
         check();
@@ -324,16 +328,16 @@ export async function readHistorySearchSource(
               belongsToWorkspace(cwd, input.workspacePath, userHome(input.environment)),
             )
           )
-            throw new Error("history-source-owner-changed", { cause: error });
+            throw new Error(REMOTE_ERROR_CODES.historySourceOwnerChanged, { cause: error });
           if (lookup) {
             if (
               lookup.cwd !== null &&
               !belongsToWorkspace(lookup.cwd, input.workspacePath, userHome(input.environment))
             )
-              throw new Error("history-source-owner-changed", { cause: error });
+              throw new Error(REMOTE_ERROR_CODES.historySourceOwnerChanged, { cause: error });
             verifyNative(lookup.session);
           }
-          throw new Error("history-source-unavailable", { cause: error });
+          throw new Error(REMOTE_ERROR_CODES.historySourceUnavailable, { cause: error });
         }
         throw error;
       }
@@ -350,19 +354,19 @@ export async function readHistorySearchSource(
       ]);
     const originalNative = nativeEvidence(resolved.native);
     const verifyLookup = (value: { cwd: string | null; session: NativeSession }) => {
-      if (value.cwd === null) throw new Error("history-source-unavailable");
+      if (value.cwd === null) throw new Error(REMOTE_ERROR_CODES.historySourceUnavailable);
       if (!belongsToWorkspace(value.cwd, resolved.workspace, userHome(input.environment)))
-        throw new Error("history-source-owner-changed");
+        throw new Error(REMOTE_ERROR_CODES.historySourceOwnerChanged);
       verifyNative(value.session);
       if (nativeEvidence(value.session) !== originalNative)
-        throw new Error("history-source-changed");
+        throw new Error(REMOTE_ERROR_CODES.historySourceChanged);
     };
     sink.fingerprint(historySourceIdentity(input, originalNative, resolved));
     const { native, workspace, transcript } = resolved;
     switch (native.agent) {
       case "codex":
       case "claude-code":
-        if (!transcript) throw new Error("history-source-unavailable");
+        if (!transcript) throw new Error(REMOTE_ERROR_CODES.historySourceUnavailable);
         await readJsonlSearchSource(transcript, native.agent, sink);
         break;
       case "grok-build": {
@@ -407,7 +411,7 @@ export async function readHistorySearchSource(
           (typeof info.directory === "string" &&
             pathIdentity(canonicalize(info.directory)) !== pathIdentity(canonicalize(workspace)))
         )
-          throw new Error("history-source-owner-changed");
+          throw new Error(REMOTE_ERROR_CODES.historySourceOwnerChanged);
         sink.fingerprint(stringifyAcpJson(snapshot));
         for (const message of snapshot.messages) {
           check();
@@ -461,7 +465,7 @@ export async function readHistorySearchSource(
             provider.readReplay(native.native_ref, deadline),
           );
           if (pathIdentity(snapshot.session.workspace) !== pathIdentity(canonicalize(workspace)))
-            throw new Error("history-source-owner-changed");
+            throw new Error(REMOTE_ERROR_CODES.historySourceOwnerChanged);
           sink.fingerprint(stringifyAcpJson(snapshot.updates));
           // Resource bodies are attachments, even when ACP exposes them as readable text.
           const updates = snapshot.updates.map((update) => {
@@ -539,7 +543,7 @@ export async function readHistorySearchSource(
                 .workspaces()
                 .some((cwd) => belongsToWorkspace(cwd, workspace, userHome(input.environment)))
             )
-              throw new Error("history-source-owner-changed");
+              throw new Error(REMOTE_ERROR_CODES.historySourceOwnerChanged);
             sink.fingerprint(cursor.rootId);
             const snapshot = await readSourceSnapshot(sink, () => cursor.turns());
             await emitTurns(snapshot.turns, sink);
@@ -560,9 +564,9 @@ export async function readHistorySearchSource(
       pathIdentity(canonicalize(current.workspace)) !== pathIdentity(canonicalize(workspace)) ||
       current.transcript !== transcript
     )
-      throw new Error("history-source-owner-changed");
+      throw new Error(REMOTE_ERROR_CODES.historySourceOwnerChanged);
     if (nativeEvidence(current.native) !== originalNative)
-      throw new Error("history-source-changed");
+      throw new Error(REMOTE_ERROR_CODES.historySourceChanged);
     check();
     return {
       sourceRevision: hash.digest("hex"),
@@ -586,7 +590,7 @@ export async function readHistorySearchSource(
         // Discovery can fail after the earlier probe; replace failures only with
         // confirmed revocation, preserving redaction and temporary source errors.
         if (ownershipError instanceof OpenClawSourceOwnershipError)
-          throw new Error("history-source-owner-changed", { cause: ownershipError });
+          throw new Error(REMOTE_ERROR_CODES.historySourceOwnerChanged, { cause: ownershipError });
       }
     }
     throw error;

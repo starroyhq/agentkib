@@ -1,3 +1,8 @@
+import {
+  REMOTE_FEATURE_VERSIONS,
+  REMOTE_ROUTE,
+  REMOTE_ROUTE_BASE,
+} from "@agentkib/runtime-protocol";
 import { readWebAdminReason, type WebAdminReason } from "../admin-errors";
 import { spawn, execFile, type ChildProcess } from "node:child_process";
 import {
@@ -21,7 +26,7 @@ import { promisify } from "node:util";
 export const DEFAULT_RELAY_BROKER = "https://api.agentkib.com";
 type Channel = "control" | "preview";
 export type DirectConnection = {
-  version: 1;
+  version: typeof REMOTE_FEATURE_VERSIONS.directConnection;
   controlOrigin: string;
   previewOrigin: string;
   candidates: Array<{ address: string; controlPort: number; previewPort: number }>;
@@ -602,7 +607,7 @@ export class RelayManager {
     });
     if (!candidates.length) return undefined;
     return {
-      version: 1,
+      version: REMOTE_FEATURE_VERSIONS.directConnection,
       controlOrigin: `https://${this.registration.controlHost}`,
       previewOrigin: `https://${this.registration.previewHost}`,
       candidates,
@@ -1185,7 +1190,7 @@ export class RelayManager {
     if (
       channel !== "control" ||
       request.method !== "GET" ||
-      request.url !== "/api/web/v1/socket" ||
+      request.url !== `${REMOTE_ROUTE_BASE}${REMOTE_ROUTE.socket}` ||
       !allowed()
     ) {
       socket.destroy();

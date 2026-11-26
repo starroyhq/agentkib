@@ -1,3 +1,4 @@
+import { REMOTE_ERROR_CODES } from "@agentkib/runtime-protocol";
 import { DatabaseSync } from "node:sqlite";
 import { nativeFileIdentity } from "./native-files";
 import { Sql } from "./sql";
@@ -31,9 +32,9 @@ function digest(kind: string, parts: string[]): string {
   return stableNativeRef(kind, parts).slice(`${kind}-v1-`.length);
 }
 function integer(value: string, maximum: bigint): bigint {
-  if (!/^[+]?\d+$/.test(value)) throw new Error("TRANSCRIPT_CURSOR_INVALID");
+  if (!/^[+]?\d+$/.test(value)) throw new Error(REMOTE_ERROR_CODES.transcriptCursorInvalid);
   const number = BigInt(value);
-  if (number > maximum) throw new Error("TRANSCRIPT_CURSOR_INVALID");
+  if (number > maximum) throw new Error(REMOTE_ERROR_CODES.transcriptCursorInvalid);
   return number;
 }
 /** Stateless rowid pages bind the high-water row to the source file and a bounded content anchor. */
@@ -123,7 +124,7 @@ export function readHermesEvents(
         ? cursor.slice("hermes-db-v2-".length).split("-")
         : [];
       if (parts.length !== 6 || parts[0] !== source || !/^[a-fA-F0-9]{64}$/.test(parts[0]!))
-        throw new Error("TRANSCRIPT_CURSOR_INVALID");
+        throw new Error(REMOTE_ERROR_CODES.transcriptCursorInvalid);
       high = integer(parts[1]!, MAX_I64);
       before = integer(parts[2]!, MAX_I64);
       const dev = integer(parts[3]!, MAX_U64),
@@ -133,14 +134,14 @@ export function readHermesEvents(
         before > (high < MAX_I64 ? high + 1n : MAX_I64) ||
         !((high === 0n && highAnchor === "") || /^[a-fA-F0-9]{64}$/.test(highAnchor))
       )
-        throw new Error("TRANSCRIPT_CURSOR_INVALID");
+        throw new Error(REMOTE_ERROR_CODES.transcriptCursorInvalid);
       if (
         dev !== identity[0] ||
         ino !== identity[1] ||
         currentHigh < high ||
         (high > 0n && anchor(high) !== highAnchor)
       )
-        throw new Error("TRANSCRIPT_CURSOR_STALE");
+        throw new Error(REMOTE_ERROR_CODES.transcriptCursorStale);
     }
     const statement = db.prepare(
       `SELECT rowid AS rowid,${blob(role)} AS role,${blob(bounded(content, MAX_MESSAGE_BYTES + 1))} AS content,${blob(timestamp)} AS timestamp,${blob(status)} AS status,${blob(tool)} AS tool FROM messages WHERE CAST(${quote(session)} AS TEXT)=? AND rowid<=? AND rowid<? ORDER BY rowid DESC LIMIT 501`,
@@ -218,7 +219,7 @@ export function readHermesEvents(
     }
     const finalIdentity = nativeFileIdentity(file);
     if (finalIdentity[0] !== identity[0] || finalIdentity[1] !== identity[1])
-      throw new Error("TRANSCRIPT_CURSOR_STALE");
+      throw new Error(REMOTE_ERROR_CODES.transcriptCursorStale);
     return {
       events: events.reverse(),
       next_cursor: more

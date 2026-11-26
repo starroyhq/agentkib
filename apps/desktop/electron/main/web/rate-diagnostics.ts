@@ -1,6 +1,7 @@
+import { REMOTE_ROUTE, REMOTE_ROUTE_BASE, REMOTE_ROUTE_PREFIXES } from "@agentkib/runtime-protocol";
 import { randomUUID } from "node:crypto";
 
-const API_PREFIX = "/api/web/v1/";
+const API_PREFIX = `${REMOTE_ROUTE_BASE}/`;
 const MINUTE_MS = 60_000;
 const RETAIN_MINUTES = 15;
 const MAX_DEVICES = 128;
@@ -24,33 +25,42 @@ export function remoteRateCategory(
   pathname: string,
 ): RemoteRateCategory {
   if (!pathname.startsWith(API_PREFIX)) return "other";
-  const route = pathname.slice(API_PREFIX.length);
+  const route = pathname.slice(REMOTE_ROUTE_BASE.length);
   if (method === "OPTIONS") return "preflight";
   if (method === "GET") {
-    if (route === "stream") return "stream";
-    if (route === "info" || route === "access") return "probe";
-    if (route.startsWith("requests/")) return "receipt";
+    if (route === REMOTE_ROUTE.stream) return "stream";
+    if (route === REMOTE_ROUTE.info || route === REMOTE_ROUTE.access) return "probe";
+    if (route.startsWith(REMOTE_ROUTE_PREFIXES.requests)) return "receipt";
   }
-  if (route === "catalog") return "catalog";
-  if (route === "events" || route === "subagent/events" || route.startsWith("history/"))
+  if (route === REMOTE_ROUTE.catalog) return "catalog";
+  if (
+    route === REMOTE_ROUTE.events ||
+    route === REMOTE_ROUTE.subagentEvents ||
+    route.startsWith(REMOTE_ROUTE_PREFIXES.history)
+  )
     return "history";
   if (
-    route === "live" ||
-    route === "read-state" ||
-    route === "managed/capabilities" ||
-    route === "codex/capabilities"
+    route === REMOTE_ROUTE.live ||
+    route === REMOTE_ROUTE.readState ||
+    route === REMOTE_ROUTE.managedCapabilities ||
+    route === REMOTE_ROUTE.codexCapabilities
   )
     return "status";
   if (
-    route.startsWith("files/") ||
-    route.startsWith("attachments") ||
-    route.startsWith("artifacts") ||
-    route === "artifact-tickets" ||
-    route === "session-images" ||
-    route === "diff"
+    route.startsWith(REMOTE_ROUTE_PREFIXES.files) ||
+    route.startsWith(REMOTE_ROUTE.attachments) ||
+    route.startsWith(REMOTE_ROUTE.artifacts) ||
+    route === REMOTE_ROUTE.artifactTickets ||
+    route === REMOTE_ROUTE.sessionImages ||
+    route === REMOTE_ROUTE.diff
   )
     return "files";
-  if (route === "pair" || route === "pair/cancel" || route === "account-binding") return "pairing";
+  if (
+    route === REMOTE_ROUTE.pair ||
+    route === REMOTE_ROUTE.pairCancel ||
+    route === REMOTE_ROUTE.accountBinding
+  )
+    return "pairing";
   return method === "POST" ? "control" : "api";
 }
 

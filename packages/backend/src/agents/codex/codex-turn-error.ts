@@ -3,9 +3,10 @@
  * turn's `error` (`TurnError {message, additionalDetails}`) and the rollout keeps it in
  * `task_complete.error {message}`; both become the same conversation row.
  */
+import { REMOTE_ERROR_CODES } from "@agentkib/runtime-protocol";
 
 type JsonObject = Record<string, unknown>;
-export const CODEX_TURN_START_REJECTED = "codex-turn-start-rejected";
+export const CODEX_TURN_START_REJECTED = REMOTE_ERROR_CODES.codexTurnStartRejected;
 const isObject = (value: unknown): value is JsonObject =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 

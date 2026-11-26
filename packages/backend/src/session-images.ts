@@ -1,3 +1,4 @@
+import { REMOTE_ERROR_CODES } from "@agentkib/runtime-protocol";
 import { createHash, randomUUID } from "node:crypto";
 import { closeSync, constants, fstatSync, lstatSync, openSync, readSync } from "node:fs";
 import path from "node:path";
@@ -133,13 +134,13 @@ function sourceDigest(source: ImageSource): string {
 
 function revision(fd: number): string {
   const metadata = fstatSync(fd, { bigint: true });
-  if (!metadata.isFile()) throw new Error("session-image-unavailable");
+  if (!metadata.isFile()) throw new Error(REMOTE_ERROR_CODES.sessionImageUnavailable);
   return `${metadata.dev}:${metadata.ino}:${metadata.size}:${metadata.mtimeNs}`;
 }
 function openRegular(filename: string): number {
   const metadata = lstatSync(filename);
   if (!metadata.isFile() || isReparseOrSymlink(filename, metadata))
-    throw new Error("session-image-unavailable");
+    throw new Error(REMOTE_ERROR_CODES.sessionImageUnavailable);
   const fd = openSync(filename, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
   try {
     revision(fd);
@@ -194,10 +195,12 @@ function mimeOf(bytes: Buffer): string | null {
 /** Canonical base64 for one image within the size limit; any other spelling is refused. */
 export function decodedSessionImage(data: string): Buffer {
   if (data.length % 4 || !/^[A-Za-z0-9+/]*={0,2}$/.test(data))
-    throw new Error("session-image-unsupported");
+    throw new Error(REMOTE_ERROR_CODES.sessionImageUnsupported);
   const bytes = Buffer.from(data, "base64");
-  if (bytes.length > MAX_SESSION_IMAGE_BYTES) throw new Error("session-image-too-large");
-  if (bytes.toString("base64") !== data) throw new Error("session-image-unsupported");
+  if (bytes.length > MAX_SESSION_IMAGE_BYTES)
+    throw new Error(REMOTE_ERROR_CODES.sessionImageTooLarge);
+  if (bytes.toString("base64") !== data)
+    throw new Error(REMOTE_ERROR_CODES.sessionImageUnsupported);
   return bytes;
 }
 
@@ -208,7 +211,7 @@ export function sessionImageResult(
 ): { mimeType: string; base64: string } {
   const mimeType = mimeOf(data);
   if (!mimeType || (declared !== undefined && mimeType !== declared))
-    throw new Error("session-image-unsupported");
+    throw new Error(REMOTE_ERROR_CODES.sessionImageUnsupported);
   return { mimeType, base64: data.toString("base64") };
 }
 
@@ -228,10 +231,10 @@ function readRecord(filename: string, offset: number): Buffer {
       length += count;
       if (newline >= 0) return Buffer.concat(parts, length);
     }
-    throw new Error("session-image-too-large");
+    throw new Error(REMOTE_ERROR_CODES.sessionImageTooLarge);
   } catch (error) {
     if (error instanceof Error && error.message.startsWith("session-image-")) throw error;
-    throw new Error("session-image-unavailable");
+    throw new Error(REMOTE_ERROR_CODES.sessionImageUnavailable);
   } finally {
     if (fd !== undefined) closeSync(fd);
   }
@@ -310,43 +313,48 @@ export class SessionImages {
     return images;
   }
   read(scope: string, filename: string, imageId: string): { mimeType: string; base64: string } {
-    if (!/^session-image-v1-[a-f0-9-]{36}$/.test(imageId)) throw new Error("session-image-invalid");
+    if (!/^session-image-v1-[a-f0-9-]{36}$/.test(imageId))
+      throw new Error(REMOTE_ERROR_CODES.sessionImageInvalid);
     const reference = this.#references.get(imageId);
     if (!reference || reference.scope !== scope || performance.now() - reference.created >= TTL)
-      throw new Error("session-image-unavailable");
+      throw new Error(REMOTE_ERROR_CODES.sessionImageUnavailable);
     const bytes = readRecord(filename, reference.offset);
-    if (digest(bytes) !== reference.digest) throw new Error("session-image-changed");
+    if (digest(bytes) !== reference.digest) throw new Error(REMOTE_ERROR_CODES.sessionImageChanged);
     let row: unknown;
     try {
       row = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
     } catch {
-      throw new Error("session-image-changed");
+      throw new Error(REMOTE_ERROR_CODES.sessionImageChanged);
     }
     const source = sessionImageSources(row, reference.format, reference.workspace).find(
       (candidate) => sourceDigest(candidate) === reference.sourceDigest,
     );
-    if (!source) throw new Error("session-image-changed");
+    if (!source) throw new Error(REMOTE_ERROR_CODES.sessionImageChanged);
     let data: Buffer;
     if (source.kind === "inline") data = decodedSessionImage(source.data);
     else {
-      if (reference.localRevision === null) throw new Error("session-image-unavailable");
+      if (reference.localRevision === null)
+        throw new Error(REMOTE_ERROR_CODES.sessionImageUnavailable);
       let fd: number | undefined;
       try {
         fd = openRegular(source.path);
-        if (revision(fd) !== reference.localRevision) throw new Error("session-image-changed");
+        if (revision(fd) !== reference.localRevision)
+          throw new Error(REMOTE_ERROR_CODES.sessionImageChanged);
         const size = fstatSync(fd).size;
-        if (size > MAX_SESSION_IMAGE_BYTES) throw new Error("session-image-too-large");
+        if (size > MAX_SESSION_IMAGE_BYTES)
+          throw new Error(REMOTE_ERROR_CODES.sessionImageTooLarge);
         data = Buffer.allocUnsafe(size);
         let read = 0;
         while (read < size) {
           const count = readSync(fd, data, read, size - read, read);
-          if (!count) throw new Error("session-image-changed");
+          if (!count) throw new Error(REMOTE_ERROR_CODES.sessionImageChanged);
           read += count;
         }
-        if (revision(fd) !== reference.localRevision) throw new Error("session-image-changed");
+        if (revision(fd) !== reference.localRevision)
+          throw new Error(REMOTE_ERROR_CODES.sessionImageChanged);
       } catch (error) {
         if (error instanceof Error && error.message.startsWith("session-image-")) throw error;
-        throw new Error("session-image-unavailable");
+        throw new Error(REMOTE_ERROR_CODES.sessionImageUnavailable);
       } finally {
         if (fd !== undefined) closeSync(fd);
       }

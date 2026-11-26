@@ -1,3 +1,4 @@
+import { REMOTE_ERROR_CODES } from "@agentkib/runtime-protocol";
 import { createHash, randomUUID } from "node:crypto";
 import {
   closeSync,
@@ -54,7 +55,7 @@ function readExact(fd: number, length: number, offset: number): Buffer {
   let count = 0;
   while (count < length) {
     const size = readSync(fd, bytes, count, length - count, offset + count);
-    if (!size) throw new Error("TRANSCRIPT_CURSOR_STALE");
+    if (!size) throw new Error(REMOTE_ERROR_CODES.transcriptCursorStale);
     count += size;
   }
   return bytes;
@@ -265,10 +266,10 @@ export class SessionPaging {
       let state: State;
       if (cursor !== null) {
         if (!cursor.startsWith("history-v1-") || Buffer.byteLength(cursor) > 64)
-          throw new Error("TRANSCRIPT_CURSOR_INVALID");
+          throw new Error(REMOTE_ERROR_CODES.transcriptCursorInvalid);
         const cached = this.#states.get(cursor);
         if (!cached || performance.now() - cached.created >= TTL)
-          throw new Error("TRANSCRIPT_CURSOR_STALE");
+          throw new Error(REMOTE_ERROR_CODES.transcriptCursorStale);
         state = clone(cached.state);
       } else {
         const length = Number(metadata.size);
@@ -433,13 +434,13 @@ export class SessionPaging {
     const metadata = fstatSync(fd, { bigint: true }),
       snapshot = state.snapshot;
     if (snapshot.path !== file || state.format !== format)
-      throw new Error("TRANSCRIPT_CURSOR_INVALID");
+      throw new Error(REMOTE_ERROR_CODES.transcriptCursorInvalid);
     if (
       metadata.size < BigInt(snapshot.length) ||
       identity(metadata) !== snapshot.identity ||
       (metadata.size === BigInt(snapshot.length) && metadata.mtimeNs !== snapshot.modified) ||
       fingerprint(fd, snapshot.length) !== snapshot.fingerprint
     )
-      throw new Error("TRANSCRIPT_CURSOR_STALE");
+      throw new Error(REMOTE_ERROR_CODES.transcriptCursorStale);
   }
 }

@@ -1,3 +1,4 @@
+import { REMOTE_ERROR_CODES } from "@agentkib/runtime-protocol";
 import {
   sessionResultProjectors,
   type SessionProvider,
@@ -108,7 +109,8 @@ export class ClaudeSessionProvider implements SessionProvider, TypedSessionProvi
         break;
       case "live":
         request = async ({ sessionId, experimentalEnabled }) => {
-          if (typeof sessionId !== "string") throw new Error("invalid-request");
+          if (typeof sessionId !== "string")
+            throw new Error(REMOTE_ERROR_CODES.invalidRequestDetail);
           return run({ operation, sessionId, experimentalEnabled: experimentalEnabled === true });
         };
         break;

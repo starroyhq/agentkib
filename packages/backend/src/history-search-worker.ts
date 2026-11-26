@@ -1,3 +1,4 @@
+import { REMOTE_ERROR_CODES } from "@agentkib/runtime-protocol";
 import { Worker } from "node:worker_threads";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -120,13 +121,14 @@ export class HistorySearchWorker {
       else
         pending.reject(
           typeof message.sourceSessionId === "string" &&
-            ["history-source-owner-changed", "history-source-redaction-failed"].includes(
-              String(message.message),
-            )
+            [
+              REMOTE_ERROR_CODES.historySourceOwnerChanged,
+              "history-source-redaction-failed",
+            ].includes(String(message.message))
             ? new HistorySourceInvalidatedError(
                 message.sourceSessionId,
                 message.message as
-                  | "history-source-owner-changed"
+                  | typeof REMOTE_ERROR_CODES.historySourceOwnerChanged
                   | "history-source-redaction-failed",
               )
             : new Error(

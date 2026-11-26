@@ -1,3 +1,4 @@
+import { REMOTE_ERROR_CODES } from "@agentkib/runtime-protocol";
 import { handoffActive, handoffCheckpoint } from "../../handoff-work";
 import type {
   SessionHistoryContext,
@@ -17,7 +18,7 @@ export function createDshHistoryReader({
       return dsh.events(native.native_ref, offset, count);
     },
     image: ({ native, imageId }) => {
-      if (!dsh) throw new Error("session-image-unavailable");
+      if (!dsh) throw new Error(REMOTE_ERROR_CODES.sessionImageUnavailable);
       return dsh.image(native.native_ref, imageId);
     },
     async hostDocument(sessionId, summary, options) {

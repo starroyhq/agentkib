@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { sessionCollection } from "@agentkib/runtime-protocol";
+import { REMOTE_ERROR_CODES, sessionCollection } from "@agentkib/runtime-protocol";
 import { SessionStore } from "./session-store";
 import {
   SESSION_AGENTS,
@@ -101,7 +101,7 @@ export class SessionIndex {
     this.refreshed();
   }
   read(workspaceId: string) {
-    if (this.#closed) return Promise.reject(new Error("session-index-stale"));
+    if (this.#closed) return Promise.reject(new Error(REMOTE_ERROR_CODES.sessionIndexStaleDetail));
     // SQL already hides unverified Codex classifications. Show the remaining
     // trusted cache now; schedule only classification work after this response.
     const rows = this.enabled() ? this.store.list(workspaceId) : [];
@@ -254,7 +254,8 @@ export class SessionIndex {
     return refresh.promise;
   }
   #assertCurrent(epoch: bigint) {
-    if (this.#closed || epoch !== this.#epoch) throw new Error("session-index-stale");
+    if (this.#closed || epoch !== this.#epoch)
+      throw new Error(REMOTE_ERROR_CODES.sessionIndexStaleDetail);
     if (!this.enabled()) throw new Error("index-disabled");
   }
   #sourceChanged() {

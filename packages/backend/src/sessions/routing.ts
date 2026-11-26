@@ -1,4 +1,4 @@
-import { RUNTIME_METHODS } from "@agentkib/runtime-protocol";
+import { REMOTE_ERROR_CODES, RUNTIME_METHODS } from "@agentkib/runtime-protocol";
 import { z } from "zod";
 import {
   sessionResultProjectors,
@@ -96,7 +96,7 @@ export function readSessionRequest(value: Record<string, unknown>): {
     deviceId.parse(fields.deviceId);
   } else {
     sessionId.parse(fields.sessionId);
-    if (agent !== undefined) throw new Error("invalid-request");
+    if (agent !== undefined) throw new Error(REMOTE_ERROR_CODES.invalidRequestDetail);
     deviceId.optional().parse(fields.deviceId);
     z.boolean().optional().parse(fields.experimentalEnabled);
   }

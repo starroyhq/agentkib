@@ -1,3 +1,4 @@
+import { REMOTE_ERROR_CODES } from "@agentkib/runtime-protocol";
 import type { ConversationReadResult, ConversationReadState } from "@agentkib/runtime-protocol";
 import type { BackendStore } from "./store";
 import type { SessionReaders } from "./session-readers";
@@ -37,11 +38,13 @@ const unknown = (source: ConversationReadState["source"]): ConversationReadState
 });
 function readStateFailure(error: unknown): Error {
   return error instanceof Error &&
-    ["read-state-conflict", "read-state-unavailable", "read-state-unsupported"].includes(
-      error.message,
-    )
+    [
+      REMOTE_ERROR_CODES.readStateConflictDetail,
+      REMOTE_ERROR_CODES.readStateUnavailableDetail,
+      REMOTE_ERROR_CODES.readStateUnsupportedDetail,
+    ].some((code) => code === error.message)
     ? error
-    : new Error("read-state-unavailable");
+    : new Error(REMOTE_ERROR_CODES.readStateUnavailableDetail);
 }
 
 /** Host-wide observation, with acknowledgements isolated by the authenticated reader scope. */
@@ -94,15 +97,15 @@ export class ConversationReadStates {
 
   async #resolveIndexed(id: string): Promise<ReadStateTarget> {
     const reader = readStateProvider(this.store.sessions.get(id)?.agent);
-    if (!reader) throw new Error("read-state-unsupported");
+    if (!reader) throw new Error(REMOTE_ERROR_CODES.readStateUnsupportedDetail);
     const source = await this.sessions.resolve(id);
-    if (!source.workspace) throw new Error("read-state-unavailable");
+    if (!source.workspace) throw new Error(REMOTE_ERROR_CODES.readStateUnavailableDetail);
     const nativeReader = readStateProvider(source.native.agent);
     const workspace = nativeReader?.indexedWorkspace
       ? nativeReader.indexedWorkspace(this, source)
       : source.workspace;
     if (!workspace || !within(canonicalize(workspace), canonicalize(source.workspace)))
-      throw new Error("read-state-unavailable");
+      throw new Error(REMOTE_ERROR_CODES.readStateUnavailableDetail);
     return {
       provider: reader.agent,
       home: reader.home(this),
@@ -128,7 +131,7 @@ export class ConversationReadStates {
       }
       target ??= await this.#resolveIndexed(id);
       const reader = readStateProvider(target.provider);
-      if (!reader) throw new Error("read-state-unsupported");
+      if (!reader) throw new Error(REMOTE_ERROR_CODES.readStateUnsupportedDetail);
       const result = {
         ...target,
         reader,
@@ -159,7 +162,7 @@ export class ConversationReadStates {
     const sourceKey = JSON.stringify([target.key, scope]);
     if (native && nativeSource) {
       const value = await native.observer.refresh(native.target, scope);
-      if (this.#closed) throw new Error("read-state-unavailable");
+      if (this.#closed) throw new Error(REMOTE_ERROR_CODES.readStateUnavailableDetail);
       if (value) {
         if (value.status === "unknown") {
           const persisted = this.ledger.nativeSnapshot(target.key)?.state;
@@ -196,7 +199,7 @@ export class ConversationReadStates {
       if (ledgerOnly) return ledgerOnly(this.ledger.get(target.key, scope));
       if (target.transcript && observeTranscript) {
         const file = readTranscript ? await readTranscript(target.transcript) : target.transcript;
-        if (this.#closed) throw new Error("read-state-unavailable");
+        if (this.#closed) throw new Error(REMOTE_ERROR_CODES.readStateUnavailableDetail);
         const observation = observeTranscript(this.ledger, target.key, file);
         if (observation.changed || (before.status === "unknown" && observation.complete))
           this.changed();
@@ -223,13 +226,13 @@ export class ConversationReadStates {
   }
 
   async get(id: string, scope: string): Promise<ConversationReadState> {
-    if (this.#closed) throw new Error("read-state-unavailable");
+    if (this.#closed) throw new Error(REMOTE_ERROR_CODES.readStateUnavailableDetail);
     for (const managed of this.#managedReaders) {
       const state = managed.beforeGet?.(this, id);
       if (state) return state;
     }
     const target = await this.#resolve(id);
-    if (this.#closed) throw new Error("read-state-unavailable");
+    if (this.#closed) throw new Error(REMOTE_ERROR_CODES.readStateUnavailableDetail);
     const value = await this.#observe(target, scope).catch((error: unknown) => {
       throw readStateFailure(error);
     });
@@ -244,32 +247,32 @@ export class ConversationReadStates {
     expectedVersion: string,
     seenResultId: string | null,
   ): Promise<ConversationReadState> {
-    if (this.#closed) throw new Error("read-state-unavailable");
+    if (this.#closed) throw new Error(REMOTE_ERROR_CODES.readStateUnavailableDetail);
     const target = await this.#resolve(id);
-    if (this.#closed) throw new Error("read-state-unavailable");
+    if (this.#closed) throw new Error(REMOTE_ERROR_CODES.readStateUnavailableDetail);
     const current = await this.#observe(target, scope).catch((error: unknown) => {
       throw readStateFailure(error);
     });
     if (current.freshness !== "current" || current.version === null)
-      throw new Error("read-state-unavailable");
+      throw new Error(REMOTE_ERROR_CODES.readStateUnavailableDetail);
     if (current.version !== expectedVersion || (current.latestResult?.id ?? null) !== seenResultId)
-      throw new Error("read-state-conflict");
+      throw new Error(REMOTE_ERROR_CODES.readStateConflictDetail);
     const native = this.#nativeTarget(target);
     if (current.source !== "agentkib") {
-      if (!native) throw new Error("read-state-unavailable");
+      if (!native) throw new Error(REMOTE_ERROR_CODES.readStateUnavailableDetail);
       const state = await native.observer.update(
         native.target,
         scope,
         expectedVersion,
         seenResultId,
       );
-      if (this.#closed) throw new Error("read-state-unavailable");
+      if (this.#closed) throw new Error(REMOTE_ERROR_CODES.readStateUnavailableDetail);
       const revision = native.observer.revision(native.target);
       if (revision) {
         try {
           this.ledger.saveNative(target.key, state, revision);
         } catch {
-          throw new Error("read-state-unavailable");
+          throw new Error(REMOTE_ERROR_CODES.readStateUnavailableDetail);
         }
       }
       this.#lastNative.set(JSON.stringify([target.key, scope]), state);

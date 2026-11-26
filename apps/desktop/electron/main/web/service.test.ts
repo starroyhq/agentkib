@@ -651,6 +651,45 @@ describe("WebAccessService loopback security boundary", () => {
     expect(directives.find((entry) => entry.startsWith("frame-src "))).not.toContain("blob:");
   });
 
+  it("matches the shared loopback responses before and after pairing", async () => {
+    const fixture = JSON.parse(
+      await readFile(
+        new URL(
+          "../../../../../packages/runtime-protocol/test/fixtures/remote-contract.json",
+          import.meta.url,
+        ),
+        "utf8",
+      ),
+    );
+    const info = await http("/api/web/v1/info");
+    expect(info.status).toBe(200);
+    expect(info.json()).toEqual(fixture.info.local);
+
+    const denied = await http("/api/web/v1/catalog");
+    expect(denied.status).toBe(fixture.errors.unpaired.http.status);
+    expect(denied.json()).toEqual(fixture.errors.unpaired.http.body);
+    const unpaired = await bootstrap();
+    expect(unpaired.status).toBe(200);
+    expect(unpaired.json()).toMatchObject({
+      ...fixture.access.unpaired,
+      csrfToken: expect.any(String),
+      bootId: expect.any(String),
+    });
+
+    await pair(true, true);
+    const approved = await http("/api/web/v1/access");
+    expect(approved.status).toBe(200);
+    expect(approved.json()).toMatchObject({
+      ...fixture.access.approved,
+      csrfToken: expect.any(String),
+      bootId: expect.any(String),
+      device: {
+        ...fixture.access.approved.device,
+        id: expect.any(String),
+        name: expect.any(String),
+      },
+    });
+  });
   it("requires pairing, same origin and CSRF; exposes no arbitrary runtime methods", async () => {
     expect((await http("/api/web/v1/catalog")).status).toBe(401);
     const access = await bootstrap();

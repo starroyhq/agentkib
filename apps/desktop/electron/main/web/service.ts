@@ -1,6 +1,21 @@
 import { createHash, randomBytes, randomInt, randomUUID } from "node:crypto";
 import {
+  CONVERSATION_PROTOCOL_VERSION,
   HISTORY_SEARCH_METHODS,
+  REMOTE_CAPABILITIES,
+  REMOTE_CONTROL_OUTCOMES,
+  REMOTE_ERROR_CODES,
+  REMOTE_ERROR_CONTRACT,
+  REMOTE_FEATURE_VERSIONS,
+  REMOTE_HEADERS,
+  REMOTE_RECEIPT_ROUTE,
+  REMOTE_VERSIONS,
+  REMOTE_LEGACY_CODEX,
+  REMOTE_MANAGED_ACTION_OPERATIONS,
+  REMOTE_ROUTE,
+  REMOTE_ROUTE_BASE,
+  REMOTE_ROUTE_PREFIXES,
+  REMOTE_ROUTE_SPECS,
   SESSION_RESOURCE_LIMIT,
   managedAgentOf,
   sessionProviderCapabilities,
@@ -419,6 +434,10 @@ type RememberedContextResource = ContextResourceScope &
     | { draftAgent: ManagedAgent; reference: ContextResourceReference }
   );
 class HttpError extends Error {
+  static fromContract({ code, http }: { code: string; http: { status: number } }) {
+    return new HttpError(http.status, code);
+  }
+
   constructor(
     readonly status: number,
     message: string,
@@ -449,16 +468,25 @@ function pairedRateClass(
   pathname: string,
   lan: boolean,
 ): PairedRateClass {
-  if (!pathname.startsWith("/api/web/v1/") || (lan && method === "OPTIONS")) return "other";
+  if (!pathname.startsWith(`${REMOTE_ROUTE_BASE}/`) || (lan && method === "OPTIONS"))
+    return "other";
   if (method === "GET") {
-    if (pathname === "/api/web/v1/stream") return "stream";
-    if (pathname === "/api/web/v1/info" || pathname === "/api/web/v1/access") return "probe";
+    if (pathname === `${REMOTE_ROUTE_BASE}${REMOTE_ROUTE.stream}`) return "stream";
+    if (
+      pathname === `${REMOTE_ROUTE_BASE}${REMOTE_ROUTE.info}` ||
+      pathname === `${REMOTE_ROUTE_BASE}${REMOTE_ROUTE.access}`
+    )
+      return "probe";
   }
   return "api";
 }
 
 function requestRateError(until: number, now: number): HttpError {
-  return new HttpError(429, "rate_limited", Math.max(1, Math.ceil((until - now) / 1000)));
+  return new HttpError(
+    REMOTE_ERROR_CONTRACT.rateLimited.http.status,
+    REMOTE_ERROR_CODES.rateLimited,
+    Math.max(1, Math.ceil((until - now) / 1000)),
+  );
 }
 type ActionAdmission = {
   hash: string;
@@ -508,7 +536,7 @@ function isOwnerWaitQueueEntry(item: QueueEntry, workspaceId: string) {
     item.ownerWaitWorkspaceId === workspaceId &&
     ((item.status === "pending" &&
       (item.reason === "codex-waiting-for-owner" || item.reason === "codex-owner-wait-paused")) ||
-      (item.status === "unknown" && item.reason === "control-outcome-unconfirmed"))
+      (item.status === "unknown" && item.reason === REMOTE_ERROR_CODES.controlOutcomeUnconfirmed))
   );
 }
 
@@ -548,20 +576,7 @@ const newPairingCode = (access: WebAccessLevel = "full"): PairingCode => ({
   failures: 0,
   failuresByBrowser: new Map(),
 });
-type DevicePermissions = Required<
-  Pick<
-    WebDevice,
-    | "send"
-    | "approve"
-    | "manage"
-    | "files"
-    | "attachments"
-    | "advancedControl"
-    | "organize"
-    | "settings"
-    | "extendedApproval"
-  >
->;
+type DevicePermissions = Required<Pick<WebDevice, keyof typeof REMOTE_CAPABILITIES.device>>;
 // 只读仍保留 accessMode: "full" 的工作区范围（跟随已登记工作区），
 // 但所有写操作权限关闭；服务端每次请求都按这些标志重新授权。
 const CODE_ACCESS_PERMISSIONS: Record<WebAccessLevel, DevicePermissions> = {
@@ -588,114 +603,33 @@ const CODE_ACCESS_PERMISSIONS: Record<WebAccessLevel, DevicePermissions> = {
     extendedApproval: true,
   },
 };
-/**
- * API 路由的元数据，替代原先三份手工同步的路径列表。
- * - lan：允许托管网页在 LAN 模式下跨源预检（其余路径在 LAN 上本来就不开放）。
- * - control：会占用执行 worker、需要控制栅栏与回执的变更请求。
- * 实际分发仍在 handle() 中进行；新增路由时在这里登记它的属性。
- */
-type RouteSpec = { lan?: true; control?: true };
-const API_ROUTES: Record<"GET" | "POST", Record<string, RouteSpec>> = {
-  GET: {
-    "/push/policy": { lan: true },
-    "/push/activity": { lan: true },
-    "/approval-audit": { lan: true },
-    "/approval-rules": { lan: true },
-    "/history/status": { lan: true },
-    "/access": { lan: true },
-    "/info": { lan: true },
-    "/catalog": { lan: true },
-    "/read-state": { lan: true },
-    "/events": { lan: true },
-    "/session-images": { lan: true },
-    "/live": { lan: true },
-    "/stream": { lan: true },
-    "/attachments": { lan: true },
-    "/codex/capabilities": { lan: true },
-    "/codex/queue": { lan: true },
-    "/codex/session-settings": { lan: true },
-    "/codex/goals": { lan: true },
-    "/codex/context-options": { lan: true },
-    "/managed/options": { lan: true },
-    "/managed/capabilities": { lan: true },
-    "/managed/inspect": { lan: true },
-    "/managed/context": { lan: true },
-    "/managed/resume-command": { lan: true },
-    "/managed/settings": {},
-    "/managed/queue": {},
-    "/managed/goals": {},
-    "/managed/resources": {},
-    "/managed/project-agent": {},
-    "/files/workspaces": { lan: true },
-    "/files/list": { lan: true },
-    "/files/text": { lan: true },
-    "/artifacts": { lan: true },
-    "/artifacts/resolve": { lan: true },
-    "/diff": { lan: true },
-  },
-  POST: {
-    "/push/policy": { control: true },
-    "/approval-rules/revoke": { control: true },
-    "/read-state": { lan: true },
-    "/session-pin": { lan: true },
-    "/history/search": { lan: true },
-    "/history/locate": { lan: true },
-    "/history/references": { lan: true },
-    "/history/configure": {},
-    "/history/clear": {},
-    "/history/rebuild": {},
-    // Desktop only: the handler refuses every other caller.
-    "/devin/terminal": {},
-    "/pair": { lan: true },
-    "/pair/cancel": { lan: true },
-    "/account-binding": { lan: true },
-    // Notifications travel through the relay to account-bound phones, so never on LAN.
-    "/push/subscribe": {},
-    "/push/unsubscribe": {},
-    "/logout": { lan: true },
-    "/send": { lan: true, control: true },
-    "/stop": { lan: true, control: true },
-    "/approve": { lan: true, control: true },
-    "/answer": { lan: true, control: true },
-    "/codex/queue-delete": { lan: true, control: true },
-    "/codex/goal-set": { lan: true, control: true },
-    "/codex/goal-pause": { lan: true, control: true },
-    "/codex/goal-resume": { lan: true, control: true },
-    "/codex/goal-clear": { lan: true, control: true },
-    "/managed/create": { lan: true, control: true },
-    "/managed/release": { lan: true, control: true },
-    "/managed/reconcile": { lan: true, control: true },
-    "/managed/action": { control: true },
-    // Explicit capability discovery starts a worker but never dispatches a command receipt.
-    "/managed/settings-prepare": {},
-    "/managed/project-agent": {},
-    "/artifact-tickets": { lan: true },
-    // Full access only, so never on LAN.
-    "/live-preview-tickets": {},
-    "/attachments": { lan: true },
-    "/attachments/delete": { lan: true },
-  },
-};
-const CODEX_READ_ALIASES: ReadonlyMap<string, string> = new Map([
-  ["/codex/capabilities", "/managed/capabilities"],
-  ["/codex/queue", "/managed/queue"],
-  ["/codex/session-settings", "/managed/settings"],
-  ["/codex/goals", "/managed/goals"],
-  ["/codex/context-options", "/managed/resources"],
-]);
-// 回执查询带动态 ID；控制请求结果不确定时客户端靠它恢复，LAN 也需要能预检。
-const RECEIPT_ROUTE = /^\/requests\/[^/]+$/;
-function routeSpec(method: string | undefined, path: string): RouteSpec | undefined {
+const CODEX_READ_ALIASES = new Map(Object.entries(REMOTE_LEGACY_CODEX.getAliases));
+
+function routeSpec(method: string | undefined, path: string) {
   if (method !== "GET" && method !== "POST") return undefined;
-  return Object.hasOwn(API_ROUTES[method], path) ? API_ROUTES[method][path] : undefined;
+  const routes = REMOTE_ROUTE_SPECS[method];
+  return Object.hasOwn(routes, path) ? routes[path] : undefined;
 }
 function lanPreflightAllowed(method: string | undefined, path: string): boolean {
-  return routeSpec(method, path)?.lan === true || (method === "GET" && RECEIPT_ROUTE.test(path));
+  const receiptPrefix = REMOTE_ROUTE_PREFIXES.requests;
+  // Receipt IDs are dynamic. LAN clients also need to recover ambiguous control outcomes.
+  return (
+    routeSpec(method, path)?.lan === true ||
+    (REMOTE_RECEIPT_ROUTE.lan &&
+      method === REMOTE_RECEIPT_ROUTE.method &&
+      path.startsWith(receiptPrefix) &&
+      path.length > receiptPrefix.length &&
+      !path.includes("/", receiptPrefix.length))
+  );
 }
 function isControlRequest(method: string | undefined, path: string): boolean {
   if (routeSpec(method, path)?.control) return true;
-  // 其余 /codex/* POST（重命名、归档、队列等）一律按控制请求处理；inspect 是只读探测。
-  return method === "POST" && path.startsWith("/codex/") && path !== "/codex/inspect";
+  // The remaining legacy POSTs are control requests. Inspect is a read-only probe.
+  return (
+    method === "POST" &&
+    path.startsWith(REMOTE_LEGACY_CODEX.prefix) &&
+    path !== REMOTE_LEGACY_CODEX.nonControlPath
+  );
 }
 /**
  * relay broker 只能是 HTTPS origin（可带结尾的 "/"），返回规范化后的 origin。
@@ -754,7 +688,7 @@ function expiredInteractionRefusal(result: unknown): boolean {
       "stale-runtime-boot",
       "stale-or-disabled-control",
       "stale-turn",
-      "stale-Claude-revision",
+      REMOTE_ERROR_CODES.staleClaudeRevision,
       "stale Claude revision",
       "stale Claude turn",
       "stale Claude question",
@@ -794,7 +728,8 @@ function settingsControlOutcome(
   const accepted = snapshotField(ack, "accepted");
   const outcome = snapshotField(ack, "controlOutcome");
   if (accepted === true && (outcome === undefined || outcome === "accepted")) return "accepted";
-  if (accepted === false && outcome === "not-dispatched") return "not-dispatched";
+  if (accepted === false && outcome === REMOTE_CONTROL_OUTCOMES.notDispatched)
+    return REMOTE_CONTROL_OUTCOMES.notDispatched;
   return undefined;
 }
 const isCodexMode = (mode: unknown) => mode === "codex-managed" || mode === "codex-follower";
@@ -1109,7 +1044,7 @@ export class WebAccessService {
       const scope = await this.localArtifactScope(sessionId);
       await this.startDesktopPreview();
       const artifacts = this.desktopArtifacts;
-      if (!artifacts) throw new Error("preview_unavailable");
+      if (!artifacts) throw new Error(REMOTE_ERROR_CODES.previewUnavailable);
       if (body.operation === "files")
         return artifacts.list(
           scope,
@@ -1153,8 +1088,10 @@ export class WebAccessService {
           accepted: false,
           completed: false,
           requestId,
-          controlOutcome: control.priorUncertain ? "unknown" : "not-dispatched",
-          error: error instanceof Error ? error.message : "invalid_request",
+          controlOutcome: control.priorUncertain
+            ? "unknown"
+            : REMOTE_CONTROL_OUTCOMES.notDispatched,
+          error: error instanceof Error ? error.message : REMOTE_ERROR_CODES.invalidRequest,
         };
       }
     }
@@ -1182,8 +1119,10 @@ export class WebAccessService {
         accepted: false,
         completed: false,
         requestId,
-        controlOutcome: control.priorUncertain ? "unknown" : "not-dispatched",
-        error: this.admission ? "operation_busy" : "outcome_unknown",
+        controlOutcome: control.priorUncertain ? "unknown" : REMOTE_CONTROL_OUTCOMES.notDispatched,
+        error: this.admission
+          ? REMOTE_ERROR_CODES.operationBusy
+          : REMOTE_ERROR_CODES.outcomeUnknown,
       };
     }
     if (mutation) {
@@ -1205,7 +1144,8 @@ export class WebAccessService {
           this.unconfirmed.add(sessionId);
           this.unconfirmedRequests.set(sessionId, requestId);
         }
-      } else if (!mutation && this.admission) throw new HttpError(409, "operation_busy");
+      } else if (!mutation && this.admission)
+        throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.operationBusy);
       return this.requestSession(params, target, false, dispatching ? approvalAudit : undefined);
     };
     try {
@@ -1240,21 +1180,21 @@ export class WebAccessService {
         if (
           !dispatched &&
           mutation &&
-          value.controlOutcome === "not-dispatched" &&
+          value.controlOutcome === REMOTE_CONTROL_OUTCOMES.notDispatched &&
           sessionId &&
           this.unconfirmed.has(sessionId) &&
           this.unconfirmedRequests.get(sessionId) === requestId
         )
-          return { ...value, controlOutcome: "unknown" };
+          return { ...value, controlOutcome: REMOTE_CONTROL_OUTCOMES.unknown };
         const settledSession =
           sessionId ?? (typeof value.sessionId === "string" ? value.sessionId : undefined);
         const acknowledged =
           value.requestId === requestId &&
           (value.accepted === true ||
-            value.controlOutcome === "not-dispatched" ||
+            value.controlOutcome === REMOTE_CONTROL_OUTCOMES.notDispatched ||
             (operation === "receipt" &&
               value.found === true &&
-              ["accepted", "not-dispatched"].includes(String(value.status))));
+              ["accepted", REMOTE_CONTROL_OUTCOMES.notDispatched].includes(String(value.status))));
         if (operation === "reconcile" && settledSession && value.reconciled === true) {
           this.clearUnconfirmed(settledSession);
           this.unconfirmedRequests.delete(settledSession);
@@ -1289,7 +1229,7 @@ export class WebAccessService {
       !session ||
       !(await this.registeredWorkspaces()).some((row) => row.id === session.workspace_id)
     )
-      throw new Error("workspace_not_authorized");
+      throw new Error(REMOTE_ERROR_CODES.workspaceNotAuthorized);
     return { deviceId: CLAUDE_LOCAL_OWNER, sessionId, workspaceId: session.workspace_id };
   }
   private isFullAccess(device?: WebDevice) {
@@ -1306,7 +1246,8 @@ export class WebAccessService {
   }
   private fullAccess(hash: string, permission?: "advancedControl" | "settings") {
     const device = this.grant(hash, permission);
-    if (!this.isFullAccess(device)) throw new HttpError(403, "permission_denied");
+    if (!this.isFullAccess(device))
+      throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.permissionDenied);
     return device;
   }
   private workspaceAllowed(
@@ -1421,7 +1362,7 @@ export class WebAccessService {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
         this.config.enabled = false;
         this.credentials = [];
-        this.error = "invalid_saved_configuration";
+        this.error = REMOTE_ERROR_CODES.invalidSavedConfiguration;
       }
     }
     if (this.config.enabled) await this.start();
@@ -1479,20 +1420,25 @@ export class WebAccessService {
         throw new Error("scheduled-control-unavailable");
       const credential = this.credentials.find((item) => item.device.id === work.deviceId);
       if (!credential) throw new Error("scheduled-device-unavailable");
-      this.grant(credential.hash, "send");
-      if (this.options.mode !== "lan") this.grant(credential.hash, "advancedControl");
-      if (work.requiresAttachments) this.grant(credential.hash, "attachments");
+      this.grant(credential.hash, REMOTE_CAPABILITIES.device.send);
+      if (this.options.mode !== "lan")
+        this.grant(credential.hash, REMOTE_CAPABILITIES.device.advancedControl);
+      if (work.requiresAttachments)
+        this.grant(credential.hash, REMOTE_CAPABILITIES.device.attachments);
       if (
         (await this.queueScope(session.sessionId, credential.hash, true, true)) !==
         session.workspaceId
       )
-        throw new Error("workspace_not_authorized");
+        throw new Error(REMOTE_ERROR_CODES.workspaceNotAuthorized);
       if (!this.ownsScheduledDevice(work.deviceId, "codex"))
         throw new Error("scheduled-control-unavailable");
-      const current = this.grant(credential.hash, "send");
-      if (this.options.mode !== "lan") this.grant(credential.hash, "advancedControl");
-      if (work.requiresAttachments) this.grant(credential.hash, "attachments");
-      if (!this.controlsEnabled(session.sessionId, current)) throw new Error("control_unavailable");
+      const current = this.grant(credential.hash, REMOTE_CAPABILITIES.device.send);
+      if (this.options.mode !== "lan")
+        this.grant(credential.hash, REMOTE_CAPABILITIES.device.advancedControl);
+      if (work.requiresAttachments)
+        this.grant(credential.hash, REMOTE_CAPABILITIES.device.attachments);
+      if (!this.controlsEnabled(session.sessionId, current))
+        throw new Error(REMOTE_ERROR_CODES.controlUnavailable);
       return { restrictNativePolicy: !this.isFullAccess(current) };
     }
     const verified =
@@ -1509,22 +1455,23 @@ export class WebAccessService {
       ? "desktop-local"
       : this.credentials.find((c) => c.device.id === work.deviceId)?.hash;
     if (!hash) throw new Error("scheduled-device-unavailable");
-    const device = this.grant(hash, "send");
-    this.grant(hash, "advancedControl");
+    const device = this.grant(hash, REMOTE_CAPABILITIES.device.send);
+    this.grant(hash, REMOTE_CAPABILITIES.device.advancedControl);
     if (work.kind === "goal") this.fullAccess(hash);
     if (work.requiresAttachments) {
-      this.grant(hash, "attachments");
+      this.grant(hash, REMOTE_CAPABILITIES.device.attachments);
       if (work.originDeviceId && work.originDeviceId !== work.deviceId)
         throw new Error("attachment-owner-changed");
     }
     if (!(await this.workspaceAllowed(session.workspaceId, device, true)))
-      throw new Error("workspace_not_authorized");
+      throw new Error(REMOTE_ERROR_CODES.workspaceNotAuthorized);
     if (!this.ownsScheduledDevice(work.deviceId)) throw new Error("scheduled-control-unavailable");
-    const current = this.grant(hash, "send");
-    this.grant(hash, "advancedControl");
+    const current = this.grant(hash, REMOTE_CAPABILITIES.device.send);
+    this.grant(hash, REMOTE_CAPABILITIES.device.advancedControl);
     if (work.kind === "goal") this.fullAccess(hash);
-    if (work.requiresAttachments) this.grant(hash, "attachments");
-    if (!this.controlsEnabled(session.sessionId, current)) throw new Error("control_unavailable");
+    if (work.requiresAttachments) this.grant(hash, REMOTE_CAPABILITIES.device.attachments);
+    if (!this.controlsEnabled(session.sessionId, current))
+      throw new Error(REMOTE_ERROR_CODES.controlUnavailable);
   }
 
   private invalidateScheduledDevice(deviceId: string, reason: string, quitting = false) {
@@ -1545,43 +1492,51 @@ export class WebAccessService {
   async localRequest(path: string, body?: unknown, upload?: Uint8Array, readSignal?: AbortSignal) {
     if (!path.startsWith("/")) path = `/${path}`;
     if (this.options.mode === "lan" || !isConversationPath(path, body !== undefined || !!upload))
-      return { status: 404, body: { error: "not_found", controlOutcome: "not-dispatched" } };
+      return {
+        status: REMOTE_ERROR_CONTRACT.notFound.http.status,
+        body: {
+          error: REMOTE_ERROR_CODES.notFound,
+          controlOutcome: REMOTE_CONTROL_OUTCOMES.notDispatched,
+        },
+      };
     const control = { request: false, dispatched: false, priorUncertain: false };
     const res = new LocalConversationResponse();
     const cancelRead = () => res.destroy();
     try {
       if (readSignal && (upload || !isHistoryReadConversationPath(path)))
-        throw new HttpError(400, "history_read_route_required");
-      if (readSignal?.aborted) throw new HttpError(408, "history_request_cancelled");
+        throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.historyReadRouteRequired);
+      if (readSignal?.aborted)
+        throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.historyRequestCancelled);
       readSignal?.addEventListener("abort", cancelRead, { once: true });
       if (
-        path.includes("/files/") ||
-        path.includes("/artifacts") ||
-        path.includes("/artifact-tickets") ||
-        path.includes("/diff") ||
-        path.includes("/codex/context-options") ||
-        path.includes("/managed/resources")
+        path.includes(REMOTE_ROUTE_PREFIXES.files) ||
+        path.includes(REMOTE_ROUTE.artifacts) ||
+        path.includes(REMOTE_ROUTE.artifactTickets) ||
+        path.includes(REMOTE_ROUTE.diff) ||
+        path.includes(REMOTE_ROUTE.codexContextOptions) ||
+        path.includes(REMOTE_ROUTE.managedResources)
       )
         await this.startDesktopPreview();
       const bytes = upload ?? Buffer.from(body === undefined ? "" : JSON.stringify(body));
       if (upload && upload.byteLength > 25 * 1024 * 1024)
-        throw new HttpError(413, "attachment_too_large");
+        throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.attachmentTooLarge);
       const req: ConversationRequest = {
         method: body === undefined && !upload ? "GET" : "POST",
-        url: path.startsWith("/api/web/v1/") ? path : `/api/web/v1${path}`,
+        url: path.startsWith(`${REMOTE_ROUTE_BASE}/`) ? path : `${REMOTE_ROUTE_BASE}${path}`,
         headers: {
           host: `127.0.0.1:${this.config.port}`,
           origin: `http://127.0.0.1:${this.config.port}`,
           "content-type": "application/json",
           "x-csrf-token": "desktop-local",
-          "x-agentkib-protocol": "2",
+          [REMOTE_HEADERS.protocol.toLowerCase()]: String(CONVERSATION_PROTOCOL_VERSION),
         },
         async *[Symbol.asyncIterator]() {
           yield bytes;
         },
       };
       await this.handle(req, res, control, true);
-      if (readSignal?.aborted) throw new HttpError(408, "history_request_cancelled");
+      if (readSignal?.aborted)
+        throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.historyRequestCancelled);
       return { status: res.statusCode, body: res.body };
     } catch (error) {
       return {
@@ -1599,11 +1554,13 @@ export class WebAccessService {
               ? error.message
               : error instanceof Error && !isHistoryReadConversationPath(path)
                 ? error.message
-                : "request_failed",
+                : REMOTE_ERROR_CODES.requestFailed,
           ...(control.request
             ? {
                 controlOutcome:
-                  control.dispatched || control.priorUncertain ? "unknown" : "not-dispatched",
+                  control.dispatched || control.priorUncertain
+                    ? "unknown"
+                    : REMOTE_CONTROL_OUTCOMES.notDispatched,
               }
             : {}),
         },
@@ -1619,7 +1576,7 @@ export class WebAccessService {
     listener: (event: SessionStreamEvent) => void,
   ): Promise<SessionSubscription> {
     if (sessionId) this.field(sessionId);
-    if (!this.options.conversationHub) throw new Error("incompatible_protocol");
+    if (!this.options.conversationHub) throw new Error(REMOTE_ERROR_CODES.incompatibleProtocol);
     const result = await this.options.conversationHub.subscribe(sessionId, afterCursor, (event) =>
       listener(this.projectControlEvent(event)),
     );
@@ -1703,7 +1660,7 @@ export class WebAccessService {
       !this.relay ||
       (this.officialRelayConfigured() && !this.cloudLoginContext())
     )
-      return Promise.resolve({ delivered: false, error: "relay_unavailable" });
+      return Promise.resolve({ delivered: false, error: REMOTE_ERROR_CODES.relayUnavailable });
     return this.relay.pushSend(input);
   }
 
@@ -1889,7 +1846,7 @@ export class WebAccessService {
       (body.approvalActions !== undefined && body.approvalActions !== 1) ||
       (body.activityDetails !== undefined && body.activityDetails !== 1)
     )
-      throw new HttpError(400, "invalid_push_subscription");
+      throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.invalidPushSubscription);
     this.grant(hash);
     this.rate(`push:${hash}`, 12);
     const push: PushSubscription = {
@@ -1903,8 +1860,10 @@ export class WebAccessService {
     };
     const work = this.adminQueue.then(async () => {
       const credential = this.credentials.find((row) => row.hash === hash);
-      if (!credential || this.browsers.get(hash)?.ended) throw new HttpError(401, "access_ended");
-      if (!this.pushReady(credential)) throw new HttpError(409, "push_unavailable");
+      if (!credential || this.browsers.get(hash)?.ended)
+        throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.accessEnded);
+      if (!this.pushReady(credential))
+        throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.pushUnavailable);
       const earlier = credential.push;
       if (
         earlier?.publicKey === push.publicKey &&
@@ -1935,7 +1894,8 @@ export class WebAccessService {
   }
 
   private async unsubscribePush(hash: string, body: Record<string, unknown>) {
-    if (Object.keys(body).length) throw new HttpError(400, "invalid_push_subscription");
+    if (Object.keys(body).length)
+      throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.invalidPushSubscription);
     this.grant(hash);
     this.rate(`push:${hash}`, 12);
     const work = this.adminQueue.then(async () => {
@@ -1978,7 +1938,7 @@ export class WebAccessService {
       stopEnabled: false,
       approvals: [],
       questions: [],
-      reason: "control-outcome-unconfirmed",
+      reason: REMOTE_ERROR_CODES.controlOutcomeUnconfirmed,
     };
   }
 
@@ -2091,14 +2051,16 @@ export class WebAccessService {
       case "remote-enable": {
         if (input.operation === "relay-start" && !this.server) throw new Error("web_not_running");
         if (this.options.mode === "lan" || this.options.acceptanceSessionId)
-          throw new Error("remote_enable_unavailable");
+          throw new Error(REMOTE_ERROR_CODES.remoteEnableUnavailable);
         const brokerUrl = relayBrokerOrigin(input.brokerUrl);
         if (brokerUrl === DEFAULT_RELAY_BROKER) {
           const identity = await this.accountIdentity();
           if (identity?.accountClaimPending) throw new Error("account_claim_pending");
-          if (!this.options.account?.signedIn()) throw new Error("account_login_required");
+          if (!this.options.account?.signedIn())
+            throw new Error(REMOTE_ERROR_CODES.accountLoginRequired);
           await this.options.account.ensureDeviceOwner(identity?.accountId);
-          if (!this.options.account.signedIn()) throw new Error("account_login_required");
+          if (!this.options.account.signedIn())
+            throw new Error(REMOTE_ERROR_CODES.accountLoginRequired);
           this.relayAccountPaused = false;
         } else if (
           input.reenroll &&
@@ -2134,7 +2096,7 @@ export class WebAccessService {
         try {
           await this.save(next, initialized, credentials);
         } catch (error) {
-          this.error = "web_state_save_failed";
+          this.error = REMOTE_ERROR_CODES.webStateSaveFailed;
           if (input.operation === "relay-start") throw error;
           // A disabled service is not polled continuously; return its failure
           // stage to the one-click caller without publishing the uncommitted config.
@@ -2235,8 +2197,8 @@ export class WebAccessService {
         const [hash, browser] = entry;
         const pending = browser.pending!;
         if (this.accountLoginRequired() && !this.validCloudBinding(browser.account))
-          throw new Error("account_login_required");
-        if (this.credentials.length >= 128) throw new Error("device_limit");
+          throw new Error(REMOTE_ERROR_CODES.accountLoginRequired);
+        if (this.credentials.length >= 128) throw new Error(REMOTE_ERROR_CODES.deviceLimit);
         this.credentials.push({
           hash,
           ...(this.options.mode === "lan" ? { binding: this.binding } : {}),
@@ -2312,7 +2274,7 @@ export class WebAccessService {
         typeof input.lanAddress !== "string" ||
         (input.lanAddress !== "" && !isPrivateIPv4(input.lanAddress))
       )
-        throw new Error("invalid_lan_address");
+        throw new Error(REMOTE_ERROR_CODES.invalidLanAddress);
       if (typeof input.allowPlaintext !== "boolean") throw new Error("invalid_configuration");
       if (input.enabled && (!input.allowPlaintext || !input.lanAddress))
         throw new Error("plaintext_confirmation_required");
@@ -2466,29 +2428,32 @@ export class WebAccessService {
   private async bindAccount(hash: string, body: Record<string, unknown>) {
     if (this.accountLoginRequired()) return this.bindCloudAccount(hash, body);
     if (Object.keys(body).some((key) => key !== "sessionId"))
-      throw new HttpError(400, "invalid_input");
+      throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.invalidInput);
     const sessionId = this.field(body.sessionId, 64);
-    if (!SESSION_ID.test(sessionId)) throw new HttpError(400, "invalid_input");
+    if (!SESSION_ID.test(sessionId))
+      throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.invalidInput);
     this.grant(hash);
     this.rate(`account-binding:${hash}`, 6);
-    if (!this.options.accountSessions) return { bound: false, reason: "account_unavailable" };
+    if (!this.options.accountSessions)
+      return { bound: false, reason: REMOTE_ERROR_CODES.accountUnavailable };
     let live: AccountSessions;
     try {
       live = await this.options.accountSessions();
     } catch {
-      return { bound: false, reason: "computer_signed_out" };
+      return { bound: false, reason: REMOTE_ERROR_CODES.computerSignedOut };
     }
     const binding = this.adminQueue.then(async () => {
       const credential = this.credentials.find((c) => c.hash === hash);
-      if (!credential || this.browsers.get(hash)?.ended) throw new HttpError(401, "access_ended");
+      if (!credential || this.browsers.get(hash)?.ended)
+        throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.accessEnded);
       const session = live.sessions.find((s) => s.id === sessionId && s.kind === "mobile");
       if (credential.account) {
         if (credential.account.accountId !== live.accountId || !session) {
           await this.revokeCredentials([credential], "authorization-revoked");
-          throw new HttpError(401, "access_ended");
+          throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.accessEnded);
         }
       } else {
-        if (!session) return { bound: false, reason: "session_unknown" };
+        if (!session) return { bound: false, reason: REMOTE_ERROR_CODES.sessionUnknown };
       }
       credential.account = { accountId: live.accountId, sessionId };
       credential.expiresAt = Math.max(credential.expiresAt, Date.now() + MAX_AGE);
@@ -2543,7 +2508,7 @@ export class WebAccessService {
   }
   private requireCloudLoginContext() {
     const context = this.cloudLoginContext();
-    if (!context) throw new HttpError(503, "account_login_unavailable");
+    if (!context) throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.accountLoginUnavailable);
     return context;
   }
   /** Supplemental receipts belong to the computer's owner, never the paired browser. */
@@ -2565,7 +2530,7 @@ export class WebAccessService {
   }
   private async bindCloudAccount(hash: string, body: Record<string, unknown>) {
     const browser = this.browsers.get(hash);
-    if (!browser || browser.ended) throw new HttpError(401, "access_ended");
+    if (!browser || browser.ended) throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.accessEnded);
     const fields = ["code", "codeVerifier", "hostChallenge", "redemptionId"] as const;
     if (
       Object.keys(body).some((key) => !fields.includes(key as (typeof fields)[number])) ||
@@ -2575,14 +2540,14 @@ export class WebAccessService {
       ) ||
       body.hostChallenge !== browser.accountChallenge
     )
-      throw new HttpError(400, "invalid_account_proof");
+      throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.invalidAccountProof);
     this.requireCloudLoginContext();
     this.rate(`account-binding:${hash}`, 6);
     let proof: RemoteAccountBinding;
     try {
       proof = await this.relay!.redeemAccountLogin(body as AccountLoginProof);
     } catch {
-      throw new HttpError(503, "account_login_unavailable");
+      throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.accountLoginUnavailable);
     }
     const bound: AccountBinding = { ...proof, hostChallenge: browser.accountChallenge };
     const work = this.adminQueue.then(async () => {
@@ -2593,11 +2558,11 @@ export class WebAccessService {
         !this.server ||
         !this.validCloudBinding(bound)
       )
-        throw new HttpError(401, "access_ended");
+        throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.accessEnded);
       const credential = this.credentials.find((row) => row.hash === hash);
       if (credential?.account?.id && credential.account.accountId !== bound.accountId) {
         await this.revokeCredentials([credential], "authorization-revoked");
-        throw new HttpError(401, "access_ended");
+        throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.accessEnded);
       }
       if (credential) {
         const next = this.credentials.map((row) =>
@@ -2728,7 +2693,7 @@ export class WebAccessService {
         await rename(`${file}.tmp`, file);
       })
       .catch((cause) => {
-        throw new Error("web_state_save_failed", { cause });
+        throw new Error(REMOTE_ERROR_CODES.webStateSaveFailed, { cause });
       });
     this.persistence = result.catch(() => undefined);
     return result;
@@ -2740,7 +2705,7 @@ export class WebAccessService {
       this.options.mode === "lan" &&
       !this.addresses.some((entry) => entry.address === this.config.lanAddress)
     ) {
-      this.error = "lan_address_unavailable";
+      this.error = REMOTE_ERROR_CODES.lanAddressUnavailable;
       return;
     }
     const server = createServer((req, res) => {
@@ -2759,7 +2724,7 @@ export class WebAccessService {
             {
               headers: request.headers,
               method: "GET",
-              url: "/api/web/v1/catalog",
+              url: `${REMOTE_ROUTE_BASE}${REMOTE_ROUTE.catalog}`,
               async *[Symbol.asyncIterator]() {},
             },
             response,
@@ -2805,13 +2770,15 @@ export class WebAccessService {
         this.addressTimer.unref();
       }
       server.on("error", () => {
-        this.error = "web_server_error";
+        this.error = REMOTE_ERROR_CODES.webServerError;
       });
     } catch (error) {
       // A preview/relay initialization failure must not leave a half-started listener.
       if (this.server === server) await this.shutdown();
       this.error =
-        (error as NodeJS.ErrnoException).code === "EADDRINUSE" ? "port_in_use" : "web_start_failed";
+        (error as NodeJS.ErrnoException).code === "EADDRINUSE"
+          ? REMOTE_ERROR_CODES.portInUse
+          : REMOTE_ERROR_CODES.webStartFailed;
     }
   }
   private respondControlError(res: ConversationResponse, control: ActionOutcome, error: unknown) {
@@ -2827,11 +2794,13 @@ export class WebAccessService {
     if (error instanceof HttpError && error.retryAfter !== undefined)
       res.setHeader("Retry-After", String(error.retryAfter));
     this.json(res, known ? error.status : 500, {
-      error: known ? error.message : "request_failed",
+      error: known ? error.message : REMOTE_ERROR_CODES.requestFailed,
       ...(control.request
         ? {
             controlOutcome:
-              control.dispatched || control.priorUncertain ? "unknown" : "not-dispatched",
+              control.dispatched || control.priorUncertain
+                ? "unknown"
+                : REMOTE_CONTROL_OUTCOMES.notDispatched,
           }
         : {}),
     });
@@ -2850,7 +2819,7 @@ export class WebAccessService {
     }
     // VPN/TUN 代理切换时网卡列表可能短暂缺少该地址；连续 3 次检查都缺失才停止监听。
     if (++this.lanAddressMisses < 3) return;
-    this.error = "lan_address_unavailable";
+    this.error = REMOTE_ERROR_CODES.lanAddressUnavailable;
     await this.shutdown();
   }
   async shutdown(streamCloseEvent: "access-ended" | "unavailable" = "access-ended") {
@@ -2986,7 +2955,8 @@ export class WebAccessService {
       ...(config.brokerUrl === DEFAULT_RELAY_BROKER
         ? {
             authorizeAccount: async (accountId?: string) => {
-              if (!this.options.account?.signedIn()) throw new Error("account_login_required");
+              if (!this.options.account?.signedIn())
+                throw new Error(REMOTE_ERROR_CODES.accountLoginRequired);
               await this.options.account.ensureDeviceOwner(accountId);
             },
             ...(this.options.account?.signedIn()
@@ -3034,11 +3004,11 @@ export class WebAccessService {
             return;
           }
           this.remotePairingInitialized = true;
-          if (this.error === "web_state_save_failed") this.error = undefined;
+          if (this.error === REMOTE_ERROR_CODES.webStateSaveFailed) this.error = undefined;
           if (!this.code || this.code.expiresAt <= Date.now()) this.code = newPairingCode();
         });
         this.adminQueue = update.catch(() => {
-          this.error = "web_state_save_failed";
+          this.error = REMOTE_ERROR_CODES.webStateSaveFailed;
         });
       },
     });
@@ -3104,7 +3074,9 @@ export class WebAccessService {
         const known =
           error instanceof ArtifactError || error instanceof LivePreviewError ? error : undefined;
         if (!res.headersSent)
-          this.json(res, known?.status ?? 500, { error: known?.message ?? "preview_failed" });
+          this.json(res, known?.status ?? 500, {
+            error: known?.message ?? REMOTE_ERROR_CODES.previewFailed,
+          });
         else res.destroy();
       });
     });
@@ -3131,11 +3103,11 @@ export class WebAccessService {
           if (scope.deviceId === CLAUDE_LOCAL_OWNER) {
             const verified = await this.localArtifactScope(this.field(scope.sessionId));
             if (verified.workspaceId !== scope.workspaceId)
-              throw new HttpError(403, "workspace_not_authorized");
+              throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.workspaceNotAuthorized);
             const root = (await this.registeredWorkspaces()).find(
               (row) => row.id === verified.workspaceId,
             );
-            if (!root) throw new HttpError(403, "workspace_not_authorized");
+            if (!root) throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.workspaceNotAuthorized);
             return {
               root: root.path,
               epoch: digest(`${this.bootId}|${root.path}|${scope.sessionId}`),
@@ -3145,12 +3117,12 @@ export class WebAccessService {
             scope.deviceId === this.localDevice.id
               ? { hash: "desktop-local", device: this.localDevice }
               : this.credentials.find((c) => c.device.id === scope.deviceId);
-          if (!credential) throw new HttpError(401, "access_ended");
-          this.grant(credential.hash, "files");
+          if (!credential) throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.accessEnded);
+          this.grant(credential.hash, REMOTE_CAPABILITIES.device.files);
           const roots = await this.fileRoots(credential.device);
           const root = roots.find((item) => item.id === scope.workspaceId);
-          if (!root) throw new HttpError(403, "workspace_not_authorized");
-          this.grant(credential.hash, "files");
+          if (!root) throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.workspaceNotAuthorized);
+          this.grant(credential.hash, REMOTE_CAPABILITIES.device.files);
           return {
             root: root.path,
             epoch: digest(
@@ -3218,43 +3190,47 @@ export class WebAccessService {
   }
   private async fileScopeFor(device: WebDevice, workspaceId: string) {
     if (!(await this.fileRoots(device)).some((w) => w.id === workspaceId))
-      throw new HttpError(403, "workspace_not_authorized");
+      throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.workspaceNotAuthorized);
     return { deviceId: device.id, workspaceId };
   }
   /** 供有副作用的调用方使用（如签发预览票据）：await 之后必须立刻确认授权仍然有效。 */
   private async fileScope(hash: string, workspaceId: string) {
-    const scope = await this.fileScopeFor(this.grant(hash, "files"), workspaceId);
-    this.grant(hash, "files");
+    const scope = await this.fileScopeFor(
+      this.grant(hash, REMOTE_CAPABILITIES.device.files),
+      workspaceId,
+    );
+    this.grant(hash, REMOTE_CAPABILITIES.device.files);
     return scope;
   }
   private async files(res: ConversationResponse, hash: string, path: string, url: URL) {
     // 这里全是只读操作：开始时授权一次，响应前再确认一次。期间被撤销的设备
     // 拿不到任何数据，中间步骤无需反复重查。
-    const device = this.grant(hash, "files");
+    const device = this.grant(hash, REMOTE_CAPABILITIES.device.files);
     const result = await this.readFiles(device, path, url);
-    const current = this.grant(hash, "files");
-    if (path === "/diff" && url.searchParams.get("context") === "1") {
+    const current = this.grant(hash, REMOTE_CAPABILITIES.device.files);
+    if (path === REMOTE_ROUTE.diff && url.searchParams.get("context") === "1") {
       const workspaceId = this.field(url.searchParams.get("workspaceId"));
       if (!(await this.workspaceAllowed(workspaceId, current, this.admission)))
-        throw new HttpError(403, "workspace_not_authorized");
-      if (this.grant(hash, "files") !== current) throw new HttpError(401, "access_ended");
+        throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.workspaceNotAuthorized);
+      if (this.grant(hash, REMOTE_CAPABILITIES.device.files) !== current)
+        throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.accessEnded);
     }
     return this.json(res, 200, result);
   }
   private async readFiles(device: WebDevice, path: string, url: URL): Promise<unknown> {
-    if (path === "/files/workspaces") {
+    if (path === REMOTE_ROUTE.filesWorkspaces) {
       const roots = await this.fileRoots(device);
       return { workspaces: roots.map(({ id, name }) => ({ id, name })) };
     }
     const workspaceId = this.field(url.searchParams.get("workspaceId"));
     const scope = await this.fileScopeFor(device, workspaceId);
     let result: unknown;
-    if (path === "/diff") {
+    if (path === REMOTE_ROUTE.diff) {
       if (!(await this.workspaceAllowed(workspaceId, device, this.admission)))
-        throw new HttpError(403, "workspace_not_authorized");
+        throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.workspaceNotAuthorized);
       const kind = url.searchParams.get("kind") ?? "worktree";
       if (!["worktree", "staged", "commit"].includes(kind))
-        throw new HttpError(400, "invalid_diff_kind");
+        throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.invalidDiffKind);
       result = await this.runtime({
         operation: "diff",
         workspaceId,
@@ -3265,24 +3241,24 @@ export class WebAccessService {
       });
     } else {
       const artifacts = this.artifactsFor(scope.deviceId);
-      if (!artifacts) throw new HttpError(503, "preview_unavailable");
-      if (path === "/files/list")
+      if (!artifacts) throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.previewUnavailable);
+      if (path === REMOTE_ROUTE.filesList)
         result = await artifacts.list(scope, url.searchParams.get("directoryId") ?? undefined);
-      else if (path === "/files/text")
+      else if (path === REMOTE_ROUTE.filesText)
         result = await artifacts.readText(
           scope,
           this.field(url.searchParams.get("artifactId")),
           url.searchParams.get("revision") ?? undefined,
         );
-      else if (path === "/artifacts" || path === "/artifacts/resolve") {
+      else if (path === REMOTE_ROUTE.artifacts || path === REMOTE_ROUTE.artifactsResolve) {
         const sessionId = this.field(url.searchParams.get("sessionId"));
         const catalog = (await this.scopeCatalog()) as {
           sessions: { id: string; workspace_id: string }[];
         };
         if (!catalog.sessions.some((s) => s.id === sessionId && s.workspace_id === workspaceId))
-          throw new HttpError(403, "session_workspace_mismatch");
+          throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.sessionWorkspaceMismatch);
         const directory = await this.sessionDirectory(sessionId);
-        if (path === "/artifacts/resolve") {
+        if (path === REMOTE_ROUTE.artifactsResolve) {
           // 手机点开回复里的一个文件引用。找不到或不允许读取都返回 null，不区分原因。
           const reference = fileReferencePath(this.field(url.searchParams.get("reference"), 4096));
           const [artifact] = reference
@@ -3310,7 +3286,7 @@ export class WebAccessService {
             next_cursor: page.next_cursor,
           };
         }
-      } else throw new HttpError(404, "not_found");
+      } else throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.notFound);
     }
     return result;
   }
@@ -3760,7 +3736,9 @@ export class WebAccessService {
                 available:
                   this.availability(writable?.model).available &&
                   !!value(defaults, "model", "modelId"),
-                ...(!value(defaults, "model", "modelId") ? { reason: "defaults_unavailable" } : {}),
+                ...(!value(defaults, "model", "modelId")
+                  ? { reason: REMOTE_ERROR_CODES.defaultsUnavailable }
+                  : {}),
               },
       },
       options: {
@@ -3901,7 +3879,7 @@ export class WebAccessService {
         ).revision,
       );
     if (!Number.isSafeInteger(revision) || revision < 0)
-      throw new HttpError(409, "state_unavailable");
+      throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.stateUnavailable);
     return this.projectContextResources(
       { deviceId: device.id, sessionId, workspaceId },
       raw,
@@ -4038,20 +4016,23 @@ export class WebAccessService {
     };
   }
   private async newSessionResources(hash: string, url: URL) {
-    if (this.options.acceptanceSessionId) throw new HttpError(403, "session_control_not_allowed");
-    if (url.searchParams.has("sessionId")) throw new HttpError(400, "invalid_input");
+    if (this.options.acceptanceSessionId)
+      throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.sessionControlNotAllowed);
+    if (url.searchParams.has("sessionId"))
+      throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.invalidInput);
     const device = this.fullAccess(hash, "advancedControl");
-    this.grant(hash, "manage");
-    this.grant(hash, "files");
+    this.grant(hash, REMOTE_CAPABILITIES.device.manage);
+    this.grant(hash, REMOTE_CAPABILITIES.device.files);
     const workspaceId = this.field(url.searchParams.get("workspaceId"));
     const agent = managedAgentOf(url.searchParams.get("agent"));
     if (!agent || !sessionProviderCapabilities(agent)?.create.workspaceResources)
-      throw new HttpError(400, "unsupported_provider_resources");
+      throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.unsupportedProviderResources);
     if (!(await this.workspaceAllowed(workspaceId, device)))
-      throw new HttpError(403, "workspace_not_authorized");
+      throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.workspaceNotAuthorized);
     const bootId = this.bootId;
     const directoryId = url.searchParams.get("directoryId") ?? undefined;
-    if (directoryId && directoryId.length > 128) throw new HttpError(400, "invalid_directory_id");
+    if (directoryId && directoryId.length > 128)
+      throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.invalidDirectoryId);
     const raw = (await this.runtime({
       operation: "provider-workspace-resources",
       agent,
@@ -4065,12 +4046,12 @@ export class WebAccessService {
       agent,
     );
     if (!(await this.workspaceAllowed(workspaceId, device)))
-      throw new HttpError(403, "workspace_not_authorized");
-    if (this.bootId !== bootId) throw new HttpError(409, "stale_boot");
+      throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.workspaceNotAuthorized);
+    if (this.bootId !== bootId) throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.staleBoot);
     if (this.fullAccess(hash, "advancedControl").id !== device.id)
-      throw new HttpError(401, "access_ended");
-    this.grant(hash, "manage");
-    this.grant(hash, "files");
+      throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.accessEnded);
+    this.grant(hash, REMOTE_CAPABILITIES.device.manage);
+    this.grant(hash, REMOTE_CAPABILITIES.device.files);
     const { sessionId: _scope, ...resources } = response;
     return { ...resources, workspaceId };
   }
@@ -4089,7 +4070,7 @@ export class WebAccessService {
       value.some((id) => typeof id !== "string" || !/^[a-f0-9]{64}$/.test(id)) ||
       new Set(value).size !== value.length
     )
-      throw new HttpError(400, "invalid_resource_ids");
+      throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.invalidResourceIds);
     const device = this.fullAccess(hash);
     const artifacts = this.artifactsFor(device.id);
     const workspaceId = await this.codexScope(sessionId, hash, reserved, false);
@@ -4100,7 +4081,8 @@ export class WebAccessService {
       undefined,
       reserved,
     );
-    if (response.revision !== expectedRevision) throw new HttpError(409, "stale_state");
+    if (response.revision !== expectedRevision)
+      throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.staleState);
     const resolved: ContextResourceReference[] = [];
     for (const id of value) {
       const native = references.get(id);
@@ -4117,10 +4099,10 @@ export class WebAccessService {
           ? artifact.draftAgent !== draftAgent
           : artifact.sessionId !== sessionId)
       )
-        throw new HttpError(409, "resource_unavailable");
+        throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.resourceUnavailable);
       if (artifact.draftAgent) {
         this.fullAccess(hash, "advancedControl");
-        this.grant(hash, "files");
+        this.grant(hash, REMOTE_CAPABILITIES.device.files);
       }
       if ("reference" in artifact) {
         const { reference } = artifact;
@@ -4132,11 +4114,11 @@ export class WebAccessService {
               current.relativePath === reference.relativePath,
           )
         )
-          throw new HttpError(409, "resource_unavailable");
+          throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.resourceUnavailable);
         resolved.push(reference);
         continue;
       }
-      if (!artifacts) throw new HttpError(409, "resource_unavailable");
+      if (!artifacts) throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.resourceUnavailable);
       try {
         const reference = await artifacts.resolveContextReference(
           { deviceId: device.id, workspaceId, sessionId: artifact.sessionId },
@@ -4170,7 +4152,7 @@ export class WebAccessService {
       !session ||
       !(await this.workspaceAllowed(session.workspace_id, this.grant(hash), reserved))
     )
-      throw new HttpError(403, "workspace_not_authorized");
+      throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.workspaceNotAuthorized);
     return session;
   }
   private async lanCodexScopeAllowed(sessionId: string, workspaceId: string, reserved = false) {
@@ -4200,8 +4182,8 @@ export class WebAccessService {
       !workspaceId ||
       !(await this.registeredWorkspaces(reserved)).some(({ id }) => id === workspaceId)
     )
-      throw new HttpError(403, "workspace_not_authorized");
-    this.grant(hash, "send");
+      throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.workspaceNotAuthorized);
+    this.grant(hash, REMOTE_CAPABILITIES.device.send);
     return workspaceId;
   }
 
@@ -4229,14 +4211,14 @@ export class WebAccessService {
     };
     const session = catalog.sessions.find((row) => row.id === sessionId);
     if (!session || (codexOnly && session.agent !== "codex"))
-      throw new HttpError(403, "workspace_not_authorized");
+      throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.workspaceNotAuthorized);
     const currentDevice = this.grant(hash, permission);
     const workspaceAllowed =
       this.options.mode === "lan" && session.agent === "codex"
         ? await this.lanCodexScopeAllowed(sessionId, session.workspace_id)
         : await this.workspaceAllowed(session.workspace_id, currentDevice);
     if (!workspaceAllowed && (session.agent !== "codex" || this.isFullAccess(currentDevice)))
-      throw new HttpError(403, "workspace_not_authorized");
+      throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.workspaceNotAuthorized);
     const request = {
       operation,
       sessionId,
@@ -4244,10 +4226,11 @@ export class WebAccessService {
     };
     const claude = session.agent === "claude-code";
     const claudeRequest = this.claudeSessionRequest;
-    if (claude && !claudeRequest) throw new HttpError(409, "unsupported_host");
+    if (claude && !claudeRequest)
+      throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.unsupportedHost);
     const result = await this.runtime(request, claude ? claudeRequest!(request) : undefined);
     const latest = this.grant(hash, permission);
-    if (latest.id !== device.id) throw new HttpError(401, "access_ended");
+    if (latest.id !== device.id) throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.accessEnded);
     const stillAllowed =
       this.options.mode === "lan" && session.agent === "codex"
         ? await this.lanCodexScopeAllowed(sessionId, session.workspace_id)
@@ -4256,7 +4239,7 @@ export class WebAccessService {
       !stillAllowed &&
       (session.agent !== "codex" || operation === "inspect" || this.isFullAccess(latest))
     )
-      throw new HttpError(403, "workspace_not_authorized");
+      throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.workspaceNotAuthorized);
     if (operation === "inspect") return this.json(res, 200, result);
     const verified =
       session.agent === "deepseek-harness"
@@ -4277,8 +4260,9 @@ export class WebAccessService {
         (item) => item.ownerWaitDeviceId === latest.id,
       );
       if ((await this.queueScope(sessionId, hash)) !== session.workspace_id)
-        throw new HttpError(403, "workspace_not_authorized");
-      if (latest.id !== this.grant(hash, "send").id) throw new HttpError(401, "access_ended");
+        throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.workspaceNotAuthorized);
+      if (latest.id !== this.grant(hash, REMOTE_CAPABILITIES.device.send).id)
+        throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.accessEnded);
     }
     const projected =
       session.agent === "codex"
@@ -4432,7 +4416,7 @@ export class WebAccessService {
               ? feature
               : {
                   available: false,
-                  reason: transport ? "permission_denied" : "same_origin_required",
+                  reason: transport ? REMOTE_ERROR_CODES.permissionDenied : "same_origin_required",
                 },
           ];
         }),
@@ -4469,7 +4453,10 @@ export class WebAccessService {
           (operation !== "fork" || device.organize === true) &&
           (this.options.mode !== "lan" || operation === "send" || lanWaitFeature) &&
           workspaceAllowed;
-        return [operation, allowed ? feature : { available: false, reason: "permission_denied" }];
+        return [
+          operation,
+          allowed ? feature : { available: false, reason: REMOTE_ERROR_CODES.permissionDenied },
+        ];
       }),
     );
     return {
@@ -4488,41 +4475,8 @@ export class WebAccessService {
     control: ActionOutcome,
     generic = false,
   ) {
-    const actions = [
-      "inspect",
-      "resume",
-      "steer",
-      "queue-add",
-      "queue-update",
-      "queue-delete",
-      "queue-reorder",
-      "queue-start",
-      ...(generic
-        ? [
-            "queue-pause",
-            "queue-resume",
-            "queue-steer",
-            "open-model-picker",
-            "adopt-terminal",
-            "handover-terminal",
-          ]
-        : []),
-      "usage-limit-cancel",
-      "usage-limit-continue",
-      "rename",
-      "archive",
-      "unarchive",
-      "delete",
-      "fork",
-      "settings",
-      "goal-set",
-      "goal-pause",
-      "goal-resume",
-      "goal-clear",
-      "compact",
-      "terminals-clean",
-    ];
-    if (!actions.includes(operation)) throw new HttpError(404, "not_found");
+    const actions = generic ? REMOTE_MANAGED_ACTION_OPERATIONS : REMOTE_LEGACY_CODEX.postOperations;
+    if (!actions.includes(operation)) throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.notFound);
     const opensPicker = operation === "open-model-picker";
     const settingsControl = operation === "settings" || opensPicker;
     if (
@@ -4534,12 +4488,15 @@ export class WebAccessService {
           ),
       )
     )
-      throw new HttpError(400, "invalid_input");
+      throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.invalidInput);
     const lanQueueDelete = this.options.mode === "lan" && !generic && operation === "queue-delete";
     if (this.options.mode === "lan" && !lanQueueDelete)
-      throw new HttpError(403, "capability_unavailable");
+      throw new HttpError(
+        REMOTE_ERROR_CONTRACT.capabilityUnavailable.http.overrides.routeDenied,
+        REMOTE_ERROR_CODES.capabilityUnavailable,
+      );
     if (operation === "adopt-terminal" && hash !== "desktop-local")
-      throw new HttpError(403, "owner_required");
+      throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.ownerRequired);
     if (operation === "handover-terminal") {
       if (
         body.handoffConfirmed !== true ||
@@ -4557,26 +4514,27 @@ export class WebAccessService {
             ].includes(key),
         )
       )
-        throw new HttpError(400, "invalid_input");
-      this.grant(hash, "send");
+        throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.invalidInput);
+      this.grant(hash, REMOTE_CAPABILITIES.device.send);
     }
     const permission = lanQueueDelete ? "send" : this.codexPermission(operation);
     const device = this.grant(hash, permission);
     if (operation.startsWith("goal-")) this.fullAccess(hash);
-    if (operation === "fork") this.grant(hash, "organize");
+    if (operation === "fork") this.grant(hash, REMOTE_CAPABILITIES.device.organize);
     const sessionId = this.field(body.sessionId);
     if (lanQueueDelete) await this.queueScope(sessionId, hash);
     else if (!generic || this.isFullAccess(device))
       await this.codexScope(sessionId, hash, false, !generic);
     if (!this.controlsEnabled(sessionId, device))
-      throw new HttpError(403, "session_control_not_allowed");
+      throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.sessionControlNotAllowed);
 
     if (operation === "inspect") return this.inspectSessionAction(res, hash, sessionId, device);
 
     const requestId = this.field(body.requestId, 128);
-    if (!/^[a-f0-9-]{36}$/i.test(requestId)) throw new HttpError(400, "invalid_request_id");
+    if (!/^[a-f0-9-]{36}$/i.test(requestId))
+      throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.invalidRequestId);
     if (body.historyReferences !== undefined && !["steer", "queue-add"].includes(operation))
-      throw new HttpError(400, "history_references_not_supported");
+      throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.historyReferencesNotSupported);
     const replay = await this.readSessionActionReceipt({
       hash,
       operation,
@@ -4589,25 +4547,27 @@ export class WebAccessService {
       generic,
     });
     if ("ack" in replay) return this.json(res, 200, projectQueueActionAck(replay.ack));
-    if (body.bootId !== this.bootId) throw new HttpError(409, "stale_boot");
+    if (body.bootId !== this.bootId) throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.staleBoot);
     if (
       operation !== "resume" &&
       (!Number.isSafeInteger(body.expectedRevision) || Number(body.expectedRevision) < 0)
     )
-      throw new HttpError(400, "invalid_revision");
+      throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.invalidRevision);
     if (this.requests.has(requestId) || this.unconfirmed.has(sessionId)) {
       control.priorUncertain = true;
-      throw new HttpError(409, "outcome_unknown");
+      throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.outcomeUnknown);
     }
-    if (this.admission || this.active.has(sessionId)) throw new HttpError(409, "operation_busy");
+    if (this.admission || this.active.has(sessionId))
+      throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.operationBusy);
     const workspaceId = lanQueueDelete
       ? await this.queueScope(sessionId, hash)
       : await this.codexScope(sessionId, hash, false, !generic);
     if (this.requests.has(requestId) || this.unconfirmed.has(sessionId)) {
       control.priorUncertain = true;
-      throw new HttpError(409, "outcome_unknown");
+      throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.outcomeUnknown);
     }
-    if (this.admission || this.active.has(sessionId)) throw new HttpError(409, "operation_busy");
+    if (this.admission || this.active.has(sessionId))
+      throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.operationBusy);
     const admission: ActionAdmission = {
       hash,
       operation,
@@ -4677,7 +4637,7 @@ export class WebAccessService {
     return this.json(res, 200, {
       ...result,
       ...(!workspaceId || !(await this.workspaceAllowed(workspaceId, device))
-        ? { context: { available: false, reason: "workspace_not_authorized" } }
+        ? { context: { available: false, reason: REMOTE_ERROR_CODES.workspaceNotAuthorized } }
         : {}),
     });
   }
@@ -4711,16 +4671,18 @@ export class WebAccessService {
     const publicInputHash = generic ? managedActionInputHash(operation, body) : undefined;
     if (generic && prior?.found === true && typeof prior.publicInputHash === "string") {
       await this.codexScope(sessionId, hash, false, false);
-      if (body.attachmentIds !== undefined) this.grant(hash, "attachments");
+      if (body.attachmentIds !== undefined)
+        this.grant(hash, REMOTE_CAPABILITIES.device.attachments);
       this.grant(hash, permission);
       const serialQueue = isSerialQueueMode(prior.executionMode) && operation.startsWith("queue-");
-      if (serialQueue && serialQueueRequiresSend(operation)) this.grant(hash, "send");
+      if (serialQueue && serialQueueRequiresSend(operation))
+        this.grant(hash, REMOTE_CAPABILITIES.device.send);
       if (
         prior.sessionId !== sessionId ||
         prior.operation !== operation ||
         prior.publicInputHash !== publicInputHash
       )
-        throw new HttpError(409, "request_id_conflict");
+        throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.requestIdConflict);
       if (
         opensPicker &&
         (prior.requestId !== requestId ||
@@ -4729,7 +4691,10 @@ export class WebAccessService {
               "accepted"))
       ) {
         control.priorUncertain = true;
-        throw new HttpError(502, "outcome_unknown");
+        throw new HttpError(
+          REMOTE_ERROR_CONTRACT.outcomeUnknown.http.overrides.runtimeResponseUnconfirmed,
+          REMOTE_ERROR_CODES.outcomeUnknown,
+        );
       }
       if (prior.status === "accepted" && prior.ack && typeof prior.ack === "object") {
         control.priorUncertain = false;
@@ -4739,10 +4704,12 @@ export class WebAccessService {
         }
         return { ack: prior.ack };
       }
-      control.priorUncertain = prior.status !== "not-dispatched";
+      control.priorUncertain = prior.status !== REMOTE_CONTROL_OUTCOMES.notDispatched;
       throw new HttpError(
         409,
-        control.priorUncertain ? "outcome_unknown" : "control_preflight_rejected",
+        control.priorUncertain
+          ? REMOTE_ERROR_CODES.outcomeUnknown
+          : REMOTE_ERROR_CODES.controlPreflightRejected,
       );
     }
     if (body.historyReferences !== undefined || prior?.historyInputHash)
@@ -4805,24 +4772,25 @@ export class WebAccessService {
       typeof context.cwd !== "string" ||
       !isAbsolute(context.cwd)
     )
-      throw new HttpError(409, "attachments_unavailable");
+      throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.attachmentsUnavailable);
     const workspace = (await this.registeredWorkspaces(true)).find(({ id }) => id === workspaceId);
-    if (!workspace) throw new HttpError(403, "workspace_not_authorized");
+    if (!workspace) throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.workspaceNotAuthorized);
     const [root, cwd] = await Promise.all([
       realpath(workspace.path).catch(() => undefined),
       realpath(context.cwd).catch(() => undefined),
     ]);
-    if (!root || !cwd || cwd !== context.cwd) throw new HttpError(409, "attachments_unavailable");
+    if (!root || !cwd || cwd !== context.cwd)
+      throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.attachmentsUnavailable);
     const within = relative(root, cwd);
     if (within === ".." || within.startsWith(`..${sep}`) || isAbsolute(within))
-      throw new HttpError(403, "workspace_not_authorized");
-    const device = this.grant(hash, "attachments");
+      throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.workspaceNotAuthorized);
+    const device = this.grant(hash, REMOTE_CAPABILITIES.device.attachments);
     if (
       device.id !== input.deviceId ||
       !(await this.workspaceAllowed(workspaceId, device, true)) ||
-      device !== this.grant(hash, "attachments")
+      device !== this.grant(hash, REMOTE_CAPABILITIES.device.attachments)
     )
-      throw new HttpError(403, "workspace_not_authorized");
+      throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.workspaceNotAuthorized);
     return [
       await this.attachmentStore.inputForTerminal(
         input.deviceId,
@@ -4872,24 +4840,24 @@ export class WebAccessService {
         : undefined;
     const ownerWaitOnly = operation === "queue-delete" && (onlyWaitCanBeDeleted || !!queuedWait);
     if (ownerWaitOnly && (!queuedWait || !canDeleteOwnerWait(queuedWait, device.id)))
-      throw new HttpError(409, "queue_item_unavailable");
+      throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.queueItemUnavailable);
     const policy: ProviderValidation = ownerWaitOnly
       ? { available: true }
       : await this.validateSessionAction(admission, capabilities.executionMode);
-    if (policy.requiresSend) this.grant(hash, "send");
+    if (policy.requiresSend) this.grant(hash, REMOTE_CAPABILITIES.device.send);
     if (
       policy.textOnlyQueue &&
       (body.attachmentIds !== undefined || body.historyReferences !== undefined)
     )
-      throw new HttpError(409, "capability_unavailable");
+      throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.capabilityUnavailable);
     if (!policy.available || capabilities.features?.[operation]?.available !== true)
       throw new HttpError(
         409,
-        capabilities.features?.[operation]?.reason === "session-compacting"
-          ? "session-compacting"
+        capabilities.features?.[operation]?.reason === REMOTE_ERROR_CODES.sessionCompacting
+          ? REMOTE_ERROR_CODES.sessionCompacting
           : continuationPreflightReason(
               capabilities.features?.[operation]?.reason,
-              "capability_unavailable",
+              REMOTE_ERROR_CODES.capabilityUnavailable,
             ),
       );
     const snapshot = (await this.runtime(
@@ -4901,14 +4869,14 @@ export class WebAccessService {
       (operation !== "resume" && snapshot.revision !== body.expectedRevision) ||
       !snapshot.runtimeBootId
     )
-      throw new HttpError(409, "stale_state");
+      throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.staleState);
     if (
       policy.idleExecutionMode &&
       (snapshot.status !== "idle" || snapshot.executionMode !== policy.idleExecutionMode)
     )
-      throw new HttpError(409, "stale_state");
+      throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.staleState);
     if (operation === "queue-add" && legacyCodex && snapshot.status !== "running")
-      throw new HttpError(409, "queue_requires_running_turn");
+      throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.queueRequiresRunningTurn);
     const params: Record<string, unknown> & { runtimeBootId: string } = {
       operation,
       sessionId,
@@ -4928,17 +4896,17 @@ export class WebAccessService {
     if (["steer", "queue-add", "queue-update"].includes(operation)) {
       const rawText = body.text === undefined ? "" : body.text;
       if (body.attachmentIds !== undefined && !Array.isArray(body.attachmentIds))
-        throw new HttpError(400, "invalid_attachments");
+        throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.invalidAttachments);
       const hasAttachments = Array.isArray(body.attachmentIds) && body.attachmentIds.length > 0;
       if (operation === "queue-update" && hasAttachments)
-        throw new HttpError(409, "queue_attachments_edit_unsupported");
+        throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.queueAttachmentsEditUnsupported);
       if (
         typeof rawText !== "string" ||
         rawText.length > 16000 ||
         Buffer.byteLength(rawText) > 16384 ||
         (!rawText.trim() && !hasAttachments && body.historyReferences === undefined)
       )
-        throw new HttpError(400, "invalid_text");
+        throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.invalidText);
       let text: string = rawText;
       if (body.historyReferences !== undefined) {
         const history = await this.resolveHistoryInput(body, hash, operation, true);
@@ -4946,22 +4914,24 @@ export class WebAccessService {
         dispatch.historyScopeKey = history.scopeKey;
         params.historyReferences = history.references;
         params.historyInputHash = history.inputHash;
-        if (!text.trim() && !hasAttachments) throw new HttpError(400, "invalid_text");
+        if (!text.trim() && !hasAttachments)
+          throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.invalidText);
       }
       params.text = text;
       // A queued edit stays a message; DSH runs only a newly sent line as a command.
       if (policy.useCommandAccess)
         params.commandAccess = this.dshCommandAccess(this.grant(hash, permission));
       if (hasAttachments) {
-        this.grant(hash, "attachments");
+        this.grant(hash, REMOTE_CAPABILITIES.device.attachments);
         const format = attachmentInputFormat(
           policy.inputFormat,
           capabilities.features?.attachments,
         );
         if (capabilities.features?.attachments?.available !== true || !format)
-          throw new HttpError(409, "attachments_unavailable");
+          throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.attachmentsUnavailable);
         if (format === "claude-terminal") {
-          if (snapshot.executionMode !== "claude-follower") throw new HttpError(409, "stale_state");
+          if (snapshot.executionMode !== "claude-follower")
+            throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.staleState);
           const alreadyPinned = (await this.attachmentStore.pendingRequests(sessionId)).some(
             (item) => item.deviceId === device.id && item.requestId === requestId,
           );
@@ -5008,25 +4978,25 @@ export class WebAccessService {
         (queued as { reason?: string }).reason === "queue-too-large" ||
         (queued.data?.length ?? 0) > 100
       )
-        throw new HttpError(409, "queue_too_large");
+        throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.queueTooLarge);
       const target = queued.data?.find((item) => item.id === body.queuedSubmissionId);
       // A terminal message of unknown outcome is never resent; deleting it is how it ends.
       const removable =
         policy.queueItem === "pending-or-unknown" ? ["pending", "unknown"] : ["pending"];
       if (!target || (target.status !== undefined && !removable.includes(target.status)))
-        throw new HttpError(409, "queue_item_unavailable");
+        throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.queueItemUnavailable);
       if (operation === "queue-update") {
         if (queueEntryHasAttachments(target))
-          throw new HttpError(409, "queue_attachments_edit_unsupported");
+          throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.queueAttachmentsEditUnsupported);
         if (target.actions?.update?.available === false)
-          throw new HttpError(409, "queue_item_unavailable");
+          throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.queueItemUnavailable);
       }
       if (
         operation === "queue-steer" &&
         (target.actions?.steer?.available === false ||
           (target.queueSteerDeviceId !== undefined && target.queueSteerDeviceId !== device.id))
       )
-        throw new HttpError(409, "queue_item_unavailable");
+        throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.queueItemUnavailable);
     }
     if (operation === "steer") params.turnId = this.field(body.turnId);
     if (["queue-update", "queue-delete", "queue-steer"].includes(operation))
@@ -5038,7 +5008,7 @@ export class WebAccessService {
         body.queuedSubmissionIds.some((id) => typeof id !== "string") ||
         new Set(body.queuedSubmissionIds).size !== body.queuedSubmissionIds.length
       )
-        throw new HttpError(400, "invalid_queue_order");
+        throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.invalidQueueOrder);
       params.queuedSubmissionIds = body.queuedSubmissionIds.map((id) => this.field(id));
     }
     if (operation === "rename") params.name = this.field(body.name, 200);
@@ -5068,35 +5038,35 @@ export class WebAccessService {
         body: Object.fromEntries(settingFields.map((key) => [key, body[key]])),
       });
       if (!settings.available || !settings.settings)
-        throw new HttpError(409, "capability_unavailable");
+        throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.capabilityUnavailable);
       Object.assign(params, settings.settings);
     }
     if (operation === "goal-set") {
       const objective = this.field(body.objective, 16_000);
       if (Buffer.byteLength(objective, "utf8") > 16_384)
-        throw new HttpError(400, "invalid_objective");
+        throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.invalidObjective);
       if (body.intent !== undefined && body.intent !== "start" && body.intent !== "update")
-        throw new HttpError(400, "invalid_goal_intent");
+        throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.invalidGoalIntent);
       const goal: Record<string, unknown> = { objective, intent: body.intent ?? "start" };
       if (body.tokenBudget !== undefined) {
         if (
           body.tokenBudget !== null &&
           (!Number.isSafeInteger(body.tokenBudget) || Number(body.tokenBudget) <= 0)
         )
-          throw new HttpError(400, "invalid_token_budget");
+          throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.invalidTokenBudget);
         goal.tokenBudget = body.tokenBudget;
       }
       params.goal = goal;
     }
     if (body.resourceIds !== undefined) {
       if (!["steer", "queue-add", "queue-update"].includes(operation))
-        throw new HttpError(400, "resources_not_supported");
+        throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.resourcesNotSupported);
       if (
         capabilities.features?.context?.available !== true &&
         (capabilities.features?.context !== undefined ||
           capabilities.features?.resources?.available !== true)
       )
-        throw new HttpError(409, "context_unavailable");
+        throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.contextUnavailable);
       const resourceRefs =
         (await this.resolveContextResources(
           sessionId,
@@ -5107,7 +5077,7 @@ export class WebAccessService {
         )) ?? [];
       const inputRows = Array.isArray(params.input) ? params.input.length : 1;
       if (inputRows > 11 || resourceRefs.length > 32)
-        throw new HttpError(400, "too_many_input_items");
+        throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.tooManyInputItems);
       params.resourceRefs = resourceRefs;
     }
     return { params, requiresSend: policy.requiresSend === true };
@@ -5137,18 +5107,18 @@ export class WebAccessService {
       params.ownerWaitOnly === true
         ? (await this.queueScope(sessionId, hash, true)) === workspaceId
         : await this.workspaceAllowed(workspaceId, current, true);
-    if (!scopeAllowed) throw new HttpError(403, "workspace_not_authorized");
+    if (!scopeAllowed) throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.workspaceNotAuthorized);
     if (this.grant(hash, permission).id !== admission.device.id)
-      throw new HttpError(401, "access_ended");
-    if (body.bootId !== this.bootId) throw new HttpError(409, "stale_boot");
+      throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.accessEnded);
+    if (body.bootId !== this.bootId) throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.staleBoot);
     if (dispatch.historyScopeKey)
       await this.assertHistoryScope(hash, dispatch.historyScopeKey, true);
     const restrictCodexNativePolicy = !this.isFullAccess(this.grant(hash, permission));
-    if (requiresSend) this.grant(hash, "send");
-    if (dispatch.terminalAttachments) this.grant(hash, "attachments");
+    if (requiresSend) this.grant(hash, REMOTE_CAPABILITIES.device.send);
+    if (dispatch.terminalAttachments) this.grant(hash, REMOTE_CAPABILITIES.device.attachments);
     if (this.requests.has(requestId)) {
       control.priorUncertain = true;
-      throw new HttpError(409, "outcome_unknown");
+      throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.outcomeUnknown);
     }
     this.rate(`control:${hash}`, 30);
     rememberRequest(this.requests, requestId);
@@ -5193,12 +5163,12 @@ export class WebAccessService {
       error?: string;
     };
     this.grant(hash, permission);
-    if (requiresSend) this.grant(hash, "send");
-    if (body.bootId !== this.bootId) throw new HttpError(409, "stale_boot");
+    if (requiresSend) this.grant(hash, REMOTE_CAPABILITIES.device.send);
+    if (body.bootId !== this.bootId) throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.staleBoot);
     if (result.accepted !== true) {
       if (
         result.requestId === requestId &&
-        result.controlOutcome === "not-dispatched" &&
+        result.controlOutcome === REMOTE_CONTROL_OUTCOMES.notDispatched &&
         (!settingsControl || settingsConfirmed)
       ) {
         if (!settingsControl) this.clearUnconfirmed(sessionId);
@@ -5207,10 +5177,17 @@ export class WebAccessService {
           await this.attachmentStore.settle(dispatch.newlyPinnedDevice, sessionId, requestId);
         throw new HttpError(409, continuationPreflightReason(result.reason ?? result.error));
       }
-      throw new HttpError(502, "outcome_unknown");
+      throw new HttpError(
+        REMOTE_ERROR_CONTRACT.outcomeUnknown.http.overrides.runtimeResponseUnconfirmed,
+        REMOTE_ERROR_CODES.outcomeUnknown,
+      );
     }
     if (operation === "delete") await this.forgetDeletedSession(sessionId);
-    if (opensPicker && !settingsConfirmed) throw new HttpError(502, "outcome_unknown");
+    if (opensPicker && !settingsConfirmed)
+      throw new HttpError(
+        REMOTE_ERROR_CONTRACT.outcomeUnknown.http.overrides.runtimeResponseUnconfirmed,
+        REMOTE_ERROR_CODES.outcomeUnknown,
+      );
     if (!settingsControl)
       res.once("finish", () => {
         if (!res.destroyed && res.statusCode === 200) this.clearUnconfirmed(sessionId);
@@ -5237,13 +5214,21 @@ export class WebAccessService {
     hash: string,
     body: Record<string, unknown>,
   ) {
-    if (this.options.mode === "lan") throw new HttpError(403, "capability_unavailable");
+    if (this.options.mode === "lan")
+      throw new HttpError(
+        REMOTE_ERROR_CONTRACT.capabilityUnavailable.http.overrides.routeDenied,
+        REMOTE_ERROR_CODES.capabilityUnavailable,
+      );
     const request = this.claudeSessionRequest;
-    if (!request) throw new HttpError(503, "capability_unavailable");
+    if (!request)
+      throw new HttpError(
+        REMOTE_ERROR_CONTRACT.capabilityUnavailable.http.overrides.serviceUnavailable,
+        REMOTE_ERROR_CODES.capabilityUnavailable,
+      );
     if (
       Object.keys(body).some((key) => !["sessionId", "operation", "scope", "worker"].includes(key))
     )
-      throw new HttpError(400, "invalid_input");
+      throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.invalidInput);
     const sessionId = this.field(body.sessionId);
     const operation = this.field(body.operation, 32);
     const needs: Record<string, ReadonlyArray<"send" | "manage" | "advancedControl">> = {
@@ -5257,7 +5242,8 @@ export class WebAccessService {
       "remove-worker": ["manage"],
       "stop-worker": ["send"],
     };
-    if (!Object.hasOwn(needs, operation)) throw new HttpError(400, "invalid_operation");
+    if (!Object.hasOwn(needs, operation))
+      throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.invalidOperation);
     let device = this.grant(hash);
     if (operation !== "status") {
       device = this.fullAccess(hash);
@@ -5269,7 +5255,10 @@ export class WebAccessService {
     const leadsWithoutClaude =
       agent !== "claude-code" && sessionProviderDeclaration(agent)?.projectAgent?.lead;
     if (!this.options.verifiedClaudeManaged && !leadsWithoutClaude)
-      throw new HttpError(503, "capability_unavailable");
+      throw new HttpError(
+        REMOTE_ERROR_CONTRACT.capabilityUnavailable.http.overrides.serviceUnavailable,
+        REMOTE_ERROR_CODES.capabilityUnavailable,
+      );
     const lead = (value: unknown) =>
       value && typeof value === "object" && "lead" in value
         ? (
@@ -5286,7 +5275,7 @@ export class WebAccessService {
     let scope: Record<string, unknown> | undefined;
     if (operation === "designate" || operation === "update") {
       if (!body.scope || typeof body.scope !== "object" || Array.isArray(body.scope))
-        throw new HttpError(400, "invalid_input");
+        throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.invalidInput);
       scope = Object.fromEntries(
         Object.entries(body.scope).filter(([key]) =>
           ["approvals", "answers", "maxAutoTurns", "stallMinutes"].includes(key),
@@ -5298,19 +5287,19 @@ export class WebAccessService {
       const current = lead(
         await request({ operation: "lead-status", sessionId, deviceId: device.id }),
       );
-      if (!current) throw new HttpError(409, "lead-unavailable");
+      if (!current) throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.leadUnavailable);
       authorizedWorkspaceIds = [];
       for (const id of current.scope?.workspaceIds ?? []) {
         if (typeof id !== "string" || !(await this.workspaceAllowed(id, device)))
-          throw new HttpError(403, "workspace_not_authorized");
+          throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.workspaceNotAuthorized);
         authorizedWorkspaceIds.push(id);
       }
       const approvals = Array.isArray(scope?.approvals)
         ? scope.approvals
         : current.scope?.approvals;
-      if (approvals?.length) this.grant(hash, "approve");
+      if (approvals?.length) this.grant(hash, REMOTE_CAPABILITIES.device.approve);
     } else if (Array.isArray(scope?.approvals) && scope.approvals.length) {
-      this.grant(hash, "approve");
+      this.grant(hash, REMOTE_CAPABILITIES.device.approve);
     }
     const backendOperation =
       operation === "remove-worker"
@@ -5327,23 +5316,24 @@ export class WebAccessService {
       ...(worker ? { worker } : {}),
     }).catch((error: unknown) => {
       const code = error instanceof Error ? error.message : "";
-      if (code.includes("workspace_not_authorized"))
-        throw new HttpError(403, "workspace_not_authorized");
+      if (code.includes(REMOTE_ERROR_CODES.workspaceNotAuthorized))
+        throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.workspaceNotAuthorized);
       const known = [
-        "lead-requires-managed-claude",
-        "session-is-a-worker",
-        "lead-exists",
-        "lead-unavailable",
-        "invalid-lead-workspaces",
-        "invalid-lead-turn-limit",
-        "invalid-lead-delegation",
-        "worker-unavailable",
-        "worker-not-running",
+        REMOTE_ERROR_CODES.leadRequiresManagedClaude,
+        REMOTE_ERROR_CODES.sessionIsAWorker,
+        REMOTE_ERROR_CODES.leadExists,
+        REMOTE_ERROR_CODES.leadUnavailable,
+        REMOTE_ERROR_CODES.invalidLeadWorkspaces,
+        REMOTE_ERROR_CODES.invalidLeadTurnLimit,
+        REMOTE_ERROR_CODES.invalidLeadDelegation,
+        REMOTE_ERROR_CODES.workerUnavailable,
+        REMOTE_ERROR_CODES.workerNotRunning,
       ].find((reason) => code.includes(reason));
-      throw new HttpError(known ? 409 : 500, known ?? "project_agent_failed");
+      throw new HttpError(known ? 409 : 500, known ?? REMOTE_ERROR_CODES.projectAgentFailed);
     });
     // The device may have lost its access while the host worked.
-    if (this.grant(hash).id !== device.id) throw new HttpError(401, "access_ended");
+    if (this.grant(hash).id !== device.id)
+      throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.accessEnded);
     return this.json(res, 200, {
       lead: lead(result),
       capable:
@@ -5358,24 +5348,30 @@ export class WebAccessService {
     hash: string,
     body: Record<string, unknown>,
   ) {
-    if (this.options.mode === "lan") throw new HttpError(403, "capability_unavailable");
+    if (this.options.mode === "lan")
+      throw new HttpError(
+        REMOTE_ERROR_CONTRACT.capabilityUnavailable.http.overrides.routeDenied,
+        REMOTE_ERROR_CODES.capabilityUnavailable,
+      );
     if (Object.keys(body).some((key) => !["sessionId", "bootId", "expectedRevision"].includes(key)))
-      throw new HttpError(400, "invalid_input");
+      throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.invalidInput);
     const device = this.fullAccess(hash, "advancedControl");
-    this.grant(hash, "settings");
+    this.grant(hash, REMOTE_CAPABILITIES.device.settings);
     const sessionId = this.field(body.sessionId);
-    if (body.bootId !== this.bootId) throw new HttpError(409, "stale_boot");
+    if (body.bootId !== this.bootId) throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.staleBoot);
     if (!Number.isSafeInteger(body.expectedRevision) || Number(body.expectedRevision) < 0)
-      throw new HttpError(400, "invalid_revision");
+      throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.invalidRevision);
     if (
       !this.options.verifiedClaudeManaged ||
       !this.claudeSessionRequest ||
       !this.controlsEnabled(sessionId, device)
     )
-      throw new HttpError(403, "session_control_not_allowed");
+      throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.sessionControlNotAllowed);
     const workspaceId = await this.codexScope(sessionId, hash, false, false);
-    if (this.unconfirmed.has(sessionId)) throw new HttpError(409, "outcome_unknown");
-    if (this.admission || this.active.has(sessionId)) throw new HttpError(409, "operation_busy");
+    if (this.unconfirmed.has(sessionId))
+      throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.outcomeUnknown);
+    if (this.admission || this.active.has(sessionId))
+      throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.operationBusy);
     this.active.add(sessionId);
     let started = false;
     try {
@@ -5395,7 +5391,7 @@ export class WebAccessService {
           409,
           continuationPreflightReason(
             capabilities.features?.settings?.reason,
-            "capability_unavailable",
+            REMOTE_ERROR_CODES.capabilityUnavailable,
           ),
         );
       const live = (await this.runtime(
@@ -5407,16 +5403,17 @@ export class WebAccessService {
         revision?: number;
       };
       if (!live.runtimeBootId || live.revision !== body.expectedRevision)
-        throw new HttpError(409, "stale_state");
+        throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.staleState);
       if (this.fullAccess(hash, "advancedControl").id !== device.id)
-        throw new HttpError(401, "access_ended");
-      this.grant(hash, "settings");
+        throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.accessEnded);
+      this.grant(hash, REMOTE_CAPABILITIES.device.settings);
       if (!(await this.workspaceAllowed(workspaceId, device, true)))
-        throw new HttpError(403, "workspace_not_authorized");
+        throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.workspaceNotAuthorized);
       if (this.fullAccess(hash, "advancedControl").id !== device.id)
-        throw new HttpError(401, "access_ended");
-      this.grant(hash, "settings");
-      if (body.bootId !== this.bootId) throw new HttpError(409, "stale_boot");
+        throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.accessEnded);
+      this.grant(hash, REMOTE_CAPABILITIES.device.settings);
+      if (body.bootId !== this.bootId)
+        throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.staleBoot);
       const params = {
         operation: "settings-prepare",
         sessionId,
@@ -5433,15 +5430,17 @@ export class WebAccessService {
       });
       started = true;
       const settings = await this.runtime(params, pending, true);
-      if (body.bootId !== this.bootId) throw new HttpError(409, "stale_boot");
+      if (body.bootId !== this.bootId)
+        throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.staleBoot);
       if (this.fullAccess(hash, "advancedControl").id !== device.id)
-        throw new HttpError(401, "access_ended");
-      this.grant(hash, "settings");
+        throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.accessEnded);
+      this.grant(hash, REMOTE_CAPABILITIES.device.settings);
       await this.codexScope(sessionId, hash, true, false);
-      if (body.bootId !== this.bootId) throw new HttpError(409, "stale_boot");
+      if (body.bootId !== this.bootId)
+        throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.staleBoot);
       if (this.fullAccess(hash, "advancedControl").id !== device.id)
-        throw new HttpError(401, "access_ended");
-      this.grant(hash, "settings");
+        throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.accessEnded);
+      this.grant(hash, REMOTE_CAPABILITIES.device.settings);
       return this.json(res, 200, { sessionId, ...this.projectSettings(settings) });
     } finally {
       if (!started) {
@@ -5472,7 +5471,7 @@ export class WebAccessService {
     } catch (error) {
       throw new HttpError(
         400,
-        error instanceof Error ? error.message : "invalid_history_reference",
+        error instanceof Error ? error.message : REMOTE_ERROR_CODES.invalidHistoryReference,
       );
     }
   }
@@ -5493,7 +5492,10 @@ export class WebAccessService {
       .sort();
     const current = this.grant(hash);
     if (boot !== this.bootId || JSON.stringify(current) !== identity)
-      throw new HttpError(403, "access_changed");
+      throw new HttpError(
+        REMOTE_ERROR_CONTRACT.accessChanged.http.overrides.accessRevokedDuringRequest,
+        REMOTE_ERROR_CODES.accessChanged,
+      );
     return { workspaces, token: digest(JSON.stringify([boot, current, workspaces])) };
   }
   private async historyScope(hash: string, reserved = false) {
@@ -5502,7 +5504,10 @@ export class WebAccessService {
       sessions?: { id: string; workspace_id: string; indexedSessionIds?: string[] }[];
     };
     if ((await this.historyAccessScope(hash, reserved)).token !== access.token)
-      throw new HttpError(403, "access_changed");
+      throw new HttpError(
+        REMOTE_ERROR_CONTRACT.accessChanged.http.overrides.accessRevokedDuringRequest,
+        REMOTE_ERROR_CODES.accessChanged,
+      );
     const allowedSessionIds = [
       ...new Set(
         (catalog.sessions ?? [])
@@ -5524,7 +5529,7 @@ export class WebAccessService {
   private checkPairedHostScope(hash: string) {
     this.grant(hash);
     if (this.options.acceptanceSessionId && hash !== "desktop-local")
-      throw new HttpError(403, "session_control_not_allowed");
+      throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.sessionControlNotAllowed);
   }
   private approvalAuditSource(
     hash: string,
@@ -5645,19 +5650,23 @@ export class WebAccessService {
       );
   }
   private async approvalAuditPage(res: ConversationResponse, hash: string, url: URL) {
-    if (!this.options.sessionRequest) throw new HttpError(404, "capability_unavailable");
+    if (!this.options.sessionRequest)
+      throw new HttpError(
+        REMOTE_ERROR_CONTRACT.capabilityUnavailable.http.overrides.handlerUnavailable,
+        REMOTE_ERROR_CODES.capabilityUnavailable,
+      );
     if (
       [...url.searchParams.keys()].some((key) => key !== "before" && key !== "limit") ||
       url.searchParams.getAll("before").length > 1 ||
       url.searchParams.getAll("limit").length > 1
     )
-      throw new HttpError(400, "invalid_approval_audit_query");
+      throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.invalidApprovalAuditQuery);
     const before = url.searchParams.get("before");
     if (before !== null && !/^[A-Za-z0-9_-]{1,160}$/.test(before))
-      throw new HttpError(400, "invalid_approval_audit_query");
+      throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.invalidApprovalAuditQuery);
     const limit = Number(url.searchParams.get("limit") ?? "30");
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100)
-      throw new HttpError(400, "invalid_approval_audit_query");
+      throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.invalidApprovalAuditQuery);
     const scope = async () => {
       this.checkPairedHostScope(hash);
       const boot = this.bootId;
@@ -5676,7 +5685,10 @@ export class WebAccessService {
               .map(({ id, path }) => ({ id, path }))
               .sort((a, b) => a.id.localeCompare(b.id));
       if (this.bootId !== boot || this.grant(hash) !== device || this.readerScope() !== readerScope)
-        throw new HttpError(403, "access_changed");
+        throw new HttpError(
+          REMOTE_ERROR_CONTRACT.accessChanged.http.overrides.accessRevokedDuringRequest,
+          REMOTE_ERROR_CODES.accessChanged,
+        );
       return { boot, readerScope, device, workspaces };
     };
     const initial = await scope();
@@ -5688,12 +5700,15 @@ export class WebAccessService {
     }).catch((error: unknown) => {
       const detail =
         error instanceof RuntimeRequestError ? snapshotField(error.data, "detail") : undefined;
-      if (detail === "invalid_approval_audit_cursor")
-        throw new HttpError(400, "invalid_approval_audit_query");
-      throw new HttpError(503, "approval_audit_unavailable");
+      if (detail === REMOTE_ERROR_CODES.invalidApprovalAuditCursor)
+        throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.invalidApprovalAuditQuery);
+      throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.approvalAuditUnavailable);
     });
     if (JSON.stringify(initial) !== JSON.stringify(await scope()))
-      throw new HttpError(403, "access_changed");
+      throw new HttpError(
+        REMOTE_ERROR_CONTRACT.accessChanged.http.overrides.accessRevokedDuringRequest,
+        REMOTE_ERROR_CODES.accessChanged,
+      );
     return this.json(res, 200, result);
   }
   private async approvalRuleScope(hash: string, workspaceId: string | undefined, write = false) {
@@ -5706,23 +5721,29 @@ export class WebAccessService {
       this.isFullAccess(caller) ||
       this.options.mode === "lan" ||
       this.config.allowedWorkspaceIds?.includes(workspaceId);
-    if (!allowsWorkspace(device)) throw new HttpError(403, "workspace_not_authorized");
+    if (!allowsWorkspace(device))
+      throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.workspaceNotAuthorized);
     const workspace = workspaceId
       ? (await this.registeredWorkspaces()).find((item) => item.id === workspaceId)
       : undefined;
-    if (workspaceId && !workspace) throw new HttpError(403, "workspace_not_authorized");
+    if (workspaceId && !workspace)
+      throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.workspaceNotAuthorized);
     const canonical = workspace ? await realpath(workspace.path).catch(() => undefined) : undefined;
     const pathKey = (path: string) =>
       process.platform === "win32" ? resolve(path).toLowerCase() : resolve(path);
     const current =
       write || workspaceId === undefined ? this.fullAccess(hash, "settings") : this.grant(hash);
-    if (current !== device || boot !== this.bootId) throw new HttpError(403, "access_changed");
+    if (current !== device || boot !== this.bootId)
+      throw new HttpError(
+        REMOTE_ERROR_CONTRACT.accessChanged.http.overrides.accessRevokedDuringRequest,
+        REMOTE_ERROR_CODES.accessChanged,
+      );
     const full = this.isFullAccess(current);
     if (
       !allowsWorkspace(current) ||
       (workspace && (!canonical || pathKey(canonical) !== pathKey(workspace.path)))
     )
-      throw new HttpError(403, "workspace_not_authorized");
+      throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.workspaceNotAuthorized);
     return {
       canonical,
       canRevoke: full && current.settings === true && this.controlsEnabled(undefined, current),
@@ -5737,7 +5758,11 @@ export class WebAccessService {
     revoke?: { agent: ManagedAgent; ruleId: string },
   ) {
     const service = this.options.approvalRules;
-    if (!service) throw new HttpError(404, "capability_unavailable");
+    if (!service)
+      throw new HttpError(
+        REMOTE_ERROR_CONTRACT.capabilityUnavailable.http.overrides.handlerUnavailable,
+        REMOTE_ERROR_CODES.capabilityUnavailable,
+      );
     const scope = await this.approvalRuleScope(hash, workspaceId, revoke !== undefined);
     const recheck = async () => {
       const next = await this.approvalRuleScope(hash, workspaceId, revoke !== undefined);
@@ -5746,7 +5771,10 @@ export class WebAccessService {
         next.boot !== scope.boot ||
         next.canonical !== scope.canonical
       )
-        throw new HttpError(403, "access_changed");
+        throw new HttpError(
+          REMOTE_ERROR_CONTRACT.accessChanged.http.overrides.accessRevokedDuringRequest,
+          REMOTE_ERROR_CODES.accessChanged,
+        );
     };
     const context = {
       ...(scope.canonical ? { workspace: scope.canonical } : {}),
@@ -5761,14 +5789,15 @@ export class WebAccessService {
         if (error instanceof HttpError) throw error;
         const reason = error instanceof Error ? error.message : "";
         if (reason === "approval-rule-read-only")
-          throw new HttpError(403, "approval_rule_read_only");
-        if (reason === "approval-rule-stale") throw new HttpError(409, "approval_rule_stale");
-        throw new HttpError(503, "approval_rule_revoke_failed");
+          throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.approvalRuleReadOnly);
+        if (reason === "approval-rule-stale")
+          throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.approvalRuleStale);
+        throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.approvalRuleRevokeFailed);
       }
       return this.json(res, 200, { revoked: true });
     }
     const result = await service.list(context).catch(() => {
-      throw new HttpError(503, "approval_rules_unavailable");
+      throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.approvalRulesUnavailable);
     });
     await recheck();
     return this.json(res, 200, {
@@ -5782,7 +5811,7 @@ export class WebAccessService {
     if (this.options.mode !== "lan") return this.codexScope(sessionId, hash, reserved, false);
     const scope = await this.historyScope(hash, reserved);
     if (!scope.targetSessionIds.includes(sessionId))
-      throw new HttpError(403, "workspace_not_authorized");
+      throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.workspaceNotAuthorized);
   }
   private async codexResumeCommandScope(sessionId: string, hash: string) {
     const access = await this.historyAccessScope(hash);
@@ -5798,7 +5827,7 @@ export class WebAccessService {
     const workspace = (await this.registeredWorkspaces()).find(
       (item) => item.id === session?.workspace_id && access.workspaces.includes(item.id),
     );
-    if (!workspace) throw new HttpError(403, "workspace_not_authorized");
+    if (!workspace) throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.workspaceNotAuthorized);
     let directory: string;
     let identity: string;
     try {
@@ -5807,10 +5836,13 @@ export class WebAccessService {
       if (!info.isDirectory()) throw new Error("not_directory");
       identity = JSON.stringify([workspace.id, directory, info.dev, info.ino]);
     } catch {
-      throw new HttpError(403, "workspace_not_authorized");
+      throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.workspaceNotAuthorized);
     }
     if ((await this.historyAccessScope(hash)).token !== access.token)
-      throw new HttpError(403, "access_changed");
+      throw new HttpError(
+        REMOTE_ERROR_CONTRACT.accessChanged.http.overrides.accessRevokedDuringRequest,
+        REMOTE_ERROR_CODES.accessChanged,
+      );
     return digest(JSON.stringify([access.token, identity]));
   }
   private async historyCall(
@@ -5818,8 +5850,12 @@ export class WebAccessService {
     params: Record<string, unknown>,
     res?: ConversationResponse,
   ): Promise<unknown> {
-    if (!this.options.historyRequest) throw new HttpError(404, "capability_unavailable");
-    if (res?.destroyed) throw new HttpError(408, "history_request_cancelled");
+    if (!this.options.historyRequest)
+      throw new HttpError(
+        REMOTE_ERROR_CONTRACT.capabilityUnavailable.http.overrides.handlerUnavailable,
+        REMOTE_ERROR_CODES.capabilityUnavailable,
+      );
+    if (res?.destroyed) throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.historyRequestCancelled);
     const requestId = randomUUID();
     let timer: ReturnType<typeof setTimeout> | undefined;
     let cancelled = false;
@@ -5835,7 +5871,7 @@ export class WebAccessService {
         void this.options.historyRequest!(HISTORY_SEARCH_METHODS.cancel, { requestId }).catch(
           () => {},
         );
-      rejectCancelled?.(new HttpError(408, "history_request_cancelled"));
+      rejectCancelled?.(HttpError.fromContract(REMOTE_ERROR_CONTRACT.historyRequestCancelled));
     };
     res?.once("close", cancel);
     try {
@@ -5857,27 +5893,27 @@ export class WebAccessService {
             : undefined;
       if (
         [
-          "history-source-stale",
-          "history-search-cursor-stale",
-          "history-source-changed",
-          "history-source-owner-changed",
-          "history-owner-changed",
-        ].includes(String(code))
+          REMOTE_ERROR_CODES.historySourceStale,
+          REMOTE_ERROR_CODES.historySearchCursorStale,
+          REMOTE_ERROR_CODES.historySourceChanged,
+          REMOTE_ERROR_CODES.historySourceOwnerChanged,
+          REMOTE_ERROR_CODES.historyOwnerChanged,
+        ].some((reason) => reason === String(code))
       )
         throw new HttpError(409, String(code));
       if (
-        code === "history-source-unavailable" ||
-        code === "history-search-disabled" ||
-        code === "history-search-cache-unavailable"
+        code === REMOTE_ERROR_CODES.historySourceUnavailable ||
+        code === REMOTE_ERROR_CODES.historySearchDisabled ||
+        code === REMOTE_ERROR_CODES.historySearchCacheUnavailable
       )
         throw new HttpError(410, String(code));
       if (
         [
-          "history-search-cursor-invalid",
-          "history-reference-range-invalid",
-          "history-references-too-large",
-          "history-search-input-invalid",
-        ].includes(String(code))
+          REMOTE_ERROR_CODES.historySearchCursorInvalid,
+          REMOTE_ERROR_CODES.historyReferenceRangeInvalid,
+          REMOTE_ERROR_CODES.historyReferencesTooLarge,
+          REMOTE_ERROR_CODES.historySearchInputInvalid,
+        ].some((reason) => reason === String(code))
       )
         throw new HttpError(400, String(code));
       throw error;
@@ -5888,7 +5924,10 @@ export class WebAccessService {
   }
   private async assertHistoryScope(hash: string, key: string, reserved = false) {
     if ((await this.historyScope(hash, reserved)).key !== key)
-      throw new HttpError(403, "access_changed");
+      throw new HttpError(
+        REMOTE_ERROR_CONTRACT.accessChanged.http.overrides.accessRevokedDuringRequest,
+        REMOTE_ERROR_CODES.accessChanged,
+      );
   }
   private async resolveHistoryInput(
     body: Record<string, unknown>,
@@ -5900,7 +5939,7 @@ export class WebAccessService {
     const inputHash = this.historyFields(() => historyInputHash(body, operation));
     const scope = await this.historyScope(hash, reserved);
     if (references.some((item) => !scope.allowedSessionIds.includes(item.sessionId)))
-      throw new HttpError(403, "workspace_not_authorized");
+      throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.workspaceNotAuthorized);
     const resolved = (await this.historyCall(HISTORY_SEARCH_METHODS.references, {
       references,
       allowedSessionIds: scope.allowedSessionIds,
@@ -5925,15 +5964,17 @@ export class WebAccessService {
       prior.operation !== operation ||
       prior.historyInputHash !== this.historyFields(() => historyInputHash(body, operation))
     )
-      throw new HttpError(409, "request_id_conflict");
+      throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.requestIdConflict);
     if (prior.status === "accepted" && prior.ack && typeof prior.ack === "object") {
       control.priorUncertain = false;
       return prior.ack;
     }
-    control.priorUncertain = prior.status !== "not-dispatched";
+    control.priorUncertain = prior.status !== REMOTE_CONTROL_OUTCOMES.notDispatched;
     throw new HttpError(
       409,
-      control.priorUncertain ? "outcome_unknown" : "control_preflight_rejected",
+      control.priorUncertain
+        ? REMOTE_ERROR_CODES.outcomeUnknown
+        : REMOTE_ERROR_CODES.controlPreflightRejected,
     );
   }
   private async historyRead(
@@ -5948,13 +5989,13 @@ export class WebAccessService {
     if (kind === "search") {
       const fields = ["query", "workspaceIds", "agents", "kinds", "archived", "cursor", "limit"];
       if (Object.keys(body).some((key) => !fields.includes(key)) || typeof body.query !== "string")
-        throw new HttpError(400, "invalid_history_query");
+        throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.invalidHistoryQuery);
       if (
         body.workspaceIds !== undefined &&
         (!Array.isArray(body.workspaceIds) ||
           body.workspaceIds.some((id) => typeof id !== "string" || !scope.workspaces.includes(id)))
       )
-        throw new HttpError(403, "workspace_not_authorized");
+        throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.workspaceNotAuthorized);
       params = { ...body };
       method = HISTORY_SEARCH_METHODS.query;
     } else if (kind === "locate") {
@@ -5963,14 +6004,14 @@ export class WebAccessService {
         unknown
       >;
       if (!scope.allowedSessionIds.includes(String(params.sessionId)))
-        throw new HttpError(403, "workspace_not_authorized");
+        throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.workspaceNotAuthorized);
       method = HISTORY_SEARCH_METHODS.locate;
     } else {
       if (Object.keys(body).some((key) => key !== "references"))
-        throw new HttpError(400, "invalid_history_references");
+        throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.invalidHistoryReferences);
       const references = this.historyFields(() => historyReferences(body.references));
       if (references.some((item) => !scope.allowedSessionIds.includes(item.sessionId)))
-        throw new HttpError(403, "workspace_not_authorized");
+        throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.workspaceNotAuthorized);
       params = { references };
       method = HISTORY_SEARCH_METHODS.references;
     }
@@ -6003,12 +6044,12 @@ export class WebAccessService {
       });
   }
   private async sessionCreationOptions(agent: ManagedAgent, workspaceId: string | undefined) {
-    const unsupported = { available: false, reason: "unsupported_host" };
+    const unsupported = { available: false, reason: REMOTE_ERROR_CODES.unsupportedHost };
     if (agent === "devin" || agent === "deepseek-harness") {
       const verified =
         agent === "devin" ? this.options.verifiedDevinManaged : this.options.verifiedDshFollower;
       if (verified !== true) return unsupported;
-      if (this.admission) throw new HttpError(409, "operation_busy");
+      if (this.admission) throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.operationBusy);
     }
     const registered = this.sessionProviderOperation(agent, "options");
     if (registered) {
@@ -6050,19 +6091,24 @@ export class WebAccessService {
     body: Record<string, unknown>,
     control: { request: boolean; dispatched: boolean; priorUncertain: boolean },
   ) {
-    this.grant(hash, "manage");
+    this.grant(hash, REMOTE_CAPABILITIES.device.manage);
     const agent = managedAgentOf(body.agent ?? "codex");
-    if (!agent) throw new HttpError(400, "invalid_agent");
+    if (!agent) throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.invalidAgent);
     const provider = sessionProviderCapabilities(agent);
     const permissionField = sessionProviderDeclaration(agent)?.permissionField;
     // DeepSeek Harness only starts sessions here; its sessions are controlled through actions.
     if (agent === "deepseek-harness" && operation !== "create")
-      throw new HttpError(404, "not_found");
+      throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.notFound);
     // Devin also only starts sessions here, with their first message.
-    if (agent === "devin" && operation !== "create") throw new HttpError(404, "not_found");
+    if (agent === "devin" && operation !== "create")
+      throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.notFound);
     const requestId = this.field(body.requestId, 128);
     if (agent === "claude-code")
-      await this.controlReceipt(requestId, this.grant(hash, "manage").id, control);
+      await this.controlReceipt(
+        requestId,
+        this.grant(hash, REMOTE_CAPABILITIES.device.manage).id,
+        control,
+      );
     const providerCreate =
       operation === "create" ? this.sessionProviderOperation(agent, "create") : undefined;
     const managedRequest =
@@ -6090,30 +6136,30 @@ export class WebAccessService {
         }
       })();
     if (agent === "claude-code" && !this.options.verifiedClaudeManaged)
-      throw new HttpError(409, "unsupported_host");
+      throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.unsupportedHost);
     if (agent === "deepseek-harness" && this.options.verifiedDshFollower !== true)
-      throw new HttpError(409, "unsupported_host");
+      throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.unsupportedHost);
     if (agent === "devin" && this.options.verifiedDevinManaged !== true)
-      throw new HttpError(409, "unsupported_host");
+      throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.unsupportedHost);
     if (
       this.options.acceptanceSessionId &&
       (operation === "create" || body.sessionId !== this.options.acceptanceSessionId)
     )
-      throw new HttpError(403, "session_control_not_allowed");
+      throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.sessionControlNotAllowed);
     if (!managedRequest || !["create", "release", "reconcile"].includes(operation))
-      throw new HttpError(404, "not_found");
-    if (body.bootId !== this.bootId) throw new HttpError(409, "stale_boot");
+      throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.notFound);
+    if (body.bootId !== this.bootId) throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.staleBoot);
     const params: Record<string, unknown> = {
       operation,
       requestId,
-      deviceId: this.grant(hash, "manage").id,
+      deviceId: this.grant(hash, REMOTE_CAPABILITIES.device.manage).id,
     };
     let creationNeedsFullAccess = false;
     let verifyPolicyReply = false;
     if (operation === "create") {
       params.workspaceId = this.field(body.workspaceId);
       if (body.permissionMode !== undefined && permissionField !== "permissionMode")
-        throw new HttpError(400, "unsupported_permission_mode");
+        throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.unsupportedPermissionMode);
       if (agent === "codex") {
         const policyId =
           body.policyId === undefined
@@ -6126,34 +6172,35 @@ export class WebAccessService {
             "full-access-on-request",
           ].includes(policyId)
         )
-          throw new HttpError(400, "unsupported_policy");
+          throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.unsupportedPolicy);
         // Starting with another policy is changing it, which a session's settings allow only
         // to a device with full access.
         creationNeedsFullAccess = policyId !== "workspace-write-on-request";
         params.policyId = policyId;
       } else if (body.policyId !== undefined) {
         if (provider?.create.permissionPicker !== true || permissionField !== "policyId")
-          throw new HttpError(400, "unsupported_policy");
+          throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.unsupportedPolicy);
         params.policyId = this.field(body.policyId, 128);
         creationNeedsFullAccess = true;
         verifyPolicyReply = true;
       }
       if (body.mode !== undefined) {
         if (provider?.create.planMode !== "mode" || body.mode !== "plan")
-          throw new HttpError(400, "unsupported_mode");
-        this.grant(hash, "settings");
+          throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.unsupportedMode);
+        this.grant(hash, REMOTE_CAPABILITIES.device.settings);
         params.mode = body.mode;
       }
       if (body.model !== undefined) params.model = this.field(body.model, 128);
       if (body.effort !== undefined) params.effort = this.field(body.effort, 32);
       if (provider?.create.verifyStartupModel && body.verifyStartupModel !== undefined) {
-        if (body.verifyStartupModel !== true) throw new HttpError(400, "invalid_input");
+        if (body.verifyStartupModel !== true)
+          throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.invalidInput);
         params.verifyStartupModel = true;
       }
       if (agent === "claude-code") {
         if (body.permissionMode !== undefined) {
           if (!["default", "plan", "acceptEdits"].includes(String(body.permissionMode)))
-            throw new HttpError(400, "unsupported_permission_mode");
+            throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.unsupportedPermissionMode);
           params.permissionMode = body.permissionMode;
         }
       }
@@ -6164,7 +6211,7 @@ export class WebAccessService {
       if (agent === "devin" && body.permissionMode !== undefined) {
         const mode = String(body.permissionMode);
         if (!DEVIN_PERMISSION_MODES.includes(mode))
-          throw new HttpError(400, "unsupported_permission_mode");
+          throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.unsupportedPermissionMode);
         // Approving more without asking is changing what the session may do: full access only.
         creationNeedsFullAccess = mode === "smart" || mode === "dangerous";
         params.permissionMode = mode;
@@ -6172,7 +6219,7 @@ export class WebAccessService {
       if (agent === "antigravity" && body.permissionMode !== undefined) {
         const mode = String(body.permissionMode);
         if (!ANTIGRAVITY_PERMISSION_MODES.includes(mode))
-          throw new HttpError(400, "unsupported_permission_mode");
+          throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.unsupportedPermissionMode);
         // Auto also runs commands Antigravity judges safe: full access only.
         creationNeedsFullAccess = mode === "auto";
         params.permissionMode = mode;
@@ -6180,9 +6227,9 @@ export class WebAccessService {
       if (creationNeedsFullAccess) this.fullAccess(hash);
       if (provider?.create.mode === "with-first-message") {
         if (typeof body.prompt !== "string" || !body.prompt.trim())
-          throw new HttpError(400, "missing_prompt");
+          throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.missingPrompt);
         if (Buffer.byteLength(body.prompt, "utf8") > 64 * 1024)
-          throw new HttpError(413, "prompt_too_large");
+          throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.promptTooLarge);
         params.prompt = body.prompt;
       }
     } else {
@@ -6191,7 +6238,7 @@ export class WebAccessService {
     const sessionId = typeof params.sessionId === "string" ? params.sessionId : undefined;
     if (agent === "claude-code" && operation === "release") {
       if (!Number.isSafeInteger(body.expectedRevision) || Number(body.expectedRevision) < 0)
-        throw new HttpError(400, "invalid_revision");
+        throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.invalidRevision);
       const live = (await this.runtime({
         operation: "live",
         sessionId: params.sessionId,
@@ -6201,10 +6248,10 @@ export class WebAccessService {
       params.runtimeBootId = this.field(live.runtimeBootId);
     }
     if (this.admission || (sessionId && this.active.has(sessionId)))
-      throw new HttpError(409, "operation_busy");
+      throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.operationBusy);
     if (agent !== "claude-code" && this.requests.has(requestId)) {
       control.priorUncertain = true;
-      throw new HttpError(409, "duplicate_request");
+      throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.duplicateRequest);
     }
     const catalog = (await this.scopeCatalog()) as {
       sessions: { id: string; workspace_id: string; agent: string }[];
@@ -6219,16 +6266,16 @@ export class WebAccessService {
       typeof workspaceId !== "string" ||
       !(await this.workspaceAllowed(workspaceId, this.grant(hash)))
     )
-      throw new HttpError(403, "workspace_not_authorized");
-    this.grant(hash, "manage");
+      throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.workspaceNotAuthorized);
+    this.grant(hash, REMOTE_CAPABILITIES.device.manage);
     if (creationNeedsFullAccess) this.fullAccess(hash);
-    if (params.mode === "plan") this.grant(hash, "settings");
-    if (body.bootId !== this.bootId) throw new HttpError(409, "stale_boot");
+    if (params.mode === "plan") this.grant(hash, REMOTE_CAPABILITIES.device.settings);
+    if (body.bootId !== this.bootId) throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.staleBoot);
     if (this.admission || (sessionId && this.active.has(sessionId)))
-      throw new HttpError(409, "operation_busy");
+      throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.operationBusy);
     if (agent !== "claude-code" && this.requests.has(requestId)) {
       control.priorUncertain = true;
-      throw new HttpError(409, "duplicate_request");
+      throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.duplicateRequest);
     }
     this.rate(`control:${hash}`, 30);
     this.admission = true;
@@ -6239,7 +6286,11 @@ export class WebAccessService {
         agent === "claude-code" && this.options.receiptRequest
           ? dispatchClaude(managedRequest!, this.options.receiptRequest, params)
           : agent === "codex" && operation === "reconcile"
-            ? this.requestSession(params, "codex", !this.isFullAccess(this.grant(hash, "manage")))
+            ? this.requestSession(
+                params,
+                "codex",
+                !this.isFullAccess(this.grant(hash, REMOTE_CAPABILITIES.device.manage)),
+              )
             : managedRequest!(params),
       )
       .finally(() => {
@@ -6257,65 +6308,65 @@ export class WebAccessService {
       requestId?: string;
       policyId?: string;
     };
-    this.grant(hash, "manage");
-    if (body.bootId !== this.bootId) throw new HttpError(409, "stale_boot");
+    this.grant(hash, REMOTE_CAPABILITIES.device.manage);
+    if (body.bootId !== this.bootId) throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.staleBoot);
     if (verifyPolicyReply && result?.accepted === true && result.policyId !== params.policyId) {
       // Creation is empty: without permission proof the client must retain the first message.
       control.dispatched = false;
       control.priorUncertain = false;
-      throw new HttpError(409, "create-permission-unconfirmed");
+      throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.createPermissionUnconfirmed);
     }
     if (operation !== "reconcile" && result?.accepted !== true) {
       if (
         result?.accepted === false &&
         result.completed === false &&
         result.requestId === requestId &&
-        result.controlOutcome === "not-dispatched"
+        result.controlOutcome === REMOTE_CONTROL_OUTCOMES.notDispatched
       ) {
         control.dispatched = false;
         control.priorUncertain = false;
-        const safeReasons = new Set([
-          "web-busy",
-          "unverified-installation",
-          "claude-session-fingerprint-changed",
-          "session-busy",
-          "session-compacting",
-          "session-released",
-          "stale-Claude-revision",
-          "codex-owner-busy",
-          "codex-cli-version-too-old",
-          "codex-cli-unavailable",
-          "codex-cli-version-unavailable",
-          "codex-owner-check-unavailable",
-          "platform-unsupported",
-          "unsupported-codex-cli-version",
-          "unsupported-model",
-          "unsupported-effort",
-          "unsupported-service-tier",
-          "claude-startup-models-unavailable",
-          "session-managed-by-another-runtime",
-          "pause-original-goal-before-handoff",
-          "control-outcome-unconfirmed",
-          "codex-policy-mismatch",
-          "codex-workspace-mismatch",
-          "codex-sandbox-mismatch",
-          "codex-writable-roots-mismatch",
-          "remote-environment-not-supported",
-          "dsh-runtime-offline",
-          "dsh-create-ambiguous",
-          "dsh-models-unavailable",
-          "dsh-create-model-selection-unsupported",
-          "dsh-create-model-not-applied",
-          "dsh-create-permission-selection-unsupported",
-          "dsh-create-permission-not-applied",
-          "invalid-policy",
+        const safeReasons = new Set<string>([
+          REMOTE_ERROR_CODES.webBusy,
+          REMOTE_ERROR_CODES.unverifiedInstallation,
+          REMOTE_ERROR_CODES.claudeSessionFingerprintChanged,
+          REMOTE_ERROR_CODES.sessionBusy,
+          REMOTE_ERROR_CODES.sessionCompacting,
+          REMOTE_ERROR_CODES.sessionReleased,
+          REMOTE_ERROR_CODES.staleClaudeRevision,
+          REMOTE_ERROR_CODES.codexOwnerBusy,
+          REMOTE_ERROR_CODES.codexCliVersionTooOld,
+          REMOTE_ERROR_CODES.codexCliUnavailable,
+          REMOTE_ERROR_CODES.codexCliVersionUnavailable,
+          REMOTE_ERROR_CODES.codexOwnerCheckUnavailable,
+          REMOTE_ERROR_CODES.platformUnsupported,
+          REMOTE_ERROR_CODES.unsupportedCodexCliVersion,
+          REMOTE_ERROR_CODES.unsupportedModelDetail,
+          REMOTE_ERROR_CODES.unsupportedEffortDetail,
+          REMOTE_ERROR_CODES.unsupportedServiceTierDetail,
+          REMOTE_ERROR_CODES.claudeStartupModelsUnavailable,
+          REMOTE_ERROR_CODES.sessionManagedByAnotherRuntime,
+          REMOTE_ERROR_CODES.pauseOriginalGoalBeforeHandoff,
+          REMOTE_ERROR_CODES.controlOutcomeUnconfirmed,
+          REMOTE_ERROR_CODES.codexPolicyMismatch,
+          REMOTE_ERROR_CODES.codexWorkspaceMismatch,
+          REMOTE_ERROR_CODES.codexSandboxMismatch,
+          REMOTE_ERROR_CODES.codexWritableRootsMismatch,
+          REMOTE_ERROR_CODES.remoteEnvironmentNotSupported,
+          REMOTE_ERROR_CODES.dshRuntimeOffline,
+          REMOTE_ERROR_CODES.dshCreateAmbiguous,
+          REMOTE_ERROR_CODES.dshModelsUnavailable,
+          REMOTE_ERROR_CODES.dshCreateModelSelectionUnsupported,
+          REMOTE_ERROR_CODES.dshCreateModelNotApplied,
+          REMOTE_ERROR_CODES.dshCreatePermissionSelectionUnsupported,
+          REMOTE_ERROR_CODES.dshCreatePermissionNotApplied,
+          REMOTE_ERROR_CODES.invalidPolicy,
           // Starting DeepSeek Harness in the background, and a session another DSH holds.
-          "dsh-start-failed",
-          "dsh-version-unsupported",
-          "dsh-launcher-unavailable",
-          "dsh-exited",
-          "dsh-session-in-use",
-          "workspace-unavailable",
+          REMOTE_ERROR_CODES.dshStartFailed,
+          REMOTE_ERROR_CODES.dshVersionUnsupported,
+          REMOTE_ERROR_CODES.dshLauncherUnavailable,
+          REMOTE_ERROR_CODES.dshExited,
+          REMOTE_ERROR_CODES.dshSessionInUse,
+          REMOTE_ERROR_CODES.workspaceUnavailable,
         ]);
         throw new HttpError(
           409,
@@ -6324,7 +6375,10 @@ export class WebAccessService {
             : continuationPreflightReason(result.reason),
         );
       }
-      throw new HttpError(502, "outcome_unknown");
+      throw new HttpError(
+        REMOTE_ERROR_CONTRACT.outcomeUnknown.http.overrides.runtimeResponseUnconfirmed,
+        REMOTE_ERROR_CODES.outcomeUnknown,
+      );
     }
     if (operation === "reconcile" && result.reconciled === true)
       this.clearUnconfirmed(String(params.sessionId));
@@ -6457,7 +6511,7 @@ export class WebAccessService {
       approvals: [],
       questions: [],
       ...(pendingInteractions !== undefined ? { pendingInteractions: [] } : {}),
-      reason: "control-outcome-unconfirmed",
+      reason: REMOTE_ERROR_CODES.controlOutcomeUnconfirmed,
     };
   }
   private expire() {
@@ -6526,7 +6580,8 @@ export class WebAccessService {
     maxBytes = 4 * 1024 * 1024,
   ) {
     const body = JSON.stringify(data);
-    if (Buffer.byteLength(body) > maxBytes) throw new HttpError(413, "response_too_large");
+    if (Buffer.byteLength(body) > maxBytes)
+      throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.responseTooLarge);
     const headers: Record<string, string> = {
       "Content-Type": "application/json; charset=utf-8",
       "Cache-Control": "no-store",
@@ -6541,12 +6596,12 @@ export class WebAccessService {
   }
   private async body(req: ConversationRequest): Promise<Record<string, unknown>> {
     if (req.headers["content-type"]?.split(";")[0] !== "application/json")
-      throw new HttpError(415, "json_required");
+      throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.jsonRequired);
     const chunks: Buffer[] = [];
     let size = 0;
     for await (const chunk of req) {
       size += chunk.length;
-      if (size > 64 * 1024) throw new HttpError(413, "body_too_large");
+      if (size > 64 * 1024) throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.bodyTooLarge);
       chunks.push(Buffer.from(chunk));
     }
     try {
@@ -6554,7 +6609,7 @@ export class WebAccessService {
       if (!value || Array.isArray(value) || typeof value !== "object") throw 0;
       return value;
     } catch {
-      throw new HttpError(400, "invalid_json");
+      throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.invalidJson);
     }
   }
   private grant(
@@ -6574,13 +6629,13 @@ export class WebAccessService {
     const credential = this.credentials.find((c) => c.hash === hash && c.expiresAt > Date.now());
     if (!this.server || !credential || this.browsers.get(hash)?.ended) {
       this.endStreams(hash);
-      throw new HttpError(401, "access_ended");
+      throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.accessEnded);
     }
     if (this.accountLoginRequired()) {
       this.requireCloudLoginContext();
       if (!this.validCloudBinding(credential.account)) {
         this.endStreams(hash);
-        throw new HttpError(401, "account_login_required");
+        throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.accountLoginRequired);
       }
     }
     if (
@@ -6588,7 +6643,7 @@ export class WebAccessService {
       ((permission !== "files" && !this.controlsEnabled(undefined, credential.device)) ||
         credential.device[permission] !== true)
     )
-      throw new HttpError(403, "permission_denied");
+      throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.permissionDenied);
     return credential.device;
   }
   private field(value: unknown, max = 256): string {
@@ -6598,16 +6653,19 @@ export class WebAccessService {
       value.length > max ||
       [...value].some((character) => character.charCodeAt(0) <= 0x1f)
     )
-      throw new HttpError(400, "invalid_input");
+      throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.invalidInput);
     return value;
   }
   private async runtime(
     params: unknown,
     existing?: Promise<unknown>,
     reserved = false,
-    timeoutError: "outcome_unknown" | "catalog_read_timeout" = "outcome_unknown",
+    timeoutError:
+      | typeof REMOTE_ERROR_CODES.outcomeUnknown
+      | typeof REMOTE_ERROR_CODES.catalogReadTimeout = REMOTE_ERROR_CODES.outcomeUnknown,
   ) {
-    if (!existing && !reserved && this.admission) throw new HttpError(409, "operation_busy");
+    if (!existing && !reserved && this.admission)
+      throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.operationBusy);
     // Timeout does not cancel owner execution. Callers never automatically retry mutations.
     let timer: ReturnType<typeof setTimeout>;
     try {
@@ -6650,7 +6708,8 @@ export class WebAccessService {
     const flight = this.catalogFlight;
     if (!flight || flight.boot !== this.bootId || flight.readerScope !== this.readerScope())
       return this.runtime({ operation: "catalog" }, undefined, reserved);
-    if (!reserved && this.admission) throw new HttpError(409, "operation_busy");
+    if (!reserved && this.admission)
+      throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.operationBusy);
     return this.runtime({ operation: "catalog" }, flight.read, reserved);
   }
   private async taskSummary(
@@ -6664,9 +6723,9 @@ export class WebAccessService {
     const source = catalog ?? (await this.runtime({ operation: "catalog" }));
     const access = await this.historyAccessScope(hash);
     const current = this.grant(hash);
-    if (boot !== this.bootId) throw new HttpError(409, "stale_boot");
+    if (boot !== this.bootId) throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.staleBoot);
     if (readerScope !== this.readerScope() || current !== device)
-      throw new HttpError(409, "access_changed");
+      throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.accessChanged);
     return projectTaskSummary(
       source,
       access.workspaces,
@@ -6692,7 +6751,10 @@ export class WebAccessService {
       [];
     const access = await this.historyAccessScope(hash);
     if (boot !== this.bootId || readerScope !== this.readerScope() || this.grant(hash) !== device)
-      throw new HttpError(403, "access_changed");
+      throw new HttpError(
+        REMOTE_ERROR_CONTRACT.accessChanged.http.overrides.accessRevokedDuringRequest,
+        REMOTE_ERROR_CODES.accessChanged,
+      );
     return projectNotificationActivity(source, {
       workspaceIds: access.workspaces,
       versionScope: JSON.stringify([access.token, readerScope]),
@@ -6701,7 +6763,11 @@ export class WebAccessService {
   }
   private async notificationPolicy(hash: string, patch?: Record<string, unknown>) {
     const store = this.options.notificationPolicy;
-    if (!store) throw new HttpError(404, "capability_unavailable");
+    if (!store)
+      throw new HttpError(
+        REMOTE_ERROR_CONTRACT.capabilityUnavailable.http.overrides.handlerUnavailable,
+        REMOTE_ERROR_CODES.capabilityUnavailable,
+      );
     this.checkPairedHostScope(hash);
     if (patch === undefined) return { policy: store.read() };
     const device = this.fullAccess(hash, "settings");
@@ -6709,13 +6775,19 @@ export class WebAccessService {
     const policy = await store
       .update(patch, () => {
         if (this.fullAccess(hash, "settings") !== device || this.bootId !== boot)
-          throw new HttpError(403, "access_changed");
+          throw new HttpError(
+            REMOTE_ERROR_CONTRACT.accessChanged.http.overrides.accessRevokedDuringRequest,
+            REMOTE_ERROR_CODES.accessChanged,
+          );
       })
       .catch((error: unknown) => {
         if (error instanceof HttpError) throw error;
-        if (error instanceof Error && error.message === "invalid_notification_policy")
+        if (
+          error instanceof Error &&
+          error.message === REMOTE_ERROR_CODES.invalidNotificationPolicy
+        )
           throw new HttpError(400, error.message);
-        throw new HttpError(503, "notification_policy_unavailable");
+        throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.notificationPolicyUnavailable);
       });
     this.pushEvents.emit("changed");
     return { policy };
@@ -6730,9 +6802,11 @@ export class WebAccessService {
     const boot = this.bootId;
     const readerScope = this.readerScope();
     const check = () => {
-      if (this.grant(hash).id !== device.id) throw new HttpError(401, "access_ended");
-      if (this.bootId !== boot) throw new HttpError(409, "stale_boot");
-      if (this.readerScope() !== readerScope) throw new HttpError(409, "access_changed");
+      if (this.grant(hash).id !== device.id)
+        throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.accessEnded);
+      if (this.bootId !== boot) throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.staleBoot);
+      if (this.readerScope() !== readerScope)
+        throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.accessChanged);
     };
     // Reading a result is independent of send/control admission and experimental controls.
     // Resolve the same readable session/workspace boundary before and after the native await.
@@ -6752,9 +6826,15 @@ export class WebAccessService {
       );
     } catch (error) {
       const errors: Record<string, [number, string]> = {
-        "read-state-conflict": [409, "read_state_conflict"],
-        "read-state-unavailable": [503, "read_state_unavailable"],
-        "read-state-unsupported": [404, "read_state_unsupported"],
+        [REMOTE_ERROR_CODES.readStateConflictDetail]: [409, REMOTE_ERROR_CODES.readStateConflict],
+        [REMOTE_ERROR_CODES.readStateUnavailableDetail]: [
+          503,
+          REMOTE_ERROR_CODES.readStateUnavailable,
+        ],
+        [REMOTE_ERROR_CODES.readStateUnsupportedDetail]: [
+          404,
+          REMOTE_ERROR_CODES.readStateUnsupported,
+        ],
       };
       const detail =
         error instanceof RuntimeRequestError &&
@@ -6782,17 +6862,18 @@ export class WebAccessService {
     pinned: boolean,
     trustedLocal: boolean,
   ) {
-    const device = this.grant(hash, "organize");
+    const device = this.grant(hash, REMOTE_CAPABILITIES.device.organize);
     const boot = this.bootId;
     const check = () => {
-      if (this.grant(hash, "organize").id !== device.id) throw new HttpError(401, "access_ended");
-      if (this.bootId !== boot) throw new HttpError(409, "stale_boot");
+      if (this.grant(hash, REMOTE_CAPABILITIES.device.organize).id !== device.id)
+        throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.accessEnded);
+      if (this.bootId !== boot) throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.staleBoot);
     };
     const workspaceId = await this.codexScope(sessionId, hash, true, false).catch((error) => {
       if (
         trustedLocal &&
         error instanceof HttpError &&
-        error.message === "workspace_not_authorized"
+        error.message === REMOTE_ERROR_CODES.workspaceNotAuthorized
       )
         return undefined;
       throw error;
@@ -6809,16 +6890,23 @@ export class WebAccessService {
       const detail =
         error instanceof RuntimeRequestError ? snapshotField(error.data, "detail") : undefined;
       const code = detail ?? (error instanceof Error ? error.message : undefined);
-      if (code === "session-not-found") throw new HttpError(404, "session_not_found");
-      if (code === "session-pin-busy") throw new HttpError(409, "session_pin_busy");
-      if (code === "session-pin-unavailable") throw new HttpError(409, "session_pin_unavailable");
+      if (code === "session-not-found")
+        throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.sessionNotFound);
+      if (code === "session-pin-busy")
+        throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.sessionPinBusy);
+      if (code === "session-pin-unavailable")
+        throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.sessionPinUnavailable);
       throw error;
     }
     check();
     if (workspaceId && (await this.codexScope(sessionId, hash, true, false)) !== workspaceId)
-      throw new HttpError(409, "access_changed");
+      throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.accessChanged);
     check();
-    if (snapshotField(result, "pinned") !== pinned) throw new HttpError(504, "outcome_unknown");
+    if (snapshotField(result, "pinned") !== pinned)
+      throw new HttpError(
+        REMOTE_ERROR_CONTRACT.outcomeUnknown.http.overrides.runtimeResponseTimedOut,
+        REMOTE_ERROR_CODES.outcomeUnknown,
+      );
     return this.json(res, 200, { pinned });
   }
   private async conversationSessionImage(
@@ -6831,9 +6919,11 @@ export class WebAccessService {
     const boot = this.bootId;
     const readerScope = this.readerScope();
     const check = () => {
-      if (this.grant(hash).id !== device.id) throw new HttpError(401, "access_ended");
-      if (this.bootId !== boot) throw new HttpError(409, "stale_boot");
-      if (this.readerScope() !== readerScope) throw new HttpError(409, "access_changed");
+      if (this.grant(hash).id !== device.id)
+        throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.accessEnded);
+      if (this.bootId !== boot) throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.staleBoot);
+      if (this.readerScope() !== readerScope)
+        throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.accessChanged);
     };
     const workspace = await this.codexScope(sessionId, hash, true, false);
     check();
@@ -6857,11 +6947,11 @@ export class WebAccessService {
             ? error.message
             : undefined;
       const errors: Record<string, [number, string]> = {
-        "session-image-invalid": [400, "invalid_image_id"],
-        "session-image-unavailable": [404, "image_unavailable"],
-        "session-image-changed": [409, "image_changed"],
-        "session-image-too-large": [413, "image_too_large"],
-        "session-image-unsupported": [415, "image_unsupported"],
+        [REMOTE_ERROR_CODES.sessionImageInvalid]: [400, REMOTE_ERROR_CODES.invalidImageId],
+        [REMOTE_ERROR_CODES.sessionImageUnavailable]: [404, REMOTE_ERROR_CODES.imageUnavailable],
+        [REMOTE_ERROR_CODES.sessionImageChanged]: [409, REMOTE_ERROR_CODES.imageChanged],
+        [REMOTE_ERROR_CODES.sessionImageTooLarge]: [413, REMOTE_ERROR_CODES.imageTooLarge],
+        [REMOTE_ERROR_CODES.sessionImageUnsupported]: [415, REMOTE_ERROR_CODES.imageUnsupported],
       };
       const mapped = detail ? errors[detail] : undefined;
       if (mapped) throw new HttpError(...mapped);
@@ -6869,7 +6959,10 @@ export class WebAccessService {
     }
     check();
     if (workspace !== (await this.codexScope(sessionId, hash, true, false)))
-      throw new HttpError(403, "access_changed");
+      throw new HttpError(
+        REMOTE_ERROR_CONTRACT.accessChanged.http.overrides.accessRevokedDuringRequest,
+        REMOTE_ERROR_CODES.accessChanged,
+      );
     check();
     const image = result as { mimeType?: unknown; base64?: unknown } | null;
     if (
@@ -6883,7 +6976,7 @@ export class WebAccessService {
       !/^[A-Za-z0-9+/]+={0,2}$/.test(image.base64) ||
       Buffer.byteLength(image.base64, "base64") > 8 * 1024 * 1024
     )
-      throw new HttpError(502, "invalid_image_response");
+      throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.invalidImageResponse);
     // Only this separately bounded media route may exceed the usual 4 MiB JSON reply.
     return this.json(
       res,
@@ -6909,16 +7002,18 @@ export class WebAccessService {
     const lan = this.options.mode === "lan";
     // 地址暂时不在网卡列表里时只拒绝本次请求；是否停止监听由 checkLanAddress 的连续缺失计数决定。
     if (lan && !this.addresses.some((entry) => entry.address === this.config.lanAddress))
-      throw new HttpError(503, "lan_address_unavailable");
+      throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.lanAddressUnavailable);
     const localOrigin = `http://${lan ? this.config.lanAddress : "127.0.0.1"}:${this.config.port}`;
     const host = req.headers.host;
     const external =
       !lan && !!this.config.externalOrigin && host === new URL(this.config.externalOrigin).host;
-    if (host !== new URL(localOrigin).host && !external) throw new HttpError(403, "invalid_host");
+    if (host !== new URL(localOrigin).host && !external)
+      throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.invalidHost);
     const origin = lan ? HOSTED_ORIGIN : external ? this.config.externalOrigin : localOrigin;
-    if (lan && req.headers.origin !== origin) throw new HttpError(403, "invalid_origin");
+    if (lan && req.headers.origin !== origin)
+      throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.invalidOrigin);
     if (req.headers.origin && req.headers.origin !== origin)
-      throw new HttpError(403, "invalid_origin");
+      throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.invalidOrigin);
     // External apps may open the public shell. This exception never covers API or embedded reads.
     const navigationPath = (req.url || "/").split("?")[0];
     const pageNavigation =
@@ -6927,7 +7022,7 @@ export class WebAccessService {
       req.headers["sec-fetch-mode"] === "navigate" &&
       req.headers["sec-fetch-dest"] === "document";
     if (!lan && req.headers["sec-fetch-site"] === "cross-site" && !pageNavigation)
-      throw new HttpError(403, "cross_site_request");
+      throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.crossSiteRequest);
     const cookieName = external ? "ak_web_secure" : "ak_web_local";
     let raw = lan
       ? req.headers.authorization?.match(/^Bearer ([A-Za-z0-9_-]{43})$/)?.[1]
@@ -6950,8 +7045,8 @@ export class WebAccessService {
     // Classified before the first limit, so a control it turns away still says it was never
     // dispatched; without an outcome the client has to treat the request as unknown.
     control.request =
-      url.pathname.startsWith("/api/web/v1/") &&
-      isControlRequest(req.method, url.pathname.replace(/^\/api\/web\/v1/, ""));
+      url.pathname.startsWith(`${REMOTE_ROUTE_BASE}/`) &&
+      isControlRequest(req.method, url.pathname.slice(REMOTE_ROUTE_BASE.length));
     if (lan) {
       res.setHeader("Access-Control-Allow-Origin", origin);
       res.setHeader("Access-Control-Expose-Headers", "Retry-After");
@@ -6973,12 +7068,13 @@ export class WebAccessService {
     }
     if (paired && url.pathname.startsWith("/api/")) this.seen.set(hash, Date.now());
     if (!url.pathname.startsWith("/api/")) {
-      if (lan) throw new HttpError(404, "not_found");
+      if (lan) throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.notFound);
       return this.static(req, res);
     }
     res.setHeader("Cache-Control", "no-store");
-    const requestedPath = url.pathname.replace(/^\/api\/web\/v1/, "");
-    if (!url.pathname.startsWith("/api/web/v1/")) throw new HttpError(404, "not_found");
+    if (!url.pathname.startsWith(`${REMOTE_ROUTE_BASE}/`))
+      throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.notFound);
+    const requestedPath = url.pathname.slice(REMOTE_ROUTE_BASE.length);
     if (lan && req.method === "OPTIONS") {
       const method = req.headers["access-control-request-method"];
       const headers = String(req.headers["access-control-request-headers"] ?? "")
@@ -6993,17 +7089,17 @@ export class WebAccessService {
               "authorization",
               "content-type",
               "x-csrf-token",
-              "x-agentkib-protocol",
+              REMOTE_HEADERS.protocol.toLowerCase(),
               "x-agentkib-client",
               "last-event-id",
             ].includes(header),
         )
       )
-        throw new HttpError(403, "invalid_preflight");
+        throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.invalidPreflight);
       res.setHeader("Access-Control-Allow-Methods", method!);
       res.setHeader(
         "Access-Control-Allow-Headers",
-        "Authorization, Content-Type, X-CSRF-Token, X-AgentKib-Protocol, Last-Event-ID",
+        `Authorization, Content-Type, X-CSRF-Token, ${REMOTE_HEADERS.protocol}, Last-Event-ID`,
       );
       if (req.headers["access-control-request-private-network"] === "true")
         res.setHeader("Access-Control-Allow-Private-Network", "true");
@@ -7011,26 +7107,33 @@ export class WebAccessService {
       res.end();
       return;
     }
-    if (req.method === "GET" && requestedPath === "/info")
+    if (req.method === "GET" && requestedPath === REMOTE_ROUTE.info)
       return this.json(res, 200, {
         // Legacy hosted clients check this before authentication or any reads.
         // Negotiate realtime separately so their history and receipt access survives.
-        protocolVersion: 1,
-        conversationProtocolVersion: 2,
+        protocolVersion: REMOTE_VERSIONS.hostDiscovery.advertised,
+        conversationProtocolVersion: CONVERSATION_PROTOCOL_VERSION,
         transport: lan ? "lan" : "local",
-        capabilities: { read: true, send: this.controlsEnabled(), approve: this.controlsEnabled() },
+        capabilities: {
+          [REMOTE_CAPABILITIES.info.read]: true,
+          [REMOTE_CAPABILITIES.info.send]: this.controlsEnabled(),
+          [REMOTE_CAPABILITIES.info.approve]: this.controlsEnabled(),
+        },
       });
     control.request = isControlRequest(req.method, requestedPath);
-    if (control.request && req.headers["x-agentkib-protocol"] !== "2")
-      throw new HttpError(409, "incompatible_protocol");
+    if (
+      control.request &&
+      req.headers[REMOTE_HEADERS.protocol.toLowerCase()] !== String(CONVERSATION_PROTOCOL_VERSION)
+    )
+      throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.incompatibleProtocol);
     // Protocol and LAN rules use the public route. The shared handlers keep its Codex scope.
     const legacyOperation =
-      req.method === "POST" && requestedPath.startsWith("/codex/")
-        ? requestedPath.slice(7)
+      req.method === "POST" && requestedPath.startsWith(REMOTE_LEGACY_CODEX.prefix)
+        ? requestedPath.slice(REMOTE_LEGACY_CODEX.prefix.length)
         : undefined;
     const path =
       legacyOperation !== undefined
-        ? "/managed/action"
+        ? REMOTE_LEGACY_CODEX.postTarget
         : req.method === "GET"
           ? (CODEX_READ_ALIASES.get(requestedPath) ?? requestedPath)
           : requestedPath;
@@ -7045,15 +7148,16 @@ export class WebAccessService {
       !browser &&
       !this.credentials.some((c) => c.hash === hash)
     )
-      throw new HttpError(401, "access_ended");
+      throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.accessEnded);
     if (!browser && hash && this.credentials.some((c) => c.hash === hash)) {
       browser = { csrf: token(), expiresAt: Date.now() + MAX_AGE };
       this.browsers.set(hash, browser);
     }
-    if (req.method === "GET" && path === "/access") {
+    if (req.method === "GET" && path === REMOTE_ROUTE.access) {
       if (!browser) {
         this.rate("bootstrap", 60);
-        if (this.browsers.size >= 1024) throw new HttpError(429, "client_limit");
+        if (this.browsers.size >= 1024)
+          throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.clientLimit);
         raw = token();
         hash = digest(raw);
         browser = { csrf: token(), expiresAt: Date.now() + 300_000 };
@@ -7102,32 +7206,50 @@ export class WebAccessService {
             ? "approved"
             : browser.pending
               ? "pending"
-              : "unpaired",
-        protocolVersion: 2,
-        readStateVersion: 1,
+              : REMOTE_ERROR_CODES.unpaired,
+        protocolVersion: CONVERSATION_PROTOCOL_VERSION,
+        [REMOTE_CAPABILITIES.access.readStateVersion]: REMOTE_FEATURE_VERSIONS.readStateVersion,
         ...(device && !trustedLocal && !browser.ended
-          ? { pendingInteractions: { version: 1 } }
+          ? {
+              [REMOTE_CAPABILITIES.access.pendingInteractions]: {
+                version: REMOTE_FEATURE_VERSIONS.pendingInteractions,
+              },
+            }
           : {}),
         ...(device && !browser.ended && this.options.conversationHub
-          ? { taskSummaryVersion: 1 }
+          ? {
+              [REMOTE_CAPABILITIES.access.taskSummaryVersion]:
+                REMOTE_FEATURE_VERSIONS.taskSummaryVersion,
+            }
           : {}),
         ...(device &&
         !browser.ended &&
         this.options.approvalRules &&
         !this.options.acceptanceSessionId
-          ? { approvalRulesVersion: 1 }
+          ? {
+              [REMOTE_CAPABILITIES.access.approvalRulesVersion]:
+                REMOTE_FEATURE_VERSIONS.approvalRulesVersion,
+            }
           : {}),
         ...(device &&
         !browser.ended &&
         this.options.sessionRequest &&
         !this.options.acceptanceSessionId
-          ? { approvalAuditVersion: 1 }
+          ? {
+              [REMOTE_CAPABILITIES.access.approvalAuditVersion]:
+                REMOTE_FEATURE_VERSIONS.approvalAuditVersion,
+            }
           : {}),
         ...(device &&
         !browser.ended &&
         this.options.notificationPolicy &&
         !this.options.acceptanceSessionId
-          ? { pushPolicyVersion: 1, pushActivityVersion: 1 }
+          ? {
+              [REMOTE_CAPABILITIES.access.pushPolicyVersion]:
+                REMOTE_FEATURE_VERSIONS.pushPolicyVersion,
+              [REMOTE_CAPABILITIES.access.pushActivityVersion]:
+                REMOTE_FEATURE_VERSIONS.pushActivityVersion,
+            }
           : {}),
         csrfToken: browser.csrf,
         bootId: this.bootId,
@@ -7136,14 +7258,22 @@ export class WebAccessService {
         pairingMode: lan ? "confirmation" : "code",
         experimentalEnabled: this.controlsEnabled(undefined, device),
         ...(device && !browser.ended && this.options.disabledSessionProviders
-          ? { disabledSessionProviders: this.options.disabledSessionProviders }
+          ? {
+              [REMOTE_CAPABILITIES.access.disabledSessionProviders]:
+                this.options.disabledSessionProviders,
+            }
           : {}),
         ...(computerName ? { computerName } : {}),
-        ...(historyAccess ? { historySearch: true, historySearchScope: historyAccess.token } : {}),
+        ...(historyAccess
+          ? {
+              [REMOTE_CAPABILITIES.access.historySearch]: true,
+              historySearchScope: historyAccess.token,
+            }
+          : {}),
         ...(directConnection &&
         directConnection.controlOrigin === this.config.externalOrigin &&
         directConnection.previewOrigin === this.previewOrigin
-          ? { directConnection }
+          ? { [REMOTE_CAPABILITIES.access.directConnection]: directConnection }
           : {}),
         ...(bearerToken ? { bearerToken } : {}),
         ...(url.searchParams.get("rateDiagnostics") === "1" &&
@@ -7155,11 +7285,11 @@ export class WebAccessService {
         // Additive: only a pairing that can be notified learns that it can subscribe.
         ...(device && credential && !browser.ended && this.pushReady(credential)
           ? {
-              push: {
-                version: 1,
+              [REMOTE_CAPABILITIES.access.push]: {
+                version: REMOTE_FEATURE_VERSIONS.push,
                 subscribed: !!credential.push,
                 ...(this.options.notificationPolicy && !this.options.acceptanceSessionId
-                  ? { approvalActionsVersion: 1 }
+                  ? { approvalActionsVersion: REMOTE_FEATURE_VERSIONS.approvalActionsVersion }
                   : {}),
                 ...(credential.push
                   ? { alerts: credential.push.alerts, liveActivity: credential.push.liveActivity }
@@ -7169,9 +7299,9 @@ export class WebAccessService {
           : {}),
         ...(loginRequired && loginContext
           ? {
-              accountLogin: {
+              [REMOTE_CAPABILITIES.access.accountLogin]: {
                 required: true,
-                proofVersion: 1,
+                proofVersion: REMOTE_FEATURE_VERSIONS.accountLoginProofVersion,
                 deviceId: loginContext.deviceId,
                 challenge: browser.accountChallenge,
                 bound,
@@ -7181,16 +7311,16 @@ export class WebAccessService {
           : {}),
       });
     }
-    if (!browser) throw new HttpError(401, "unpaired");
+    if (!browser) throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.unpaired);
     // Trusted IPC GETs still use the underlying read admission and route-specific limits.
     // Catalog and transcript refreshes must not exhaust the desktop's write budget.
     if (!paired && (!trustedLocal || req.method !== "GET")) this.rate(hash, API_REQUEST_LIMIT);
     if (req.method === "POST") {
       if (req.headers.origin !== origin || req.headers["x-csrf-token"] !== browser.csrf)
-        throw new HttpError(403, "csrf_rejected");
-      if (path === "/attachments") {
-        if (lan) throw new HttpError(403, "attachments_require_same_origin");
-        const device = this.grant(hash, "attachments");
+        throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.csrfRejected);
+      if (path === REMOTE_ROUTE.attachments) {
+        if (lan) throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.attachmentsRequireSameOrigin);
+        const device = this.grant(hash, REMOTE_CAPABILITIES.device.attachments);
         const sessionId = this.field(url.searchParams.get("sessionId"));
         const workspaceId = await this.codexScope(sessionId, hash, false, false);
         const capabilities = (await this.runtime({
@@ -7199,35 +7329,35 @@ export class WebAccessService {
           experimentalEnabled: true,
         })) as { features?: Record<string, { available: boolean }> };
         if (capabilities.features?.attachments?.available !== true)
-          throw new HttpError(409, "attachments_unavailable");
+          throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.attachmentsUnavailable);
         const result = await this.attachmentStore.upload(
           req,
           { deviceId: device.id, sessionId },
           this.field(url.searchParams.get("name"), 255),
           this.field(url.searchParams.get("mime") || "application/octet-stream"),
           () => {
-            this.grant(hash, "attachments");
+            this.grant(hash, REMOTE_CAPABILITIES.device.attachments);
             if (
               !this.isFullAccess(device) &&
               !this.config.allowedWorkspaceIds?.includes(workspaceId)
             )
-              throw new HttpError(403, "workspace_not_authorized");
+              throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.workspaceNotAuthorized);
           },
         );
-        this.grant(hash, "attachments");
+        this.grant(hash, REMOTE_CAPABILITIES.device.attachments);
         if (!(await this.workspaceAllowed(workspaceId, device)))
-          throw new HttpError(403, "workspace_not_authorized");
+          throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.workspaceNotAuthorized);
         return this.json(res, 201, result);
       }
       const body = await this.body(req);
-      if (path === "/approval-rules/revoke") {
+      if (path === REMOTE_ROUTE.approvalRulesRevoke) {
         if (
           url.search ||
           Object.keys(body).some((key) => !["workspaceId", "agent", "ruleId"].includes(key))
         )
-          throw new HttpError(400, "invalid_approval_rule_request");
+          throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.invalidApprovalRuleRequest);
         const agent = managedAgentOf(body.agent);
-        if (!agent) throw new HttpError(400, "invalid_agent");
+        if (!agent) throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.invalidAgent);
         return this.approvalRuleRequest(
           res,
           hash,
@@ -7235,13 +7365,13 @@ export class WebAccessService {
           { agent, ruleId: this.field(body.ruleId, 128) },
         );
       }
-      if (path === "/session-pin") {
+      if (path === REMOTE_ROUTE.sessionPin) {
         if (
           url.search ||
           Object.keys(body).some((key) => !["sessionId", "pinned"].includes(key)) ||
           typeof body.pinned !== "boolean"
         )
-          throw new HttpError(400, "invalid_session_pin_request");
+          throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.invalidSessionPinRequest);
         return this.sessionPin(
           res,
           hash,
@@ -7250,7 +7380,7 @@ export class WebAccessService {
           trustedLocal,
         );
       }
-      if (path === "/read-state") {
+      if (path === REMOTE_ROUTE.readState) {
         if (
           url.search ||
           Object.keys(body).some(
@@ -7258,35 +7388,41 @@ export class WebAccessService {
           ) ||
           !(body.seenResultId === null || typeof body.seenResultId === "string")
         )
-          throw new HttpError(400, "invalid_read_state_request");
+          throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.invalidReadStateRequest);
         return this.conversationReadState(res, hash, this.field(body.sessionId), {
           expectedVersion: this.field(body.expectedVersion, 4096),
           seenResultId: body.seenResultId === null ? null : this.field(body.seenResultId, 4096),
         });
       }
-      if (path.startsWith("/history/")) {
-        if (url.search) throw new HttpError(400, "invalid_history_request");
-        const kind = path.slice(9);
+      if (path.startsWith(REMOTE_ROUTE_PREFIXES.history)) {
+        if (url.search) throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.invalidHistoryRequest);
+        const kind = path.slice(REMOTE_ROUTE_PREFIXES.history.length);
         if (["search", "locate", "references"].includes(kind))
           return this.historyRead(res, hash, kind, body);
-        if (!trustedLocal || lan) throw new HttpError(403, "owner_required");
-        if (!this.options.historyRequest) throw new HttpError(404, "capability_unavailable");
+        if (!trustedLocal || lan) throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.ownerRequired);
+        if (!this.options.historyRequest)
+          throw new HttpError(
+            REMOTE_ERROR_CONTRACT.capabilityUnavailable.http.overrides.handlerUnavailable,
+            REMOTE_ERROR_CODES.capabilityUnavailable,
+          );
         let method: string;
         if (kind === "configure") {
           if (
             Object.keys(body).some((key) => key !== "enabled") ||
             typeof body.enabled !== "boolean"
           )
-            throw new HttpError(400, "invalid_history_configuration");
+            throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.invalidHistoryConfiguration);
           method = HISTORY_SEARCH_METHODS.configure;
         } else {
-          if (Object.keys(body).length) throw new HttpError(400, "invalid_history_request");
-          if (kind !== "clear" && kind !== "rebuild") throw new HttpError(404, "not_found");
+          if (Object.keys(body).length)
+            throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.invalidHistoryRequest);
+          if (kind !== "clear" && kind !== "rebuild")
+            throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.notFound);
           method = kind === "clear" ? HISTORY_SEARCH_METHODS.clear : HISTORY_SEARCH_METHODS.refresh;
         }
         return this.json(res, 200, await this.options.historyRequest(method, body));
       }
-      if (path === "/managed/action")
+      if (path === REMOTE_ROUTE.managedAction)
         return this.admitSessionAction(
           res,
           hash,
@@ -7295,9 +7431,9 @@ export class WebAccessService {
           control,
           !legacyCodex,
         );
-      if (path === "/attachments/delete") {
-        if (lan) throw new HttpError(403, "attachments_require_same_origin");
-        const device = this.grant(hash, "attachments");
+      if (path === REMOTE_ROUTE.attachmentsDelete) {
+        if (lan) throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.attachmentsRequireSameOrigin);
+        const device = this.grant(hash, REMOTE_CAPABILITIES.device.attachments);
         await this.attachmentStore.remove(
           device.id,
           this.field(body.sessionId),
@@ -7306,30 +7442,31 @@ export class WebAccessService {
         );
         return this.json(res, 200, { ok: true });
       }
-      if (path === "/pair") {
+      if (path === REMOTE_ROUTE.pair) {
         this.rate(`pair:${hash}`, 5);
         this.rate("pair", 20);
         const pairingBrowser = browser;
         const pairing = this.adminQueue.then(async () => {
           this.expire();
           if (pairingBrowser.ended || this.credentials.some((c) => c.hash === hash))
-            throw new HttpError(409, "already_paired");
+            throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.alreadyPaired);
           if (this.browsers.get(hash) !== pairingBrowser || !this.server)
-            throw new HttpError(401, "access_ended");
+            throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.accessEnded);
           if (this.accountLoginRequired()) {
             this.requireCloudLoginContext();
             if (!this.validCloudBinding(pairingBrowser.account))
-              throw new HttpError(401, "account_login_required");
+              throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.accountLoginRequired);
             let verified;
             try {
               verified = await this.relay!.verifyAccountLogins([pairingBrowser.account!.id!]);
             } catch {
-              throw new HttpError(503, "account_login_unavailable");
+              throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.accountLoginUnavailable);
             }
-            if (!verified[0]?.active) throw new HttpError(401, "account_login_required");
+            if (!verified[0]?.active)
+              throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.accountLoginRequired);
           }
           const name = this.field(body.name, 80);
-          if (!this.code) throw new HttpError(403, "invalid_pairing_code");
+          if (!this.code) throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.invalidPairingCode);
           const browserFailures = this.code.failuresByBrowser.get(hash) ?? 0;
           if (
             browserFailures >= PAIRING_FAILURES_PER_BROWSER ||
@@ -7338,10 +7475,11 @@ export class WebAccessService {
           ) {
             this.code.failuresByBrowser.set(hash, browserFailures + 1);
             this.code.failures++;
-            throw new HttpError(403, "invalid_pairing_code");
+            throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.invalidPairingCode);
           }
           if (!lan) {
-            if (this.credentials.length >= 128) throw new HttpError(429, "device_limit");
+            if (this.credentials.length >= 128)
+              throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.deviceLimit);
             const credential: Credential = {
               hash,
               expiresAt: Date.now() + MAX_AGE,
@@ -7365,7 +7503,7 @@ export class WebAccessService {
             return { status: "approved", device: credential.device };
           }
           if ([...this.browsers.values()].filter((b) => b.pending).length >= 8)
-            throw new HttpError(429, "pending_limit");
+            throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.pendingLimit);
           pairingBrowser.pending = {
             id: token(),
             name,
@@ -7384,21 +7522,22 @@ export class WebAccessService {
         this.adminQueue = pairing.catch(() => undefined);
         return this.json(res, 200, await pairing);
       }
-      if (path === "/pair/cancel") {
+      if (path === REMOTE_ROUTE.pairCancel) {
         browser.pending = undefined;
         return this.json(res, 200, { ok: true });
       }
-      if (path === "/account-binding")
+      if (path === REMOTE_ROUTE.accountBinding)
         return this.json(res, 200, await this.bindAccount(hash, body));
-      if (path === "/push/subscribe")
+      if (path === REMOTE_ROUTE.pushSubscribe)
         return this.json(res, 200, await this.subscribePush(hash, body));
-      if (path === "/push/unsubscribe")
+      if (path === REMOTE_ROUTE.pushUnsubscribe)
         return this.json(res, 200, await this.unsubscribePush(hash, body));
-      if (path === "/push/policy") {
-        if (url.search) throw new HttpError(400, "invalid_notification_policy");
+      if (path === REMOTE_ROUTE.pushPolicy) {
+        if (url.search)
+          throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.invalidNotificationPolicy);
         return this.json(res, 200, await this.notificationPolicy(hash, body));
       }
-      if (path === "/logout") {
+      if (path === REMOTE_ROUTE.logout) {
         // Share the config transaction queue: a logout captured during a provider
         // switch must not overwrite the new config with an old persistence snapshot.
         const logout = this.adminQueue.then(async () => {
@@ -7421,18 +7560,21 @@ export class WebAccessService {
           );
         return this.json(res, 200, { ok: true });
       }
-      if (path === "/managed/settings-prepare") {
-        if (req.headers["x-agentkib-protocol"] !== "2")
-          throw new HttpError(409, "incompatible_protocol");
+      if (path === REMOTE_ROUTE.managedSettingsPrepare) {
+        if (
+          req.headers[REMOTE_HEADERS.protocol.toLowerCase()] !==
+          String(CONVERSATION_PROTOCOL_VERSION)
+        )
+          throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.incompatibleProtocol);
         return this.prepareClaudeSettings(res, hash, body);
       }
-      if (path === "/managed/project-agent") return this.projectAgent(res, hash, body);
+      if (path === REMOTE_ROUTE.managedProjectAgent) return this.projectAgent(res, hash, body);
       // Opens a terminal on this computer for Devin CLI's own login or workspace trust, so only
       // the desktop app itself may ask; remote devices only see the explanation.
-      if (path === "/devin/terminal") {
-        if (!trustedLocal || lan) throw new HttpError(403, "owner_required");
+      if (path === REMOTE_ROUTE.devinTerminal) {
+        if (!trustedLocal || lan) throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.ownerRequired);
         const action = body.action === "login" || body.action === "trust" ? body.action : null;
-        if (!action) throw new HttpError(400, "invalid_input");
+        if (!action) throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.invalidInput);
         const params: Record<string, unknown> = { operation: "devin-terminal", action };
         if (action === "trust")
           params.workspaceId =
@@ -7441,12 +7583,19 @@ export class WebAccessService {
               : this.field(body.workspaceId);
         return this.json(res, 200, await this.requestSession(params));
       }
-      if (path.startsWith("/managed/"))
-        return this.manage(req, res, hash, path.slice(9), body, control);
-      if (path === "/artifact-tickets") {
+      if (path.startsWith(REMOTE_ROUTE_PREFIXES.managed))
+        return this.manage(
+          req,
+          res,
+          hash,
+          path.slice(REMOTE_ROUTE_PREFIXES.managed.length),
+          body,
+          control,
+        );
+      if (path === REMOTE_ROUTE.artifactTickets) {
         const scope = await this.fileScope(hash, this.field(body.workspaceId));
         const artifacts = this.artifactsFor(scope.deviceId);
-        if (!artifacts) throw new HttpError(503, "preview_unavailable");
+        if (!artifacts) throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.previewUnavailable);
         const result = await artifacts.issueTicket(scope, {
           artifactId: this.field(body.artifactId),
           ...(body.expectedRevision !== undefined
@@ -7454,13 +7603,13 @@ export class WebAccessService {
             : {}),
           download: body.download === true,
         });
-        this.grant(hash, "files");
+        this.grant(hash, REMOTE_CAPABILITIES.device.files);
         return this.json(res, 200, result);
       }
-      if (path === "/live-preview-tickets") {
+      if (path === REMOTE_ROUTE.livePreviewTickets) {
         const device = this.fullAccess(hash, "advancedControl");
         const live = this.livePreview;
-        if (!live) throw new HttpError(503, "preview_unavailable");
+        if (!live) throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.previewUnavailable);
         const ticket = await live
           .issue(device.id, { port: body.port, path: body.path, secure: body.secure })
           .catch((error: unknown) => {
@@ -7471,8 +7620,12 @@ export class WebAccessService {
         this.fullAccess(hash, "advancedControl");
         return this.json(res, 200, ticket);
       }
-      if (!["/send", "/stop", "/approve", "/answer"].includes(path))
-        throw new HttpError(404, "not_found");
+      if (
+        ![REMOTE_ROUTE.send, REMOTE_ROUTE.stop, REMOTE_ROUTE.approve, REMOTE_ROUTE.answer].some(
+          (route) => route === path,
+        )
+      )
+        throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.notFound);
       const operation = path.slice(1);
       const permission = operation === "approve" ? "approve" : "send";
       this.grant(hash, permission);
@@ -7486,7 +7639,7 @@ export class WebAccessService {
           body.decision !== undefined ||
           body.nativeDecision !== undefined)
       )
-        throw new HttpError(400, "invalid_decision");
+        throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.invalidDecision);
       const interactionRuntimeBootId = interactionDecisionId
         ? this.field(body.interactionRuntimeBootId)
         : undefined;
@@ -7495,7 +7648,7 @@ export class WebAccessService {
         interactionDecisionId &&
         !/^[a-f\d]{8}-[a-f\d]{4}-[a-f\d]{4}-[a-f\d]{4}-[a-f\d]{12}$/i.test(requestId)
       )
-        throw new HttpError(400, "invalid_input");
+        throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.invalidInput);
       const pushSubscription =
         body.pushActionToken === undefined ? undefined : this.pushActionSubscription(hash);
       const pushAction =
@@ -7507,34 +7660,41 @@ export class WebAccessService {
             )
           : undefined;
       if (body.pushActionToken !== undefined && !pushAction)
-        throw new HttpError(403, "push_action_unavailable");
+        throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.pushActionUnavailable);
       const checkPushAction = () => {
         if (!pushAction) return;
-        if (pushAction.expiresAt <= Date.now()) throw new HttpError(409, "interaction_expired");
+        if (pushAction.expiresAt <= Date.now())
+          throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.interactionExpired);
         if (this.pushActionSubscription(hash) !== pushSubscription)
-          throw new HttpError(403, "push_action_unavailable");
+          throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.pushActionUnavailable);
       };
       const prior = await this.controlReceipt(requestId, this.grant(hash, permission).id, control);
       const sessionId = this.field(body.sessionId);
       if (this.isFullAccess(this.grant(hash)))
-        await this.codexScope(sessionId, hash, path === "/stream", false);
+        await this.codexScope(sessionId, hash, path === REMOTE_ROUTE.stream, false);
       if (body.historyReferences !== undefined || prior?.historyInputHash)
         await this.historyTargetScope(sessionId, hash);
       if (!this.controlsEnabled(sessionId, this.grant(hash)))
-        throw new HttpError(403, "session_control_not_allowed");
+        throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.sessionControlNotAllowed);
       if (body.historyReferences !== undefined && operation !== "send")
-        throw new HttpError(400, "history_references_not_supported");
+        throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.historyReferencesNotSupported);
       this.grant(hash, permission);
       if (interactionDecisionId && prior?.found === true) {
         // The acknowledged payload stays on the device-bound receipt endpoint.
         // Never dispatch a second native decision to verify an already used ID.
         const conflict = prior.sessionId !== sessionId || prior.operation !== operation;
-        control.priorUncertain = !["accepted", "not-dispatched"].includes(String(prior.status));
-        if (conflict) throw new HttpError(409, "request_id_conflict");
-        if (control.priorUncertain) throw new HttpError(409, "outcome_unknown");
-        if (prior.status === "not-dispatched" && expiredInteractionRefusal(prior.ack))
-          throw new HttpError(409, "interaction_expired");
-        throw new HttpError(409, "duplicate_request");
+        control.priorUncertain = !["accepted", REMOTE_CONTROL_OUTCOMES.notDispatched].includes(
+          String(prior.status),
+        );
+        if (conflict) throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.requestIdConflict);
+        if (control.priorUncertain)
+          throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.outcomeUnknown);
+        if (
+          prior.status === REMOTE_CONTROL_OUTCOMES.notDispatched &&
+          expiredInteractionRefusal(prior.ack)
+        )
+          throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.interactionExpired);
+        throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.duplicateRequest);
       }
       checkPushAction();
       const historyReplay = this.historyReplay(prior, body, operation, control);
@@ -7559,7 +7719,12 @@ export class WebAccessService {
             interactionDecisionId,
           ).catch(() => undefined);
         }
-        throw new HttpError(409, interactionDecisionId ? "interaction_expired" : "stale_boot");
+        throw new HttpError(
+          409,
+          interactionDecisionId
+            ? REMOTE_ERROR_CODES.interactionExpired
+            : REMOTE_ERROR_CODES.staleBoot,
+        );
       }
       // Bridged and managed providers replay a receipted request from their own ledger.
       const claudeReplay =
@@ -7569,15 +7734,16 @@ export class WebAccessService {
       this.grant(hash, permission);
       if (!claudeReplay && this.requests.has(requestId)) {
         control.priorUncertain = true;
-        throw new HttpError(409, "duplicate_request");
+        throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.duplicateRequest);
       }
-      if (this.active.has(sessionId)) throw new HttpError(409, "operation_busy");
+      if (this.active.has(sessionId))
+        throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.operationBusy);
       if (!claudeReplay && this.unconfirmed.has(sessionId)) {
         control.priorUncertain = true;
-        throw new HttpError(409, "outcome_unknown");
+        throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.outcomeUnknown);
       }
       if (!Number.isSafeInteger(body.expectedRevision) || Number(body.expectedRevision) < 0)
-        throw new HttpError(400, "invalid_revision");
+        throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.invalidRevision);
       const params: Record<string, unknown> = {
         operation,
         sessionId,
@@ -7598,7 +7764,7 @@ export class WebAccessService {
           frozenText.length > 16_000 ||
           Buffer.byteLength(frozenText, "utf8") > 16_384
         )
-          throw new HttpError(400, "invalid_text");
+          throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.invalidText);
         params.text = frozenText;
       } else if (operation === "stop") {
         params.turnId = this.field(body.turnId);
@@ -7611,7 +7777,7 @@ export class WebAccessService {
             ? body.questionId
             : this.field(body.questionId);
         if (!body.answers || typeof body.answers !== "object" || Array.isArray(body.answers))
-          throw new HttpError(400, "invalid_answers");
+          throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.invalidAnswers);
         const entries = Object.entries(body.answers);
         if (
           !entries.length ||
@@ -7633,7 +7799,7 @@ export class WebAccessService {
               new Set(values).size !== values.length,
           )
         )
-          throw new HttpError(400, "invalid_answers");
+          throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.invalidAnswers);
         params.answers = body.answers;
       } else {
         params.turnId = this.field(body.turnId);
@@ -7642,14 +7808,14 @@ export class WebAccessService {
             ? body.approvalId
             : this.field(body.approvalId);
         if (body.nativeDecision !== undefined) {
-          this.grant(hash, "extendedApproval");
+          this.grant(hash, REMOTE_CAPABILITIES.device.extendedApproval);
           if (JSON.stringify(body.nativeDecision).length > 16384)
-            throw new HttpError(400, "invalid_decision");
+            throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.invalidDecision);
           params.nativeDecision = body.nativeDecision;
           params.decision = typeof body.decision === "string" ? body.decision : "native";
         } else if (!interactionDecisionId) params.decision = this.field(body.decision);
       }
-      if (this.admission) throw new HttpError(409, "operation_busy");
+      if (this.admission) throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.operationBusy);
       this.rate(`control:${hash}`, 30);
       if (!interactionDecisionId) rememberRequest(this.requests, requestId);
       this.active.add(sessionId);
@@ -7696,9 +7862,14 @@ export class WebAccessService {
         };
         this.grant(hash, permission);
         if (boot !== this.bootId)
-          throw new HttpError(409, interactionDecisionId ? "interaction_expired" : "stale_boot");
+          throw new HttpError(
+            409,
+            interactionDecisionId
+              ? REMOTE_ERROR_CODES.interactionExpired
+              : REMOTE_ERROR_CODES.staleBoot,
+          );
         if (!(await this.controlsEnabledForSnapshot(sessionId, snapshot, this.grant(hash), true)))
-          throw new HttpError(403, "provider_control_not_allowed");
+          throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.providerControlNotAllowed);
         let approvalAudit =
           this.options.sessionRequest && (operation === "approve" || operation === "answer")
             ? this.approvalAuditSource(
@@ -7721,20 +7892,25 @@ export class WebAccessService {
                 ? { id: interactionDecisionId, device: this.grant(hash, permission) }
                 : undefined,
             );
-          throw new HttpError(409, interactionDecisionId ? "interaction_expired" : "stale_state");
+          throw new HttpError(
+            409,
+            interactionDecisionId
+              ? REMOTE_ERROR_CODES.interactionExpired
+              : REMOTE_ERROR_CODES.staleState,
+          );
         }
         if (
           !claudeReplay &&
           operation === "send" &&
           (snapshot as { activity?: string }).activity === "compacting"
         )
-          throw new HttpError(409, "session-compacting");
+          throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.sessionCompacting);
         if (!claudeReplay && operation === "send" && snapshot.sendEnabled !== true)
           throw new HttpError(
             409,
             continuationPreflightReason(
               snapshotField(snapshot, "ownershipReason") ?? snapshotField(snapshot, "reason"),
-              "control_unavailable",
+              REMOTE_ERROR_CODES.controlUnavailable,
             ),
           );
         if (
@@ -7742,7 +7918,7 @@ export class WebAccessService {
           operation === "stop" &&
           (snapshot.stopEnabled !== true || snapshot.turnId !== params.turnId)
         )
-          throw new HttpError(409, "turn_unavailable");
+          throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.turnUnavailable);
         if (!claudeReplay && operation === "answer") {
           const question = snapshot.questions?.find(
             (item) =>
@@ -7753,7 +7929,9 @@ export class WebAccessService {
           if (!question || !Array.isArray(question.questions) || !question.questions.length)
             throw new HttpError(
               409,
-              interactionDecisionId ? "interaction_expired" : "question_unavailable",
+              interactionDecisionId
+                ? REMOTE_ERROR_CODES.interactionExpired
+                : REMOTE_ERROR_CODES.questionUnavailable,
             );
           const answers = body.answers as Record<string, string[]>;
           if (
@@ -7770,14 +7948,14 @@ export class WebAccessService {
               );
             })
           )
-            throw new HttpError(400, "invalid_answers");
+            throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.invalidAnswers);
         }
         if (
           permission === "approve" &&
           snapshot.approvals?.find((item) => item.requestId === params.approvalId)
             ?.requiresExtendedApproval === true
         )
-          this.grant(hash, "extendedApproval");
+          this.grant(hash, REMOTE_CAPABILITIES.device.extendedApproval);
         const approval =
           operation === "approve"
             ? snapshot.approvals?.find(
@@ -7809,24 +7987,28 @@ export class WebAccessService {
             !(await this.controlsEnabledForSnapshot(sessionId, snapshot, device, true)) ||
             device !== this.grant(hash, permission)
           )
-            throw new HttpError(403, "access_changed");
-          if (boot !== this.bootId) throw new HttpError(409, "interaction_expired");
+            throw new HttpError(
+              REMOTE_ERROR_CONTRACT.accessChanged.http.overrides.accessRevokedDuringRequest,
+              REMOTE_ERROR_CODES.accessChanged,
+            );
+          if (boot !== this.bootId)
+            throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.interactionExpired);
           const interaction = interactionFor(
             descriptions,
             operation === "approve" ? "approval" : "question",
             operation === "approve" ? params.approvalId : params.questionId,
             params.turnId,
           );
-          if (!interaction) throw new HttpError(409, "interaction_expired");
+          if (!interaction) throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.interactionExpired);
           const selected = resolvePendingInteractionDecision(
             interaction,
             approval,
             interactionDecisionId,
           );
           if (!selected?.decision.available)
-            throw new HttpError(409, "interaction_decision_unavailable");
+            throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.interactionDecisionUnavailable);
           if (selected.nativeDecision !== undefined) {
-            this.grant(hash, "extendedApproval");
+            this.grant(hash, REMOTE_CAPABILITIES.device.extendedApproval);
             params.nativeDecision = selected.nativeDecision;
             params.decision = "native";
           } else if (selected.nativeChoice !== undefined) {
@@ -7834,7 +8016,7 @@ export class WebAccessService {
           }
         }
         if (!claudeReplay && operation === "approve" && !nativeApprovalOffered()) {
-          throw new HttpError(409, "approval_unavailable");
+          throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.approvalUnavailable);
         }
         if (operation === "send" && body.historyReferences !== undefined) {
           const history = await this.resolveHistoryInput(body, hash, operation, true);
@@ -7847,12 +8029,12 @@ export class WebAccessService {
             !history.text.trim() &&
             !(Array.isArray(body.attachmentIds) && body.attachmentIds.length)
           )
-            throw new HttpError(400, "invalid_text");
+            throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.invalidText);
         }
         if (operation === "send" && snapshotField(snapshot, "executionMode") === "dsh-follower")
           params.commandAccess = this.dshCommandAccess(this.grant(hash, permission));
         if (operation === "send" && body.attachmentIds !== undefined) {
-          const device = this.grant(hash, "attachments");
+          const device = this.grant(hash, REMOTE_CAPABILITIES.device.attachments);
           const workspaceId = await this.codexScope(sessionId, hash, true, false);
           const capabilities = (await this.requestSession({
             operation: "capabilities",
@@ -7860,7 +8042,7 @@ export class WebAccessService {
             experimentalEnabled: true,
           })) as { features?: Record<string, AttachmentAvailability> };
           if (!claudeReplay && capabilities.features?.attachments?.available !== true)
-            throw new HttpError(409, "attachments_unavailable");
+            throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.attachmentsUnavailable);
           const mode = (snapshot as { executionMode?: string }).executionMode;
           if (claudeReplay && body.resourceIds === undefined) {
             const previous = await replayClaudeAttachments(this.attachmentStore, prior, {
@@ -7872,25 +8054,29 @@ export class WebAccessService {
               text: String(frozenText ?? ""),
             });
             this.grant(hash, permission);
-            this.grant(hash, "attachments");
-            if (boot !== this.bootId) throw new HttpError(409, "stale_boot");
+            this.grant(hash, REMOTE_CAPABILITIES.device.attachments);
+            if (boot !== this.bootId) throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.staleBoot);
             if (previous) {
-              if (previous.controlOutcome === "not-dispatched") {
+              if (previous.controlOutcome === REMOTE_CONTROL_OUTCOMES.notDispatched) {
                 control.priorUncertain = false;
-                throw new HttpError(409, "control_preflight_rejected");
+                throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.controlPreflightRejected);
               }
               control.priorUncertain = previous.accepted !== true;
-              if (previous.accepted !== true) throw new HttpError(502, "outcome_unknown");
+              if (previous.accepted !== true)
+                throw new HttpError(
+                  REMOTE_ERROR_CONTRACT.outcomeUnknown.http.overrides.runtimeResponseUnconfirmed,
+                  REMOTE_ERROR_CODES.outcomeUnknown,
+                );
               return this.json(res, 200, previous);
             }
             if (prior?.executionMode === "claude-follower")
-              throw new HttpError(409, "request_conflict");
+              throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.requestConflict);
           }
           const format = attachmentInputFormat(
             ATTACHMENT_FORMATS[mode ?? ""],
             capabilities.features?.attachments,
           );
-          if (!format) throw new HttpError(409, "attachments_unavailable");
+          if (!format) throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.attachmentsUnavailable);
           const pinnedFormat = format === "claude" || format === "claude-terminal";
           const alreadyPinned =
             pinnedFormat &&
@@ -7900,7 +8086,7 @@ export class WebAccessService {
           const text = String(frozenText ?? "");
           if (format === "claude-terminal") {
             if (snapshotField(snapshot, "workspaceId") !== workspaceId)
-              throw new HttpError(403, "workspace_not_authorized");
+              throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.workspaceNotAuthorized);
             params.input = await this.terminalAttachmentInput(hash, workspaceId, {
               deviceId: device.id,
               sessionId,
@@ -7929,7 +8115,7 @@ export class WebAccessService {
           }
           if (pinnedFormat && !alreadyPinned) newlyPinnedDevice = device.id;
           delete params.text;
-          this.grant(hash, "attachments");
+          this.grant(hash, REMOTE_CAPABILITIES.device.attachments);
         }
         if (operation === "send" && body.resourceIds !== undefined) {
           this.fullAccess(hash);
@@ -7943,7 +8129,7 @@ export class WebAccessService {
             (capabilities.features?.context !== undefined ||
               capabilities.features?.resources?.available !== true)
           )
-            throw new HttpError(409, "context_unavailable");
+            throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.contextUnavailable);
           const resourceRefs =
             (await this.resolveContextResources(
               sessionId,
@@ -7959,11 +8145,11 @@ export class WebAccessService {
             )) ?? [];
           const inputRows = Array.isArray(params.input) ? params.input.length : 1;
           if (inputRows > 11 || resourceRefs.length > 32)
-            throw new HttpError(400, "too_many_input_items");
+            throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.tooManyInputItems);
           params.resourceRefs = resourceRefs;
         }
         this.grant(hash, permission);
-        if (boot !== this.bootId) throw new HttpError(409, "stale_boot");
+        if (boot !== this.bootId) throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.staleBoot);
         if (historyScopeKey) await this.assertHistoryScope(hash, historyScopeKey, true);
         if (approvalAudit && !claudeReplay) {
           approvalAudit = {
@@ -7971,9 +8157,9 @@ export class WebAccessService {
             ...(await this.readApprovalEvidence(snapshot, params)),
           };
           const current = this.grant(hash, permission);
-          if (boot !== this.bootId) throw new HttpError(409, "stale_boot");
+          if (boot !== this.bootId) throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.staleBoot);
           if (!(await this.controlsEnabledForSnapshot(sessionId, snapshot, current, true)))
-            throw new HttpError(403, "provider_control_not_allowed");
+            throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.providerControlNotAllowed);
         }
         if (
           lan &&
@@ -7984,7 +8170,7 @@ export class WebAccessService {
             true,
           ))
         )
-          throw new HttpError(403, "workspace_not_authorized");
+          throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.workspaceNotAuthorized);
         const device = this.grant(hash, permission);
         if (
           operation === "send" &&
@@ -7999,7 +8185,7 @@ export class WebAccessService {
           pushAction &&
           (params.nativeDecision !== undefined || approval?.requiresExtendedApproval)
         )
-          this.grant(hash, "extendedApproval");
+          this.grant(hash, REMOTE_CAPABILITIES.device.extendedApproval);
         params.runtimeBootId = snapshot.runtimeBootId;
         if (interactionDecisionId) rememberRequest(this.requests, requestId);
         dispatched = true;
@@ -8033,7 +8219,7 @@ export class WebAccessService {
           "completed" in result &&
           result.completed === false &&
           "controlOutcome" in result &&
-          result.controlOutcome === "not-dispatched" &&
+          result.controlOutcome === REMOTE_CONTROL_OUTCOMES.notDispatched &&
           "requestId" in result &&
           result.requestId === requestId &&
           "runtimeBootId" in result &&
@@ -8045,10 +8231,10 @@ export class WebAccessService {
           if (newlyPinnedDevice || snapshot.executionMode === "claude-managed")
             await this.attachmentStore.settle(String(params.deviceId), sessionId, requestId);
           this.grant(hash, permission);
-          if (boot !== this.bootId) throw new HttpError(409, "stale_boot");
+          if (boot !== this.bootId) throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.staleBoot);
           if (interactionDecisionId && expiredInteractionRefusal(result)) {
             this.requests.delete(requestId);
-            throw new HttpError(409, "interaction_expired");
+            throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.interactionExpired);
           }
           throw new HttpError(
             409,
@@ -8059,7 +8245,7 @@ export class WebAccessService {
           );
         }
         this.grant(hash, permission);
-        if (boot !== this.bootId) throw new HttpError(409, "stale_boot");
+        if (boot !== this.bootId) throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.staleBoot);
         if (
           lan &&
           isCodexMode(snapshotField(snapshot, "executionMode")) &&
@@ -8069,7 +8255,7 @@ export class WebAccessService {
             true,
           ))
         )
-          throw new HttpError(403, "workspace_not_authorized");
+          throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.workspaceNotAuthorized);
         this.grant(hash, permission);
         if (
           typeof result !== "object" ||
@@ -8077,7 +8263,10 @@ export class WebAccessService {
           !("accepted" in result) ||
           result.accepted !== true
         )
-          throw new HttpError(502, "outcome_unknown");
+          throw new HttpError(
+            REMOTE_ERROR_CONTRACT.outcomeUnknown.http.overrides.runtimeResponseUnconfirmed,
+            REMOTE_ERROR_CODES.outcomeUnknown,
+          );
         res.once("finish", () => {
           // Node finish confirms the server wrote the response, not that a
           // browser received it. No automatic resend is safe even after this.
@@ -8102,24 +8291,28 @@ export class WebAccessService {
         }
       }
     }
-    if (req.method !== "GET") throw new HttpError(405, "method_not_allowed");
+    if (req.method !== "GET") throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.methodNotAllowed);
     this.grant(hash);
-    if (path === "/push/policy" || path === "/push/activity") {
-      if (url.search) throw new HttpError(400, "invalid_notification_query");
-      if (!this.options.notificationPolicy) throw new HttpError(404, "capability_unavailable");
+    if (path === REMOTE_ROUTE.pushPolicy || path === REMOTE_ROUTE.pushActivity) {
+      if (url.search) throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.invalidNotificationQuery);
+      if (!this.options.notificationPolicy)
+        throw new HttpError(
+          REMOTE_ERROR_CONTRACT.capabilityUnavailable.http.overrides.handlerUnavailable,
+          REMOTE_ERROR_CODES.capabilityUnavailable,
+        );
       const payload =
-        path === "/push/policy"
+        path === REMOTE_ROUTE.pushPolicy
           ? await this.notificationPolicy(hash)
           : { activity: await this.notificationActivity(hash) };
       return this.json(res, 200, payload);
     }
-    if (path === "/approval-audit") return this.approvalAuditPage(res, hash, url);
-    if (path === "/approval-rules") {
+    if (path === REMOTE_ROUTE.approvalAudit) return this.approvalAuditPage(res, hash, url);
+    if (path === REMOTE_ROUTE.approvalRules) {
       if (
         [...url.searchParams.keys()].some((key) => key !== "workspaceId") ||
         url.searchParams.getAll("workspaceId").length > 1
       )
-        throw new HttpError(400, "invalid_approval_rule_request");
+        throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.invalidApprovalRuleRequest);
       const workspaceId = url.searchParams.get("workspaceId");
       return this.approvalRuleRequest(
         res,
@@ -8127,21 +8320,21 @@ export class WebAccessService {
         workspaceId === null ? undefined : this.field(workspaceId),
       );
     }
-    if (path === "/read-state") {
+    if (path === REMOTE_ROUTE.readState) {
       if (
         [...url.searchParams.keys()].some((key) => key !== "sessionId") ||
         url.searchParams.getAll("sessionId").length !== 1
       )
-        throw new HttpError(400, "invalid_read_state_request");
+        throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.invalidReadStateRequest);
       return this.conversationReadState(res, hash, this.field(url.searchParams.get("sessionId")));
     }
-    if (path === "/session-images") {
+    if (path === REMOTE_ROUTE.sessionImages) {
       if (
         [...url.searchParams.keys()].some((key) => !["sessionId", "imageId"].includes(key)) ||
         url.searchParams.getAll("sessionId").length !== 1 ||
         url.searchParams.getAll("imageId").length !== 1
       )
-        throw new HttpError(400, "invalid_image_request");
+        throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.invalidImageRequest);
       return this.conversationSessionImage(
         res,
         hash,
@@ -8149,8 +8342,8 @@ export class WebAccessService {
         this.field(url.searchParams.get("imageId"), 512),
       );
     }
-    if (path === "/history/status") {
-      if (url.search) throw new HttpError(400, "invalid_history_request");
+    if (path === REMOTE_ROUTE.historyStatus) {
+      if (url.search) throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.invalidHistoryRequest);
       const scope = await this.historyScope(hash, true);
       const result = await this.historyCall(
         HISTORY_SEARCH_METHODS.status,
@@ -8162,22 +8355,26 @@ export class WebAccessService {
       await this.assertHistoryScope(hash, scope.key, true);
       return this.json(res, 200, result);
     }
-    if (path === "/attachments") {
-      if (lan) throw new HttpError(403, "attachments_require_same_origin");
-      const device = this.grant(hash, "attachments");
+    if (path === REMOTE_ROUTE.attachments) {
+      if (lan) throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.attachmentsRequireSameOrigin);
+      const device = this.grant(hash, REMOTE_CAPABILITIES.device.attachments);
       const attachments = await this.attachmentStore.list(
         device.id,
         this.field(url.searchParams.get("sessionId")),
       );
-      this.grant(hash, "attachments");
+      this.grant(hash, REMOTE_CAPABILITIES.device.attachments);
       return this.json(res, 200, { attachments });
     }
-    if (!legacyCodex && path === "/managed/resources" && url.searchParams.has("workspaceId"))
+    if (
+      !legacyCodex &&
+      path === REMOTE_ROUTE.managedResources &&
+      url.searchParams.has("workspaceId")
+    )
       return this.json(res, 200, await this.newSessionResources(hash, url));
     if (
-      path === "/managed/settings" ||
-      path === "/managed/goals" ||
-      path === "/managed/resources"
+      path === REMOTE_ROUTE.managedSettings ||
+      path === REMOTE_ROUTE.managedGoals ||
+      path === REMOTE_ROUTE.managedResources
     ) {
       const sessionId = this.field(url.searchParams.get("sessionId"));
       // 与 projectCapabilities 一致：settings-state/usage/goal/context 都属于 advancedControl，
@@ -8186,7 +8383,7 @@ export class WebAccessService {
       const scope = await this.sessionScope(sessionId, hash, false, legacyCodex);
       const workspaceId = scope.workspace_id;
       let result: unknown;
-      if (path === "/managed/settings") {
+      if (path === REMOTE_ROUTE.managedSettings) {
         const settings = await this.runtime({
           operation: "settings-state",
           sessionId,
@@ -8208,7 +8405,7 @@ export class WebAccessService {
                 return undefined;
               });
         result = { sessionId, ...this.projectSettings(settings, usage) };
-      } else if (path === "/managed/goals") {
+      } else if (path === REMOTE_ROUTE.managedGoals) {
         const goal = await this.runtime({ operation: "goal", sessionId });
         this.fullAccess(hash, "advancedControl");
         const capabilities = await this.runtime({
@@ -8223,30 +8420,34 @@ export class WebAccessService {
       } else {
         const directoryId = url.searchParams.get("directoryId") ?? undefined;
         if (directoryId && directoryId.length > 128)
-          throw new HttpError(400, "invalid_directory_id");
+          throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.invalidDirectoryId);
         result = (await this.contextResources(sessionId, device, workspaceId, directoryId))
           .response;
       }
       if (this.fullAccess(hash, "advancedControl").id !== device.id)
-        throw new HttpError(401, "access_ended");
+        throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.accessEnded);
       await this.codexScope(sessionId, hash, false, legacyCodex);
       return this.json(res, 200, result);
     }
-    if (path === "/managed/project-agent")
+    if (path === REMOTE_ROUTE.managedProjectAgent)
       return this.projectAgent(res, hash, {
         operation: "status",
         sessionId: url.searchParams.get("sessionId"),
       });
-    if (path === "/managed/capabilities")
+    if (path === REMOTE_ROUTE.managedCapabilities)
       return this.readSessionCapabilities(res, hash, url, legacyCodex);
-    if (path === "/managed/queue") {
+    if (path === REMOTE_ROUTE.managedQueue) {
       if (!legacyCodex && this.options.mode === "lan")
-        throw new HttpError(403, "capability_unavailable");
+        throw new HttpError(
+          REMOTE_ERROR_CONTRACT.capabilityUnavailable.http.overrides.routeDenied,
+          REMOTE_ERROR_CODES.capabilityUnavailable,
+        );
       const sessionId = this.field(url.searchParams.get("sessionId"));
       const permission = lan ? "send" : "advancedControl";
       const device = this.grant(hash, permission);
       const workspaceId = await this.queueScope(sessionId, hash, false, legacyCodex);
-      if (this.grant(hash, permission).id !== device.id) throw new HttpError(401, "access_ended");
+      if (this.grant(hash, permission).id !== device.id)
+        throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.accessEnded);
       const result = lan
         ? {
             data: (await this.ownerWaitQueue(sessionId, workspaceId)).filter(
@@ -8258,11 +8459,11 @@ export class WebAccessService {
             reason?: string;
           });
       if ((await this.queueScope(sessionId, hash, false, legacyCodex)) !== workspaceId)
-        throw new HttpError(403, "workspace_not_authorized");
+        throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.workspaceNotAuthorized);
       const current = this.grant(hash, permission);
-      if (current.id !== device.id) throw new HttpError(401, "access_ended");
+      if (current.id !== device.id) throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.accessEnded);
       if ("reason" in result && result.reason === "queue-too-large")
-        throw new HttpError(409, "queue_too_large");
+        throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.queueTooLarge);
       const entries = result.data ?? [];
       return this.json(res, 200, {
         sessionId,
@@ -8314,11 +8515,13 @@ export class WebAccessService {
         })),
       });
     }
-    if (path.startsWith("/requests/")) {
+    if (path.startsWith(REMOTE_ROUTE_PREFIXES.requests)) {
       const device = this.grant(hash);
-      const requestId = this.field(path.slice("/requests/".length), 128);
-      if (!/^[a-f0-9-]{36}$/i.test(requestId)) throw new HttpError(400, "invalid_input");
-      if (!this.options.receiptRequest) throw new HttpError(503, "receipt_unavailable");
+      const requestId = this.field(path.slice(REMOTE_ROUTE_PREFIXES.requests.length), 128);
+      if (!/^[a-f0-9-]{36}$/i.test(requestId))
+        throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.invalidInput);
+      if (!this.options.receiptRequest)
+        throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.receiptUnavailable);
       const result = (await this.runtime(
         {},
         this.options.receiptRequest({ requestId, deviceId: device.id }),
@@ -8339,11 +8542,11 @@ export class WebAccessService {
         if (
           result.found !== true ||
           result.requestId !== requestId ||
-          result.status !== "not-dispatched" ||
+          result.status !== REMOTE_CONTROL_OUTCOMES.notDispatched ||
           result.recovery !== "legacy-prepared" ||
           result.completionObserved !== false
         )
-          throw new HttpError(503, "receipt_unavailable");
+          throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.receiptUnavailable);
         for (const [sessionId, pendingRequestId] of this.unconfirmedRequests) {
           if (pendingRequestId === requestId && !this.active.has(sessionId)) {
             this.clearUnconfirmed(sessionId);
@@ -8355,7 +8558,7 @@ export class WebAccessService {
         return this.json(res, 200, {
           found: true,
           requestId,
-          status: "not-dispatched",
+          status: REMOTE_CONTROL_OUTCOMES.notDispatched,
           recovery: "legacy-prepared",
           completionObserved: false,
         });
@@ -8406,7 +8609,7 @@ export class WebAccessService {
             ? await this.lanCodexScopeAllowed(result.sessionId, result.workspaceId)
             : await this.workspaceAllowed(result.workspaceId, device))
         )
-          throw new HttpError(403, "workspace_not_authorized");
+          throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.workspaceNotAuthorized);
         this.grant(hash, permission);
         if (
           result.operation === "open-model-picker" &&
@@ -8420,10 +8623,10 @@ export class WebAccessService {
               snapshotField(result, "runtimeBootId"),
             ) !== "accepted")
         )
-          throw new HttpError(503, "receipt_unavailable");
+          throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.receiptUnavailable);
         if (
           result.sessionId &&
-          ["accepted", "not-dispatched"].includes(result.status ?? "") &&
+          ["accepted", REMOTE_CONTROL_OUTCOMES.notDispatched].includes(result.status ?? "") &&
           this.unconfirmedRequests.get(result.sessionId) === requestId &&
           !this.active.has(result.sessionId)
         ) {
@@ -8460,7 +8663,7 @@ export class WebAccessService {
         result.ack === undefined ? result : { ...result, ack: projectQueueActionAck(result.ack) },
       );
     }
-    if (path === "/managed/options") {
+    if (path === REMOTE_ROUTE.managedOptions) {
       const requestedWorkspace = url.searchParams.get("workspaceId");
       const workspaceId = requestedWorkspace === null ? undefined : this.field(requestedWorkspace);
       const permission =
@@ -8468,14 +8671,14 @@ export class WebAccessService {
       const caller = this.grant(hash, permission);
       const bootId = this.bootId;
       const agent = managedAgentOf(url.searchParams.get("agent") ?? "codex");
-      if (!agent) throw new HttpError(400, "invalid_agent");
+      if (!agent) throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.invalidAgent);
       if (workspaceId) {
         if (this.options.acceptanceSessionId)
-          throw new HttpError(403, "session_control_not_allowed");
+          throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.sessionControlNotAllowed);
         if (!(await this.workspaceAllowed(workspaceId, caller)))
-          throw new HttpError(403, "workspace_not_authorized");
+          throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.workspaceNotAuthorized);
         this.grant(hash, permission);
-        if (this.bootId !== bootId) throw new HttpError(409, "stale_boot");
+        if (this.bootId !== bootId) throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.staleBoot);
       }
       const options = await this.sessionCreationOptions(agent, workspaceId);
       const device = this.grant(hash, permission);
@@ -8485,9 +8688,9 @@ export class WebAccessService {
         (w) => this.isFullAccess(current) || this.config.allowedWorkspaceIds?.includes(w.id),
       );
       if (workspaceId) {
-        if (this.bootId !== bootId) throw new HttpError(409, "stale_boot");
+        if (this.bootId !== bootId) throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.staleBoot);
         if (!allowed.some((workspace) => workspace.id === workspaceId))
-          throw new HttpError(403, "workspace_not_authorized");
+          throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.workspaceNotAuthorized);
       }
       return this.json(res, 200, {
         ...(options as object),
@@ -8495,9 +8698,9 @@ export class WebAccessService {
         workspaces: allowed.map(({ id, name }) => ({ id, name })),
       });
     }
-    if (path === "/managed/inspect")
+    if (path === REMOTE_ROUTE.managedInspect)
       return this.readSessionCapabilities(res, hash, url, false, "inspect");
-    if (path === "/managed/resume-command") {
+    if (path === REMOTE_ROUTE.managedResumeCommand) {
       const sessionId = this.field(url.searchParams.get("sessionId"));
       const scope = await this.codexResumeCommandScope(sessionId, hash);
       const result = (await this.runtime({ operation: "resume-command", sessionId })) as {
@@ -8507,7 +8710,10 @@ export class WebAccessService {
         runOn?: unknown;
       } | null;
       if ((await this.codexResumeCommandScope(sessionId, hash)) !== scope)
-        throw new HttpError(403, "access_changed");
+        throw new HttpError(
+          REMOTE_ERROR_CONTRACT.accessChanged.http.overrides.accessRevokedDuringRequest,
+          REMOTE_ERROR_CODES.accessChanged,
+        );
       if (
         result?.available !== true ||
         typeof result.command !== "string" ||
@@ -8516,7 +8722,7 @@ export class WebAccessService {
         !["posix", "powershell"].includes(String(result.shell)) ||
         result.runOn !== "host"
       )
-        throw new HttpError(503, "codex_context_unavailable");
+        throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.codexContextUnavailable);
       return this.json(res, 200, {
         available: true,
         command: result.command,
@@ -8524,7 +8730,7 @@ export class WebAccessService {
         runOn: "host",
       });
     }
-    if (path === "/managed/context") {
+    if (path === REMOTE_ROUTE.managedContext) {
       const id = this.field(url.searchParams.get("sessionId"));
       const device = this.grant(hash);
       const catalog = (await this.scopeCatalog()) as {
@@ -8534,21 +8740,22 @@ export class WebAccessService {
         (entry) => entry.id === id && ["codex", "claude-code"].includes(entry.agent),
       );
       if (!session || !(await this.workspaceAllowed(session.workspace_id, device)))
-        throw new HttpError(403, "workspace_not_authorized");
+        throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.workspaceNotAuthorized);
       const result = await this.runtime({ operation: "context", sessionId: id });
-      if (this.grant(hash).id !== device.id) throw new HttpError(401, "access_ended");
+      if (this.grant(hash).id !== device.id)
+        throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.accessEnded);
       if (!(await this.workspaceAllowed(session.workspace_id, device)))
-        throw new HttpError(403, "workspace_not_authorized");
+        throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.workspaceNotAuthorized);
       return this.json(res, 200, result);
     }
     if (
-      path.startsWith("/files/") ||
-      path === "/artifacts" ||
-      path === "/artifacts/resolve" ||
-      path === "/diff"
+      path.startsWith(REMOTE_ROUTE_PREFIXES.files) ||
+      path === REMOTE_ROUTE.artifacts ||
+      path === REMOTE_ROUTE.artifactsResolve ||
+      path === REMOTE_ROUTE.diff
     )
       return this.files(res, hash, path, url);
-    if (path === "/subagents" || path === "/subagent/events") {
+    if (path === REMOTE_ROUTE.subagents || path === REMOTE_ROUTE.subagentEvents) {
       const parentId = this.field(url.searchParams.get("sessionId"));
       const boot = this.bootId;
       const device = this.grant(hash);
@@ -8572,27 +8779,30 @@ export class WebAccessService {
             entry.sidechain !== true,
         );
         if (!parent || !(await this.workspaceAllowed(parent.workspace_id, this.grant(hash))))
-          throw new HttpError(403, "workspace_not_authorized");
+          throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.workspaceNotAuthorized);
         return `${parent.agent}:${parent.workspace_id}`;
       };
       const scope = await parentScope();
       const params: Record<string, unknown> = {
-        operation: path === "/subagents" ? "subagents" : "subagent-events",
+        operation: path === REMOTE_ROUTE.subagents ? "subagents" : "subagent-events",
         sessionId: parentId,
       };
-      if (path === "/subagent/events") {
+      if (path === REMOTE_ROUTE.subagentEvents) {
         const childId = this.field(url.searchParams.get("subagentId"));
-        if (!/^[a-f0-9]{64}$/.test(childId)) throw new HttpError(400, "invalid_subagent_id");
+        if (!/^[a-f0-9]{64}$/.test(childId))
+          throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.invalidSubagentId);
         params.subagentId = childId;
         const limit = Number(url.searchParams.get("limit") || 50);
         if (!Number.isInteger(limit) || limit < 1 || limit > 50)
-          throw new HttpError(400, "invalid_limit");
+          throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.invalidLimit);
         const cursor = url.searchParams.get("cursor");
-        if (cursor && cursor.length > 1024) throw new HttpError(400, "invalid_cursor");
+        if (cursor && cursor.length > 1024)
+          throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.invalidCursor);
         params.limit = limit;
         params.cursor = cursor;
       }
-      if (this.grant(hash).id !== device.id) throw new HttpError(401, "access_ended");
+      if (this.grant(hash).id !== device.id)
+        throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.accessEnded);
       let result: unknown;
       try {
         result = await this.runtime(params);
@@ -8600,46 +8810,60 @@ export class WebAccessService {
         // Only these read errors are public; never expose native paths or arbitrary
         // runtime exception messages. A missing child does not disable the catalog.
         const errors: Record<string, [number, string]> = {
-          "invalid-request": [400, "invalid_input"],
-          TRANSCRIPT_CURSOR_INVALID: [400, "invalid_cursor"],
-          TRANSCRIPT_CURSOR_STALE: [409, "stale_cursor"],
-          "subagent-unavailable": [404, "subagent_unavailable"],
+          [REMOTE_ERROR_CODES.invalidRequestDetail]: [400, REMOTE_ERROR_CODES.invalidInput],
+          TRANSCRIPT_CURSOR_INVALID: [400, REMOTE_ERROR_CODES.invalidCursor],
+          TRANSCRIPT_CURSOR_STALE: [409, REMOTE_ERROR_CODES.staleCursor],
+          [REMOTE_ERROR_CODES.subagentUnavailableDetail]: [
+            404,
+            REMOTE_ERROR_CODES.subagentUnavailable,
+          ],
         };
         const mapped =
           error instanceof Error && Object.hasOwn(errors, error.message)
             ? errors[error.message]
             : undefined;
-        if (mapped && (path === "/subagent/events" || mapped[0] !== 404))
+        if (mapped && (path === REMOTE_ROUTE.subagentEvents || mapped[0] !== 404))
           throw new HttpError(...mapped);
         throw error;
       }
-      if (this.grant(hash).id !== device.id) throw new HttpError(401, "access_ended");
-      if (scope !== (await parentScope())) throw new HttpError(403, "access_changed");
+      if (this.grant(hash).id !== device.id)
+        throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.accessEnded);
+      if (scope !== (await parentScope()))
+        throw new HttpError(
+          REMOTE_ERROR_CONTRACT.accessChanged.http.overrides.accessRevokedDuringRequest,
+          REMOTE_ERROR_CODES.accessChanged,
+        );
       // parentScope may await both catalog and workspace registration. Revocation
       // during either wait must still close this final response window.
-      if (this.grant(hash).id !== device.id) throw new HttpError(401, "access_ended");
-      if (boot !== this.bootId) throw new HttpError(409, "stale_boot");
+      if (this.grant(hash).id !== device.id)
+        throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.accessEnded);
+      if (boot !== this.bootId) throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.staleBoot);
       return this.json(res, 200, result);
     }
     const sessionId =
-      path === "/catalog" || (path === "/stream" && !url.searchParams.has("sessionId"))
+      path === REMOTE_ROUTE.catalog ||
+      (path === REMOTE_ROUTE.stream && !url.searchParams.has("sessionId"))
         ? undefined
         : this.field(url.searchParams.get("sessionId"));
-    const localEvents = trustedLocal && path === "/events";
+    const localEvents = trustedLocal && path === REMOTE_ROUTE.events;
     const streamWorkspaceId =
       sessionId && !localEvents && this.isFullAccess(this.grant(hash))
-        ? await this.codexScope(sessionId, hash, path === "/stream", false)
+        ? await this.codexScope(sessionId, hash, path === REMOTE_ROUTE.stream, false)
         : undefined;
-    if (path === "/stream") {
-      if (url.searchParams.get("protocolVersion") !== "2" || !this.options.conversationHub)
-        throw new HttpError(409, "incompatible_protocol");
+    if (path === REMOTE_ROUTE.stream) {
+      if (
+        url.searchParams.get("protocolVersion") !== String(CONVERSATION_PROTOCOL_VERSION) ||
+        !this.options.conversationHub
+      )
+        throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.incompatibleProtocol);
       const watchTaskSummary =
         sessionId === undefined && url.searchParams.get("taskSummary") === "1";
       const afterCursor =
         url.searchParams.get("afterCursor") ||
         String(req.headers["last-event-id"] ?? "") ||
         undefined;
-      if (afterCursor && afterCursor.length > 1024) throw new HttpError(400, "invalid_cursor");
+      if (afterCursor && afterCursor.length > 1024)
+        throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.invalidCursor);
       // Allow a catalog and up to three detail streams, including the recently
       // viewed sessions retained by the client. Idle tabs can share a credential.
       // Replace a half-open detail on reconnect, or prefer an older detail at a cap.
@@ -8657,7 +8881,7 @@ export class WebAccessService {
           : undefined);
       if (!previous && this.streams.size >= MAX_EVENT_STREAMS) {
         res.setHeader("Retry-After", "3");
-        throw new HttpError(429, "stream_limit");
+        throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.streamLimit);
       }
       previous?.evict();
       res.writeHead(200, {
@@ -8724,7 +8948,7 @@ export class WebAccessService {
           !this.isFullAccess(device) &&
           !this.config.allowedWorkspaceIds?.includes(streamWorkspaceId)
         )
-          throw new HttpError(403, "workspace_not_authorized");
+          throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.workspaceNotAuthorized);
         return device;
       };
       const unavailable = (force = false) => {
@@ -8767,7 +8991,8 @@ export class WebAccessService {
           try {
             summary = await this.taskSummary(hash);
           } catch (error) {
-            if (!(error instanceof HttpError) || error.message !== "operation_busy") throw error;
+            if (!(error instanceof HttpError) || error.message !== REMOTE_ERROR_CODES.operationBusy)
+              throw error;
             if (!closed) {
               // Reads wait for write admission to release without tearing down
               // the subscription or losing the last queued invalidation.
@@ -8783,9 +9008,12 @@ export class WebAccessService {
             cleanup();
             return false;
           }
-          if (boot !== this.bootId) throw new HttpError(409, "stale_boot");
+          if (boot !== this.bootId) throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.staleBoot);
           if (authorized() !== device || readerScope !== this.readerScope())
-            throw new HttpError(403, "access_changed");
+            throw new HttpError(
+              REMOTE_ERROR_CONTRACT.accessChanged.http.overrides.accessRevokedDuringRequest,
+              REMOTE_ERROR_CODES.accessChanged,
+            );
           if (summary && summary.version !== taskSummaryVersion) {
             taskSummaryVersion = summary.version;
             const snapshot = JSON.stringify({ ...payload, taskSummary: summary });
@@ -8807,7 +9035,11 @@ export class WebAccessService {
           for (const key of pendingFields)
             pendingContext[key] = snapshotField(event.payload.live, key);
           const live = await this.projectLive(sessionId, event.payload.live, device, true);
-          if (device !== authorized()) throw new HttpError(403, "access_changed");
+          if (device !== authorized())
+            throw new HttpError(
+              REMOTE_ERROR_CONTRACT.accessChanged.http.overrides.accessRevokedDuringRequest,
+              REMOTE_ERROR_CODES.accessChanged,
+            );
           hasPendingProjection = snapshotField(live, "pendingInteractions") !== undefined;
           return {
             ...event,
@@ -8866,7 +9098,11 @@ export class WebAccessService {
               true,
             );
           device = authorized();
-          if (device !== projectedDevice) throw new HttpError(403, "access_changed");
+          if (device !== projectedDevice)
+            throw new HttpError(
+              REMOTE_ERROR_CONTRACT.accessChanged.http.overrides.accessRevokedDuringRequest,
+              REMOTE_ERROR_CODES.accessChanged,
+            );
           guard = sessionId ? this.controlGuard(sessionId) : undefined;
           if (guard) pendingInteractions = undefined;
           if (pendingInteractions?.length || hasPendingProjection)
@@ -9034,21 +9270,22 @@ export class WebAccessService {
       return;
     }
     let params: Record<string, unknown>;
-    if (path === "/catalog") params = { operation: "catalog" };
-    else if (path === "/events") {
+    if (path === REMOTE_ROUTE.catalog) params = { operation: "catalog" };
+    else if (path === REMOTE_ROUTE.events) {
       const limit = Number(url.searchParams.get("limit") || 50);
       if (!Number.isInteger(limit) || limit < 1 || limit > 50)
-        throw new HttpError(400, "invalid_limit");
+        throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.invalidLimit);
       const cursor = url.searchParams.get("cursor");
-      if (cursor && cursor.length > 1024) throw new HttpError(400, "invalid_cursor");
+      if (cursor && cursor.length > 1024)
+        throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.invalidCursor);
       params = { operation: "events", sessionId, cursor, limit };
-    } else if (path === "/live")
+    } else if (path === REMOTE_ROUTE.live)
       params = {
         operation: "live",
         sessionId,
         experimentalEnabled: this.controlsEnabled(sessionId, this.grant(hash)),
       };
-    else throw new HttpError(404, "not_found");
+    else throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.notFound);
     const boot = this.bootId;
     const readerScope = this.readerScope();
     let result: unknown;
@@ -9061,22 +9298,28 @@ export class WebAccessService {
           | { handled: true; page: unknown }
           | { handled: false };
         this.grant(hash);
-        if (boot !== this.bootId) throw new HttpError(409, "stale_boot");
-        if (readerScope !== this.readerScope()) throw new HttpError(409, "access_changed");
+        if (boot !== this.bootId) throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.staleBoot);
+        if (readerScope !== this.readerScope())
+          throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.accessChanged);
         if (direct?.handled === true) result = direct.page;
         else {
           await this.codexScope(sessionId!, hash, false, false);
           result = await this.runtime(params);
         }
-      } else if (path === "/catalog") {
-        result = await this.runtime(params, undefined, false, "catalog_read_timeout");
+      } else if (path === REMOTE_ROUTE.catalog) {
+        result = await this.runtime(
+          params,
+          undefined,
+          false,
+          REMOTE_ERROR_CODES.catalogReadTimeout,
+        );
       } else result = await this.runtime(params);
     } catch (error) {
-      if (path === "/catalog" || (path === "/events" && params.cursor)) {
+      if (path === REMOTE_ROUTE.catalog || (path === REMOTE_ROUTE.events && params.cursor)) {
         this.grant(hash);
-        if (boot !== this.bootId) throw new HttpError(409, "stale_boot");
-        if ((path === "/catalog" || localEvents) && readerScope !== this.readerScope())
-          throw new HttpError(409, "access_changed");
+        if (boot !== this.bootId) throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.staleBoot);
+        if ((path === REMOTE_ROUTE.catalog || localEvents) && readerScope !== this.readerScope())
+          throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.accessChanged);
         const detail =
           error instanceof RuntimeRequestError &&
           error.data !== null &&
@@ -9086,16 +9329,17 @@ export class WebAccessService {
             : error instanceof Error
               ? error.message
               : undefined;
-        if (path === "/catalog" && detail === "catalog-stale")
-          throw new HttpError(409, "catalog_stale");
-        if (path === "/events" && detail === "TRANSCRIPT_CURSOR_STALE")
-          throw new HttpError(409, "stale_cursor");
+        if (path === REMOTE_ROUTE.catalog && detail === REMOTE_ERROR_CODES.catalogStaleDetail)
+          throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.catalogStale);
+        if (path === REMOTE_ROUTE.events && detail === REMOTE_ERROR_CODES.transcriptCursorStale)
+          throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.staleCursor);
       }
       throw error;
     }
-    const wantsTaskSummary = path === "/catalog" && url.searchParams.get("taskSummary") === "1";
+    const wantsTaskSummary =
+      path === REMOTE_ROUTE.catalog && url.searchParams.get("taskSummary") === "1";
     const device = this.grant(hash);
-    if (path === "/catalog" && !wantsTaskSummary && this.isFullAccess(device)) {
+    if (path === REMOTE_ROUTE.catalog && !wantsTaskSummary && this.isFullAccess(device)) {
       const registered = new Set(
         (await this.registeredWorkspaces()).map((workspace) => workspace.id),
       );
@@ -9110,24 +9354,32 @@ export class WebAccessService {
       };
       this.grant(hash);
     }
-    if (path === "/live") {
+    if (path === REMOTE_ROUTE.live) {
       result = await this.projectLive(sessionId, result, device);
       if (device !== this.grant(hash) || readerScope !== this.readerScope())
-        throw new HttpError(403, "access_changed");
+        throw new HttpError(
+          REMOTE_ERROR_CONTRACT.accessChanged.http.overrides.accessRevokedDuringRequest,
+          REMOTE_ERROR_CODES.accessChanged,
+        );
     }
     const taskSummary = wantsTaskSummary ? await this.taskSummary(hash, result) : undefined;
     this.grant(hash);
-    if (boot !== this.bootId) throw new HttpError(409, "stale_boot");
-    if ((path === "/catalog" || localEvents) && readerScope !== this.readerScope())
-      throw new HttpError(409, "access_changed");
+    if (boot !== this.bootId) throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.staleBoot);
+    if ((path === REMOTE_ROUTE.catalog || localEvents) && readerScope !== this.readerScope())
+      throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.accessChanged);
     // 桌面内嵌会话页走可信本地桥，仍拿完整目录；远程（中继、局域网）客户端从不列出
     // 子代理会话，去掉它们并压缩，目录回复从约 800 KiB 降到几十 KiB。
-    const remoteCatalog = path === "/catalog" && !trustedLocal;
+    const remoteCatalog = path === REMOTE_ROUTE.catalog && !trustedLocal;
     const gzip = remoteCatalog && acceptsGzip(req.headers["accept-encoding"]);
     // Large task snapshots remain readable independently of the legacy directory size.
     if (wantsTaskSummary) return this.json(res, 200, { taskSummary }, gzip, TASK_CATALOG_MAX_BYTES);
     if (remoteCatalog) result = projectRemoteCatalog(result);
-    if (path === "/catalog" && result && typeof result === "object" && !Array.isArray(result)) {
+    if (
+      path === REMOTE_ROUTE.catalog &&
+      result &&
+      typeof result === "object" &&
+      !Array.isArray(result)
+    ) {
       const catalog = { ...result } as Record<string, unknown>;
       // Runtime completeness spans every registered workspace. Only the authorized projection is public.
       delete catalog.taskSummarySourceCoverage;
@@ -9137,30 +9389,37 @@ export class WebAccessService {
   }
   private async static(req: ConversationRequest, res: ConversationResponse) {
     if (req.method !== "GET" && req.method !== "HEAD")
-      throw new HttpError(405, "method_not_allowed");
+      throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.methodNotAllowed);
     let pathname: string;
     try {
       pathname = decodeURIComponent((req.url || "/").split("?")[0]);
     } catch {
-      throw new HttpError(400, "invalid_path");
+      throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.invalidPath);
     }
     if (pathname.includes("\\") || pathname.includes("\0") || pathname.split("/").includes(".."))
-      throw new HttpError(403, "invalid_path");
+      throw new HttpError(
+        REMOTE_ERROR_CONTRACT.invalidPath.http.overrides.invalidRemoteRequestTarget,
+        REMOTE_ERROR_CODES.invalidPath,
+      );
     const root = await realpath(this.options.staticDir);
     const candidate = resolve(root, `.${pathname === "/" ? "/index.html" : pathname}`);
     let file: string;
     try {
       file = await realpath(candidate);
     } catch {
-      throw new HttpError(404, "not_found");
+      throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.notFound);
     }
     const rel = relative(root, file);
     if (rel === ".." || rel.startsWith(`..${sep}`) || resolve(root, rel) !== file)
-      throw new HttpError(403, "invalid_path");
+      throw new HttpError(
+        REMOTE_ERROR_CONTRACT.invalidPath.http.overrides.invalidRemoteRequestTarget,
+        REMOTE_ERROR_CODES.invalidPath,
+      );
     // 先看元数据：目录直接 404，超大文件在读入内存之前就拒绝。
     const info = await stat(file);
-    if (!info.isFile()) throw new HttpError(404, "not_found");
-    if (info.size > 16 * 1024 * 1024) throw new HttpError(413, "asset_too_large");
+    if (!info.isFile()) throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.notFound);
+    if (info.size > 16 * 1024 * 1024)
+      throw HttpError.fromContract(REMOTE_ERROR_CONTRACT.assetTooLarge);
     const data = await readFile(file);
     const mime: Record<string, string> = {
       ".html": "text/html; charset=utf-8",

@@ -38,6 +38,7 @@ export interface SessionDetailProps {
   history: {
     page?: ConversationEventPage | null;
     live?: (SessionTurnLive & Pick<Live, "streamText" | "streamTextTruncated">) | null;
+    observesTerminalQuestions?: boolean;
     turnLive?: SessionTurnLive;
     online?: boolean;
     externalTurn?: SessionExternalTurn | null;
@@ -219,6 +220,7 @@ export function SessionDetail({
               streamTextTruncated={live?.streamTextTruncated}
               liveTurnId={live?.turnId}
               liveQuestions={live?.questions}
+              observesTerminalQuestions={history.observesTerminalQuestions}
               activeTurnId={turn?.turnId}
               incomplete={page.warnings.length > 0}
               labels={labels}

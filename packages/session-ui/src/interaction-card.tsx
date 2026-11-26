@@ -36,6 +36,7 @@ export interface QuestionDockItem {
   key: string;
   request: InteractionQuestionRequest;
   enabled: boolean;
+  readOnly?: true;
   notice?: InteractionNotice;
   answerContext?: AnswerContext;
 }
@@ -610,11 +611,14 @@ export function HistoryQuestionCard({
   questionnaire,
   locale,
   attachments,
+  hidden = false,
+  pager,
+  onCollapse,
 }: {
   questionnaire: ConversationQuestionnaire;
   locale: string;
   attachments?: ReactNode;
-}) {
+} & Partial<Pick<FrameProps, "hidden" | "pager" | "onCollapse">>) {
   const t = interactionCardCopy(locale as InteractionLocale);
   const id = useId();
   const { status, questions, imageQuestionId } = questionnaire;
@@ -625,7 +629,16 @@ export function HistoryQuestionCard({
         ? t.waitingAnswer
         : t.question;
   return (
-    <Frame t={t} icon="question" label={label} heading={label} headingTone="kind" hidden={false}>
+    <Frame
+      t={t}
+      icon="question"
+      label={label}
+      heading={label}
+      headingTone="kind"
+      hidden={hidden}
+      pager={pager}
+      onCollapse={onCollapse}
+    >
       {questions.map((question, index) => {
         const { answer } = question;
         const previews = answer?.preview
@@ -930,7 +943,10 @@ export function InteractionDock({
   useEffect(() => {
     const present = new Set(items.map((item) => item.key));
     const gone = previous.current.filter(
-      (item) => !present.has(item.key) && !answered.current.has(item.key),
+      (item) =>
+        !present.has(item.key) &&
+        !answered.current.has(item.key) &&
+        !(item.kind === "question" && item.readOnly),
     );
     previous.current = items;
     if (!vanished || !gone.length) return;
@@ -1039,6 +1055,15 @@ export function InteractionDock({
             pager={pager}
             onCollapse={onDismiss ?? (() => setCollapsedWith(keys))}
             onChoose={(choice) => void run(item.key, choice.key, () => onChoose(item, choice))}
+          />
+        ) : item.readOnly ? (
+          <HistoryQuestionCard
+            key={item.key}
+            questionnaire={{ status: "pending", questions: item.request.questions }}
+            locale={locale}
+            hidden={item !== current}
+            pager={pager}
+            onCollapse={onDismiss ?? (() => setCollapsedWith(keys))}
           />
         ) : (
           <QuestionCard

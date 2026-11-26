@@ -1,5 +1,12 @@
 import { useCallback } from "react";
-import type { Access, Approval, Decision, Live, UserQuestionRequest } from "@agentkib/web-client";
+import type {
+  Access,
+  Approval,
+  ConversationEvent,
+  Decision,
+  Live,
+  UserQuestionRequest,
+} from "@agentkib/web-client";
 import { sessionApprovalRuntime } from "./agents/session-approvals";
 import { resolveSessionProvider, sessionProviderControlsDisabled } from "./session-provider";
 import { InteractionDock, type InteractionNotice } from "./interaction-card";
@@ -52,10 +59,12 @@ export function SessionInteractionDock({
   session,
   agent,
   explainReason,
+  history,
 }: {
   session: SessionInteractionState;
   agent: string;
   explainReason: (reason: string) => string;
+  history?: readonly ConversationEvent[];
 }) {
   const {
     live,
@@ -114,7 +123,18 @@ export function SessionInteractionDock({
   return (
     <InteractionDock
       locale={locale}
-      items={items}
+      items={items.filter(
+        (item) =>
+          item.kind !== "question" ||
+          !item.readOnly ||
+          !history?.some(
+            (event) =>
+              event.id === item.request.requestId &&
+              (!event.turn_id || event.turn_id === item.request.turnId) &&
+              (event.questionnaire?.status === "answered" ||
+                event.questionnaire?.status === "closed"),
+          ),
+      )}
       busy={busy}
       failure={
         fromCard && notice === "notDispatched"

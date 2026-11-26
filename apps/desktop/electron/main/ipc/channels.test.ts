@@ -16,6 +16,7 @@ const main = [
   "main/app-updates.ts",
   "main/ipc/runtime.ts",
   "main/ipc/conversation.ts",
+  "main/ipc/diagnostics.ts",
 ]
   .map(read)
   .join("\n");

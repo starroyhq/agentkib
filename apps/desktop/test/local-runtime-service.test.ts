@@ -1,7 +1,15 @@
 // @vitest-environment node
 import { randomUUID } from "node:crypto";
 import { once } from "node:events";
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { createConnection, createServer, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -25,6 +33,7 @@ import {
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ClaudeManagedReadOwner } from "../../../packages/backend/src/agents/claude/claude-managed-read";
 import { LocalCosts } from "../../../packages/backend/src/local-costs";
+import { localRuntimeTracePaths } from "../../../packages/backend/src/local-runtime-trace";
 import { acquirePortableFileLease } from "../../../packages/backend/src/managed-session-lock";
 import { QuitWork } from "../../../packages/backend/src/sessions/quit-work";
 
@@ -129,6 +138,36 @@ async function fixture() {
 }
 
 describe("shared local runtime service", () => {
+  it("traces authenticated requests in the runtime profile without storing request values", async () => {
+    const runtime = await fixture();
+    const desktop = await runtime.attach("private-device-name");
+    await expect(
+      desktop.request(RUNTIME_METHODS.sessionRequest, {
+        operation: "live",
+        sessionId: "synthetic-missing-session",
+      }),
+    ).rejects.toThrow();
+    await runtime.daemon.close();
+    const contents = readFileSync(localRuntimeTracePaths(runtime.dataDir)[0]!, "utf8");
+    const rows = contents
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    expect(rows).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ kind: "runtime", state: "started" }),
+        expect.objectContaining({
+          kind: "request",
+          method: RUNTIME_METHODS.sessionRequest,
+          operation: "live",
+          session: expect.stringMatching(/^[0-9a-f]{16}$/),
+        }),
+      ]),
+    );
+    for (const value of ["private-device-name", "synthetic-missing-session", runtime.dataDir])
+      expect(contents).not.toContain(value);
+  });
+
   it("shares one backend and session source across clients of the same version", async () => {
     const runtime = await fixture();
     const stable = await runtime.attach("stable");

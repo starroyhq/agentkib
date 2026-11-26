@@ -97,7 +97,7 @@ require('node:readline').createInterface({input:process.stdin}).on('line', line 
   fs.appendFileSync(file, JSON.stringify({type:'assistant',uuid:assistant,parentUuid:frame.uuid,sessionId:frame.session_id,cwd:process.cwd(),timestamp:new Date().toISOString(),message:{role:'assistant',stop_reason:'end_turn',content:[{type:'text',text:'Synthetic complete'}]}})+'\n');
   send({type:'assistant',uuid:assistant,parent_tool_use_id:null,message:{id:assistant,model:'fixture-model',usage:{input_tokens:10},content:[]}});
   const finish=()=>send({type:'result',subtype:'success',...(process.env.PARITY_MODE==='missing-usage'?{}:{usage:{input_tokens:10,output_tokens:5}}),modelUsage:{'fixture-model':{contextWindow:100}}});
-  if(['steer','stage-next-settings'].includes(process.env.PARITY_MODE)) { const timer=setInterval(()=>{if(fs.existsSync(process.env.PARITY_RESULT_GATE)){clearInterval(timer);finish();}},10); } else finish();
+  if(['steer','stage-next-settings'].includes(process.env.PARITY_MODE)) { const timer=setInterval(()=>{if(fs.existsSync(process.env.PARITY_RESULT_GATE)){clearInterval(timer);finish();}},10).unref(); } else finish();
  }
 });
 `}`,

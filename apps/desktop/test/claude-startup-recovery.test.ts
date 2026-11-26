@@ -1,8 +1,9 @@
 import { randomUUID } from "node:crypto";
-import childProcesses, { execFileSync } from "node:child_process";
+import childProcesses from "node:child_process";
 import { once } from "node:events";
 import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import { syncBuiltinESMExports } from "node:module";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
@@ -26,6 +27,7 @@ import { processAlive, type FakeClaudePlan } from "./fixtures/claude-fake-cli";
 import { createStartupClaude, createStartupClaudeSpawn } from "./fixtures/claude-startup-cli";
 
 const cleanups: Array<() => void | Promise<void>> = [];
+const fixtureRoots: string[] = [];
 const confirmsOwnedTree = process.platform === "darwin";
 let startupSpawn: ReturnType<typeof createStartupClaudeSpawn>;
 beforeEach(() => {
@@ -38,7 +40,32 @@ beforeEach(() => {
 afterEach(async () => {
   vi.restoreAllMocks();
   syncBuiltinESMExports();
-  for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
+  const roots = fixtureRoots.splice(0);
+  const pending = cleanups.splice(0).reverse();
+  const errors: unknown[] = [];
+  const timer = new AbortController();
+  const shutdown = async () => {
+    for (const cleanup of pending) {
+      try {
+        await cleanup();
+      } catch (error) {
+        errors.push(error);
+      }
+    }
+  };
+  try {
+    await Promise.race([
+      shutdown(),
+      delay(6_000, undefined, { signal: timer.signal, ref: false }).then(() => {
+        throw new Error("Claude startup fixture shutdown timed out");
+      }),
+    ]);
+  } finally {
+    timer.abort();
+    await startupSpawn.processGroups.cleanup();
+  }
+  for (const root of roots) rmSync(root, { recursive: true, force: true });
+  if (errors.length) throw new AggregateError(errors, "Claude startup teardown failed");
   // A missing fixture prerequisite must fail even if an expected protocol timeout occurred.
   expect(startupSpawn.failures).toEqual([]);
 });
@@ -46,7 +73,7 @@ afterEach(async () => {
 function fixture(plan: FakeClaudePlan) {
   const f = createStartupClaude();
   f.setPlan(plan);
-  cleanups.push(() => rmSync(f.root, { recursive: true, force: true }));
+  fixtureRoots.push(f.root);
   const runner = new ClaudeManagedRunnerProcess(
     f.workspace,
     randomUUID(),
@@ -322,33 +349,33 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))("Claude startup
     async (operation) => {
       const f = fixture({ silentInitialize: true });
       const childPidFile = path.join(f.root, "detached-child-pid");
-      const identities = new Map<number, string>();
-      const identity = (pid: number) => {
+      const registerDetached = () => {
+        let pid: number;
         try {
-          return execFileSync("/bin/ps", ["-p", String(pid), "-o", "pgid=,lstart="], {
-            encoding: "utf8",
-            stdio: ["ignore", "pipe", "ignore"],
-          }).trim();
-        } catch {
-          return "";
+          pid = Number(readFileSync(childPidFile, "utf8"));
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+          throw error;
         }
+        if (!Number.isSafeInteger(pid) || pid <= 1) return;
+        startupSpawn.processGroups.track(pid);
+        return pid;
       };
       const originalPlatform = Object.getOwnPropertyDescriptor(process, "platform")!;
       const proof = vi.fn();
       // Keep the implementation rather than the spy object that the override below reuses.
       const actualSpawn = startupSpawn.spawn;
-      let childReady = false;
+      let detachedPid: number | undefined;
       const spawning = vi
         .spyOn(childProcesses, "spawn")
         .mockImplementation((...args: Parameters<typeof childProcesses.spawn>) => {
           const child = actualSpawn(...args);
-          if (args[0] === f.executable) {
+          if (args[0] === f.executable && child.pid) {
             // Establish the real detached-child fixture before the runner starts its unchanged
-            // 300 ms initialize deadline. Always return the child, even if readiness fails.
+            // 300 ms initialize deadline. Register its group even if the test later fails.
             const deadline = Date.now() + 2000;
-            while (!existsSync(childPidFile) && Date.now() < deadline)
+            while ((detachedPid = registerDetached()) === undefined && Date.now() < deadline)
               Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
-            childReady = existsSync(childPidFile);
           }
           return child;
         });
@@ -357,10 +384,19 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))("Claude startup
       writeFileSync(
         f.executable,
         `#!/bin/bash
+owner=$PPID
+[ "$owner" -gt 1 ] || exit 0
 set -m
-(while :; do :; done) < /dev/null > /dev/null 2>&1 &
-printf '%s' "$!" > "$TEST_CHILD_PID"
-while IFS= read -r frame; do printf '%s\\n' "$frame" >> "$FAKE_LOG"; done
+# This descendant must outlive the CLI's own group for the recovery proof.
+(exec /bin/sleep 60) </dev/null >/dev/null 2>&1 &
+printf '%s\\n' "$!" > "$TEST_CHILD_PID" || exit 90
+# The fixture never responds. Its idle timeout also bounds waiting after parent death.
+while [ "$SECONDS" -lt 60 ] && kill -0 "$owner" 2>/dev/null; do
+  remaining=$((60 - SECONDS))
+  [ "$remaining" -le 5 ] || remaining=5
+  [ "$remaining" -gt 0 ] && IFS= read -r -t "$remaining" frame || exit 0
+  printf '%s\\n' "$frame" >> "$FAKE_LOG" || exit 90
+done
 `,
         { mode: 0o700 },
       );
@@ -386,43 +422,26 @@ while IFS= read -r frame; do printf '%s\\n' "$frame" >> "$FAKE_LOG"; done
             : runner.prepare(f.executable)
         ).catch((error: unknown) => error);
         const rootPid = runner.processId!;
-        identities.set(rootPid, identity(rootPid));
         const error = await pending;
-        expect(childReady).toBe(true);
+        expect(detachedPid).toBeDefined();
         expect(error).toBeInstanceOf(Error);
         expect(error).not.toBeInstanceOf(ClaudeUndispatchedError);
         expect(error).toMatchObject({ message: "Claude initialize timed out" });
         expect(runner.snapshot()).toMatchObject({ status: "outcome-unknown", sendEnabled: false });
         expect(proof).not.toHaveBeenCalled();
         expect(f.frames().filter((frame) => frame.type === "user")).toEqual([]);
-        expect(existsSync(childPidFile)).toBe(true);
-        const childPid = Number(readFileSync(childPidFile, "utf8"));
-        const childIdentity = identity(childPid);
-        identities.set(childPid, childIdentity);
-        expect(childIdentity).toMatch(new RegExp(`^${childPid}\\s`));
-        expect(childPid).not.toBe(rootPid);
+        expect(detachedPid).not.toBe(rootPid);
+        expect(processAlive(detachedPid!)).toBe(true);
+        expect(startupSpawn.processGroups.isRunning(detachedPid!)).toBe(true);
       } finally {
-        await runner?.shutdown().catch(() => undefined);
-        if (existsSync(childPidFile)) {
-          const pid = Number(readFileSync(childPidFile, "utf8"));
-          if (!identities.has(pid)) identities.set(pid, identity(pid));
+        try {
+          await runner?.shutdown().catch(() => undefined);
+        } finally {
+          Object.defineProperty(process, "platform", originalPlatform);
+          spawning.mockRestore();
+          syncBuiltinESMExports();
+          registerDetached();
         }
-        for (const [pid, started] of identities) {
-          if (!started || identity(pid) !== started) continue;
-          try {
-            process.kill(-pid, "SIGKILL");
-          } catch {
-            // This exact test process group already exited.
-          }
-          try {
-            process.kill(pid, "SIGKILL");
-          } catch {
-            // The group signal already ended this exact test process.
-          }
-        }
-        Object.defineProperty(process, "platform", originalPlatform);
-        spawning.mockRestore();
-        syncBuiltinESMExports();
       }
     },
     30_000,

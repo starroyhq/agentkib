@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { DatabaseSync, SQLInputValue, StatementSync } from "node:sqlite";
+import { beginSqliteWrite } from "./sqlite-lock-timing";
 import { storedTime, utcNow } from "./workspaces";
 export type Row = Record<string, unknown>;
 export class Sql {
@@ -25,7 +26,7 @@ export class Sql {
     this.#statement(sql).run(...values);
   }
   transaction<T>(operation: () => T): T {
-    this.database.exec("BEGIN IMMEDIATE");
+    beginSqliteWrite(this.database, "shared-store");
     try {
       const result = operation();
       this.database.exec("COMMIT");

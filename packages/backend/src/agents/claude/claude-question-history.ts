@@ -4,6 +4,10 @@ import type { ConversationImage } from "../../session-events";
 import { sanitizeSessionText } from "../../session-handoff";
 
 type Question = ConversationQuestionnaire["questions"][number];
+const MAX_QUESTIONS = 4;
+const ANSWER_PREFIX = "The user answered: ";
+const ANSWER_CONTINUATION =
+  ". Read the answers carefully — they may request clarification, changes, or that you not proceed — and follow what they actually say.";
 const record = (value: unknown): value is Record<string, unknown> =>
   value !== null && typeof value === "object" && !Array.isArray(value);
 
@@ -45,7 +49,7 @@ export function claudeQuestionnaire(
     !record(source) ||
     !Array.isArray(source.questions) ||
     source.questions.length === 0 ||
-    source.questions.length > 4 ||
+    source.questions.length > MAX_QUESTIONS ||
     (status === "answered" && !record(source.answers))
   )
     return;
@@ -108,25 +112,93 @@ export function claudeQuestionnaire(
   return { status, questions, ...(imageQuestionId ? { imageQuestionId } : {}) };
 }
 
+interface ClaudeQuestionResult {
+  value?: ConversationQuestionnaire;
+  answerDetails?: {
+    answers: Record<string, string>;
+    annotations: Record<string, { preview: string }>;
+  };
+  images: ConversationImage[];
+}
+
+/** Read the native quoted pairs only when the entire bounded result matches the format. */
+function nativeAnswerFallback(content: unknown): [string, string][] {
+  if (typeof content !== "string" || !content.startsWith(ANSWER_PREFIX) || content.length > 32_768)
+    return [];
+  const pairs: [string, string][] = [];
+  const pair = /("(?:[^"\\]|\\.)*")=("(?:[^"\\]|\\.)*")/sy;
+  let offset = ANSWER_PREFIX.length;
+  while (pairs.length < MAX_QUESTIONS) {
+    pair.lastIndex = offset;
+    const match = pair.exec(content);
+    if (!match) return [];
+    try {
+      const question = JSON.parse(match[1]!) as string;
+      const answer = JSON.parse(match[2]!) as string;
+      if (!question || pairs.some(([previous]) => previous === question)) return [];
+      pairs.push([question, answer]);
+    } catch {
+      return [];
+    }
+    if (pair.lastIndex === content.length || content.slice(pair.lastIndex) === ANSWER_CONTINUATION)
+      return pairs;
+    if (!content.startsWith(", ", pair.lastIndex)) return [];
+    offset = pair.lastIndex + 2;
+  }
+  return [];
+}
+
 export function claudeQuestionHistoryResult(
   structured: unknown,
   content: unknown,
   rowImages: ConversationImage[],
-) {
-  const images =
-    typeof content === "string" && content.startsWith("The user answered: ") ? rowImages : [];
+): ClaudeQuestionResult | undefined {
+  const images = typeof content === "string" && content.startsWith(ANSWER_PREFIX) ? rowImages : [];
   const value = claudeQuestionnaire(structured, "answered", images.length > 0);
-  return value && { value, images };
+  if (value) return { value, images };
+
+  // Some result rows do not repeat the questions. Resolve their answers only
+  // once the original tool use with exactly the same ID is available.
+  const answers: Record<string, string> = Object.assign(
+    Object.create(null),
+    Object.fromEntries(nativeAnswerFallback(content)),
+  );
+  const annotations: Record<string, { preview: string }> = Object.create(null);
+  const result = record(structured) ? structured : undefined;
+  if (record(result?.answers)) {
+    for (const [key, answer] of Object.entries(result.answers).slice(0, MAX_QUESTIONS)) {
+      if (key.length <= 8192 && typeof answer === "string" && answer.length <= 16384)
+        answers[key] = answer;
+    }
+  }
+  if (!Object.keys(answers).length) return;
+  if (record(result?.annotations)) {
+    for (const key of Object.keys(answers)) {
+      if (!Object.hasOwn(result.annotations, key)) continue;
+      const entry = result.annotations[key];
+      if (record(entry) && typeof entry.preview === "string" && entry.preview.length <= 16384)
+        annotations[key] = { preview: entry.preview };
+    }
+  }
+  return { answerDetails: { answers, annotations }, images };
 }
 
 export function claudeQuestionHistory(
   name: string,
   input: unknown,
   completed: boolean,
-  answer: ReturnType<typeof claudeQuestionHistoryResult>,
+  answer: ClaudeQuestionResult | undefined,
 ) {
   if (name !== "AskUserQuestion") return;
-  if (answer) return answer;
+  if (answer?.value) return { value: answer.value, images: answer.images };
+  if (answer?.answerDetails && record(input)) {
+    const value = claudeQuestionnaire(
+      { questions: input.questions, ...answer.answerDetails },
+      "answered",
+      answer.images.length > 0,
+    );
+    if (value) return { value, images: answer.images };
+  }
   const value = claudeQuestionnaire(input, completed ? "closed" : "pending");
   return value && { value };
 }

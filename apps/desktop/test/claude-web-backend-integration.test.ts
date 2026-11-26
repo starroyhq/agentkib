@@ -140,7 +140,7 @@ require('node:readline').createInterface({input:process.stdin}).on('line', line 
     }
     append({type:'user',uuid:frame.uuid,message:{role:'user',content:frame.message.content}});
     if(mode()==='hold' && !frame.priority) return;
-    while(mode()==='hold-worker' && frame.message.content==='Offline Worker task') await new Promise(resolve=>setTimeout(resolve,25));
+    while(mode()==='hold-worker' && frame.message.content==='Offline Worker task') await new Promise(resolve=>setTimeout(resolve,25).unref());
     if(mode()==='approval' || mode()==='question') {
       const question=mode()==='question';
       send({type:'control_request',request_id:question?'question-native':'approval-native',request:{subtype:'can_use_tool',tool_name:question?'AskUserQuestion':'Read',input:question?{questions:[{question:'Choose fixture?',header:'Fixture',options:[{label:'A',description:'First'},{label:'B',description:'Second'}],multiSelect:false}]}:{file_path:path.join(process.cwd(),'notes.txt')}}}); return;
@@ -1825,11 +1825,15 @@ describe.skipIf(process.platform !== "darwin")(
 
       // The terminal fixture is a real child. Expose only that process to the
       // ownership scanner, so this test never inspects another Claude session.
-      const terminal = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
-        cwd: workspace,
-        env: environment,
-        stdio: "ignore",
-      });
+      const terminal = spawn(
+        process.execPath,
+        ["-e", "setTimeout(() => process.exit(124), 60_000)"],
+        {
+          cwd: workspace,
+          env: environment,
+          stdio: "ignore",
+        },
+      );
       const exited = once(terminal, "exit");
       const terminalAlive = () => terminal.exitCode === null && terminal.signalCode === null;
       const commandMock = vi.mocked(Commands.prototype.run);

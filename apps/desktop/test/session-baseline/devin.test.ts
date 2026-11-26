@@ -49,6 +49,7 @@ if (args[0] === "auth") {
   ];
   const turn = { cwd: process.cwd(), config: {} };
   let pending = null;
+  let holdTimer;
   const storeNew = () => {
     const db = new DatabaseSync(process.env.FIXTURE_DB);
     const now = Math.floor(Date.now() / 1000);
@@ -66,6 +67,7 @@ if (args[0] === "auth") {
   };
   const finish = (stopReason) => {
     if (pending === null) return;
+    clearInterval(holdTimer);
     if (stopReason === "end_turn" && turn.acp[0] === "session/new" && process.env.FIXTURE_STORE_AFTER_TURN) storeNew();
     send({ jsonrpc: "2.0", id: pending, result: { stopReason } });
     pending = null;
@@ -91,11 +93,12 @@ if (args[0] === "auth") {
       turn.prompt = (params.prompt ?? []).map((block) => block.text ?? "").join("");
       log(turn);
       pending = id;
-      const timer = setInterval(() => {
+      // A held synthetic turn must not keep the CLI alive after stdin ends.
+      clearInterval(holdTimer);
+      holdTimer = setInterval(() => {
         if (existsSync(process.env.FIXTURE_HOLD)) return;
-        clearInterval(timer);
         finish("end_turn");
-      }, 20);
+      }, 20).unref();
       return;
     }
     if (method === "session/cancel") {

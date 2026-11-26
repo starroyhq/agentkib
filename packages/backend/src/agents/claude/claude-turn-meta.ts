@@ -1,5 +1,5 @@
 import type { ConversationTurnMeta } from "@agentkib/runtime-protocol";
-import { openManagedLedger } from "../../managed-ledger";
+import { beginManagedLedgerWrite, openManagedLedger } from "../../managed-ledger";
 import { cleanTurnSummary } from "../../session-turn-summary";
 import { isClaudeToolItemId } from "./claude-frame-policy";
 
@@ -56,7 +56,7 @@ export class ClaudeTurnMetaStore {
     const database = openManagedLedger(this.dataDir, true)!;
     try {
       database.exec(TABLE);
-      database.exec("BEGIN IMMEDIATE");
+      beginManagedLedgerWrite(database);
       database
         .prepare(
           "INSERT INTO claude_turn_meta(native_id,item_id,meta) VALUES(?,?,?) ON CONFLICT(native_id,item_id) DO UPDATE SET meta=excluded.meta",

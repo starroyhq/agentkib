@@ -2,6 +2,11 @@ import { DatabaseSync } from "node:sqlite";
 import { closeSync, constants, existsSync, lstatSync, mkdirSync, openSync } from "node:fs";
 import path from "node:path";
 import { restrictRemotePath } from "./remote-tls";
+import { beginSqliteWrite } from "./sqlite-lock-timing";
+
+export function beginManagedLedgerWrite(database: DatabaseSync): void {
+  beginSqliteWrite(database, "managed-ledger");
+}
 
 /** Open and migrate the private durable Codex ledger using the native schema. */
 export function openManagedLedger(dataDir: string, create = false): DatabaseSync | null {
@@ -55,7 +60,7 @@ export function openManagedLedger(dataDir: string, create = false): DatabaseSync
       ["evidence", "device_id", "claim_version"].every((name) => columns.has(name))
     )
       return database;
-    database.exec("BEGIN IMMEDIATE");
+    beginManagedLedgerWrite(database);
     database.exec(
       "CREATE TABLE IF NOT EXISTS managed_sessions(id TEXT PRIMARY KEY, record TEXT NOT NULL);" +
         "CREATE TABLE IF NOT EXISTS managed_commands(request_id TEXT PRIMARY KEY, session_id TEXT NOT NULL, fingerprint TEXT NOT NULL, phase TEXT NOT NULL, result TEXT);" +
@@ -394,7 +399,7 @@ export function claimManagedCommand(
   const database = openManagedLedger(dataDir, true);
   if (!database) throw new Error("session-unavailable");
   try {
-    database.exec("BEGIN IMMEDIATE");
+    beginManagedLedgerWrite(database);
     const prior = database
       .prepare("SELECT fingerprint,phase,result FROM managed_commands WHERE request_id=?")
       .get(requestId) as { fingerprint: string; phase: string; result: string | null } | undefined;
@@ -442,7 +447,7 @@ export function deleteManagedSessions(dataDir: string, ids: readonly string[]): 
   const database = openManagedLedger(dataDir);
   if (!database) return;
   try {
-    database.exec("BEGIN IMMEDIATE");
+    beginManagedLedgerWrite(database);
     for (const id of new Set(ids)) {
       database.prepare("DELETE FROM managed_sessions WHERE id=?").run(id);
       database.prepare("DELETE FROM managed_events WHERE session_id=?").run(id);
@@ -560,7 +565,7 @@ export function saveManagedSettingsReceipt(
   const database = openManagedLedger(dataDir);
   if (!database) throw new Error("session-unavailable");
   try {
-    database.exec("BEGIN IMMEDIATE");
+    beginManagedLedgerWrite(database);
     resolvePreparedSettings(database, record.id, { requestId, result });
     database
       .prepare(
@@ -586,7 +591,7 @@ export function observeManagedCommandCompletion(
   const database = openManagedLedger(dataDir);
   if (!database) return;
   try {
-    database.exec("BEGIN IMMEDIATE");
+    beginManagedLedgerWrite(database);
     const rows = database
       .prepare(
         "SELECT request_id,phase,evidence,result FROM managed_commands WHERE session_id=? AND " +
@@ -734,7 +739,7 @@ export function persistManagedGoal(
   const database = openManagedLedger(dataDir);
   if (!database) return null;
   try {
-    database.exec("BEGIN IMMEDIATE");
+    beginManagedLedgerWrite(database);
     const row = database
       .prepare("SELECT record FROM managed_sessions WHERE id=?")
       .get(expected.id) as { record: string } | undefined;
@@ -822,7 +827,7 @@ export function persistManagedSnapshot(
   const database = openManagedLedger(dataDir);
   if (!database) throw new Error("session-unavailable");
   try {
-    database.exec("BEGIN IMMEDIATE");
+    beginManagedLedgerWrite(database);
     const row = database
       .prepare("SELECT record FROM managed_sessions WHERE id=?")
       .get(expected.id) as { record: string } | undefined;

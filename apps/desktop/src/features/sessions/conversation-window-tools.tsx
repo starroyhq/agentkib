@@ -114,6 +114,18 @@ export function ConversationWindowTools({
   const copy = webLayoutCopy[locale];
   const canReconnect =
     !session.online && !session.incompatible && (!!session.live || session.error);
+  const dotTone =
+    !session.online || !!requestFailed || status.offline
+      ? "error"
+      : reconnecting || status.tone === "warning"
+        ? "warning"
+        : "healthy";
+  const dotClass =
+    dotTone === "error"
+      ? "bg-destructive-icon"
+      : dotTone === "warning"
+        ? "bg-warning"
+        : "bg-[var(--green)]";
   return (
     <>
       {slots.files && access?.status === "approved" && access.device?.files
@@ -144,7 +156,8 @@ export function ConversationWindowTools({
               >
                 <span
                   aria-hidden="true"
-                  className={`size-1.5 rounded-full ${status.tone === "active" ? "bg-primary-text" : "bg-muted-foreground"} ${status.loading ? "motion-safe:animate-pulse" : ""}`}
+                  data-connection-tone={dotTone}
+                  className={`size-2 rounded-full ${dotClass} ${reconnecting || status.loading ? "motion-safe:animate-pulse" : ""}`}
                 />
               </Popover.Trigger>
               <Popover.Portal>

@@ -159,7 +159,9 @@ describe("catalog loading through the real Web application and session provider"
         }),
       ),
     );
-    expect(screen.getByRole("status")).toHaveTextContent(dictionaries["zh-CN"].loading);
+    expect(
+      await screen.findByRole("status", { name: dictionaries["zh-CN"].loading }),
+    ).toBeVisible();
     expect(screen.queryByText(dictionaries["zh-CN"].empty)).not.toBeInTheDocument();
     host.readCatalog.mockResolvedValue(Response.json({ ...emptyCatalog, complete: true }));
     act(() => directoryStream().emit("catalog-invalidated"));
@@ -231,7 +233,7 @@ describe("catalog loading through the real Web application and session provider"
       const host = fixture(locale);
       const t = dictionaries[locale];
       await waitFor(() => expect(host.readCatalog).toHaveBeenCalledOnce());
-      expect(screen.getByRole("status")).toHaveTextContent(t.loading);
+      expect(await screen.findByRole("status", { name: t.loading })).toBeVisible();
       expect(screen.queryByText(t.empty)).not.toBeInTheDocument();
       expect(
         screen.queryByText(catalogCopyForSurface(locale, "web").missing),
@@ -308,7 +310,7 @@ describe("catalog loading through the real Web application and session provider"
     host.readCatalog.mockReturnValue(retry.promise);
     fireEvent.click(screen.getByRole("button", { name: t.retry }));
     await waitFor(() => expect(host.readCatalog).toHaveBeenCalledTimes(2));
-    expect(screen.getByRole("status")).toHaveTextContent(t.loading);
+    expect(await screen.findByRole("status", { name: t.loading })).toBeVisible();
     expect(screen.queryByText(t.empty)).not.toBeInTheDocument();
     await act(async () => retry.resolve(Response.json(catalog)));
     expect(await screen.findByRole("button", { name: /First session/ })).toBeVisible();
@@ -406,7 +408,9 @@ describe("catalog loading through the real Web application and session provider"
     act(() => CatalogEventSource.instances.at(-1)!.onopen?.());
     await waitFor(() => expect(host.readCatalog).toHaveBeenCalledTimes(2));
     await act(async () => host.first.resolve(Response.json(catalog)));
-    expect(screen.getByRole("status")).toHaveTextContent(dictionaries["zh-CN"].loading);
+    expect(
+      await screen.findByRole("status", { name: dictionaries["zh-CN"].loading }),
+    ).toBeVisible();
     expect(screen.queryByRole("button", { name: /First session/ })).not.toBeInTheDocument();
     expect(screen.queryByText(dictionaries["zh-CN"].empty)).not.toBeInTheDocument();
     await act(async () => next.resolve(Response.json(emptyCatalog)));

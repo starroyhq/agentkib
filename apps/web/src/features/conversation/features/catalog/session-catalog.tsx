@@ -1,5 +1,6 @@
 import {
   IconAction,
+  LoadingSkeleton,
   PendingReviewLane,
   sessionContinuationListState,
   SessionContinuationDot,
@@ -185,7 +186,7 @@ export function SessionCatalog({
         {!indexEnabled ? (
           <p>{t.indexDisabled}</p>
         ) : status === "loading" ? (
-          <p role="status">{t.loading}</p>
+          <LoadingSkeleton label={t.loading} rows={5} className="py-1" />
         ) : status === "error" ? (
           onRetry && (
             <Button type="button" variant="outline" size="sm" onClick={onRetry}>

@@ -72,7 +72,11 @@ import { takeNewSessionDraft } from "./new-session-draft";
 import { PermissionModeNotice } from "./permission-mode-notice";
 import { SessionReadOnly } from "./session-read-only";
 import type { SessionPanels } from "./session-panels";
-import { SessionOutcomeAction, type SessionOutcomeControls } from "./session-outcome-action";
+import {
+  SessionOutcomeAction,
+  SessionSendOutcomeNotice,
+  type SessionOutcomeControls,
+} from "./session-outcome-action";
 
 type ComposerSession = SessionComposerControlsProps["session"] &
   SessionOutcomeControls & {
@@ -809,6 +813,7 @@ export function SessionComposer({
     );
   const sendTarget = followUp ? runningAction : "send";
   const sendActions = ["send", "steer", "queue-add"] as const;
+  const showSending = useDelayedBusy(submitted);
   const standardPrimaryAction = stopping ? (
     <ComposerPrimaryAction kind="stop" label={t.stop} onStop={() => void control("stop")} />
   ) : (
@@ -823,7 +828,8 @@ export function SessionComposer({
               ? display.reason || display.label
               : undefined
       }
-      disabled={(!directReady && !runningReady) || !valid || submitted}
+      loading={showSending}
+      disabled={(!directReady && !runningReady) || !valid || submitted || sendOutcomePending}
       showDisabledTitle={
         display.continuation === "busy" || display.continuation === "terminal-watch"
       }
@@ -833,23 +839,8 @@ export function SessionComposer({
     <>
       <SessionOutcomeAction session={session} actions={["settings", "open-model-picker"]} />
       <SessionOutcomeAction session={session} actions={["approve", "answer"]} />
-      <SessionOutcomeAction
-        session={session}
-        actions={
-          stopping
-            ? sendActions
-            : ["stop", ...sendActions.filter((action) => action !== sendTarget)]
-        }
-      />
-      {stopping ? (
-        standardPrimaryAction
-      ) : (
-        <SessionOutcomeAction
-          session={session}
-          actions={[sendTarget]}
-          fallback={standardPrimaryAction}
-        />
-      )}
+      <SessionOutcomeAction session={session} actions={["stop"]} />
+      {standardPrimaryAction}
     </>
   );
   if (
@@ -927,8 +918,8 @@ export function SessionComposer({
           onFocus: () => {
             if (resume?.refreshOccupancy) void session.checkContinuation?.();
           },
-          disabled:
-            providerDisabled || (busy && !settingsOnlyBlocked) || submitted || sendOutcomePending,
+          readOnly: sendOutcomePending,
+          disabled: providerDisabled || (busy && !settingsOnlyBlocked) || submitted,
           ...slash.inputProps,
         }}
         onEditorKeyDown={(event, composing) => {
@@ -1122,6 +1113,7 @@ export function SessionComposer({
       />
       {/* These come and go. Floating above the composer, they never move it. */}
       <div className="pointer-events-none absolute inset-x-0 bottom-full z-10 mb-2 flex flex-col gap-2">
+        <SessionSendOutcomeNotice session={session} actions={sendActions} />
         {terminalInteraction && (
           <p role="status" className={`${floatingNotice} bg-background text-muted-foreground`}>
             {terminalInteraction}

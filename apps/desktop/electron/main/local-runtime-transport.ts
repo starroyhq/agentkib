@@ -190,7 +190,8 @@ class LocalRuntimeTransport extends EventEmitter implements RuntimeTransport {
       config.electronPath,
       [options.executablePath, "--local-runtime", config.root, config.dataDir],
       {
-        detached: true,
+        // A Store-launched Windows child uses its parent's packaged process context.
+        detached: process.windowsStore !== true,
         env: { ...options.environment, ELECTRON_RUN_AS_NODE: "1" },
         stdio: "ignore",
         windowsHide: true,

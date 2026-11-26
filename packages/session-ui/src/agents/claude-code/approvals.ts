@@ -40,6 +40,7 @@ export const terminalApprovalRuntime: ApprovalRuntime = {
   observedText: (live, sessionId, locale, surface: SessionSurface) => {
     const kind = claudeTerminalInteraction(live, sessionId);
     if (kind === "approval" && live.approvals.length) return;
+    if (kind === "question" && live.questions?.length) return;
     return kind ? claudeConnectionCopyForSurface(locale, surface)[kind] : undefined;
   },
 };

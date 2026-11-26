@@ -38,7 +38,12 @@ import {
   bridgePollSchema,
   bridgeResultSchema,
 } from "./claude-bridge-schema";
-import { claudeBridgeToolDetail } from "./claude-bridge-tool-detail";
+import {
+  claudeBridgeToolItem,
+  terminalQuestions,
+  terminalQuestionSettled,
+  terminalToolItems,
+} from "./claude-bridge-tool-detail";
 import { acquirePortableFileLease } from "../../managed-session-lock";
 import type { ClaudeBridgePluginUpdater } from "./claude-bridge-plugin-update";
 import {
@@ -1600,7 +1605,8 @@ export class ClaudeBridge {
               },
             ]
           : [],
-      questions: [],
+      questions:
+        status === "waiting-input" ? terminalQuestions(snapshot, connection?.turnTools) : [],
       ...(status === "waiting-input" && snapshot?.pendingQuestionSummary
         ? { terminalQuestionSummary: snapshot.pendingQuestionSummary }
         : {}),
@@ -3080,8 +3086,7 @@ export class ClaudeBridge {
             (event.turnId === undefined &&
               (event.type === "tool-start" || connection.turnTools.has(event.tool.id))))
         ) {
-          // The next snapshot carries the complete hook observation; the legacy display
-          // delta does not carry its opaque IDs or timestamps.
+          // Only the next snapshot has the full worker observation.
           delete snapshot.terminalWorkerActivity;
           connection.turnTools.set(event.tool.id, event.tool);
           if (connection.turnTools.size > 256)
@@ -3092,6 +3097,8 @@ export class ClaudeBridge {
     if (previousTurnId !== connection.snapshot?.currentTurnId) connection.turnTools.clear();
     connection.revision = ++this.#revision;
     this.#publish(id);
+    if (terminalQuestionSettled(event, connection.turnTools, previousWaiting))
+      this.options.publish(id, "invalidate", { domains: ["history"] }, this.live(id, true));
     if (event.type === "snapshot") {
       const { currentTurnId: turnId, waiting } = event.snapshot;
       if (
@@ -3247,6 +3254,14 @@ export class ClaudeBridge {
       this.live(row.target.sessionId, true),
     );
   }
+  #dropToolOverlays(id: string, ids: string[], live = this.live(id, true)): void {
+    this.options.publish(
+      id,
+      "snapshot",
+      { live, items: [], replaceItemIds: ids, completeItems: false },
+      live,
+    );
+  }
   #publish(id: string): void {
     const binding = this.#bindings.get(id);
     if (!binding) return;
@@ -3260,36 +3275,16 @@ export class ClaudeBridge {
     // The snapshot contains a history preview. Live overlays come only from this turn's tool events.
     const turnId = connection.gap ? null : connection.snapshot.currentTurnId;
     const previous = connection.publishedTools;
-    const tools = new Map<string, ClaudeBridgeTool>();
-    if (turnId)
-      for (const tool of connection.turnTools.values())
-        tools.set(`claude-follower-tool:${tool.id}`, tool);
+    const tools = terminalToolItems(turnId, connection.turnTools);
     const removed = [...previous.keys()].filter((key) => !tools.has(key));
-    if (removed.length)
-      this.options.publish(
-        id,
-        "snapshot",
-        { live, items: [], replaceItemIds: removed, completeItems: false },
-        live,
-      );
+    if (removed.length) this.#dropToolOverlays(id, removed, live);
     connection.publishedTools = tools;
     for (const [toolId, tool] of tools) {
       if (previous.get(toolId) === tool) continue;
-      const detail = claudeBridgeToolDetail(tool, binding.target.workspace);
       this.options.publish(
         id,
         "item-upsert",
-        {
-          id: toolId,
-          kind: "tool-summary",
-          content: "",
-          tool_name: sanitizeSessionText(tool.name, { value: 0 }),
-          tool_status: tool.status,
-          attachment_count: 0,
-          truncated: false,
-          turn_id: turnId,
-          ...(detail ? { tool: detail } : {}),
-        },
+        claudeBridgeToolItem(tool, toolId, turnId, binding.target.workspace),
         live,
       );
     }
@@ -3316,15 +3311,7 @@ export class ClaudeBridge {
       pending.resolve(result);
     }
     this.#publish(id);
-    if (overlays.length) {
-      const live = this.live(id, true);
-      this.options.publish(
-        id,
-        "snapshot",
-        { live, items: [], replaceItemIds: overlays, completeItems: false },
-        live,
-      );
-    }
+    if (overlays.length) this.#dropToolOverlays(id, overlays);
   }
   async close(): Promise<void> {
     if (this.#closed) return;

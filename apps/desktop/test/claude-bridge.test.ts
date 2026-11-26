@@ -2397,6 +2397,123 @@ describe.skipIf(process.platform === "win32")("native Claude borrowed-host broke
       expect.anything(),
     );
   });
+  it("projects a current terminal question as read-only and refreshes history after its answer", async () => {
+    const f = await fixture();
+    const turnId = randomUUID();
+    const question = {
+      id: "toolu_question",
+      name: "AskUserQuestion",
+      status: "running" as const,
+      input: JSON.stringify({
+        questions: [
+          {
+            header: "Release",
+            question: "Which target?",
+            options: [
+              { label: "Desktop", description: "Desktop first", preview: "platform=desktop" },
+            ],
+            multiSelect: false,
+          },
+        ],
+      }),
+    };
+    const waiting = {
+      ...f.snapshot,
+      currentTurnId: turnId,
+      waiting: "question" as const,
+      status: "waiting" as const,
+      revision: 1,
+      pendingQuestionSummary: "Which target?",
+      toolItems: [question],
+    };
+    await f.events({ type: "snapshot", snapshot: waiting });
+    f.publish.mockClear();
+    await f.events({ type: "tool-start", turnId, revision: 1, tool: question });
+    const request = {
+      requestId: "toolu_question",
+      turnId,
+      supported: false,
+      questions: [
+        {
+          id: "1",
+          header: "Release",
+          question: "Which target?",
+          options: [
+            { label: "Desktop", description: "Desktop first", preview: "platform=desktop" },
+          ],
+          multiSelect: false,
+          allowCustom: false,
+        },
+      ],
+    };
+    expect(f.live()).toMatchObject({ status: "waiting-input", questions: [request] });
+    expect(f.publish).toHaveBeenCalledWith(
+      f.target.sessionId,
+      "state",
+      expect.objectContaining({ questions: [expect.objectContaining(request)] }),
+      expect.anything(),
+    );
+    expect(f.publish.mock.calls.some(([, type]) => type === "item-upsert")).toBe(false);
+
+    await f.events({
+      type: "tool-complete",
+      turnId,
+      revision: 1,
+      tool: { ...question, status: "completed" },
+    });
+    expect(f.live().questions).toEqual([]);
+    expect(f.publish).toHaveBeenCalledWith(
+      f.target.sessionId,
+      "invalidate",
+      { domains: ["history"] },
+      expect.anything(),
+    );
+    await f.events({ type: "snapshot", snapshot: { ...f.snapshot, revision: 2 } });
+    expect(f.live().questions).toEqual([]);
+  });
+
+  it("does not turn an older snapshot tool into the current pending question", async () => {
+    const f = await fixture();
+    const turnId = randomUUID();
+    await f.events({
+      type: "snapshot",
+      snapshot: {
+        ...f.snapshot,
+        revision: 1,
+        status: "waiting",
+        waiting: "question",
+        currentTurnId: turnId,
+        pendingQuestionSummary: "Current question?",
+        toolItems: [
+          {
+            id: "old-question",
+            name: "AskUserQuestion",
+            status: "running",
+            input: JSON.stringify({
+              questions: [{ question: "Earlier question?", options: [{ label: "A" }] }],
+            }),
+          },
+        ],
+      },
+    });
+    expect(f.live().questions).toEqual([
+      {
+        requestId: turnId,
+        turnId,
+        supported: false,
+        questions: [
+          {
+            id: "1",
+            question: "Current question?",
+            options: [],
+            multiSelect: false,
+            allowCustom: false,
+          },
+        ],
+      },
+    ]);
+  });
+
   it("projects connected terminal Bash and MCP previews without bridge metadata", async () => {
     const f = await fixture();
     const turnId = randomUUID();

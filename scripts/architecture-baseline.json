@@ -179,7 +179,7 @@
     "apps/desktop/src/features/remote/WebAccessSettings.tsx": 2211,
     "apps/desktop/src/features/skills/SkillManagerPanels.tsx": 1612,
     "apps/desktop/src/styles.css": 1722,
-    "packages/backend/src/agents/claude/claude-bridge.ts": 3349,
+    "packages/backend/src/agents/claude/claude-bridge.ts": 3340,
     "packages/backend/src/agents/claude/claude-managed-read.ts": 7102,
     "packages/backend/src/agents/claude/claude-managed-runner.ts": 3789,
     "packages/backend/src/agents/claude/claude-settings.ts": 1517,
@@ -195,7 +195,7 @@
     "packages/claude-bridge-plugin/hooks/register.js": 3335,
     "packages/dsh-bridge-plugin/bridge.js": 2170,
     "packages/session-ui/src/conversation/sessions/session-composer-controls.tsx": 1886,
-    "packages/session-ui/src/conversation/sessions/use-session-controller.ts": 2967,
+    "packages/session-ui/src/conversation/sessions/use-session-controller.ts": 2964,
     "packages/web-client/src/index.ts": 2410
   },
   "compatibility": {
@@ -895,7 +895,6 @@
       "comment: Legacy callers validate the target before receiving an unsupported-operation error.": 1,
       "comment: Legacy files are optional. Never replace or recreate an unreadable registry.": 1,
       "comment: The legacy on-disk format can contain reports larger than a plugin can submit.": 1,
-      "comment: The next snapshot carries the complete hook observation; the legacy display": 1,
       "identifier: #assertLegacySettled": 7,
       "identifier: #legacyBindings": 7,
       "identifier: #legacyUnresolved": 6,

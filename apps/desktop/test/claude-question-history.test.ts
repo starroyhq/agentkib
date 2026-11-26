@@ -147,6 +147,135 @@ it("keeps the answer and attachment associated when reading older pages", () => 
   });
 });
 
+it("keeps structured answers from a metadata-marked result without exposing its metadata image", () => {
+  const session = setup();
+  session.append({ ...answer, isMeta: true });
+
+  const [question, extra] = session.read().events;
+  expect(extra).toBeUndefined();
+  expect(question).toMatchObject({
+    questionnaire: {
+      status: "answered",
+      questions: [
+        { answer: { selected: ["Wide"] } },
+        { answer: { selected: ["Logs, detailed", "Tracing"] } },
+        { answer: { selected: ["Map"], preview: "Selected preview" } },
+        { answer: { custom: "Notes, custom wording (Image attached)" } },
+      ],
+    },
+    attachment_count: 0,
+  });
+  expect(question?.images).toBeUndefined();
+});
+
+it("uses the original tool questions when only structured answers are repeated", () => {
+  const session = setup();
+  session.append({
+    ...answer,
+    message: {
+      ...answer.message,
+      content: [
+        { ...answer.message.content[0], content: 'The user answered: "Pick a layout"="Compact"' },
+        image,
+      ],
+    },
+    toolUseResult: {
+      answers: answer.toolUseResult.answers,
+      annotations: answer.toolUseResult.annotations,
+    },
+  });
+  const questionnaire = session.read().events[0]?.questionnaire;
+  expect(questionnaire).toMatchObject({
+    status: "answered",
+    questions: [
+      { ...questions[0], answer: { selected: ["Wide"] } },
+      { ...questions[1], answer: { selected: ["Logs, detailed", "Tracing"] } },
+      { ...questions[2], answer: { selected: ["Map"], preview: "Selected preview" } },
+      { ...questions[3], answer: { custom: "Notes, custom wording (Image attached)" } },
+    ],
+  });
+});
+
+it("reads exact native result text and preserves the native order of assistant blocks without UUIDs", () => {
+  const session = setup();
+  const custom = 'Keep "trace", then run checks.';
+  const before = { type: "text", text: "This changes the release gate." };
+  const after = { type: "text", text: "The documentation is ready." };
+  const quotedAnswers = {
+    "Pick a layout": "Compact",
+    "Pick features": "Logs, detailed, Tracing",
+    "Choose a preview": "Map",
+    "Add a note": custom,
+  };
+  session.append(
+    {
+      type: "assistant",
+      message: {
+        role: "assistant",
+        content: [before, { ...prompt.message.content[0], id: "toolu_text_result" }, after],
+      },
+    },
+    {
+      type: "user",
+      message: {
+        role: "user",
+        content: [
+          {
+            type: "tool_result",
+            tool_use_id: "toolu_text_result",
+            content:
+              "The user answered: " +
+              Object.entries(quotedAnswers)
+                .map(([key, value]) => `${JSON.stringify(key)}=${JSON.stringify(value)}`)
+                .join(", ") +
+              ". Read the answers carefully — they may request clarification, changes, or that you not proceed — and follow what they actually say.",
+          },
+        ],
+      },
+    },
+  );
+  const page = session.read();
+  expect(page.events.slice(1)).toMatchObject([
+    { content: before.text },
+    {
+      id: "toolu_text_result",
+      questionnaire: {
+        status: "answered",
+        questions: [
+          { ...questions[0], answer: { selected: ["Compact"] } },
+          { ...questions[1], answer: { selected: ["Logs, detailed", "Tracing"] } },
+          { ...questions[2], answer: { selected: ["Map"] } },
+          { ...questions[3], answer: { selected: [], custom } },
+        ],
+      },
+    },
+    { content: after.text },
+  ]);
+  expect(page.events.map((event) => event.id)).toEqual(
+    session.read().events.map((event) => event.id),
+  );
+});
+
+it("leaves answers unknown when the native result text cannot be decoded as a whole", () => {
+  const session = setup();
+  session.append({
+    type: "user",
+    message: {
+      role: "user",
+      content: [
+        {
+          type: "tool_result",
+          tool_use_id: "toolu_question",
+          content: 'The user answered: "Pick a layout"="Wide", trailing invalid text',
+        },
+      ],
+    },
+  });
+  const value = session.read().events[0]?.questionnaire;
+  expect(value?.status).toBe("closed");
+  expect(value?.questions.every((question) => question.answer === undefined)).toBe(true);
+});
+
 it("does not treat a failed tool result as pending or as an answer", () => {
   const session = setup();
   session.append({

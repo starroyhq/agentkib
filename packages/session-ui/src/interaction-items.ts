@@ -6,6 +6,7 @@ import {
   approvalCardModel,
   fillCopy,
   interactionCardCopy,
+  observedQuestionRequest,
   type InteractionApproval,
   type InteractionLocale,
   type InteractionQuestionRequest,
@@ -123,6 +124,8 @@ export function sessionInteractionItems<
     }),
     ...(live.questions ?? []).map((question): InteractionDockItem => {
       const key = interactionKey(question);
+      if (native?.owner === "terminal" && observedQuestionRequest(question))
+        return { kind: "question", key, request: question, enabled: false, readOnly: true };
       questions.set(key, question);
       const permitted = !!access.experimentalEnabled && !!access.device?.send;
       const notice =

@@ -21,6 +21,7 @@ import { transcriptProcessCopy, transcriptProcessLabel } from "./transcript-proc
 import { toolStatusLabel } from "./tool-status";
 import { SessionImagePreview } from "./session-image-preview";
 import { HistoryQuestionCard } from "./interaction-card";
+import { observedQuestionRequest } from "./interaction-model";
 
 interface ReaderLabels {
   process: string;
@@ -547,6 +548,7 @@ export interface SessionTranscriptProps {
   streamTextTruncated?: boolean;
   liveTurnId?: string;
   liveQuestions?: readonly UserQuestionRequest[];
+  observesTerminalQuestions?: boolean;
   activeTurnId?: string | null;
   resultMarker?: { id: string; eventId: string; turnId?: string | null; label: string };
   incomplete?: boolean;
@@ -567,6 +569,7 @@ export function SessionTranscript({
   streamTextTruncated = false,
   liveTurnId,
   liveQuestions,
+  observesTerminalQuestions,
   activeTurnId,
   resultMarker,
   incomplete = false,
@@ -580,11 +583,26 @@ export function SessionTranscript({
   historyDetailTurnId,
 }: SessionTranscriptProps) {
   const projectedEvents = useMemo(() => {
-    // The live dock owns live questions. Native history can omit the turn ID, so in that case
-    // match only the latest pending record with the same questions.
+    // The live dock owns pending prompts. Terminal observations include the exact native tool
+    // ID. Managed requests may use a different identity, so match only their latest prompt.
     const docked = new Set<string>();
     for (const request of liveQuestions ?? []) {
-      if (!request.supported || !Array.isArray(request.questions)) continue;
+      if (
+        !Array.isArray(request.questions) ||
+        (!request.supported && !(observesTerminalQuestions && observedQuestionRequest(request)))
+      )
+        continue;
+      const exact = events.find(
+        (event) =>
+          event.id === request.requestId &&
+          (!event.turn_id || event.turn_id === request.turnId) &&
+          event.questionnaire,
+      );
+      if (exact) {
+        if (exact.questionnaire?.status === "pending") docked.add(exact.id);
+        continue;
+      }
+      if (!request.supported) continue;
       for (let index = events.length - 1; index >= 0; index--) {
         const event = events[index];
         const questionnaire = event.questionnaire;
@@ -665,6 +683,7 @@ export function SessionTranscript({
     events,
     liveQuestions,
     liveTurnId,
+    observesTerminalQuestions,
     pendingMessage,
     streamText,
     streamTextTruncated,

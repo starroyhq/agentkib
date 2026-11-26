@@ -36,6 +36,7 @@ import {
 } from "./pending-controls";
 import { blockedWhileCompacting } from "./session-activity";
 import { contextUsageCopyForSurface } from "../../context-usage-copy";
+import { sessionTurnStatus } from "../../session-turn-status";
 import { checkLiveSession, retryBusyRead } from "../../session-read-retry";
 import { capabilityAccessBinding, useSessionCapabilities } from "../../use-session-capabilities";
 import { interactionCopy } from "../interactions/interaction-copy";
@@ -2123,6 +2124,7 @@ export function useSessionController<Words extends ControllerWords>(
       selection.current !== selected ||
       !access ||
       !live ||
+      (settingsAction && !!sessionTurnStatus(selected, live)) ||
       (action !== "inspect" &&
         !dismissingOwnerWait &&
         (live.status === "outcome-unknown" ||
@@ -2194,6 +2196,7 @@ export function useSessionController<Words extends ControllerWords>(
       capabilityAccessBinding(accessRef.current) !== accessBinding ||
       liveValue.current?.sessionId !== id ||
       liveValue.current?.status !== live.status ||
+      (settingsAction && !!sessionTurnStatus(id, liveValue.current)) ||
       (dismissingOwnerWait && !canDismissOwnerWait(liveValue.current)) ||
       (action !== "inspect" &&
         !dismissingOwnerWait &&

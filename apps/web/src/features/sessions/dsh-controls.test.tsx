@@ -138,27 +138,21 @@ describe("DeepSeek Harness controls", () => {
     };
     const view = render(<SessionComposerControls session={state} {...props} />);
     const model = await screen.findByRole("button", { name: /DeepSeek Chat/ });
+    const permissions = screen.getByRole("button", {
+      name: new RegExp(`^${copy.executionPolicy}`),
+    });
+    expect(model).toBeDisabled();
+    expect(permissions).toBeDisabled();
     fireEvent.click(model);
-    expect(screen.getByRole("button", { name: "Reset default model" })).toBeDisabled();
-    expect(within(screen.getByRole("dialog")).queryByRole("status")).not.toBeInTheDocument();
+    fireEvent.click(permissions);
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(screen.queryByRole("menu")).not.toBeInTheDocument();
     // DSH has no collaboration mode or service tier to offer.
     expect(screen.queryByLabelText(copy.mode)).not.toBeInTheDocument();
     expect(screen.queryByLabelText(copy.serviceTier)).not.toBeInTheDocument();
     expect(screen.getByRole("img", { name: copy.contextUsage })).toHaveAccessibleDescription(
       expect.stringContaining("70%"),
     );
-    expect(screen.getByRole("dialog")).not.toHaveTextContent("70%");
-    expect(screen.getByRole("dialog")).not.toHaveTextContent(copy.contextUnknown);
-    fireEvent.click(model);
-    fireEvent.click(screen.getByRole("button", { name: new RegExp(`^${copy.executionPolicy}`) }));
-    // The host text is English only; clients show DSH's preset wording by id.
-    await waitFor(() =>
-      expect(screen.getByText(/^Can write inside the workspace and permitted/)).toBeVisible(),
-    );
-    const policy = await screen.findByRole("menuitem", { name: /^Read only/i });
-    expect(policy).toHaveAttribute("aria-disabled", "true");
-    expect(within(screen.getByRole("menu")).queryByRole("status")).not.toBeInTheDocument();
-    fireEvent.click(policy);
     expect(state.runSessionAction).not.toHaveBeenCalled();
 
     vi.mocked(state.client.sessionSettings).mockResolvedValue({
@@ -169,7 +163,16 @@ describe("DeepSeek Harness controls", () => {
     state.live = { ...state.live!, status: "idle", revision: 2 };
     state.capabilities!.features.settings = { available: true };
     view.rerender(<SessionComposerControls session={state} {...props} />);
-    await waitFor(() => expect(policy).not.toHaveAttribute("aria-disabled", "true"));
+    await waitFor(() => expect(model).toBeEnabled());
+    expect(permissions).toBeEnabled();
+    fireEvent.click(permissions);
+    // The host text is English only; clients show DSH's preset wording by id.
+    await waitFor(() =>
+      expect(screen.getByText(/^Can write inside the workspace and permitted/)).toBeVisible(),
+    );
+    const policy = await screen.findByRole("menuitem", { name: /^Read only/i });
+    expect(policy).not.toHaveAttribute("aria-disabled", "true");
+    expect(within(screen.getByRole("menu")).queryByRole("status")).not.toBeInTheDocument();
     fireEvent.click(policy);
     await waitFor(() =>
       expect(state.runSessionAction).toHaveBeenCalledWith("settings", { policyId: "read-only" }),

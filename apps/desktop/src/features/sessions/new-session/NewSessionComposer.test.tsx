@@ -656,9 +656,9 @@ describe("NewSessionComposer", () => {
     await waitFor(() => expect(fast).toHaveAttribute("aria-pressed", "true"));
     expect(fast.querySelector("svg")).toHaveAttribute("fill", "currentColor");
     await userEvent.setup().keyboard("{Escape}");
-    expect(
-      screen.getByRole("button", { name: /gpt-6\.1-sol.*Fast/ }).querySelector("svg"),
-    ).toHaveAttribute("fill", "currentColor");
+    expect(screen.getByRole("button", { name: /gpt-6\.1-sol.*Fast/ })).toHaveTextContent(
+      /^gpt-6\.1-sol$/,
+    );
 
     await write("Review the routes");
     fireEvent.click(send());
@@ -1309,10 +1309,7 @@ describe("NewSessionComposer", () => {
     fireEvent.click(fast);
     await waitFor(() => expect(fast).toHaveAttribute("aria-pressed", "true"));
     await userEvent.setup().keyboard("{Escape}");
-    expect(screen.getByRole("button", { name: /Opus.*Fast/ }).querySelector("svg")).toHaveAttribute(
-      "fill",
-      "currentColor",
-    );
+    expect(screen.getByRole("button", { name: /Opus.*Fast/ })).toHaveTextContent(/^Opus$/);
 
     await write("Review the routes");
     fireEvent.click(send());

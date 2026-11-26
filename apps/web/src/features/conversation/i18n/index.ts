@@ -72,8 +72,6 @@ const zh = {
   send: "发送",
   stop: "停止当前轮次",
   message: "发送消息",
-  experimental: "实验控制",
-  controlInfo: "仅在明确空闲时发送；运行中可停止当前轮次，不排队。",
   accepted: "请求已接收，不代表执行完成。",
   uncertain: "结果尚未确认。请刷新核对已保存请求的处理状态，不会自动重发。",
   notDispatched: "本次操作未执行。请刷新状态后重试，不会自动重发。",
@@ -203,8 +201,6 @@ const en: Words = {
   send: "Send",
   stop: "Stop current turn",
   message: "Send a message",
-  experimental: "Experimental controls",
-  controlInfo: "Send only when confirmed idle; stop the current turn while running. No queueing.",
   accepted: "Request acknowledged; execution is not necessarily complete.",
   uncertain:
     "The outcome is unconfirmed. Refresh to check the saved request; it will not be sent again automatically.",
@@ -332,8 +328,6 @@ const tw: Words = {
   send: "傳送",
   stop: "停止目前輪次",
   message: "傳送訊息",
-  experimental: "實驗控制",
-  controlInfo: "僅在明確閒置時傳送；執行中可停止目前輪次，不排隊。",
   accepted: "請求已接收，不代表執行完成。",
   uncertain: "結果尚未確認。請重新整理核對已儲存請求的處理狀態，不會自動重傳。",
   notDispatched: "本次操作未執行。請重新整理狀態後重試，不會自動重送。",
@@ -461,9 +455,6 @@ const ja: Words = {
   send: "送信",
   stop: "現在のターンを停止",
   message: "メッセージを送信",
-  experimental: "実験的な操作",
-  controlInfo:
-    "待機状態が確認されたときのみ送信し、実行中は現在のターンを停止できます。キューは利用できません。",
   accepted: "リクエストを受け付けました。実行完了を意味しません。",
   uncertain:
     "結果は未確認です。更新して保存済みリクエストの処理状況を確認してください。自動で再送しません。",

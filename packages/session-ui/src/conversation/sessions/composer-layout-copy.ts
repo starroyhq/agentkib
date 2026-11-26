@@ -3,17 +3,15 @@ import type { InteractionLocale as Locale } from "../../interaction-model";
 const copy = {
   "zh-CN": {
     sendShortcut: "Enter 发送，Shift+Enter 换行。",
-    resourceNeedsMessage: "引用文件或技能后，请输入消息或添加附件再发送。",
+    resourceNeedsMessage: "请先输入消息再发送",
     details: "诊断详情",
     tryResume: "尝试恢复",
     nativeChanged: "会话状态已变化，草稿已保留。重新载入后再提交。",
     reloadDraft: "重新载入",
-    settingsPending: "已保存设置，发送后确认生效状态。",
-    settingsUnknown: "设置是否生效尚未确认",
-    settingsWriting: "正在保存设置…",
+    retry: "重试",
+    settingsUnknown: "设置结果待核对，请勿重试",
     done: "完成",
     selected: "已选",
-    help: "发送说明",
     pending: "请求结果尚未确认，请勿重复发送。",
     offline: "连接已断开，恢复后才能发送。",
     connecting: "正在检查会话状态，请稍候。",
@@ -23,17 +21,15 @@ const copy = {
   },
   "zh-Hant": {
     sendShortcut: "Enter 傳送，Shift+Enter 換行。",
-    resourceNeedsMessage: "引用檔案或技能後，請輸入訊息或新增附件再傳送。",
+    resourceNeedsMessage: "請先輸入訊息再傳送",
     details: "診斷詳情",
     tryResume: "嘗試恢復",
     nativeChanged: "對話狀態已變更，草稿已保留。重新載入後再提交。",
     reloadDraft: "重新載入",
-    settingsPending: "已儲存設定，傳送後確認是否生效。",
-    settingsUnknown: "設定是否生效尚未確認",
-    settingsWriting: "正在儲存設定…",
+    retry: "重試",
+    settingsUnknown: "設定結果待核對，請勿重試",
     done: "完成",
     selected: "已選",
-    help: "傳送說明",
     pending: "請求結果尚未確認，請勿重複傳送。",
     offline: "連線已中斷，恢復後才能傳送。",
     connecting: "正在檢查對話狀態，請稍候。",
@@ -43,17 +39,15 @@ const copy = {
   },
   "en-US": {
     sendShortcut: "Enter to send, Shift+Enter for a new line.",
-    resourceNeedsMessage: "Add a message or upload an attachment to send file or skill references.",
+    resourceNeedsMessage: "Enter a message before sending",
     details: "Diagnostic details",
     tryResume: "Try resuming",
     nativeChanged: "The session changed. Your draft is preserved. Reload before submitting.",
     reloadDraft: "Reload",
-    settingsPending: "Settings saved. They’ll be confirmed after you send.",
-    settingsUnknown: "Setting status unconfirmed",
-    settingsWriting: "Saving settings…",
+    retry: "Retry",
+    settingsUnknown: "Settings outcome needs checking. Wait before retrying.",
     done: "Done",
     selected: "Selected",
-    help: "Sending help",
     pending: "The request outcome is unconfirmed. Do not send it again.",
     offline: "Disconnected. Reconnect before sending.",
     connecting: "Checking the session state…",
@@ -63,19 +57,16 @@ const copy = {
   },
   "ja-JP": {
     sendShortcut: "Enter で送信、Shift+Enter で改行。",
-    resourceNeedsMessage:
-      "ファイルやスキルの参照を送るには、メッセージを入力するか添付ファイルを追加してください。",
+    resourceNeedsMessage: "メッセージを入力してから送信してください",
     details: "診断の詳細",
     tryResume: "再開を試す",
     nativeChanged:
       "セッションの状態が変わりました。下書きは保持されています。再読み込み後に送信してください。",
     reloadDraft: "再読み込み",
-    settingsPending: "設定を保存しました。送信後に反映を確認します。",
-    settingsUnknown: "設定の反映を確認中",
-    settingsWriting: "設定を保存中…",
+    retry: "再試行",
+    settingsUnknown: "設定の結果を確認してください。再試行は確認後に行ってください。",
     done: "完了",
     selected: "選択済み",
-    help: "送信について",
     pending: "リクエストの結果を確認する必要があります。再送しないでください。",
     offline: "接続が切れました。再接続後に送信できます。",
     connecting: "会話の状態を確認しています…",
@@ -98,7 +89,7 @@ export function composerSettingsStatus(
   const copy = composerLayoutCopy[locale];
   switch (notice.status) {
     case "writing":
-      return copy.settingsWriting;
+      return undefined;
     case "uncertain":
       return copy.settingsUnknown;
     case "notDispatched":

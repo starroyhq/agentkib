@@ -3,7 +3,6 @@ import { sessionContinuationCopy } from "../../session-continuation";
 import { claudeConnectionReason } from "../../agents/claude-code/connection-copy";
 import type { InteractionLocale as Locale } from "../../interaction-model";
 const zh = {
-  composerHint: "空闲时发送；运行中可停止，获授权后可追加或加入待发队列。队列消息将自动执行。",
   queueTooLarge: "待发队列超过 100 条，此处暂不允许编辑或排序。",
   queueAttachments: "含附件的待发消息暂不支持编辑正文，可删除后重新添加。",
   keep: "保持当前设置",
@@ -53,7 +52,7 @@ const zh = {
   attachmentNote: "选择文件或粘贴图片；上传只暂存，发送后才加入会话。",
   previewAttachment: "预览附件",
   uploading: "上传中",
-  uploadFailed: "上传失败，请重新选择文件",
+  uploadFailed: "上传失败",
   remove: "移除附件",
   limit: "最多选择 10 个附件",
   pending: "待处理中心",
@@ -80,13 +79,10 @@ const zh = {
   executionPolicy: "执行策略",
   nativePolicy: "原生配置",
   nativePolicyReadOnly: "原生执行策略在这里仅可查看。",
-  chooseNextPolicy: "为下一轮选择",
   contextUsage: "上下文用量",
   contextUnknown: "这台电脑尚未提供上下文窗口用量",
   settingUnavailable: "此会话暂不支持修改该设置",
   settingsWhileRunning: "当前轮次结束后才能修改设置",
-  settingsWhileRunningModel: "当前轮次结束后才能修改模型和推理强度",
-  settingsSaved: "设置已由这台电脑确认",
   goals: "持续目标",
   goalObjective: "目标内容",
   goalBudget: "Token 预算（可选）",
@@ -111,7 +107,6 @@ export const sessionCopy: Record<Locale, Copy> = {
   "zh-CN": zh,
   "zh-Hant": {
     previewAttachment: "預覽附件",
-    composerHint: "閒置時傳送；執行中可停止，獲授權後可追加或加入待發佇列。佇列訊息將自動執行。",
     queueTooLarge: "待發佇列超過 100 條，此處暫不允許編輯或排序。",
     queueAttachments: "含附件的待傳送訊息暫不支援編輯內文，可刪除後重新新增。",
     keep: "保持目前設定",
@@ -160,7 +155,7 @@ export const sessionCopy: Record<Locale, Copy> = {
     attachment: "新增附件",
     attachmentNote: "選取檔案或貼上圖片；上傳僅暫存，傳送後才加入對話。",
     uploading: "上傳中",
-    uploadFailed: "上傳失敗，請重新選取檔案",
+    uploadFailed: "上傳失敗",
     remove: "移除附件",
     limit: "最多選取 10 個附件",
     pending: "待處理中心",
@@ -187,13 +182,10 @@ export const sessionCopy: Record<Locale, Copy> = {
     executionPolicy: "執行策略",
     nativePolicy: "原生設定",
     nativePolicyReadOnly: "原生執行策略在這裡僅可檢視。",
-    chooseNextPolicy: "為下一輪選擇",
     contextUsage: "上下文用量",
     contextUnknown: "這台電腦尚未提供上下文視窗用量",
     settingUnavailable: "此對話暫不支援修改此設定",
     settingsWhileRunning: "目前輪次結束後才能修改設定",
-    settingsWhileRunningModel: "目前輪次結束後才能修改模型和推理強度",
-    settingsSaved: "設定已由這台電腦確認",
     goals: "持續目標",
     goalObjective: "目標內容",
     goalBudget: "Token 預算（選填）",
@@ -215,8 +207,6 @@ export const sessionCopy: Record<Locale, Copy> = {
   },
   "en-US": {
     previewAttachment: "Preview attachment",
-    composerHint:
-      "Send when idle. While running, stop or—with permission—steer or queue messages. Queued messages execute automatically.",
     queueTooLarge: "The queue exceeds 100 items. Editing and reordering are disabled here.",
     queueAttachments:
       "Queued messages with attachments cannot be edited yet. Remove and add them again instead.",
@@ -268,7 +258,7 @@ export const sessionCopy: Record<Locale, Copy> = {
     attachmentNote:
       "Choose files or paste images. Uploads are staged and only join the session when sent.",
     uploading: "Uploading",
-    uploadFailed: "Upload failed. Select the file again.",
+    uploadFailed: "Upload failed",
     remove: "Remove attachment",
     limit: "Select up to 10 attachments",
     pending: "Pending actions",
@@ -296,14 +286,10 @@ export const sessionCopy: Record<Locale, Copy> = {
     executionPolicy: "Execution policy",
     nativePolicy: "Native settings",
     nativePolicyReadOnly: "The native execution policy is read-only here.",
-    chooseNextPolicy: "Choose for next turn",
     contextUsage: "Context usage",
     contextUnknown: "The computer has not reported context-window usage",
     settingUnavailable: "This session cannot change this setting",
     settingsWhileRunning: "Settings can be changed after the current turn finishes",
-    settingsWhileRunningModel:
-      "The model and reasoning effort can be changed after the current turn finishes",
-    settingsSaved: "The computer confirmed these settings",
     goals: "Persistent goal",
     goalObjective: "Objective",
     goalBudget: "Token budget (optional)",
@@ -325,8 +311,6 @@ export const sessionCopy: Record<Locale, Copy> = {
   },
   "ja-JP": {
     previewAttachment: "添付ファイルをプレビュー",
-    composerHint:
-      "待機中は送信できます。実行中は停止、許可があれば追加入力やキュー登録ができます。キューは自動実行されます。",
     queueTooLarge: "送信待ちキューが 100 件を超えています。ここでの編集と並べ替えは無効です。",
     queueAttachments:
       "添付付きの送信待ちメッセージは編集できません。削除して追加し直してください。",
@@ -379,7 +363,7 @@ export const sessionCopy: Record<Locale, Copy> = {
     attachmentNote:
       "ファイルを選択するか画像を貼り付けます。アップロードは一時保存で、送信後に会話に追加されます。",
     uploading: "アップロード中",
-    uploadFailed: "アップロードに失敗しました。ファイルを再選択してください。",
+    uploadFailed: "アップロードに失敗しました",
     remove: "添付を削除",
     limit: "添付は 10 件までです",
     pending: "対応待ち",
@@ -406,13 +390,10 @@ export const sessionCopy: Record<Locale, Copy> = {
     executionPolicy: "実行ポリシー",
     nativePolicy: "ネイティブ設定",
     nativePolicyReadOnly: "ネイティブ実行ポリシーはここでは読み取り専用です。",
-    chooseNextPolicy: "次のターン用に選択",
     contextUsage: "コンテキスト使用量",
     contextUnknown: "このコンピューターからコンテキストウィンドウの使用量が提供されていません",
     settingUnavailable: "この会話ではこの設定を変更できません",
     settingsWhileRunning: "現在のターンが終了してから設定を変更できます",
-    settingsWhileRunningModel: "モデルと推論の強度は現在のターンが終了してから変更できます",
-    settingsSaved: "このコンピューターが設定を確認しました",
     goals: "継続目標",
     goalObjective: "目標",
     goalBudget: "Token 予算（任意）",

@@ -27,9 +27,7 @@ const managementLocales = [
     notHandedOver: "This session has not been handed over to AgentKib",
     handedOver: "This session has been handed over to AgentKib",
     pending:
-      "The previous outcome is unconfirmed. Wait for the saved request's status before another operation.",
-    checking:
-      "The saved request status is checked automatically. Refreshing does not run the operation again.",
+      "The last result is being checked. Wait before another operation. Refreshing won’t resend it.",
   },
   {
     locale: "zh-CN",
@@ -37,8 +35,7 @@ const managementLocales = [
     release: "交还原客户端",
     notHandedOver: "此会话尚未交给 AgentKib",
     handedOver: "此会话已交给 AgentKib",
-    pending: "上次操作结果尚未确认。请等待系统确认已保存的请求，再执行新的操作。",
-    checking: "正在自动查询已保存请求的处理状态；刷新不会重新执行操作。",
+    pending: "上次操作结果待核对。请先核对再操作，刷新不会重发。",
   },
   {
     locale: "zh-Hant",
@@ -46,8 +43,7 @@ const managementLocales = [
     release: "交還原客戶端",
     notHandedOver: "此對話尚未交給 AgentKib",
     handedOver: "此對話已交給 AgentKib",
-    pending: "上次操作結果尚未確認。請等待系統確認已儲存的請求，再執行新操作。",
-    checking: "正在自動查詢已儲存請求的處理狀態；重新整理不會重新執行操作。",
+    pending: "上次操作結果待核對。請先核對再操作，重新整理不會重送。",
   },
   {
     locale: "ja-JP",
@@ -55,9 +51,7 @@ const managementLocales = [
     release: "元のクライアントに引き渡す",
     notHandedOver: "この会話はまだ AgentKib に引き渡されていません",
     handedOver: "この会話は AgentKib に引き渡されています",
-    pending:
-      "前回の結果は未確認です。保存済みリクエストの処理状況を確認してから次の操作を行ってください。",
-    checking: "保存済みリクエストの処理状況を自動確認しています。更新しても再実行しません。",
+    pending: "前回の結果を確認中です。確認後に操作してください。更新しても再送信しません。",
   },
 ] as const;
 
@@ -205,7 +199,6 @@ describe("automatic Claude continuation replaces execution handoff", () => {
       const scope = save();
       const view = render(panel(true));
       expect(await screen.findByText(copy.pending)).toBeVisible();
-      expect(screen.getByText(copy.checking)).toBeVisible();
       await waitFor(() => expect(session.client.receipt).toHaveBeenCalledWith(requestId));
       for (const mode of ["claude-follower", "managed-resume", "claude-managed"]) {
         session.live.executionMode = mode;

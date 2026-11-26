@@ -20,18 +20,10 @@ import { managedControlCopy } from "@agentkib/session-ui";
 
 vi.mock("@tanstack/react-router", () => ({ useNavigate: () => vi.fn() }));
 const labels = [
-  ["zh-CN", "选择附件文件", "引用文件或技能后，请输入消息或添加附件再发送。"],
-  ["zh-Hant", "選取附件檔案", "引用檔案或技能後，請輸入訊息或新增附件再傳送。"],
-  [
-    "en-US",
-    "Choose attachment files",
-    "Add a message or upload an attachment to send file or skill references.",
-  ],
-  [
-    "ja-JP",
-    "添付ファイルを選択",
-    "ファイルやスキルの参照を送るには、メッセージを入力するか添付ファイルを追加してください。",
-  ],
+  ["zh-CN", "选择附件文件"],
+  ["zh-Hant", "選取附件檔案"],
+  ["en-US", "Choose attachment files"],
+  ["ja-JP", "添付ファイルを選択"],
 ] as const;
 type Locale = (typeof labels)[number][0];
 function fixture(attachments = true, send = true, full = true) {
@@ -196,8 +188,9 @@ afterEach(() => {
 describe("Web access attachment and permission copy", () => {
   it.each(labels)(
     "uses general file copy and the real attachment picker in %s",
-    async (locale, chooseLabel, resourceHint) => {
+    async (locale, chooseLabel) => {
       const f = await start(locale);
+      const resourceHint = composerLayoutCopy[locale].resourceNeedsMessage;
       const c = sessionCopy[locale];
       const input = screen.getByLabelText(c.attachment, { selector: "input" });
       await waitFor(() => expect(input).toBeEnabled());
@@ -214,6 +207,8 @@ describe("Web access attachment and permission copy", () => {
       fireEvent.click(
         within(dialog).getByRole("button", { name: composerLayoutCopy[locale].done }),
       );
+      expect(screen.queryByText(resourceHint)).not.toBeInTheDocument();
+      fireEvent.keyDown(screen.getByRole("textbox"), { key: "Enter" });
       expect(screen.getByText(resourceHint)).toBeVisible();
       fireEvent.click(screen.getByRole("button", { name: c.addContext }));
       fireEvent.click(await screen.findByRole("button", { name: chooseLabel }));

@@ -1,10 +1,4 @@
-export function ContextUsageRing({
-  percent,
-  historical,
-}: {
-  percent?: number;
-  historical: boolean;
-}) {
+export function ContextUsageRing({ percent }: { percent?: number }) {
   return (
     <svg
       className="size-4"
@@ -26,7 +20,7 @@ export function ContextUsageRing({
           pathLength="100"
           strokeDasharray={`${percent} 100`}
           transform="rotate(-90 10 10)"
-          opacity={historical ? 0.5 : 1}
+          opacity="1"
         />
       )}
     </svg>

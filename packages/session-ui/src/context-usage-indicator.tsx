@@ -25,7 +25,7 @@ type IndicatorProps = UsageProps & {
 };
 
 function usageLabels({ locale, online, view, copy, unknown, reason }: UsageProps) {
-  const { usage, state, percent, compacting, awaitingCliReport } = view;
+  const { usage, state, percent, compacting } = view;
   const displayedPercent =
     percent !== undefined && !compacting && (state === "ready" || state === "stale")
       ? Math.round(percent)
@@ -64,39 +64,28 @@ function usageLabels({ locale, online, view, copy, unknown, reason }: UsageProps
   const denied = ["permission_denied", "permission-denied", "same_origin_required"].includes(
     usage?.reason ?? "",
   );
-  const message = compacting
+  const hasReading = proportions !== undefined || tokens !== undefined;
+  const warning =
+    reason !== copy.pendingDetail && reason !== copy.stale && reason !== unknown
+      ? reason
+      : undefined;
+  const status = compacting
     ? copy.compactingDetail
-    : !online && !denied
-      ? copy.offline
-      : awaitingCliReport
-        ? copy.awaitingCliReportDetail
-        : denied
-          ? (reason ?? unknown)
-          : capacity && count === undefined
-            ? copy.unavailableDetail
-            : state === "ready"
-              ? undefined
-              : (reason ??
-                (state === "pending"
-                  ? copy.pendingDetail
-                  : state === "stale"
-                    ? copy.stale
-                    : unknown));
-  const hasPostCompactionCount =
-    count !== undefined &&
-    (usage?.reason === "claude-post-compaction-usage" ||
-      usage?.reason === "claude-post-compaction-current-window");
-  const status =
-    message === copy.stale && (displayedPercent !== undefined || hasPostCompactionCount)
-      ? undefined
-      : message;
+    : denied
+      ? copy.permission
+      : !online
+        ? copy.offline
+        : (warning ?? (hasReading ? undefined : copy.awaitingCliReport));
+  const reading =
+    hasReading && (state === "stale" || usage?.historical) ? copy.lastReading : undefined;
   return {
     status,
+    reading,
     capacity,
     proportions,
     tokens,
     displayedPercent,
-    description: [status, capacity, proportions, tokens].filter(Boolean).join(" "),
+    description: [status, reading, capacity, proportions, tokens].filter(Boolean).join(" "),
   };
 }
 
@@ -110,25 +99,21 @@ function ScopedIndicator({
   reason,
   usageRef,
 }: IndicatorProps) {
-  const { status, capacity, proportions, tokens, displayedPercent, description } = usageLabels({
-    locale,
-    online,
-    view,
-    copy,
-    unknown,
-    reason,
-  });
+  const { status, reading, capacity, proportions, tokens, displayedPercent, description } =
+    usageLabels({
+      locale,
+      online,
+      view,
+      copy,
+      unknown,
+      reason,
+    });
   const triggerId = useId();
   const [tooltip] = useState(() => Tooltip.createHandle());
   useImperativeHandle(usageRef, () => ({ open: () => tooltip.open(triggerId) }), [
     tooltip,
     triggerId,
   ]);
-  const fresh =
-    view.state === "ready" &&
-    !view.usage?.historical &&
-    !view.compacting &&
-    !view.awaitingCliReport;
   return (
     <Tooltip.Root handle={tooltip}>
       <Tooltip.Trigger
@@ -146,10 +131,7 @@ function ScopedIndicator({
             aria-label={title}
             aria-description={description}
           >
-            <ContextUsageRing
-              percent={displayedPercent === undefined ? undefined : view.percent}
-              historical={!fresh}
-            />
+            <ContextUsageRing percent={displayedPercent === undefined ? undefined : view.percent} />
           </span>
         }
       />
@@ -161,6 +143,7 @@ function ScopedIndicator({
           >
             <p className="text-muted-foreground">{copy.windowTitle}</p>
             {status && <p className="mt-1">{status}</p>}
+            {reading && <p className="mt-1 text-muted-foreground">{reading}</p>}
             {capacity && <p className="mt-1">{capacity}</p>}
             {proportions && <p className="mt-1">{proportions}</p>}
             {tokens && <p className="mt-1">{tokens}</p>}

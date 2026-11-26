@@ -126,6 +126,9 @@ describe("permissions in an existing Devin conversation", () => {
     await user.click(await permissionTrigger());
 
     const menu = await screen.findByRole("menu");
+    expect(
+      within(menu).getByText("Applies next turn. Devin can’t ask while running."),
+    ).toBeVisible();
     expect(within(menu).queryByText("Approve all")).not.toBeInTheDocument();
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     await user.click(within(menu).getByRole("menuitem", { name: /^Read only/ }));
@@ -144,6 +147,13 @@ describe("permissions in an existing Devin conversation", () => {
   ] as const)("cannot change modes %s", async (_description, options) => {
     const { runSessionAction } = renderControls(options);
     const trigger = await permissionTrigger();
+    if ("running" in options) {
+      expect(trigger).toBeDisabled();
+      await userEvent.click(trigger);
+      expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+      expect(runSessionAction).not.toHaveBeenCalled();
+      return;
+    }
     expect(trigger).toBeEnabled();
     await userEvent.setup().click(trigger);
     const menu = await screen.findByRole("menu");
@@ -187,7 +197,7 @@ describe("the model in an existing Devin conversation", () => {
     const ring = await screen.findByRole("img", { name: sessionCopy["en-US"].contextUsage });
     await waitFor(() =>
       expect(ring).toHaveAccessibleDescription(
-        /The native interface does not currently provide.*Model context limit of 1,000,000 tokens/,
+        /No usage data yet.*Model context limit of 1,000,000 tokens/,
       ),
     );
     expect(ring).not.toHaveTextContent("1M");
@@ -227,7 +237,7 @@ describe("the model in an existing Devin conversation", () => {
     const ring = await screen.findByRole("img", { name: sessionCopy["en-US"].contextUsage });
     await waitFor(() =>
       expect(ring).toHaveAccessibleDescription(
-        "4% used (96% remaining) 40,000 / 1,000,000 tokens used",
+        "Last reading 4% used (96% remaining) 40,000 / 1,000,000 tokens used",
       ),
     );
     expect(ring.querySelector("circle[pathLength]")).toHaveAttribute("stroke-dasharray", "4 100");

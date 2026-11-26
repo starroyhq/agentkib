@@ -11,12 +11,15 @@ import {
   Folder,
   Goal,
   Lightbulb,
+  LoaderCircle,
   Paperclip,
   Plus,
   Search,
 } from "lucide-react";
-import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { composerButtonClasses } from "./composer-control-style";
+import { useDelayedBusy } from "./delayed-busy";
+import { LoadingSkeleton } from "./loading-feedback";
 
 const planCopy = {
   "zh-CN": { title: "计划模式", clear: "清除已保存的协作模式" },
@@ -67,7 +70,6 @@ const resourceBrowserCopy = {
     resourceSearch: "搜索可用资源",
     resourceEmpty: "没有可用资源",
     resourceUnavailable: "这台电脑尚未提供受控上下文引用",
-    directoryReference: "文件夹仅作为引用，不会递归上传",
   },
   "zh-Hant": {
     enterDirectory: "進入資料夾",
@@ -83,7 +85,6 @@ const resourceBrowserCopy = {
     resourceSearch: "搜尋可用資源",
     resourceEmpty: "沒有可用資源",
     resourceUnavailable: "這台電腦尚未提供受控上下文引用",
-    directoryReference: "資料夾僅作為引用，不會遞迴上傳",
   },
   "en-US": {
     enterDirectory: "Open folder",
@@ -99,7 +100,6 @@ const resourceBrowserCopy = {
     resourceSearch: "Search available resources",
     resourceEmpty: "No resources available",
     resourceUnavailable: "The computer does not provide controlled context references",
-    directoryReference: "Folders are referenced without recursively uploading their contents",
   },
   "ja-JP": {
     enterDirectory: "フォルダーを開く",
@@ -115,7 +115,6 @@ const resourceBrowserCopy = {
     resourceSearch: "利用可能なリソースを検索",
     resourceEmpty: "利用可能なリソースはありません",
     resourceUnavailable: "このコンピューターは制御されたコンテキスト参照を提供していません",
-    directoryReference: "フォルダーは再帰アップロードせず参照として追加されます",
   },
 };
 
@@ -206,6 +205,7 @@ function ComposerAddMenu({
   side = "top",
   disabled,
   disabledReason,
+  saving = false,
   open,
   onOpenChange,
   children,
@@ -214,11 +214,13 @@ function ComposerAddMenu({
   side?: "top" | "bottom";
   disabled?: boolean;
   disabledReason?: string;
+  saving?: boolean;
   open?: boolean;
   onOpenChange?: (open: boolean) => void;
   children: ReactNode;
 }) {
   const [anchor, setAnchor] = useState<HTMLFormElement | null>(null);
+  const showSaving = useDelayedBusy(saving);
   const anchorForm = useCallback((element: HTMLButtonElement | null) => {
     setAnchor(element?.form ?? null);
   }, []);
@@ -231,8 +233,13 @@ function ComposerAddMenu({
         aria-label={label}
         title={disabledReason ?? label}
         disabled={disabled}
+        aria-busy={saving || undefined}
       >
-        <Plus className="size-5" aria-hidden />
+        {showSaving ? (
+          <LoaderCircle className="size-3.5 motion-safe:animate-spin" aria-hidden />
+        ) : (
+          <Plus className="size-5" aria-hidden />
+        )}
       </Popover.Trigger>
       <Popover.Portal>
         <Popover.Positioner
@@ -311,6 +318,7 @@ export function SessionComposerAddMenu({
   side,
   disabled,
   disabledReason,
+  saving,
   open: controlledOpen,
   onOpenChange,
   attachment,
@@ -324,6 +332,7 @@ export function SessionComposerAddMenu({
   side?: "top" | "bottom";
   disabled?: boolean;
   disabledReason?: string;
+  saving?: boolean;
   open?: boolean;
   onOpenChange?: (open: boolean) => void;
   attachment?: ActionAvailability & { label?: string; onPick: () => void };
@@ -370,6 +379,7 @@ export function SessionComposerAddMenu({
       open={open}
       onOpenChange={close}
       disabled={disabled || !offered}
+      saving={saving}
       disabledReason={disabledReason ?? (!offered ? add.unavailable : undefined)}
     >
       {browsing && resources ? (
@@ -403,7 +413,11 @@ export function SessionComposerAddMenu({
                 label={add.filesAndFolders}
                 icon={<Folder className="size-4" aria-hidden />}
                 disabled={resources.disabled}
-                title={resources.disabled ? resources.reason : undefined}
+                title={
+                  resources.disabled
+                    ? (resources.reason ?? resourceBrowserCopy[locale].resourceUnavailable)
+                    : undefined
+                }
                 onClick={() => {
                   focusNavigation.current = true;
                   setBrowsing(true);
@@ -485,7 +499,7 @@ function ResourceBrowser({
     onSelect,
   } = resources;
   const [query, setQuery] = useState("");
-  const selectionNoticeId = useId();
+  const loadingRows = useDelayedBusy(loading === true);
   const selectionNotice = !selectable && selectionReason ? reasonText(selectionReason) : undefined;
   const atLimit = selected.length >= SESSION_RESOURCE_LIMIT;
   const limitText = copy.selectionLimit.replace("{limit}", String(SESSION_RESOURCE_LIMIT));
@@ -518,11 +532,7 @@ function ResourceBrowser({
           {[copy.contextRoot, ...path].join(" / ")}
         </span>
       </div>
-      {loading && (
-        <p role="status" className="text-sm">
-          {copy.contextLoading}
-        </p>
-      )}
+      {loading && <LoadingSkeleton label={copy.contextLoading} rows={3} />}
       {error && (
         <div role="alert" className="space-y-2 text-sm">
           <p>{reasonText(error)}</p>
@@ -536,18 +546,8 @@ function ResourceBrowser({
           </button>
         </div>
       )}
-      {!page && !loading && !error && (
-        <p role="status" className="text-sm text-muted-foreground">
-          {copy.resourceUnavailable}
-        </p>
-      )}
-      {page && (
+      {page && !loadingRows && (
         <>
-          {selectionNotice && (
-            <p id={selectionNoticeId} role="status" className="text-xs text-muted-foreground">
-              {selectionNotice}
-            </p>
-          )}
           <div className="relative">
             <Search
               className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground"
@@ -562,7 +562,6 @@ function ResourceBrowser({
               onChange={(event) => setQuery(event.target.value)}
             />
           </div>
-          <p className="text-xs text-muted-foreground">{copy.directoryReference}</p>
           {!visible.length && <p className="text-sm text-muted-foreground">{copy.resourceEmpty}</p>}
           {groups.map(
             ({ label, items }) =>
@@ -588,8 +587,7 @@ function ResourceBrowser({
                             className="mt-0.5 size-4 shrink-0 accent-primary disabled:opacity-50"
                             checked={checked}
                             disabled={disabled || (atLimit && !checked)}
-                            title={why || (atLimit && !checked ? limitText : undefined)}
-                            aria-describedby={selectionNotice ? selectionNoticeId : undefined}
+                            title={why || (atLimit && !checked ? limitText : selectionNotice)}
                             onChange={(event) =>
                               onSelect(
                                 event.target.checked

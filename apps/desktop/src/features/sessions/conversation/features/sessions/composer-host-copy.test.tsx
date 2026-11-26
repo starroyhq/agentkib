@@ -20,18 +20,10 @@ import { managedControlCopy } from "@agentkib/session-ui";
 
 vi.mock("@tanstack/react-router", () => ({ useNavigate: () => vi.fn() }));
 const labels = [
-  ["zh-CN", "选择附件文件", "引用文件或技能后，请输入消息或添加附件再发送。"],
-  ["zh-Hant", "選取附件檔案", "引用檔案或技能後，請輸入訊息或新增附件再傳送。"],
-  [
-    "en-US",
-    "Choose attachment files",
-    "Add a message or upload an attachment to send file or skill references.",
-  ],
-  [
-    "ja-JP",
-    "添付ファイルを選択",
-    "ファイルやスキルの参照を送るには、メッセージを入力するか添付ファイルを追加してください。",
-  ],
+  ["zh-CN", "选择附件文件", "请先输入消息再发送"],
+  ["zh-Hant", "選取附件檔案", "請先輸入訊息再傳送"],
+  ["en-US", "Choose attachment files", "Enter a message before sending"],
+  ["ja-JP", "添付ファイルを選択", "メッセージを入力してから送信してください"],
 ] as const;
 type Locale = (typeof labels)[number][0];
 function fixture(attachments = true) {
@@ -219,7 +211,10 @@ describe("desktop local attachment and permission copy", () => {
       fireEvent.click(
         within(dialog).getByRole("button", { name: composerLayoutCopy[locale].done }),
       );
+      expect(screen.queryByText(resourceHint)).not.toBeInTheDocument();
+      fireEvent.keyDown(screen.getByRole("textbox"), { key: "Enter" });
       expect(screen.getByText(resourceHint)).toBeVisible();
+      expect(writes(f)).toEqual([]);
       fireEvent.click(screen.getByRole("button", { name: c.addContext }));
       fireEvent.click(await screen.findByRole("button", { name: chooseLabel }));
       expect(picker).toHaveBeenCalledOnce();

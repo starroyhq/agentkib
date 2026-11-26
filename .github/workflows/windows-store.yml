@@ -44,9 +44,55 @@ jobs:
           cache-dependency-path: pnpm-lock.yaml
       - run: pnpm install --frozen-lockfile
 
+      - name: Trace the Koffi loader for this diagnostic run
+        shell: pwsh
+        run: |
+          node --input-type=module -e @'
+          import { readFileSync, writeFileSync } from "node:fs";
+          const file = "packages/backend/src/native-files.ts";
+          const source = readFileSync(file, "utf8");
+          const marker = "bindings = load(entry) as typeof Koffi;";
+          if (!source.includes(marker)) throw new Error("Missing Koffi loader marker.");
+          const diagnostic = `
+            try { ${marker} } catch (error) {
+              const candidate = path.join(entry, "build/koffi", process.platform + "_" + process.arch, "koffi.node");
+              console.error("Koffi loader:", JSON.stringify({ directory, unpacked, entry, candidate, exists: existsSync(candidate), resourcesPath: process.resourcesPath }));
+              try { load(candidate); console.error("Koffi direct load succeeded"); }
+              catch (nativeError) { console.error("Koffi direct load failed:", String(nativeError)); }
+              throw error;
+            }
+          `;
+          writeFileSync(file, source.replace(marker, diagnostic));
+          '@
+
       - name: Build Electron bundles
         working-directory: apps/desktop
         run: pnpm build:electron
+
+      - name: Instrument test-only runtime bootstrap
+        shell: pwsh
+        run: |
+          node --input-type=module -e @'
+          import { readFileSync, writeFileSync } from "node:fs";
+          const file = "apps/desktop/dist-electron/main.cjs";
+          const source = readFileSync(file, "utf8");
+          const start = source.indexOf("async #launch(options, config)");
+          const end = source.indexOf("send(message)", start);
+          const section = source.slice(start, end);
+          if (start < 0 || end < 0 || !section.includes('stdio: "ignore"') || !section.includes("child.unref();"))
+            throw new Error("Runtime bootstrap instrumentation cannot find its insertion points.");
+          const trace = `
+            const traceMsix = (message) => {
+              require("node:fs").appendFileSync(require("node:path").join(config.dataDir, "msix-runtime-smoke.log"), String(message).slice(0, 2048) + "\\n");
+            };
+            child.stderr.on("data", (chunk) => traceMsix(chunk.toString()));
+            child.on("exit", (code) => traceMsix("Runtime child exit: " + code));
+            child.on("error", (error) => traceMsix("Runtime child spawn error: " + error.code));
+            child.unref();
+          `;
+          const traced = section.replace('stdio: "ignore"', 'stdio: ["ignore", "ignore", "pipe"]').replace("child.unref();", trace);
+          writeFileSync(file, source.slice(0, start) + traced + source.slice(end));
+          '@
 
       - name: Build two versions of the same test package
         shell: pwsh

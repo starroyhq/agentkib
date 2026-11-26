@@ -25,3 +25,39 @@ export function workerLimit(live: Record<string, unknown> | null): WorkerLimit |
     manual: reasonCode(limit.manual) as WorkerLimit["manual"],
   };
 }
+
+export function workerCommands(live: Record<string, unknown> | null) {
+  const commands: unknown = live?.commands;
+  return Array.isArray(commands) &&
+    commands.every(
+      (value): value is { id: string; startedAt?: unknown } =>
+        isObject(value) && typeof value.id === "string" && value.id.length > 0,
+    )
+    ? commands
+    : null;
+}
+
+export function progressSignal(live: Record<string, unknown>, turnId: string): string | null {
+  const observedItems = typeof live.workerProgress === "string" ? live.workerProgress : null;
+  const output =
+    live.streamTextTruncated !== true && typeof live.streamText === "string"
+      ? live.streamText
+      : null;
+  if (
+    observedItems === null &&
+    (output === null ||
+      (live.executionMode === "codex-managed" && Buffer.byteLength(output) >= 120 * 1024))
+  )
+    return null;
+  const external = isObject(live.externalTurn) ? live.externalTurn : null;
+  // Status revisions include wait heartbeats. Count actual work within one runtime and turn.
+  return JSON.stringify([
+    live.runtimeBootId,
+    live.executionMode,
+    live.connectionGeneration,
+    external?.turnId === turnId ? external.startedAt : null,
+    observedItems,
+    output?.length,
+    output?.slice(-128),
+  ]);
+}

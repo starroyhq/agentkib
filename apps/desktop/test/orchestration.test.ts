@@ -661,6 +661,68 @@ describe("Project Agent supervision", () => {
     expect(delivered).toHaveLength(2);
   });
 
+  it("observes a new dispatch after restart without inheriting the previous turn's silence", async () => {
+    const { orchestration, delivered, lives, tick } = await supervised({
+      scope: { stallMinutes: 3 },
+    });
+    const active = {
+      status: "running",
+      turnId: "before-restart",
+      workerProgress: "1",
+      commands: [],
+    };
+    lives.set(WORKER, active);
+    await tick(0);
+    await orchestration.close();
+    vi.setSystemTime(now + 3_600_000);
+    const resumed = service(
+      orchestration.lanes,
+      orchestration.registry.dataDir,
+      "new-boot",
+      (_id, _device, report) => {
+        delivered.push(report);
+        return false;
+      },
+    );
+    const read = async () => parse(await resumed.call(LEAD, "worker_read", { worker: "worker-1" }));
+    await resumed.catchUp();
+    expect((await read()).noProgressForMs).toBe(0);
+    vi.setSystemTime(now + 3_780_001);
+    await resumed.catchUp();
+    expect(delivered).toEqual([]);
+    lives.set(WORKER, { status: "idle", sendEnabled: true });
+    expect(
+      parse(await resumed.call(LEAD, "worker_send", { worker: "worker-1", text: "new task" })),
+    ).toMatchObject({ accepted: true, operation: "send" });
+
+    // The first post-send read can still be the pre-dispatch observation.
+    lives.set(WORKER, active);
+    expect(await read()).not.toHaveProperty("noProgressForMs");
+    lives.set(WORKER, { ...active, turnId: "after-restart" });
+    await resumed.catchUp();
+    expect((await read()).noProgressForMs).toBe(0);
+    vi.setSystemTime(now + 4_140_002);
+    await resumed.catchUp();
+    expect(delivered).toEqual([expect.stringContaining("may be stalled")]);
+  });
+
+  it("hides an old silence timer as soon as output or a running command is observed", async () => {
+    const { delivered, lives, tick, list, read } = await supervised({ scope: { stallMinutes: 3 } });
+    const active = { status: "running", turnId: "busy", workerProgress: "1", commands: [] };
+    lives.set(WORKER, active);
+    await tick(0);
+    await tick(180_001);
+    expect((await read()).noProgressForMs).toBe(180_001);
+    lives.set(WORKER, { ...active, workerProgress: "2" });
+    expect(await read()).not.toHaveProperty("noProgressForMs");
+    await tick(200_000);
+    lives.set(WORKER, { ...active, workerProgress: "2", commands: [{ id: "watch" }] });
+    expect(await list()).not.toHaveProperty("noProgressForMs");
+    await tick(4_000_000);
+    expect(await read()).not.toHaveProperty("noProgressForMs");
+    expect(delivered).toEqual([]);
+  });
+
   it("attaches an overdue command to the next report without waking for a tool wait", async () => {
     const { orchestration, delivered, lives, tick, read } = await supervised();
     const live = {
@@ -811,6 +873,53 @@ describe("Project Agent supervision", () => {
     expect(delivered).toHaveLength(1);
     expect(delivered[0]).toContain("an answer to its question");
     expect(delivered[0]).not.toContain("stalled");
+  });
+
+  it("rechecks a possible stall if model output arrived during the history read", async () => {
+    const reading = Promise.withResolvers<void>();
+    const finish = Promise.withResolvers<void>();
+    let blocked = false;
+    const { delivered, lives, tick, read } = await supervised({
+      scope: { stallMinutes: 3 },
+      endedTurns: async () => {
+        if (blocked) {
+          reading.resolve();
+          await finish.promise;
+        }
+        return [];
+      },
+    });
+    const active = { status: "running", turnId: "busy", workerProgress: "1", commands: [] };
+    lives.set(WORKER, active);
+    await tick(0);
+    blocked = true;
+    const checking = tick(400_000);
+    await reading.promise;
+    lives.set(WORKER, { ...active, workerProgress: "2" });
+    finish.resolve();
+    await checking;
+    expect(delivered).toEqual([]);
+    expect((await read()).noProgressForMs).toBe(0);
+  });
+
+  it("starts timing when a live observation is available, even if the scan began much earlier", async () => {
+    const observe = vi.fn<NonNullable<LaneHost["observe"]>>();
+    const { delivered, lives, tick, read } = await supervised({
+      scope: { stallMinutes: 3 },
+      observe,
+    });
+    const active = { status: "running", turnId: "new", workerProgress: "1", commands: [] };
+    lives.set(WORKER, active);
+    observe.mockImplementation(async () => {
+      vi.setSystemTime(now + 3_600_000);
+      return active;
+    });
+    await tick(0);
+    expect((await read()).noProgressForMs).toBe(0);
+    observe.mockResolvedValue(active);
+    await tick(3_650_000);
+    expect((await read()).noProgressForMs).toBe(50_000);
+    expect(delivered).toEqual([]);
   });
 
   it("can attach a shorter model stall once and drops it if real activity resumes before a report", async () => {

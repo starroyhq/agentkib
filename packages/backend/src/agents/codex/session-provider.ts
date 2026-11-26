@@ -419,7 +419,6 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
    * The native threads AgentKib tried to name while it runs, at most once each, and whether the
    * person renamed one meanwhile: their name is never replaced.
    */
-  #titleAttempts = new Map<string, { renamed: boolean }>();
   #managedImagePages = new Map<
     string,
     {
@@ -7184,7 +7183,10 @@ export class CodexSessionProvider implements CodexExecutor, TypedSessionProvider
         const recovered = await this.#recoverCodexReceipts(managed, resident);
         if (recovered) return recovered;
       }
-      return resident.bridge.snapshot(this.host.runtimeBootId, !unknown);
+      const snapshot = await resident.bridge.snapshot(this.host.runtimeBootId, !unknown);
+      return worker && snapshot.turnId === resident.state.turnId
+        ? { ...snapshot, ...resident.state.workerObservation() }
+        : snapshot;
     }
     if (resident) {
       await this.#closeManagedRunner(sessionId, resident);

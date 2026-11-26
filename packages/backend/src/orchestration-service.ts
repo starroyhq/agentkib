@@ -40,7 +40,9 @@ import {
 import {
   dateField,
   isObject,
+  progressSignal,
   reasonCode,
+  workerCommands,
   workerLimit,
   type WorkerLimit,
 } from "./orchestration-worker-state";
@@ -359,6 +361,7 @@ type Progress = { turnId: string; signal: string; since: number; notice?: LaneRe
 type WorkerObservation = {
   lane: Lane;
   live: Record<string, unknown> | null;
+  observedAt: number;
   sample: { current: boolean };
 };
 
@@ -451,27 +454,6 @@ function observedTurn(live: Record<string, unknown> | null): string | null {
   )
     return null;
   return typeof turnId === "string" && turnId ? turnId : null;
-}
-
-function progressSignal(live: Record<string, unknown>): string | null {
-  const observedItems = typeof live.workerProgress === "string" ? live.workerProgress : null;
-  const output =
-    live.streamTextTruncated !== true && typeof live.streamText === "string"
-      ? live.streamText
-      : null;
-  if (
-    observedItems === null &&
-    (output === null ||
-      (live.executionMode === "codex-managed" && Buffer.byteLength(output) >= 120 * 1024))
-  )
-    return null;
-  // Generic status revisions include wait heartbeats. Providers supply actual output/items.
-  return JSON.stringify([
-    live.connectionGeneration,
-    observedItems,
-    output?.length,
-    output?.slice(-128),
-  ]);
 }
 
 function limitReport(limit: WorkerLimit): string {
@@ -1419,7 +1401,7 @@ export class OrchestrationService {
             this.#workerWatch.delete(lane.id);
             continue;
           }
-          observations.push({ lane, live, sample });
+          observations.push({ lane, live, observedAt: Date.now(), sample });
           let turns: LaneEndedTurn[];
           try {
             turns = (await this.lanes.endedTurns?.(lane.sessionId)) ?? [];
@@ -1469,9 +1451,34 @@ export class OrchestrationService {
         const allowed = new Set(
           lead.lanes.filter((lane) => this.#inAssignedWorkspace(lane)).map((lane) => lane.id),
         );
-        for (const { lane, live, sample } of observations) {
+        for (const { lane, live, observedAt, sample } of observations) {
           if (!allowed.has(lane.id)) continue;
-          const check = this.#supervise(lane, live, lead.scope.stallMinutes, now, sample.current);
+          let check = this.#supervise(
+            lane,
+            live,
+            lead.scope.stallMinutes,
+            observedAt,
+            sample.current,
+          );
+          if (
+            check.watch.progress?.notice ||
+            check.reports.some(({ key }) => key?.startsWith("stall:"))
+          ) {
+            // Catch-up can spend time reading history after taking the live sample.
+            const latest = await this.#state(lane.sessionId, "supervision");
+            if (this.#closed) return;
+            if (!this.#inAssignedWorkspace(lane, latest)) {
+              this.#workerWatch.delete(lane.id);
+              continue;
+            }
+            check = this.#supervise(
+              lane,
+              latest,
+              lead.scope.stallMinutes,
+              Date.now(),
+              sample.current,
+            );
+          }
           this.#workerWatch.set(lane.id, check.watch);
           reports.push(...check.reports);
         }
@@ -1623,19 +1630,8 @@ export class OrchestrationService {
         (notice) => !lane.reportedTurns.includes(notice.key),
       );
     const turnId = observedTurn(live);
-    const commands = live?.commands;
-    if (
-      !current ||
-      offline ||
-      limit ||
-      !live ||
-      !turnId ||
-      !Array.isArray(commands) ||
-      !commands.every(
-        (value) => isObject(value) && typeof value.id === "string" && value.id.length > 0,
-      )
-    )
-      return { watch, reports };
+    const commands = workerCommands(live);
+    if (!current || offline || limit || !live || !turnId || !commands) return { watch, reports };
 
     const threshold = stallMinutes * 60_000;
     if (commands.length > 0) {
@@ -1669,7 +1665,7 @@ export class OrchestrationService {
       return { watch, reports };
     }
 
-    const signal = progressSignal(live);
+    const signal = progressSignal(live, turnId);
     if (signal === null) return { watch, reports };
     const previousProgress = before?.progress;
     const since =
@@ -1769,6 +1765,7 @@ export class OrchestrationService {
     if (!["send", "steer", "queue-add", "stop"].includes(operation)) return;
     const owner = this.registry.leadOfLane(sessionId);
     if (!owner) return;
+    if (operation === "send" || operation === "stop") this.#clearStall(owner.lane.id, null);
     const last = this.#interventions.get(sessionId) ?? 0;
     if (Date.now() - last < INTERVENTION_QUIET_MS) return;
     this.#interventions.set(sessionId, Date.now());
@@ -2505,15 +2502,19 @@ export class OrchestrationService {
     }
   }
 
-  #healthView(lane: Lane, live: Record<string, unknown> | null) {
+  async #healthView(lane: Lane, live: Record<string, unknown> | null) {
     if (!this.#inAssignedWorkspace(lane, live)) return {};
-    const now = Date.now();
     const watch = this.#workerWatch.get(lane.id);
     const limit = workerLimit(live);
     const offline =
       offlineState(live) ?? (live?.executionMode === "claude-managed" ? watch?.offline : undefined);
     const turnId = offline || limit ? null : observedTurn(live);
-    const progress = watch?.progress;
+    const observed =
+      turnId && watch?.progress?.turnId === turnId && !workerCommands(live)
+        ? await this.#state(lane.sessionId, "supervision")
+        : live;
+    const now = Date.now();
+    const progress = this.#workerWatch.get(lane.id)?.progress;
     return {
       ...(limit ? { usageLimit: limit } : {}),
       ...(offline
@@ -2524,7 +2525,15 @@ export class OrchestrationService {
             },
           }
         : {}),
-      ...(turnId && progress?.turnId === turnId
+      ...(turnId &&
+      progress?.turnId === turnId &&
+      observed &&
+      observedTurn(observed) === turnId &&
+      !workerLimit(observed) &&
+      !offlineState(observed) &&
+      this.#inAssignedWorkspace(lane, observed) &&
+      workerCommands(observed)?.length === 0 &&
+      progress.signal === progressSignal(observed, turnId)
         ? {
             noProgressForMs: Math.max(0, now - progress.since),
           }
@@ -2551,7 +2560,7 @@ export class OrchestrationService {
             session: lane.sessionId,
             status: wait?.status ?? workerStatus(live),
             ...(reason ? { reason } : {}),
-            ...this.#healthView(lane, live),
+            ...(await this.#healthView(lane, live)),
             title: lane.title,
             lastReport: lane.lastReport,
           },
@@ -2720,6 +2729,7 @@ export class OrchestrationService {
     const accepted = outcome?.accepted === true;
     const waiting = accepted && outcome?.status === "waiting-for-owner";
     const unknown = outcome?.controlOutcome === "unknown";
+    if (accepted && !waiting && operation === "send") this.#clearStall(lane.id, null);
     this.registry.update(lead.sessionId, (current) => {
       const target = current.lanes.find((item) => item.id === lane.id);
       if (target && accepted && title) target.title = title;
@@ -2760,7 +2770,6 @@ export class OrchestrationService {
     const limit = Number.isSafeInteger(input.limit)
       ? Math.min(10, Math.max(1, Number(input.limit)))
       : 3;
-    const live = await this.#state(lane.sessionId);
     let replies: Array<{ turn: unknown; text: string }> = [];
     try {
       replies = (await this.lanes.events(lane.sessionId, 50))
@@ -2773,6 +2782,8 @@ export class OrchestrationService {
     } catch {
       /* The state still answers the call. */
     }
+    const live = await this.#state(lane.sessionId);
+    const health = await this.#healthView(lane, live);
     const current = this.#currentAssignment(lead, lane, false);
     const waiting = live ? waitingItems(live, current.scope) : [];
     const wait = deferredCodexSend(lane, live);
@@ -2781,7 +2792,7 @@ export class OrchestrationService {
       worker: lane.name,
       status: wait?.status ?? workerStatus(live),
       ...(reason ? { reason } : {}),
-      ...this.#healthView(lane, live),
+      ...health,
       title: lane.title,
       waitingForUser: waiting,
       replies,

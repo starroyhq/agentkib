@@ -119,7 +119,7 @@ type RolloutScan = {
 /** Where a rollout was read up to, and its latest turn there. */
 type Scan = RolloutScan & {
   turn: Turn | null;
-  outputOffset: number | null;
+  progressOffset: number | null;
   // Undefined if a scan couldn't read from the start of the turn.
   commands?: Map<string, CommandEvidence>;
 };
@@ -200,14 +200,14 @@ export class CodexExternalTurns {
     }
   }
 
-  /** A lock-verified external turn and the latest observed assistant output in its rollout. */
+  /** A lock-verified external turn and the latest observed progress in its rollout. */
   async workerTurnOf(threadId: string) {
     const externalTurn = await this.turnOf(threadId);
     const scan = this.#scans.get(threadId.toLowerCase());
     return externalTurn && scan
       ? {
           externalTurn,
-          workerProgress: `${scan.dev}:${scan.ino}:${scan.outputOffset ?? ""}`,
+          workerProgress: `${scan.dev}:${scan.ino}:${scan.progressOffset ?? ""}`,
           ...(scan.tail?.length === 0 &&
             scan.commands && {
               commands: [...scan.commands].flatMap(([id, { call, execution }]) => {
@@ -484,7 +484,7 @@ export class CodexExternalTurns {
                 event?.started &&
                 (!scan.turn?.open || !event.turnId || event.turnId !== scan.turn.id)
               ) {
-                scan.outputOffset = null;
+                scan.progressOffset = null;
                 scan.commands = new Map();
               }
               scan.turn = nextTurn(scan.turn, event);
@@ -497,12 +497,12 @@ export class CodexExternalTurns {
         const latest = await latestTurnAsync(handle, stat.size, floor);
         const scan: Scan = {
           ...rolloutIdentity(file, stat),
-          outputOffset: latest.outputOffset,
+          progressOffset: latest.progressOffset,
           // A turn that began before the bytes read is found in Codex's own turn history.
           turn: latest.turn ?? (floor > 0 ? projectedTurn(home, threadId, floor, stat.size) : null),
         };
         if (scan.turn?.open && latest.startedAfter !== undefined) {
-          scan.outputOffset = null;
+          scan.progressOffset = null;
           scan.commands = new Map();
           scan.tail = await readRows(
             handle,
@@ -810,7 +810,7 @@ function recordWorkerActivity(scan: Scan, line: Buffer, offset: number) {
   const { payload } = row;
   const turn = payload.turn_id ?? row.turn_id;
   if (scan.turn?.id && typeof turn === "string" && turn !== scan.turn.id) return;
-  if (modelActivity(row)) scan.outputOffset = offset;
+  if (modelActivity(row)) scan.progressOffset = offset;
 
   const commands = scan.commands;
   if (!commands) return;
@@ -847,7 +847,10 @@ function recordWorkerActivity(scan: Scan, line: Buffer, offset: number) {
   }
   const prior = commands.get(id);
   if (!started) {
-    if (prior) commands.set(id, { ...prior, [source]: null });
+    if (prior && prior[source] !== null) {
+      if (prior[source]) scan.progressOffset = offset;
+      commands.set(id, { ...prior, [source]: null });
+    }
     return;
   }
   if (prior?.[source] !== undefined) return;
@@ -857,6 +860,7 @@ function recordWorkerActivity(scan: Scan, line: Buffer, offset: number) {
   }
   const startedAt = Date.parse(timestamp(row.timestamp, true) ?? "");
   commands.set(id, { ...prior, [source]: Number.isFinite(startedAt) ? { startedAt } : {} });
+  scan.progressOffset = offset;
 }
 
 /** The turn event of one rollout line, if it is one. */
@@ -916,7 +920,7 @@ function lastNewline(bytes: Buffer, end: number): number {
 type LatestTurn = {
   offset: number;
   turn: Turn | null;
-  outputOffset: number | null;
+  progressOffset: number | null;
   startedAfter?: number;
 };
 
@@ -945,7 +949,7 @@ function* latestTurnReads(
   activity: boolean,
 ): Generator<{ position: number; length: number }, LatestTurn, Buffer> {
   let offset: number | undefined;
-  let outputOffset: number | null = null;
+  let progressOffset: number | null = null;
   /** The turns that ended after the latest start found so far. */
   const ended = new Map<string | null, EndedTurn["outcome"]>();
   /** Later parts of the line that ends at the first newline of the chunk read last. */
@@ -953,9 +957,9 @@ function* latestTurnReads(
   const read = (line: Buffer, position: number): Turn | undefined => {
     const event = turnEvent(line);
     if (!event) {
-      if (activity && outputOffset === null) {
+      if (activity && progressOffset === null) {
         const row = workerRow(line);
-        if (row && modelActivity(row)) outputOffset = position;
+        if (row && modelActivity(row)) progressOffset = position;
       }
       return undefined;
     }
@@ -987,7 +991,7 @@ function* latestTurnReads(
       else {
         const line = chunk.subarray(newline + 1, end);
         const turn = read(tail.length ? Buffer.concat([line, ...tail]) : line, lineEnd);
-        if (turn) return { offset, turn, outputOffset, startedAfter: lineEnd + 1 };
+        if (turn) return { offset, turn, progressOffset, startedAfter: lineEnd + 1 };
       }
       tail = [];
       lineEnd = start + newline;
@@ -998,13 +1002,13 @@ function* latestTurnReads(
     tail.unshift(chunk.subarray(0, end));
     if (start === 0) {
       const turn = read(Buffer.concat(tail), lineEnd);
-      if (turn) return { offset, turn, outputOffset, startedAfter: lineEnd + 1 };
+      if (turn) return { offset, turn, progressOffset, startedAfter: lineEnd + 1 };
     }
   }
   return {
     offset: offset ?? floor,
     turn: ended.size ? { id: null, open: false, startedAt: null } : null,
-    outputOffset,
+    progressOffset,
   };
 }
 

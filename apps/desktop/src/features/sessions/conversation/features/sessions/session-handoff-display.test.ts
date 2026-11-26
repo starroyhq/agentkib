@@ -492,7 +492,7 @@ describe("handoff-aware session presentation", () => {
       tone: "muted",
     });
   });
-  it("renders an unbridged DeepSeek Harness session with a muted unknown status", () => {
+  it("renders a muted connection status for an unbridged DeepSeek Harness session", () => {
     const state = fixture();
     state.locale = "zh-CN";
     state.current!.agent = "deepseek-harness";
@@ -504,7 +504,7 @@ describe("handoff-aware session presentation", () => {
       reason: "dsh-native-status-unknown",
     };
     const display = {
-      label: "实时状态未知",
+      label: "DeepSeek Harness 未连接",
       reason: "DeepSeek Harness 桥接未连接，仍可查看历史和缓存。",
       tone: "muted",
       continuation: "status-unknown",

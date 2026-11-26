@@ -1637,13 +1637,15 @@ export class ClaudeManagedReadOwner {
         ) {
           try {
             current.fingerprint = this.#targetFingerprint(current.nativeId, current.workspace);
-            const title = this.#hostState.read(id).title;
-            if (!quitting && title && title !== current.nativeTitle) {
+            const { title, localTitle } = this.#hostState.read(id);
+            if (!quitting && !localTitle && title && title !== current.nativeTitle) {
               // Keep completion publication synchronous; native title updates await the same
               // ownership proof as explicit renames, after the current control releases its queue.
               void this.#serializeSession(id, async () => {
                 const pending = this.#load(id);
                 if (!pending || pending.released) return;
+                const host = this.#hostState.peek(id);
+                if (host?.localTitle || host?.title !== title) return;
                 await this.#persistNativeTitle(pending, title);
                 this.#save(pending);
               }).catch(() => {
@@ -2270,7 +2272,7 @@ export class ClaudeManagedReadOwner {
       settingsRunner &&
       (this.#canStageRunningSettings(id, live) ||
         (idle && this.#runnerSelectionPending(settingsRunner, state.settings)));
-    if (operation === "settings" && live.ownershipReason)
+    if ((operation === "settings" || operation === "rename") && live.ownershipReason)
       throw new Error(String(live.ownershipReason));
     if (
       ["settings", "rename", "fork", "goal-set", "goal-resume", "queue-resume"].includes(
@@ -2282,6 +2284,7 @@ export class ClaudeManagedReadOwner {
       throw new Error("session-busy");
     let nextSettings: ClaudeSettings | undefined;
     let renamedTitle: string | undefined;
+    let localRename = false;
     let externallyDispatched = false;
     const claimExternalEffect = (steer?: { item: ClaudeHostWork; turnId: string }) => {
       const externalReceipt = bindControlReceipt(
@@ -2382,15 +2385,14 @@ export class ClaudeManagedReadOwner {
         throw new Error("invalid-session-name");
       renamedTitle = value.name;
       if (!record.fresh) {
-        if (record.fingerprint !== this.#targetFingerprint(record.nativeId, record.workspace))
-          throw new Error("claude-session-fingerprint-changed");
-        const transcript = this.sessions.verifiedClaudeControlTarget(
-          record.nativeId,
-          record.workspace,
-        );
-        if (lstatSync(transcript).nlink !== 1) throw new Error("invalid-Claude-transcript");
-        claimExternalEffect();
-        await this.#persistNativeTitle(record, renamedTitle!);
+        const proof = this.#transcriptProofs.readForRename(record.nativeId, record.workspace);
+        localRename = proof === null;
+        if (proof) {
+          if (record.fingerprint !== proof.fingerprint)
+            throw new Error("claude-session-fingerprint-changed");
+          claimExternalEffect();
+          await this.#persistNativeTitle(record, renamedTitle!);
+        }
       }
     }
     let fork: ClaudeRecord | undefined;
@@ -2449,6 +2451,7 @@ export class ClaudeManagedReadOwner {
         released: false,
         title:
           this.#nativeMetadata(record.nativeId, record.workspace)?.title ??
+          state.localTitle ??
           state.title ??
           record.title,
         nativeTitle: undefined,
@@ -2492,7 +2495,11 @@ export class ClaudeManagedReadOwner {
               ...(stageSettings ? { appliesTo: "next-turn" } : {}),
             };
           case "rename": {
-            host.title = renamedTitle!;
+            if (localRename) host.localTitle = renamedTitle!;
+            else {
+              host.title = renamedTitle!;
+              delete host.localTitle;
+            }
             return { name: renamedTitle };
           }
           case "fork":
@@ -2723,6 +2730,7 @@ export class ClaudeManagedReadOwner {
     }
     const currentLive = await this.#live(id, true);
     this.#publishConversationEvent?.(id, "state", currentLive, currentLive);
+    if (operation === "rename") this.#catalogChanged?.();
     return result;
   }
 
@@ -4670,6 +4678,7 @@ export class ClaudeManagedReadOwner {
             ? forkSources[0]!.id
             : this.store.sessions.id("claude-code", record.forkSourceNativeId)
           : null;
+        const host = this.#hostState.peek(record.id);
         return [
           {
             id: record.id,
@@ -4677,7 +4686,8 @@ export class ClaudeManagedReadOwner {
             workspace_id: record.workspaceId,
             agent: "claude-code",
             title:
-              this.#hostState.peek(record.id)?.title ??
+              host?.localTitle ??
+              host?.title ??
               (record.forkSourceNativeId
                 ? (legacyForkTitle ?? record.title)
                 : (namedCreateTitle ?? native?.title ?? record.title)),

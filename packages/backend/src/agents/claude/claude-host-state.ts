@@ -85,6 +85,8 @@ export type ClaudeHostState = {
   bootId: string;
   revision: number;
   title: string | null;
+  /** An AgentKib title for history too large to verify before a native write. */
+  localTitle?: string;
   settings: ClaudeSettings;
   lastConfirmedOptions?: {
     options: Omit<ClaudeRunnerOptionsSnapshot, "settingsAcknowledged">;

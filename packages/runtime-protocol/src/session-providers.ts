@@ -16,6 +16,8 @@ export type SessionQueueAction =
   | "resume"
   | "steer";
 
+export type SessionManagementCapability = "rename" | "archive" | "unarchive" | "delete" | "fork";
+
 export interface SessionExecution {
   owner: "agentkib" | "terminal" | "native-app" | "external" | null;
   observed: boolean;
@@ -419,6 +421,21 @@ export type ReadStateProvider = {
 
 export function isSessionProviderAgent(agent: unknown): agent is SessionProviderAgent {
   return typeof agent === "string" && Object.hasOwn(MANAGED_CAPABILITIES, agent);
+}
+
+const MANAGEMENT_CAPABILITIES = {
+  codex: ["rename", "archive", "unarchive", "delete", "fork"],
+  "claude-code": ["rename", "delete", "fork"],
+  "deepseek-harness": ["rename", "archive", "unarchive", "fork"],
+  devin: [],
+  antigravity: [],
+} satisfies Record<SessionProviderAgent, readonly SessionManagementCapability[]>;
+
+/** Registered actions are stable; the session and device determine their current availability. */
+export function sessionManagementCapabilities(
+  agent: unknown,
+): readonly SessionManagementCapability[] {
+  return isSessionProviderAgent(agent) ? MANAGEMENT_CAPABILITIES[agent] : [];
 }
 
 /** The providers wired through the shared session registry. */

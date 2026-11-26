@@ -4,6 +4,7 @@ import {
   type SessionStreamEvent,
   type SessionSubscription,
 } from "@agentkib/runtime-protocol";
+import { CATALOG_RECONCILE_MS, SessionCatalogStream } from "./session-catalog-stream";
 
 const MAX_SUBSCRIPTIONS = 128;
 const MAX_REPLAY_EVENTS = 256;
@@ -42,6 +43,7 @@ interface Source {
   replay: SessionStreamEvent[];
   replayBytes: number;
   nextPollAt: number;
+  catalog?: SessionCatalogStream;
   polling?: boolean;
   pollFailures?: number;
   removedItemIds: Set<string>;
@@ -100,7 +102,11 @@ export class SessionStreamHub {
   async #subscribe(sessionId: string, afterCursor?: string): Promise<SessionSubscription> {
     const previousSource = this.#sources.get(sessionId);
     const previousHistoryRevision = previousSource?.historyRevision;
-    const snapshot = await this.#readSnapshot(sessionId, previousSource);
+    // A running catalog subscription maintains one baseline for all observers.
+    const snapshot =
+      previousSource && !sessionId
+        ? previousSource.snapshot
+        : await this.#readSnapshot(sessionId, previousSource);
     if (this.#closed) throw new Error("session-stream-unavailable");
     let source = this.#sources.get(sessionId);
     if (!source) {
@@ -123,14 +129,15 @@ export class SessionStreamHub {
         },
         replay: [],
         replayBytes: 0,
-        nextPollAt: Date.now() + (sessionId ? SNAPSHOT_INTERVAL_MS : 2_000),
+        nextPollAt: Date.now() + (sessionId ? SNAPSHOT_INTERVAL_MS : CATALOG_RECONCILE_MS),
+        ...(!sessionId && { catalog: new SessionCatalogStream(snapshot.live) }),
         removedItemIds: new Set(),
         removedTurnIds: new Set(),
         ...(snapshot.completeItems && !retainedAll ? { historyCacheEpoch: randomUUID() } : {}),
       };
       this.#recordCompleteCoverage(source, snapshot.items, snapshot.completeItems, initialItems);
       this.#sources.set(sessionId, source);
-    } else {
+    } else if (sessionId) {
       this.#flushProgress(sessionId, source);
       const previousCacheEpoch = source.historyCacheEpoch;
       const reconciled =
@@ -201,6 +208,15 @@ export class SessionStreamHub {
 
   hasSubscribers(sessionId: string): boolean {
     return [...this.#subscriptions.values()].some((item) => item.sessionId === sessionId);
+  }
+
+  invalidateCatalog(): void {
+    this.#sources.get("")?.catalog?.invalidate();
+  }
+
+  catalogContinuation(sessionId: string, live: Record<string, unknown>): void {
+    const catalog = this.#sources.get("");
+    catalog?.catalog?.update(catalog.snapshot.live, sessionId, live);
   }
 
   publish(
@@ -360,14 +376,22 @@ export class SessionStreamHub {
     if (this.#closed) return;
     const now = Date.now();
     for (const [sessionId, source] of this.#sources) {
-      if (source.polling || source.nextPollAt > now) continue;
-      source.nextPollAt = now + (sessionId ? SNAPSHOT_INTERVAL_MS : 2_000);
+      if (source.polling) continue;
+      const pending = source.catalog?.take(source.snapshot.live, now);
+      if (pending && pending !== "refresh") {
+        source.snapshot = { ...source.snapshot, live: pending.live };
+        source.historyRevision += 1;
+        this.#append(sessionId, source, "invalidate", pending.payload);
+        this.#broadcastLatest(sessionId, source);
+      }
+      if (pending !== "refresh" && source.nextPollAt > now) continue;
+      source.nextPollAt = now + (sessionId ? SNAPSHOT_INTERVAL_MS : CATALOG_RECONCILE_MS);
       // A slow provider read occupies only its own session's poll slot.
-      void this.#pollSource(sessionId, source);
+      void this.#pollSource(sessionId, source, pending === "refresh");
     }
   }
 
-  async #pollSource(sessionId: string, source: Source): Promise<void> {
+  async #pollSource(sessionId: string, source: Source, forceCatalog = false): Promise<void> {
     source.polling = true;
     try {
       const historyRevision = source.historyRevision;
@@ -376,6 +400,16 @@ export class SessionStreamHub {
       source.pollFailures = 0;
       if (source.historyRevision !== historyRevision) {
         source.nextPollAt = Date.now();
+        return;
+      }
+      if (source.catalog) {
+        const payload = source.catalog.reconcile(source.snapshot.live, read.live, forceCatalog);
+        source.snapshot = read;
+        source.historyRevision += 1;
+        if (payload) {
+          this.#append(sessionId, source, "invalidate", payload);
+          this.#broadcastLatest(sessionId, source);
+        }
         return;
       }
       const previousCacheEpoch = source.historyCacheEpoch;
@@ -388,12 +422,7 @@ export class SessionStreamHub {
       this.#flushProgress(sessionId, source);
       source.snapshot = snapshot;
       source.historyRevision += 1;
-      this.#append(
-        sessionId,
-        source,
-        sessionId === "" ? "invalidate" : "snapshot",
-        sessionId === "" ? { domains: ["catalog"] } : this.#snapshotPayload(source),
-      );
+      this.#append(sessionId, source, "snapshot", this.#snapshotPayload(source));
       for (const subscription of this.#subscriptions.values()) {
         if (subscription.sessionId !== sessionId) continue;
         const event = source.replay.at(-1);
@@ -411,6 +440,7 @@ export class SessionStreamHub {
           MAX_SNAPSHOT_RETRY_MS,
           (sessionId ? SNAPSHOT_INTERVAL_MS : 2_000) * 2 ** (failures - 1),
         );
+      if (forceCatalog) source.catalog?.invalidate(source.nextPollAt);
     } finally {
       source.polling = false;
     }

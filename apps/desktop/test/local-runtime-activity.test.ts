@@ -2,7 +2,10 @@
 import { RUNTIME_METHODS } from "@agentkib/runtime-protocol";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { LocalRuntimeActivity } from "../../../packages/backend/src/local-runtime-activity";
-import type { LocalRuntimeTraceEvent } from "../../../packages/backend/src/local-runtime-trace";
+import {
+  parseLocalRuntimeTraceRow,
+  type LocalRuntimeTraceEvent,
+} from "../../../packages/backend/src/local-runtime-trace";
 
 describe("local runtime stalls", () => {
   let now: number;
@@ -52,6 +55,24 @@ describe("local runtime stalls", () => {
       [{ kind: "request", durationMs: 2_101, ...context }],
     ]);
     expect(JSON.stringify(record.mock.calls)).not.toContain("private-");
+  });
+
+  it("labels host catalog reads through capture and diagnostic export", () => {
+    const read = activity.beginRequest({
+      jsonrpc: "2.0",
+      method: RUNTIME_METHODS.sessionRequest,
+      params: { host: { request: { operation: "catalog", readerScope: "private-scope" } } },
+    });
+    now = 10;
+    read?.();
+    expect(parseLocalRuntimeTraceRow({ v: 1, at: 10, ...record.mock.calls[0]?.[0] })).toEqual({
+      v: 1,
+      at: 10,
+      kind: "request",
+      method: RUNTIME_METHODS.sessionRequest,
+      operation: "catalog",
+      durationMs: 10,
+    });
   });
 
   it("distinguishes a slow asynchronous request from an event-loop stall", () => {

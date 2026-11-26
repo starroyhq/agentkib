@@ -49,11 +49,9 @@ import { unavailableReasonText } from "../live-status";
 import { useAppearance } from "../preferences/use-appearance";
 import type { ResolvedHistoryReference } from "@agentkib/web-client";
 import {
-  createConversationStore,
   createTranscriptPageCache,
   mergeConversationItems,
   oldestIncompleteHistoryTurn,
-  type SessionStreamEvent,
   mergeLatestPage,
   mergeOrderedPersistedHistory,
   removePersistedOverlays,
@@ -68,6 +66,7 @@ import {
   subscribeSessionInvalidation,
 } from "@agentkib/conversation-state";
 import { useSessionLive, type WarmSessionNavigation } from "./use-session-live";
+import { observeSessionCatalog } from "./session-catalog-observation";
 import {
   useCallback,
   useEffect,
@@ -86,11 +85,14 @@ import {
   matchesSettingsAck,
   isSessionSettingsAction,
   WebClient,
+  applyConversationCatalogPatch,
+  rememberConversationCatalogPatch,
   mergeCatalogSessions,
   isStaleCatalogRead,
   retryStaleCatalogRead,
   sessionProviderDeclaration,
   type ConversationCatalog,
+  type ConversationCatalogPatch,
   type Access,
   type WebConnection,
   type SessionAction,
@@ -159,6 +161,8 @@ export type SessionOptions = {
   initialTheme?: string;
   initialSessionId?: string;
   readInitialCatalog?: (sessionId: string) => ConversationCatalog | undefined;
+  /** The containing desktop window already observes and scopes its directory. */
+  observeCatalog?: (receive: (catalog: ConversationCatalog) => void) => () => void;
   client?: WebClient;
   embedded?: boolean;
   /** Also list and open program-started sessions (the directory option). */
@@ -174,6 +178,7 @@ export function useSessionController<Words extends ControllerWords>(
     initialTheme = "system",
     initialSessionId,
     readInitialCatalog,
+    observeCatalog,
     client: providedClient,
     embedded = false,
     showExecution: controlledShowExecution,
@@ -222,7 +227,7 @@ export function useSessionController<Words extends ControllerWords>(
   const [liveContentVersion, setLiveContentVersion] = useState(0);
   const [catalogObservationFailed, setCatalogObservationFailed] = useState(false);
   const retryCatalogObservation = useRef<(() => void) | undefined>(undefined);
-  const catalogInvalidationRead = useRef<(() => Promise<void>) | undefined>(undefined);
+  const catalogInvalidationRead = useRef<(() => void) | undefined>(undefined);
   const liveDelivery = useRef(0);
   const streamReady = useRef(false);
   const activeReceipts = useRef(
@@ -440,6 +445,13 @@ export function useSessionController<Words extends ControllerWords>(
   // Manual refresh and catalog notifications share this order. An older
   // response cannot undo a newer directory classification or dispatch guard.
   const catalogReadOrder = useRef(0);
+  const catalogReadUpdates = useRef<
+    Map<string, ConversationCatalogPatch["updates"][number]> | undefined
+  >(undefined);
+  const beginCatalogRead = useCallback(() => {
+    catalogReadUpdates.current = new Map();
+    return ++catalogReadOrder.current;
+  }, []);
   const readableSessionIds = useRef(new Set<string>());
   useEffect(() => {
     const readable = sessions.filter((session) => session.availability === "readable");
@@ -668,6 +680,7 @@ export function useSessionController<Words extends ControllerWords>(
     setSelected("");
     setSessions([]);
     catalogSessions.current = [];
+    catalogReadUpdates.current = undefined;
     catalogRecords.current = undefined;
     excludedIds.current = new Set();
     setExcludedSessionIds(excludedIds.current);
@@ -816,6 +829,37 @@ export function useSessionController<Words extends ControllerWords>(
       sessionImages,
     ],
   );
+  const applyCatalogRead = useCallback(
+    (catalog: ConversationCatalog) => {
+      const updates = [...(catalogReadUpdates.current?.values() ?? [])];
+      catalogReadUpdates.current = undefined;
+      if (!catalog.indexEnabled) {
+        sessionImages.setSessionImageIndexEnabled(client, false);
+        clear();
+        setIndexEnabled(false);
+        return;
+      }
+      sessionImages.setSessionImageIndexEnabled(client, true);
+      setIndexEnabled(true);
+      acceptCatalog(applyConversationCatalogPatch(catalog.sessions, { updates }), catalog);
+      setWorkspaces(catalog.workspaces);
+    },
+    [client, clear, acceptCatalog, sessionImages],
+  );
+  useEffect(() => {
+    if (access?.status === "approved" && access.protocolVersion === 2)
+      return observeCatalog?.((catalog) => {
+        beginCatalogRead();
+        applyCatalogRead(catalog);
+      });
+  }, [
+    observeCatalog,
+    applyCatalogRead,
+    beginCatalogRead,
+    access?.status,
+    access?.protocolVersion,
+    access?.bootId,
+  ]);
   useEffect(() => {
     if (showExecutionValue.current === showExecution) return;
     showExecutionValue.current = showExecution;
@@ -1237,23 +1281,15 @@ export function useSessionController<Words extends ControllerWords>(
           void reconcilePending(target).catch((error) => fail(error, g));
         }
         if (g !== generation.current) return;
-        catalogOrder = ++catalogReadOrder.current;
+        catalogOrder = beginCatalogRead();
         const catalog =
           cached ?? (await retryStaleCatalogRead(() => retryBusyRead(() => client.catalog())));
         if (g !== generation.current) return;
         if (contention !== readContention.current.version)
           throw new ApiError(409, "operation_busy");
         if (catalogOrder === catalogReadOrder.current) {
-          if (!catalog.indexEnabled) {
-            sessionImages.setSessionImageIndexEnabled(client, false);
-            clear();
-            setIndexEnabled(false);
-            return;
-          }
-          sessionImages.setSessionImageIndexEnabled(client, true);
-          setIndexEnabled(true);
-          acceptCatalog(catalog.sessions, catalog);
-          setWorkspaces(catalog.workspaces);
+          applyCatalogRead(catalog);
+          if (!catalog.indexEnabled) return;
         }
         // The full refresh still owns calibrating selected history and control
         // readiness when a notification superseded only its catalog response.
@@ -1447,6 +1483,7 @@ export function useSessionController<Words extends ControllerWords>(
               (e instanceof ApiError && e.code === "operation_busy"),
           );
       } finally {
+        if (catalogOrder === catalogReadOrder.current) catalogReadUpdates.current = undefined;
         if (refreshFlight.current === flight) refreshFlight.current = undefined;
       }
     },
@@ -1462,7 +1499,8 @@ export function useSessionController<Words extends ControllerWords>(
       setLive,
       setPage,
       setOnline,
-      acceptCatalog,
+      applyCatalogRead,
+      beginCatalogRead,
       renewStream,
       desktop,
       sessionImages,
@@ -1519,271 +1557,211 @@ export function useSessionController<Words extends ControllerWords>(
   }, [access?.status, syncAccess, refresh, fail]);
   useEffect(() => {
     if (access?.status !== "approved" || access.protocolVersion !== 2) return;
-    const store = createConversationStore<Live>("");
-    let closed = false;
-    let resetPending = false;
-    let exhausted = false;
-    let resets = 0;
-    let connectionEpoch = 0;
-    let closeStream: (() => void) | undefined;
-    const current = () =>
-      !closed &&
-      accessRef.current?.status === "approved" &&
-      accessRef.current.protocolVersion === 2 &&
-      accessRef.current.bootId === access.bootId &&
-      accessRef.current.device?.id === access.device?.id;
-    const resync = () => {
-      if (!current() || resetPending || exhausted) return;
-      resetPending = true;
-      // Invalidate callbacks and pending reads before the adapter can deliver
-      // more bootstrap events or readiness for this rejected stream.
-      connectionEpoch++;
-      queueMicrotask(() => {
-        if (!current()) return;
-        closeStream?.();
-        closeStream = undefined;
-        if (++resets > 3) {
-          exhausted = true;
-          setCatalogObservationFailed(true);
-          if (!desktop) setCatalogStatus((previous) => (previous === "ready" ? previous : "error"));
-          return;
-        }
-        store.reset();
-        resetPending = false;
-        connect();
-      });
-    };
-    const connect = () => {
-      const connection = ++connectionEpoch;
-      const active = () =>
-        current() && connection === connectionEpoch && !resetPending && !exhausted;
-      // A replacement subscription owns its read queue, so a stalled old read
-      // cannot delay the new baseline or overwrite its catalog when it resolves.
-      let flight = false;
-      let dirty = false;
-      let retryAfterControl = false;
-      const retryInvalidated = (g: number) => {
-        if (
-          !active() ||
-          g === generation.current ||
-          accessRef.current?.status !== "approved" ||
-          accessRef.current.protocolVersion !== 2
-        )
-          return false;
-        // Navigation invalidates reads, but does not consume a global catalog
-        // notification. Re-read under the current generation and authorization.
-        dirty = true;
-        return true;
-      };
-      const update = async () => {
-        if (!active()) return;
-        if (flight) {
+    const observation = observeSessionCatalog({
+      client,
+      current: () =>
+        accessRef.current?.status === "approved" &&
+        accessRef.current.protocolVersion === 2 &&
+        accessRef.current.bootId === access.bootId &&
+        accessRef.current.device?.id === access.device?.id,
+      createReader: (active) => {
+        let flight = false;
+        let dirty = false;
+        let retryAfterControl = false;
+        let crossedNavigation = false;
+        const retryInvalidated = (g: number) => {
+          if (
+            !active() ||
+            g === generation.current ||
+            accessRef.current?.status !== "approved" ||
+            accessRef.current.protocolVersion !== 2
+          )
+            return false;
+          // Navigation invalidates reads, but does not consume a global catalog
+          // notification. Re-read under the current generation and authorization.
+          crossedNavigation = true;
           dirty = true;
-          return;
-        }
-        flight = true;
-        do {
-          dirty = false;
-          let g = generation.current;
-          let catalogOrder: number | undefined;
-          try {
-            const next = await syncAccess(active);
-            if (!active()) break;
-            if (!next) {
-              if (retryInvalidated(g)) continue;
-              break;
-            }
-            if (
-              next.status !== "approved" ||
-              accessRef.current?.status !== "approved" ||
-              accessRef.current.protocolVersion !== 2
-            )
-              break;
-            if (next !== accessRef.current) {
-              dirty = true;
-              continue;
-            }
-            // An accepted access response may clear the old runtime boot itself.
-            // syncAccess rejects superseded reads; protect subsequent reads using
-            // the generation belonging to this newly accepted access instead.
-            g = generation.current;
-            catalogOrder = ++catalogReadOrder.current;
-            if (!desktop)
-              setCatalogStatus((previous) => (previous === "ready" ? previous : "loading"));
-            const catalog = await retryStaleCatalogRead(() =>
-              retryBusyRead(() => client.catalog()),
-            );
-            if (!active()) break;
-            if (g !== generation.current) {
-              if (retryInvalidated(g)) continue;
-              break;
-            }
-            if (catalogOrder !== catalogReadOrder.current) {
-              dirty = true;
-              continue;
-            }
-            if (!catalog.indexEnabled) {
-              sessionImages.setSessionImageIndexEnabled(client, false);
-              clear();
-              setIndexEnabled(false);
-              break;
-            }
-            sessionImages.setSessionImageIndexEnabled(client, true);
-            setIndexEnabled(true);
-            acceptCatalog(catalog.sessions, catalog);
-            setWorkspaces(catalog.workspaces);
-            await reconcilePending();
-            retryAfterControl = false;
-            if (active() && g === generation.current)
-              // Management receipts have their own consumer, including creation
-              // without a selected session. Reconnects must reconcile those too.
-              publishSessionInvalidation(client, "", ["receipts"]);
-          } catch (error) {
-            if (active() && !retryInvalidated(g)) {
-              // Read contention is not an uncertain command outcome. Wait for a
-              // settlement/catalog event without fencing the selected conversation.
-              if (
-                (error instanceof ApiError && error.code === "operation_busy") ||
-                isStaleCatalogRead(error)
-              )
-                retryAfterControl = true;
-              else {
-                if (
-                  !desktop &&
-                  g === generation.current &&
-                  (catalogOrder === undefined || catalogOrder === catalogReadOrder.current) &&
-                  !(error instanceof DOMException && error.name === "AbortError")
-                )
-                  setCatalogStatus((previous) => (previous === "ready" ? previous : "error"));
-                fail(error, g);
-              }
-            }
-          }
-        } while (dirty && active());
-        flight = false;
-      };
-      catalogInvalidationRead.current = update;
-      closeStream = client.stream("", {
-        open: () => {
+          return true;
+        };
+        const update = async () => {
           if (!active()) return;
-          wakeDeferredRefresh();
-          void update();
-        },
-        error: (error) => {
-          if (!active()) return;
-          if (desktop && error instanceof ApiError && error.code === "stream_limit")
-            warmStreams.discardParked();
-          if (error instanceof ApiError && error.code === "incompatible_protocol")
-            setIncompatible(true);
-          // Native EventSource does not expose HTTP 401/403. Recheck access on
-          // failed reconnect so an expired grant clears the retained private view.
-          else void update();
-        },
-        event: (type, data) => {
-          if (!active()) return false;
-          if (type === "access-ended") {
-            fail(new ApiError(401, "access_ended"));
+          if (flight) {
+            dirty = true;
             return;
           }
-          if (type === "control-changed") {
+          flight = true;
+          do {
+            dirty = false;
+            let g = generation.current;
+            let catalogOrder: number | undefined;
             try {
-              const changed = JSON.parse(data) as { sessionId?: string };
-              wakeDeferredRefresh();
-              // Settlement can arrive before the busy response. Mark an in-flight
-              // read dirty as well so that notification is not consumed too early.
-              if (retryAfterControl || flight) void update();
-              if (!selection.current || changed.sessionId !== selection.current)
+              const next = await syncAccess(active);
+              if (!active()) break;
+              if (!next) {
+                if (retryInvalidated(g)) continue;
+                break;
+              }
+              if (
+                next.status !== "approved" ||
+                accessRef.current?.status !== "approved" ||
+                accessRef.current.protocolVersion !== 2
+              )
+                break;
+              if (next !== accessRef.current) {
+                dirty = true;
+                continue;
+              }
+              // An accepted access response may clear the old runtime boot itself.
+              // syncAccess rejects superseded reads; protect subsequent reads using
+              // the generation belonging to this newly accepted access instead.
+              g = generation.current;
+              if (observeCatalog) {
+                await reconcilePending();
+                if (active() && g === generation.current)
+                  publishSessionInvalidation(client, "", ["receipts"]);
+                break;
+              }
+              catalogOrder = beginCatalogRead();
+              if (!desktop)
+                setCatalogStatus((previous) => (previous === "ready" ? previous : "loading"));
+              const catalog = await retryStaleCatalogRead(() =>
+                retryBusyRead(() => client.catalog()),
+              );
+              if (!active()) break;
+              if (g !== generation.current) {
+                if (retryInvalidated(g)) continue;
+                break;
+              }
+              if (catalogOrder !== catalogReadOrder.current) {
+                dirty = true;
+                continue;
+              }
+              // The next read already owns the latest directory. A superseded
+              // empty result must not erase the rows still in use.
+              if (
+                dirty &&
+                catalog.complete !== false &&
+                !catalog.sessions.length &&
+                catalogRecords.current?.length
+              )
+                continue;
+              applyCatalogRead(catalog);
+              if (!catalog.indexEnabled) break;
+              await reconcilePending();
+              retryAfterControl = false;
+              if (active() && g === generation.current)
+                // Management receipts have their own consumer, including creation
+                // without a selected session. Reconnects must reconcile those too.
                 publishSessionInvalidation(client, "", ["receipts"]);
-            } catch {
-              setError(true);
-            }
-            return;
-          }
-          if (type === "session-ready") {
-            try {
-              const ready = JSON.parse(data) as { cursor?: string };
-              const state = store.getSnapshot();
-              if (state.cursor && state.cursor === ready.cursor && !state.resyncRequired) {
-                // A baseline alone cannot reset the failure limit: replay may
-                // still contain a gap before the adapter announces readiness.
-                resets = 0;
-                setCatalogObservationFailed(false);
+            } catch (error) {
+              if (active() && !retryInvalidated(g)) {
+                // Read contention is not an uncertain command outcome. Wait for a
+                // settlement/catalog event without fencing the selected conversation.
+                if (
+                  (error instanceof ApiError && error.code === "operation_busy") ||
+                  isStaleCatalogRead(error)
+                )
+                  retryAfterControl = true;
+                else {
+                  if (
+                    !desktop &&
+                    g === generation.current &&
+                    (catalogOrder === undefined || catalogOrder === catalogReadOrder.current) &&
+                    !(error instanceof DOMException && error.name === "AbortError")
+                  )
+                    setCatalogStatus((previous) => (previous === "ready" ? previous : "error"));
+                  fail(error, g);
+                }
               }
-            } catch {
-              // Malformed readiness never proves observation has recovered.
+            } finally {
+              if (catalogOrder === catalogReadOrder.current) catalogReadUpdates.current = undefined;
             }
-            return false;
+          } while (dirty && active());
+          flight = false;
+          crossedNavigation = false;
+        };
+        return {
+          read: update,
+          waiting: () => !observeCatalog && (retryAfterControl || flight),
+          needsImmediateReload: () => {
+            if (!retryAfterControl && !crossedNavigation) return false;
+            retryAfterControl = false;
+            crossedNavigation = false;
+            return true;
+          },
+        };
+      },
+      bindRefresh: (read) => {
+        catalogInvalidationRead.current = observeCatalog ? undefined : read;
+      },
+      applyPatch: (patch) => {
+        if (observeCatalog) return true;
+        const records = catalogRecords.current;
+        const read = catalogReadUpdates.current;
+        if (read) rememberConversationCatalogPatch(read, patch);
+        if (!records) return !!read;
+        const next = applyConversationCatalogPatch(records, patch);
+        if (records !== next) {
+          catalogRecords.current = next;
+          const visible = applyConversationCatalogPatch(catalogSessions.current, patch);
+          if (visible !== catalogSessions.current) {
+            catalogSessions.current = visible;
+            setSessions(visible);
           }
-          if (["catalog-invalidated", "access-changed"].includes(type)) {
-            if (type === "access-changed") warmStreams.discardParked();
-            wakeDeferredRefresh();
-            void update();
-            return false;
-          }
-          if (type !== "session-event") return false;
-          try {
-            const event = JSON.parse(data) as SessionStreamEvent<Live>;
-            if (event.sessionId !== "") return false;
-            const previous = store.getSnapshot();
-            const state = store.dispatch(event);
-            if (state.resyncRequired) {
-              resync();
-              return false;
-            }
-            const advanced =
-              state.cursor !== previous.cursor ||
-              state.seq !== previous.seq ||
-              state.epoch !== previous.epoch ||
-              state.runtimeBootId !== previous.runtimeBootId;
-            if (advanced) {
-              sessionImages.noteSessionImageBoot(client, state.runtimeBootId);
-              wakeDeferredRefresh();
-              if (
-                event.type === "snapshot" ||
-                (event.type === "invalidate" && event.payload.domains.includes("catalog"))
-              )
-                void update();
-              if (event.type === "invalidate")
-                publishSessionInvalidation(client, "", event.payload.domains);
-            }
-            // IPC ACKs are cumulative and may safely repeat the accepted cursor.
-            // Rejected gaps and resync markers never acknowledge received data.
-            return state.cursor ?? false;
-          } catch {
-            resync();
-            return false;
-          }
-        },
-      });
-    };
-    const retry = () => {
-      if (!current() || !exhausted) return;
-      exhausted = false;
-      resetPending = false;
-      resets = 0;
-      store.reset();
-      connect();
-    };
-    retryCatalogObservation.current = retry;
-    connect();
+        }
+        return true;
+      },
+      onOpen: wakeDeferredRefresh,
+      onError: (error) => {
+        if (desktop && error instanceof ApiError && error.code === "stream_limit")
+          warmStreams.discardParked();
+        if (error instanceof ApiError && error.code === "incompatible_protocol") {
+          setIncompatible(true);
+          return false;
+        }
+        // EventSource cannot surface HTTP 401/403. Recheck the retained grant.
+        return true;
+      },
+      onAccessEnded: () => fail(new ApiError(401, "access_ended")),
+      onAccessChanged: () => {
+        warmStreams.discardParked();
+        wakeDeferredRefresh();
+      },
+      onControlChanged: (id) => {
+        wakeDeferredRefresh();
+        if (!selection.current || id !== selection.current)
+          publishSessionInvalidation(client, "", ["receipts"]);
+      },
+      onAdvanced: (bootId) => {
+        sessionImages.noteSessionImageBoot(client, bootId);
+        wakeDeferredRefresh();
+      },
+      onInvalidated: (domains) => publishSessionInvalidation(client, "", domains),
+      setFailed: (failed) => {
+        setCatalogObservationFailed(failed);
+        if (failed && !desktop)
+          setCatalogStatus((previous) => (previous === "ready" ? previous : "error"));
+      },
+    });
+    retryCatalogObservation.current = observation.retry;
     return () => {
-      closed = true;
-      catalogInvalidationRead.current = undefined;
-      if (retryCatalogObservation.current === retry) retryCatalogObservation.current = undefined;
-      closeStream?.();
+      if (retryCatalogObservation.current === observation.retry)
+        retryCatalogObservation.current = undefined;
+      observation.stop();
     };
   }, [
     access?.status,
     access?.protocolVersion,
     access?.bootId,
     access?.device?.id,
+    observeCatalog,
     client,
     syncAccess,
     reconcilePending,
-    clear,
+    beginCatalogRead,
+    applyCatalogRead,
     fail,
     wakeDeferredRefresh,
-    acceptCatalog,
     warmStreams,
     desktop,
     sessionImages,
@@ -2273,6 +2251,7 @@ export function useSessionController<Words extends ControllerWords>(
    */
   function dropDeletedSession(id: string) {
     catalogReadOrder.current++;
+    catalogReadUpdates.current = undefined;
     sessionImages.forgetSessionImages(client, id);
     excludedIds.current = new Set([...excludedIds.current, id]);
     catalogSessions.current = catalogSessions.current.filter((session) => session.id !== id);

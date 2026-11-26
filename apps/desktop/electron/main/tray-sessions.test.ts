@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { ConversationCatalogPatch } from "@agentkib/web-client";
 import type { HomeSession } from "@agentkib/session-catalog";
 import { TraySessionWatcher, type TraySessionSource } from "./tray-sessions";
 
@@ -17,14 +18,14 @@ function session(id: string, status?: string): HomeSession {
 function source(initial: readonly HomeSession[] | undefined) {
   let sessions = initial;
   const stops: ReturnType<typeof vi.fn>[] = [];
-  const changes: (() => void)[] = [];
+  const changes: ((patch?: ConversationCatalogPatch) => void)[] = [];
   const value: TraySessionSource & {
     set(next: readonly HomeSession[] | undefined): void;
     stops: typeof stops;
     changes: typeof changes;
   } = {
     readSessions: vi.fn(async () => sessions),
-    follow: vi.fn(async (onChange: () => void) => {
+    follow: vi.fn(async (onChange: (patch?: ConversationCatalogPatch) => void) => {
       changes.push(onChange);
       const stop = vi.fn();
       stops.push(stop);
@@ -107,6 +108,21 @@ describe("tray session watcher", () => {
     expect(value.readSessions).toHaveBeenCalledTimes(2);
     expect(value.stops[0]).toHaveBeenCalledTimes(1);
     expect(watcher.status).toEqual({ needsYou: 0, running: 0 });
+    watcher.stop();
+  });
+
+  it("uses pushed running and waiting status without reading the full catalog", async () => {
+    const value = source([session("a", "running")]);
+    const watcher = new TraySessionWatcher(value, () => undefined);
+    watcher.start();
+    await vi.advanceTimersByTimeAsync(0);
+    value.changes[0]({
+      updates: [{ sessionId: "a", workspaceId: "w", continuation: { status: "waiting-input" } }],
+    });
+    expect(watcher.status).toEqual({ needsYou: 1, running: 0 });
+    expect(value.readSessions).toHaveBeenCalledOnce();
+    await Promise.resolve();
+    expect(value.stops[0]).toHaveBeenCalledOnce();
     watcher.stop();
   });
 

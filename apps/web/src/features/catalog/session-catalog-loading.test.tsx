@@ -33,8 +33,8 @@ class CatalogEventSource {
   addEventListener(name: string, listener: (event: MessageEvent) => void) {
     this.listeners[name] = listener;
   }
-  emit(name: string) {
-    this.listeners[name]?.(new MessageEvent(name, { data: "{}" }));
+  emit(name: string, data = {}) {
+    this.listeners[name]?.(new MessageEvent(name, { data: JSON.stringify(data) }));
   }
 }
 
@@ -166,6 +166,27 @@ describe("catalog loading through the real Web application and session provider"
     expect(await screen.findByText(dictionaries["zh-CN"].empty)).toBeVisible();
   });
 
+  it("subscribes to the scoped catalog patch and updates row status without a new request", async () => {
+    const host = fixture("en-US");
+    await act(async () => host.first.resolve(Response.json(catalog)));
+    const first = await screen.findByRole("button", { name: /First session/ });
+    const source = await waitFor(directoryStream);
+    expect(new URL(source.path, "http://localhost").searchParams.get("catalogPatch")).toBe("1");
+    act(() =>
+      source.emit("catalog-invalidated", {
+        catalogPatch: {
+          updates: [
+            { sessionId: "first", workspaceId: "project", continuation: { status: "running" } },
+            { sessionId: "private", workspaceId: "unpaired", continuation: { status: "running" } },
+          ],
+        },
+      }),
+    );
+    expect(first).toHaveAccessibleName(/First session.*Running/i);
+    expect(screen.queryByRole("button", { name: /private/ })).not.toBeInTheDocument();
+    expect(host.readCatalog).toHaveBeenCalledOnce();
+  });
+
   it("preserves the selected source on a partial live catalog while removing a completed source", async () => {
     const host = fixture();
     await act(async () => host.first.resolve(Response.json(catalog)));
@@ -185,6 +206,7 @@ describe("catalog loading through the real Web application and session provider"
     expect(first).toHaveAttribute("aria-current", "page");
     expect(screen.getByText("Readable history")).toBe(historyNode);
     host.readCatalog.mockResolvedValue(Response.json({ ...emptyCatalog, complete: true }));
+    vi.spyOn(Date, "now").mockReturnValue(Date.now() + 3_001);
     act(() => directoryStream().emit("catalog-invalidated"));
     await waitFor(() => expect(screen.queryByRole("button", { name: /First session/ })).toBeNull());
   });

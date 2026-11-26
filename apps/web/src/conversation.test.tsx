@@ -2842,17 +2842,21 @@ describe("shared embedded conversation", () => {
     });
     await waitFor(() => expect(view.result.current.pendingSessions.second).toBe(true));
     delete sessions[1].pendingInteraction;
+    const clock = vi.spyOn(Date, "now");
+    clock.mockReturnValue(Date.now() + 3_001);
     act(() => {
       streams.get("")!.event("catalog-invalidated", "{}");
     });
     await waitFor(() => expect(view.result.current.sessions[1].pendingInteraction).toBeUndefined());
     expect(view.result.current.pendingSessions.second).toBe(true);
     sessions[1].pendingInteraction = false;
+    clock.mockReturnValue(Date.now() + 3_001);
     act(() => {
       streams.get("")!.event("catalog-invalidated", "{}");
     });
     await waitFor(() => expect(view.result.current.pendingSessions.second).toBe(false));
     expect(detailRead).not.toHaveBeenCalled();
+    clock.mockRestore();
   });
 
   it.each(["removed", "metadata-only"] as const)(

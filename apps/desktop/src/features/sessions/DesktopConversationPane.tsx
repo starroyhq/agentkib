@@ -5,7 +5,11 @@ import { createDesktopConversationClient } from "@/core/conversation-bridge";
 import type { ConversationSessionSummary } from "@/core/types";
 import { useI18n } from "@/core/useI18n";
 import { useSessionHub } from "./SessionHubContext";
-import { cachedConversationCatalog, refreshConversationCatalog } from "./conversation-catalog";
+import {
+  cachedConversationCatalog,
+  observeConversationCatalog,
+  refreshConversationCatalog,
+} from "./conversation-catalog";
 import { useSessionViewStore } from "./session-view-store";
 import { cn } from "cn";
 import { subscribeConversationPanel } from "./conversation-panel-commands";
@@ -140,6 +144,7 @@ export function DesktopConversationPane({ sessionId }: { sessionId?: string }) {
           client={client}
           sessionId={sessionId}
           readInitialCatalog={cachedConversationCatalog}
+          observeCatalog={observeConversationCatalog}
           refreshRevision={conversationRefreshRevision}
           locale={locale}
           showExecution={showExecution}

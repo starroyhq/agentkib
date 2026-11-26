@@ -44,7 +44,9 @@ function fixture(
     "INSERT INTO workspaces(id,canonical_path,name,status,last_discovered_at) VALUES ('workspace','/fixture/project','Project','healthy',?)",
     new Date().toISOString(),
   );
-  const store = new SessionStore(sql, () => "/fixture/project");
+  const store = new SessionStore(sql, (id) =>
+    id === "workspace" ? "/fixture/project" : `/fixture/${id}`,
+  );
   let enabled = true;
   const index = new SessionIndex(
     store,
@@ -186,6 +188,29 @@ describe("cached directory refresh", () => {
     expect(list).toHaveBeenCalledTimes(SESSION_AGENTS.length);
     await f.index.refresh({ workspaceId: "workspace" });
     expect(list).toHaveBeenCalledTimes(SESSION_AGENTS.length);
+  });
+  it("serializes discovery for distinct workspaces and still coalesces queued readers", async () => {
+    const waiting = deferred<NativeListing>();
+    const list = vi.fn(async (_agent: SessionAgent, workspace: string) =>
+      workspace === "/fixture/project" ? waiting.promise : { sessions: [], incomplete: false },
+    );
+    const f = fixture(list);
+    f.sql.run(
+      "INSERT INTO workspaces(id,canonical_path,name,status,last_discovered_at) VALUES ('other','/fixture/other','Other','healthy',?)",
+      new Date().toISOString(),
+    );
+    const first = f.index.refresh({ workspaceId: "workspace", force: true });
+    const second = f.index.refresh({ workspaceId: "other" });
+    const forced = f.index.refresh({ workspaceId: "other", force: true });
+    expect(second).toBe(forced);
+    await vi.waitFor(() => expect(list).toHaveBeenCalledWith("codex", "/fixture/project"));
+    expect(list).toHaveBeenCalledTimes(1);
+    waiting.resolve({ sessions: [], incomplete: false });
+    await Promise.all([first, second, forced]);
+    expect(list.mock.calls.map(([, workspace]) => workspace)).toEqual([
+      ...SESSION_AGENTS.map(() => "/fixture/project"),
+      ...SESSION_AGENTS.map(() => "/fixture/other"),
+    ]);
   });
   it("retains one necessary forced follow-up when force arrives during a non-force pass", async () => {
     const first = deferred<NativeListing>();

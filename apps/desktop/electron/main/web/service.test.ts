@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { createServer, request, ServerResponse } from "node:http";
 import { WebAccessService, createWebControlState } from "./service";
 import { ConversationHub } from "../conversation-hub";
+import { CatalogChanges } from "./catalog-stream";
 import { RuntimeRequestError } from "../runtime-host";
 import { RUNTIME_METHODS, type SessionStreamEvent } from "../../generated/runtime-protocol";
 import {
@@ -116,12 +117,14 @@ describe("WebAccessService loopback security boundary", () => {
     sessionId = "s",
     afterCursor?: string,
     taskSummary = false,
+    catalogPatch = false,
   ) {
     const chunks: string[] = [];
     const query = new URLSearchParams({ protocolVersion: "2" });
     if (sessionId) query.set("sessionId", sessionId);
     if (afterCursor) query.set("afterCursor", afterCursor);
     if (taskSummary) query.set("taskSummary", "1");
+    if (catalogPatch) query.set("catalogPatch", "1");
     const req = request(
       {
         hostname: "127.0.0.1",
@@ -2205,6 +2208,86 @@ describe("WebAccessService loopback security boundary", () => {
       }
     },
   );
+
+  it("retains distinct changed fields of the same row until catalog SSE flushes", () => {
+    const changes = new CatalogChanges();
+    const row = { sessionId: "s", workspaceId: "w", auxiliary: false };
+    const updatedAt = "2026-11-26T17:00:00.000Z";
+    changes.add({ catalogPatch: { updates: [{ ...row, updatedAt }] } });
+    changes.add({ catalogPatch: { updates: [{ ...row, continuation: null }] } });
+    expect(changes.take()).toEqual({ updates: [{ ...row, updatedAt, continuation: null }] });
+    expect(changes.pending).toBe(false);
+    changes.add({ catalogPatch: { updates: [{ ...row, updatedAt }] } });
+    changes.add();
+    changes.add({ catalogPatch: { updates: [{ ...row, continuation: null }] } });
+    expect(changes.pending).toBe(true);
+    expect(changes.take()).toBeUndefined();
+  });
+
+  it("pushes catalog changes only for authorized directory rows and keeps legacy invalidation", async () => {
+    await service.request({
+      operation: "configure",
+      enabled: true,
+      port,
+      externalOrigin: "",
+      experimentalEnabled: true,
+      allowedWorkspaceIds: ["allowed"],
+    });
+    await bootstrap();
+    await pair();
+    runtime.mockImplementation(async (input) => {
+      if ((input as { operation: string }).operation !== "catalog") return {};
+      return {
+        workspaces: [
+          { id: "allowed", name: "Allowed", path: join(dir, "allowed") },
+          { id: "private", name: "Private", path: join(dir, "private") },
+        ],
+      };
+    });
+    const modern = openStream(cookie, "", undefined, false, true);
+    const plain = openStream(cookie, "");
+    const changes = (stream: ReturnType<typeof openStream>) =>
+      stream.chunks
+        .join("")
+        .split("\n\n")
+        .flatMap((frame) =>
+          frame.startsWith("event: catalog-invalidated\ndata: ")
+            ? [JSON.parse(frame.split("\ndata: ")[1]!)]
+            : [],
+        );
+    try {
+      await vi.waitFor(() => {
+        expect(modern.chunks.join("")).toContain("event: session-ready");
+        expect(plain.chunks.join("")).toContain("event: session-ready");
+      });
+      const visible = {
+        sessionId: "visible-worker",
+        workspaceId: "allowed",
+        auxiliary: false,
+        continuation: { status: "running" },
+      };
+      pushEvent("invalidate", {
+        domains: ["catalog"],
+        catalogPatch: {
+          updates: [
+            visible,
+            { ...visible, sessionId: "private-worker", workspaceId: "private" },
+            { ...visible, sessionId: "auxiliary-worker", auxiliary: true },
+          ],
+        },
+      });
+      await vi.waitFor(() => {
+        expect(changes(modern)).toEqual([{ catalogPatch: { updates: [visible] } }]);
+        expect(changes(plain)).toEqual([{}]);
+      });
+      pushEvent("invalidate", { domains: ["catalog"] }, 2);
+      await vi.waitFor(() => expect(changes(modern)).toHaveLength(2));
+      expect(changes(modern)[1]).toEqual({});
+    } finally {
+      modern.close();
+      plain.close();
+    }
+  });
 
   describe("task summary stream", () => {
     const workspaceRows = () => [

@@ -78,6 +78,11 @@ export function isTraceMethod(value: unknown): value is string {
   return typeof value === "string" && value.length <= 128 && traceMethods.has(value);
 }
 
+/** Host catalog reads have no session identity or typed provider operation. */
+export function isTraceSessionOperation(value: unknown): value is string {
+  return value === "catalog" || isSessionOperation(value);
+}
+
 export function localRuntimeTracePaths(dataDir: string): string[] {
   const file = path.join(dataDir, "diagnostics", "runtime-trace.ndjson");
   return Array.from({ length: FILE_COUNT }, (_, index) => (index ? `${file}.${index}` : file));
@@ -101,7 +106,9 @@ function context(value: Record<string, unknown> | undefined): LocalRuntimeTraceC
   const { method, operation, session } = value;
   return {
     method,
-    ...(typeof operation === "string" && operation.length <= 64 && isSessionOperation(operation)
+    ...(typeof operation === "string" &&
+    operation.length <= 64 &&
+    isTraceSessionOperation(operation)
       ? { operation }
       : {}),
     ...(typeof session === "string" && /^[0-9a-f]{16}$/.test(session) ? { session } : {}),

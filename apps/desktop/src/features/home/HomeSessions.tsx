@@ -117,13 +117,7 @@ export function HomeSessions({
   ) : null;
 
   const attention = groups.needsYou.length + groups.review.length + groups.running.length;
-  if (!attention && !groups.recent.length)
-    return (
-      <div className="grid gap-3">
-        {sources}
-        <Notice text={tr("home.firstSession")} />
-      </div>
-    );
+  if (!attention && !groups.recent.length) return sources;
   return (
     <div className="grid gap-5">
       {sources}

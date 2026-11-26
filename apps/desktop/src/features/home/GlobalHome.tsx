@@ -100,22 +100,18 @@ export function GlobalHome({
 
       {interruptedWork}
 
-      {!workspaces.length ? (
-        showOnboarding ? (
-          <p className="text-sm leading-6 text-muted-foreground">{tr("home.emptySummary")}</p>
-        ) : (
-          <Card className="grid min-h-[260px] place-content-center justify-items-center gap-3 rounded-xl border-dashed bg-card p-8 text-center shadow-none">
-            <span className="grid size-12 place-items-center rounded-xl bg-primary/8 text-primary">
-              <FolderGit2 size={24} />
-            </span>
-            <h2 className="text-lg font-semibold tracking-[-.02em]">{tr("home.emptyTitle")}</h2>
-            <p className="max-w-md text-sm leading-6 text-muted-foreground">
-              {tr("home.emptyText")}
-            </p>
-            <WorkspaceAddActions busy={adding} onAddWorkspace={addWorkspace} onAddRoot={addRoot} />
-          </Card>
-        )
-      ) : (
+      {!workspaces.length && !showOnboarding && (
+        <Card className="grid min-h-[260px] place-content-center justify-items-center gap-3 rounded-xl border-dashed bg-card p-8 text-center shadow-none">
+          <span className="grid size-12 place-items-center rounded-xl bg-primary/8 text-primary">
+            <FolderGit2 size={24} />
+          </span>
+          <h2 className="text-lg font-semibold tracking-[-.02em]">{tr("home.emptyTitle")}</h2>
+          <p className="max-w-md text-sm leading-6 text-muted-foreground">{tr("home.emptyText")}</p>
+          <WorkspaceAddActions busy={adding} onAddWorkspace={addWorkspace} onAddRoot={addRoot} />
+        </Card>
+      )}
+
+      {workspaces.length > 0 && (
         <div
           className={cn(
             "grid gap-6",

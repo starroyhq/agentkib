@@ -13,7 +13,10 @@ import {
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ClaudeBridge, type ClaudeBridgeTarget } from "../../../packages/backend/src/agents/claude/claude-bridge";
+import {
+  ClaudeBridge,
+  type ClaudeBridgeTarget,
+} from "../../../packages/backend/src/agents/claude/claude-bridge";
 import { ClaudeManagedReadOwner } from "../../../packages/backend/src/agents/claude/claude-managed-read";
 import { ClaudeManagedRunnerProcess } from "../../../packages/backend/src/agents/claude/claude-managed-runner";
 import { ClaudeSessionOwnerProbe } from "../../../packages/backend/src/agents/claude/claude-session-owner";
@@ -144,6 +147,7 @@ require("node:readline").createInterface({ input: process.stdin }).on("line", li
                 agent: "claude-code",
                 workspace_id: "workspace",
                 sidechain: false,
+                availability: "readable",
               }
             : undefined,
       },
@@ -161,8 +165,6 @@ require("node:readline").createInterface({ input: process.stdin }).on("line", li
       }),
       claudeControlWorkspace: () => workspace,
       verifyClaudeBridgeWorktree: verifyBridgeWorktree,
-      list: async () => ({ sessions: [{ native_ref: nativeId, sidechain: false }] }),
-      document: async () => ({ source: { agent: "claude-code", workspace_id: "workspace" } }),
     } as unknown as SessionReaders,
     {
       run: vi.fn(async (_command: string, args: string[]) => {

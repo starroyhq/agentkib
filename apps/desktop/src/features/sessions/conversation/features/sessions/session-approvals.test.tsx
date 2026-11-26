@@ -4,7 +4,7 @@ import { cleanup, fireEvent, screen, within } from "@testing-library/react";
 import { render } from "@/features/sessions/conversation/desktop-reader-test-utils";
 import { createContext, useContext } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { WebClient, type Approval } from "@agentkib/web-client";
+import { WebClient, type Approval, type UserQuestionRequest } from "@agentkib/web-client";
 import { fillCopy, interactionCardCopy, type InteractionLocale } from "@agentkib/session-ui";
 import { conversationWords } from "@/core/i18n";
 import { SessionReader } from "./desktop-session-reader";
@@ -208,6 +208,65 @@ describe("waiting approvals above the composer", () => {
     expect(screen.queryByText("1/2")).not.toBeInTheDocument();
     expect(within(card()).getByText("notes.md")).toBeVisible();
     expect(state.control).not.toHaveBeenCalled();
+  });
+});
+
+describe("managed Claude interactions", () => {
+  beforeEach(() => {
+    state = {
+      ...state,
+      client: new WebClient(vi.fn()),
+      current: { ...state.current!, agent: "claude-code" },
+      access: {
+        ...state.access!,
+        status: "approved",
+        experimentalEnabled: true,
+        bootId: "fixture-boot",
+        device: {
+          id: "device",
+          name: "Desktop",
+          send: true,
+          approve: true,
+          accessMode: "full",
+          advancedControl: true,
+        },
+      },
+      live: { ...state.live!, executionMode: "claude-managed" },
+    };
+  });
+
+  it("shows a native approval and submits the selected choice", () => {
+    const request = approval({ toolName: "Read", input: { file_path: "notes.txt" } });
+    state.live = { ...state.live!, status: "waiting-approval", approvals: [request] };
+    render(<SessionReader />);
+    const deny = within(card()).getByRole("button", { name: interactionCardCopy("en-US").deny });
+    expect(deny).toBeEnabled();
+    fireEvent.click(deny);
+    expect(state.control).toHaveBeenCalledExactlyOnceWith("approve", request, "deny");
+  });
+
+  it("shows the live AskUserQuestion options and submits their original labels", () => {
+    const request: UserQuestionRequest = {
+      requestId: "question",
+      turnId: "turn",
+      supported: true,
+      questions: [
+        {
+          id: "Pick a format",
+          question: "Pick a format",
+          options: [{ label: "Markdown" }, { label: "Plain text" }],
+          multiSelect: false,
+          allowCustom: true,
+        },
+      ],
+    };
+    state.live = { ...state.live!, status: "waiting-input", questions: [request] };
+    render(<SessionReader />);
+    expect(screen.getByRole("heading", { name: "Pick a format" })).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Markdown" }));
+    expect(state.control).toHaveBeenCalledExactlyOnceWith("answer", undefined, undefined, request, {
+      "Pick a format": ["Markdown"],
+    });
   });
 });
 

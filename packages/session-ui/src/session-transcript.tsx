@@ -1,6 +1,6 @@
 import type { ConversationEvent, UserQuestionRequest } from "@agentkib/web-client";
 import { groupConversationEvents, turnFileActivity } from "@agentkib/conversation-state";
-import { ChevronRight, CircleAlert, Wrench } from "lucide-react";
+import { ChevronRight, CircleAlert } from "lucide-react";
 import { Fragment, useId, useMemo, useState, type ComponentProps, type ReactNode } from "react";
 import { Button } from "@base-ui/react/button";
 import { SafeMarkdown } from "./safe-markdown";
@@ -198,13 +198,11 @@ function EventRow({
   event,
   labels,
   locale,
-  onTool,
   imageLoader,
 }: {
   event: ConversationEvent;
   labels: ReaderLabels;
   locale: string;
-  onTool?: (event: ConversationEvent) => void;
   imageLoader?: MessageImageLoader;
 }) {
   const isTool = event.kind === "tool-summary";
@@ -250,25 +248,27 @@ function EventRow({
       </div>
     );
   const hasBubble = hasText || attachmentCount > 0 || event.truncated;
-  if (isTool && event.tool && onTool)
+  if (isTool)
     return (
-      <div data-event-id={event.id}>
+      <>
         <ToolDetailRow
-          event={{ ...event, tool: event.tool }}
+          event={event}
           locale={locale}
           statusLabel={toolStatusLabel(event.tool_status, locale)}
+          unknownTool={labels.unknownTool}
         />
-      </div>
+        {!event.tool && attachmentCount > 0 && (
+          <p className="px-2 text-xs text-muted-foreground">
+            {labels.attachments}: {attachmentCount}
+          </p>
+        )}
+      </>
     );
   return (
     <div
       data-event-id={event.id}
       className={
-        isUser
-          ? "flex min-w-0 max-w-full flex-col items-end"
-          : isTool
-            ? "flex min-w-0"
-            : "aui-markdown min-w-0 break-words"
+        isUser ? "flex min-w-0 max-w-full flex-col items-end" : "aui-markdown min-w-0 break-words"
       }
     >
       {gallery}
@@ -281,37 +281,10 @@ function EventRow({
               : "contents"
           }
         >
-          {isTool && !onTool ? (
-            <div className="flex min-h-8 min-w-0 flex-wrap items-center gap-2 px-2 py-1.5 text-xs text-muted-foreground">
-              <Wrench aria-hidden="true" className="size-3.5 shrink-0" />
-              <span className="min-w-0 break-words text-foreground">
-                {event.tool_name || labels.unknownTool}
-              </span>
-              {toolStatusLabel(event.tool_status, locale)}
+          {hasText && (
+            <div data-message-body className="select-text">
+              <SafeMarkdown text={content} literal={event.cli_output === true} locale={locale} />
             </div>
-          ) : isTool && onTool ? (
-            <Button
-              type="button"
-              aria-label={`${event.tool_name || labels.unknownTool} ${toolStatusLabel(event.tool_status, locale)}`}
-              className="group/tool flex h-auto min-h-8 min-w-0 max-w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-xs font-normal text-muted-foreground transition-colors hover:bg-muted/70 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-              onClick={() => onTool(event)}
-            >
-              <Wrench aria-hidden="true" className="size-3.5 shrink-0" />
-              <span className="min-w-0 truncate text-foreground">
-                {event.tool_name || labels.unknownTool}
-              </span>
-              <span className="shrink-0">{toolStatusLabel(event.tool_status, locale)}</span>
-              <ChevronRight
-                aria-hidden="true"
-                className="ml-auto size-3.5 shrink-0 opacity-50 transition-transform group-hover/tool:translate-x-0.5"
-              />
-            </Button>
-          ) : (
-            hasText && (
-              <div data-message-body className="select-text">
-                <SafeMarkdown text={content} literal={event.cli_output === true} locale={locale} />
-              </div>
-            )
           )}
           {(attachmentCount > 0 || event.truncated) && (
             <div
@@ -378,7 +351,6 @@ function MessageBlock({
   message,
   labels,
   locale,
-  onTool,
   imageLoader,
   openProcesses,
   onToggleProcess,
@@ -389,7 +361,6 @@ function MessageBlock({
   message: TranscriptMessage;
   labels: ReaderLabels;
   locale: string;
-  onTool?: (event: ConversationEvent) => void;
   imageLoader?: MessageImageLoader;
   openProcesses: Record<string, boolean>;
   onToggleProcess: (key: string, open: boolean) => void;
@@ -459,7 +430,6 @@ function MessageBlock({
                     beforeActions={group === fileActivityReply ? fileActivity : undefined}
                     labels={labels}
                     locale={locale}
-                    onTool={onTool}
                     imageLoader={imageLoader}
                   />
                 );
@@ -545,7 +515,6 @@ function MessageBlock({
                             key={event.id}
                             labels={labels}
                             locale={locale}
-                            onTool={onTool}
                             imageLoader={imageLoader}
                           />
                         ) : (
@@ -554,7 +523,6 @@ function MessageBlock({
                             key={event.id}
                             labels={labels}
                             locale={locale}
-                            onTool={onTool}
                             imageLoader={imageLoader}
                           />
                         ),
@@ -584,7 +552,6 @@ export interface SessionTranscriptProps {
   incomplete?: boolean;
   labels: ReaderLabels;
   locale: string;
-  onTool?: (event: ConversationEvent) => void;
   imageLoader?: MessageImageLoader;
   hasEarlier?: boolean;
   loadingEarlier?: boolean;
@@ -605,7 +572,6 @@ export function SessionTranscript({
   incomplete = false,
   labels,
   locale,
-  onTool,
   imageLoader,
   hasEarlier = false,
   loadingEarlier = false,
@@ -753,7 +719,6 @@ export function SessionTranscript({
             message={message}
             labels={labels}
             locale={locale}
-            onTool={onTool}
             imageLoader={imageLoader}
             openProcesses={openProcesses}
             onToggleProcess={(key, open) =>

@@ -35,7 +35,8 @@
     "./session-interaction-risk": "./src/sessions/interaction-risk.ts",
     "./approval-rule-providers": "./src/sessions/approval-rule-providers.ts",
     "./local-runtime-ipc": "./src/local-runtime-ipc.ts",
-    "./local-runtime-service": "./src/local-runtime-service.ts"
+    "./local-runtime-service": "./src/local-runtime-service.ts",
+    "./windows-store-process": "./src/windows-store-process.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit"

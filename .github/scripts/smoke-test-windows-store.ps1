@@ -366,10 +366,6 @@ try {
       Write-Host "Roaming profile exists: $(Test-Path -LiteralPath (Join-Path $electronProfileRoot 'electron') -PathType Container)"
       $owned = @(Get-CimInstance Win32_Process -Filter "Name = 'AgentKib.exe'")
       Write-Host "AgentKib processes: $($owned.Count); shared runtime processes: $(@($owned | Where-Object CommandLine -Match '(?:^|\s)--local-runtime(?:\s|$)').Count)"
-      $trace = Join-Path $data "msix-runtime-smoke.log"
-      if (Test-Path -LiteralPath $trace) {
-        Get-Content -LiteralPath $trace -TotalCount 20 | ForEach-Object { Write-Host $_ }
-      }
       throw
     }
     $runtimeVersion = "$($Version.Major).$($Version.Minor).$($Version.Build)"

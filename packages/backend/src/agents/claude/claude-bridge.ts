@@ -38,7 +38,7 @@ import {
   bridgePollSchema,
   bridgeResultSchema,
 } from "./claude-bridge-schema";
-import { claudeBridgeToolDetail } from "./claude-bridge-tool-detail";
+import { claudeBridgeToolEvent } from "./claude-bridge-tool-detail";
 import { acquirePortableFileLease } from "../../managed-session-lock";
 import type { ClaudeBridgePluginUpdater } from "./claude-bridge-plugin-update";
 import {
@@ -3275,21 +3275,10 @@ export class ClaudeBridge {
     connection.publishedTools = tools;
     for (const [toolId, tool] of tools) {
       if (previous.get(toolId) === tool) continue;
-      const detail = claudeBridgeToolDetail(tool, binding.target.workspace);
       this.options.publish(
         id,
         "item-upsert",
-        {
-          id: toolId,
-          kind: "tool-summary",
-          content: "",
-          tool_name: sanitizeSessionText(tool.name, { value: 0 }),
-          tool_status: tool.status,
-          attachment_count: 0,
-          truncated: false,
-          turn_id: turnId,
-          ...(detail ? { tool: detail } : {}),
-        },
+        claudeBridgeToolEvent(toolId, tool, turnId, binding.target.workspace),
         live,
       );
     }

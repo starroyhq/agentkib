@@ -31,22 +31,13 @@ pnpm install --frozen-lockfile
 
 ### Architecture
 
-AgentKib is one desktop application assembled from several cooperating parts:
+The Electron main process owns the native shell, trusted preload IPC and remote HTTP access. It connects to a shared TypeScript backend for workspace data, session Providers, control receipts and Project Agent orchestration. Electron supplies the bundled Node runtime. File replacement and rollback use the staged Koffi module, unpacked from ASAR in installed apps.
 
-| Part                  | Location                                                      | Responsibility                                                                                                             |
-| --------------------- | ------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
-| Electron main process | `apps/desktop/electron/main/`                                 | Window lifecycle, tray, native shell integration, updates, runtime hosting, and privileged IPC                             |
-| Electron preload      | `apps/desktop/electron/preload/`                              | Narrow bridge exposed to the renderer                                                                                      |
-| React renderer        | `apps/desktop/src/`                                           | Routes, screens, state, and user interaction                                                                               |
-| TypeScript backend    | `packages/backend/`, `apps/desktop/electron/backend-entry.ts` | Application settings, workspace/discovery writes, cached reads and Agent sessions in a shared local runtime |
-| Quota sidecar         | Prepared under `apps/desktop/resources/quota/`                | Pinned, patched platform collectors for separate quota and local-cost collection; see [build and verification](development/quota-collector.md) |
-| Runtime protocol      | `packages/runtime-protocol/src/index.ts`                      | Shared contract generated for Electron                                                                                     |
+The desktop renderer and remote Web app share session components from `packages/session-ui` and inject their platform services through `session-platform`. New session operations use `session.request` and the Provider interface. Shared runtime methods, schemas and capabilities live in `packages/runtime-protocol`. See the full request path and rules in the [architecture guide](development/architecture.md) (Chinese).
+
+The build commands generate the Electron protocol entry and stage native artifacts in the order defined in `apps/desktop/package.json`. See [quota collector build and verification](development/quota-collector.md) for the separate quota and local cost sidecar.
 
 Quota RPC compatibility: `quota.snapshot` and `quota.collectorStatus` remain available; `quota.refresh` accepts an optional `{provider}` and refreshes every enabled provider when omitted. Each completed provider emits `quota.updated` immediately. Local estimates use `quota.costSnapshot`, `quota.costStatus`, `quota.refreshCost` with `{provider: "codex" | "claude", force?: boolean}`, and `quota.observeCosts` with `{provider: "codex" | "claude" | null}`. The `force` flag bypasses application scheduling only; it does not request an upstream full rescan. `quota.costUpdated` carries normalized snapshot/status data. Renderer observation IPC is trusted-desktop-only and is cleared on navigation, destruction, hiding and runtime restart; clients cannot select log roots or identities. The existing private SQLite receives additive cache tables without changing schema 15, so prior quota caches remain readable.
-
-The Electron main process and packaged application use the TypeScript backend exclusively. `runtime-router.ts` assigns every runtime method to a TypeScript owner and validates renderer access through IPC. The backend owns workspace and discovery data, settings, agent context and assets, sessions and transcripts, insights and quotas, handoff and change application, MCP configuration, and SQLite schema upgrades. Provider readers preserve bounded paging, partial-source retention, last-good data, workspace ownership checks, and sensitive-data redaction. Managed Claude/Codex and remote control features run through the TypeScript owner paths. Workspace writes are serialized and transactional, with crash fencing; failed requests are never replayed to another backend.
-
-`pnpm dev` and packaged applications start only the TypeScript backend. Electron supplies the bundled Node runtime. Native file replacement and rollback use the staged Koffi module, unpacked from ASAR for installed apps. The build commands generate the shared protocol and stage required native artifacts in the order defined in `apps/desktop/package.json`.
 
 `apps/desktop/electron.vite.config.ts` configures electron-vite for the main process, preload, and React renderer. `pnpm dev` builds main and preload once and runs renderer HMR. Renderer changes, including those in shared UI packages, keep the Electron client connected to the local runtime. Restart Dev to apply changes to main or preload. The backend and its workers use an independent Vite build in `vite.backend.config.ts`, followed by native-module staging. Vitest configuration lives in `vitest.config.ts`. Release jobs can still build the renderer (`build:web`) and Electron processes (`electron:build`) separately, and electron-builder packages the existing `dist/` and `dist-electron/` output directories.
 
@@ -158,30 +149,17 @@ pnpm install --frozen-lockfile
 
 ### 架构
 
-AgentKib 由多个协作部分组成一个桌面应用：
+Electron 主进程负责原生窗口和系统集成、可信 preload IPC 及远程 HTTP 访问。共享 TypeScript 后台负责工作区数据、会话 Provider、控制回执和项目 Agent 编排。Electron 自带 Node Runtime，原生文件替换和回滚使用暂存并从 ASAR 解包的 Koffi 模块。
 
-| 部分                  | 位置                                                          | 职责                                                                               |
-| --------------------- | ------------------------------------------------------------- | ---------------------------------------------------------------------------------- |
-| Electron main process | `apps/desktop/electron/main/`                                 | 窗口生命周期、托盘、原生系统集成、更新、Runtime 托管和高权限 IPC                   |
-| Electron preload      | `apps/desktop/electron/preload/`                              | 向 renderer 暴露收窄后的桥接接口                                                   |
-| React renderer        | `apps/desktop/src/`                                           | 路由、界面、状态和用户交互                                                         |
-| TypeScript backend    | `packages/backend/`、`apps/desktop/electron/backend-entry.ts` | 在共享本地服务中处理应用设置、工作区和发现写入、缓存读取及 Agent 会话 |
-| Quota sidecar         | 准备到 `apps/desktop/resources/quota/`                        | 分平台采集本机额度数据                                                             |
-| Runtime protocol      | 由 `apps/desktop/scripts/generate-runtime-protocol.mjs` 生成  | 在开发和构建前生成 Electron 与 TypeScript backend 的共享协议                       |
+桌面 renderer 和远程 Web 在 `packages/session-ui` 共用会话界面，通过 `session-platform` 注入平台服务。新会话操作走 `session.request` 和 Provider 接口。Runtime 方法、数据结构和能力声明集中在 `packages/runtime-protocol`。完整请求路径、代码放置和检查规则见[架构约定](development/architecture.md)。
 
-`pnpm dev` 和正式安装版只启动 TypeScript backend。Electron 使用自带的 Node runtime。原生文件替换和回滚使用暂存的 Koffi 预编译模块，安装版会从 ASAR 解包。`pnpm dev`、`pnpm build` 和 `pnpm dist:electron` 会按照 `apps/desktop/package.json` 定义的顺序生成共享协议并暂存所需原生产物；不要手工编辑生成协议或其转出文件。
+开发与构建命令按 `apps/desktop/package.json` 中的顺序生成 Electron 的协议入口并暂存原生产物。额度和本机费用由独立的采集器提供，构建和校验见[额度采集器说明](development/quota-collector.md)。
 
 `apps/desktop/electron.vite.config.ts` 统一配置 electron-vite 的主进程、preload 和 React renderer。`pnpm dev` 在启动时构建主进程和 preload，运行期间热更新 renderer。界面和共享 UI 包的改动会保留当前 Electron 客户端与本地服务的连接。主进程或 preload 改动需要重启 Dev。Backend 及其 worker 通过 `vite.backend.config.ts` 独立编译，再暂存原生模块。Vitest 配置位于 `vitest.config.ts`。发布流程仍可通过 `build:web` 和 `electron:build` 分别构建 renderer 与 Electron 进程，electron-builder 继续打包现有的 `dist/` 和 `dist-electron/` 目录。
 
+桌面 preload 的 `paths.displayContext()` 经可信 renderer 校验后返回本机主目录，供界面缩写路径。它是无参数的只读 IPC。
+
 ### 启动开发环境
-
-桌面保留以下导航快捷键：macOS 使用 `⌘1` 首页、`⌘2` 工作区、`⌘3` 会话、`⌘4` 资源库、`⌘5` 额度、`⌘6` 洞察，其他平台使用对应的 `Ctrl` 组合。Agent 管理位于“设置 → Agent 与集成 → Agent”；旧 `/agents` 路由及其 Agent 筛选会兼容跳转，旧集成设置深链接仍进入“集成”标签
-
-侧栏顶部的 AgentKib Logo 同时作为首页入口，平时显示 Logo，鼠标悬浮或键盘聚焦时切换为 Home 图标，点击返回首页；不再单独排列首页按钮。选中项使用背景和图标状态区分，不显示侧边主题色指示条。
-
-侧栏底部的额度入口使用中心透明的分段圆环。Codex 为白色（浅色主题使用深色），Claude Code 为橙色，各自最多占半圈，分别取该 Agent 已启用来源中所有账号、额度窗口的最低剩余比例；白色弧后紧接橙色弧，不将两个 Agent 的额度相加或平均成总剩余值。悬浮提示说明各自的最低值和对应窗口。无数据不伪装成 0%，过期缓存保留并标明待刷新；图标只读取共享额度快照，采集仍由现有自动更新和手动刷新入口控制。底部不再显示通用刷新按钮，菜单和 `⌘R`／`Ctrl+R` 保持可用。
-
-桌面 preload 的 `paths.displayContext()` 只读返回主进程的本机主目录，用于界面路径缩写。该 IPC 使用既有可信 renderer 校验，不接受路径参数，不读取 Agent 配置文件，不改变 Runtime 协议或文件操作路径
 
 ```bash
 pnpm dev

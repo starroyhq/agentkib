@@ -46,6 +46,8 @@ Start with the repository [README](../README.md) for the overview and downloads.
 ## 开发与发布
 
 - [开发文档](DEVELOPMENT.md)（EN）：环境、架构、启动、验证命令和打包。
+- [架构约定](development/architecture.md)说明进程分工、会话请求路径和架构检查。
+- [兼容代码登记表](development/compat-registry.md)记录兼容范围和删除条件。
 - [发布流程](development/release.md)（EN）：发布、重试、签名公证和更新元数据。
 - [候选版检查清单](development/beta-checklist.md)（EN）：打标签前后的人工检查。
 - [Windows 构建](development/windows.md)：在 Windows 11 x64 上从源码构建和打包。

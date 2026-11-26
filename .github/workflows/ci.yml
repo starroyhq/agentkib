@@ -41,6 +41,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
         with:
+          fetch-depth: 0
           persist-credentials: false
 
       - name: Setup quality environment
@@ -53,6 +54,14 @@ jobs:
 
       - name: Lint desktop and backend
         run: pnpm lint
+
+      - name: Test architecture checks
+        run: node --test scripts/check-architecture.test.mjs
+
+      - name: Check architecture guardrails
+        env:
+          ARCHITECTURE_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: node scripts/check-architecture.mjs --base "$ARCHITECTURE_BASE_SHA"
 
       - name: Test release startup checks
         run: node --test .github/scripts/*.test.mjs
